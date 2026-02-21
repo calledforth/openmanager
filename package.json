@@ -1,0 +1,53 @@
+{
+  "name": "openmanager",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop GUI for managing OpenCode agent sessions",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
+    "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "lint": "eslint .",
+    "format": "prettier --write \"src/**/*.{ts,tsx}\" \"convex/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx}\" \"convex/**/*.ts\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "convex:dev": "npx convex dev",
+    "ci": "npm run typecheck && npm run lint && npm run test"
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "^4.2.0",
+    "autoprefixer": "^10.4.24",
+    "clsx": "^2.1.1",
+    "convex": "^1.32.0",
+    "motion": "^12.34.3",
+    "postcss": "^8.5.6",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "tailwind-merge": "^3.5.0",
+    "tailwindcss": "^4.2.0",
+    "tailwindcss-animate": "^1.0.7"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@typescript-eslint/eslint-plugin": "^8.56.0",
+    "@typescript-eslint/parser": "^8.56.0",
+    "@vitejs/plugin-react": "^5.1.4",
+    "electron": "^40.6.0",
+    "electron-builder": "^26.8.1",
+    "electron-vite": "^5.0.0",
+    "eslint": "^9.39.2",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "prettier": "^3.8.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}

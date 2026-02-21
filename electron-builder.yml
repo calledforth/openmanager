@@ -1,0 +1,13 @@
+appId: com.openmanager.app
+productName: OpenManager
+directories:
+  buildResources: build
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintignore,.eslintrc.cjs,.prettierrc,tsconfig*.json}'
+win:
+  target:
+    - nsis
+    - portable

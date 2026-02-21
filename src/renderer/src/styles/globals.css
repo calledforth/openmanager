@@ -1,0 +1,54 @@
+@import "tailwindcss";
+
+@theme {
+  /* Semantic colors for chat UI */
+  --color-background: hsl(240 10% 4%);
+  --color-foreground: hsl(240 4.8% 95.9%);
+  --color-border: hsl(240 3.7% 15.9%);
+  --color-input: hsl(240 3.7% 15.9%);
+  --color-muted: hsl(240 5.9% 10%);
+  --color-muted-foreground: hsl(240 4.4% 58%);
+  --color-input-background: hsl(60 2% 18%);
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono: "Monaco", "Menlo", "Consolas", monospace;
+}
+
+body {
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-sans);
+}
+
+/* Chat-specific styles - 1Code inspired */
+@keyframes chat-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes chat-slide-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes text-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+.chat-animate-fade-in {
+  animation: chat-fade-in 200ms ease-out;
+}
+
+.chat-animate-slide-up {
+  animation: chat-slide-up 200ms ease-out;
+}
+
+/* Hide scrollbar but keep scroll functionality */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
