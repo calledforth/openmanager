@@ -41,6 +41,16 @@ interface RuntimeMetadata {
   }
 }
 
+function isPlaceholderSessionTitle(title: string | undefined): boolean {
+  if (!title) return true
+  const trimmed = title.trim()
+  if (!trimmed) return true
+  if (/^ACP Session\s+[0-9a-f-]{8,}$/i.test(trimmed)) return true
+  if (/^New session\s*-\s*\d+$/i.test(trimmed)) return true
+  if (/^session[-_\s]?[0-9a-z]{6,}$/i.test(trimmed)) return true
+  return false
+}
+
 export class SSEBridge {
   private controller: AbortController | null = null
   private buffers = new Map<string, MessageBuffer>()
@@ -413,6 +423,20 @@ export class SSEBridge {
     return hasData ? runtime : undefined
   }
 
+  private buildCandidateTitleFromMessage(info: Record<string, any>): string | null {
+    const summaryTitle = typeof info.summary?.title === 'string' ? info.summary.title.trim() : ''
+    if (summaryTitle && !isPlaceholderSessionTitle(summaryTitle)) return summaryTitle
+
+    const textPart = Array.isArray(info.parts)
+      ? info.parts.find((part: any) => part?.type === 'text' && typeof part.text === 'string')
+      : null
+    const text = typeof textPart?.text === 'string' ? textPart.text.trim() : ''
+    if (!text) return null
+    const singleLine = text.replace(/\s+/g, ' ').trim()
+    if (!singleLine) return null
+    return singleLine.length > 80 ? `${singleLine.slice(0, 77)}...` : singleLine
+  }
+
   private emitSSEEvent(payload: {
     id: string
     timestamp: string
@@ -570,6 +594,21 @@ export class SSEBridge {
               parts: finalizedParts,
               runtimeMetadata: runtimeMetadata ?? this.messageRuntime.get(info.id),
             })
+          }
+
+          if (isFinal && role === 'user') {
+            const candidateTitle = this.buildCandidateTitleFromMessage(info)
+            if (candidateTitle && !isPlaceholderSessionTitle(candidateTitle)) {
+              void this.runTrackedMutation('sessions.upsertTitle', (api as any).sessions.upsertTitle, {
+                  workspacePath: this.workspacePath,
+                  externalId: info.sessionID,
+                  title: candidateTitle,
+                  clientId: this.clientId,
+                })
+                .catch((err) =>
+                  console.warn('[sse-bridge] session title promote failed:', (err as Error).message),
+                )
+            }
           }
           break
         }

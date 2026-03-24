@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Hash, Plus, Settings, ChevronDown, Archive, X } from 'lucide-react'
+import { MessageSquare, Plus, SquarePen, ChevronDown, Archive, Trash2, PanelLeftClose, PanelLeft, Loader2 } from 'lucide-react'
 import { useSidebarData, type WorkspaceEntry } from '../providers/sidebar-data-provider'
 import { cn } from '../lib/utils'
 
@@ -19,7 +19,7 @@ const statusLabel: Record<string, string> = {
   error: 'text-red-400',
 }
 
-export function WorkspaceSidebar() {
+export function WorkspaceSidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   const {
     workspaces,
     sessionsByWorkspace,
@@ -32,14 +32,42 @@ export function WorkspaceSidebar() {
     deleteSession,
   } = useSidebarData()
 
+  if (collapsed) {
+    return (
+      <aside className="flex h-full w-[48px] flex-col items-center bg-sidebar py-3 shrink-0">
+        <button
+          onClick={onToggle}
+          className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground"
+          title="Expand sidebar"
+        >
+          <PanelLeft className="h-4 w-4" />
+        </button>
+      </aside>
+    )
+  }
+
   return (
-    <aside className="flex h-full w-[260px] flex-col border-r border-border bg-sidebar">
+    <aside className="flex h-full w-[260px] flex-col bg-sidebar shrink-0">
       {/* Header */}
       <div className="flex h-12 items-center justify-between px-3">
         <span className="text-sm font-medium text-sidebar-primary">Home</span>
-        <button className="rounded-md p-1 text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground">
-          <Settings className="h-4 w-4" />
-        </button>
+        <div className="flex items-center gap-0.5">
+          <button
+            onClick={onToggle}
+            className="rounded-md p-1.5 text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground"
+            title="Collapse sidebar"
+          >
+            <PanelLeftClose className="h-4 w-4" />
+          </button>
+          <button
+            onClick={() => activeWorkspacePath && createSession(activeWorkspacePath)}
+            disabled={!activeWorkspacePath}
+            className="rounded-md p-1.5 text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground disabled:opacity-30"
+            title="New thread"
+          >
+            <SquarePen className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
       {/* Workspace list */}
@@ -65,7 +93,7 @@ export function WorkspaceSidebar() {
       </div>
 
       {/* Bottom actions */}
-      <div className="border-t border-border px-2 py-2">
+      <div className="px-2 py-2">
         <button
           onClick={() => addWorkspace()}
           className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground"
@@ -104,7 +132,7 @@ function WorkspaceGroup({
       {/* Group header */}
       <button
         onClick={() => setCollapsed(!collapsed)}
-        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground"
+        className="group flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground"
       >
         <ChevronDown
           className={cn(
@@ -126,7 +154,7 @@ function WorkspaceGroup({
           }}
           className="rounded p-0.5 text-muted-foreground/50 opacity-0 group-hover:opacity-100 hover:text-foreground transition-default"
         >
-          <X className="h-3 w-3" />
+          <Trash2 className="h-3 w-3" />
         </button>
       </button>
 
@@ -149,32 +177,28 @@ function WorkspaceGroup({
                 key={s.externalId}
                 onClick={() => selectSession(workspace.path, s.externalId)}
                 className={cn(
-                  'group flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left transition-default',
+                  'group flex w-full items-center gap-2 rounded-md px-3 py-1 text-left transition-default',
                   isActive
                     ? 'bg-surface-active text-foreground'
                     : 'text-sidebar-foreground hover:bg-surface-hover hover:text-foreground'
                 )}
               >
-                <Hash className="h-3 w-3 shrink-0 text-muted-foreground" />
-                <div className="flex min-w-0 flex-1 flex-col">
-                  <span className="truncate text-[13px]">
-                    {s.title || s.externalId.slice(0, 10)}
-                  </span>
-                  <span className={cn(
-                    'truncate text-[11px]',
-                    statusLabel[s.status] ?? 'text-muted-foreground'
-                  )}>
-                    {s.status}
-                  </span>
-                </div>
+                {s.status === 'running' || s.status === 'busy' || s.status === 'waiting' ? (
+                  <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" />
+                ) : (
+                  <MessageSquare className="h-3 w-3 shrink-0 text-muted-foreground/50" />
+                )}
+                <span className="flex-1 truncate text-[13px]">
+                  {s.title || s.externalId.slice(0, 10)}
+                </span>
                 <button
                   onClick={(e) => {
                     e.stopPropagation()
                     deleteSession(workspace.path, s.externalId)
                   }}
-                  className="shrink-0 rounded p-0.5 text-muted-foreground/40 opacity-0 transition-default group-hover:opacity-100 hover:text-foreground"
+                  className="shrink-0 rounded p-1 text-muted-foreground/30 opacity-0 transition-default group-hover:opacity-100 hover:text-red-400 hover:bg-red-400/10"
                 >
-                  <X className="h-3 w-3" />
+                  <Trash2 className="h-3 w-3" />
                 </button>
               </button>
             )

@@ -103,6 +103,28 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
     Record<string, { modelId?: string; modeId?: string }>
   >({})
 
+  const mergeDraftRuntimeForWorkspace = useCallback(
+    (
+      workspacePath: string,
+      patch: {
+        models?: AcpSessionRuntimeState['models']
+        modes?: AcpSessionRuntimeState['modes']
+        availableCommands?: AcpCommandOption[]
+      },
+    ) => {
+      setDraftSessionStateByWorkspace((prev) => ({
+        ...prev,
+        [workspacePath]: {
+          ...(prev[workspacePath] ?? {}),
+          ...(patch.models ? { models: patch.models } : {}),
+          ...(patch.modes ? { modes: patch.modes } : {}),
+          ...(patch.availableCommands ? { availableCommands: patch.availableCommands } : {}),
+        },
+      }))
+    },
+    [],
+  )
+
   const telemetryContext = useCallback(
     () => ({
       sessionExternalId: activeSessionId ?? undefined,
@@ -214,23 +236,69 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           ? acpSessionStateById[activeSessionId]
           : null
       if (fallbackSessionState) {
-        setDraftSessionStateByWorkspace((prev) => ({
+        mergeDraftRuntimeForWorkspace(workspacePath, {
+          ...(fallbackSessionState.models ? { models: fallbackSessionState.models } : {}),
+          ...(fallbackSessionState.modes ? { modes: fallbackSessionState.modes } : {}),
+          ...(fallbackSessionState.availableCommands
+            ? { availableCommands: fallbackSessionState.availableCommands }
+            : {}),
+        })
+        setDraftSelectionByWorkspace((prev) => ({
           ...prev,
           [workspacePath]: {
             ...(prev[workspacePath] ?? {}),
-            ...(fallbackSessionState.models ? { models: fallbackSessionState.models } : {}),
-            ...(fallbackSessionState.modes ? { modes: fallbackSessionState.modes } : {}),
-            ...(fallbackSessionState.availableCommands
-              ? { availableCommands: fallbackSessionState.availableCommands }
+            ...(fallbackSessionState.models?.currentModelId
+              ? { modelId: fallbackSessionState.models.currentModelId }
+              : {}),
+            ...(fallbackSessionState.modes?.currentModeId
+              ? { modeId: fallbackSessionState.modes.currentModeId }
               : {}),
           },
         }))
       }
-      if (sidecarStatuses[workspacePath] !== 'connected') {
-        ensureSidecar(workspacePath).catch(console.error)
+      let sidecarReady = sidecarStatuses[workspacePath] === 'connected'
+      if (!sidecarReady) {
+        sidecarReady = await ensureSidecar(workspacePath)
+      }
+
+      const hasRuntime =
+        !!fallbackSessionState?.models?.availableModels?.length ||
+        !!fallbackSessionState?.modes?.availableModes?.length ||
+        !!fallbackSessionState?.availableCommands?.length
+      if (hasRuntime || typeof window.electronAPI.loadAcpSession !== 'function') return
+
+      try {
+        const sessions = (await trackedConvexQuery('sessions.listByWorkspace', api.sessions.listByWorkspace, {
+          workspacePath,
+        })) as Array<{ externalId: string; updatedAt: number }>
+        const sorted = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt)
+        const hydrated = sorted.find((row) => !!acpSessionStateById[row.externalId])
+        if (hydrated) {
+          const runtime = acpSessionStateById[hydrated.externalId]
+          if (runtime) {
+            mergeDraftRuntimeForWorkspace(workspacePath, {
+              ...(runtime.models ? { models: runtime.models } : {}),
+              ...(runtime.modes ? { modes: runtime.modes } : {}),
+              ...(runtime.availableCommands ? { availableCommands: runtime.availableCommands } : {}),
+            })
+          }
+          return
+        }
+        if (sidecarReady && sorted[0]?.externalId) {
+          await window.electronAPI.loadAcpSession(workspacePath, sorted[0].externalId)
+        }
+      } catch {
+        // Best-effort hydration; draft can still proceed without metadata.
       }
     },
-    [acpSessionStateById, activeSessionId, activeWorkspacePath, ensureSidecar, sidecarStatuses],
+    [
+      acpSessionStateById,
+      activeSessionId,
+      activeWorkspacePath,
+      ensureSidecar,
+      mergeDraftRuntimeForWorkspace,
+      sidecarStatuses,
+    ],
   )
 
   const deleteSession = useCallback(
@@ -546,8 +614,9 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       return
     }
     const cleanup = window.electronAPI.onAcpEvent((data) => {
-      const event = data as { type?: string; payload?: any }
+      const event = data as { type?: string; payload?: any; workspacePath?: string }
       if (!event?.type) return
+      const eventWorkspacePath = event.workspacePath ?? activeWorkspacePath
 
       if (event.type === 'initialize.result') {
         const payload = event.payload as { agentInfo?: { name?: string; version?: string } }
@@ -570,15 +639,11 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
             ...(payload.modes ? { modes: payload.modes } : {}),
           },
         }))
-        if (activeWorkspacePath) {
-          setDraftSessionStateByWorkspace((prev) => ({
-            ...prev,
-            [activeWorkspacePath]: {
-              ...(prev[activeWorkspacePath] ?? {}),
-              ...(payload.models ? { models: payload.models } : {}),
-              ...(payload.modes ? { modes: payload.modes } : {}),
-            },
-          }))
+        if (eventWorkspacePath) {
+          mergeDraftRuntimeForWorkspace(eventWorkspacePath, {
+            ...(payload.models ? { models: payload.models } : {}),
+            ...(payload.modes ? { modes: payload.modes } : {}),
+          })
         }
         if (pendingDraftSessionStart && activeWorkspacePath) {
           setActiveSessionId(payload.sessionId)
@@ -603,15 +668,11 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
             ...(payload.modes ? { modes: payload.modes } : {}),
           },
         }))
-        if (activeWorkspacePath) {
-          setDraftSessionStateByWorkspace((prev) => ({
-            ...prev,
-            [activeWorkspacePath]: {
-              ...(prev[activeWorkspacePath] ?? {}),
-              ...(payload.models ? { models: payload.models } : {}),
-              ...(payload.modes ? { modes: payload.modes } : {}),
-            },
-          }))
+        if (eventWorkspacePath) {
+          mergeDraftRuntimeForWorkspace(eventWorkspacePath, {
+            ...(payload.models ? { models: payload.models } : {}),
+            ...(payload.modes ? { modes: payload.modes } : {}),
+          })
         }
         return
       }
@@ -662,20 +723,16 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
               availableCommands: payload.update?.availableCommands ?? [],
             },
           }))
-          if (activeWorkspacePath) {
-            setDraftSessionStateByWorkspace((prev) => ({
-              ...prev,
-              [activeWorkspacePath]: {
-                ...(prev[activeWorkspacePath] ?? {}),
-                availableCommands: payload.update?.availableCommands ?? [],
-              },
-            }))
+          if (eventWorkspacePath) {
+            mergeDraftRuntimeForWorkspace(eventWorkspacePath, {
+              availableCommands: payload.update?.availableCommands ?? [],
+            })
           }
         }
       }
     })
     return cleanup
-  }, [activeWorkspacePath, pendingDraftSessionStart])
+  }, [activeWorkspacePath, mergeDraftRuntimeForWorkspace, pendingDraftSessionStart])
 
   const acpSessionState = useMemo(
     () => (activeSessionId ? acpSessionStateById[activeSessionId] ?? null : null),

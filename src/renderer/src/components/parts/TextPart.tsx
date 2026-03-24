@@ -33,13 +33,13 @@ const mdComponents: Components = {
     )
   },
   p({ children }) {
-    return <p className="text-[13px] text-foreground/85 my-px leading-relaxed py-[3px]">{children}</p>
+    return <p className="text-foreground my-px leading-relaxed py-[3px]">{children}</p>
   },
   ul({ children }) {
-    return <ul className="my-1 pl-5 text-[13px] text-foreground/85 leading-relaxed">{children}</ul>
+    return <ul className="my-1 pl-5 text-foreground leading-relaxed">{children}</ul>
   },
   ol({ children }) {
-    return <ol className="my-1 pl-5 text-[13px] text-foreground/85 leading-relaxed">{children}</ol>
+    return <ol className="my-1 pl-5 text-foreground leading-relaxed">{children}</ol>
   },
   li({ children }) {
     return <li className="my-0.5">{children}</li>
@@ -102,7 +102,7 @@ interface TextPartProps {
 export function TextPart({ text, dimmed }: TextPartProps) {
   if (!text) return null
   return (
-    <div className={cn('text-[13px] leading-relaxed', dimmed ? 'text-muted-foreground' : 'text-foreground/85')}>
+    <div className={cn('leading-relaxed', dimmed ? 'text-muted-foreground' : 'text-foreground')}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
         {text}
       </ReactMarkdown>

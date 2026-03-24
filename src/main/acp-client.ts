@@ -13,6 +13,7 @@ type PermissionOutcome = {
 
 interface PendingPermission {
   sessionId: string
+  options?: Array<{ optionId?: string; kind?: string }>
   resolve: (outcome: PermissionOutcome) => void
 }
 
@@ -228,13 +229,26 @@ export class ACPClient implements AgentClient {
     }
   }
 
-  async resolvePermission(sessionId: string, permissionId: string, approved: boolean): Promise<void> {
+  async resolvePermission(
+    sessionId: string,
+    permissionId: string,
+    approved: boolean,
+  ): Promise<void> {
     const pending = this.pendingPermissions.get(permissionId)
-    if (!pending || pending.sessionId !== sessionId) return
+    if (!pending) {
+      console.warn(`[acp] resolvePermission ignored: missing pending permission ${permissionId}`)
+      return
+    }
+    if (pending.sessionId !== sessionId) {
+      console.warn(
+        `[acp] resolvePermission ignored: session mismatch for ${permissionId} (expected ${pending.sessionId}, got ${sessionId})`,
+      )
+      return
+    }
     this.pendingPermissions.delete(permissionId)
     const outcome: PermissionOutcome = {
       outcome: 'selected',
-      optionId: approved ? 'once' : 'reject',
+      optionId: this.findOptionId(pending.options, approved),
     }
     pending.resolve(outcome)
     this.ingestSynthetic('permission.replied', { sessionID: sessionId, requestID: permissionId })
@@ -289,7 +303,12 @@ export class ACPClient implements AgentClient {
 
   private emitAcpEvent(type: string, payload: unknown): void {
     if (this.mainWindow.isDestroyed()) return
-    this.mainWindow.webContents.send('acp:event', { type, payload, timestamp: Date.now() })
+    this.mainWindow.webContents.send('acp:event', {
+      type,
+      payload,
+      workspacePath: this.workspacePath,
+      timestamp: Date.now(),
+    })
   }
 
   private ingestSynthetic(eventType: string, properties: Record<string, unknown>): void {
@@ -329,7 +348,7 @@ export class ACPClient implements AgentClient {
     switch (kind) {
       case 'agent_message_chunk': {
         const content = update.content as { type?: string; text?: string } | undefined
-        const delta = content?.type === 'text' ? content.text ?? '' : ''
+        const delta = content?.type === 'text' ? (content.text ?? '') : ''
         if (!delta) return
         const partId = 'acp_text_part'
         const existing = activeTurn.parts.get(partId) ?? { type: 'text', id: partId, text: '' }
@@ -348,7 +367,7 @@ export class ACPClient implements AgentClient {
       }
       case 'agent_thought_chunk': {
         const content = update.content as { type?: string; text?: string } | undefined
-        const delta = content?.type === 'text' ? content.text ?? '' : ''
+        const delta = content?.type === 'text' ? (content.text ?? '') : ''
         if (!delta) return
         const partId = 'acp_reasoning_part'
         const existing = activeTurn.parts.get(partId) ?? { type: 'reasoning', id: partId, text: '' }
@@ -412,7 +431,9 @@ export class ACPClient implements AgentClient {
           input: (update.rawInput as Record<string, unknown>) ?? {},
           output:
             (update.rawOutput as { output?: string } | undefined)?.output ??
-            ((update.content as Array<{ content?: { text?: string } }> | undefined)?.[0]?.content?.text ?? ''),
+            (update.content as Array<{ content?: { text?: string } }> | undefined)?.[0]?.content
+              ?.text ??
+            '',
           error: (update.rawOutput as { error?: string } | undefined)?.error,
           title: String(update.title ?? previous.tool ?? 'tool'),
           metadata: (update.rawOutput as { metadata?: unknown } | undefined)?.metadata,
@@ -463,10 +484,11 @@ export class ACPClient implements AgentClient {
       case 'requestPermission': {
         const payload = (params ?? {}) as {
           sessionId?: string
+          sessionID?: string
           toolCall?: Record<string, unknown>
           options?: Array<{ optionId?: string; kind?: string }>
         }
-        const sessionId = String(payload.sessionId ?? '')
+        const sessionId = String(payload.sessionId ?? payload.sessionID ?? '')
         const toolCall = payload.toolCall ?? {}
         const requestId = String(toolCall.toolCallId ?? randomUUID())
         this.ingestSynthetic('permission.asked', {
@@ -478,7 +500,7 @@ export class ACPClient implements AgentClient {
           metadata: (toolCall.rawInput as Record<string, unknown>) ?? {},
         })
         return await new Promise<PermissionOutcome>((resolve) => {
-          this.pendingPermissions.set(requestId, { sessionId, resolve })
+          this.pendingPermissions.set(requestId, { sessionId, options: payload.options, resolve })
           setTimeout(() => {
             const pending = this.pendingPermissions.get(requestId)
             if (!pending) return
@@ -487,7 +509,10 @@ export class ACPClient implements AgentClient {
               outcome: 'selected',
               optionId: this.findOptionId(payload.options, false),
             })
-            this.ingestSynthetic('permission.replied', { sessionID: sessionId, requestID: requestId })
+            this.ingestSynthetic('permission.replied', {
+              sessionID: sessionId,
+              requestID: requestId,
+            })
           }, 60_000)
         })
       }
@@ -581,7 +606,11 @@ export class ACPClient implements AgentClient {
     return approved ? 'once' : 'reject'
   }
 
-  private updateSessionRuntimeFromPayload(sessionId: string, models: unknown, modes: unknown): void {
+  private updateSessionRuntimeFromPayload(
+    sessionId: string,
+    models: unknown,
+    modes: unknown,
+  ): void {
     const currentModelId =
       models &&
       typeof models === 'object' &&
@@ -604,7 +633,9 @@ export class ACPClient implements AgentClient {
     })
   }
 
-  private parseModelId(modelId: string | undefined): { providerId: string; modelId: string } | null {
+  private parseModelId(
+    modelId: string | undefined,
+  ): { providerId: string; modelId: string } | null {
     if (!modelId) return null
     const parts = modelId.split('/')
     if (parts.length < 2) return null
@@ -623,10 +654,9 @@ export class ACPClient implements AgentClient {
 
     for (const [method, params] of attempts) {
       try {
-        const result = await this.connection.call<{ sessions?: Array<{ sessionId?: string; title?: string }> }>(
-          method,
-          params,
-        )
+        const result = await this.connection.call<{
+          sessions?: Array<{ sessionId?: string; title?: string }>
+        }>(method, params)
         const sessions =
           result.sessions
             ?.filter((row) => typeof row.sessionId === 'string' && row.sessionId.length > 0)

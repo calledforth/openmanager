@@ -110,7 +110,7 @@ export function ChatView() {
 
   return (
     <div data-chat-view className="flex-1 flex flex-col min-h-0">
-      <div className="px-4 py-2.5 border-b border-border flex justify-between items-center shrink-0">
+      <div className="px-4 py-2.5 flex justify-between items-center shrink-0">
         <span className="text-sm font-medium text-sidebar-primary">
           {activeSession?.title || activeSessionId.slice(0, 12)}
         </span>
@@ -301,7 +301,7 @@ function UserMessage({ content, runtime }: { content: string; runtime?: RuntimeM
       <div className="flex justify-end">
         <div
           className={cn(
-            'max-w-[85%] relative rounded-2xl rounded-br-md bg-secondary px-4 py-2.5 text-[13px] text-foreground leading-relaxed whitespace-pre-wrap break-words transition-all duration-200',
+            'max-w-[85%] relative rounded-2xl rounded-br-md bg-secondary px-4 py-2.5 text-[14px] text-foreground leading-relaxed whitespace-pre-wrap break-words transition-all duration-200',
             canExpand ? 'cursor-pointer hover:brightness-110' : '',
           )}
           onClick={() => canExpand && setExpanded(true)}
@@ -473,7 +473,7 @@ const AssistantMessage = memo(function AssistantMessage({
 
   return (
     <div className="py-2">
-      <div className="text-[13px] leading-relaxed text-foreground/85 space-y-0.5">
+      <div className="text-[14px] leading-relaxed text-foreground space-y-0.5">
         {hasParts ? (
           <MessageParts parts={parts} isStreaming={isStreaming} />
         ) : (
