@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
+import { motion } from 'motion/react'
 import { cn } from '../../lib/utils'
 
 interface TextShimmerProps {
@@ -29,20 +30,34 @@ function TextShimmerComponent({
     return <Component className={className}>{children}</Component>
   }
 
+  const MotionComponent = useMemo(() => motion.create(Component), [Component])
+
   return (
-    <Component
-      className={cn('inline', className)}
+    <MotionComponent
+      className={cn('relative inline-block bg-clip-text', className)}
       style={{
-        backgroundImage: 'linear-gradient(90deg, var(--color-muted-foreground) 0%, var(--color-muted-foreground) 35%, rgba(255,255,255,0.9) 50%, var(--color-muted-foreground) 65%, var(--color-muted-foreground) 100%)',
-        backgroundSize: '300% 100%',
-        backgroundClip: 'text',
+        backgroundSize: '250% 100%',
+        backgroundImage: `linear-gradient(
+          90deg,
+          currentColor 0%,
+          currentColor 40%,
+          color-mix(in oklab, currentColor, transparent 70%) 50%,
+          currentColor 60%,
+          currentColor 100%
+        )`,
         WebkitBackgroundClip: 'text',
-        color: 'transparent',
-        animation: `text-shimmer ${duration}s ease-in-out infinite`,
+        WebkitTextFillColor: 'transparent',
+      }}
+      initial={{ backgroundPosition: '100% center' }}
+      animate={shouldAnimate ? { backgroundPosition: '0% center' } : undefined}
+      transition={{
+        repeat: Infinity,
+        duration,
+        ease: 'linear',
       }}
     >
       {children}
-    </Component>
+    </MotionComponent>
   )
 }
 

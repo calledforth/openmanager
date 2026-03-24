@@ -1,61 +1,38 @@
-import { SessionProvider } from './stores/session-store'
+import { AppUiProvider } from './providers/app-ui-provider'
+import { SidebarDataProvider } from './providers/sidebar-data-provider'
+import { ActiveSessionProvider } from './providers/active-session-provider'
+import { PermissionStateProvider } from './providers/permission-provider'
 import { WorkspaceSidebar } from './components/WorkspaceSidebar'
 import { ChatView } from './components/ChatView'
 import { MessageInput } from './components/MessageInput'
 import { PermissionPrompt } from './components/PermissionPrompt'
+import { ConvexTelemetryPanel } from './components/ConvexTelemetryPanel'
 
 function AppShell() {
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        height: '100vh',
-        width: '100vw',
-        overflow: 'hidden',
-        fontFamily:
-          '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
-        backgroundColor: '#0f0f0f',
-        color: '#e0e0e0',
-        margin: 0,
-        padding: 0,
-      }}
-    >
-      <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-        <div
-          style={{
-            width: '240px',
-            borderRight: '1px solid #1f1f1f',
-            flexShrink: 0,
-            display: 'flex',
-            flexDirection: 'column',
-          }}
-        >
-          <WorkspaceSidebar />
-        </div>
-        <div
-          style={{
-            flex: 1,
-            display: 'flex',
-            flexDirection: 'column',
-            minWidth: 0,
-            minHeight: 0,
-          }}
-        >
-          <ChatView />
-          <MessageInput />
-        </div>
+    <div className="flex h-screen w-screen overflow-hidden bg-background">
+      <WorkspaceSidebar />
+      <div className="flex flex-1 flex-col overflow-hidden">
+        <ChatView />
+        <MessageInput />
       </div>
       <PermissionPrompt />
+      <ConvexTelemetryPanel />
     </div>
   )
 }
 
 function App() {
   return (
-    <SessionProvider>
-      <AppShell />
-    </SessionProvider>
+    <AppUiProvider>
+      <SidebarDataProvider>
+        <ActiveSessionProvider>
+          <PermissionStateProvider>
+            <AppShell />
+          </PermissionStateProvider>
+        </ActiveSessionProvider>
+      </SidebarDataProvider>
+    </AppUiProvider>
   )
 }
 

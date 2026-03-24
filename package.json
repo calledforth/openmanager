@@ -10,20 +10,22 @@
     "preview": "electron-vite preview",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
-    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "typecheck": "bun run typecheck:node && bun run typecheck:web",
     "lint": "eslint .",
     "format": "prettier --write \"src/**/*.{ts,tsx}\" \"convex/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx}\" \"convex/**/*.ts\"",
     "test": "vitest run",
     "test:watch": "vitest",
-    "convex:dev": "npx convex dev",
-    "ci": "npm run typecheck && npm run lint && npm run test"
+    "convex:dev": "bunx convex dev",
+    "ci": "bun run typecheck && bun run lint && bun run test"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.2.0",
+    "@tanstack/react-virtual": "^3.13.22",
     "autoprefixer": "^10.4.24",
     "clsx": "^2.1.1",
     "convex": "^1.32.0",
+    "lucide-react": "^0.577.0",
     "motion": "^12.34.3",
     "postcss": "^8.5.6",
     "react": "^19.2.4",
@@ -37,7 +39,7 @@
   "devDependencies": {
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
-    "@typescript-eslint/eslint-plugin": "^8.56.0",
+    "@typescript-eslint1/eslint-plugin": "^8.56.0",
     "@typescript-eslint/parser": "^8.56.0",
     "@vitejs/plugin-react": "^5.1.4",
     "electron": "^40.6.0",
@@ -47,6 +49,7 @@
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.0.1",
     "prettier": "^3.8.1",
+    "react-scan": "^0.5.3",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
   }

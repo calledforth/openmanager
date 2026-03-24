@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { TextShimmer } from '../ui/text-shimmer'
+import { Loader2, Check, ChevronRight, ChevronDown } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
 const PREVIEW_LENGTH = 60
@@ -74,23 +74,31 @@ export function ThinkingPart({ text, duration, isStreaming = false }: ThinkingPa
           ▸
         </span>
         {isStreaming ? (
-          <TextShimmer duration={1.2} className="inline-flex items-center text-xs leading-4 m-0">
-            Thinking
-          </TextShimmer>
-        ) : (
-          <span className="text-muted-foreground text-xs leading-4">Thought</span>
-        )}
-        {!expanded && previewText && (
-          <span className="text-muted-foreground/60 truncate flex-1 min-w-0 text-xs">
-            {previewText}
+          <span className="inline-flex items-center gap-1.5 text-[12px] leading-4 m-0">
+            <Loader2 className="h-3 w-3 animate-spin text-primary" />
+            <span className="shimmer-text font-medium">Thinking</span>
           </span>
-        )}
-        {elapsedDisplay && (
-          <span className="text-muted-foreground/50 tabular-nums flex-shrink-0 text-xs">
-            {elapsedDisplay}
+        ) : (
+          <span className="inline-flex items-center gap-1.5 text-[12px] leading-4">
+            <Check className="h-3 w-3 text-primary" />
+            <span className="text-muted-foreground">Thought</span>
           </span>
         )}
       </button>
+      {!expanded && previewText && (
+        <div className="px-2 mt-0.5">
+          <span className="text-muted-foreground/60 truncate text-[12px] block">
+            {previewText}
+          </span>
+        </div>
+      )}
+      {elapsedDisplay && !expanded && (
+        <div className="px-2">
+          <span className="text-muted-foreground/50 tabular-nums text-[11px]">
+            {elapsedDisplay}
+          </span>
+        </div>
+      )}
 
       {expanded && (text || isStreaming) && (
         <div className="relative px-2">
@@ -104,8 +112,8 @@ export function ThinkingPart({ text, duration, isStreaming = false }: ThinkingPa
             ref={scrollRef}
             className={cn(
               'overflow-y-auto max-h-36 scrollbar-hide',
-              'pl-2 border-l-2 border-muted',
-              'text-muted-foreground text-[13px] leading-relaxed whitespace-pre-wrap'
+              'ml-1 pl-3 border-l border-border',
+              'text-muted-foreground text-[12px] leading-relaxed whitespace-pre-wrap'
             )}
           >
             {text || (isStreaming ? '…' : '')}

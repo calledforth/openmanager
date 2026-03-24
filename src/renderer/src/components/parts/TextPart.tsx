@@ -9,13 +9,7 @@ const mdComponents: Components = {
     if (isInline) {
       return (
         <code
-          style={{
-            background: '#2a2a2a',
-            borderRadius: '3px',
-            padding: '1px 4px',
-            fontSize: '0.9em',
-            fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", monospace',
-          }}
+          className="bg-foreground/[0.06] dark:bg-foreground/[0.1] font-mono text-[85%] rounded px-[0.4em] py-[0.15em]"
           {...props}
         >
           {children}
@@ -24,18 +18,14 @@ const mdComponents: Components = {
     }
     const lang = className?.replace('language-', '') ?? ''
     return (
-      <div style={{ margin: '8px 0', borderRadius: '6px', overflow: 'hidden', border: '1px solid #2a2a2a' }}>
+      <div className="my-2 rounded-lg overflow-hidden border border-border bg-card">
         {lang && (
-          <div style={{ background: '#1a1a1a', padding: '4px 12px', fontSize: '11px', color: '#666', borderBottom: '1px solid #2a2a2a' }}>
-            {lang}
+          <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
+            <span className="text-[11px] text-muted-foreground font-mono">{lang}</span>
           </div>
         )}
-        <pre style={{ margin: 0, padding: '12px', background: '#111', overflowX: 'auto', fontSize: '13px', lineHeight: 1.5 }}>
-          <code
-            style={{ fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", monospace', color: '#d4d4d4' }}
-            className={className}
-            {...props}
-          >
+        <pre className="m-0 overflow-x-auto px-3 py-2.5 text-[12px] leading-relaxed">
+          <code className="font-mono text-foreground/80" {...props}>
             {children}
           </code>
         </pre>
@@ -43,51 +33,64 @@ const mdComponents: Components = {
     )
   },
   p({ children }) {
-    return <p style={{ margin: '4px 0', lineHeight: 1.6 }}>{children}</p>
+    return <p className="text-[13px] text-foreground/85 my-px leading-relaxed py-[3px]">{children}</p>
   },
   ul({ children }) {
-    return <ul style={{ margin: '4px 0', paddingLeft: '20px' }}>{children}</ul>
+    return <ul className="my-1 pl-5 text-[13px] text-foreground/85 leading-relaxed">{children}</ul>
   },
   ol({ children }) {
-    return <ol style={{ margin: '4px 0', paddingLeft: '20px' }}>{children}</ol>
+    return <ol className="my-1 pl-5 text-[13px] text-foreground/85 leading-relaxed">{children}</ol>
   },
   li({ children }) {
-    return <li style={{ margin: '2px 0' }}>{children}</li>
+    return <li className="my-0.5">{children}</li>
   },
   blockquote({ children }) {
     return (
-      <blockquote style={{ margin: '8px 0', paddingLeft: '12px', borderLeft: '3px solid #333', color: '#999' }}>
+      <blockquote className="my-2 pl-3 border-l-[3px] border-border text-muted-foreground">
         {children}
       </blockquote>
     )
   },
   table({ children }) {
     return (
-      <div style={{ overflowX: 'auto', margin: '8px 0' }}>
-        <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '13px' }}>{children}</table>
+      <div className="overflow-x-auto my-2">
+        <table className="border-collapse w-full text-[12px]">{children}</table>
       </div>
     )
   },
   th({ children }) {
-    return <th style={{ border: '1px solid #333', padding: '6px 10px', background: '#1a1a1a', textAlign: 'left' }}>{children}</th>
+    return (
+      <th className="border border-border px-2.5 py-1.5 bg-card text-left text-foreground/90 font-semibold text-[11px]">
+        {children}
+      </th>
+    )
   },
   td({ children }) {
-    return <td style={{ border: '1px solid #2a2a2a', padding: '6px 10px' }}>{children}</td>
+    return <td className="border border-border px-2.5 py-1.5 text-[12px]">{children}</td>
   },
   hr() {
-    return <hr style={{ border: 'none', borderTop: '1px solid #2a2a2a', margin: '12px 0' }} />
+    return <hr className="border-none border-t border-border my-3" />
   },
   a({ href, children }) {
-    return <a href={href} style={{ color: '#60a5fa', textDecoration: 'none' }} target="_blank" rel="noopener noreferrer">{children}</a>
+    return (
+      <a
+        href={href}
+        className="text-primary no-underline hover:underline"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        {children}
+      </a>
+    )
   },
   h1({ children }) {
-    return <h1 style={{ fontSize: '1.4em', fontWeight: 600, margin: '12px 0 4px', color: '#e0e0e0' }}>{children}</h1>
+    return <h1 className="text-base font-semibold text-foreground mt-[1.4em] mb-1">{children}</h1>
   },
   h2({ children }) {
-    return <h2 style={{ fontSize: '1.2em', fontWeight: 600, margin: '10px 0 4px', color: '#e0e0e0' }}>{children}</h2>
+    return <h2 className="text-[15px] font-semibold text-foreground mt-[1.2em] mb-1">{children}</h2>
   },
   h3({ children }) {
-    return <h3 style={{ fontSize: '1.05em', fontWeight: 600, margin: '8px 0 4px', color: '#e0e0e0' }}>{children}</h3>
+    return <h3 className="text-[13px] font-semibold text-foreground mt-[1em] mb-1">{children}</h3>
   },
 }
 
@@ -99,7 +102,7 @@ interface TextPartProps {
 export function TextPart({ text, dimmed }: TextPartProps) {
   if (!text) return null
   return (
-    <div className={cn('text-sm leading-relaxed', dimmed ? 'text-muted-foreground' : 'text-foreground')}>
+    <div className={cn('text-[13px] leading-relaxed', dimmed ? 'text-muted-foreground' : 'text-foreground/85')}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
         {text}
       </ReactMarkdown>

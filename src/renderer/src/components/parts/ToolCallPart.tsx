@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { TextShimmer } from '../ui/text-shimmer'
+import { Check, AlertCircle, Loader2 } from 'lucide-react'
+import { getToolMeta } from './ToolRegistry'
 import { cn } from '../../lib/utils'
 
 interface ToolPartData {
@@ -19,73 +19,44 @@ interface ToolPartData {
   }
 }
 
-const stateIndicator: Record<string, { label: string; color: string }> = {
-  pending: { label: 'Pending', color: 'text-violet-400' },
-  running: { label: 'Running', color: 'text-amber-400' },
-  completed: { label: 'Done', color: 'text-emerald-400' },
-  error: { label: 'Error', color: 'text-red-400' },
-}
-
 export function ToolCallPart({ part }: { part: ToolPartData }) {
-  const [expanded, setExpanded] = useState(false)
   const toolName = part.tool ?? 'tool'
   const state = part.state ?? {}
-  const stateType = (state.type ?? state.status ?? 'pending') as keyof typeof stateIndicator
-  const indicator = stateIndicator[stateType] ?? stateIndicator.pending
+  const stateType = (state.type ?? state.status ?? 'pending') as string
   const isPending = stateType === 'pending' || stateType === 'running'
-  const title = state.title ?? toolName
-  const duration =
-    state.time?.start && state.time?.end
-      ? `${((state.time.end - state.time.start) / 1000).toFixed(1)}s`
-      : null
+  const isError = stateType === 'error'
+
+  const meta = getToolMeta(toolName)
+  const ToolIcon = meta.icon
+  const title = state.title ?? meta.getTitle(state.input)
+  const subtitle = meta.getSubtitle(state.input)
+
+  const statusIcon = isPending ? (
+    <Loader2 className="h-3 w-3 animate-spin text-muted-foreground/70" />
+  ) : isError ? (
+    <AlertCircle className="h-3 w-3 text-destructive" />
+  ) : (
+    <Check className="h-3 w-3 text-muted-foreground/70" />
+  )
 
   return (
-    <div className="my-1.5 rounded-lg border border-border overflow-hidden bg-input-background/50">
-      <button
-        type="button"
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 bg-background/40 hover:bg-background/60 border-none cursor-pointer text-foreground text-[13px] text-left transition-colors"
-      >
-        <span className={cn('text-[10px] flex-shrink-0', indicator.color)}>
-          {stateType === 'running' ? '◌' : stateType === 'completed' ? '✓' : stateType === 'error' ? '✗' : '○'}
+    <div className="py-0.5">
+      <div className="flex items-start gap-2 text-[12px] leading-relaxed">
+        <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground/60">
+          <ToolIcon className="h-3.5 w-3.5" />
         </span>
-        <span className="font-mono text-violet-400 text-xs flex-shrink-0">{toolName}</span>
-        <span className="text-muted-foreground flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-xs">
-          {isPending ? <TextShimmer duration={1.2}>{title}</TextShimmer> : title}
-        </span>
-        {duration && (
-          <span className="text-muted-foreground/70 text-[11px] flex-shrink-0 tabular-nums">{duration}</span>
-        )}
-        <span className="text-muted-foreground/60 text-[10px] flex-shrink-0 transition-transform duration-200" style={{ transform: expanded ? 'rotate(90deg)' : 'none' }}>
-          ▸
-        </span>
-      </button>
-
-      {expanded && (
-        <div className="px-3 py-2 bg-[#0d0d0d] border-t border-border text-xs">
-          {state.input != null && (
-            <div className="mb-2">
-              <div className="text-muted-foreground text-[11px] mb-1">Input</div>
-              <pre className="m-0 p-2 bg-[#0a0a0a] rounded text-muted-foreground font-mono text-xs leading-relaxed whitespace-pre-wrap break-words overflow-x-auto">
-                {typeof state.input === 'string' ? state.input : JSON.stringify(state.input, null, 2)}
-              </pre>
-            </div>
-          )}
-          {state.output != null && (
-            <div>
-              <div className="text-muted-foreground text-[11px] mb-1">Output</div>
-              <pre className="m-0 p-2 bg-[#0a0a0a] rounded text-muted-foreground font-mono text-xs leading-relaxed whitespace-pre-wrap break-words max-h-[300px] overflow-y-auto overflow-x-auto">
-                {state.output}
-              </pre>
-            </div>
-          )}
-          {state.error != null && (
-            <div className="text-red-400 p-2 bg-red-950/30 rounded">
-              {state.error}
-            </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className={cn('truncate', isPending ? 'shimmer-text' : 'text-muted-foreground')}>
+              {title}
+            </span>
+            <span className="shrink-0">{statusIcon}</span>
+          </div>
+          {subtitle && (
+            <div className="truncate text-[11px] text-muted-foreground/45">{subtitle}</div>
           )}
         </div>
-      )}
+      </div>
     </div>
   )
 }

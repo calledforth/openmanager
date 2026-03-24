@@ -1,6 +1,7 @@
 import { resolve } from 'path'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
+import reactScan from '@react-scan/vite-plugin-react-scan'
 import tailwindcss from '@tailwindcss/vite'
 import { loadEnv } from 'vite'
 
@@ -31,6 +32,10 @@ export default defineConfig({
         '@convex': resolve('convex'),
       },
     },
-    plugins: [react(), tailwindcss()],
+    plugins: [
+      react(),
+      reactScan(),
+      tailwindcss(),
+    ],
   },
 })

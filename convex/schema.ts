@@ -15,6 +15,7 @@ export default defineSchema({
   sessions: defineTable({
     workspaceId: v.id('workspaces'),
     externalId: v.string(),
+    clientId: v.optional(v.string()),
     title: v.optional(v.string()),
     status: v.string(),
     createdAt: v.number(),
@@ -40,6 +41,7 @@ export default defineSchema({
   pending_jobs: defineTable({
     workspaceId: v.id('workspaces'),
     sessionId: v.optional(v.id('sessions')),
+    targetClientId: v.optional(v.string()),
     type: v.string(),
     payload: v.string(),
     status: v.string(),
@@ -50,5 +52,34 @@ export default defineSchema({
     updatedAt: v.number(),
   })
     .index('by_status', ['status'])
-    .index('by_workspace', ['workspaceId']),
+    .index('by_workspace', ['workspaceId'])
+    .index('by_target_status', ['targetClientId', 'status']),
+
+  pending_permissions: defineTable({
+    sessionExternalId: v.string(),
+    requestId: v.string(),
+    permission: v.optional(v.string()),
+    toolName: v.string(),
+    description: v.string(),
+    input: v.optional(v.any()),
+    patterns: v.optional(v.any()),
+    alwaysPatterns: v.optional(v.any()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index('by_sessionExternalId', ['sessionExternalId'])
+    .index('by_requestId', ['requestId']),
+
+  stream_cursors: defineTable({
+    messageId: v.id('messages'),
+    messageExternalId: v.string(),
+    sessionExternalId: v.string(),
+    chunkIndex: v.number(),
+    chunkText: v.string(),
+    bodyUpToHere: v.string(),
+    partsUpToHere: v.optional(v.any()),
+    updatedAt: v.number(),
+  })
+    .index('by_messageExternalId', ['messageExternalId'])
+    .index('by_sessionExternalId', ['sessionExternalId']),
 })

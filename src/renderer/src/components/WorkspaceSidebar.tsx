@@ -1,78 +1,51 @@
 import { useState } from 'react'
-import { useQuery } from 'convex/react'
-import { api } from '@convex/_generated/api'
-import { useSessionStore, type WorkspaceEntry } from '../stores/session-store'
-
-const statusColors: Record<string, string> = {
-  idle: '#666',
-  running: '#4ade80',
-  busy: '#4ade80',
-  waiting: '#fbbf24',
-  retry: '#fbbf24',
-  done: '#888',
-  error: '#ef4444',
-}
+import { Hash, Plus, Settings, ChevronDown, Archive, X } from 'lucide-react'
+import { useSidebarData, type WorkspaceEntry } from '../providers/sidebar-data-provider'
+import { cn } from '../lib/utils'
 
 const sidecarDot: Record<string, string> = {
-  disconnected: '#555',
-  connecting: '#fbbf24',
-  connected: '#4ade80',
+  disconnected: 'bg-[hsl(0_0%_33%)]',
+  connecting: 'bg-amber-400',
+  connected: 'bg-emerald-400',
+}
+
+const statusLabel: Record<string, string> = {
+  idle: 'text-muted-foreground',
+  running: 'text-emerald-400',
+  busy: 'text-emerald-400',
+  waiting: 'text-amber-400',
+  retry: 'text-amber-400',
+  done: 'text-muted-foreground',
+  error: 'text-red-400',
 }
 
 export function WorkspaceSidebar() {
-  const { workspaces, activeWorkspacePath, activeSessionId, addWorkspace, removeWorkspace } =
-    useSessionStore()
+  const {
+    workspaces,
+    sessionsByWorkspace,
+    activeWorkspacePath,
+    activeSessionId,
+    addWorkspace,
+    removeWorkspace,
+    selectSession,
+    createSession,
+    deleteSession,
+  } = useSidebarData()
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+    <aside className="flex h-full w-[260px] flex-col border-r border-border bg-sidebar">
       {/* Header */}
-      <div
-        style={{
-          padding: '12px 14px',
-          borderBottom: '1px solid #1f1f1f',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-        }}
-      >
-        <span
-          style={{
-            fontSize: '12px',
-            fontWeight: 600,
-            color: '#888',
-            textTransform: 'uppercase',
-            letterSpacing: '0.5px',
-          }}
-        >
-          Workspaces
-        </span>
-        <button
-          onClick={() => addWorkspace()}
-          style={{
-            background: '#1a1a2e',
-            color: '#a0a0ff',
-            border: '1px solid #2a2a4a',
-            borderRadius: '4px',
-            padding: '3px 8px',
-            fontSize: '11px',
-            cursor: 'pointer',
-          }}
-        >
-          + Add
+      <div className="flex h-12 items-center justify-between px-3">
+        <span className="text-sm font-medium text-sidebar-primary">Home</span>
+        <button className="rounded-md p-1 text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground">
+          <Settings className="h-4 w-4" />
         </button>
       </div>
 
-      {/* Workspace tree */}
-      <div style={{ flex: 1, overflowY: 'auto' }}>
+      {/* Workspace list */}
+      <div className="flex-1 overflow-y-auto px-1.5 pb-3">
         {workspaces.length === 0 && (
-          <div
-            style={{
-              padding: '20px 14px',
-              color: '#444',
-              fontSize: '12px',
-              textAlign: 'center',
-            }}
-          >
+          <div className="px-3 py-5 text-center text-xs text-muted-foreground">
             No workspaces yet
           </div>
         )}
@@ -80,211 +53,132 @@ export function WorkspaceSidebar() {
           <WorkspaceGroup
             key={ws.path}
             workspace={ws}
+            sessions={sessionsByWorkspace[ws.path] ?? []}
             isActiveWorkspace={ws.path === activeWorkspacePath}
             activeSessionId={activeSessionId}
+            selectSession={selectSession}
+            createSession={createSession}
+            deleteSession={deleteSession}
             onRemove={() => removeWorkspace(ws.path)}
           />
         ))}
       </div>
-    </div>
+
+      {/* Bottom actions */}
+      <div className="border-t border-border px-2 py-2">
+        <button
+          onClick={() => addWorkspace()}
+          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground"
+        >
+          <Archive className="h-3.5 w-3.5" />
+          <span>Add repository</span>
+        </button>
+      </div>
+    </aside>
   )
 }
 
 function WorkspaceGroup({
   workspace,
+  sessions,
   isActiveWorkspace,
   activeSessionId,
+  selectSession,
+  createSession,
+  deleteSession,
   onRemove,
 }: {
   workspace: WorkspaceEntry
+  sessions: Array<{ externalId: string; title?: string; status: string }>
   isActiveWorkspace: boolean
   activeSessionId: string | null
+  selectSession: (workspacePath: string, externalId: string) => void
+  createSession: (workspacePath: string) => Promise<void>
+  deleteSession: (workspacePath: string, externalId: string) => Promise<void>
   onRemove: () => void
 }) {
   const [collapsed, setCollapsed] = useState(false)
-  const { selectSession, createSession, deleteSession } = useSessionStore()
-
-  const rawSessions = useQuery(api.sessions.listByWorkspace, {
-    workspacePath: workspace.path,
-  })
-  const sessions = (rawSessions ?? []).map((s) => ({
-    externalId: s.externalId,
-    title: s.title,
-    status: s.status,
-  }))
 
   return (
-    <div style={{ borderBottom: '1px solid #141414' }}>
-      {/* Workspace header */}
-      <div
+    <div className="mb-1">
+      {/* Group header */}
+      <button
         onClick={() => setCollapsed(!collapsed)}
-        style={{
-          padding: '8px 14px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-          cursor: 'pointer',
-          background: isActiveWorkspace ? '#131320' : 'transparent',
-        }}
-        onMouseEnter={(e) => {
-          if (!isActiveWorkspace)
-            (e.currentTarget as HTMLDivElement).style.background = '#141414'
-        }}
-        onMouseLeave={(e) => {
-          if (!isActiveWorkspace)
-            (e.currentTarget as HTMLDivElement).style.background = 'transparent'
-        }}
+        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground"
       >
-        <span
-          style={{
-            fontSize: '10px',
-            color: '#555',
-            transition: 'transform 0.15s',
-            transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
-            display: 'inline-block',
-          }}
-        >
-          ▼
-        </span>
-        <span
-          style={{
-            width: '6px',
-            height: '6px',
-            borderRadius: '50%',
-            backgroundColor: sidecarDot[workspace.sidecarStatus] ?? '#555',
-            flexShrink: 0,
-          }}
+        <ChevronDown
+          className={cn(
+            'h-3 w-3 transition-transform duration-150',
+            collapsed && '-rotate-90'
+          )}
         />
         <span
-          style={{
-            fontSize: '13px',
-            fontWeight: 500,
-            color: isActiveWorkspace ? '#d4d4d4' : '#999',
-            flex: 1,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-          title={workspace.path}
-        >
-          {workspace.name}
-        </span>
+          className={cn(
+            'w-1.5 h-1.5 rounded-full shrink-0',
+            sidecarDot[workspace.sidecarStatus] ?? 'bg-[hsl(0_0%_33%)]'
+          )}
+        />
+        <span className="flex-1 truncate text-left">{workspace.name}</span>
         <button
           onClick={(e) => {
             e.stopPropagation()
             onRemove()
           }}
-          style={{
-            background: 'none',
-            border: 'none',
-            color: '#444',
-            cursor: 'pointer',
-            fontSize: '11px',
-            padding: '0 2px',
-            opacity: 0.5,
-          }}
-          title="Remove workspace"
+          className="rounded p-0.5 text-muted-foreground/50 opacity-0 group-hover:opacity-100 hover:text-foreground transition-default"
         >
-          ×
+          <X className="h-3 w-3" />
         </button>
-      </div>
+      </button>
 
-      {/* Sessions */}
+      {/* Items */}
       {!collapsed && (
-        <div style={{ paddingLeft: '12px' }}>
+        <div className="ml-1">
+          {/* New session button */}
+          <button
+            onClick={() => createSession(workspace.path)}
+            className="flex w-full items-center gap-2 rounded-md px-3 py-1 text-xs text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground"
+          >
+            <Plus className="h-3 w-3" />
+            <span>New session</span>
+          </button>
+
           {sessions.map((s) => {
             const isActive = isActiveWorkspace && s.externalId === activeSessionId
             return (
-              <div
+              <button
                 key={s.externalId}
                 onClick={() => selectSession(workspace.path, s.externalId)}
-                style={{
-                  padding: '6px 14px',
-                  cursor: 'pointer',
-                  background: isActive ? '#1a1a2e' : 'transparent',
-                  borderLeft: isActive
-                    ? '2px solid #5b5bf7'
-                    : '2px solid transparent',
-                  transition: 'background 0.1s',
-                }}
-                onMouseEnter={(e) => {
-                  if (!isActive)
-                    (e.currentTarget as HTMLDivElement).style.background = '#141414'
-                }}
-                onMouseLeave={(e) => {
-                  if (!isActive)
-                    (e.currentTarget as HTMLDivElement).style.background = 'transparent'
-                }}
+                className={cn(
+                  'group flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left transition-default',
+                  isActive
+                    ? 'bg-surface-active text-foreground'
+                    : 'text-sidebar-foreground hover:bg-surface-hover hover:text-foreground'
+                )}
               >
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                  }}
-                >
-                  <span
-                    style={{
-                      fontSize: '12px',
-                      color: isActive ? '#e0e0e0' : '#888',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                      flex: 1,
-                    }}
-                  >
+                <Hash className="h-3 w-3 shrink-0 text-muted-foreground" />
+                <div className="flex min-w-0 flex-1 flex-col">
+                  <span className="truncate text-[13px]">
                     {s.title || s.externalId.slice(0, 10)}
                   </span>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      deleteSession(workspace.path, s.externalId)
-                    }}
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: '#444',
-                      cursor: 'pointer',
-                      fontSize: '10px',
-                      padding: '0 2px',
-                      opacity: 0.5,
-                    }}
-                  >
-                    ×
-                  </button>
+                  <span className={cn(
+                    'truncate text-[11px]',
+                    statusLabel[s.status] ?? 'text-muted-foreground'
+                  )}>
+                    {s.status}
+                  </span>
                 </div>
-                <div
-                  style={{
-                    fontSize: '10px',
-                    color: statusColors[s.status] ?? '#555',
-                    marginTop: '1px',
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    deleteSession(workspace.path, s.externalId)
                   }}
+                  className="shrink-0 rounded p-0.5 text-muted-foreground/40 opacity-0 transition-default group-hover:opacity-100 hover:text-foreground"
                 >
-                  {s.status}
-                </div>
-              </div>
+                  <X className="h-3 w-3" />
+                </button>
+              </button>
             )
           })}
-
-          {/* New session button */}
-          <div
-            onClick={() => createSession(workspace.path)}
-            style={{
-              padding: '6px 14px',
-              cursor: 'pointer',
-              fontSize: '11px',
-              color: '#555',
-              transition: 'color 0.1s',
-            }}
-            onMouseEnter={(e) => {
-              ;(e.currentTarget as HTMLDivElement).style.color = '#a0a0ff'
-            }}
-            onMouseLeave={(e) => {
-              ;(e.currentTarget as HTMLDivElement).style.color = '#555'
-            }}
-          >
-            + New Session
-          </div>
         </div>
       )}
     </div>

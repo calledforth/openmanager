@@ -6,6 +6,8 @@ export const submit = mutation({
     workspacePath: v.string(),
     type: v.string(),
     payload: v.string(),
+    clientId: v.string(),
+    sessionExternalId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const workspace = await ctx.db
@@ -14,9 +16,25 @@ export const submit = mutation({
       .first()
     if (!workspace) throw new Error(`Workspace not found: ${args.workspacePath}`)
 
+    let sessionId: any
+    let targetClientId = args.clientId
+
+    if (args.sessionExternalId) {
+      const session = await ctx.db
+        .query('sessions')
+        .withIndex('by_externalId', (q) => q.eq('externalId', args.sessionExternalId!))
+        .first()
+      if (session) {
+        sessionId = session._id
+        targetClientId = session.clientId ?? args.clientId
+      }
+    }
+
     const now = Date.now()
     return await ctx.db.insert('pending_jobs', {
       workspaceId: workspace._id,
+      sessionId,
+      targetClientId,
       type: args.type,
       payload: args.payload,
       status: 'pending',
@@ -32,6 +50,7 @@ export const submitMessage = mutation({
     workspacePath: v.string(),
     sessionExternalId: v.string(),
     content: v.string(),
+    clientId: v.string(),
   },
   handler: async (ctx, args) => {
     const workspace = await ctx.db
@@ -40,9 +59,17 @@ export const submitMessage = mutation({
       .first()
     if (!workspace) throw new Error(`Workspace not found: ${args.workspacePath}`)
 
+    const session = await ctx.db
+      .query('sessions')
+      .withIndex('by_externalId', (q) => q.eq('externalId', args.sessionExternalId))
+      .first()
+    if (!session) throw new Error(`Session not found: ${args.sessionExternalId}`)
+
     const now = Date.now()
     return await ctx.db.insert('pending_jobs', {
       workspaceId: workspace._id,
+      sessionId: session._id,
+      targetClientId: session.clientId ?? args.clientId,
       type: 'send_message',
       payload: JSON.stringify({
         workspacePath: args.workspacePath,
@@ -60,7 +87,7 @@ export const submitMessage = mutation({
 export const claim = mutation({
   args: {
     jobId: v.id('pending_jobs'),
-    machineId: v.string(),
+    clientId: v.string(),
   },
   handler: async (ctx, args) => {
     const job = await ctx.db.get(args.jobId)
@@ -68,7 +95,7 @@ export const claim = mutation({
 
     await ctx.db.patch(args.jobId, {
       status: 'running',
-      claimedBy: args.machineId,
+      claimedBy: args.clientId,
       attempts: job.attempts + 1,
       updatedAt: Date.now(),
     })
@@ -92,11 +119,13 @@ export const complete = mutation({
 })
 
 export const listPending = query({
-  args: {},
-  handler: async (ctx) => {
+  args: { clientId: v.string() },
+  handler: async (ctx, args) => {
     return await ctx.db
       .query('pending_jobs')
-      .withIndex('by_status', (q) => q.eq('status', 'pending'))
+      .withIndex('by_target_status', (q) =>
+        q.eq('targetClientId', args.clientId).eq('status', 'pending'),
+      )
       .collect()
   },
 })

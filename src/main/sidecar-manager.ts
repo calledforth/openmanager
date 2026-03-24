@@ -3,6 +3,7 @@ import { createServer } from 'net'
 import { randomBytes } from 'crypto'
 import { BrowserWindow } from 'electron'
 import type { SidecarHandshake, SidecarStatus } from '@shared/contracts/sidecar'
+import { ACPConnection } from './acp-connection'
 
 interface SidecarInstance {
   process: ChildProcess
@@ -11,6 +12,8 @@ interface SidecarInstance {
   restartCount: number
   workspacePath: string
   lastActivityAt: number
+  mode: 'legacy' | 'acp'
+  acpConnection?: ACPConnection
 }
 
 const MAX_RESTARTS = 1
@@ -59,6 +62,12 @@ async function pollHealth(url: string, password: string): Promise<boolean> {
 
 export class SidecarManager {
   private instances = new Map<string, SidecarInstance>()
+  private mode: 'legacy' | 'acp' =
+    process.env['OPENMANAGER_RUNTIME'] === 'legacy' ? 'legacy' : 'acp'
+
+  getMode(): 'legacy' | 'acp' {
+    return this.mode
+  }
 
   async spawn(workspacePath: string): Promise<SidecarHandshake> {
     const existing = this.instances.get(workspacePath)
@@ -67,19 +76,22 @@ export class SidecarManager {
       return existing.handshake
     }
 
-    const password = randomBytes(32).toString('hex')
-    const port = await findFreePort()
-    const hostname = '127.0.0.1'
-    const serverUrl = `http://${hostname}:${port}`
-
     const binary = process.env['OPENCODE_BINARY'] || 'opencode'
-    console.log(`[sidecar] spawning: ${binary} serve --port ${port} --hostname ${hostname}`)
+    const isACP = this.mode === 'acp'
+    const password = isACP ? '' : randomBytes(32).toString('hex')
+    const port = isACP ? 0 : await findFreePort()
+    const hostname = '127.0.0.1'
+    const serverUrl = isACP ? 'acp://stdio' : `http://${hostname}:${port}`
+
+    const args = isACP ? ['acp'] : ['serve', '--port', String(port), '--hostname', hostname]
+    console.log(`[sidecar] spawning: ${binary} ${args.join(' ')}`)
+    console.log(`[sidecar] mode: ${this.mode}`)
     console.log(`[sidecar] cwd: ${workspacePath}`)
 
-    const proc = spawn(binary, ['serve', '--port', String(port), '--hostname', hostname], {
+    const proc = spawn(binary, args, {
       cwd: workspacePath,
-      env: { ...process.env, OPENCODE_SERVER_PASSWORD: password },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      env: isACP ? { ...process.env } : { ...process.env, OPENCODE_SERVER_PASSWORD: password },
+      stdio: ['pipe', 'pipe', 'pipe'],
     })
 
     proc.stdout?.on('data', (data: Buffer) => {
@@ -102,6 +114,8 @@ export class SidecarManager {
       restartCount: 0,
       workspacePath,
       lastActivityAt: Date.now(),
+      mode: this.mode,
+      ...(isACP ? { acpConnection: new ACPConnection(proc) } : {}),
     }
 
     this.instances.set(workspacePath, instance)
@@ -119,16 +133,22 @@ export class SidecarManager {
       }
     })
 
-    const healthy = await pollHealth(serverUrl, password)
-    if (healthy) {
-      console.log(`[sidecar] healthy on ${serverUrl}`)
+    if (isACP) {
       instance.handshake.ready = true
       instance.status = 'healthy'
       this.broadcastStatus(workspacePath, 'healthy')
     } else {
-      console.error(`[sidecar] health check timed out after ${HEALTH_TIMEOUT_MS}ms`)
-      instance.status = 'unhealthy'
-      this.broadcastStatus(workspacePath, 'unhealthy')
+      const healthy = await pollHealth(serverUrl, password)
+      if (healthy) {
+        console.log(`[sidecar] healthy on ${serverUrl}`)
+        instance.handshake.ready = true
+        instance.status = 'healthy'
+        this.broadcastStatus(workspacePath, 'healthy')
+      } else {
+        console.error(`[sidecar] health check timed out after ${HEALTH_TIMEOUT_MS}ms`)
+        instance.status = 'unhealthy'
+        this.broadcastStatus(workspacePath, 'unhealthy')
+      }
     }
 
     return instance.handshake
@@ -152,6 +172,12 @@ export class SidecarManager {
 
   getHandshake(workspacePath: string): SidecarHandshake | null {
     return this.instances.get(workspacePath)?.handshake ?? null
+  }
+
+  getACPConnection(workspacePath: string): ACPConnection | null {
+    const instance = this.instances.get(workspacePath)
+    if (!instance || instance.mode !== 'acp') return null
+    return instance.acpConnection ?? null
   }
 
   getStatus(workspacePath: string): SidecarStatus {

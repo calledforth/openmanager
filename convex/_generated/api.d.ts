@@ -10,8 +10,9 @@
 
 import type * as jobs from "../jobs.js";
 import type * as messages from "../messages.js";
+import type * as permissions from "../permissions.js";
 import type * as sessions from "../sessions.js";
-import type * as streaming from "../streaming.js";
+import type * as streamCursors from "../streamCursors.js";
 import type * as workspaces from "../workspaces.js";
 
 import type {
@@ -23,8 +24,9 @@ import type {
 declare const fullApi: ApiFromModules<{
   jobs: typeof jobs;
   messages: typeof messages;
+  permissions: typeof permissions;
   sessions: typeof sessions;
-  streaming: typeof streaming;
+  streamCursors: typeof streamCursors;
   workspaces: typeof workspaces;
 }>;
 

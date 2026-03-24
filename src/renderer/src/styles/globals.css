@@ -1,25 +1,75 @@
 @import "tailwindcss";
 
 @theme {
-  /* Semantic colors for chat UI */
-  --color-background: hsl(240 10% 4%);
-  --color-foreground: hsl(240 4.8% 95.9%);
-  --color-border: hsl(240 3.7% 15.9%);
-  --color-input: hsl(240 3.7% 15.9%);
-  --color-muted: hsl(240 5.9% 10%);
-  --color-muted-foreground: hsl(240 4.4% 58%);
-  --color-input-background: hsl(60 2% 18%);
-  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
-  --font-mono: "Monaco", "Menlo", "Consolas", monospace;
+  /* ── Lovable design tokens ── */
+  --color-background: hsl(0 0% 6%);
+  --color-foreground: hsl(0 0% 88%);
+
+  --color-card: hsl(0 0% 8%);
+  --color-card-foreground: hsl(0 0% 88%);
+
+  --color-popover: hsl(0 0% 9%);
+  --color-popover-foreground: hsl(0 0% 88%);
+
+  --color-primary: hsl(142 50% 50%);
+  --color-primary-foreground: hsl(0 0% 3%);
+
+  --color-secondary: hsl(0 0% 10%);
+  --color-secondary-foreground: hsl(0 0% 65%);
+
+  --color-muted: hsl(0 0% 11%);
+  --color-muted-foreground: hsl(0 0% 42%);
+
+  --color-accent: hsl(0 0% 12%);
+  --color-accent-foreground: hsl(0 0% 80%);
+
+  --color-destructive: hsl(0 62% 50%);
+  --color-destructive-foreground: hsl(0 0% 95%);
+
+  --color-border: hsl(0 0% 12%);
+  --color-input: hsl(0 0% 12%);
+  --color-ring: hsl(142 50% 50%);
+
+  /* Sidebar */
+  --color-sidebar: hsl(0 0% 5%);
+  --color-sidebar-foreground: hsl(0 0% 55%);
+  --color-sidebar-primary: hsl(0 0% 88%);
+  --color-sidebar-primary-foreground: hsl(0 0% 3%);
+  --color-sidebar-accent: hsl(0 0% 9%);
+  --color-sidebar-accent-foreground: hsl(0 0% 80%);
+  --color-sidebar-border: hsl(0 0% 10%);
+
+  /* Surfaces & extras */
+  --color-surface-hover: hsl(0 0% 10%);
+  --color-surface-active: hsl(0 0% 12%);
+  --color-text-tertiary: hsl(0 0% 32%);
+  --color-badge-bg: hsl(0 0% 14%);
+  --color-input-bg: hsl(0 0% 8%);
+  --color-scrollbar: hsl(0 0% 16%);
+
+  /* Fonts */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  /* Radius */
+  --radius: 0.5rem;
 }
 
 body {
   background-color: var(--color-background);
   color: var(--color-foreground);
   font-family: var(--font-sans);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-/* Chat-specific styles - 1Code inspired */
+/* ── Transition utility ── */
+.transition-default {
+  transition: all 150ms ease-out;
+}
+
+/* ── Chat animations ── */
 @keyframes chat-fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
@@ -30,11 +80,6 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
-@keyframes text-shimmer {
-  0% { background-position: 100% 0; }
-  100% { background-position: -100% 0; }
-}
-
 .chat-animate-fade-in {
   animation: chat-fade-in 200ms ease-out;
 }
@@ -43,7 +88,27 @@ body {
   animation: chat-slide-up 200ms ease-out;
 }
 
-/* Hide scrollbar but keep scroll functionality */
+/* ── Shimmer animation for tool calls ── */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.shimmer-text {
+  background: linear-gradient(
+    90deg,
+    hsl(0 0% 42%) 25%,
+    hsl(0 0% 88%) 50%,
+    hsl(0 0% 42%) 75%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 2s ease-in-out infinite;
+}
+
+/* ── Scrollbar ── */
 .scrollbar-hide {
   -ms-overflow-style: none;
   scrollbar-width: none;
@@ -51,4 +116,51 @@ body {
 
 .scrollbar-hide::-webkit-scrollbar {
   display: none;
+}
+
+.overflow-y-auto {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(0 0% 16%) transparent;
+}
+
+.overflow-y-auto::-webkit-scrollbar {
+  width: 5px;
+}
+
+.overflow-y-auto::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.overflow-y-auto::-webkit-scrollbar-thumb {
+  background-color: hsl(0 0% 16%);
+  border-radius: 3px;
+}
+
+.overflow-y-auto::-webkit-scrollbar-thumb:hover {
+  background-color: hsl(0 0% 24%);
+}
+
+/* ── Chat markdown — Notion-like compact spacing ── */
+[data-chat-view] p {
+  margin-top: 1px;
+  margin-bottom: 1px;
+}
+
+[data-chat-view] ul,
+[data-chat-view] ol {
+  margin-top: 4px;
+  margin-bottom: 4px;
+}
+
+[data-chat-view] pre {
+  margin-top: 8px;
+  margin-bottom: 8px;
+}
+
+[data-chat-view] h1,
+[data-chat-view] h2,
+[data-chat-view] h3,
+[data-chat-view] h4 {
+  margin-top: 1em;
+  margin-bottom: 0.25em;
 }

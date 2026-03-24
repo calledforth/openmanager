@@ -5,27 +5,27 @@ Desktop GUI for managing OpenCode agent sessions. Electron + React + Convex.
 ## Setup
 
 ```bash
-# Install dependencies
-npm install
+# Install dependencies (requires Bun: https://bun.sh)
+bun install
 
 # Initialize Convex (requires Convex account)
-npx convex dev
+bunx convex dev
 
 # Start development
-npm run dev
+bun run dev
 ```
 
 ## Scripts
 
 | Command | Description |
 |---------|-------------|
-| `npm run dev` | Start Electron + Vite dev server |
-| `npm run build` | Production build |
-| `npm run typecheck` | TypeScript strict check |
-| `npm run lint` | ESLint |
-| `npm run test` | Vitest |
-| `npm run ci` | typecheck + lint + test |
-| `npm run convex:dev` | Start Convex dev server |
+| `bun run dev` | Start Electron + Vite dev server |
+| `bun run build` | Production build |
+| `bun run typecheck` | TypeScript strict check |
+| `bun run lint` | ESLint |
+| `bun run test` | Vitest |
+| `bun run ci` | typecheck + lint + test |
+| `bun run convex:dev` | Start Convex dev server |
 
 ## Architecture
 
