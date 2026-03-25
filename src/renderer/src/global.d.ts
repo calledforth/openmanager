@@ -5,15 +5,18 @@ interface ElectronAPI {
   getTelemetrySnapshot: () => Promise<{ filePath: string; events: unknown[] }>
   clearTelemetry: () => Promise<void>
   recordTelemetry: (event: Record<string, unknown>) => Promise<void>
-  spawnSidecar: (workspacePath: string) => Promise<SidecarHandshake>
-  getSidecarHandshake: (workspacePath: string) => Promise<SidecarHandshake | null>
-  getSidecarStatus: (workspacePath: string) => Promise<SidecarStatus>
-  shutdownSidecar: (workspacePath: string) => Promise<void>
-  loadAcpSession: (workspacePath: string, sessionId: string) => Promise<{ ok: boolean; reason?: string }>
+  ensureOpenCode: () => Promise<SidecarHandshake>
+  retryOpenCode: () => Promise<SidecarHandshake>
+  getOpenCodeStatus: () => Promise<SidecarStatus>
+  shutdownOpenCode: () => Promise<void>
+  loadAcpSession: (
+    workspacePath: string,
+    sessionId: string,
+  ) => Promise<{ ok: boolean; reason?: string }>
   selectFolder: () => Promise<string | null>
-  onSidecarStatusChanged: (
-    callback: (data: { workspacePath: string; status: string }) => void,
-  ) => () => void
+  getCollapsedWorkspaces: () => Promise<string[]>
+  setCollapsedWorkspaces: (paths: string[]) => Promise<void>
+  onOpenCodeStatusChanged: (callback: (data: { status: string }) => void) => () => void
   onStreamToken: (
     callback: (data: {
       sessionExternalId: string

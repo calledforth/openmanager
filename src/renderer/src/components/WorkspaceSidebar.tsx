@@ -1,25 +1,34 @@
-import { useState } from 'react'
-import { MessageSquare, Plus, SquarePen, ChevronDown, Archive, Trash2, PanelLeftClose, PanelLeft, Loader2 } from 'lucide-react'
+import { useState, useEffect, useCallback } from 'react'
+import {
+  MessageSquare,
+  Plus,
+  SquarePen,
+  ChevronDown,
+  Archive,
+  Trash2,
+  PanelLeftClose,
+  PanelLeft,
+  Loader2,
+} from 'lucide-react'
 import { useSidebarData, type WorkspaceEntry } from '../providers/sidebar-data-provider'
+import { useAppUi } from '../providers/app-ui-provider'
 import { cn } from '../lib/utils'
 
-const sidecarDot: Record<string, string> = {
-  disconnected: 'bg-[hsl(0_0%_33%)]',
-  connecting: 'bg-amber-400',
-  connected: 'bg-emerald-400',
+const openCodeDot: Record<string, string> = {
+  stopped: 'bg-[hsl(0_0%_33%)]',
+  starting: 'bg-amber-400',
+  healthy: 'bg-emerald-400',
+  unhealthy: 'bg-red-400',
+  crashed: 'bg-red-400',
 }
 
-const statusLabel: Record<string, string> = {
-  idle: 'text-muted-foreground',
-  running: 'text-emerald-400',
-  busy: 'text-emerald-400',
-  waiting: 'text-amber-400',
-  retry: 'text-amber-400',
-  done: 'text-muted-foreground',
-  error: 'text-red-400',
-}
-
-export function WorkspaceSidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
+export function WorkspaceSidebar({
+  collapsed,
+  onToggle,
+}: {
+  collapsed: boolean
+  onToggle: () => void
+}) {
   const {
     workspaces,
     sessionsByWorkspace,
@@ -31,6 +40,33 @@ export function WorkspaceSidebar({ collapsed, onToggle }: { collapsed: boolean; 
     createSession,
     deleteSession,
   } = useSidebarData()
+  const { openCodeStatus, openCodeUiStatus, retryOpenCode } = useAppUi()
+
+  const [collapsedSet, setCollapsedSet] = useState<Set<string>>(new Set())
+
+  // Load persisted collapsed workspaces on mount
+  useEffect(() => {
+    window.electronAPI
+      .getCollapsedWorkspaces()
+      .then((paths) => {
+        setCollapsedSet(new Set(paths))
+      })
+      .catch(() => {})
+  }, [])
+
+  const toggleWorkspaceCollapse = useCallback((path: string) => {
+    setCollapsedSet((prev) => {
+      const next = new Set(prev)
+      if (next.has(path)) {
+        next.delete(path)
+      } else {
+        next.add(path)
+      }
+      // Persist to electron-store
+      window.electronAPI.setCollapsedWorkspaces([...next]).catch(() => {})
+      return next
+    })
+  }, [])
 
   if (collapsed) {
     return (
@@ -70,6 +106,37 @@ export function WorkspaceSidebar({ collapsed, onToggle }: { collapsed: boolean; 
         </div>
       </div>
 
+      <button
+        onClick={() => {
+          if (openCodeUiStatus !== 'connected') void retryOpenCode()
+        }}
+        className={cn(
+          'mx-3 mb-2 flex items-center gap-2 rounded-md border px-2 py-1.5 text-[11px] transition-default',
+          openCodeUiStatus === 'connected'
+            ? 'border-emerald-500/30 bg-emerald-500/5 text-emerald-300'
+            : openCodeUiStatus === 'connecting'
+              ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
+              : 'border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/15',
+        )}
+        title={
+          openCodeUiStatus === 'connected' ? 'OpenCode connected' : 'Retry OpenCode connection'
+        }
+      >
+        <span
+          className={cn(
+            'h-1.5 w-1.5 rounded-full',
+            openCodeDot[openCodeStatus] ?? openCodeDot.stopped,
+          )}
+        />
+        <span className="flex-1 text-left">
+          {openCodeUiStatus === 'connected'
+            ? 'OpenCode ACP connected'
+            : openCodeUiStatus === 'connecting'
+              ? 'Connecting OpenCode...'
+              : 'OpenCode unavailable - click to retry'}
+        </span>
+      </button>
+
       {/* Workspace list */}
       <div className="flex-1 overflow-y-auto px-1.5 pb-3">
         {workspaces.length === 0 && (
@@ -84,6 +151,8 @@ export function WorkspaceSidebar({ collapsed, onToggle }: { collapsed: boolean; 
             sessions={sessionsByWorkspace[ws.path] ?? []}
             isActiveWorkspace={ws.path === activeWorkspacePath}
             activeSessionId={activeSessionId}
+            isCollapsed={collapsedSet.has(ws.path)}
+            onToggleCollapse={() => toggleWorkspaceCollapse(ws.path)}
             selectSession={selectSession}
             createSession={createSession}
             deleteSession={deleteSession}
@@ -111,6 +180,8 @@ function WorkspaceGroup({
   sessions,
   isActiveWorkspace,
   activeSessionId,
+  isCollapsed,
+  onToggleCollapse,
   selectSession,
   createSession,
   deleteSession,
@@ -120,31 +191,22 @@ function WorkspaceGroup({
   sessions: Array<{ externalId: string; title?: string; status: string }>
   isActiveWorkspace: boolean
   activeSessionId: string | null
+  isCollapsed: boolean
+  onToggleCollapse: () => void
   selectSession: (workspacePath: string, externalId: string) => void
   createSession: (workspacePath: string) => Promise<void>
   deleteSession: (workspacePath: string, externalId: string) => Promise<void>
   onRemove: () => void
 }) {
-  const [collapsed, setCollapsed] = useState(false)
-
   return (
     <div className="mb-1">
       {/* Group header */}
       <button
-        onClick={() => setCollapsed(!collapsed)}
+        onClick={onToggleCollapse}
         className="group flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground"
       >
         <ChevronDown
-          className={cn(
-            'h-3 w-3 transition-transform duration-150',
-            collapsed && '-rotate-90'
-          )}
-        />
-        <span
-          className={cn(
-            'w-1.5 h-1.5 rounded-full shrink-0',
-            sidecarDot[workspace.sidecarStatus] ?? 'bg-[hsl(0_0%_33%)]'
-          )}
+          className={cn('h-3 w-3 transition-transform duration-150', isCollapsed && '-rotate-90')}
         />
         <span className="flex-1 truncate text-left">{workspace.name}</span>
         <button
@@ -159,7 +221,7 @@ function WorkspaceGroup({
       </button>
 
       {/* Items */}
-      {!collapsed && (
+      {!isCollapsed && (
         <div className="ml-1">
           {/* New session button */}
           <button
@@ -177,10 +239,10 @@ function WorkspaceGroup({
                 key={s.externalId}
                 onClick={() => selectSession(workspace.path, s.externalId)}
                 className={cn(
-                  'group flex w-full items-center gap-2 rounded-md px-3 py-1 text-left transition-default',
+                  'group flex w-full items-center gap-2 rounded-md px-2.5 py-1 mb-[2px] text-left transition-default',
                   isActive
                     ? 'bg-surface-active text-foreground'
-                    : 'text-sidebar-foreground hover:bg-surface-hover hover:text-foreground'
+                    : 'text-sidebar-foreground hover:bg-surface-hover hover:text-foreground',
                 )}
               >
                 {s.status === 'running' || s.status === 'busy' || s.status === 'waiting' ? (

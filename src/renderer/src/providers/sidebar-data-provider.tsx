@@ -6,7 +6,6 @@ import { useAppUi } from './app-ui-provider'
 export interface WorkspaceEntry {
   path: string
   name: string
-  sidecarStatus: 'disconnected' | 'connecting' | 'connected'
 }
 
 export interface SidebarSessionEntry {
@@ -54,16 +53,14 @@ export function SidebarDataProvider({ children }: { children: ReactNode }) {
     EMPTY_WORKSPACES
 
   const workspacePaths = rawWorkspaces.map((workspace) => workspace.path)
-  const rawSidebarRows = (useTrackedQuery(
-    'sessions.listForSidebar',
-    (api as any).sessions.listForSidebar,
-    { workspacePaths },
-  ) as typeof EMPTY_SIDEBAR_ROWS | undefined) ?? EMPTY_SIDEBAR_ROWS
+  const rawSidebarRows =
+    (useTrackedQuery('sessions.listForSidebar', (api as any).sessions.listForSidebar, {
+      workspacePaths,
+    }) as typeof EMPTY_SIDEBAR_ROWS | undefined) ?? EMPTY_SIDEBAR_ROWS
 
   const workspaces: WorkspaceEntry[] = rawWorkspaces.map((workspace) => ({
     path: workspace.path,
     name: workspace.name,
-    sidecarStatus: ui.sidecarStatuses[workspace.path] ?? 'disconnected',
   }))
 
   const sessionsByWorkspace = useMemo(() => {

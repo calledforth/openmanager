@@ -2,7 +2,6 @@ import { useState, useRef, useEffect, useCallback, type KeyboardEvent } from 're
 import { ArrowUp, Plus, ChevronDown, Mic, Check } from 'lucide-react'
 import { useAppUi } from '../providers/app-ui-provider'
 import { useActiveSession } from '../providers/active-session-provider'
-import { useSidebarData } from '../providers/sidebar-data-provider'
 import { cn } from '../lib/utils'
 
 /* ── Compact custom dropdown ───────────────────────────────────── */
@@ -52,17 +51,22 @@ function MiniDropdown({
         onClick={() => !disabled && setOpen(!open)}
         disabled={disabled}
         className={cn(
-          'flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium transition-all duration-100',
-          'text-muted-foreground hover:text-foreground hover:bg-surface-hover',
+          'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-medium transition-all duration-100',
+          'text-foreground/90 bg-secondary/50 hover:text-foreground hover:bg-secondary/80 border border-border/40 shadow-sm',
           disabled && 'opacity-40 cursor-default',
         )}
       >
         <span className="truncate max-w-[140px]">{displayName}</span>
-        <ChevronDown className={cn('h-2.5 w-2.5 shrink-0 transition-transform duration-100', open && 'rotate-180')} />
+        <ChevronDown
+          className={cn(
+            'h-2.5 w-2.5 shrink-0 transition-transform duration-100',
+            open && 'rotate-180',
+          )}
+        />
       </button>
 
       {open && (
-        <div className="absolute bottom-full left-0 mb-1 z-50 min-w-[180px] max-w-[260px] max-h-[200px] overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-lg shadow-black/30">
+        <div className="absolute bottom-full left-0 mb-1 z-50 min-w-[180px] max-w-[260px] max-h-[220px] overflow-y-auto rounded-md border border-border/80 bg-popover p-1 shadow-md shadow-black/20 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-thumb]:bg-muted-foreground/30 hover:[&::-webkit-scrollbar-thumb]:bg-muted-foreground/50 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full">
           {options.map((opt) => {
             const isSelected = opt.id === value
             return (
@@ -74,10 +78,10 @@ function MiniDropdown({
                   close()
                 }}
                 className={cn(
-                  'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[12px] transition-colors duration-75',
+                  'flex w-full items-center gap-2 rounded-sm px-2.5 py-1.5 text-left text-[12px] font-medium transition-colors duration-75',
                   isSelected
-                    ? 'text-foreground bg-surface-active'
-                    : 'text-foreground/70 hover:bg-surface-hover hover:text-foreground',
+                    ? 'text-primary bg-primary/10'
+                    : 'text-foreground/80 hover:bg-secondary hover:text-foreground',
                 )}
               >
                 <span className="flex-1 truncate">{opt.name}</span>
@@ -105,15 +109,14 @@ export function MessageInput() {
     setDraftMode,
     setSessionModel,
     setSessionMode,
+    openCodeUiStatus,
   } = useAppUi()
   const { sendMessage } = useActiveSession()
-  const { workspaces } = useSidebarData()
   const [text, setText] = useState('')
   const [focused, setFocused] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
-  const activeWs = workspaces.find((w) => w.path === activeWorkspacePath)
-  const sidecarReady = activeWs?.sidecarStatus === 'connected'
+  const openCodeReady = openCodeUiStatus === 'connected'
   const disabled =
     !activeWorkspacePath || pendingDraftSessionStart || (!activeSessionId && !isSessionDraftOpen)
 
@@ -151,8 +154,7 @@ export function MessageInput() {
   }
 
   const hasContent = text.trim().length > 0
-  const runtimeState =
-    activeSessionId || !isSessionDraftOpen ? acpSessionState : draftSessionState
+  const runtimeState = activeSessionId || !isSessionDraftOpen ? acpSessionState : draftSessionState
   const modelOptions = runtimeState?.models?.availableModels ?? []
   const currentModelId = runtimeState?.models?.currentModelId ?? ''
   const modeOptions = runtimeState?.modes?.availableModes ?? []
@@ -167,21 +169,24 @@ export function MessageInput() {
       : !activeSessionId && isSessionDraftOpen
         ? 'Ask anything, @ to mention, / for workflows'
         : !activeSessionId
-      ? 'Select a session...'
-      : !sidecarReady
-        ? 'Connecting to workspace...'
-        : 'Ask anything, @ to mention, / for workflows'
+          ? 'Select a session...'
+          : !openCodeReady
+            ? 'Connecting to OpenCode...'
+            : 'Ask anything, @ to mention, / for workflows'
 
   return (
     <div className="px-4 pb-3 pt-1 shrink-0">
       <div className="mx-auto max-w-2xl">
         <div
           className={cn(
-            'rounded-xl border transition-all duration-150 bg-card',
-            focused ? 'border-muted-foreground/30' : 'border-border',
+            'rounded-md border transition-all duration-150 bg-card shadow-sm',
+            focused
+              ? currentModeId === 'plan'
+                ? 'border-purple-500/50 ring-1 ring-purple-500/20'
+                : 'border-primary/50 ring-1 ring-primary/20'
+              : 'border-border/60',
           )}
         >
-          {/* Textarea */}
           <textarea
             ref={textareaRef}
             value={text}
@@ -192,18 +197,18 @@ export function MessageInput() {
             placeholder={placeholder}
             disabled={disabled}
             rows={1}
-            className="w-full resize-none bg-transparent px-3.5 pt-2.5 pb-1.5 text-[13px] leading-relaxed text-foreground placeholder:text-muted-foreground/50 focus:outline-none disabled:opacity-50"
+            className="w-full resize-none bg-transparent px-3.5 pt-2.5 pb-1.5 text-[13px] leading-relaxed text-foreground placeholder:text-muted-foreground/50 focus:outline-none disabled:opacity-50 overflow-y-auto [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-thumb]:bg-muted-foreground/30 hover:[&::-webkit-scrollbar-thumb]:bg-muted-foreground/50 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full"
           />
 
           {/* Bottom toolbar */}
           <div className="flex items-center justify-between px-1.5 pb-1.5">
-            <div className="flex items-center gap-0.5">
+            <div className="flex items-center gap-2">
               {/* Attach */}
               <button
                 type="button"
-                className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors duration-100 hover:bg-surface-hover hover:text-foreground"
+                className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors duration-100 hover:bg-secondary hover:text-foreground"
               >
-                <Plus className="h-3.5 w-3.5" />
+                <Plus className="h-4 w-4" />
               </button>
 
               {/* Mode dropdown */}
@@ -212,9 +217,7 @@ export function MessageInput() {
                   value={currentModeId}
                   options={modeOptions.map((m) => ({ id: m.id, name: m.name }))}
                   onChange={(id) =>
-                    activeSessionId
-                      ? setSessionMode(activeSessionId, id)
-                      : setDraftMode(id)
+                    activeSessionId ? setSessionMode(activeSessionId, id) : setDraftMode(id)
                   }
                   disabled={!canChangeSettings}
                   label="Mode"
@@ -227,9 +230,7 @@ export function MessageInput() {
                   value={currentModelId}
                   options={modelOptions.map((m) => ({ id: m.modelId, name: m.name }))}
                   onChange={(id) =>
-                    activeSessionId
-                      ? setSessionModel(activeSessionId, id)
-                      : setDraftModel(id)
+                    activeSessionId ? setSessionModel(activeSessionId, id) : setDraftModel(id)
                   }
                   disabled={!canChangeSettings}
                   label="Model"
@@ -238,7 +239,7 @@ export function MessageInput() {
 
               {/* Agent badge */}
               {acpAgentInfo?.name && (
-                <span className="rounded-md px-2 py-0.5 text-[11px] text-muted-foreground">
+                <span className="rounded-md px-2 py-1 bg-secondary/40 border border-border/40 text-[11px] font-medium text-foreground/80 shadow-sm">
                   {acpAgentInfo.name}
                   {acpAgentInfo.version ? ` ${acpAgentInfo.version}` : ''}
                 </span>
@@ -246,12 +247,12 @@ export function MessageInput() {
             </div>
 
             {/* Right actions */}
-            <div className="flex items-center gap-0.5">
+            <div className="flex items-center gap-1.5">
               <button
                 type="button"
-                className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/40 transition-colors duration-100 hover:bg-surface-hover hover:text-muted-foreground"
+                className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors duration-100 hover:bg-secondary hover:text-foreground"
               >
-                <Mic className="h-3.5 w-3.5" />
+                <Mic className="h-4 w-4" />
               </button>
 
               <button
@@ -259,13 +260,15 @@ export function MessageInput() {
                 onClick={handleSend}
                 disabled={!hasContent || disabled}
                 className={cn(
-                  'flex h-6 w-6 items-center justify-center rounded-md transition-all duration-100',
+                  'flex h-7 w-7 items-center justify-center rounded-md transition-all duration-100 shadow-sm',
                   hasContent && !disabled
-                    ? 'bg-foreground text-background hover:opacity-90'
-                    : 'bg-muted/50 text-muted-foreground/20',
+                    ? currentModeId === 'plan'
+                      ? 'bg-purple-600 text-white hover:brightness-110'
+                      : 'bg-primary text-primary-foreground hover:brightness-110'
+                    : 'bg-muted text-muted-foreground/40',
                 )}
               >
-                <ArrowUp className="h-3.5 w-3.5" />
+                <ArrowUp className="h-4 w-4" />
               </button>
             </div>
           </div>

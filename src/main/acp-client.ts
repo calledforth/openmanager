@@ -20,6 +20,7 @@ interface PendingPermission {
 interface StreamingTurn {
   assistantMessageId: string
   parts: Map<string, Record<string, unknown>>
+  activeReasoningPartId?: string
 }
 
 interface SessionRuntimeSelection {
@@ -34,11 +35,13 @@ function parseRpcError(error: unknown): RpcError {
   return err
 }
 
-export class ACPClient implements AgentClient {
+export class ACPClient {
   private initialized = false
   private pendingPermissions = new Map<string, PendingPermission>()
   private activeTurns = new Map<string, StreamingTurn>()
   private sessionRuntime = new Map<string, SessionRuntimeSelection>()
+  private sessionWorkspace = new Map<string, string>()
+  private activeRequestWorkspace: string | null = null
   private terminals = new Map<
     string,
     {
@@ -51,12 +54,15 @@ export class ACPClient implements AgentClient {
 
   constructor(
     private connection: ACPConnection,
-    private workspacePath: string,
-    private bridge: SSEBridge,
+    private resolveBridge: (workspacePath: string) => SSEBridge | null,
     private mainWindow: BrowserWindow,
   ) {
     this.connection.onNotification((method, params) => this.handleNotification(method, params))
     this.connection.setRequestHandler((method, params) => this.handleRequest(method, params))
+  }
+
+  getWorkspaceClient(workspacePath: string): AgentClient {
+    return new ACPWorkspaceClient(this, workspacePath)
   }
 
   async initialize(): Promise<void> {
@@ -77,7 +83,7 @@ export class ACPClient implements AgentClient {
     this.emitAcpEvent('initialize.result', result)
   }
 
-  async createSession(title?: string): Promise<AgentSession> {
+  async createSessionForWorkspace(workspacePath: string, title?: string): Promise<AgentSession> {
     await this.initialize()
     const result = await this.connection.call<{
       sessionId: string
@@ -85,11 +91,12 @@ export class ACPClient implements AgentClient {
       modes?: unknown
       _meta?: unknown
     }>('session/new', {
-      cwd: this.workspacePath,
+      cwd: workspacePath,
       mcpServers: [],
       ...(title ? { title } : {}),
     })
-    this.emitAcpEvent('session.new.result', result)
+    this.sessionWorkspace.set(result.sessionId, workspacePath)
+    this.emitAcpEvent('session.new.result', result, workspacePath)
     this.updateSessionRuntimeFromPayload(result.sessionId, result.models, result.modes)
     await this.syncSessionTitle(result.sessionId).catch(() => undefined)
     return {
@@ -100,16 +107,16 @@ export class ACPClient implements AgentClient {
     }
   }
 
-  async deleteSession(id: string): Promise<void> {
+  async deleteSessionForWorkspace(workspacePath: string, id: string): Promise<void> {
     await this.initialize()
     // OpenCode ACP currently doesn't expose a delete-session RPC method.
     // Project local deletion through the existing SSEBridge -> Convex path.
     this.sessionRuntime.delete(id)
     this.activeTurns.delete(id)
-    this.ingestSynthetic('session.deleted', { info: { id } })
+    this.ingestSynthetic('session.deleted', { info: { id } }, workspacePath)
   }
 
-  async loadSession(sessionId: string): Promise<void> {
+  async loadSessionForWorkspace(workspacePath: string, sessionId: string): Promise<void> {
     await this.initialize()
     const result = await this.connection.call<{
       sessionId?: string
@@ -118,104 +125,232 @@ export class ACPClient implements AgentClient {
       _meta?: unknown
     }>('session/load', {
       sessionId,
-      cwd: this.workspacePath,
+      cwd: workspacePath,
       mcpServers: [],
     })
-    this.emitAcpEvent('session.load.result', { sessionId, ...result })
+    this.sessionWorkspace.set(sessionId, workspacePath)
+    this.emitAcpEvent('session.load.result', { sessionId, ...result }, workspacePath)
     this.updateSessionRuntimeFromPayload(sessionId, result.models, result.modes)
     await this.syncSessionTitle(sessionId).catch(() => undefined)
   }
 
-  async sendMessageAsync(sessionId: string, content: string): Promise<void> {
+  async sendMessageAsyncForWorkspace(
+    workspacePath: string,
+    sessionId: string,
+    content: string,
+  ): Promise<void> {
     await this.initialize()
+    this.sessionWorkspace.set(sessionId, workspacePath)
+    this.emitUserAndStartTurn(sessionId, content, workspacePath)
+    void this.promptSession(sessionId, content, workspacePath).catch(() => undefined)
+  }
+
+  private emitUserAndStartTurn(sessionId: string, content: string, workspacePath: string): void {
     const runtimeSelection = this.sessionRuntime.get(sessionId)
     const selectedModel = this.parseModelId(runtimeSelection?.currentModelId)
     const selectedAgent = runtimeSelection?.currentModeId
-
     const userMessageId = `acp_usr_${randomUUID()}`
     const userPartId = `prt_${randomUUID()}`
-    this.ingestSynthetic('message.updated', {
-      info: {
-        id: userMessageId,
-        sessionID: sessionId,
-        role: 'user',
-        parts: [{ type: 'text', id: userPartId, text: content }],
-        ...(selectedAgent ? { agent: selectedAgent } : {}),
-        ...(selectedModel
-          ? {
-              model: {
-                providerID: selectedModel.providerId,
-                modelID: selectedModel.modelId,
-              },
-            }
-          : {}),
-        time: { completed: Date.now() },
-      },
-    })
-
-    const assistantMessageId = `acp_asst_${randomUUID()}`
-    this.activeTurns.set(sessionId, { assistantMessageId, parts: new Map() })
-
-    this.ingestSynthetic('session.status', { sessionID: sessionId, status: { type: 'running' } })
-
-    void this.connection
-      .call<{ stopReason?: string; usage?: Record<string, number> }>('session/prompt', {
-        sessionId,
-        prompt: [{ type: 'text', text: content }],
-      })
-      .then((result) => {
-        const turn = this.activeTurns.get(sessionId)
-        if (!turn) return
-        this.ingestSynthetic('message.updated', {
-          info: {
-            id: turn.assistantMessageId,
-            sessionID: sessionId,
-            role: 'assistant',
-            parts: Array.from(turn.parts.values()),
-            time: { completed: Date.now() },
-            stopReason: result?.stopReason,
-            ...(selectedModel
-              ? {
+    this.ingestSynthetic(
+      'message.updated',
+      {
+        info: {
+          id: userMessageId,
+          sessionID: sessionId,
+          role: 'user',
+          parts: [{ type: 'text', id: userPartId, text: content }],
+          ...(selectedAgent ? { agent: selectedAgent } : {}),
+          ...(selectedModel
+            ? {
+                model: {
                   providerID: selectedModel.providerId,
                   modelID: selectedModel.modelId,
-                }
-              : {}),
-            ...(selectedAgent ? { mode: selectedAgent, agent: selectedAgent } : {}),
-            ...(result?.usage
-              ? {
-                  tokens: {
-                    total: result.usage.totalTokens,
-                    input: result.usage.inputTokens,
-                    output: result.usage.outputTokens,
-                    reasoning: result.usage.thoughtTokens ?? 0,
-                    cache: {
-                      read: result.usage.cachedReadTokens ?? 0,
-                      write: result.usage.cachedWriteTokens ?? 0,
-                    },
-                  },
-                }
-              : {}),
-          },
-        })
-        this.ingestSynthetic('session.status', { sessionID: sessionId, status: { type: 'idle' } })
-        this.activeTurns.delete(sessionId)
-        void this.syncSessionTitle(sessionId).catch(() => undefined)
-      })
-      .catch((error) => {
-        const rpcError = parseRpcError(error)
-        if (rpcError.code === -32002 || /auth/i.test(rpcError.message)) {
-          this.emitAcpEvent('auth_required', {
-            message: 'Authentication required. Run `opencode auth login` in terminal and retry.',
-            sessionId,
-          })
-        }
-        this.ingestSynthetic('session.error', { sessionID: sessionId, error: rpcError.message })
-        this.ingestSynthetic('session.status', { sessionID: sessionId, status: { type: 'error' } })
-        this.activeTurns.delete(sessionId)
-      })
+                },
+              }
+            : {}),
+          time: { completed: Date.now() },
+        },
+      },
+      workspacePath,
+    )
+
+    const assistantMessageId = `acp_asst_${randomUUID()}`
+    this.activeTurns.set(sessionId, {
+      assistantMessageId,
+      parts: new Map(),
+      activeReasoningPartId: undefined,
+    })
+    this.ingestSynthetic(
+      'session.status',
+      { sessionID: sessionId, status: { type: 'running' } },
+      workspacePath,
+    )
   }
 
-  async abortSession(sessionId: string): Promise<void> {
+  private async promptSession(
+    sessionId: string,
+    content: string,
+    workspacePath: string,
+  ): Promise<void> {
+    const runtimeSelection = this.sessionRuntime.get(sessionId)
+    const selectedModel = this.parseModelId(runtimeSelection?.currentModelId)
+    const selectedAgent = runtimeSelection?.currentModeId
+    const executePrompt = async () => {
+      this.activeRequestWorkspace = workspacePath
+      return await this.connection.call<{ stopReason?: string; usage?: Record<string, number> }>(
+        'session/prompt',
+        {
+          sessionId,
+          prompt: [{ type: 'text', text: content }],
+        },
+      )
+    }
+
+    try {
+      const result = await executePrompt()
+      this.finalizePromptSuccess(sessionId, selectedModel, selectedAgent, result, workspacePath)
+      this.activeRequestWorkspace = null
+      return
+    } catch (error) {
+      this.activeRequestWorkspace = null
+      const rpcError = parseRpcError(error)
+      if (!/Session not found/i.test(String(rpcError.message))) {
+        this.handlePromptError(sessionId, rpcError, workspacePath)
+        return
+      }
+      await this.loadSessionForWorkspace(workspacePath, sessionId)
+      try {
+        const result = await executePrompt()
+        this.finalizePromptSuccess(sessionId, selectedModel, selectedAgent, result, workspacePath)
+        this.activeRequestWorkspace = null
+      } catch (retryError) {
+        this.activeRequestWorkspace = null
+        this.handlePromptError(sessionId, parseRpcError(retryError), workspacePath)
+      }
+    }
+  }
+
+  private finalizePromptSuccess(
+    sessionId: string,
+    selectedModel: { providerId: string; modelId: string } | null,
+    selectedAgent: string | undefined,
+    result: { stopReason?: string; usage?: Record<string, number> } | undefined,
+    workspacePath: string,
+  ): void {
+    const turn = this.activeTurns.get(sessionId)
+    if (!turn) return
+    this.finishActiveReasoning(sessionId, turn.assistantMessageId, turn)
+    this.ingestSynthetic(
+      'message.updated',
+      {
+        info: {
+          id: turn.assistantMessageId,
+          sessionID: sessionId,
+          role: 'assistant',
+          parts: Array.from(turn.parts.values()),
+          time: { completed: Date.now() },
+          stopReason: result?.stopReason,
+          ...(selectedModel
+            ? {
+                providerID: selectedModel.providerId,
+                modelID: selectedModel.modelId,
+              }
+            : {}),
+          ...(selectedAgent ? { mode: selectedAgent, agent: selectedAgent } : {}),
+          ...(result?.usage
+            ? {
+                tokens: {
+                  total: result.usage.totalTokens,
+                  input: result.usage.inputTokens,
+                  output: result.usage.outputTokens,
+                  reasoning: result.usage.thoughtTokens ?? 0,
+                  cache: {
+                    read: result.usage.cachedReadTokens ?? 0,
+                    write: result.usage.cachedWriteTokens ?? 0,
+                  },
+                },
+              }
+            : {}),
+        },
+      },
+      workspacePath,
+    )
+    this.ingestSynthetic(
+      'session.status',
+      { sessionID: sessionId, status: { type: 'idle' } },
+      workspacePath,
+    )
+    this.activeTurns.delete(sessionId)
+    void this.syncSessionTitle(sessionId).catch(() => undefined)
+  }
+
+  private handlePromptError(sessionId: string, rpcError: RpcError, workspacePath: string): void {
+    if (rpcError.code === -32002 || /auth/i.test(rpcError.message)) {
+      this.emitAcpEvent(
+        'auth_required',
+        {
+          message: 'Authentication required. Run `opencode auth login` in terminal and retry.',
+          sessionId,
+        },
+        workspacePath,
+      )
+    }
+    const turn = this.activeTurns.get(sessionId)
+    if (turn) {
+      this.finishActiveReasoning(sessionId, turn.assistantMessageId, turn)
+    }
+    this.ingestSynthetic(
+      'session.error',
+      { sessionID: sessionId, error: rpcError.message },
+      workspacePath,
+    )
+    this.ingestSynthetic(
+      'session.status',
+      { sessionID: sessionId, status: { type: 'error' } },
+      workspacePath,
+    )
+    this.activeTurns.delete(sessionId)
+  }
+
+  private finishActiveReasoning(
+    sessionId: string,
+    assistantMessageId: string,
+    turn: StreamingTurn,
+  ): void {
+    const partId = turn.activeReasoningPartId
+    if (!partId) return
+    const existing = turn.parts.get(partId)
+    turn.activeReasoningPartId = undefined
+    if (!existing) return
+    const rawTime = existing.time
+    const time =
+      rawTime && typeof rawTime === 'object'
+        ? (rawTime as Record<string, number>)
+        : { start: Date.now() }
+    if (typeof time.end === 'number') return
+    const next = {
+      ...existing,
+      time: {
+        ...time,
+        end: Date.now(),
+      },
+    }
+    turn.parts.set(partId, next)
+    const workspacePath = this.sessionWorkspace.get(sessionId)
+    this.ingestSynthetic(
+      'message.part.updated',
+      {
+        part: {
+          ...next,
+          sessionID: sessionId,
+          messageID: assistantMessageId,
+        },
+      },
+      workspacePath,
+    )
+  }
+
+  async abortSessionForWorkspace(_workspacePath: string, sessionId: string): Promise<void> {
     await this.initialize()
     try {
       await this.connection.call('session/cancel', { sessionId })
@@ -229,7 +364,8 @@ export class ACPClient implements AgentClient {
     }
   }
 
-  async resolvePermission(
+  async resolvePermissionForWorkspace(
+    _workspacePath: string,
     sessionId: string,
     permissionId: string,
     approved: boolean,
@@ -251,10 +387,19 @@ export class ACPClient implements AgentClient {
       optionId: this.findOptionId(pending.options, approved),
     }
     pending.resolve(outcome)
-    this.ingestSynthetic('permission.replied', { sessionID: sessionId, requestID: permissionId })
+    const workspacePath = this.sessionWorkspace.get(sessionId)
+    this.ingestSynthetic(
+      'permission.replied',
+      { sessionID: sessionId, requestID: permissionId },
+      workspacePath,
+    )
   }
 
-  async setSessionModel(sessionId: string, modelId: string): Promise<void> {
+  async setSessionModelForWorkspace(
+    _workspacePath: string,
+    sessionId: string,
+    modelId: string,
+  ): Promise<void> {
     await this.initialize()
     const attempts: Array<[string, Record<string, unknown>]> = [
       ['session/set_model', { sessionId, modelId }],
@@ -268,7 +413,11 @@ export class ACPClient implements AgentClient {
           ...(this.sessionRuntime.get(sessionId) ?? {}),
           currentModelId: modelId,
         })
-        this.emitAcpEvent('session.set_model.result', { sessionId, modelId, result })
+        this.emitAcpEvent(
+          'session.set_model.result',
+          { sessionId, modelId, result },
+          this.sessionWorkspace.get(sessionId),
+        )
         return
       } catch (error) {
         const rpcError = parseRpcError(error)
@@ -278,7 +427,11 @@ export class ACPClient implements AgentClient {
     throw new Error('Session model switching is not supported by this ACP agent')
   }
 
-  async setSessionMode(sessionId: string, modeId: string): Promise<void> {
+  async setSessionModeForWorkspace(
+    _workspacePath: string,
+    sessionId: string,
+    modeId: string,
+  ): Promise<void> {
     await this.initialize()
     const attempts: Array<[string, Record<string, unknown>]> = [
       ['session/set_mode', { sessionId, modeId }],
@@ -291,7 +444,11 @@ export class ACPClient implements AgentClient {
           ...(this.sessionRuntime.get(sessionId) ?? {}),
           currentModeId: modeId,
         })
-        this.emitAcpEvent('session.set_mode.result', { sessionId, modeId, result })
+        this.emitAcpEvent(
+          'session.set_mode.result',
+          { sessionId, modeId, result },
+          this.sessionWorkspace.get(sessionId),
+        )
         return
       } catch (error) {
         const rpcError = parseRpcError(error)
@@ -301,24 +458,31 @@ export class ACPClient implements AgentClient {
     throw new Error('Session mode switching is not supported by this ACP agent')
   }
 
-  private emitAcpEvent(type: string, payload: unknown): void {
+  private emitAcpEvent(type: string, payload: unknown, workspacePath?: string): void {
     if (this.mainWindow.isDestroyed()) return
     this.mainWindow.webContents.send('acp:event', {
       type,
       payload,
-      workspacePath: this.workspacePath,
+      workspacePath,
       timestamp: Date.now(),
     })
   }
 
-  private ingestSynthetic(eventType: string, properties: Record<string, unknown>): void {
+  private ingestSynthetic(
+    eventType: string,
+    properties: Record<string, unknown>,
+    workspacePath?: string,
+  ): void {
+    if (!workspacePath) return
+    const bridge = this.resolveBridge(workspacePath)
+    if (!bridge) return
     const envelope = {
       payload: {
         type: eventType,
         properties,
       },
     }
-    this.bridge.ingestEnvelope(envelope, JSON.stringify(envelope))
+    bridge.ingestEnvelope(envelope, JSON.stringify(envelope))
   }
 
   private handleNotification(method: string, params: unknown): void {
@@ -341,12 +505,18 @@ export class ACPClient implements AgentClient {
     const turn = this.activeTurns.get(sessionId)
     const assistantMessageId = turn?.assistantMessageId ?? `acp_asst_${randomUUID()}`
     if (!turn) {
-      this.activeTurns.set(sessionId, { assistantMessageId, parts: new Map() })
+      this.activeTurns.set(sessionId, {
+        assistantMessageId,
+        parts: new Map(),
+        activeReasoningPartId: undefined,
+      })
     }
     const activeTurn = this.activeTurns.get(sessionId)!
+    const workspacePath = this.sessionWorkspace.get(sessionId)
 
     switch (kind) {
       case 'agent_message_chunk': {
+        this.finishActiveReasoning(sessionId, assistantMessageId, activeTurn)
         const content = update.content as { type?: string; text?: string } | undefined
         const delta = content?.type === 'text' ? (content.text ?? '') : ''
         if (!delta) return
@@ -356,36 +526,51 @@ export class ACPClient implements AgentClient {
           ...existing,
           text: `${String(existing.text ?? '')}${delta}`,
         })
-        this.ingestSynthetic('message.part.delta', {
-          sessionID: sessionId,
-          messageID: assistantMessageId,
-          partID: partId,
-          field: 'text',
-          delta,
-        })
+        this.ingestSynthetic(
+          'message.part.delta',
+          {
+            sessionID: sessionId,
+            messageID: assistantMessageId,
+            partID: partId,
+            field: 'text',
+            delta,
+          },
+          workspacePath,
+        )
         return
       }
       case 'agent_thought_chunk': {
         const content = update.content as { type?: string; text?: string } | undefined
         const delta = content?.type === 'text' ? (content.text ?? '') : ''
         if (!delta) return
-        const partId = 'acp_reasoning_part'
-        const existing = activeTurn.parts.get(partId) ?? { type: 'reasoning', id: partId, text: '' }
+        const partId = activeTurn.activeReasoningPartId ?? `acp_reasoning_part_${randomUUID()}`
+        activeTurn.activeReasoningPartId = partId
+        const existing = activeTurn.parts.get(partId) ?? {
+          type: 'reasoning',
+          id: partId,
+          text: '',
+          time: { start: Date.now() },
+        }
         const next = {
           ...existing,
           text: `${String(existing.text ?? '')}${delta}`,
         }
         activeTurn.parts.set(partId, next)
-        this.ingestSynthetic('message.part.updated', {
-          part: {
-            ...next,
-            sessionID: sessionId,
-            messageID: assistantMessageId,
+        this.ingestSynthetic(
+          'message.part.updated',
+          {
+            part: {
+              ...next,
+              sessionID: sessionId,
+              messageID: assistantMessageId,
+            },
           },
-        })
+          workspacePath,
+        )
         return
       }
       case 'tool_call': {
+        this.finishActiveReasoning(sessionId, assistantMessageId, activeTurn)
         const toolCallId = String(update.toolCallId ?? randomUUID())
         const partId = toolCallId
         const part = {
@@ -402,10 +587,11 @@ export class ACPClient implements AgentClient {
           },
         }
         activeTurn.parts.set(partId, part)
-        this.ingestSynthetic('message.part.updated', { part })
+        this.ingestSynthetic('message.part.updated', { part }, workspacePath)
         return
       }
       case 'tool_call_update': {
+        this.finishActiveReasoning(sessionId, assistantMessageId, activeTurn)
         const toolCallId = String(update.toolCallId ?? randomUUID())
         const partId = toolCallId
         const status = String(update.status ?? 'running')
@@ -440,10 +626,11 @@ export class ACPClient implements AgentClient {
         }
         const nextPart = { ...previous, state }
         activeTurn.parts.set(partId, nextPart)
-        this.ingestSynthetic('message.part.updated', { part: nextPart })
+        this.ingestSynthetic('message.part.updated', { part: nextPart }, workspacePath)
         return
       }
       case 'plan': {
+        this.finishActiveReasoning(sessionId, assistantMessageId, activeTurn)
         const partId = 'acp_plan_part'
         const next = {
           type: 'subtask',
@@ -453,15 +640,19 @@ export class ACPClient implements AgentClient {
           entries: update.entries,
         }
         activeTurn.parts.set(partId, next)
-        this.ingestSynthetic('message.part.updated', { part: next })
+        this.ingestSynthetic('message.part.updated', { part: next }, workspacePath)
         return
       }
       case 'usage_update':
       case 'available_commands_update':
       case 'user_message_chunk': {
+        if (kind === 'user_message_chunk') {
+          this.finishActiveReasoning(sessionId, assistantMessageId, activeTurn)
+        }
         return
       }
       default: {
+        this.finishActiveReasoning(sessionId, assistantMessageId, activeTurn)
         const partId = `acp_${kind}_${randomUUID()}`
         const next = {
           type: 'agent',
@@ -472,7 +663,7 @@ export class ACPClient implements AgentClient {
           payload: update,
         }
         activeTurn.parts.set(partId, next)
-        this.ingestSynthetic('message.part.updated', { part: next })
+        this.ingestSynthetic('message.part.updated', { part: next }, workspacePath)
       }
     }
   }
@@ -489,16 +680,22 @@ export class ACPClient implements AgentClient {
           options?: Array<{ optionId?: string; kind?: string }>
         }
         const sessionId = String(payload.sessionId ?? payload.sessionID ?? '')
+        const workspacePath =
+          this.sessionWorkspace.get(sessionId) ?? this.activeRequestWorkspace ?? undefined
         const toolCall = payload.toolCall ?? {}
         const requestId = String(toolCall.toolCallId ?? randomUUID())
-        this.ingestSynthetic('permission.asked', {
-          sessionID: sessionId,
-          requestID: requestId,
-          id: requestId,
-          permission: String(toolCall.kind ?? toolCall.title ?? 'tool'),
-          tool: String(toolCall.title ?? toolCall.kind ?? 'tool'),
-          metadata: (toolCall.rawInput as Record<string, unknown>) ?? {},
-        })
+        this.ingestSynthetic(
+          'permission.asked',
+          {
+            sessionID: sessionId,
+            requestID: requestId,
+            id: requestId,
+            permission: String(toolCall.kind ?? toolCall.title ?? 'tool'),
+            tool: String(toolCall.title ?? toolCall.kind ?? 'tool'),
+            metadata: (toolCall.rawInput as Record<string, unknown>) ?? {},
+          },
+          workspacePath,
+        )
         return await new Promise<PermissionOutcome>((resolve) => {
           this.pendingPermissions.set(requestId, { sessionId, options: payload.options, resolve })
           setTimeout(() => {
@@ -509,10 +706,14 @@ export class ACPClient implements AgentClient {
               outcome: 'selected',
               optionId: this.findOptionId(payload.options, false),
             })
-            this.ingestSynthetic('permission.replied', {
-              sessionID: sessionId,
-              requestID: requestId,
-            })
+            this.ingestSynthetic(
+              'permission.replied',
+              {
+                sessionID: sessionId,
+                requestID: requestId,
+              },
+              workspacePath,
+            )
           }, 60_000)
         })
       }
@@ -544,7 +745,7 @@ export class ACPClient implements AgentClient {
             return acc
           }, {}) ?? {}
         const proc = spawn(payload.command ?? 'cmd', payload.args ?? [], {
-          cwd: payload.cwd ?? this.workspacePath,
+          cwd: payload.cwd ?? this.activeRequestWorkspace ?? process.cwd(),
           env: { ...process.env, ...env },
           shell: true,
           stdio: ['pipe', 'pipe', 'pipe'],
@@ -645,11 +846,13 @@ export class ACPClient implements AgentClient {
     }
   }
 
-  private async listSessions(): Promise<Array<{ sessionId: string; title?: string }>> {
+  private async listSessions(
+    workspacePath: string,
+  ): Promise<Array<{ sessionId: string; title?: string }>> {
     const attempts: Array<[string, Record<string, unknown>]> = [
-      ['session/list', { cwd: this.workspacePath }],
-      ['session/unstable_list', { cwd: this.workspacePath }],
-      ['session/unstable_listSessions', { cwd: this.workspacePath }],
+      ['session/list', { cwd: workspacePath }],
+      ['session/unstable_list', { cwd: workspacePath }],
+      ['session/unstable_listSessions', { cwd: workspacePath }],
     ]
 
     for (const [method, params] of attempts) {
@@ -671,14 +874,68 @@ export class ACPClient implements AgentClient {
   }
 
   private async syncSessionTitle(sessionId: string): Promise<void> {
-    const sessions = await this.listSessions()
+    const workspacePath = this.sessionWorkspace.get(sessionId)
+    if (!workspacePath) return
+    const sessions = await this.listSessions(workspacePath)
     const row = sessions.find((session) => session.sessionId === sessionId)
     if (!row?.title) return
-    this.ingestSynthetic('session.updated', {
-      info: {
-        id: sessionId,
-        title: row.title,
+    this.ingestSynthetic(
+      'session.updated',
+      {
+        info: {
+          id: sessionId,
+          title: row.title,
+        },
       },
-    })
+      workspacePath,
+    )
+  }
+}
+
+class ACPWorkspaceClient implements AgentClient {
+  constructor(
+    private core: ACPClient,
+    private workspacePath: string,
+  ) {}
+
+  async createSession(title?: string): Promise<AgentSession> {
+    return await this.core.createSessionForWorkspace(this.workspacePath, title)
+  }
+
+  async loadSession(sessionId: string): Promise<void> {
+    await this.core.loadSessionForWorkspace(this.workspacePath, sessionId)
+  }
+
+  async deleteSession(id: string): Promise<void> {
+    await this.core.deleteSessionForWorkspace(this.workspacePath, id)
+  }
+
+  async sendMessageAsync(sessionId: string, content: string): Promise<void> {
+    await this.core.sendMessageAsyncForWorkspace(this.workspacePath, sessionId, content)
+  }
+
+  async abortSession(sessionId: string): Promise<void> {
+    await this.core.abortSessionForWorkspace(this.workspacePath, sessionId)
+  }
+
+  async resolvePermission(
+    sessionId: string,
+    permissionId: string,
+    approved: boolean,
+  ): Promise<void> {
+    await this.core.resolvePermissionForWorkspace(
+      this.workspacePath,
+      sessionId,
+      permissionId,
+      approved,
+    )
+  }
+
+  async setSessionModel(sessionId: string, modelId: string): Promise<void> {
+    await this.core.setSessionModelForWorkspace(this.workspacePath, sessionId, modelId)
+  }
+
+  async setSessionMode(sessionId: string, modeId: string): Promise<void> {
+    await this.core.setSessionModeForWorkspace(this.workspacePath, sessionId, modeId)
   }
 }

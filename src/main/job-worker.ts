@@ -75,24 +75,28 @@ export class JobWorker {
       name: 'jobs.listPending',
       requestBytes: estimateConvexPayloadBytes({ clientId: this.clientId }),
     })
-    const unsub = this.convex.onUpdate(api.jobs.listPending, { clientId: this.clientId }, (jobs) => {
-      recordConvexTelemetry({
-        source: 'main',
-        kind: 'subscription',
-        phase: 'update',
-        name: 'jobs.listPending',
-        requestBytes: estimateConvexPayloadBytes({ clientId: this.clientId }),
-        responseBytes: estimateConvexPayloadBytes(jobs),
-      })
-      if (!jobs) return
-      console.log(`[job-worker] ${jobs.length} pending job(s)`)
-      for (const job of jobs as JobDoc[]) {
-        if (!this.processing.has(job._id)) {
-          this.processing.add(job._id)
-          this.processJob(job).finally(() => this.processing.delete(job._id))
+    const unsub = this.convex.onUpdate(
+      api.jobs.listPending,
+      { clientId: this.clientId },
+      (jobs) => {
+        recordConvexTelemetry({
+          source: 'main',
+          kind: 'subscription',
+          phase: 'update',
+          name: 'jobs.listPending',
+          requestBytes: estimateConvexPayloadBytes({ clientId: this.clientId }),
+          responseBytes: estimateConvexPayloadBytes(jobs),
+        })
+        if (!jobs) return
+        console.log(`[job-worker] ${jobs.length} pending job(s)`)
+        for (const job of jobs as JobDoc[]) {
+          if (!this.processing.has(job._id)) {
+            this.processing.add(job._id)
+            this.processJob(job).finally(() => this.processing.delete(job._id))
+          }
         }
-      }
-    })
+      },
+    )
     this.unsubscribe = unsub
   }
 
@@ -122,7 +126,7 @@ export class JobWorker {
     try {
       const parsed = JSON.parse(job.payload)
       const client = await this.getClient(parsed.workspacePath)
-      if (!client) throw new Error(`No active sidecar for workspace: ${parsed.workspacePath}`)
+      if (!client) throw new Error('OpenCode ACP runtime is unavailable')
 
       switch (job.type) {
         case 'send_message':
@@ -151,7 +155,8 @@ export class JobWorker {
         }
         case 'start_session_with_message': {
           const session: AgentSession = await client.createSession(parsed.title)
-          const preferredModel = parsed.preferredModelId ?? this.getLastModelForWorkspace(parsed.workspacePath)
+          const preferredModel =
+            parsed.preferredModelId ?? this.getLastModelForWorkspace(parsed.workspacePath)
           if (preferredModel && client.setSessionModel) {
             try {
               await client.setSessionModel(session.id, preferredModel)

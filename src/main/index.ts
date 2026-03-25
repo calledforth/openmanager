@@ -4,10 +4,9 @@ import { ConvexClient } from 'convex/browser'
 import { SidecarManager } from './sidecar-manager'
 import { SSEBridge } from './sse-bridge'
 import { JobWorker } from './job-worker'
-import { OpenCodeClient } from '@shared/lib/opencode-client'
 import { ACPClient } from './acp-client'
 import { loadOrCreateClientId } from './client-id'
-import { getLastSelectedModel, setLastSelectedModel } from './local-settings'
+import store from './store'
 import type { AgentClient } from './agent-client'
 import {
   clearConvexTelemetry,
@@ -18,16 +17,12 @@ import {
 
 declare const __CONVEX_URL__: string
 
-const IDLE_CHECK_INTERVAL_MS = 60_000
-const IDLE_THRESHOLD_MS = 10 * 60_000
-
 let mainWindow: BrowserWindow | null = null
 const sidecarManager = new SidecarManager()
 const sseBridges = new Map<string, SSEBridge>()
-const acpClients = new Map<string, ACPClient>()
+let acpClient: ACPClient | null = null
 let convexClient: ConvexClient | null = null
 let jobWorker: JobWorker | null = null
-let idleTimer: ReturnType<typeof setInterval> | null = null
 let clientId: string | null = null
 let userDataPath = ''
 
@@ -42,59 +37,29 @@ function initConvex(): ConvexClient | null {
 }
 
 async function ensureAgentClient(workspacePath: string): Promise<AgentClient | null> {
-  sidecarManager.touchActivity(workspacePath)
-  let hs = sidecarManager.getHandshake(workspacePath)
+  let hs = sidecarManager.getHandshake()
   if (!hs?.ready) {
-    hs = await sidecarManager.spawn(workspacePath)
+    hs = await sidecarManager.spawn()
   }
   if (!hs?.ready) return null
-  if (sidecarManager.getMode() === 'legacy') {
-    startSSEBridge(workspacePath)
-    return new OpenCodeClient(hs.serverUrl, hs.password)
-  }
 
   if (!convexClient || !mainWindow) return null
-  let bridge = sseBridges.get(workspacePath)
-  if (!bridge && clientId) {
-    bridge = new SSEBridge('', '', workspacePath, convexClient, mainWindow, clientId)
+  if (!acpClient) {
+    const connection = sidecarManager.getACPConnection()
+    if (!connection) return null
+    acpClient = new ACPClient(connection, (path) => sseBridges.get(path) ?? null, mainWindow)
+  }
+  await acpClient.initialize()
+  if (!sseBridges.has(workspacePath) && convexClient && mainWindow && clientId) {
+    const bridge = new SSEBridge('', '', workspacePath, convexClient, mainWindow, clientId)
     sseBridges.set(workspacePath, bridge)
   }
-  if (!bridge) return null
-
-  let client = acpClients.get(workspacePath)
-  if (!client) {
-    const connection = sidecarManager.getACPConnection(workspacePath)
-    if (!connection) return null
-    client = new ACPClient(connection, workspacePath, bridge, mainWindow)
-    acpClients.set(workspacePath, client)
-  }
-  await client.initialize()
-  return client
-}
-
-function startSSEBridge(workspacePath: string): void {
-  if (sseBridges.has(workspacePath) || !convexClient || !mainWindow || !clientId) return
-  if (sidecarManager.getMode() !== 'legacy') return
-  const hs = sidecarManager.getHandshake(workspacePath)
-  if (!hs?.ready) return
-  const bridge = new SSEBridge(hs.serverUrl, hs.password, workspacePath, convexClient, mainWindow, clientId)
-  sseBridges.set(workspacePath, bridge)
-  bridge.start()
+  return acpClient.getWorkspaceClient(workspacePath)
 }
 
 function stopSSEBridge(workspacePath: string): void {
   sseBridges.get(workspacePath)?.stop()
   sseBridges.delete(workspacePath)
-  acpClients.delete(workspacePath)
-}
-
-function shutdownIdleWorkspaces(): void {
-  const idle = sidecarManager.getIdleWorkspaces(IDLE_THRESHOLD_MS)
-  for (const path of idle) {
-    console.log(`[idle-monitor] shutting down idle workspace: ${path}`)
-    stopSSEBridge(path)
-    sidecarManager.shutdown(path).catch(console.error)
-  }
 }
 
 function createWindow(): void {
@@ -127,23 +92,23 @@ function createWindow(): void {
   }
 }
 
-ipcMain.handle('sidecar:spawn', async (_e, workspacePath: string) => {
-  const handshake = await sidecarManager.spawn(workspacePath)
-  if (handshake.ready) startSSEBridge(workspacePath)
+ipcMain.handle('opencode:ensure', async () => {
+  const handshake = await sidecarManager.spawn()
   return handshake
 })
 
-ipcMain.handle('sidecar:handshake', async (_e, workspacePath: string) => {
-  return sidecarManager.getHandshake(workspacePath)
+ipcMain.handle('opencode:retry', async () => {
+  const handshake = await sidecarManager.retryStart()
+  return handshake
 })
 
-ipcMain.handle('sidecar:status', async (_e, workspacePath: string) => {
-  return sidecarManager.getStatus(workspacePath)
+ipcMain.handle('opencode:status', async () => {
+  return sidecarManager.getStatus()
 })
 
-ipcMain.handle('sidecar:shutdown', async (_e, workspacePath: string) => {
-  stopSSEBridge(workspacePath)
-  return sidecarManager.shutdown(workspacePath)
+ipcMain.handle('opencode:shutdown', async () => {
+  for (const path of sseBridges.keys()) stopSSEBridge(path)
+  return sidecarManager.shutdown()
 })
 
 ipcMain.handle('acp:load-session', async (_e, workspacePath: string, sessionId: string) => {
@@ -165,6 +130,14 @@ ipcMain.handle('client:get-id', async () => clientId)
 ipcMain.handle('telemetry:get-snapshot', async () => getConvexTelemetrySnapshot())
 ipcMain.handle('telemetry:clear', async () => {
   clearConvexTelemetry()
+})
+
+ipcMain.handle('store:get-collapsed-workspaces', async () => {
+  return store.get('collapsedWorkspaces', [])
+})
+
+ipcMain.handle('store:set-collapsed-workspaces', async (_e, paths: string[]) => {
+  store.set('collapsedWorkspaces', paths)
 })
 ipcMain.handle('telemetry:record', async (_event, payload: Record<string, unknown>) => {
   recordConvexTelemetry({
@@ -201,21 +174,30 @@ app.whenReady().then(() => {
 
   createWindow()
 
+  sidecarManager.spawn().catch((error) => {
+    console.error('[opencode] failed to start at app launch:', (error as Error).message)
+  })
+
   if (convexClient && clientId) {
     console.log('[job-worker] starting')
     jobWorker = new JobWorker(
       convexClient,
       ensureAgentClient,
       clientId,
-      (workspacePath) => getLastSelectedModel(userDataPath, workspacePath),
-      (workspacePath, modelId) => setLastSelectedModel(userDataPath, workspacePath, modelId),
+      (workspacePath) => {
+        const models = store.get('lastSelectedModelByWorkspace', {})
+        const model = models[workspacePath]
+        return typeof model === 'string' && model.length > 0 ? model : null
+      },
+      (workspacePath, modelId) => {
+        const models = store.get('lastSelectedModelByWorkspace', {})
+        store.set('lastSelectedModelByWorkspace', { ...models, [workspacePath]: modelId })
+      },
     )
     jobWorker.start()
   } else {
     console.warn('[job-worker] skipped — no Convex client')
   }
-
-  idleTimer = setInterval(shutdownIdleWorkspaces, IDLE_CHECK_INTERVAL_MS)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -227,8 +209,8 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', async () => {
-  if (idleTimer) clearInterval(idleTimer)
   jobWorker?.stop()
   for (const bridge of sseBridges.values()) bridge.stop()
+  acpClient = null
   await sidecarManager.shutdownAll()
 })

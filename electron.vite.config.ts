@@ -9,7 +9,7 @@ const env = loadEnv('development', process.cwd(), '')
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin({ exclude: ['electron-store'] })],
     define: {
       __CONVEX_URL__: JSON.stringify(env.CONVEX_URL || ''),
     },

@@ -61,18 +61,9 @@ export function ThinkingPart({ text, duration, isStreaming = false }: ThinkingPa
         onClick={() => setExpanded(!expanded)}
         className={cn(
           'group flex items-start gap-1.5 py-0.5 px-2 cursor-pointer w-full text-left',
-          'text-muted-foreground hover:text-foreground/80 transition-colors'
+          'text-muted-foreground hover:text-foreground/80 transition-colors',
         )}
       >
-        <span
-          className={cn(
-            'transition-transform duration-200 ease-out flex-shrink-0',
-            expanded ? 'rotate-90' : ''
-          )}
-          style={{ fontSize: 14, lineHeight: 1 }}
-        >
-          ▸
-        </span>
         {isStreaming ? (
           <span className="inline-flex items-center gap-1.5 text-[12px] leading-4 m-0">
             <Loader2 className="h-3 w-3 animate-spin text-primary" />
@@ -87,9 +78,7 @@ export function ThinkingPart({ text, duration, isStreaming = false }: ThinkingPa
       </button>
       {!expanded && previewText && (
         <div className="px-2 mt-0.5">
-          <span className="text-muted-foreground/60 truncate text-[12px] block">
-            {previewText}
-          </span>
+          <span className="text-muted-foreground/60 truncate text-[12px] block">{previewText}</span>
         </div>
       )}
       {elapsedDisplay && !expanded && (
@@ -105,7 +94,7 @@ export function ThinkingPart({ text, duration, isStreaming = false }: ThinkingPa
           <div
             className={cn(
               'absolute inset-x-0 top-0 h-8 bg-gradient-to-b from-background to-transparent z-10 pointer-events-none transition-opacity duration-200',
-              isStreaming && isOverflowing ? 'opacity-100' : 'opacity-0'
+              isStreaming && isOverflowing ? 'opacity-100' : 'opacity-0',
             )}
           />
           <div
@@ -113,7 +102,7 @@ export function ThinkingPart({ text, duration, isStreaming = false }: ThinkingPa
             className={cn(
               'overflow-y-auto max-h-36 scrollbar-hide',
               'ml-1 pl-3 border-l border-border',
-              'text-muted-foreground text-[12px] leading-relaxed whitespace-pre-wrap'
+              'text-muted-foreground text-[12px] leading-relaxed whitespace-pre-wrap',
             )}
           >
             {text || (isStreaming ? '…' : '')}

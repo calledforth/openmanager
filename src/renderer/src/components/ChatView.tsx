@@ -192,7 +192,8 @@ function MessageTimeline({
   const firstUnvirtualizedIndex = useMemo(() => {
     const firstTailIndex = Math.max(messages.length - ALWAYS_UNVIRTUALIZED_TAIL_ROWS, 0)
     const firstLiveIndex = messages.findIndex(
-      (message) => message.isOptimistic || (message.role === 'assistant' && message.isFinal !== true),
+      (message) =>
+        message.isOptimistic || (message.role === 'assistant' && message.isFinal !== true),
     )
     if (firstLiveIndex < 0) return firstTailIndex
     return Math.min(firstLiveIndex, firstTailIndex)
@@ -226,11 +227,7 @@ function MessageTimeline({
                 className="absolute left-0 top-0 w-full"
                 style={{ transform: `translateY(${virtualRow.start}px)` }}
               >
-                <MessageRow
-                  message={message}
-                  isDriven={isDriven}
-                  onStreamUpdate={onStreamUpdate}
-                />
+                <MessageRow message={message} isDriven={isDriven} onStreamUpdate={onStreamUpdate} />
               </div>
             )
           })}
@@ -415,7 +412,8 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
   )
 
   const finalizedParts = (contentDoc?.metadata as { parts?: MessagePart[] } | undefined)?.parts
-  const runtimeMetadata = (contentDoc?.metadata as { runtime?: RuntimeMetadata } | undefined)?.runtime
+  const runtimeMetadata = (contentDoc?.metadata as { runtime?: RuntimeMetadata } | undefined)
+    ?.runtime
   const drivenStreamingMessage = props.isDriven ? localStreamingMessage : undefined
 
   // Cache last-known streaming parts so the isFinal transition doesn't flash empty
@@ -437,11 +435,11 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
       ? props.isFinal === true
         ? finalizedContent
         : streamingContent
-      : props.optimisticContent ?? contentDoc?.content ?? ''
+      : (props.optimisticContent ?? contentDoc?.content ?? '')
   const parts =
     props.role === 'assistant' && props.isFinal !== true
       ? streamingParts
-      : finalizedParts ?? lastStreamingPartsRef.current
+      : (finalizedParts ?? lastStreamingPartsRef.current)
 
   if (props.role === 'user') {
     return <UserMessage content={content} runtime={runtimeMetadata} />
@@ -473,7 +471,7 @@ const AssistantMessage = memo(function AssistantMessage({
 
   return (
     <div className="py-2">
-      <div className="text-[14px] leading-relaxed text-foreground space-y-0.5">
+      <div className="text-[14px] leading-relaxed text-foreground/90 space-y-0.5">
         {hasParts ? (
           <MessageParts parts={parts} isStreaming={isStreaming} />
         ) : (
@@ -499,7 +497,7 @@ function MessageRuntimeMeta({
   const modelLabel =
     runtime.providerId && runtime.modelId
       ? `${runtime.providerId}/${runtime.modelId}`
-      : runtime.modelId ?? undefined
+      : (runtime.modelId ?? undefined)
   if (modelLabel) parts.push(modelLabel)
   if (runtime.modeId) parts.push(`mode:${runtime.modeId}`)
   if (runtime.agentId) parts.push(`agent:${runtime.agentId}`)

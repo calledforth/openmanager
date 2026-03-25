@@ -8,13 +8,14 @@ import {
   type ReactNode,
 } from 'react'
 import { api } from '@convex/_generated/api'
+import type { SidecarStatus } from '@shared/contracts/sidecar'
 import {
   recordRendererTelemetry,
   trackedConvexQuery,
   useTrackedMutation,
 } from '../lib/convex-telemetry'
 
-type SidecarStatus = 'disconnected' | 'connecting' | 'connected'
+type OpenCodeUiStatus = 'disconnected' | 'connecting' | 'connected'
 
 export interface AcpModelOption {
   modelId: string
@@ -51,11 +52,13 @@ interface AppUiValue {
   isSessionDraftOpen: boolean
   pendingDraftSessionStart: boolean
   currentClientId: string | null
-  sidecarStatuses: Record<string, SidecarStatus>
+  openCodeStatus: SidecarStatus
+  openCodeUiStatus: OpenCodeUiStatus
   acpAgentInfo: { name?: string; version?: string } | null
   acpSessionState: AcpSessionRuntimeState | null
   draftSessionState: AcpSessionRuntimeState | null
   error: string | null
+  retryOpenCode: () => Promise<void>
   setActiveWorkspacePath: (path: string | null) => void
   setActiveSessionId: (sessionId: string | null) => void
   addWorkspace: () => Promise<void>
@@ -85,7 +88,8 @@ export function useAppUi() {
 }
 
 export function AppUiProvider({ children }: { children: ReactNode }) {
-  const [sidecarStatuses, setSidecarStatuses] = useState<Record<string, SidecarStatus>>({})
+  const [openCodeStatus, setOpenCodeStatus] = useState<SidecarStatus>('stopped')
+  const [openCodeUiStatus, setOpenCodeUiStatus] = useState<OpenCodeUiStatus>('disconnected')
   const [activeWorkspacePath, setActiveWorkspacePath] = useState<string | null>(null)
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [isSessionDraftOpen, setIsSessionDraftOpen] = useState(false)
@@ -93,9 +97,9 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
   const [currentClientId, setCurrentClientId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [acpAgentInfo, setAcpAgentInfo] = useState<{ name?: string; version?: string } | null>(null)
-  const [acpSessionStateById, setAcpSessionStateById] = useState<Record<string, AcpSessionRuntimeState>>(
-    {},
-  )
+  const [acpSessionStateById, setAcpSessionStateById] = useState<
+    Record<string, AcpSessionRuntimeState>
+  >({})
   const [draftSessionStateByWorkspace, setDraftSessionStateByWorkspace] = useState<
     Record<string, Omit<AcpSessionRuntimeState, 'sessionId'>>
   >({})
@@ -134,32 +138,61 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
   )
 
   const submitJob = useTrackedMutation('jobs.submit', api.jobs.submit, telemetryContext)
-  const submitMessage = useTrackedMutation('jobs.submitMessage', api.jobs.submitMessage, telemetryContext)
+  const submitMessage = useTrackedMutation(
+    'jobs.submitMessage',
+    api.jobs.submitMessage,
+    telemetryContext,
+  )
   const ensureWorkspace = useTrackedMutation('workspaces.ensureByPath', api.workspaces.ensureByPath)
   const removeWorkspaceMutation = useTrackedMutation('workspaces.remove', api.workspaces.remove)
 
-  const ensureSidecar = useCallback(
-    async (path: string): Promise<boolean> => {
-      const current = sidecarStatuses[path]
-      if (current === 'connected') return true
-      if (current === 'connecting') return false
+  const syncOpenCodeUiStatus = useCallback((status: SidecarStatus) => {
+    if (status === 'healthy') {
+      setOpenCodeUiStatus('connected')
+      return
+    }
+    if (status === 'starting') {
+      setOpenCodeUiStatus('connecting')
+      return
+    }
+    setOpenCodeUiStatus('disconnected')
+  }, [])
 
-      setSidecarStatuses((prev) => ({ ...prev, [path]: 'connecting' }))
-      try {
-        const handshake = await window.electronAPI.spawnSidecar(path)
-        if (!handshake.ready) {
-          setSidecarStatuses((prev) => ({ ...prev, [path]: 'disconnected' }))
-          return false
-        }
-        setSidecarStatuses((prev) => ({ ...prev, [path]: 'connected' }))
-        return true
-      } catch {
-        setSidecarStatuses((prev) => ({ ...prev, [path]: 'disconnected' }))
+  const ensureOpenCode = useCallback(async (): Promise<boolean> => {
+    if (openCodeUiStatus === 'connected') return true
+    if (openCodeUiStatus === 'connecting') return false
+    setOpenCodeUiStatus('connecting')
+    try {
+      const handshake = await window.electronAPI.ensureOpenCode()
+      if (!handshake.ready) {
+        setOpenCodeUiStatus('disconnected')
         return false
       }
-    },
-    [sidecarStatuses],
-  )
+      setOpenCodeStatus('healthy')
+      setOpenCodeUiStatus('connected')
+      return true
+    } catch {
+      setOpenCodeUiStatus('disconnected')
+      return false
+    }
+  }, [openCodeUiStatus])
+
+  const retryOpenCode = useCallback(async () => {
+    setError(null)
+    setOpenCodeUiStatus('connecting')
+    try {
+      const handshake = await window.electronAPI.retryOpenCode()
+      if (!handshake.ready) {
+        setOpenCodeUiStatus('disconnected')
+        return
+      }
+      setOpenCodeStatus('healthy')
+      setOpenCodeUiStatus('connected')
+    } catch (err) {
+      setOpenCodeUiStatus('disconnected')
+      setError((err as Error).message)
+    }
+  }, [])
 
   const addWorkspace = useCallback(async () => {
     setError(null)
@@ -171,29 +204,23 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       setActiveSessionId(null)
       setIsSessionDraftOpen(false)
       setPendingDraftSessionStart(false)
-      ensureSidecar(folder).catch(console.error)
     } catch (err) {
       setError((err as Error).message)
     }
-  }, [ensureWorkspace, ensureSidecar])
+  }, [ensureWorkspace])
 
   const removeWorkspace = useCallback(
     async (path: string) => {
       setError(null)
       try {
-        const workspace = await trackedConvexQuery('workspaces.getByPath', api.workspaces.getByPath, { path })
+        const workspace = await trackedConvexQuery(
+          'workspaces.getByPath',
+          api.workspaces.getByPath,
+          { path },
+        )
         if (workspace?._id) {
           await removeWorkspaceMutation({ id: workspace._id })
         }
-
-        if (sidecarStatuses[path] === 'connected') {
-          await window.electronAPI.shutdownSidecar(path)
-        }
-        setSidecarStatuses((prev) => {
-          const next = { ...prev }
-          delete next[path]
-          return next
-        })
 
         if (activeWorkspacePath === path) {
           setActiveWorkspacePath(null)
@@ -205,7 +232,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         setError((err as Error).message)
       }
     },
-    [activeWorkspacePath, removeWorkspaceMutation, sidecarStatuses],
+    [activeWorkspacePath, removeWorkspaceMutation],
   )
 
   const selectSession = useCallback(
@@ -214,14 +241,12 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       setActiveSessionId(externalId)
       setIsSessionDraftOpen(false)
       setPendingDraftSessionStart(false)
-      if (sidecarStatuses[workspacePath] !== 'connected') {
-        ensureSidecar(workspacePath).catch(console.error)
-      }
+      ensureOpenCode().catch(console.error)
       if (typeof window.electronAPI.loadAcpSession === 'function') {
         window.electronAPI.loadAcpSession(workspacePath, externalId).catch(() => undefined)
       }
     },
-    [sidecarStatuses, ensureSidecar],
+    [ensureOpenCode],
   )
 
   const createSession = useCallback(
@@ -256,10 +281,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           },
         }))
       }
-      let sidecarReady = sidecarStatuses[workspacePath] === 'connected'
-      if (!sidecarReady) {
-        sidecarReady = await ensureSidecar(workspacePath)
-      }
+      const openCodeReady = await ensureOpenCode()
 
       const hasRuntime =
         !!fallbackSessionState?.models?.availableModels?.length ||
@@ -268,9 +290,13 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       if (hasRuntime || typeof window.electronAPI.loadAcpSession !== 'function') return
 
       try {
-        const sessions = (await trackedConvexQuery('sessions.listByWorkspace', api.sessions.listByWorkspace, {
-          workspacePath,
-        })) as Array<{ externalId: string; updatedAt: number }>
+        const sessions = (await trackedConvexQuery(
+          'sessions.listByWorkspace',
+          api.sessions.listByWorkspace,
+          {
+            workspacePath,
+          },
+        )) as Array<{ externalId: string; updatedAt: number }>
         const sorted = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt)
         const hydrated = sorted.find((row) => !!acpSessionStateById[row.externalId])
         if (hydrated) {
@@ -279,12 +305,14 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
             mergeDraftRuntimeForWorkspace(workspacePath, {
               ...(runtime.models ? { models: runtime.models } : {}),
               ...(runtime.modes ? { modes: runtime.modes } : {}),
-              ...(runtime.availableCommands ? { availableCommands: runtime.availableCommands } : {}),
+              ...(runtime.availableCommands
+                ? { availableCommands: runtime.availableCommands }
+                : {}),
             })
           }
           return
         }
-        if (sidecarReady && sorted[0]?.externalId) {
+        if (openCodeReady && sorted[0]?.externalId) {
           await window.electronAPI.loadAcpSession(workspacePath, sorted[0].externalId)
         }
       } catch {
@@ -295,9 +323,8 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       acpSessionStateById,
       activeSessionId,
       activeWorkspacePath,
-      ensureSidecar,
+      ensureOpenCode,
       mergeDraftRuntimeForWorkspace,
-      sidecarStatuses,
     ],
   )
 
@@ -335,9 +362,9 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       }
       if (!activeSessionId) {
         if (!isSessionDraftOpen || pendingDraftSessionStart) return
-        const ready = await ensureSidecar(activeWorkspacePath)
+        const ready = await ensureOpenCode()
         if (!ready) {
-          setError('Failed to start workspace sidecar')
+          setError('OpenCode is unavailable. Retry connection from the sidebar.')
           return
         }
         const draftSelection = draftSelectionByWorkspace[activeWorkspacePath] ?? {}
@@ -385,7 +412,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       activeWorkspacePath,
       currentClientId,
       draftSelectionByWorkspace,
-      ensureSidecar,
+      ensureOpenCode,
       isSessionDraftOpen,
       pendingDraftSessionStart,
       submitJob,
@@ -599,15 +626,22 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
-    const cleanup = window.electronAPI.onSidecarStatusChanged(({ workspacePath, status }) => {
-      if (status === 'crashed' || status === 'stopped') {
-        setSidecarStatuses((prev) => ({ ...prev, [workspacePath]: 'disconnected' }))
-      } else if (status === 'healthy') {
-        setSidecarStatuses((prev) => ({ ...prev, [workspacePath]: 'connected' }))
-      }
+    window.electronAPI
+      .getOpenCodeStatus()
+      .then((status) => {
+        setOpenCodeStatus(status)
+        syncOpenCodeUiStatus(status)
+      })
+      .catch(() => {
+        setOpenCodeStatus('stopped')
+        setOpenCodeUiStatus('disconnected')
+      })
+    const cleanup = window.electronAPI.onOpenCodeStatusChanged(({ status }) => {
+      setOpenCodeStatus(status as SidecarStatus)
+      syncOpenCodeUiStatus(status as SidecarStatus)
     })
     return cleanup
-  }, [])
+  }, [syncOpenCodeUiStatus])
 
   useEffect(() => {
     if (typeof window.electronAPI.onAcpEvent !== 'function') {
@@ -735,7 +769,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
   }, [activeWorkspacePath, mergeDraftRuntimeForWorkspace, pendingDraftSessionStart])
 
   const acpSessionState = useMemo(
-    () => (activeSessionId ? acpSessionStateById[activeSessionId] ?? null : null),
+    () => (activeSessionId ? (acpSessionStateById[activeSessionId] ?? null) : null),
     [acpSessionStateById, activeSessionId],
   )
 
@@ -756,11 +790,13 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       isSessionDraftOpen,
       pendingDraftSessionStart,
       currentClientId,
-      sidecarStatuses,
+      openCodeStatus,
+      openCodeUiStatus,
       acpAgentInfo,
       acpSessionState,
       draftSessionState,
       error,
+      retryOpenCode,
       setActiveWorkspacePath,
       setActiveSessionId,
       addWorkspace,
@@ -782,11 +818,13 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       isSessionDraftOpen,
       pendingDraftSessionStart,
       currentClientId,
-      sidecarStatuses,
+      openCodeStatus,
+      openCodeUiStatus,
       acpAgentInfo,
       acpSessionState,
       draftSessionState,
       error,
+      retryOpenCode,
       addWorkspace,
       removeWorkspace,
       selectSession,

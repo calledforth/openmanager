@@ -58,22 +58,10 @@ function basename(path: string): string {
   return parts[parts.length - 1] ?? path
 }
 
-function parentDir(path: string): string {
-  if (!path) return ''
-  const parts = path.split('/').filter(Boolean)
-  if (parts.length <= 1) return ''
-  const dir = parts.slice(0, -1).join('/')
-  return dir.length > 36 ? `.../${dir.slice(dir.lastIndexOf('/', dir.length - 37) + 1)}` : dir
-}
-
 function formatFileTitle(verb: string, input: unknown): string {
   const path = normalizePath(input)
   const name = basename(path)
   return name ? `${verb} ${name}` : verb
-}
-
-function formatFileSubtitle(input: unknown): string {
-  return parentDir(normalizePath(input))
 }
 
 function extractCommand(input: unknown): string {
@@ -98,22 +86,22 @@ const registry: Record<string, ToolMeta> = {
   Edit: {
     icon: FileEdit,
     getTitle: (input) => formatFileTitle('Edited', input),
-    getSubtitle: (input) => formatFileSubtitle(input),
+    getSubtitle: () => '',
   },
   Write: {
     icon: FilePlus,
     getTitle: (input) => formatFileTitle('Created', input),
-    getSubtitle: (input) => formatFileSubtitle(input),
+    getSubtitle: () => '',
   },
   MultiEdit: {
     icon: FileEdit,
     getTitle: (input) => formatFileTitle('Edited', input),
-    getSubtitle: (input) => formatFileSubtitle(input),
+    getSubtitle: () => '',
   },
   Read: {
     icon: FileSearch,
     getTitle: (input) => formatFileTitle('Read', input),
-    getSubtitle: (input) => formatFileSubtitle(input),
+    getSubtitle: () => '',
   },
   Grep: {
     icon: Search,
@@ -171,11 +159,13 @@ export function canonicalizeToolName(toolName: string): string {
 
 export function getToolMeta(toolName: string): ToolMeta {
   const canonicalName = canonicalizeToolName(toolName)
-  return registry[canonicalName] ?? {
-    icon: Wrench,
-    getTitle: () => canonicalName || toolName,
-    getSubtitle: () => '',
-  }
+  return (
+    registry[canonicalName] ?? {
+      icon: Wrench,
+      getTitle: () => canonicalName || toolName,
+      getSubtitle: () => '',
+    }
+  )
 }
 
 export function isExploringTool(toolName: string): boolean {

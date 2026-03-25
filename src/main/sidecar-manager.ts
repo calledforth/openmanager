@@ -1,6 +1,4 @@
 import { ChildProcess, spawn } from 'child_process'
-import { createServer } from 'net'
-import { randomBytes } from 'crypto'
 import { BrowserWindow } from 'electron'
 import type { SidecarHandshake, SidecarStatus } from '@shared/contracts/sidecar'
 import { ACPConnection } from './acp-connection'
@@ -10,87 +8,46 @@ interface SidecarInstance {
   handshake: SidecarHandshake
   status: SidecarStatus
   restartCount: number
-  workspacePath: string
-  lastActivityAt: number
-  mode: 'legacy' | 'acp'
   acpConnection?: ACPConnection
 }
 
 const MAX_RESTARTS = 1
-const HEALTH_TIMEOUT_MS = 30_000
-const HEALTH_POLL_MS = 500
-
-function findFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer()
-    server.listen(0, '127.0.0.1', () => {
-      const port = (server.address() as { port: number }).port
-      server.close(() => resolve(port))
-    })
-    server.on('error', reject)
-  })
-}
-
-function basicAuthHeader(password: string): string {
-  return `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`
-}
-
-async function pollHealth(url: string, password: string): Promise<boolean> {
-  const deadline = Date.now() + HEALTH_TIMEOUT_MS
-  let attempt = 0
-  while (Date.now() < deadline) {
-    attempt++
-    try {
-      const res = await fetch(`${url}/global/health`, {
-        headers: { Authorization: basicAuthHeader(password) },
-        signal: AbortSignal.timeout(3000),
-      })
-      if (res.ok) return true
-      const body = await res.text().catch(() => '')
-      if (attempt <= 3 || attempt % 10 === 0) {
-        console.log(`[sidecar:health] attempt ${attempt}: ${res.status} ${body.slice(0, 200)}`)
-      }
-    } catch (err) {
-      if (attempt <= 3 || attempt % 10 === 0) {
-        console.log(`[sidecar:health] attempt ${attempt}: ${(err as Error).message}`)
-      }
-    }
-    await new Promise((r) => setTimeout(r, HEALTH_POLL_MS))
-  }
-  return false
-}
 
 export class SidecarManager {
-  private instances = new Map<string, SidecarInstance>()
-  private mode: 'legacy' | 'acp' =
-    process.env['OPENMANAGER_RUNTIME'] === 'legacy' ? 'legacy' : 'acp'
+  private instance: SidecarInstance | null = null
+  private startPromise: Promise<SidecarHandshake> | null = null
 
-  getMode(): 'legacy' | 'acp' {
-    return this.mode
+  async spawn(): Promise<SidecarHandshake> {
+    if (this.instance?.status === 'healthy' && this.instance.handshake.ready) {
+      return this.instance.handshake
+    }
+    if (this.startPromise) return this.startPromise
+
+    this.startPromise = this.spawnInternal().finally(() => {
+      this.startPromise = null
+    })
+    return await this.startPromise
   }
 
-  async spawn(workspacePath: string): Promise<SidecarHandshake> {
-    const existing = this.instances.get(workspacePath)
-    if (existing?.status === 'healthy') {
-      existing.lastActivityAt = Date.now()
-      return existing.handshake
+  async retryStart(): Promise<SidecarHandshake> {
+    if (this.instance) {
+      await this.shutdown().catch(() => undefined)
     }
+    return await this.spawn()
+  }
 
+  private async spawnInternal(): Promise<SidecarHandshake> {
     const binary = process.env['OPENCODE_BINARY'] || 'opencode'
-    const isACP = this.mode === 'acp'
-    const password = isACP ? '' : randomBytes(32).toString('hex')
-    const port = isACP ? 0 : await findFreePort()
-    const hostname = '127.0.0.1'
-    const serverUrl = isACP ? 'acp://stdio' : `http://${hostname}:${port}`
+    const serverUrl = 'acp://stdio'
 
-    const args = isACP ? ['acp'] : ['serve', '--port', String(port), '--hostname', hostname]
+    const args = ['acp']
     console.log(`[sidecar] spawning: ${binary} ${args.join(' ')}`)
-    console.log(`[sidecar] mode: ${this.mode}`)
-    console.log(`[sidecar] cwd: ${workspacePath}`)
+    console.log(`[sidecar] mode: acp`)
+    console.log(`[sidecar] cwd: ${process.cwd()}`)
 
     const proc = spawn(binary, args, {
-      cwd: workspacePath,
-      env: isACP ? { ...process.env } : { ...process.env, OPENCODE_SERVER_PASSWORD: password },
+      cwd: process.cwd(),
+      env: { ...process.env },
       stdio: ['pipe', 'pipe', 'pipe'],
     })
 
@@ -104,103 +61,70 @@ export class SidecarManager {
 
     proc.on('error', (err) => {
       console.error(`[sidecar] spawn error:`, err.message)
+      instance.status = 'crashed'
+      instance.handshake.ready = false
+      this.broadcastStatus('crashed')
     })
 
-    const handshake: SidecarHandshake = { serverUrl, password, ready: false }
+    const handshake: SidecarHandshake = { serverUrl, password: '', ready: false }
     const instance: SidecarInstance = {
       process: proc,
       handshake,
       status: 'starting',
       restartCount: 0,
-      workspacePath,
-      lastActivityAt: Date.now(),
-      mode: this.mode,
-      ...(isACP ? { acpConnection: new ACPConnection(proc) } : {}),
+      acpConnection: new ACPConnection(proc),
     }
 
-    this.instances.set(workspacePath, instance)
-    this.broadcastStatus(workspacePath, 'starting')
+    this.instance = instance
+    this.broadcastStatus('starting')
 
     proc.on('exit', (code, signal) => {
       console.log(`[sidecar] exited with code=${code} signal=${signal}`)
       if (instance.status === 'stopped') return
       instance.status = 'crashed'
-      this.broadcastStatus(workspacePath, 'crashed')
+      this.broadcastStatus('crashed')
       if (instance.restartCount < MAX_RESTARTS) {
         instance.restartCount++
         console.log(`[sidecar] restarting (attempt ${instance.restartCount})...`)
-        this.spawn(workspacePath).catch(console.error)
+        this.spawn().catch(console.error)
       }
     })
 
-    if (isACP) {
-      instance.handshake.ready = true
-      instance.status = 'healthy'
-      this.broadcastStatus(workspacePath, 'healthy')
-    } else {
-      const healthy = await pollHealth(serverUrl, password)
-      if (healthy) {
-        console.log(`[sidecar] healthy on ${serverUrl}`)
-        instance.handshake.ready = true
-        instance.status = 'healthy'
-        this.broadcastStatus(workspacePath, 'healthy')
-      } else {
-        console.error(`[sidecar] health check timed out after ${HEALTH_TIMEOUT_MS}ms`)
-        instance.status = 'unhealthy'
-        this.broadcastStatus(workspacePath, 'unhealthy')
-      }
-    }
+    instance.handshake.ready = true
+    instance.status = 'healthy'
+    this.broadcastStatus('healthy')
 
     return instance.handshake
   }
 
-  touchActivity(workspacePath: string): void {
-    const instance = this.instances.get(workspacePath)
-    if (instance) instance.lastActivityAt = Date.now()
+  getHandshake(): SidecarHandshake | null {
+    return this.instance?.handshake ?? null
   }
 
-  getIdleWorkspaces(thresholdMs: number): string[] {
-    const now = Date.now()
-    const idle: string[] = []
-    for (const [path, instance] of this.instances) {
-      if (instance.status === 'healthy' && now - instance.lastActivityAt > thresholdMs) {
-        idle.push(path)
-      }
-    }
-    return idle
+  getACPConnection(): ACPConnection | null {
+    return this.instance?.acpConnection ?? null
   }
 
-  getHandshake(workspacePath: string): SidecarHandshake | null {
-    return this.instances.get(workspacePath)?.handshake ?? null
+  getStatus(): SidecarStatus {
+    return this.instance?.status ?? 'stopped'
   }
 
-  getACPConnection(workspacePath: string): ACPConnection | null {
-    const instance = this.instances.get(workspacePath)
-    if (!instance || instance.mode !== 'acp') return null
-    return instance.acpConnection ?? null
-  }
-
-  getStatus(workspacePath: string): SidecarStatus {
-    return this.instances.get(workspacePath)?.status ?? 'stopped'
-  }
-
-  async shutdown(workspacePath: string): Promise<void> {
-    const instance = this.instances.get(workspacePath)
+  async shutdown(): Promise<void> {
+    const instance = this.instance
     if (!instance) return
     instance.status = 'stopped'
     instance.process.kill()
-    this.instances.delete(workspacePath)
-    this.broadcastStatus(workspacePath, 'stopped')
+    this.instance = null
+    this.broadcastStatus('stopped')
   }
 
   async shutdownAll(): Promise<void> {
-    const paths = [...this.instances.keys()]
-    await Promise.all(paths.map((p) => this.shutdown(p)))
+    await this.shutdown()
   }
 
-  private broadcastStatus(workspacePath: string, status: SidecarStatus): void {
+  private broadcastStatus(status: SidecarStatus): void {
     BrowserWindow.getAllWindows().forEach((win) => {
-      win.webContents.send('sidecar:status-changed', { workspacePath, status })
+      win.webContents.send('opencode:status-changed', { status })
     })
   }
 }
