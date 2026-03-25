@@ -13,6 +13,11 @@ interface PartData {
   [key: string]: unknown
 }
 
+interface CursorPartUpdate {
+  kind: 'part.updated'
+  part: PartData
+}
+
 interface MessageBuffer {
   content: string
   sessionExternalId: string
@@ -156,7 +161,11 @@ export class SSEBridge {
     this.scheduleReconnect(1000)
   }
 
-  private getOrCreateBuffer(messageId: string, sessionId: string, role = 'assistant'): MessageBuffer {
+  private getOrCreateBuffer(
+    messageId: string,
+    sessionId: string,
+    role = 'assistant',
+  ): MessageBuffer {
     let buf = this.buffers.get(messageId)
     if (!buf) {
       buf = {
@@ -197,16 +206,23 @@ export class SSEBridge {
       }))
   }
 
-  private async ensureAssistantPlaceholder(messageId: string, sessionExternalId: string): Promise<void> {
+  private async ensureAssistantPlaceholder(
+    messageId: string,
+    sessionExternalId: string,
+  ): Promise<void> {
     const buffer = this.getOrCreateBuffer(messageId, sessionExternalId)
     if (buffer.placeholderInserted || buffer.placeholderInFlight) return
     buffer.placeholderInFlight = true
     try {
-      const inserted = await this.runTrackedMutation('messages.insertPlaceholder', api.messages.insertPlaceholder, {
-        sessionExternalId,
-        externalId: messageId,
-        role: buffer.role,
-      })
+      const inserted = await this.runTrackedMutation(
+        'messages.insertPlaceholder',
+        api.messages.insertPlaceholder,
+        {
+          sessionExternalId,
+          externalId: messageId,
+          role: buffer.role,
+        },
+      )
       if (inserted) {
         buffer.placeholderInserted = true
       }
@@ -246,20 +262,29 @@ export class SSEBridge {
     return boundaryLength
   }
 
-  private async flushCursorChunk(messageId: string, isFinal: boolean): Promise<void> {
+  private async flushCursorChunk(
+    messageId: string,
+    isFinal: boolean,
+    partUpdate?: CursorPartUpdate,
+  ): Promise<void> {
     const buffer = this.buffers.get(messageId)
     if (!buffer) return
 
     const boundaryLength = isFinal
       ? buffer.content.length - buffer.flushedLength
       : this.getSentenceBoundaryLength(buffer.content, buffer.flushedLength)
-    if (boundaryLength <= 0) return
+    if (boundaryLength <= 0 && !partUpdate) return
 
-    const chunkText = buffer.content.slice(buffer.flushedLength, buffer.flushedLength + boundaryLength)
-    if (!chunkText) return
+    const chunkText =
+      boundaryLength > 0
+        ? buffer.content.slice(buffer.flushedLength, buffer.flushedLength + boundaryLength)
+        : ''
+    if (!chunkText && !partUpdate) return
 
     buffer.chunkIndex += 1
-    buffer.flushedLength += boundaryLength
+    if (boundaryLength > 0) {
+      buffer.flushedLength += boundaryLength
+    }
 
     try {
       await this.runTrackedMutation('streamCursors.upsert', api.streamCursors.upsert, {
@@ -267,6 +292,7 @@ export class SSEBridge {
         sessionExternalId: buffer.sessionExternalId,
         chunkIndex: buffer.chunkIndex,
         chunkText,
+        partUpdate,
         bodyUpToHere: buffer.content,
         partsUpToHere: Array.from(buffer.parts.values()),
       })
@@ -275,9 +301,15 @@ export class SSEBridge {
     }
   }
 
-  private enqueueCursorFlush(messageId: string, isFinal: boolean): Promise<void> {
+  private enqueueCursorFlush(
+    messageId: string,
+    isFinal: boolean,
+    partUpdate?: CursorPartUpdate,
+  ): Promise<void> {
     const previous = this.cursorFlushQueues.get(messageId) ?? Promise.resolve()
-    const next = previous.catch(() => undefined).then(() => this.flushCursorChunk(messageId, isFinal))
+    const next = previous
+      .catch(() => undefined)
+      .then(() => this.flushCursorChunk(messageId, isFinal, partUpdate))
     const tracked = next.finally(() => {
       if (this.cursorFlushQueues.get(messageId) === tracked) {
         this.cursorFlushQueues.delete(messageId)
@@ -388,7 +420,12 @@ export class SSEBridge {
           : undefined
     const modeId = typeof info.mode === 'string' ? info.mode : undefined
     const agentId = typeof info.agent === 'string' ? info.agent : undefined
-    const finishReason = typeof info.finish === 'string' ? info.finish : typeof info.stopReason === 'string' ? info.stopReason : undefined
+    const finishReason =
+      typeof info.finish === 'string'
+        ? info.finish
+        : typeof info.stopReason === 'string'
+          ? info.stopReason
+          : undefined
     const costUsd = typeof info.cost === 'number' ? info.cost : undefined
     const tokens = info.tokens && typeof info.tokens === 'object' ? info.tokens : undefined
     const runtime: RuntimeMetadata = {
@@ -405,7 +442,9 @@ export class SSEBridge {
               ...(typeof tokens.output === 'number' ? { output: tokens.output } : {}),
               ...(typeof tokens.reasoning === 'number' ? { reasoning: tokens.reasoning } : {}),
               ...(typeof tokens.cache?.read === 'number' ? { cacheRead: tokens.cache.read } : {}),
-              ...(typeof tokens.cache?.write === 'number' ? { cacheWrite: tokens.cache.write } : {}),
+              ...(typeof tokens.cache?.write === 'number'
+                ? { cacheWrite: tokens.cache.write }
+                : {}),
               ...(typeof tokens.total === 'number' ? { total: tokens.total } : {}),
             },
           }
@@ -482,288 +521,296 @@ export class SSEBridge {
     if (!eventType || !props) return
 
     switch (eventType) {
-        case 'session.updated':
-        case 'session.created': {
-          const info = props.info
-          if (!info?.id) break
-          const title = info.title ?? info.slug ?? info.id
-          const status = info.status?.type ?? 'idle'
-          void this.runTrackedMutation('sessions.upsertStatus', api.sessions.upsertStatus, {
-              workspacePath: this.workspacePath,
-              externalId: info.id,
-              status,
-              title,
-              clientId: this.clientId,
-            })
-            .catch((err) =>
-              console.warn('[sse-bridge] session upsert failed:', (err as Error).message),
-            )
-          break
+      case 'session.updated':
+      case 'session.created': {
+        const info = props.info
+        if (!info?.id) break
+        const title = info.title ?? info.slug ?? info.id
+        const status = info.status?.type ?? 'idle'
+        void this.runTrackedMutation('sessions.upsertStatus', api.sessions.upsertStatus, {
+          workspacePath: this.workspacePath,
+          externalId: info.id,
+          status,
+          title,
+          clientId: this.clientId,
+        }).catch((err) =>
+          console.warn('[sse-bridge] session upsert failed:', (err as Error).message),
+        )
+        break
+      }
+
+      case 'session.deleted': {
+        const info = props.info
+        if (!info?.id) break
+        void this.runTrackedMutation('sessions.remove', api.sessions.remove, {
+          externalId: info.id,
+        }).catch((err) =>
+          console.warn('[sse-bridge] session remove failed:', (err as Error).message),
+        )
+        break
+      }
+
+      case 'session.status': {
+        const sid: string = props.sessionID
+        if (!sid) break
+        const statusObj = props.status
+        const status = statusObj?.type ?? 'idle'
+        void this.runTrackedMutation('sessions.upsertStatus', api.sessions.upsertStatus, {
+          workspacePath: this.workspacePath,
+          externalId: sid,
+          status,
+          clientId: this.clientId,
+        }).catch((err) =>
+          console.warn('[sse-bridge] session status failed:', (err as Error).message),
+        )
+        break
+      }
+
+      case 'session.error': {
+        const sid: string = props.sessionID
+        if (!sid) break
+        void this.runTrackedMutation('sessions.upsertStatus', api.sessions.upsertStatus, {
+          workspacePath: this.workspacePath,
+          externalId: sid,
+          status: 'error',
+          clientId: this.clientId,
+        }).catch((err) =>
+          console.warn('[sse-bridge] session error status failed:', (err as Error).message),
+        )
+        break
+      }
+
+      case 'message.updated': {
+        const info = props.info
+        if (!info?.id || !info?.sessionID) break
+        const isFinal = !!info.time?.completed
+        const role = info.role ?? 'assistant'
+        const runtimeMetadata = this.extractRuntimeMetadata(info)
+        if (runtimeMetadata) {
+          this.messageRuntime.set(info.id, runtimeMetadata)
         }
+        const partsArray = this.normalizeParts((info.parts ?? []) as PartData[])
 
-        case 'session.deleted': {
-          const info = props.info
-          if (!info?.id) break
-          void this.runTrackedMutation('sessions.remove', api.sessions.remove, {
-              externalId: info.id,
-            })
-            .catch((err) =>
-              console.warn('[sse-bridge] session remove failed:', (err as Error).message),
-            )
-          break
-        }
-
-        case 'session.status': {
-          const sid: string = props.sessionID
-          if (!sid) break
-          const statusObj = props.status
-          const status = statusObj?.type ?? 'idle'
-          void this.runTrackedMutation('sessions.upsertStatus', api.sessions.upsertStatus, {
-              workspacePath: this.workspacePath,
-              externalId: sid,
-              status,
-              clientId: this.clientId,
-            })
-            .catch((err) =>
-              console.warn('[sse-bridge] session status failed:', (err as Error).message),
-            )
-          break
-        }
-
-        case 'session.error': {
-          const sid: string = props.sessionID
-          if (!sid) break
-          void this.runTrackedMutation('sessions.upsertStatus', api.sessions.upsertStatus, {
-              workspacePath: this.workspacePath,
-              externalId: sid,
-              status: 'error',
-              clientId: this.clientId,
-            })
-            .catch((err) =>
-              console.warn('[sse-bridge] session error status failed:', (err as Error).message),
-            )
-          break
-        }
-
-        case 'message.updated': {
-          const info = props.info
-          if (!info?.id || !info?.sessionID) break
-          const isFinal = !!info.time?.completed
-          const role = info.role ?? 'assistant'
-          const runtimeMetadata = this.extractRuntimeMetadata(info)
-          if (runtimeMetadata) {
-            this.messageRuntime.set(info.id, runtimeMetadata)
-          }
-          const partsArray = this.normalizeParts((info.parts ?? []) as PartData[])
-
-          if (role === 'assistant') {
-            const buffer = this.getOrCreateBuffer(info.id, info.sessionID, role)
-
-            if (!buffer.content && partsArray.length > 0) {
-              for (const part of partsArray) {
-                buffer.parts.set(part.id, part)
-              }
-              buffer.content = this.rebuildContent(buffer.parts)
-            }
-
-            if (!isFinal) {
-              void this.ensureAssistantPlaceholder(info.id, info.sessionID)
-            } else {
-              void this.finalizeAssistantMessage(info.id)
-            }
-            break
-          }
-
+        if (role === 'assistant') {
           const buffer = this.getOrCreateBuffer(info.id, info.sessionID, role)
-          if (partsArray.length > 0) {
+
+          if (!buffer.content && partsArray.length > 0) {
             for (const part of partsArray) {
               buffer.parts.set(part.id, part)
             }
             buffer.content = this.rebuildContent(buffer.parts)
           }
 
-          const finalizedParts = Array.from(buffer.parts.values())
-          const content = buffer.content
-
-          if (content || finalizedParts.length > 0) {
-            void this.upsertFinalizedMessage({
-              sessionExternalId: info.sessionID,
-              externalId: info.id,
-              content,
-              role,
-              parts: finalizedParts,
-              runtimeMetadata: runtimeMetadata ?? this.messageRuntime.get(info.id),
-            })
-          }
-
-          if (isFinal && role === 'user') {
-            const candidateTitle = this.buildCandidateTitleFromMessage(info)
-            if (candidateTitle && !isPlaceholderSessionTitle(candidateTitle)) {
-              void this.runTrackedMutation('sessions.upsertTitle', (api as any).sessions.upsertTitle, {
-                  workspacePath: this.workspacePath,
-                  externalId: info.sessionID,
-                  title: candidateTitle,
-                  clientId: this.clientId,
-                })
-                .catch((err) =>
-                  console.warn('[sse-bridge] session title promote failed:', (err as Error).message),
-                )
-            }
-          }
-          break
-        }
-
-        case 'message.removed': {
-          const msgId: string = props.messageID
-          if (!msgId) break
-          this.buffers.delete(msgId)
-          this.messageRuntime.delete(msgId)
-          void this.runTrackedMutation('messages.removeByExternalId', api.messages.removeByExternalId, {
-              externalId: msgId,
-            })
-            .catch((err) =>
-              console.warn('[sse-bridge] message remove failed:', (err as Error).message),
-            )
-          break
-        }
-
-        case 'message.part.updated': {
-          const part = props.part
-          if (!part?.messageID || !part?.sessionID) break
-          const existingBuffer = this.buffers.get(part.messageID)
-          const role = existingBuffer?.role ?? 'assistant'
-          const buf = this.getOrCreateBuffer(part.messageID, part.sessionID, role)
-          const partId = part.id ?? (part as { callID?: string }).callID ?? `${part.type}_${buf.parts.size}`
-          buf.parts.set(partId, { ...part, id: partId })
-          buf.content = this.rebuildContent(buf.parts)
-
-          if (buf.role !== 'assistant') {
-            void this.upsertFinalizedMessage({
-              sessionExternalId: part.sessionID,
-              externalId: part.messageID,
-              content: buf.content,
-              role: buf.role,
-              parts: Array.from(buf.parts.values()),
-              runtimeMetadata: this.messageRuntime.get(part.messageID),
-            })
-            break
-          }
-
-          void this.ensureAssistantPlaceholder(part.messageID, part.sessionID)
-          this.forwardDelta({
-            sessionExternalId: part.sessionID,
-            messageExternalId: part.messageID,
-            part: { ...part, id: partId },
-          })
-          void this.enqueueCursorFlush(part.messageID, false)
-          break
-        }
-
-        case 'message.part.delta': {
-          const msgId: string = props.messageID
-          const sid: string = props.sessionID
-          const partId: string = props.partID
-          const field: string = props.field
-          const delta: string = props.delta ?? ''
-          if (!msgId || !sid || !delta) break
-
-          const existingBuffer = this.buffers.get(msgId)
-          const role = existingBuffer?.role ?? 'assistant'
-          const buf = this.getOrCreateBuffer(msgId, sid, role)
-          const existing = buf.parts.get(partId)
-          if (existing) {
-            ;(existing as Record<string, unknown>)[field] =
-              ((existing as Record<string, unknown>)[field] as string ?? '') + delta
+          if (!isFinal) {
+            void this.ensureAssistantPlaceholder(info.id, info.sessionID)
           } else {
-            buf.parts.set(partId, { type: 'text', id: partId, [field]: delta })
+            void this.finalizeAssistantMessage(info.id)
           }
-          buf.content = this.rebuildContent(buf.parts)
+          break
+        }
 
-          if (buf.role !== 'assistant') {
-            void this.upsertFinalizedMessage({
-              sessionExternalId: sid,
-              externalId: msgId,
-              content: buf.content,
-              role: buf.role,
-              parts: Array.from(buf.parts.values()),
-              runtimeMetadata: this.messageRuntime.get(msgId),
-            })
-            break
+        const buffer = this.getOrCreateBuffer(info.id, info.sessionID, role)
+        if (partsArray.length > 0) {
+          for (const part of partsArray) {
+            buffer.parts.set(part.id, part)
           }
+          buffer.content = this.rebuildContent(buffer.parts)
+        }
 
-          void this.ensureAssistantPlaceholder(msgId, sid)
-          this.forwardDelta({
-            sessionExternalId: sid,
-            messageExternalId: msgId,
-            delta,
-            partId,
-            field,
+        const finalizedParts = Array.from(buffer.parts.values())
+        const content = buffer.content
+
+        if (content || finalizedParts.length > 0) {
+          void this.upsertFinalizedMessage({
+            sessionExternalId: info.sessionID,
+            externalId: info.id,
+            content,
+            role,
+            parts: finalizedParts,
+            runtimeMetadata: runtimeMetadata ?? this.messageRuntime.get(info.id),
           })
-          void this.enqueueCursorFlush(msgId, false)
-          break
         }
 
-        case 'permission.asked': {
-          const sid: string = props.sessionID
-          const requestId: string = props.requestID ?? props.id
-          if (!sid || !requestId) break
-          const toolRef = props.tool
-          const toolName =
-            typeof toolRef === 'string'
-              ? toolRef
-              : typeof props.permission === 'string'
-                ? props.permission
-                : 'unknown'
-          const metadata = props.metadata && typeof props.metadata === 'object' ? props.metadata : undefined
-          const targetPath =
-            typeof metadata?.filepath === 'string'
-              ? metadata.filepath
-              : typeof metadata?.parentDir === 'string'
-                ? metadata.parentDir
-                : undefined
-          const description =
-            (typeof metadata?.title === 'string' && metadata.title) ||
-            (targetPath ? `${toolName} access requested for ${targetPath}` : `${toolName} requires permission`)
-          void this.runTrackedMutation(
-            'permissions.upsertPending',
-            (api as any).permissions.upsertPending,
-            {
-              sessionExternalId: sid,
-              requestId,
-              permission: props.permission,
-              toolName,
-              description,
-              input: props.input ?? metadata ?? toolRef,
-              patterns: props.patterns,
-              alwaysPatterns: props.always,
-            },
-          ).catch((err) =>
-            console.warn('[sse-bridge] permission upsert failed:', (err as Error).message),
-          )
-          break
-        }
-
-        case 'permission.replied': {
-          const requestId: string = props.requestID ?? props.id
-          if (!requestId) break
-          void this.runTrackedMutation('permissions.resolve', (api as any).permissions.resolve, {
-              requestId,
-            })
-            .catch((err) =>
-              console.warn('[sse-bridge] permission cleanup failed:', (err as Error).message),
+        if (isFinal && role === 'user') {
+          const candidateTitle = this.buildCandidateTitleFromMessage(info)
+          if (candidateTitle && !isPlaceholderSessionTitle(candidateTitle)) {
+            void this.runTrackedMutation(
+              'sessions.upsertTitle',
+              (api as any).sessions.upsertTitle,
+              {
+                workspacePath: this.workspacePath,
+                externalId: info.sessionID,
+                title: candidateTitle,
+                clientId: this.clientId,
+              },
+            ).catch((err) =>
+              console.warn('[sse-bridge] session title promote failed:', (err as Error).message),
             )
+          }
+        }
+        break
+      }
+
+      case 'message.removed': {
+        const msgId: string = props.messageID
+        if (!msgId) break
+        this.buffers.delete(msgId)
+        this.messageRuntime.delete(msgId)
+        void this.runTrackedMutation(
+          'messages.removeByExternalId',
+          api.messages.removeByExternalId,
+          {
+            externalId: msgId,
+          },
+        ).catch((err) =>
+          console.warn('[sse-bridge] message remove failed:', (err as Error).message),
+        )
+        break
+      }
+
+      case 'message.part.updated': {
+        const part = props.part
+        if (!part?.messageID || !part?.sessionID) break
+        const existingBuffer = this.buffers.get(part.messageID)
+        const role = existingBuffer?.role ?? 'assistant'
+        const buf = this.getOrCreateBuffer(part.messageID, part.sessionID, role)
+        const partId =
+          part.id ?? (part as { callID?: string }).callID ?? `${part.type}_${buf.parts.size}`
+        buf.parts.set(partId, { ...part, id: partId })
+        buf.content = this.rebuildContent(buf.parts)
+
+        if (buf.role !== 'assistant') {
+          void this.upsertFinalizedMessage({
+            sessionExternalId: part.sessionID,
+            externalId: part.messageID,
+            content: buf.content,
+            role: buf.role,
+            parts: Array.from(buf.parts.values()),
+            runtimeMetadata: this.messageRuntime.get(part.messageID),
+          })
           break
         }
 
-        case 'server.heartbeat':
-        case 'project.updated':
-        case 'session.diff':
-        case 'session.idle':
-        case 'session.compacted':
-        case 'lsp.updated':
-        case 'vcs.branch.updated':
-        case 'todo.updated':
+        void this.ensureAssistantPlaceholder(part.messageID, part.sessionID)
+        this.forwardDelta({
+          sessionExternalId: part.sessionID,
+          messageExternalId: part.messageID,
+          part: { ...part, id: partId },
+        })
+        void this.enqueueCursorFlush(part.messageID, false, {
+          kind: 'part.updated',
+          part: { ...part, id: partId },
+        })
+        break
+      }
+
+      case 'message.part.delta': {
+        const msgId: string = props.messageID
+        const sid: string = props.sessionID
+        const partId: string = props.partID
+        const field: string = props.field
+        const delta: string = props.delta ?? ''
+        if (!msgId || !sid || !delta) break
+
+        const existingBuffer = this.buffers.get(msgId)
+        const role = existingBuffer?.role ?? 'assistant'
+        const buf = this.getOrCreateBuffer(msgId, sid, role)
+        const existing = buf.parts.get(partId)
+        if (existing) {
+          ;(existing as Record<string, unknown>)[field] =
+            (((existing as Record<string, unknown>)[field] as string) ?? '') + delta
+        } else {
+          buf.parts.set(partId, { type: 'text', id: partId, [field]: delta })
+        }
+        buf.content = this.rebuildContent(buf.parts)
+
+        if (buf.role !== 'assistant') {
+          void this.upsertFinalizedMessage({
+            sessionExternalId: sid,
+            externalId: msgId,
+            content: buf.content,
+            role: buf.role,
+            parts: Array.from(buf.parts.values()),
+            runtimeMetadata: this.messageRuntime.get(msgId),
+          })
           break
+        }
+
+        void this.ensureAssistantPlaceholder(msgId, sid)
+        this.forwardDelta({
+          sessionExternalId: sid,
+          messageExternalId: msgId,
+          delta,
+          partId,
+          field,
+        })
+        void this.enqueueCursorFlush(msgId, false)
+        break
+      }
+
+      case 'permission.asked': {
+        const sid: string = props.sessionID
+        const requestId: string = props.requestID ?? props.id
+        if (!sid || !requestId) break
+        const toolRef = props.tool
+        const toolName =
+          typeof toolRef === 'string'
+            ? toolRef
+            : typeof props.permission === 'string'
+              ? props.permission
+              : 'unknown'
+        const metadata =
+          props.metadata && typeof props.metadata === 'object' ? props.metadata : undefined
+        const targetPath =
+          typeof metadata?.filepath === 'string'
+            ? metadata.filepath
+            : typeof metadata?.parentDir === 'string'
+              ? metadata.parentDir
+              : undefined
+        const description =
+          (typeof metadata?.title === 'string' && metadata.title) ||
+          (targetPath
+            ? `${toolName} access requested for ${targetPath}`
+            : `${toolName} requires permission`)
+        void this.runTrackedMutation(
+          'permissions.upsertPending',
+          (api as any).permissions.upsertPending,
+          {
+            sessionExternalId: sid,
+            requestId,
+            permission: props.permission,
+            toolName,
+            description,
+            input: props.input ?? metadata ?? toolRef,
+            patterns: props.patterns,
+            alwaysPatterns: props.always,
+          },
+        ).catch((err) =>
+          console.warn('[sse-bridge] permission upsert failed:', (err as Error).message),
+        )
+        break
+      }
+
+      case 'permission.replied': {
+        const requestId: string = props.requestID ?? props.id
+        if (!requestId) break
+        void this.runTrackedMutation('permissions.resolve', (api as any).permissions.resolve, {
+          requestId,
+        }).catch((err) =>
+          console.warn('[sse-bridge] permission cleanup failed:', (err as Error).message),
+        )
+        break
+      }
+
+      case 'server.heartbeat':
+      case 'project.updated':
+      case 'session.diff':
+      case 'session.idle':
+      case 'session.compacted':
+      case 'lsp.updated':
+      case 'vcs.branch.updated':
+      case 'todo.updated':
+        break
 
       default:
         console.log(`[sse-bridge] unhandled: ${eventType}`)

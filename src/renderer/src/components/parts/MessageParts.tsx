@@ -24,7 +24,12 @@ function getPartKey(part: Part, index: number): string {
 }
 
 function FallbackPart({ part }: { part: Part }) {
-  if (part.type === 'step-start' || part.type === 'snapshot' || part.type === 'agent' || part.type === 'step-finish') {
+  if (
+    part.type === 'step-start' ||
+    part.type === 'snapshot' ||
+    part.type === 'agent' ||
+    part.type === 'step-finish'
+  ) {
     return null
   }
   return (
@@ -54,25 +59,27 @@ function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode
       }
       return <ToolCallPart key={key} part={part as Parameters<typeof ToolCallPart>[0]['part']} />
     }
-    case 'reasoning':
+    case 'reasoning': {
+      const partTime =
+        part.time && typeof part.time === 'object'
+          ? (part.time as Record<string, number>)
+          : undefined
+      const reasoningStreaming = partTime ? typeof partTime.end !== 'number' : !!isStreaming
       return (
         <ThinkingPart
           key={key}
           text={(part.text as string) ?? ''}
-          isStreaming={isStreaming}
+          isStreaming={reasoningStreaming}
           duration={
-            part.time && typeof part.time === 'object'
-              ? ((part.time as Record<string, number>).end ?? Date.now()) -
-                ((part.time as Record<string, number>).start ?? Date.now())
-              : undefined
+            partTime ? (partTime.end ?? Date.now()) - (partTime.start ?? Date.now()) : undefined
           }
         />
       )
+    }
     case 'retry':
       return (
         <div key={key} className="text-xs text-amber-400 py-0.5 px-2">
-          Retrying (attempt {(part.attempt as number) ?? '?'})
-          {part.error ? `: ${part.error}` : ''}
+          Retrying (attempt {(part.attempt as number) ?? '?'}){part.error ? `: ${part.error}` : ''}
         </div>
       )
     case 'subtask':
@@ -94,7 +101,10 @@ function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode
 
 function isToolOrExploringStep(part: Part): boolean {
   return (
-    part.type === 'tool' || part.type === 'reasoning' || part.type === 'retry' || part.type === 'subtask'
+    part.type === 'tool' ||
+    part.type === 'reasoning' ||
+    part.type === 'retry' ||
+    part.type === 'subtask'
   )
 }
 
@@ -123,7 +133,8 @@ export function MessageParts({ parts, isStreaming }: { parts: Part[]; isStreamin
       }
     }
 
-    const hasToolsBefore = lastTextIdx > 0 && deduped.slice(0, lastTextIdx).some(isToolOrExploringStep)
+    const hasToolsBefore =
+      lastTextIdx > 0 && deduped.slice(0, lastTextIdx).some(isToolOrExploringStep)
     const nextHasFinalText = lastTextIdx > 0 && hasToolsBefore
     const nextStepParts = nextHasFinalText ? deduped.slice(0, lastTextIdx) : deduped
     const nextFinalParts = nextHasFinalText ? deduped.slice(lastTextIdx) : []
@@ -131,7 +142,13 @@ export function MessageParts({ parts, isStreaming }: { parts: Part[]; isStreamin
     let nextStepsCount = 0
     if (nextHasFinalText) {
       for (const part of nextStepParts) {
-        if (part.type === 'tool' || (part.type === 'text' && (part.text as string)?.trim())) {
+        if (
+          part.type === 'tool' ||
+          part.type === 'reasoning' ||
+          part.type === 'retry' ||
+          part.type === 'subtask' ||
+          (part.type === 'text' && (part.text as string)?.trim())
+        ) {
           nextStepsCount += 1
         }
       }
@@ -161,7 +178,8 @@ export function MessageParts({ parts, isStreaming }: { parts: Part[]; isStreamin
   return (
     <>
       {renderedSteps}
-      {hasFinalText && finalParts.map((part, idx) => renderPart(part, stepParts.length + idx, isStreaming))}
+      {hasFinalText &&
+        finalParts.map((part, idx) => renderPart(part, stepParts.length + idx, isStreaming))}
     </>
   )
 }

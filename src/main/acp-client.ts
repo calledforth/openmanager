@@ -21,6 +21,7 @@ interface StreamingTurn {
   assistantMessageId: string
   parts: Map<string, Record<string, unknown>>
   activeReasoningPartId?: string
+  activeTextPartId?: string
 }
 
 interface SessionRuntimeSelection {
@@ -29,6 +30,20 @@ interface SessionRuntimeSelection {
 }
 
 type RpcError = Error & { code?: number; data?: unknown }
+
+type ToolLifecycleState = 'pending' | 'running' | 'completed' | 'error'
+
+function toolStateRank(status: ToolLifecycleState): number {
+  switch (status) {
+    case 'pending':
+      return 0
+    case 'running':
+      return 1
+    case 'completed':
+    case 'error':
+      return 2
+  }
+}
 
 function parseRpcError(error: unknown): RpcError {
   const err = error instanceof Error ? (error as RpcError) : (new Error(String(error)) as RpcError)
@@ -179,6 +194,7 @@ export class ACPClient {
       assistantMessageId,
       parts: new Map(),
       activeReasoningPartId: undefined,
+      activeTextPartId: undefined,
     })
     this.ingestSynthetic(
       'session.status',
@@ -297,6 +313,7 @@ export class ACPClient {
     }
     const turn = this.activeTurns.get(sessionId)
     if (turn) {
+      this.finishActiveText(turn)
       this.finishActiveReasoning(sessionId, turn.assistantMessageId, turn)
     }
     this.ingestSynthetic(
@@ -348,6 +365,10 @@ export class ACPClient {
       },
       workspacePath,
     )
+  }
+
+  private finishActiveText(turn: StreamingTurn): void {
+    turn.activeTextPartId = undefined
   }
 
   async abortSessionForWorkspace(_workspacePath: string, sessionId: string): Promise<void> {
@@ -509,6 +530,7 @@ export class ACPClient {
         assistantMessageId,
         parts: new Map(),
         activeReasoningPartId: undefined,
+        activeTextPartId: undefined,
       })
     }
     const activeTurn = this.activeTurns.get(sessionId)!
@@ -520,7 +542,8 @@ export class ACPClient {
         const content = update.content as { type?: string; text?: string } | undefined
         const delta = content?.type === 'text' ? (content.text ?? '') : ''
         if (!delta) return
-        const partId = 'acp_text_part'
+        const partId = activeTurn.activeTextPartId ?? `acp_text_part_${randomUUID()}`
+        activeTurn.activeTextPartId = partId
         const existing = activeTurn.parts.get(partId) ?? { type: 'text', id: partId, text: '' }
         activeTurn.parts.set(partId, {
           ...existing,
@@ -540,6 +563,7 @@ export class ACPClient {
         return
       }
       case 'agent_thought_chunk': {
+        this.finishActiveText(activeTurn)
         const content = update.content as { type?: string; text?: string } | undefined
         const delta = content?.type === 'text' ? (content.text ?? '') : ''
         if (!delta) return
@@ -570,9 +594,14 @@ export class ACPClient {
         return
       }
       case 'tool_call': {
+        this.finishActiveText(activeTurn)
         this.finishActiveReasoning(sessionId, assistantMessageId, activeTurn)
         const toolCallId = String(update.toolCallId ?? randomUUID())
         const partId = toolCallId
+        const previous = activeTurn.parts.get(partId) as
+          | { state?: { status?: ToolLifecycleState } }
+          | undefined
+        const previousStatus = previous?.state?.status
         const part = {
           id: partId,
           callID: toolCallId,
@@ -586,16 +615,24 @@ export class ACPClient {
             title: String(update.title ?? update.kind ?? 'tool'),
           },
         }
-        activeTurn.parts.set(partId, part)
-        this.ingestSynthetic('message.part.updated', { part }, workspacePath)
+        if (previousStatus && toolStateRank(previousStatus) > toolStateRank('pending')) {
+          break
+        }
+        const mergedPart = {
+          ...(activeTurn.parts.get(partId) as Record<string, unknown> | undefined),
+          ...part,
+        }
+        activeTurn.parts.set(partId, mergedPart)
+        this.ingestSynthetic('message.part.updated', { part: mergedPart }, workspacePath)
         return
       }
       case 'tool_call_update': {
+        this.finishActiveText(activeTurn)
         this.finishActiveReasoning(sessionId, assistantMessageId, activeTurn)
         const toolCallId = String(update.toolCallId ?? randomUUID())
         const partId = toolCallId
         const status = String(update.status ?? 'running')
-        const mappedStatus =
+        const mappedStatus: ToolLifecycleState =
           status === 'completed'
             ? 'completed'
             : status === 'failed'
@@ -612,17 +649,35 @@ export class ACPClient {
           type: 'tool',
           tool: String(update.title ?? update.kind ?? 'tool'),
         }
+        const previousState =
+          previous.state && typeof previous.state === 'object'
+            ? (previous.state as Record<string, unknown>)
+            : undefined
+        const previousStatus =
+          typeof previousState?.status === 'string'
+            ? (previousState.status as ToolLifecycleState)
+            : undefined
+        if (previousStatus && toolStateRank(previousStatus) > toolStateRank(mappedStatus)) {
+          return
+        }
         const state = {
           status: mappedStatus,
-          input: (update.rawInput as Record<string, unknown>) ?? {},
+          input:
+            (update.rawInput as Record<string, unknown> | undefined) ??
+            (previousState?.input as Record<string, unknown> | undefined) ??
+            {},
           output:
             (update.rawOutput as { output?: string } | undefined)?.output ??
             (update.content as Array<{ content?: { text?: string } }> | undefined)?.[0]?.content
               ?.text ??
-            '',
-          error: (update.rawOutput as { error?: string } | undefined)?.error,
+            (typeof previousState?.output === 'string' ? previousState.output : ''),
+          error:
+            (update.rawOutput as { error?: string } | undefined)?.error ??
+            (typeof previousState?.error === 'string' ? previousState.error : undefined),
           title: String(update.title ?? previous.tool ?? 'tool'),
-          metadata: (update.rawOutput as { metadata?: unknown } | undefined)?.metadata,
+          metadata:
+            (update.rawOutput as { metadata?: unknown } | undefined)?.metadata ??
+            previousState?.metadata,
         }
         const nextPart = { ...previous, state }
         activeTurn.parts.set(partId, nextPart)
@@ -630,6 +685,7 @@ export class ACPClient {
         return
       }
       case 'plan': {
+        this.finishActiveText(activeTurn)
         this.finishActiveReasoning(sessionId, assistantMessageId, activeTurn)
         const partId = 'acp_plan_part'
         const next = {
@@ -646,12 +702,14 @@ export class ACPClient {
       case 'usage_update':
       case 'available_commands_update':
       case 'user_message_chunk': {
+        this.finishActiveText(activeTurn)
         if (kind === 'user_message_chunk') {
           this.finishActiveReasoning(sessionId, assistantMessageId, activeTurn)
         }
         return
       }
       default: {
+        this.finishActiveText(activeTurn)
         this.finishActiveReasoning(sessionId, assistantMessageId, activeTurn)
         const partId = `acp_${kind}_${randomUUID()}`
         const next = {

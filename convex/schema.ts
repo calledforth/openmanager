@@ -76,6 +76,7 @@ export default defineSchema({
     sessionExternalId: v.string(),
     chunkIndex: v.number(),
     chunkText: v.string(),
+    partUpdate: v.optional(v.any()),
     bodyUpToHere: v.string(),
     partsUpToHere: v.optional(v.any()),
     updatedAt: v.number(),

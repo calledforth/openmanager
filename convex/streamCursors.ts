@@ -8,7 +8,9 @@ async function listCursorsByMessageExternalId(ctx: { db: any }, messageExternalI
     .collect()
 }
 
-function getCanonicalCursor(cursors: Array<{ [key: string]: any; chunkIndex: number; updatedAt: number }>) {
+function getCanonicalCursor(
+  cursors: Array<{ [key: string]: any; chunkIndex: number; updatedAt: number }>,
+) {
   if (cursors.length === 0) return null
   return cursors.reduce((best, cursor) => {
     if (cursor.chunkIndex > best.chunkIndex) return cursor
@@ -23,6 +25,7 @@ export const upsert = mutation({
     sessionExternalId: v.string(),
     chunkIndex: v.number(),
     chunkText: v.string(),
+    partUpdate: v.optional(v.any()),
     bodyUpToHere: v.string(),
     partsUpToHere: v.optional(v.any()),
   },
@@ -50,6 +53,7 @@ export const upsert = mutation({
       sessionExternalId: args.sessionExternalId,
       chunkIndex: args.chunkIndex,
       chunkText: args.chunkText,
+      partUpdate: args.partUpdate,
       bodyUpToHere: args.bodyUpToHere,
       partsUpToHere: args.partsUpToHere,
       updatedAt: Date.now(),
@@ -67,11 +71,14 @@ export const upsert = mutation({
 export const get = query({
   args: { messageExternalId: v.string() },
   handler: async (ctx, args) => {
-    const cursor = getCanonicalCursor(await listCursorsByMessageExternalId(ctx, args.messageExternalId))
+    const cursor = getCanonicalCursor(
+      await listCursorsByMessageExternalId(ctx, args.messageExternalId),
+    )
     if (!cursor) return null
     return {
       chunkIndex: cursor.chunkIndex,
       chunkText: cursor.chunkText,
+      partUpdate: cursor.partUpdate,
     }
   },
 })
@@ -79,7 +86,9 @@ export const get = query({
 export const getSnapshot = query({
   args: { messageExternalId: v.string() },
   handler: async (ctx, args) => {
-    const cursor = getCanonicalCursor(await listCursorsByMessageExternalId(ctx, args.messageExternalId))
+    const cursor = getCanonicalCursor(
+      await listCursorsByMessageExternalId(ctx, args.messageExternalId),
+    )
     if (!cursor) return null
     return {
       bodyUpToHere: cursor.bodyUpToHere,

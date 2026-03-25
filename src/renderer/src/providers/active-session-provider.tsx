@@ -16,6 +16,7 @@ import { useAppUi } from './app-ui-provider'
 interface MessagePart {
   type: string
   id: string
+  __ordinal?: number
   [key: string]: unknown
 }
 
@@ -44,6 +45,8 @@ interface ActiveSessionDetails {
 class StreamingMessagesStore {
   private messages = new Map<string, LocalStreamingMessage>()
   private listeners = new Map<string, Set<() => void>>()
+  private partOrdinals = new Map<string, Map<string, number>>()
+  private partOrdinalCounter = new Map<string, number>()
 
   subscribe(messageExternalId: string, listener: () => void) {
     const current = this.listeners.get(messageExternalId) ?? new Set<() => void>()
@@ -70,13 +73,20 @@ class StreamingMessagesStore {
     field?: string
     part?: Record<string, unknown>
   }) {
-    this.messages = applyStreamDelta(this.messages, payload)
+    this.messages = applyStreamDelta(
+      this.messages,
+      payload,
+      this.partOrdinals,
+      this.partOrdinalCounter,
+    )
     this.emit(payload.messageExternalId)
   }
 
   remove(messageExternalId: string) {
     if (!this.messages.has(messageExternalId)) return
     this.messages.delete(messageExternalId)
+    this.partOrdinals.delete(messageExternalId)
+    this.partOrdinalCounter.delete(messageExternalId)
     this.emit(messageExternalId)
   }
 
@@ -84,6 +94,8 @@ class StreamingMessagesStore {
     if (this.messages.size === 0) return
     const ids = [...this.messages.keys()]
     this.messages = new Map()
+    this.partOrdinals = new Map()
+    this.partOrdinalCounter = new Map()
     for (const id of ids) {
       this.emit(id)
     }
@@ -125,6 +137,33 @@ function upsertPart(parts: MessagePart[], part: MessagePart): MessagePart[] {
   return next
 }
 
+function getOrAssignPartOrdinal(
+  messageExternalId: string,
+  partId: string,
+  partOrdinals: Map<string, Map<string, number>>,
+  partOrdinalCounter: Map<string, number>,
+): number {
+  const messageOrdinals = partOrdinals.get(messageExternalId) ?? new Map<string, number>()
+  partOrdinals.set(messageExternalId, messageOrdinals)
+  const existing = messageOrdinals.get(partId)
+  if (typeof existing === 'number') return existing
+  const nextOrdinal = partOrdinalCounter.get(messageExternalId) ?? 0
+  partOrdinalCounter.set(messageExternalId, nextOrdinal + 1)
+  messageOrdinals.set(partId, nextOrdinal)
+  return nextOrdinal
+}
+
+function sortPartsByOrdinal(parts: MessagePart[]): MessagePart[] {
+  return [...parts].sort((left, right) => {
+    const leftOrdinal =
+      typeof left.__ordinal === 'number' ? left.__ordinal : Number.MAX_SAFE_INTEGER
+    const rightOrdinal =
+      typeof right.__ordinal === 'number' ? right.__ordinal : Number.MAX_SAFE_INTEGER
+    if (leftOrdinal !== rightOrdinal) return leftOrdinal - rightOrdinal
+    return left.id.localeCompare(right.id)
+  })
+}
+
 function applyStreamDelta(
   prev: Map<string, LocalStreamingMessage>,
   payload: {
@@ -134,26 +173,44 @@ function applyStreamDelta(
     field?: string
     part?: Record<string, unknown>
   },
+  partOrdinals: Map<string, Map<string, number>>,
+  partOrdinalCounter: Map<string, number>,
 ): Map<string, LocalStreamingMessage> {
   const next = new Map(prev)
   const current = next.get(payload.messageExternalId) ?? { content: '', parts: [] }
   let parts = current.parts
 
   if (payload.part) {
-    parts = upsertPart(parts, payload.part as MessagePart)
+    const part = payload.part as MessagePart
+    const ordinal = getOrAssignPartOrdinal(
+      payload.messageExternalId,
+      part.id,
+      partOrdinals,
+      partOrdinalCounter,
+    )
+    parts = upsertPart(parts, { ...part, __ordinal: ordinal })
   }
 
   if (payload.delta && payload.partId) {
+    const ordinal = getOrAssignPartOrdinal(
+      payload.messageExternalId,
+      payload.partId,
+      partOrdinals,
+      partOrdinalCounter,
+    )
     const existing =
       parts.find((part) => part.id === payload.partId) ??
-      ({ type: 'text', id: payload.partId } as MessagePart)
+      ({ type: 'text', id: payload.partId, __ordinal: ordinal } as MessagePart)
     const field = payload.field ?? 'text'
     const patched = {
       ...existing,
+      __ordinal: ordinal,
       [field]: `${String(existing[field] ?? '')}${payload.delta}`,
     } satisfies MessagePart
     parts = upsertPart(parts, patched)
   }
+
+  parts = sortPartsByOrdinal(parts)
 
   const content = parts
     .filter((part) => part.type === 'text')

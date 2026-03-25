@@ -8,6 +8,12 @@ import { MessageParts } from './parts/MessageParts'
 import { TextPart } from './parts/TextPart'
 import { cn } from '../lib/utils'
 import { trackedConvexQuery, useTrackedQuery } from '../lib/convex-telemetry'
+import {
+  applyPartUpdate,
+  createPartOrdinalState,
+  normalizeSnapshotParts,
+  type StreamMessagePart,
+} from '../lib/remote-stream-parts'
 
 interface RuntimeMetadata {
   providerId?: string
@@ -319,11 +325,7 @@ function UserMessage({ content, runtime }: { content: string; runtime?: RuntimeM
   )
 }
 
-interface MessagePart {
-  type: string
-  id: string
-  [key: string]: unknown
-}
+interface MessagePart extends StreamMessagePart {}
 
 function useRemoteStreamingMessage(
   messageExternalId: string,
@@ -338,18 +340,22 @@ function useRemoteStreamingMessage(
   const [content, setContent] = useState('')
   const [parts, setParts] = useState<MessagePart[] | undefined>(undefined)
   const lastChunkIndex = useRef<number | null>(null)
+  const partOrdinalStateRef = useRef(createPartOrdinalState())
 
   useEffect(() => {
     if (!enabled) return
     setContent('')
     setParts(undefined)
     lastChunkIndex.current = null
+    partOrdinalStateRef.current = createPartOrdinalState()
   }, [enabled, messageExternalId])
 
   useEffect(() => {
     if (!enabled || !cursor) return
 
     if (lastChunkIndex.current !== null && cursor.chunkIndex <= lastChunkIndex.current) return
+
+    const cursorPartUpdate = (cursor as { partUpdate?: { part?: MessagePart } }).partUpdate
 
     const expectedChunkIndex = cursor.chunkIndex
     const requiresSnapshot =
@@ -358,6 +364,16 @@ function useRemoteStreamingMessage(
     if (!requiresSnapshot) {
       lastChunkIndex.current = expectedChunkIndex
       setContent((prev) => prev + cursor.chunkText)
+      if (cursorPartUpdate?.part?.id) {
+        setParts(
+          (prev) =>
+            applyPartUpdate(
+              prev as StreamMessagePart[] | undefined,
+              cursorPartUpdate.part as StreamMessagePart,
+              partOrdinalStateRef.current,
+            ) as MessagePart[],
+        )
+      }
       onUpdate?.()
       return
     }
@@ -373,7 +389,14 @@ function useRemoteStreamingMessage(
         if (lastChunkIndex.current !== null && snapshot.chunkIndex <= lastChunkIndex.current) return
         lastChunkIndex.current = snapshot.chunkIndex
         setContent(snapshot.bodyUpToHere)
-        setParts((snapshot.partsUpToHere as MessagePart[] | undefined) ?? undefined)
+        setParts(
+          normalizeSnapshotParts(
+            ((snapshot.partsUpToHere as MessagePart[] | undefined) ?? undefined) as
+              | StreamMessagePart[]
+              | undefined,
+            partOrdinalStateRef.current,
+          ) as MessagePart[] | undefined,
+        )
         onUpdate?.()
       })
       .catch(() => undefined)
@@ -419,6 +442,7 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
   // Cache last-known streaming parts so the isFinal transition doesn't flash empty
   // (getContent query needs a round-trip to resolve after listMetadata flips isFinal)
   const lastStreamingPartsRef = useRef<MessagePart[] | undefined>(undefined)
+  const lastStreamingContentRef = useRef<string>('')
   const streamingParts = drivenStreamingMessage?.parts ?? remoteStreaming.parts
   if (streamingParts && streamingParts.length > 0) {
     lastStreamingPartsRef.current = streamingParts
@@ -429,11 +453,13 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
     localStreamingContent.length >= remoteStreaming.content.length
       ? localStreamingContent
       : remoteStreaming.content
-  const finalizedContent = contentDoc?.content ?? streamingContent
+  if (streamingContent.length > 0) {
+    lastStreamingContentRef.current = streamingContent
+  }
   const content =
     props.role === 'assistant'
       ? props.isFinal === true
-        ? finalizedContent
+        ? (contentDoc?.content ?? lastStreamingContentRef.current)
         : streamingContent
       : (props.optimisticContent ?? contentDoc?.content ?? '')
   const parts =
