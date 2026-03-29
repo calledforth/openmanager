@@ -1,6 +1,7 @@
 node_modules/
 out/
 dist/
+storybook-static/
 .env
 .env.local
 .env.*.local

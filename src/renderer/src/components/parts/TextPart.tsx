@@ -1,6 +1,8 @@
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { Components } from 'react-markdown'
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { cn } from '../../lib/utils'
 
 const mdComponents: Components = {
@@ -17,29 +19,44 @@ const mdComponents: Components = {
       )
     }
     const lang = className?.replace('language-', '') ?? ''
+    const codeString = String(children).replace(/\n$/, '')
     return (
-      <div className="my-2 rounded-lg overflow-hidden border border-border bg-card">
-        {lang && (
-          <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
-            <span className="text-[11px] text-muted-foreground font-mono">{lang}</span>
-          </div>
-        )}
-        <pre className="m-0 overflow-x-auto px-3 py-2.5 text-[12px] leading-relaxed">
-          <code className="font-mono text-foreground/80" {...props}>
-            {children}
-          </code>
-        </pre>
+      <div className="my-2 rounded-lg overflow-hidden border border-border -mx-2">
+        <SyntaxHighlighter
+          language={lang || 'text'}
+          style={vscDarkPlus}
+          customStyle={{
+            margin: 0,
+            padding: '0.75rem 1rem',
+            fontSize: '13px',
+            lineHeight: '1.6',
+            background: 'transparent',
+            borderRadius: 0,
+            overflow: 'visible',
+          }}
+          codeTagProps={{
+            style: {
+              fontFamily: 'inherit',
+              margin: 0,
+              padding: 0,
+            },
+          }}
+          showLineNumbers={false}
+          wrapLongLines={true}
+        >
+          {codeString}
+        </SyntaxHighlighter>
       </div>
     )
   },
   p({ children }) {
-    return <p className="text-foreground my-px leading-relaxed py-[3px]">{children}</p>
+    return <p className="text-foreground my-px leading-[1.5] py-[3px]">{children}</p>
   },
   ul({ children }) {
-    return <ul className="my-1 pl-5 text-foreground leading-relaxed">{children}</ul>
+    return <ul className="my-1 pl-5 text-foreground leading-[1.5]">{children}</ul>
   },
   ol({ children }) {
-    return <ol className="my-1 pl-5 text-foreground leading-relaxed">{children}</ol>
+    return <ol className="my-1 pl-5 text-foreground leading-[1.5]">{children}</ol>
   },
   li({ children }) {
     return <li className="my-0.5">{children}</li>
@@ -60,7 +77,7 @@ const mdComponents: Components = {
   },
   th({ children }) {
     return (
-      <th className="border border-border px-2.5 py-1.5 bg-card text-left text-foreground/90 font-semibold text-[11px]">
+      <th className="border border-border px-2.5 py-1.5 bg-card text-left text-foreground/90 font-medium text-[11px]">
         {children}
       </th>
     )
@@ -84,13 +101,13 @@ const mdComponents: Components = {
     )
   },
   h1({ children }) {
-    return <h1 className="text-base font-semibold text-foreground mt-[1.4em] mb-1">{children}</h1>
+    return <h1 className="text-base font-medium text-foreground mt-[1.4em] mb-1">{children}</h1>
   },
   h2({ children }) {
-    return <h2 className="text-[15px] font-semibold text-foreground mt-[1.2em] mb-1">{children}</h2>
+    return <h2 className="text-[15px] font-medium text-foreground mt-[1.2em] mb-1">{children}</h2>
   },
   h3({ children }) {
-    return <h3 className="text-[13px] font-semibold text-foreground mt-[1em] mb-1">{children}</h3>
+    return <h3 className="text-[13px] font-medium text-foreground mt-[1em] mb-1">{children}</h3>
   },
 }
 
@@ -102,7 +119,12 @@ interface TextPartProps {
 export function TextPart({ text, dimmed }: TextPartProps) {
   if (!text) return null
   return (
-    <div className={cn('leading-relaxed', dimmed ? 'text-muted-foreground' : 'text-foreground')}>
+    <div
+      className={cn(
+        'text-14-regular',
+        dimmed ? 'text-muted-foreground' : 'text-foreground',
+      )}
+    >
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
         {text}
       </ReactMarkdown>

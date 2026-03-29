@@ -1,5 +1,5 @@
 import { ShieldAlert, ShieldCheck, TerminalSquare } from 'lucide-react'
-import { usePermissionState } from '../providers/permission-provider'
+import { usePermissionState } from '../../providers/permission-provider'
 
 function formatValue(value: unknown): string | null {
   if (value == null) return null
@@ -29,7 +29,7 @@ export function PermissionPrompt() {
               <ShieldAlert className="size-4" />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-semibold text-foreground">Permission required</div>
+              <div className="text-sm font-medium text-foreground">Permission required</div>
               <div className="mt-1 text-xs text-muted-foreground">
                 An agent action is waiting for approval before it can continue.
               </div>
@@ -43,7 +43,9 @@ export function PermissionPrompt() {
               <TerminalSquare className="size-3.5" />
               Requested tool
             </div>
-            <div className="mt-2 text-sm font-medium text-foreground">{pendingPermission.toolName}</div>
+            <div className="mt-2 text-sm font-medium text-foreground">
+              {pendingPermission.toolName}
+            </div>
             <div className="mt-1 text-sm leading-relaxed text-muted-foreground">
               {pendingPermission.description}
             </div>
@@ -51,7 +53,8 @@ export function PermissionPrompt() {
 
           {pendingPermission.permission && (
             <div className="text-xs text-muted-foreground">
-              Permission type: <span className="text-foreground/80">{pendingPermission.permission}</span>
+              Permission type:{' '}
+              <span className="text-foreground/80">{pendingPermission.permission}</span>
             </div>
           )}
 

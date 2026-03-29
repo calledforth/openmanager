@@ -1,4 +1,3 @@
-import { useState, useEffect, useCallback } from 'react'
 import {
   MessageSquare,
   Plus,
@@ -8,13 +7,16 @@ import {
   Trash2,
   PanelLeftClose,
   PanelLeft,
-  Loader2,
 } from 'lucide-react'
-import { useSidebarData, type WorkspaceEntry } from '../providers/sidebar-data-provider'
-import { useAppUi } from '../providers/app-ui-provider'
-import { cn } from '../lib/utils'
+import { cn } from '../../lib/utils'
 
-const openCodeDot: Record<string, string> = {
+export interface SidebarWorkspace {
+  path: string
+  name: string
+  sessions: Array<{ externalId: string; title?: string; status: string }>
+}
+
+const dot: Record<string, string> = {
   stopped: 'bg-[hsl(0_0%_33%)]',
   starting: 'bg-amber-400',
   healthy: 'bg-emerald-400',
@@ -22,51 +24,40 @@ const openCodeDot: Record<string, string> = {
   crashed: 'bg-red-400',
 }
 
-export function WorkspaceSidebar({
+export function WorkspaceSidebarView({
   collapsed,
   onToggle,
+  workspaces,
+  activeWorkspacePath,
+  activeSessionId,
+  collapsedWorkspacePaths,
+  onToggleWorkspaceCollapse,
+  onCreateSession,
+  onSelectSession,
+  onDeleteSession,
+  onRemoveWorkspace,
+  onAddWorkspace,
+  openCodeStatus,
+  openCodeUiStatus,
+  onRetryOpenCode,
 }: {
   collapsed: boolean
   onToggle: () => void
+  workspaces: SidebarWorkspace[]
+  activeWorkspacePath: string | null
+  activeSessionId: string | null
+  collapsedWorkspacePaths: string[]
+  onToggleWorkspaceCollapse: (path: string) => void
+  onCreateSession: (workspacePath: string) => void
+  onSelectSession: (workspacePath: string, externalId: string) => void
+  onDeleteSession: (workspacePath: string, externalId: string) => void
+  onRemoveWorkspace: (path: string) => void
+  onAddWorkspace: () => void
+  openCodeStatus: string
+  openCodeUiStatus: 'disconnected' | 'connecting' | 'connected'
+  onRetryOpenCode: () => void
 }) {
-  const {
-    workspaces,
-    sessionsByWorkspace,
-    activeWorkspacePath,
-    activeSessionId,
-    addWorkspace,
-    removeWorkspace,
-    selectSession,
-    createSession,
-    deleteSession,
-  } = useSidebarData()
-  const { openCodeStatus, openCodeUiStatus, retryOpenCode } = useAppUi()
-
-  const [collapsedSet, setCollapsedSet] = useState<Set<string>>(new Set())
-
-  // Load persisted collapsed workspaces on mount
-  useEffect(() => {
-    window.electronAPI
-      .getCollapsedWorkspaces()
-      .then((paths) => {
-        setCollapsedSet(new Set(paths))
-      })
-      .catch(() => {})
-  }, [])
-
-  const toggleWorkspaceCollapse = useCallback((path: string) => {
-    setCollapsedSet((prev) => {
-      const next = new Set(prev)
-      if (next.has(path)) {
-        next.delete(path)
-      } else {
-        next.add(path)
-      }
-      // Persist to electron-store
-      window.electronAPI.setCollapsedWorkspaces([...next]).catch(() => {})
-      return next
-    })
-  }, [])
+  const collapsedSet = new Set(collapsedWorkspacePaths)
 
   if (collapsed) {
     return (
@@ -86,7 +77,7 @@ export function WorkspaceSidebar({
     <aside className="flex h-full w-[260px] flex-col bg-sidebar shrink-0">
       {/* Header */}
       <div className="flex h-12 items-center justify-between px-3">
-        <span className="text-sm font-medium text-sidebar-primary">Home</span>
+        <span className="text-13-medium text-sidebar-primary">Home</span>
         <div className="flex items-center gap-0.5">
           <button
             onClick={onToggle}
@@ -96,7 +87,7 @@ export function WorkspaceSidebar({
             <PanelLeftClose className="h-4 w-4" />
           </button>
           <button
-            onClick={() => activeWorkspacePath && createSession(activeWorkspacePath)}
+            onClick={() => activeWorkspacePath && onCreateSession(activeWorkspacePath)}
             disabled={!activeWorkspacePath}
             className="rounded-md p-1.5 text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground disabled:opacity-30"
             title="New thread"
@@ -106,12 +97,13 @@ export function WorkspaceSidebar({
         </div>
       </div>
 
+      {/* Status badge */}
       <button
         onClick={() => {
-          if (openCodeUiStatus !== 'connected') void retryOpenCode()
+          if (openCodeUiStatus !== 'connected') onRetryOpenCode()
         }}
         className={cn(
-          'mx-3 mb-2 flex items-center gap-2 rounded-md border px-2 py-1.5 text-[11px] transition-default',
+          'mx-3 mb-2 flex items-center gap-2 rounded-md border px-2 py-1.5 text-11-regular transition-default',
           openCodeUiStatus === 'connected'
             ? 'border-emerald-500/30 bg-emerald-500/5 text-emerald-300'
             : openCodeUiStatus === 'connecting'
@@ -122,12 +114,7 @@ export function WorkspaceSidebar({
           openCodeUiStatus === 'connected' ? 'OpenCode connected' : 'Retry OpenCode connection'
         }
       >
-        <span
-          className={cn(
-            'h-1.5 w-1.5 rounded-full',
-            openCodeDot[openCodeStatus] ?? openCodeDot.stopped,
-          )}
-        />
+        <span className={cn('h-1.5 w-1.5 rounded-full shrink-0', dot[openCodeStatus] ?? dot.stopped)} />
         <span className="flex-1 text-left">
           {openCodeUiStatus === 'connected'
             ? 'OpenCode ACP connected'
@@ -140,7 +127,7 @@ export function WorkspaceSidebar({
       {/* Workspace list */}
       <div className="flex-1 overflow-y-auto px-1.5 pb-3">
         {workspaces.length === 0 && (
-          <div className="px-3 py-5 text-center text-xs text-muted-foreground">
+          <div className="px-3 py-5 text-center text-13-regular text-muted-foreground">
             No workspaces yet
           </div>
         )}
@@ -148,24 +135,23 @@ export function WorkspaceSidebar({
           <WorkspaceGroup
             key={ws.path}
             workspace={ws}
-            sessions={sessionsByWorkspace[ws.path] ?? []}
             isActiveWorkspace={ws.path === activeWorkspacePath}
             activeSessionId={activeSessionId}
             isCollapsed={collapsedSet.has(ws.path)}
-            onToggleCollapse={() => toggleWorkspaceCollapse(ws.path)}
-            selectSession={selectSession}
-            createSession={createSession}
-            deleteSession={deleteSession}
-            onRemove={() => removeWorkspace(ws.path)}
+            onToggleCollapse={() => onToggleWorkspaceCollapse(ws.path)}
+            onSelectSession={onSelectSession}
+            onCreateSession={onCreateSession}
+            onDeleteSession={onDeleteSession}
+            onRemove={() => onRemoveWorkspace(ws.path)}
           />
         ))}
       </div>
 
-      {/* Bottom actions */}
+      {/* Footer */}
       <div className="px-2 py-2">
         <button
-          onClick={() => addWorkspace()}
-          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground"
+          onClick={onAddWorkspace}
+          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-13-regular text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground"
         >
           <Archive className="h-3.5 w-3.5" />
           <span>Add repository</span>
@@ -177,36 +163,34 @@ export function WorkspaceSidebar({
 
 function WorkspaceGroup({
   workspace,
-  sessions,
   isActiveWorkspace,
   activeSessionId,
   isCollapsed,
   onToggleCollapse,
-  selectSession,
-  createSession,
-  deleteSession,
+  onSelectSession,
+  onCreateSession,
+  onDeleteSession,
   onRemove,
 }: {
-  workspace: WorkspaceEntry
-  sessions: Array<{ externalId: string; title?: string; status: string }>
+  workspace: SidebarWorkspace
   isActiveWorkspace: boolean
   activeSessionId: string | null
   isCollapsed: boolean
   onToggleCollapse: () => void
-  selectSession: (workspacePath: string, externalId: string) => void
-  createSession: (workspacePath: string) => Promise<void>
-  deleteSession: (workspacePath: string, externalId: string) => Promise<void>
+  onSelectSession: (workspacePath: string, externalId: string) => void
+  onCreateSession: (workspacePath: string) => void
+  onDeleteSession: (workspacePath: string, externalId: string) => void
   onRemove: () => void
 }) {
   return (
     <div className="mb-1">
-      {/* Group header */}
+      {/* Workspace header row */}
       <button
         onClick={onToggleCollapse}
-        className="group flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground"
+        className="group flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-13-regular text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground"
       >
         <ChevronDown
-          className={cn('h-3 w-3 transition-transform duration-150', isCollapsed && '-rotate-90')}
+          className={cn('h-3 w-3 shrink-0 transition-transform duration-150', isCollapsed && '-rotate-90')}
         />
         <span className="flex-1 truncate text-left">{workspace.name}</span>
         <button
@@ -220,43 +204,43 @@ function WorkspaceGroup({
         </button>
       </button>
 
-      {/* Items */}
       {!isCollapsed && (
         <div className="ml-1">
-          {/* New session button */}
+          {/* New session row */}
           <button
-            onClick={() => createSession(workspace.path)}
-            className="flex w-full items-center gap-2 rounded-md px-3 py-1 text-xs text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground"
+            onClick={() => onCreateSession(workspace.path)}
+            className="flex w-full items-center gap-2 rounded-md px-3 py-1 text-13-regular text-muted-foreground/60 transition-default hover:bg-surface-hover hover:text-foreground"
           >
-            <Plus className="h-3 w-3" />
+            <Plus className="h-3 w-3 shrink-0" />
             <span>New session</span>
           </button>
 
-          {sessions.map((s) => {
+          {/* Session rows */}
+          {workspace.sessions.map((s) => {
             const isActive = isActiveWorkspace && s.externalId === activeSessionId
             return (
               <button
                 key={s.externalId}
-                onClick={() => selectSession(workspace.path, s.externalId)}
+                onClick={() => onSelectSession(workspace.path, s.externalId)}
                 className={cn(
-                  'group flex w-full items-center gap-2 rounded-md px-2.5 py-1 mb-[2px] text-left transition-default',
+                  'group flex w-full items-center gap-2 rounded-md px-2.5 py-1 mb-[1px] text-left transition-default',
                   isActive
                     ? 'bg-surface-active text-foreground'
                     : 'text-sidebar-foreground hover:bg-surface-hover hover:text-foreground',
                 )}
               >
                 {s.status === 'running' || s.status === 'busy' || s.status === 'waiting' ? (
-                  <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" />
+                  <span className="custom-loader text-primary shrink-0 !w-3 !h-3 !border-2" />
                 ) : (
-                  <MessageSquare className="h-3 w-3 shrink-0 text-muted-foreground/50" />
+                  <MessageSquare className="h-3 w-3 shrink-0 text-muted-foreground/40" />
                 )}
-                <span className="flex-1 truncate text-[13px]">
+                <span className="flex-1 truncate text-13-regular">
                   {s.title || s.externalId.slice(0, 10)}
                 </span>
                 <button
                   onClick={(e) => {
                     e.stopPropagation()
-                    deleteSession(workspace.path, s.externalId)
+                    onDeleteSession(workspace.path, s.externalId)
                   }}
                   className="shrink-0 rounded p-1 text-muted-foreground/30 opacity-0 transition-default group-hover:opacity-100 hover:text-red-400 hover:bg-red-400/10"
                 >

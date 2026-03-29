@@ -1,36 +1,21 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Loader2 } from 'lucide-react'
 import { useVirtualizer, type VirtualItem } from '@tanstack/react-virtual'
 import { api } from '@convex/_generated/api'
-import { useActiveSession, useStreamingMessage } from '../providers/active-session-provider'
-import { useAppUi } from '../providers/app-ui-provider'
-import { MessageParts } from './parts/MessageParts'
-import { TextPart } from './parts/TextPart'
-import { cn } from '../lib/utils'
-import { trackedConvexQuery, useTrackedQuery } from '../lib/convex-telemetry'
+import { useActiveSession, useStreamingMessage } from '../../providers/active-session-provider'
+import { useAppUi } from '../../providers/app-ui-provider'
+import {
+  AssistantMessage,
+  ChatViewPanel,
+  UserMessage,
+  type RuntimeMetadata,
+} from './ChatViewPrimitives'
+import { trackedConvexQuery, useTrackedQuery } from '../../lib/convex-telemetry'
 import {
   applyPartUpdate,
   createPartOrdinalState,
   normalizeSnapshotParts,
   type StreamMessagePart,
-} from '../lib/remote-stream-parts'
-
-interface RuntimeMetadata {
-  providerId?: string
-  modelId?: string
-  modeId?: string
-  agentId?: string
-  finishReason?: string
-  costUsd?: number
-  tokens?: {
-    input?: number
-    output?: number
-    reasoning?: number
-    cacheRead?: number
-    cacheWrite?: number
-    total?: number
-  }
-}
+} from '../../lib/remote-stream-parts'
 
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96
 const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 8
@@ -94,7 +79,7 @@ export function ChatView() {
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
             <div className="text-xl font-medium text-foreground">Let&apos;s build in</div>
-            <div className="mt-1 text-2xl font-semibold text-sidebar-primary">{workspaceName}</div>
+            <div className="mt-1 text-20-medium text-sidebar-primary">{workspaceName}</div>
             <div className="mt-3 text-xs text-muted-foreground">
               {pendingDraftSessionStart
                 ? 'Creating session...'
@@ -113,46 +98,22 @@ export function ChatView() {
 
   const chatMessages = messages.filter((m) => m.role !== 'permission')
   const isStreaming = activeSession?.status === 'running' || activeSession?.status === 'busy'
+  const title = activeSession?.title || activeSessionId.slice(0, 12)
+  const status = activeSession?.status
 
   return (
-    <div data-chat-view className="flex-1 flex flex-col min-h-0">
-      <div className="px-4 py-2.5 flex justify-between items-center shrink-0">
-        <span className="text-sm font-medium text-sidebar-primary">
-          {activeSession?.title || activeSessionId.slice(0, 12)}
-        </span>
-        <div className="flex items-center gap-2">
-          {activeSession?.status && activeSession.status !== 'idle' && (
-            <span
-              className={cn(
-                'text-[11px]',
-                activeSession.status === 'running' || activeSession.status === 'busy'
-                  ? 'text-primary'
-                  : activeSession.status === 'error'
-                    ? 'text-destructive'
-                    : 'text-muted-foreground',
-              )}
-            >
-              {activeSession.status}
-            </span>
-          )}
-          {isStreaming && (
-            <button
-              type="button"
-              onClick={() => abortSession(activeSessionId)}
-              className="rounded-md border border-destructive px-2 py-0.5 text-[11px] text-destructive bg-transparent cursor-pointer transition-default hover:bg-destructive/10"
-            >
-              Stop
-            </button>
-          )}
-        </div>
-      </div>
-
+    <ChatViewPanel
+      title={title}
+      status={status}
+      isStreaming={isStreaming}
+      onAbort={() => abortSession(activeSessionId)}
+    >
       <div
         ref={scrollRef}
         onScroll={handleScroll}
         className="flex-1 overflow-y-auto overflow-x-hidden min-h-0"
       >
-        <div className="mx-auto max-w-2xl px-4 py-6 space-y-1">
+        <div className="mx-auto max-w-3xl px-4 py-6 space-y-1">
           {chatMessages.length === 0 && (
             <div className="text-muted-foreground/70 text-[13px] text-center mt-10">
               Send a message to start
@@ -165,16 +126,9 @@ export function ChatView() {
             isDriven={activeSessionDriven}
             onStreamUpdate={scheduleStickToBottom}
           />
-
-          {isStreaming && (
-            <div className="flex items-center gap-2 py-2">
-              <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
-              <span className="text-xs text-muted-foreground">Thinking...</span>
-            </div>
-          )}
         </div>
       </div>
-    </div>
+    </ChatViewPanel>
   )
 }
 
@@ -278,49 +232,6 @@ function MessageRow({
         isDriven={isDriven}
         onStreamUpdate={onStreamUpdate}
       />
-    </div>
-  )
-}
-
-function UserMessage({ content, runtime }: { content: string; runtime?: RuntimeMetadata }) {
-  const [expanded, setExpanded] = useState(false)
-  const contentRef = useRef<HTMLDivElement>(null)
-  const [showGradient, setShowGradient] = useState(false)
-
-  useEffect(() => {
-    const el = contentRef.current
-    if (!el) return
-    const check = () => setShowGradient(el.scrollHeight > el.clientHeight)
-    check()
-    const ro = new ResizeObserver(check)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [content])
-
-  const canExpand = showGradient && !expanded
-
-  return (
-    <div className="py-1.5">
-      <div className="flex justify-end">
-        <div
-          className={cn(
-            'max-w-[85%] relative rounded-2xl rounded-br-md bg-secondary px-4 py-2.5 text-[14px] text-foreground leading-relaxed whitespace-pre-wrap break-words transition-all duration-200',
-            canExpand ? 'cursor-pointer hover:brightness-110' : '',
-          )}
-          onClick={() => canExpand && setExpanded(true)}
-        >
-          <div ref={contentRef} className={cn(canExpand && 'max-h-[100px] overflow-hidden')}>
-            {content}
-          </div>
-          {canExpand && (
-            <div
-              className="absolute inset-x-0 bottom-0 h-8 bg-linear-to-t from-secondary to-transparent pointer-events-none"
-              aria-hidden
-            />
-          )}
-        </div>
-      </div>
-      <MessageRuntimeMeta runtime={runtime} align="right" />
     </div>
   )
 }
@@ -480,66 +391,3 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
     />
   )
 })
-
-const AssistantMessage = memo(function AssistantMessage({
-  content,
-  isFinal,
-  parts,
-  runtime,
-}: {
-  content: string
-  isFinal?: boolean
-  parts?: MessagePart[]
-  runtime?: RuntimeMetadata
-}) {
-  const hasParts = !!parts && parts.length > 0
-  const isStreaming = isFinal === false
-
-  return (
-    <div className="py-2">
-      <div className="text-[14px] leading-relaxed text-foreground/90 space-y-0.5">
-        {hasParts ? (
-          <MessageParts parts={parts} isStreaming={isStreaming} />
-        ) : (
-          <div className={isStreaming ? 'opacity-80' : 'opacity-100'}>
-            <TextPart text={content} />
-          </div>
-        )}
-      </div>
-      <MessageRuntimeMeta runtime={runtime} align="left" />
-    </div>
-  )
-})
-
-function MessageRuntimeMeta({
-  runtime,
-  align,
-}: {
-  runtime?: RuntimeMetadata
-  align: 'left' | 'right'
-}) {
-  if (!runtime) return null
-  const parts: string[] = []
-  const modelLabel =
-    runtime.providerId && runtime.modelId
-      ? `${runtime.providerId}/${runtime.modelId}`
-      : (runtime.modelId ?? undefined)
-  if (modelLabel) parts.push(modelLabel)
-  if (runtime.modeId) parts.push(`mode:${runtime.modeId}`)
-  if (runtime.agentId) parts.push(`agent:${runtime.agentId}`)
-  if (runtime.tokens?.total != null) parts.push(`${runtime.tokens.total} tokens`)
-  if (runtime.costUsd != null && runtime.costUsd > 0) parts.push(`$${runtime.costUsd.toFixed(4)}`)
-  if (runtime.finishReason) parts.push(runtime.finishReason)
-  if (parts.length === 0) return null
-
-  return (
-    <div
-      className={cn(
-        'mt-1 text-[11px] text-muted-foreground tabular-nums',
-        align === 'right' ? 'text-right' : 'text-left',
-      )}
-    >
-      {parts.join(' • ')}
-    </div>
-  )
-}

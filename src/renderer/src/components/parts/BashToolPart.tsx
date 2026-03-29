@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Terminal, ChevronRight, Check, AlertCircle, Loader2 } from 'lucide-react'
+import { Terminal, ChevronRight, AlertCircle } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
 interface BashToolPartProps {
@@ -34,7 +34,6 @@ export function BashToolPart({ part }: BashToolPartProps) {
   const output = state.output ?? ''
   const error = state.error ?? ''
   const exitCode = parseExitCode(output)
-  const isSuccess = stateType === 'completed' && (exitCode === null || exitCode === 0) && !error
   const isError = stateType === 'error' || (exitCode !== null && exitCode !== 0) || !!error
 
   const duration =
@@ -45,55 +44,66 @@ export function BashToolPart({ part }: BashToolPartProps) {
   const displayCommand = command.length > 120 ? command.slice(0, 117) + '...' : command
   const hasOutput = !!output || !!error
 
-  if (isPending || isInputStreaming) {
-    return (
-      <div className="border border-border rounded-lg overflow-hidden my-1 bg-card">
-        <div className="flex items-center gap-2 px-2.5 h-7">
-          <Loader2 className="size-3.5 animate-spin text-muted-foreground/60" />
-          <span className="text-[12px] shimmer-text">
-            {isInputStreaming ? 'Generating command' : 'Running command'}
-          </span>
-        </div>
-      </div>
-    )
-  }
-
   return (
-    <div className="border border-border rounded-lg overflow-hidden my-1 bg-card">
+    <div className="py-0.5">
       <button
         type="button"
         onClick={() => hasOutput && setExpanded(!expanded)}
         className={cn(
-          'w-full flex items-center gap-1.5 pl-2.5 pr-1 h-7 bg-transparent border-none text-left transition-default',
-          hasOutput ? 'cursor-pointer hover:bg-surface-hover' : 'cursor-default'
+          'w-full flex items-start gap-2 py-0.5 px-0 bg-transparent border-none text-left transition-default',
+          hasOutput ? 'cursor-pointer hover:opacity-80' : 'cursor-default',
         )}
       >
-        <Terminal className="size-3.5 text-muted-foreground/60 flex-shrink-0" />
-        <span className="text-[12px] text-muted-foreground flex-1 min-w-0 truncate">
-          Ran command
+        <span className="mt-[4px] flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground/60">
+          <Terminal className="h-4 w-4" />
         </span>
-        {isSuccess && <Check className="size-3 text-primary flex-shrink-0" />}
-        {isError && <AlertCircle className="size-3 text-destructive flex-shrink-0" />}
-        {duration && (
-          <span className="text-[11px] text-muted-foreground/50 tabular-nums flex-shrink-0">{duration}</span>
-        )}
-        {hasOutput && (
-          <ChevronRight
+        <div className="flex-1 min-w-0 flex items-center gap-2 text-[14px] leading-relaxed">
+          <span
             className={cn(
-              'size-3 text-muted-foreground/40 flex-shrink-0 transition-transform duration-200',
-              expanded && 'rotate-90'
+              'truncate',
+              isPending || isInputStreaming ? 'shimmer-text font-medium' : 'text-foreground',
             )}
-          />
-        )}
+          >
+            {isInputStreaming
+              ? 'Generating command'
+              : isPending
+                ? 'Running command'
+                : 'Ran command'}
+          </span>
+          {displayCommand && !isPending && !isInputStreaming && (
+            <span className="truncate text-muted-foreground/70 text-[13px] font-mono">
+              {displayCommand}
+            </span>
+          )}
+          {(isPending || isInputStreaming) && (
+            <span className="custom-loader text-primary shrink-0" />
+          )}
+          {isError && !isPending && !isInputStreaming && (
+            <AlertCircle className="h-4 w-4 text-destructive flex-shrink-0" />
+          )}
+          {duration && !isPending && (
+            <span className="text-[12px] text-muted-foreground/50 tabular-nums flex-shrink-0 ml-auto">
+              {duration}
+            </span>
+          )}
+          {hasOutput && !isPending && (
+            <ChevronRight
+              className={cn(
+                'h-4 w-4 text-muted-foreground/40 flex-shrink-0 transition-transform duration-200',
+                expanded && 'rotate-90',
+              )}
+            />
+          )}
+        </div>
       </button>
 
       {expanded && (
-        <div className="border-t border-border px-2.5 py-1.5 max-h-[300px] overflow-y-auto scrollbar-hide">
+        <div className="mt-1 mb-2 ml-6 pl-3 border-l border-border max-h-[300px] overflow-y-auto scrollbar-hide">
           {command && (
-            <div className="flex items-start gap-1.5 mb-1">
-              <span className="text-primary font-mono text-[12px] flex-shrink-0">$</span>
-              <code className="font-mono text-[12px] text-foreground/80 whitespace-pre-wrap break-all">
-                {displayCommand}
+            <div className="flex items-start gap-1.5 mb-1.5">
+              <span className="text-primary font-mono text-[13px] flex-shrink-0">$</span>
+              <code className="font-mono text-[13px] text-foreground/80 whitespace-pre-wrap break-all">
+                {command}
               </code>
             </div>
           )}
@@ -103,7 +113,7 @@ export function BashToolPart({ part }: BashToolPartProps) {
             </pre>
           )}
           {error && (
-            <pre className="m-0 text-[12px] text-destructive font-mono whitespace-pre-wrap break-words leading-relaxed">
+            <pre className="m-0 mt-1 text-[12px] text-destructive font-mono whitespace-pre-wrap break-words leading-relaxed">
               {error}
             </pre>
           )}

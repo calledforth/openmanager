@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { FileEdit, FilePlus, ChevronRight, Check, AlertCircle, Loader2 } from 'lucide-react'
+import { FileEdit, FilePlus, ChevronRight, AlertCircle } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { canonicalizeToolName } from './ToolRegistry'
 
@@ -79,74 +79,91 @@ export function EditToolPart({ part }: EditToolPartProps) {
   const diffLines = useMemo(() => parseDiffFromOutput(state.output ?? ''), [state.output])
   const stats = useMemo(() => countDiffStats(diffLines), [diffLines])
   const hasDiff = diffLines.length > 0
+  const hasOutput = hasDiff || !!state.output || !!state.error
 
   const duration =
     state.time?.start && state.time?.end
       ? `${((state.time.end - state.time.start) / 1000).toFixed(1)}s`
       : null
 
-  if (isPending || isInputStreaming) {
-    return (
-      <div className="border border-border rounded-lg overflow-hidden my-1 bg-card">
-        <div className="flex items-center gap-1.5 px-2.5 h-7">
-          <Loader2 className="size-3.5 animate-spin text-muted-foreground/60" />
-          <span className="text-[12px] shimmer-text">
-            {actionLabel}
-          </span>
-          <span className="text-[12px] text-muted-foreground/50 truncate">{filename}</span>
-        </div>
-      </div>
-    )
-  }
-
   return (
-    <div className="border border-border rounded-lg overflow-hidden my-1 bg-card">
+    <div className="py-0.5">
       <button
         type="button"
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-1.5 pl-2.5 pr-1 h-7 bg-transparent border-none cursor-pointer text-left transition-default hover:bg-surface-hover"
+        onClick={() => hasOutput && setExpanded(!expanded)}
+        className={cn(
+          'w-full flex items-start gap-2 py-0.5 px-0 bg-transparent border-none text-left transition-default',
+          hasOutput ? 'cursor-pointer hover:opacity-80' : 'cursor-default',
+        )}
       >
-        <Icon className="size-3.5 text-muted-foreground/60 flex-shrink-0" />
-        <span className="text-[12px] text-muted-foreground whitespace-nowrap">{doneLabel}</span>
-        <span className="text-[12px] text-foreground/70 font-medium truncate">{filename}</span>
-        {dir && (
-          <span className="text-[11px] text-muted-foreground/40 truncate min-w-0">{dir}</span>
-        )}
-        <div className="flex-1" />
-        {stats.added > 0 && (
-          <span className="text-[11px] text-primary tabular-nums flex-shrink-0">+{stats.added}</span>
-        )}
-        {stats.removed > 0 && (
-          <span className="text-[11px] text-destructive tabular-nums flex-shrink-0 ml-1">-{stats.removed}</span>
-        )}
-        {!isError && <Check className="size-3 text-primary flex-shrink-0 ml-1" />}
-        {isError && <AlertCircle className="size-3 text-destructive flex-shrink-0 ml-1" />}
-        {duration && (
-          <span className="text-[11px] text-muted-foreground/50 tabular-nums flex-shrink-0 ml-1">{duration}</span>
-        )}
-        <ChevronRight
-          className={cn(
-            'size-3 text-muted-foreground/40 flex-shrink-0 transition-transform duration-200',
-            expanded && 'rotate-90'
+        <span className="mt-[4px] flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground/60">
+          <Icon className="h-4 w-4" />
+        </span>
+        <div className="flex-1 min-w-0 flex items-center gap-2 text-[14px] leading-relaxed">
+          <span
+            className={cn(
+              'whitespace-nowrap',
+              isPending || isInputStreaming ? 'shimmer-text font-medium' : 'text-foreground',
+            )}
+          >
+            {isPending || isInputStreaming ? actionLabel : doneLabel}
+          </span>
+          <span className="text-muted-foreground truncate">{filename}</span>
+
+          {(isPending || isInputStreaming) && (
+            <span className="custom-loader text-primary shrink-0 ml-1" />
           )}
-        />
+
+          {dir && !isPending && !isInputStreaming && (
+            <span className="text-[12px] text-muted-foreground/40 truncate min-w-0">{dir}</span>
+          )}
+
+          {!isPending && !isInputStreaming && (
+            <>
+              {stats.added > 0 && (
+                <span className="text-[12px] text-primary tabular-nums flex-shrink-0 ml-auto">
+                  +{stats.added}
+                </span>
+              )}
+              {stats.removed > 0 && (
+                <span className="text-[12px] text-destructive tabular-nums flex-shrink-0 ml-1">
+                  -{stats.removed}
+                </span>
+              )}
+              {isError && <AlertCircle className="h-4 w-4 text-destructive flex-shrink-0 ml-1" />}
+              {duration && (
+                <span className="text-[12px] text-muted-foreground/50 tabular-nums flex-shrink-0 ml-2">
+                  {duration}
+                </span>
+              )}
+              {hasOutput && (
+                <ChevronRight
+                  className={cn(
+                    'h-4 w-4 text-muted-foreground/40 flex-shrink-0 ml-1 transition-transform duration-200',
+                    expanded && 'rotate-90',
+                  )}
+                />
+              )}
+            </>
+          )}
+        </div>
       </button>
 
       {expanded && (
-        <div className="border-t border-border max-h-[300px] overflow-y-auto scrollbar-hide">
+        <div className="mt-1 mb-2 ml-6 pl-3 border-l border-border max-h-[300px] overflow-y-auto scrollbar-hide">
           {hasDiff ? (
-            <div className="font-mono text-[11px] leading-5">
+            <div className="font-mono text-[12px] leading-relaxed">
               {diffLines.map((line, i) => (
                 <div
                   key={i}
                   className={cn(
-                    'flex px-3 py-0 whitespace-pre-wrap break-all',
+                    'flex px-2 py-0 whitespace-pre-wrap break-all',
                     line.type === 'added' && 'bg-primary/8 text-primary',
                     line.type === 'removed' && 'bg-destructive/8 text-destructive',
-                    line.type === 'context' && 'text-foreground/40'
+                    line.type === 'context' && 'text-foreground/40',
                   )}
                 >
-                  <span className="w-4 shrink-0 select-none text-muted-foreground/30">
+                  <span className="w-5 shrink-0 select-none text-muted-foreground/30">
                     {line.type === 'added' ? '+' : line.type === 'removed' ? '-' : ' '}
                   </span>
                   <span className="whitespace-pre">{line.content}</span>
@@ -154,12 +171,12 @@ export function EditToolPart({ part }: EditToolPartProps) {
               ))}
             </div>
           ) : state.output ? (
-            <pre className="m-0 px-2.5 py-1.5 text-[12px] text-muted-foreground font-mono whitespace-pre-wrap break-words">
+            <pre className="m-0 text-[12px] text-muted-foreground font-mono whitespace-pre-wrap break-words leading-relaxed">
               {state.output}
             </pre>
           ) : null}
           {state.error && (
-            <div className="px-2.5 py-1.5 text-[12px] text-destructive bg-destructive/5">
+            <div className="mt-1 text-[12px] text-destructive bg-destructive/5 px-2 py-1 rounded">
               {state.error}
             </div>
           )}

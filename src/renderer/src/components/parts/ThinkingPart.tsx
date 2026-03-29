@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Loader2, Check, ChevronRight, ChevronDown } from 'lucide-react'
+import { ChevronRight } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
 const PREVIEW_LENGTH = 60
@@ -51,7 +51,6 @@ export function ThinkingPart({ text, duration, isStreaming = false }: ThinkingPa
 
   if (!text && !isStreaming) return null
 
-  const previewText = text.slice(0, PREVIEW_LENGTH).replace(/\n/g, ' ')
   const elapsedDisplay = isStreaming ? formatElapsedTime(elapsedMs) : ''
 
   return (
@@ -60,37 +59,41 @@ export function ThinkingPart({ text, duration, isStreaming = false }: ThinkingPa
         type="button"
         onClick={() => setExpanded(!expanded)}
         className={cn(
-          'group flex items-start gap-1.5 py-0.5 px-2 cursor-pointer w-full text-left',
+          'group flex items-start gap-2 py-0.5 px-0 cursor-pointer w-full text-left',
           'text-muted-foreground hover:text-foreground/80 transition-colors',
         )}
       >
         {isStreaming ? (
-          <span className="inline-flex items-center gap-1.5 text-[12px] leading-4 m-0">
-            <Loader2 className="h-3 w-3 animate-spin text-primary" />
+          <span className="flex items-start gap-2 text-[14px] leading-relaxed m-0">
+            <span className="mt-[4px] flex h-4 w-4 shrink-0 items-center justify-center">
+              <span className="custom-loader text-primary" />
+            </span>
             <span className="shimmer-text font-medium">Thinking</span>
           </span>
         ) : (
-          <span className="inline-flex items-center gap-1.5 text-[12px] leading-4">
-            <Check className="h-3 w-3 text-primary" />
+          <span className="flex items-start gap-2 text-[14px] leading-relaxed">
+            <span className="mt-[4px] flex h-4 w-4 shrink-0 items-center justify-center">
+              <ChevronRight
+                className={cn(
+                  'h-3.5 w-3.5 text-muted-foreground transition-transform duration-200',
+                  expanded && 'rotate-90',
+                )}
+              />
+            </span>
             <span className="text-muted-foreground">Thought</span>
           </span>
         )}
       </button>
-      {!expanded && previewText && (
-        <div className="px-2 mt-0.5">
-          <span className="text-muted-foreground/60 truncate text-[12px] block">{previewText}</span>
-        </div>
-      )}
       {elapsedDisplay && !expanded && (
-        <div className="px-2">
-          <span className="text-muted-foreground/50 tabular-nums text-[11px]">
+        <div className="px-0 mt-0.5 ml-6">
+          <span className="text-muted-foreground/50 tabular-nums text-[12px]">
             {elapsedDisplay}
           </span>
         </div>
       )}
 
       {expanded && (text || isStreaming) && (
-        <div className="relative px-2">
+        <div className="relative px-0 mt-1">
           <div
             className={cn(
               'absolute inset-x-0 top-0 h-8 bg-gradient-to-b from-background to-transparent z-10 pointer-events-none transition-opacity duration-200',
@@ -100,9 +103,9 @@ export function ThinkingPart({ text, duration, isStreaming = false }: ThinkingPa
           <div
             ref={scrollRef}
             className={cn(
-              'overflow-y-auto max-h-36 scrollbar-hide',
-              'ml-1 pl-3 border-l border-border',
-              'text-muted-foreground text-[12px] leading-relaxed whitespace-pre-wrap',
+              'overflow-y-auto max-h-[400px] scrollbar-hide',
+              'ml-6 pl-3 border-l border-border',
+              'text-muted-foreground text-[14px] leading-relaxed whitespace-pre-wrap',
             )}
           >
             {text || (isStreaming ? '…' : '')}

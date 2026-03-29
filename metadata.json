@@ -1,0 +1,5 @@
+{
+  "name": "Agentic Chat UI",
+  "description": "A dark-themed chat interface for an AI agent with tool call visualizations and a floating input bar.",
+  "requestFramePermissions": []
+}

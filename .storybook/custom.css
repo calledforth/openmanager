@@ -1,0 +1,135 @@
+/* Storybook-only UI adjustments */
+:root {
+  /* Increase line heights specifically for Storybook testing */
+  --lh-tight: 1.4;
+  --lh-default: 1.7;
+  --lh-loose: 2;
+
+  /* Increase letter spacing slightly */
+  --tracking-normal: 0.015em;
+}
+
+body {
+  letter-spacing: var(--tracking-normal);
+}
+
+/* Base text adjustments */
+.text-\[14px\] {
+  line-height: 1.8 !important;
+  letter-spacing: 0.01em !important;
+}
+
+/* --- Stunning Markdown Formatting (Overrides Tailwind Utilities) --- */
+
+/* Tables */
+table {
+  width: 100% !important;
+  border-collapse: collapse !important;
+  margin: 1.5em 0 !important;
+  font-size: 0.875rem !important;
+}
+
+th,
+td {
+  border: 1px solid var(--color-border) !important;
+  padding: 0.75rem 1rem !important;
+  text-align: left !important;
+}
+
+th {
+  background-color: var(--color-surface-hover) !important;
+  color: var(--color-foreground) !important;
+  font-weight: 500 !important;
+  font-size: 0.875rem !important;
+}
+
+/* Inline Code - No background, pop of color, mono font */
+code:not(pre code) {
+  background: transparent !important;
+  color: var(--color-primary) !important; /* Pop of primary color instead of background */
+  font-family: var(--font-mono) !important;
+  font-size: 0.9em !important;
+  font-weight: 500 !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+}
+
+/* Code block language header */
+.my-2.rounded-lg.overflow-hidden.border.border-border.bg-card > div:first-child {
+  background-color: var(--color-surface-active) !important;
+  border-bottom: 1px solid var(--color-border) !important;
+  padding: 0.5rem 1rem !important;
+}
+
+.my-2.rounded-lg.overflow-hidden.border.border-border.bg-card > div:first-child span {
+  color: var(--color-foreground) !important;
+  font-size: 0.75rem !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.05em !important;
+  opacity: 0.7;
+}
+
+pre {
+  padding: 1rem !important;
+  margin: 0 !important;
+}
+
+pre code {
+  color: var(--color-foreground) !important;
+  font-family: var(--font-mono) !important;
+  font-size: 0.85rem !important;
+  background: transparent !important;
+  padding: 0 !important;
+  opacity: 0.9 !important;
+}
+
+/* Blockquotes */
+blockquote {
+  border-left: 3px solid var(--color-primary) !important;
+  padding-left: 1.25rem !important;
+  margin-left: 0 !important;
+  margin-top: 1.5em !important;
+  margin-bottom: 1.5em !important;
+  color: var(--color-muted-foreground) !important;
+  font-style: italic !important;
+}
+
+/* Lists */
+ul,
+ol {
+  padding-left: 1.5rem !important;
+  margin-top: 1em !important;
+  margin-bottom: 1em !important;
+}
+
+li {
+  margin-bottom: 0.5em !important;
+}
+
+li > p {
+  margin-top: 0.25em !important;
+}
+
+/* Headings */
+h1,
+h2,
+h3,
+h4 {
+  color: var(--color-foreground) !important;
+  margin-top: 2em !important;
+  margin-bottom: 0.75em !important;
+  font-weight: 600 !important;
+  letter-spacing: var(--tracking-tight) !important;
+}
+
+h1 {
+  font-size: 1.5em !important;
+}
+h2 {
+  font-size: 1.25em !important;
+  border-bottom: 1px solid var(--color-border) !important;
+  padding-bottom: 0.25em !important;
+}
+h3 {
+  font-size: 1.1em !important;
+}

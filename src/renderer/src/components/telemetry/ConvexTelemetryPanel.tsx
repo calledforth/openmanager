@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useAppUi } from '../providers/app-ui-provider'
+import { useAppUi } from '../../providers/app-ui-provider'
 
 // ---------------------------------------------------------------------------
 // Font + keyframe injection
@@ -74,35 +74,35 @@ interface MergedEntry {
 // Color palette
 // ---------------------------------------------------------------------------
 const C = {
-  bg:           '#000',
-  bg2:          '#050505',
-  bg3:          '#080808',
-  border:       '#111',
-  border2:      '#0d0d0d',
-  text:         '#e8e8e8',
-  muted:        '#9a9a9a',
-  dim:          '#2b2b2b',
-  success:      '#22c55e',
-  error:        '#ef4444',
-  pending:      '#3b82f6',
-  active:       '#a855f7',
-  marker:       '#f59e0b',
-  mutation:     '#3b82f6',
-  query:        '#22c55e',
+  bg: '#000',
+  bg2: '#050505',
+  bg3: '#080808',
+  border: '#111',
+  border2: '#0d0d0d',
+  text: '#e8e8e8',
+  muted: '#9a9a9a',
+  dim: '#2b2b2b',
+  success: '#22c55e',
+  error: '#ef4444',
+  pending: '#3b82f6',
+  active: '#a855f7',
+  marker: '#f59e0b',
+  mutation: '#3b82f6',
+  query: '#22c55e',
   subscription: '#a855f7',
 }
 
 const TYPE_COLOR: Record<MergedEntry['type'], string> = {
-  mutation:     C.mutation,
-  query:        C.query,
+  mutation: C.mutation,
+  query: C.query,
   subscription: C.subscription,
-  mark:         C.marker,
+  mark: C.marker,
 }
 const TYPE_LABEL: Record<MergedEntry['type'], string> = {
-  mutation:     'MUT',
-  query:        'QRY',
+  mutation: 'MUT',
+  query: 'QRY',
   subscription: 'SUB',
-  mark:         'MARK',
+  mark: 'MARK',
 }
 
 // ---------------------------------------------------------------------------
@@ -120,7 +120,9 @@ function formatDuration(ms: number): string {
 }
 function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString([], {
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
   })
 }
 function formatAgeMs(now: number, timestamp: number): string {
@@ -144,11 +146,16 @@ function buildMergedEntries(events: TelemetryEvent[]): MergedEntry[] {
     // ── Mark: standalone horizontal divider ──────────────────────────────
     if (ev.phase === 'mark') {
       const entry: MergedEntry = {
-        key: ev.id, type: 'mark', status: 'done', name: ev.name,
-        updateCount: 0, timestamp: ev.timestamp,
+        key: ev.id,
+        type: 'mark',
+        status: 'done',
+        name: ev.name,
+        updateCount: 0,
+        timestamp: ev.timestamp,
         sessionExternalId: ev.sessionExternalId,
         messageExternalId: ev.messageExternalId,
-        details: ev.details, rawEvents: [ev],
+        details: ev.details,
+        rawEvents: [ev],
       }
       keyToIdx.set(ev.id, result.push(entry) - 1)
       continue
@@ -168,12 +175,17 @@ function buildMergedEntries(events: TelemetryEvent[]): MergedEntry[] {
         continue
       }
       const entry: MergedEntry = {
-        key: subKey, type: 'subscription', status: 'active', name: ev.name,
-        updateCount: 0, timestamp: ev.timestamp,
+        key: subKey,
+        type: 'subscription',
+        status: 'active',
+        name: ev.name,
+        updateCount: 0,
+        timestamp: ev.timestamp,
         requestBytes: ev.requestBytes,
         sessionExternalId: ev.sessionExternalId,
         messageExternalId: ev.messageExternalId,
-        details: ev.details, rawEvents: [ev],
+        details: ev.details,
+        rawEvents: [ev],
       }
       keyToIdx.set(subKey, result.push(entry) - 1)
       continue
@@ -209,12 +221,15 @@ function buildMergedEntries(events: TelemetryEvent[]): MergedEntry[] {
       const entry: MergedEntry = {
         key: ev.id,
         type: ev.kind === 'mutation' ? 'mutation' : 'query',
-        status: 'pending', name: ev.name,
-        updateCount: 0, timestamp: ev.timestamp,
+        status: 'pending',
+        name: ev.name,
+        updateCount: 0,
+        timestamp: ev.timestamp,
         requestBytes: ev.requestBytes,
         sessionExternalId: ev.sessionExternalId,
         messageExternalId: ev.messageExternalId,
-        details: ev.details, rawEvents: [ev],
+        details: ev.details,
+        rawEvents: [ev],
       }
       keyToIdx.set(ev.id, result.push(entry) - 1)
       const q = pendingQueue.get(correlKey) ?? []
@@ -248,17 +263,22 @@ function buildMergedEntries(events: TelemetryEvent[]): MergedEntry[] {
 // ---------------------------------------------------------------------------
 function StatusDot({ status }: { status: MergedEntry['status'] }) {
   const color =
-    status === 'success' ? C.success :
-    status === 'error'   ? C.error   :
-    status === 'pending' ? C.pending :
-    status === 'active'  ? C.active  :
-    C.dim
+    status === 'success'
+      ? C.success
+      : status === 'error'
+        ? C.error
+        : status === 'pending'
+          ? C.pending
+          : status === 'active'
+            ? C.active
+            : C.dim
   const pulse = status === 'pending' || status === 'active'
   return (
     <span
       style={{
         display: 'inline-block',
-        width: 6, height: 6,
+        width: 6,
+        height: 6,
         borderRadius: '50%',
         background: color,
         flexShrink: 0,
@@ -272,10 +292,13 @@ function EntryRow({ entry }: { entry: MergedEntry }) {
   const isPulsing = entry.status === 'pending' || entry.status === 'active'
   const typeColor = TYPE_COLOR[entry.type]
   const leftColor =
-    entry.status === 'success' ? C.success :
-    entry.status === 'error'   ? C.error   :
-    isPulsing                  ? typeColor  :
-    C.dim
+    entry.status === 'success'
+      ? C.success
+      : entry.status === 'error'
+        ? C.error
+        : isPulsing
+          ? typeColor
+          : C.dim
   const now = Date.now()
   const ageMs = Math.max(0, now - entry.timestamp)
 
@@ -284,7 +307,9 @@ function EntryRow({ entry }: { entry: MergedEntry }) {
     return (
       <div
         style={{
-          display: 'flex', alignItems: 'center', gap: 8,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
           padding: '6px 0',
           animation: 'ctFadeSlide 0.18s ease-out',
         }}
@@ -292,13 +317,24 @@ function EntryRow({ entry }: { entry: MergedEntry }) {
         <div style={{ flex: 1, height: 1, background: C.dim }} />
         <div
           style={{
-            display: 'flex', alignItems: 'center', gap: 5,
-            background: C.bg2, border: `1px solid ${C.border}`,
-            borderRadius: 6, padding: '4px 10px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 5,
+            background: C.bg2,
+            border: `1px solid ${C.border}`,
+            borderRadius: 6,
+            padding: '4px 10px',
           }}
         >
           <span style={{ color: C.marker, fontSize: 10, lineHeight: 1 }}>◆</span>
-          <span style={{ color: C.marker, fontSize: 12, fontFamily: 'JetBrains Mono, monospace', letterSpacing: '0.04em' }}>
+          <span
+            style={{
+              color: C.marker,
+              fontSize: 12,
+              fontFamily: 'JetBrains Mono, monospace',
+              letterSpacing: '0.04em',
+            }}
+          >
             {entry.name}
           </span>
           <span style={{ color: C.muted, fontSize: 11, fontFamily: 'JetBrains Mono, monospace' }}>
@@ -316,7 +352,9 @@ function EntryRow({ entry }: { entry: MergedEntry }) {
       className="ct-row"
       style={{
         position: 'relative',
-        display: 'flex', alignItems: 'center', gap: 7,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 7,
         padding: '8px 10px 8px 14px',
         background: C.bg3,
         border: `1px solid ${C.border}`,
@@ -330,7 +368,11 @@ function EntryRow({ entry }: { entry: MergedEntry }) {
       {/* Left border indicator */}
       <div
         style={{
-          position: 'absolute', left: 0, top: 0, bottom: 0, width: 2,
+          position: 'absolute',
+          left: 0,
+          top: 0,
+          bottom: 0,
+          width: 2,
           background: leftColor,
           animation: isPulsing ? 'ctLeftBorderPulse 1.6s ease-in-out infinite' : 'none',
           borderRadius: '8px 0 0 8px',
@@ -343,9 +385,13 @@ function EntryRow({ entry }: { entry: MergedEntry }) {
       {/* Name */}
       <span
         style={{
-          flex: 1, fontSize: 13, color: C.text,
+          flex: 1,
+          fontSize: 13,
+          color: C.text,
           fontFamily: 'JetBrains Mono, monospace',
-          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
           minWidth: 0,
           lineHeight: 1.25,
         }}
@@ -357,11 +403,14 @@ function EntryRow({ entry }: { entry: MergedEntry }) {
       {entry.type === 'subscription' && entry.updateCount > 0 && (
         <span
           style={{
-            fontSize: 10, color: C.active,
+            fontSize: 10,
+            color: C.active,
             background: `${C.active}1a`,
             border: `1px solid ${C.active}40`,
-            borderRadius: 6, padding: '2px 7px',
-            fontFamily: 'JetBrains Mono, monospace', flexShrink: 0,
+            borderRadius: 6,
+            padding: '2px 7px',
+            fontFamily: 'JetBrains Mono, monospace',
+            flexShrink: 0,
           }}
         >
           ×{entry.updateCount}
@@ -371,12 +420,15 @@ function EntryRow({ entry }: { entry: MergedEntry }) {
       {/* Type chip */}
       <span
         style={{
-          fontSize: 10, color: typeColor,
+          fontSize: 10,
+          color: typeColor,
           background: `${typeColor}18`,
           border: `1px solid ${typeColor}38`,
-          borderRadius: 6, padding: '2px 7px',
+          borderRadius: 6,
+          padding: '2px 7px',
           fontFamily: 'JetBrains Mono, monospace',
-          letterSpacing: '0.04em', flexShrink: 0,
+          letterSpacing: '0.04em',
+          flexShrink: 0,
         }}
       >
         {TYPE_LABEL[entry.type]}
@@ -399,8 +451,23 @@ function EntryRow({ entry }: { entry: MergedEntry }) {
       )}
 
       {/* Timestamp */}
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2, flexShrink: 0 }}>
-        <span style={{ fontSize: 11, color: C.muted, fontFamily: 'JetBrains Mono, monospace', fontVariantNumeric: 'tabular-nums' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'flex-end',
+          gap: 2,
+          flexShrink: 0,
+        }}
+      >
+        <span
+          style={{
+            fontSize: 11,
+            color: C.muted,
+            fontFamily: 'JetBrains Mono, monospace',
+            fontVariantNumeric: 'tabular-nums',
+          }}
+        >
           {formatTime(entry.timestamp)}
         </span>
         <span
@@ -427,8 +494,11 @@ function KpiCard({ label, value, accent }: { label: string; value: string; accen
     <div style={{ background: C.bg, padding: '8px 10px' }}>
       <div
         style={{
-          fontSize: 9, color: C.muted, letterSpacing: '0.1em',
-          textTransform: 'uppercase', marginBottom: 5,
+          fontSize: 9,
+          color: C.muted,
+          letterSpacing: '0.1em',
+          textTransform: 'uppercase',
+          marginBottom: 5,
           fontFamily: 'JetBrains Mono, monospace',
         }}
       >
@@ -436,7 +506,8 @@ function KpiCard({ label, value, accent }: { label: string; value: string; accen
       </div>
       <div
         style={{
-          fontSize: 16, color: accent ?? C.text,
+          fontSize: 16,
+          color: accent ?? C.text,
           fontFamily: 'JetBrains Mono, monospace',
           fontVariantNumeric: 'tabular-nums',
           lineHeight: 1,
@@ -459,7 +530,9 @@ export function ConvexTelemetryPanel() {
   const [showAllSessions, setShowAllSessions] = useState(false)
   const listRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => { injectStyles() }, [])
+  useEffect(() => {
+    injectStyles()
+  }, [])
 
   useEffect(() => {
     window.electronAPI
@@ -483,9 +556,7 @@ export function ConvexTelemetryPanel() {
     const filtered =
       showAllSessions || !activeSessionId
         ? allMerged
-        : allMerged.filter(
-            (e) => !e.sessionExternalId || e.sessionExternalId === activeSessionId,
-          )
+        : allMerged.filter((e) => !e.sessionExternalId || e.sessionExternalId === activeSessionId)
     return filtered.slice(-100).reverse()
   }, [allMerged, showAllSessions, activeSessionId])
 
@@ -494,12 +565,14 @@ export function ConvexTelemetryPanel() {
     const base =
       showAllSessions || !activeSessionId
         ? allMerged
-        : allMerged.filter(
-            (e) => !e.sessionExternalId || e.sessionExternalId === activeSessionId,
-          )
-    let mutations = 0, queries = 0, totalLatencyMs = 0, latencyCount = 0, totalOut = 0
+        : allMerged.filter((e) => !e.sessionExternalId || e.sessionExternalId === activeSessionId)
+    let mutations = 0,
+      queries = 0,
+      totalLatencyMs = 0,
+      latencyCount = 0,
+      totalOut = 0
     for (const e of base) {
-      if (e.type === 'mutation')                          mutations++
+      if (e.type === 'mutation') mutations++
       if (e.type === 'subscription' || e.type === 'query') queries++
       if (e.durationMs !== undefined && (e.type === 'mutation' || e.type === 'query')) {
         totalLatencyMs += e.durationMs
@@ -516,9 +589,14 @@ export function ConvexTelemetryPanel() {
     background: active ? '#111' : C.bg2,
     color: active ? C.text : C.muted,
     border: `1px solid ${active ? '#222' : C.border}`,
-    borderRadius: 7, padding: '6px 10px', fontSize: 10,
-    cursor: 'pointer', letterSpacing: '0.1em', textTransform: 'uppercase',
-    fontFamily: 'JetBrains Mono, monospace', transition: 'color 0.12s, border-color 0.12s',
+    borderRadius: 7,
+    padding: '6px 10px',
+    fontSize: 10,
+    cursor: 'pointer',
+    letterSpacing: '0.1em',
+    textTransform: 'uppercase',
+    fontFamily: 'JetBrains Mono, monospace',
+    transition: 'color 0.12s, border-color 0.12s',
   })
 
   return (
@@ -529,12 +607,18 @@ export function ConvexTelemetryPanel() {
         className="ct-btn"
         onClick={() => setOpen((p) => !p)}
         style={{
-          position: 'fixed', top: 12, right: 12, zIndex: 60,
+          position: 'fixed',
+          top: 12,
+          right: 12,
+          zIndex: 60,
           background: C.bg2,
           color: open ? C.text : C.muted,
           border: `1px solid ${open ? '#222' : C.border}`,
-          borderRadius: 9, padding: '8px 12px',
-          fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase',
+          borderRadius: 9,
+          padding: '8px 12px',
+          fontSize: 11,
+          letterSpacing: '0.12em',
+          textTransform: 'uppercase',
           cursor: 'pointer',
           fontFamily: 'Fraunces, JetBrains Mono, monospace',
           transition: 'color 0.15s, border-color 0.15s, transform 0.08s',
@@ -548,7 +632,9 @@ export function ConvexTelemetryPanel() {
         <div
           style={{
             position: 'fixed',
-            top: 46, right: 12, bottom: 12,
+            top: 46,
+            right: 12,
+            bottom: 12,
             width: 520,
             background: `radial-gradient(1200px 500px at 100% 0%, rgba(59,130,246,0.08), transparent 55%),
                          radial-gradient(900px 450px at 30% 10%, rgba(168,85,247,0.08), transparent 55%),
@@ -556,21 +642,40 @@ export function ConvexTelemetryPanel() {
             border: `1px solid #0e0e0e`,
             borderRadius: 12,
             zIndex: 55,
-            display: 'flex', flexDirection: 'column',
+            display: 'flex',
+            flexDirection: 'column',
             overflow: 'hidden',
             boxShadow: '0 32px 80px rgba(0,0,0,0.9), inset 0 0 0 1px #111',
             fontFamily: 'JetBrains Mono, monospace',
           }}
         >
           {/* ── Header ────────────────────────────────────────────────────── */}
-          <div style={{ padding: '14px 16px', borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+          <div
+            style={{ padding: '14px 16px', borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}
+          >
             {/* Title + controls row */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'flex-start',
+                marginBottom: 12,
+              }}
+            >
               <div>
-                <div style={{ fontSize: 12, color: C.text, letterSpacing: '0.12em', fontFamily: 'Fraunces, JetBrains Mono, monospace' }}>
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: C.text,
+                    letterSpacing: '0.12em',
+                    fontFamily: 'Fraunces, JetBrains Mono, monospace',
+                  }}
+                >
                   CONVEX TRACE
                 </div>
-                <div style={{ fontSize: 11, color: C.muted, marginTop: 4, letterSpacing: '0.02em' }}>
+                <div
+                  style={{ fontSize: 11, color: C.muted, marginTop: 4, letterSpacing: '0.02em' }}
+                >
                   {activeSessionId
                     ? `session · ${activeSessionId.slice(0, 16)}…`
                     : 'no active session'}
@@ -602,19 +707,31 @@ export function ConvexTelemetryPanel() {
             {/* KPI strip — tight grid with inner dividers */}
             <div
               style={{
-                display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)',
-                gap: 1, background: C.border, borderRadius: 4, overflow: 'hidden',
+                display: 'grid',
+                gridTemplateColumns: 'repeat(4, 1fr)',
+                gap: 1,
+                background: C.border,
+                borderRadius: 4,
+                overflow: 'hidden',
               }}
             >
-              <KpiCard label="MUTATIONS"  value={String(kpi.mutations)}  accent={C.mutation} />
-              <KpiCard label="QUERIES"    value={String(kpi.queries)}    accent={C.subscription} />
-              <KpiCard label="AVG LAT"    value={kpi.avgLatency > 0 ? `${kpi.avgLatency}ms` : '—'} />
-              <KpiCard label="TOTAL OUT"  value={formatBytes(kpi.totalOut)} />
+              <KpiCard label="MUTATIONS" value={String(kpi.mutations)} accent={C.mutation} />
+              <KpiCard label="QUERIES" value={String(kpi.queries)} accent={C.subscription} />
+              <KpiCard label="AVG LAT" value={kpi.avgLatency > 0 ? `${kpi.avgLatency}ms` : '—'} />
+              <KpiCard label="TOTAL OUT" value={formatBytes(kpi.totalOut)} />
             </div>
 
             {/* File path */}
             {filePath && (
-              <div style={{ marginTop: 10, fontSize: 11, color: C.dim, wordBreak: 'break-all', lineHeight: 1.45 }}>
+              <div
+                style={{
+                  marginTop: 10,
+                  fontSize: 11,
+                  color: C.dim,
+                  wordBreak: 'break-all',
+                  lineHeight: 1.45,
+                }}
+              >
                 {filePath}
               </div>
             )}
@@ -624,17 +741,23 @@ export function ConvexTelemetryPanel() {
           <div
             ref={listRef}
             style={{
-              flex: 1, overflowY: 'auto',
+              flex: 1,
+              overflowY: 'auto',
               padding: '10px 12px',
-              display: 'flex', flexDirection: 'column', gap: 2,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 2,
             }}
           >
             {displayed.length === 0 ? (
               <div
                 style={{
-                  color: C.muted, fontSize: 13,
-                  padding: '32px 8px', textAlign: 'center',
-                  letterSpacing: '0.06em', lineHeight: 1.8,
+                  color: C.muted,
+                  fontSize: 13,
+                  padding: '32px 8px',
+                  textAlign: 'center',
+                  letterSpacing: '0.06em',
+                  lineHeight: 1.8,
                 }}
               >
                 no telemetry captured yet

@@ -1,4 +1,4 @@
-import { Check, AlertCircle, Loader2 } from 'lucide-react'
+import { AlertCircle } from 'lucide-react'
 import { getToolMeta, canonicalizeToolName } from './ToolRegistry'
 import { cn } from '../../lib/utils'
 
@@ -47,43 +47,61 @@ export function ToolCallPart({ part }: { part: ToolPartData }) {
   const readTarget = canonicalName === 'Read' ? basename(extractPath(state.input)) : ''
 
   const statusIcon = isPending ? (
-    <Loader2 className="h-3 w-3 animate-spin text-muted-foreground/70" />
+    <span className="custom-loader text-primary shrink-0" />
   ) : isError ? (
-    <AlertCircle className="h-3 w-3 text-destructive" />
-  ) : (
-    <Check className="h-3 w-3 text-muted-foreground/70" />
-  )
+    <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
+  ) : null
 
   return (
     <div className="py-0.5">
-      <div className="flex items-start gap-2 text-[12px] leading-relaxed">
-        {canonicalName !== 'Read' && (
-          <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground/60">
-            <ToolIcon className="h-3.5 w-3.5" />
+      <div className="flex items-start gap-2 text-[14px] leading-relaxed">
+        {canonicalName !== 'Read' ? (
+          <span className="mt-[4px] flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground/60">
+            <ToolIcon className="h-4 w-4" />
+          </span>
+        ) : (
+          <span className="mt-[4px] flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground/60">
+            <ToolIcon className="h-4 w-4" />
           </span>
         )}
         <div className="min-w-0 flex-1">
           {canonicalName === 'Read' ? (
             <div className="flex items-center gap-2">
-              <span className={cn('shrink-0', isPending ? 'shimmer-text' : 'text-foreground')}>
+              <span
+                className={cn(
+                  'shrink-0',
+                  isPending ? 'shimmer-text font-medium' : 'text-foreground',
+                )}
+              >
                 Read
               </span>
-              <span className="truncate text-muted-foreground">
+              <span className="truncate text-muted-foreground/70 font-mono text-[13px]">
                 {readTarget || title.replace(/^Read\s+/, '')}
               </span>
+              {statusIcon && <span className="ml-2 flex items-center">{statusIcon}</span>}
             </div>
           ) : (
             <>
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-2">
                 <span
-                  className={cn('truncate', isPending ? 'shimmer-text' : 'text-muted-foreground')}
+                  className={cn(
+                    'truncate',
+                    isPending ? 'shimmer-text font-medium' : 'text-foreground',
+                  )}
                 >
                   {title}
                 </span>
-                <span className="shrink-0">{statusIcon}</span>
+                {subtitle && canonicalName === 'Grep' && (
+                  <span className="truncate text-muted-foreground/70 font-mono text-[13px]">
+                    {subtitle}
+                  </span>
+                )}
+                {statusIcon && <span className="flex items-center">{statusIcon}</span>}
               </div>
-              {subtitle && (
-                <div className="truncate text-[11px] text-muted-foreground/45">{subtitle}</div>
+              {subtitle && canonicalName !== 'Grep' && (
+                <div className="truncate text-[12px] text-muted-foreground/60 mt-0.5">
+                  {subtitle}
+                </div>
               )}
             </>
           )}
