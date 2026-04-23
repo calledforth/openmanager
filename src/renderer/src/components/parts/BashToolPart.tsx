@@ -57,7 +57,7 @@ export function BashToolPart({ part }: BashToolPartProps) {
         <span className="mt-[4px] flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground/60">
           <Terminal className="h-4 w-4" />
         </span>
-        <div className="flex-1 min-w-0 flex items-center gap-2 text-[14px] leading-relaxed">
+        <div className="text-14-regular leading-readable flex flex-1 min-w-0 items-center gap-2">
           <span
             className={cn(
               'truncate',
@@ -108,12 +108,12 @@ export function BashToolPart({ part }: BashToolPartProps) {
             </div>
           )}
           {output && (
-            <pre className="m-0 text-[12px] text-muted-foreground font-mono whitespace-pre-wrap break-words leading-relaxed">
+            <pre className="m-0 font-mono text-[12px] leading-readable whitespace-pre-wrap break-words text-muted-foreground">
               {output}
             </pre>
           )}
           {error && (
-            <pre className="m-0 mt-1 text-[12px] text-destructive font-mono whitespace-pre-wrap break-words leading-relaxed">
+            <pre className="m-0 mt-1 font-mono text-[12px] leading-readable whitespace-pre-wrap break-words text-destructive">
               {error}
             </pre>
           )}

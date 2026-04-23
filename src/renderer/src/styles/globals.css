@@ -6,6 +6,8 @@
   /* Step 0: True near-black canvas (neutral-975 equivalent) */
   --color-background: hsl(0 0% 2.5%);
   --color-foreground: hsl(0 0% 90%);
+  /* Markdown **bold** in chat: stay at weight 400; lift lightness only (agentic demo used plain text, no strong) */
+  --color-chat-emphasis: hsl(0 0% 96%);
 
   /* Step 1: Slightly lifted card surface */
   --color-card: hsl(0 0% 5%);
@@ -57,40 +59,52 @@
   --color-input-border-focus: hsl(0 0% 18%);
   --color-scrollbar: hsl(0 0% 14%);
 
-  /* ── Fonts ── */
-  --font-sans: 'Geist Sans', 'Geist Variable', system-ui, sans-serif;
+  /* ── Fonts (self-hosted; matches CSP font-src 'self') ── */
+  --font-sans: 'Geist Sans', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 
-  /* ── Letter spacing ── */
+  /* ── Letter spacing: neutral for body; use Tailwind tracking-* on labels ── */
   --tracking-normal: 0;
-  --tracking-tight: -0.16px;
-  --tracking-tightest: -0.32px;
 
   /* Radius */
   --radius: 0.5rem;
 }
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   §1  VARIABLE FONT — self-hosted (no CDN dependency)
+   §1  Self-hosted faces — Geist Sans + JetBrains Mono
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-@import '@fontsource-variable/inter';
-@import '@fontsource-variable/public-sans';
+@import '@fontsource/geist-sans/400.css';
+@import '@fontsource/geist-sans/500.css';
+@import '@fontsource/geist-sans/600.css';
+@import '@fontsource/geist-sans/700.css';
+@import '@fontsource/jetbrains-mono/300.css';
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
+@import '@fontsource/jetbrains-mono/600.css';
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   §2  BASE — font rendering & feature flags
+   §2  BASE — line rhythm & rendering (Geist; no Inter-only features)
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 :root {
-  /* Line-height system (mirrors OpenCode: 130 / 150 / 180%) */
   --lh-tight: 1.3;
+  --lh-snug: 1.375;
   --lh-default: 1.6;
+  /* ~Tailwind leading-relaxed: inputs, dense UI */
+  --lh-readable: 1.625;
+  /* Long-form chat / markdown (aligned with reference agentic-chat-ui) */
+  --lh-prose: 1.75;
   --lh-loose: 1.9;
+  /* Main conversation copy — one step under agentic’s 15px reference */
+  --chat-assistant-size: 14px;
+  --chat-user-size: 14px;
 }
 
 html {
-  /* ss03 = Inter's geometric alternative glyphs (a, g, l, t …) */
-  font-feature-settings: 'ss03' 1;
+  font-feature-settings: normal;
   font-variation-settings: normal;
   line-height: var(--lh-default);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 body {
@@ -99,9 +113,9 @@ body {
   font-family: var(--font-sans);
   font-size: 13px;
   line-height: var(--lh-default);
-  font-feature-settings: 'ss03' 1;
-  /* wght 415: microscopic step above 400 regular, only possible with variable font */
-  font-variation-settings: 'wght' 415;
+  letter-spacing: var(--tracking-normal);
+  font-feature-settings: normal;
+  font-variation-settings: normal;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -130,78 +144,145 @@ textarea,
 }
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   §3  TYPE SCALE — named utilities (OpenCode convention)
-        Weights: 400 (regular) and 500 (medium) only.
+   §3  TYPE SCALE — aligned with agentic-chat-ui
+        Sizes: 10 / 11 / 12 / 13 / 14 / 15 px
+        Weights: 400 body & prose · 500 labels & nav · 600 only on 12px section bars (text-xs)
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 
-/* 11px — metadata, labels, badges */
+/*
+ * Chat copy uses class names NOT starting with `text-` — in Tailwind v4, `text-*` is
+ * reserved for color utilities; `text-chat-body` can fail to apply or fight the cascade.
+ */
+.chat-assistant {
+  font-size: var(--chat-assistant-size);
+  font-weight: 400;
+  line-height: var(--lh-prose);
+  letter-spacing: var(--tracking-normal);
+  font-synthesis-weight: none;
+}
+
+/* Lock block markdown to the same size (avoids rem/em shrinking vs 13px body) */
+.chat-assistant :where(p, ul, ol, li, blockquote) {
+  font-size: inherit;
+  line-height: inherit;
+  font-weight: inherit;
+}
+
+/* Emphasis = color only, weight 400 (matches single-weight agentic body text) */
+.chat-assistant :where(strong, b) {
+  font-weight: 400;
+  color: var(--color-chat-emphasis);
+}
+
+.chat-user :where(strong, b) {
+  font-weight: 400;
+  color: var(--color-chat-emphasis);
+}
+
+.chat-user {
+  font-size: var(--chat-user-size);
+  font-weight: 400;
+  line-height: var(--lh-readable);
+  letter-spacing: var(--tracking-normal);
+  font-synthesis-weight: none;
+}
+
+.leading-readable {
+  line-height: var(--lh-readable);
+}
+
+.leading-prose {
+  line-height: var(--lh-prose);
+}
+
+/* 10px — micro pills (model/workspace chips) */
+.text-10-medium {
+  font-size: 10px;
+  font-weight: 500;
+  line-height: var(--lh-default);
+  letter-spacing: var(--tracking-normal);
+}
+
+/* 11px — dropdown rows, Build/Plan, compact controls */
 .text-11-regular {
   font-size: 11px;
   font-weight: 400;
   line-height: var(--lh-default);
-  letter-spacing: 0;
+  letter-spacing: var(--tracking-normal);
 }
 .text-11-medium {
   font-size: 11px;
   font-weight: 500;
   line-height: var(--lh-default);
-  letter-spacing: 0;
+  letter-spacing: var(--tracking-normal);
 }
 
-/* 13px — UI chrome, sidebar items, tooltips */
+/* 12px — session titles, todo lines, secondary sidebar */
+.text-12-regular {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: var(--lh-tight);
+  letter-spacing: var(--tracking-normal);
+}
+.text-12-medium {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: var(--lh-default);
+  letter-spacing: var(--tracking-normal);
+}
+
+/* 13px — default UI density, composer input, logs, mono code blocks */
 .text-13-regular {
   font-size: 13px;
   font-weight: 400;
   line-height: var(--lh-default);
-  letter-spacing: 0;
+  letter-spacing: var(--tracking-normal);
 }
 .text-13-medium {
   font-size: 13px;
   font-weight: 500;
   line-height: var(--lh-default);
-  letter-spacing: 0;
+  letter-spacing: var(--tracking-normal);
 }
 
-/* 14px — chat body text, primary content */
+/* 14px — secondary content, tool rows */
 .text-14-regular {
   font-size: 14px;
   font-weight: 400;
-  line-height: var(--lh-loose);
-  letter-spacing: -0.01em;
+  line-height: var(--lh-default);
+  letter-spacing: var(--tracking-normal);
 }
 .text-14-medium {
   font-size: 14px;
   font-weight: 500;
   line-height: var(--lh-default);
-  letter-spacing: -0.005em;
+  letter-spacing: var(--tracking-normal);
 }
 
 /* 16px — section titles */
 .text-16-medium {
   font-size: 16px;
   font-weight: 500;
-  line-height: var(--lh-loose);
-  letter-spacing: var(--tracking-tight);
+  line-height: var(--lh-prose);
+  letter-spacing: var(--tracking-normal);
 }
 
-/* 20px — large display text */
+/* 20px — display */
 .text-20-medium {
   font-size: 20px;
   font-weight: 500;
   line-height: var(--lh-loose);
-  letter-spacing: var(--tracking-tightest);
+  letter-spacing: -0.02em;
 }
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    §4  CHAT MARKDOWN — tighter content rhythm
+    §4  CHAT MARKDOWN — prose rhythm inside [data-chat-view]
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-/* Body base: Inter/Geist, antialiased, inherits from body */
-/* Chat prose — Geist-style: 15px / 1.7 / -0.01em */
 .chat-prose {
-  font-size: 0.9375rem;        /* 15px */
-  line-height: 1.7;
-  letter-spacing: -0.01em;
-  font-family: var(--font-sans); /* Inter variable */
+  font-size: var(--chat-assistant-size);
+  line-height: var(--lh-prose);
+  letter-spacing: var(--tracking-normal);
+  font-family: var(--font-sans);
 }
 
 /* Tables in chat */
@@ -232,7 +313,7 @@ textarea,
   color: var(--color-primary);
   font-family: var(--font-mono);
   font-size: 0.9em;
-  font-weight: 500;
+  font-weight: 400;
   padding: 0;
 }
 
@@ -263,7 +344,7 @@ textarea,
   margin-top: 0.25em;
 }
 
-/* Headings */
+/* Headings — regular weight; size provides hierarchy (agentic-style) */
 [data-chat-view] h1,
 [data-chat-view] h2,
 [data-chat-view] h3,
@@ -271,8 +352,8 @@ textarea,
   color: var(--color-foreground);
   margin-top: 2em;
   margin-bottom: 0.75em;
-  font-weight: 600;
-  letter-spacing: var(--tracking-tight);
+  font-weight: 400;
+  letter-spacing: var(--tracking-normal);
 }
 
 [data-chat-view] h1 {
@@ -301,6 +382,15 @@ textarea,
 [data-chat-view] pre {
   margin-top: 8px;
   margin-bottom: 8px;
+}
+
+/* Floating composer — frosted glass: Tailwind alone was ineffective because (1) the dock gradient
+   used opaque `from-card` behind the input, so blur had nothing to show, and (2) Electron/Chromium
+   needs explicit -webkit-backdrop-filter. Keep tint as rgba, not a solid theme color. */
+.chat-composer-glass {
+  background: rgba(10, 10, 10, 0.28);
+  -webkit-backdrop-filter: blur(40px) saturate(160%);
+  backdrop-filter: blur(40px) saturate(160%);
 }
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

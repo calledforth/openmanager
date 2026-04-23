@@ -29,14 +29,15 @@ const mdComponents: Components = {
             margin: 0,
             padding: '0.75rem 1rem',
             fontSize: '13px',
-            lineHeight: '1.6',
+            lineHeight: 'var(--lh-readable)',
+            fontFamily: 'var(--font-mono), ui-monospace, monospace',
             background: 'transparent',
             borderRadius: 0,
             overflow: 'visible',
           }}
           codeTagProps={{
             style: {
-              fontFamily: 'inherit',
+              fontFamily: 'var(--font-mono), ui-monospace, monospace',
               margin: 0,
               padding: 0,
             },
@@ -50,13 +51,13 @@ const mdComponents: Components = {
     )
   },
   p({ children }) {
-    return <p className="text-foreground my-px leading-[1.5] py-[3px]">{children}</p>
+    return <p className="text-foreground my-px py-[3px] leading-prose">{children}</p>
   },
   ul({ children }) {
-    return <ul className="my-1 pl-5 text-foreground leading-[1.5]">{children}</ul>
+    return <ul className="my-1 pl-5 text-foreground leading-prose">{children}</ul>
   },
   ol({ children }) {
-    return <ol className="my-1 pl-5 text-foreground leading-[1.5]">{children}</ol>
+    return <ol className="my-1 pl-5 text-foreground leading-prose">{children}</ol>
   },
   li({ children }) {
     return <li className="my-0.5">{children}</li>
@@ -77,7 +78,7 @@ const mdComponents: Components = {
   },
   th({ children }) {
     return (
-      <th className="border border-border px-2.5 py-1.5 bg-card text-left text-foreground/90 font-medium text-[11px]">
+      <th className="border border-border px-2.5 py-1.5 bg-card text-left text-foreground/90 font-normal text-[11px]">
         {children}
       </th>
     )
@@ -101,13 +102,19 @@ const mdComponents: Components = {
     )
   },
   h1({ children }) {
-    return <h1 className="text-base font-medium text-foreground mt-[1.4em] mb-1">{children}</h1>
+    return (
+      <h1 className="text-[1.125em] font-normal text-foreground mt-[1.4em] mb-1 leading-prose">{children}</h1>
+    )
   },
   h2({ children }) {
-    return <h2 className="text-[15px] font-medium text-foreground mt-[1.2em] mb-1">{children}</h2>
+    return (
+      <h2 className="text-[1.05em] font-normal text-foreground mt-[1.2em] mb-1 leading-prose">{children}</h2>
+    )
   },
   h3({ children }) {
-    return <h3 className="text-[13px] font-medium text-foreground mt-[1em] mb-1">{children}</h3>
+    return (
+      <h3 className="text-[0.95em] font-normal text-foreground mt-[1em] mb-1 leading-prose">{children}</h3>
+    )
   },
 }
 
@@ -121,7 +128,7 @@ export function TextPart({ text, dimmed }: TextPartProps) {
   return (
     <div
       className={cn(
-        'text-14-regular',
+        'chat-assistant',
         dimmed ? 'text-muted-foreground' : 'text-foreground',
       )}
     >

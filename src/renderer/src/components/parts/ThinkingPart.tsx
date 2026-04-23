@@ -64,14 +64,14 @@ export function ThinkingPart({ text, duration, isStreaming = false }: ThinkingPa
         )}
       >
         {isStreaming ? (
-          <span className="flex items-start gap-2 text-[14px] leading-relaxed m-0">
+          <span className="text-13-regular m-0 flex items-start gap-2">
             <span className="mt-[4px] flex h-4 w-4 shrink-0 items-center justify-center">
               <span className="custom-loader text-primary" />
             </span>
             <span className="shimmer-text font-medium">Thinking</span>
           </span>
         ) : (
-          <span className="flex items-start gap-2 text-[14px] leading-relaxed">
+          <span className="text-13-regular flex items-start gap-2">
             <span className="mt-[4px] flex h-4 w-4 shrink-0 items-center justify-center">
               <ChevronRight
                 className={cn(
@@ -105,7 +105,7 @@ export function ThinkingPart({ text, duration, isStreaming = false }: ThinkingPa
             className={cn(
               'overflow-y-auto max-h-[400px] scrollbar-hide',
               'ml-6 pl-3 border-l border-border',
-              'text-muted-foreground text-[14px] leading-relaxed whitespace-pre-wrap',
+              'chat-assistant text-muted-foreground whitespace-pre-wrap',
             )}
           >
             {text || (isStreaming ? '…' : '')}

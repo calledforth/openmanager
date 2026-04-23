@@ -99,7 +99,7 @@ export function EditToolPart({ part }: EditToolPartProps) {
         <span className="mt-[4px] flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground/60">
           <Icon className="h-4 w-4" />
         </span>
-        <div className="flex-1 min-w-0 flex items-center gap-2 text-[14px] leading-relaxed">
+        <div className="text-14-regular leading-readable flex flex-1 min-w-0 items-center gap-2">
           <span
             className={cn(
               'whitespace-nowrap',
@@ -152,7 +152,7 @@ export function EditToolPart({ part }: EditToolPartProps) {
       {expanded && (
         <div className="mt-1 mb-2 ml-6 pl-3 border-l border-border max-h-[300px] overflow-y-auto scrollbar-hide">
           {hasDiff ? (
-            <div className="font-mono text-[12px] leading-relaxed">
+            <div className="font-mono text-[12px] leading-readable">
               {diffLines.map((line, i) => (
                 <div
                   key={i}
@@ -171,7 +171,7 @@ export function EditToolPart({ part }: EditToolPartProps) {
               ))}
             </div>
           ) : state.output ? (
-            <pre className="m-0 text-[12px] text-muted-foreground font-mono whitespace-pre-wrap break-words leading-relaxed">
+            <pre className="m-0 font-mono text-[12px] leading-readable whitespace-pre-wrap break-words text-muted-foreground">
               {state.output}
             </pre>
           ) : null}

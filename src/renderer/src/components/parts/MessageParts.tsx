@@ -33,7 +33,7 @@ function FallbackPart({ part }: { part: Part }) {
     return null
   }
   return (
-    <div className="text-[11px] text-muted-foreground py-0.5 font-medium italic px-2">
+    <div className="text-11-medium text-muted-foreground px-2 py-0.5 italic">
       {part.type}
       {(part as Record<string, unknown>).tool ? `: ${(part as Record<string, unknown>).tool}` : ''}
     </div>
@@ -78,19 +78,19 @@ function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode
     }
     case 'retry':
       return (
-        <div key={key} className="text-xs text-amber-400 py-0.5 px-2">
+        <div key={key} className="text-11-regular px-2 py-0.5 text-amber-400">
           Retrying (attempt {(part.attempt as number) ?? '?'}){part.error ? `: ${part.error}` : ''}
         </div>
       )
     case 'subtask':
       return (
-        <div key={key} className="text-xs text-violet-400 py-0.5 px-2">
+        <div key={key} className="text-11-regular px-2 py-0.5 text-violet-400">
           Subtask: {(part.description as string) ?? (part.prompt as string) ?? 'running'}
         </div>
       )
     case 'compaction':
       return (
-        <div key={key} className="text-[11px] text-muted-foreground py-0.5 italic px-2">
+        <div key={key} className="text-11-regular text-muted-foreground px-2 py-0.5 italic">
           Session compacted
         </div>
       )

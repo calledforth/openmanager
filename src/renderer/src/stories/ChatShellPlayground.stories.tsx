@@ -3,6 +3,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { WorkspaceSidebarView } from '../components/sidebar/WorkspaceSidebarView'
 import { ChatViewPanel, UserMessage, AssistantMessage } from '../components/chat/ChatViewPrimitives'
 import { MessageInputView } from '../components/chat/MessageInputView'
+import { FloatingChatComposer } from '../components/chat/FloatingChatComposer'
 import type { StreamMessagePart } from '../lib/remote-stream-parts'
 
 const meta = {
@@ -678,7 +679,7 @@ function Demo() {
   )
 
   return (
-    <div className="h-screen w-screen overflow-hidden bg-background flex">
+    <div className="flex h-screen w-screen min-w-0 overflow-hidden bg-background text-foreground selection:bg-accent/25 selection:text-foreground">
       <WorkspaceSidebarView
         collapsed={collapsed}
         onToggle={() => setCollapsed((v) => !v)}
@@ -699,15 +700,16 @@ function Demo() {
         onRetryOpenCode={() => setStatus('connecting')}
       />
 
-      <div className="flex flex-1 flex-col overflow-hidden">
-        <ChatViewPanel
-          title="Typography system refactor"
-          status={sessionStatus}
-          isStreaming={streaming}
-          onAbort={stopStream}
-        >
-          <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden min-h-0">
-            <div className="mx-auto max-w-2xl px-4 py-6 space-y-1">
+      <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden pt-2 pr-2 pb-0 pl-0 transition-all duration-300 ease-in-out">
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-t-xl border border-border bg-card">
+          <ChatViewPanel
+            title="Typography system refactor"
+            status={sessionStatus}
+            isStreaming={streaming}
+            onAbort={stopStream}
+          >
+            <div ref={scrollRef} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+              <div className="mx-auto max-w-2xl space-y-1 px-4 py-6 pb-44">
               {messages.map((msg) =>
                 msg.role === 'user' ? (
                   <UserMessage key={msg.id} content={msg.content} />
@@ -726,13 +728,13 @@ function Demo() {
                   />
                 ),
               )}
+              </div>
             </div>
-          </div>
-        </ChatViewPanel>
+          </ChatViewPanel>
 
-        {/* Debug controls */}
-        <div className="px-4 pb-2">
-          <div className="mx-auto max-w-2xl flex flex-wrap gap-1.5 text-11-regular text-muted-foreground">
+          <FloatingChatComposer>
+            <div className="pb-2">
+              <div className="mx-auto flex max-w-2xl flex-wrap gap-1.5 text-11-regular text-muted-foreground">
             <button
               className="rounded border border-border px-2 py-1 hover:bg-surface-hover transition-default"
               onClick={() => setStatus('connected')}
@@ -796,36 +798,38 @@ function Demo() {
             >
               clear
             </button>
-          </div>
-        </div>
+              </div>
+            </div>
 
-        <MessageInputView
-          disabled={status !== 'connected'}
-          pendingDraftSessionStart={false}
-          activeWorkspacePath="/workspace/openmanager"
-          activeSessionId="sess-1"
-          isSessionDraftOpen={false}
-          openCodeReady={status === 'connected'}
-          modeOptions={[
-            { id: 'default', name: 'Default' },
-            { id: 'plan', name: 'Plan' },
-            { id: 'debug', name: 'Debug' },
-          ]}
-          currentModeId={modeId}
-          modelOptions={[
-            { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5' },
-            { id: 'claude-opus-4', name: 'Claude Opus 4' },
-            { id: 'gpt-5.1', name: 'GPT-5.1' },
-          ]}
-          currentModelId={modelId}
-          canChangeSettings={true}
-          agent={{ name: 'OpenCode', version: '1.7.0' }}
-          isStreaming={false}
-          onModeChange={setModeId}
-          onModelChange={setModelId}
-          onSend={(prompt) => startStream(prompt, preset)}
-          onAbort={() => {}}
-        />
+            <MessageInputView
+              disabled={status !== 'connected'}
+              pendingDraftSessionStart={false}
+              activeWorkspacePath="/workspace/openmanager"
+              activeSessionId="sess-1"
+              isSessionDraftOpen={false}
+              openCodeReady={status === 'connected'}
+              modeOptions={[
+                { id: 'default', name: 'Default' },
+                { id: 'plan', name: 'Plan' },
+                { id: 'debug', name: 'Debug' },
+              ]}
+              currentModeId={modeId}
+              modelOptions={[
+                { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5' },
+                { id: 'claude-opus-4', name: 'Claude Opus 4' },
+                { id: 'gpt-5.1', name: 'GPT-5.1' },
+              ]}
+              currentModelId={modelId}
+              canChangeSettings={true}
+              agent={{ name: 'OpenCode', version: '1.7.0' }}
+              isStreaming={false}
+              onModeChange={setModeId}
+              onModelChange={setModelId}
+              onSend={(prompt) => startStream(prompt, preset)}
+              onAbort={() => {}}
+            />
+          </FloatingChatComposer>
+        </div>
       </div>
     </div>
   )

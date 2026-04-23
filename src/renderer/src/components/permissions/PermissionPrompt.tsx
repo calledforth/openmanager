@@ -29,8 +29,8 @@ export function PermissionPrompt() {
               <ShieldAlert className="size-4" />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium text-foreground">Permission required</div>
-              <div className="mt-1 text-xs text-muted-foreground">
+              <div className="text-13-medium text-foreground">Permission required</div>
+              <div className="mt-1 text-13-regular text-muted-foreground">
                 An agent action is waiting for approval before it can continue.
               </div>
             </div>
@@ -39,20 +39,20 @@ export function PermissionPrompt() {
 
         <div className="space-y-4 px-5 py-4">
           <div className="rounded-xl border border-border bg-muted/40 p-3">
-            <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+            <div className="text-11-medium flex items-center gap-2 uppercase tracking-wide text-muted-foreground">
               <TerminalSquare className="size-3.5" />
               Requested tool
             </div>
-            <div className="mt-2 text-sm font-medium text-foreground">
+            <div className="mt-2 text-13-medium text-foreground">
               {pendingPermission.toolName}
             </div>
-            <div className="mt-1 text-sm leading-relaxed text-muted-foreground">
+            <div className="mt-1 text-13-regular leading-readable text-muted-foreground">
               {pendingPermission.description}
             </div>
           </div>
 
           {pendingPermission.permission && (
-            <div className="text-xs text-muted-foreground">
+            <div className="text-11-regular text-muted-foreground">
               Permission type:{' '}
               <span className="text-foreground/80">{pendingPermission.permission}</span>
             </div>
@@ -60,10 +60,10 @@ export function PermissionPrompt() {
 
           {inputPreview && (
             <div>
-              <div className="mb-1.5 text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+              <div className="text-11-medium mb-1.5 uppercase tracking-wide text-muted-foreground">
                 Input
               </div>
-              <pre className="max-h-40 overflow-auto rounded-xl border border-border bg-black/20 px-3 py-2 text-xs leading-relaxed text-foreground/80 whitespace-pre-wrap wrap-break-word">
+              <pre className="max-h-40 overflow-auto rounded-xl border border-border bg-black/20 px-3 py-2 font-mono text-11-regular leading-readable text-foreground/80 whitespace-pre-wrap wrap-break-word">
                 {inputPreview}
               </pre>
             </div>
@@ -71,10 +71,10 @@ export function PermissionPrompt() {
 
           {patternsPreview && (
             <div>
-              <div className="mb-1.5 text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+              <div className="text-11-medium mb-1.5 uppercase tracking-wide text-muted-foreground">
                 Allowed patterns
               </div>
-              <pre className="max-h-28 overflow-auto rounded-xl border border-border bg-black/20 px-3 py-2 text-xs leading-relaxed text-foreground/80 whitespace-pre-wrap wrap-break-word">
+              <pre className="max-h-28 overflow-auto rounded-xl border border-border bg-black/20 px-3 py-2 font-mono text-11-regular leading-readable text-foreground/80 whitespace-pre-wrap wrap-break-word">
                 {patternsPreview}
               </pre>
             </div>
@@ -82,10 +82,10 @@ export function PermissionPrompt() {
 
           {alwaysPatternsPreview && (
             <div>
-              <div className="mb-1.5 text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+              <div className="text-11-medium mb-1.5 uppercase tracking-wide text-muted-foreground">
                 Always allow patterns
               </div>
-              <pre className="max-h-28 overflow-auto rounded-xl border border-border bg-black/20 px-3 py-2 text-xs leading-relaxed text-foreground/80 whitespace-pre-wrap wrap-break-word">
+              <pre className="max-h-28 overflow-auto rounded-xl border border-border bg-black/20 px-3 py-2 font-mono text-11-regular leading-readable text-foreground/80 whitespace-pre-wrap wrap-break-word">
                 {alwaysPatternsPreview}
               </pre>
             </div>
@@ -95,13 +95,13 @@ export function PermissionPrompt() {
         <div className="flex items-center justify-end gap-2 border-t border-border bg-muted/20 px-5 py-4">
           <button
             onClick={() => resolvePermission(false)}
-            className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="rounded-lg border border-border bg-background px-3 py-2 text-13-regular text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
             Deny
           </button>
           <button
             onClick={() => resolvePermission(true)}
-            className="inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-3 py-2 text-sm font-medium text-black transition-colors hover:bg-emerald-400"
+            className="inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-3 py-2 text-13-medium text-black transition-colors hover:bg-emerald-400"
           >
             <ShieldCheck className="size-4" />
             Approve

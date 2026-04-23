@@ -54,7 +54,7 @@ export function ToolCallPart({ part }: { part: ToolPartData }) {
 
   return (
     <div className="py-0.5">
-      <div className="flex items-start gap-2 text-[14px] leading-relaxed">
+      <div className="text-14-regular leading-readable flex items-start gap-2">
         {canonicalName !== 'Read' ? (
           <span className="mt-[4px] flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground/60">
             <ToolIcon className="h-4 w-4" />

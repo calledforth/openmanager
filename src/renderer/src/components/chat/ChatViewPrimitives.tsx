@@ -3,6 +3,7 @@ import { MessageParts } from '../parts/MessageParts'
 import { TextPart } from '../parts/TextPart'
 import { cn } from '../../lib/utils'
 import type { StreamMessagePart } from '../../lib/remote-stream-parts'
+import { ReferenceComposerToolbar } from './composer-toolbar'
 
 export interface RuntimeMetadata {
   providerId?: string
@@ -39,12 +40,12 @@ export function ChatViewPanel({
   return (
     <div data-chat-view className="flex-1 flex flex-col min-h-0">
       <div className="px-4 py-2.5 flex justify-between items-center shrink-0">
-        <span className="text-13-medium text-sidebar-primary">{title}</span>
+        <span className="text-14-medium text-sidebar-primary">{title}</span>
         <div className="flex items-center gap-2">
           {status && status !== 'idle' && (
             <span
               className={cn(
-                'text-[11px]',
+                'text-11-regular',
                 status === 'running' || status === 'busy'
                   ? 'text-primary'
                   : status === 'error'
@@ -59,7 +60,7 @@ export function ChatViewPanel({
             <button
               type="button"
               onClick={onAbort}
-              className="rounded-md border border-destructive px-2 py-0.5 text-[11px] text-destructive bg-transparent cursor-pointer transition-default hover:bg-destructive/10"
+              className="rounded-md border border-destructive px-2 py-0.5 text-11-regular text-destructive bg-transparent cursor-pointer transition-default hover:bg-destructive/10"
             >
               Stop
             </button>
@@ -89,24 +90,49 @@ export function UserMessage({ content, runtime }: { content: string; runtime?: R
   const canExpand = showGradient && !expanded
 
   return (
-    <div className="py-1.5">
-      <div className="flex justify-end">
+    <div className="w-full py-1.5">
+      <div className="flex w-full flex-col shadow-2xl shadow-black/40">
         <div
-          className={cn(
-            'max-w-[85%] relative rounded-2xl rounded-br-md bg-secondary px-4 py-2.5 text-14-regular text-foreground whitespace-pre-wrap break-words transition-all duration-200',
-            canExpand ? 'cursor-pointer hover:brightness-110' : '',
-          )}
+          role={canExpand ? 'button' : undefined}
+          tabIndex={canExpand ? 0 : undefined}
           onClick={() => canExpand && setExpanded(true)}
-        >
-          <div ref={contentRef} className={cn(canExpand && 'max-h-[100px] overflow-hidden')}>
-            {content}
-          </div>
-          {canExpand && (
-            <div
-              className="absolute inset-x-0 bottom-0 h-8 bg-linear-to-t from-secondary to-transparent pointer-events-none"
-              aria-hidden
-            />
+          onKeyDown={(e) => {
+            if (!canExpand) return
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              setExpanded(true)
+            }
+          }}
+          className={cn(
+            'chat-composer-glass relative flex w-full flex-col gap-2 rounded-md border border-white/10 p-2.5 transition-all duration-200',
+            canExpand ? 'cursor-pointer hover:border-white/15' : '',
           )}
+        >
+          <div className="relative min-w-0">
+            <div
+              ref={contentRef}
+              className={cn(
+                'chat-user min-w-0 whitespace-pre-wrap break-words text-neutral-200',
+                canExpand && !expanded && 'max-h-[100px] overflow-hidden',
+              )}
+            >
+              {content}
+            </div>
+            {canExpand && !expanded && (
+              <div
+                className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-[rgb(10,10,10)] to-transparent"
+                aria-hidden
+              />
+            )}
+          </div>
+
+          <div
+            className="mt-0.5"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <ReferenceComposerToolbar />
+          </div>
         </div>
       </div>
       <MessageRuntimeMeta runtime={runtime} align="right" />
@@ -130,7 +156,7 @@ export function AssistantMessage({
 
   return (
     <div className="py-2">
-      <div className="text-14-regular text-foreground/90 space-y-0.5">
+      <div className="text-foreground/90 space-y-0.5">
         {hasParts ? (
           <MessageParts parts={parts} isStreaming={isStreaming} />
         ) : (
@@ -168,7 +194,7 @@ export function MessageRuntimeMeta({
   return (
     <div
       className={cn(
-        'mt-1 text-[11px] text-muted-foreground tabular-nums',
+        'mt-1 text-11-regular text-muted-foreground tabular-nums',
         align === 'right' ? 'text-right' : 'text-left',
       )}
     >

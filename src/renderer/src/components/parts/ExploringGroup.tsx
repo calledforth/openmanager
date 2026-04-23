@@ -84,7 +84,7 @@ export function ExploringGroup({ parts, isStreaming = false }: ExploringGroupPro
             'Explored'
           )}
         </span>
-        <span className="text-xs text-muted-foreground/50 truncate min-w-0">
+        <span className="text-11-regular min-w-0 truncate text-muted-foreground/50">
           {subtitle}
         </span>
       </button>

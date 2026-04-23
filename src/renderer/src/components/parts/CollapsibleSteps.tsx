@@ -20,7 +20,7 @@ export function CollapsibleSteps({
       <button
         type="button"
         onClick={() => setExpanded(!expanded)}
-        className="py-0.5 px-0 cursor-pointer text-muted-foreground hover:text-foreground/70 transition-colors bg-transparent border-none text-left w-full text-[14px]"
+        className="w-full cursor-pointer border-none bg-transparent py-0.5 px-0 text-left text-xs font-semibold text-foreground/90 transition-colors hover:text-foreground"
       >
         Worked, {stepsCount} step{stepsCount !== 1 ? 's' : ''}
       </button>

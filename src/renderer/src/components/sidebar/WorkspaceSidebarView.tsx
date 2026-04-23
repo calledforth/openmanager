@@ -61,7 +61,7 @@ export function WorkspaceSidebarView({
 
   if (collapsed) {
     return (
-      <aside className="flex h-full w-[48px] flex-col items-center bg-sidebar py-3 shrink-0">
+      <aside className="flex h-full w-[48px] shrink-0 flex-col items-center overflow-hidden bg-transparent py-3 transition-[width] duration-300 ease-in-out">
         <button
           onClick={onToggle}
           className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground"
@@ -74,7 +74,7 @@ export function WorkspaceSidebarView({
   }
 
   return (
-    <aside className="flex h-full w-[260px] flex-col bg-sidebar shrink-0">
+    <aside className="flex h-full w-[260px] shrink-0 flex-col overflow-hidden bg-transparent py-2 transition-[width] duration-300 ease-in-out">
       {/* Header */}
       <div className="flex h-12 items-center justify-between px-3">
         <span className="text-13-medium text-sidebar-primary">Home</span>
@@ -151,7 +151,7 @@ export function WorkspaceSidebarView({
       <div className="px-2 py-2">
         <button
           onClick={onAddWorkspace}
-          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-13-regular text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground"
+          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-12-medium text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground"
         >
           <Archive className="h-3.5 w-3.5" />
           <span>Add repository</span>
@@ -187,7 +187,7 @@ function WorkspaceGroup({
       {/* Workspace header row */}
       <button
         onClick={onToggleCollapse}
-        className="group flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-13-regular text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground"
+        className="group flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-13-medium text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground"
       >
         <ChevronDown
           className={cn('h-3 w-3 shrink-0 transition-transform duration-150', isCollapsed && '-rotate-90')}
@@ -209,7 +209,7 @@ function WorkspaceGroup({
           {/* New session row */}
           <button
             onClick={() => onCreateSession(workspace.path)}
-            className="flex w-full items-center gap-2 rounded-md px-3 py-1 text-13-regular text-muted-foreground/60 transition-default hover:bg-surface-hover hover:text-foreground"
+            className="flex w-full items-center gap-2 rounded-md px-3 py-1 text-12-regular text-muted-foreground/60 transition-default hover:bg-surface-hover hover:text-foreground"
           >
             <Plus className="h-3 w-3 shrink-0" />
             <span>New session</span>
@@ -234,7 +234,7 @@ function WorkspaceGroup({
                 ) : (
                   <MessageSquare className="h-3 w-3 shrink-0 text-muted-foreground/40" />
                 )}
-                <span className="flex-1 truncate text-13-regular">
+                <span className="flex-1 truncate text-12-regular">
                   {s.title || s.externalId.slice(0, 10)}
                 </span>
                 <button

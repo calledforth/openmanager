@@ -76,11 +76,11 @@ export function ChatView() {
       const workspaceName =
         activeWorkspacePath.split(/[\\/]/).filter(Boolean).pop() ?? activeWorkspacePath
       return (
-        <div className="flex-1 flex items-center justify-center">
+        <div className="flex min-h-0 flex-1 flex items-center justify-center">
           <div className="text-center">
-            <div className="text-xl font-medium text-foreground">Let&apos;s build in</div>
+            <div className="text-16-medium text-foreground">Let&apos;s build in</div>
             <div className="mt-1 text-20-medium text-sidebar-primary">{workspaceName}</div>
-            <div className="mt-3 text-xs text-muted-foreground">
+            <div className="mt-3 text-13-regular text-muted-foreground">
               {pendingDraftSessionStart
                 ? 'Creating session...'
                 : 'Session will be created when you send your first message'}
@@ -90,7 +90,7 @@ export function ChatView() {
       )
     }
     return (
-      <div className="flex-1 flex items-center justify-center text-muted-foreground text-xs">
+      <div className="flex min-h-0 flex-1 flex items-center justify-center text-muted-foreground text-13-regular">
         Select or create a session
       </div>
     )
@@ -113,7 +113,7 @@ export function ChatView() {
         onScroll={handleScroll}
         className="flex-1 overflow-y-auto overflow-x-hidden min-h-0"
       >
-        <div className="mx-auto max-w-3xl px-4 py-6 space-y-1">
+        <div className="mx-auto max-w-3xl space-y-1 px-4 py-6 pb-44">
           {chatMessages.length === 0 && (
             <div className="text-muted-foreground/70 text-[13px] text-center mt-10">
               Send a message to start

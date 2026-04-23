@@ -1,135 +1,107 @@
-/* Storybook-only UI adjustments */
+/* Storybook-only: optional alternate UI fonts for the toolbar (see preview.tsx). */
+@import '@fontsource-variable/inter';
+@import '@fontsource-variable/public-sans';
+
+/* Storybook-only UI adjustments — avoid overriding production typography with !important */
 :root {
-  /* Increase line heights specifically for Storybook testing */
-  --lh-tight: 1.4;
-  --lh-default: 1.7;
+  --lh-tight: 1.35;
+  --lh-default: 1.65;
+  --lh-readable: 1.65;
+  --lh-prose: 1.78;
   --lh-loose: 2;
-
-  /* Increase letter spacing slightly */
-  --tracking-normal: 0.015em;
 }
 
-body {
-  letter-spacing: var(--tracking-normal);
-}
+/* --- Markdown story helpers (no !important; mirror globals structure) --- */
 
-/* Base text adjustments */
-.text-\[14px\] {
-  line-height: 1.8 !important;
-  letter-spacing: 0.01em !important;
-}
-
-/* --- Stunning Markdown Formatting (Overrides Tailwind Utilities) --- */
-
-/* Tables */
 table {
-  width: 100% !important;
-  border-collapse: collapse !important;
-  margin: 1.5em 0 !important;
-  font-size: 0.875rem !important;
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.5em 0;
+  font-size: 0.875rem;
 }
 
 th,
 td {
-  border: 1px solid var(--color-border) !important;
-  padding: 0.75rem 1rem !important;
-  text-align: left !important;
+  border: 1px solid var(--color-border);
+  padding: 0.75rem 1rem;
+  text-align: left;
 }
 
 th {
-  background-color: var(--color-surface-hover) !important;
-  color: var(--color-foreground) !important;
-  font-weight: 500 !important;
-  font-size: 0.875rem !important;
+  background-color: var(--color-surface-hover);
+  color: var(--color-foreground);
+  font-weight: 500;
+  font-size: 0.875rem;
 }
 
-/* Inline Code - No background, pop of color, mono font */
 code:not(pre code) {
-  background: transparent !important;
-  color: var(--color-primary) !important; /* Pop of primary color instead of background */
-  font-family: var(--font-mono) !important;
-  font-size: 0.9em !important;
-  font-weight: 500 !important;
-  padding: 0 !important;
-  border-radius: 0 !important;
-}
-
-/* Code block language header */
-.my-2.rounded-lg.overflow-hidden.border.border-border.bg-card > div:first-child {
-  background-color: var(--color-surface-active) !important;
-  border-bottom: 1px solid var(--color-border) !important;
-  padding: 0.5rem 1rem !important;
-}
-
-.my-2.rounded-lg.overflow-hidden.border.border-border.bg-card > div:first-child span {
-  color: var(--color-foreground) !important;
-  font-size: 0.75rem !important;
-  text-transform: uppercase !important;
-  letter-spacing: 0.05em !important;
-  opacity: 0.7;
+  background: transparent;
+  color: var(--color-primary);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  font-weight: 500;
+  padding: 0;
+  border-radius: 0;
 }
 
 pre {
-  padding: 1rem !important;
-  margin: 0 !important;
+  padding: 1rem;
+  margin: 0;
 }
 
 pre code {
-  color: var(--color-foreground) !important;
-  font-family: var(--font-mono) !important;
-  font-size: 0.85rem !important;
-  background: transparent !important;
-  padding: 0 !important;
-  opacity: 0.9 !important;
+  color: var(--color-foreground);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  background: transparent;
+  padding: 0;
+  opacity: 0.9;
 }
 
-/* Blockquotes */
 blockquote {
-  border-left: 3px solid var(--color-primary) !important;
-  padding-left: 1.25rem !important;
-  margin-left: 0 !important;
-  margin-top: 1.5em !important;
-  margin-bottom: 1.5em !important;
-  color: var(--color-muted-foreground) !important;
-  font-style: italic !important;
+  border-left: 3px solid var(--color-primary);
+  padding-left: 1.25rem;
+  margin-left: 0;
+  margin-top: 1.5em;
+  margin-bottom: 1.5em;
+  color: var(--color-muted-foreground);
+  font-style: italic;
 }
 
-/* Lists */
 ul,
 ol {
-  padding-left: 1.5rem !important;
-  margin-top: 1em !important;
-  margin-bottom: 1em !important;
+  padding-left: 1.5rem;
+  margin-top: 1em;
+  margin-bottom: 1em;
 }
 
 li {
-  margin-bottom: 0.5em !important;
+  margin-bottom: 0.5em;
 }
 
 li > p {
-  margin-top: 0.25em !important;
+  margin-top: 0.25em;
 }
 
-/* Headings */
 h1,
 h2,
 h3,
 h4 {
-  color: var(--color-foreground) !important;
-  margin-top: 2em !important;
-  margin-bottom: 0.75em !important;
-  font-weight: 600 !important;
-  letter-spacing: var(--tracking-tight) !important;
+  color: var(--color-foreground);
+  margin-top: 2em;
+  margin-bottom: 0.75em;
+  font-weight: 500;
+  letter-spacing: 0;
 }
 
 h1 {
-  font-size: 1.5em !important;
+  font-size: 1.5em;
 }
 h2 {
-  font-size: 1.25em !important;
-  border-bottom: 1px solid var(--color-border) !important;
-  padding-bottom: 0.25em !important;
+  font-size: 1.25em;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 0.25em;
 }
 h3 {
-  font-size: 1.1em !important;
+  font-size: 1.1em;
 }

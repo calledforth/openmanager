@@ -1,8 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useAppUi } from '../../providers/app-ui-provider'
 
+/** App-wide stacks from globals.css (self-hosted; CSP-safe). */
+const fontMono =
+  'var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
+const fontSans = 'var(--font-sans), ui-sans-serif, system-ui, sans-serif'
+
 // ---------------------------------------------------------------------------
-// Font + keyframe injection
+// Keyframe injection (no remote fonts)
 // ---------------------------------------------------------------------------
 const STYLE_ID = 'convex-telemetry-global-styles'
 function injectStyles(): void {
@@ -10,8 +15,6 @@ function injectStyles(): void {
   const el = document.createElement('style')
   el.id = STYLE_ID
   el.textContent = `
-    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,500;9..144,700&display=swap');
-
     @keyframes ctLeftBorderPulse {
       0%, 100% { opacity: 1; }
       50%       { opacity: 0.15; }
@@ -331,13 +334,13 @@ function EntryRow({ entry }: { entry: MergedEntry }) {
             style={{
               color: C.marker,
               fontSize: 12,
-              fontFamily: 'JetBrains Mono, monospace',
+              fontFamily: fontMono,
               letterSpacing: '0.04em',
             }}
           >
             {entry.name}
           </span>
-          <span style={{ color: C.muted, fontSize: 11, fontFamily: 'JetBrains Mono, monospace' }}>
+          <span style={{ color: C.muted, fontSize: 11, fontFamily: fontMono }}>
             {formatTime(entry.timestamp)}
           </span>
         </div>
@@ -388,7 +391,7 @@ function EntryRow({ entry }: { entry: MergedEntry }) {
           flex: 1,
           fontSize: 13,
           color: C.text,
-          fontFamily: 'JetBrains Mono, monospace',
+          fontFamily: fontMono,
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
@@ -409,7 +412,7 @@ function EntryRow({ entry }: { entry: MergedEntry }) {
             border: `1px solid ${C.active}40`,
             borderRadius: 6,
             padding: '2px 7px',
-            fontFamily: 'JetBrains Mono, monospace',
+            fontFamily: fontMono,
             flexShrink: 0,
           }}
         >
@@ -426,7 +429,7 @@ function EntryRow({ entry }: { entry: MergedEntry }) {
           border: `1px solid ${typeColor}38`,
           borderRadius: 6,
           padding: '2px 7px',
-          fontFamily: 'JetBrains Mono, monospace',
+          fontFamily: fontMono,
           letterSpacing: '0.04em',
           flexShrink: 0,
         }}
@@ -438,12 +441,12 @@ function EntryRow({ entry }: { entry: MergedEntry }) {
       {(entry.durationMs !== undefined || entry.responseBytes !== undefined) && (
         <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
           {entry.durationMs !== undefined && (
-            <span style={{ fontSize: 11, color: C.muted, fontFamily: 'JetBrains Mono, monospace' }}>
+            <span style={{ fontSize: 11, color: C.muted, fontFamily: fontMono }}>
               {formatDuration(entry.durationMs)}
             </span>
           )}
           {entry.responseBytes !== undefined && (
-            <span style={{ fontSize: 11, color: C.muted, fontFamily: 'JetBrains Mono, monospace' }}>
+            <span style={{ fontSize: 11, color: C.muted, fontFamily: fontMono }}>
               {formatBytes(entry.responseBytes)}
             </span>
           )}
@@ -464,7 +467,7 @@ function EntryRow({ entry }: { entry: MergedEntry }) {
           style={{
             fontSize: 11,
             color: C.muted,
-            fontFamily: 'JetBrains Mono, monospace',
+            fontFamily: fontMono,
             fontVariantNumeric: 'tabular-nums',
           }}
         >
@@ -474,7 +477,7 @@ function EntryRow({ entry }: { entry: MergedEntry }) {
           style={{
             fontSize: 10,
             color: ageMs > 1500 ? C.marker : C.dim,
-            fontFamily: 'JetBrains Mono, monospace',
+            fontFamily: fontMono,
             fontVariantNumeric: 'tabular-nums',
           }}
           title="Time since event timestamp"
@@ -499,7 +502,7 @@ function KpiCard({ label, value, accent }: { label: string; value: string; accen
           letterSpacing: '0.1em',
           textTransform: 'uppercase',
           marginBottom: 5,
-          fontFamily: 'JetBrains Mono, monospace',
+          fontFamily: fontMono,
         }}
       >
         {label}
@@ -508,7 +511,7 @@ function KpiCard({ label, value, accent }: { label: string; value: string; accen
         style={{
           fontSize: 16,
           color: accent ?? C.text,
-          fontFamily: 'JetBrains Mono, monospace',
+          fontFamily: fontMono,
           fontVariantNumeric: 'tabular-nums',
           lineHeight: 1,
         }}
@@ -585,7 +588,7 @@ export function ConvexTelemetryPanel() {
   }, [allMerged, showAllSessions, activeSessionId])
 
   // Shared button style helper
-  const btnStyle = (active?: boolean): React.CSSProperties => ({
+  const btnStyle = (active?: boolean): CSSProperties => ({
     background: active ? '#111' : C.bg2,
     color: active ? C.text : C.muted,
     border: `1px solid ${active ? '#222' : C.border}`,
@@ -595,7 +598,7 @@ export function ConvexTelemetryPanel() {
     cursor: 'pointer',
     letterSpacing: '0.1em',
     textTransform: 'uppercase',
-    fontFamily: 'JetBrains Mono, monospace',
+    fontFamily: fontMono,
     transition: 'color 0.12s, border-color 0.12s',
   })
 
@@ -620,7 +623,7 @@ export function ConvexTelemetryPanel() {
           letterSpacing: '0.12em',
           textTransform: 'uppercase',
           cursor: 'pointer',
-          fontFamily: 'Fraunces, JetBrains Mono, monospace',
+          fontFamily: fontSans,
           transition: 'color 0.15s, border-color 0.15s, transform 0.08s',
         }}
       >
@@ -646,7 +649,7 @@ export function ConvexTelemetryPanel() {
             flexDirection: 'column',
             overflow: 'hidden',
             boxShadow: '0 32px 80px rgba(0,0,0,0.9), inset 0 0 0 1px #111',
-            fontFamily: 'JetBrains Mono, monospace',
+            fontFamily: fontMono,
           }}
         >
           {/* ── Header ────────────────────────────────────────────────────── */}
@@ -668,7 +671,7 @@ export function ConvexTelemetryPanel() {
                     fontSize: 12,
                     color: C.text,
                     letterSpacing: '0.12em',
-                    fontFamily: 'Fraunces, JetBrains Mono, monospace',
+                    fontFamily: fontSans,
                   }}
                 >
                   CONVEX TRACE

@@ -4,14 +4,14 @@ import '../src/renderer/src/styles/globals.css'
 import './custom.css'
 
 const fontThemeDecorator = (Story, context) => {
-  const fontChoice = context.globals.fontFamily || 'public-sans'
+  const fontChoice = context.globals.fontFamily || 'geist'
 
   useEffect(() => {
-    let fontVar = "'Public Sans Variable', 'Public Sans', system-ui, sans-serif"
+    let fontVar = "'Geist Sans', ui-sans-serif, system-ui, sans-serif"
     if (fontChoice === 'inter') {
-      fontVar = "'Inter Variable', 'Inter', system-ui, sans-serif"
-    } else if (fontChoice === 'geist') {
-      fontVar = "'Geist Sans', system-ui, sans-serif"
+      fontVar = "'Inter Variable', 'Inter', ui-sans-serif, system-ui, sans-serif"
+    } else if (fontChoice === 'public-sans') {
+      fontVar = "'Public Sans Variable', 'Public Sans', ui-sans-serif, system-ui, sans-serif"
     }
 
     document.documentElement.style.setProperty('--font-sans', fontVar)
@@ -25,13 +25,13 @@ const preview: Preview = {
     fontFamily: {
       name: 'Font',
       description: 'Switch between UI fonts',
-      defaultValue: 'public-sans',
+      defaultValue: 'geist',
       toolbar: {
         icon: 'paintbrush',
         items: [
-          { value: 'public-sans', title: 'Public Sans' },
-          { value: 'inter', title: 'Inter' },
           { value: 'geist', title: 'Geist Sans' },
+          { value: 'inter', title: 'Inter' },
+          { value: 'public-sans', title: 'Public Sans' },
         ],
       },
     },
