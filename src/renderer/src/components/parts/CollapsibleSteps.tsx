@@ -1,4 +1,5 @@
-import { useState, type ReactNode } from 'react'
+import { type ReactNode } from 'react'
+import { activityRow, activityDetailsSummary } from './ToolLine'
 
 interface CollapsibleStepsProps {
   stepsCount: number
@@ -11,21 +12,17 @@ export function CollapsibleSteps({
   children,
   defaultExpanded = false,
 }: CollapsibleStepsProps) {
-  const [expanded, setExpanded] = useState(defaultExpanded)
-
   if (stepsCount === 0) return null
 
   return (
-    <div className="my-1.5">
-      <button
-        type="button"
-        onClick={() => setExpanded(!expanded)}
-        className="w-full cursor-pointer border-none bg-transparent py-0.5 px-0 text-left text-xs font-semibold text-foreground/90 transition-colors hover:text-foreground"
-      >
-        Worked, {stepsCount} step{stepsCount !== 1 ? 's' : ''}
-      </button>
-
-      {expanded && <div className="ml-0 mt-1 flex flex-col gap-1">{children}</div>}
-    </div>
+    <details className={`group ${activityRow}`} open={defaultExpanded}>
+      <summary className={activityDetailsSummary}>
+        <span className="text-[var(--basis-text-muted)]">Worked</span>{' '}
+        <span className="text-[var(--basis-text-faint)]">
+          {stepsCount} step{stepsCount !== 1 ? 's' : ''}
+        </span>
+      </summary>
+      <div className="mt-0.5 flex flex-col gap-0">{children}</div>
+    </details>
   )
 }

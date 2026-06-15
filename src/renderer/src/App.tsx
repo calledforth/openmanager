@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { AppUiProvider } from './providers/app-ui-provider'
+import { ThemeProvider } from './providers/theme-provider'
 import { SidebarDataProvider } from './providers/sidebar-data-provider'
 import { ActiveSessionProvider } from './providers/active-session-provider'
 import { PermissionStateProvider } from './providers/permission-provider'
@@ -14,13 +15,13 @@ function AppShell() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
   return (
-    <div className="flex h-screen w-screen min-w-0 overflow-hidden bg-background text-foreground selection:bg-accent/25 selection:text-foreground">
+    <div className="flex h-screen w-screen min-w-0 overflow-hidden bg-[var(--basis-canvas-bg)] text-[var(--basis-text)]">
       <WorkspaceSidebar
         collapsed={sidebarCollapsed}
         onToggle={() => setSidebarCollapsed((v) => !v)}
       />
-      <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden pt-2 pr-2 pb-0 pl-0 transition-all duration-300 ease-in-out">
-        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-t-xl border border-border bg-card">
+      <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden border-l border-[var(--basis-border-muted)] bg-[var(--basis-canvas-bg)]">
           <ChatView />
           <FloatingChatComposer>
             <MessageInput />
@@ -35,15 +36,17 @@ function AppShell() {
 
 function App() {
   return (
-    <AppUiProvider>
-      <SidebarDataProvider>
-        <ActiveSessionProvider>
-          <PermissionStateProvider>
-            <AppShell />
-          </PermissionStateProvider>
-        </ActiveSessionProvider>
-      </SidebarDataProvider>
-    </AppUiProvider>
+    <ThemeProvider>
+      <AppUiProvider>
+        <SidebarDataProvider>
+          <ActiveSessionProvider>
+            <PermissionStateProvider>
+              <AppShell />
+            </PermissionStateProvider>
+          </ActiveSessionProvider>
+        </SidebarDataProvider>
+      </AppUiProvider>
+    </ThemeProvider>
   )
 }
 

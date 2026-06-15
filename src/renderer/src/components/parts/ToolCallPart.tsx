@@ -1,6 +1,11 @@
-import { AlertCircle } from 'lucide-react'
-import { getToolMeta, canonicalizeToolName } from './ToolRegistry'
-import { cn } from '../../lib/utils'
+import { presentToolPart } from './toolPresenter'
+import {
+  activityRow,
+  activityDetailsSummary,
+  ToolLine,
+  ToolExpandedBody,
+} from './ToolLine'
+import { typographyMonoCaption } from '../../lib/typography'
 
 interface ToolPartData {
   type: 'tool'
@@ -8,105 +13,77 @@ interface ToolPartData {
   tool?: string
   callID?: string
   state?: {
-    type?: 'pending' | 'running' | 'completed' | 'error'
-    status?: 'pending' | 'running' | 'completed' | 'error'
+    type?: string
+    status?: string
     input?: unknown
     output?: string
     title?: string
     error?: string
-    metadata?: Record<string, unknown>
-    time?: { start?: number; end?: number }
   }
 }
 
-function extractPath(input: unknown): string {
-  if (!input || typeof input !== 'object') return ''
-  const obj = input as Record<string, unknown>
-  return String(obj.path ?? obj.filePath ?? obj.file_path ?? obj.file ?? '')
-}
-
-function basename(path: string): string {
-  if (!path) return ''
-  const normalized = path.replace(/\\/g, '/')
-  const parts = normalized.split('/').filter(Boolean)
-  return parts[parts.length - 1] ?? path
+function DiffBody({ text }: { text: string }) {
+  return (
+    <div className={`${typographyMonoCaption} text-[var(--basis-text-muted)]`}>
+      {text.split('\n').map((line, i) => {
+        const isAdd = line.startsWith('+') && !line.startsWith('+++')
+        const isDel = line.startsWith('-') && !line.startsWith('---')
+        return (
+          <div
+            key={i}
+            className={
+              isAdd
+                ? 'text-emerald-500/90'
+                : isDel
+                  ? 'text-rose-500/90'
+                  : 'text-[var(--basis-text-faint)]'
+            }
+          >
+            {line}
+          </div>
+        )
+      })}
+    </div>
+  )
 }
 
 export function ToolCallPart({ part }: { part: ToolPartData }) {
-  const toolName = part.tool ?? 'tool'
-  const state = part.state ?? {}
-  const stateType = (state.type ?? state.status ?? 'pending') as string
-  const isPending = stateType === 'pending' || stateType === 'running'
-  const isError = stateType === 'error'
+  const model = presentToolPart(part)
+  const line = (
+    <ToolLine
+      verb={model.verb}
+      detail={model.detail}
+      isRunning={model.isRunning}
+      detailSlot={
+        model.uiKind === 'read' && model.readTarget ? (
+          <span className="font-mono text-[var(--basis-text)]">{model.readTarget}</span>
+        ) : undefined
+      }
+    />
+  )
 
-  const meta = getToolMeta(toolName)
-  const canonicalName = canonicalizeToolName(toolName)
-  const ToolIcon = meta.icon
-  const title = state.title ?? meta.getTitle(state.input)
-  const subtitle = meta.getSubtitle(state.input)
-  const readTarget = canonicalName === 'Read' ? basename(extractPath(state.input)) : ''
+  if (!model.expandedText) {
+    return <div className={activityRow}>{line}</div>
+  }
 
-  const statusIcon = isPending ? (
-    <span className="custom-loader text-primary shrink-0" />
-  ) : isError ? (
-    <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
-  ) : null
+  const isDiff = model.uiKind === 'edit' && model.expandedText.includes('\n+')
 
   return (
-    <div className="py-0.5">
-      <div className="text-14-regular leading-readable flex items-start gap-2">
-        {canonicalName !== 'Read' ? (
-          <span className="mt-[4px] flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground/60">
-            <ToolIcon className="h-4 w-4" />
-          </span>
+    <details className={`group ${activityRow}`}>
+      <summary className={activityDetailsSummary}>
+        <span className="min-w-0 flex-1">{line}</span>
+      </summary>
+      <ToolExpandedBody>
+        {isDiff ? (
+          <DiffBody text={model.expandedText} />
         ) : (
-          <span className="mt-[4px] flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground/60">
-            <ToolIcon className="h-4 w-4" />
-          </span>
+          <pre
+            className={`m-0 whitespace-pre-wrap break-words ${typographyMonoCaption} text-[var(--basis-text-muted)]`}
+          >
+            {model.expandedText}
+          </pre>
         )}
-        <div className="min-w-0 flex-1">
-          {canonicalName === 'Read' ? (
-            <div className="flex items-center gap-2">
-              <span
-                className={cn(
-                  'shrink-0',
-                  isPending ? 'shimmer-text font-medium' : 'text-foreground',
-                )}
-              >
-                Read
-              </span>
-              <span className="truncate text-muted-foreground/70 font-mono text-[13px]">
-                {readTarget || title.replace(/^Read\s+/, '')}
-              </span>
-              {statusIcon && <span className="ml-2 flex items-center">{statusIcon}</span>}
-            </div>
-          ) : (
-            <>
-              <div className="flex items-center gap-2">
-                <span
-                  className={cn(
-                    'truncate',
-                    isPending ? 'shimmer-text font-medium' : 'text-foreground',
-                  )}
-                >
-                  {title}
-                </span>
-                {subtitle && canonicalName === 'Grep' && (
-                  <span className="truncate text-muted-foreground/70 font-mono text-[13px]">
-                    {subtitle}
-                  </span>
-                )}
-                {statusIcon && <span className="flex items-center">{statusIcon}</span>}
-              </div>
-              {subtitle && canonicalName !== 'Grep' && (
-                <div className="truncate text-[12px] text-muted-foreground/60 mt-0.5">
-                  {subtitle}
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-    </div>
+      </ToolExpandedBody>
+    </details>
   )
 }

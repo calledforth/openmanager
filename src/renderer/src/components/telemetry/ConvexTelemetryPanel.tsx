@@ -27,13 +27,13 @@ function injectStyles(): void {
       from { opacity: 0; transform: translateX(6px); }
       to   { opacity: 1; transform: translateX(0); }
     }
-    .ct-row:hover { background: #0b0b0b !important; }
-    .ct-btn:hover { border-color: #2a2a2a !important; color: #c0c0c0 !important; }
+    .ct-row:hover { background: var(--basis-surface-hover) !important; }
+    .ct-btn:hover { border-color: var(--basis-border) !important; color: var(--basis-text) !important; }
     .ct-btn:active { transform: translateY(0.5px); }
-    .ct-softFocus:focus-visible { outline: 2px solid rgba(59,130,246,0.45); outline-offset: 2px; }
+    .ct-softFocus:focus-visible { outline: 2px solid color-mix(in srgb, var(--basis-text-muted) 45%, transparent); outline-offset: 2px; }
     ::-webkit-scrollbar { width: 4px; }
-    ::-webkit-scrollbar-track { background: #000; }
-    ::-webkit-scrollbar-thumb { background: #1a1a1a; border-radius: 2px; }
+    ::-webkit-scrollbar-track { background: var(--basis-canvas-bg); }
+    ::-webkit-scrollbar-thumb { background: var(--basis-scrollbar-thumb); border-radius: 2px; }
   `
   document.head.appendChild(el)
 }
@@ -77,14 +77,14 @@ interface MergedEntry {
 // Color palette
 // ---------------------------------------------------------------------------
 const C = {
-  bg: '#000',
-  bg2: '#050505',
-  bg3: '#080808',
-  border: '#111',
-  border2: '#0d0d0d',
-  text: '#e8e8e8',
-  muted: '#9a9a9a',
-  dim: '#2b2b2b',
+  bg: 'var(--basis-canvas-bg)',
+  bg2: 'var(--basis-surface)',
+  bg3: 'var(--basis-surface-elevated)',
+  border: 'var(--basis-border-muted)',
+  border2: 'var(--basis-border)',
+  text: 'var(--basis-text)',
+  muted: 'var(--basis-text-muted)',
+  dim: 'var(--basis-text-faint)',
   success: '#22c55e',
   error: '#ef4444',
   pending: '#3b82f6',

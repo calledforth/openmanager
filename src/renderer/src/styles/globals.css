@@ -1,82 +1,81 @@
 @import 'tailwindcss';
 
 @theme {
-  /* ── Design tokens — near-black base ── */
+  /* ── Basis-aligned monochrome palette (Geist, 14px body) ── */
 
-  /* Step 0: True near-black canvas (neutral-975 equivalent) */
-  --color-background: hsl(0 0% 2.5%);
-  --color-foreground: hsl(0 0% 90%);
-  /* Markdown **bold** in chat: stay at weight 400; lift lightness only (agentic demo used plain text, no strong) */
-  --color-chat-emphasis: hsl(0 0% 96%);
+  --color-background: var(--basis-canvas-bg);
+  --color-foreground: var(--basis-text);
+  --color-chat-emphasis: var(--basis-text-strong);
+  --color-canvas: var(--basis-canvas-bg);
 
-  /* Step 1: Slightly lifted card surface */
-  --color-card: hsl(0 0% 5%);
-  --color-card-foreground: hsl(0 0% 90%);
+  --color-card: var(--basis-surface);
+  --color-card-foreground: var(--basis-text);
 
-  /* Step 2: Popover floats above card */
-  --color-popover: hsl(0 0% 7%);
-  --color-popover-foreground: hsl(0 0% 90%);
+  --color-popover: var(--basis-surface-elevated);
+  --color-popover-foreground: var(--basis-text);
 
-  --color-primary: hsl(142 50% 50%);
-  --color-primary-foreground: hsl(0 0% 3%);
+  --color-primary: var(--basis-text-strong);
+  --color-primary-foreground: var(--basis-canvas-bg);
 
-  --color-secondary: hsl(0 0% 8%);
-  --color-secondary-foreground: hsl(0 0% 68%);
+  --color-secondary: var(--basis-surface-elevated);
+  --color-secondary-foreground: var(--basis-text-muted);
 
-  --color-muted: hsl(0 0% 9%);
-  --color-muted-foreground: hsl(0 0% 40%);
+  --color-muted: var(--basis-surface-elevated);
+  --color-muted-foreground: var(--basis-text-muted);
 
-  --color-accent: hsl(0 0% 10%);
-  --color-accent-foreground: hsl(0 0% 82%);
+  --color-accent: var(--basis-surface-hover);
+  --color-accent-foreground: var(--basis-text);
 
   --color-destructive: hsl(0 62% 50%);
   --color-destructive-foreground: hsl(0 0% 95%);
 
-  --color-border: hsl(0 0% 10%);
-  --color-input: hsl(0 0% 10%);
-  --color-ring: hsl(142 50% 50%);
+  --color-border: var(--basis-border);
+  --color-input: var(--basis-surface);
+  --color-ring: var(--basis-border);
 
-  /* Sidebar — one step darker than background */
-  --color-sidebar: hsl(0 0% 1.5%);
-  --color-sidebar-foreground: hsl(0 0% 50%);
-  --color-sidebar-primary: hsl(0 0% 88%);
-  --color-sidebar-primary-foreground: hsl(0 0% 3%);
-  --color-sidebar-accent: hsl(0 0% 7%);
-  --color-sidebar-accent-foreground: hsl(0 0% 80%);
-  --color-sidebar-border: hsl(0 0% 8%);
+  --color-sidebar: var(--basis-canvas-bg);
+  --color-sidebar-foreground: var(--basis-text-muted);
+  --color-sidebar-primary: var(--basis-text-strong);
+  --color-sidebar-primary-foreground: var(--basis-canvas-bg);
+  --color-sidebar-accent: var(--basis-surface-elevated);
+  --color-sidebar-accent-foreground: var(--basis-text);
+  --color-sidebar-border: var(--basis-border-muted);
 
-  /* Surfaces & extras */
-  --color-surface-hover: hsl(0 0% 8%);
-  --color-surface-active: hsl(0 0% 10%);
-  --color-surface-raised: hsl(0 0% 6%);   /* input box, elevated panels */
-  --color-text-tertiary: hsl(0 0% 28%);
-  --color-badge-bg: hsl(0 0% 11%);
+  --color-surface-hover: var(--basis-surface-hover);
+  --color-surface-active: var(--basis-tab-active-bg);
+  --color-surface-raised: var(--basis-surface-elevated);
+  --color-text-tertiary: var(--basis-text-faint);
+  --color-badge-bg: var(--basis-surface-hover);
 
-  /* Input-specific tokens */
-  --color-input-bg: hsl(0 0% 5.5%);
-  --color-input-bg-active: hsl(0 0% 7%);
-  --color-input-border: hsl(0 0% 12%);
-  --color-input-border-focus: hsl(0 0% 18%);
-  --color-scrollbar: hsl(0 0% 14%);
+  --color-input-bg: var(--basis-surface);
+  --color-input-bg-active: var(--basis-surface-elevated);
+  --color-input-border: var(--basis-border);
+  --color-input-border-focus: var(--basis-border);
+  --color-scrollbar: var(--basis-scrollbar-thumb);
 
-  /* ── Fonts (self-hosted; matches CSP font-src 'self') ── */
-  --font-sans: 'Geist Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-geist-sans: 'Geist Variable', 'Geist', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-geist-sans);
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 
-  /* ── Letter spacing: neutral for body; use Tailwind tracking-* on labels ── */
-  --tracking-normal: 0;
+  --tracking-normal: 0.01em;
+  --tracking-ui: 0.01em;
 
-  /* Radius */
-  --radius: 0.5rem;
+  --text-ui-2xs: 10px;
+  --text-ui-xs: 11px;
+  --text-ui-sm: 12px;
+  --text-ui-md: 13px;
+  --text-ui-base: 14px;
+
+  --leading-ui-normal: 1.6;
+  --leading-ui-relaxed: 1.75;
+
+  --radius: 0.375rem;
 }
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   §1  Self-hosted faces — Geist Sans + JetBrains Mono
+   §1  Self-hosted faces — Geist Variable + JetBrains Mono
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-@import '@fontsource/geist-sans/400.css';
-@import '@fontsource/geist-sans/500.css';
-@import '@fontsource/geist-sans/600.css';
-@import '@fontsource/geist-sans/700.css';
+@import '@fontsource-variable/geist';
 @import '@fontsource/jetbrains-mono/300.css';
 @import '@fontsource/jetbrains-mono/400.css';
 @import '@fontsource/jetbrains-mono/500.css';
@@ -86,17 +85,95 @@
    §2  BASE — line rhythm & rendering (Geist; no Inter-only features)
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 :root {
+  /* Basis design tokens — dark default */
+  --basis-canvas-bg: #141414;
+  --basis-surface: #1c1c1c;
+  --basis-surface-elevated: #212121;
+  --basis-surface-hover: #2a2a2a;
+  --basis-tab-active-bg: #242424;
+  --basis-border: #363636;
+  --basis-border-muted: #2e2e2e;
+  --basis-font-size: 14px;
+  --basis-chat-font-size: 14px;
+  --basis-thought-font-size: 13px;
+  --basis-chat-text: #d0d0d0;
+  --basis-text: #d0d0d0;
+  --basis-text-strong: #e0e0e0;
+  --basis-text-muted: #8f8f8f;
+  --basis-text-faint: #6b6b6b;
+  --basis-action-bg: #e5e5e5;
+  --basis-action-fg: #111111;
+  --basis-action-hover: #f4f4f4;
+  --basis-scrollbar-track: transparent;
+  --basis-scrollbar-thumb: color-mix(in srgb, var(--basis-text-muted) 45%, transparent);
+  --basis-scrollbar-thumb-hover: color-mix(in srgb, var(--basis-text-muted) 70%, transparent);
+  --basis-line-height: 1.75;
+  --basis-letter-spacing: 0.01em;
+  --basis-chat-shell-radius: 0.375rem;
+
   --lh-tight: 1.3;
   --lh-snug: 1.375;
   --lh-default: 1.6;
-  /* ~Tailwind leading-relaxed: inputs, dense UI */
   --lh-readable: 1.625;
-  /* Long-form chat / markdown (aligned with reference agentic-chat-ui) */
   --lh-prose: 1.75;
   --lh-loose: 1.9;
-  /* Main conversation copy — one step under agentic’s 15px reference */
   --chat-assistant-size: 14px;
   --chat-user-size: 14px;
+
+  --bg-main: var(--basis-canvas-bg);
+  --bg-chat: var(--basis-canvas-bg);
+  --bg-gradient-start: color-mix(in srgb, var(--basis-canvas-bg) 95%, transparent);
+  --bg-gradient-mid: color-mix(in srgb, var(--basis-canvas-bg) 60%, transparent);
+  --accent-main: var(--basis-text-strong);
+  --accent-hover: var(--basis-text);
+  --accent-transparent: color-mix(in srgb, var(--basis-text) 10%, transparent);
+  --plan-toggle-bg: transparent;
+  --plan-toggle-border: 1px dashed var(--basis-border);
+  --plan-text: var(--basis-text-strong);
+  --build-toggle-bg: var(--basis-surface-hover);
+  --build-text: var(--basis-text-strong);
+  --send-plan-bg: transparent;
+  --send-plan-text: var(--basis-text-strong);
+  --send-plan-hover: var(--basis-surface-hover);
+  --send-plan-border: 1px dashed var(--basis-border);
+  --send-build-bg: var(--basis-action-bg);
+  --send-build-text: var(--basis-action-fg);
+  --send-build-hover: var(--basis-action-hover);
+  --panel-border-color: var(--basis-border);
+  --panel-border-style: solid;
+  --panel-border-width: 1px;
+  --tool-border-color: var(--basis-border-muted);
+  --tool-border-style: solid;
+  --tool-border-width: 1px;
+  --tool-bg: transparent;
+  --tool-bg-hover: transparent;
+  --tool-bg-active: transparent;
+  --tool-border-active: transparent;
+  --shimmer-anim: tool-shimmer-sweep 1.5s infinite;
+  --shimmer-bg: linear-gradient(to right, transparent, color-mix(in srgb, var(--basis-text) 10%, transparent), transparent);
+  --radius-chat: var(--basis-chat-shell-radius);
+  --radius-panel: var(--basis-chat-shell-radius);
+  --radius-tool: var(--basis-chat-shell-radius);
+}
+
+html[data-theme='light'] {
+  --basis-canvas-bg: #f8f8f8;
+  --basis-surface: #fcfcfc;
+  --basis-surface-elevated: #f3f3f3;
+  --basis-surface-hover: #f3f3f3;
+  --basis-tab-active-bg: #e7e7e7;
+  --basis-border: #dedede;
+  --basis-border-muted: #e7e7e7;
+  --basis-chat-text: #2d2d2d;
+  --basis-text: #2d2d2d;
+  --basis-text-strong: #000000;
+  --basis-text-muted: #5f5f5f;
+  --basis-text-faint: #747474;
+  --basis-action-bg: #2a2a2a;
+  --basis-action-fg: #f3f3f3;
+  --basis-action-hover: #1f1f1f;
+  --basis-scrollbar-thumb: #cecece;
+  --basis-scrollbar-thumb-hover: #b8b8b8;
 }
 
 html {
@@ -107,13 +184,18 @@ html {
   -moz-osx-font-smoothing: grayscale;
 }
 
+::selection {
+  background-color: rgba(255, 255, 255, 0.14);
+  color: #fafafa;
+}
+
 body {
-  background-color: var(--color-background);
-  color: var(--color-foreground);
+  background-color: var(--basis-canvas-bg);
+  color: var(--basis-text);
   font-family: var(--font-sans);
-  font-size: 13px;
-  line-height: var(--lh-default);
-  letter-spacing: var(--tracking-normal);
+  font-size: var(--basis-font-size);
+  line-height: var(--basis-line-height);
+  letter-spacing: var(--basis-letter-spacing);
   font-feature-settings: normal;
   font-variation-settings: normal;
   -webkit-font-smoothing: antialiased;
@@ -384,13 +466,108 @@ textarea,
   margin-bottom: 8px;
 }
 
-/* Floating composer — frosted glass: Tailwind alone was ineffective because (1) the dock gradient
-   used opaque `from-card` behind the input, so blur had nothing to show, and (2) Electron/Chromium
-   needs explicit -webkit-backdrop-filter. Keep tint as rgba, not a solid theme color. */
-.chat-composer-glass {
-  background: rgba(10, 10, 10, 0.28);
-  -webkit-backdrop-filter: blur(40px) saturate(160%);
-  backdrop-filter: blur(40px) saturate(160%);
+/* Composer fade scrim — Basis-style canvas gradient (no glass) */
+.chat-composer-fade {
+  background: linear-gradient(
+    to top,
+    var(--basis-canvas-bg) 0%,
+    color-mix(in srgb, var(--basis-canvas-bg) 95%, transparent) 40%,
+    transparent 100%
+  );
+}
+
+.thin-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--basis-scrollbar-thumb) var(--basis-scrollbar-track);
+}
+.thin-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.thin-scrollbar::-webkit-scrollbar-track {
+  background: var(--basis-scrollbar-track);
+}
+.thin-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--basis-scrollbar-thumb);
+  border-radius: 10px;
+}
+.thin-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: var(--basis-scrollbar-thumb-hover);
+}
+
+@layer utilities {
+  .theme-btn-plan {
+    background-color: var(--send-plan-bg);
+    color: var(--send-plan-text);
+    border: var(--send-plan-border);
+  }
+  .theme-btn-plan:hover {
+    background-color: var(--send-plan-hover);
+  }
+  .theme-btn-build {
+    background-color: var(--send-build-bg);
+    color: var(--send-build-text);
+    border: 1px solid transparent;
+  }
+  .theme-btn-build:hover {
+    background-color: var(--send-build-hover);
+  }
+  .theme-toggle-plan {
+    background-color: var(--plan-toggle-bg);
+    border: var(--plan-toggle-border);
+  }
+  .theme-toggle-build {
+    background-color: var(--build-toggle-bg);
+    border: 1px solid transparent;
+  }
+  .theme-panel {
+    border-color: var(--panel-border-color);
+    border-style: var(--panel-border-style);
+    border-width: var(--panel-border-width, 1px);
+  }
+  .theme-tool {
+    border-color: var(--tool-border-color);
+    border-style: var(--tool-border-style);
+    border-width: var(--tool-border-width, 1px);
+    background-color: var(--tool-bg);
+  }
+  .theme-tool:hover {
+    background-color: var(--tool-bg-hover);
+  }
+  .theme-tool.active {
+    background-color: var(--tool-bg-active);
+    border-color: var(--tool-border-active);
+  }
+  .theme-rounded-tool {
+    border-radius: var(--radius-tool);
+  }
+  .shimmer-effect {
+    position: relative;
+    overflow: hidden;
+  }
+  .shimmer-effect::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: var(--shimmer-bg);
+    transform: skewX(-20deg) translateX(-150%);
+    pointer-events: none;
+  }
+  .shimmer-effect:hover::after,
+  .active-shimmer::after {
+    animation: var(--shimmer-anim);
+  }
+}
+
+@keyframes tool-shimmer-sweep {
+  0% {
+    transform: skewX(-20deg) translateX(-150%);
+  }
+  100% {
+    transform: skewX(-20deg) translateX(200%);
+  }
 }
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -445,6 +622,29 @@ textarea,
   animation: shimmer 2s ease-in-out infinite;
 }
 
+.active-shimmer-text {
+  background: linear-gradient(
+    90deg,
+    var(--accent-hover) 0%,
+    var(--accent-main) 50%,
+    var(--accent-hover) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer-text-anim 2s linear infinite;
+}
+
+@keyframes shimmer-text-anim {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
 .custom-loader {
   width: 14px;
   height: 14px;
@@ -466,7 +666,7 @@ textarea,
 }
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   §6  SCROLLBARS
+   §6  SCROLLBARS (agentic-chat-ui custom-scrollbar)
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 .scrollbar-hide {
   -ms-overflow-style: none;
@@ -476,20 +676,38 @@ textarea,
   display: none;
 }
 
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--basis-scrollbar-thumb) var(--basis-scrollbar-track);
+}
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: var(--basis-scrollbar-track);
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--basis-scrollbar-thumb);
+  border-radius: 10px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: var(--basis-scrollbar-thumb-hover);
+}
+
 .overflow-y-auto {
   scrollbar-width: thin;
-  scrollbar-color: hsl(0 0% 12%) transparent;
+  scrollbar-color: var(--basis-scrollbar-thumb) var(--basis-scrollbar-track);
 }
 .overflow-y-auto::-webkit-scrollbar {
-  width: 5px;
+  width: 6px;
 }
 .overflow-y-auto::-webkit-scrollbar-track {
-  background: transparent;
+  background: var(--basis-scrollbar-track);
 }
 .overflow-y-auto::-webkit-scrollbar-thumb {
-  background-color: hsl(0 0% 12%);
-  border-radius: 3px;
+  background: var(--basis-scrollbar-thumb);
+  border-radius: 10px;
 }
 .overflow-y-auto::-webkit-scrollbar-thumb:hover {
-  background-color: hsl(0 0% 20%);
+  background: var(--basis-scrollbar-thumb-hover);
 }

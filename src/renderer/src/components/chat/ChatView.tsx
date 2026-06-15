@@ -111,7 +111,7 @@ export function ChatView() {
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto overflow-x-hidden min-h-0"
+        className="custom-scrollbar flex-1 min-h-0 overflow-x-hidden overflow-y-auto"
       >
         <div className="mx-auto max-w-3xl space-y-1 px-4 py-6 pb-44">
           {chatMessages.length === 0 && (

@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { type ReactNode } from 'react'
 import { MessageParts } from '../parts/MessageParts'
 import { TextPart } from '../parts/TextPart'
 import { cn } from '../../lib/utils'
 import type { StreamMessagePart } from '../../lib/remote-stream-parts'
 import { ReferenceComposerToolbar } from './composer-toolbar'
+import { chatInputShell, chatUserInner, chatStreamInner } from './chatComposerStyles'
+import { typographyCaption } from '../../lib/typography'
 
 export interface RuntimeMetadata {
   providerId?: string
@@ -38,19 +40,19 @@ export function ChatViewPanel({
   children: ReactNode
 }) {
   return (
-    <div data-chat-view className="flex-1 flex flex-col min-h-0">
-      <div className="px-4 py-2.5 flex justify-between items-center shrink-0">
-        <span className="text-14-medium text-sidebar-primary">{title}</span>
+    <div data-chat-view className="flex min-h-0 flex-1 flex-col">
+      <div className="flex h-8 shrink-0 items-center justify-between border-b border-[var(--basis-border-muted)] px-3">
+        <span className="text-ui-base font-medium text-[var(--basis-text-strong)]">{title}</span>
         <div className="flex items-center gap-2">
           {status && status !== 'idle' && (
             <span
               className={cn(
-                'text-11-regular',
+                typographyCaption,
                 status === 'running' || status === 'busy'
-                  ? 'text-primary'
+                  ? 'text-[var(--basis-text)]'
                   : status === 'error'
                     ? 'text-destructive'
-                    : 'text-muted-foreground',
+                    : 'text-[var(--basis-text-muted)]',
               )}
             >
               {status}
@@ -60,7 +62,10 @@ export function ChatViewPanel({
             <button
               type="button"
               onClick={onAbort}
-              className="rounded-md border border-destructive px-2 py-0.5 text-11-regular text-destructive bg-transparent cursor-pointer transition-default hover:bg-destructive/10"
+              className={cn(
+                typographyCaption,
+                'cursor-pointer rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)] bg-transparent px-2 py-0.5 text-[var(--basis-text-muted)] transition-colors hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
+              )}
             >
               Stop
             </button>
@@ -73,66 +78,14 @@ export function ChatViewPanel({
 }
 
 export function UserMessage({ content, runtime }: { content: string; runtime?: RuntimeMetadata }) {
-  const [expanded, setExpanded] = useState(false)
-  const contentRef = useRef<HTMLDivElement>(null)
-  const [showGradient, setShowGradient] = useState(false)
-
-  useEffect(() => {
-    const el = contentRef.current
-    if (!el) return
-    const check = () => setShowGradient(el.scrollHeight > el.clientHeight)
-    check()
-    const ro = new ResizeObserver(check)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [content])
-
-  const canExpand = showGradient && !expanded
-
   return (
-    <div className="w-full py-1.5">
-      <div className="flex w-full flex-col shadow-2xl shadow-black/40">
-        <div
-          role={canExpand ? 'button' : undefined}
-          tabIndex={canExpand ? 0 : undefined}
-          onClick={() => canExpand && setExpanded(true)}
-          onKeyDown={(e) => {
-            if (!canExpand) return
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault()
-              setExpanded(true)
-            }
-          }}
-          className={cn(
-            'chat-composer-glass relative flex w-full flex-col gap-2 rounded-md border border-white/10 p-2.5 transition-all duration-200',
-            canExpand ? 'cursor-pointer hover:border-white/15' : '',
-          )}
-        >
-          <div className="relative min-w-0">
-            <div
-              ref={contentRef}
-              className={cn(
-                'chat-user min-w-0 whitespace-pre-wrap break-words text-neutral-200',
-                canExpand && !expanded && 'max-h-[100px] overflow-hidden',
-              )}
-            >
-              {content}
-            </div>
-            {canExpand && !expanded && (
-              <div
-                className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-[rgb(10,10,10)] to-transparent"
-                aria-hidden
-              />
-            )}
-          </div>
-
-          <div
-            className="mt-0.5"
-            onClick={(e) => e.stopPropagation()}
-            onKeyDown={(e) => e.stopPropagation()}
-          >
-            <ReferenceComposerToolbar />
-          </div>
+    <div className="w-full py-1">
+      <div className={cn(chatInputShell, 'max-w-none')}>
+        <div className={chatUserInner}>
+          <div className="min-w-0 whitespace-pre-wrap break-words">{content}</div>
+        </div>
+        <div className="px-1 pb-0.5" onClick={(e) => e.stopPropagation()}>
+          <ReferenceComposerToolbar />
         </div>
       </div>
       <MessageRuntimeMeta runtime={runtime} align="right" />
@@ -155,14 +108,12 @@ export function AssistantMessage({
   const isStreaming = isFinal === false
 
   return (
-    <div className="py-2">
-      <div className="text-foreground/90 space-y-0.5">
+    <div className="py-1">
+      <div className={cn(chatStreamInner, isStreaming ? 'opacity-90' : 'opacity-100')}>
         {hasParts ? (
           <MessageParts parts={parts} isStreaming={isStreaming} />
         ) : (
-          <div className={isStreaming ? 'opacity-80' : 'opacity-100'}>
-            <TextPart text={content} />
-          </div>
+          <TextPart text={content} />
         )}
       </div>
       <MessageRuntimeMeta runtime={runtime} align="left" />
@@ -194,7 +145,8 @@ export function MessageRuntimeMeta({
   return (
     <div
       className={cn(
-        'mt-1 text-11-regular text-muted-foreground tabular-nums',
+        typographyCaption,
+        'mt-0.5 tabular-nums text-[var(--basis-text-faint)]',
         align === 'right' ? 'text-right' : 'text-left',
       )}
     >

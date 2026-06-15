@@ -7,8 +7,12 @@ import {
   Trash2,
   PanelLeftClose,
   PanelLeft,
+  Sun,
+  Moon,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import { useTheme } from '../../providers/theme-provider'
+import { typographyBodySm, typographyCaption, typographyLabel } from '../../lib/typography'
 
 export interface SidebarWorkspace {
   path: string
@@ -18,8 +22,8 @@ export interface SidebarWorkspace {
 
 const dot: Record<string, string> = {
   stopped: 'bg-[hsl(0_0%_33%)]',
-  starting: 'bg-amber-400',
-  healthy: 'bg-emerald-400',
+  starting: 'bg-neutral-400',
+  healthy: 'bg-neutral-200',
   unhealthy: 'bg-red-400',
   crashed: 'bg-red-400',
 }
@@ -58,6 +62,7 @@ export function WorkspaceSidebarView({
   onRetryOpenCode: () => void
 }) {
   const collapsedSet = new Set(collapsedWorkspacePaths)
+  const { theme, toggleTheme } = useTheme()
 
   if (collapsed) {
     return (
@@ -74,10 +79,10 @@ export function WorkspaceSidebarView({
   }
 
   return (
-    <aside className="flex h-full w-[260px] shrink-0 flex-col overflow-hidden bg-transparent py-2 transition-[width] duration-300 ease-in-out">
+    <aside className="flex h-full w-[260px] shrink-0 flex-col overflow-hidden border-r border-[var(--basis-border-muted)] bg-[var(--basis-canvas-bg)] py-2 transition-[width] duration-300 ease-in-out">
       {/* Header */}
-      <div className="flex h-12 items-center justify-between px-3">
-        <span className="text-13-medium text-sidebar-primary">Home</span>
+      <div className="flex h-8 items-center justify-between px-3">
+        <span className={`${typographyLabel} text-[var(--basis-text-strong)]`}>Home</span>
         <div className="flex items-center gap-0.5">
           <button
             onClick={onToggle}
@@ -103,12 +108,13 @@ export function WorkspaceSidebarView({
           if (openCodeUiStatus !== 'connected') onRetryOpenCode()
         }}
         className={cn(
-          'mx-3 mb-2 flex items-center gap-2 rounded-md border px-2 py-1.5 text-11-regular transition-default',
+          'mx-3 mb-2 flex items-center gap-2 rounded-[var(--basis-chat-shell-radius)] border px-2 py-1.5 transition-default',
+          typographyCaption,
           openCodeUiStatus === 'connected'
-            ? 'border-emerald-500/30 bg-emerald-500/5 text-emerald-300'
+            ? 'border-[var(--basis-border)] bg-[var(--basis-surface)] text-[var(--basis-text)]'
             : openCodeUiStatus === 'connecting'
-              ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
-              : 'border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/15',
+              ? 'border-[var(--basis-border)] bg-[var(--basis-surface-elevated)] text-[var(--basis-text-muted)]'
+              : 'border-red-500/40 bg-red-500/10 text-red-400 hover:bg-red-500/15',
         )}
         title={
           openCodeUiStatus === 'connected' ? 'OpenCode connected' : 'Retry OpenCode connection'
@@ -148,10 +154,17 @@ export function WorkspaceSidebarView({
       </div>
 
       {/* Footer */}
-      <div className="px-2 py-2">
+      <div className="space-y-0.5 px-2 py-2">
+        <button
+          onClick={toggleTheme}
+          className={`flex w-full items-center gap-2 rounded-[var(--basis-chat-shell-radius)] px-2 py-1.5 ${typographyBodySm} text-[var(--basis-text-muted)] transition-default hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]`}
+        >
+          {theme === 'dark' ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+          <span>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
+        </button>
         <button
           onClick={onAddWorkspace}
-          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-12-medium text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground"
+          className={`flex w-full items-center gap-2 rounded-[var(--basis-chat-shell-radius)] px-2 py-1.5 ${typographyBodySm} text-[var(--basis-text-muted)] transition-default hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]`}
         >
           <Archive className="h-3.5 w-3.5" />
           <span>Add repository</span>

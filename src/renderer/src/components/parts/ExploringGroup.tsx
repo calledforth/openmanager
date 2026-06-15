@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import { ChevronRight, Search } from 'lucide-react'
 import { ToolCallPart } from './ToolCallPart'
-import { cn } from '../../lib/utils'
+import { activityRowBare, activityDetailsSummary } from './ToolLine'
 
 interface Part {
   type: string
@@ -29,7 +28,8 @@ function buildSubtitle(parts: Part[]): string {
   for (const p of parts) {
     const tool = p.tool ?? ''
     if (tool === 'Read') files++
-    else if (tool === 'Grep' || tool === 'Glob' || tool === 'WebSearch' || tool === 'WebFetch') searches++
+    else if (tool === 'Grep' || tool === 'Glob' || tool === 'WebSearch' || tool === 'WebFetch')
+      searches++
     else files++
   }
   const segments: string[] = []
@@ -60,46 +60,42 @@ export function ExploringGroup({ parts, isStreaming = false }: ExploringGroupPro
   })
 
   const subtitle = buildSubtitle(parts)
-  const maxVisible = 5
-  const itemHeight = 24
+  const isRunning = isStreaming && !allDone
 
   return (
-    <div className="my-0.5">
-      <button
-        type="button"
-        onClick={() => setExpanded(!expanded)}
-        className="group flex items-start gap-1.5 py-0.5 px-2 cursor-pointer w-full text-left text-muted-foreground hover:text-foreground/80 transition-colors bg-transparent border-none"
-      >
-        <ChevronRight
-          className={cn(
-            'size-3.5 flex-shrink-0 mt-px transition-transform duration-200',
-            expanded && 'rotate-90'
-          )}
-        />
-        <Search className="size-3.5 flex-shrink-0 mt-px text-muted-foreground/60" />
-        <span className="text-[12px]">
-          {isStreaming && !allDone ? (
-            <span className="shimmer-text font-medium">Exploring</span>
-          ) : (
-            'Explored'
-          )}
-        </span>
-        <span className="text-11-regular min-w-0 truncate text-muted-foreground/50">
-          {subtitle}
-        </span>
-      </button>
-
-      {expanded && (
-        <div
-          ref={scrollRef}
-          className="ml-5 overflow-y-auto scrollbar-hide"
-          style={{ maxHeight: maxVisible * itemHeight }}
-        >
-          {parts.map((p) => (
-            <ToolCallPart key={p.id} part={p as Parameters<typeof ToolCallPart>[0]['part']} />
-          ))}
-        </div>
-      )}
-    </div>
+    <details
+      className={`group ${activityRowBare}`}
+      open={expanded}
+      onToggle={(e) => setExpanded((e.target as HTMLDetailsElement).open)}
+    >
+      <summary className={`${activityDetailsSummary} px-2`}>
+        {isRunning ? (
+          <span
+            className="inline basis-tool-shimmer"
+            style={{
+              background:
+                'linear-gradient(90deg, color-mix(in srgb, var(--basis-text-faint) 65%, transparent) 25%, color-mix(in srgb, var(--basis-text-muted) 92%, transparent) 50%, color-mix(in srgb, var(--basis-text-faint) 65%, transparent) 75%)',
+              backgroundSize: '200% 100%',
+              backgroundClip: 'text',
+              WebkitBackgroundClip: 'text',
+              WebkitTextFillColor: 'transparent',
+              animation: 'shimmer 1.6s infinite linear',
+            }}
+          >
+            Explored {subtitle}
+          </span>
+        ) : (
+          <>
+            <span className="text-[var(--basis-text-muted)]">Explored</span>{' '}
+            <span className="text-[var(--basis-text-faint)]">{subtitle}</span>
+          </>
+        )}
+      </summary>
+      <div ref={scrollRef} className="thin-scrollbar max-h-[120px] overflow-y-auto">
+        {parts.map((p) => (
+          <ToolCallPart key={p.id} part={p as Parameters<typeof ToolCallPart>[0]['part']} />
+        ))}
+      </div>
+    </details>
   )
 }
