@@ -1,5 +1,5 @@
-import { ShieldAlert, ShieldCheck, TerminalSquare } from 'lucide-react'
 import { usePermissionState } from '../../providers/permission-provider'
+import { typographyBodySm, typographyCaption, typographyLabel } from '../../lib/typography'
 
 function formatValue(value: unknown): string | null {
   if (value == null) return null
@@ -21,49 +21,43 @@ export function PermissionPrompt() {
   const alwaysPatternsPreview = formatValue(pendingPermission.alwaysPatterns)
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm">
-      <div className="w-full max-w-xl overflow-hidden rounded-2xl border border-border/80 bg-background/95 shadow-2xl shadow-black/50">
-        <div className="border-b border-border bg-linear-to-r from-amber-500/10 via-background to-background px-5 py-4">
-          <div className="flex items-start gap-3">
-            <div className="mt-0.5 rounded-xl border border-amber-500/20 bg-amber-500/10 p-2 text-amber-300">
-              <ShieldAlert className="size-4" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="text-13-medium text-foreground">Permission required</div>
-              <div className="mt-1 text-13-regular text-muted-foreground">
-                An agent action is waiting for approval before it can continue.
-              </div>
-            </div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
+      <div className="w-full max-w-xl overflow-hidden rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)] bg-[var(--basis-surface)] shadow-lg">
+        <div className="border-b border-[var(--basis-border-muted)] px-4 py-3">
+          <div className={typographyLabel}>Permission required</div>
+          <div className={`mt-1 ${typographyBodySm} text-[var(--basis-text-muted)]`}>
+            An agent action is waiting for approval before it can continue.
           </div>
         </div>
 
-        <div className="space-y-4 px-5 py-4">
-          <div className="rounded-xl border border-border bg-muted/40 p-3">
-            <div className="text-11-medium flex items-center gap-2 uppercase tracking-wide text-muted-foreground">
-              <TerminalSquare className="size-3.5" />
+        <div className="space-y-3 px-4 py-3">
+          <div className="rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border-muted)] bg-[var(--basis-surface-elevated)] p-3">
+            <div className={`${typographyCaption} uppercase tracking-wide text-[var(--basis-text-muted)]`}>
               Requested tool
             </div>
-            <div className="mt-2 text-13-medium text-foreground">
+            <div className={`mt-1.5 ${typographyBodySm} text-[var(--basis-text)]`}>
               {pendingPermission.toolName}
             </div>
-            <div className="mt-1 text-13-regular leading-readable text-muted-foreground">
+            <div className={`mt-1 ${typographyBodySm} text-[var(--basis-text-muted)]`}>
               {pendingPermission.description}
             </div>
           </div>
 
           {pendingPermission.permission && (
-            <div className="text-11-regular text-muted-foreground">
+            <div className={`${typographyCaption} text-[var(--basis-text-muted)]`}>
               Permission type:{' '}
-              <span className="text-foreground/80">{pendingPermission.permission}</span>
+              <span className="text-[var(--basis-text)]">{pendingPermission.permission}</span>
             </div>
           )}
 
           {inputPreview && (
             <div>
-              <div className="text-11-medium mb-1.5 uppercase tracking-wide text-muted-foreground">
+              <div className={`${typographyCaption} mb-1 uppercase tracking-wide text-[var(--basis-text-muted)]`}>
                 Input
               </div>
-              <pre className="max-h-40 overflow-auto rounded-xl border border-border bg-black/20 px-3 py-2 font-mono text-11-regular leading-readable text-foreground/80 whitespace-pre-wrap wrap-break-word">
+              <pre
+                className={`max-h-40 overflow-auto rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border-muted)] bg-[var(--basis-canvas-bg)] px-3 py-2 font-mono text-ui-xs leading-relaxed text-[var(--basis-text-muted)] whitespace-pre-wrap wrap-break-word`}
+              >
                 {inputPreview}
               </pre>
             </div>
@@ -71,10 +65,12 @@ export function PermissionPrompt() {
 
           {patternsPreview && (
             <div>
-              <div className="text-11-medium mb-1.5 uppercase tracking-wide text-muted-foreground">
+              <div className={`${typographyCaption} mb-1 uppercase tracking-wide text-[var(--basis-text-muted)]`}>
                 Allowed patterns
               </div>
-              <pre className="max-h-28 overflow-auto rounded-xl border border-border bg-black/20 px-3 py-2 font-mono text-11-regular leading-readable text-foreground/80 whitespace-pre-wrap wrap-break-word">
+              <pre
+                className={`max-h-28 overflow-auto rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border-muted)] bg-[var(--basis-canvas-bg)] px-3 py-2 font-mono text-ui-xs leading-relaxed text-[var(--basis-text-muted)] whitespace-pre-wrap wrap-break-word`}
+              >
                 {patternsPreview}
               </pre>
             </div>
@@ -82,28 +78,29 @@ export function PermissionPrompt() {
 
           {alwaysPatternsPreview && (
             <div>
-              <div className="text-11-medium mb-1.5 uppercase tracking-wide text-muted-foreground">
+              <div className={`${typographyCaption} mb-1 uppercase tracking-wide text-[var(--basis-text-muted)]`}>
                 Always allow patterns
               </div>
-              <pre className="max-h-28 overflow-auto rounded-xl border border-border bg-black/20 px-3 py-2 font-mono text-11-regular leading-readable text-foreground/80 whitespace-pre-wrap wrap-break-word">
+              <pre
+                className={`max-h-28 overflow-auto rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border-muted)] bg-[var(--basis-canvas-bg)] px-3 py-2 font-mono text-ui-xs leading-relaxed text-[var(--basis-text-muted)] whitespace-pre-wrap wrap-break-word`}
+              >
                 {alwaysPatternsPreview}
               </pre>
             </div>
           )}
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-border bg-muted/20 px-5 py-4">
+        <div className="flex items-center justify-end gap-2 border-t border-[var(--basis-border-muted)] px-4 py-3">
           <button
             onClick={() => resolvePermission(false)}
-            className="rounded-lg border border-border bg-background px-3 py-2 text-13-regular text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className={`rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)] bg-[var(--basis-surface-elevated)] px-3 py-1.5 ${typographyBodySm} text-[var(--basis-text-muted)] transition-colors hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]`}
           >
             Deny
           </button>
           <button
             onClick={() => resolvePermission(true)}
-            className="inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-3 py-2 text-13-medium text-black transition-colors hover:bg-emerald-400"
+            className={`rounded-[var(--basis-chat-shell-radius)] bg-[var(--basis-action-bg)] px-3 py-1.5 ${typographyLabel} text-[var(--basis-action-fg)] transition-colors hover:bg-[var(--basis-action-hover)]`}
           >
-            <ShieldCheck className="size-4" />
             Approve
           </button>
         </div>

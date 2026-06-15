@@ -7,7 +7,7 @@ const fontThemeDecorator = (Story, context) => {
   const fontChoice = context.globals.fontFamily || 'geist'
 
   useEffect(() => {
-    let fontVar = "'Geist Sans', ui-sans-serif, system-ui, sans-serif"
+    let fontVar = "'Geist Variable', 'Geist', ui-sans-serif, system-ui, sans-serif"
     if (fontChoice === 'inter') {
       fontVar = "'Inter Variable', 'Inter', ui-sans-serif, system-ui, sans-serif"
     } else if (fontChoice === 'public-sans') {
@@ -29,7 +29,7 @@ const preview: Preview = {
       toolbar: {
         icon: 'paintbrush',
         items: [
-          { value: 'geist', title: 'Geist Sans' },
+          { value: 'geist', title: 'Geist' },
           { value: 'inter', title: 'Inter' },
           { value: 'public-sans', title: 'Public Sans' },
         ],

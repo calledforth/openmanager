@@ -2,7 +2,7 @@
 
 Desktop GUI for managing OpenCode agent sessions. Electron + React + Convex.
 
-## Setup
+## Setup  
 
 ```bash
 # Install dependencies (requires Bun: https://bun.sh)

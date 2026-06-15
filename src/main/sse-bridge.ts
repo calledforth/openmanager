@@ -8,7 +8,7 @@ import {
 } from './convex-telemetry'
 
 interface PartData {
-  type: string
+  type: string  
   id: string
   [key: string]: unknown
 }
@@ -63,6 +63,8 @@ export class SSEBridge {
   private cursorFlushQueues = new Map<string, Promise<void>>()
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private stopped = true
+  
+  // Dude the zed edittor 
 
   constructor(
     private serverUrl: string,

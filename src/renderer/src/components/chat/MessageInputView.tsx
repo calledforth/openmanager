@@ -9,8 +9,12 @@ import {
 import { createPortal } from 'react-dom'
 import { ArrowUp, Plus, ChevronDown, Check, Square, Mic } from 'lucide-react'
 import { cn } from '../../lib/utils'
-
-const INPUT_RADIUS = 'rounded-md'
+import {
+  chatInputShell,
+  chatComposerTextarea,
+  btnSend,
+  COMPOSER_TEXTAREA_MAX_PX,
+} from './chatComposerStyles'
 
 type MenuCoords = { left: number; bottom: number; width: number }
 
@@ -101,8 +105,8 @@ function PillSelect({
       <div
         ref={menuRef}
         className={cn(
-          'fixed z-[200] max-h-[min(280px,calc(100vh-24px))] overflow-y-auto border border-white/10 bg-[#1a1a1a] py-0.5 shadow-2xl shadow-black/50',
-          INPUT_RADIUS,
+          'fixed z-[200] max-h-[min(280px,calc(100vh-24px))] overflow-y-auto border border-[var(--basis-border)] bg-[var(--basis-surface-elevated)] py-0.5 shadow-lg',
+          'rounded-[var(--basis-chat-shell-radius)]',
         )}
         style={{
           left: menuCoords.left,
@@ -121,14 +125,16 @@ function PillSelect({
                 close()
               }}
               className={cn(
-                'flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left text-[11px] font-medium transition-colors',
+                'flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left text-ui-xs font-medium transition-colors',
                 isSelected
-                  ? 'bg-white/10 text-white'
-                  : 'text-neutral-400 hover:bg-white/5 hover:text-neutral-200',
+                  ? 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]'
+                  : 'text-[var(--basis-text-muted)] hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
               )}
             >
               <span className="flex-1 truncate">{opt.name}</span>
-              {isSelected && <Check className="h-2.5 w-2.5 shrink-0 text-orange-400" />}
+              {isSelected && (
+                <Check className="h-2.5 w-2.5 shrink-0 text-[var(--basis-text)]" />
+              )}
             </button>
           )
         })}
@@ -147,21 +153,20 @@ function PillSelect({
           'flex max-w-[220px] items-center gap-1 font-medium transition-all duration-150',
           ghost
             ? cn(
-                INPUT_RADIUS,
-                'border border-transparent bg-transparent px-1.5 py-0.5 text-[10px] text-neutral-400',
-                'hover:border-white/10 hover:bg-white/[0.06] hover:text-neutral-200',
-                open && 'border-white/10 bg-white/[0.06] text-neutral-200',
+                'rounded-[var(--basis-chat-shell-radius)] border border-transparent bg-transparent px-1.5 py-0.5 text-ui-2xs text-[var(--basis-text-muted)]',
+                'hover:border-[var(--basis-border)] hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
+                open && 'border-[var(--basis-border)] bg-[var(--basis-surface-hover)] text-[var(--basis-text)]',
               )
             : cn(
-                'rounded-full border border-white/[0.08] bg-white/[0.04] px-2 py-1 text-[10px] text-neutral-300',
-                'hover:border-white/10 hover:bg-white/[0.07] hover:text-neutral-100',
-                open && 'border-white/15 bg-white/[0.08]',
+                'rounded-full border border-[var(--basis-border-muted)] bg-[var(--basis-surface-elevated)] px-2 py-1 text-ui-2xs text-[var(--basis-text)]',
+                'hover:border-[var(--basis-border)] hover:bg-[var(--basis-surface-hover)]',
+                open && 'border-[var(--basis-border)] bg-[var(--basis-surface-hover)]',
               ),
           disabled && 'cursor-default opacity-40',
         )}
       >
         <span className="truncate">{label}</span>
-        <ChevronDown size={10} className="shrink-0 text-neutral-500" />
+        <ChevronDown size={10} className="shrink-0 text-[var(--basis-text-faint)]" />
       </button>
       {menu}
     </div>
@@ -183,22 +188,22 @@ function BuildPlanToggle({
   return (
     <div
       className={cn(
-        'relative flex shrink-0 items-center rounded border border-white/5 bg-black/50 p-px',
+        'relative flex shrink-0 items-center rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border-muted)] bg-[var(--basis-surface)] p-0.5',
         disabled && 'pointer-events-none opacity-40',
       )}
     >
       <div
         className={cn(
-          'absolute top-px bottom-px w-[38px] rounded-[2px] transition-all duration-300 ease-out',
-          isPlan ? 'translate-x-[38px] bg-orange-500/20' : 'translate-x-0 bg-white/10',
+          'absolute top-0.5 bottom-0.5 w-[46px] rounded-sm transition-all duration-300 ease-out',
+          isPlan ? 'translate-x-[46px] theme-toggle-plan' : 'translate-x-0 theme-toggle-build',
         )}
       />
       <button
         type="button"
         onClick={onSelectBuild}
         className={cn(
-          'relative z-10 w-[38px] rounded-[2px] py-0.5 text-[11px] font-medium transition-colors duration-300',
-          !isPlan ? 'text-white' : 'text-neutral-500 hover:text-neutral-300',
+          'relative z-10 w-[46px] rounded-sm py-1 text-[11px] font-medium transition-colors duration-300',
+          !isPlan ? 'text-[var(--build-text)]' : 'text-[var(--basis-text-muted)] hover:text-[var(--basis-text)]',
         )}
       >
         Build
@@ -207,8 +212,8 @@ function BuildPlanToggle({
         type="button"
         onClick={onSelectPlan}
         className={cn(
-          'relative z-10 w-[38px] rounded-[2px] py-0.5 text-[11px] font-medium transition-colors duration-300',
-          isPlan ? 'text-orange-400' : 'text-neutral-500 hover:text-neutral-300',
+          'relative z-10 w-[46px] rounded-sm py-1 text-[11px] font-medium transition-colors duration-300',
+          isPlan ? 'text-[var(--plan-text)]' : 'text-[var(--basis-text-muted)] hover:text-[var(--basis-text)]',
         )}
       >
         Plan
@@ -255,7 +260,6 @@ export function MessageInputView({
   onAbort: () => void
 }) {
   const [text, setText] = useState('')
-  const [focused, setFocused] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const planOption = modeOptions.find((m) => m.id === 'plan')
@@ -267,7 +271,7 @@ export function MessageInputView({
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
-      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 160)}px`
+      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, COMPOSER_TEXTAREA_MAX_PX)}px`
     }
   }, [text])
 
@@ -314,37 +318,29 @@ export function MessageInputView({
   const sendActive = hasContent && !disabled
 
   return (
-    <div className="flex w-full flex-col shadow-2xl shadow-black/40">
-      <div
-        className={cn(
-          'chat-composer-glass relative flex flex-col gap-1.5 border p-2 transition-all duration-200',
-          INPUT_RADIUS,
-          focused ? 'border-white/25' : 'border-white/10',
-        )}
-      >
+    <div className="flex w-full flex-col">
+      <div className={cn(chatInputShell, 'gap-1 p-1')}>
         <textarea
           ref={textareaRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
           placeholder={placeholder}
           disabled={disabled}
           rows={1}
-          className="min-h-[36px] max-h-32 w-full resize-none overflow-y-auto bg-transparent p-1 text-[13px] font-normal leading-relaxed text-neutral-200 placeholder:text-neutral-600 focus:outline-none disabled:opacity-50 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-thumb]:bg-neutral-600/40 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-track]:bg-transparent"
+          className={cn(chatComposerTextarea, 'max-h-[156px] overflow-y-auto')}
         />
 
-        <div className="flex items-center justify-between gap-1.5">
-          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scrollbar-hide">
+        <div className="flex items-center justify-between gap-1.5 px-1 pb-0.5">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto scrollbar-hide">
             <button
               type="button"
-              className="flex shrink-0 items-center justify-center rounded border border-transparent p-1 text-neutral-400 transition-all hover:bg-white/10 hover:text-neutral-200"
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--basis-text-muted)] transition-colors hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]"
             >
               <Plus size={12} />
             </button>
 
-            <div className="mx-0.5 h-3.5 w-px shrink-0 bg-white/10" />
+            <div className="mx-0.5 h-3.5 w-px shrink-0 bg-[var(--basis-border-muted)]" />
 
             {buildPlanToggle ? (
               <BuildPlanToggle
@@ -366,7 +362,7 @@ export function MessageInputView({
 
             {modelOptions.length > 0 && (
               <>
-                <div className="mx-0.5 h-3.5 w-px shrink-0 bg-white/10" />
+                <div className="mx-0.5 h-3.5 w-px shrink-0 bg-[var(--basis-border-muted)]" />
                 <PillSelect
                   variant="ghost"
                   value={currentModelId}
@@ -380,8 +376,8 @@ export function MessageInputView({
             {agent?.name && (
               <span
                 className={cn(
-                  'ml-0.5 shrink-0 truncate rounded-full border border-white/10 bg-white/[0.06] px-1.5 py-px text-10-medium text-neutral-400',
-                  isPlan && 'border-orange-500/25 text-orange-400',
+                  'ml-0.5 shrink-0 truncate rounded-full border border-[var(--basis-border)] bg-[var(--basis-surface-elevated)] px-1.5 py-px text-ui-2xs text-[var(--basis-text-muted)]',
+                  isPlan && 'border-dashed text-[var(--basis-text)]',
                 )}
               >
                 {agent.name}
@@ -393,7 +389,7 @@ export function MessageInputView({
           <div className="flex shrink-0 items-center gap-1">
             <button
               type="button"
-              className="flex items-center justify-center rounded border border-transparent p-1 text-neutral-400 transition-all hover:bg-white/10 hover:text-neutral-200"
+              className="flex h-5 w-5 items-center justify-center rounded text-[var(--basis-text-muted)] transition-colors hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]"
             >
               <Mic size={12} />
             </button>
@@ -401,7 +397,7 @@ export function MessageInputView({
               <button
                 type="button"
                 onClick={onAbort}
-                className="shrink-0 rounded bg-red-500/90 p-1 text-white transition-all hover:bg-red-500"
+                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-red-500/90 text-white transition-colors hover:bg-red-500"
               >
                 <Square className="h-3 w-3" />
               </button>
@@ -411,15 +407,12 @@ export function MessageInputView({
                 onClick={send}
                 disabled={!sendActive}
                 className={cn(
-                  'ml-0.5 shrink-0 rounded p-1 transition-all',
-                  sendActive
-                    ? isPlan
-                      ? 'bg-orange-500 text-white hover:bg-orange-400'
-                      : 'bg-white text-black hover:bg-neutral-200'
-                    : 'bg-white/10 text-neutral-500 hover:bg-white/20',
+                  btnSend,
+                  sendActive && isPlan && 'theme-btn-plan !rounded-full !h-6 !w-6 !p-0',
+                  !sendActive && '!bg-[var(--basis-surface-hover)] !text-[var(--basis-text-faint)]',
                 )}
               >
-                <ArrowUp size={12} />
+                <ArrowUp size={14} strokeWidth={1.9} />
               </button>
             )}
           </div>
