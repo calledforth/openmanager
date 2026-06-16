@@ -143,12 +143,12 @@ export const removeByExternalId = mutation({
     const msg = await getMessageByExternalId(ctx, args.externalId)
     if (msg) await ctx.db.delete(msg._id)
 
-    const cursors = await ctx.db
-      .query('stream_cursors')
-      .withIndex('by_messageExternalId', (q) => q.eq('messageExternalId', args.externalId))
+    const chunks = await ctx.db
+      .query('stream_chunks')
+      .withIndex('by_message_and_index', (q) => q.eq('messageExternalId', args.externalId))
       .collect()
-    for (const cursor of cursors) {
-      await ctx.db.delete(cursor._id)
+    for (const chunk of chunks) {
+      await ctx.db.delete(chunk._id)
     }
   },
 })

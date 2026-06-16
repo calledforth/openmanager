@@ -289,17 +289,15 @@ export class SSEBridge {
     }
 
     try {
-      await this.runTrackedMutation('streamCursors.upsert', api.streamCursors.upsert, {
+      await this.runTrackedMutation('streamChunks.appendChunk', api.streamChunks.appendChunk, {
         messageExternalId: messageId,
         sessionExternalId: buffer.sessionExternalId,
         chunkIndex: buffer.chunkIndex,
         chunkText,
         partUpdate,
-        bodyUpToHere: buffer.content,
-        partsUpToHere: Array.from(buffer.parts.values()),
       })
     } catch (err) {
-      console.warn('[sse-bridge] cursor update failed:', (err as Error).message)
+      console.warn('[sse-bridge] chunk append failed:', (err as Error).message)
     }
   }
 
@@ -377,14 +375,17 @@ export class SSEBridge {
       })
       if (!finalized) {
         console.warn('[sse-bridge] finalize skipped: message/session missing')
-        return
       }
-      await this.runTrackedMutation('streamCursors.remove', api.streamCursors.remove, {
+    } catch (err) {
+      console.warn('[sse-bridge] finalize failed:', (err as Error).message)
+    }
+
+    try {
+      await this.runTrackedMutation('streamChunks.remove', api.streamChunks.remove, {
         messageExternalId: messageId,
       })
     } catch (err) {
-      console.warn('[sse-bridge] finalize failed:', (err as Error).message)
-      return
+      console.warn('[sse-bridge] chunk cleanup failed:', (err as Error).message)
     }
 
     this.buffers.delete(messageId)
