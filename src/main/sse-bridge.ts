@@ -62,9 +62,14 @@ export class SSEBridge {
   private messageRuntime = new Map<string, RuntimeMetadata>()
   private cursorFlushQueues = new Map<string, Promise<void>>()
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private finalizingMessages = new Set<string>()
   private stopped = true
-  
-  // Dude the zed edittor 
+
+  private static readonly FINALIZE_ATTEMPTS = 3
+  private static readonly FINALIZE_RETRY_BASE_MS = 500
+  // Grace window before force-finalizing an interrupted stream, giving a clean
+  // `message.updated(completed)` event time to arrive and finalize normally.
+  private static readonly INTERRUPTION_FINALIZE_GRACE_MS = 1500
 
   constructor(
     private serverUrl: string,
@@ -89,6 +94,12 @@ export class SSEBridge {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
+    }
+    // Best-effort: finalize whatever was buffered so an in-flight stream still
+    // reaches messages.content rather than being dropped on shutdown.
+    for (const [messageId, buffer] of this.buffers) {
+      if (buffer.role !== 'assistant') continue
+      void this.finalizeAssistantMessage(messageId)
     }
     this.cursorFlushQueues.clear()
   }
@@ -358,38 +369,105 @@ export class SSEBridge {
     }
   }
 
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms))
+  }
+
+  // Persist the message to Convex with bounded retries.
+  // - 'finalized': content durably written (or patched onto an existing row).
+  // - 'missing': session/message genuinely absent; nothing to persist.
+  // - 'retain': all attempts threw (transient/network); keep state for a later retry.
+  private async finalizeWithRetry(
+    messageId: string,
+    buffer: MessageBuffer,
+  ): Promise<'finalized' | 'missing' | 'retain'> {
+    const attempts = SSEBridge.FINALIZE_ATTEMPTS
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        const finalized = await this.runTrackedMutation(
+          'messages.finalize',
+          api.messages.finalize,
+          {
+            sessionExternalId: buffer.sessionExternalId,
+            externalId: messageId,
+            content: buffer.content,
+            role: buffer.role,
+            parts: Array.from(buffer.parts.values()),
+            runtimeMetadata: this.messageRuntime.get(messageId),
+          },
+        )
+        if (!finalized) {
+          console.warn('[sse-bridge] finalize skipped: message/session missing')
+          return 'missing'
+        }
+        return 'finalized'
+      } catch (err) {
+        console.warn(
+          `[sse-bridge] finalize attempt ${attempt}/${attempts} failed:`,
+          (err as Error).message,
+        )
+        if (attempt < attempts) {
+          await this.delay(attempt * SSEBridge.FINALIZE_RETRY_BASE_MS)
+        }
+      }
+    }
+    return 'retain'
+  }
+
   private async finalizeAssistantMessage(messageId: string): Promise<void> {
     const buffer = this.buffers.get(messageId)
     if (!buffer) return
-
-    await this.enqueueCursorFlush(messageId, true)
+    if (this.finalizingMessages.has(messageId)) return
+    this.finalizingMessages.add(messageId)
 
     try {
-      const finalized = await this.runTrackedMutation('messages.finalize', api.messages.finalize, {
-        sessionExternalId: buffer.sessionExternalId,
-        externalId: messageId,
-        content: buffer.content,
-        role: buffer.role,
-        parts: Array.from(buffer.parts.values()),
-        runtimeMetadata: this.messageRuntime.get(messageId),
-      })
-      if (!finalized) {
-        console.warn('[sse-bridge] finalize skipped: message/session missing')
+      // Ordering guarantee: flush remaining content -> finalize (sets isFinal)
+      // -> only then remove chunks. appendChunk no-ops once isFinal is true.
+      await this.enqueueCursorFlush(messageId, true)
+
+      const outcome = await this.finalizeWithRetry(messageId, buffer)
+
+      if (outcome === 'retain') {
+        // Transient/network failure: retain buffer + chunks so a later trigger
+        // (interruption fallback, reconnect, or completed event) can retry.
+        // The 30-min cron sweep is the eventual backstop for the chunk rows.
+        console.warn(
+          '[sse-bridge] finalize unresolved; retaining buffer and chunks for retry:',
+          messageId,
+        )
+        return
       }
-    } catch (err) {
-      console.warn('[sse-bridge] finalize failed:', (err as Error).message)
-    }
 
-    try {
-      await this.runTrackedMutation('streamChunks.remove', api.streamChunks.remove, {
-        messageExternalId: messageId,
-      })
-    } catch (err) {
-      console.warn('[sse-bridge] chunk cleanup failed:', (err as Error).message)
-    }
+      // 'finalized' (durable) or 'missing' (nothing to persist): chunks are now
+      // safe to drop and the in-memory buffer is no longer needed.
+      try {
+        await this.runTrackedMutation('streamChunks.remove', api.streamChunks.remove, {
+          messageExternalId: messageId,
+        })
+      } catch (err) {
+        console.warn('[sse-bridge] chunk cleanup failed:', (err as Error).message)
+      }
 
-    this.buffers.delete(messageId)
-    this.messageRuntime.delete(messageId)
+      this.buffers.delete(messageId)
+      this.messageRuntime.delete(messageId)
+    } finally {
+      this.finalizingMessages.delete(messageId)
+    }
+  }
+
+  // Case A: the stream ended without a clean `message.updated(completed)` event
+  // (session error/idle, disconnect). Finalize whatever was buffered so it still
+  // reaches messages.content. Deferred so a real completion can win the race.
+  private scheduleInterruptionFinalize(sessionExternalId: string): void {
+    for (const [messageId, buffer] of this.buffers) {
+      if (buffer.role !== 'assistant') continue
+      if (buffer.sessionExternalId !== sessionExternalId) continue
+      setTimeout(() => {
+        if (this.stopped) return
+        if (!this.buffers.has(messageId)) return
+        void this.finalizeAssistantMessage(messageId)
+      }, SSEBridge.INTERRUPTION_FINALIZE_GRACE_MS)
+    }
   }
 
   private async upsertFinalizedMessage(args: {
@@ -566,6 +644,9 @@ export class SSEBridge {
         }).catch((err) =>
           console.warn('[sse-bridge] session status failed:', (err as Error).message),
         )
+        if (status === 'idle' || status === 'error') {
+          this.scheduleInterruptionFinalize(sid)
+        }
         break
       }
 
@@ -580,6 +661,7 @@ export class SSEBridge {
         }).catch((err) =>
           console.warn('[sse-bridge] session error status failed:', (err as Error).message),
         )
+        this.scheduleInterruptionFinalize(sid)
         break
       }
 
@@ -805,10 +887,15 @@ export class SSEBridge {
         break
       }
 
+      case 'session.idle': {
+        const sid: string | undefined = props.sessionID
+        if (sid) this.scheduleInterruptionFinalize(sid)
+        break
+      }
+
       case 'server.heartbeat':
       case 'project.updated':
       case 'session.diff':
-      case 'session.idle':
       case 'session.compacted':
       case 'lsp.updated':
       case 'vcs.branch.updated':
