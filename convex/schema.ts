@@ -70,17 +70,16 @@ export default defineSchema({
     .index('by_sessionExternalId', ['sessionExternalId'])
     .index('by_requestId', ['requestId']),
 
-  stream_cursors: defineTable({
+  stream_chunks: defineTable({
     messageId: v.id('messages'),
     messageExternalId: v.string(),
     sessionExternalId: v.string(),
     chunkIndex: v.number(),
     chunkText: v.string(),
     partUpdate: v.optional(v.any()),
-    bodyUpToHere: v.string(),
-    partsUpToHere: v.optional(v.any()),
-    updatedAt: v.number(),
+    createdAt: v.number(),
   })
-    .index('by_messageExternalId', ['messageExternalId'])
-    .index('by_sessionExternalId', ['sessionExternalId']),
+    .index('by_message_and_index', ['messageExternalId', 'chunkIndex'])
+    .index('by_sessionExternalId', ['sessionExternalId'])
+    .index('by_createdAt', ['createdAt']),
 })

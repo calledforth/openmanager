@@ -13,7 +13,6 @@ import { trackedConvexQuery, useTrackedQuery } from '../../lib/convex-telemetry'
 import {
   applyPartUpdate,
   createPartOrdinalState,
-  normalizeSnapshotParts,
   type StreamMessagePart,
 } from '../../lib/remote-stream-parts'
 
@@ -243,9 +242,9 @@ function useRemoteStreamingMessage(
   enabled: boolean,
   onUpdate?: () => void,
 ) {
-  const cursor = useTrackedQuery(
-    'streamCursors.get',
-    api.streamCursors.get,
+  const latest = useTrackedQuery(
+    'streamChunks.getLatestChunk',
+    api.streamChunks.getLatestChunk,
     enabled ? { messageExternalId } : 'skip',
   )
   const [content, setContent] = useState('')
@@ -262,52 +261,60 @@ function useRemoteStreamingMessage(
   }, [enabled, messageExternalId])
 
   useEffect(() => {
-    if (!enabled || !cursor) return
+    if (!enabled || !latest) return
 
-    if (lastChunkIndex.current !== null && cursor.chunkIndex <= lastChunkIndex.current) return
+    if (lastChunkIndex.current !== null && latest.chunkIndex <= lastChunkIndex.current) return
 
-    const cursorPartUpdate = (cursor as { partUpdate?: { part?: MessagePart } }).partUpdate
+    const applyChunkPart = (partUpdate: unknown) => {
+      const part = (partUpdate as { part?: MessagePart } | undefined)?.part
+      if (!part?.id) return
+      setParts(
+        (prev) =>
+          applyPartUpdate(
+            prev as StreamMessagePart[] | undefined,
+            part as StreamMessagePart,
+            partOrdinalStateRef.current,
+          ) as MessagePart[],
+      )
+    }
 
-    const expectedChunkIndex = cursor.chunkIndex
-    const requiresSnapshot =
-      lastChunkIndex.current === null || expectedChunkIndex > lastChunkIndex.current + 1
+    const expectedChunkIndex = latest.chunkIndex
+    const previousIndex = lastChunkIndex.current
+    // Sequential delivery: append the single newest chunk without any extra read.
+    const isSequential =
+      previousIndex === null ? expectedChunkIndex === 0 : expectedChunkIndex === previousIndex + 1
 
-    if (!requiresSnapshot) {
+    if (isSequential) {
       lastChunkIndex.current = expectedChunkIndex
-      setContent((prev) => prev + cursor.chunkText)
-      if (cursorPartUpdate?.part?.id) {
-        setParts(
-          (prev) =>
-            applyPartUpdate(
-              prev as StreamMessagePart[] | undefined,
-              cursorPartUpdate.part as StreamMessagePart,
-              partOrdinalStateRef.current,
-            ) as MessagePart[],
-        )
-      }
+      setContent((prev) => prev + latest.chunkText)
+      applyChunkPart(latest.partUpdate)
       onUpdate?.()
       return
     }
 
+    // Gap (coalesced updates) or late join: fetch only the missed tail and append it.
     let cancelled = false
+    const afterIndex = previousIndex ?? -1
 
-    trackedConvexQuery('streamCursors.getSnapshot', api.streamCursors.getSnapshot, {
+    trackedConvexQuery('streamChunks.getChunksSince', api.streamChunks.getChunksSince, {
       messageExternalId,
+      afterIndex,
     })
-      .then((snapshot) => {
-        if (cancelled || !snapshot) return
-        if (snapshot.chunkIndex < expectedChunkIndex) return
-        if (lastChunkIndex.current !== null && snapshot.chunkIndex <= lastChunkIndex.current) return
-        lastChunkIndex.current = snapshot.chunkIndex
-        setContent(snapshot.bodyUpToHere)
-        setParts(
-          normalizeSnapshotParts(
-            ((snapshot.partsUpToHere as MessagePart[] | undefined) ?? undefined) as
-              | StreamMessagePart[]
-              | undefined,
-            partOrdinalStateRef.current,
-          ) as MessagePart[] | undefined,
-        )
+      .then((chunks) => {
+        if (cancelled || !chunks || chunks.length === 0) return
+        if (lastChunkIndex.current !== previousIndex) return
+        const ordered = [...chunks].sort((a, b) => a.chunkIndex - b.chunkIndex)
+        let appended = ''
+        let maxIndex = previousIndex ?? -1
+        for (const chunk of ordered) {
+          if (chunk.chunkIndex <= maxIndex) continue
+          appended += chunk.chunkText
+          applyChunkPart(chunk.partUpdate)
+          maxIndex = chunk.chunkIndex
+        }
+        if (maxIndex <= (previousIndex ?? -1)) return
+        lastChunkIndex.current = maxIndex
+        setContent((prev) => prev + appended)
         onUpdate?.()
       })
       .catch(() => undefined)
@@ -315,7 +322,7 @@ function useRemoteStreamingMessage(
     return () => {
       cancelled = true
     }
-  }, [cursor, enabled, messageExternalId, onUpdate])
+  }, [latest, enabled, messageExternalId, onUpdate])
 
   return { content, parts }
 }
