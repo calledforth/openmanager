@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { ThemeProvider } from '../../providers/theme-provider'
+import { AppUiProvider } from '../../providers/app-ui-provider'
 import {
   WorkspaceSidebarView,
   type SidebarWorkspace,
@@ -31,52 +33,46 @@ const meta = {
 export default meta
 type Story = StoryObj
 
-function Demo({
-  collapsed,
-  openCodeUiStatus,
-}: {
-  collapsed: boolean
-  openCodeUiStatus: 'connected' | 'connecting' | 'disconnected'
-}) {
+function Demo({ collapsed }: { collapsed: boolean }) {
   const [isCollapsed, setIsCollapsed] = useState(collapsed)
   const [activeSessionId, setActiveSessionId] = useState<string | null>('sess-002')
   const [collapsedPaths, setCollapsedPaths] = useState<string[]>(['/workspace/opencode.ref'])
 
   return (
-    <div className="h-screen w-screen bg-background">
-      <WorkspaceSidebarView
-        collapsed={isCollapsed}
-        onToggle={() => setIsCollapsed((v) => !v)}
-        workspaces={data}
-        activeWorkspacePath="/workspace/openmanager"
-        activeSessionId={activeSessionId}
-        collapsedWorkspacePaths={collapsedPaths}
-        onToggleWorkspaceCollapse={(path) =>
-          setCollapsedPaths((prev) =>
-            prev.includes(path) ? prev.filter((x) => x !== path) : [...prev, path],
-          )
-        }
-        onCreateSession={() => undefined}
-        onSelectSession={(_, id) => setActiveSessionId(id)}
-        onDeleteSession={() => undefined}
-        onRemoveWorkspace={() => undefined}
-        onAddWorkspace={() => undefined}
-        openCodeStatus="healthy"
-        openCodeUiStatus={openCodeUiStatus}
-        onRetryOpenCode={() => undefined}
-      />
-    </div>
+    <ThemeProvider>
+      <AppUiProvider>
+        <div className="h-screen w-screen bg-background">
+          <WorkspaceSidebarView
+            collapsed={isCollapsed}
+            workspaces={data}
+            activeWorkspacePath="/workspace/openmanager"
+            activeSessionId={activeSessionId}
+            collapsedWorkspacePaths={collapsedPaths}
+            onToggleWorkspaceCollapse={(path) =>
+              setCollapsedPaths((prev) =>
+                prev.includes(path) ? prev.filter((x) => x !== path) : [...prev, path],
+              )
+            }
+            onCreateSession={() => undefined}
+            onSelectSession={(_, id) => setActiveSessionId(id)}
+            onDeleteSession={() => undefined}
+            onRemoveWorkspace={() => undefined}
+            onAddWorkspace={() => undefined}
+          />
+        </div>
+      </AppUiProvider>
+    </ThemeProvider>
   )
 }
 
 export const Connected: Story = {
-  render: () => <Demo collapsed={false} openCodeUiStatus="connected" />,
+  render: () => <Demo collapsed={false} />,
 }
 
 export const Connecting: Story = {
-  render: () => <Demo collapsed={false} openCodeUiStatus="connecting" />,
+  render: () => <Demo collapsed={false} />,
 }
 
 export const DisconnectedCollapsed: Story = {
-  render: () => <Demo collapsed={true} openCodeUiStatus="disconnected" />,
+  render: () => <Demo collapsed={true} />,
 }

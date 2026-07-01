@@ -34,7 +34,7 @@ export function ThinkingPart({ text, isStreaming = false }: ThinkingPartProps) {
       </summary>
       {(text || isStreaming) && (
         <div
-          className={`mt-1 pl-2 ${typographyBodySm} text-[var(--basis-text-muted)] whitespace-pre-wrap`}
+          className={`mt-1 ${typographyBodySm} text-[var(--basis-text-muted)] whitespace-pre-wrap`}
         >
           {text || (isStreaming ? '…' : '')}
         </div>

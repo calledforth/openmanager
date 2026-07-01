@@ -27,51 +27,12 @@ export interface RuntimeMetadata {
 interface MessagePart extends StreamMessagePart {}
 
 export function ChatViewPanel({
-  title,
-  status,
-  isStreaming,
-  onAbort,
   children,
 }: {
-  title: string
-  status?: string
-  isStreaming: boolean
-  onAbort: () => void
   children: ReactNode
 }) {
   return (
     <div data-chat-view className="flex min-h-0 flex-1 flex-col">
-      <div className="flex h-8 shrink-0 items-center justify-between border-b border-[var(--basis-border-muted)] px-3">
-        <span className="text-ui-base font-medium text-[var(--basis-text-strong)]">{title}</span>
-        <div className="flex items-center gap-2">
-          {status && status !== 'idle' && (
-            <span
-              className={cn(
-                typographyCaption,
-                status === 'running' || status === 'busy'
-                  ? 'text-[var(--basis-text)]'
-                  : status === 'error'
-                    ? 'text-destructive'
-                    : 'text-[var(--basis-text-muted)]',
-              )}
-            >
-              {status}
-            </span>
-          )}
-          {isStreaming && (
-            <button
-              type="button"
-              onClick={onAbort}
-              className={cn(
-                typographyCaption,
-                'cursor-pointer rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)] bg-transparent px-2 py-0.5 text-[var(--basis-text-muted)] transition-colors hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
-              )}
-            >
-              Stop
-            </button>
-          )}
-        </div>
-      </div>
       {children}
     </div>
   )

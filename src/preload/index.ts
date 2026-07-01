@@ -1,6 +1,17 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 const electronAPI = {
+  platform: process.platform as NodeJS.Platform,
+  minimizeWindow: () => ipcRenderer.invoke('window:minimize'),
+  maximizeWindow: () => ipcRenderer.invoke('window:maximize'),
+  closeWindow: () => ipcRenderer.invoke('window:close'),
+  isWindowMaximized: () => ipcRenderer.invoke('window:is-maximized') as Promise<boolean>,
+  onWindowMaximizedChanged: (callback: (maximized: boolean) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, maximized: boolean) =>
+      callback(maximized)
+    ipcRenderer.on('window:maximized-changed', handler)
+    return () => ipcRenderer.removeListener('window:maximized-changed', handler)
+  },
   getClientId: () => ipcRenderer.invoke('client:get-id'),
   getTelemetrySnapshot: () => ipcRenderer.invoke('telemetry:get-snapshot'),
   clearTelemetry: () => ipcRenderer.invoke('telemetry:clear'),

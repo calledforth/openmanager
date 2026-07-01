@@ -68,7 +68,7 @@ export function ExploringGroup({ parts, isStreaming = false }: ExploringGroupPro
       open={expanded}
       onToggle={(e) => setExpanded((e.target as HTMLDetailsElement).open)}
     >
-      <summary className={`${activityDetailsSummary} px-2`}>
+      <summary className={activityDetailsSummary}>
         {isRunning ? (
           <span
             className="inline basis-tool-shimmer"

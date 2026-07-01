@@ -20,8 +20,7 @@ const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96
 const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 8
 
 export function ChatView() {
-  const { activeSessionId, activeSession, messages, abortSession, activeSessionDriven } =
-    useActiveSession()
+  const { activeSessionId, messages, activeSessionDriven } = useActiveSession()
   const { activeWorkspacePath, isSessionDraftOpen, pendingDraftSessionStart } = useAppUi()
   const scrollRef = useRef<HTMLDivElement>(null)
   const shouldAutoScrollRef = useRef(true)
@@ -96,23 +95,15 @@ export function ChatView() {
   }
 
   const chatMessages = messages.filter((m) => m.role !== 'permission')
-  const isStreaming = activeSession?.status === 'running' || activeSession?.status === 'busy'
-  const title = activeSession?.title || activeSessionId.slice(0, 12)
-  const status = activeSession?.status
 
   return (
-    <ChatViewPanel
-      title={title}
-      status={status}
-      isStreaming={isStreaming}
-      onAbort={() => abortSession(activeSessionId)}
-    >
+    <ChatViewPanel>
       <div
         ref={scrollRef}
         onScroll={handleScroll}
         className="custom-scrollbar flex-1 min-h-0 overflow-x-hidden overflow-y-auto"
       >
-        <div className="mx-auto max-w-3xl space-y-1 px-4 py-6 pb-44">
+        <div className="mx-auto max-w-3xl space-y-1 px-4 pt-2 pb-44">
           {chatMessages.length === 0 && (
             <div className="text-muted-foreground/70 text-[13px] text-center mt-10">
               Send a message to start

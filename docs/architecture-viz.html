@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenManager Architecture</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #000;
+      --ink: #e8e8e8;
+      --muted: #666;
+      --line: #2a2a2a;
+      --convex: #f59e0b;
+      --query: #60a5fa;
+      --mutation: #f87171;
+      --ipc: #4ade80;
+      --sse: #c084fc;
+      --owner: #fde047;
+      --observer: #94a3b8;
+      --mobile: #67e8f9;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(--ink); font-family: "IBM Plex Mono", monospace; font-size: 11px; }
+
+    .toolbar {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      height: 44px; display: flex; align-items: center; gap: 16px;
+      padding: 0 14px; background: rgba(0,0,0,.9); border-bottom: 1px solid var(--line);
+    }
+    .toolbar h1 { font-family: Caveat, cursive; font-size: 22px; font-weight: 600; white-space: nowrap; }
+    .legend { display: flex; gap: 12px; color: var(--muted); font-size: 10px; flex-wrap: wrap; }
+    .legend i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+    .zoom-ui { margin-left: auto; display: flex; gap: 6px; align-items: center; color: var(--muted); }
+    .zoom-ui button {
+      background: #111; border: 1px solid var(--line); color: var(--ink);
+      width: 28px; height: 28px; border-radius: 4px; cursor: pointer; font-size: 14px;
+    }
+    .zoom-ui button:hover { border-color: var(--convex); }
+    #zoom-label { min-width: 42px; text-align: center; }
+
+    #viewport {
+      position: fixed; inset: 44px 0 0; cursor: grab; touch-action: none;
+      background:
+        radial-gradient(circle at 50% 50%, #050505 0%, #000 100%),
+        repeating-linear-gradient(0deg, transparent, transparent 23px, #0a0a0a 24px),
+        repeating-linear-gradient(90deg, transparent, transparent 23px, #0a0a0a 24px);
+    }
+    #viewport.dragging { cursor: grabbing; }
+
+    #world {
+      position: absolute; left: 0; top: 0; width: 3400px; height: 2000px;
+      transform-origin: 0 0;
+      will-change: transform;
+    }
+
+    #edges {
+      position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible;
+    }
+    #edges path {
+      fill: none; stroke: #2e2e2e; stroke-width: 1.4;
+      transition: stroke-width .15s, opacity .15s, stroke .15s;
+    }
+    #edges path.q { stroke: var(--query); }
+    #edges path.m { stroke: var(--mutation); }
+    #edges path.i { stroke: var(--ipc); }
+    #edges path.s { stroke: var(--sse); }
+    #edges path.c { stroke: var(--convex); }
+    #edges path.dim { opacity: .06; }
+    #edges path.on { stroke-width: 2.6; opacity: 1; filter: drop-shadow(0 0 3px currentColor); }
+
+    .zone {
+      position: absolute; border: 1px dashed #1e1e1e; border-radius: 8px; pointer-events: none;
+    }
+    .zone > span {
+      position: absolute; top: -22px; left: 8px;
+      font-family: Caveat, cursive; font-size: 18px; color: #444;
+    }
+    .zone.convex { border-color: #3d2a00; }
+    .zone.convex > span { color: var(--convex); }
+
+    .node {
+      position: absolute; padding: 6px 9px; border-radius: 5px;
+      border: 1.5px solid #444; background: rgba(6,6,6,.96);
+      transition: opacity .2s, box-shadow .2s, border-color .2s, transform .2s;
+      transform: rotate(var(--r, 0deg));
+    }
+    .node .t {
+      font-family: Caveat, cursive; font-size: 15px; line-height: 1.1; white-space: nowrap;
+    }
+    .node .h { font-size: 9px; color: var(--muted); margin-top: 2px; white-space: nowrap; }
+
+    .node.owner { border-color: var(--owner); --r: -.5deg; }
+    .node.observer { border-color: var(--observer); --r: .4deg; }
+    .node.mobile { border-color: var(--mobile); --r: -.3deg; }
+    .node.rnd { border-color: #64748b; }
+    .node.main { border-color: #78716c; }
+    .node.oc { border-color: var(--sse); }
+    .node.hub { border-color: var(--convex); background: rgba(245,158,11,.08); box-shadow: 0 0 24px rgba(245,158,11,.06); }
+    .node.tbl { border-color: var(--convex); background: rgba(245,158,11,.05); }
+    .node.tbl .t { color: var(--convex); font-size: 14px; }
+    .node.qry { border-color: var(--query); background: rgba(96,165,250,.07); }
+    .node.qry .t { color: var(--query); font-size: 13px; }
+    .node.mut { border-color: var(--mutation); background: rgba(248,113,113,.07); }
+    .node.mut .t { color: var(--mutation); font-size: 13px; }
+    .node.off { border-style: dashed; border-color: #555; }
+    .node.off .t { color: #888; font-size: 13px; }
+
+    .node.dim { opacity: .14; }
+    .node.on {
+      opacity: 1 !important; z-index: 10; transform: rotate(0) scale(1.04);
+      border-color: #fff !important;
+      box-shadow: 0 0 0 1px rgba(255,255,255,.3), 0 0 20px rgba(245,158,11,.25);
+      animation: glow 1.1s ease-in-out infinite;
+    }
+    @keyframes glow {
+      50% { box-shadow: 0 0 0 2px rgba(255,255,255,.4), 0 0 28px rgba(245,158,11,.35); }
+    }
+
+    .panel {
+      position: fixed; z-index: 90; background: rgba(8,8,8,.94);
+      border: 1px solid var(--line); border-radius: 8px; backdrop-filter: blur(10px);
+      max-height: calc(100vh - 60px); overflow: auto;
+    }
+    .panel.flows { left: 12px; bottom: 12px; width: 220px; padding: 10px; }
+    .panel.step { right: 12px; bottom: 12px; width: 260px; padding: 12px; }
+    .panel h2 { font-family: Caveat, cursive; font-size: 18px; margin-bottom: 8px; }
+    .grp { margin-bottom: 10px; }
+    .grp label { display: block; font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 4px; }
+    .flow-btn {
+      display: block; width: 100%; text-align: left; padding: 5px 7px; margin-bottom: 3px;
+      background: transparent; border: 1px solid #222; border-radius: 4px; color: var(--ink);
+      cursor: pointer; font: inherit; font-size: 10px;
+    }
+    .flow-btn:hover { border-color: var(--convex); }
+    .flow-btn.active { border-color: var(--convex); color: var(--convex); background: rgba(245,158,11,.08); }
+    .nav { display: flex; gap: 4px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+    .nav button {
+      flex: 1; padding: 6px; background: #111; border: 1px solid var(--line);
+      color: var(--ink); border-radius: 4px; cursor: pointer; font: inherit; font-size: 10px;
+    }
+    .nav button:hover { border-color: var(--convex); }
+    .nav button:disabled { opacity: .3; cursor: default; }
+    #step-meta { color: var(--convex); font-size: 10px; margin-bottom: 6px; }
+    #step-text { font-size: 11px; line-height: 1.5; color: #ccc; min-height: 48px; }
+    .hint { position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 80;
+      color: #444; font-size: 10px; pointer-events: none; white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <h1>OpenManager Architecture</h1>
+    <div class="legend">
+      <span><i style="background:var(--convex)"></i>Convex</span>
+      <span><i style="background:var(--query)"></i>Query</span>
+      <span><i style="background:var(--mutation)"></i>Mutation</span>
+      <span><i style="background:var(--ipc)"></i>IPC</span>
+      <span><i style="background:var(--sse)"></i>SSE</span>
+    </div>
+    <div class="zoom-ui">
+      <button id="zoom-out" title="Zoom out">−</button>
+      <span id="zoom-label">100%</span>
+      <button id="zoom-in" title="Zoom in">+</button>
+      <button id="zoom-fit" title="Fit view">Fit</button>
+    </div>
+  </div>
+
+  <div id="viewport">
+    <div id="world">
+      <svg id="edges"></svg>
+      <div id="zones"></div>
+      <div id="nodes"></div>
+    </div>
+  </div>
+
+  <div class="panel flows">
+    <h2>Flows</h2>
+    <div class="grp"><label>Lifecycle</label>
+      <button type="button" class="flow-btn" data-flow="bootstrap">Bootstrap</button>
+      <button type="button" class="flow-btn" data-flow="add-workspace">Add workspace</button>
+      <button type="button" class="flow-btn" data-flow="create-session">Create session</button>
+      <button type="button" class="flow-btn" data-flow="session-reopen">Reopen session</button>
+      <button type="button" class="flow-btn" data-flow="delete-session">Delete session</button>
+    </div>
+    <div class="grp"><label>Messaging</label>
+      <button type="button" class="flow-btn" data-flow="send-message">Send message</button>
+      <button type="button" class="flow-btn" data-flow="start-with-message">Start + message</button>
+      <button type="button" class="flow-btn" data-flow="remote-send">Remote send</button>
+      <button type="button" class="flow-btn" data-flow="abort">Abort</button>
+      <button type="button" class="flow-btn" data-flow="message-removed">Message removed</button>
+    </div>
+    <div class="grp"><label>Streaming</label>
+      <button type="button" class="flow-btn" data-flow="stream-owner">Owner IPC stream</button>
+      <button type="button" class="flow-btn" data-flow="stream-remote">Remote Convex stream</button>
+      <button type="button" class="flow-btn" data-flow="late-join">Late join</button>
+      <button type="button" class="flow-btn" data-flow="finalize">Finalize</button>
+    </div>
+    <div class="grp"><label>Other</label>
+      <button type="button" class="flow-btn" data-flow="permission">Permission</button>
+      <button type="button" class="flow-btn" data-flow="session-status">Session status</button>
+      <button type="button" class="flow-btn" data-flow="set-model">Set model/mode</button>
+    </div>
+    <div class="nav">
+      <button type="button" id="btn-prev" disabled>Prev</button>
+      <button type="button" id="btn-next" disabled>Next</button>
+      <button type="button" id="btn-stop">Stop</button>
+    </div>
+  </div>
+
+  <div class="panel step">
+    <h2>Step</h2>
+    <div id="step-meta">Pick a flow</div>
+    <div id="step-text">Drag canvas · scroll to zoom · click a flow to highlight the path step-by-step.</div>
+  </div>
+
+  <div class="hint">drag · scroll zoom · space+drag pan</div>
+
+<script>
+(function () {
+  'use strict';
+
+  const W = 3400, H = 2000;
+  const nodesEl = document.getElementById('nodes');
+  const zonesEl = document.getElementById('zones');
+  const edgesSvg = document.getElementById('edges');
+  const viewport = document.getElementById('viewport');
+  const world = document.getElementById('world');
+
+  edgesSvg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+
+  const NODES = [
+    { id: 'n-owner', cls: 'owner', x: 80, y: 70, w: 150, t: 'Desktop Owner', h: 'driven · IPC' },
+    { id: 'n-observer', cls: 'observer', x: 260, y: 70, w: 150, t: 'Desktop Observer', h: 'Convex stream' },
+    { id: 'n-mobile', cls: 'mobile', x: 440, y: 70, w: 140, t: 'Mobile', h: 'Convex only' },
+
+    { id: 'n-app-ui', cls: 'rnd', x: 60, y: 210, w: 130, t: 'AppUiProvider', h: 'jobs · mutations' },
+    { id: 'n-sidebar', cls: 'rnd', x: 210, y: 210, w: 130, t: 'SidebarData', h: 'list · listForSidebar' },
+    { id: 'n-active', cls: 'rnd', x: 360, y: 210, w: 140, t: 'ActiveSession', h: 'metadata · IPC' },
+    { id: 'n-perm-ui', cls: 'rnd', x: 520, y: 210, w: 120, t: 'Permission', h: 'getPending' },
+    { id: 'n-chat', cls: 'rnd', x: 60, y: 300, w: 580, t: 'ChatView', h: 'getContent · streamCursors.get · getSnapshot · IPC store' },
+
+    { id: 'n-job-worker', cls: 'main', x: 80, y: 430, w: 130, t: 'JobWorker', h: 'listPending sub' },
+    { id: 'n-sse', cls: 'main', x: 240, y: 430, w: 130, t: 'SSEBridge', h: 'SSE → mutations' },
+    { id: 'n-ipc', cls: 'main', x: 400, y: 430, w: 120, t: 'IPC token', h: 'owner only' },
+
+    { id: 'n-opencode', cls: 'oc', x: 80, y: 530, w: 560, t: 'OpenCode ACP Sidecar', h: 'sessions · messages · permissions · SSE' },
+
+    { id: 'n-convex', cls: 'hub', x: 1180, y: 60, w: 140, t: 'Convex', h: 'reactive DB' },
+
+    { id: 't-workspaces', cls: 'tbl', x: 900, y: 170, w: 110, t: 'workspaces' },
+    { id: 't-sessions', cls: 'tbl', x: 1030, y: 170, w: 100, t: 'sessions' },
+    { id: 't-messages', cls: 'tbl', x: 1150, y: 170, w: 100, t: 'messages' },
+    { id: 't-jobs', cls: 'tbl', x: 1270, y: 170, w: 110, t: 'pending_jobs' },
+    { id: 't-perms', cls: 'tbl', x: 1400, y: 170, w: 130, t: 'pending_permissions' },
+    { id: 't-cursors', cls: 'tbl', x: 1550, y: 170, w: 110, t: 'stream_cursors' },
+
+    { id: 'q-workspaces-list', cls: 'qry', x: 900, y: 290, w: 130, t: 'workspaces.list' },
+    { id: 'q-sessions-sidebar', cls: 'qry', x: 1050, y: 290, w: 150, t: 'sessions.listForSidebar' },
+    { id: 'q-session-get', cls: 'qry', x: 1220, y: 290, w: 160, t: 'sessions.getByExternalId' },
+    { id: 'q-messages-meta', cls: 'qry', x: 900, y: 360, w: 140, t: 'messages.listMetadata' },
+    { id: 'q-messages-content', cls: 'qry', x: 1060, y: 360, w: 130, t: 'messages.getContent' },
+    { id: 'q-cursor-get', cls: 'qry', x: 1210, y: 360, w: 130, t: 'streamCursors.get' },
+    { id: 'q-perm-get', cls: 'qry', x: 1360, y: 360, w: 180, t: 'permissions.getPendingForSession' },
+    { id: 'q-jobs-pending', cls: 'qry', x: 1560, y: 360, w: 120, t: 'jobs.listPending' },
+
+    { id: 'q-workspace-path', cls: 'off', x: 900, y: 440, w: 140, t: 'workspaces.getByPath', h: 'one-off' },
+    { id: 'q-sessions-ws', cls: 'off', x: 1060, y: 440, w: 150, t: 'sessions.listByWorkspace', h: 'one-off' },
+    { id: 'q-cursor-snap', cls: 'off', x: 1230, y: 440, w: 160, t: 'streamCursors.getSnapshot', h: 'one-off' },
+
+    { id: 'm-jobs-submit', cls: 'mut', x: 900, y: 540, w: 100, t: 'jobs.submit' },
+    { id: 'm-jobs-msg', cls: 'mut', x: 1020, y: 540, w: 130, t: 'jobs.submitMessage' },
+    { id: 'm-jobs-claim', cls: 'mut', x: 1170, y: 540, w: 120, t: 'jobs.claim' },
+    { id: 'm-ws-ensure', cls: 'mut', x: 1310, y: 540, w: 150, t: 'workspaces.ensureByPath' },
+    { id: 'm-sess-upsert', cls: 'mut', x: 900, y: 610, w: 170, t: 'sessions.upsertStatus' },
+    { id: 'm-sess-remove', cls: 'mut', x: 1090, y: 610, w: 120, t: 'sessions.remove' },
+    { id: 'm-msg-placeholder', cls: 'mut', x: 1230, y: 610, w: 150, t: 'messages.insertPlaceholder' },
+    { id: 'm-msg-finalized', cls: 'mut', x: 1400, y: 610, w: 150, t: 'messages.upsertFinalized' },
+    { id: 'm-msg-finalize', cls: 'mut', x: 900, y: 680, w: 120, t: 'messages.finalize' },
+    { id: 'm-msg-remove', cls: 'mut', x: 1040, y: 680, w: 160, t: 'messages.removeByExternalId' },
+    { id: 'm-cursor-upsert', cls: 'mut', x: 1220, y: 680, w: 130, t: 'streamCursors.upsert' },
+    { id: 'm-cursor-remove', cls: 'mut', x: 1370, y: 680, w: 130, t: 'streamCursors.remove' },
+    { id: 'm-perm-upsert', cls: 'mut', x: 1520, y: 680, w: 150, t: 'permissions.upsertPending' },
+    { id: 'm-perm-resolve', cls: 'mut', x: 900, y: 750, w: 140, t: 'permissions.resolve' },
+  ];
+
+  const ZONES = [
+    { x: 40, y: 40, w: 620, h: 100, label: 'Clients' },
+    { x: 40, y: 170, w: 640, h: 200, label: 'Renderer' },
+    { x: 40, y: 400, w: 640, h: 90, label: 'Main' },
+    { x: 40, y: 510, w: 640, h: 70, label: 'OpenCode' },
+    { x: 860, y: 40, w: 860, h: 760, label: 'Convex', convex: true },
+  ];
+
+  const EDGES = [
+    ['e-owner-app','n-owner','n-app-ui','i'],['e-owner-active','n-owner','n-active','i'],
+    ['e-owner-chat','n-owner','n-chat','i'],['e-observer-active','n-observer','n-active','i'],
+    ['e-mobile-app','n-mobile','n-app-ui','i'],
+    ['e-app-jobs','n-app-ui','m-jobs-submit','m'],['e-app-msg','n-app-ui','m-jobs-msg','m'],
+    ['e-sidebar-q1','n-sidebar','q-workspaces-list','q'],['e-sidebar-q2','n-sidebar','q-sessions-sidebar','q'],
+    ['e-active-q1','n-active','q-session-get','q'],['e-active-q2','n-active','q-messages-meta','q'],
+    ['e-active-ipc','n-ipc','n-active','i'],
+    ['e-chat-content','n-chat','q-messages-content','q'],['e-chat-cursor','n-chat','q-cursor-get','q'],
+    ['e-chat-snap','n-chat','q-cursor-snap','q'],['e-perm-q','n-perm-ui','q-perm-get','q'],
+    ['e-jw-q','n-job-worker','q-jobs-pending','q'],['e-jw-claim','n-job-worker','m-jobs-claim','m'],
+    ['e-jw-oc','n-job-worker','n-opencode','s'],['e-sse-oc','n-sse','n-opencode','s'],
+    ['e-sse-ipc','n-sse','n-ipc','i'],
+    ['e-sse-ph','n-sse','m-msg-placeholder','m'],['e-sse-fin','n-sse','m-msg-finalized','m'],
+    ['e-sse-finalize','n-sse','m-msg-finalize','m'],['e-sse-cur','n-sse','m-cursor-upsert','m'],
+    ['e-sse-cur-rm','n-sse','m-cursor-remove','m'],['e-sse-sess','n-sse','m-sess-upsert','m'],
+    ['e-sse-sess-rm','n-sse','m-sess-remove','m'],['e-sse-perm','n-sse','m-perm-upsert','m'],
+    ['e-sse-perm-rm','n-sse','m-perm-resolve','m'],['e-sse-msg-rm','n-sse','m-msg-remove','m'],
+    ['e-q1-t1','q-workspaces-list','t-workspaces','c'],['e-q2-t2','q-sessions-sidebar','t-sessions','c'],
+    ['e-q3-t2','q-session-get','t-sessions','c'],['e-q4-t3','q-messages-meta','t-messages','c'],
+    ['e-q5-t3','q-messages-content','t-messages','c'],['e-q6-t6','q-cursor-get','t-cursors','c'],
+    ['e-q7-t5','q-perm-get','t-perms','c'],['e-q8-t4','q-jobs-pending','t-jobs','c'],
+    ['e-m1-t4','m-jobs-submit','t-jobs','c'],['e-m2-t4','m-jobs-msg','t-jobs','c'],
+    ['e-m3-t4','m-jobs-claim','t-jobs','c'],['e-m4-t1','m-ws-ensure','t-workspaces','c'],
+    ['e-m5-t2','m-sess-upsert','t-sessions','c'],['e-m6-t3','m-msg-placeholder','t-messages','c'],
+    ['e-m7-t3','m-msg-finalized','t-messages','c'],['e-m8-t3','m-msg-finalize','t-messages','c'],
+    ['e-m8b-t3','m-msg-remove','t-messages','c'],['e-m9-t6','m-cursor-upsert','t-cursors','c'],
+    ['e-m9b-t6','m-cursor-remove','t-cursors','c'],['e-m10-t5','m-perm-upsert','t-perms','c'],
+    ['e-m10b-t5','m-perm-resolve','t-perms','c'],['e-m5b-t2','m-sess-remove','t-sessions','c'],
+    ['e-hub-t1','n-convex','t-workspaces','c'],['e-hub-t2','n-convex','t-sessions','c'],
+    ['e-hub-t3','n-convex','t-messages','c'],
+  ];
+
+  const pos = {};
+  NODES.forEach(n => {
+    pos[n.id] = { x: n.x + n.w / 2, y: n.y + (n.h ? 26 : 16) };
+  });
+
+  function renderDiagram() {
+    zonesEl.innerHTML = ZONES.map(z =>
+      `<div class="zone${z.convex ? ' convex' : ''}" style="left:${z.x}px;top:${z.y}px;width:${z.w}px;height:${z.h}px"><span>${z.label}</span></div>`
+    ).join('');
+
+    nodesEl.innerHTML = NODES.map(n =>
+      `<div class="node ${n.cls}" id="${n.id}" style="left:${n.x}px;top:${n.y}px;width:${n.w}px">` +
+      `<div class="t">${n.t}</div>${n.h ? `<div class="h">${n.h}</div>` : ''}</div>`
+    ).join('');
+
+    const paths = EDGES.map(([id, a, b, k], i) => {
+      const f = pos[a], t = pos[b];
+      if (!f || !t) return '';
+      const bend = ((i % 3) - 1) * 20;
+      const mx = (f.x + t.x) / 2, my = (f.y + t.y) / 2 + bend;
+      return `<path id="${id}" class="${k}" d="M${f.x} ${f.y} Q${mx} ${my} ${t.x} ${t.y}"/>`;
+    }).join('');
+    edgesSvg.innerHTML = paths;
+  }
+
+  const FLOWS = {
+    bootstrap: { title: 'Bootstrap', steps: [
+      { nodes: ['n-owner','n-app-ui','m-ws-ensure','t-workspaces'], edges: ['e-owner-app','e-m4-t1'], text: 'ensureByPath on launch.' },
+      { nodes: ['n-sidebar','q-workspaces-list','t-workspaces'], edges: ['e-sidebar-q1','e-q1-t1'], text: 'workspaces.list subscription → sidebar.' },
+      { nodes: ['n-sidebar','q-sessions-sidebar','t-sessions'], edges: ['e-sidebar-q2','e-q2-t2'], text: 'listForSidebar → session list.' },
+      { nodes: ['n-job-worker','q-jobs-pending','t-jobs'], edges: ['e-jw-q','e-q8-t4'], text: 'JobWorker subscribes listPending(clientId).' },
+    ]},
+    'add-workspace': { title: 'Add workspace', steps: [
+      { nodes: ['n-app-ui','m-ws-ensure','t-workspaces'], edges: ['e-m4-t1'], text: 'ensureByPath inserts workspace row.' },
+      { nodes: ['n-sidebar','q-workspaces-list','t-workspaces'], edges: ['e-sidebar-q1','e-q1-t1'], text: 'list invalidates → sidebar updates.' },
+    ]},
+    'create-session': { title: 'Create session', steps: [
+      { nodes: ['n-app-ui','m-jobs-submit','t-jobs'], edges: ['e-app-jobs','e-m1-t4'], text: 'jobs.submit create_session.' },
+      { nodes: ['n-job-worker','q-jobs-pending','t-jobs'], edges: ['e-jw-q','e-q8-t4'], text: 'Owner sees pending job.' },
+      { nodes: ['n-job-worker','n-opencode'], edges: ['e-jw-claim','e-jw-oc'], text: 'claim → ACP createSession.' },
+      { nodes: ['n-sse','m-sess-upsert','t-sessions'], edges: ['e-sse-oc','e-sse-sess','e-m5-t2'], text: 'SSE session.created → upsertStatus + clientId.' },
+      { nodes: ['n-sidebar','q-sessions-sidebar','t-sessions'], edges: ['e-sidebar-q2','e-q2-t2'], text: 'Sidebar re-fires.' },
+    ]},
+    'send-message': { title: 'Send message', steps: [
+      { nodes: ['n-owner','n-active','n-chat'], edges: ['e-owner-active','e-owner-chat'], text: 'Optimistic user bubble (local).' },
+      { nodes: ['n-app-ui','m-jobs-msg','t-jobs'], edges: ['e-app-msg','e-m2-t4'], text: 'submitMessage → pending_jobs (targetClientId=owner).' },
+      { nodes: ['n-job-worker','n-opencode'], edges: ['e-jw-q','e-jw-claim','e-jw-oc'], text: 'Owner executes sendMessageAsync.' },
+      { nodes: ['n-sse','m-msg-finalized','t-messages'], edges: ['e-sse-oc','e-sse-fin','e-m7-t3'], text: 'SSE user echo → upsertFinalized.' },
+      { nodes: ['n-active','q-messages-meta','t-messages'], edges: ['e-active-q2','e-q4-t3'], text: 'listMetadata re-fires.' },
+      { nodes: ['n-chat','q-messages-content','t-messages'], edges: ['e-chat-content','e-q5-t3'], text: 'getContent loads body.' },
+    ]},
+    'start-with-message': { title: 'Start + message', steps: [
+      { nodes: ['n-app-ui','m-jobs-submit','t-jobs'], edges: ['e-app-jobs','e-m1-t4'], text: 'start_session_with_message job.' },
+      { nodes: ['n-job-worker','n-opencode','m-sess-upsert','t-sessions'], edges: ['e-jw-oc','e-m5-t2'], text: 'Create session + upsertStatus.' },
+      { nodes: ['n-job-worker','n-opencode'], edges: ['e-jw-oc'], text: 'sendMessageAsync in same job.' },
+      { nodes: ['n-sse','m-msg-finalized','t-messages'], edges: ['e-sse-fin','e-m7-t3'], text: 'Normal SSE path from here.' },
+      { nodes: ['n-active','q-messages-meta'], edges: ['e-active-q2','e-q4-t3'], text: 'UI binds to new session metadata.' },
+    ]},
+    'remote-send': { title: 'Remote send', steps: [
+      { nodes: ['n-mobile','n-app-ui','m-jobs-msg','t-jobs'], edges: ['e-mobile-app','e-app-msg','e-m2-t4'], text: 'Remote submits; targetClientId = owner.' },
+      { nodes: ['n-owner','n-job-worker','q-jobs-pending','t-jobs'], edges: ['e-jw-q','e-q8-t4'], text: 'Only owner worker receives job.' },
+      { nodes: ['n-job-worker','n-opencode','n-sse'], edges: ['e-jw-oc','e-sse-oc'], text: 'Owner sidecar runs message.' },
+      { nodes: ['n-observer','n-mobile','q-messages-meta','t-messages'], edges: ['e-q4-t3'], text: 'Observers watch via Convex only.' },
+    ]},
+    'stream-owner': { title: 'Owner IPC stream', steps: [
+      { nodes: ['n-opencode','n-sse'], edges: ['e-sse-oc'], text: 'SSE part.delta / part.updated tokens.' },
+      { nodes: ['n-sse','m-msg-placeholder','t-messages'], edges: ['e-sse-ph','e-m6-t3'], text: 'insertPlaceholder → listMetadata once.' },
+      { nodes: ['n-active','q-session-get','q-messages-meta'], edges: ['e-active-q1','e-active-q2'], text: 'isDriven=true on owner.' },
+      { nodes: ['n-sse','n-ipc','n-active','n-chat'], edges: ['e-sse-ipc','e-active-ipc','e-owner-chat'], text: 'IPC per token — no Convex hot path.' },
+      { nodes: ['n-sse','m-cursor-upsert','t-cursors'], edges: ['e-sse-cur','e-m9-t6'], text: 'Sentence boundary cursor for remotes.' },
+    ]},
+    'stream-remote': { title: 'Remote Convex stream', steps: [
+      { nodes: ['n-observer','n-active','q-session-get','t-sessions'], edges: ['e-observer-active','e-active-q1'], text: 'isDriven=false.' },
+      { nodes: ['n-active','q-messages-meta','t-messages'], edges: ['e-active-q2','e-q4-t3'], text: 'Assistant placeholder visible.' },
+      { nodes: ['n-chat','q-cursor-get','t-cursors'], edges: ['e-chat-cursor','e-q6-t6'], text: 'streamCursors.get delta sub.' },
+      { nodes: ['n-sse','m-cursor-upsert','t-cursors'], edges: ['e-sse-cur','e-m9-t6'], text: 'Owner writes sentence patches.' },
+      { nodes: ['n-chat'], edges: ['e-chat-cursor'], text: 'Append chunkText locally.' },
+    ]},
+    'late-join': { title: 'Late join', steps: [
+      { nodes: ['n-mobile','n-active','q-messages-meta','t-messages'], edges: ['e-active-q2','e-q4-t3'], text: 'Mid-stream placeholder in metadata.' },
+      { nodes: ['n-chat','q-cursor-get','t-cursors'], edges: ['e-chat-cursor','e-q6-t6'], text: 'get returns chunkIndex N; gap detected.' },
+      { nodes: ['n-chat','q-cursor-snap','t-cursors'], edges: ['e-chat-snap'], text: 'One-off getSnapshot → bodyUpToHere.' },
+      { nodes: ['n-chat','q-cursor-get'], edges: ['e-chat-cursor'], text: 'Resume delta append N+1…' },
+    ]},
+    finalize: { title: 'Finalize', steps: [
+      { nodes: ['n-opencode','n-sse'], edges: ['e-sse-oc'], text: 'message.updated isFinal.' },
+      { nodes: ['n-sse','m-msg-finalize','m-cursor-remove','t-messages','t-cursors'], edges: ['e-sse-finalize','e-m8-t3','e-sse-cur-rm','e-m9b-t6'], text: 'finalize + remove cursor.' },
+      { nodes: ['n-active','q-messages-meta'], edges: ['e-active-q2','e-q4-t3'], text: 'Clear IPC store on isFinal.' },
+      { nodes: ['n-chat','q-messages-content'], edges: ['e-chat-content','e-q5-t3'], text: 'getContent → final body.' },
+    ]},
+    'session-reopen': { title: 'Reopen session', steps: [
+      { nodes: ['n-active','q-session-get','t-sessions'], edges: ['e-active-q1','e-q3-t2'], text: 'Session + clientId for driven.' },
+      { nodes: ['n-active','q-messages-meta','t-messages'], edges: ['e-active-q2','e-q4-t3'], text: 'All metadata rows.' },
+      { nodes: ['n-chat','q-messages-content','t-messages'], edges: ['e-chat-content','e-q5-t3'], text: 'Per-message getContent hydrate.' },
+    ]},
+    permission: { title: 'Permission', steps: [
+      { nodes: ['n-opencode','n-sse','m-perm-upsert','t-perms'], edges: ['e-sse-oc','e-sse-perm','e-m10-t5'], text: 'permission.asked → upsertPending.' },
+      { nodes: ['n-perm-ui','q-perm-get','t-perms'], edges: ['e-perm-q','e-q7-t5'], text: 'UI subscription shows prompt.' },
+      { nodes: ['n-app-ui','m-jobs-submit','t-jobs'], edges: ['e-app-jobs','e-m1-t4'], text: 'resolve_permission job → owner.' },
+      { nodes: ['n-job-worker','n-opencode'], edges: ['e-jw-oc'], text: 'ACP resolvePermission.' },
+      { nodes: ['n-sse','m-perm-resolve','t-perms'], edges: ['e-sse-perm-rm','e-m10b-t5'], text: 'permission.replied → resolve.' },
+    ]},
+    'session-status': { title: 'Session status', steps: [
+      { nodes: ['n-opencode','n-sse'], edges: ['e-sse-oc'], text: 'session.status / error SSE.' },
+      { nodes: ['n-sse','m-sess-upsert','t-sessions'], edges: ['e-sse-sess','e-m5-t2'], text: 'upsertStatus patch.' },
+      { nodes: ['n-sidebar','q-sessions-sidebar','t-sessions'], edges: ['e-sidebar-q2','e-q2-t2'], text: 'Sidebar status badges update.' },
+      { nodes: ['n-active','q-session-get'], edges: ['e-active-q1'], text: 'Active header updates.' },
+    ]},
+    abort: { title: 'Abort', steps: [
+      { nodes: ['n-app-ui','m-jobs-submit','t-jobs'], edges: ['e-app-jobs','e-m1-t4'], text: 'abort job → owner.' },
+      { nodes: ['n-job-worker','n-opencode'], edges: ['e-jw-oc'], text: 'abortSession on sidecar.' },
+      { nodes: ['n-sse','m-sess-upsert','t-sessions'], edges: ['e-sse-sess','e-m5-t2'], text: 'Status synced via SSE.' },
+    ]},
+    'delete-session': { title: 'Delete session', steps: [
+      { nodes: ['n-app-ui','m-jobs-submit','t-jobs'], edges: ['e-app-jobs','e-m1-t4'], text: 'delete_session job.' },
+      { nodes: ['n-job-worker','n-opencode'], edges: ['e-jw-oc'], text: 'Sidecar deleteSession.' },
+      { nodes: ['n-sse','m-sess-remove','t-sessions','t-messages','t-cursors','t-perms'], edges: ['e-sse-sess-rm','e-m5b-t2'], text: 'sessions.remove cascade.' },
+      { nodes: ['n-sidebar','q-sessions-sidebar'], edges: ['e-sidebar-q2'], text: 'Sidebar removes session.' },
+    ]},
+    'message-removed': { title: 'Message removed', steps: [
+      { nodes: ['n-opencode','n-sse'], edges: ['e-sse-oc'], text: 'message.removed SSE.' },
+      { nodes: ['n-sse','m-msg-remove','t-messages','t-cursors'], edges: ['e-sse-msg-rm','e-m8b-t3'], text: 'removeByExternalId + cursors.' },
+      { nodes: ['n-active','q-messages-meta'], edges: ['e-active-q2'], text: 'listMetadata re-fires.' },
+    ]},
+    'set-model': { title: 'Set model/mode', steps: [
+      { nodes: ['n-app-ui','m-jobs-submit','t-jobs'], edges: ['e-app-jobs','e-m1-t4'], text: 'set_model / set_mode job.' },
+      { nodes: ['n-job-worker','n-opencode'], edges: ['e-jw-oc'], text: 'ACP setSessionModel/Mode — local only.' },
+    ]},
+  };
+
+  let panX = 0, panY = 0, zoom = 0.55;
+  let drag = null, spaceDown = false;
+  let flowId = null, stepIdx = 0;
+
+  const metaEl = document.getElementById('step-meta');
+  const textEl = document.getElementById('step-text');
+  const btnPrev = document.getElementById('btn-prev');
+  const btnNext = document.getElementById('btn-next');
+  const btnStop = document.getElementById('btn-stop');
+  const zoomLabel = document.getElementById('zoom-label');
+
+  function applyTransform() {
+    world.style.transform = `translate(${panX}px,${panY}px) scale(${zoom})`;
+    zoomLabel.textContent = Math.round(zoom * 100) + '%';
+  }
+
+  function fitView() {
+    const vw = viewport.clientWidth, vh = viewport.clientHeight;
+    zoom = Math.min(vw / W, vh / H) * 0.92;
+    panX = (vw - W * zoom) / 2;
+    panY = (vh - H * zoom) / 2;
+    applyTransform();
+  }
+
+  function panToNodes(ids) {
+    if (!ids.length) return;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    ids.forEach(id => {
+      const n = NODES.find(x => x.id === id);
+      if (!n) return;
+      minX = Math.min(minX, n.x);
+      minY = Math.min(minY, n.y);
+      maxX = Math.max(maxX, n.x + n.w);
+      maxY = Math.max(maxY, n.y + 40);
+    });
+    if (!isFinite(minX)) return;
+    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    const vw = viewport.clientWidth, vh = viewport.clientHeight;
+    panX = vw / 2 - cx * zoom;
+    panY = vh / 2 - cy * zoom;
+    applyTransform();
+  }
+
+  function clearHL() {
+    document.querySelectorAll('.node').forEach(n => n.classList.remove('dim', 'on'));
+    document.querySelectorAll('#edges path').forEach(p => p.classList.remove('dim', 'on'));
+  }
+
+  function showStep() {
+    if (!flowId || !FLOWS[flowId]) return;
+    const flow = FLOWS[flowId];
+    const step = flow.steps[stepIdx];
+    if (!step) return;
+
+    clearHL();
+    const ns = new Set(step.nodes || []);
+    const es = new Set(step.edges || []);
+
+    document.querySelectorAll('.node').forEach(el => {
+      if (ns.has(el.id)) el.classList.add('on');
+      else el.classList.add('dim');
+    });
+    document.querySelectorAll('#edges path').forEach(el => {
+      if (es.has(el.id)) el.classList.add('on');
+      else el.classList.add('dim');
+    });
+
+    metaEl.textContent = flow.title + ' · ' + (stepIdx + 1) + '/' + flow.steps.length;
+    textEl.textContent = step.text;
+    btnPrev.disabled = stepIdx === 0;
+    btnNext.disabled = stepIdx >= flow.steps.length - 1;
+
+    panToNodes(step.nodes || []);
+  }
+
+  function startFlow(id) {
+    if (!FLOWS[id]) return;
+    flowId = id;
+    stepIdx = 0;
+    document.querySelectorAll('.flow-btn').forEach(b => {
+      b.classList.toggle('active', b.getAttribute('data-flow') === id);
+    });
+    btnNext.disabled = false;
+    showStep();
+  }
+
+  function stopFlow() {
+    flowId = null;
+    stepIdx = 0;
+    document.querySelectorAll('.flow-btn').forEach(b => b.classList.remove('active'));
+    clearHL();
+    metaEl.textContent = 'Pick a flow';
+    textEl.textContent = 'Drag canvas · scroll to zoom · click a flow to highlight the path step-by-step.';
+    btnPrev.disabled = true;
+    btnNext.disabled = true;
+  }
+
+  document.querySelectorAll('.flow-btn').forEach(btn => {
+    btn.addEventListener('click', function () {
+      startFlow(this.getAttribute('data-flow'));
+    });
+  });
+
+  btnNext.addEventListener('click', () => { if (flowId && stepIdx < FLOWS[flowId].steps.length - 1) { stepIdx++; showStep(); } });
+  btnPrev.addEventListener('click', () => { if (flowId && stepIdx > 0) { stepIdx--; showStep(); } });
+  btnStop.addEventListener('click', stopFlow);
+
+  document.getElementById('zoom-in').addEventListener('click', () => {
+    zoom = Math.min(2.5, zoom * 1.15);
+    applyTransform();
+  });
+  document.getElementById('zoom-out').addEventListener('click', () => {
+    zoom = Math.max(0.15, zoom / 1.15);
+    applyTransform();
+  });
+  document.getElementById('zoom-fit').addEventListener('click', fitView);
+
+  viewport.addEventListener('wheel', e => {
+    e.preventDefault();
+    const rect = viewport.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const old = zoom;
+    zoom = e.deltaY < 0 ? Math.min(2.5, zoom * 1.08) : Math.max(0.15, zoom / 1.08);
+    panX = mx - (mx - panX) * (zoom / old);
+    panY = my - (my - panY) * (zoom / old);
+    applyTransform();
+  }, { passive: false });
+
+  viewport.addEventListener('mousedown', e => {
+    if (e.target.closest('.panel')) return;
+    if (e.button !== 0 && e.button !== 1) return;
+    drag = { x: e.clientX - panX, y: e.clientY - panY };
+    viewport.classList.add('dragging');
+  });
+  window.addEventListener('mousemove', e => {
+    if (!drag) return;
+    panX = e.clientX - drag.x;
+    panY = e.clientY - drag.y;
+    applyTransform();
+  });
+  window.addEventListener('mouseup', () => {
+    drag = null;
+    viewport.classList.remove('dragging');
+  });
+
+  window.addEventListener('keydown', e => {
+    if (e.code === 'Space') { spaceDown = true; e.preventDefault(); }
+    if (e.code === 'ArrowRight' && flowId) { btnNext.click(); }
+    if (e.code === 'ArrowLeft' && flowId) { btnPrev.click(); }
+    if (e.code === 'Escape') stopFlow();
+  });
+  window.addEventListener('keyup', e => { if (e.code === 'Space') spaceDown = false; });
+
+  renderDiagram();
+  fitView();
+})();
+</script>
+</body>
+</html>

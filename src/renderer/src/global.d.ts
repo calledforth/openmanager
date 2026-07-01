@@ -1,6 +1,12 @@
 import type { SidecarHandshake, SidecarStatus } from '@shared/contracts/sidecar'
 
 interface ElectronAPI {
+  platform: NodeJS.Platform
+  minimizeWindow: () => Promise<void>
+  maximizeWindow: () => Promise<void>
+  closeWindow: () => Promise<void>
+  isWindowMaximized: () => Promise<boolean>
+  onWindowMaximizedChanged: (callback: (maximized: boolean) => void) => () => void
   getClientId: () => Promise<string | null>
   getTelemetrySnapshot: () => Promise<{ filePath: string; events: unknown[] }>
   clearTelemetry: () => Promise<void>

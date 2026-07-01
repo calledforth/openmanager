@@ -79,12 +79,7 @@ This is a one-line change. No state is lost once the key is stable.`
 export const StaticConversation: Story = {
   render: () => (
     <div className="h-screen w-screen bg-background flex flex-col">
-      <ChatViewPanel
-        title="Typography system refactor"
-        status="idle"
-        isStreaming={false}
-        onAbort={() => undefined}
-      >
+      <ChatViewPanel>
         <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0">
           <div className="mx-auto max-w-2xl px-4 py-6 space-y-1">
             <UserMessage
@@ -121,12 +116,7 @@ export const StaticConversation: Story = {
 export const StreamingInProgress: Story = {
   render: () => (
     <div className="h-screen w-screen bg-background flex flex-col">
-      <ChatViewPanel
-        title="Typography system refactor"
-        status="running"
-        isStreaming={true}
-        onAbort={() => undefined}
-      >
+      <ChatViewPanel>
         <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0">
           <div className="mx-auto max-w-2xl px-4 py-6 space-y-1">
             <UserMessage
@@ -154,12 +144,7 @@ Inter is now loaded via \`@fontsource-variable/inter\` instead of the Google Fon
 export const ErrorState: Story = {
   render: () => (
     <div className="h-screen w-screen bg-background flex flex-col">
-      <ChatViewPanel
-        title="Typecheck run"
-        status="error"
-        isStreaming={false}
-        onAbort={() => undefined}
-      >
+      <ChatViewPanel>
         <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0">
           <div className="mx-auto max-w-2xl px-4 py-6 space-y-1">
             <UserMessage content="Run typecheck and fix any errors." />
