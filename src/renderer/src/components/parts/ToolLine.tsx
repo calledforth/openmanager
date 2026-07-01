@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { cn } from '../../lib/utils'
 
 export const activityRowBare = 'w-full max-w-none py-px text-ui-base leading-snug'
-export const activityRow = `${activityRowBare} px-2`
+export const activityRow = activityRowBare
 export const activityDetailsSummary =
   'flex cursor-pointer list-none items-start gap-1.5 text-ui-base leading-snug [&::-webkit-details-marker]:hidden'
 
@@ -56,7 +56,7 @@ export function ToolLine({
 
 export function ToolExpandedBody({ children }: { children: ReactNode }) {
   return (
-    <div className="mt-1 max-h-[300px] overflow-y-auto pl-2 custom-scrollbar">
+    <div className="mt-1 max-h-[300px] overflow-y-auto custom-scrollbar">
       {children}
     </div>
   )

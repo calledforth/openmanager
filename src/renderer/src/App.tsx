@@ -10,26 +10,31 @@ import { MessageInput } from './components/chat/MessageInput'
 import { FloatingChatComposer } from './components/chat/FloatingChatComposer'
 import { PermissionPrompt } from './components/permissions/PermissionPrompt'
 import { ConvexTelemetryPanel } from './components/telemetry/ConvexTelemetryPanel'
+import { ChatSectionHeader } from './components/chat/ChatSectionHeader'
+import { AppChrome } from './components/shell/AppChrome'
 
 function AppShell() {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true)
+  const [convexOpen, setConvexOpen] = useState(false)
 
   return (
-    <div className="flex h-screen w-screen min-w-0 overflow-hidden bg-[var(--basis-canvas-bg)] text-[var(--basis-text)]">
-      <WorkspaceSidebar
-        collapsed={sidebarCollapsed}
-        onToggle={() => setSidebarCollapsed((v) => !v)}
-      />
-      <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
-        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden border-l border-[var(--basis-border-muted)] bg-[var(--basis-canvas-bg)]">
+    <div className="flex h-screen w-screen min-w-0 flex-col overflow-hidden bg-[var(--basis-canvas-bg)] text-[var(--basis-text)]">
+      <AppChrome convexOpen={convexOpen} onToggleConvex={() => setConvexOpen((v) => !v)} />
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <WorkspaceSidebar collapsed={sidebarCollapsed} />
+        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--basis-canvas-bg)]">
+          <ChatSectionHeader
+            sidebarCollapsed={sidebarCollapsed}
+            onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
+          />
           <ChatView />
           <FloatingChatComposer>
             <MessageInput />
           </FloatingChatComposer>
         </div>
+        <PermissionPrompt />
+        <ConvexTelemetryPanel open={convexOpen} onOpenChange={setConvexOpen} />
       </div>
-      <PermissionPrompt />
-      <ConvexTelemetryPanel />
     </div>
   )
 }

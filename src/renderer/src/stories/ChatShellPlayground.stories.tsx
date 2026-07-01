@@ -4,6 +4,8 @@ import { WorkspaceSidebarView } from '../components/sidebar/WorkspaceSidebarView
 import { ChatViewPanel, UserMessage, AssistantMessage } from '../components/chat/ChatViewPrimitives'
 import { MessageInputView } from '../components/chat/MessageInputView'
 import { FloatingChatComposer } from '../components/chat/FloatingChatComposer'
+import { ThemeProvider } from '../providers/theme-provider'
+import { AppUiProvider } from '../providers/app-ui-provider'
 import type { StreamMessagePart } from '../lib/remote-stream-parts'
 
 const meta = {
@@ -679,10 +681,11 @@ function Demo() {
   )
 
   return (
+    <ThemeProvider>
+      <AppUiProvider>
     <div className="flex h-screen w-screen min-w-0 overflow-hidden bg-background text-foreground selection:bg-accent/25 selection:text-foreground">
       <WorkspaceSidebarView
         collapsed={collapsed}
-        onToggle={() => setCollapsed((v) => !v)}
         workspaces={workspaces}
         activeWorkspacePath="/workspace/openmanager"
         activeSessionId="sess-1"
@@ -693,21 +696,11 @@ function Demo() {
         onDeleteSession={() => undefined}
         onRemoveWorkspace={() => undefined}
         onAddWorkspace={() => undefined}
-        openCodeStatus={
-          status === 'connected' ? 'healthy' : status === 'connecting' ? 'starting' : 'unhealthy'
-        }
-        openCodeUiStatus={status}
-        onRetryOpenCode={() => setStatus('connecting')}
       />
 
       <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden pt-2 pr-2 pb-0 pl-0 transition-all duration-300 ease-in-out">
         <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-t-xl border border-border bg-card">
-          <ChatViewPanel
-            title="Typography system refactor"
-            status={sessionStatus}
-            isStreaming={streaming}
-            onAbort={stopStream}
-          >
+          <ChatViewPanel>
             <div ref={scrollRef} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
               <div className="mx-auto max-w-2xl space-y-1 px-4 py-6 pb-44">
               {messages.map((msg) =>
@@ -832,6 +825,8 @@ function Demo() {
         </div>
       </div>
     </div>
+      </AppUiProvider>
+    </ThemeProvider>
   )
 }
 

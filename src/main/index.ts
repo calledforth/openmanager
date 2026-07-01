@@ -63,6 +63,7 @@ function stopSSEBridge(workspacePath: string): void {
 }
 
 function createWindow(): void {
+  const isMac = process.platform === 'darwin'
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -70,6 +71,9 @@ function createWindow(): void {
     minHeight: 600,
     show: false,
     autoHideMenuBar: true,
+    frame: isMac ? true : false,
+    ...(isMac ? { titleBarStyle: 'hiddenInset' as const } : {}),
+    backgroundColor: '#141414',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -77,6 +81,11 @@ function createWindow(): void {
       nodeIntegration: false,
     },
   })
+
+  mainWindow.on('maximize', () => mainWindow?.webContents.send('window:maximized-changed', true))
+  mainWindow.on('unmaximize', () =>
+    mainWindow?.webContents.send('window:maximized-changed', false),
+  )
 
   mainWindow.on('ready-to-show', () => mainWindow?.show())
 
@@ -125,6 +134,19 @@ ipcMain.handle('dialog:select-folder', async () => {
   })
   return result.filePaths[0] ?? null
 })
+
+ipcMain.handle('window:minimize', () => {
+  mainWindow?.minimize()
+})
+ipcMain.handle('window:maximize', () => {
+  if (!mainWindow) return
+  if (mainWindow.isMaximized()) mainWindow.unmaximize()
+  else mainWindow.maximize()
+})
+ipcMain.handle('window:close', () => {
+  mainWindow?.close()
+})
+ipcMain.handle('window:is-maximized', () => mainWindow?.isMaximized() ?? false)
 
 ipcMain.handle('client:get-id', async () => clientId)
 ipcMain.handle('telemetry:get-snapshot', async () => getConvexTelemetrySnapshot())

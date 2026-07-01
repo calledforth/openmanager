@@ -54,6 +54,9 @@
   --color-scrollbar: var(--basis-scrollbar-thumb);
 
   --font-geist-sans: 'Geist Variable', 'Geist', ui-sans-serif, system-ui, sans-serif;
+  --font-inter-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-public-sans: 'Public Sans Variable', 'Public Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-system-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-sans: var(--font-geist-sans);
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 
@@ -76,6 +79,8 @@
    §1  Self-hosted faces — Geist Variable + JetBrains Mono
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 @import '@fontsource-variable/geist';
+@import '@fontsource-variable/inter';
+@import '@fontsource-variable/public-sans';
 @import '@fontsource/jetbrains-mono/300.css';
 @import '@fontsource/jetbrains-mono/400.css';
 @import '@fontsource/jetbrains-mono/500.css';
@@ -110,6 +115,11 @@
   --basis-line-height: 1.75;
   --basis-letter-spacing: 0.01em;
   --basis-chat-shell-radius: 0.375rem;
+  --basis-titlebar-height: 32px;
+  --basis-sidebar-icons-width: 56px;
+  --basis-sidebar-width: 240px;
+  --basis-selection-bg: color-mix(in srgb, var(--basis-text-strong) 18%, var(--basis-canvas-bg));
+  --basis-selection-fg: var(--basis-text-strong);
 
   --lh-tight: 1.3;
   --lh-snug: 1.375;
@@ -176,6 +186,56 @@ html[data-theme='light'] {
   --basis-scrollbar-thumb-hover: #b8b8b8;
 }
 
+html[data-ui-font='geist'],
+html:not([data-ui-font]),
+html[data-ui-font='inter'] {
+  --basis-font-size: 14px;
+  --basis-chat-font-size: 14px;
+  --basis-line-height: 22.75px;
+  --basis-letter-spacing: normal;
+  --leading-ui-normal: 1.625;
+  --leading-ui-relaxed: 1.625;
+  --lh-default: 1.625;
+  --lh-readable: 1.625;
+  --lh-prose: 1.625;
+}
+
+html[data-ui-font='geist'],
+html:not([data-ui-font]) {
+  --font-sans: var(--font-geist-sans);
+}
+
+html[data-ui-font='inter'] {
+  --font-sans: var(--font-inter-sans);
+}
+
+html[data-ui-font='geist'],
+html:not([data-ui-font]),
+html[data-ui-font='inter'] body {
+  font-size: 14px;
+  line-height: 22.75px;
+  letter-spacing: normal;
+  font-weight: 450;
+  font-variation-settings: 'wght' 450;
+  font-feature-settings: normal;
+  font-style: normal;
+}
+
+html[data-ui-font='geist'],
+html:not([data-ui-font]),
+html[data-ui-font='inter'] .font-normal {
+  font-weight: 450;
+  font-variation-settings: 'wght' 450;
+}
+
+html[data-ui-font='public-sans'] {
+  --font-sans: var(--font-public-sans);
+}
+
+html[data-ui-font='system'] {
+  --font-sans: var(--font-system-sans);
+}
+
 html {
   font-feature-settings: normal;
   font-variation-settings: normal;
@@ -185,8 +245,13 @@ html {
 }
 
 ::selection {
-  background-color: rgba(255, 255, 255, 0.14);
-  color: #fafafa;
+  background-color: var(--basis-selection-bg);
+  color: var(--basis-selection-fg);
+}
+
+::-moz-selection {
+  background-color: var(--basis-selection-bg);
+  color: var(--basis-selection-fg);
 }
 
 body {
@@ -577,6 +642,16 @@ textarea,
   transition: all 150ms ease-out;
 }
 
+.titlebar-drag {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.titlebar-no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
 @keyframes chat-fade-in {
   from {
     opacity: 0;
@@ -668,6 +743,14 @@ textarea,
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    §6  SCROLLBARS (agentic-chat-ui custom-scrollbar)
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+
+/* App-wide: hide legacy scrollbar arrow buttons (Windows/Electron) */
+*::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 .scrollbar-hide {
   -ms-overflow-style: none;
   scrollbar-width: none;

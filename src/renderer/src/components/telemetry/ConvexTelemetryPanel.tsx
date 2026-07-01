@@ -525,9 +525,14 @@ function KpiCard({ label, value, accent }: { label: string; value: string; accen
 // ---------------------------------------------------------------------------
 // Main panel
 // ---------------------------------------------------------------------------
-export function ConvexTelemetryPanel() {
+export function ConvexTelemetryPanel({
+  open,
+  onOpenChange: _onOpenChange,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}) {
   const { activeSessionId } = useAppUi()
-  const [open, setOpen] = useState(false)
   const [events, setEvents] = useState<TelemetryEvent[]>([])
   const [filePath, setFilePath] = useState('')
   const [showAllSessions, setShowAllSessions] = useState(false)
@@ -604,38 +609,11 @@ export function ConvexTelemetryPanel() {
 
   return (
     <>
-      {/* Toggle trigger */}
-      <button
-        type="button"
-        className="ct-btn"
-        onClick={() => setOpen((p) => !p)}
-        style={{
-          position: 'fixed',
-          top: 12,
-          right: 12,
-          zIndex: 60,
-          background: C.bg2,
-          color: open ? C.text : C.muted,
-          border: `1px solid ${open ? '#222' : C.border}`,
-          borderRadius: 9,
-          padding: '8px 12px',
-          fontSize: 11,
-          letterSpacing: '0.12em',
-          textTransform: 'uppercase',
-          cursor: 'pointer',
-          fontFamily: fontSans,
-          transition: 'color 0.15s, border-color 0.15s, transform 0.08s',
-        }}
-      >
-        ⬡ CONVEX
-      </button>
-
-      {/* Panel */}
       {open && (
         <div
           style={{
             position: 'fixed',
-            top: 46,
+            top: 'calc(var(--basis-titlebar-height) + 8px)',
             right: 12,
             bottom: 12,
             width: 520,
