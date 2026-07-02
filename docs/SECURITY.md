@@ -9,7 +9,7 @@
 ## Secret Handling
 
 - `OPENCODE_SERVER_PASSWORD`: generated per-session, passed via env var to sidecar, never persisted to disk
-- `VITE_CONVEX_URL`: deployment URL, safe to store in `.env.local` (git-ignored)
+- `CONVEX_URL`: deployment URL, safe to store in `.env.local` (git-ignored)
 - No secrets in source code, logs, or IPC payloads
 
 ## Explicit Non-Goals

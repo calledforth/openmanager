@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "target": "ESNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@openmanager/shared/*": ["../../packages/shared/src/*"],
+      "@openmanager/convex/*": ["../../packages/convex/convex/*"]
+    }
+  },
+  "include": [
+    "src/main/**/*.ts",
+    "src/preload/**/*.ts",
+    "electron.vite.config.ts",
+    "../../packages/shared/src/**/*.ts"
+  ]
+}

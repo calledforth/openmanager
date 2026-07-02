@@ -7,7 +7,7 @@ import reactHooksPlugin from 'eslint-plugin-react-hooks'
 export default [
   js.configs.recommended,
   {
-    files: ['src/**/*.{ts,tsx}'],
+    files: ['apps/**/*.{ts,tsx}', 'packages/**/*.{ts,tsx}'],
     languageOptions: {
       parser: tsParser,
       parserOptions: {
@@ -36,6 +36,7 @@ export default [
       ...tsPlugin.configs.recommended.rules,
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'warn',
+      'no-undef': 'off',
       'no-unused-vars': 'off',
       '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'warn',
@@ -45,6 +46,20 @@ export default [
     },
   },
   {
-    ignores: ['out/', 'dist/', 'node_modules/', 'convex/_generated/'],
+    files: ['apps/desktop/postcss.config.js'],
+    languageOptions: {
+      globals: {
+        module: 'readonly',
+      },
+    },
+  },
+  {
+    ignores: [
+      'apps/**/out/',
+      'apps/**/dist/',
+      'dist/',
+      'node_modules/',
+      'packages/convex/convex/_generated/',
+    ],
   },
 ]

@@ -9,7 +9,7 @@ All clients — including this one — connect to the same Convex backend. The d
 ```
 [This client] ──WebSocket──► [Convex] ◄──WebSocket── [Electron main process]
                                                               │
-                                                       [opencode serve]
+                                                       [opencode acp]
 ```
 
 ## Convex Queries (read — subscribe for real-time updates)
@@ -18,9 +18,10 @@ All clients — including this one — connect to the same Convex backend. The d
 |---|---|---|---|
 | `api.sessions.listByWorkspace` | `{ workspacePath: string }` | Session[] | Session list sidebar |
 | `api.sessions.getByExternalId` | `{ externalId: string }` | Session \| null | Session detail |
-| `api.messages.listBySession` | `{ sessionExternalId: string }` | Message[] | Chat timeline (ordered by sequenceNum) |
+| `api.messages.listMetadata` | `{ sessionExternalId: string }` | Message metadata[] | Chat timeline metadata (ordered by sequenceNum) |
+| `api.messages.getContent` | `{ externalId: string }` | Message content | Message body content |
 | `api.workspaces.list` | `{}` | Workspace[] | Workspace picker |
-| `api.jobs.listPending` | `{}` | PendingJob[] | Queue status indicator |
+| `api.jobs.listPending` | `{ clientId: string }` | PendingJob[] | Queue status indicator |
 
 All queries are reactive — subscribe via `useQuery()` (React) or `client.onUpdate()` (vanilla JS) for live updates including streaming tokens.
 
@@ -62,7 +63,7 @@ Messages with `role: "permission"` have JSON content:
 ## Setup
 
 1. Install `convex` package
-2. Use the same `CONVEX_URL` from the project's `.env.local`
+2. Use the same `CONVEX_URL` from the workspace root `.env.local`
 3. Create a `ConvexReactClient` (React) or `ConvexClient` (vanilla) with that URL
 4. Subscribe to queries above for real-time data
 5. Call mutations above to submit actions
