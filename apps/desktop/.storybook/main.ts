@@ -4,6 +4,7 @@ import type { StorybookConfig } from '@storybook/react-vite'
 import tailwindcss from '@tailwindcss/vite'
 
 const here = fileURLToPath(new URL('.', import.meta.url))
+const workspaceRoot = resolve(here, '../../..')
 
 const config: StorybookConfig = {
   framework: {
@@ -23,6 +24,8 @@ const config: StorybookConfig = {
     }
     return {
       ...config,
+      envDir: workspaceRoot,
+      envPrefix: ['VITE_', 'CONVEX_'],
       plugins: [...(config.plugins ?? []), tailwindcss()],
       resolve: {
         ...(config.resolve ?? {}),
