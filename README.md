@@ -2,7 +2,7 @@
 
 Desktop GUI for managing OpenCode agent sessions. Electron + React + Convex.
 
-## Setup  
+## Setup
 
 ```bash
 # Install dependencies (requires pnpm: https://pnpm.io)
@@ -17,18 +17,20 @@ pnpm dev
 
 ## Scripts
 
-| Command                       | Description                         |
-| ----------------------------- | ----------------------------------- |
-| `pnpm dev`                    | Start Electron + Vite dev server    |
-| `pnpm build`                  | Production desktop build            |
-| `pnpm typecheck`              | TypeScript strict check             |
-| `pnpm lint`                   | ESLint                              |
-| `pnpm test`                   | Vitest                              |
-| `pnpm ci`                     | typecheck + lint + test             |
-| `pnpm convex:dev`             | Start Convex dev server             |
-| `pnpm storybook`              | Start Storybook UI playground       |
-| `pnpm storybook:build`        | Build Storybook static site         |
-| `pnpm --filter @openmanager/desktop build` | Build only the desktop app |
+| Command                                    | Description                              |
+| ------------------------------------------ | ---------------------------------------- |
+| `pnpm dev`                                 | Start Electron + Vite dev server         |
+| `pnpm build`                               | Production desktop build                 |
+| `pnpm typecheck`                           | TypeScript strict check                  |
+| `pnpm lint`                                | ESLint                                   |
+| `pnpm test`                                | Vitest                                   |
+| `pnpm ci`                                  | typecheck + lint + test                  |
+| `pnpm convex:dev`                          | Start Convex dev server                  |
+| `pnpm storybook`                           | Start Storybook UI playground            |
+| `pnpm storybook:build`                     | Build Storybook static site              |
+| `pnpm mobile`                              | Start the mobile Expo/Metro dev server   |
+| `pnpm mobile:android`                      | Build + launch the mobile app on Android |
+| `pnpm --filter @openmanager/desktop build` | Build only the desktop app               |
 
 ## Architecture
 
@@ -38,6 +40,9 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for full design rationale.
 - **Main process** — sidecar lifecycle management
 - **Preload** — typed IPC bridge (context-isolated)
 - **Renderer** — React UI with direct OpenCode HTTP/SSE + Convex sync
+- **Mobile app** — `apps/mobile`, an Expo (React Native) Convex-only controller; reactive
+  queries for data, `pending_jobs` for actions. The desktop app is the sole OpenCode
+  worker. See [`apps/mobile/README.md`](apps/mobile/README.md).
 - **Shared contracts** — `packages/shared`, domain types and boundary interfaces
 - **Convex** — `packages/convex/convex`, cloud DB schema and functions
 
@@ -47,3 +52,6 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for full design rationale.
 - `apps/desktop/src/renderer/src/components/sidebar` — sidebar components
 - `apps/desktop/src/renderer/src/components/parts` — message-part renderers (tool/text/reasoning)
 - `apps/desktop/src/renderer/src/stories` — Storybook stories and playground screens
+- `apps/mobile/src/app` — expo-router screens (sessions home, chat, settings)
+- `apps/mobile/src/components` — mobile UI, including `parts` message-part renderers mirroring desktop
+- `apps/mobile/src/data` — typed Convex hooks and job actions (mobile data layer)

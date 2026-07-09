@@ -3,7 +3,7 @@ import {
   applyPartUpdate,
   createPartOrdinalState,
   normalizeSnapshotParts,
-} from './remote-stream-parts'
+} from '@openmanager/shared/lib/remote-stream-parts'
 
 describe('remote-stream-parts', () => {
   it('preserves existing order when updating same part id', () => {

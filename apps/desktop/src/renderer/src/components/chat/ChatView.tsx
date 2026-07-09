@@ -14,7 +14,7 @@ import {
   applyPartUpdate,
   createPartOrdinalState,
   type StreamMessagePart,
-} from '../../lib/remote-stream-parts'
+} from '@openmanager/shared/lib/remote-stream-parts'
 
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96
 const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 8

@@ -6,7 +6,7 @@ import { MessageInputView } from '../components/chat/MessageInputView'
 import { FloatingChatComposer } from '../components/chat/FloatingChatComposer'
 import { ThemeProvider } from '../providers/theme-provider'
 import { AppUiProvider } from '../providers/app-ui-provider'
-import type { StreamMessagePart } from '../lib/remote-stream-parts'
+import type { StreamMessagePart } from '@openmanager/shared/lib/remote-stream-parts'
 
 const meta = {
   title: 'App/ChatShellPlayground',
