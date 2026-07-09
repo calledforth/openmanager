@@ -1,6 +1,6 @@
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { ChevronLeft, MoreVertical } from 'lucide-react-native'
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   FlatList,
   KeyboardAvoidingView,
@@ -31,6 +31,9 @@ import { useTokens } from '../../theme/useTokens'
 
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96
 const ACTIVE_STATUSES = new Set(['running', 'busy', 'waiting'])
+// How long to keep the banner hidden after a successful job queue before
+// assuming the desktop worker never cleared `pending_permissions`.
+const PERMISSION_RESOLVE_TIMEOUT_MS = 15_000
 
 export default function SessionScreen() {
   const router = useRouter()
@@ -83,7 +86,38 @@ export default function SessionScreen() {
   }, [])
 
   // --- Permission banner with optimistic hide after submit ---
+  // Hide immediately on Approve/Deny so the UI feels snappy, but only keep it
+  // hidden while Convex still shows that same requestId. If the desktop worker
+  // never clears `pending_permissions` (job never runs / fails after queue),
+  // restore the banner so the user can retry without leaving the session.
   const [resolvedRequestId, setResolvedRequestId] = useState<string | null>(null)
+  const resolveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const clearResolveTimeout = useCallback(() => {
+    if (resolveTimeoutRef.current !== null) {
+      clearTimeout(resolveTimeoutRef.current)
+      resolveTimeoutRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => clearResolveTimeout()
+  }, [clearResolveTimeout])
+
+  // New session → drop any in-flight optimistic hide from the previous one.
+  useEffect(() => {
+    clearResolveTimeout()
+    setResolvedRequestId(null)
+  }, [externalId, clearResolveTimeout])
+
+  useEffect(() => {
+    if (!resolvedRequestId) return
+    if (!pendingPermission || pendingPermission.requestId !== resolvedRequestId) {
+      clearResolveTimeout()
+      setResolvedRequestId(null)
+    }
+  }, [pendingPermission, resolvedRequestId, clearResolveTimeout])
+
   const visiblePermission =
     pendingPermission && pendingPermission.requestId !== resolvedRequestId
       ? pendingPermission
@@ -92,18 +126,32 @@ export default function SessionScreen() {
   const handleResolvePermission = useCallback(
     (approved: boolean) => {
       if (!pendingPermission || !workspacePath || !externalId) return
-      setResolvedRequestId(pendingPermission.requestId)
+      const requestId = pendingPermission.requestId
+      clearResolveTimeout()
+      setResolvedRequestId(requestId)
+      resolveTimeoutRef.current = setTimeout(() => {
+        resolveTimeoutRef.current = null
+        setResolvedRequestId((current) => {
+          if (current !== requestId) return current
+          showAlert(
+            'Decision not applied',
+            'The desktop app did not clear this permission. Please try again.',
+          )
+          return null
+        })
+      }, PERMISSION_RESOLVE_TIMEOUT_MS)
       resolvePermission({
         workspacePath,
         sessionExternalId: externalId,
-        permissionId: pendingPermission.requestId,
+        permissionId: requestId,
         approved,
       }).catch(() => {
+        clearResolveTimeout()
         setResolvedRequestId(null)
         showAlert('Could not submit decision', 'Please try again.')
       })
     },
-    [pendingPermission, workspacePath, externalId, resolvePermission],
+    [pendingPermission, workspacePath, externalId, resolvePermission, clearResolveTimeout],
   )
 
   // --- Composer actions ---

@@ -8,8 +8,8 @@ import { AppText } from '../ui/AppText'
 // toolName (text-13-medium textStrong) + description (text-12-regular
 // textMuted), with the tool input expandable as mono JSON. Deny is a bordered
 // transparent button, Approve the monochrome action button. The banner hides
-// optimistically once either is submitted; the parent clears the submitted
-// marker when the pending row actually changes/disappears.
+// optimistically once either is submitted; the parent restores it if the
+// pending row is still present after the desktop worker fails to clear it.
 
 export function PermissionBanner({
   permission,
