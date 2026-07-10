@@ -29,6 +29,25 @@ interface SessionRuntimeSelection {
   currentModeId?: string
 }
 
+interface AcpConfigOption {
+  id?: unknown
+  category?: unknown
+  currentValue?: unknown
+  options?: Array<{
+    value?: unknown
+    name?: unknown
+    description?: unknown
+  }>
+}
+
+interface AcpSessionResult {
+  sessionId?: string
+  models?: unknown
+  modes?: unknown
+  configOptions?: AcpConfigOption[]
+  _meta?: unknown
+}
+
 type RpcError = Error & { code?: number; data?: unknown }
 
 type ToolLifecycleState = 'pending' | 'running' | 'completed' | 'error'
@@ -100,19 +119,22 @@ export class ACPClient {
 
   async createSessionForWorkspace(workspacePath: string, title?: string): Promise<AgentSession> {
     await this.initialize()
-    const result = await this.connection.call<{
-      sessionId: string
-      models?: unknown
-      modes?: unknown
-      _meta?: unknown
-    }>('session/new', {
-      cwd: workspacePath,
-      mcpServers: [],
-      ...(title ? { title } : {}),
-    })
+    const result = await this.connection.call<AcpSessionResult & { sessionId: string }>(
+      'session/new',
+      {
+        cwd: workspacePath,
+        mcpServers: [],
+        ...(title ? { title } : {}),
+      },
+    )
     this.sessionWorkspace.set(result.sessionId, workspacePath)
-    this.emitAcpEvent('session.new.result', result, workspacePath)
-    this.updateSessionRuntimeFromPayload(result.sessionId, result.models, result.modes)
+    const normalizedResult = this.normalizeSessionResult(result)
+    this.emitAcpEvent('session.new.result', normalizedResult, workspacePath)
+    this.updateSessionRuntimeFromPayload(
+      result.sessionId,
+      normalizedResult.models,
+      normalizedResult.modes,
+    )
     await this.syncSessionTitle(result.sessionId).catch(() => undefined)
     return {
       id: result.sessionId,
@@ -133,19 +155,17 @@ export class ACPClient {
 
   async loadSessionForWorkspace(workspacePath: string, sessionId: string): Promise<void> {
     await this.initialize()
-    const result = await this.connection.call<{
-      sessionId?: string
-      models?: unknown
-      modes?: unknown
-      _meta?: unknown
-    }>('session/load', {
+    // OpenCode replays session/update notifications while session/load is still
+    // in flight, so routing must exist before making the request.
+    this.sessionWorkspace.set(sessionId, workspacePath)
+    const result = await this.connection.call<AcpSessionResult>('session/load', {
       sessionId,
       cwd: workspacePath,
       mcpServers: [],
     })
-    this.sessionWorkspace.set(sessionId, workspacePath)
-    this.emitAcpEvent('session.load.result', { sessionId, ...result }, workspacePath)
-    this.updateSessionRuntimeFromPayload(sessionId, result.models, result.modes)
+    const normalizedResult = this.normalizeSessionResult({ sessionId, ...result })
+    this.emitAcpEvent('session.load.result', normalizedResult, workspacePath)
+    this.updateSessionRuntimeFromPayload(sessionId, normalizedResult.models, normalizedResult.modes)
     await this.syncSessionTitle(sessionId).catch(() => undefined)
   }
 
@@ -373,16 +393,9 @@ export class ACPClient {
 
   async abortSessionForWorkspace(_workspacePath: string, sessionId: string): Promise<void> {
     await this.initialize()
-    try {
-      await this.connection.call('session/cancel', { sessionId })
-    } catch (error) {
-      const rpcError = parseRpcError(error)
-      if (rpcError.code === -32601) {
-        await this.connection.call('cancel', { sessionId })
-      } else {
-        throw rpcError
-      }
-    }
+    // ACP defines cancellation as a notification, not a request. Sending an id
+    // makes current OpenCode reject it as an unknown request method.
+    this.connection.notify('session/cancel', { sessionId })
   }
 
   async resolvePermissionForWorkspace(
@@ -423,6 +436,7 @@ export class ACPClient {
   ): Promise<void> {
     await this.initialize()
     const attempts: Array<[string, Record<string, unknown>]> = [
+      ['session/set_config_option', { sessionId, configId: 'model', value: modelId }],
       ['session/set_model', { sessionId, modelId }],
       ['session/unstable_set_model', { sessionId, modelId }],
       ['session/unstable_setSessionModel', { sessionId, modelId }],
@@ -455,6 +469,7 @@ export class ACPClient {
   ): Promise<void> {
     await this.initialize()
     const attempts: Array<[string, Record<string, unknown>]> = [
+      ['session/set_config_option', { sessionId, configId: 'mode', value: modeId }],
       ['session/set_mode', { sessionId, modeId }],
       ['session/setSessionMode', { sessionId, modeId }],
     ]
@@ -599,8 +614,7 @@ export class ACPClient {
         const toolCallId = String(update.toolCallId ?? randomUUID())
         const partId = toolCallId
         const previous = activeTurn.parts.get(partId) as
-          | { state?: { status?: ToolLifecycleState } }
-          | undefined
+          { state?: { status?: ToolLifecycleState } } | undefined
         const previousStatus = previous?.state?.status
         const part = {
           id: partId,
@@ -890,6 +904,51 @@ export class ACPClient {
       ...(currentModelId ? { currentModelId } : {}),
       ...(currentModeId ? { currentModeId } : {}),
     })
+  }
+
+  private normalizeSessionResult<T extends AcpSessionResult>(result: T): T {
+    if (!Array.isArray(result.configOptions)) return result
+
+    const findOption = (category: string, fallbackId: string) =>
+      result.configOptions?.find(
+        (option) => option.category === category || option.id === fallbackId,
+      )
+    const modelOption = findOption('model', 'model')
+    const modeOption = findOption('mode', 'mode')
+
+    const models =
+      result.models ??
+      (modelOption
+        ? {
+            currentModelId:
+              typeof modelOption.currentValue === 'string' ? modelOption.currentValue : undefined,
+            availableModels: (modelOption.options ?? [])
+              .filter((option) => typeof option.value === 'string')
+              .map((option) => ({
+                modelId: option.value as string,
+                name: typeof option.name === 'string' ? option.name : (option.value as string),
+              })),
+          }
+        : undefined)
+    const modes =
+      result.modes ??
+      (modeOption
+        ? {
+            currentModeId:
+              typeof modeOption.currentValue === 'string' ? modeOption.currentValue : undefined,
+            availableModes: (modeOption.options ?? [])
+              .filter((option) => typeof option.value === 'string')
+              .map((option) => ({
+                id: option.value as string,
+                name: typeof option.name === 'string' ? option.name : (option.value as string),
+                ...(typeof option.description === 'string'
+                  ? { description: option.description }
+                  : {}),
+              })),
+          }
+        : undefined)
+
+    return { ...result, ...(models ? { models } : {}), ...(modes ? { modes } : {}) }
   }
 
   private parseModelId(
