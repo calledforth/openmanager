@@ -8,17 +8,7 @@ import {
   type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
-import {
-  Check,
-  ChevronRight,
-  Circle,
-  Moon,
-  Palette,
-  Plug,
-  Settings,
-  Sun,
-  Type,
-} from 'lucide-react'
+import { Check, ChevronRight, Circle, Moon, Palette, Plug, Settings, Sun, Type } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { UI_FONTS, type UiFontId } from '../../lib/fonts'
 import { typographyBodySm, typographyCaption } from '../../lib/typography'
@@ -41,13 +31,12 @@ function formatProviderLabel(id: string): string {
     .join(' ')
 }
 
-function extractModelProviders(
-  models: Array<{ modelId: string }> | undefined,
-): ProviderRow[] {
+function extractModelProviders(models: Array<{ modelId?: unknown }> | undefined): ProviderRow[] {
   if (!models?.length) return []
   const seen = new Set<string>()
   const rows: ProviderRow[] = []
   for (const model of models) {
+    if (typeof model.modelId !== 'string' || !model.modelId.trim()) continue
     const providerId = model.modelId.split('/')[0]
     if (!providerId || seen.has(providerId)) continue
     seen.add(providerId)
@@ -79,7 +68,10 @@ function MenuFlyout({
       >
         <Icon className="h-3.5 w-3.5 shrink-0 text-[var(--basis-text-muted)]" strokeWidth={1.75} />
         <span className="min-w-0 flex-1 text-left">{label}</span>
-        <ChevronRight className="h-3 w-3 shrink-0 text-[var(--basis-text-faint)]" strokeWidth={1.75} />
+        <ChevronRight
+          className="h-3 w-3 shrink-0 text-[var(--basis-text-faint)]"
+          strokeWidth={1.75}
+        />
       </div>
       <div
         className={cn(
@@ -166,9 +158,7 @@ export function SidebarSettingsMenu() {
 
   const modelProviders = useMemo(() => {
     const models =
-      acpSessionState?.models?.availableModels ??
-      draftSessionState?.models?.availableModels ??
-      []
+      acpSessionState?.models?.availableModels ?? draftSessionState?.models?.availableModels ?? []
     return extractModelProviders(models)
   }, [acpSessionState, draftSessionState])
 
@@ -280,7 +270,9 @@ export function SidebarSettingsMenu() {
                 <div className="min-w-0 flex-1">
                   <div className="truncate">{provider.label}</div>
                   {provider.detail && (
-                    <div className={cn(typographyCaption, 'truncate text-[var(--basis-text-faint)]')}>
+                    <div
+                      className={cn(typographyCaption, 'truncate text-[var(--basis-text-faint)]')}
+                    >
                       {provider.detail}
                     </div>
                   )}

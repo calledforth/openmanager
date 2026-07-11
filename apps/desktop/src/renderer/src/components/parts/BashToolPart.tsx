@@ -14,7 +14,7 @@ interface BashToolPartProps {
       type?: string
       status?: string
       input?: unknown
-      output?: string
+      output?: unknown
       error?: string
     }
   }
@@ -24,7 +24,7 @@ export function BashToolPart({ part }: BashToolPartProps) {
   const model = presentToolPart(part)
   const input = part.state?.input as Record<string, unknown> | undefined
   const command = String(input?.command ?? '')
-  const output = part.state?.output ?? part.state?.error ?? ''
+  const output = model.expandedText ?? ''
   const hasExpand = !!(output || command)
 
   const line = <ToolLine verb={model.verb} detail={model.detail} isRunning={model.isRunning} />

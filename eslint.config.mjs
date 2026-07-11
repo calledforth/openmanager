@@ -57,6 +57,7 @@ export default [
     ignores: [
       'apps/**/out/',
       'apps/**/dist/',
+      '**/storybook-static/',
       'dist/',
       'node_modules/',
       'packages/convex/convex/_generated/',

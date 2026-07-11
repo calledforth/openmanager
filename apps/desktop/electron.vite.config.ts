@@ -14,7 +14,16 @@ const env = loadEnv('development', workspaceRoot, '')
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin({ exclude: ['electron-store'] })],
+    plugins: [
+      externalizeDepsPlugin({
+        exclude: [
+          'electron-store',
+          '@agentpack/contract',
+          '@agentpack/runtime',
+          '@agentpack/view',
+        ],
+      }),
+    ],
     build: {
       outDir: resolve(appRoot, 'out/main'),
     },

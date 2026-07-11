@@ -13,12 +13,9 @@ import type {
 describe('contract types', () => {
   it('SidecarHandshake has required shape', () => {
     const handshake: SidecarHandshake = {
-      serverUrl: 'http://127.0.0.1:5432',
-      password: 'test-password',
       ready: true,
     }
     expect(handshake.ready).toBe(true)
-    expect(handshake.serverUrl).toContain('127.0.0.1')
   })
 
   it('SidecarStatus covers all lifecycle states', () => {

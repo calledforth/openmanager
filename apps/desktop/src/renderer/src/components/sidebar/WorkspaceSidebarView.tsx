@@ -1,10 +1,4 @@
-import {
-  MessageSquare,
-  Plus,
-  ChevronDown,
-  FolderPlus,
-  Trash2,
-} from 'lucide-react'
+import { MessageSquare, Plus, ChevronDown, FolderPlus, Trash2 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { typographyBodySm } from '../../lib/typography'
 import { SidebarSettingsMenu } from './SidebarSettingsMenu'
@@ -66,27 +60,27 @@ export function WorkspaceSidebarView({
         </div>
 
         {/* Workspace list */}
-      <div className="flex-1 overflow-y-auto px-1.5 pb-3">
-        {workspaces.length === 0 && (
-          <div className="px-3 py-5 text-center text-13-regular text-muted-foreground">
-            No workspaces yet
-          </div>
-        )}
-        {workspaces.map((ws) => (
-          <WorkspaceGroup
-            key={ws.path}
-            workspace={ws}
-            isActiveWorkspace={ws.path === activeWorkspacePath}
-            activeSessionId={activeSessionId}
-            isCollapsed={collapsedSet.has(ws.path)}
-            onToggleCollapse={() => onToggleWorkspaceCollapse(ws.path)}
-            onSelectSession={onSelectSession}
-            onCreateSession={onCreateSession}
-            onDeleteSession={onDeleteSession}
-            onRemove={() => onRemoveWorkspace(ws.path)}
-          />
-        ))}
-      </div>
+        <div className="flex-1 overflow-y-auto px-1.5 pb-3">
+          {workspaces.length === 0 && (
+            <div className="px-3 py-5 text-center text-13-regular text-muted-foreground">
+              No workspaces yet
+            </div>
+          )}
+          {workspaces.map((ws) => (
+            <WorkspaceGroup
+              key={ws.path}
+              workspace={ws}
+              isActiveWorkspace={ws.path === activeWorkspacePath}
+              activeSessionId={activeSessionId}
+              isCollapsed={collapsedSet.has(ws.path)}
+              onToggleCollapse={() => onToggleWorkspaceCollapse(ws.path)}
+              onSelectSession={onSelectSession}
+              onCreateSession={onCreateSession}
+              onDeleteSession={onDeleteSession}
+              onRemove={() => onRemoveWorkspace(ws.path)}
+            />
+          ))}
+        </div>
 
         {/* Footer */}
         <div className="flex items-center justify-end border-t border-[var(--basis-border-muted)] px-2 py-1.5">
@@ -121,15 +115,22 @@ function WorkspaceGroup({
   return (
     <div className="mb-1">
       {/* Workspace header row */}
-      <button
-        onClick={onToggleCollapse}
-        className="group flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-13-medium text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground"
-      >
-        <ChevronDown
-          className={cn('h-3 w-3 shrink-0 transition-transform duration-150', isCollapsed && '-rotate-90')}
-        />
-        <span className="flex-1 truncate text-left">{workspace.name}</span>
+      <div className="group flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-13-medium text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground">
         <button
+          type="button"
+          onClick={onToggleCollapse}
+          className="flex min-w-0 flex-1 items-center gap-1.5"
+        >
+          <ChevronDown
+            className={cn(
+              'h-3 w-3 shrink-0 transition-transform duration-150',
+              isCollapsed && '-rotate-90',
+            )}
+          />
+          <span className="flex-1 truncate text-left">{workspace.name}</span>
+        </button>
+        <button
+          type="button"
           onClick={(e) => {
             e.stopPropagation()
             onRemove()
@@ -138,7 +139,7 @@ function WorkspaceGroup({
         >
           <Trash2 className="h-3 w-3" />
         </button>
-      </button>
+      </div>
 
       {!isCollapsed && (
         <div className="ml-1">

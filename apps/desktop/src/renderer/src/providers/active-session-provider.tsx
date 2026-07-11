@@ -10,6 +10,8 @@ import {
   type ReactNode,
 } from 'react'
 import { api } from '@openmanager/convex/_generated/api'
+import type { AgentEvent } from '@agentpack/contract'
+import { foldAgentEvents, presentTool, type FoldedRow, type FoldedToolRow } from '@agentpack/view'
 import { useTrackedQuery } from '../lib/convex-telemetry'
 import { useAppUi } from './app-ui-provider'
 
@@ -42,11 +44,11 @@ interface ActiveSessionDetails {
   isDriven: boolean
 }
 
-class StreamingMessagesStore {
+export class StreamingMessagesStore {
   private messages = new Map<string, LocalStreamingMessage>()
   private listeners = new Map<string, Set<() => void>>()
-  private partOrdinals = new Map<string, Map<string, number>>()
-  private partOrdinalCounter = new Map<string, number>()
+  private eventsByThread = new Map<string, AgentEvent[]>()
+  private messageIdByThread = new Map<string, string>()
 
   subscribe(messageExternalId: string, listener: () => void) {
     const current = this.listeners.get(messageExternalId) ?? new Set<() => void>()
@@ -66,27 +68,40 @@ class StreamingMessagesStore {
     return this.messages.get(messageExternalId)
   }
 
-  update(payload: {
-    messageExternalId: string
-    delta?: string
-    partId?: string
-    field?: string
-    part?: Record<string, unknown>
-  }) {
-    this.messages = applyStreamDelta(
-      this.messages,
-      payload,
-      this.partOrdinals,
-      this.partOrdinalCounter,
-    )
-    this.emit(payload.messageExternalId)
+  update(event: AgentEvent) {
+    if (event.category !== 'stream' && event.category !== 'tool') return
+    const previousMessageId = this.messageIdByThread.get(event.threadId)
+    const startsNewMessage =
+      !!event.messageId && !!previousMessageId && event.messageId !== previousMessageId
+    const currentEvents = startsNewMessage ? [] : (this.eventsByThread.get(event.threadId) ?? [])
+    if (currentEvents.some((candidate) => candidate.id === event.id)) return
+    const events = [...currentEvents, event]
+    this.eventsByThread.set(event.threadId, events)
+
+    let messageExternalId = event.messageId ?? previousMessageId
+    if (!messageExternalId) {
+      messageExternalId = event.messageId ?? `agent_asst_${event.id}`
+    }
+    this.messageIdByThread.set(event.threadId, messageExternalId)
+
+    const rows = foldAgentEvents(events, { summarizeWork: false })
+    const parts = rows.flatMap(partsFromFoldedRow)
+    const content = parts
+      .filter((part) => part.type === 'text')
+      .map((part) => String(part.text ?? ''))
+      .join('')
+    this.messages = new Map(this.messages).set(messageExternalId, { content, parts })
+    this.emit(messageExternalId)
   }
 
   remove(messageExternalId: string) {
     if (!this.messages.has(messageExternalId)) return
     this.messages.delete(messageExternalId)
-    this.partOrdinals.delete(messageExternalId)
-    this.partOrdinalCounter.delete(messageExternalId)
+    for (const [threadId, id] of this.messageIdByThread) {
+      if (id !== messageExternalId) continue
+      this.messageIdByThread.delete(threadId)
+      this.eventsByThread.delete(threadId)
+    }
     this.emit(messageExternalId)
   }
 
@@ -94,8 +109,8 @@ class StreamingMessagesStore {
     if (this.messages.size === 0) return
     const ids = [...this.messages.keys()]
     this.messages = new Map()
-    this.partOrdinals = new Map()
-    this.partOrdinalCounter = new Map()
+    this.eventsByThread = new Map()
+    this.messageIdByThread = new Map()
     for (const id of ids) {
       this.emit(id)
     }
@@ -129,96 +144,59 @@ const EMPTY_MESSAGES: Array<{
   sequenceNum: number
 }> = []
 
-function upsertPart(parts: MessagePart[], part: MessagePart): MessagePart[] {
-  const index = parts.findIndex((entry) => entry.id === part.id)
-  if (index === -1) return [...parts, part]
-  const next = [...parts]
-  next[index] = part
-  return next
-}
-
-function getOrAssignPartOrdinal(
-  messageExternalId: string,
-  partId: string,
-  partOrdinals: Map<string, Map<string, number>>,
-  partOrdinalCounter: Map<string, number>,
-): number {
-  const messageOrdinals = partOrdinals.get(messageExternalId) ?? new Map<string, number>()
-  partOrdinals.set(messageExternalId, messageOrdinals)
-  const existing = messageOrdinals.get(partId)
-  if (typeof existing === 'number') return existing
-  const nextOrdinal = partOrdinalCounter.get(messageExternalId) ?? 0
-  partOrdinalCounter.set(messageExternalId, nextOrdinal + 1)
-  messageOrdinals.set(partId, nextOrdinal)
-  return nextOrdinal
-}
-
-function sortPartsByOrdinal(parts: MessagePart[]): MessagePart[] {
-  return [...parts].sort((left, right) => {
-    const leftOrdinal =
-      typeof left.__ordinal === 'number' ? left.__ordinal : Number.MAX_SAFE_INTEGER
-    const rightOrdinal =
-      typeof right.__ordinal === 'number' ? right.__ordinal : Number.MAX_SAFE_INTEGER
-    if (leftOrdinal !== rightOrdinal) return leftOrdinal - rightOrdinal
-    return left.id.localeCompare(right.id)
-  })
-}
-
-function applyStreamDelta(
-  prev: Map<string, LocalStreamingMessage>,
-  payload: {
-    messageExternalId: string
-    delta?: string
-    partId?: string
-    field?: string
-    part?: Record<string, unknown>
-  },
-  partOrdinals: Map<string, Map<string, number>>,
-  partOrdinalCounter: Map<string, number>,
-): Map<string, LocalStreamingMessage> {
-  const next = new Map(prev)
-  const current = next.get(payload.messageExternalId) ?? { content: '', parts: [] }
-  let parts = current.parts
-
-  if (payload.part) {
-    const part = payload.part as MessagePart
-    const ordinal = getOrAssignPartOrdinal(
-      payload.messageExternalId,
-      part.id,
-      partOrdinals,
-      partOrdinalCounter,
-    )
-    parts = upsertPart(parts, { ...part, __ordinal: ordinal })
+function toolPart(row: FoldedToolRow): MessagePart {
+  const viewModel = presentTool(row)
+  return {
+    type: 'tool',
+    id: row.id,
+    callID: row.toolCallId,
+    tool: row.title,
+    kind: row.kind,
+    locations: row.locations,
+    content: row.contentItems,
+    viewModel,
+    state: {
+      status: viewModel.status,
+      input: row.rawInput,
+      output: row.rawOutput,
+      metadata: row.metadata,
+    },
   }
+}
 
-  if (payload.delta && payload.partId) {
-    const ordinal = getOrAssignPartOrdinal(
-      payload.messageExternalId,
-      payload.partId,
-      partOrdinals,
-      partOrdinalCounter,
-    )
-    const existing =
-      parts.find((part) => part.id === payload.partId) ??
-      ({ type: 'text', id: payload.partId, __ordinal: ordinal } as MessagePart)
-    const field = payload.field ?? 'text'
-    const patched = {
-      ...existing,
-      __ordinal: ordinal,
-      [field]: `${String(existing[field] ?? '')}${payload.delta}`,
-    } satisfies MessagePart
-    parts = upsertPart(parts, patched)
+function partsFromFoldedRow(row: FoldedRow): MessagePart[] {
+  switch (row.type) {
+    case 'assistant':
+      return [{ type: 'text', id: row.id, text: row.text }]
+    case 'thinking':
+      return [{ type: 'reasoning', id: row.id, text: row.text }]
+    case 'tool':
+      return [toolPart(row)]
+    case 'explore_group':
+      return row.items.map(toolPart)
+    case 'subagent':
+      return [
+        {
+          type: 'subtask',
+          id: row.id,
+          description: row.subtitle ?? row.title,
+          status: row.status,
+          modelId: row.model,
+          targetSessionId: row.targetSessionId,
+        },
+      ]
+    case 'worked_group':
+      return row.items.flatMap(partsFromFoldedRow)
+    case 'user':
+    case 'permission':
+    case 'extension':
+    case 'plan':
+    case 'error':
+      return []
+    default:
+      row satisfies never
+      return []
   }
-
-  parts = sortPartsByOrdinal(parts)
-
-  const content = parts
-    .filter((part) => part.type === 'text')
-    .map((part) => String(part.text ?? ''))
-    .join('')
-
-  next.set(payload.messageExternalId, { content, parts })
-  return next
 }
 
 export function useActiveSession() {
@@ -273,10 +251,10 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
   )
 
   useEffect(() => {
-    const cleanup = window.electronAPI.onStreamToken((payload) => {
-      if (!ui.activeSessionId || payload.sessionExternalId !== ui.activeSessionId) return
+    const cleanup = window.electronAPI.onStreamToken((event) => {
+      if (!ui.activeSessionId || event.sessionId !== ui.activeSessionId) return
       if (!activeSessionDriven) return
-      streamingStore.update(payload)
+      streamingStore.update(event)
     })
     return cleanup
   }, [activeSessionDriven, streamingStore, ui.activeSessionId])

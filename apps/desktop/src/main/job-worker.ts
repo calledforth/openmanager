@@ -1,12 +1,13 @@
 import { ConvexClient } from 'convex/browser'
 import { api } from '@openmanager/convex/_generated/api'
 import type { Id } from '@openmanager/convex/_generated/dataModel'
+import type { ProviderId } from '@agentpack/contract'
 import {
   estimateConvexPayloadBytes,
   extractConvexTelemetryContext,
   recordConvexTelemetry,
 } from './convex-telemetry'
-import type { AgentClient, AgentSession } from './agent-client'
+import type { AgentHost } from './agent-host'
 
 type JobDoc = {
   _id: Id<'pending_jobs'>
@@ -21,11 +22,24 @@ export class JobWorker {
 
   constructor(
     private convex: ConvexClient,
-    private getClient: (workspacePath: string) => Promise<AgentClient | null>,
+    private agentHost: AgentHost,
     private clientId: string,
     private getLastModelForWorkspace: (workspacePath: string) => string | null,
     private setLastModelForWorkspace: (workspacePath: string, modelId: string) => void,
   ) {}
+
+  private providerId(_value: unknown): ProviderId {
+    return 'opencode'
+  }
+
+  private route(parsed: Record<string, any>, threadId: string) {
+    return {
+      providerId: this.providerId(parsed.providerId),
+      threadId,
+      workspaceId: parsed.workspacePath as string,
+      cwd: parsed.workspacePath as string,
+    }
+  }
 
   private async runTrackedMutation(name: string, mutationRef: any, args: Record<string, unknown>) {
     const startedAt = Date.now()
@@ -125,19 +139,27 @@ export class JobWorker {
 
     try {
       const parsed = JSON.parse(job.payload)
-      const client = await this.getClient(parsed.workspacePath)
-      if (!client) throw new Error('OpenCode ACP runtime is unavailable')
+      const providerId = this.providerId(parsed.providerId)
 
       switch (job.type) {
         case 'send_message':
-          await client.sendMessageAsync(parsed.sessionExternalId, parsed.content)
+          await this.agentHost.runtime.prompt({
+            ...this.route(parsed, parsed.sessionExternalId),
+            sessionId: parsed.sessionExternalId,
+            prompt: parsed.content,
+          })
           break
         case 'create_session': {
-          const session: AgentSession = await client.createSession(parsed.title)
+          const threadId = crypto.randomUUID()
+          const session = await this.agentHost.runtime.ensureSession(this.route(parsed, threadId))
           const rememberedModel = this.getLastModelForWorkspace(parsed.workspacePath)
-          if (rememberedModel && client.setSessionModel) {
+          if (rememberedModel) {
             try {
-              await client.setSessionModel(session.id, rememberedModel)
+              await this.agentHost.runtime.setModel({
+                ...this.route(parsed, threadId),
+                sessionId: session.sessionId,
+                modelId: rememberedModel,
+              })
             } catch (error) {
               console.warn(
                 `[job-worker] failed to apply remembered model ${rememberedModel}: ${(error as Error).message}`,
@@ -146,29 +168,38 @@ export class JobWorker {
           }
           await this.runTrackedMutation('sessions.upsertStatus', api.sessions.upsertStatus, {
             workspacePath: parsed.workspacePath,
-            externalId: session.id,
-            status: session.status ?? 'idle',
-            title: session.title,
+            externalId: session.sessionId,
+            status: 'idle',
+            title: parsed.title,
             clientId: this.clientId,
           })
           break
         }
         case 'start_session_with_message': {
-          const session: AgentSession = await client.createSession(parsed.title)
+          const threadId = crypto.randomUUID()
+          const session = await this.agentHost.runtime.ensureSession(this.route(parsed, threadId))
           const preferredModel =
             parsed.preferredModelId ?? this.getLastModelForWorkspace(parsed.workspacePath)
-          if (preferredModel && client.setSessionModel) {
+          if (preferredModel) {
             try {
-              await client.setSessionModel(session.id, preferredModel)
+              await this.agentHost.runtime.setModel({
+                ...this.route(parsed, threadId),
+                sessionId: session.sessionId,
+                modelId: preferredModel,
+              })
             } catch (error) {
               console.warn(
                 `[job-worker] failed to apply model ${preferredModel}: ${(error as Error).message}`,
               )
             }
           }
-          if (parsed.preferredModeId && client.setSessionMode) {
+          if (parsed.preferredModeId) {
             try {
-              await client.setSessionMode(session.id, parsed.preferredModeId)
+              await this.agentHost.runtime.setMode({
+                ...this.route(parsed, threadId),
+                sessionId: session.sessionId,
+                modeId: parsed.preferredModeId,
+              })
             } catch (error) {
               console.warn(
                 `[job-worker] failed to apply mode ${parsed.preferredModeId}: ${(error as Error).message}`,
@@ -177,35 +208,62 @@ export class JobWorker {
           }
           await this.runTrackedMutation('sessions.upsertStatus', api.sessions.upsertStatus, {
             workspacePath: parsed.workspacePath,
-            externalId: session.id,
-            status: session.status ?? 'idle',
-            title: session.title,
+            externalId: session.sessionId,
+            status: 'idle',
+            title: parsed.title,
             clientId: this.clientId,
           })
-          await client.sendMessageAsync(session.id, parsed.content)
+          await this.agentHost.runtime.prompt({
+            ...this.route(parsed, threadId),
+            sessionId: session.sessionId,
+            prompt: parsed.content,
+          })
           break
         }
         case 'abort':
-          await client.abortSession(parsed.sessionExternalId)
+          await this.agentHost.runtime.cancel({
+            ...this.route(parsed, parsed.sessionExternalId),
+            sessionId: parsed.sessionExternalId,
+          })
           break
-        case 'delete_session':
-          await client.deleteSession(parsed.sessionExternalId)
+        case 'delete_session': {
+          const capabilities = this.agentHost.runtime.getProvider(providerId).capabilities
+          if (capabilities.canDeleteSession) {
+            throw new Error(
+              `Provider ${providerId} advertises session deletion without a runtime operation`,
+            )
+          }
+          this.agentHost.emitSessionDeleted({
+            providerId,
+            threadId: parsed.sessionExternalId,
+            workspacePath: parsed.workspacePath,
+            sessionId: parsed.sessionExternalId,
+          })
+          await this.agentHost.projector.waitForThread(parsed.sessionExternalId)
           break
+        }
         case 'resolve_permission':
-          await client.resolvePermission(
-            parsed.sessionExternalId,
-            parsed.permissionId,
-            parsed.approved,
-          )
+          this.agentHost.respondPermission({
+            providerId,
+            threadId: parsed.sessionExternalId,
+            requestId: parsed.permissionId,
+            approved: parsed.approved,
+          })
           break
         case 'set_model':
-          if (!client.setSessionModel) throw new Error('Session model switching not supported')
-          await client.setSessionModel(parsed.sessionExternalId, parsed.modelId)
+          await this.agentHost.runtime.setModel({
+            ...this.route(parsed, parsed.sessionExternalId),
+            sessionId: parsed.sessionExternalId,
+            modelId: parsed.modelId,
+          })
           this.setLastModelForWorkspace(parsed.workspacePath, parsed.modelId)
           break
         case 'set_mode':
-          if (!client.setSessionMode) throw new Error('Session mode switching not supported')
-          await client.setSessionMode(parsed.sessionExternalId, parsed.modeId)
+          await this.agentHost.runtime.setMode({
+            ...this.route(parsed, parsed.sessionExternalId),
+            sessionId: parsed.sessionExternalId,
+            modeId: parsed.modeId,
+          })
           break
         default:
           throw new Error(`Unknown job type: ${job.type}`)

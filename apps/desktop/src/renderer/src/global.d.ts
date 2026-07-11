@@ -1,4 +1,5 @@
 import type { SidecarHandshake, SidecarStatus } from '@openmanager/shared/contracts/sidecar'
+import type { AgentEvent, ProviderId, ProviderMetadata } from '@agentpack/contract'
 
 interface ElectronAPI {
   platform: NodeJS.Platform
@@ -12,10 +13,13 @@ interface ElectronAPI {
   clearTelemetry: () => Promise<void>
   recordTelemetry: (event: Record<string, unknown>) => Promise<void>
   ensureOpenCode: () => Promise<SidecarHandshake>
+  ensureAgentProvider: (providerId: ProviderId, cwd: string) => Promise<SidecarHandshake>
   retryOpenCode: () => Promise<SidecarHandshake>
   getOpenCodeStatus: () => Promise<SidecarStatus>
   shutdownOpenCode: () => Promise<void>
+  getAgentProviders: () => Promise<ProviderMetadata[]>
   loadAcpSession: (
+    providerId: ProviderId,
     workspacePath: string,
     sessionId: string,
   ) => Promise<{ ok: boolean; reason?: string }>
@@ -23,18 +27,9 @@ interface ElectronAPI {
   getCollapsedWorkspaces: () => Promise<string[]>
   setCollapsedWorkspaces: (paths: string[]) => Promise<void>
   onOpenCodeStatusChanged: (callback: (data: { status: string }) => void) => () => void
-  onStreamToken: (
-    callback: (data: {
-      sessionExternalId: string
-      messageExternalId: string
-      delta?: string
-      partId?: string
-      field?: string
-      part?: Record<string, unknown>
-    }) => void,
-  ) => () => void
+  onStreamToken: (callback: (data: AgentEvent) => void) => () => void
   onTelemetryUpdate: (callback: (data: unknown) => void) => () => void
-  onAcpEvent: (callback: (data: unknown) => void) => () => void
+  onAcpEvent: (callback: (data: AgentEvent) => void) => () => void
 }
 
 declare global {

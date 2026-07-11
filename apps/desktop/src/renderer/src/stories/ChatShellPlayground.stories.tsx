@@ -683,148 +683,154 @@ function Demo() {
   return (
     <ThemeProvider>
       <AppUiProvider>
-    <div className="flex h-screen w-screen min-w-0 overflow-hidden bg-background text-foreground selection:bg-accent/25 selection:text-foreground">
-      <WorkspaceSidebarView
-        collapsed={collapsed}
-        workspaces={workspaces}
-        activeWorkspacePath="/workspace/openmanager"
-        activeSessionId="sess-1"
-        collapsedWorkspacePaths={[]}
-        onToggleWorkspaceCollapse={() => undefined}
-        onCreateSession={() => undefined}
-        onSelectSession={() => undefined}
-        onDeleteSession={() => undefined}
-        onRemoveWorkspace={() => undefined}
-        onAddWorkspace={() => undefined}
-      />
+        <div className="flex h-screen w-screen min-w-0 overflow-hidden bg-background text-foreground selection:bg-accent/25 selection:text-foreground">
+          <WorkspaceSidebarView
+            collapsed={collapsed}
+            workspaces={workspaces}
+            activeWorkspacePath="/workspace/openmanager"
+            activeSessionId="sess-1"
+            collapsedWorkspacePaths={[]}
+            onToggleWorkspaceCollapse={() => undefined}
+            onCreateSession={() => undefined}
+            onSelectSession={() => undefined}
+            onDeleteSession={() => undefined}
+            onRemoveWorkspace={() => undefined}
+            onAddWorkspace={() => undefined}
+          />
 
-      <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden pt-2 pr-2 pb-0 pl-0 transition-all duration-300 ease-in-out">
-        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-t-xl border border-border bg-card">
-          <ChatViewPanel>
-            <div ref={scrollRef} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-              <div className="mx-auto max-w-2xl space-y-1 px-4 py-6 pb-44">
-              {messages.map((msg) =>
-                msg.role === 'user' ? (
-                  <UserMessage key={msg.id} content={msg.content} />
-                ) : (
-                  <AssistantMessage
-                    key={msg.id}
-                    isFinal={msg.isFinal}
-                    content={msg.content}
-                    parts={msg.parts}
-                    runtime={{
-                      providerId: 'anthropic',
-                      modelId,
-                      modeId,
-                      tokens: { total: 1200 + messages.length * 33 },
-                    }}
-                  />
-                ),
-              )}
-              </div>
+          <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden pt-2 pr-2 pb-0 pl-0 transition-all duration-300 ease-in-out">
+            <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-t-xl border border-border bg-card">
+              <ChatViewPanel>
+                <div ref={scrollRef} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+                  <div className="mx-auto max-w-2xl space-y-1 px-4 py-6 pb-44">
+                    {messages.map((msg) =>
+                      msg.role === 'user' ? (
+                        <UserMessage key={msg.id} content={msg.content} />
+                      ) : (
+                        <AssistantMessage
+                          key={msg.id}
+                          isFinal={msg.isFinal}
+                          content={msg.content}
+                          parts={msg.parts}
+                          runtime={{
+                            providerId: 'anthropic',
+                            modelId,
+                            modeId,
+                            tokens: { total: 1200 + messages.length * 33 },
+                          }}
+                        />
+                      ),
+                    )}
+                  </div>
+                </div>
+              </ChatViewPanel>
+
+              <FloatingChatComposer>
+                <div className="pb-2">
+                  <div className="mx-auto flex max-w-2xl flex-wrap gap-1.5 text-11-regular text-muted-foreground">
+                    <button
+                      className="rounded border border-border px-2 py-1 hover:bg-surface-hover transition-default"
+                      onClick={() => setStatus('connected')}
+                    >
+                      connected
+                    </button>
+                    <button
+                      className="rounded border border-border px-2 py-1 hover:bg-surface-hover transition-default"
+                      onClick={() => setStatus('connecting')}
+                    >
+                      connecting
+                    </button>
+                    <button
+                      className="rounded border border-border px-2 py-1 hover:bg-surface-hover transition-default"
+                      onClick={() => setStatus('disconnected')}
+                    >
+                      disconnected
+                    </button>
+                    <button
+                      className="rounded border border-border px-2 py-1 hover:bg-surface-hover transition-default"
+                      onClick={() => setMessages((prev) => [...makeDenseHistory(), ...prev])}
+                    >
+                      seed history (6 turns)
+                    </button>
+                    <button
+                      className="rounded border border-border px-2 py-1 hover:bg-surface-hover transition-default"
+                      onClick={() => {
+                        setPreset('normal')
+                        startStream(
+                          'Apply the four font changes we identified: variable font, ss03, type scale, and line-height tokens.',
+                          'normal',
+                        )
+                      }}
+                    >
+                      ▶ run normal
+                    </button>
+                    <button
+                      className="rounded border border-border px-2 py-1 hover:bg-surface-hover transition-default"
+                      onClick={() => {
+                        setPreset('error')
+                        startStream('Run typecheck and fix any errors.', 'error')
+                      }}
+                    >
+                      ▶ run errors
+                    </button>
+                    <button
+                      className="rounded border border-border px-2 py-1 hover:bg-surface-hover transition-default"
+                      onClick={() => {
+                        setPreset('parallel')
+                        startStream(
+                          'Audit font-semibold and leading-relaxed usages in parallel, then report.',
+                          'parallel',
+                        )
+                      }}
+                    >
+                      ▶ run parallel
+                    </button>
+                    <button
+                      className="rounded border border-border px-2 py-1 hover:bg-surface-hover transition-default"
+                      onClick={() => setMessages([])}
+                    >
+                      clear
+                    </button>
+                  </div>
+                </div>
+
+                <MessageInputView
+                  disabled={status !== 'connected'}
+                  pendingDraftSessionStart={false}
+                  activeWorkspacePath="/workspace/openmanager"
+                  activeSessionId="sess-1"
+                  isSessionDraftOpen={false}
+                  openCodeReady={status === 'connected'}
+                  providerOptions={[{ id: 'opencode', name: 'OpenCode' }]}
+                  currentProviderId="opencode"
+                  modeOptions={[
+                    { id: 'default', name: 'Default' },
+                    { id: 'plan', name: 'Plan' },
+                    { id: 'debug', name: 'Debug' },
+                  ]}
+                  currentModeId={modeId}
+                  modelOptions={[
+                    { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5' },
+                    { id: 'claude-opus-4', name: 'Claude Opus 4' },
+                    { id: 'gpt-5.1', name: 'GPT-5.1' },
+                  ]}
+                  currentModelId={modelId}
+                  canChangeSettings={true}
+                  canChangeProvider={false}
+                  showModeControl={true}
+                  showModelControl={true}
+                  agent={{ name: 'OpenCode', version: '1.7.0' }}
+                  isStreaming={false}
+                  onModeChange={setModeId}
+                  onProviderChange={() => {}}
+                  onModelChange={setModelId}
+                  onSend={(prompt) => startStream(prompt, preset)}
+                  onAbort={() => {}}
+                />
+              </FloatingChatComposer>
             </div>
-          </ChatViewPanel>
-
-          <FloatingChatComposer>
-            <div className="pb-2">
-              <div className="mx-auto flex max-w-2xl flex-wrap gap-1.5 text-11-regular text-muted-foreground">
-            <button
-              className="rounded border border-border px-2 py-1 hover:bg-surface-hover transition-default"
-              onClick={() => setStatus('connected')}
-            >
-              connected
-            </button>
-            <button
-              className="rounded border border-border px-2 py-1 hover:bg-surface-hover transition-default"
-              onClick={() => setStatus('connecting')}
-            >
-              connecting
-            </button>
-            <button
-              className="rounded border border-border px-2 py-1 hover:bg-surface-hover transition-default"
-              onClick={() => setStatus('disconnected')}
-            >
-              disconnected
-            </button>
-            <button
-              className="rounded border border-border px-2 py-1 hover:bg-surface-hover transition-default"
-              onClick={() => setMessages((prev) => [...makeDenseHistory(), ...prev])}
-            >
-              seed history (6 turns)
-            </button>
-            <button
-              className="rounded border border-border px-2 py-1 hover:bg-surface-hover transition-default"
-              onClick={() => {
-                setPreset('normal')
-                startStream(
-                  'Apply the four font changes we identified: variable font, ss03, type scale, and line-height tokens.',
-                  'normal',
-                )
-              }}
-            >
-              ▶ run normal
-            </button>
-            <button
-              className="rounded border border-border px-2 py-1 hover:bg-surface-hover transition-default"
-              onClick={() => {
-                setPreset('error')
-                startStream('Run typecheck and fix any errors.', 'error')
-              }}
-            >
-              ▶ run errors
-            </button>
-            <button
-              className="rounded border border-border px-2 py-1 hover:bg-surface-hover transition-default"
-              onClick={() => {
-                setPreset('parallel')
-                startStream(
-                  'Audit font-semibold and leading-relaxed usages in parallel, then report.',
-                  'parallel',
-                )
-              }}
-            >
-              ▶ run parallel
-            </button>
-            <button
-              className="rounded border border-border px-2 py-1 hover:bg-surface-hover transition-default"
-              onClick={() => setMessages([])}
-            >
-              clear
-            </button>
-              </div>
-            </div>
-
-            <MessageInputView
-              disabled={status !== 'connected'}
-              pendingDraftSessionStart={false}
-              activeWorkspacePath="/workspace/openmanager"
-              activeSessionId="sess-1"
-              isSessionDraftOpen={false}
-              openCodeReady={status === 'connected'}
-              modeOptions={[
-                { id: 'default', name: 'Default' },
-                { id: 'plan', name: 'Plan' },
-                { id: 'debug', name: 'Debug' },
-              ]}
-              currentModeId={modeId}
-              modelOptions={[
-                { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5' },
-                { id: 'claude-opus-4', name: 'Claude Opus 4' },
-                { id: 'gpt-5.1', name: 'GPT-5.1' },
-              ]}
-              currentModelId={modelId}
-              canChangeSettings={true}
-              agent={{ name: 'OpenCode', version: '1.7.0' }}
-              isStreaming={false}
-              onModeChange={setModeId}
-              onModelChange={setModelId}
-              onSend={(prompt) => startStream(prompt, preset)}
-              onAbort={() => {}}
-            />
-          </FloatingChatComposer>
+          </div>
         </div>
-      </div>
-    </div>
       </AppUiProvider>
     </ThemeProvider>
   )
