@@ -279,7 +279,7 @@ export type AgentEvent = AgentEventBase &
         category: 'lifecycle'
         event: 'prompt_started'
         sessionId: string
-        data: { prompt: string }
+        data: { prompt: string; userMessageId: string }
       }
     | {
         category: 'lifecycle'

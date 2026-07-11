@@ -211,6 +211,14 @@ export class AcpBackend implements Backend {
   private emit(event: BackendEvent): void {
     for (const listener of this.listeners) listener(event)
   }
+  private logInbound(method: string, data: unknown): void {
+    this.host.log({
+      scope: 'acp',
+      level: 'info',
+      message: `[event] <- ${method}`,
+      data,
+    })
+  }
   private emitAll(
     category: AgentEvent['category'],
     event: AgentEvent['event'],
@@ -467,11 +475,20 @@ export class AcpBackend implements Backend {
     }
   }
   async prompt(
-    args: BackendRoute & { cwd: string; sessionId: string; prompt: string },
+    args: BackendRoute & {
+      cwd: string
+      sessionId: string
+      prompt: string
+      userMessageId?: string
+    },
   ): Promise<void> {
     await this.start(args)
+    const userMessageId = args.userMessageId ?? `agent_usr_${crypto.randomUUID()}`
     this.emit(
-      routeEvent(args, args.sessionId, 'lifecycle', 'prompt_started', { prompt: args.prompt }),
+      routeEvent(args, args.sessionId, 'lifecycle', 'prompt_started', {
+        prompt: args.prompt,
+        userMessageId,
+      }),
     )
     try {
       const result = object(
@@ -584,6 +601,7 @@ export class AcpBackend implements Backend {
   private async permissionRequest(
     params: acp.RequestPermissionRequest,
   ): Promise<acp.RequestPermissionResponse> {
+    this.logInbound('session/request_permission', params)
     const sessionId = sessionIdOf(params)
     const binding = sessionId ? this.sessions.forSession(sessionId) : undefined
     if (!sessionId || !binding) return { outcome: { outcome: 'cancelled' } }
@@ -624,6 +642,7 @@ export class AcpBackend implements Backend {
   }
 
   private async sessionUpdate(params: acp.SessionNotification): Promise<void> {
+    this.logInbound('session/update', params)
     const p = object(params)
     const sessionId = string(p.sessionId)
     const binding = sessionId ? this.sessions.forSession(sessionId) : undefined
@@ -786,6 +805,7 @@ export class AcpBackend implements Backend {
     method: string,
     params: unknown,
   ): Promise<Record<string, unknown>> {
+    this.logInbound(method, params)
     const sessionId = sessionIdOf(params)
     const binding = sessionId ? this.sessions.forSession(sessionId) : undefined
     if (binding && sessionId)
@@ -799,6 +819,7 @@ export class AcpBackend implements Backend {
     return object(await this.extensions.request(method, params))
   }
   private async extensionNotification(method: string, params: unknown): Promise<void> {
+    this.logInbound(method, params)
     const sessionId = sessionIdOf(params)
     const binding = sessionId ? this.sessions.forSession(sessionId) : undefined
     if (binding && sessionId)

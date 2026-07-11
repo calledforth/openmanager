@@ -66,7 +66,8 @@ export class AgentRuntime {
     if (
       event.event === 'prompt_completed' ||
       event.event === 'rpc_error' ||
-      event.event === 'runtime_error'
+      event.event === 'runtime_error' ||
+      event.event === 'process_exited'
     ) {
       this.activeMessageIds.delete(event.threadId)
     }
@@ -100,7 +101,9 @@ export class AgentRuntime {
     return this.ensureSession(args)
   }
 
-  async prompt(args: RuntimeSessionArgs & { prompt: string }): Promise<SessionResult> {
+  async prompt(
+    args: RuntimeSessionArgs & { prompt: string; userMessageId?: string },
+  ): Promise<SessionResult> {
     const session = await this.ensureSession(args)
     const key = args.threadId
     const previous = this.promptQueues.get(key) ?? Promise.resolve()
@@ -114,7 +117,9 @@ export class AgentRuntime {
     await run
     return session
   }
-  sendPrompt(args: RuntimeSessionArgs & { prompt: string }): Promise<SessionResult> {
+  sendPrompt(
+    args: RuntimeSessionArgs & { prompt: string; userMessageId?: string },
+  ): Promise<SessionResult> {
     return this.prompt(args)
   }
   async cancel(args: RuntimeRoute & { sessionId: string }): Promise<void> {

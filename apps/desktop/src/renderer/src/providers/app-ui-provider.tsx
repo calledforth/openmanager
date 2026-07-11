@@ -95,7 +95,7 @@ interface AppUiValue {
   selectSession: (workspacePath: string, externalId: string) => void
   createSession: (workspacePath: string) => Promise<void>
   deleteSession: (workspacePath: string, externalId: string) => Promise<void>
-  sendMessage: (content: string) => Promise<void>
+  sendMessage: (content: string, userMessageId?: string) => Promise<void>
   abortSession: (externalId: string) => Promise<void>
   resolvePermission: (
     sessionExternalId: string,
@@ -414,7 +414,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
   )
 
   const sendMessage = useCallback(
-    async (content: string) => {
+    async (content: string, userMessageId?: string) => {
       const trimmed = content.trim()
       if (!activeWorkspacePath || !trimmed) return
       setError(null)
@@ -441,6 +441,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
             payload: JSON.stringify({
               workspacePath: activeWorkspacePath,
               content: trimmed,
+              userMessageId,
               providerId: draftSelection.providerId ?? 'opencode',
               ...(draftSelection.modelId ? { preferredModelId: draftSelection.modelId } : {}),
               ...(draftSelection.modeId ? { preferredModeId: draftSelection.modeId } : {}),
@@ -470,6 +471,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
             workspacePath: activeWorkspacePath,
             sessionExternalId: activeSessionId,
             content: trimmed,
+            userMessageId,
             providerId: acpSessionStateById[activeSessionId]?.providerId ?? 'opencode',
           }),
           clientId: currentClientId,

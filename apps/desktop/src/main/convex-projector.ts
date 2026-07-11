@@ -41,6 +41,7 @@ type MessageBuffer = {
   chunkIndex: number
   flushedLength: number
   runtimeMetadata: RuntimeMetadata
+  pendingPartUpdates: Map<string, number>
 }
 
 type ActiveTurn = {
@@ -53,6 +54,7 @@ type ActiveTurn = {
 
 const FINALIZE_ATTEMPTS = 3
 const FINALIZE_RETRY_BASE_MS = 500
+const PART_UPDATE_CHUNK_INTERVAL = 8
 
 function statusForTool(status: ToolCall['status']): string {
   if (status === 'in_progress') return 'running'
@@ -146,7 +148,9 @@ export class ConvexProjector {
         await this.completeTurn(event, workspacePath)
         return
       case 'user_message_chunk':
-        await this.appendUserChunk(event)
+        // The host has already persisted the canonical prompt in prompt_started.
+        // ACP user chunks are provider echoes, matching the behavior retained
+        // by the pre-AgentPack implementation.
         return
       case 'agent_message_chunk':
         await this.appendAgentChunk(event, false)
@@ -187,11 +191,11 @@ export class ConvexProjector {
       case 'auth_required':
         if (event.sessionId && workspacePath) {
           await this.upsertSession(workspacePath, event.sessionId, 'error')
-          await this.finalizeTurn(event.threadId)
+          await this.finalizeTurn(event.threadId, 'error')
         }
         return
       case 'process_exited':
-        await this.finalizeTurn(event.threadId)
+        await this.finalizeTurn(event.threadId, 'error')
         return
       default:
         return
@@ -202,7 +206,7 @@ export class ConvexProjector {
     event: Extract<AgentEvent, { event: 'prompt_started' }>,
     workspacePath?: string,
   ): Promise<void> {
-    const userMessageId = `agent_usr_${event.id}`
+    const userMessageId = event.data.userMessageId
     const assistantMessageId = event.messageId ?? `agent_asst_${event.id}`
     const userPart: PartData = {
       type: 'text',
@@ -249,26 +253,9 @@ export class ConvexProjector {
           tokens: this.tokens(event.data.usage),
         }
       }
-      await this.finalizeTurn(event.threadId)
+      await this.finalizeTurn(event.threadId, event.data.stopReason)
     }
     if (workspacePath) await this.upsertSession(workspacePath, event.sessionId, 'idle')
-  }
-
-  private async appendUserChunk(
-    event: Extract<AgentEvent, { event: 'user_message_chunk' }>,
-  ): Promise<void> {
-    const turn = this.turns.get(event.threadId)
-    const messageId = event.data.messageId ?? turn?.userMessageId ?? `agent_usr_${event.id}`
-    const buffer = this.buffer(messageId, event.sessionId, 'user', event.providerId)
-    this.appendContent(buffer, `${messageId}_text`, event.data.content)
-    await this.runMutation('messages.upsertFinalized', api.messages.upsertFinalized, {
-      sessionExternalId: event.sessionId,
-      externalId: messageId,
-      content: buffer.content,
-      role: 'user',
-      parts: [...buffer.parts.values()],
-      runtimeMetadata: buffer.runtimeMetadata,
-    })
   }
 
   private async appendAgentChunk(
@@ -283,14 +270,19 @@ export class ConvexProjector {
       event.providerId,
     )
     await this.ensurePlaceholder(turn.assistantMessageId, buffer)
+    if (reasoning) {
+      turn.textPartId = undefined
+    } else {
+      this.finishReasoning(turn, buffer)
+    }
     const partId = reasoning
-      ? (turn.reasoningPartId ??= `${turn.assistantMessageId}_reasoning`)
-      : (turn.textPartId ??= `${turn.assistantMessageId}_text`)
+      ? (turn.reasoningPartId ??= `${turn.assistantMessageId}_reasoning_${buffer.parts.size}`)
+      : (turn.textPartId ??= `${turn.assistantMessageId}_text_${buffer.parts.size}`)
     const part = this.appendContent(buffer, partId, event.data.content, reasoning)
-    const text = event.data.content.type === 'text' ? event.data.content.text : ''
+    const text = !reasoning && event.data.content.type === 'text' ? event.data.content.text : ''
     await this.appendChunk(turn.assistantMessageId, buffer, text, {
-      kind: 'part.updated',
-      part,
+      partUpdate: { kind: 'part.updated', part },
+      coalescePartUpdate: true,
     })
   }
 
@@ -306,6 +298,7 @@ export class ConvexProjector {
       event.providerId,
     )
     await this.ensurePlaceholder(turn.assistantMessageId, buffer)
+    this.finishActiveParts(turn, buffer)
     const existing = buffer.parts.get(tool.toolCallId)
     const existingState = (existing?.state as Record<string, unknown> | undefined) ?? {}
     const proposedStatus = statusForTool(tool.status)
@@ -332,8 +325,7 @@ export class ConvexProjector {
     }
     buffer.parts.set(part.id, part)
     await this.appendChunk(turn.assistantMessageId, buffer, '', {
-      kind: 'part.updated',
-      part,
+      partUpdate: { kind: 'part.updated', part },
     })
   }
 
@@ -350,6 +342,7 @@ export class ConvexProjector {
       event.providerId,
     )
     await this.ensurePlaceholder(turn.assistantMessageId, buffer)
+    this.finishActiveParts(turn, buffer)
     const existing = buffer.parts.get(toolCallId) ?? {
       type: 'tool',
       id: toolCallId,
@@ -361,8 +354,7 @@ export class ConvexProjector {
     const part = { ...existing, content: [...content, item] }
     buffer.parts.set(toolCallId, part)
     await this.appendChunk(turn.assistantMessageId, buffer, '', {
-      kind: 'part.updated',
-      part,
+      partUpdate: { kind: 'part.updated', part },
     })
   }
 
@@ -418,9 +410,10 @@ export class ConvexProjector {
         role,
         parts: new Map(),
         placeholderInserted: false,
-        chunkIndex: 0,
+        chunkIndex: -1,
         flushedLength: 0,
         runtimeMetadata: { providerId },
+        pendingPartUpdates: new Map(),
       }
       this.buffers.set(messageId, buffer)
     }
@@ -488,7 +481,10 @@ export class ConvexProjector {
     messageId: string,
     buffer: MessageBuffer,
     immediateText: string,
-    partUpdate?: { kind: 'part.updated'; part: PartData },
+    options: {
+      partUpdate?: { kind: 'part.updated'; part: PartData }
+      coalescePartUpdate?: boolean
+    } = {},
   ): Promise<void> {
     const boundary = this.sentenceBoundary(buffer.content, buffer.flushedLength)
     const chunkText = boundary
@@ -496,6 +492,17 @@ export class ConvexProjector {
       : immediateText && buffer.content.length === 0
         ? immediateText
         : ''
+    let partUpdate = options.partUpdate
+    if (partUpdate && options.coalescePartUpdate) {
+      const previousCount = buffer.pendingPartUpdates.get(partUpdate.part.id)
+      const pendingCount = (previousCount ?? -1) + 1
+      if (previousCount !== undefined && !boundary && pendingCount < PART_UPDATE_CHUNK_INTERVAL) {
+        buffer.pendingPartUpdates.set(partUpdate.part.id, pendingCount)
+        partUpdate = undefined
+      } else {
+        buffer.pendingPartUpdates.set(partUpdate.part.id, 0)
+      }
+    }
     if (!chunkText && !partUpdate) return
     buffer.chunkIndex += 1
     if (boundary) buffer.flushedLength += boundary
@@ -508,12 +515,47 @@ export class ConvexProjector {
     })
   }
 
-  private async finalizeTurn(threadId: string): Promise<void> {
+  private async finalizeTurn(threadId: string, stopReason?: string): Promise<void> {
     const turn = this.turns.get(threadId)
     if (!turn) return
     const buffer = this.buffers.get(turn.assistantMessageId)
-    if (buffer) await this.finalize(turn.assistantMessageId, buffer)
+    if (buffer) {
+      this.finishActiveParts(turn, buffer)
+      this.finishRunningTools(buffer, stopReason)
+      await this.finalize(turn.assistantMessageId, buffer)
+    }
     this.turns.delete(threadId)
+  }
+
+  private finishReasoning(turn: ActiveTurn, buffer: MessageBuffer): void {
+    const partId = turn.reasoningPartId
+    turn.reasoningPartId = undefined
+    if (!partId) return
+    const part = buffer.parts.get(partId)
+    if (!part) return
+    const time =
+      part.time && typeof part.time === 'object'
+        ? (part.time as Record<string, number>)
+        : { start: Date.now() }
+    buffer.parts.set(partId, { ...part, time: { ...time, end: time.end ?? Date.now() } })
+  }
+
+  private finishActiveParts(turn: ActiveTurn, buffer: MessageBuffer): void {
+    turn.textPartId = undefined
+    this.finishReasoning(turn, buffer)
+  }
+
+  private finishRunningTools(buffer: MessageBuffer, stopReason?: string): void {
+    const failed = !!stopReason && /error|fail|cancel|abort/i.test(stopReason)
+    for (const [id, part] of buffer.parts) {
+      if (part.type !== 'tool') continue
+      const state = (part.state as Record<string, unknown> | undefined) ?? {}
+      if (toolStatusRank(state.status) >= 2) continue
+      buffer.parts.set(id, {
+        ...part,
+        state: { ...state, status: failed ? 'error' : 'completed' },
+      })
+    }
   }
 
   private async finalize(messageId: string, buffer: MessageBuffer): Promise<void> {

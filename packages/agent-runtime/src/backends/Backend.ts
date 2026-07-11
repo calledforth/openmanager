@@ -18,7 +18,14 @@ export interface Backend {
   readonly providerId: ProviderId
   start(args: BackendRoute & { cwd: string }): Promise<void>
   ensureSession(args: BackendSessionArgs): Promise<SessionResult>
-  prompt(args: BackendRoute & { cwd: string; sessionId: string; prompt: string }): Promise<void>
+  prompt(
+    args: BackendRoute & {
+      cwd: string
+      sessionId: string
+      prompt: string
+      userMessageId?: string
+    },
+  ): Promise<void>
   cancel(args: BackendRoute & { cwd: string; sessionId: string }): Promise<void>
   respondPermission(requestId: string, outcome: PermissionOutcome): boolean
   setModel(args: BackendRoute & { cwd: string; sessionId: string; modelId: string }): Promise<void>

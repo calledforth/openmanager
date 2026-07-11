@@ -2,7 +2,10 @@ import type { AgentEvent } from '@agentpack/contract'
 import { AgentRuntime, type BackendEvent } from '@agentpack/runtime'
 import { foldAgentEvents } from '@agentpack/view'
 import { describe, expect, it } from 'vitest'
-import { StreamingMessagesStore } from './active-session-provider'
+import {
+  mergePersistedAndOptimisticMessages,
+  StreamingMessagesStore,
+} from './active-session-provider'
 
 const base = {
   threadId: 'thread-1',
@@ -37,7 +40,7 @@ describe('agent streaming regressions', () => {
       ...base,
       category: 'lifecycle',
       event: 'prompt_started',
-      data: { prompt: 'Inspect the project' },
+      data: { prompt: 'Inspect the project', userMessageId: 'user-1' },
     })
     forward('opencode', {
       ...base,
@@ -77,7 +80,7 @@ describe('agent streaming regressions', () => {
       ...base,
       category: 'lifecycle',
       event: 'prompt_started',
-      data: { prompt: 'Second turn' },
+      data: { prompt: 'Second turn', userMessageId: 'user-2' },
     })
     forward('opencode', {
       ...base,
@@ -144,5 +147,96 @@ describe('agent streaming regressions', () => {
     ).find((row) => row.type === 'tool')
 
     expect(tool?.type === 'tool' ? tool.contentItems : []).toEqual([item])
+  })
+
+  it('reduces live chunks incrementally across tool boundaries and closes activity', () => {
+    const messageId = 'assistant-1'
+    const store = new StreamingMessagesStore()
+    const updates = [
+      event({
+        messageId,
+        seq: 1,
+        category: 'stream',
+        event: 'agent_thought_chunk',
+        data: { content: { type: 'text', text: 'Checking' } },
+      }),
+      event({
+        messageId,
+        seq: 2,
+        category: 'tool',
+        event: 'tool_call',
+        data: { toolCallId: 'tool-1', title: 'Read', status: 'in_progress' },
+      }),
+      event({
+        messageId,
+        seq: 3,
+        category: 'stream',
+        event: 'agent_message_chunk',
+        data: { content: { type: 'text', text: 'First. ' } },
+      }),
+      event({
+        messageId,
+        seq: 4,
+        category: 'tool',
+        event: 'tool_call_update',
+        data: { toolCallId: 'tool-1', status: 'completed' },
+      }),
+      event({
+        messageId,
+        seq: 5,
+        category: 'stream',
+        event: 'agent_message_chunk',
+        data: { content: { type: 'text', text: 'Second.' } },
+      }),
+      event({
+        messageId,
+        seq: 6,
+        category: 'lifecycle',
+        event: 'prompt_completed',
+        data: { stopReason: 'end_turn' },
+      }),
+    ]
+    for (const update of updates) store.update(update)
+
+    const snapshot = store.get(messageId)!
+    expect(snapshot.content).toBe('First. Second.')
+    expect(snapshot.parts.map((part) => part.type)).toEqual(['reasoning', 'tool', 'text', 'text'])
+    expect((snapshot.parts[0]?.time as { end?: number }).end).toEqual(expect.any(Number))
+    expect((snapshot.parts[1]?.state as { status?: string }).status).toBe('completed')
+  })
+
+  it('ignores replayed events by host event identity', () => {
+    const store = new StreamingMessagesStore()
+    const chunk = event({
+      id: 'stable-event',
+      messageId: 'assistant-1',
+      category: 'stream',
+      event: 'agent_message_chunk',
+      data: { content: { type: 'text', text: 'once' } },
+    })
+    store.update(chunk)
+    store.update(chunk)
+    expect(store.get('assistant-1')?.content).toBe('once')
+  })
+
+  it('reconciles optimistic messages by canonical identity, not message counts', () => {
+    const optimistic = [
+      {
+        externalId: 'user-local',
+        role: 'user',
+        isFinal: true,
+        sequenceNum: 2,
+        optimisticContent: 'mine',
+        isOptimistic: true,
+      },
+    ]
+    const unrelated = [{ externalId: 'user-remote', role: 'user', isFinal: true, sequenceNum: 1 }]
+    expect(mergePersistedAndOptimisticMessages(unrelated, optimistic)).toHaveLength(2)
+    expect(
+      mergePersistedAndOptimisticMessages(
+        [...unrelated, { externalId: 'user-local', role: 'user', isFinal: true, sequenceNum: 2 }],
+        optimistic,
+      ).map((message) => message.externalId),
+    ).toEqual(['user-remote', 'user-local'])
   })
 })

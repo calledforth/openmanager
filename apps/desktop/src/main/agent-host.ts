@@ -100,7 +100,15 @@ export class AgentHost {
     const window = this.getMainWindow()
     if (window?.isDestroyed() !== false) return
     window.webContents.send('acp:event', event)
-    if (event.category === 'stream' || event.category === 'tool') {
+    if (
+      event.category === 'stream' ||
+      event.category === 'tool' ||
+      event.event === 'prompt_started' ||
+      event.event === 'prompt_completed' ||
+      event.event === 'rpc_error' ||
+      event.event === 'runtime_error' ||
+      event.event === 'process_exited'
+    ) {
       window.webContents.send('stream:token', event)
     }
     if (event.event === 'process_exited') {

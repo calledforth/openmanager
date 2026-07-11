@@ -147,6 +147,7 @@ export class JobWorker {
             ...this.route(parsed, parsed.sessionExternalId),
             sessionId: parsed.sessionExternalId,
             prompt: parsed.content,
+            userMessageId: parsed.userMessageId,
           })
           break
         case 'create_session': {
@@ -217,6 +218,7 @@ export class JobWorker {
             ...this.route(parsed, threadId),
             sessionId: session.sessionId,
             prompt: parsed.content,
+            userMessageId: parsed.userMessageId,
           })
           break
         }
