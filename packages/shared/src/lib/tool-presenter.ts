@@ -27,10 +27,41 @@ interface ToolPartData {
     type?: string
     status?: string
     input?: unknown
-    output?: string
+    output?: unknown
     title?: string
     error?: string
   }
+}
+
+/**
+ * ACP deliberately allows provider-owned structured tool output. Keep that
+ * flexibility at the contract boundary, but never pass the raw value through
+ * to React: Cursor, for example, wraps its result as { output, metadata }.
+ */
+export function formatToolOutput(value: unknown): string {
+  if (value == null) return ''
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value)
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(formatToolOutput).filter(Boolean).join('\n')
+  }
+
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    if ('output' in record && record.output !== value) return formatToolOutput(record.output)
+    if (record.type === 'text' && typeof record.text === 'string') return record.text
+
+    try {
+      return JSON.stringify(value, null, 2)
+    } catch {
+      return String(value)
+    }
+  }
+
+  return String(value)
 }
 
 function extractPath(input: unknown): string {
@@ -81,7 +112,7 @@ export function presentToolPart(part: ToolPartData): ToolPresenterModel {
   const meta = getToolLabels(toolName)
   const title = state.title ?? meta.getTitle(state.input)
   const subtitle = meta.getSubtitle(state.input)
-  const output = state.output ?? state.error ?? ''
+  const output = formatToolOutput(state.output ?? state.error)
 
   if (canonical === 'Read') {
     const target = basename(extractPath(state.input))
@@ -115,7 +146,7 @@ export function presentToolPart(part: ToolPartData): ToolPresenterModel {
 
   if (canonical === 'Edit' || canonical === 'Write' || canonical === 'MultiEdit') {
     const file = basename(extractPath(state.input))
-    const stats = countDiffStats(state.output ?? '')
+    const stats = countDiffStats(output)
     const diffSuffix =
       !isRunning && (stats.added > 0 || stats.removed > 0)
         ? ` +${stats.added} -${stats.removed}`

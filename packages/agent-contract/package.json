@@ -1,0 +1,38 @@
+{
+  "name": "@agentpack/contract",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./events": {
+      "types": "./src/events.ts",
+      "default": "./src/events.ts"
+    },
+    "./parts": {
+      "types": "./src/parts.ts",
+      "default": "./src/parts.ts"
+    },
+    "./permissions": {
+      "types": "./src/permissions.ts",
+      "default": "./src/permissions.ts"
+    },
+    "./capabilities": {
+      "types": "./src/capabilities.ts",
+      "default": "./src/capabilities.ts"
+    },
+    "./providers": {
+      "types": "./src/providers.ts",
+      "default": "./src/providers.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
