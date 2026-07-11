@@ -5,7 +5,9 @@ import { useActiveSession, useStreamingMessage } from '../../providers/active-se
 import { useAppUi } from '../../providers/app-ui-provider'
 import {
   AssistantMessage,
+  ChatLoadingSkeleton,
   ChatViewPanel,
+  MessageLoadingSkeleton,
   UserMessage,
   type RuntimeMetadata,
 } from './ChatViewPrimitives'
@@ -15,12 +17,13 @@ import {
   createPartOrdinalState,
   type StreamMessagePart,
 } from '@openmanager/shared/lib/remote-stream-parts'
+import { cn } from '../../lib/utils'
 
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96
 const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 8
 
 export function ChatView() {
-  const { activeSessionId, messages, activeSessionDriven } = useActiveSession()
+  const { activeSessionId, messages, activeSessionDriven, isMessagesLoading } = useActiveSession()
   const { activeWorkspacePath, isSessionDraftOpen, pendingDraftSessionStart } = useAppUi()
   const scrollRef = useRef<HTMLDivElement>(null)
   const shouldAutoScrollRef = useRef(true)
@@ -104,14 +107,10 @@ export function ChatView() {
         className="custom-scrollbar flex-1 min-h-0 overflow-x-hidden overflow-y-auto"
       >
         <div className="mx-auto max-w-3xl space-y-1 px-4 pt-2 pb-44">
-          {chatMessages.length === 0 && (
-            <div className="text-muted-foreground/70 text-[13px] text-center mt-10">
-              Send a message to start
-            </div>
-          )}
-
-          <MessageTimeline
+          <ConversationTimeline
+            key={activeSessionId}
             messages={chatMessages}
+            isMessagesLoading={isMessagesLoading}
             scrollElement={scrollRef.current}
             isDriven={activeSessionDriven}
             onStreamUpdate={scheduleStickToBottom}
@@ -122,8 +121,9 @@ export function ChatView() {
   )
 }
 
-function MessageTimeline({
+function ConversationTimeline({
   messages,
+  isMessagesLoading,
   scrollElement,
   isDriven,
   onStreamUpdate,
@@ -135,10 +135,71 @@ function MessageTimeline({
     optimisticContent?: string
     isOptimistic?: boolean
   }>
+  isMessagesLoading: boolean
   scrollElement: HTMLDivElement | null
   isDriven: boolean
   onStreamUpdate: () => void
 }) {
+  const [isContentHydrating, setIsContentHydrating] = useState(true)
+  const isHydrating = isMessagesLoading || isContentHydrating
+  const handleHydrated = useCallback(() => setIsContentHydrating(false), [])
+
+  useEffect(() => {
+    if (!isMessagesLoading && messages.length === 0) setIsContentHydrating(false)
+  }, [isMessagesLoading, messages.length])
+
+  useEffect(() => {
+    if (!isHydrating) onStreamUpdate()
+  }, [isHydrating, onStreamUpdate])
+
+  return (
+    <>
+      {isHydrating ? (
+        <ChatLoadingSkeleton />
+      ) : messages.length === 0 ? (
+        <div className="text-muted-foreground/70 text-[13px] text-center mt-10">
+          Send a message to start
+        </div>
+      ) : null}
+
+      {!isMessagesLoading && messages.length > 0 && (
+        <MessageTimeline
+          messages={messages}
+          scrollElement={scrollElement}
+          isDriven={isDriven}
+          onStreamUpdate={onStreamUpdate}
+          hidden={isHydrating}
+          onHydrated={handleHydrated}
+        />
+      )}
+    </>
+  )
+}
+
+function MessageTimeline({
+  messages,
+  scrollElement,
+  isDriven,
+  onStreamUpdate,
+  hidden,
+  onHydrated,
+}: {
+  messages: Array<{
+    externalId: string
+    role: string
+    isFinal?: boolean
+    optimisticContent?: string
+    isOptimistic?: boolean
+  }>
+  scrollElement: HTMLDivElement | null
+  isDriven: boolean
+  onStreamUpdate: () => void
+  hidden: boolean
+  onHydrated: () => void
+}) {
+  const [readyMessageIds, setReadyMessageIds] = useState<Set<string>>(() => new Set())
+  const didReportHydratedRef = useRef(false)
+  const initialMessageIdsRef = useRef(new Set(messages.map((message) => message.externalId)))
   const firstUnvirtualizedIndex = useMemo(() => {
     const firstTailIndex = Math.max(messages.length - ALWAYS_UNVIRTUALIZED_TAIL_ROWS, 0)
     const firstLiveIndex = messages.findIndex(
@@ -161,9 +222,29 @@ function MessageTimeline({
   })
 
   const virtualRows = rowVirtualizer.getVirtualItems()
+  const hydrationTargetIds = useMemo(
+    () => tailMessages.map((message) => message.externalId),
+    [tailMessages],
+  )
+  const handleMessageReady = useCallback((messageId: string) => {
+    setReadyMessageIds((current) => {
+      if (current.has(messageId)) return current
+      const next = new Set(current)
+      next.add(messageId)
+      return next
+    })
+  }, [])
+
+  useEffect(() => {
+    if (didReportHydratedRef.current || hydrationTargetIds.length === 0) return
+    if (hydrationTargetIds.every((messageId) => readyMessageIds.has(messageId))) {
+      didReportHydratedRef.current = true
+      onHydrated()
+    }
+  }, [hydrationTargetIds, onHydrated, readyMessageIds])
 
   return (
-    <div className="min-w-0">
+    <div className={cn('min-w-0', hidden && 'pointer-events-none invisible h-0 overflow-hidden')}>
       {virtualizedCount > 0 && (
         <div className="relative" style={{ height: `${rowVirtualizer.getTotalSize()}px` }}>
           {virtualRows.map((virtualRow: VirtualItem) => {
@@ -177,7 +258,13 @@ function MessageTimeline({
                 className="absolute left-0 top-0 w-full"
                 style={{ transform: `translateY(${virtualRow.start}px)` }}
               >
-                <MessageRow message={message} isDriven={isDriven} onStreamUpdate={onStreamUpdate} />
+                <MessageRow
+                  message={message}
+                  isDriven={isDriven}
+                  onStreamUpdate={onStreamUpdate}
+                  onReady={handleMessageReady}
+                  animate={!initialMessageIdsRef.current.has(message.externalId)}
+                />
               </div>
             )
           })}
@@ -190,6 +277,8 @@ function MessageTimeline({
           message={message}
           isDriven={isDriven}
           onStreamUpdate={onStreamUpdate}
+          onReady={handleMessageReady}
+          animate={!initialMessageIdsRef.current.has(message.externalId)}
         />
       ))}
     </div>
@@ -200,6 +289,8 @@ function MessageRow({
   message,
   isDriven,
   onStreamUpdate,
+  onReady,
+  animate,
 }: {
   message: {
     externalId: string
@@ -210,9 +301,11 @@ function MessageRow({
   }
   isDriven: boolean
   onStreamUpdate: () => void
+  onReady: (messageId: string) => void
+  animate: boolean
 }) {
   return (
-    <div className="chat-animate-slide-up">
+    <div className={cn(animate && 'chat-animate-slide-up')}>
       <ResolvedMessage
         externalId={message.externalId}
         role={message.role}
@@ -221,6 +314,7 @@ function MessageRow({
         isOptimistic={message.isOptimistic}
         isDriven={isDriven}
         onStreamUpdate={onStreamUpdate}
+        onReady={onReady}
       />
     </div>
   )
@@ -326,6 +420,7 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
   isOptimistic?: boolean
   isDriven: boolean
   onStreamUpdate: () => void
+  onReady?: (messageId: string) => void
 }) {
   const shouldUseRemoteStreaming =
     props.role === 'assistant' && props.isFinal !== true && !props.isDriven
@@ -352,6 +447,20 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
   // (getContent query needs a round-trip to resolve after listMetadata flips isFinal)
   const lastStreamingPartsRef = useRef<MessagePart[] | undefined>(undefined)
   const lastStreamingContentRef = useRef<string>('')
+  const isContentLoading =
+    !props.isOptimistic &&
+    (props.isFinal === true || props.role === 'user') &&
+    contentDoc === undefined
+  const onReady = props.onReady
+  const externalId = props.externalId
+  useEffect(() => {
+    if (!isContentLoading) onReady?.(externalId)
+  }, [externalId, isContentLoading, onReady])
+
+  if (isContentLoading) {
+    return <MessageLoadingSkeleton role={props.role} />
+  }
+
   const streamingParts = drivenStreamingMessage?.parts ?? remoteStreaming.parts
   if (streamingParts && streamingParts.length > 0) {
     lastStreamingPartsRef.current = streamingParts

@@ -292,6 +292,7 @@ interface ActiveSessionValue {
   activeSessionId: string | null
   activeSession: ActiveSessionDetails | null
   activeSessionDriven: boolean
+  isMessagesLoading: boolean
   messages: UIMessage[]
   abortSession: (externalId: string) => Promise<void>
   sendMessage: (content: string) => Promise<void>
@@ -352,6 +353,7 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
   ) as typeof EMPTY_MESSAGES | undefined
 
   const messageList = rawMessages ?? EMPTY_MESSAGES
+  const isMessagesLoading = !!ui.activeSessionId && rawMessages === undefined
   const activeSessionDriven =
     !!rawSession && !!ui.currentClientId && rawSession.clientId === ui.currentClientId
   const activeSession = useMemo<ActiveSessionDetails | null>(
@@ -447,6 +449,7 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
       activeSessionId: ui.activeSessionId,
       activeSession,
       activeSessionDriven,
+      isMessagesLoading,
       messages,
       abortSession: ui.abortSession,
       sendMessage,
@@ -456,6 +459,7 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
       ui.activeSessionId,
       activeSession,
       activeSessionDriven,
+      isMessagesLoading,
       messages,
       ui.abortSession,
       sendMessage,

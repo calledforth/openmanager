@@ -26,14 +26,66 @@ export interface RuntimeMetadata {
 
 type MessagePart = StreamMessagePart
 
-export function ChatViewPanel({
-  children,
-}: {
-  children: ReactNode
-}) {
+export function ChatViewPanel({ children }: { children: ReactNode }) {
   return (
     <div data-chat-view className="flex min-h-0 flex-1 flex-col">
       {children}
+    </div>
+  )
+}
+
+export function ChatLoadingSkeleton() {
+  return (
+    <div
+      role="status"
+      aria-label="Loading conversation"
+      className="chat-animate-fade-in space-y-5 py-4"
+    >
+      <div aria-hidden="true" className="space-y-5">
+        <MessageLoadingSkeleton role="user" announce={false} />
+        <MessageLoadingSkeleton role="assistant" announce={false} />
+        <MessageLoadingSkeleton role="user" announce={false} compact />
+        <MessageLoadingSkeleton role="assistant" announce={false} compact />
+      </div>
+    </div>
+  )
+}
+
+export function MessageLoadingSkeleton({
+  role,
+  announce = true,
+  compact = false,
+}: {
+  role: string
+  announce?: boolean
+  compact?: boolean
+}) {
+  const isUser = role === 'user'
+  return (
+    <div
+      role={announce ? 'status' : undefined}
+      aria-label={announce ? 'Loading message' : undefined}
+      aria-hidden={announce ? undefined : true}
+      className={cn('w-full py-1', announce && 'chat-animate-fade-in')}
+    >
+      <div className={cn('space-y-2', isUser ? 'ml-auto w-[68%] max-w-xl' : 'mr-auto w-[82%]')}>
+        <div
+          className={cn('chat-skeleton h-3 rounded-full', isUser ? 'ml-auto w-full' : 'w-[88%]')}
+        />
+        <div
+          className={cn(
+            'chat-skeleton h-3 rounded-full',
+            isUser
+              ? compact
+                ? 'ml-auto w-[42%]'
+                : 'ml-auto w-[72%]'
+              : compact
+                ? 'w-[48%]'
+                : 'w-[66%]',
+          )}
+        />
+        {!compact && !isUser && <div className="chat-skeleton h-3 w-[38%] rounded-full" />}
+      </div>
     </div>
   )
 }
