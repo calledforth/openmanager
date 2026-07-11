@@ -1,6 +1,6 @@
 import type { ProviderCapabilities } from './capabilities.js'
 
-export type ProviderId = 'opencode'
+export type ProviderId = 'opencode' | 'cursor'
 
 export type ModelOption = {
   id: string

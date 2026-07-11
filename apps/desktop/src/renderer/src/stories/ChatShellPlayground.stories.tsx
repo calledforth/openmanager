@@ -801,7 +801,10 @@ function Demo() {
                   activeSessionId="sess-1"
                   isSessionDraftOpen={false}
                   openCodeReady={status === 'connected'}
-                  providerOptions={[{ id: 'opencode', name: 'OpenCode' }]}
+                  providerOptions={[
+                    { id: 'opencode', name: 'OpenCode' },
+                    { id: 'cursor', name: 'Cursor' },
+                  ]}
                   currentProviderId="opencode"
                   modeOptions={[
                     { id: 'default', name: 'Default' },

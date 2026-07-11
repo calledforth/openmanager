@@ -18,6 +18,6 @@ export type {
   ExtensionNotificationHandler,
   ExtensionRequestHandler,
 } from './backends/acp/extensions.js'
-export { opencode, providers } from './providers/index.js'
+export { cursor, opencode, providers } from './providers/index.js'
 export type { ProviderConfig } from './providers/index.js'
 export type { HostDeps, HostLogEntry } from './host.js'

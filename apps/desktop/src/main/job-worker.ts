@@ -28,8 +28,8 @@ export class JobWorker {
     private setLastModelForWorkspace: (workspacePath: string, modelId: string) => void,
   ) {}
 
-  private providerId(_value: unknown): ProviderId {
-    return 'opencode'
+  private providerId(value: unknown): ProviderId {
+    return value === 'cursor' ? 'cursor' : 'opencode'
   }
 
   private route(parsed: Record<string, any>, threadId: string) {

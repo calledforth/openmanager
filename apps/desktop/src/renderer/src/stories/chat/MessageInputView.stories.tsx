@@ -13,7 +13,10 @@ const meta = {
     activeSessionId: 'sess-001',
     isSessionDraftOpen: false,
     openCodeReady: true,
-    providerOptions: [{ id: 'opencode', name: 'OpenCode' }],
+    providerOptions: [
+      { id: 'opencode', name: 'OpenCode' },
+      { id: 'cursor', name: 'Cursor' },
+    ],
     currentProviderId: 'opencode',
     modeOptions: [
       { id: 'default', name: 'Default' },
