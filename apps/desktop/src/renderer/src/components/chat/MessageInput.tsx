@@ -1,6 +1,7 @@
 import { useAppUi } from '../../providers/app-ui-provider'
 import { useActiveSession } from '../../providers/active-session-provider'
 import { MessageInputView } from './MessageInputView'
+import { deriveSessionChrome } from '@agentpack/view'
 
 export function MessageInput() {
   const {
@@ -13,9 +14,12 @@ export function MessageInput() {
     acpAgentInfo,
     setDraftModel,
     setDraftMode,
+    setDraftProvider,
     setSessionModel,
     setSessionMode,
     openCodeUiStatus,
+    agentEvents,
+    providers,
   } = useAppUi()
   const { sendMessage, abortSession, activeSession } = useActiveSession()
 
@@ -23,14 +27,24 @@ export function MessageInput() {
   const disabled =
     !activeWorkspacePath || pendingDraftSessionStart || (!activeSessionId && !isSessionDraftOpen)
   const runtimeState = activeSessionId || !isSessionDraftOpen ? acpSessionState : draftSessionState
-  const modeOptions = (runtimeState?.modes?.availableModes ?? []).map((m) => ({
-    id: m.id,
-    name: m.name,
+  const chrome = deriveSessionChrome(agentEvents, {
+    providers,
+    selectedProviderId: runtimeState?.providerId ?? 'opencode',
+    sessionId: activeSessionId ?? undefined,
+  })
+  const providerOptions = chrome.providerPicker.options.map((provider) => ({
+    id: provider.id,
+    name: provider.label,
+  }))
+  const currentProviderId = chrome.providerPicker.currentProviderId ?? 'opencode'
+  const modeOptions = (chrome.modePicker?.options ?? []).map((mode) => ({
+    id: mode.id,
+    name: mode.label,
   }))
   const currentModeId = runtimeState?.modes?.currentModeId ?? ''
-  const modelOptions = (runtimeState?.models?.availableModels ?? []).map((m) => ({
-    id: m.modelId,
-    name: m.name,
+  const modelOptions = (chrome.modelPicker?.options ?? []).map((model) => ({
+    id: model.id,
+    name: model.label,
   }))
   const currentModelId = runtimeState?.models?.currentModelId ?? ''
   const canChangeSettings = !!activeSessionId || isSessionDraftOpen
@@ -44,11 +58,16 @@ export function MessageInput() {
       activeSessionId={activeSessionId}
       isSessionDraftOpen={isSessionDraftOpen}
       openCodeReady={openCodeReady}
+      providerOptions={providerOptions}
+      currentProviderId={currentProviderId}
       modeOptions={modeOptions}
       currentModeId={currentModeId}
       modelOptions={modelOptions}
       currentModelId={currentModelId}
       canChangeSettings={canChangeSettings}
+      canChangeProvider={isSessionDraftOpen && !activeSessionId}
+      showModeControl={chrome.modePicker !== null}
+      showModelControl={chrome.modelPicker !== null}
       agent={acpAgentInfo}
       isStreaming={isStreaming}
       onModeChange={(id) => {
@@ -58,6 +77,7 @@ export function MessageInput() {
         }
         setDraftMode(id)
       }}
+      onProviderChange={setDraftProvider}
       onModelChange={(id) => {
         if (activeSessionId) {
           void setSessionModel(activeSessionId, id)

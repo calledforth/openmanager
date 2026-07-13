@@ -9,6 +9,7 @@ import {
 import { createPortal } from 'react-dom'
 import { ArrowUp, Plus, ChevronDown, Check, Square, Mic } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import type { ProviderId } from '@agentpack/contract'
 import {
   chatInputShell,
   chatComposerTextarea,
@@ -19,16 +20,16 @@ import {
 type MenuCoords = { left: number; bottom: number; width: number }
 
 /** Mode = small pill; model = ghost trigger. Menu is portaled — avoids overflow-x-auto / overflow-hidden clipping. */
-function PillSelect({
+function PillSelect<T extends string>({
   value,
   options,
   onChange,
   disabled,
   variant = 'filled',
 }: {
-  value: string
-  options: Array<{ id: string; name: string }>
-  onChange: (id: string) => void
+  value: T
+  options: Array<{ id: T; name: string }>
+  onChange: (id: T) => void
   disabled?: boolean
   variant?: 'filled' | 'ghost'
 }) {
@@ -132,9 +133,7 @@ function PillSelect({
               )}
             >
               <span className="flex-1 truncate">{opt.name}</span>
-              {isSelected && (
-                <Check className="h-2.5 w-2.5 shrink-0 text-[var(--basis-text)]" />
-              )}
+              {isSelected && <Check className="h-2.5 w-2.5 shrink-0 text-[var(--basis-text)]" />}
             </button>
           )
         })}
@@ -155,7 +154,8 @@ function PillSelect({
             ? cn(
                 'rounded-[var(--basis-chat-shell-radius)] border border-transparent bg-transparent px-1.5 py-0.5 text-ui-2xs text-[var(--basis-text-muted)]',
                 'hover:border-[var(--basis-border)] hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
-                open && 'border-[var(--basis-border)] bg-[var(--basis-surface-hover)] text-[var(--basis-text)]',
+                open &&
+                  'border-[var(--basis-border)] bg-[var(--basis-surface-hover)] text-[var(--basis-text)]',
               )
             : cn(
                 'rounded-full border border-[var(--basis-border-muted)] bg-[var(--basis-surface-elevated)] px-2 py-1 text-ui-2xs text-[var(--basis-text)]',
@@ -203,7 +203,9 @@ function BuildPlanToggle({
         onClick={onSelectBuild}
         className={cn(
           'relative z-10 w-[46px] rounded-sm py-1 text-[11px] font-medium transition-colors duration-300',
-          !isPlan ? 'text-[var(--build-text)]' : 'text-[var(--basis-text-muted)] hover:text-[var(--basis-text)]',
+          !isPlan
+            ? 'text-[var(--build-text)]'
+            : 'text-[var(--basis-text-muted)] hover:text-[var(--basis-text)]',
         )}
       >
         Build
@@ -213,7 +215,9 @@ function BuildPlanToggle({
         onClick={onSelectPlan}
         className={cn(
           'relative z-10 w-[46px] rounded-sm py-1 text-[11px] font-medium transition-colors duration-300',
-          isPlan ? 'text-[var(--plan-text)]' : 'text-[var(--basis-text-muted)] hover:text-[var(--basis-text)]',
+          isPlan
+            ? 'text-[var(--plan-text)]'
+            : 'text-[var(--basis-text-muted)] hover:text-[var(--basis-text)]',
         )}
       >
         Plan
@@ -229,14 +233,20 @@ export function MessageInputView({
   activeSessionId,
   isSessionDraftOpen,
   openCodeReady,
+  providerOptions,
+  currentProviderId,
   modeOptions,
   currentModeId,
   modelOptions,
   currentModelId,
   canChangeSettings,
+  canChangeProvider,
+  showModeControl,
+  showModelControl,
   agent,
   isStreaming,
   onModeChange,
+  onProviderChange,
   onModelChange,
   onSend,
   onAbort,
@@ -247,14 +257,20 @@ export function MessageInputView({
   activeSessionId: string | null
   isSessionDraftOpen: boolean
   openCodeReady: boolean
+  providerOptions: Array<{ id: ProviderId; name: string }>
+  currentProviderId: ProviderId
   modeOptions: Array<{ id: string; name: string }>
   currentModeId: string
   modelOptions: Array<{ id: string; name: string }>
   currentModelId: string
   canChangeSettings: boolean
+  canChangeProvider: boolean
+  showModeControl: boolean
+  showModelControl: boolean
   agent?: { name?: string; version?: string } | null
   isStreaming: boolean
   onModeChange: (id: string) => void
+  onProviderChange: (id: ProviderId) => void
   onModelChange: (id: string) => void
   onSend: (text: string) => void
   onAbort: () => void
@@ -342,7 +358,14 @@ export function MessageInputView({
 
             <div className="mx-0.5 h-3.5 w-px shrink-0 bg-[var(--basis-border-muted)]" />
 
-            {buildPlanToggle ? (
+            <PillSelect
+              value={currentProviderId}
+              options={providerOptions}
+              onChange={onProviderChange}
+              disabled={!canChangeProvider}
+            />
+
+            {showModeControl && buildPlanToggle ? (
               <BuildPlanToggle
                 isPlan={isPlan}
                 disabled={!canChangeSettings}
@@ -350,6 +373,7 @@ export function MessageInputView({
                 onSelectPlan={() => onModeChange('plan')}
               />
             ) : (
+              showModeControl &&
               modeOptions.length > 0 && (
                 <PillSelect
                   value={currentModeId}
@@ -360,7 +384,7 @@ export function MessageInputView({
               )
             )}
 
-            {modelOptions.length > 0 && (
+            {showModelControl && modelOptions.length > 0 && (
               <>
                 <div className="mx-0.5 h-3.5 w-px shrink-0 bg-[var(--basis-border-muted)]" />
                 <PillSelect

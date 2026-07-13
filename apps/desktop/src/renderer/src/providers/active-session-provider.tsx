@@ -4,12 +4,12 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
 } from 'react'
 import { api } from '@openmanager/convex/_generated/api'
+import type { AgentEvent, ContentBlock, ToolCallStatus } from '@agentpack/contract'
 import { useTrackedQuery } from '../lib/convex-telemetry'
 import { useAppUi } from './app-ui-provider'
 
@@ -34,6 +34,15 @@ export interface LocalStreamingMessage {
   parts: MessagePart[]
 }
 
+type LiveThreadState = {
+  messageId: string
+  parts: Map<string, MessagePart>
+  seenEventIds: Set<string>
+  activeTextPartId?: string
+  activeReasoningPartId?: string
+  nextPartOrdinal: number
+}
+
 interface ActiveSessionDetails {
   externalId: string
   title?: string
@@ -42,11 +51,10 @@ interface ActiveSessionDetails {
   isDriven: boolean
 }
 
-class StreamingMessagesStore {
+export class StreamingMessagesStore {
   private messages = new Map<string, LocalStreamingMessage>()
   private listeners = new Map<string, Set<() => void>>()
-  private partOrdinals = new Map<string, Map<string, number>>()
-  private partOrdinalCounter = new Map<string, number>()
+  private threads = new Map<string, LiveThreadState>()
 
   subscribe(messageExternalId: string, listener: () => void) {
     const current = this.listeners.get(messageExternalId) ?? new Set<() => void>()
@@ -66,27 +74,77 @@ class StreamingMessagesStore {
     return this.messages.get(messageExternalId)
   }
 
-  update(payload: {
-    messageExternalId: string
-    delta?: string
-    partId?: string
-    field?: string
-    part?: Record<string, unknown>
-  }) {
-    this.messages = applyStreamDelta(
-      this.messages,
-      payload,
-      this.partOrdinals,
-      this.partOrdinalCounter,
-    )
-    this.emit(payload.messageExternalId)
+  update(event: AgentEvent) {
+    const messageId = event.messageId
+    if (!messageId) return
+    let state = this.threads.get(event.threadId)
+    if (!state || state.messageId !== messageId) {
+      state = {
+        messageId,
+        parts: new Map(),
+        seenEventIds: new Set(),
+        nextPartOrdinal: 0,
+      }
+      this.threads.set(event.threadId, state)
+    }
+    if (state.seenEventIds.has(event.id)) return
+    state.seenEventIds.add(event.id)
+
+    let changed = false
+    switch (event.event) {
+      case 'prompt_started':
+        changed = true
+        break
+      case 'agent_message_chunk':
+        this.finishReasoning(state)
+        changed = this.appendText(state, event.data.content, false)
+        break
+      case 'agent_thought_chunk':
+        state.activeTextPartId = undefined
+        changed = this.appendText(state, event.data.content, true)
+        break
+      case 'tool_call':
+      case 'tool_call_update':
+        this.finishActiveParts(state)
+        changed = this.mergeTool(state, event.data)
+        break
+      case 'tool_call_content':
+        this.finishActiveParts(state)
+        changed = this.appendToolContent(state, event.data.toolCallId, event.data.item)
+        break
+      case 'prompt_completed':
+        this.finishActiveParts(state)
+        this.finishRunningTools(state, event.data.stopReason)
+        changed = true
+        break
+      case 'rpc_error':
+      case 'runtime_error':
+      case 'process_exited':
+        this.finishActiveParts(state)
+        this.finishRunningTools(state, 'error')
+        changed = true
+        break
+      default:
+        return
+    }
+
+    if (!changed) return
+    const parts = [...state.parts.values()]
+    const content = parts
+      .filter((part) => part.type === 'text')
+      .map((part) => String(part.text ?? ''))
+      .join('')
+    this.messages = new Map(this.messages).set(messageId, { content, parts })
+    this.emit(messageId)
   }
 
   remove(messageExternalId: string) {
     if (!this.messages.has(messageExternalId)) return
     this.messages.delete(messageExternalId)
-    this.partOrdinals.delete(messageExternalId)
-    this.partOrdinalCounter.delete(messageExternalId)
+    for (const [threadId, state] of this.threads) {
+      if (state.messageId !== messageExternalId) continue
+      this.threads.delete(threadId)
+    }
     this.emit(messageExternalId)
   }
 
@@ -94,8 +152,7 @@ class StreamingMessagesStore {
     if (this.messages.size === 0) return
     const ids = [...this.messages.keys()]
     this.messages = new Map()
-    this.partOrdinals = new Map()
-    this.partOrdinalCounter = new Map()
+    this.threads = new Map()
     for (const id of ids) {
       this.emit(id)
     }
@@ -108,12 +165,134 @@ class StreamingMessagesStore {
       listener()
     }
   }
+
+  private text(block: ContentBlock): string {
+    if (block.type === 'text') return block.text
+    if (block.type === 'resource_link') return block.uri
+    if (block.type === 'resource') return block.text ?? block.uri ?? ''
+    return ''
+  }
+
+  private nextPartId(state: LiveThreadState, kind: 'text' | 'reasoning'): string {
+    return `${state.messageId}_${kind}_${state.nextPartOrdinal++}`
+  }
+
+  private appendText(state: LiveThreadState, block: ContentBlock, reasoning: boolean): boolean {
+    const text = this.text(block)
+    if (!text) return false
+    const activeKey = reasoning ? 'activeReasoningPartId' : 'activeTextPartId'
+    const partId = state[activeKey] ?? this.nextPartId(state, reasoning ? 'reasoning' : 'text')
+    state[activeKey] = partId
+    const existing = state.parts.get(partId)
+    state.parts.set(partId, {
+      ...(existing ?? {}),
+      type: reasoning ? 'reasoning' : 'text',
+      id: partId,
+      text: `${String(existing?.text ?? '')}${text}`,
+      ...(reasoning ? { time: existing?.time ?? { start: Date.now() } } : {}),
+    })
+    return true
+  }
+
+  private finishReasoning(state: LiveThreadState): void {
+    const partId = state.activeReasoningPartId
+    state.activeReasoningPartId = undefined
+    if (!partId) return
+    const part = state.parts.get(partId)
+    if (!part) return
+    const time =
+      part.time && typeof part.time === 'object'
+        ? (part.time as Record<string, number>)
+        : { start: Date.now() }
+    state.parts.set(partId, { ...part, time: { ...time, end: time.end ?? Date.now() } })
+  }
+
+  private finishActiveParts(state: LiveThreadState): void {
+    state.activeTextPartId = undefined
+    this.finishReasoning(state)
+  }
+
+  private status(status: ToolCallStatus | undefined): string {
+    if (status === 'in_progress') return 'running'
+    if (status === 'failed') return 'error'
+    return status ?? 'pending'
+  }
+
+  private statusRank(status: unknown): number {
+    if (status === 'completed' || status === 'error' || status === 'cancelled') return 2
+    if (status === 'running') return 1
+    return 0
+  }
+
+  private mergeTool(
+    state: LiveThreadState,
+    tool: Extract<AgentEvent, { event: 'tool_call' | 'tool_call_update' }>['data'],
+  ): boolean {
+    if (!tool.toolCallId) return false
+    const existing = state.parts.get(tool.toolCallId)
+    const existingState = (existing?.state as Record<string, unknown> | undefined) ?? {}
+    const proposedStatus = this.status(tool.status)
+    const status =
+      this.statusRank(existingState.status) > this.statusRank(proposedStatus)
+        ? existingState.status
+        : proposedStatus
+    state.parts.set(tool.toolCallId, {
+      ...(existing ?? {}),
+      type: 'tool',
+      id: tool.toolCallId,
+      callID: tool.toolCallId,
+      tool: tool.title ?? existing?.tool ?? 'tool',
+      state: {
+        ...existingState,
+        status,
+        ...(tool.rawInput !== undefined ? { input: tool.rawInput } : {}),
+        ...(tool.rawOutput !== undefined ? { output: tool.rawOutput } : {}),
+      },
+      ...(tool.kind ? { kind: tool.kind } : {}),
+      ...(tool.locations ? { locations: tool.locations } : {}),
+      ...(tool.metadata ? { metadata: tool.metadata } : {}),
+      ...(tool.content ? { content: tool.content } : {}),
+    })
+    return true
+  }
+
+  private appendToolContent(
+    state: LiveThreadState,
+    toolCallId: string,
+    item: Extract<AgentEvent, { event: 'tool_call_content' }>['data']['item'],
+  ): boolean {
+    if (!toolCallId) return false
+    const existing = state.parts.get(toolCallId) ?? {
+      type: 'tool',
+      id: toolCallId,
+      callID: toolCallId,
+      tool: 'tool',
+      state: { status: 'running' },
+    }
+    const content = Array.isArray(existing.content) ? existing.content : []
+    state.parts.set(toolCallId, { ...existing, content: [...content, item] })
+    return true
+  }
+
+  private finishRunningTools(state: LiveThreadState, stopReason?: string): void {
+    const failed = !!stopReason && /error|fail|cancel|abort/i.test(stopReason)
+    for (const [id, part] of state.parts) {
+      if (part.type !== 'tool') continue
+      const toolState = (part.state as Record<string, unknown> | undefined) ?? {}
+      if (this.statusRank(toolState.status) >= 2) continue
+      state.parts.set(id, {
+        ...part,
+        state: { ...toolState, status: failed ? 'error' : 'completed' },
+      })
+    }
+  }
 }
 
 interface ActiveSessionValue {
   activeSessionId: string | null
   activeSession: ActiveSessionDetails | null
   activeSessionDriven: boolean
+  isMessagesLoading: boolean
   messages: UIMessage[]
   abortSession: (externalId: string) => Promise<void>
   sendMessage: (content: string) => Promise<void>
@@ -129,96 +308,16 @@ const EMPTY_MESSAGES: Array<{
   sequenceNum: number
 }> = []
 
-function upsertPart(parts: MessagePart[], part: MessagePart): MessagePart[] {
-  const index = parts.findIndex((entry) => entry.id === part.id)
-  if (index === -1) return [...parts, part]
-  const next = [...parts]
-  next[index] = part
-  return next
-}
-
-function getOrAssignPartOrdinal(
-  messageExternalId: string,
-  partId: string,
-  partOrdinals: Map<string, Map<string, number>>,
-  partOrdinalCounter: Map<string, number>,
-): number {
-  const messageOrdinals = partOrdinals.get(messageExternalId) ?? new Map<string, number>()
-  partOrdinals.set(messageExternalId, messageOrdinals)
-  const existing = messageOrdinals.get(partId)
-  if (typeof existing === 'number') return existing
-  const nextOrdinal = partOrdinalCounter.get(messageExternalId) ?? 0
-  partOrdinalCounter.set(messageExternalId, nextOrdinal + 1)
-  messageOrdinals.set(partId, nextOrdinal)
-  return nextOrdinal
-}
-
-function sortPartsByOrdinal(parts: MessagePart[]): MessagePart[] {
-  return [...parts].sort((left, right) => {
-    const leftOrdinal =
-      typeof left.__ordinal === 'number' ? left.__ordinal : Number.MAX_SAFE_INTEGER
-    const rightOrdinal =
-      typeof right.__ordinal === 'number' ? right.__ordinal : Number.MAX_SAFE_INTEGER
-    if (leftOrdinal !== rightOrdinal) return leftOrdinal - rightOrdinal
-    return left.id.localeCompare(right.id)
-  })
-}
-
-function applyStreamDelta(
-  prev: Map<string, LocalStreamingMessage>,
-  payload: {
-    messageExternalId: string
-    delta?: string
-    partId?: string
-    field?: string
-    part?: Record<string, unknown>
-  },
-  partOrdinals: Map<string, Map<string, number>>,
-  partOrdinalCounter: Map<string, number>,
-): Map<string, LocalStreamingMessage> {
-  const next = new Map(prev)
-  const current = next.get(payload.messageExternalId) ?? { content: '', parts: [] }
-  let parts = current.parts
-
-  if (payload.part) {
-    const part = payload.part as MessagePart
-    const ordinal = getOrAssignPartOrdinal(
-      payload.messageExternalId,
-      part.id,
-      partOrdinals,
-      partOrdinalCounter,
-    )
-    parts = upsertPart(parts, { ...part, __ordinal: ordinal })
-  }
-
-  if (payload.delta && payload.partId) {
-    const ordinal = getOrAssignPartOrdinal(
-      payload.messageExternalId,
-      payload.partId,
-      partOrdinals,
-      partOrdinalCounter,
-    )
-    const existing =
-      parts.find((part) => part.id === payload.partId) ??
-      ({ type: 'text', id: payload.partId, __ordinal: ordinal } as MessagePart)
-    const field = payload.field ?? 'text'
-    const patched = {
-      ...existing,
-      __ordinal: ordinal,
-      [field]: `${String(existing[field] ?? '')}${payload.delta}`,
-    } satisfies MessagePart
-    parts = upsertPart(parts, patched)
-  }
-
-  parts = sortPartsByOrdinal(parts)
-
-  const content = parts
-    .filter((part) => part.type === 'text')
-    .map((part) => String(part.text ?? ''))
-    .join('')
-
-  next.set(payload.messageExternalId, { content, parts })
-  return next
+export function mergePersistedAndOptimisticMessages(
+  persisted: UIMessage[],
+  optimistic: UIMessage[],
+): UIMessage[] {
+  if (optimistic.length === 0) return persisted
+  const persistedIds = new Set(persisted.map((message) => message.externalId))
+  const unacknowledged = optimistic.filter((message) => !persistedIds.has(message.externalId))
+  return [...persisted, ...unacknowledged].sort(
+    (left, right) => left.sequenceNum - right.sequenceNum,
+  )
 }
 
 export function useActiveSession() {
@@ -240,8 +339,6 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
   const ui = useAppUi()
   const streamingStore = useMemo(() => new StreamingMessagesStore(), [])
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<UIMessage[]>([])
-  const userMessageCountRef = useRef<number | null>(null)
-  const optimisticCounterRef = useRef(0)
 
   const rawSession = useTrackedQuery(
     'sessions.getByExternalId.active',
@@ -256,6 +353,7 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
   ) as typeof EMPTY_MESSAGES | undefined
 
   const messageList = rawMessages ?? EMPTY_MESSAGES
+  const isMessagesLoading = !!ui.activeSessionId && rawMessages === undefined
   const activeSessionDriven =
     !!rawSession && !!ui.currentClientId && rawSession.clientId === ui.currentClientId
   const activeSession = useMemo<ActiveSessionDetails | null>(
@@ -273,10 +371,10 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
   )
 
   useEffect(() => {
-    const cleanup = window.electronAPI.onStreamToken((payload) => {
-      if (!ui.activeSessionId || payload.sessionExternalId !== ui.activeSessionId) return
+    const cleanup = window.electronAPI.onStreamToken((event) => {
+      if (!ui.activeSessionId || event.sessionId !== ui.activeSessionId) return
       if (!activeSessionDriven) return
-      streamingStore.update(payload)
+      streamingStore.update(event)
     })
     return cleanup
   }, [activeSessionDriven, streamingStore, ui.activeSessionId])
@@ -292,19 +390,16 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
   }, [messageList, streamingStore])
 
   useEffect(() => {
-    userMessageCountRef.current = null
     setOptimisticUserMessages([])
     streamingStore.reset()
   }, [streamingStore, ui.activeSessionId])
 
   useEffect(() => {
-    const persistedUserCount = messageList.filter((message) => message.role === 'user').length
-    const previousCount = userMessageCountRef.current
-    userMessageCountRef.current = persistedUserCount
-    if (previousCount === null) return
-    const ackedCount = persistedUserCount - previousCount
-    if (ackedCount <= 0) return
-    setOptimisticUserMessages((prev) => prev.slice(Math.min(ackedCount, prev.length)))
+    const persistedIds = new Set(messageList.map((message) => message.externalId))
+    setOptimisticUserMessages((prev) => {
+      const next = prev.filter((message) => !persistedIds.has(message.externalId))
+      return next.length === prev.length ? prev : next
+    })
   }, [messageList])
 
   const sendMessage = useCallback(
@@ -315,7 +410,7 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
         (max, message) => Math.max(max, message.sequenceNum),
         -1,
       )
-      const localExternalId = `local-user-${Date.now()}-${optimisticCounterRef.current++}`
+      const localExternalId = `agent_usr_${crypto.randomUUID()}`
       const optimisticMessage: UIMessage = {
         externalId: localExternalId,
         role: 'user',
@@ -327,7 +422,7 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
 
       setOptimisticUserMessages((prev) => [...prev, optimisticMessage])
       try {
-        await ui.sendMessage(trimmed)
+        await ui.sendMessage(trimmed, localExternalId)
       } catch (error) {
         setOptimisticUserMessages((prev) =>
           prev.filter((message) => message.externalId !== localExternalId),
@@ -346,10 +441,7 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
       sequenceNum: message.sequenceNum,
     }))
 
-    if (optimisticUserMessages.length === 0) return persisted
-    return [...persisted, ...optimisticUserMessages].sort(
-      (left, right) => left.sequenceNum - right.sequenceNum,
-    )
+    return mergePersistedAndOptimisticMessages(persisted, optimisticUserMessages)
   }, [messageList, optimisticUserMessages])
 
   const value = useMemo<ActiveSessionValue>(
@@ -357,6 +449,7 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
       activeSessionId: ui.activeSessionId,
       activeSession,
       activeSessionDriven,
+      isMessagesLoading,
       messages,
       abortSession: ui.abortSession,
       sendMessage,
@@ -366,6 +459,7 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
       ui.activeSessionId,
       activeSession,
       activeSessionDriven,
+      isMessagesLoading,
       messages,
       ui.abortSession,
       sendMessage,

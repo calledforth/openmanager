@@ -679,6 +679,34 @@ textarea,
   animation: chat-slide-up 200ms ease-out;
 }
 
+.chat-skeleton {
+  background: linear-gradient(
+    100deg,
+    color-mix(in srgb, var(--basis-surface-hover) 72%, transparent) 20%,
+    color-mix(in srgb, var(--basis-text-muted) 20%, var(--basis-surface-hover)) 42%,
+    color-mix(in srgb, var(--basis-surface-hover) 72%, transparent) 64%
+  );
+  background-size: 240% 100%;
+  animation: chat-skeleton-shimmer 1.8s ease-in-out infinite;
+}
+
+@keyframes chat-skeleton-shimmer {
+  0% {
+    background-position: 120% 0;
+  }
+  100% {
+    background-position: -120% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-skeleton,
+  .chat-animate-fade-in,
+  .chat-animate-slide-up {
+    animation: none;
+  }
+}
+
 @keyframes shimmer {
   0% {
     background-position: 200% 0;

@@ -12,7 +12,7 @@
     "storybook:build": "pnpm --filter @openmanager/desktop storybook:build",
     "mobile": "pnpm --filter @openmanager/mobile start",
     "mobile:android": "pnpm --filter @openmanager/mobile exec expo run:android",
-    "typecheck": "pnpm --filter @openmanager/shared typecheck && pnpm --filter @openmanager/desktop typecheck && pnpm --filter @openmanager/convex typecheck && pnpm --filter @openmanager/mobile typecheck",
+    "typecheck": "pnpm --filter @agentpack/contract typecheck && pnpm --filter @agentpack/runtime typecheck && pnpm --filter @agentpack/view typecheck && pnpm --filter @openmanager/shared typecheck && pnpm --filter @openmanager/desktop typecheck && pnpm --filter @openmanager/convex typecheck && pnpm --filter @openmanager/mobile typecheck",
     "lint": "pnpm --filter @openmanager/desktop lint",
     "format": "pnpm --filter @openmanager/desktop format && pnpm --filter @openmanager/convex format",
     "format:check": "pnpm --filter @openmanager/desktop format:check && pnpm --filter @openmanager/convex format:check",
@@ -27,5 +27,12 @@
       "electron-winstaller",
       "esbuild"
     ]
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@typescript-eslint/eslint-plugin": "^8.62.1",
+    "@typescript-eslint/parser": "^8.62.1",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.1.1"
   }
 }

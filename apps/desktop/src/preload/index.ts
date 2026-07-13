@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { AgentEvent, ProviderId, ProviderMetadata } from '@agentpack/contract'
 
 const electronAPI = {
   platform: process.platform as NodeJS.Platform,
@@ -7,8 +8,7 @@ const electronAPI = {
   closeWindow: () => ipcRenderer.invoke('window:close'),
   isWindowMaximized: () => ipcRenderer.invoke('window:is-maximized') as Promise<boolean>,
   onWindowMaximizedChanged: (callback: (maximized: boolean) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, maximized: boolean) =>
-      callback(maximized)
+    const handler = (_event: Electron.IpcRendererEvent, maximized: boolean) => callback(maximized)
     ipcRenderer.on('window:maximized-changed', handler)
     return () => ipcRenderer.removeListener('window:maximized-changed', handler)
   },
@@ -18,11 +18,14 @@ const electronAPI = {
   recordTelemetry: (event: Record<string, unknown>) =>
     ipcRenderer.invoke('telemetry:record', event),
   ensureOpenCode: () => ipcRenderer.invoke('opencode:ensure'),
+  ensureAgentProvider: (providerId: ProviderId, cwd: string) =>
+    ipcRenderer.invoke('agent:ensure', providerId, cwd),
   retryOpenCode: () => ipcRenderer.invoke('opencode:retry'),
   getOpenCodeStatus: () => ipcRenderer.invoke('opencode:status'),
   shutdownOpenCode: () => ipcRenderer.invoke('opencode:shutdown'),
-  loadAcpSession: (workspacePath: string, sessionId: string) =>
-    ipcRenderer.invoke('acp:load-session', workspacePath, sessionId),
+  getAgentProviders: () => ipcRenderer.invoke('agent:providers') as Promise<ProviderMetadata[]>,
+  loadAcpSession: (providerId: ProviderId, workspacePath: string, sessionId: string) =>
+    ipcRenderer.invoke('acp:load-session', providerId, workspacePath, sessionId),
   selectFolder: () => ipcRenderer.invoke('dialog:select-folder'),
   getCollapsedWorkspaces: () =>
     ipcRenderer.invoke('store:get-collapsed-workspaces') as Promise<string[]>,
@@ -34,27 +37,8 @@ const electronAPI = {
     ipcRenderer.on('opencode:status-changed', handler)
     return () => ipcRenderer.removeListener('opencode:status-changed', handler)
   },
-  onStreamToken: (
-    callback: (data: {
-      sessionExternalId: string
-      messageExternalId: string
-      delta?: string
-      partId?: string
-      field?: string
-      part?: Record<string, unknown>
-    }) => void,
-  ) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
-      callback(
-        data as {
-          sessionExternalId: string
-          messageExternalId: string
-          delta?: string
-          partId?: string
-          field?: string
-          part?: Record<string, unknown>
-        },
-      )
+  onStreamToken: (callback: (data: AgentEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: AgentEvent) => callback(data)
     ipcRenderer.on('stream:token', handler)
     return () => ipcRenderer.removeListener('stream:token', handler)
   },
@@ -63,8 +47,8 @@ const electronAPI = {
     ipcRenderer.on('telemetry:update', handler)
     return () => ipcRenderer.removeListener('telemetry:update', handler)
   },
-  onAcpEvent: (callback: (data: unknown) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => callback(data)
+  onAcpEvent: (callback: (data: AgentEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: AgentEvent) => callback(data)
     ipcRenderer.on('acp:event', handler)
     return () => ipcRenderer.removeListener('acp:event', handler)
   },

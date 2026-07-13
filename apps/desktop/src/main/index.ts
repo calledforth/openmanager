@@ -1,13 +1,13 @@
 import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron'
 import { join } from 'path'
 import { ConvexClient } from 'convex/browser'
-import { SidecarManager } from './sidecar-manager'
-import { SSEBridge } from './sse-bridge'
 import { JobWorker } from './job-worker'
-import { ACPClient } from './acp-client'
+import { AgentHost } from './agent-host'
+import { ConvexProjector } from './convex-projector'
+import type { ProviderId, ProviderMetadata } from '@agentpack/contract'
+import { providers } from '@agentpack/runtime'
 import { loadOrCreateClientId } from './client-id'
 import store from './store'
-import type { AgentClient } from './agent-client'
 import {
   clearConvexTelemetry,
   getConvexTelemetrySnapshot,
@@ -18,9 +18,7 @@ import {
 declare const __CONVEX_URL__: string
 
 let mainWindow: BrowserWindow | null = null
-const sidecarManager = new SidecarManager()
-const sseBridges = new Map<string, SSEBridge>()
-let acpClient: ACPClient | null = null
+let agentHost: AgentHost | null = null
 let convexClient: ConvexClient | null = null
 let jobWorker: JobWorker | null = null
 let clientId: string | null = null
@@ -36,30 +34,9 @@ function initConvex(): ConvexClient | null {
   return new ConvexClient(url)
 }
 
-async function ensureAgentClient(workspacePath: string): Promise<AgentClient | null> {
-  let hs = sidecarManager.getHandshake()
-  if (!hs?.ready) {
-    hs = await sidecarManager.spawn()
-  }
-  if (!hs?.ready) return null
-
-  if (!convexClient || !mainWindow) return null
-  if (!acpClient) {
-    const connection = sidecarManager.getACPConnection()
-    if (!connection) return null
-    acpClient = new ACPClient(connection, (path) => sseBridges.get(path) ?? null, mainWindow)
-  }
-  await acpClient.initialize()
-  if (!sseBridges.has(workspacePath) && convexClient && mainWindow && clientId) {
-    const bridge = new SSEBridge('', '', workspacePath, convexClient, mainWindow, clientId)
-    sseBridges.set(workspacePath, bridge)
-  }
-  return acpClient.getWorkspaceClient(workspacePath)
-}
-
-function stopSSEBridge(workspacePath: string): void {
-  sseBridges.get(workspacePath)?.stop()
-  sseBridges.delete(workspacePath)
+function getAgentHost(): AgentHost {
+  if (!agentHost) throw new Error('Agent runtime is unavailable')
+  return agentHost
 }
 
 function createWindow(): void {
@@ -83,9 +60,7 @@ function createWindow(): void {
   })
 
   mainWindow.on('maximize', () => mainWindow?.webContents.send('window:maximized-changed', true))
-  mainWindow.on('unmaximize', () =>
-    mainWindow?.webContents.send('window:maximized-changed', false),
-  )
+  mainWindow.on('unmaximize', () => mainWindow?.webContents.send('window:maximized-changed', false))
 
   mainWindow.on('ready-to-show', () => mainWindow?.show())
 
@@ -102,30 +77,50 @@ function createWindow(): void {
 }
 
 ipcMain.handle('opencode:ensure', async () => {
-  const handshake = await sidecarManager.spawn()
-  return handshake
+  return getAgentHost().ensureProvider('opencode', process.cwd())
+})
+
+ipcMain.handle('agent:ensure', async (_e, providerId: ProviderId, cwd: string) => {
+  return getAgentHost().ensureProvider(providerId, cwd)
 })
 
 ipcMain.handle('opencode:retry', async () => {
-  const handshake = await sidecarManager.retryStart()
-  return handshake
+  return getAgentHost().ensureProvider('opencode', process.cwd())
 })
 
 ipcMain.handle('opencode:status', async () => {
-  return sidecarManager.getStatus()
+  return agentHost?.getStatus() ?? 'stopped'
 })
 
 ipcMain.handle('opencode:shutdown', async () => {
-  for (const path of sseBridges.keys()) stopSSEBridge(path)
-  return sidecarManager.shutdown()
+  agentHost?.dispose()
 })
 
-ipcMain.handle('acp:load-session', async (_e, workspacePath: string, sessionId: string) => {
-  const client = await ensureAgentClient(workspacePath)
-  if (!client?.loadSession) return { ok: false, reason: 'load_session_not_supported' }
-  await client.loadSession(sessionId)
-  return { ok: true }
-})
+ipcMain.handle('agent:providers', (): ProviderMetadata[] =>
+  Object.values(providers).map(({ id, displayName, capabilities }) => ({
+    id,
+    displayName,
+    capabilities,
+  })),
+)
+
+ipcMain.handle(
+  'acp:load-session',
+  async (_e, providerId: ProviderId, workspacePath: string, sessionId: string) => {
+    const host = getAgentHost()
+    if (!host.runtime.getProvider(providerId).capabilities.canLoadSession) {
+      return { ok: false, reason: 'load_session_not_supported' }
+    }
+    await host.runtime.ensureSession({
+      providerId,
+      threadId: sessionId,
+      workspaceId: workspacePath,
+      cwd: workspacePath,
+      sessionId,
+    })
+    return { ok: true }
+  },
+)
 
 ipcMain.handle('dialog:select-folder', async () => {
   const result = await dialog.showOpenDialog({
@@ -167,13 +162,7 @@ ipcMain.handle('telemetry:record', async (_event, payload: Record<string, unknow
     kind: (payload.kind as 'query' | 'mutation' | 'subscription' | 'trace') ?? 'trace',
     phase:
       (payload.phase as
-        | 'start'
-        | 'success'
-        | 'error'
-        | 'subscribe'
-        | 'update'
-        | 'unsubscribe'
-        | 'mark') ?? 'mark',
+        'start' | 'success' | 'error' | 'subscribe' | 'update' | 'unsubscribe' | 'mark') ?? 'mark',
     name: String(payload.name ?? 'renderer.unknown'),
     durationMs: typeof payload.durationMs === 'number' ? payload.durationMs : undefined,
     requestBytes: typeof payload.requestBytes === 'number' ? payload.requestBytes : undefined,
@@ -196,15 +185,16 @@ app.whenReady().then(() => {
 
   createWindow()
 
-  sidecarManager.spawn().catch((error) => {
-    console.error('[opencode] failed to start at app launch:', (error as Error).message)
-  })
-
   if (convexClient && clientId) {
+    const projector = new ConvexProjector(convexClient, clientId)
+    agentHost = new AgentHost(projector, () => mainWindow)
+    agentHost.ensureProvider('opencode', process.cwd()).catch((error) => {
+      console.error('[opencode] failed to start at app launch:', (error as Error).message)
+    })
     console.log('[job-worker] starting')
     jobWorker = new JobWorker(
       convexClient,
-      ensureAgentClient,
+      agentHost,
       clientId,
       (workspacePath) => {
         const models = store.get('lastSelectedModelByWorkspace', {})
@@ -232,7 +222,6 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', async () => {
   jobWorker?.stop()
-  for (const bridge of sseBridges.values()) bridge.stop()
-  acpClient = null
-  await sidecarManager.shutdownAll()
+  agentHost?.dispose()
+  agentHost = null
 })

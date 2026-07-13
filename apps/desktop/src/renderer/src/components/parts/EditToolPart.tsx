@@ -1,11 +1,9 @@
 import { presentToolPart } from './toolPresenter'
-import {
-  activityRow,
-  activityDetailsSummary,
-  ToolLine,
-  ToolExpandedBody,
-} from './ToolLine'
+import { activityRow, activityDetailsSummary, ToolLine, ToolExpandedBody } from './ToolLine'
 import { typographyMonoCaption } from '../../lib/typography'
+import type { ToolCallContent } from '@agentpack/contract'
+import { extractDiff } from '@agentpack/view'
+import { StructuredDiffBody } from './StructuredDiffBody'
 
 interface EditToolPartProps {
   part: {
@@ -14,41 +12,18 @@ interface EditToolPartProps {
       type?: string
       status?: string
       input?: unknown
-      output?: string
+      output?: unknown
       error?: string
     }
+    content?: ToolCallContent[]
   }
-}
-
-function DiffBody({ text }: { text: string }) {
-  return (
-    <div className={typographyMonoCaption}>
-      {text.split('\n').map((line, i) => {
-        const isAdd = line.startsWith('+') && !line.startsWith('+++')
-        const isDel = line.startsWith('-') && !line.startsWith('---')
-        return (
-          <div
-            key={i}
-            className={
-              isAdd
-                ? 'text-emerald-500/90'
-                : isDel
-                  ? 'text-rose-500/90'
-                  : 'text-[var(--basis-text-faint)]'
-            }
-          >
-            {line}
-          </div>
-        )
-      })}
-    </div>
-  )
 }
 
 export function EditToolPart({ part }: EditToolPartProps) {
   const model = presentToolPart(part)
-  const output = part.state?.output ?? part.state?.error ?? ''
-  const hasExpand = !!output
+  const output = model.expandedText ?? ''
+  const diff = extractDiff(part.content ?? [])
+  const hasExpand = !!output || !!diff
 
   const line = <ToolLine verb={model.verb} detail={model.detail} isRunning={model.isRunning} />
 
@@ -56,16 +31,14 @@ export function EditToolPart({ part }: EditToolPartProps) {
     return <div className={activityRow}>{line}</div>
   }
 
-  const isDiff = output.includes('\n+') || output.includes('\n-')
-
   return (
     <details className={`group ${activityRow}`}>
       <summary className={activityDetailsSummary}>
         <span className="min-w-0 flex-1">{line}</span>
       </summary>
       <ToolExpandedBody>
-        {isDiff ? (
-          <DiffBody text={output} />
+        {diff ? (
+          <StructuredDiffBody diff={diff} />
         ) : (
           <pre
             className={`m-0 whitespace-pre-wrap break-words ${typographyMonoCaption} text-[var(--basis-text-muted)]`}
