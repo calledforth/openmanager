@@ -7,6 +7,7 @@ export default defineConfig({
     environment: 'node',
     include: [
       'src/**/*.{test,spec}.{ts,tsx}',
+      '../../packages/agent-runtime/src/**/*.{test,spec}.{ts,tsx}',
       '../../packages/shared/src/**/*.{test,spec}.{ts,tsx}',
       '../../packages/convex/convex/**/*.{test,spec}.{ts,tsx}',
     ],

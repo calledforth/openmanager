@@ -1,4 +1,4 @@
-import type { ProviderId } from '@agentpack/contract'
+import type { ProviderId, SessionConfigOption } from '@agentpack/contract'
 export type SessionBinding = {
   providerId: ProviderId
   threadId: string
@@ -6,6 +6,7 @@ export type SessionBinding = {
   sessionId: string
   generation: number
   resumeCursor?: string
+  configOptions?: SessionConfigOption[]
 }
 export class SessionStore {
   private generation = 0
@@ -39,6 +40,16 @@ export class SessionStore {
   setResumeCursor(threadId: string, cursor?: string): void {
     const v = this.forThread(threadId)
     if (v) v.resumeCursor = cursor
+  }
+  setConfigOptions(threadId: string, configOptions: SessionConfigOption[]): void {
+    const v = this.forThread(threadId)
+    if (v) v.configOptions = configOptions
+  }
+  unbindThread(threadId: string): void {
+    const v = this.byThread.get(threadId)
+    if (!v) return
+    this.byThread.delete(threadId)
+    this.bySession.delete(v.sessionId)
   }
   clear(): void {
     this.byThread.clear()

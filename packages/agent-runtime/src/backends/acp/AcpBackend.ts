@@ -29,6 +29,11 @@ import type {
 import { ExtensionRegistry } from './extensions.js'
 
 type RecordValue = Record<string, unknown>
+type SessionInitialState = {
+  models?: ModelListing
+  modes?: ModeListing
+  configOptions: SessionConfigOption[]
+}
 const object = (value: unknown): RecordValue =>
   value && typeof value === 'object' ? (value as RecordValue) : {}
 const string = (value: unknown): string | undefined =>
@@ -107,7 +112,8 @@ function modelListingFromConfig(options: readonly SessionConfigOption[]): ModelL
   const control = options.find(
     (option) =>
       option.type === 'select' &&
-      (option.category === 'model' || option.name.toLowerCase().includes('model')),
+      (option.category === 'model' ||
+        (option.category === undefined && /\bmodel\b/i.test(option.name))),
   )
   if (!control || control.type !== 'select') return undefined
   return {
@@ -124,7 +130,8 @@ function modeListingFromConfig(options: readonly SessionConfigOption[]): ModeLis
   const control = options.find(
     (option) =>
       option.type === 'select' &&
-      (option.category === 'mode' || option.name.toLowerCase().includes('mode')),
+      (option.category === 'mode' ||
+        (option.category === undefined && /\bmode\b/i.test(option.name))),
   )
   if (!control || control.type !== 'select') return undefined
   return {
@@ -135,6 +142,16 @@ function modeListingFromConfig(options: readonly SessionConfigOption[]): ModeLis
       ...(option.description ? { description: option.description } : {}),
     })),
   }
+}
+
+function configOptionFor(
+  options: readonly SessionConfigOption[] | undefined,
+  category: 'model' | 'mode',
+): SessionConfigOption | undefined {
+  return (
+    options?.find((option) => option.category === category) ??
+    options?.find((option) => option.id === category)
+  )
 }
 
 function contentBlock(value: unknown): ContentBlock {
@@ -400,6 +417,15 @@ export class AcpBackend implements Backend {
     if (active)
       return { sessionId: active.sessionId, state: 'reused', resumeCursor: active.resumeCursor }
     if (args.sessionId && this.config.capabilities.canLoadSession) {
+      // Agents replay session/update notifications before session/load returns.
+      // Install the route first so those events are not dropped as unknown.
+      this.sessions.bind({
+        providerId: this.providerId,
+        threadId: args.threadId,
+        workspaceId: args.workspaceId,
+        sessionId: args.sessionId,
+        resumeCursor: args.resumeCursor,
+      })
       try {
         const response = object(
           await this.conn().loadSession({
@@ -408,24 +434,16 @@ export class AcpBackend implements Backend {
             mcpServers: [],
           }),
         )
-        this.sessions.bind({
-          providerId: this.providerId,
-          threadId: args.threadId,
-          workspaceId: args.workspaceId,
+        const initialState = this.initialState(response)
+        this.sessions.setConfigOptions(args.threadId, initialState.configOptions)
+        this.emit(routeEvent(args, args.sessionId, 'lifecycle', 'session_loaded', initialState))
+        return {
           sessionId: args.sessionId,
-          resumeCursor: args.resumeCursor,
-        })
-        this.emit(
-          routeEvent(
-            args,
-            args.sessionId,
-            'lifecycle',
-            'session_loaded',
-            this.initialState(response),
-          ),
-        )
-        return { sessionId: args.sessionId, state: 'loaded', resumeCursor: args.resumeCursor }
+          state: 'loaded',
+          resumeCursor: this.sessions.forThread(args.threadId)?.resumeCursor,
+        }
       } catch (error) {
+        this.sessions.unbindThread(args.threadId)
         if (isAuthRequired(error)) throw this.authRequired(args, undefined, errorMessage(error))
         this.host.log({
           scope: 'acp',
@@ -439,16 +457,16 @@ export class AcpBackend implements Backend {
       const response = object(await this.conn().newSession({ cwd: args.cwd, mcpServers: [] }))
       const sessionId = string(response.sessionId)
       if (!sessionId) throw new Error('ACP session/new returned no sessionId')
+      const initialState = this.initialState(response)
       this.sessions.bind({
         providerId: this.providerId,
         threadId: args.threadId,
         workspaceId: args.workspaceId,
         sessionId,
         resumeCursor: args.resumeCursor,
+        configOptions: initialState.configOptions,
       })
-      this.emit(
-        routeEvent(args, sessionId, 'lifecycle', 'session_created', this.initialState(response)),
-      )
+      this.emit(routeEvent(args, sessionId, 'lifecycle', 'session_created', initialState))
       return { sessionId, state: 'created', resumeCursor: args.resumeCursor }
     } catch (error) {
       if (isAuthRequired(error)) throw this.authRequired(args, undefined, errorMessage(error))
@@ -456,7 +474,7 @@ export class AcpBackend implements Backend {
     }
   }
 
-  private initialState(response: RecordValue): unknown {
+  private initialState(response: RecordValue): SessionInitialState {
     const configOptions = Array.isArray(response.configOptions)
       ? (response.configOptions as SessionConfigOption[])
       : []
@@ -523,6 +541,28 @@ export class AcpBackend implements Backend {
     args: BackendRoute & { cwd: string; sessionId: string; modelId: string },
   ): Promise<void> {
     await this.start(args)
+    const configOption = configOptionFor(
+      this.sessions.forSession(args.sessionId)?.configOptions,
+      'model',
+    )
+    if (configOption) {
+      await this.setConfigOption({
+        ...args,
+        configId: configOption.id,
+        value: args.modelId,
+      })
+      this.emit(
+        routeEvent(
+          args,
+          args.sessionId,
+          'session',
+          'current_model_update',
+          modelListingFromConfig(this.sessions.forSession(args.sessionId)?.configOptions ?? []) ??
+            normalizeModelListing({ currentModelId: args.modelId }),
+        ),
+      )
+      return
+    }
     try {
       await this.conn().unstable_setSessionModel({
         sessionId: args.sessionId,
@@ -545,6 +585,28 @@ export class AcpBackend implements Backend {
     args: BackendRoute & { cwd: string; sessionId: string; modeId: string },
   ): Promise<void> {
     await this.start(args)
+    const configOption = configOptionFor(
+      this.sessions.forSession(args.sessionId)?.configOptions,
+      'mode',
+    )
+    if (configOption) {
+      await this.setConfigOption({
+        ...args,
+        configId: configOption.id,
+        value: args.modeId,
+      })
+      this.emit(
+        routeEvent(
+          args,
+          args.sessionId,
+          'session',
+          'current_mode_update',
+          modeListingFromConfig(this.sessions.forSession(args.sessionId)?.configOptions ?? []) ??
+            normalizeModeListing({ currentModeId: args.modeId }),
+        ),
+      )
+      return
+    }
     try {
       await this.conn().setSessionMode({ sessionId: args.sessionId, modeId: args.modeId })
     } catch (error) {
@@ -571,9 +633,11 @@ export class AcpBackend implements Backend {
             }
           : { sessionId: args.sessionId, configId: args.configId, value: args.value }
       const response = await this.conn().setSessionConfigOption(params)
+      const configOptions = response.configOptions as SessionConfigOption[]
+      this.sessions.setConfigOptions(args.threadId, configOptions)
       this.emit(
         routeEvent(args, args.sessionId, 'session', 'config_option_update', {
-          configOptions: response.configOptions as SessionConfigOption[],
+          configOptions,
         }),
       )
     } catch (error) {
@@ -760,9 +824,11 @@ export class AcpBackend implements Backend {
       return
     }
     if (kind === 'config_option_update') {
+      const configOptions = (update.configOptions ?? []) as SessionConfigOption[]
+      this.sessions.setConfigOptions(binding.threadId, configOptions)
       this.emit(
         routeEvent(binding, sessionId, 'session', 'config_option_update', {
-          configOptions: update.configOptions ?? [],
+          configOptions,
         }),
       )
       return
