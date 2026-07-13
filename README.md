@@ -11,9 +11,21 @@ pnpm install
 # Initialize Convex (requires Convex account)
 pnpm convex:dev
 
+# Point local development at the deployment (saved settings override this value)
+# .env.local: CONVEX_URL=https://your-deployment.convex.cloud
+
 # Start development
 pnpm dev
 ```
+
+## Convex deployment configuration
+
+Development builds use `CONVEX_URL` from `.env`/`.env.local` as a default. You can override it from
+**Settings → Convex deployment**; the app tests the deployment and saves the URL on that device.
+
+Packaged builds do not embed a Convex deployment URL. On first launch, OpenManager asks for the
+deployment URL and restarts after verifying the OpenManager Convex schema. The URL is an endpoint,
+not a secret—never enter a deploy key or admin token in the app.
 
 ## Scripts
 

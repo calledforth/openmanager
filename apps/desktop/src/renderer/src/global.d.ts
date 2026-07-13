@@ -1,5 +1,6 @@
 import type { SidecarHandshake, SidecarStatus } from '@openmanager/shared/contracts/sidecar'
 import type { AgentEvent, ProviderId, ProviderMetadata } from '@agentpack/contract'
+import type { ConvexConnectionResult, RuntimeConfig } from '../../shared/runtime-config'
 
 interface ElectronAPI {
   platform: NodeJS.Platform
@@ -9,6 +10,9 @@ interface ElectronAPI {
   isWindowMaximized: () => Promise<boolean>
   onWindowMaximizedChanged: (callback: (maximized: boolean) => void) => () => void
   getClientId: () => Promise<string | null>
+  getRuntimeConfig: () => Promise<RuntimeConfig>
+  testConvexUrl: (url: string) => Promise<ConvexConnectionResult>
+  setConvexUrlAndRestart: (url: string) => Promise<ConvexConnectionResult>
   getTelemetrySnapshot: () => Promise<{ filePath: string; events: unknown[] }>
   clearTelemetry: () => Promise<void>
   recordTelemetry: (event: Record<string, unknown>) => Promise<void>

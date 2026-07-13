@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useMutation as useConvexMutation, useQuery as useConvexQuery } from 'convex/react'
-import { convex } from './convex'
+import { getConvexClient } from './convex'
 
 export interface RendererTelemetryEvent {
   source?: 'renderer'
@@ -163,6 +163,7 @@ export function useTrackedMutation(
 }
 
 export async function trackedConvexQuery(name: string, queryRef: any, args: Record<string, unknown>) {
+  const convex = getConvexClient()
   if (!convex) return null
   const startedAt = performance.now()
   const context = extractContext(args)

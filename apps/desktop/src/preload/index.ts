@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { AgentEvent, ProviderId, ProviderMetadata } from '@agentpack/contract'
+import type { ConvexConnectionResult, RuntimeConfig } from '../shared/runtime-config'
 
 const electronAPI = {
   platform: process.platform as NodeJS.Platform,
@@ -13,6 +14,11 @@ const electronAPI = {
     return () => ipcRenderer.removeListener('window:maximized-changed', handler)
   },
   getClientId: () => ipcRenderer.invoke('client:get-id'),
+  getRuntimeConfig: () => ipcRenderer.invoke('config:get-runtime') as Promise<RuntimeConfig>,
+  testConvexUrl: (url: string) =>
+    ipcRenderer.invoke('config:test-convex-url', url) as Promise<ConvexConnectionResult>,
+  setConvexUrlAndRestart: (url: string) =>
+    ipcRenderer.invoke('config:set-convex-url', url) as Promise<ConvexConnectionResult>,
   getTelemetrySnapshot: () => ipcRenderer.invoke('telemetry:get-snapshot'),
   clearTelemetry: () => ipcRenderer.invoke('telemetry:clear'),
   recordTelemetry: (event: Record<string, unknown>) =>

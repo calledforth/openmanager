@@ -6,6 +6,7 @@ import { configureStableUserDataPath } from './app-paths'
 configureStableUserDataPath()
 
 interface StoreSchema {
+  convexUrl: string
   collapsedWorkspaces: string[]
   lastSelectedModelByWorkspace: Record<string, string>
 }
@@ -13,6 +14,7 @@ interface StoreSchema {
 const store = new Store<StoreSchema>({
   name: 'openmanager-settings',
   defaults: {
+    convexUrl: '',
     collapsedWorkspaces: [],
     lastSelectedModelByWorkspace: {},
   },
