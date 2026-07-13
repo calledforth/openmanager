@@ -8,12 +8,24 @@ import {
   type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, ChevronRight, Circle, Moon, Palette, Plug, Settings, Sun, Type } from 'lucide-react'
+import {
+  Check,
+  ChevronRight,
+  Circle,
+  Hexagon,
+  Moon,
+  Palette,
+  Plug,
+  Settings,
+  Sun,
+  Type,
+} from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { UI_FONTS, type UiFontId } from '../../lib/fonts'
 import { typographyBodySm, typographyCaption } from '../../lib/typography'
 import { useTheme } from '../../providers/theme-provider'
 import { useAppUi } from '../../providers/app-ui-provider'
+import { ConvexSettingsDialog } from '../settings/ConvexSettingsDialog'
 
 interface ProviderRow {
   id: string
@@ -86,6 +98,7 @@ function MenuFlyout({
 
 export function SidebarSettingsMenu() {
   const [open, setOpen] = useState(false)
+  const [convexSettingsOpen, setConvexSettingsOpen] = useState(false)
   const [menuCoords, setMenuCoords] = useState<MenuCoords | null>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -293,24 +306,44 @@ export function SidebarSettingsMenu() {
             )}
           </div>
         </MenuFlyout>
+
+        <div className="my-1 border-t border-[var(--basis-border-muted)]" />
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            close()
+            setConvexSettingsOpen(true)
+          }}
+          className={cn(
+            typographyBodySm,
+            'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[var(--basis-text)] transition-default hover:bg-[var(--basis-surface-hover)]',
+          )}
+        >
+          <Hexagon className="h-3.5 w-3.5 shrink-0 text-emerald-400" strokeWidth={1.75} />
+          <span className="min-w-0 flex-1">Convex deployment</span>
+        </button>
       </div>,
       document.body,
     )
 
   return (
-    <div ref={wrapRef} className="relative">
-      <button
-        ref={triggerRef}
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        aria-haspopup="menu"
-        title="Settings"
-        className="flex h-7 w-7 items-center justify-center rounded-[var(--basis-chat-shell-radius)] text-[var(--basis-text-muted)] transition-default hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]"
-      >
-        <Settings className="h-3.5 w-3.5" strokeWidth={1.75} />
-      </button>
-      {menu}
-    </div>
+    <>
+      <div ref={wrapRef} className="relative">
+        <button
+          ref={triggerRef}
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          aria-haspopup="menu"
+          title="Settings"
+          className="flex h-7 w-7 items-center justify-center rounded-[var(--basis-chat-shell-radius)] text-[var(--basis-text-muted)] transition-default hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]"
+        >
+          <Settings className="h-3.5 w-3.5" strokeWidth={1.75} />
+        </button>
+        {menu}
+      </div>
+      <ConvexSettingsDialog open={convexSettingsOpen} onOpenChange={setConvexSettingsOpen} />
+    </>
   )
 }

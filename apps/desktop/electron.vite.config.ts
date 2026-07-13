@@ -10,56 +10,54 @@ const appRoot = fileURLToPath(new URL('.', import.meta.url))
 const workspaceRoot = resolve(appRoot, '../..')
 const sharedRoot = resolve(workspaceRoot, 'packages/shared/src')
 const convexRoot = resolve(workspaceRoot, 'packages/convex/convex')
-const env = loadEnv('development', workspaceRoot, '')
+export default defineConfig(({ mode }) => {
+  // A packaged build is configured at runtime. Only local development reads .env files.
+  const env = mode === 'development' ? loadEnv(mode, workspaceRoot, '') : {}
 
-export default defineConfig({
-  main: {
-    plugins: [
-      externalizeDepsPlugin({
-        exclude: [
-          'electron-store',
-          '@agentpack/contract',
-          '@agentpack/runtime',
-          '@agentpack/view',
-        ],
-      }),
-    ],
-    build: {
-      outDir: resolve(appRoot, 'out/main'),
-    },
-    define: {
-      __CONVEX_URL__: JSON.stringify(env.CONVEX_URL || ''),
-    },
-    resolve: {
-      alias: {
-        '@openmanager/shared': sharedRoot,
-        '@openmanager/convex': convexRoot,
+  return {
+    main: {
+      plugins: [
+        externalizeDepsPlugin({
+          exclude: [
+            'electron-store',
+            '@agentpack/contract',
+            '@agentpack/runtime',
+            '@agentpack/view',
+          ],
+        }),
+      ],
+      build: {
+        outDir: resolve(appRoot, 'out/main'),
+      },
+      define: {
+        __CONVEX_URL__: JSON.stringify(env.CONVEX_URL || ''),
+      },
+      resolve: {
+        alias: {
+          '@openmanager/shared': sharedRoot,
+          '@openmanager/convex': convexRoot,
+        },
       },
     },
-  },
-  preload: {
-    plugins: [externalizeDepsPlugin()],
-    build: {
-      outDir: resolve(appRoot, 'out/preload'),
-    },
-  },
-  renderer: {
-    envDir: workspaceRoot,
-    envPrefix: ['VITE_', 'CONVEX_'],
-    build: {
-      outDir: resolve(appRoot, 'out/renderer'),
-    },
-    resolve: {
-      alias: {
-        '@renderer': resolve(appRoot, 'src/renderer/src'),
-        '@openmanager/shared': sharedRoot,
-        '@openmanager/convex': convexRoot,
+    preload: {
+      plugins: [externalizeDepsPlugin()],
+      build: {
+        outDir: resolve(appRoot, 'out/preload'),
       },
     },
-    plugins: [
-      react(),
-      reactScan(),
-      tailwindcss(),
-    ],
-  },
+    renderer: {
+      envDir: workspaceRoot,
+      build: {
+        outDir: resolve(appRoot, 'out/renderer'),
+      },
+      resolve: {
+        alias: {
+          '@renderer': resolve(appRoot, 'src/renderer/src'),
+          '@openmanager/shared': sharedRoot,
+          '@openmanager/convex': convexRoot,
+        },
+      },
+      plugins: [react(), reactScan(), tailwindcss()],
+    },
+  }
 })

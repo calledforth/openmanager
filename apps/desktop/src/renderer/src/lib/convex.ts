@@ -1,4 +1,12 @@
 import { ConvexReactClient } from 'convex/react'
 
-export const convexUrl = import.meta.env.CONVEX_URL as string
-export const convex = convexUrl ? new ConvexReactClient(convexUrl) : null
+let convexClient: ConvexReactClient | null = null
+
+export function createConvexClient(url: string): ConvexReactClient {
+  convexClient = new ConvexReactClient(url)
+  return convexClient
+}
+
+export function getConvexClient(): ConvexReactClient | null {
+  return convexClient
+}

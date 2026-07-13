@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron'
 import { join } from 'path'
 import { ConvexClient } from 'convex/browser'
+import { api } from '@openmanager/convex/_generated/api'
 import { JobWorker } from './job-worker'
 import { AgentHost } from './agent-host'
 import { ConvexProjector } from './convex-projector'
@@ -8,6 +9,8 @@ import type { ProviderId, ProviderMetadata } from '@agentpack/contract'
 import { providers } from '@agentpack/runtime'
 import { loadOrCreateClientId } from './client-id'
 import store from './store'
+import { normalizeConvexUrl, resolveRuntimeConfig } from './convex-config'
+import type { ConvexConnectionResult, RuntimeConfig } from '../shared/runtime-config'
 import {
   clearConvexTelemetry,
   getConvexTelemetrySnapshot,
@@ -24,14 +27,50 @@ let jobWorker: JobWorker | null = null
 let clientId: string | null = null
 let userDataPath = ''
 
+function getRuntimeConfig(): RuntimeConfig {
+  return resolveRuntimeConfig(store.get('convexUrl', ''), __CONVEX_URL__, !app.isPackaged)
+}
+
 function initConvex(): ConvexClient | null {
-  const url = __CONVEX_URL__
-  if (!url) {
+  const config = getRuntimeConfig()
+  if (!config.convexUrl) {
     console.warn('[convex] CONVEX_URL not set — Convex features disabled')
     return null
   }
-  console.log('[convex] connecting to', url)
-  return new ConvexClient(url)
+  console.log(`[convex] connecting via ${config.convexSource} configuration`)
+  return new ConvexClient(config.convexUrl)
+}
+
+async function testConvexDeployment(rawUrl: string): Promise<ConvexConnectionResult> {
+  let normalizedUrl: string
+  try {
+    normalizedUrl = normalizeConvexUrl(rawUrl, !app.isPackaged)
+  } catch (error) {
+    return { ok: false, error: (error as Error).message }
+  }
+
+  const testClient = new ConvexClient(normalizedUrl)
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      testClient.query(api.workspaces.list, {}),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error('Connection timed out after 10 seconds.')),
+          10_000,
+        )
+      }),
+    ])
+    return { ok: true, normalizedUrl }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'The deployment could not be reached.'
+    return { ok: false, error: message }
+  } finally {
+    if (timeout) clearTimeout(timeout)
+    await testClient.close().catch((error) => {
+      console.warn('[convex] test client did not close cleanly:', error)
+    })
+  }
 }
 
 function getAgentHost(): AgentHost {
@@ -144,6 +183,22 @@ ipcMain.handle('window:close', () => {
 ipcMain.handle('window:is-maximized', () => mainWindow?.isMaximized() ?? false)
 
 ipcMain.handle('client:get-id', async () => clientId)
+ipcMain.handle('config:get-runtime', async () => getRuntimeConfig())
+ipcMain.handle('config:test-convex-url', async (_event, url: string) => {
+  return testConvexDeployment(url)
+})
+ipcMain.handle('config:set-convex-url', async (_event, url: string) => {
+  const result = await testConvexDeployment(url)
+  if (!result.ok || !result.normalizedUrl) return result
+
+  store.set('convexUrl', result.normalizedUrl)
+  const restartTimer = setTimeout(() => {
+    app.relaunch()
+    app.exit(0)
+  }, 300)
+  restartTimer.unref()
+  return result
+})
 ipcMain.handle('telemetry:get-snapshot', async () => getConvexTelemetrySnapshot())
 ipcMain.handle('telemetry:clear', async () => {
   clearConvexTelemetry()
