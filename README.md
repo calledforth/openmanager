@@ -36,7 +36,9 @@ not a secret—never enter a deploy key or admin token in the app.
 | `pnpm typecheck`                           | TypeScript strict check                  |
 | `pnpm lint`                                | ESLint                                   |
 | `pnpm test`                                | Vitest                                   |
-| `pnpm ci`                                  | typecheck + lint + test                  |
+| `pnpm run ci:desktop`                      | Desktop typecheck + lint + test          |
+| `pnpm dist:win`                            | Build Windows installer + portable app  |
+| `pnpm release:prepare <version>`           | Synchronize desktop release versions    |
 | `pnpm convex:dev`                          | Start Convex dev server                  |
 | `pnpm storybook`                           | Start Storybook UI playground            |
 | `pnpm storybook:build`                     | Build Storybook static site              |
@@ -57,6 +59,11 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for full design rationale.
   worker. See [`apps/mobile/README.md`](apps/mobile/README.md).
 - **Shared contracts** — `packages/shared`, domain types and boundary interfaces
 - **Convex** — `packages/convex/convex`, cloud DB schema and functions
+
+## Releases
+
+CI, Windows packaging, public GitHub Releases, and application updates are documented in
+[`docs/RELEASING.md`](docs/RELEASING.md).
 
 ## UI layout
 

@@ -11,6 +11,7 @@ import { loadOrCreateClientId } from './client-id'
 import store from './store'
 import { normalizeConvexUrl, resolveRuntimeConfig } from './convex-config'
 import type { ConvexConnectionResult, RuntimeConfig } from '../shared/runtime-config'
+import { startUpdateService } from './update-service'
 import {
   clearConvexTelemetry,
   getConvexTelemetrySnapshot,
@@ -239,6 +240,7 @@ app.whenReady().then(() => {
   convexClient = initConvex()
 
   createWindow()
+  startUpdateService()
 
   if (convexClient && clientId) {
     const projector = new ConvexProjector(convexClient, clientId)
