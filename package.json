@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "pnpm --filter @openmanager/desktop dev",
     "build": "pnpm --filter @openmanager/desktop build",
+    "dist:win": "pnpm --filter @openmanager/desktop dist:win",
     "preview": "pnpm --filter @openmanager/desktop preview",
     "storybook": "pnpm --filter @openmanager/desktop storybook",
     "storybook:build": "pnpm --filter @openmanager/desktop storybook:build",
@@ -19,7 +20,9 @@
     "test": "pnpm --filter @openmanager/desktop test",
     "test:watch": "pnpm --filter @openmanager/desktop test:watch",
     "convex:dev": "pnpm --filter @openmanager/convex dev",
-    "ci": "pnpm typecheck && pnpm lint && pnpm test"
+    "ci": "pnpm typecheck && pnpm lint && pnpm test",
+    "ci:desktop": "pnpm --filter @openmanager/desktop typecheck && pnpm --filter @openmanager/desktop lint && pnpm --filter @openmanager/desktop test",
+    "release:prepare": "node scripts/prepare-release.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

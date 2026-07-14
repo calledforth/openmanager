@@ -29,6 +29,13 @@ import type {
 import { ExtensionRegistry } from './extensions.js'
 
 type RecordValue = Record<string, unknown>
+type SpawnedChildProcess = ChildProcessWithoutNullStreams & {
+  on(event: 'error', listener: (error: Error) => void): SpawnedChildProcess
+  on(
+    event: 'exit',
+    listener: (code: number | null, signal: NodeJS.Signals | null) => void,
+  ): SpawnedChildProcess
+}
 type SessionInitialState = {
   models?: ModelListing
   modes?: ModeListing
@@ -275,7 +282,7 @@ export class AcpBackend implements Backend {
       cwd: route.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: process.platform === 'win32',
-    })
+    }) as SpawnedChildProcess
     this.process = child
     this.emit(
       routeEvent(route, undefined, 'lifecycle', 'process_spawned', {

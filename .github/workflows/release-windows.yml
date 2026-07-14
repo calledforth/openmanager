@@ -1,0 +1,149 @@
+name: Windows Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Windows artifacts
+    runs-on: windows-latest
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Validate release source
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+        run: |
+          $rootVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $desktopVersion = (Get-Content apps/desktop/package.json -Raw | ConvertFrom-Json).version
+
+          if ($rootVersion -ne $desktopVersion) {
+            throw "Root version $rootVersion does not match desktop version $desktopVersion."
+          }
+
+          if ($env:RELEASE_REF_TYPE -eq 'tag') {
+            if ($env:RELEASE_TAG -ne "v$desktopVersion") {
+              throw "Tag $env:RELEASE_TAG does not match desktop version $desktopVersion."
+            }
+
+            git fetch origin main
+            git merge-base --is-ancestor $env:GITHUB_SHA origin/main
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Release tags must point to a commit contained in origin/main.'
+            }
+
+            if ($env:RELEASE_TAG -notmatch '-' -and [string]::IsNullOrWhiteSpace($env:WIN_CSC_LINK)) {
+              throw 'Stable releases require the WIN_CSC_LINK signing secret. Use a prerelease tag for unsigned internal testing.'
+            }
+          }
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run desktop release checks
+        run: pnpm run ci:desktop
+
+      - name: Build installers
+        run: pnpm run dist:win
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+
+      - name: Collect release assets and checksums
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path release-assets -Force | Out-Null
+          $assets = Get-ChildItem apps/desktop/dist -File | Where-Object {
+            $_.Extension -eq '.exe' -or
+            $_.Extension -eq '.blockmap' -or
+            $_.Name -like 'latest*.yml'
+          }
+
+          if (-not ($assets | Where-Object Name -Like 'OpenManager-Setup-*.exe')) {
+            throw 'The NSIS installer was not produced.'
+          }
+          if (-not ($assets | Where-Object Name -Like 'latest*.yml')) {
+            throw 'Updater metadata was not produced.'
+          }
+
+          $assets | Copy-Item -Destination release-assets
+          Get-ChildItem release-assets -File | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          } | Set-Content release-assets/SHA256SUMS.txt
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-release
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub Release
+    if: ${{ github.ref_type == 'tag' }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-release
+          path: release-assets
+
+      - name: Attest build provenance
+        uses: actions/attest@f6bf1532d7d6793fce74eac584813a8eee607999 # v4
+        with:
+          subject-path: release-assets/*
+
+      - name: Create or update GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            args=("$RELEASE_TAG" --verify-tag --draft --generate-notes --title "OpenManager ${RELEASE_TAG#v}")
+            if [[ "$RELEASE_TAG" == *-* ]]; then
+              args+=(--prerelease)
+            fi
+            gh release create "${args[@]}"
+          fi
+
+          gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false
