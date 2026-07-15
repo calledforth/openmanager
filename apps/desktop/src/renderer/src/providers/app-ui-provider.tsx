@@ -4,16 +4,18 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
 import { api } from '@openmanager/convex/_generated/api'
 import type { SidecarStatus } from '@openmanager/shared/contracts/sidecar'
-import type {
-  AgentEvent,
-  AvailableCommand,
-  ProviderId,
-  ProviderMetadata,
+import {
+  isProviderId,
+  type AgentEvent,
+  type AvailableCommand,
+  type ProviderId,
+  type ProviderMetadata,
 } from '@agentpack/contract'
 import {
   recordRendererTelemetry,
@@ -21,7 +23,10 @@ import {
   useTrackedMutation,
 } from '../lib/convex-telemetry'
 
-type OpenCodeUiStatus = 'disconnected' | 'connecting' | 'connected'
+export type ProviderUiStatus = 'disconnected' | 'connecting' | 'connected'
+
+export type AgentInfo = { name?: string; version?: string }
+
 
 function toAcpModels(models: Extract<AgentEvent, { event: 'session_created' }>['data']['models']) {
   if (!models) return undefined
@@ -79,15 +84,16 @@ interface AppUiValue {
   isSessionDraftOpen: boolean
   pendingDraftSessionStart: boolean
   currentClientId: string | null
-  openCodeStatus: SidecarStatus
-  openCodeUiStatus: OpenCodeUiStatus
-  acpAgentInfo: { name?: string; version?: string } | null
+  agentStatusByProvider: Partial<Record<ProviderId, SidecarStatus>>
+  agentUiStatusByProvider: Partial<Record<ProviderId, ProviderUiStatus>>
+  acpAgentInfoByProvider: Partial<Record<ProviderId, AgentInfo>>
+  defaultProviderId: ProviderId
   agentEvents: AgentEvent[]
   providers: ProviderMetadata[]
   acpSessionState: AcpSessionRuntimeState | null
   draftSessionState: AcpSessionRuntimeState | null
   error: string | null
-  retryOpenCode: () => Promise<void>
+  retryProvider: (providerId: ProviderId) => Promise<void>
   setActiveWorkspacePath: (path: string | null) => void
   setActiveSessionId: (sessionId: string | null) => void
   addWorkspace: () => Promise<void>
@@ -118,15 +124,23 @@ export function useAppUi() {
 }
 
 export function AppUiProvider({ children }: { children: ReactNode }) {
-  const [openCodeStatus, setOpenCodeStatus] = useState<SidecarStatus>('stopped')
-  const [openCodeUiStatus, setOpenCodeUiStatus] = useState<OpenCodeUiStatus>('disconnected')
+  const [agentStatusByProvider, setAgentStatusByProvider] = useState<
+    Partial<Record<ProviderId, SidecarStatus>>
+  >({})
+  const [connectingProviders, setConnectingProviders] = useState<
+    Partial<Record<ProviderId, boolean>>
+  >({})
+  const connectingRef = useRef<Set<ProviderId>>(new Set())
+  const [defaultProviderId, setDefaultProviderId] = useState<ProviderId>('opencode')
   const [activeWorkspacePath, setActiveWorkspacePath] = useState<string | null>(null)
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [isSessionDraftOpen, setIsSessionDraftOpen] = useState(false)
   const [pendingDraftSessionStart, setPendingDraftSessionStart] = useState(false)
   const [currentClientId, setCurrentClientId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [acpAgentInfo, setAcpAgentInfo] = useState<{ name?: string; version?: string } | null>(null)
+  const [acpAgentInfoByProvider, setAcpAgentInfoByProvider] = useState<
+    Partial<Record<ProviderId, AgentInfo>>
+  >({})
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([])
   const [providers, setProviders] = useState<ProviderMetadata[]>([])
   const [acpSessionStateById, setAcpSessionStateById] = useState<
@@ -175,55 +189,68 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
   const ensureWorkspace = useTrackedMutation('workspaces.ensureByPath', api.workspaces.ensureByPath)
   const removeWorkspaceMutation = useTrackedMutation('workspaces.remove', api.workspaces.remove)
 
-  const syncOpenCodeUiStatus = useCallback((status: SidecarStatus) => {
-    if (status === 'healthy') {
-      setOpenCodeUiStatus('connected')
-      return
-    }
-    if (status === 'starting') {
-      setOpenCodeUiStatus('connecting')
-      return
-    }
-    setOpenCodeUiStatus('disconnected')
+  const applyProviderStatus = useCallback((providerId: ProviderId, status: SidecarStatus) => {
+    setAgentStatusByProvider((prev) => ({ ...prev, [providerId]: status }))
   }, [])
+
+  const setProviderConnecting = useCallback((providerId: ProviderId, connecting: boolean) => {
+    if (connecting) connectingRef.current.add(providerId)
+    else connectingRef.current.delete(providerId)
+    setConnectingProviders((prev) => ({ ...prev, [providerId]: connecting }))
+  }, [])
+
+  // Pushed sidecar statuses are the source of truth; the local connecting flag
+  // only bridges the gap while an ensure IPC round-trip is in flight.
+  const agentUiStatusByProvider = useMemo(() => {
+    const result: Partial<Record<ProviderId, ProviderUiStatus>> = {}
+    const providerIds = new Set([
+      ...Object.keys(agentStatusByProvider),
+      ...Object.keys(connectingProviders),
+    ])
+    for (const providerId of providerIds) {
+      if (!isProviderId(providerId)) continue
+      const status = agentStatusByProvider[providerId]
+      result[providerId] =
+        status === 'healthy'
+          ? 'connected'
+          : connectingProviders[providerId] || status === 'starting'
+            ? 'connecting'
+            : 'disconnected'
+    }
+    return result
+  }, [agentStatusByProvider, connectingProviders])
+
+  const providerDisplayName = useCallback(
+    (providerId: ProviderId) =>
+      providers.find((provider) => provider.id === providerId)?.displayName ?? providerId,
+    [providers],
+  )
 
   const ensureProvider = useCallback(
     async (providerId: ProviderId, cwd: string): Promise<boolean> => {
-      if (openCodeUiStatus === 'connecting') return false
-      setOpenCodeUiStatus('connecting')
+      if (connectingRef.current.has(providerId)) return false
+      setProviderConnecting(providerId, true)
       try {
         const handshake = await window.electronAPI.ensureAgentProvider(providerId, cwd)
-        if (!handshake.ready) {
-          setOpenCodeUiStatus('disconnected')
-          return false
-        }
-        setOpenCodeStatus('healthy')
-        setOpenCodeUiStatus('connected')
-        return true
+        return handshake.ready
       } catch {
-        setOpenCodeUiStatus('disconnected')
         return false
+      } finally {
+        setProviderConnecting(providerId, false)
       }
     },
-    [openCodeUiStatus],
+    [setProviderConnecting],
   )
 
-  const retryOpenCode = useCallback(async () => {
-    setError(null)
-    setOpenCodeUiStatus('connecting')
-    try {
-      const handshake = await window.electronAPI.retryOpenCode()
-      if (!handshake.ready) {
-        setOpenCodeUiStatus('disconnected')
-        return
-      }
-      setOpenCodeStatus('healthy')
-      setOpenCodeUiStatus('connected')
-    } catch (err) {
-      setOpenCodeUiStatus('disconnected')
-      setError((err as Error).message)
-    }
-  }, [])
+  const retryProvider = useCallback(
+    async (providerId: ProviderId) => {
+      if (connectingRef.current.has(providerId)) return
+      setError(null)
+      const ready = await ensureProvider(providerId, activeWorkspacePath ?? '')
+      if (!ready) setError(`Failed to connect to ${providerDisplayName(providerId)}.`)
+    },
+    [activeWorkspacePath, ensureProvider, providerDisplayName],
+  )
 
   const addWorkspace = useCallback(async () => {
     setError(null)
@@ -272,7 +299,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       setActiveSessionId(externalId)
       setIsSessionDraftOpen(false)
       setPendingDraftSessionStart(false)
-      const providerId = acpSessionStateById[externalId]?.providerId ?? 'opencode'
+      const providerId = acpSessionStateById[externalId]?.providerId ?? defaultProviderId
       ensureProvider(providerId, workspacePath).catch(console.error)
       if (typeof window.electronAPI.loadAcpSession === 'function') {
         window.electronAPI
@@ -280,7 +307,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           .catch(() => undefined)
       }
     },
-    [acpSessionStateById, ensureProvider],
+    [acpSessionStateById, defaultProviderId, ensureProvider],
   )
 
   const createSession = useCallback(
@@ -321,22 +348,17 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         ...prev,
         [workspacePath]: {
           providerId:
-            prev[workspacePath]?.providerId ?? fallbackSessionState?.providerId ?? 'opencode',
+            prev[workspacePath]?.providerId ?? fallbackSessionState?.providerId ?? defaultProviderId,
           ...(prev[workspacePath]?.modelId ? { modelId: prev[workspacePath].modelId } : {}),
           ...(prev[workspacePath]?.modeId ? { modeId: prev[workspacePath].modeId } : {}),
         },
       }))
-      mergeDraftRuntimeForWorkspace(workspacePath, {
-        providerId:
-          fallbackSessionState?.providerId ??
-          draftSelectionByWorkspace[workspacePath]?.providerId ??
-          'opencode',
-      })
-      const providerId =
+      const draftProviderId =
         fallbackSessionState?.providerId ??
         draftSelectionByWorkspace[workspacePath]?.providerId ??
-        'opencode'
-      const openCodeReady = await ensureProvider(providerId, workspacePath)
+        defaultProviderId
+      mergeDraftRuntimeForWorkspace(workspacePath, { providerId: draftProviderId })
+      const providerReady = await ensureProvider(draftProviderId, workspacePath)
 
       const hasRuntime =
         !!fallbackSessionState?.models?.availableModels?.length ||
@@ -367,9 +389,9 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           }
           return
         }
-        if (openCodeReady && sorted[0]?.externalId) {
+        if (providerReady && sorted[0]?.externalId) {
           const sessionId = sorted[0].externalId
-          const providerId = acpSessionStateById[sessionId]?.providerId ?? 'opencode'
+          const providerId = acpSessionStateById[sessionId]?.providerId ?? defaultProviderId
           await window.electronAPI.loadAcpSession(providerId, workspacePath, sessionId)
         }
       } catch {
@@ -380,6 +402,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       acpSessionStateById,
       activeSessionId,
       activeWorkspacePath,
+      defaultProviderId,
       ensureProvider,
       draftSelectionByWorkspace,
       mergeDraftRuntimeForWorkspace,
@@ -400,7 +423,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           payload: JSON.stringify({
             workspacePath,
             sessionExternalId: externalId,
-            providerId: acpSessionStateById[externalId]?.providerId ?? 'opencode',
+            providerId: acpSessionStateById[externalId]?.providerId ?? defaultProviderId,
           }),
           clientId: currentClientId,
           sessionExternalId: externalId,
@@ -410,7 +433,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         setError((err as Error).message)
       }
     },
-    [acpSessionStateById, activeSessionId, currentClientId, submitJob],
+    [acpSessionStateById, activeSessionId, currentClientId, defaultProviderId, submitJob],
   )
 
   const sendMessage = useCallback(
@@ -425,12 +448,12 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       if (!activeSessionId) {
         if (!isSessionDraftOpen || pendingDraftSessionStart) return
         const draftSelection = draftSelectionByWorkspace[activeWorkspacePath] ?? {}
-        const ready = await ensureProvider(
-          draftSelection.providerId ?? 'opencode',
-          activeWorkspacePath,
-        )
+        const draftProviderId = draftSelection.providerId ?? defaultProviderId
+        const ready = await ensureProvider(draftProviderId, activeWorkspacePath)
         if (!ready) {
-          setError('OpenCode is unavailable. Retry connection from the sidebar.')
+          setError(
+            `${providerDisplayName(draftProviderId)} is unavailable. Retry connection from the sidebar.`,
+          )
           return
         }
         setPendingDraftSessionStart(true)
@@ -442,7 +465,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
               workspacePath: activeWorkspacePath,
               content: trimmed,
               userMessageId,
-              providerId: draftSelection.providerId ?? 'opencode',
+              providerId: draftProviderId,
               ...(draftSelection.modelId ? { preferredModelId: draftSelection.modelId } : {}),
               ...(draftSelection.modeId ? { preferredModeId: draftSelection.modeId } : {}),
             }),
@@ -472,7 +495,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
             sessionExternalId: activeSessionId,
             content: trimmed,
             userMessageId,
-            providerId: acpSessionStateById[activeSessionId]?.providerId ?? 'opencode',
+            providerId: acpSessionStateById[activeSessionId]?.providerId ?? defaultProviderId,
           }),
           clientId: currentClientId,
           sessionExternalId: activeSessionId,
@@ -486,11 +509,12 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       activeWorkspacePath,
       acpSessionStateById,
       currentClientId,
+      defaultProviderId,
       draftSelectionByWorkspace,
       ensureProvider,
       isSessionDraftOpen,
       pendingDraftSessionStart,
-      submitJob,
+      providerDisplayName,
       submitJob,
     ],
   )
@@ -546,6 +570,9 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
   const setDraftProvider = useCallback(
     (providerId: ProviderId) => {
       if (!activeWorkspacePath) return
+      setDefaultProviderId(providerId)
+      // Preference persistence is best-effort.
+      window.electronAPI.setLastProviderId(providerId).catch(() => undefined)
       const matchingRuntime = Object.values(acpSessionStateById).find(
         (state) => state.providerId === providerId,
       )
@@ -590,7 +617,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           payload: JSON.stringify({
             workspacePath: activeWorkspacePath,
             sessionExternalId: externalId,
-            providerId: acpSessionStateById[externalId]?.providerId ?? 'opencode',
+            providerId: acpSessionStateById[externalId]?.providerId ?? defaultProviderId,
           }),
           clientId: currentClientId,
           sessionExternalId: externalId,
@@ -599,7 +626,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         setError((err as Error).message)
       }
     },
-    [acpSessionStateById, activeWorkspacePath, currentClientId, submitJob],
+    [acpSessionStateById, activeWorkspacePath, currentClientId, defaultProviderId, submitJob],
   )
 
   const resolvePermission = useCallback(
@@ -618,7 +645,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
             sessionExternalId,
             permissionId,
             approved,
-            providerId: acpSessionStateById[sessionExternalId]?.providerId ?? 'opencode',
+            providerId: acpSessionStateById[sessionExternalId]?.providerId ?? defaultProviderId,
           }),
           clientId: currentClientId,
           sessionExternalId,
@@ -627,7 +654,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         setError((err as Error).message)
       }
     },
-    [acpSessionStateById, activeWorkspacePath, currentClientId, submitJob],
+    [acpSessionStateById, activeWorkspacePath, currentClientId, defaultProviderId, submitJob],
   )
 
   const setSessionModel = useCallback(
@@ -641,7 +668,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
             workspacePath: activeWorkspacePath,
             sessionExternalId,
             modelId,
-            providerId: acpSessionStateById[sessionExternalId]?.providerId ?? 'opencode',
+            providerId: acpSessionStateById[sessionExternalId]?.providerId ?? defaultProviderId,
           }),
           clientId: currentClientId,
           sessionExternalId,
@@ -651,7 +678,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           [sessionExternalId]: {
             ...(prev[sessionExternalId] ?? {
               sessionId: sessionExternalId,
-              providerId: 'opencode',
+              providerId: defaultProviderId,
             }),
             models: {
               ...(prev[sessionExternalId]?.models ?? {}),
@@ -680,7 +707,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         setError((err as Error).message)
       }
     },
-    [acpSessionStateById, activeWorkspacePath, currentClientId, submitJob],
+    [acpSessionStateById, activeWorkspacePath, currentClientId, defaultProviderId, submitJob],
   )
 
   const setSessionMode = useCallback(
@@ -694,7 +721,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
             workspacePath: activeWorkspacePath,
             sessionExternalId,
             modeId,
-            providerId: acpSessionStateById[sessionExternalId]?.providerId ?? 'opencode',
+            providerId: acpSessionStateById[sessionExternalId]?.providerId ?? defaultProviderId,
           }),
           clientId: currentClientId,
           sessionExternalId,
@@ -704,7 +731,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           [sessionExternalId]: {
             ...(prev[sessionExternalId] ?? {
               sessionId: sessionExternalId,
-              providerId: 'opencode',
+              providerId: defaultProviderId,
             }),
             modes: {
               ...(prev[sessionExternalId]?.modes ?? {}),
@@ -733,7 +760,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         setError((err as Error).message)
       }
     },
-    [acpSessionStateById, activeWorkspacePath, currentClientId, submitJob],
+    [acpSessionStateById, activeWorkspacePath, currentClientId, defaultProviderId, submitJob],
   )
 
   useEffect(() => {
@@ -745,6 +772,15 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     window.electronAPI
+      .getLastProviderId()
+      .then((providerId) => {
+        if (isProviderId(providerId)) setDefaultProviderId(providerId)
+      })
+      .catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    window.electronAPI
       .getClientId()
       .then(setCurrentClientId)
       .catch(() => setCurrentClientId(null))
@@ -752,21 +788,18 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     window.electronAPI
-      .getOpenCodeStatus()
-      .then((status) => {
-        setOpenCodeStatus(status)
-        syncOpenCodeUiStatus(status)
+      .getAgentStatuses()
+      .then((statuses) => {
+        for (const [providerId, status] of Object.entries(statuses)) {
+          if (isProviderId(providerId) && status) applyProviderStatus(providerId, status)
+        }
       })
-      .catch(() => {
-        setOpenCodeStatus('stopped')
-        setOpenCodeUiStatus('disconnected')
-      })
-    const cleanup = window.electronAPI.onOpenCodeStatusChanged(({ status }) => {
-      setOpenCodeStatus(status as SidecarStatus)
-      syncOpenCodeUiStatus(status as SidecarStatus)
+      .catch(() => undefined)
+    const cleanup = window.electronAPI.onAgentStatusChanged(({ providerId, status }) => {
+      applyProviderStatus(providerId, status as SidecarStatus)
     })
     return cleanup
-  }, [syncOpenCodeUiStatus])
+  }, [applyProviderStatus])
 
   useEffect(() => {
     const cleanup = window.electronAPI.onAcpEvent((event) => {
@@ -777,7 +810,10 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
 
       switch (event.event) {
         case 'initialized':
-          if (event.data.agentInfo) setAcpAgentInfo(event.data.agentInfo)
+          if (event.data.agentInfo) {
+            const agentInfo = event.data.agentInfo
+            setAcpAgentInfoByProvider((prev) => ({ ...prev, [event.providerId]: agentInfo }))
+          }
           return
         case 'session_created':
         case 'session_loaded': {
@@ -918,15 +954,16 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       isSessionDraftOpen,
       pendingDraftSessionStart,
       currentClientId,
-      openCodeStatus,
-      openCodeUiStatus,
-      acpAgentInfo,
+      agentStatusByProvider,
+      agentUiStatusByProvider,
+      acpAgentInfoByProvider,
+      defaultProviderId,
       agentEvents,
       providers,
       acpSessionState,
       draftSessionState,
       error,
-      retryOpenCode,
+      retryProvider,
       setActiveWorkspacePath,
       setActiveSessionId,
       addWorkspace,
@@ -949,15 +986,16 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       isSessionDraftOpen,
       pendingDraftSessionStart,
       currentClientId,
-      openCodeStatus,
-      openCodeUiStatus,
-      acpAgentInfo,
+      agentStatusByProvider,
+      agentUiStatusByProvider,
+      acpAgentInfoByProvider,
+      defaultProviderId,
       agentEvents,
       providers,
       acpSessionState,
       draftSessionState,
       error,
-      retryOpenCode,
+      retryProvider,
       addWorkspace,
       removeWorkspace,
       selectSession,

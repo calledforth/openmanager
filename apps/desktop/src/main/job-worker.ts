@@ -1,7 +1,7 @@
 import { ConvexClient } from 'convex/browser'
 import { api } from '@openmanager/convex/_generated/api'
 import type { Id } from '@openmanager/convex/_generated/dataModel'
-import type { ProviderId } from '@agentpack/contract'
+import { isProviderId, type ProviderId } from '@agentpack/contract'
 import {
   estimateConvexPayloadBytes,
   extractConvexTelemetryContext,
@@ -24,12 +24,19 @@ export class JobWorker {
     private convex: ConvexClient,
     private agentHost: AgentHost,
     private clientId: string,
-    private getLastModelForWorkspace: (workspacePath: string) => string | null,
-    private setLastModelForWorkspace: (workspacePath: string, modelId: string) => void,
+    private getLastModelForWorkspace: (
+      workspacePath: string,
+      providerId: ProviderId,
+    ) => string | null,
+    private setLastModelForWorkspace: (
+      workspacePath: string,
+      providerId: ProviderId,
+      modelId: string,
+    ) => void,
   ) {}
 
-  private providerId(_value: unknown): ProviderId {
-    return 'opencode'
+  private providerId(value: unknown): ProviderId {
+    return isProviderId(value) ? value : 'opencode'
   }
 
   private route(parsed: Record<string, any>, threadId: string) {
@@ -153,7 +160,7 @@ export class JobWorker {
         case 'create_session': {
           const threadId = crypto.randomUUID()
           const session = await this.agentHost.runtime.ensureSession(this.route(parsed, threadId))
-          const rememberedModel = this.getLastModelForWorkspace(parsed.workspacePath)
+          const rememberedModel = this.getLastModelForWorkspace(parsed.workspacePath, providerId)
           if (rememberedModel) {
             try {
               await this.agentHost.runtime.setModel({
@@ -180,7 +187,7 @@ export class JobWorker {
           const threadId = crypto.randomUUID()
           const session = await this.agentHost.runtime.ensureSession(this.route(parsed, threadId))
           const preferredModel =
-            parsed.preferredModelId ?? this.getLastModelForWorkspace(parsed.workspacePath)
+            parsed.preferredModelId ?? this.getLastModelForWorkspace(parsed.workspacePath, providerId)
           if (preferredModel) {
             try {
               await this.agentHost.runtime.setModel({
@@ -258,7 +265,7 @@ export class JobWorker {
             sessionId: parsed.sessionExternalId,
             modelId: parsed.modelId,
           })
-          this.setLastModelForWorkspace(parsed.workspacePath, parsed.modelId)
+          this.setLastModelForWorkspace(parsed.workspacePath, providerId, parsed.modelId)
           break
         case 'set_mode':
           await this.agentHost.runtime.setMode({

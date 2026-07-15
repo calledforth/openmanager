@@ -6,7 +6,7 @@ import { ConvexProjector } from './convex-projector'
 
 export class AgentHost {
   readonly runtime: AgentRuntime
-  private status: SidecarStatus = 'stopped'
+  private readonly statusByProvider = new Map<ProviderId, SidecarStatus>()
   private localSequence = 0
   private readonly pendingPermissions = new Map<string, PermissionRequest>()
 
@@ -27,19 +27,19 @@ export class AgentHost {
     cwd: string,
     threadId = `desktop-bootstrap:${providerId}`,
   ): Promise<SidecarHandshake> {
-    this.setStatus('starting')
+    this.setStatus(providerId, 'starting')
     try {
       await this.runtime.start({ providerId, threadId, workspaceId: cwd, cwd })
-      this.setStatus('healthy')
+      this.setStatus(providerId, 'healthy')
       return { ready: true }
     } catch (error) {
-      this.setStatus('crashed')
+      this.setStatus(providerId, 'crashed')
       throw error
     }
   }
 
-  getStatus(): SidecarStatus {
-    return this.status
+  getStatuses(): Partial<Record<ProviderId, SidecarStatus>> {
+    return Object.fromEntries(this.statusByProvider) as Partial<Record<ProviderId, SidecarStatus>>
   }
 
   respondPermission(args: {
@@ -89,7 +89,7 @@ export class AgentHost {
 
   dispose(): void {
     this.runtime.dispose()
-    this.setStatus('stopped')
+    for (const providerId of this.statusByProvider.keys()) this.setStatus(providerId, 'stopped')
   }
 
   private emitEvent(event: AgentEvent): void {
@@ -112,16 +112,16 @@ export class AgentHost {
       window.webContents.send('stream:token', event)
     }
     if (event.event === 'process_exited') {
-      this.setStatus(event.data.expected ? 'stopped' : 'crashed')
+      this.setStatus(event.providerId, event.data.expected ? 'stopped' : 'crashed')
     }
   }
 
-  private setStatus(status: SidecarStatus): void {
-    if (this.status === status) return
-    this.status = status
+  private setStatus(providerId: ProviderId, status: SidecarStatus): void {
+    if (this.statusByProvider.get(providerId) === status) return
+    this.statusByProvider.set(providerId, status)
     const window = this.getMainWindow()
     if (window?.isDestroyed() === false) {
-      window.webContents.send('opencode:status-changed', { status })
+      window.webContents.send('agent:status-changed', { providerId, status })
     }
   }
 

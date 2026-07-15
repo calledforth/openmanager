@@ -5,7 +5,7 @@ import { api } from '@openmanager/convex/_generated/api'
 import { JobWorker } from './job-worker'
 import { AgentHost } from './agent-host'
 import { ConvexProjector } from './convex-projector'
-import type { ProviderId, ProviderMetadata } from '@agentpack/contract'
+import { isProviderId, type ProviderId, type ProviderMetadata } from '@agentpack/contract'
 import { providers } from '@agentpack/runtime'
 import { loadOrCreateClientId } from './client-id'
 import store from './store'
@@ -116,24 +116,13 @@ function createWindow(): void {
   }
 }
 
-ipcMain.handle('opencode:ensure', async () => {
-  return getAgentHost().ensureProvider('opencode', process.cwd())
+ipcMain.handle('agent:ensure', async (_e, providerId: unknown, cwd: string) => {
+  if (!isProviderId(providerId)) throw new Error(`Unknown provider: ${String(providerId)}`)
+  return getAgentHost().ensureProvider(providerId, cwd || process.cwd())
 })
 
-ipcMain.handle('agent:ensure', async (_e, providerId: ProviderId, cwd: string) => {
-  return getAgentHost().ensureProvider(providerId, cwd)
-})
-
-ipcMain.handle('opencode:retry', async () => {
-  return getAgentHost().ensureProvider('opencode', process.cwd())
-})
-
-ipcMain.handle('opencode:status', async () => {
-  return agentHost?.getStatus() ?? 'stopped'
-})
-
-ipcMain.handle('opencode:shutdown', async () => {
-  agentHost?.dispose()
+ipcMain.handle('agent:status', async () => {
+  return agentHost?.getStatuses() ?? {}
 })
 
 ipcMain.handle('agent:providers', (): ProviderMetadata[] =>
@@ -146,7 +135,8 @@ ipcMain.handle('agent:providers', (): ProviderMetadata[] =>
 
 ipcMain.handle(
   'acp:load-session',
-  async (_e, providerId: ProviderId, workspacePath: string, sessionId: string) => {
+  async (_e, providerId: unknown, workspacePath: string, sessionId: string) => {
+    if (!isProviderId(providerId)) throw new Error(`Unknown provider: ${String(providerId)}`)
     const host = getAgentHost()
     if (!host.runtime.getProvider(providerId).capabilities.canLoadSession) {
       return { ok: false, reason: 'load_session_not_supported' }
@@ -212,6 +202,16 @@ ipcMain.handle('store:get-collapsed-workspaces', async () => {
 ipcMain.handle('store:set-collapsed-workspaces', async (_e, paths: string[]) => {
   store.set('collapsedWorkspaces', paths)
 })
+
+ipcMain.handle('store:get-last-provider', async (): Promise<ProviderId> => {
+  const value = store.get('lastUsedProviderId', 'opencode')
+  return isProviderId(value) ? value : 'opencode'
+})
+
+ipcMain.handle('store:set-last-provider', async (_e, providerId: unknown) => {
+  if (!isProviderId(providerId)) throw new Error(`Unknown provider: ${String(providerId)}`)
+  store.set('lastUsedProviderId', providerId)
+})
 ipcMain.handle('telemetry:record', async (_event, payload: Record<string, unknown>) => {
   recordConvexTelemetry({
     source: 'renderer',
@@ -245,22 +245,33 @@ app.whenReady().then(() => {
   if (convexClient && clientId) {
     const projector = new ConvexProjector(convexClient, clientId)
     agentHost = new AgentHost(projector, () => mainWindow)
-    agentHost.ensureProvider('opencode', process.cwd()).catch((error) => {
-      console.error('[opencode] failed to start at app launch:', (error as Error).message)
+    const lastUsed = store.get('lastUsedProviderId', 'opencode')
+    const startupProviderId: ProviderId = isProviderId(lastUsed) ? lastUsed : 'opencode'
+    agentHost.ensureProvider(startupProviderId, process.cwd()).catch((error) => {
+      console.error(
+        `[agent] failed to start ${startupProviderId} at app launch:`,
+        (error as Error).message,
+      )
     })
     console.log('[job-worker] starting')
     jobWorker = new JobWorker(
       convexClient,
       agentHost,
       clientId,
-      (workspacePath) => {
+      (workspacePath, providerId) => {
         const models = store.get('lastSelectedModelByWorkspace', {})
-        const model = models[workspacePath]
+        // Legacy entries were keyed by workspace alone, before Cursor support.
+        const model =
+          models[`${workspacePath}::${providerId}`] ??
+          (providerId === 'opencode' ? models[workspacePath] : undefined)
         return typeof model === 'string' && model.length > 0 ? model : null
       },
-      (workspacePath, modelId) => {
+      (workspacePath, providerId, modelId) => {
         const models = store.get('lastSelectedModelByWorkspace', {})
-        store.set('lastSelectedModelByWorkspace', { ...models, [workspacePath]: modelId })
+        store.set('lastSelectedModelByWorkspace', {
+          ...models,
+          [`${workspacePath}::${providerId}`]: modelId,
+        })
       },
     )
     jobWorker.start()

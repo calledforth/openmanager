@@ -1,6 +1,12 @@
 import type { ProviderCapabilities } from './capabilities.js'
 
-export type ProviderId = 'opencode'
+export const PROVIDER_IDS = ['opencode', 'cursor'] as const
+
+export type ProviderId = (typeof PROVIDER_IDS)[number]
+
+export function isProviderId(value: unknown): value is ProviderId {
+  return typeof value === 'string' && (PROVIDER_IDS as readonly string[]).includes(value)
+}
 
 export type ModelOption = {
   id: string

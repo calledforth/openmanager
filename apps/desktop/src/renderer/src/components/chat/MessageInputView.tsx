@@ -232,9 +232,10 @@ export function MessageInputView({
   activeWorkspacePath,
   activeSessionId,
   isSessionDraftOpen,
-  openCodeReady,
+  providerReady,
   providerOptions,
   currentProviderId,
+  currentProviderName,
   modeOptions,
   currentModeId,
   modelOptions,
@@ -256,9 +257,10 @@ export function MessageInputView({
   activeWorkspacePath: string | null
   activeSessionId: string | null
   isSessionDraftOpen: boolean
-  openCodeReady: boolean
+  providerReady: boolean
   providerOptions: Array<{ id: ProviderId; name: string }>
   currentProviderId: ProviderId
+  currentProviderName: string
   modeOptions: Array<{ id: string; name: string }>
   currentModeId: string
   modelOptions: Array<{ id: string; name: string }>
@@ -326,8 +328,8 @@ export function MessageInputView({
         ? 'Ask anything, @ to mention, / for workflows'
         : !activeSessionId
           ? 'Select a session...'
-          : !openCodeReady
-            ? 'Connecting to OpenCode...'
+          : !providerReady
+            ? `Connecting to ${currentProviderName}...`
             : 'Ask anything, @ to mention, / for workflows'
 
   const isPlan = currentModeId === 'plan'

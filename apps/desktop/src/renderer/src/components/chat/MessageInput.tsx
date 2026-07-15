@@ -11,32 +11,36 @@ export function MessageInput() {
     pendingDraftSessionStart,
     acpSessionState,
     draftSessionState,
-    acpAgentInfo,
+    acpAgentInfoByProvider,
     setDraftModel,
     setDraftMode,
     setDraftProvider,
     setSessionModel,
     setSessionMode,
-    openCodeUiStatus,
+    agentUiStatusByProvider,
+    defaultProviderId,
     agentEvents,
     providers,
   } = useAppUi()
   const { sendMessage, abortSession, activeSession } = useActiveSession()
 
-  const openCodeReady = openCodeUiStatus === 'connected'
   const disabled =
     !activeWorkspacePath || pendingDraftSessionStart || (!activeSessionId && !isSessionDraftOpen)
   const runtimeState = activeSessionId || !isSessionDraftOpen ? acpSessionState : draftSessionState
   const chrome = deriveSessionChrome(agentEvents, {
     providers,
-    selectedProviderId: runtimeState?.providerId ?? 'opencode',
+    selectedProviderId: runtimeState?.providerId ?? defaultProviderId,
     sessionId: activeSessionId ?? undefined,
   })
   const providerOptions = chrome.providerPicker.options.map((provider) => ({
     id: provider.id,
     name: provider.label,
   }))
-  const currentProviderId = chrome.providerPicker.currentProviderId ?? 'opencode'
+  const currentProviderId = chrome.providerPicker.currentProviderId ?? defaultProviderId
+  const providerReady = agentUiStatusByProvider[currentProviderId] === 'connected'
+  const currentProviderName =
+    providerOptions.find((provider) => provider.id === currentProviderId)?.name ??
+    currentProviderId
   const modeOptions = (chrome.modePicker?.options ?? []).map((mode) => ({
     id: mode.id,
     name: mode.label,
@@ -57,9 +61,10 @@ export function MessageInput() {
       activeWorkspacePath={activeWorkspacePath}
       activeSessionId={activeSessionId}
       isSessionDraftOpen={isSessionDraftOpen}
-      openCodeReady={openCodeReady}
+      providerReady={providerReady}
       providerOptions={providerOptions}
       currentProviderId={currentProviderId}
+      currentProviderName={currentProviderName}
       modeOptions={modeOptions}
       currentModeId={currentModeId}
       modelOptions={modelOptions}
@@ -68,7 +73,7 @@ export function MessageInput() {
       canChangeProvider={isSessionDraftOpen && !activeSessionId}
       showModeControl={chrome.modePicker !== null}
       showModelControl={chrome.modelPicker !== null}
-      agent={acpAgentInfo}
+      agent={acpAgentInfoByProvider[currentProviderId] ?? null}
       isStreaming={isStreaming}
       onModeChange={(id) => {
         if (activeSessionId) {

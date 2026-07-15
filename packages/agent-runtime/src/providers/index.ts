@@ -1,5 +1,6 @@
 import type { ProviderCapabilities, ProviderId } from '@agentpack/contract'
 import type { ExtensionHandlers } from '../backends/acp/extensions.js'
+import { cursor } from './cursor.js'
 import { opencode } from './opencode.js'
 
 export type ProviderConfig = {
@@ -11,5 +12,5 @@ export type ProviderConfig = {
   capabilities: ProviderCapabilities
   extensions: ExtensionHandlers
 }
-export const providers: Readonly<Record<ProviderId, ProviderConfig>> = { opencode }
-export { opencode }
+export const providers: Readonly<Record<ProviderId, ProviderConfig>> = { cursor, opencode }
+export { cursor, opencode }

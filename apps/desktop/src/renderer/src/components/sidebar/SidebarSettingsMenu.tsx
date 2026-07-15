@@ -105,12 +105,13 @@ export function SidebarSettingsMenu() {
   const menuRef = useRef<HTMLDivElement>(null)
   const { theme, toggleTheme, font, setFont } = useTheme()
   const {
-    openCodeUiStatus,
-    openCodeStatus,
+    agentStatusByProvider,
+    agentUiStatusByProvider,
     acpSessionState,
     draftSessionState,
-    acpAgentInfo,
-    retryOpenCode,
+    acpAgentInfoByProvider,
+    providers: registeredProviders,
+    retryProvider,
   } = useAppUi()
 
   const close = useCallback(() => setOpen(false), [])
@@ -176,26 +177,38 @@ export function SidebarSettingsMenu() {
   }, [acpSessionState, draftSessionState])
 
   const providers = useMemo<ProviderRow[]>(() => {
-    const runtimeLabel = acpAgentInfo?.name
-      ? `${acpAgentInfo.name}${acpAgentInfo.version ? ` ${acpAgentInfo.version}` : ''}`
-      : 'OpenCode ACP'
+    const runtimeRows = registeredProviders.map((provider) => {
+      const uiStatus = agentUiStatusByProvider[provider.id] ?? 'disconnected'
+      const status = agentStatusByProvider[provider.id] ?? 'stopped'
+      const agentInfo = acpAgentInfoByProvider[provider.id]
+      const label = agentInfo?.name
+        ? `${agentInfo.name}${agentInfo.version ? ` ${agentInfo.version}` : ''}`
+        : `${provider.displayName} ACP`
+      return {
+        id: provider.id,
+        label,
+        connected: uiStatus === 'connected',
+        detail:
+          uiStatus === 'connecting'
+            ? 'Connecting…'
+            : uiStatus === 'connected'
+              ? status === 'healthy'
+                ? 'Healthy'
+                : status
+              : 'Unavailable',
+      }
+    })
 
-    const runtime: ProviderRow = {
-      id: 'opencode-acp',
-      label: runtimeLabel,
-      connected: openCodeUiStatus === 'connected',
-      detail:
-        openCodeUiStatus === 'connecting'
-          ? 'Connecting…'
-          : openCodeUiStatus === 'connected'
-            ? openCodeStatus === 'healthy'
-              ? 'Healthy'
-              : openCodeStatus
-            : 'Unavailable',
-    }
+    return [...runtimeRows, ...modelProviders]
+  }, [acpAgentInfoByProvider, agentStatusByProvider, agentUiStatusByProvider, modelProviders, registeredProviders])
 
-    return [runtime, ...modelProviders]
-  }, [acpAgentInfo, modelProviders, openCodeStatus, openCodeUiStatus])
+  const disconnectedProviders = useMemo(
+    () =>
+      registeredProviders.filter(
+        (provider) => (agentUiStatusByProvider[provider.id] ?? 'disconnected') !== 'connected',
+      ),
+    [agentUiStatusByProvider, registeredProviders],
+  )
 
   const menu =
     open &&
@@ -292,18 +305,19 @@ export function SidebarSettingsMenu() {
                 </div>
               </div>
             ))}
-            {openCodeUiStatus !== 'connected' && (
+            {disconnectedProviders.map((provider) => (
               <button
+                key={provider.id}
                 type="button"
-                onClick={() => void retryOpenCode()}
+                onClick={() => void retryProvider(provider.id)}
                 className={cn(
                   typographyCaption,
                   'mx-1 mb-0.5 mt-0.5 w-[calc(100%-0.5rem)] rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border-muted)] px-2 py-1 text-[var(--basis-text-muted)] transition-default hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
                 )}
               >
-                Retry connection
+                Retry {provider.displayName}
               </button>
-            )}
+            ))}
           </div>
         </MenuFlyout>
 

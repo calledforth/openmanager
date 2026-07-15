@@ -23,12 +23,9 @@ const electronAPI = {
   clearTelemetry: () => ipcRenderer.invoke('telemetry:clear'),
   recordTelemetry: (event: Record<string, unknown>) =>
     ipcRenderer.invoke('telemetry:record', event),
-  ensureOpenCode: () => ipcRenderer.invoke('opencode:ensure'),
   ensureAgentProvider: (providerId: ProviderId, cwd: string) =>
     ipcRenderer.invoke('agent:ensure', providerId, cwd),
-  retryOpenCode: () => ipcRenderer.invoke('opencode:retry'),
-  getOpenCodeStatus: () => ipcRenderer.invoke('opencode:status'),
-  shutdownOpenCode: () => ipcRenderer.invoke('opencode:shutdown'),
+  getAgentStatuses: () => ipcRenderer.invoke('agent:status'),
   getAgentProviders: () => ipcRenderer.invoke('agent:providers') as Promise<ProviderMetadata[]>,
   loadAcpSession: (providerId: ProviderId, workspacePath: string, sessionId: string) =>
     ipcRenderer.invoke('acp:load-session', providerId, workspacePath, sessionId),
@@ -37,11 +34,14 @@ const electronAPI = {
     ipcRenderer.invoke('store:get-collapsed-workspaces') as Promise<string[]>,
   setCollapsedWorkspaces: (paths: string[]) =>
     ipcRenderer.invoke('store:set-collapsed-workspaces', paths),
-  onOpenCodeStatusChanged: (callback: (data: { status: string }) => void) => {
+  getLastProviderId: () => ipcRenderer.invoke('store:get-last-provider') as Promise<ProviderId>,
+  setLastProviderId: (providerId: ProviderId) =>
+    ipcRenderer.invoke('store:set-last-provider', providerId),
+  onAgentStatusChanged: (callback: (data: { providerId: ProviderId; status: string }) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
-      callback(data as { status: string })
-    ipcRenderer.on('opencode:status-changed', handler)
-    return () => ipcRenderer.removeListener('opencode:status-changed', handler)
+      callback(data as { providerId: ProviderId; status: string })
+    ipcRenderer.on('agent:status-changed', handler)
+    return () => ipcRenderer.removeListener('agent:status-changed', handler)
   },
   onStreamToken: (callback: (data: AgentEvent) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: AgentEvent) => callback(data)

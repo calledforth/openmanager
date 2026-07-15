@@ -9,6 +9,7 @@ interface StoreSchema {
   convexUrl: string
   collapsedWorkspaces: string[]
   lastSelectedModelByWorkspace: Record<string, string>
+  lastUsedProviderId: string
 }
 
 const store = new Store<StoreSchema>({
@@ -17,6 +18,7 @@ const store = new Store<StoreSchema>({
     convexUrl: '',
     collapsedWorkspaces: [],
     lastSelectedModelByWorkspace: {},
+    lastUsedProviderId: 'opencode',
   },
 })
 
