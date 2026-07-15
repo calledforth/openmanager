@@ -1,5 +1,4 @@
 import type { ProviderConfig } from './index.js'
-const noop = () => undefined
 export const cursor: ProviderConfig = {
   id: 'cursor',
   displayName: 'Cursor',
@@ -32,16 +31,12 @@ export const cursor: ProviderConfig = {
     supportsExtensions: true,
   },
   extensions: {
+    // Unlisted methods fall back to ExtensionRegistry defaults (requests →
+    // cancelled outcome, notifications → no-op).
     requests: {
       'cursor/ask_question': () => ({
         outcome: { outcome: 'skipped', reason: 'No UI handler registered' },
       }),
-      'cursor/create_plan': () => ({ outcome: { outcome: 'cancelled' } }),
-    },
-    notifications: {
-      'cursor/update_todos': noop,
-      'cursor/task': noop,
-      'cursor/generate_image': noop,
     },
   },
 }

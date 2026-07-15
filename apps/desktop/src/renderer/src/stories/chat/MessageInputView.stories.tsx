@@ -12,12 +12,13 @@ const meta = {
     activeWorkspacePath: '/workspace/openmanager',
     activeSessionId: 'sess-001',
     isSessionDraftOpen: false,
-    openCodeReady: true,
+    providerReady: true,
     providerOptions: [
       { id: 'opencode', name: 'OpenCode' },
       { id: 'cursor', name: 'Cursor' },
     ],
     currentProviderId: 'opencode',
+    currentProviderName: 'OpenCode',
     modeOptions: [
       { id: 'default', name: 'Default' },
       { id: 'plan', name: 'Plan' },
@@ -59,7 +60,7 @@ export const DraftStarting: Story = {
 
 export const Disconnected: Story = {
   args: {
-    openCodeReady: false,
+    providerReady: false,
   },
 }
 

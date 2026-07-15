@@ -16,11 +16,8 @@ interface ElectronAPI {
   getTelemetrySnapshot: () => Promise<{ filePath: string; events: unknown[] }>
   clearTelemetry: () => Promise<void>
   recordTelemetry: (event: Record<string, unknown>) => Promise<void>
-  ensureOpenCode: () => Promise<SidecarHandshake>
   ensureAgentProvider: (providerId: ProviderId, cwd: string) => Promise<SidecarHandshake>
-  retryOpenCode: () => Promise<SidecarHandshake>
-  getOpenCodeStatus: () => Promise<SidecarStatus>
-  shutdownOpenCode: () => Promise<void>
+  getAgentStatuses: () => Promise<Partial<Record<ProviderId, SidecarStatus>>>
   getAgentProviders: () => Promise<ProviderMetadata[]>
   loadAcpSession: (
     providerId: ProviderId,
@@ -30,7 +27,11 @@ interface ElectronAPI {
   selectFolder: () => Promise<string | null>
   getCollapsedWorkspaces: () => Promise<string[]>
   setCollapsedWorkspaces: (paths: string[]) => Promise<void>
-  onOpenCodeStatusChanged: (callback: (data: { status: string }) => void) => () => void
+  getLastProviderId: () => Promise<ProviderId>
+  setLastProviderId: (providerId: ProviderId) => Promise<void>
+  onAgentStatusChanged: (
+    callback: (data: { providerId: ProviderId; status: string }) => void,
+  ) => () => void
   onStreamToken: (callback: (data: AgentEvent) => void) => () => void
   onTelemetryUpdate: (callback: (data: unknown) => void) => () => void
   onAcpEvent: (callback: (data: AgentEvent) => void) => () => void

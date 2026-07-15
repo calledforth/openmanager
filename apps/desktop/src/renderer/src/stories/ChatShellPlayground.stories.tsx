@@ -800,12 +800,13 @@ function Demo() {
                   activeWorkspacePath="/workspace/openmanager"
                   activeSessionId="sess-1"
                   isSessionDraftOpen={false}
-                  openCodeReady={status === 'connected'}
+                  providerReady={status === 'connected'}
                   providerOptions={[
                     { id: 'opencode', name: 'OpenCode' },
                     { id: 'cursor', name: 'Cursor' },
                   ]}
                   currentProviderId="opencode"
+                  currentProviderName="OpenCode"
                   modeOptions={[
                     { id: 'default', name: 'Default' },
                     { id: 'plan', name: 'Plan' },
