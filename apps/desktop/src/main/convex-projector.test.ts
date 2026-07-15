@@ -42,6 +42,27 @@ function setup() {
 }
 
 describe('ConvexProjector streaming contracts', () => {
+  it('persists the provider with a session so it survives an app restart', async () => {
+    const { projector, mutations } = setup()
+    projector.consume(
+      event(1, {
+        providerId: 'cursor',
+        category: 'lifecycle',
+        event: 'session_created',
+        data: {},
+      }),
+    )
+    await projector.waitForThread(base.threadId)
+
+    expect(mutations).toContainEqual(
+      expect.objectContaining({
+        externalId: base.sessionId,
+        providerId: 'cursor',
+        status: 'idle',
+      }),
+    )
+  })
+
   it('persists one canonical user message when ACP echoes the prompt', async () => {
     const { projector, mutations } = setup()
     projector.consume(

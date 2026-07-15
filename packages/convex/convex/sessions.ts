@@ -16,6 +16,7 @@ export const upsertStatus = mutation({
     workspacePath: v.string(),
     externalId: v.string(),
     status: v.string(),
+    providerId: v.optional(v.string()),
     title: v.optional(v.string()),
     clientId: v.optional(v.string()),
   },
@@ -27,18 +28,23 @@ export const upsertStatus = mutation({
 
     if (existing) {
       const requestedTitle =
-        args.title !== undefined && isPlaceholderTitle(args.title) && !isPlaceholderTitle(existing.title)
+        args.title !== undefined &&
+        isPlaceholderTitle(args.title) &&
+        !isPlaceholderTitle(existing.title)
           ? existing.title
           : args.title
       const nextTitle = requestedTitle !== undefined ? requestedTitle : existing.title
       const nextClientId = args.clientId ?? existing.clientId
+      const nextProviderId = existing.providerId ?? args.providerId
       const statusChanged = existing.status !== args.status
       const titleChanged = nextTitle !== existing.title
       const clientChanged = nextClientId !== existing.clientId
-      if (!statusChanged && !titleChanged && !clientChanged) return
+      const providerChanged = nextProviderId !== existing.providerId
+      if (!statusChanged && !titleChanged && !clientChanged && !providerChanged) return
 
       await ctx.db.patch(existing._id, {
         status: args.status,
+        ...(providerChanged ? { providerId: nextProviderId } : {}),
         ...(requestedTitle !== undefined ? { title: requestedTitle } : {}),
         ...(args.clientId ? { clientId: args.clientId } : {}),
         updatedAt: Date.now(),
@@ -55,6 +61,7 @@ export const upsertStatus = mutation({
     await ctx.db.insert('sessions', {
       workspaceId: workspace._id,
       externalId: args.externalId,
+      providerId: args.providerId,
       clientId: args.clientId,
       title: args.title,
       status: args.status,
@@ -69,6 +76,7 @@ export const upsertTitle = mutation({
     workspacePath: v.string(),
     externalId: v.string(),
     title: v.string(),
+    providerId: v.optional(v.string()),
     clientId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
@@ -81,10 +89,23 @@ export const upsertTitle = mutation({
       .first()
 
     if (existing) {
-      if (!isPlaceholderTitle(existing.title)) return
-      if (existing.title === nextTitle && (!args.clientId || existing.clientId === args.clientId)) return
+      const nextProviderId = existing.providerId ?? args.providerId
+      const providerChanged = nextProviderId !== existing.providerId
+      if (!isPlaceholderTitle(existing.title)) {
+        if (providerChanged) {
+          await ctx.db.patch(existing._id, { providerId: nextProviderId, updatedAt: Date.now() })
+        }
+        return
+      }
+      if (
+        existing.title === nextTitle &&
+        (!args.clientId || existing.clientId === args.clientId) &&
+        !providerChanged
+      )
+        return
       await ctx.db.patch(existing._id, {
         title: nextTitle,
+        ...(providerChanged ? { providerId: nextProviderId } : {}),
         ...(args.clientId ? { clientId: args.clientId } : {}),
         updatedAt: Date.now(),
       })
@@ -100,6 +121,7 @@ export const upsertTitle = mutation({
     await ctx.db.insert('sessions', {
       workspaceId: workspace._id,
       externalId: args.externalId,
+      providerId: args.providerId,
       clientId: args.clientId,
       title: nextTitle,
       status: 'idle',
@@ -134,6 +156,7 @@ export const listForSidebar = query({
       externalId: string
       title?: string
       status: string
+      providerId?: string
       clientId?: string
       updatedAt: number
     }> = []
@@ -154,6 +177,7 @@ export const listForSidebar = query({
           externalId: session.externalId,
           title: session.title,
           status: session.status,
+          providerId: session.providerId,
           clientId: session.clientId,
           updatedAt: session.updatedAt,
         })

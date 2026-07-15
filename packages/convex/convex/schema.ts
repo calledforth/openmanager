@@ -15,6 +15,7 @@ export default defineSchema({
   sessions: defineTable({
     workspaceId: v.id('workspaces'),
     externalId: v.string(),
+    providerId: v.optional(v.string()),
     clientId: v.optional(v.string()),
     title: v.optional(v.string()),
     status: v.string(),
