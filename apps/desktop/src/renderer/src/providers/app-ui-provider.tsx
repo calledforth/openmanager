@@ -22,11 +22,11 @@ import {
   trackedConvexQuery,
   useTrackedMutation,
 } from '../lib/convex-telemetry'
+import { resolveSessionProviderId, sessionsForProvider } from './session-provider'
 
 export type ProviderUiStatus = 'disconnected' | 'connecting' | 'connected'
 
 export type AgentInfo = { name?: string; version?: string }
-
 
 function toAcpModels(models: Extract<AgentEvent, { event: 'session_created' }>['data']['models']) {
   if (!models) return undefined
@@ -98,9 +98,13 @@ interface AppUiValue {
   setActiveSessionId: (sessionId: string | null) => void
   addWorkspace: () => Promise<void>
   removeWorkspace: (path: string) => Promise<void>
-  selectSession: (workspacePath: string, externalId: string) => void
+  selectSession: (workspacePath: string, externalId: string, providerId?: ProviderId) => void
   createSession: (workspacePath: string) => Promise<void>
-  deleteSession: (workspacePath: string, externalId: string) => Promise<void>
+  deleteSession: (
+    workspacePath: string,
+    externalId: string,
+    providerId?: ProviderId,
+  ) => Promise<void>
   sendMessage: (content: string, userMessageId?: string) => Promise<void>
   abortSession: (externalId: string) => Promise<void>
   resolvePermission: (
@@ -294,12 +298,17 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
   )
 
   const selectSession = useCallback(
-    (workspacePath: string, externalId: string) => {
+    (workspacePath: string, externalId: string, persistedProviderId?: ProviderId) => {
       setActiveWorkspacePath(workspacePath)
       setActiveSessionId(externalId)
       setIsSessionDraftOpen(false)
       setPendingDraftSessionStart(false)
-      const providerId = acpSessionStateById[externalId]?.providerId ?? defaultProviderId
+      const providerId =
+        acpSessionStateById[externalId]?.providerId ?? persistedProviderId ?? 'opencode'
+      setAcpSessionStateById((prev) => ({
+        ...prev,
+        [externalId]: prev[externalId] ?? { sessionId: externalId, providerId },
+      }))
       ensureProvider(providerId, workspacePath).catch(console.error)
       if (typeof window.electronAPI.loadAcpSession === 'function') {
         window.electronAPI
@@ -307,7 +316,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           .catch(() => undefined)
       }
     },
-    [acpSessionStateById, defaultProviderId, ensureProvider],
+    [acpSessionStateById, ensureProvider],
   )
 
   const createSession = useCallback(
@@ -348,7 +357,9 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         ...prev,
         [workspacePath]: {
           providerId:
-            prev[workspacePath]?.providerId ?? fallbackSessionState?.providerId ?? defaultProviderId,
+            prev[workspacePath]?.providerId ??
+            fallbackSessionState?.providerId ??
+            defaultProviderId,
           ...(prev[workspacePath]?.modelId ? { modelId: prev[workspacePath].modelId } : {}),
           ...(prev[workspacePath]?.modeId ? { modeId: prev[workspacePath].modeId } : {}),
         },
@@ -373,9 +384,10 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           {
             workspacePath,
           },
-        )) as Array<{ externalId: string; updatedAt: number }>
+        )) as Array<{ externalId: string; updatedAt: number; providerId?: unknown }>
         const sorted = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt)
-        const hydrated = sorted.find((row) => !!acpSessionStateById[row.externalId])
+        const providerSessions = sessionsForProvider(sorted, draftProviderId)
+        const hydrated = providerSessions.find((row) => !!acpSessionStateById[row.externalId])
         if (hydrated) {
           const runtime = acpSessionStateById[hydrated.externalId]
           if (runtime) {
@@ -389,9 +401,9 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           }
           return
         }
-        if (providerReady && sorted[0]?.externalId) {
-          const sessionId = sorted[0].externalId
-          const providerId = acpSessionStateById[sessionId]?.providerId ?? defaultProviderId
+        if (providerReady && providerSessions[0]?.externalId) {
+          const sessionId = providerSessions[0].externalId
+          const providerId = resolveSessionProviderId(providerSessions[0].providerId)
           await window.electronAPI.loadAcpSession(providerId, workspacePath, sessionId)
         }
       } catch {
@@ -410,7 +422,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
   )
 
   const deleteSession = useCallback(
-    async (workspacePath: string, externalId: string) => {
+    async (workspacePath: string, externalId: string, persistedProviderId?: ProviderId) => {
       setError(null)
       if (!currentClientId) {
         setError('Client identity unavailable')
@@ -423,7 +435,8 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           payload: JSON.stringify({
             workspacePath,
             sessionExternalId: externalId,
-            providerId: acpSessionStateById[externalId]?.providerId ?? defaultProviderId,
+            providerId:
+              acpSessionStateById[externalId]?.providerId ?? persistedProviderId ?? 'opencode',
           }),
           clientId: currentClientId,
           sessionExternalId: externalId,
@@ -433,7 +446,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         setError((err as Error).message)
       }
     },
-    [acpSessionStateById, activeSessionId, currentClientId, defaultProviderId, submitJob],
+    [acpSessionStateById, activeSessionId, currentClientId, submitJob],
   )
 
   const sendMessage = useCallback(

@@ -1,7 +1,9 @@
 import { createContext, useContext, useMemo, type ReactNode } from 'react'
+import type { ProviderId } from '@agentpack/contract'
 import { api } from '@openmanager/convex/_generated/api'
 import { useTrackedQuery } from '../lib/convex-telemetry'
 import { useAppUi } from './app-ui-provider'
+import { resolveSessionProviderId } from './session-provider'
 
 export interface WorkspaceEntry {
   path: string
@@ -12,6 +14,7 @@ export interface SidebarSessionEntry {
   externalId: string
   title?: string
   status: string
+  providerId: ProviderId
   clientId?: string
   isDriven: boolean
 }
@@ -23,9 +26,13 @@ interface SidebarDataValue {
   activeSessionId: string | null
   addWorkspace: () => Promise<void>
   removeWorkspace: (path: string) => Promise<void>
-  selectSession: (workspacePath: string, externalId: string) => void
+  selectSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
   createSession: (workspacePath: string) => Promise<void>
-  deleteSession: (workspacePath: string, externalId: string) => Promise<void>
+  deleteSession: (
+    workspacePath: string,
+    externalId: string,
+    providerId: ProviderId,
+  ) => Promise<void>
 }
 
 const SidebarDataContext = createContext<SidebarDataValue | null>(null)
@@ -36,6 +43,7 @@ const EMPTY_SIDEBAR_ROWS: Array<{
   externalId: string
   title?: string
   status: string
+  providerId?: unknown
   clientId?: string
 }> = []
 
@@ -71,6 +79,7 @@ export function SidebarDataProvider({ children }: { children: ReactNode }) {
         externalId: row.externalId,
         title: row.title,
         status: row.status,
+        providerId: resolveSessionProviderId(row.providerId),
         clientId: row.clientId,
         isDriven: !!ui.currentClientId && row.clientId === ui.currentClientId,
       })

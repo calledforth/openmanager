@@ -1,4 +1,5 @@
 import { MessageSquare, Plus, ChevronDown, FolderPlus, Trash2 } from 'lucide-react'
+import type { ProviderId } from '@agentpack/contract'
 import { cn } from '../../lib/utils'
 import { typographyBodySm } from '../../lib/typography'
 import { SidebarSettingsMenu } from './SidebarSettingsMenu'
@@ -6,7 +7,12 @@ import { SidebarSettingsMenu } from './SidebarSettingsMenu'
 export interface SidebarWorkspace {
   path: string
   name: string
-  sessions: Array<{ externalId: string; title?: string; status: string }>
+  sessions: Array<{
+    externalId: string
+    title?: string
+    status: string
+    providerId?: ProviderId
+  }>
 }
 
 export function WorkspaceSidebarView({
@@ -29,8 +35,8 @@ export function WorkspaceSidebarView({
   collapsedWorkspacePaths: string[]
   onToggleWorkspaceCollapse: (path: string) => void
   onCreateSession: (workspacePath: string) => void
-  onSelectSession: (workspacePath: string, externalId: string) => void
-  onDeleteSession: (workspacePath: string, externalId: string) => void
+  onSelectSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
+  onDeleteSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
   onRemoveWorkspace: (path: string) => void
   onAddWorkspace: () => void
 }) {
@@ -107,9 +113,9 @@ function WorkspaceGroup({
   activeSessionId: string | null
   isCollapsed: boolean
   onToggleCollapse: () => void
-  onSelectSession: (workspacePath: string, externalId: string) => void
+  onSelectSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
   onCreateSession: (workspacePath: string) => void
-  onDeleteSession: (workspacePath: string, externalId: string) => void
+  onDeleteSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
   onRemove: () => void
 }) {
   return (
@@ -155,10 +161,11 @@ function WorkspaceGroup({
           {/* Session rows */}
           {workspace.sessions.map((s) => {
             const isActive = isActiveWorkspace && s.externalId === activeSessionId
+            const providerId = s.providerId ?? 'opencode'
             return (
               <button
                 key={s.externalId}
-                onClick={() => onSelectSession(workspace.path, s.externalId)}
+                onClick={() => onSelectSession(workspace.path, s.externalId, providerId)}
                 className={cn(
                   'group flex w-full items-center gap-2 rounded-md px-2.5 py-1 mb-[1px] text-left transition-default',
                   isActive
@@ -177,7 +184,7 @@ function WorkspaceGroup({
                 <button
                   onClick={(e) => {
                     e.stopPropagation()
-                    onDeleteSession(workspace.path, s.externalId)
+                    onDeleteSession(workspace.path, s.externalId, providerId)
                   }}
                   className="shrink-0 rounded p-1 text-muted-foreground/30 opacity-0 transition-default group-hover:opacity-100 hover:text-red-400 hover:bg-red-400/10"
                 >

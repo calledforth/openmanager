@@ -52,7 +52,9 @@ export function WorkspaceSidebar({ collapsed }: { collapsed: boolean }) {
       onToggleWorkspaceCollapse={toggleWorkspaceCollapse}
       onCreateSession={(workspacePath) => void createSession(workspacePath)}
       onSelectSession={selectSession}
-      onDeleteSession={(workspacePath, externalId) => void deleteSession(workspacePath, externalId)}
+      onDeleteSession={(workspacePath, externalId, providerId) =>
+        void deleteSession(workspacePath, externalId, providerId)
+      }
       onRemoveWorkspace={(path) => void removeWorkspace(path)}
       onAddWorkspace={() => void addWorkspace()}
     />

@@ -1,6 +1,16 @@
 import { v } from 'convex/values'
 import { mutation, query } from './_generated/server'
 
+function routePayloadToSessionProvider(payload: string, providerId: string): string {
+  try {
+    const parsed = JSON.parse(payload)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return payload
+    return JSON.stringify({ ...parsed, providerId })
+  } catch {
+    return payload
+  }
+}
+
 export const submit = mutation({
   args: {
     workspacePath: v.string(),
@@ -18,6 +28,7 @@ export const submit = mutation({
 
     let sessionId: any
     let targetClientId = args.clientId
+    let payload = args.payload
 
     if (args.sessionExternalId) {
       const session = await ctx.db
@@ -27,6 +38,7 @@ export const submit = mutation({
       if (session) {
         sessionId = session._id
         targetClientId = session.clientId ?? args.clientId
+        payload = routePayloadToSessionProvider(args.payload, session.providerId ?? 'opencode')
       }
     }
 
@@ -36,7 +48,7 @@ export const submit = mutation({
       sessionId,
       targetClientId,
       type: args.type,
-      payload: args.payload,
+      payload,
       status: 'pending',
       attempts: 0,
       createdAt: now,
@@ -75,6 +87,7 @@ export const submitMessage = mutation({
         workspacePath: args.workspacePath,
         sessionExternalId: args.sessionExternalId,
         content: args.content,
+        providerId: session.providerId ?? 'opencode',
       }),
       status: 'pending',
       attempts: 0,

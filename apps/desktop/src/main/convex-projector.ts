@@ -78,6 +78,7 @@ export class ConvexProjector {
   private readonly buffers = new Map<string, MessageBuffer>()
   private readonly turns = new Map<string, ActiveTurn>()
   private readonly sessionByThread = new Map<string, string>()
+  private readonly providerByThread = new Map<string, AgentEvent['providerId']>()
   private readonly queues = new Map<string, Promise<void>>()
 
   constructor(
@@ -97,10 +98,12 @@ export class ConvexProjector {
     this.enqueue(threadId, async () => {
       const sessionId = this.sessionByThread.get(threadId)
       if (!sessionId || !workspacePath) return
+      const providerId = this.providerByThread.get(threadId)
       await this.runMutation('sessions.upsertTitle', (api as any).sessions.upsertTitle, {
         workspacePath,
         externalId: sessionId,
         title,
+        ...(providerId ? { providerId } : {}),
         clientId: this.clientId,
       })
     })
@@ -128,18 +131,21 @@ export class ConvexProjector {
 
   private async project(event: AgentEvent): Promise<void> {
     const workspacePath = event.workspaceId
+    this.providerByThread.set(event.threadId, event.providerId)
     if (event.sessionId) this.sessionByThread.set(event.threadId, event.sessionId)
 
     switch (event.event) {
       case 'session_created':
       case 'session_loaded':
-        if (workspacePath) await this.upsertSession(workspacePath, event.sessionId, 'idle')
+        if (workspacePath)
+          await this.upsertSession(workspacePath, event.sessionId, 'idle', event.providerId)
         return
       case 'session_deleted':
         await this.runMutation('sessions.remove', api.sessions.remove, {
           externalId: event.sessionId,
         })
         this.sessionByThread.delete(event.threadId)
+        this.providerByThread.delete(event.threadId)
         return
       case 'prompt_started':
         await this.startTurn(event, workspacePath)
@@ -182,6 +188,7 @@ export class ConvexProjector {
             workspacePath,
             externalId: event.sessionId,
             title: event.data.title,
+            providerId: event.providerId,
             clientId: this.clientId,
           })
         }
@@ -190,7 +197,7 @@ export class ConvexProjector {
       case 'runtime_error':
       case 'auth_required':
         if (event.sessionId && workspacePath) {
-          await this.upsertSession(workspacePath, event.sessionId, 'error')
+          await this.upsertSession(workspacePath, event.sessionId, 'error', event.providerId)
           await this.finalizeTurn(event.threadId, 'error')
         }
         return
@@ -218,7 +225,8 @@ export class ConvexProjector {
       userMessageId,
       assistantMessageId,
     })
-    if (workspacePath) await this.upsertSession(workspacePath, event.sessionId, 'running')
+    if (workspacePath)
+      await this.upsertSession(workspacePath, event.sessionId, 'running', event.providerId)
     await this.runMutation('messages.upsertFinalized', api.messages.upsertFinalized, {
       sessionExternalId: event.sessionId,
       externalId: userMessageId,
@@ -233,6 +241,7 @@ export class ConvexProjector {
         workspacePath,
         externalId: event.sessionId,
         title,
+        providerId: event.providerId,
         clientId: this.clientId,
       })
     }
@@ -255,7 +264,8 @@ export class ConvexProjector {
       }
       await this.finalizeTurn(event.threadId, event.data.stopReason)
     }
-    if (workspacePath) await this.upsertSession(workspacePath, event.sessionId, 'idle')
+    if (workspacePath)
+      await this.upsertSession(workspacePath, event.sessionId, 'idle', event.providerId)
   }
 
   private async appendAgentChunk(
@@ -615,11 +625,17 @@ export class ConvexProjector {
     }
   }
 
-  private upsertSession(workspacePath: string, sessionId: string, status: string): Promise<void> {
+  private upsertSession(
+    workspacePath: string,
+    sessionId: string,
+    status: string,
+    providerId: AgentEvent['providerId'],
+  ): Promise<void> {
     return this.runMutation('sessions.upsertStatus', api.sessions.upsertStatus, {
       workspacePath,
       externalId: sessionId,
       status,
+      providerId,
       clientId: this.clientId,
     })
   }
