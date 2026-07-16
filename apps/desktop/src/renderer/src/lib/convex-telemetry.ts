@@ -91,6 +91,9 @@ export function useTrackedQuery(
     }
   }, [argsKey, details, isSkipped, name])
 
+  // Depend on argsKey (stable string), not the args object: callers pass fresh
+  // object literals every render, and keying this effect on identity made it
+  // re-run (and re-stringify the full result) on every parent render.
   useEffect(() => {
     if (isSkipped || result === undefined) return
     const serialized = JSON.stringify(result)
@@ -101,11 +104,12 @@ export function useTrackedQuery(
       phase: 'update',
       name,
       requestBytes: estimateBytes(args),
-      responseBytes: estimateBytes(result),
+      responseBytes: serialized.length,
       details: details ?? subscriptionId.current,
       ...extractContext(args),
     })
-  }, [args, details, isSkipped, name, result])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [argsKey, details, isSkipped, name, result])
 
   return result
 }

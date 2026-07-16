@@ -340,26 +340,33 @@ export function useStreamingMessage(messageExternalId: string) {
 }
 
 export function ActiveSessionProvider({ children }: { children: ReactNode }) {
-  const ui = useAppUi()
+  // Destructure so callbacks/memos below depend on the stable pieces they use,
+  // not on the whole context value (which changes on unrelated updates).
+  const {
+    activeSessionId,
+    currentClientId,
+    sendMessage: uiSendMessage,
+    abortSession: uiAbortSession,
+  } = useAppUi()
   const streamingStore = useMemo(() => new StreamingMessagesStore(), [])
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<UIMessage[]>([])
 
   const rawSession = useTrackedQuery(
     'sessions.getByExternalId.active',
     api.sessions.getByExternalId,
-    ui.activeSessionId ? { externalId: ui.activeSessionId } : 'skip',
+    activeSessionId ? { externalId: activeSessionId } : 'skip',
   ) as { externalId: string; title?: string; status: string; clientId?: string } | null | undefined
 
   const rawMessages = useTrackedQuery(
     'messages.listMetadata',
     api.messages.listMetadata,
-    ui.activeSessionId ? { sessionExternalId: ui.activeSessionId } : 'skip',
+    activeSessionId ? { sessionExternalId: activeSessionId } : 'skip',
   ) as typeof EMPTY_MESSAGES | undefined
 
   const messageList = rawMessages ?? EMPTY_MESSAGES
-  const isMessagesLoading = !!ui.activeSessionId && rawMessages === undefined
+  const isMessagesLoading = !!activeSessionId && rawMessages === undefined
   const activeSessionDriven =
-    !!rawSession && !!ui.currentClientId && rawSession.clientId === ui.currentClientId
+    !!rawSession && !!currentClientId && rawSession.clientId === currentClientId
   const activeSession = useMemo<ActiveSessionDetails | null>(
     () =>
       rawSession
@@ -376,12 +383,12 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const cleanup = window.electronAPI.onStreamToken((event) => {
-      if (!ui.activeSessionId || event.sessionId !== ui.activeSessionId) return
+      if (!activeSessionId || event.sessionId !== activeSessionId) return
       if (!activeSessionDriven) return
       streamingStore.update(event)
     })
     return cleanup
-  }, [activeSessionDriven, streamingStore, ui.activeSessionId])
+  }, [activeSessionDriven, streamingStore, activeSessionId])
 
   useEffect(() => {
     const finalIds = new Set(
@@ -403,7 +410,7 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
       return []
     })
     streamingStore.reset()
-  }, [streamingStore, ui.activeSessionId])
+  }, [streamingStore, activeSessionId])
 
   useEffect(() => {
     const persistedIds = new Set(messageList.map((message) => message.externalId))
@@ -440,7 +447,7 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
 
       setOptimisticUserMessages((prev) => [...prev, optimisticMessage])
       try {
-        const jobId = await ui.sendMessage(
+        const jobId = await uiSendMessage(
           trimmed,
           localExternalId,
           attachments.map(promptAttachment),
@@ -461,7 +468,7 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
         throw error
       }
     },
-    [messageList, optimisticUserMessages.length, ui],
+    [messageList, optimisticUserMessages.length, uiSendMessage],
   )
 
   const messages: UIMessage[] = useMemo(() => {
@@ -477,22 +484,22 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<ActiveSessionValue>(
     () => ({
-      activeSessionId: ui.activeSessionId,
+      activeSessionId,
       activeSession,
       activeSessionDriven,
       isMessagesLoading,
       messages,
-      abortSession: ui.abortSession,
+      abortSession: uiAbortSession,
       sendMessage,
       streamingStore,
     }),
     [
-      ui.activeSessionId,
+      activeSessionId,
       activeSession,
       activeSessionDriven,
       isMessagesLoading,
       messages,
-      ui.abortSession,
+      uiAbortSession,
       sendMessage,
       streamingStore,
     ],

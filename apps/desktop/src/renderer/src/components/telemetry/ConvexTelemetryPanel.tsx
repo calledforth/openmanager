@@ -542,19 +542,25 @@ export function ConvexTelemetryPanel({
     injectStyles()
   }, [])
 
+  // Only subscribe while the panel is open: when closed, live updates would
+  // just burn renders on an invisible component. The snapshot on open catches
+  // up on anything missed.
   useEffect(() => {
+    if (!open) return
     window.electronAPI
       .getTelemetrySnapshot()
       .then((snapshot) => {
-        setEvents(snapshot.events as TelemetryEvent[])
+        setEvents((snapshot.events as TelemetryEvent[]).slice(-500))
         setFilePath(snapshot.filePath)
       })
       .catch(() => undefined)
 
-    return window.electronAPI.onTelemetryUpdate((event) => {
-      setEvents((prev) => [...prev, event as TelemetryEvent].slice(-500))
+    return window.electronAPI.onTelemetryUpdate((update) => {
+      // Main batches broadcasts (array); tolerate single events for safety.
+      const batch = (Array.isArray(update) ? update : [update]) as TelemetryEvent[]
+      setEvents((prev) => [...prev, ...batch].slice(-500))
     })
-  }, [])
+  }, [open])
 
   // Build merged entries from all raw events
   const allMerged = useMemo(() => buildMergedEntries(events), [events])
