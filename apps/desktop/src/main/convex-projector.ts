@@ -215,11 +215,26 @@ export class ConvexProjector {
   ): Promise<void> {
     const userMessageId = event.data.userMessageId
     const assistantMessageId = event.messageId ?? `agent_asst_${event.id}`
-    const userPart: PartData = {
-      type: 'text',
-      id: `${userMessageId}_text`,
-      text: event.data.prompt,
-    }
+    const attachments = event.data.attachments ?? []
+    const userParts: PartData[] = [
+      ...(event.data.prompt
+        ? [
+            {
+              type: 'text',
+              id: `${userMessageId}_text`,
+              text: event.data.prompt,
+            },
+          ]
+        : []),
+      ...attachments.map((attachment, index) => ({
+        type: 'image',
+        id: `${userMessageId}_image_${index}`,
+        attachmentId: attachment.id,
+        name: attachment.name,
+        mimeType: attachment.mimeType,
+        size: attachment.size,
+      })),
+    ]
     this.turns.set(event.threadId, {
       sessionId: event.sessionId,
       userMessageId,
@@ -232,10 +247,21 @@ export class ConvexProjector {
       externalId: userMessageId,
       content: event.data.prompt,
       role: 'user',
-      parts: [userPart],
+      parts: userParts,
       runtimeMetadata: { providerId: event.providerId },
     })
-    const title = titleFromPrompt(event.data.prompt)
+    if (attachments.length) {
+      await this.runMutation(
+        'attachments.assignToMessage',
+        (api as any).attachments.assignToMessage,
+        {
+          ids: attachments.map((attachment) => attachment.id),
+          clientId: this.clientId,
+          messageExternalId: userMessageId,
+        },
+      )
+    }
+    const title = titleFromPrompt(event.data.prompt) ?? attachments[0]?.name
     if (title && workspacePath) {
       await this.runMutation('sessions.upsertTitle', (api as any).sessions.upsertTitle, {
         workspacePath,

@@ -39,6 +39,19 @@ export default defineSchema({
     .index('by_externalId', ['externalId'])
     .index('by_session_seq', ['sessionId', 'sequenceNum']),
 
+  attachments: defineTable({
+    storageId: v.id('_storage'),
+    clientId: v.string(),
+    name: v.string(),
+    mimeType: v.string(),
+    size: v.number(),
+    messageExternalId: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index('by_client', ['clientId'])
+    .index('by_message', ['messageExternalId'])
+    .index('by_created_at', ['createdAt']),
+
   pending_jobs: defineTable({
     workspaceId: v.id('workspaces'),
     sessionId: v.optional(v.id('sessions')),

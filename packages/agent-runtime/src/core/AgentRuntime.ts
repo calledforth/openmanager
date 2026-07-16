@@ -1,4 +1,10 @@
-import type { AgentEvent, CapabilityKey, PermissionOutcome, ProviderId } from '@agentpack/contract'
+import type {
+  AgentEvent,
+  CapabilityKey,
+  PermissionOutcome,
+  PromptInput,
+  ProviderId,
+} from '@agentpack/contract'
 import { AcpBackend } from '../backends/acp/AcpBackend.js'
 import type { Backend, BackendEvent, SessionResult } from '../backends/Backend.js'
 import type { HostDeps } from '../host.js'
@@ -102,7 +108,7 @@ export class AgentRuntime {
   }
 
   async prompt(
-    args: RuntimeSessionArgs & { prompt: string; userMessageId?: string },
+    args: RuntimeSessionArgs & { prompt: PromptInput; userMessageId?: string },
   ): Promise<SessionResult> {
     const session = await this.ensureSession(args)
     const key = args.threadId
@@ -118,7 +124,7 @@ export class AgentRuntime {
     return session
   }
   sendPrompt(
-    args: RuntimeSessionArgs & { prompt: string; userMessageId?: string },
+    args: RuntimeSessionArgs & { prompt: PromptInput; userMessageId?: string },
   ): Promise<SessionResult> {
     return this.prompt(args)
   }

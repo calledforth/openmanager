@@ -100,6 +100,48 @@ describe('ConvexProjector streaming contracts', () => {
     expect(userWrites[0]).toMatchObject({ externalId: 'user-1', content: 'Hello' })
   })
 
+  it('persists image references with the canonical user message', async () => {
+    const { projector, mutations } = setup()
+    projector.consume(
+      event(1, {
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: {
+          prompt: '',
+          userMessageId: 'user-image-1',
+          attachments: [
+            {
+              id: 'attachment-1',
+              name: 'icon.png',
+              mimeType: 'image/png',
+              size: 1129,
+            },
+          ],
+        },
+      }),
+    )
+    await projector.waitForThread(base.threadId)
+
+    const userWrite = mutations.find((args) => args.externalId === 'user-image-1')
+    expect(userWrite).toMatchObject({
+      content: '',
+      parts: [
+        expect.objectContaining({
+          type: 'image',
+          attachmentId: 'attachment-1',
+          name: 'icon.png',
+        }),
+      ],
+    })
+    expect(mutations).toContainEqual(
+      expect.objectContaining({
+        ids: ['attachment-1'],
+        clientId: 'client-1',
+        messageExternalId: 'user-image-1',
+      }),
+    )
+  })
+
   it('starts remote chunks at zero and does not persist every text token', async () => {
     const { projector, mutations } = setup()
     projector.consume(

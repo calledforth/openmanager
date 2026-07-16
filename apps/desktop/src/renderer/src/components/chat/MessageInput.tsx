@@ -1,7 +1,11 @@
+import { useEffect, useState } from 'react'
+import { api } from '@openmanager/convex/_generated/api'
 import { useAppUi } from '../../providers/app-ui-provider'
 import { useActiveSession } from '../../providers/active-session-provider'
 import { MessageInputView } from './MessageInputView'
 import { deriveSessionChrome } from '@agentpack/view'
+import { useTrackedMutation } from '../../lib/convex-telemetry'
+import type { DraftImageAttachment, UploadedImageAttachment } from '../../lib/attachments'
 
 export function MessageInput() {
   const {
@@ -21,8 +25,23 @@ export function MessageInput() {
     defaultProviderId,
     agentEvents,
     providers,
+    currentClientId,
+    acpPromptCapabilitiesByProvider,
   } = useAppUi()
   const { sendMessage, abortSession, activeSession } = useActiveSession()
+  const generateUploadUrl = useTrackedMutation(
+    'attachments.generateUploadUrl',
+    (api as any).attachments.generateUploadUrl,
+  )
+  const registerAttachment = useTrackedMutation(
+    'attachments.register',
+    (api as any).attachments.register,
+  )
+  const removeAttachments = useTrackedMutation(
+    'attachments.removeMany',
+    (api as any).attachments.removeMany,
+  )
+  const [modelImageSupport, setModelImageSupport] = useState<boolean | null | undefined>(undefined)
 
   const disabled =
     !activeWorkspacePath || pendingDraftSessionStart || (!activeSessionId && !isSessionDraftOpen)
@@ -39,8 +58,7 @@ export function MessageInput() {
   const currentProviderId = chrome.providerPicker.currentProviderId ?? defaultProviderId
   const providerReady = agentUiStatusByProvider[currentProviderId] === 'connected'
   const currentProviderName =
-    providerOptions.find((provider) => provider.id === currentProviderId)?.name ??
-    currentProviderId
+    providerOptions.find((provider) => provider.id === currentProviderId)?.name ?? currentProviderId
   const modeOptions = (chrome.modePicker?.options ?? []).map((mode) => ({
     id: mode.id,
     name: mode.label,
@@ -53,6 +71,86 @@ export function MessageInput() {
   const currentModelId = runtimeState?.models?.currentModelId ?? ''
   const canChangeSettings = !!activeSessionId || isSessionDraftOpen
   const isStreaming = activeSession?.status === 'running' || activeSession?.status === 'busy'
+  const providerImageSupport = acpPromptCapabilitiesByProvider[currentProviderId]?.image
+  const providerSupportsImages = providerImageSupport === true
+
+  useEffect(() => {
+    let cancelled = false
+    setModelImageSupport(undefined)
+    if (!currentModelId) {
+      setModelImageSupport(null)
+      return
+    }
+    window.electronAPI
+      .getModelImageSupport(currentProviderId, currentModelId)
+      .then((supported) => {
+        if (!cancelled) setModelImageSupport(supported)
+      })
+      .catch(() => {
+        if (!cancelled) setModelImageSupport(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [currentModelId, currentProviderId])
+
+  const uploadAndSend = async (text: string, drafts: DraftImageAttachment[]) => {
+    if (!currentClientId) throw new Error('Client identity unavailable')
+    const uploaded: UploadedImageAttachment[] = []
+    try {
+      for (const draft of drafts) {
+        const uploadUrl = (await generateUploadUrl({ clientId: currentClientId })) as string
+        const response = await fetch(uploadUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': draft.file.type },
+          body: draft.file,
+        })
+        if (!response.ok) throw new Error(`Failed to upload ${draft.file.name}`)
+        const result = (await response.json()) as { storageId?: string }
+        if (!result.storageId)
+          throw new Error(`Upload did not return storage for ${draft.file.name}`)
+        const attachmentId = (await registerAttachment({
+          storageId: result.storageId,
+          clientId: currentClientId,
+          name: draft.file.name,
+          mimeType: draft.file.type,
+          size: draft.file.size,
+        })) as string
+        uploaded.push({
+          id: attachmentId,
+          name: draft.file.name,
+          mimeType: draft.file.type,
+          size: draft.file.size,
+          previewUrl: draft.previewUrl,
+        })
+      }
+      await sendMessage(text, uploaded)
+    } catch (error) {
+      if (uploaded.length) {
+        await removeAttachments({
+          ids: uploaded.map((attachment) => attachment.id),
+          clientId: currentClientId,
+        }).catch(() => undefined)
+      }
+      throw error
+    }
+  }
+
+  const draftKey = activeSessionId
+    ? `session:${activeSessionId}`
+    : activeWorkspacePath
+      ? `draft:${activeWorkspacePath}`
+      : 'no-workspace'
+  const imageSupportMessage =
+    providerImageSupport === undefined
+      ? 'Checking whether the provider accepts image prompts…'
+      : !providerSupportsImages
+        ? `${currentProviderName} does not advertise image prompt support.`
+        : modelImageSupport === undefined
+          ? 'Checking whether the selected model can read images…'
+          : modelImageSupport === false
+            ? `${modelOptions.find((model) => model.id === currentModelId)?.name ?? currentModelId} cannot read images. Choose a vision-capable model.`
+            : null
 
   return (
     <MessageInputView
@@ -75,6 +173,11 @@ export function MessageInput() {
       showModelControl={chrome.modelPicker !== null}
       agent={acpAgentInfoByProvider[currentProviderId] ?? null}
       isStreaming={isStreaming}
+      draftKey={draftKey}
+      imageUploadEnabled={
+        providerSupportsImages && modelImageSupport !== false && modelImageSupport !== undefined
+      }
+      imageSupportMessage={imageSupportMessage}
       onModeChange={(id) => {
         if (activeSessionId) {
           void setSessionMode(activeSessionId, id)
@@ -90,9 +193,7 @@ export function MessageInput() {
         }
         setDraftModel(id)
       }}
-      onSend={(text) => {
-        void sendMessage(text)
-      }}
+      onSend={uploadAndSend}
       onAbort={() => {
         if (activeSessionId) {
           void abortSession(activeSessionId)

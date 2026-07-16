@@ -142,3 +142,12 @@ export const listPending = query({
       .collect()
   },
 })
+
+export const getStatus = query({
+  args: { jobId: v.id('pending_jobs') },
+  handler: async (ctx, args) => {
+    const job = await ctx.db.get(args.jobId)
+    if (!job) return null
+    return { status: job.status, lastError: job.lastError }
+  },
+})

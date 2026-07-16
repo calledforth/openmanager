@@ -16,6 +16,8 @@ import {
   type AvailableCommand,
   type ProviderId,
   type ProviderMetadata,
+  type PromptAttachment,
+  type PromptCapabilities,
 } from '@agentpack/contract'
 import {
   recordRendererTelemetry,
@@ -87,6 +89,7 @@ interface AppUiValue {
   agentStatusByProvider: Partial<Record<ProviderId, SidecarStatus>>
   agentUiStatusByProvider: Partial<Record<ProviderId, ProviderUiStatus>>
   acpAgentInfoByProvider: Partial<Record<ProviderId, AgentInfo>>
+  acpPromptCapabilitiesByProvider: Partial<Record<ProviderId, PromptCapabilities>>
   defaultProviderId: ProviderId
   agentEvents: AgentEvent[]
   providers: ProviderMetadata[]
@@ -105,7 +108,11 @@ interface AppUiValue {
     externalId: string,
     providerId?: ProviderId,
   ) => Promise<void>
-  sendMessage: (content: string, userMessageId?: string) => Promise<void>
+  sendMessage: (
+    content: string,
+    userMessageId?: string,
+    attachments?: PromptAttachment[],
+  ) => Promise<string | null>
   abortSession: (externalId: string) => Promise<void>
   resolvePermission: (
     sessionExternalId: string,
@@ -144,6 +151,9 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null)
   const [acpAgentInfoByProvider, setAcpAgentInfoByProvider] = useState<
     Partial<Record<ProviderId, AgentInfo>>
+  >({})
+  const [acpPromptCapabilitiesByProvider, setAcpPromptCapabilitiesByProvider] = useState<
+    Partial<Record<ProviderId, PromptCapabilities>>
   >({})
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([])
   const [providers, setProviders] = useState<ProviderMetadata[]>([])
@@ -450,45 +460,47 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
   )
 
   const sendMessage = useCallback(
-    async (content: string, userMessageId?: string) => {
+    async (content: string, userMessageId?: string, attachments: PromptAttachment[] = []) => {
       const trimmed = content.trim()
-      if (!activeWorkspacePath || !trimmed) return
+      if (!activeWorkspacePath || (!trimmed && attachments.length === 0)) return null
       setError(null)
       if (!currentClientId) {
-        setError('Client identity unavailable')
-        return
+        const error = new Error('Client identity unavailable')
+        setError(error.message)
+        throw error
       }
       if (!activeSessionId) {
-        if (!isSessionDraftOpen || pendingDraftSessionStart) return
+        if (!isSessionDraftOpen || pendingDraftSessionStart) return null
         const draftSelection = draftSelectionByWorkspace[activeWorkspacePath] ?? {}
         const draftProviderId = draftSelection.providerId ?? defaultProviderId
         const ready = await ensureProvider(draftProviderId, activeWorkspacePath)
         if (!ready) {
-          setError(
+          const error = new Error(
             `${providerDisplayName(draftProviderId)} is unavailable. Retry connection from the sidebar.`,
           )
-          return
+          setError(error.message)
+          throw error
         }
         setPendingDraftSessionStart(true)
         try {
-          await submitJob({
+          return (await submitJob({
             workspacePath: activeWorkspacePath,
             type: 'start_session_with_message',
             payload: JSON.stringify({
               workspacePath: activeWorkspacePath,
               content: trimmed,
+              attachments,
               userMessageId,
               providerId: draftProviderId,
               ...(draftSelection.modelId ? { preferredModelId: draftSelection.modelId } : {}),
               ...(draftSelection.modeId ? { preferredModeId: draftSelection.modeId } : {}),
             }),
             clientId: currentClientId,
-          })
-          return
+          })) as string
         } catch (err) {
           setPendingDraftSessionStart(false)
           setError((err as Error).message)
-          return
+          throw err
         }
       }
       try {
@@ -498,23 +510,25 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           name: 'message.send',
           sessionExternalId: activeSessionId,
           workspacePath: activeWorkspacePath,
-          details: trimmed.slice(0, 120),
+          details: trimmed.slice(0, 120) || `${attachments.length} image attachment(s)`,
         })
-        await submitJob({
+        return (await submitJob({
           workspacePath: activeWorkspacePath,
           type: 'send_message',
           payload: JSON.stringify({
             workspacePath: activeWorkspacePath,
             sessionExternalId: activeSessionId,
             content: trimmed,
+            attachments,
             userMessageId,
             providerId: acpSessionStateById[activeSessionId]?.providerId ?? defaultProviderId,
           }),
           clientId: currentClientId,
           sessionExternalId: activeSessionId,
-        })
+        })) as string
       } catch (err) {
         setError((err as Error).message)
+        throw err
       }
     },
     [
@@ -801,6 +815,13 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     window.electronAPI
+      .getAgentPromptCapabilities()
+      .then(setAcpPromptCapabilitiesByProvider)
+      .catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    window.electronAPI
       .getAgentStatuses()
       .then((statuses) => {
         for (const [providerId, status] of Object.entries(statuses)) {
@@ -826,6 +847,12 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           if (event.data.agentInfo) {
             const agentInfo = event.data.agentInfo
             setAcpAgentInfoByProvider((prev) => ({ ...prev, [event.providerId]: agentInfo }))
+          }
+          if (event.data.promptCapabilities) {
+            setAcpPromptCapabilitiesByProvider((prev) => ({
+              ...prev,
+              [event.providerId]: event.data.promptCapabilities,
+            }))
           }
           return
         case 'session_created':
@@ -970,6 +997,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       agentStatusByProvider,
       agentUiStatusByProvider,
       acpAgentInfoByProvider,
+      acpPromptCapabilitiesByProvider,
       defaultProviderId,
       agentEvents,
       providers,
@@ -1002,6 +1030,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       agentStatusByProvider,
       agentUiStatusByProvider,
       acpAgentInfoByProvider,
+      acpPromptCapabilitiesByProvider,
       defaultProviderId,
       agentEvents,
       providers,

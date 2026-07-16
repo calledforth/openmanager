@@ -5,9 +5,11 @@ import {
   useLayoutEffect,
   useCallback,
   type KeyboardEvent,
+  type ClipboardEvent,
+  type DragEvent,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowUp, Plus, ChevronDown, Check, Square, Mic } from 'lucide-react'
+import { ArrowUp, Plus, ChevronDown, Check, Square, Mic, X, LoaderCircle } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import type { ProviderId } from '@agentpack/contract'
 import {
@@ -16,6 +18,12 @@ import {
   btnSend,
   COMPOSER_TEXTAREA_MAX_PX,
 } from './chatComposerStyles'
+import {
+  ACCEPTED_IMAGE_TYPES,
+  MAX_IMAGE_ATTACHMENTS,
+  MAX_IMAGE_BYTES,
+  type DraftImageAttachment,
+} from '../../lib/attachments'
 
 type MenuCoords = { left: number; bottom: number; width: number }
 
@@ -246,6 +254,9 @@ export function MessageInputView({
   showModelControl,
   agent,
   isStreaming,
+  draftKey,
+  imageUploadEnabled,
+  imageSupportMessage,
   onModeChange,
   onProviderChange,
   onModelChange,
@@ -271,14 +282,55 @@ export function MessageInputView({
   showModelControl: boolean
   agent?: { name?: string; version?: string } | null
   isStreaming: boolean
+  draftKey: string
+  imageUploadEnabled: boolean
+  imageSupportMessage: string | null
   onModeChange: (id: string) => void
   onProviderChange: (id: ProviderId) => void
   onModelChange: (id: string) => void
-  onSend: (text: string) => void
+  onSend: (text: string, attachments: DraftImageAttachment[]) => Promise<void>
   onAbort: () => void
 }) {
-  const [text, setText] = useState('')
+  const [drafts, setDrafts] = useState<
+    Record<string, { text: string; attachments: DraftImageAttachment[] }>
+  >({})
+  const [sending, setSending] = useState(false)
+  const [attachmentError, setAttachmentError] = useState<string | null>(null)
+  const [isDragging, setIsDragging] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const draftsRef = useRef(drafts)
+  const draft = drafts[draftKey] ?? { text: '', attachments: [] }
+  const text = draft.text
+  const attachments = draft.attachments
+
+  useEffect(() => {
+    draftsRef.current = drafts
+  }, [drafts])
+
+  useEffect(
+    () => () => {
+      for (const item of Object.values(draftsRef.current)) {
+        for (const attachment of item.attachments) URL.revokeObjectURL(attachment.previewUrl)
+      }
+    },
+    [],
+  )
+
+  const updateDraft = useCallback(
+    (
+      update: (current: { text: string; attachments: DraftImageAttachment[] }) => {
+        text: string
+        attachments: DraftImageAttachment[]
+      },
+    ) => {
+      setDrafts((current) => {
+        const active = current[draftKey] ?? { text: '', attachments: [] }
+        return { ...current, [draftKey]: update(active) }
+      })
+    },
+    [draftKey],
+  )
 
   const planOption = modeOptions.find((m) => m.id === 'plan')
   const nonPlanModes = modeOptions.filter((m) => m.id !== 'plan')
@@ -304,22 +356,96 @@ export function MessageInputView({
     return () => window.removeEventListener('keydown', handler)
   }, [])
 
-  const send = () => {
+  const addFiles = useCallback(
+    (files: File[]) => {
+      if (!imageUploadEnabled) {
+        setAttachmentError(imageSupportMessage ?? 'Image uploads are unavailable.')
+        return
+      }
+      let error: string | null = null
+      updateDraft((current) => {
+        const next = [...current.attachments]
+        for (const file of files) {
+          if (next.length >= MAX_IMAGE_ATTACHMENTS) {
+            error = `You can attach up to ${MAX_IMAGE_ATTACHMENTS} images.`
+            break
+          }
+          if (!(ACCEPTED_IMAGE_TYPES as readonly string[]).includes(file.type)) {
+            error = `${file.name} is not a PNG, JPEG, or WebP image.`
+            continue
+          }
+          if (file.size <= 0 || file.size > MAX_IMAGE_BYTES) {
+            error = `${file.name} must be smaller than 10 MB.`
+            continue
+          }
+          next.push({ id: crypto.randomUUID(), file, previewUrl: URL.createObjectURL(file) })
+        }
+        return { ...current, attachments: next }
+      })
+      setAttachmentError(error)
+    },
+    [imageSupportMessage, imageUploadEnabled, updateDraft],
+  )
+
+  const removeAttachment = (id: string) => {
+    updateDraft((current) => {
+      const removed = current.attachments.find((attachment) => attachment.id === id)
+      if (removed) URL.revokeObjectURL(removed.previewUrl)
+      return {
+        ...current,
+        attachments: current.attachments.filter((attachment) => attachment.id !== id),
+      }
+    })
+    setAttachmentError(null)
+  }
+
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData.files).filter((file) =>
+      file.type.startsWith('image/'),
+    )
+    if (!files.length) return
+    event.preventDefault()
+    addFiles(files)
+  }
+
+  const onDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    setIsDragging(false)
+    addFiles(Array.from(event.dataTransfer.files))
+  }
+
+  const send = async () => {
     const trimmed = text.trim()
-    if (!trimmed || disabled) return
-    onSend(trimmed)
-    setText('')
-    if (textareaRef.current) textareaRef.current.style.height = 'auto'
+    if ((!trimmed && attachments.length === 0) || disabled || sending) return
+    if (attachments.length && !imageUploadEnabled) {
+      setAttachmentError(imageSupportMessage ?? 'The selected model cannot read images.')
+      return
+    }
+    setSending(true)
+    setAttachmentError(null)
+    try {
+      await onSend(trimmed, attachments)
+      setDrafts((current) => {
+        const next = { ...current }
+        delete next[draftKey]
+        return next
+      })
+      if (textareaRef.current) textareaRef.current.style.height = 'auto'
+    } catch (error) {
+      setAttachmentError(error instanceof Error ? error.message : 'Failed to send message')
+    } finally {
+      setSending(false)
+    }
   }
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      send()
+      void send()
     }
   }
 
-  const hasContent = text.trim().length > 0
+  const hasContent = text.trim().length > 0 || attachments.length > 0
   const placeholder = !activeWorkspacePath
     ? 'Select a workspace...'
     : pendingDraftSessionStart
@@ -333,27 +459,90 @@ export function MessageInputView({
             : 'Ask anything, @ to mention, / for workflows'
 
   const isPlan = currentModeId === 'plan'
-  const sendActive = hasContent && !disabled
+  const sendActive =
+    hasContent && !disabled && !sending && (attachments.length === 0 || imageUploadEnabled)
 
   return (
     <div className="flex w-full flex-col">
-      <div className={cn(chatInputShell, 'gap-1 p-1')}>
+      <div
+        className={cn(
+          chatInputShell,
+          'gap-1 p-1 transition-[border-color,box-shadow]',
+          isDragging && 'border-[var(--basis-action-bg)]',
+        )}
+        onDragEnter={(event) => {
+          event.preventDefault()
+          setIsDragging(true)
+        }}
+        onDragOver={(event) => event.preventDefault()}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+            setIsDragging(false)
+        }}
+        onDrop={onDrop}
+      >
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={ACCEPTED_IMAGE_TYPES.join(',')}
+          multiple
+          className="hidden"
+          onChange={(event) => {
+            addFiles(Array.from(event.target.files ?? []))
+            event.target.value = ''
+          }}
+        />
+        {attachments.length > 0 && (
+          <div className="flex gap-2 overflow-x-auto px-2 pt-1.5 pb-0.5 scrollbar-hide">
+            {attachments.map((attachment) => (
+              <div
+                key={attachment.id}
+                className="group relative h-16 w-16 shrink-0 overflow-hidden rounded-lg border border-[var(--basis-border)] bg-[var(--basis-surface)] shadow-sm"
+              >
+                <img
+                  src={attachment.previewUrl}
+                  alt={attachment.file.name}
+                  className="h-full w-full object-cover"
+                />
+                <button
+                  type="button"
+                  onClick={() => removeAttachment(attachment.id)}
+                  className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/70 text-white opacity-90 shadow-sm transition hover:bg-black group-hover:opacity-100"
+                  aria-label={`Remove ${attachment.file.name}`}
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <textarea
           ref={textareaRef}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => updateDraft((current) => ({ ...current, text: e.target.value }))}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
           placeholder={placeholder}
           disabled={disabled}
           rows={1}
           className={cn(chatComposerTextarea, 'max-h-[156px] overflow-y-auto')}
         />
 
+        {(attachmentError || (attachments.length > 0 && imageSupportMessage)) && (
+          <div className="px-2 pb-1 text-[11px] leading-4 text-amber-500" role="alert">
+            {attachmentError ?? imageSupportMessage}
+          </div>
+        )}
+
         <div className="flex items-center justify-between gap-1.5 px-1 pb-0.5">
           <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto scrollbar-hide">
             <button
               type="button"
-              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--basis-text-muted)] transition-colors hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={disabled || !imageUploadEnabled || sending}
+              title={imageSupportMessage ?? 'Attach images'}
+              aria-label="Attach images"
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--basis-text-muted)] transition-colors hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)] disabled:cursor-not-allowed disabled:opacity-35"
             >
               <Plus size={12} />
             </button>
@@ -438,7 +627,11 @@ export function MessageInputView({
                   !sendActive && '!bg-[var(--basis-surface-hover)] !text-[var(--basis-text-faint)]',
                 )}
               >
-                <ArrowUp size={14} strokeWidth={1.9} />
+                {sending ? (
+                  <LoaderCircle size={13} className="animate-spin" />
+                ) : (
+                  <ArrowUp size={14} strokeWidth={1.9} />
+                )}
               </button>
             )}
           </div>

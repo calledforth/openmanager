@@ -1,5 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AgentEvent, ProviderId, ProviderMetadata } from '@agentpack/contract'
+import type {
+  AgentEvent,
+  PromptCapabilities,
+  ProviderId,
+  ProviderMetadata,
+} from '@agentpack/contract'
 import type { ConvexConnectionResult, RuntimeConfig } from '../shared/runtime-config'
 
 const electronAPI = {
@@ -26,7 +31,13 @@ const electronAPI = {
   ensureAgentProvider: (providerId: ProviderId, cwd: string) =>
     ipcRenderer.invoke('agent:ensure', providerId, cwd),
   getAgentStatuses: () => ipcRenderer.invoke('agent:status'),
+  getAgentPromptCapabilities: () =>
+    ipcRenderer.invoke('agent:prompt-capabilities') as Promise<
+      Partial<Record<ProviderId, PromptCapabilities>>
+    >,
   getAgentProviders: () => ipcRenderer.invoke('agent:providers') as Promise<ProviderMetadata[]>,
+  getModelImageSupport: (providerId: ProviderId, modelId: string) =>
+    ipcRenderer.invoke('agent:model-image-support', providerId, modelId) as Promise<boolean | null>,
   loadAcpSession: (providerId: ProviderId, workspacePath: string, sessionId: string) =>
     ipcRenderer.invoke('acp:load-session', providerId, workspacePath, sessionId),
   selectFolder: () => ipcRenderer.invoke('dialog:select-folder'),

@@ -1,5 +1,7 @@
 import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron'
 import { join } from 'path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { ConvexClient } from 'convex/browser'
 import { api } from '@openmanager/convex/_generated/api'
 import { JobWorker } from './job-worker'
@@ -27,6 +29,70 @@ let convexClient: ConvexClient | null = null
 let jobWorker: JobWorker | null = null
 let clientId: string | null = null
 let userDataPath = ''
+const execFileAsync = promisify(execFile)
+const modelImageSupportCache = new Map<string, boolean | null>()
+
+function jsonObjects(output: string): Array<Record<string, any>> {
+  const objects: Array<Record<string, any>> = []
+  let start = -1
+  let depth = 0
+  let quoted = false
+  let escaped = false
+  for (let index = 0; index < output.length; index += 1) {
+    const char = output[index]
+    if (quoted) {
+      if (escaped) escaped = false
+      else if (char === '\\') escaped = true
+      else if (char === '"') quoted = false
+      continue
+    }
+    if (char === '"') quoted = true
+    else if (char === '{') {
+      if (depth === 0) start = index
+      depth += 1
+    } else if (char === '}' && depth > 0) {
+      depth -= 1
+      if (depth === 0 && start >= 0) {
+        try {
+          objects.push(JSON.parse(output.slice(start, index + 1)))
+        } catch {
+          // Ignore a malformed model block and leave support unknown.
+        }
+        start = -1
+      }
+    }
+  }
+  return objects
+}
+
+async function modelSupportsImages(
+  providerId: ProviderId,
+  modelId: string,
+): Promise<boolean | null> {
+  if (providerId !== 'opencode' || !modelId.includes('/')) return null
+  if (modelImageSupportCache.has(modelId)) return modelImageSupportCache.get(modelId) ?? null
+  const [modelProvider] = modelId.split('/', 1)
+  const command = process.env.ACP_OPENCODE_BIN ?? providers.opencode.command.bin
+  try {
+    const { stdout } = await execFileAsync(
+      command,
+      ['models', modelProvider, '--verbose', '--pure'],
+      { windowsHide: true, maxBuffer: 32 * 1024 * 1024 },
+    )
+    const model = jsonObjects(stdout).find(
+      (item) => `${String(item.providerID)}/${String(item.id)}` === modelId,
+    )
+    const value =
+      typeof model?.capabilities?.input?.image === 'boolean'
+        ? (model.capabilities.input.image as boolean)
+        : null
+    modelImageSupportCache.set(modelId, value)
+    return value
+  } catch {
+    modelImageSupportCache.set(modelId, null)
+    return null
+  }
+}
 
 function getRuntimeConfig(): RuntimeConfig {
   return resolveRuntimeConfig(store.get('convexUrl', ''), __CONVEX_URL__, !app.isPackaged)
@@ -125,12 +191,24 @@ ipcMain.handle('agent:status', async () => {
   return agentHost?.getStatuses() ?? {}
 })
 
+ipcMain.handle('agent:prompt-capabilities', async () => {
+  return agentHost?.getPromptCapabilities() ?? {}
+})
+
 ipcMain.handle('agent:providers', (): ProviderMetadata[] =>
   Object.values(providers).map(({ id, displayName, capabilities }) => ({
     id,
     displayName,
     capabilities,
   })),
+)
+
+ipcMain.handle(
+  'agent:model-image-support',
+  async (_event, providerId: unknown, modelId: string) => {
+    if (!isProviderId(providerId)) return null
+    return modelSupportsImages(providerId, modelId)
+  },
 )
 
 ipcMain.handle(

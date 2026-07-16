@@ -9,6 +9,7 @@ import type {
   ModelListing,
   PermissionOption,
   PermissionOutcome,
+  PromptInput,
   ProviderId,
   SessionConfigOption,
   ToolCallContent,
@@ -375,6 +376,7 @@ export class AcpBackend implements Backend {
         protocolVersion: string(response.protocolVersion),
         agentInfo,
         capabilities: this.config.capabilities,
+        promptCapabilities: object(response.agentCapabilities).promptCapabilities,
         authMethods: methods,
       }),
     )
@@ -503,7 +505,7 @@ export class AcpBackend implements Backend {
     args: BackendRoute & {
       cwd: string
       sessionId: string
-      prompt: string
+      prompt: PromptInput
       userMessageId?: string
     },
   ): Promise<void> {
@@ -511,15 +513,16 @@ export class AcpBackend implements Backend {
     const userMessageId = args.userMessageId ?? `agent_usr_${crypto.randomUUID()}`
     this.emit(
       routeEvent(args, args.sessionId, 'lifecycle', 'prompt_started', {
-        prompt: args.prompt,
+        prompt: args.prompt.text,
         userMessageId,
+        attachments: args.prompt.attachments,
       }),
     )
     try {
       const result = object(
         await this.conn().prompt({
           sessionId: args.sessionId,
-          prompt: [{ type: 'text', text: args.prompt }],
+          prompt: args.prompt.blocks as unknown as acp.ContentBlock[],
         }),
       )
       this.emit(

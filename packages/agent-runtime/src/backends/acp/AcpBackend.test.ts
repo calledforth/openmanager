@@ -156,4 +156,39 @@ describe('AcpBackend session compatibility', () => {
       modeId: 'legacy-mode',
     })
   })
+
+  it('forwards text and image blocks in one ACP prompt without dropping attachment metadata', async () => {
+    const prompt = vi.fn(async () => ({ stopReason: 'end_turn' }))
+    const { backend, events } = setup({
+      newSession: async () => ({ sessionId: 'session-1' }),
+      prompt,
+    })
+    await backend.ensureSession(route)
+
+    await backend.prompt({
+      ...route,
+      sessionId: 'session-1',
+      prompt: {
+        text: 'Describe this',
+        blocks: [
+          { type: 'text', text: 'Describe this' },
+          { type: 'image', mimeType: 'image/png', data: 'aW1hZ2U=' },
+        ],
+        attachments: [{ id: 'attachment-1', name: 'icon.png', mimeType: 'image/png', size: 5 }],
+      },
+      userMessageId: 'user-1',
+    })
+
+    expect(prompt).toHaveBeenCalledWith({
+      sessionId: 'session-1',
+      prompt: [
+        { type: 'text', text: 'Describe this' },
+        { type: 'image', mimeType: 'image/png', data: 'aW1hZ2U=' },
+      ],
+    })
+    expect(events.find((event) => event.event === 'prompt_started')?.data).toMatchObject({
+      prompt: 'Describe this',
+      attachments: [{ id: 'attachment-1', name: 'icon.png' }],
+    })
+  })
 })

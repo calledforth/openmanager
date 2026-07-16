@@ -1,7 +1,12 @@
 import { ConvexClient } from 'convex/browser'
 import { api } from '@openmanager/convex/_generated/api'
 import type { Id } from '@openmanager/convex/_generated/dataModel'
-import { isProviderId, type ProviderId } from '@agentpack/contract'
+import {
+  isProviderId,
+  type PromptAttachment,
+  type PromptInput,
+  type ProviderId,
+} from '@agentpack/contract'
 import {
   estimateConvexPayloadBytes,
   extractConvexTelemetryContext,
@@ -15,6 +20,9 @@ type JobDoc = {
   payload: string
   status: string
 }
+
+const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 export class JobWorker {
   private unsubscribe: (() => void) | null = null
@@ -46,6 +54,58 @@ export class JobWorker {
       workspaceId: parsed.workspacePath as string,
       cwd: parsed.workspacePath as string,
     }
+  }
+
+  private async promptInput(parsed: Record<string, any>): Promise<PromptInput> {
+    const text = typeof parsed.content === 'string' ? parsed.content.trim() : ''
+    const requested = Array.isArray(parsed.attachments)
+      ? (parsed.attachments as PromptAttachment[]).filter(
+          (item) => item && typeof item.id === 'string',
+        )
+      : []
+    const resolved = requested.length
+      ? ((await this.convex.query((api as any).attachments.resolveMany, {
+          ids: requested.map((item) => item.id),
+          clientId: this.clientId,
+        })) as Array<{
+          id: string
+          name: string
+          mimeType: string
+          size: number
+          url: string
+        } | null>)
+      : []
+
+    if (resolved.some((item) => !item) || resolved.length !== requested.length) {
+      throw new Error('One or more image attachments could not be resolved')
+    }
+
+    const blocks: PromptInput['blocks'] = text ? [{ type: 'text', text }] : []
+    const attachments: PromptAttachment[] = []
+    for (const item of resolved) {
+      if (!item) continue
+      if (!ALLOWED_IMAGE_TYPES.has(item.mimeType)) {
+        throw new Error(`Unsupported image type: ${item.mimeType}`)
+      }
+      if (item.size <= 0 || item.size > MAX_IMAGE_BYTES) {
+        throw new Error(`Image ${item.name} exceeds the 10 MB limit`)
+      }
+      const response = await fetch(item.url)
+      if (!response.ok) throw new Error(`Failed to read image ${item.name}`)
+      const bytes = Buffer.from(await response.arrayBuffer())
+      if (bytes.length === 0 || bytes.length > MAX_IMAGE_BYTES) {
+        throw new Error(`Image ${item.name} is empty or exceeds the 10 MB limit`)
+      }
+      blocks.push({ type: 'image', mimeType: item.mimeType, data: bytes.toString('base64') })
+      attachments.push({
+        id: item.id,
+        name: item.name,
+        mimeType: item.mimeType,
+        size: bytes.length,
+      })
+    }
+    if (blocks.length === 0) throw new Error('A prompt must contain text or an image')
+    return { text, blocks, ...(attachments.length ? { attachments } : {}) }
   }
 
   private async runTrackedMutation(name: string, mutationRef: any, args: Record<string, unknown>) {
@@ -153,7 +213,7 @@ export class JobWorker {
           await this.agentHost.runtime.prompt({
             ...this.route(parsed, parsed.sessionExternalId),
             sessionId: parsed.sessionExternalId,
-            prompt: parsed.content,
+            prompt: await this.promptInput(parsed),
             userMessageId: parsed.userMessageId,
           })
           break
@@ -187,7 +247,8 @@ export class JobWorker {
           const threadId = crypto.randomUUID()
           const session = await this.agentHost.runtime.ensureSession(this.route(parsed, threadId))
           const preferredModel =
-            parsed.preferredModelId ?? this.getLastModelForWorkspace(parsed.workspacePath, providerId)
+            parsed.preferredModelId ??
+            this.getLastModelForWorkspace(parsed.workspacePath, providerId)
           if (preferredModel) {
             try {
               await this.agentHost.runtime.setModel({
@@ -224,7 +285,7 @@ export class JobWorker {
           await this.agentHost.runtime.prompt({
             ...this.route(parsed, threadId),
             sessionId: session.sessionId,
-            prompt: parsed.content,
+            prompt: await this.promptInput(parsed),
             userMessageId: parsed.userMessageId,
           })
           break
