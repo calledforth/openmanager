@@ -1,5 +1,6 @@
 import { BrowserWindow } from 'electron'
-import { mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { mkdirSync, readFileSync } from 'fs'
+import { writeFile } from 'fs/promises'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
 
@@ -28,10 +29,14 @@ interface TelemetryState {
   filePath: string
   events: ConvexTelemetryEvent[]
   flushTimer: ReturnType<typeof setTimeout> | null
+  broadcastTimer: ReturnType<typeof setTimeout> | null
+  pendingBroadcast: ConvexTelemetryEvent[]
 }
 
 const MAX_EVENTS = 5000
 const TELEMETRY_FILE = 'convex-telemetry-log.json'
+const FLUSH_INTERVAL_MS = 1000
+const BROADCAST_INTERVAL_MS = 250
 
 let state: TelemetryState | null = null
 
@@ -47,19 +52,28 @@ function flushSoon(): void {
   if (current.flushTimer) return
   current.flushTimer = setTimeout(() => {
     current.flushTimer = null
-    writeFileSync(
+    // Async + compact: the previous synchronous pretty-printed write serialized
+    // up to 5000 events and blocked the main process on disk I/O during streams.
+    void writeFile(
       current.filePath,
-      JSON.stringify(
-        {
-          updatedAt: Date.now(),
-          events: current.events,
-        },
-        null,
-        2,
-      ),
+      JSON.stringify({ updatedAt: Date.now(), events: current.events }),
       'utf8',
-    )
-  }, 200)
+    ).catch(() => undefined)
+  }, FLUSH_INTERVAL_MS)
+}
+
+function broadcastSoon(): void {
+  const current = ensureState()
+  if (current.broadcastTimer) return
+  current.broadcastTimer = setTimeout(() => {
+    current.broadcastTimer = null
+    const batch = current.pendingBroadcast
+    if (batch.length === 0) return
+    current.pendingBroadcast = []
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send('telemetry:update', batch)
+    }
+  }, BROADCAST_INTERVAL_MS)
 }
 
 export function initConvexTelemetry(userDataPath: string): void {
@@ -81,6 +95,8 @@ export function initConvexTelemetry(userDataPath: string): void {
     filePath,
     events,
     flushTimer: null,
+    broadcastTimer: null,
+    pendingBroadcast: [],
   }
 }
 
@@ -141,9 +157,8 @@ export function recordConvexTelemetry(
   }
   flushSoon()
 
-  for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('telemetry:update', next)
-  }
+  current.pendingBroadcast.push(next)
+  broadcastSoon()
 
   return next
 }

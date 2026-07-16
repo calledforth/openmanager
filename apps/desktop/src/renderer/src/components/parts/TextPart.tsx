@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { Components } from 'react-markdown'
@@ -123,7 +124,10 @@ interface TextPartProps {
   dimmed?: boolean
 }
 
-export function TextPart({ text, dimmed }: TextPartProps) {
+// Memoized: markdown parsing + syntax highlighting is the most expensive render
+// work in the timeline. During streaming only the growing part's text changes,
+// so every other part must skip the re-parse.
+export const TextPart = memo(function TextPart({ text, dimmed }: TextPartProps) {
   if (!text) return null
   return (
     <div
@@ -137,4 +141,4 @@ export function TextPart({ text, dimmed }: TextPartProps) {
       </ReactMarkdown>
     </div>
   )
-}
+})

@@ -126,6 +126,30 @@ interface AppUiValue {
   setSessionMode: (sessionExternalId: string, modeId: string) => Promise<void>
 }
 
+// Only the low-frequency lifecycle/config events feed deriveSessionChrome.
+// High-frequency stream events (message/thought chunks, tool updates) must stay
+// out of React state: storing them invalidates the AppUi context on every token,
+// which re-renders every consumer for the whole duration of a streaming response.
+const CHROME_EVENT_TYPES = new Set<AgentEvent['event']>([
+  'initialized',
+  'authenticated',
+  'auth_required',
+  'process_spawned',
+  'process_exited',
+  'session_created',
+  'session_loaded',
+  'session_deleted',
+  'prompt_started',
+  'prompt_completed',
+  'current_model_update',
+  'current_mode_update',
+  'config_option_update',
+  'available_commands_update',
+  'usage_update',
+  'rpc_error',
+  'runtime_error',
+])
+
 const AppUiContext = createContext<AppUiValue | null>(null)
 
 export function useAppUi() {
@@ -837,9 +861,11 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const cleanup = window.electronAPI.onAcpEvent((event) => {
-      setAgentEvents((prev) =>
-        prev.some((candidate) => candidate.id === event.id) ? prev : [...prev, event],
-      )
+      if (CHROME_EVENT_TYPES.has(event.event)) {
+        setAgentEvents((prev) =>
+          prev.some((candidate) => candidate.id === event.id) ? prev : [...prev, event],
+        )
+      }
       const eventWorkspacePath = event.workspaceId ?? activeWorkspacePath
 
       switch (event.event) {
