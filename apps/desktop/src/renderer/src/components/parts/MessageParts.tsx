@@ -1,5 +1,6 @@
-import { useMemo, type ReactNode } from 'react'
+import { Fragment, useMemo, type ReactNode } from 'react'
 import { TextPart } from './TextPart'
+import { ToolCallPermission } from '../permissions/InlinePermissionPrompt'
 import { ToolCallPart } from './ToolCallPart'
 import { BashToolPart } from './BashToolPart'
 import { EditToolPart } from './EditToolPart'
@@ -51,13 +52,21 @@ function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode
     }
     case 'tool': {
       const toolName = canonicalizeToolName((part.tool as string) ?? '')
+      const callID = (part as { callID?: string }).callID
+      let toolElement: ReactNode
       if (toolName === 'Bash') {
-        return <BashToolPart key={key} part={part as Parameters<typeof BashToolPart>[0]['part']} />
+        toolElement = <BashToolPart part={part as Parameters<typeof BashToolPart>[0]['part']} />
+      } else if (toolName === 'Edit' || toolName === 'Write' || toolName === 'MultiEdit') {
+        toolElement = <EditToolPart part={part as Parameters<typeof EditToolPart>[0]['part']} />
+      } else {
+        toolElement = <ToolCallPart part={part as Parameters<typeof ToolCallPart>[0]['part']} />
       }
-      if (toolName === 'Edit' || toolName === 'Write' || toolName === 'MultiEdit') {
-        return <EditToolPart key={key} part={part as Parameters<typeof EditToolPart>[0]['part']} />
-      }
-      return <ToolCallPart key={key} part={part as Parameters<typeof ToolCallPart>[0]['part']} />
+      return (
+        <Fragment key={key}>
+          {toolElement}
+          <ToolCallPermission callID={callID} />
+        </Fragment>
+      )
     }
     case 'reasoning': {
       const partTime =

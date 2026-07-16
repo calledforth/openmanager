@@ -5,6 +5,7 @@ export const upsertPending = mutation({
   args: {
     sessionExternalId: v.string(),
     requestId: v.string(),
+    toolCallId: v.optional(v.string()),
     permission: v.optional(v.string()),
     toolName: v.string(),
     description: v.string(),
@@ -21,6 +22,7 @@ export const upsertPending = mutation({
     const next = {
       sessionExternalId: args.sessionExternalId,
       requestId: args.requestId,
+      toolCallId: args.toolCallId,
       permission: args.permission,
       toolName: args.toolName,
       description: args.description,
@@ -67,6 +69,7 @@ export const getPendingForSession = query({
     const latest = rows[0]
     return {
       requestId: latest.requestId,
+      toolCallId: latest.toolCallId,
       permission: latest.permission,
       toolName: latest.toolName,
       description: latest.description,

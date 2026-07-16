@@ -72,6 +72,7 @@ export default defineSchema({
   pending_permissions: defineTable({
     sessionExternalId: v.string(),
     requestId: v.string(),
+    toolCallId: v.optional(v.string()),
     permission: v.optional(v.string()),
     toolName: v.string(),
     description: v.string(),

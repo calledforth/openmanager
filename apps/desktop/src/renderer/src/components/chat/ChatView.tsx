@@ -19,6 +19,7 @@ import {
 } from '@openmanager/shared/lib/remote-stream-parts'
 import { cn } from '../../lib/utils'
 import type { UploadedImageAttachment } from '../../lib/attachments'
+import { PendingPermissionFallback } from '../permissions/InlinePermissionPrompt'
 
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96
 const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 8
@@ -116,6 +117,7 @@ export function ChatView() {
             isDriven={activeSessionDriven}
             onStreamUpdate={scheduleStickToBottom}
           />
+          <PendingPermissionFallback />
         </div>
       </div>
     </ChatViewPanel>
