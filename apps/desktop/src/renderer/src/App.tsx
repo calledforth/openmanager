@@ -8,7 +8,6 @@ import { WorkspaceSidebar } from './components/sidebar/WorkspaceSidebar'
 import { ChatView } from './components/chat/ChatView'
 import { MessageInput } from './components/chat/MessageInput'
 import { FloatingChatComposer } from './components/chat/FloatingChatComposer'
-import { PermissionPrompt } from './components/permissions/PermissionPrompt'
 import { ConvexTelemetryPanel } from './components/telemetry/ConvexTelemetryPanel'
 import { ChatSectionHeader } from './components/chat/ChatSectionHeader'
 import { AppChrome } from './components/shell/AppChrome'
@@ -32,7 +31,6 @@ function AppShell() {
             <MessageInput />
           </FloatingChatComposer>
         </div>
-        <PermissionPrompt />
         <ConvexTelemetryPanel open={convexOpen} onOpenChange={setConvexOpen} />
       </div>
     </div>

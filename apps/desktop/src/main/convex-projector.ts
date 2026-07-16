@@ -406,6 +406,7 @@ export class ConvexProjector {
     await this.runMutation('permissions.upsertPending', (api as any).permissions.upsertPending, {
       sessionExternalId: permission.sessionId,
       requestId: permission.requestId,
+      toolCallId: permission.toolCall.toolCallId || undefined,
       permission: permission.toolCall.kind,
       toolName,
       description:
