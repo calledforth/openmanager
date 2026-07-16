@@ -1,5 +1,10 @@
 import type { SidecarHandshake, SidecarStatus } from '@openmanager/shared/contracts/sidecar'
-import type { AgentEvent, ProviderId, ProviderMetadata } from '@agentpack/contract'
+import type {
+  AgentEvent,
+  PromptCapabilities,
+  ProviderId,
+  ProviderMetadata,
+} from '@agentpack/contract'
 import type { ConvexConnectionResult, RuntimeConfig } from '../../shared/runtime-config'
 
 interface ElectronAPI {
@@ -18,7 +23,9 @@ interface ElectronAPI {
   recordTelemetry: (event: Record<string, unknown>) => Promise<void>
   ensureAgentProvider: (providerId: ProviderId, cwd: string) => Promise<SidecarHandshake>
   getAgentStatuses: () => Promise<Partial<Record<ProviderId, SidecarStatus>>>
+  getAgentPromptCapabilities: () => Promise<Partial<Record<ProviderId, PromptCapabilities>>>
   getAgentProviders: () => Promise<ProviderMetadata[]>
+  getModelImageSupport: (providerId: ProviderId, modelId: string) => Promise<boolean | null>
   loadAcpSession: (
     providerId: ProviderId,
     workspacePath: string,

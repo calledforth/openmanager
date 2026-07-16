@@ -18,6 +18,7 @@ import {
   type StreamMessagePart,
 } from '@openmanager/shared/lib/remote-stream-parts'
 import { cn } from '../../lib/utils'
+import type { UploadedImageAttachment } from '../../lib/attachments'
 
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96
 const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 8
@@ -133,6 +134,8 @@ function ConversationTimeline({
     role: string
     isFinal?: boolean
     optimisticContent?: string
+    optimisticAttachments?: UploadedImageAttachment[]
+    optimisticJobId?: string
     isOptimistic?: boolean
   }>
   isMessagesLoading: boolean
@@ -189,6 +192,8 @@ function MessageTimeline({
     role: string
     isFinal?: boolean
     optimisticContent?: string
+    optimisticAttachments?: UploadedImageAttachment[]
+    optimisticJobId?: string
     isOptimistic?: boolean
   }>
   scrollElement: HTMLDivElement | null
@@ -297,6 +302,8 @@ function MessageRow({
     role: string
     isFinal?: boolean
     optimisticContent?: string
+    optimisticAttachments?: UploadedImageAttachment[]
+    optimisticJobId?: string
     isOptimistic?: boolean
   }
   isDriven: boolean
@@ -311,6 +318,8 @@ function MessageRow({
         role={message.role}
         isFinal={message.isFinal}
         optimisticContent={message.optimisticContent}
+        optimisticAttachments={message.optimisticAttachments}
+        optimisticJobId={message.optimisticJobId}
         isOptimistic={message.isOptimistic}
         isDriven={isDriven}
         onStreamUpdate={onStreamUpdate}
@@ -417,6 +426,8 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
   role: string
   isFinal?: boolean
   optimisticContent?: string
+  optimisticAttachments?: UploadedImageAttachment[]
+  optimisticJobId?: string
   isOptimistic?: boolean
   isDriven: boolean
   onStreamUpdate: () => void
@@ -432,6 +443,13 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
       ? { externalId: props.externalId }
       : 'skip',
   )
+  const optimisticJob = useTrackedQuery(
+    'jobs.getStatus.optimistic',
+    api.jobs.getStatus,
+    props.isOptimistic && props.optimisticJobId
+      ? ({ jobId: props.optimisticJobId } as any)
+      : 'skip',
+  ) as { status: string; lastError?: string } | null | undefined
   const remoteStreaming = useRemoteStreamingMessage(
     props.externalId,
     shouldUseRemoteStreaming,
@@ -486,7 +504,15 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
       : (finalizedParts ?? lastStreamingPartsRef.current)
 
   if (props.role === 'user') {
-    return <UserMessage content={content} runtime={runtimeMetadata} />
+    return (
+      <UserMessage
+        content={content}
+        parts={parts}
+        optimisticAttachments={props.optimisticAttachments}
+        sendError={optimisticJob?.status === 'failed' ? optimisticJob.lastError : undefined}
+        runtime={runtimeMetadata}
+      />
+    )
   }
 
   return (

@@ -77,6 +77,26 @@ export type ContentBlock =
       data?: string
     }
 
+export type PromptCapabilities = {
+  image?: boolean
+  audio?: boolean
+  embeddedContext?: boolean
+}
+
+/** Metadata safe to persist and relay; attachment bytes are resolved only at the backend. */
+export type PromptAttachment = {
+  id: string
+  name: string
+  mimeType: string
+  size: number
+}
+
+export type PromptInput = {
+  text: string
+  blocks: ContentBlock[]
+  attachments?: PromptAttachment[]
+}
+
 export type StreamedMessageChunk = {
   messageId?: string
   content: ContentBlock
@@ -241,6 +261,7 @@ export type AgentEvent = AgentEventBase &
           protocolVersion?: string
           agentInfo?: AgentInfo
           capabilities: ProviderCapabilities
+          promptCapabilities?: PromptCapabilities
           authMethods: AuthMethod[]
         }
       }
@@ -279,7 +300,7 @@ export type AgentEvent = AgentEventBase &
         category: 'lifecycle'
         event: 'prompt_started'
         sessionId: string
-        data: { prompt: string; userMessageId: string }
+        data: { prompt: string; userMessageId: string; attachments?: PromptAttachment[] }
       }
     | {
         category: 'lifecycle'

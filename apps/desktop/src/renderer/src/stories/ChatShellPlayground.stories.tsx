@@ -825,10 +825,13 @@ function Demo() {
                   showModelControl={true}
                   agent={{ name: 'OpenCode', version: '1.7.0' }}
                   isStreaming={false}
+                  draftKey="playground"
+                  imageUploadEnabled={true}
+                  imageSupportMessage={null}
                   onModeChange={setModeId}
                   onProviderChange={() => {}}
                   onModelChange={setModelId}
-                  onSend={(prompt) => startStream(prompt, preset)}
+                  onSend={async (prompt) => startStream(prompt, preset)}
                   onAbort={() => {}}
                 />
               </FloatingChatComposer>

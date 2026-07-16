@@ -141,7 +141,17 @@ export const removeByExternalId = mutation({
   args: { externalId: v.string() },
   handler: async (ctx, args) => {
     const msg = await getMessageByExternalId(ctx, args.externalId)
-    if (msg) await ctx.db.delete(msg._id)
+    if (msg) {
+      const attachments = await ctx.db
+        .query('attachments')
+        .withIndex('by_message', (q) => q.eq('messageExternalId', args.externalId))
+        .collect()
+      for (const attachment of attachments) {
+        await ctx.storage.delete(attachment.storageId)
+        await ctx.db.delete(attachment._id)
+      }
+      await ctx.db.delete(msg._id)
+    }
 
     const chunks = await ctx.db
       .query('stream_chunks')
@@ -177,10 +187,23 @@ export const getContent = query({
   handler: async (ctx, args) => {
     const message = await getMessageByExternalId(ctx, args.externalId)
     if (!message) return null
+    const metadata = message.metadata as
+      { parts?: Array<Record<string, unknown>>; runtime?: unknown } | undefined
+    const parts = metadata?.parts
+      ? await Promise.all(
+          metadata.parts.map(async (part) => {
+            if (part.type !== 'image' || typeof part.attachmentId !== 'string') return part
+            const attachment = await ctx.db.get(part.attachmentId as any)
+            if (!attachment || !('storageId' in attachment)) return part
+            const url = await ctx.storage.getUrl(attachment.storageId as any)
+            return url ? { ...part, url } : part
+          }),
+        )
+      : undefined
     return {
       externalId: message.externalId,
       content: message.content,
-      metadata: message.metadata,
+      metadata: metadata ? { ...metadata, ...(parts ? { parts } : {}) } : undefined,
       isFinal: message.isFinal,
       role: message.role,
     }

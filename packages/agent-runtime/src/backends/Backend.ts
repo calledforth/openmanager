@@ -1,4 +1,4 @@
-import type { AgentEvent, PermissionOutcome, ProviderId } from '@agentpack/contract'
+import type { AgentEvent, PermissionOutcome, PromptInput, ProviderId } from '@agentpack/contract'
 
 export type BackendRoute = { threadId: string; workspaceId?: string }
 export type BackendSessionArgs = BackendRoute & {
@@ -22,7 +22,7 @@ export interface Backend {
     args: BackendRoute & {
       cwd: string
       sessionId: string
-      prompt: string
+      prompt: PromptInput
       userMessageId?: string
     },
   ): Promise<void>

@@ -1,4 +1,9 @@
-import type { AgentEvent, PermissionRequest, ProviderId } from '@agentpack/contract'
+import type {
+  AgentEvent,
+  PermissionRequest,
+  PromptCapabilities,
+  ProviderId,
+} from '@agentpack/contract'
 import { AgentRuntime, type HostLogEntry } from '@agentpack/runtime'
 import type { BrowserWindow } from 'electron'
 import type { SidecarHandshake, SidecarStatus } from '@openmanager/shared/contracts/sidecar'
@@ -7,6 +12,7 @@ import { ConvexProjector } from './convex-projector'
 export class AgentHost {
   readonly runtime: AgentRuntime
   private readonly statusByProvider = new Map<ProviderId, SidecarStatus>()
+  private readonly promptCapabilitiesByProvider = new Map<ProviderId, PromptCapabilities>()
   private localSequence = 0
   private readonly pendingPermissions = new Map<string, PermissionRequest>()
 
@@ -40,6 +46,12 @@ export class AgentHost {
 
   getStatuses(): Partial<Record<ProviderId, SidecarStatus>> {
     return Object.fromEntries(this.statusByProvider) as Partial<Record<ProviderId, SidecarStatus>>
+  }
+
+  getPromptCapabilities(): Partial<Record<ProviderId, PromptCapabilities>> {
+    return Object.fromEntries(this.promptCapabilitiesByProvider) as Partial<
+      Record<ProviderId, PromptCapabilities>
+    >
   }
 
   respondPermission(args: {
@@ -93,6 +105,9 @@ export class AgentHost {
   }
 
   private emitEvent(event: AgentEvent): void {
+    if (event.event === 'initialized' && event.data.promptCapabilities) {
+      this.promptCapabilitiesByProvider.set(event.providerId, event.data.promptCapabilities)
+    }
     if (event.event === 'permission_request') {
       this.pendingPermissions.set(event.data.requestId, event.data)
     }

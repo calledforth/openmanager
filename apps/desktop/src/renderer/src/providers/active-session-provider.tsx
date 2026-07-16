@@ -12,6 +12,8 @@ import { api } from '@openmanager/convex/_generated/api'
 import type { AgentEvent, ContentBlock, ToolCallStatus } from '@agentpack/contract'
 import { useTrackedQuery } from '../lib/convex-telemetry'
 import { useAppUi } from './app-ui-provider'
+import type { UploadedImageAttachment } from '../lib/attachments'
+import { promptAttachment } from '../lib/attachments'
 
 interface MessagePart {
   type: string
@@ -26,6 +28,8 @@ export interface UIMessage {
   isFinal?: boolean
   sequenceNum: number
   optimisticContent?: string
+  optimisticAttachments?: UploadedImageAttachment[]
+  optimisticJobId?: string
   isOptimistic?: boolean
 }
 
@@ -295,7 +299,7 @@ interface ActiveSessionValue {
   isMessagesLoading: boolean
   messages: UIMessage[]
   abortSession: (externalId: string) => Promise<void>
-  sendMessage: (content: string) => Promise<void>
+  sendMessage: (content: string, attachments?: UploadedImageAttachment[]) => Promise<void>
   streamingStore: StreamingMessagesStore
 }
 
@@ -390,22 +394,35 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
   }, [messageList, streamingStore])
 
   useEffect(() => {
-    setOptimisticUserMessages([])
+    setOptimisticUserMessages((prev) => {
+      for (const message of prev) {
+        for (const attachment of message.optimisticAttachments ?? []) {
+          URL.revokeObjectURL(attachment.previewUrl)
+        }
+      }
+      return []
+    })
     streamingStore.reset()
   }, [streamingStore, ui.activeSessionId])
 
   useEffect(() => {
     const persistedIds = new Set(messageList.map((message) => message.externalId))
     setOptimisticUserMessages((prev) => {
+      for (const message of prev) {
+        if (!persistedIds.has(message.externalId)) continue
+        for (const attachment of message.optimisticAttachments ?? []) {
+          URL.revokeObjectURL(attachment.previewUrl)
+        }
+      }
       const next = prev.filter((message) => !persistedIds.has(message.externalId))
       return next.length === prev.length ? prev : next
     })
   }, [messageList])
 
   const sendMessage = useCallback(
-    async (content: string) => {
+    async (content: string, attachments: UploadedImageAttachment[] = []) => {
       const trimmed = content.trim()
-      if (!trimmed) return
+      if (!trimmed && attachments.length === 0) return
       const maxSequenceNum = messageList.reduce(
         (max, message) => Math.max(max, message.sequenceNum),
         -1,
@@ -417,12 +434,26 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
         isFinal: true,
         sequenceNum: maxSequenceNum + optimisticUserMessages.length + 1,
         optimisticContent: trimmed,
+        optimisticAttachments: attachments,
         isOptimistic: true,
       }
 
       setOptimisticUserMessages((prev) => [...prev, optimisticMessage])
       try {
-        await ui.sendMessage(trimmed, localExternalId)
+        const jobId = await ui.sendMessage(
+          trimmed,
+          localExternalId,
+          attachments.map(promptAttachment),
+        )
+        if (jobId) {
+          setOptimisticUserMessages((prev) =>
+            prev.map((message) =>
+              message.externalId === localExternalId
+                ? { ...message, optimisticJobId: jobId }
+                : message,
+            ),
+          )
+        }
       } catch (error) {
         setOptimisticUserMessages((prev) =>
           prev.filter((message) => message.externalId !== localExternalId),

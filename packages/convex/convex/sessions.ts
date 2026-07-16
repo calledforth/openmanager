@@ -214,6 +214,14 @@ export const remove = mutation({
       .collect()
 
     for (const message of messages) {
+      const attachments = await ctx.db
+        .query('attachments')
+        .withIndex('by_message', (q) => q.eq('messageExternalId', message.externalId))
+        .collect()
+      for (const attachment of attachments) {
+        await ctx.storage.delete(attachment.storageId)
+        await ctx.db.delete(attachment._id)
+      }
       const chunks = await ctx.db
         .query('stream_chunks')
         .withIndex('by_message_and_index', (q) => q.eq('messageExternalId', message.externalId))
