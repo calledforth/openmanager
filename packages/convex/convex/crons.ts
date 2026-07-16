@@ -29,12 +29,15 @@ export const sweepAbandonedAttachments = internalMutation({
   args: {},
   handler: async (ctx) => {
     const cutoff = Date.now() - STALE_ATTACHMENT_MS
+    // Filter unassigned attachments inside the query: assigned attachments stay
+    // in the table, so skipping them after take() would let 200+ old assigned
+    // rows permanently occupy the batch and starve the sweep.
     const candidates = await ctx.db
       .query('attachments')
       .withIndex('by_created_at', (q) => q.lt('createdAt', cutoff))
+      .filter((q) => q.eq(q.field('messageExternalId'), undefined))
       .take(SWEEP_BATCH)
     for (const attachment of candidates) {
-      if (attachment.messageExternalId) continue
       await ctx.storage.delete(attachment.storageId)
       await ctx.db.delete(attachment._id)
     }

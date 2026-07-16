@@ -193,9 +193,13 @@ export const getContent = query({
       ? await Promise.all(
           metadata.parts.map(async (part) => {
             if (part.type !== 'image' || typeof part.attachmentId !== 'string') return part
-            const attachment = await ctx.db.get(part.attachmentId as any)
-            if (!attachment || !('storageId' in attachment)) return part
-            const url = await ctx.storage.getUrl(attachment.storageId as any)
+            // normalizeId guards against malformed ids in persisted parts: db.get
+            // would throw and take the whole message query down with it.
+            const attachmentId = ctx.db.normalizeId('attachments', part.attachmentId)
+            if (!attachmentId) return part
+            const attachment = await ctx.db.get(attachmentId)
+            if (!attachment) return part
+            const url = await ctx.storage.getUrl(attachment.storageId)
             return url ? { ...part, url } : part
           }),
         )
