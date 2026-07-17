@@ -92,9 +92,12 @@
 :root {
   /* Basis design tokens — dark default */
   --basis-canvas-bg: #141414;
+  --basis-titlebar-bg: #121212;
+  --basis-sidebar-bg: #121212;
   --basis-surface: #1c1c1c;
   --basis-surface-elevated: #212121;
   --basis-surface-hover: #2a2a2a;
+  --basis-composer-bg: #101010;
   --basis-tab-active-bg: #242424;
   --basis-border: #363636;
   --basis-border-muted: #2e2e2e;
@@ -168,9 +171,12 @@
 
 html[data-theme='light'] {
   --basis-canvas-bg: #f8f8f8;
+  --basis-titlebar-bg: #f3f3f3;
+  --basis-sidebar-bg: #f3f3f3;
   --basis-surface: #fcfcfc;
-  --basis-surface-elevated: #f3f3f3;
-  --basis-surface-hover: #f3f3f3;
+  --basis-surface-elevated: #ffffff;
+  --basis-surface-hover: #f0f0f0;
+  --basis-composer-bg: #efefef;
   --basis-tab-active-bg: #e7e7e7;
   --basis-border: #dedede;
   --basis-border-muted: #e7e7e7;

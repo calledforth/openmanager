@@ -44,7 +44,7 @@ export function ChatSectionHeader({
 
   return (
     <div
-      className="flex h-[var(--basis-titlebar-height)] shrink-0 items-center gap-2 px-2"
+      className="flex h-9 shrink-0 items-center gap-2 border-b border-[var(--basis-border-muted)] bg-[var(--basis-canvas-bg)] px-2.5"
       data-chat-section-header
     >
       <div className="flex shrink-0 items-center gap-0.5" data-sidebar-icons>

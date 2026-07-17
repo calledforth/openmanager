@@ -1,8 +1,12 @@
 import { typographyBody } from '../../lib/typography'
 
-/** Shared shell for composer and user messages — Basis parity */
+/** Shared shell for user messages — Basis parity */
 export const chatInputShell =
   'flex w-full flex-col gap-0.5 rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)] bg-[var(--basis-surface)] p-1 shadow-sm'
+
+/** Composer dock — slightly darker than message shells */
+export const chatComposerShell =
+  'flex w-full flex-col gap-0.5 rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)] bg-[var(--basis-composer-bg)] p-1 shadow-sm'
 
 export const chatUserInner = `px-1 py-0.5 ${typographyBody} text-[var(--basis-text)]`
 

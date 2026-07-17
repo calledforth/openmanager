@@ -13,7 +13,7 @@ import { ArrowUp, Plus, ChevronDown, Check, Square, Mic, X, LoaderCircle } from 
 import { cn } from '../../lib/utils'
 import type { ProviderId } from '@agentpack/contract'
 import {
-  chatInputShell,
+  chatComposerShell,
   chatComposerTextarea,
   btnSend,
   COMPOSER_TEXTAREA_MAX_PX,
@@ -466,7 +466,7 @@ export function MessageInputView({
     <div className="flex w-full flex-col">
       <div
         className={cn(
-          chatInputShell,
+          chatComposerShell,
           'gap-1 p-1 transition-[border-color,box-shadow]',
           isDragging && 'border-[var(--basis-action-bg)]',
         )}

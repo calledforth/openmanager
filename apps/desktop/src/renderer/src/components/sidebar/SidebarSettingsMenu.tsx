@@ -5,16 +5,13 @@ import {
   useMemo,
   useRef,
   useState,
-  type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Check,
-  ChevronRight,
   Circle,
   Hexagon,
   Moon,
-  Palette,
   Plug,
   Settings,
   Sun,
@@ -22,7 +19,7 @@ import {
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { UI_FONTS, type UiFontId } from '../../lib/fonts'
-import { typographyBodySm, typographyCaption } from '../../lib/typography'
+import { typographyBodySm, typographyCaption, typographyLabelSm } from '../../lib/typography'
 import { useTheme } from '../../providers/theme-provider'
 import { useAppUi } from '../../providers/app-ui-provider'
 import { ConvexSettingsDialog } from '../settings/ConvexSettingsDialog'
@@ -61,37 +58,15 @@ function extractModelProviders(models: Array<{ modelId?: unknown }> | undefined)
   return rows.sort((a, b) => a.label.localeCompare(b.label))
 }
 
-function MenuFlyout({
-  label,
-  icon: Icon,
-  children,
-}: {
-  label: string
-  icon: typeof Palette
-  children: ReactNode
-}) {
+function SectionLabel({ children }: { children: string }) {
   return (
-    <div className="group/flyout relative">
-      <div
-        className={cn(
-          typographyBodySm,
-          'flex w-full cursor-default items-center gap-2 rounded-[var(--basis-chat-shell-radius)] px-2.5 py-1.5 text-[var(--basis-text)] transition-default group-hover/flyout:bg-[var(--basis-surface-hover)]',
-        )}
-      >
-        <Icon className="h-3.5 w-3.5 shrink-0 text-[var(--basis-text-muted)]" strokeWidth={1.75} />
-        <span className="min-w-0 flex-1 text-left">{label}</span>
-        <ChevronRight
-          className="h-3 w-3 shrink-0 text-[var(--basis-text-faint)]"
-          strokeWidth={1.75}
-        />
-      </div>
-      <div
-        className={cn(
-          'pointer-events-none absolute bottom-0 left-full z-[210] ml-1 min-w-[11rem] rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)] bg-[var(--basis-surface-elevated)] py-1 opacity-0 shadow-lg transition-opacity duration-100 group-hover/flyout:pointer-events-auto group-hover/flyout:opacity-100',
-        )}
-      >
-        {children}
-      </div>
+    <div
+      className={cn(
+        typographyCaption,
+        'px-2.5 pb-1 pt-2 uppercase tracking-[0.12em] text-[var(--basis-text-faint)]',
+      )}
+    >
+      {children}
     </div>
   )
 }
@@ -103,7 +78,7 @@ export function SidebarSettingsMenu() {
   const wrapRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
-  const { theme, toggleTheme, font, setFont } = useTheme()
+  const { theme, setTheme, font, setFont } = useTheme()
   const {
     agentStatusByProvider,
     agentUiStatusByProvider,
@@ -120,9 +95,9 @@ export function SidebarSettingsMenu() {
     const el = triggerRef.current
     if (!el) return
     const rect = el.getBoundingClientRect()
-    const width = 184
+    const width = 248
     const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8))
-    const gap = 6
+    const gap = 8
     setMenuCoords({
       left,
       bottom: window.innerHeight - rect.top + gap,
@@ -217,39 +192,71 @@ export function SidebarSettingsMenu() {
       <div
         ref={menuRef}
         role="menu"
-        className="fixed z-[200] rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)] bg-[var(--basis-surface-elevated)] py-1 shadow-lg"
+        className="fixed z-[200] overflow-hidden rounded-lg border border-[var(--basis-border)] bg-[var(--basis-surface-elevated)] shadow-[0_12px_40px_rgba(0,0,0,0.45)]"
         style={{
           left: menuCoords.left,
           bottom: menuCoords.bottom,
           width: menuCoords.width,
         }}
       >
-        <MenuFlyout label="Appearance" icon={Palette}>
-          <div className="px-1">
-            <div
-              className={cn(
-                typographyCaption,
-                'px-2 py-1 uppercase tracking-[0.1em] text-[var(--basis-text-faint)]',
-              )}
-            >
-              Font
-            </div>
+        <SectionLabel>Appearance</SectionLabel>
+        <div className="px-2.5 pb-2">
+          <div className="mb-1.5 flex items-center gap-1.5 text-[var(--basis-text-muted)]">
+            {theme === 'dark' ? (
+              <Moon className="h-3 w-3 shrink-0" strokeWidth={1.75} />
+            ) : (
+              <Sun className="h-3 w-3 shrink-0" strokeWidth={1.75} />
+            )}
+            <span className={typographyLabelSm}>Theme</span>
+          </div>
+          <div className="grid grid-cols-2 gap-1 rounded-md border border-[var(--basis-border-muted)] bg-[var(--basis-canvas-bg)] p-0.5">
+            {(['dark', 'light'] as const).map((mode) => {
+              const selected = theme === mode
+              return (
+                <button
+                  key={mode}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={selected}
+                  onClick={() => setTheme(mode)}
+                  className={cn(
+                    typographyBodySm,
+                    'rounded-[5px] px-2 py-1.5 capitalize transition-default',
+                    selected
+                      ? 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]'
+                      : 'text-[var(--basis-text-muted)] hover:text-[var(--basis-text)]',
+                  )}
+                >
+                  {mode}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        <div className="px-2.5 pb-2">
+          <div className="mb-1.5 flex items-center gap-1.5 text-[var(--basis-text-muted)]">
+            <Type className="h-3 w-3 shrink-0" strokeWidth={1.75} />
+            <span className={typographyLabelSm}>Font</span>
+          </div>
+          <div className="space-y-0.5">
             {UI_FONTS.map((option) => {
               const selected = font === option.id
               return (
                 <button
                   key={option.id}
                   type="button"
+                  role="menuitemradio"
+                  aria-checked={selected}
                   onClick={() => setFont(option.id as UiFontId)}
                   className={cn(
                     typographyBodySm,
-                    'flex w-full items-center gap-2 rounded-[var(--basis-chat-shell-radius)] px-2 py-1 text-left transition-default',
+                    'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-default',
                     selected
-                      ? 'bg-[var(--basis-surface-hover)] text-[var(--basis-text)]'
+                      ? 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]'
                       : 'text-[var(--basis-text-muted)] hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
                   )}
                 >
-                  <Type className="h-3 w-3 shrink-0 opacity-60" strokeWidth={1.75} />
                   <span className="min-w-0 flex-1 truncate">{option.label}</span>
                   {selected && (
                     <Check className="h-3 w-3 shrink-0 text-[var(--basis-text)]" strokeWidth={2} />
@@ -257,33 +264,29 @@ export function SidebarSettingsMenu() {
                 </button>
               )
             })}
-            <div className="my-1 border-t border-[var(--basis-border-muted)]" />
-            <button
-              type="button"
-              onClick={toggleTheme}
+          </div>
+        </div>
+
+        <div className="mx-2.5 border-t border-[var(--basis-border-muted)]" />
+
+        <SectionLabel>Providers</SectionLabel>
+        <div className="px-1.5 pb-2">
+          {providers.length === 0 ? (
+            <div
               className={cn(
-                typographyBodySm,
-                'flex w-full items-center gap-2 rounded-[var(--basis-chat-shell-radius)] px-2 py-1 text-left text-[var(--basis-text-muted)] transition-default hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
+                typographyCaption,
+                'px-2 py-2 text-[var(--basis-text-faint)]',
               )}
             >
-              {theme === 'dark' ? (
-                <Sun className="h-3 w-3 shrink-0" strokeWidth={1.75} />
-              ) : (
-                <Moon className="h-3 w-3 shrink-0" strokeWidth={1.75} />
-              )}
-              <span>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
-            </button>
-          </div>
-        </MenuFlyout>
-
-        <MenuFlyout label="Provider" icon={Plug}>
-          <div className="px-1">
-            {providers.map((provider) => (
+              No providers connected
+            </div>
+          ) : (
+            providers.map((provider) => (
               <div
                 key={provider.id}
                 className={cn(
                   typographyBodySm,
-                  'flex items-center gap-2 rounded-[var(--basis-chat-shell-radius)] px-2 py-1.5 text-[var(--basis-text)]',
+                  'flex items-center gap-2 rounded-md px-2 py-1.5 text-[var(--basis-text)]',
                 )}
               >
                 <Circle
@@ -304,39 +307,41 @@ export function SidebarSettingsMenu() {
                   )}
                 </div>
               </div>
-            ))}
-            {disconnectedProviders.map((provider) => (
-              <button
-                key={provider.id}
-                type="button"
-                onClick={() => void retryProvider(provider.id)}
-                className={cn(
-                  typographyCaption,
-                  'mx-1 mb-0.5 mt-0.5 w-[calc(100%-0.5rem)] rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border-muted)] px-2 py-1 text-[var(--basis-text-muted)] transition-default hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
-                )}
-              >
-                Retry {provider.displayName}
-              </button>
-            ))}
-          </div>
-        </MenuFlyout>
-
-        <div className="my-1 border-t border-[var(--basis-border-muted)]" />
-        <button
-          type="button"
-          role="menuitem"
-          onClick={() => {
-            close()
-            setConvexSettingsOpen(true)
-          }}
-          className={cn(
-            typographyBodySm,
-            'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[var(--basis-text)] transition-default hover:bg-[var(--basis-surface-hover)]',
+            ))
           )}
-        >
-          <Hexagon className="h-3.5 w-3.5 shrink-0 text-emerald-400" strokeWidth={1.75} />
-          <span className="min-w-0 flex-1">Convex deployment</span>
-        </button>
+          {disconnectedProviders.map((provider) => (
+            <button
+              key={`retry-${provider.id}`}
+              type="button"
+              onClick={() => void retryProvider(provider.id)}
+              className={cn(
+                typographyCaption,
+                'mx-1 mb-0.5 mt-0.5 w-[calc(100%-0.5rem)] rounded-md border border-[var(--basis-border-muted)] px-2 py-1.5 text-[var(--basis-text-muted)] transition-default hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
+              )}
+            >
+              Retry {provider.displayName}
+            </button>
+          ))}
+        </div>
+
+        <div className="border-t border-[var(--basis-border-muted)] bg-[var(--basis-canvas-bg)] p-1.5">
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              close()
+              setConvexSettingsOpen(true)
+            }}
+            className={cn(
+              typographyBodySm,
+              'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[var(--basis-text)] transition-default hover:bg-[var(--basis-surface-hover)]',
+            )}
+          >
+            <Hexagon className="h-3.5 w-3.5 shrink-0 text-emerald-400" strokeWidth={1.75} />
+            <span className="min-w-0 flex-1">Convex deployment</span>
+            <Plug className="h-3 w-3 shrink-0 text-[var(--basis-text-faint)]" strokeWidth={1.75} />
+          </button>
+        </div>
       </div>,
       document.body,
     )
@@ -351,9 +356,13 @@ export function SidebarSettingsMenu() {
           aria-expanded={open}
           aria-haspopup="menu"
           title="Settings"
-          className="flex h-7 w-7 items-center justify-center rounded-[var(--basis-chat-shell-radius)] text-[var(--basis-text-muted)] transition-default hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]"
+          className={cn(
+            'flex h-7 items-center gap-1.5 rounded-md px-1.5 text-[var(--basis-text-muted)] transition-default hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
+            open && 'bg-[var(--basis-surface-hover)] text-[var(--basis-text)]',
+          )}
         >
           <Settings className="h-3.5 w-3.5" strokeWidth={1.75} />
+          <span className={cn(typographyCaption, 'pr-0.5')}>Settings</span>
         </button>
         {menu}
       </div>
