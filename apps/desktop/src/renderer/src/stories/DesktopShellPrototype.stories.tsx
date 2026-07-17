@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { ConvexProvider, ConvexReactClient } from 'convex/react'
 import { PanelLeft, SquarePen } from 'lucide-react'
 import { ThemeProvider } from '../providers/theme-provider'
 import { AppUiProvider } from '../providers/app-ui-provider'
@@ -19,6 +20,8 @@ const meta = {
 
 export default meta
 type Story = StoryObj
+
+const storyConvex = new ConvexReactClient('https://example.convex.cloud')
 
 function ensureElectronMock() {
   if (typeof window === 'undefined') return
@@ -47,12 +50,24 @@ function ensureElectronMock() {
     getTelemetrySnapshot: async () => ({ filePath: '', events: [] }),
     clearTelemetry: noop,
     recordTelemetry: noop,
-    ensureAgentProvider: async () => ({ ok: true }),
-    getAgentStatuses: async () => ({}),
+    ensureAgentProvider: async () => ({
+      providerId: 'opencode',
+      agentInfo: { name: 'OpenCode', version: '1.7.0' },
+      promptCapabilities: {},
+    }),
+    getAgentStatuses: async () => ({ opencode: 'healthy' }),
     getAgentPromptCapabilities: async () => ({}),
     getAgentProviders: async () => [
-      { id: 'opencode', displayName: 'OpenCode' },
-      { id: 'cursor', displayName: 'Cursor' },
+      {
+        id: 'opencode',
+        displayName: 'OpenCode',
+        capabilities: { loadSession: true, imageInput: true },
+      },
+      {
+        id: 'cursor',
+        displayName: 'Cursor',
+        capabilities: { loadSession: true, imageInput: true },
+      },
     ],
     getModelImageSupport: async () => true,
     loadAcpSession: async () => ({ ok: true }),
@@ -66,6 +81,17 @@ function ensureElectronMock() {
     onTelemetryUpdate: emptyCleanup,
     onAcpEvent: emptyCleanup,
   }
+}
+
+function StoryProviders({ children }: { children: ReactNode }) {
+  ensureElectronMock()
+  return (
+    <ConvexProvider client={storyConvex}>
+      <ThemeProvider>
+        <AppUiProvider>{children}</AppUiProvider>
+      </ThemeProvider>
+    </ConvexProvider>
+  )
 }
 
 function ShellHeader({
@@ -121,9 +147,9 @@ function DesktopShellDemo({ settingsOpen = false }: { settingsOpen?: boolean }) 
   useEffect(() => {
     if (!settingsOpen) return
     const timer = window.setTimeout(() => {
-      const btn = document.querySelector<HTMLButtonElement>('[title="Settings"]')
+      const btn = document.querySelector<HTMLButtonElement>('button[title="Settings"]')
       btn?.click()
-    }, 400)
+    }, 500)
     return () => window.clearTimeout(timer)
   }, [settingsOpen])
 
@@ -148,90 +174,88 @@ function DesktopShellDemo({ settingsOpen = false }: { settingsOpen?: boolean }) 
   )
 
   return (
-    <ThemeProvider>
-      <AppUiProvider>
-        <div className="flex h-screen w-screen min-w-0 flex-col overflow-hidden bg-[var(--basis-canvas-bg)] text-[var(--basis-text)]">
-          <AppChrome convexOpen={convexOpen} onToggleConvex={() => setConvexOpen((v) => !v)} />
-          <div className="flex min-h-0 flex-1 overflow-hidden">
-            <WorkspaceSidebarView
-              collapsed={sidebarCollapsed}
-              workspaces={workspaces}
-              activeWorkspacePath="/workspace/openmanager"
-              activeSessionId="sess-1"
-              collapsedWorkspacePaths={[]}
-              onToggleWorkspaceCollapse={() => undefined}
-              onCreateSession={() => undefined}
-              onSelectSession={() => undefined}
-              onDeleteSession={() => undefined}
-              onRemoveWorkspace={() => undefined}
-              onAddWorkspace={() => undefined}
+    <StoryProviders>
+      <div className="flex h-screen w-screen min-w-0 flex-col overflow-hidden bg-[var(--basis-canvas-bg)] text-[var(--basis-text)]">
+        <AppChrome convexOpen={convexOpen} onToggleConvex={() => setConvexOpen((v) => !v)} />
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <WorkspaceSidebarView
+            collapsed={sidebarCollapsed}
+            workspaces={workspaces}
+            activeWorkspacePath="/workspace/openmanager"
+            activeSessionId="sess-1"
+            collapsedWorkspacePaths={[]}
+            onToggleWorkspaceCollapse={() => undefined}
+            onCreateSession={() => undefined}
+            onSelectSession={() => undefined}
+            onDeleteSession={() => undefined}
+            onRemoveWorkspace={() => undefined}
+            onAddWorkspace={() => undefined}
+          />
+          <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--basis-canvas-bg)]">
+            <ShellHeader
+              sidebarCollapsed={sidebarCollapsed}
+              onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
             />
-            <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--basis-canvas-bg)]">
-              <ShellHeader
-                sidebarCollapsed={sidebarCollapsed}
-                onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
-              />
-              <ChatViewPanel>
-                <div className="min-h-0 flex-1 overflow-y-auto">
-                  <div className="mx-auto max-w-2xl space-y-3 px-4 py-6 pb-44">
-                    <UserMessage content="The title bar still feels unfinished — can we tighten the chrome and settings?" />
-                    <AssistantMessage
-                      isFinal
-                      content="Yes. I tightened the title bar border, cleaned the sidebar hierarchy, rebuilt settings as a flat panel, and darkened the composer slightly while leaving chat content alone."
-                    />
-                    <UserMessage content="Also check Lucide icon consistency across the shell." />
-                    <AssistantMessage
-                      isFinal
-                      content="Icons were already Lucide React. Stroke width is now consistently 1.75 across chrome, sidebar, and settings."
-                    />
-                  </div>
+            <ChatViewPanel>
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <div className="mx-auto max-w-2xl space-y-3 px-4 py-6 pb-44">
+                  <UserMessage content="The title bar still feels unfinished — can we tighten the chrome and settings?" />
+                  <AssistantMessage
+                    isFinal
+                    content="Yes. I tightened the title bar border, cleaned the sidebar hierarchy, rebuilt settings as a flat panel, and darkened the composer slightly while leaving chat content alone."
+                  />
+                  <UserMessage content="Also check Lucide icon consistency across the shell." />
+                  <AssistantMessage
+                    isFinal
+                    content="Icons were already Lucide React. Stroke width is now consistently 1.75 across chrome, sidebar, and settings."
+                  />
                 </div>
-              </ChatViewPanel>
-              <FloatingChatComposer>
-                <MessageInputView
-                  disabled={false}
-                  pendingDraftSessionStart={false}
-                  activeWorkspacePath="/workspace/openmanager"
-                  activeSessionId="sess-1"
-                  isSessionDraftOpen={false}
-                  providerReady={true}
-                  providerOptions={[
-                    { id: 'opencode', name: 'OpenCode' },
-                    { id: 'cursor', name: 'Cursor' },
-                  ]}
-                  currentProviderId="opencode"
-                  currentProviderName="OpenCode"
-                  modeOptions={[
-                    { id: 'default', name: 'Default' },
-                    { id: 'plan', name: 'Plan' },
-                  ]}
-                  currentModeId="default"
-                  modelOptions={[
-                    { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5' },
-                    { id: 'claude-opus-4', name: 'Claude Opus 4' },
-                  ]}
-                  currentModelId="claude-sonnet-4-5"
-                  canChangeSettings={true}
-                  canChangeProvider={false}
-                  showModeControl={true}
-                  showModelControl={true}
-                  agent={{ name: 'OpenCode', version: '1.7.0' }}
-                  isStreaming={false}
-                  draftKey="desktop-shell"
-                  imageUploadEnabled={true}
-                  imageSupportMessage={null}
-                  onModeChange={() => undefined}
-                  onProviderChange={() => undefined}
-                  onModelChange={() => undefined}
-                  onSend={async () => undefined}
-                  onAbort={() => undefined}
-                />
-              </FloatingChatComposer>
-            </div>
+              </div>
+            </ChatViewPanel>
+            <FloatingChatComposer>
+              <MessageInputView
+                disabled={false}
+                pendingDraftSessionStart={false}
+                activeWorkspacePath="/workspace/openmanager"
+                activeSessionId="sess-1"
+                isSessionDraftOpen={false}
+                providerReady={true}
+                providerOptions={[
+                  { id: 'opencode', name: 'OpenCode' },
+                  { id: 'cursor', name: 'Cursor' },
+                ]}
+                currentProviderId="opencode"
+                currentProviderName="OpenCode"
+                modeOptions={[
+                  { id: 'default', name: 'Default' },
+                  { id: 'plan', name: 'Plan' },
+                ]}
+                currentModeId="default"
+                modelOptions={[
+                  { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5' },
+                  { id: 'claude-opus-4', name: 'Claude Opus 4' },
+                ]}
+                currentModelId="claude-sonnet-4-5"
+                canChangeSettings={true}
+                canChangeProvider={false}
+                showModeControl={true}
+                showModelControl={true}
+                agent={{ name: 'OpenCode', version: '1.7.0' }}
+                isStreaming={false}
+                draftKey="desktop-shell"
+                imageUploadEnabled={true}
+                imageSupportMessage={null}
+                onModeChange={() => undefined}
+                onProviderChange={() => undefined}
+                onModelChange={() => undefined}
+                onSend={async () => undefined}
+                onAbort={() => undefined}
+              />
+            </FloatingChatComposer>
           </div>
         </div>
-      </AppUiProvider>
-    </ThemeProvider>
+      </div>
+    </StoryProviders>
   )
 }
 
