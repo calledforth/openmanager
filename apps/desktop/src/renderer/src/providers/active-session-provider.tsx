@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
@@ -298,6 +299,7 @@ interface ActiveSessionValue {
   activeSessionDriven: boolean
   isMessagesLoading: boolean
   messages: UIMessage[]
+  acknowledgeOptimisticMessage: (externalId: string) => void
   abortSession: (externalId: string) => Promise<void>
   sendMessage: (content: string, attachments?: UploadedImageAttachment[]) => Promise<void>
   streamingStore: StreamingMessagesStore
@@ -317,10 +319,32 @@ export function mergePersistedAndOptimisticMessages(
   optimistic: UIMessage[],
 ): UIMessage[] {
   if (optimistic.length === 0) return persisted
-  const persistedIds = new Set(persisted.map((message) => message.externalId))
+  const optimisticById = new Map(optimistic.map((message) => [message.externalId, message]))
+  const acknowledged = persisted.map((message) => {
+    const optimisticMessage = optimisticById.get(message.externalId)
+    if (!optimisticMessage) return message
+    return {
+      ...message,
+      optimisticContent: optimisticMessage.optimisticContent,
+      optimisticAttachments: optimisticMessage.optimisticAttachments,
+      optimisticJobId: optimisticMessage.optimisticJobId,
+      isOptimistic: false,
+    }
+  })
+  const persistedIds = new Set(acknowledged.map((message) => message.externalId))
   const unacknowledged = optimistic.filter((message) => !persistedIds.has(message.externalId))
-  return [...persisted, ...unacknowledged].sort(
+  return [...acknowledged, ...unacknowledged].sort(
     (left, right) => left.sequenceNum - right.sequenceNum,
+  )
+}
+
+export function shouldPreserveOptimisticMessages(
+  previousSessionId: string | null,
+  nextSessionId: string | null,
+  adoptedDraftSessionId: string | null,
+): boolean {
+  return (
+    previousSessionId === null && nextSessionId !== null && nextSessionId === adoptedDraftSessionId
   )
 }
 
@@ -344,12 +368,14 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
   // not on the whole context value (which changes on unrelated updates).
   const {
     activeSessionId,
+    adoptedDraftSessionId,
     currentClientId,
     sendMessage: uiSendMessage,
     abortSession: uiAbortSession,
   } = useAppUi()
   const streamingStore = useMemo(() => new StreamingMessagesStore(), [])
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<UIMessage[]>([])
+  const previousActiveSessionIdRef = useRef(activeSessionId)
 
   const rawSession = useTrackedQuery(
     'sessions.getByExternalId.active',
@@ -366,7 +392,8 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
   const messageList = rawMessages ?? EMPTY_MESSAGES
   const isMessagesLoading = !!activeSessionId && rawMessages === undefined
   const activeSessionDriven =
-    !!rawSession && !!currentClientId && rawSession.clientId === currentClientId
+    (!!rawSession && !!currentClientId && rawSession.clientId === currentClientId) ||
+    (!!activeSessionId && activeSessionId === adoptedDraftSessionId)
   const activeSession = useMemo<ActiveSessionDetails | null>(
     () =>
       rawSession
@@ -401,30 +428,38 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
   }, [messageList, streamingStore])
 
   useEffect(() => {
-    setOptimisticUserMessages((prev) => {
-      for (const message of prev) {
-        for (const attachment of message.optimisticAttachments ?? []) {
-          URL.revokeObjectURL(attachment.previewUrl)
-        }
-      }
-      return []
-    })
-    streamingStore.reset()
-  }, [streamingStore, activeSessionId])
+    const previousSessionId = previousActiveSessionIdRef.current
+    if (previousSessionId === activeSessionId) return
+    previousActiveSessionIdRef.current = activeSessionId
+    const preserveOptimisticMessages = shouldPreserveOptimisticMessages(
+      previousSessionId,
+      activeSessionId,
+      adoptedDraftSessionId,
+    )
 
-  useEffect(() => {
-    const persistedIds = new Set(messageList.map((message) => message.externalId))
-    setOptimisticUserMessages((prev) => {
-      for (const message of prev) {
-        if (!persistedIds.has(message.externalId)) continue
-        for (const attachment of message.optimisticAttachments ?? []) {
-          URL.revokeObjectURL(attachment.previewUrl)
+    if (!preserveOptimisticMessages) {
+      setOptimisticUserMessages((prev) => {
+        for (const message of prev) {
+          for (const attachment of message.optimisticAttachments ?? []) {
+            URL.revokeObjectURL(attachment.previewUrl)
+          }
         }
+        return []
+      })
+    }
+    streamingStore.reset()
+  }, [activeSessionId, adoptedDraftSessionId, streamingStore])
+
+  const acknowledgeOptimisticMessage = useCallback((externalId: string) => {
+    setOptimisticUserMessages((prev) => {
+      const acknowledged = prev.find((message) => message.externalId === externalId)
+      if (!acknowledged) return prev
+      for (const attachment of acknowledged.optimisticAttachments ?? []) {
+        URL.revokeObjectURL(attachment.previewUrl)
       }
-      const next = prev.filter((message) => !persistedIds.has(message.externalId))
-      return next.length === prev.length ? prev : next
+      return prev.filter((message) => message.externalId !== externalId)
     })
-  }, [messageList])
+  }, [])
 
   const sendMessage = useCallback(
     async (content: string, attachments: UploadedImageAttachment[] = []) => {
@@ -489,6 +524,7 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
       activeSessionDriven,
       isMessagesLoading,
       messages,
+      acknowledgeOptimisticMessage,
       abortSession: uiAbortSession,
       sendMessage,
       streamingStore,
@@ -499,6 +535,7 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
       activeSessionDriven,
       isMessagesLoading,
       messages,
+      acknowledgeOptimisticMessage,
       uiAbortSession,
       sendMessage,
       streamingStore,

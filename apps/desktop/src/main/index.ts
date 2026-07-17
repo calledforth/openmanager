@@ -13,6 +13,12 @@ import { loadOrCreateClientId } from './client-id'
 import store from './store'
 import { normalizeConvexUrl, resolveRuntimeConfig } from './convex-config'
 import type { ConvexConnectionResult, RuntimeConfig } from '../shared/runtime-config'
+import {
+  workspaceComposerPreferenceKey,
+  type ProviderComposerProfile,
+  type WorkspaceComposerPreference,
+  type WorkspaceComposerPreferences,
+} from '../shared/composer-profile'
 import { startUpdateService } from './update-service'
 import {
   clearConvexTelemetry,
@@ -290,6 +296,75 @@ ipcMain.handle('store:set-last-provider', async (_e, providerId: unknown) => {
   if (!isProviderId(providerId)) throw new Error(`Unknown provider: ${String(providerId)}`)
   store.set('lastUsedProviderId', providerId)
 })
+
+ipcMain.handle('store:get-last-active-workspace', async (): Promise<string> => {
+  return store.get('lastActiveWorkspacePath', '')
+})
+
+ipcMain.handle('store:set-last-active-workspace', async (_e, workspacePath: unknown) => {
+  if (typeof workspacePath !== 'string') throw new Error('Workspace path must be a string')
+  store.set('lastActiveWorkspacePath', workspacePath)
+})
+
+ipcMain.handle('store:get-provider-composer-profiles', async () => {
+  return store.get('providerComposerProfiles', {})
+})
+
+ipcMain.handle(
+  'store:set-provider-composer-profile',
+  async (_e, providerId: unknown, profile: unknown) => {
+    if (!isProviderId(providerId)) throw new Error(`Unknown provider: ${String(providerId)}`)
+    if (!profile || typeof profile !== 'object')
+      throw new Error('Invalid provider composer profile')
+    const profiles = store.get('providerComposerProfiles', {})
+    store.set('providerComposerProfiles', {
+      ...profiles,
+      [providerId]: {
+        ...(profiles[providerId] ?? {}),
+        ...(profile as ProviderComposerProfile),
+      },
+    })
+  },
+)
+
+ipcMain.handle('store:get-workspace-composer-preferences', async () => {
+  const preferences = {
+    ...store.get('workspaceComposerPreferences', {}),
+  } as WorkspaceComposerPreferences
+  const legacyModels = store.get('lastSelectedModelByWorkspace', {})
+  for (const [legacyKey, modelId] of Object.entries(legacyModels)) {
+    if (!modelId) continue
+    const providerSuffix = (['opencode', 'cursor'] as const).find((providerId) =>
+      legacyKey.endsWith(`::${providerId}`),
+    )
+    const key = providerSuffix ? legacyKey : workspaceComposerPreferenceKey(legacyKey, 'opencode')
+    preferences[key] = {
+      ...(preferences[key] ?? {}),
+      modelId: preferences[key]?.modelId ?? modelId,
+    }
+  }
+  return preferences
+})
+
+ipcMain.handle(
+  'store:set-workspace-composer-preference',
+  async (_e, workspacePath: unknown, providerId: unknown, preference: unknown) => {
+    if (typeof workspacePath !== 'string') throw new Error('Workspace path must be a string')
+    if (!isProviderId(providerId)) throw new Error(`Unknown provider: ${String(providerId)}`)
+    if (!preference || typeof preference !== 'object')
+      throw new Error('Invalid workspace composer preference')
+    const key = workspaceComposerPreferenceKey(workspacePath, providerId)
+    const preferences = store.get('workspaceComposerPreferences', {})
+    store.set('workspaceComposerPreferences', {
+      ...preferences,
+      [key]: {
+        ...(preferences[key] ?? {}),
+        ...(preference as WorkspaceComposerPreference),
+      },
+    })
+  },
+)
+
 ipcMain.handle('telemetry:record', async (_event, payload: Record<string, unknown>) => {
   recordConvexTelemetry({
     source: 'renderer',
@@ -337,6 +412,10 @@ app.whenReady().then(() => {
       agentHost,
       clientId,
       (workspacePath, providerId) => {
+        const preference = store.get('workspaceComposerPreferences', {})[
+          workspaceComposerPreferenceKey(workspacePath, providerId)
+        ]
+        if (preference?.modelId) return preference.modelId
         const models = store.get('lastSelectedModelByWorkspace', {})
         // Legacy entries were keyed by workspace alone, before Cursor support.
         const model =
@@ -345,6 +424,15 @@ app.whenReady().then(() => {
         return typeof model === 'string' && model.length > 0 ? model : null
       },
       (workspacePath, providerId, modelId) => {
+        const key = workspaceComposerPreferenceKey(workspacePath, providerId)
+        const preferences = store.get('workspaceComposerPreferences', {})
+        store.set('workspaceComposerPreferences', {
+          ...preferences,
+          [key]: {
+            ...(preferences[key] ?? {}),
+            modelId,
+          },
+        })
         const models = store.get('lastSelectedModelByWorkspace', {})
         store.set('lastSelectedModelByWorkspace', {
           ...models,

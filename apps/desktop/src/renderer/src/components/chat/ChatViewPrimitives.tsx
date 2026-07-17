@@ -109,32 +109,19 @@ export function ChatLoadingSkeleton() {
       className="chat-animate-fade-in space-y-5 py-4"
     >
       <div aria-hidden="true" className="space-y-5">
-        <MessageLoadingSkeleton role="user" announce={false} />
-        <MessageLoadingSkeleton role="assistant" announce={false} />
-        <MessageLoadingSkeleton role="user" announce={false} compact />
-        <MessageLoadingSkeleton role="assistant" announce={false} compact />
+        <SkeletonMessageShape role="user" />
+        <SkeletonMessageShape role="assistant" />
+        <SkeletonMessageShape role="user" compact />
+        <SkeletonMessageShape role="assistant" compact />
       </div>
     </div>
   )
 }
 
-export function MessageLoadingSkeleton({
-  role,
-  announce = true,
-  compact = false,
-}: {
-  role: string
-  announce?: boolean
-  compact?: boolean
-}) {
+function SkeletonMessageShape({ role, compact = false }: { role: string; compact?: boolean }) {
   const isUser = role === 'user'
   return (
-    <div
-      role={announce ? 'status' : undefined}
-      aria-label={announce ? 'Loading message' : undefined}
-      aria-hidden={announce ? undefined : true}
-      className={cn('w-full py-1', announce && 'chat-animate-fade-in')}
-    >
+    <div className="w-full py-1">
       <div className={cn('space-y-2', isUser ? 'ml-auto w-[68%] max-w-xl' : 'mr-auto w-[82%]')}>
         <div
           className={cn('chat-skeleton h-3 rounded-full', isUser ? 'ml-auto w-full' : 'w-[88%]')}

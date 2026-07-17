@@ -1,5 +1,9 @@
 import Store from 'electron-store'
 import { configureStableUserDataPath } from './app-paths'
+import type {
+  ProviderComposerProfiles,
+  WorkspaceComposerPreferences,
+} from '../shared/composer-profile'
 
 // Electron derives userData from package.name. Keep the original path so the
 // desktop retains its existing client identity and local preferences.
@@ -10,6 +14,9 @@ interface StoreSchema {
   collapsedWorkspaces: string[]
   lastSelectedModelByWorkspace: Record<string, string>
   lastUsedProviderId: string
+  lastActiveWorkspacePath: string
+  providerComposerProfiles: ProviderComposerProfiles
+  workspaceComposerPreferences: WorkspaceComposerPreferences
 }
 
 const store = new Store<StoreSchema>({
@@ -19,6 +26,9 @@ const store = new Store<StoreSchema>({
     collapsedWorkspaces: [],
     lastSelectedModelByWorkspace: {},
     lastUsedProviderId: 'opencode',
+    lastActiveWorkspacePath: '',
+    providerComposerProfiles: {},
+    workspaceComposerPreferences: {},
   },
 })
 
