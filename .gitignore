@@ -17,4 +17,5 @@ Thumbs.db
 .tmp/  
 .lovable-ref/  
 .cursor/  
+.claude/
 opencode.ref/ 

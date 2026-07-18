@@ -2,12 +2,10 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { useVirtualizer, type VirtualItem } from '@tanstack/react-virtual'
 import { api } from '@openmanager/convex/_generated/api'
 import { useActiveSession, useStreamingMessage } from '../../providers/active-session-provider'
-import { useAppUi } from '../../providers/app-ui-provider'
 import {
   AssistantMessage,
   ChatLoadingSkeleton,
   ChatViewPanel,
-  MessageLoadingSkeleton,
   UserMessage,
   type RuntimeMetadata,
 } from './ChatViewPrimitives'
@@ -20,13 +18,19 @@ import {
 import { cn } from '../../lib/utils'
 import type { UploadedImageAttachment } from '../../lib/attachments'
 import { PendingPermissionFallback } from '../permissions/InlinePermissionPrompt'
+import { NewSessionLanding } from './NewSessionLanding'
 
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96
 const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 8
 
 export function ChatView() {
-  const { activeSessionId, messages, activeSessionDriven, isMessagesLoading } = useActiveSession()
-  const { activeWorkspacePath, isSessionDraftOpen, pendingDraftSessionStart } = useAppUi()
+  const {
+    activeSessionId,
+    messages,
+    activeSessionDriven,
+    isMessagesLoading,
+    acknowledgeOptimisticMessage,
+  } = useActiveSession()
   const scrollRef = useRef<HTMLDivElement>(null)
   const shouldAutoScrollRef = useRef(true)
   const lastKnownScrollTopRef = useRef(0)
@@ -74,29 +78,8 @@ export function ChatView() {
     }
   }, [])
 
-  if (!activeSessionId) {
-    if (isSessionDraftOpen && activeWorkspacePath) {
-      const workspaceName =
-        activeWorkspacePath.split(/[\\/]/).filter(Boolean).pop() ?? activeWorkspacePath
-      return (
-        <div className="flex min-h-0 flex-1 flex items-center justify-center">
-          <div className="text-center">
-            <div className="text-16-medium text-foreground">Let&apos;s build in</div>
-            <div className="mt-1 text-20-medium text-sidebar-primary">{workspaceName}</div>
-            <div className="mt-3 text-13-regular text-muted-foreground">
-              {pendingDraftSessionStart
-                ? 'Creating session...'
-                : 'Session will be created when you send your first message'}
-            </div>
-          </div>
-        </div>
-      )
-    }
-    return (
-      <div className="flex min-h-0 flex-1 flex items-center justify-center text-muted-foreground text-13-regular">
-        Select or create a session
-      </div>
-    )
+  if (!activeSessionId && messages.length === 0) {
+    return <NewSessionLanding />
   }
 
   const chatMessages = messages.filter((m) => m.role !== 'permission')
@@ -110,12 +93,13 @@ export function ChatView() {
       >
         <div className="mx-auto max-w-3xl space-y-1 px-4 pt-2 pb-44">
           <ConversationTimeline
-            key={activeSessionId}
+            sessionId={activeSessionId}
             messages={chatMessages}
             isMessagesLoading={isMessagesLoading}
             scrollElement={scrollRef.current}
             isDriven={activeSessionDriven}
             onStreamUpdate={scheduleStickToBottom}
+            onPersistedContentReady={acknowledgeOptimisticMessage}
           />
           <PendingPermissionFallback />
         </div>
@@ -125,12 +109,15 @@ export function ChatView() {
 }
 
 function ConversationTimeline({
+  sessionId,
   messages,
   isMessagesLoading,
   scrollElement,
   isDriven,
   onStreamUpdate,
+  onPersistedContentReady,
 }: {
+  sessionId: string | null
   messages: Array<{
     externalId: string
     role: string
@@ -144,14 +131,24 @@ function ConversationTimeline({
   scrollElement: HTMLDivElement | null
   isDriven: boolean
   onStreamUpdate: () => void
+  onPersistedContentReady: (messageId: string) => void
 }) {
-  const [isContentHydrating, setIsContentHydrating] = useState(true)
-  const isHydrating = isMessagesLoading || isContentHydrating
-  const handleHydrated = useCallback(() => setIsContentHydrating(false), [])
+  const [hydratingSessionId, setHydratingSessionId] = useState<string | null>(null)
+  const isColdSessionLoad = !!sessionId && isMessagesLoading && messages.length === 0
+  const isHydrating = isColdSessionLoad || (!!sessionId && hydratingSessionId === sessionId)
+  const handleHydrated = useCallback(() => {
+    setHydratingSessionId((current) => (current === sessionId ? null : current))
+  }, [sessionId])
 
   useEffect(() => {
-    if (!isMessagesLoading && messages.length === 0) setIsContentHydrating(false)
-  }, [isMessagesLoading, messages.length])
+    if (isColdSessionLoad) {
+      setHydratingSessionId(sessionId)
+      return
+    }
+    if (!isMessagesLoading && messages.length === 0 && hydratingSessionId === sessionId) {
+      setHydratingSessionId(null)
+    }
+  }, [hydratingSessionId, isColdSessionLoad, isMessagesLoading, messages.length, sessionId])
 
   useEffect(() => {
     if (!isHydrating) onStreamUpdate()
@@ -167,7 +164,7 @@ function ConversationTimeline({
         </div>
       ) : null}
 
-      {!isMessagesLoading && messages.length > 0 && (
+      {messages.length > 0 && (
         <MessageTimeline
           messages={messages}
           scrollElement={scrollElement}
@@ -175,6 +172,7 @@ function ConversationTimeline({
           onStreamUpdate={onStreamUpdate}
           hidden={isHydrating}
           onHydrated={handleHydrated}
+          onPersistedContentReady={onPersistedContentReady}
         />
       )}
     </>
@@ -188,6 +186,7 @@ function MessageTimeline({
   onStreamUpdate,
   hidden,
   onHydrated,
+  onPersistedContentReady,
 }: {
   messages: Array<{
     externalId: string
@@ -203,6 +202,7 @@ function MessageTimeline({
   onStreamUpdate: () => void
   hidden: boolean
   onHydrated: () => void
+  onPersistedContentReady: (messageId: string) => void
 }) {
   const [readyMessageIds, setReadyMessageIds] = useState<Set<string>>(() => new Set())
   const didReportHydratedRef = useRef(false)
@@ -270,6 +270,7 @@ function MessageTimeline({
                   isDriven={isDriven}
                   onStreamUpdate={onStreamUpdate}
                   onReady={handleMessageReady}
+                  onPersistedContentReady={onPersistedContentReady}
                   animate={!initialMessageIdsRef.current.has(message.externalId)}
                 />
               </div>
@@ -285,6 +286,7 @@ function MessageTimeline({
           isDriven={isDriven}
           onStreamUpdate={onStreamUpdate}
           onReady={handleMessageReady}
+          onPersistedContentReady={onPersistedContentReady}
           animate={!initialMessageIdsRef.current.has(message.externalId)}
         />
       ))}
@@ -297,6 +299,7 @@ function MessageRow({
   isDriven,
   onStreamUpdate,
   onReady,
+  onPersistedContentReady,
   animate,
 }: {
   message: {
@@ -311,6 +314,7 @@ function MessageRow({
   isDriven: boolean
   onStreamUpdate: () => void
   onReady: (messageId: string) => void
+  onPersistedContentReady: (messageId: string) => void
   animate: boolean
 }) {
   return (
@@ -326,6 +330,7 @@ function MessageRow({
         isDriven={isDriven}
         onStreamUpdate={onStreamUpdate}
         onReady={onReady}
+        onPersistedContentReady={onPersistedContentReady}
       />
     </div>
   )
@@ -434,6 +439,7 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
   isDriven: boolean
   onStreamUpdate: () => void
   onReady?: (messageId: string) => void
+  onPersistedContentReady?: (messageId: string) => void
 }) {
   const shouldUseRemoteStreaming =
     props.role === 'assistant' && props.isFinal !== true && !props.isDriven
@@ -461,26 +467,12 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
   const finalizedParts = (contentDoc?.metadata as { parts?: MessagePart[] } | undefined)?.parts
   const runtimeMetadata = (contentDoc?.metadata as { runtime?: RuntimeMetadata } | undefined)
     ?.runtime
-  const drivenStreamingMessage = props.isDriven ? localStreamingMessage : undefined
+  const drivenStreamingMessage = localStreamingMessage
 
   // Cache last-known streaming parts so the isFinal transition doesn't flash empty
   // (getContent query needs a round-trip to resolve after listMetadata flips isFinal)
   const lastStreamingPartsRef = useRef<MessagePart[] | undefined>(undefined)
   const lastStreamingContentRef = useRef<string>('')
-  const isContentLoading =
-    !props.isOptimistic &&
-    (props.isFinal === true || props.role === 'user') &&
-    contentDoc === undefined
-  const onReady = props.onReady
-  const externalId = props.externalId
-  useEffect(() => {
-    if (!isContentLoading) onReady?.(externalId)
-  }, [externalId, isContentLoading, onReady])
-
-  if (isContentLoading) {
-    return <MessageLoadingSkeleton role={props.role} />
-  }
-
   const streamingParts = drivenStreamingMessage?.parts ?? remoteStreaming.parts
   if (streamingParts && streamingParts.length > 0) {
     lastStreamingPartsRef.current = streamingParts
@@ -494,6 +486,31 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
   if (streamingContent.length > 0) {
     lastStreamingContentRef.current = streamingContent
   }
+
+  const isContentLoading =
+    !props.isOptimistic &&
+    (props.isFinal === true || props.role === 'user') &&
+    contentDoc === undefined
+  const hasRenderableFallback =
+    props.optimisticContent !== undefined ||
+    !!props.optimisticAttachments?.length ||
+    lastStreamingContentRef.current.length > 0 ||
+    !!lastStreamingPartsRef.current?.length
+  const onReady = props.onReady
+  const onPersistedContentReady = props.onPersistedContentReady
+  const externalId = props.externalId
+  useEffect(() => {
+    if (!isContentLoading || hasRenderableFallback) onReady?.(externalId)
+  }, [externalId, hasRenderableFallback, isContentLoading, onReady])
+
+  useEffect(() => {
+    if (props.optimisticContent !== undefined && contentDoc !== undefined && contentDoc !== null) {
+      onPersistedContentReady?.(externalId)
+    }
+  }, [contentDoc, externalId, onPersistedContentReady, props.optimisticContent])
+
+  if (isContentLoading && !hasRenderableFallback) return null
+
   const content =
     props.role === 'assistant'
       ? props.isFinal === true

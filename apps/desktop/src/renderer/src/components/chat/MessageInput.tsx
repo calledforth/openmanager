@@ -13,6 +13,7 @@ export function MessageInput() {
     activeWorkspacePath,
     isSessionDraftOpen,
     pendingDraftSessionStart,
+    localSessionStatus,
     acpSessionState,
     draftSessionState,
     acpAgentInfoByProvider,
@@ -59,18 +60,34 @@ export function MessageInput() {
   const providerReady = agentUiStatusByProvider[currentProviderId] === 'connected'
   const currentProviderName =
     providerOptions.find((provider) => provider.id === currentProviderId)?.name ?? currentProviderId
-  const modeOptions = (chrome.modePicker?.options ?? []).map((mode) => ({
+  const chromeModeOptions = (chrome.modePicker?.options ?? []).map((mode) => ({
     id: mode.id,
     name: mode.label,
   }))
-  const currentModeId = runtimeState?.modes?.currentModeId ?? ''
-  const modelOptions = (chrome.modelPicker?.options ?? []).map((model) => ({
+  const runtimeModeOptions = runtimeState?.modes?.availableModes ?? []
+  const modeOptions = runtimeModeOptions.length > 0 ? runtimeModeOptions : chromeModeOptions
+  const currentModeId =
+    runtimeState?.modes?.currentModeId ??
+    chrome.modePicker?.currentModeId ??
+    modeOptions[0]?.id ??
+    ''
+  const chromeModelOptions = (chrome.modelPicker?.options ?? []).map((model) => ({
     id: model.id,
     name: model.label,
   }))
-  const currentModelId = runtimeState?.models?.currentModelId ?? ''
+  const runtimeModelOptions = (runtimeState?.models?.availableModels ?? []).map((model) => ({
+    id: model.modelId,
+    name: model.name,
+  }))
+  const modelOptions = runtimeModelOptions.length > 0 ? runtimeModelOptions : chromeModelOptions
+  const currentModelId =
+    runtimeState?.models?.currentModelId ??
+    chrome.modelPicker?.currentModelId ??
+    modelOptions[0]?.id ??
+    ''
   const canChangeSettings = !!activeSessionId || isSessionDraftOpen
-  const isStreaming = activeSession?.status === 'running' || activeSession?.status === 'busy'
+  const effectiveStatus = localSessionStatus ?? activeSession?.status
+  const isStreaming = effectiveStatus === 'running' || effectiveStatus === 'busy'
   const providerImageSupport = acpPromptCapabilitiesByProvider[currentProviderId]?.image
   const providerSupportsImages = providerImageSupport === true
 
@@ -169,8 +186,8 @@ export function MessageInput() {
       currentModelId={currentModelId}
       canChangeSettings={canChangeSettings}
       canChangeProvider={isSessionDraftOpen && !activeSessionId}
-      showModeControl={chrome.modePicker !== null}
-      showModelControl={chrome.modelPicker !== null}
+      showModeControl={chrome.modePicker !== null || modeOptions.length > 0}
+      showModelControl={chrome.modelPicker !== null || modelOptions.length > 0}
       agent={acpAgentInfoByProvider[currentProviderId] ?? null}
       isStreaming={isStreaming}
       draftKey={draftKey}

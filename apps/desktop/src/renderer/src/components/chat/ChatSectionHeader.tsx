@@ -16,11 +16,11 @@ export function ChatSectionHeader({
   onToggleSidebar: () => void
 }) {
   const { activeSessionId, activeSession, abortSession } = useActiveSession()
-  const { activeWorkspacePath, isSessionDraftOpen } = useAppUi()
+  const { activeWorkspacePath, isSessionDraftOpen, localSessionStatus } = useAppUi()
   const { createSession } = useSidebarData()
 
-  const isStreaming = activeSession?.status === 'running' || activeSession?.status === 'busy'
-  const status = activeSession?.status
+  const status = localSessionStatus ?? activeSession?.status
+  const isStreaming = status === 'running' || status === 'busy'
 
   let sessionTitle = 'New session'
   if (activeSessionId && activeSession?.title) {
@@ -28,8 +28,7 @@ export function ChatSectionHeader({
   } else if (activeSessionId) {
     sessionTitle = activeSessionId.slice(0, 12)
   } else if (isSessionDraftOpen && activeWorkspacePath) {
-    sessionTitle =
-      activeWorkspacePath.split(/[\\/]/).filter(Boolean).pop() ?? activeWorkspacePath
+    sessionTitle = activeWorkspacePath.split(/[\\/]/).filter(Boolean).pop() ?? activeWorkspacePath
   }
 
   const handleAbort = () => {
@@ -69,7 +68,10 @@ export function ChatSectionHeader({
       </div>
 
       <span
-        className={cn(typographyTitle, 'min-w-0 flex-1 truncate font-normal text-[var(--basis-text-muted)]')}
+        className={cn(
+          typographyTitle,
+          'min-w-0 flex-1 truncate font-normal text-[var(--basis-text-muted)]',
+        )}
         title={sessionTitle}
       >
         {sessionTitle}

@@ -6,6 +6,12 @@ import type {
   ProviderMetadata,
 } from '@agentpack/contract'
 import type { ConvexConnectionResult, RuntimeConfig } from '../shared/runtime-config'
+import type {
+  ProviderComposerProfile,
+  ProviderComposerProfiles,
+  WorkspaceComposerPreference,
+  WorkspaceComposerPreferences,
+} from '../shared/composer-profile'
 
 const electronAPI = {
   platform: process.platform as NodeJS.Platform,
@@ -48,6 +54,29 @@ const electronAPI = {
   getLastProviderId: () => ipcRenderer.invoke('store:get-last-provider') as Promise<ProviderId>,
   setLastProviderId: (providerId: ProviderId) =>
     ipcRenderer.invoke('store:set-last-provider', providerId),
+  getLastActiveWorkspacePath: () =>
+    ipcRenderer.invoke('store:get-last-active-workspace') as Promise<string>,
+  setLastActiveWorkspacePath: (workspacePath: string) =>
+    ipcRenderer.invoke('store:set-last-active-workspace', workspacePath),
+  getProviderComposerProfiles: () =>
+    ipcRenderer.invoke('store:get-provider-composer-profiles') as Promise<ProviderComposerProfiles>,
+  setProviderComposerProfile: (providerId: ProviderId, profile: ProviderComposerProfile) =>
+    ipcRenderer.invoke('store:set-provider-composer-profile', providerId, profile),
+  getWorkspaceComposerPreferences: () =>
+    ipcRenderer.invoke(
+      'store:get-workspace-composer-preferences',
+    ) as Promise<WorkspaceComposerPreferences>,
+  setWorkspaceComposerPreference: (
+    workspacePath: string,
+    providerId: ProviderId,
+    preference: WorkspaceComposerPreference,
+  ) =>
+    ipcRenderer.invoke(
+      'store:set-workspace-composer-preference',
+      workspacePath,
+      providerId,
+      preference,
+    ),
   onAgentStatusChanged: (callback: (data: { providerId: ProviderId; status: string }) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
       callback(data as { providerId: ProviderId; status: string })

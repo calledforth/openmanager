@@ -209,14 +209,41 @@ export class JobWorker {
       const providerId = this.providerId(parsed.providerId)
 
       switch (job.type) {
-        case 'send_message':
+        case 'send_message': {
+          const route = this.route(parsed, parsed.sessionExternalId)
+          await this.agentHost.runtime.ensureSession({
+            ...route,
+            sessionId: parsed.sessionExternalId,
+          })
+          // Model selection is provider-global agent state (another session may
+          // have changed it since this one was last used), so re-apply the
+          // workspace's current selection before every prompt. This is the one
+          // sync point that keeps "what the composer shows" and "what the
+          // agent runs" identical, for prompts from any device.
+          const preferredModel =
+            parsed.preferredModelId ??
+            this.getLastModelForWorkspace(parsed.workspacePath, route.providerId)
+          if (preferredModel) {
+            try {
+              await this.agentHost.runtime.setModel({
+                ...route,
+                sessionId: parsed.sessionExternalId,
+                modelId: preferredModel,
+              })
+            } catch (error) {
+              console.warn(
+                `[job-worker] failed to apply model ${preferredModel}: ${(error as Error).message}`,
+              )
+            }
+          }
           await this.agentHost.runtime.prompt({
-            ...this.route(parsed, parsed.sessionExternalId),
+            ...route,
             sessionId: parsed.sessionExternalId,
             prompt: await this.promptInput(parsed),
             userMessageId: parsed.userMessageId,
           })
           break
+        }
         case 'create_session': {
           const threadId = crypto.randomUUID()
           const session = await this.agentHost.runtime.ensureSession(this.route(parsed, threadId))

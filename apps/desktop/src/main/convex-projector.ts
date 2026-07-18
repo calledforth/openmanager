@@ -1,6 +1,8 @@
 import type {
   AgentEvent,
   ContentBlock,
+  ModeListing,
+  ModelListing,
   PermissionRequest,
   TokenUsage,
   ToolCall,
@@ -80,6 +82,7 @@ export class ConvexProjector {
   private readonly sessionByThread = new Map<string, string>()
   private readonly providerByThread = new Map<string, AgentEvent['providerId']>()
   private readonly queues = new Map<string, Promise<void>>()
+  private readonly sentProfileByProvider = new Map<string, string>()
 
   constructor(
     private readonly convex: ConvexClient,
@@ -135,10 +138,22 @@ export class ConvexProjector {
     if (event.sessionId) this.sessionByThread.set(event.threadId, event.sessionId)
 
     switch (event.event) {
+      case 'initialized':
+        if (event.data.agentInfo) {
+          await this.upsertProviderProfile(event.providerId, { agentInfo: event.data.agentInfo })
+        }
+        return
       case 'session_created':
       case 'session_loaded':
         if (workspacePath)
           await this.upsertSession(workspacePath, event.sessionId, 'idle', event.providerId)
+        await this.upsertProviderProfile(event.providerId, {
+          models: event.data.models,
+          modes: event.data.modes,
+          // Only a freshly created session reflects the provider's defaults;
+          // a loaded session reports whatever the agent was last using.
+          includeDefaults: event.event === 'session_created',
+        })
         return
       case 'session_deleted':
         await this.runMutation('sessions.remove', api.sessions.remove, {
@@ -178,9 +193,11 @@ export class ConvexProjector {
         return
       case 'current_model_update':
         this.updateRuntime(event.sessionId, { modelId: event.data.currentModelId })
+        await this.upsertProviderProfile(event.providerId, { models: event.data })
         return
       case 'current_mode_update':
         this.updateRuntime(event.sessionId, { modeId: event.data.currentModeId })
+        await this.upsertProviderProfile(event.providerId, { modes: event.data })
         return
       case 'session_info_update':
         if (workspacePath && event.data.title) {
@@ -650,6 +667,49 @@ export class ConvexProjector {
       cacheWrite: usage.cachedWriteTokens,
       total: usage.totalTokens,
     }
+  }
+
+  private async upsertProviderProfile(
+    providerId: AgentEvent['providerId'],
+    source: {
+      agentInfo?: { name?: string; version?: string }
+      models?: ModelListing
+      modes?: ModeListing
+      includeDefaults?: boolean
+    },
+  ): Promise<void> {
+    const availableModels = source.models?.availableModels?.map((model) => ({
+      modelId: model.id,
+      name: model.displayName,
+      ...(model.description !== undefined ? { description: model.description } : {}),
+      ...(model.contextWindowTokens !== undefined
+        ? { contextWindowTokens: model.contextWindowTokens }
+        : {}),
+    }))
+    const availableModes = source.modes?.availableModes?.map((mode) => ({
+      id: mode.id,
+      name: mode.displayName,
+      ...(mode.description !== undefined ? { description: mode.description } : {}),
+    }))
+    const args = {
+      providerId,
+      ...(source.agentInfo ? { agentInfo: source.agentInfo } : {}),
+      ...(availableModels?.length ? { availableModels } : {}),
+      ...(availableModes?.length ? { availableModes } : {}),
+      ...(source.includeDefaults && source.models?.currentModelId
+        ? { defaultModelId: source.models.currentModelId }
+        : {}),
+      ...(source.includeDefaults && source.modes?.currentModeId
+        ? { defaultModeId: source.modes.currentModeId }
+        : {}),
+    }
+    if (Object.keys(args).length === 1) return
+    // The mutation is a server-side no-op for unchanged data; this local cache
+    // just avoids issuing repeat round-trips for identical payloads.
+    const serialized = JSON.stringify(args)
+    if (this.sentProfileByProvider.get(providerId) === serialized) return
+    this.sentProfileByProvider.set(providerId, serialized)
+    await this.runMutation('composer.upsertProfile', (api as any).composer.upsertProfile, args)
   }
 
   private upsertSession(

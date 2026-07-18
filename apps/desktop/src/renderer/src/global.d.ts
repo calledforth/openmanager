@@ -6,6 +6,12 @@ import type {
   ProviderMetadata,
 } from '@agentpack/contract'
 import type { ConvexConnectionResult, RuntimeConfig } from '../../shared/runtime-config'
+import type {
+  ProviderComposerProfile,
+  ProviderComposerProfiles,
+  WorkspaceComposerPreference,
+  WorkspaceComposerPreferences,
+} from '../../shared/composer-profile'
 
 interface ElectronAPI {
   platform: NodeJS.Platform
@@ -36,6 +42,19 @@ interface ElectronAPI {
   setCollapsedWorkspaces: (paths: string[]) => Promise<void>
   getLastProviderId: () => Promise<ProviderId>
   setLastProviderId: (providerId: ProviderId) => Promise<void>
+  getLastActiveWorkspacePath: () => Promise<string>
+  setLastActiveWorkspacePath: (workspacePath: string) => Promise<void>
+  getProviderComposerProfiles: () => Promise<ProviderComposerProfiles>
+  setProviderComposerProfile: (
+    providerId: ProviderId,
+    profile: ProviderComposerProfile,
+  ) => Promise<void>
+  getWorkspaceComposerPreferences: () => Promise<WorkspaceComposerPreferences>
+  setWorkspaceComposerPreference: (
+    workspacePath: string,
+    providerId: ProviderId,
+    preference: WorkspaceComposerPreference,
+  ) => Promise<void>
   onAgentStatusChanged: (
     callback: (data: { providerId: ProviderId; status: string }) => void,
   ) => () => void

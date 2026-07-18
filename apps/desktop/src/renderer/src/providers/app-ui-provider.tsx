@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react'
 import { api } from '@openmanager/convex/_generated/api'
+import type { Id } from '@openmanager/convex/_generated/dataModel'
 import type { SidecarStatus } from '@openmanager/shared/contracts/sidecar'
 import {
   isProviderId,
@@ -23,7 +24,24 @@ import {
   recordRendererTelemetry,
   trackedConvexQuery,
   useTrackedMutation,
+  useTrackedQuery,
 } from '../lib/convex-telemetry'
+import {
+  composerPreferencesFromDocs,
+  composerProfilesFromDocs,
+  mergeProviderComposerProfiles,
+  mergeWorkspaceComposerPreferences,
+  resolveComposerChoice,
+  workspaceComposerPreferenceKey,
+  type ComposerModeOption,
+  type ComposerModelOption,
+  type ProviderComposerProfile,
+  type ProviderComposerProfiles,
+  type ProviderComposerProfileDoc,
+  type WorkspaceComposerPreference,
+  type WorkspaceComposerPreferences,
+  type WorkspaceComposerPreferenceDoc,
+} from '../../../shared/composer-profile'
 import { resolveSessionProviderId, sessionsForProvider } from './session-provider'
 
 export type ProviderUiStatus = 'disconnected' | 'connecting' | 'connected'
@@ -37,6 +55,8 @@ function toAcpModels(models: Extract<AgentEvent, { event: 'session_created' }>['
     availableModels: models.availableModels?.map((model) => ({
       modelId: model.id,
       name: model.displayName,
+      description: model.description,
+      contextWindowTokens: model.contextWindowTokens,
     })),
   }
 }
@@ -53,16 +73,9 @@ function toAcpModes(modes: Extract<AgentEvent, { event: 'session_created' }>['da
   }
 }
 
-export interface AcpModelOption {
-  modelId: string
-  name: string
-}
+export type AcpModelOption = ComposerModelOption
 
-export interface AcpModeOption {
-  id: string
-  name: string
-  description?: string
-}
+export type AcpModeOption = ComposerModeOption
 
 export type AcpCommandOption = AvailableCommand
 
@@ -80,11 +93,156 @@ export interface AcpSessionRuntimeState {
   availableCommands?: AcpCommandOption[]
 }
 
+type DraftComposerSelection = {
+  providerId?: ProviderId
+  modelId?: string
+  modeId?: string
+}
+
+export function resolveDraftComposerRuntime({
+  workspacePath,
+  providerId,
+  runtime,
+  selection,
+  preference,
+  profile,
+}: {
+  workspacePath: string
+  providerId: ProviderId
+  runtime?: Partial<Omit<AcpSessionRuntimeState, 'sessionId'>>
+  selection?: DraftComposerSelection
+  preference?: WorkspaceComposerPreference
+  profile?: ProviderComposerProfile
+}): AcpSessionRuntimeState {
+  const availableModels = runtime?.models?.availableModels?.length
+    ? runtime.models.availableModels
+    : profile?.availableModels
+  const availableModes = runtime?.modes?.availableModes?.length
+    ? runtime.modes.availableModes
+    : profile?.availableModes
+  const currentModelId = resolveComposerChoice(
+    [
+      preference?.modelId,
+      selection?.modelId,
+      runtime?.models?.currentModelId,
+      profile?.defaultModelId,
+    ],
+    availableModels?.map((model) => ({ id: model.modelId })),
+  )
+  const currentModeId = resolveComposerChoice(
+    [preference?.modeId, selection?.modeId, runtime?.modes?.currentModeId, profile?.defaultModeId],
+    availableModes,
+  )
+
+  return {
+    sessionId: `draft:${workspacePath}`,
+    providerId,
+    ...(availableModels?.length || currentModelId
+      ? {
+          models: {
+            ...(availableModels?.length ? { availableModels } : {}),
+            ...(currentModelId ? { currentModelId } : {}),
+          },
+        }
+      : {}),
+    ...(availableModes?.length || currentModeId
+      ? {
+          modes: {
+            ...(availableModes?.length ? { availableModes } : {}),
+            ...(currentModeId ? { currentModeId } : {}),
+          },
+        }
+      : {}),
+    ...(runtime?.availableCommands ? { availableCommands: runtime.availableCommands } : {}),
+  }
+}
+
+// Resolve what the composer should display for an active session. Model
+// selection is provider-global agent state (not per session), so the workspace
+// preference — the single selection the job worker re-applies before every
+// prompt — is what the composer must show; live runtime and profile defaults
+// are fallbacks. Modes can be switched by the agent itself mid-session, so the
+// live runtime wins there. Catalogs fall back to the persisted provider
+// profile so controls render instantly, before any live session round-trip.
+export function resolveSessionComposerRuntime(
+  runtime: AcpSessionRuntimeState,
+  preference?: WorkspaceComposerPreference,
+  profile?: ProviderComposerProfile,
+): AcpSessionRuntimeState {
+  const availableModels = runtime.models?.availableModels?.length
+    ? runtime.models.availableModels
+    : profile?.availableModels
+  const availableModes = runtime.modes?.availableModes?.length
+    ? runtime.modes.availableModes
+    : profile?.availableModes
+  const currentModelId =
+    resolveComposerChoice(
+      [preference?.modelId, runtime.models?.currentModelId, profile?.defaultModelId],
+      availableModels?.map((model) => ({ id: model.modelId })),
+    ) ??
+    preference?.modelId ??
+    runtime.models?.currentModelId
+  const currentModeId =
+    resolveComposerChoice(
+      [runtime.modes?.currentModeId, preference?.modeId, profile?.defaultModeId],
+      availableModes,
+    ) ??
+    runtime.modes?.currentModeId ??
+    preference?.modeId
+  if (
+    availableModels === runtime.models?.availableModels &&
+    availableModes === runtime.modes?.availableModes &&
+    currentModelId === runtime.models?.currentModelId &&
+    currentModeId === runtime.modes?.currentModeId
+  ) {
+    return runtime
+  }
+  return {
+    ...runtime,
+    ...(availableModels?.length || currentModelId
+      ? {
+          models: {
+            ...(availableModels?.length ? { availableModels } : {}),
+            ...(currentModelId ? { currentModelId } : {}),
+          },
+        }
+      : {}),
+    ...(availableModes?.length || currentModeId
+      ? {
+          modes: {
+            ...(availableModes?.length ? { availableModes } : {}),
+            ...(currentModeId ? { currentModeId } : {}),
+          },
+        }
+      : {}),
+  }
+}
+
+export function coordinateProviderConnection(
+  connections: Map<ProviderId, Promise<boolean>>,
+  providerId: ProviderId,
+  start: () => Promise<boolean>,
+): Promise<boolean> {
+  const existing = connections.get(providerId)
+  if (existing) return existing
+  const connection = start()
+  connections.set(providerId, connection)
+  const cleanup = () => {
+    if (connections.get(providerId) === connection) connections.delete(providerId)
+  }
+  void connection.then(cleanup, cleanup)
+  return connection
+}
+
+export type LocalSessionStatus = 'starting' | 'running'
+
 interface AppUiValue {
   activeWorkspacePath: string | null
   activeSessionId: string | null
   isSessionDraftOpen: boolean
   pendingDraftSessionStart: boolean
+  localSessionStatus: LocalSessionStatus | null
+  adoptedDraftSessionId: string | null
   currentClientId: string | null
   agentStatusByProvider: Partial<Record<ProviderId, SidecarStatus>>
   agentUiStatusByProvider: Partial<Record<ProviderId, ProviderUiStatus>>
@@ -165,12 +323,15 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
   const [connectingProviders, setConnectingProviders] = useState<
     Partial<Record<ProviderId, boolean>>
   >({})
-  const connectingRef = useRef<Set<ProviderId>>(new Set())
+  const providerConnectionPromisesRef = useRef<Map<ProviderId, Promise<boolean>>>(new Map())
   const [defaultProviderId, setDefaultProviderId] = useState<ProviderId>('opencode')
   const [activeWorkspacePath, setActiveWorkspacePath] = useState<string | null>(null)
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [isSessionDraftOpen, setIsSessionDraftOpen] = useState(false)
   const [pendingDraftSessionStart, setPendingDraftSessionStart] = useState(false)
+  const [localSessionStatus, setLocalSessionStatus] = useState<LocalSessionStatus | null>(null)
+  const [adoptedDraftSessionId, setAdoptedDraftSessionId] = useState<string | null>(null)
+  const [localSessionJobId, setLocalSessionJobId] = useState<Id<'pending_jobs'> | null>(null)
   const [currentClientId, setCurrentClientId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [acpAgentInfoByProvider, setAcpAgentInfoByProvider] = useState<
@@ -190,6 +351,12 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
   const [draftSelectionByWorkspace, setDraftSelectionByWorkspace] = useState<
     Record<string, { providerId?: ProviderId; modelId?: string; modeId?: string }>
   >({})
+  const [providerComposerProfiles, setProviderComposerProfiles] =
+    useState<ProviderComposerProfiles>({})
+  const [workspaceComposerPreferences, setWorkspaceComposerPreferences] =
+    useState<WorkspaceComposerPreferences>({})
+  const providerComposerProfilesRef = useRef<ProviderComposerProfiles>({})
+  const workspaceComposerPreferencesRef = useRef<WorkspaceComposerPreferences>({})
 
   const mergeDraftRuntimeForWorkspace = useCallback(
     (
@@ -215,6 +382,60 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
     [],
   )
 
+  const upsertComposerPreference = useTrackedMutation(
+    'composer.upsertPreference',
+    (api as any).composer.upsertPreference,
+  )
+
+  const rememberWorkspaceComposerPreference = useCallback(
+    (
+      workspacePath: string,
+      providerId: ProviderId,
+      patch: WorkspaceComposerPreference,
+      overwrite = true,
+    ) => {
+      const key = workspaceComposerPreferenceKey(workspacePath, providerId)
+      const current = workspaceComposerPreferencesRef.current[key] ?? {}
+      const preference = overwrite ? { ...current, ...patch } : { ...patch, ...current }
+      const next = {
+        ...workspaceComposerPreferencesRef.current,
+        [key]: preference,
+      }
+      workspaceComposerPreferencesRef.current = next
+      setWorkspaceComposerPreferences(next)
+      window.electronAPI
+        .setWorkspaceComposerPreference(workspacePath, providerId, preference)
+        .catch(() => undefined)
+      // Mirror to Convex so other devices (mobile) can read composer prefs.
+      void upsertComposerPreference({
+        workspacePath,
+        providerId,
+        ...(preference.modelId !== undefined ? { modelId: preference.modelId } : {}),
+        ...(preference.modeId !== undefined ? { modeId: preference.modeId } : {}),
+      }).catch(() => undefined)
+    },
+    [upsertComposerPreference],
+  )
+
+  const updateProviderComposerProfile = useCallback(
+    (providerId: ProviderId, patch: Omit<Partial<ProviderComposerProfile>, 'updatedAt'>) => {
+      const current = providerComposerProfilesRef.current[providerId]
+      const profile: ProviderComposerProfile = {
+        ...(current ?? { updatedAt: Date.now() }),
+        ...patch,
+        updatedAt: Date.now(),
+      }
+      const next = {
+        ...providerComposerProfilesRef.current,
+        [providerId]: profile,
+      }
+      providerComposerProfilesRef.current = next
+      setProviderComposerProfiles(next)
+      window.electronAPI.setProviderComposerProfile(providerId, profile).catch(() => undefined)
+    },
+    [],
+  )
+
   const telemetryContext = useCallback(
     () => ({
       sessionExternalId: activeSessionId ?? undefined,
@@ -223,17 +444,39 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
     [activeSessionId, activeWorkspacePath],
   )
 
+  const rememberActiveWorkspacePath = useCallback((workspacePath: string | null) => {
+    setActiveWorkspacePath(workspacePath)
+    window.electronAPI.setLastActiveWorkspacePath(workspacePath ?? '').catch(() => undefined)
+  }, [])
+
   const submitJob = useTrackedMutation('jobs.submit', api.jobs.submit, telemetryContext)
   const ensureWorkspace = useTrackedMutation('workspaces.ensureByPath', api.workspaces.ensureByPath)
   const removeWorkspaceMutation = useTrackedMutation('workspaces.remove', api.workspaces.remove)
+  const localSessionJob = useTrackedQuery(
+    'jobs.getStatus.local-session',
+    api.jobs.getStatus,
+    localSessionJobId ? { jobId: localSessionJobId } : 'skip',
+  ) as { status: string; lastError?: string } | null | undefined
+
+  useEffect(() => {
+    if (
+      !localSessionJob ||
+      (localSessionJob.status !== 'done' && localSessionJob.status !== 'failed')
+    )
+      return
+    setLocalSessionStatus(null)
+    setPendingDraftSessionStart(false)
+    setLocalSessionJobId(null)
+    if (localSessionJob.status === 'failed') {
+      setError(localSessionJob.lastError ?? 'Failed to run the session')
+    }
+  }, [localSessionJob])
 
   const applyProviderStatus = useCallback((providerId: ProviderId, status: SidecarStatus) => {
     setAgentStatusByProvider((prev) => ({ ...prev, [providerId]: status }))
   }, [])
 
   const setProviderConnecting = useCallback((providerId: ProviderId, connecting: boolean) => {
-    if (connecting) connectingRef.current.add(providerId)
-    else connectingRef.current.delete(providerId)
     setConnectingProviders((prev) => ({ ...prev, [providerId]: connecting }))
   }, [])
 
@@ -266,23 +509,27 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
 
   const ensureProvider = useCallback(
     async (providerId: ProviderId, cwd: string): Promise<boolean> => {
-      if (connectingRef.current.has(providerId)) return false
-      setProviderConnecting(providerId, true)
-      try {
-        const handshake = await window.electronAPI.ensureAgentProvider(providerId, cwd)
-        return handshake.ready
-      } catch {
-        return false
-      } finally {
-        setProviderConnecting(providerId, false)
-      }
+      return coordinateProviderConnection(
+        providerConnectionPromisesRef.current,
+        providerId,
+        async () => {
+          setProviderConnecting(providerId, true)
+          try {
+            const handshake = await window.electronAPI.ensureAgentProvider(providerId, cwd)
+            return handshake.ready
+          } catch {
+            return false
+          } finally {
+            setProviderConnecting(providerId, false)
+          }
+        },
+      )
     },
     [setProviderConnecting],
   )
 
   const retryProvider = useCallback(
     async (providerId: ProviderId) => {
-      if (connectingRef.current.has(providerId)) return
       setError(null)
       const ready = await ensureProvider(providerId, activeWorkspacePath ?? '')
       if (!ready) setError(`Failed to connect to ${providerDisplayName(providerId)}.`)
@@ -296,14 +543,38 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
     if (!folder) return
     try {
       await ensureWorkspace({ path: folder, machineId: 'desktop' })
-      setActiveWorkspacePath(folder)
+      rememberActiveWorkspacePath(folder)
       setActiveSessionId(null)
-      setIsSessionDraftOpen(false)
+      setIsSessionDraftOpen(true)
       setPendingDraftSessionStart(false)
+      setLocalSessionStatus(null)
+      setLocalSessionJobId(null)
+      setAdoptedDraftSessionId(null)
+      setDraftSelectionByWorkspace((prev) => ({
+        ...prev,
+        [folder]: {
+          ...(prev[folder] ?? {}),
+          providerId: prev[folder]?.providerId ?? defaultProviderId,
+        },
+      }))
+      mergeDraftRuntimeForWorkspace(folder, {
+        providerId: draftSelectionByWorkspace[folder]?.providerId ?? defaultProviderId,
+      })
+      void ensureProvider(
+        draftSelectionByWorkspace[folder]?.providerId ?? defaultProviderId,
+        folder,
+      )
     } catch (err) {
       setError((err as Error).message)
     }
-  }, [ensureWorkspace])
+  }, [
+    defaultProviderId,
+    draftSelectionByWorkspace,
+    ensureProvider,
+    ensureWorkspace,
+    mergeDraftRuntimeForWorkspace,
+    rememberActiveWorkspacePath,
+  ])
 
   const removeWorkspace = useCallback(
     async (path: string) => {
@@ -319,24 +590,30 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         }
 
         if (activeWorkspacePath === path) {
-          setActiveWorkspacePath(null)
+          rememberActiveWorkspacePath(null)
           setActiveSessionId(null)
           setIsSessionDraftOpen(false)
           setPendingDraftSessionStart(false)
+          setLocalSessionStatus(null)
+          setLocalSessionJobId(null)
+          setAdoptedDraftSessionId(null)
         }
       } catch (err) {
         setError((err as Error).message)
       }
     },
-    [activeWorkspacePath, removeWorkspaceMutation],
+    [activeWorkspacePath, rememberActiveWorkspacePath, removeWorkspaceMutation],
   )
 
   const selectSession = useCallback(
     (workspacePath: string, externalId: string, persistedProviderId?: ProviderId) => {
-      setActiveWorkspacePath(workspacePath)
+      rememberActiveWorkspacePath(workspacePath)
       setActiveSessionId(externalId)
       setIsSessionDraftOpen(false)
       setPendingDraftSessionStart(false)
+      setLocalSessionStatus(null)
+      setLocalSessionJobId(null)
+      setAdoptedDraftSessionId(null)
       const providerId =
         acpSessionStateById[externalId]?.providerId ?? persistedProviderId ?? 'opencode'
       setAcpSessionStateById((prev) => ({
@@ -350,59 +627,67 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           .catch(() => undefined)
       }
     },
-    [acpSessionStateById, ensureProvider],
+    [acpSessionStateById, ensureProvider, rememberActiveWorkspacePath],
   )
 
   const createSession = useCallback(
     async (workspacePath: string) => {
       setError(null)
-      setActiveWorkspacePath(workspacePath)
+      rememberActiveWorkspacePath(workspacePath)
       setActiveSessionId(null)
       setIsSessionDraftOpen(true)
       setPendingDraftSessionStart(false)
+      setLocalSessionStatus(null)
+      setLocalSessionJobId(null)
+      setAdoptedDraftSessionId(null)
       const fallbackSessionState =
         activeWorkspacePath === workspacePath && activeSessionId
           ? acpSessionStateById[activeSessionId]
           : null
-      if (fallbackSessionState) {
-        mergeDraftRuntimeForWorkspace(workspacePath, {
-          providerId: fallbackSessionState.providerId,
-          ...(fallbackSessionState.models ? { models: fallbackSessionState.models } : {}),
-          ...(fallbackSessionState.modes ? { modes: fallbackSessionState.modes } : {}),
-          ...(fallbackSessionState.availableCommands
-            ? { availableCommands: fallbackSessionState.availableCommands }
-            : {}),
-        })
-        setDraftSelectionByWorkspace((prev) => ({
-          ...prev,
-          [workspacePath]: {
-            ...(prev[workspacePath] ?? {}),
-            providerId: fallbackSessionState.providerId,
-            ...(fallbackSessionState.models?.currentModelId
-              ? { modelId: fallbackSessionState.models.currentModelId }
-              : {}),
-            ...(fallbackSessionState.modes?.currentModeId
-              ? { modeId: fallbackSessionState.modes.currentModeId }
-              : {}),
-          },
-        }))
-      }
-      setDraftSelectionByWorkspace((prev) => ({
-        ...prev,
-        [workspacePath]: {
-          providerId:
-            prev[workspacePath]?.providerId ??
-            fallbackSessionState?.providerId ??
-            defaultProviderId,
-          ...(prev[workspacePath]?.modelId ? { modelId: prev[workspacePath].modelId } : {}),
-          ...(prev[workspacePath]?.modeId ? { modeId: prev[workspacePath].modeId } : {}),
-        },
-      }))
       const draftProviderId =
         fallbackSessionState?.providerId ??
         draftSelectionByWorkspace[workspacePath]?.providerId ??
         defaultProviderId
-      mergeDraftRuntimeForWorkspace(workspacePath, { providerId: draftProviderId })
+      const preference =
+        workspaceComposerPreferencesRef.current[
+          workspaceComposerPreferenceKey(workspacePath, draftProviderId)
+        ]
+      const resolvedDraft = resolveDraftComposerRuntime({
+        workspacePath,
+        providerId: draftProviderId,
+        runtime: fallbackSessionState ?? draftSessionStateByWorkspace[workspacePath],
+        selection: {
+          ...draftSelectionByWorkspace[workspacePath],
+          ...(fallbackSessionState?.models?.currentModelId
+            ? { modelId: fallbackSessionState.models.currentModelId }
+            : {}),
+          ...(fallbackSessionState?.modes?.currentModeId
+            ? { modeId: fallbackSessionState.modes.currentModeId }
+            : {}),
+        },
+        preference,
+        profile: providerComposerProfilesRef.current[draftProviderId],
+      })
+      setDraftSelectionByWorkspace((prev) => ({
+        ...prev,
+        [workspacePath]: {
+          providerId: draftProviderId,
+          ...(resolvedDraft.models?.currentModelId
+            ? { modelId: resolvedDraft.models.currentModelId }
+            : {}),
+          ...(resolvedDraft.modes?.currentModeId
+            ? { modeId: resolvedDraft.modes.currentModeId }
+            : {}),
+        },
+      }))
+      mergeDraftRuntimeForWorkspace(workspacePath, {
+        providerId: draftProviderId,
+        ...(resolvedDraft.models ? { models: resolvedDraft.models } : {}),
+        ...(resolvedDraft.modes ? { modes: resolvedDraft.modes } : {}),
+        ...(resolvedDraft.availableCommands
+          ? { availableCommands: resolvedDraft.availableCommands }
+          : {}),
+      })
       const providerReady = await ensureProvider(draftProviderId, workspacePath)
 
       const hasRuntime =
@@ -449,9 +734,11 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       activeSessionId,
       activeWorkspacePath,
       defaultProviderId,
+      draftSessionStateByWorkspace,
       ensureProvider,
       draftSelectionByWorkspace,
       mergeDraftRuntimeForWorkspace,
+      rememberActiveWorkspacePath,
     ],
   )
 
@@ -475,7 +762,12 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           clientId: currentClientId,
           sessionExternalId: externalId,
         })
-        if (activeSessionId === externalId) setActiveSessionId(null)
+        if (activeSessionId === externalId) {
+          setActiveSessionId(null)
+          setLocalSessionStatus(null)
+          setLocalSessionJobId(null)
+          setAdoptedDraftSessionId(null)
+        }
       } catch (err) {
         setError((err as Error).message)
       }
@@ -497,17 +789,34 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         if (!isSessionDraftOpen || pendingDraftSessionStart) return null
         const draftSelection = draftSelectionByWorkspace[activeWorkspacePath] ?? {}
         const draftProviderId = draftSelection.providerId ?? defaultProviderId
+        const resolvedDraft = resolveDraftComposerRuntime({
+          workspacePath: activeWorkspacePath,
+          providerId: draftProviderId,
+          runtime: draftSessionStateByWorkspace[activeWorkspacePath],
+          selection: draftSelection,
+          preference:
+            workspaceComposerPreferencesRef.current[
+              workspaceComposerPreferenceKey(activeWorkspacePath, draftProviderId)
+            ],
+          profile: providerComposerProfilesRef.current[draftProviderId],
+        })
+        const preferredModelId = resolvedDraft.models?.currentModelId
+        const preferredModeId = resolvedDraft.modes?.currentModeId
+        setPendingDraftSessionStart(true)
+        setLocalSessionStatus('starting')
+        setAdoptedDraftSessionId(null)
         const ready = await ensureProvider(draftProviderId, activeWorkspacePath)
         if (!ready) {
           const error = new Error(
             `${providerDisplayName(draftProviderId)} is unavailable. Retry connection from the sidebar.`,
           )
+          setPendingDraftSessionStart(false)
+          setLocalSessionStatus(null)
           setError(error.message)
           throw error
         }
-        setPendingDraftSessionStart(true)
         try {
-          return (await submitJob({
+          const jobId = (await submitJob({
             workspacePath: activeWorkspacePath,
             type: 'start_session_with_message',
             payload: JSON.stringify({
@@ -516,17 +825,23 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
               attachments,
               userMessageId,
               providerId: draftProviderId,
-              ...(draftSelection.modelId ? { preferredModelId: draftSelection.modelId } : {}),
-              ...(draftSelection.modeId ? { preferredModeId: draftSelection.modeId } : {}),
+              ...(preferredModelId ? { preferredModelId } : {}),
+              ...(preferredModeId ? { preferredModeId } : {}),
             }),
             clientId: currentClientId,
-          })) as string
+          })) as Id<'pending_jobs'>
+          setLocalSessionJobId(jobId)
+          return jobId
         } catch (err) {
           setPendingDraftSessionStart(false)
+          setLocalSessionStatus(null)
+          setLocalSessionJobId(null)
           setError((err as Error).message)
           throw err
         }
       }
+      setLocalSessionStatus('running')
+      setAdoptedDraftSessionId(null)
       try {
         await recordRendererTelemetry({
           kind: 'trace',
@@ -536,7 +851,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           workspacePath: activeWorkspacePath,
           details: trimmed.slice(0, 120) || `${attachments.length} image attachment(s)`,
         })
-        return (await submitJob({
+        const jobId = (await submitJob({
           workspacePath: activeWorkspacePath,
           type: 'send_message',
           payload: JSON.stringify({
@@ -549,8 +864,12 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           }),
           clientId: currentClientId,
           sessionExternalId: activeSessionId,
-        })) as string
+        })) as Id<'pending_jobs'>
+        setLocalSessionJobId(jobId)
+        return jobId
       } catch (err) {
+        setLocalSessionStatus(null)
+        setLocalSessionJobId(null)
         setError((err as Error).message)
         throw err
       }
@@ -562,6 +881,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       currentClientId,
       defaultProviderId,
       draftSelectionByWorkspace,
+      draftSessionStateByWorkspace,
       ensureProvider,
       isSessionDraftOpen,
       pendingDraftSessionStart,
@@ -573,6 +893,9 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
   const setDraftModel = useCallback(
     (modelId: string) => {
       if (!activeWorkspacePath) return
+      const providerId =
+        draftSelectionByWorkspace[activeWorkspacePath]?.providerId ?? defaultProviderId
+      rememberWorkspaceComposerPreference(activeWorkspacePath, providerId, { modelId })
       setDraftSelectionByWorkspace((prev) => ({
         ...prev,
         [activeWorkspacePath]: {
@@ -591,12 +914,20 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         },
       }))
     },
-    [activeWorkspacePath],
+    [
+      activeWorkspacePath,
+      defaultProviderId,
+      draftSelectionByWorkspace,
+      rememberWorkspaceComposerPreference,
+    ],
   )
 
   const setDraftMode = useCallback(
     (modeId: string) => {
       if (!activeWorkspacePath) return
+      const providerId =
+        draftSelectionByWorkspace[activeWorkspacePath]?.providerId ?? defaultProviderId
+      rememberWorkspaceComposerPreference(activeWorkspacePath, providerId, { modeId })
       setDraftSelectionByWorkspace((prev) => ({
         ...prev,
         [activeWorkspacePath]: {
@@ -615,7 +946,12 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         },
       }))
     },
-    [activeWorkspacePath],
+    [
+      activeWorkspacePath,
+      defaultProviderId,
+      draftSelectionByWorkspace,
+      rememberWorkspaceComposerPreference,
+    ],
   )
 
   const setDraftProvider = useCallback(
@@ -624,18 +960,26 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       setDefaultProviderId(providerId)
       // Preference persistence is best-effort.
       window.electronAPI.setLastProviderId(providerId).catch(() => undefined)
-      const matchingRuntime = Object.values(acpSessionStateById).find(
-        (state) => state.providerId === providerId,
-      )
+      const workspaceRuntime = draftSessionStateByWorkspace[activeWorkspacePath]
+      const resolvedDraft = resolveDraftComposerRuntime({
+        workspacePath: activeWorkspacePath,
+        providerId,
+        runtime: workspaceRuntime?.providerId === providerId ? workspaceRuntime : undefined,
+        preference:
+          workspaceComposerPreferencesRef.current[
+            workspaceComposerPreferenceKey(activeWorkspacePath, providerId)
+          ],
+        profile: providerComposerProfilesRef.current[providerId],
+      })
       setDraftSelectionByWorkspace((prev) => ({
         ...prev,
         [activeWorkspacePath]: {
           providerId,
-          ...(matchingRuntime?.models?.currentModelId
-            ? { modelId: matchingRuntime.models.currentModelId }
+          ...(resolvedDraft.models?.currentModelId
+            ? { modelId: resolvedDraft.models.currentModelId }
             : {}),
-          ...(matchingRuntime?.modes?.currentModeId
-            ? { modeId: matchingRuntime.modes.currentModeId }
+          ...(resolvedDraft.modes?.currentModeId
+            ? { modeId: resolvedDraft.modes.currentModeId }
             : {}),
         },
       }))
@@ -643,15 +987,16 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         ...prev,
         [activeWorkspacePath]: {
           providerId,
-          ...(matchingRuntime?.models ? { models: matchingRuntime.models } : {}),
-          ...(matchingRuntime?.modes ? { modes: matchingRuntime.modes } : {}),
-          ...(matchingRuntime?.availableCommands
-            ? { availableCommands: matchingRuntime.availableCommands }
+          ...(resolvedDraft.models ? { models: resolvedDraft.models } : {}),
+          ...(resolvedDraft.modes ? { modes: resolvedDraft.modes } : {}),
+          ...(resolvedDraft.availableCommands
+            ? { availableCommands: resolvedDraft.availableCommands }
             : {}),
         },
       }))
+      void ensureProvider(providerId, activeWorkspacePath)
     },
-    [acpSessionStateById, activeWorkspacePath],
+    [activeWorkspacePath, draftSessionStateByWorkspace, ensureProvider],
   )
 
   const abortSession = useCallback(
@@ -711,6 +1056,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
   const setSessionModel = useCallback(
     async (sessionExternalId: string, modelId: string) => {
       if (!activeWorkspacePath || !currentClientId) return
+      const providerId = acpSessionStateById[sessionExternalId]?.providerId ?? defaultProviderId
       try {
         await submitJob({
           workspacePath: activeWorkspacePath,
@@ -719,7 +1065,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
             workspacePath: activeWorkspacePath,
             sessionExternalId,
             modelId,
-            providerId: acpSessionStateById[sessionExternalId]?.providerId ?? defaultProviderId,
+            providerId,
           }),
           clientId: currentClientId,
           sessionExternalId,
@@ -744,6 +1090,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
             modelId,
           },
         }))
+        rememberWorkspaceComposerPreference(activeWorkspacePath, providerId, { modelId })
         setDraftSessionStateByWorkspace((prev) => ({
           ...prev,
           [activeWorkspacePath]: {
@@ -758,12 +1105,20 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         setError((err as Error).message)
       }
     },
-    [acpSessionStateById, activeWorkspacePath, currentClientId, defaultProviderId, submitJob],
+    [
+      acpSessionStateById,
+      activeWorkspacePath,
+      currentClientId,
+      defaultProviderId,
+      rememberWorkspaceComposerPreference,
+      submitJob,
+    ],
   )
 
   const setSessionMode = useCallback(
     async (sessionExternalId: string, modeId: string) => {
       if (!activeWorkspacePath || !currentClientId) return
+      const providerId = acpSessionStateById[sessionExternalId]?.providerId ?? defaultProviderId
       try {
         await submitJob({
           workspacePath: activeWorkspacePath,
@@ -772,7 +1127,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
             workspacePath: activeWorkspacePath,
             sessionExternalId,
             modeId,
-            providerId: acpSessionStateById[sessionExternalId]?.providerId ?? defaultProviderId,
+            providerId,
           }),
           clientId: currentClientId,
           sessionExternalId,
@@ -797,6 +1152,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
             modeId,
           },
         }))
+        rememberWorkspaceComposerPreference(activeWorkspacePath, providerId, { modeId })
         setDraftSessionStateByWorkspace((prev) => ({
           ...prev,
           [activeWorkspacePath]: {
@@ -811,7 +1167,14 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         setError((err as Error).message)
       }
     },
-    [acpSessionStateById, activeWorkspacePath, currentClientId, defaultProviderId, submitJob],
+    [
+      acpSessionStateById,
+      activeWorkspacePath,
+      currentClientId,
+      defaultProviderId,
+      rememberWorkspaceComposerPreference,
+      submitJob,
+    ],
   )
 
   useEffect(() => {
@@ -820,6 +1183,83 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       .then(setProviders)
       .catch(() => setProviders([]))
   }, [])
+
+  useEffect(() => {
+    window.electronAPI
+      .getProviderComposerProfiles()
+      .then((stored) => {
+        const next = mergeProviderComposerProfiles(stored, providerComposerProfilesRef.current)
+        providerComposerProfilesRef.current = next
+        setProviderComposerProfiles(next)
+        setAcpAgentInfoByProvider((current) => {
+          const restored = { ...current }
+          for (const [providerId, profile] of Object.entries(stored)) {
+            if (isProviderId(providerId) && profile?.agentInfo) {
+              restored[providerId] = profile.agentInfo
+            }
+          }
+          return restored
+        })
+      })
+      .catch(() => undefined)
+    window.electronAPI
+      .getWorkspaceComposerPreferences()
+      .then((stored) => {
+        const next = mergeWorkspaceComposerPreferences(
+          stored,
+          workspaceComposerPreferencesRef.current,
+        )
+        workspaceComposerPreferencesRef.current = next
+        setWorkspaceComposerPreferences(next)
+      })
+      .catch(() => undefined)
+  }, [])
+
+  // Convex is the durable, cross-device source for composer profiles and
+  // preferences (the electron-store copy above is a machine-local fast path).
+  // Both subscriptions are tiny and only push when the projector actually
+  // learns something new; merges keep live in-memory state authoritative and
+  // bail out before setState when nothing changed, so no extra re-renders.
+  const composerProfileDocs = useTrackedQuery(
+    'composer.listProfiles',
+    (api as any).composer.listProfiles,
+    {},
+  ) as ProviderComposerProfileDoc[] | undefined
+  const composerPreferenceDocs = useTrackedQuery(
+    'composer.listPreferences',
+    (api as any).composer.listPreferences,
+    {},
+  ) as WorkspaceComposerPreferenceDoc[] | undefined
+
+  useEffect(() => {
+    if (!composerProfileDocs) return
+    const stored = composerProfilesFromDocs(composerProfileDocs)
+    const next = mergeProviderComposerProfiles(stored, providerComposerProfilesRef.current)
+    if (JSON.stringify(next) !== JSON.stringify(providerComposerProfilesRef.current)) {
+      providerComposerProfilesRef.current = next
+      setProviderComposerProfiles(next)
+    }
+    setAcpAgentInfoByProvider((current) => {
+      let changed = false
+      const restored = { ...current }
+      for (const [providerId, profile] of Object.entries(stored)) {
+        if (isProviderId(providerId) && profile?.agentInfo && !current[providerId]) {
+          restored[providerId] = profile.agentInfo
+          changed = true
+        }
+      }
+      return changed ? restored : current
+    })
+  }, [composerProfileDocs])
+
+  useEffect(() => {
+    if (!composerPreferenceDocs) return
+    const stored = composerPreferencesFromDocs(composerPreferenceDocs)
+    const next = mergeWorkspaceComposerPreferences(stored, workspaceComposerPreferencesRef.current)
+    if (JSON.stringify(next) === JSON.stringify(workspaceComposerPreferencesRef.current)) return
+    workspaceComposerPreferencesRef.current = next
+    setWorkspaceComposerPreferences(next)
+  }, [composerPreferenceDocs])
 
   useEffect(() => {
     window.electronAPI
@@ -873,6 +1313,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           if (event.data.agentInfo) {
             const agentInfo = event.data.agentInfo
             setAcpAgentInfoByProvider((prev) => ({ ...prev, [event.providerId]: agentInfo }))
+            updateProviderComposerProfile(event.providerId, { agentInfo })
           }
           if (event.data.promptCapabilities) {
             setAcpPromptCapabilitiesByProvider((prev) => ({
@@ -885,6 +1326,16 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         case 'session_loaded': {
           const models = toAcpModels(event.data.models)
           const modes = toAcpModes(event.data.modes)
+          updateProviderComposerProfile(event.providerId, {
+            ...(models?.availableModels?.length ? { availableModels: models.availableModels } : {}),
+            ...(modes?.availableModes?.length ? { availableModes: modes.availableModes } : {}),
+            ...(event.event === 'session_created' && models?.currentModelId
+              ? { defaultModelId: models.currentModelId }
+              : {}),
+            ...(event.event === 'session_created' && modes?.currentModeId
+              ? { defaultModeId: modes.currentModeId }
+              : {}),
+          })
           setAcpSessionStateById((prev) => ({
             ...prev,
             [event.sessionId]: {
@@ -903,43 +1354,107 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
               ...(models ? { models } : {}),
               ...(modes ? { modes } : {}),
             })
+            if (event.event === 'session_loaded') {
+              rememberWorkspaceComposerPreference(
+                eventWorkspacePath,
+                event.providerId,
+                {
+                  ...(models?.currentModelId ? { modelId: models.currentModelId } : {}),
+                  ...(modes?.currentModeId ? { modeId: modes.currentModeId } : {}),
+                },
+                false,
+              )
+            }
           }
           if (
             event.event === 'session_created' &&
             pendingDraftSessionStart &&
             activeWorkspacePath === eventWorkspacePath
           ) {
+            setAdoptedDraftSessionId(event.sessionId)
             setActiveSessionId(event.sessionId)
             setIsSessionDraftOpen(false)
             setPendingDraftSessionStart(false)
+            setLocalSessionStatus('running')
           }
           return
         }
         case 'current_model_update':
-          setAcpSessionStateById((prev) => ({
-            ...prev,
-            [event.sessionId]: {
-              ...(prev[event.sessionId] ?? {
-                sessionId: event.sessionId,
+          {
+            const models = toAcpModels(event.data)
+            updateProviderComposerProfile(event.providerId, {
+              ...(models?.availableModels?.length
+                ? { availableModels: models.availableModels }
+                : {}),
+            })
+            setAcpSessionStateById((prev) => ({
+              ...prev,
+              [event.sessionId]: {
+                ...(prev[event.sessionId] ?? {
+                  sessionId: event.sessionId,
+                  providerId: event.providerId,
+                }),
                 providerId: event.providerId,
-              }),
-              providerId: event.providerId,
-              models: toAcpModels(event.data),
-            },
-          }))
+                models,
+              },
+            }))
+            if (eventWorkspacePath && models) {
+              mergeDraftRuntimeForWorkspace(eventWorkspacePath, {
+                providerId: event.providerId,
+                models,
+              })
+              if (models.currentModelId) {
+                // Fill-only: model updates also fire when the main process
+                // restores a reopened session's own model, and that must not
+                // overwrite the workspace's last-chosen preference. Explicit
+                // user picks persist via setDraftModel/setSessionModel.
+                rememberWorkspaceComposerPreference(
+                  eventWorkspacePath,
+                  event.providerId,
+                  {
+                    modelId: models.currentModelId,
+                  },
+                  false,
+                )
+              }
+            }
+          }
           return
         case 'current_mode_update':
-          setAcpSessionStateById((prev) => ({
-            ...prev,
-            [event.sessionId]: {
-              ...(prev[event.sessionId] ?? {
-                sessionId: event.sessionId,
+          {
+            const modes = toAcpModes(event.data)
+            updateProviderComposerProfile(event.providerId, {
+              ...(modes?.availableModes?.length ? { availableModes: modes.availableModes } : {}),
+            })
+            setAcpSessionStateById((prev) => ({
+              ...prev,
+              [event.sessionId]: {
+                ...(prev[event.sessionId] ?? {
+                  sessionId: event.sessionId,
+                  providerId: event.providerId,
+                }),
                 providerId: event.providerId,
-              }),
-              providerId: event.providerId,
-              modes: toAcpModes(event.data),
-            },
-          }))
+                modes,
+              },
+            }))
+            if (eventWorkspacePath && modes) {
+              mergeDraftRuntimeForWorkspace(eventWorkspacePath, {
+                providerId: event.providerId,
+                modes,
+              })
+              if (modes.currentModeId) {
+                // Fill-only, matching the model update handling above.
+                rememberWorkspaceComposerPreference(
+                  eventWorkspacePath,
+                  event.providerId,
+                  {
+                    modeId: modes.currentModeId,
+                  },
+                  false,
+                )
+              }
+            }
+          }
           return
         case 'available_commands_update':
           setAcpSessionStateById((prev) => ({
@@ -967,11 +1482,36 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
             return next
           })
           return
-        case 'process_spawned':
-        case 'process_exited':
-        case 'authenticated':
         case 'prompt_started':
+          if (
+            event.sessionId === activeSessionId ||
+            event.sessionId === adoptedDraftSessionId ||
+            pendingDraftSessionStart
+          ) {
+            setLocalSessionStatus('running')
+          }
+          return
         case 'prompt_completed':
+          if (event.sessionId === activeSessionId || event.sessionId === adoptedDraftSessionId) {
+            setLocalSessionStatus(null)
+            setLocalSessionJobId(null)
+          }
+          return
+        case 'rpc_error':
+        case 'runtime_error':
+        case 'process_exited':
+          if (
+            !event.sessionId ||
+            event.sessionId === activeSessionId ||
+            event.sessionId === adoptedDraftSessionId
+          ) {
+            setLocalSessionStatus(null)
+            setLocalSessionJobId(null)
+            setPendingDraftSessionStart(false)
+          }
+          return
+        case 'process_spawned':
+        case 'authenticated':
         case 'user_message_chunk':
         case 'agent_message_chunk':
         case 'agent_thought_chunk':
@@ -985,8 +1525,6 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         case 'usage_update':
         case 'extension_request':
         case 'extension_notification':
-        case 'rpc_error':
-        case 'runtime_error':
         case 'auth_required':
         case 'capability_missing':
           return
@@ -995,23 +1533,63 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       }
     })
     return cleanup
-  }, [activeWorkspacePath, mergeDraftRuntimeForWorkspace, pendingDraftSessionStart])
+  }, [
+    activeSessionId,
+    activeWorkspacePath,
+    adoptedDraftSessionId,
+    mergeDraftRuntimeForWorkspace,
+    pendingDraftSessionStart,
+    rememberWorkspaceComposerPreference,
+    updateProviderComposerProfile,
+  ])
 
-  const acpSessionState = useMemo(
-    () => (activeSessionId ? (acpSessionStateById[activeSessionId] ?? null) : null),
-    [acpSessionStateById, activeSessionId],
-  )
+  const acpSessionState = useMemo(() => {
+    if (!activeSessionId) return null
+    const runtime = acpSessionStateById[activeSessionId]
+    if (!runtime) return null
+    const preference = activeWorkspacePath
+      ? workspaceComposerPreferences[
+          workspaceComposerPreferenceKey(activeWorkspacePath, runtime.providerId)
+        ]
+      : undefined
+    return resolveSessionComposerRuntime(
+      runtime,
+      preference,
+      providerComposerProfiles[runtime.providerId],
+    )
+  }, [
+    acpSessionStateById,
+    activeSessionId,
+    activeWorkspacePath,
+    providerComposerProfiles,
+    workspaceComposerPreferences,
+  ])
 
   const draftSessionState = useMemo(() => {
     if (!activeWorkspacePath || !isSessionDraftOpen) return null
     const runtime = draftSessionStateByWorkspace[activeWorkspacePath]
-    if (!runtime?.providerId) return null
-    return {
-      sessionId: `draft:${activeWorkspacePath}`,
-      ...runtime,
-      providerId: runtime.providerId,
-    }
-  }, [activeWorkspacePath, draftSessionStateByWorkspace, isSessionDraftOpen])
+    const selection = draftSelectionByWorkspace[activeWorkspacePath]
+    const providerId = runtime?.providerId ?? selection?.providerId ?? defaultProviderId
+    return resolveDraftComposerRuntime({
+      workspacePath: activeWorkspacePath,
+      providerId,
+      runtime,
+      selection,
+      preference:
+        workspaceComposerPreferences[
+          workspaceComposerPreferenceKey(activeWorkspacePath, providerId)
+        ],
+      profile: providerComposerProfiles[providerId],
+    })
+  }, [
+    activeWorkspacePath,
+    defaultProviderId,
+    draftSelectionByWorkspace,
+    draftSessionStateByWorkspace,
+    isSessionDraftOpen,
+    providerComposerProfiles,
+    workspaceComposerPreferences,
+  ])
 
   const value = useMemo<AppUiValue>(
     () => ({
@@ -1019,6 +1597,8 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       activeSessionId,
       isSessionDraftOpen,
       pendingDraftSessionStart,
+      localSessionStatus,
+      adoptedDraftSessionId,
       currentClientId,
       agentStatusByProvider,
       agentUiStatusByProvider,
@@ -1052,6 +1632,8 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       activeSessionId,
       isSessionDraftOpen,
       pendingDraftSessionStart,
+      localSessionStatus,
+      adoptedDraftSessionId,
       currentClientId,
       agentStatusByProvider,
       agentUiStatusByProvider,

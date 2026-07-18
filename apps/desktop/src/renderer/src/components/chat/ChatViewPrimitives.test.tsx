@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { ChatLoadingSkeleton, MessageLoadingSkeleton, UserMessage } from './ChatViewPrimitives'
+import { ChatLoadingSkeleton, UserMessage } from './ChatViewPrimitives'
 
 describe('chat loading skeletons', () => {
   it('announces the conversation loading state once', () => {
@@ -11,12 +11,11 @@ describe('chat loading skeletons', () => {
     expect(html).not.toContain('Send a message to start')
   })
 
-  it('renders a message placeholder without the user message shell', () => {
-    const html = renderToStaticMarkup(<MessageLoadingSkeleton role="user" />)
+  it('keeps all placeholder shapes inside the single session-loading status', () => {
+    const html = renderToStaticMarkup(<ChatLoadingSkeleton />)
 
-    expect(html).toContain('aria-label="Loading message"')
-    expect(html).toContain('chat-skeleton')
-    expect(html).not.toContain('ReferenceComposerToolbar')
+    expect(html.match(/role="status"/g)).toHaveLength(1)
+    expect(html).not.toContain('Loading message')
   })
 
   it('renders persisted images as in-app preview buttons', () => {
