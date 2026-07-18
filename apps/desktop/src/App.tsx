@@ -1,5 +1,34 @@
 import React, { useState } from 'react';
-import { ChevronDown, Zap, Search, Paperclip, AlertTriangle, ArrowUp, FileEdit, FileText, Terminal, CheckCircle2, FileCode, Hash, Atom, PanelLeft, Pin, GitBranch, MessageCircle, Grid, UserPlus, Plus, ListTodo, Loader2, Microscope, Bug, GraduationCap, Sparkles, Folder, FolderOpen } from 'lucide-react';
+import {
+  CaretDownIcon,
+  LightningIcon,
+  MagnifyingGlassIcon,
+  PaperclipIcon,
+  WarningIcon,
+  ArrowUpIcon,
+  NotePencilIcon,
+  FileTextIcon,
+  TerminalIcon,
+  CheckCircleIcon,
+  FileCodeIcon,
+  HashIcon,
+  AtomIcon,
+  SidebarSimpleIcon,
+  PushPinIcon,
+  GitBranchIcon,
+  ChatCircleIcon,
+  GridFourIcon,
+  UserPlusIcon,
+  PlusIcon,
+  ListChecksIcon,
+  CircleNotchIcon,
+  MicroscopeIcon,
+  BugIcon,
+  GraduationCapIcon,
+  SparkleIcon,
+  FolderIcon,
+  FolderOpenIcon,
+} from '@phosphor-icons/react';
 
 const CustomDropdown = ({ options, value, onChange }: { options: {label: string, value: string}[], value: string, onChange: (val: string) => void }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -12,7 +41,7 @@ const CustomDropdown = ({ options, value, onChange }: { options: {label: string,
         className="flex items-center gap-2 px-2.5 py-1.5 text-[11px] font-medium text-neutral-400 hover:text-neutral-200 bg-transparent hover:bg-white/5 border border-transparent hover:border-white/5 rounded-md transition-all"
       >
         {options.find(o => o.value === value)?.label}
-        <ChevronDown size={12} className="text-neutral-500" />
+        <CaretDownIcon size={12} className="text-neutral-500" />
       </button>
       {isOpen && (
         <div className="absolute bottom-full mb-1 left-0 w-48 bg-[#1a1a1a] border border-white/10 rounded-lg shadow-2xl overflow-hidden z-50 py-1">
@@ -54,7 +83,7 @@ const TodoItem = ({ text, done }: { text: string, done?: boolean }) => (
   <div className="flex items-start gap-2 px-2 py-1.5 hover:bg-white/5 rounded group cursor-default">
     <div className="mt-0.5">
       {done ? (
-        <CheckCircle2 size={14} className="text-orange-500" />
+        <CheckCircleIcon size={14} className="text-orange-500" />
       ) : (
         <div className="w-[14px] h-[14px] rounded-full border border-neutral-600 group-hover:border-orange-500 transition-colors" />
       )}
@@ -121,23 +150,23 @@ export default function App() {
   };
 
   const workspacesData = [
-    { id: '1', name: 'Research_Schizoprenia', icon: Microscope, sessions: [
+    { id: '1', name: 'Research_Schizoprenia', icon: MicroscopeIcon, sessions: [
       { id: 'r1', title: 'Literature review on dopamine...' },
       { id: 'r2', title: 'Data analysis script for fMRI' },
     ] },
-    { id: '2', name: 'blocker', icon: Bug, sessions: [
+    { id: '2', name: 'blocker', icon: BugIcon, sessions: [
       { id: 'b1', title: 'Fixing CORS issue in prod' },
       { id: 'b2', title: 'Database migration script' },
     ] },
-    { id: '3', name: 'finalyr_proj', icon: GraduationCap, sessions: [
+    { id: '3', name: 'finalyr_proj', icon: GraduationCapIcon, sessions: [
       { id: 'f1', title: 'Drafting the abstract' },
       { id: 'f2', title: 'System architecture diagram' },
     ] },
-    { id: '4', name: 'ayumi', icon: Sparkles, sessions: [
+    { id: '4', name: 'ayumi', icon: SparkleIcon, sessions: [
       { id: 'a1', title: 'Character backstory ideas' },
       { id: 'a2', title: 'Dialogue tree generation' },
     ] },
-    { id: '5', name: 'openmanager', icon: Terminal, sessions: [
+    { id: '5', name: 'openmanager', icon: TerminalIcon, sessions: [
       { id: 's1', title: 'Light chat with friend' },
       { id: 's2', title: 'Repo review request and fee...', isActive: true, isLoading: true },
       { id: 's3', title: 'Light chat greeting conversa...' },
@@ -181,19 +210,19 @@ export default function App() {
           {/* Header / Toggle */}
           <div className="flex items-center justify-between px-4 pt-2 pb-1">
             <button onClick={() => setIsSidebarOpen(false)} className="text-neutral-500 hover:text-neutral-200 transition-colors">
-              <PanelLeft size={16} />
+              <SidebarSimpleIcon size={16} />
             </button>
             <button className="text-neutral-500 hover:text-neutral-200 transition-colors">
-              <FileEdit size={14} />
+              <NotePencilIcon size={14} />
             </button>
           </div>
 
-          {/* Search */}
+          {/* MagnifyingGlassIcon */}
           <div className="px-3 mb-3 mt-4 relative flex items-center">
-            <Search size={14} className="absolute left-5 text-neutral-500" />
+            <MagnifyingGlassIcon size={14} className="absolute left-5 text-neutral-500" />
             <input 
               type="text" 
-              placeholder="Search your threads..." 
+              placeholder="MagnifyingGlassIcon your threads..." 
               className="w-full bg-transparent border-none text-[13px] text-neutral-300 placeholder:text-neutral-500 pl-8 py-1 outline-none" 
             />
           </div>
@@ -213,7 +242,7 @@ export default function App() {
                 {openWorkspaces[ws.id] && (
                   <div className="mt-0.5 mb-1 flex flex-col gap-0.5">
                     <div className="px-2 py-0.5 mx-1 hover:bg-white/5 rounded-md cursor-pointer flex items-center gap-2 text-neutral-500 hover:text-orange-400 transition-colors text-[12px] group">
-                      <Plus size={12} className="shrink-0 group-hover:rotate-90 transition-transform duration-300" /> New session
+                      <PlusIcon size={12} className="shrink-0 group-hover:rotate-90 transition-transform duration-300" /> New session
                     </div>
                     {ws.sessions.map(session => (
                       <div 
@@ -225,9 +254,9 @@ export default function App() {
                         }`}
                       >
                         {session.isLoading ? (
-                          <Loader2 size={12} className="text-orange-500 shrink-0 animate-spin" />
+                          <CircleNotchIcon size={12} className="text-orange-500 shrink-0 animate-spin" />
                         ) : (
-                          <MessageCircle size={12} className={`${session.isActive ? 'text-orange-500' : 'text-neutral-600 group-hover:text-orange-400/50'} shrink-0 transition-colors`} /> 
+                          <ChatCircleIcon size={12} className={`${session.isActive ? 'text-orange-500' : 'text-neutral-600 group-hover:text-orange-400/50'} shrink-0 transition-colors`} /> 
                         )}
                         <span className="truncate text-[12px]">{session.title}</span>
                       </div>
@@ -241,8 +270,8 @@ export default function App() {
           {/* Bottom Actions */}
           <div className="px-3 py-2 mt-auto">
             <button className="w-full flex items-center gap-2 px-2 py-1.5 text-[12px] font-medium text-neutral-400 hover:text-neutral-200 hover:bg-white/5 rounded-md transition-colors">
-              <FolderOpen size={14} className="text-neutral-500" />
-              Open Folder
+              <FolderOpenIcon size={14} className="text-neutral-500" />
+              Open FolderIcon
             </button>
           </div>
         </div>
@@ -257,7 +286,7 @@ export default function App() {
           <div className="flex items-center gap-3">
             {!isSidebarOpen && (
               <button onClick={() => setIsSidebarOpen(true)} className="text-neutral-500 hover:text-neutral-200 transition-all hover:shimmer-effect p-1.5 rounded hover:bg-white/5 bg-black/20 border border-white/5">
-                <PanelLeft size={16} />
+                <SidebarSimpleIcon size={16} />
               </button>
             )}
             <div className="text-[14px] font-medium text-neutral-200">
@@ -277,7 +306,7 @@ export default function App() {
                 onClick={() => setIsThinkingExpanded(!isThinkingExpanded)}
                 className="text-[13px] text-neutral-500 py-1 hover:text-neutral-300 w-fit cursor-pointer transition-all flex items-center gap-2 select-none"
               >
-                <ChevronDown size={14} className={`transition-transform duration-200 ${isThinkingExpanded ? '' : '-rotate-90'}`} />
+                <CaretDownIcon size={14} className={`transition-transform duration-200 ${isThinkingExpanded ? '' : '-rotate-90'}`} />
                 Thinking Process (12.4s)
               </div>
               
@@ -294,18 +323,18 @@ export default function App() {
                 <LogEntry>Executing command: <span className="font-mono text-neutral-400">grep -rI "select" src/</span></LogEntry>
                 <LogEntry>Found 2 matches in <span className="font-mono text-neutral-400">src/App.tsx</span></LogEntry>
                 <FileReadLog filename="/src/App.tsx" lines={337} />
-                <FileEditBlock icon={FileCode} filename="vite.config.js" added="2" removed="2" />
-                <FileEditBlock icon={Hash} filename="index.css" added="73" />
+                <FileEditBlock icon={FileCodeIcon} filename="vite.config.js" added="2" removed="2" />
+                <FileEditBlock icon={HashIcon} filename="index.css" added="73" />
                 <FileReadLog filename="/src/index.css" lines={142} />
-                <FileEditBlock icon={Hash} filename="index.css" added="75" />
+                <FileEditBlock icon={HashIcon} filename="index.css" added="75" />
 
                 <ActionHeader>Now let me build all 5 chat variations:</ActionHeader>
-                <FileEditBlock icon={FileCode} filename="messages.js" added="180" />
+                <FileEditBlock icon={FileCodeIcon} filename="messages.js" added="180" />
 
                 <ActionHeader>Now let me build the 5 chat variations:</ActionHeader>
-                <FileEditBlock icon={Atom} filename="V1Terminal.jsx" added="176" />
-                <FileEditBlock icon={Atom} filename="V2Clean.jsx" added="167" />
-                <FileEditBlock icon={Atom} filename="V3Cards.jsx" added="187" />
+                <FileEditBlock icon={AtomIcon} filename="V1Terminal.jsx" added="176" />
+                <FileEditBlock icon={AtomIcon} filename="V2Clean.jsx" added="167" />
+                <FileEditBlock icon={AtomIcon} filename="V3Cards.jsx" added="187" />
 
                 <FileReadLog filename="/package.json" />
                 <LogEntry>Found files matching <span className="font-mono text-neutral-400">src/**/*</span></LogEntry>
@@ -372,13 +401,13 @@ export default function App() {
                      className="flex items-center justify-between px-3 py-2 border-b border-white/5 bg-white/[0.02] cursor-pointer hover:bg-white/[0.04] transition-colors"
                    >
                       <div className="flex items-center gap-2 text-xs font-semibold text-neutral-200">
-                         <ListTodo size={14} className="text-neutral-400" /> 6/6 todos completed
+                         <ListChecksIcon size={14} className="text-neutral-400" /> 6/6 todos completed
                       </div>
-                      <ChevronDown size={14} className={`text-neutral-500 transition-transform duration-200 ${isTodosOpen ? '' : 'rotate-180'}`} />
+                      <CaretDownIcon size={14} className={`text-neutral-500 transition-transform duration-200 ${isTodosOpen ? '' : 'rotate-180'}`} />
                    </div>
                    {isTodosOpen && (
                      <div className="flex flex-col p-1.5 max-h-[160px] overflow-y-auto custom-scrollbar">
-                        <TodoItem text="Build V1 Terminal (green-on-black, monospace, hacker terminal)" done />
+                        <TodoItem text="Build V1 TerminalIcon (green-on-black, monospace, hacker terminal)" done />
                         <TodoItem text="Build V2 Clean (minimal dark, violet accents, ChatGPT-like)" done />
                         <TodoItem text="Build V3 Cards (content-in-cards, colorful, travel/rich content)" done />
                         <TodoItem text="Build V4 Paper (light mode, editorial, document-like)" done />
@@ -405,7 +434,7 @@ export default function App() {
                       
                       {/* Attach Button */}
                       <button className="flex items-center justify-center text-neutral-400 hover:text-neutral-200 p-1.5 rounded-md border border-transparent hover:bg-white/10 transition-all">
-                        <Plus size={14} />
+                        <PlusIcon size={14} />
                       </button>
 
                       <div className="w-[1px] h-4 bg-white/10 mx-1" />
@@ -449,7 +478,7 @@ export default function App() {
                           : 'bg-white/10 text-neutral-500 hover:bg-white/20'
                       }`}
                     >
-                      <ArrowUp size={14} />
+                      <ArrowUpIcon size={14} />
                     </button>
                   </div>
                </div>

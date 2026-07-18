@@ -1,5 +1,5 @@
 import { useLocalSearchParams, useRouter } from 'expo-router'
-import { ChevronLeft, MoreVertical } from 'lucide-react-native'
+import { CaretLeftIcon, DotsThreeVerticalIcon } from 'phosphor-react-native'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   FlatList,
@@ -219,7 +219,7 @@ export default function SessionScreen() {
           accessibilityRole="button"
           accessibilityLabel="Back"
         >
-          <ChevronLeft size={20} color={tokens.textMuted} strokeWidth={2} />
+          <CaretLeftIcon size={20} color={tokens.textMuted} />
         </TouchableOpacity>
         <StatusDot active={isSessionActive} />
         <AppText variant="text-13-medium" numberOfLines={1} className="flex-1 text-textStrong">
@@ -232,7 +232,7 @@ export default function SessionScreen() {
           accessibilityRole="button"
           accessibilityLabel="Session options"
         >
-          <MoreVertical size={18} color={tokens.textMuted} strokeWidth={2} />
+          <DotsThreeVerticalIcon size={18} color={tokens.textMuted} />
         </TouchableOpacity>
       </View>
 

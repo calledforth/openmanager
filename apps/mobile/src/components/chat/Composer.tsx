@@ -1,4 +1,4 @@
-import { ArrowUp, Square } from 'lucide-react-native'
+import { ArrowUpIcon, SquareIcon } from 'phosphor-react-native'
 import { useState } from 'react'
 import { TextInput, TouchableOpacity, View } from 'react-native'
 
@@ -74,12 +74,7 @@ export function Composer({
             accessibilityRole="button"
             accessibilityLabel="Stop"
           >
-            <Square
-              size={13}
-              color={tokens.destructive}
-              strokeWidth={2}
-              fill={tokens.destructive}
-            />
+            <SquareIcon size={13} color={tokens.destructive} weight="fill" />
           </TouchableOpacity>
         ) : null}
 
@@ -92,7 +87,7 @@ export function Composer({
           accessibilityRole="button"
           accessibilityLabel="Send"
         >
-          <ArrowUp size={16} color={tokens.actionFg} strokeWidth={2.25} />
+          <ArrowUpIcon size={16} color={tokens.actionFg} weight="bold" />
         </TouchableOpacity>
       </View>
     </View>

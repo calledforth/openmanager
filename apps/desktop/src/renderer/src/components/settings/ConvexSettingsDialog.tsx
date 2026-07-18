@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { AlertCircle, CheckCircle2, Hexagon, LoaderCircle, Server, X } from 'lucide-react'
+import {
+  WarningCircleIcon,
+  CheckCircleIcon,
+  HexagonIcon,
+  CircleNotchIcon,
+  HardDrivesIcon,
+  XIcon,
+} from '@phosphor-icons/react'
 import type { RuntimeConfig } from '../../../../shared/runtime-config'
 import { cn } from '../../lib/utils'
 import { typographyBodySm, typographyCaption, typographyLabel } from '../../lib/typography'
@@ -158,13 +165,13 @@ export function ConvexSettingsDialog({
                 aria-label="Close Convex settings"
                 className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--basis-text-muted)] transition-default hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)] disabled:opacity-40"
               >
-                <X className="h-3.5 w-3.5" strokeWidth={1.75} />
+                <XIcon className="h-3.5 w-3.5" />
               </button>
             )}
           </div>
 
           <div className="mb-4 flex h-9 w-9 items-center justify-center rounded-lg border border-emerald-400/20 bg-emerald-400/[0.07] text-emerald-400">
-            <Hexagon className="h-[18px] w-[18px]" strokeWidth={1.75} />
+            <HexagonIcon className="h-[18px] w-[18px]" />
           </div>
           <div
             className={cn(typographyCaption, 'mb-1 uppercase tracking-[0.14em] text-emerald-400')}
@@ -192,9 +199,8 @@ export function ConvexSettingsDialog({
               Deployment URL
             </label>
             <div className="flex items-center rounded-lg border border-[var(--basis-border)] bg-[var(--basis-canvas-bg)] px-3 focus-within:border-emerald-400/60 focus-within:ring-1 focus-within:ring-emerald-400/15">
-              <Server
+              <HardDrivesIcon
                 className="mr-2.5 h-3.5 w-3.5 shrink-0 text-[var(--basis-text-faint)]"
-                strokeWidth={1.75}
               />
               <input
                 ref={inputRef}
@@ -218,7 +224,7 @@ export function ConvexSettingsDialog({
               />
             </div>
             <p className={cn(typographyCaption, 'mt-2 text-[var(--basis-text-faint)]')}>
-              Use the deployment URL from Convex Dashboard → Settings → URL &amp; Deploy Key.
+              Use the deployment URL from Convex Dashboard → GearIcon → URL &amp; Deploy Key.
             </p>
           </div>
 
@@ -234,16 +240,15 @@ export function ConvexSettingsDialog({
             aria-live="polite"
           >
             {requestState === 'testing' || requestState === 'saving' ? (
-              <LoaderCircle
+              <CircleNotchIcon
                 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin"
-                strokeWidth={1.75}
               />
             ) : requestState === 'success' ? (
-              <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />
+              <CheckCircleIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             ) : requestState === 'error' ? (
-              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />
+              <WarningCircleIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             ) : (
-              <Server className="mt-0.5 h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />
+              <HardDrivesIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             )}
             <span className={typographyCaption}>
               {message ||
@@ -292,7 +297,7 @@ export function ConvexConfigurationRequired() {
     <div className="relative flex h-screen w-screen items-center justify-center overflow-hidden bg-[var(--basis-canvas-bg)]">
       <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-emerald-400/40 to-transparent" />
       <div className="absolute left-8 top-7 flex items-center gap-2 text-[var(--basis-text-faint)]">
-        <Hexagon className="h-4 w-4" strokeWidth={1.75} />
+        <HexagonIcon className="h-4 w-4" />
         <span className={cn(typographyCaption, 'uppercase tracking-[0.14em]')}>OpenManager</span>
       </div>
       <ConvexSettingsDialog open required onOpenChange={() => undefined} />

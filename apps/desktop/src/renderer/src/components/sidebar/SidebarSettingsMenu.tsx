@@ -9,17 +9,18 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  Check,
-  ChevronRight,
-  Circle,
-  Hexagon,
-  Moon,
-  Palette,
-  Plug,
-  Settings,
-  Sun,
-  Type,
-} from 'lucide-react'
+  CheckIcon,
+  CaretRightIcon,
+  CircleIcon,
+  HexagonIcon,
+  MoonIcon,
+  PaletteIcon,
+  PlugIcon,
+  GearIcon,
+  SunIcon,
+  TextTIcon,
+  type Icon,
+} from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
 import { UI_FONTS, type UiFontId } from '../../lib/fonts'
 import { typographyBodySm, typographyCaption } from '../../lib/typography'
@@ -67,7 +68,7 @@ function MenuFlyout({
   children,
 }: {
   label: string
-  icon: typeof Palette
+  icon: Icon
   children: ReactNode
 }) {
   return (
@@ -78,11 +79,10 @@ function MenuFlyout({
           'flex w-full cursor-default items-center gap-2 rounded-[var(--basis-chat-shell-radius)] px-2.5 py-1.5 text-[var(--basis-text)] transition-default group-hover/flyout:bg-[var(--basis-surface-hover)]',
         )}
       >
-        <Icon className="h-3.5 w-3.5 shrink-0 text-[var(--basis-text-muted)]" strokeWidth={1.75} />
+        <Icon className="h-3.5 w-3.5 shrink-0 text-[var(--basis-text-muted)]" />
         <span className="min-w-0 flex-1 text-left">{label}</span>
-        <ChevronRight
+        <CaretRightIcon
           className="h-3 w-3 shrink-0 text-[var(--basis-text-faint)]"
-          strokeWidth={1.75}
         />
       </div>
       <div
@@ -224,7 +224,7 @@ export function SidebarSettingsMenu() {
           width: menuCoords.width,
         }}
       >
-        <MenuFlyout label="Appearance" icon={Palette}>
+        <MenuFlyout label="Appearance" icon={PaletteIcon}>
           <div className="px-1">
             <div
               className={cn(
@@ -249,10 +249,10 @@ export function SidebarSettingsMenu() {
                       : 'text-[var(--basis-text-muted)] hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
                   )}
                 >
-                  <Type className="h-3 w-3 shrink-0 opacity-60" strokeWidth={1.75} />
+                  <TextTIcon className="h-3 w-3 shrink-0 opacity-60" />
                   <span className="min-w-0 flex-1 truncate">{option.label}</span>
                   {selected && (
-                    <Check className="h-3 w-3 shrink-0 text-[var(--basis-text)]" strokeWidth={2} />
+                    <CheckIcon className="h-3 w-3 shrink-0 text-[var(--basis-text)]" />
                   )}
                 </button>
               )
@@ -267,16 +267,16 @@ export function SidebarSettingsMenu() {
               )}
             >
               {theme === 'dark' ? (
-                <Sun className="h-3 w-3 shrink-0" strokeWidth={1.75} />
+                <SunIcon className="h-3 w-3 shrink-0" />
               ) : (
-                <Moon className="h-3 w-3 shrink-0" strokeWidth={1.75} />
+                <MoonIcon className="h-3 w-3 shrink-0" />
               )}
               <span>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
             </button>
           </div>
         </MenuFlyout>
 
-        <MenuFlyout label="Provider" icon={Plug}>
+        <MenuFlyout label="Provider" icon={PlugIcon}>
           <div className="px-1">
             {providers.map((provider) => (
               <div
@@ -286,12 +286,12 @@ export function SidebarSettingsMenu() {
                   'flex items-center gap-2 rounded-[var(--basis-chat-shell-radius)] px-2 py-1.5 text-[var(--basis-text)]',
                 )}
               >
-                <Circle
+                <CircleIcon
+                  weight="fill"
                   className={cn(
-                    'h-2 w-2 shrink-0 fill-current',
+                    'h-2 w-2 shrink-0',
                     provider.connected ? 'text-emerald-400' : 'text-[var(--basis-text-faint)]',
                   )}
-                  strokeWidth={0}
                 />
                 <div className="min-w-0 flex-1">
                   <div className="truncate">{provider.label}</div>
@@ -334,7 +334,7 @@ export function SidebarSettingsMenu() {
             'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[var(--basis-text)] transition-default hover:bg-[var(--basis-surface-hover)]',
           )}
         >
-          <Hexagon className="h-3.5 w-3.5 shrink-0 text-emerald-400" strokeWidth={1.75} />
+          <HexagonIcon className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
           <span className="min-w-0 flex-1">Convex deployment</span>
         </button>
       </div>,
@@ -353,7 +353,7 @@ export function SidebarSettingsMenu() {
           title="Settings"
           className="flex h-7 w-7 items-center justify-center rounded-[var(--basis-chat-shell-radius)] text-[var(--basis-text-muted)] transition-default hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]"
         >
-          <Settings className="h-3.5 w-3.5" strokeWidth={1.75} />
+          <GearIcon className="h-3.5 w-3.5" />
         </button>
         {menu}
       </div>

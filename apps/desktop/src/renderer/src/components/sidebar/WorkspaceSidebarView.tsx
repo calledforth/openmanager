@@ -1,7 +1,14 @@
-import { MessageSquare, Plus, ChevronDown, FolderPlus, Trash2 } from 'lucide-react'
+import {
+  ChatIcon,
+  PlusIcon,
+  CaretDownIcon,
+  CaretDoubleLeftIcon,
+  FolderPlusIcon,
+  TrashIcon,
+} from '@phosphor-icons/react'
 import type { ProviderId } from '@agentpack/contract'
 import { cn } from '../../lib/utils'
-import { typographyBodySm } from '../../lib/typography'
+import { typographyBodySm, typographyLabel } from '../../lib/typography'
 import { SidebarSettingsMenu } from './SidebarSettingsMenu'
 
 export interface SidebarWorkspace {
@@ -22,6 +29,7 @@ export function WorkspaceSidebarView({
   activeSessionId,
   collapsedWorkspacePaths,
   onToggleWorkspaceCollapse,
+  onCollapse,
   onCreateSession,
   onSelectSession,
   onDeleteSession,
@@ -34,6 +42,7 @@ export function WorkspaceSidebarView({
   activeSessionId: string | null
   collapsedWorkspacePaths: string[]
   onToggleWorkspaceCollapse: (path: string) => void
+  onCollapse?: () => void
   onCreateSession: (workspacePath: string) => void
   onSelectSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
   onDeleteSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
@@ -45,12 +54,26 @@ export function WorkspaceSidebarView({
   return (
     <aside
       className={cn(
-        'flex h-full shrink-0 flex-col overflow-hidden border-r border-[var(--basis-border-muted)] bg-[var(--basis-canvas-bg)] transition-[width] duration-300 ease-in-out',
+        'group/sidebar relative flex h-full shrink-0 flex-col overflow-hidden border-r border-[var(--basis-border-muted)] bg-[var(--basis-canvas-bg)] transition-[width] duration-300 ease-in-out',
         collapsed ? 'w-0 border-r-0' : 'w-[var(--basis-sidebar-width)]',
       )}
       aria-hidden={collapsed}
     >
-      <div className={cn('flex min-h-0 flex-1 flex-col py-1.5', collapsed && 'invisible')}>
+      <div className={cn('flex min-h-0 flex-1 flex-col', collapsed && 'invisible')}>
+        <div className="relative flex h-[var(--basis-titlebar-height)] shrink-0 items-center justify-end px-1.5">
+          {onCollapse && (
+            <button
+              type="button"
+              onClick={onCollapse}
+              title="Close sidebar"
+              aria-label="Close sidebar"
+              className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--basis-text-strong)] opacity-0 transition-default hover:bg-[color-mix(in_srgb,var(--basis-text-strong)_14%,transparent)] group-hover/sidebar:opacity-100 focus-visible:opacity-100"
+            >
+              <CaretDoubleLeftIcon weight="light" className="h-[16px] w-[18px]" />
+            </button>
+          )}
+        </div>
+
         <div className="px-2 pb-2">
           <button
             type="button"
@@ -60,7 +83,7 @@ export function WorkspaceSidebarView({
               'flex w-full items-center gap-2 rounded-[var(--basis-chat-shell-radius)] px-2 py-1.5 text-[var(--basis-text-muted)] transition-default hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
             )}
           >
-            <FolderPlus className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />
+            <FolderPlusIcon className="h-3.5 w-3.5 shrink-0" />
             <span>Add repository</span>
           </button>
         </div>
@@ -68,7 +91,7 @@ export function WorkspaceSidebarView({
         {/* Workspace list */}
         <div className="flex-1 overflow-y-auto px-1.5 pb-3">
           {workspaces.length === 0 && (
-            <div className="px-3 py-5 text-center text-13-regular text-muted-foreground">
+            <div className={cn(typographyBodySm, 'px-3 py-5 text-center text-muted-foreground')}>
               No workspaces yet
             </div>
           )}
@@ -121,13 +144,18 @@ function WorkspaceGroup({
   return (
     <div className="mb-1">
       {/* Workspace header row */}
-      <div className="group flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-13-medium text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground">
+      <div
+        className={cn(
+          typographyBodySm,
+          'group flex w-full items-center gap-1.5 rounded-md px-2 py-1 font-medium text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground',
+        )}
+      >
         <button
           type="button"
           onClick={onToggleCollapse}
           className="flex min-w-0 flex-1 items-center gap-1.5"
         >
-          <ChevronDown
+          <CaretDownIcon
             className={cn(
               'h-3 w-3 shrink-0 transition-transform duration-150',
               isCollapsed && '-rotate-90',
@@ -143,7 +171,7 @@ function WorkspaceGroup({
           }}
           className="rounded p-0.5 text-muted-foreground/50 opacity-0 group-hover:opacity-100 hover:text-foreground transition-default"
         >
-          <Trash2 className="h-3 w-3" />
+          <TrashIcon className="h-3 w-3" />
         </button>
       </div>
 
@@ -152,9 +180,12 @@ function WorkspaceGroup({
           {/* New session row */}
           <button
             onClick={() => onCreateSession(workspace.path)}
-            className="flex w-full items-center gap-2 rounded-md px-3 py-1 text-12-regular text-muted-foreground/60 transition-default hover:bg-surface-hover hover:text-foreground"
+            className={cn(
+              typographyLabel,
+              'flex w-full items-center gap-2 rounded-md px-3 py-1 font-normal text-muted-foreground/60 transition-default hover:bg-surface-hover hover:text-foreground',
+            )}
           >
-            <Plus className="h-3 w-3 shrink-0" />
+            <PlusIcon className="h-3 w-3 shrink-0" />
             <span>New session</span>
           </button>
 
@@ -176,9 +207,9 @@ function WorkspaceGroup({
                 {s.status === 'running' || s.status === 'busy' || s.status === 'waiting' ? (
                   <span className="custom-loader text-primary shrink-0 !w-3 !h-3 !border-2" />
                 ) : (
-                  <MessageSquare className="h-3 w-3 shrink-0 text-muted-foreground/40" />
+                  <ChatIcon className="h-3 w-3 shrink-0 text-muted-foreground/40" />
                 )}
-                <span className="flex-1 truncate text-12-regular">
+                <span className={cn(typographyLabel, 'flex-1 truncate font-normal')}>
                   {s.title || s.externalId.slice(0, 10)}
                 </span>
                 <button
@@ -188,7 +219,7 @@ function WorkspaceGroup({
                   }}
                   className="shrink-0 rounded p-1 text-muted-foreground/30 opacity-0 transition-default group-hover:opacity-100 hover:text-red-400 hover:bg-red-400/10"
                 >
-                  <Trash2 className="h-3 w-3" />
+                  <TrashIcon className="h-3 w-3" />
                 </button>
               </button>
             )

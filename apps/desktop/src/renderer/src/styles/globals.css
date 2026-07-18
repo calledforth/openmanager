@@ -110,14 +110,15 @@
   --basis-action-fg: #111111;
   --basis-action-hover: #f4f4f4;
   --basis-scrollbar-track: transparent;
-  --basis-scrollbar-thumb: color-mix(in srgb, var(--basis-text-muted) 45%, transparent);
-  --basis-scrollbar-thumb-hover: color-mix(in srgb, var(--basis-text-muted) 70%, transparent);
+  --basis-scrollbar-thumb: color-mix(in srgb, var(--basis-text-muted) 28%, transparent);
+  --basis-scrollbar-thumb-hover: color-mix(in srgb, var(--basis-text-muted) 48%, transparent);
+  --basis-scrollbar-size: 4px;
   --basis-line-height: 1.75;
   --basis-letter-spacing: 0.01em;
   --basis-chat-shell-radius: 0.375rem;
   --basis-titlebar-height: 32px;
   --basis-sidebar-icons-width: 56px;
-  --basis-sidebar-width: 240px;
+  --basis-sidebar-width: 288px;
   --basis-selection-bg: color-mix(in srgb, var(--basis-text-strong) 18%, var(--basis-canvas-bg));
   --basis-selection-fg: var(--basis-text-strong);
 
@@ -182,8 +183,8 @@ html[data-theme='light'] {
   --basis-action-bg: #2a2a2a;
   --basis-action-fg: #f3f3f3;
   --basis-action-hover: #1f1f1f;
-  --basis-scrollbar-thumb: #cecece;
-  --basis-scrollbar-thumb-hover: #b8b8b8;
+  --basis-scrollbar-thumb: #d9d9d9;
+  --basis-scrollbar-thumb-hover: #c4c4c4;
 }
 
 html[data-ui-font='geist'],
@@ -541,23 +542,6 @@ textarea,
   );
 }
 
-.thin-scrollbar {
-  scrollbar-width: thin;
-  scrollbar-color: var(--basis-scrollbar-thumb) var(--basis-scrollbar-track);
-}
-.thin-scrollbar::-webkit-scrollbar {
-  width: 6px;
-}
-.thin-scrollbar::-webkit-scrollbar-track {
-  background: var(--basis-scrollbar-track);
-}
-.thin-scrollbar::-webkit-scrollbar-thumb {
-  background: var(--basis-scrollbar-thumb);
-  border-radius: 10px;
-}
-.thin-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: var(--basis-scrollbar-thumb-hover);
-}
 
 @layer utilities {
   .theme-btn-plan {
@@ -769,56 +753,87 @@ textarea,
 }
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   §6  SCROLLBARS (agentic-chat-ui custom-scrollbar)
+   §6  SCROLLBARS
+   Chrome 121+ / Electron: scrollbar-width/color OVERRIDE
+   ::-webkit-scrollbar-* and force the Windows fluent bar
+   (with up/down arrows). Keep standard props Firefox-only.
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 
-/* App-wide: hide legacy scrollbar arrow buttons (Windows/Electron) */
-*::-webkit-scrollbar-button {
-  display: none;
-  width: 0;
-  height: 0;
+/* Firefox (no webkit scrollbar pseudos) */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--basis-scrollbar-thumb) var(--basis-scrollbar-track);
+  }
+}
+
+/* Chromium / Electron — custom classic scrollbar, no arrows */
+*::-webkit-scrollbar {
+  width: var(--basis-scrollbar-size);
+  height: var(--basis-scrollbar-size);
+  background: transparent;
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--basis-scrollbar-track);
+  border: none;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--basis-scrollbar-thumb);
+  border-radius: 999px;
+  border: none;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--basis-scrollbar-thumb-hover);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-button,
+*::-webkit-scrollbar-button:single-button,
+*::-webkit-scrollbar-button:double-button,
+*::-webkit-scrollbar-button:vertical:start:decrement,
+*::-webkit-scrollbar-button:vertical:end:increment,
+*::-webkit-scrollbar-button:horizontal:start:decrement,
+*::-webkit-scrollbar-button:horizontal:end:increment,
+*::-webkit-scrollbar-button:vertical:start:increment,
+*::-webkit-scrollbar-button:vertical:end:decrement,
+*::-webkit-scrollbar-button:horizontal:start:increment,
+*::-webkit-scrollbar-button:horizontal:end:decrement,
+*::-webkit-scrollbar-button:vertical:decrement,
+*::-webkit-scrollbar-button:vertical:increment,
+*::-webkit-scrollbar-button:horizontal:decrement,
+*::-webkit-scrollbar-button:horizontal:increment {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  border: none !important;
+  box-shadow: none !important;
+  -webkit-appearance: none !important;
 }
 
 .scrollbar-hide {
   -ms-overflow-style: none;
-  scrollbar-width: none;
 }
 .scrollbar-hide::-webkit-scrollbar {
   display: none;
+  width: 0;
+  height: 0;
+}
+@supports not selector(::-webkit-scrollbar) {
+  .scrollbar-hide {
+    scrollbar-width: none;
+  }
 }
 
-.custom-scrollbar {
-  scrollbar-width: thin;
-  scrollbar-color: var(--basis-scrollbar-thumb) var(--basis-scrollbar-track);
-}
-.custom-scrollbar::-webkit-scrollbar {
-  width: 6px;
-}
-.custom-scrollbar::-webkit-scrollbar-track {
-  background: var(--basis-scrollbar-track);
-}
-.custom-scrollbar::-webkit-scrollbar-thumb {
-  background: var(--basis-scrollbar-thumb);
-  border-radius: 10px;
-}
-.custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: var(--basis-scrollbar-thumb-hover);
-}
-
-.overflow-y-auto {
-  scrollbar-width: thin;
-  scrollbar-color: var(--basis-scrollbar-thumb) var(--basis-scrollbar-track);
-}
-.overflow-y-auto::-webkit-scrollbar {
-  width: 6px;
-}
-.overflow-y-auto::-webkit-scrollbar-track {
-  background: var(--basis-scrollbar-track);
-}
-.overflow-y-auto::-webkit-scrollbar-thumb {
-  background: var(--basis-scrollbar-thumb);
-  border-radius: 10px;
-}
-.overflow-y-auto::-webkit-scrollbar-thumb:hover {
-  background: var(--basis-scrollbar-thumb-hover);
-}
+/* .thin-scrollbar / .custom-scrollbar: call-site markers only; global webkit rules apply */

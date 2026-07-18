@@ -4,14 +4,24 @@ import {
   useEffect,
   useLayoutEffect,
   useCallback,
+  useMemo,
   type KeyboardEvent,
   type ClipboardEvent,
   type DragEvent,
 } from 'react'
-import { createPortal } from 'react-dom'
-import { ArrowUp, Plus, ChevronDown, Check, Square, Mic, X, LoaderCircle } from 'lucide-react'
+import {
+  ArrowUpIcon,
+  PlusIcon,
+  CaretDownIcon,
+  SquareIcon,
+  MicrophoneIcon,
+  XIcon,
+  CircleNotchIcon,
+} from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
 import type { ProviderId } from '@agentpack/contract'
+import { ProviderIcon } from '../providers/ProviderIcon'
+import { SearchableMenu, type SearchableMenuSection } from '../ui/SearchableMenu'
 import {
   chatInputShell,
   chatComposerTextarea,
@@ -25,9 +35,13 @@ import {
   type DraftImageAttachment,
 } from '../../lib/attachments'
 
-type MenuCoords = { left: number; bottom: number; width: number }
+export type ProviderModelGroup = {
+  providerId: ProviderId
+  providerName: string
+  models: Array<{ id: string; name: string }>
+}
 
-/** Mode = small pill; model = ghost trigger. Menu is portaled — avoids overflow-x-auto / overflow-hidden clipping. */
+/** Mode / misc select. Menu is portaled — avoids overflow-x-auto / overflow-hidden clipping. */
 function PillSelect<T extends string>({
   value,
   options,
@@ -41,196 +55,145 @@ function PillSelect<T extends string>({
   disabled?: boolean
   variant?: 'filled' | 'ghost'
 }) {
-  const [open, setOpen] = useState(false)
-  const [menuCoords, setMenuCoords] = useState<MenuCoords | null>(null)
-  const wrapRef = useRef<HTMLDivElement>(null)
-  const triggerRef = useRef<HTMLButtonElement>(null)
-  const menuRef = useRef<HTMLDivElement>(null)
-  const close = useCallback(() => setOpen(false), [])
-
-  const updateMenuCoords = useCallback(() => {
-    const el = triggerRef.current
-    if (!el) return
-    const rect = el.getBoundingClientRect()
-    const width = Math.max(208, rect.width)
-    const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))
-    const gap = 6
-    setMenuCoords({
-      left,
-      bottom: window.innerHeight - rect.top + gap,
-      width,
-    })
-  }, [])
-
-  useLayoutEffect(() => {
-    if (!open) {
-      setMenuCoords(null)
-      return
-    }
-    updateMenuCoords()
-  }, [open, updateMenuCoords, value, options.length])
-
-  useEffect(() => {
-    if (!open) return
-    const onResizeOrScroll = () => updateMenuCoords()
-    window.addEventListener('resize', onResizeOrScroll)
-    window.addEventListener('scroll', onResizeOrScroll, true)
-    return () => {
-      window.removeEventListener('resize', onResizeOrScroll)
-      window.removeEventListener('scroll', onResizeOrScroll, true)
-    }
-  }, [open, updateMenuCoords])
-
-  useEffect(() => {
-    if (!open) return
-    const handler = (e: MouseEvent) => {
-      const t = e.target as Node
-      if (wrapRef.current?.contains(t)) return
-      if (menuRef.current?.contains(t)) return
-      close()
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [open, close])
-
-  useEffect(() => {
-    if (!open) return
-    const handler = (e: globalThis.KeyboardEvent) => {
-      if (e.key === 'Escape') close()
-    }
-    document.addEventListener('keydown', handler)
-    return () => document.removeEventListener('keydown', handler)
-  }, [open, close])
-
   const current = options.find((o) => o.id === value)
   const label = current?.name ?? value?.split('/').pop() ?? '—'
-
   const ghost = variant === 'ghost'
-
-  const menu =
-    open &&
-    menuCoords &&
-    createPortal(
-      <div
-        ref={menuRef}
-        className={cn(
-          'fixed z-[200] max-h-[min(280px,calc(100vh-24px))] overflow-y-auto border border-[var(--basis-border)] bg-[var(--basis-surface-elevated)] py-0.5 shadow-lg',
-          'rounded-[var(--basis-chat-shell-radius)]',
-        )}
-        style={{
-          left: menuCoords.left,
-          bottom: menuCoords.bottom,
-          width: menuCoords.width,
-        }}
-      >
-        {options.map((opt) => {
-          const isSelected = opt.id === value
-          return (
-            <button
-              key={opt.id}
-              type="button"
-              onClick={() => {
-                onChange(opt.id)
-                close()
-              }}
-              className={cn(
-                'flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left text-ui-xs font-medium transition-colors',
-                isSelected
-                  ? 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]'
-                  : 'text-[var(--basis-text-muted)] hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
-              )}
-            >
-              <span className="flex-1 truncate">{opt.name}</span>
-              {isSelected && <Check className="h-2.5 w-2.5 shrink-0 text-[var(--basis-text)]" />}
-            </button>
-          )
-        })}
-      </div>,
-      document.body,
-    )
+  const sections = useMemo<SearchableMenuSection[]>(
+    () => [
+      {
+        id: 'options',
+        options: options.map((option) => ({ id: option.id, label: option.name })),
+      },
+    ],
+    [options],
+  )
 
   return (
-    <div ref={wrapRef} className="relative shrink-0">
-      <button
-        ref={triggerRef}
-        type="button"
-        onClick={() => !disabled && setOpen((o) => !o)}
-        disabled={disabled}
-        className={cn(
-          'flex max-w-[220px] items-center gap-1 font-medium transition-all duration-150',
-          ghost
-            ? cn(
-                'rounded-[var(--basis-chat-shell-radius)] border border-transparent bg-transparent px-1.5 py-0.5 text-ui-2xs text-[var(--basis-text-muted)]',
-                'hover:border-[var(--basis-border)] hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
-                open &&
-                  'border-[var(--basis-border)] bg-[var(--basis-surface-hover)] text-[var(--basis-text)]',
-              )
-            : cn(
-                'rounded-full border border-[var(--basis-border-muted)] bg-[var(--basis-surface-elevated)] px-2 py-1 text-ui-2xs text-[var(--basis-text)]',
-                'hover:border-[var(--basis-border)] hover:bg-[var(--basis-surface-hover)]',
-                open && 'border-[var(--basis-border)] bg-[var(--basis-surface-hover)]',
-              ),
-          disabled && 'cursor-default opacity-40',
-        )}
-      >
-        <span className="truncate">{label}</span>
-        <ChevronDown size={10} className="shrink-0 text-[var(--basis-text-faint)]" />
-      </button>
-      {menu}
-    </div>
+    <SearchableMenu
+      sections={sections}
+      value={value}
+      onSelect={(optionId) => onChange(optionId as T)}
+      searchable={options.length > 6}
+      searchPlaceholder="Search…"
+      emptyText="No options"
+      disabled={disabled}
+      minWidth={ghost ? 140 : 180}
+      maxHeight={280}
+      aria-label="Select option"
+      trigger={({ ref, open, toggle, disabled: isDisabled }) => (
+        <button
+          ref={ref}
+          type="button"
+          onClick={toggle}
+          disabled={isDisabled}
+          className={cn(
+            'flex max-w-[220px] items-center font-medium transition-colors duration-150',
+            ghost
+              ? cn(
+                  'gap-0.5 border-0 bg-transparent px-0.5 py-0 text-11-regular leading-none text-[var(--basis-text)]',
+                  'hover:text-[var(--basis-text-strong)]',
+                  open && 'text-[var(--basis-text-strong)]',
+                )
+              : cn(
+                  'gap-1 rounded-full border border-[var(--basis-border-muted)] bg-[var(--basis-surface)] px-2 py-1 text-11-regular text-[var(--basis-text)]',
+                  'hover:border-[var(--basis-border)] hover:bg-[var(--basis-surface-hover)]',
+                  open && 'border-[var(--basis-border)] bg-[var(--basis-surface-hover)]',
+                ),
+            isDisabled && 'cursor-default opacity-40',
+          )}
+        >
+          <span className="truncate">{label}</span>
+          <CaretDownIcon
+            size={ghost ? 9 : 10}
+            weight="light"
+            className="shrink-0 text-[var(--basis-text-faint)]"
+          />
+        </button>
+      )}
+    />
   )
 }
 
-/** Reference: src/App.tsx Build/Plan Mode Switcher */
-function BuildPlanToggle({
-  isPlan,
+/** Single control: provider groups → models. Trigger shows provider SVG + model name. */
+function ProviderModelSelect({
+  groups,
+  currentProviderId,
+  currentModelId,
+  onChange,
   disabled,
-  onSelectBuild,
-  onSelectPlan,
+  canChangeProvider,
 }: {
-  isPlan: boolean
+  groups: ProviderModelGroup[]
+  currentProviderId: ProviderId
+  currentModelId: string
+  onChange: (providerId: ProviderId, modelId: string) => void
   disabled?: boolean
-  onSelectBuild: () => void
-  onSelectPlan: () => void
+  canChangeProvider: boolean
 }) {
+  const visibleGroups = canChangeProvider
+    ? groups.filter((group) => group.models.length > 0)
+    : groups.filter((group) => group.providerId === currentProviderId && group.models.length > 0)
+
+  const currentGroup = groups.find((group) => group.providerId === currentProviderId)
+  const currentModel =
+    currentGroup?.models.find((model) => model.id === currentModelId) ??
+    currentGroup?.models[0]
+  const modelLabel = currentModel?.name ?? currentModelId.split('/').pop() ?? 'Model'
+  const selectedId = `${currentProviderId}:${currentModelId}`
+
+  const sections = useMemo<SearchableMenuSection[]>(
+    () =>
+      visibleGroups.map((group) => ({
+        id: group.providerId,
+        label: group.providerName,
+        icon: <ProviderIcon providerId={group.providerId} className="h-3 w-3" />,
+        options: group.models.map((model) => ({
+          id: `${group.providerId}:${model.id}`,
+          label: model.name,
+          keywords: `${group.providerName} ${model.id}`,
+        })),
+      })),
+    [visibleGroups],
+  )
+
   return (
-    <div
-      className={cn(
-        'relative flex shrink-0 items-center rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border-muted)] bg-[var(--basis-surface)] p-0.5',
-        disabled && 'pointer-events-none opacity-40',
+    <SearchableMenu
+      sections={sections}
+      value={selectedId}
+      onSelect={(optionId, sectionId) => {
+        const modelId = optionId.slice(sectionId.length + 1)
+        onChange(sectionId as ProviderId, modelId)
+      }}
+      searchable
+      searchPlaceholder="Search models…"
+      emptyText="No models"
+      disabled={disabled}
+      minWidth={260}
+      maxHeight={320}
+      aria-label="Select model"
+      trigger={({ ref, open, toggle, disabled: isDisabled }) => (
+        <button
+          ref={ref}
+          type="button"
+          onClick={toggle}
+          disabled={isDisabled}
+          className={cn(
+            'flex max-w-[240px] items-center gap-1.5 border-0 bg-transparent px-0.5 py-0 text-11-regular leading-none text-[var(--basis-text)] transition-colors duration-150',
+            'hover:text-[var(--basis-text-strong)]',
+            open && 'text-[var(--basis-text-strong)]',
+            isDisabled && 'cursor-default opacity-40',
+          )}
+        >
+          <ProviderIcon providerId={currentProviderId} />
+          <span className="truncate">{modelLabel}</span>
+          <CaretDownIcon
+            size={9}
+            weight="light"
+            className="shrink-0 text-[var(--basis-text-faint)]"
+          />
+        </button>
       )}
-    >
-      <div
-        className={cn(
-          'absolute top-0.5 bottom-0.5 w-[46px] rounded-sm transition-all duration-300 ease-out',
-          isPlan ? 'translate-x-[46px] theme-toggle-plan' : 'translate-x-0 theme-toggle-build',
-        )}
-      />
-      <button
-        type="button"
-        onClick={onSelectBuild}
-        className={cn(
-          'relative z-10 w-[46px] rounded-sm py-1 text-[11px] font-medium transition-colors duration-300',
-          !isPlan
-            ? 'text-[var(--build-text)]'
-            : 'text-[var(--basis-text-muted)] hover:text-[var(--basis-text)]',
-        )}
-      >
-        Build
-      </button>
-      <button
-        type="button"
-        onClick={onSelectPlan}
-        className={cn(
-          'relative z-10 w-[46px] rounded-sm py-1 text-[11px] font-medium transition-colors duration-300',
-          isPlan
-            ? 'text-[var(--plan-text)]'
-            : 'text-[var(--basis-text-muted)] hover:text-[var(--basis-text)]',
-        )}
-      >
-        Plan
-      </button>
-    </div>
+    />
   )
 }
 
@@ -241,25 +204,21 @@ export function MessageInputView({
   activeSessionId,
   isSessionDraftOpen,
   providerReady,
-  providerOptions,
   currentProviderId,
-  currentProviderName,
+  providerModelGroups,
+  currentModelId,
   modeOptions,
   currentModeId,
-  modelOptions,
-  currentModelId,
   canChangeSettings,
   canChangeProvider,
   showModeControl,
   showModelControl,
-  agent,
   isStreaming,
   draftKey,
   imageUploadEnabled,
   imageSupportMessage,
   onModeChange,
-  onProviderChange,
-  onModelChange,
+  onProviderModelChange,
   onSend,
   onAbort,
 }: {
@@ -269,25 +228,21 @@ export function MessageInputView({
   activeSessionId: string | null
   isSessionDraftOpen: boolean
   providerReady: boolean
-  providerOptions: Array<{ id: ProviderId; name: string }>
   currentProviderId: ProviderId
-  currentProviderName: string
+  providerModelGroups: ProviderModelGroup[]
+  currentModelId: string
   modeOptions: Array<{ id: string; name: string }>
   currentModeId: string
-  modelOptions: Array<{ id: string; name: string }>
-  currentModelId: string
   canChangeSettings: boolean
   canChangeProvider: boolean
   showModeControl: boolean
   showModelControl: boolean
-  agent?: { name?: string; version?: string } | null
   isStreaming: boolean
   draftKey: string
   imageUploadEnabled: boolean
   imageSupportMessage: string | null
   onModeChange: (id: string) => void
-  onProviderChange: (id: ProviderId) => void
-  onModelChange: (id: string) => void
+  onProviderModelChange: (providerId: ProviderId, modelId: string) => void
   onSend: (text: string, attachments: DraftImageAttachment[]) => Promise<void>
   onAbort: () => void
 }) {
@@ -445,6 +400,9 @@ export function MessageInputView({
     }
   }
 
+  const currentProviderName =
+    providerModelGroups.find((group) => group.providerId === currentProviderId)?.providerName ??
+    currentProviderId
   const hasContent = text.trim().length > 0 || attachments.length > 0
   const placeholder = !activeWorkspacePath
     ? 'Select a workspace...'
@@ -510,7 +468,7 @@ export function MessageInputView({
                   className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/70 text-white opacity-90 shadow-sm transition hover:bg-black group-hover:opacity-100"
                   aria-label={`Remove ${attachment.file.name}`}
                 >
-                  <X size={11} />
+                  <XIcon size={11} />
                 </button>
               </div>
             ))}
@@ -544,29 +502,38 @@ export function MessageInputView({
               aria-label="Attach images"
               className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--basis-text-muted)] transition-colors hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)] disabled:cursor-not-allowed disabled:opacity-35"
             >
-              <Plus size={12} />
+              <PlusIcon size={12} />
             </button>
 
             <div className="mx-0.5 h-3.5 w-px shrink-0 bg-[var(--basis-border-muted)]" />
 
-            <PillSelect
-              value={currentProviderId}
-              options={providerOptions}
-              onChange={onProviderChange}
-              disabled={!canChangeProvider}
-            />
+            {showModelControl && (
+              <ProviderModelSelect
+                groups={providerModelGroups}
+                currentProviderId={currentProviderId}
+                currentModelId={currentModelId}
+                onChange={onProviderModelChange}
+                disabled={!canChangeSettings}
+                canChangeProvider={canChangeProvider}
+              />
+            )}
 
             {showModeControl && buildPlanToggle ? (
-              <BuildPlanToggle
-                isPlan={isPlan}
+              <PillSelect
+                variant="ghost"
+                value={isPlan ? 'plan' : buildModeId}
+                options={[
+                  { id: buildModeId, name: 'Build' },
+                  { id: 'plan', name: 'Plan' },
+                ]}
+                onChange={onModeChange}
                 disabled={!canChangeSettings}
-                onSelectBuild={() => onModeChange(buildModeId)}
-                onSelectPlan={() => onModeChange('plan')}
               />
             ) : (
               showModeControl &&
               modeOptions.length > 0 && (
                 <PillSelect
+                  variant="ghost"
                   value={currentModeId}
                   options={modeOptions}
                   onChange={onModeChange}
@@ -575,30 +542,6 @@ export function MessageInputView({
               )
             )}
 
-            {showModelControl && modelOptions.length > 0 && (
-              <>
-                <div className="mx-0.5 h-3.5 w-px shrink-0 bg-[var(--basis-border-muted)]" />
-                <PillSelect
-                  variant="ghost"
-                  value={currentModelId}
-                  options={modelOptions}
-                  onChange={onModelChange}
-                  disabled={!canChangeSettings}
-                />
-              </>
-            )}
-
-            {agent?.name && (
-              <span
-                className={cn(
-                  'ml-0.5 shrink-0 truncate rounded-full border border-[var(--basis-border)] bg-[var(--basis-surface-elevated)] px-1.5 py-px text-ui-2xs text-[var(--basis-text-muted)]',
-                  isPlan && 'border-dashed text-[var(--basis-text)]',
-                )}
-              >
-                {agent.name}
-                {agent.version ? ` ${agent.version}` : ''}
-              </span>
-            )}
           </div>
 
           <div className="flex shrink-0 items-center gap-1">
@@ -606,7 +549,7 @@ export function MessageInputView({
               type="button"
               className="flex h-5 w-5 items-center justify-center rounded text-[var(--basis-text-muted)] transition-colors hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]"
             >
-              <Mic size={12} />
+              <MicrophoneIcon size={12} />
             </button>
             {isStreaming ? (
               <button
@@ -614,7 +557,7 @@ export function MessageInputView({
                 onClick={onAbort}
                 className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-red-500/90 text-white transition-colors hover:bg-red-500"
               >
-                <Square className="h-3 w-3" />
+                <SquareIcon className="h-3 w-3" />
               </button>
             ) : (
               <button
@@ -628,9 +571,9 @@ export function MessageInputView({
                 )}
               >
                 {sending ? (
-                  <LoaderCircle size={13} className="animate-spin" />
+                  <CircleNotchIcon size={13} className="animate-spin" />
                 ) : (
-                  <ArrowUp size={14} strokeWidth={1.9} />
+                  <ArrowUpIcon size={14} />
                 )}
               </button>
             )}

@@ -84,27 +84,15 @@ export const StaticConversation: Story = {
           <div className="mx-auto max-w-2xl px-4 py-6 space-y-1">
             <UserMessage
               content="Why does the font look generic even though we use Inter?"
-              runtime={{ modelId: 'claude-sonnet-4-5', modeId: 'plan', tokens: { total: 221 } }}
             />
             <AssistantMessage
               isFinal={true}
               content={TYPOGRAPHY_REPLY}
-              runtime={{
-                providerId: 'anthropic',
-                modelId: 'claude-sonnet-4-5',
-                tokens: { total: 918 },
-              }}
             />
             <UserMessage content="Can you show me the flicker fix for tool calls during streaming?" />
             <AssistantMessage
               isFinal={true}
               content={STREAMING_REPLY}
-              runtime={{
-                providerId: 'anthropic',
-                modelId: 'claude-sonnet-4-5',
-                modeId: 'default',
-                tokens: { total: 312 },
-              }}
             />
           </div>
         </div>
@@ -121,7 +109,6 @@ export const StreamingInProgress: Story = {
           <div className="mx-auto max-w-2xl px-4 py-6 space-y-1">
             <UserMessage
               content="Apply the four font changes we identified: variable font, ss03, type scale, and line-height tokens."
-              runtime={{ modelId: 'claude-sonnet-4-5', modeId: 'plan', tokens: { total: 44 } }}
             />
             <AssistantMessage
               isFinal={false}
@@ -132,7 +119,6 @@ export const StreamingInProgress: Story = {
 ### 1. Self-hosted variable font
 
 Inter is now loaded via \`@fontsource-variable/inter\` instead of the Google Fonts CDN.`}
-              runtime={{ providerId: 'anthropic', modelId: 'claude-sonnet-4-5', modeId: 'plan' }}
             />
           </div>
         </div>
@@ -151,12 +137,6 @@ export const ErrorState: Story = {
             <AssistantMessage
               isFinal={true}
               content={`I hit a type error in \`ChatViewPrimitives.tsx\` at line 105. The \`cn()\` call has a conditional that widens to \`string | false\`, but the type expects \`string\`. I attempted to write a fix but the file was locked by the editor. Please close the file and retry.`}
-              runtime={{
-                providerId: 'anthropic',
-                modelId: 'claude-sonnet-4-5',
-                finishReason: 'error',
-                tokens: { total: 78 },
-              }}
             />
           </div>
         </div>

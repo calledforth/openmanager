@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { Check, ChevronDown, FolderGit2, FolderPlus } from 'lucide-react'
+import { useMemo } from 'react'
+import { CaretDownIcon, FolderSimpleIcon, FolderPlusIcon } from '@phosphor-icons/react'
 import { useAppUi } from '../../providers/app-ui-provider'
 import { useSidebarData, type WorkspaceEntry } from '../../providers/sidebar-data-provider'
 import { cn } from '../../lib/utils'
+import { SearchableMenu, type SearchableMenuSection } from '../ui/SearchableMenu'
 
 export function NewSessionLanding() {
   const { activeWorkspacePath, pendingDraftSessionStart } = useAppUi()
@@ -35,25 +36,22 @@ export function NewSessionLandingView({
   onSelectWorkspace: (workspacePath: string) => void
   onAddWorkspace: () => void
 }) {
-  const [open, setOpen] = useState(false)
-  const menuRef = useRef<HTMLDivElement>(null)
-  const close = useCallback(() => setOpen(false), [])
-
-  useEffect(() => {
-    if (!open) return
-    const handlePointerDown = (event: MouseEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) close()
-    }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') close()
-    }
-    document.addEventListener('mousedown', handlePointerDown)
-    document.addEventListener('keydown', handleKeyDown)
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown)
-      document.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [close, open])
+  const sections = useMemo<SearchableMenuSection[]>(
+    () => [
+      {
+        id: 'repositories',
+        label: 'Repositories',
+        options: workspaces.map((workspace) => ({
+          id: workspace.path,
+          label: workspace.name,
+          description: workspace.path,
+          icon: <FolderSimpleIcon weight="light" className="h-3.5 w-3.5" />,
+          keywords: `${workspace.name} ${workspace.path}`,
+        })),
+      },
+    ],
+    [workspaces],
+  )
 
   if (isWorkspacesLoading) {
     return (
@@ -71,7 +69,7 @@ export function NewSessionLandingView({
       <div className="flex min-h-0 flex-1 items-center justify-center px-6">
         <div className="text-center">
           <div className="mx-auto mb-4 flex h-10 w-10 items-center justify-center rounded-xl border border-[var(--basis-border)] bg-[var(--basis-surface)] text-[var(--basis-text-muted)] shadow-sm">
-            <FolderGit2 className="h-4 w-4" strokeWidth={1.6} />
+            <FolderSimpleIcon className="h-4 w-4" />
           </div>
           <div className="text-16-medium text-[var(--basis-text-strong)]">
             Start with a repository
@@ -82,9 +80,9 @@ export function NewSessionLandingView({
           <button
             type="button"
             onClick={onAddWorkspace}
-            className="mt-4 inline-flex items-center gap-1.5 rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)] bg-[var(--basis-surface-elevated)] px-3 py-1.5 text-12-medium text-[var(--basis-text)] shadow-sm transition-default hover:bg-[var(--basis-surface-hover)]"
+            className="mt-4 inline-flex items-center gap-1.5 rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)] bg-[var(--basis-surface)] px-3 py-1.5 text-12-medium text-[var(--basis-text)] shadow-sm transition-default hover:bg-[var(--basis-surface-hover)]"
           >
-            <FolderPlus className="h-3.5 w-3.5" strokeWidth={1.75} />
+            <FolderPlusIcon className="h-3.5 w-3.5" />
             Add repository
           </button>
         </div>
@@ -98,86 +96,63 @@ export function NewSessionLandingView({
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center px-6">
       <div className="chat-animate-fade-in -mt-14 text-center">
-        <div className="text-16-medium text-[var(--basis-text)]">Let&apos;s build in</div>
-
-        <div ref={menuRef} className="relative mt-2 inline-flex">
-          <button
-            type="button"
-            onClick={() => setOpen((current) => !current)}
-            aria-haspopup="listbox"
-            aria-expanded={open}
-            className={cn(
-              'group inline-flex max-w-[min(480px,76vw)] items-center gap-2 rounded-xl border px-3 py-1.5 text-20-medium shadow-sm transition-all duration-150',
-              'border-[var(--basis-border)] bg-[var(--basis-surface)] text-[var(--basis-text-strong)]',
-              'hover:bg-[var(--basis-surface-hover)] hover:shadow-md',
-              open && 'bg-[var(--basis-surface-hover)] shadow-md',
-            )}
-          >
-            <FolderGit2
-              className="h-4 w-4 shrink-0 text-[var(--basis-text-muted)]"
-              strokeWidth={1.6}
-            />
-            <span className="truncate">{activeWorkspace.name}</span>
-            <ChevronDown
-              className={cn(
-                'h-3.5 w-3.5 shrink-0 text-[var(--basis-text-faint)] transition-transform',
-                open && 'rotate-180',
-              )}
-              strokeWidth={1.75}
-            />
-          </button>
-
-          {open && (
-            <div
-              role="listbox"
-              aria-label="Choose a repository"
-              className="absolute left-1/2 top-[calc(100%+8px)] z-40 max-h-64 w-[min(320px,82vw)] -translate-x-1/2 overflow-y-auto rounded-xl border border-[var(--basis-border)] bg-[var(--basis-surface-elevated)] p-1 shadow-xl"
-            >
-              {workspaces.map((workspace) => {
-                const selected = workspace.path === activeWorkspace.path
-                return (
-                  <button
-                    key={workspace.path}
-                    type="button"
-                    role="option"
-                    aria-selected={selected}
-                    onClick={() => {
-                      close()
-                      if (!selected) onSelectWorkspace(workspace.path)
-                    }}
-                    className={cn(
-                      'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-12-regular transition-default',
-                      selected
-                        ? 'bg-[var(--basis-surface-active)] text-[var(--basis-text-strong)]'
-                        : 'text-[var(--basis-text-muted)] hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
-                    )}
-                  >
-                    <FolderGit2 className="h-3.5 w-3.5 shrink-0" strokeWidth={1.6} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate">{workspace.name}</span>
-                      <span className="block truncate text-[10px] text-[var(--basis-text-faint)]">
-                        {workspace.path}
-                      </span>
-                    </span>
-                    {selected && <Check className="h-3.5 w-3.5 shrink-0" strokeWidth={1.8} />}
-                  </button>
-                )
-              })}
-
-              <div className="my-1 h-px bg-[var(--basis-border-muted)]" />
+        <div className="inline-flex max-w-[min(520px,86vw)] flex-wrap items-center justify-center gap-x-1.5 gap-y-1 text-16-medium text-[var(--basis-text)]">
+          <span>Let&apos;s build in</span>
+          <SearchableMenu
+            sections={sections}
+            value={activeWorkspace.path}
+            onSelect={(optionId) => {
+              if (optionId !== activeWorkspace.path) onSelectWorkspace(optionId)
+            }}
+            searchable
+            searchPlaceholder="Search repositories…"
+            emptyText="No repositories"
+            placement="below"
+            align="center"
+            minWidth={320}
+            maxHeight={360}
+            aria-label="Choose a repository"
+            footer={({ close }) => (
               <button
                 type="button"
                 onClick={() => {
                   close()
                   onAddWorkspace()
                 }}
-                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-12-regular text-[var(--basis-text-muted)] transition-default hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]"
+                className="flex w-full items-center gap-2 px-2.5 py-1 text-left text-11-regular text-[var(--basis-text-muted)] transition-colors hover:bg-[var(--basis-surface)] hover:text-[var(--basis-text)]"
               >
-                <FolderPlus className="h-3.5 w-3.5" strokeWidth={1.7} />
+                <FolderPlusIcon weight="light" className="h-3.5 w-3.5" />
                 Add repository
               </button>
-            </div>
-          )}
+            )}
+            trigger={({ ref, open, toggle }) => (
+              <button
+                ref={ref}
+                type="button"
+                onClick={toggle}
+                aria-haspopup="listbox"
+                aria-expanded={open}
+                className={cn(
+                  'inline-flex min-w-0 max-w-full items-center gap-1 border-0 bg-transparent p-0 text-16-medium text-[var(--basis-text-strong)] transition-colors',
+                  'hover:text-[var(--basis-text)]',
+                  open && 'text-[var(--basis-text)]',
+                )}
+              >
+                <FolderSimpleIcon
+                  weight="light"
+                  className="h-4 w-4 shrink-0 text-[var(--basis-text-muted)]"
+                />
+                <span className="truncate">{activeWorkspace.name}</span>
+                <CaretDownIcon
+                  weight="light"
+                  className={cn(
+                    'h-3.5 w-3.5 shrink-0 text-[var(--basis-text-faint)] transition-transform',
+                    open && 'rotate-180',
+                  )}
+                />
+              </button>
+            )}
+          />
         </div>
 
         <div className="mt-3 text-12-regular text-[var(--basis-text-faint)]">

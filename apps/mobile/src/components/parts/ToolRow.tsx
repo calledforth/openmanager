@@ -46,7 +46,7 @@ export function ToolRow({ part }: { part: ToolPartData }) {
 
   const line = (
     <View className="flex-row items-center gap-1.5">
-      <Icon size={13} color={iconColor} strokeWidth={2} />
+      <Icon size={13} color={iconColor} />
       {model.isRunning ? (
         <ShimmerText variant="text-14-regular" className="flex-1">
           {label}

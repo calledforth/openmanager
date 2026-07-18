@@ -1,31 +1,13 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { Expand, X } from 'lucide-react'
+import { ArrowsOutIcon, XIcon } from '@phosphor-icons/react'
 import { MessageParts } from '../parts/MessageParts'
 import { TextPart } from '../parts/TextPart'
 import { cn } from '../../lib/utils'
 import type { StreamMessagePart } from '@openmanager/shared/lib/remote-stream-parts'
 import { ReferenceComposerToolbar } from './composer-toolbar'
 import { chatInputShell, chatUserInner, chatStreamInner } from './chatComposerStyles'
-import { typographyCaption } from '../../lib/typography'
 import type { UploadedImageAttachment } from '../../lib/attachments'
-
-export interface RuntimeMetadata {
-  providerId?: string
-  modelId?: string
-  modeId?: string
-  agentId?: string
-  finishReason?: string
-  costUsd?: number
-  tokens?: {
-    input?: number
-    output?: number
-    reasoning?: number
-    cacheRead?: number
-    cacheWrite?: number
-    total?: number
-  }
-}
 
 type MessagePart = StreamMessagePart
 
@@ -65,7 +47,7 @@ function ImagePreviewDialog({ image, onClose }: { image: PreviewImage; onClose: 
         className="relative flex h-full w-full max-w-[min(1100px,94vw)] flex-col overflow-hidden rounded-xl border border-white/15 bg-[#111]/95 shadow-[0_28px_100px_rgba(0,0,0,0.65)]"
       >
         <div className="flex h-11 shrink-0 items-center gap-3 border-b border-white/10 px-3.5 text-white/70">
-          <Expand className="h-3.5 w-3.5 shrink-0 text-white/40" strokeWidth={1.75} />
+          <ArrowsOutIcon className="h-3.5 w-3.5 shrink-0 text-white/40" />
           <span className="min-w-0 flex-1 truncate text-[12px] font-medium">{image.name}</span>
           <span className="hidden text-[10px] uppercase tracking-[0.12em] text-white/35 sm:block">
             Esc to close
@@ -77,7 +59,7 @@ function ImagePreviewDialog({ image, onClose }: { image: PreviewImage; onClose: 
             aria-label="Close image preview"
             className="flex h-7 w-7 items-center justify-center rounded-md text-white/55 transition-colors hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/50"
           >
-            <X className="h-4 w-4" strokeWidth={1.75} />
+            <XIcon className="h-4 w-4" />
           </button>
         </div>
         <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.055),transparent_62%)] p-4 sm:p-8">
@@ -149,13 +131,11 @@ export function UserMessage({
   parts,
   optimisticAttachments,
   sendError,
-  runtime,
 }: {
   content: string
   parts?: MessagePart[]
   optimisticAttachments?: UploadedImageAttachment[]
   sendError?: string
-  runtime?: RuntimeMetadata
 }) {
   const [previewImage, setPreviewImage] = useState<PreviewImage | null>(null)
   const persistedImages = (parts ?? []).flatMap((part) => {
@@ -196,7 +176,7 @@ export function UserMessage({
                     className="max-h-64 w-full object-contain transition-transform duration-200 group-hover:scale-[1.01]"
                   />
                   <span className="pointer-events-none absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-md border border-white/15 bg-black/55 text-white/75 opacity-0 shadow-sm backdrop-blur-sm transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
-                    <Expand className="h-3 w-3" strokeWidth={1.75} />
+                    <ArrowsOutIcon className="h-3 w-3" />
                   </span>
                 </button>
               ))}
@@ -213,7 +193,6 @@ export function UserMessage({
           <ReferenceComposerToolbar />
         </div>
       </div>
-      <MessageRuntimeMeta runtime={runtime} align="right" />
       {previewImage && (
         <ImagePreviewDialog image={previewImage} onClose={() => setPreviewImage(null)} />
       )}
@@ -225,12 +204,10 @@ export function AssistantMessage({
   content,
   isFinal,
   parts,
-  runtime,
 }: {
   content: string
   isFinal?: boolean
   parts?: MessagePart[]
-  runtime?: RuntimeMetadata
 }) {
   const hasParts = !!parts && parts.length > 0
   const isStreaming = isFinal === false
@@ -244,41 +221,6 @@ export function AssistantMessage({
           <TextPart text={content} />
         )}
       </div>
-      <MessageRuntimeMeta runtime={runtime} align="left" />
-    </div>
-  )
-}
-
-export function MessageRuntimeMeta({
-  runtime,
-  align,
-}: {
-  runtime?: RuntimeMetadata
-  align: 'left' | 'right'
-}) {
-  if (!runtime) return null
-  const parts: string[] = []
-  const modelLabel =
-    runtime.providerId && runtime.modelId
-      ? `${runtime.providerId}/${runtime.modelId}`
-      : (runtime.modelId ?? undefined)
-  if (modelLabel) parts.push(modelLabel)
-  if (runtime.modeId) parts.push(`mode:${runtime.modeId}`)
-  if (runtime.agentId) parts.push(`agent:${runtime.agentId}`)
-  if (runtime.tokens?.total != null) parts.push(`${runtime.tokens.total} tokens`)
-  if (runtime.costUsd != null && runtime.costUsd > 0) parts.push(`$${runtime.costUsd.toFixed(4)}`)
-  if (runtime.finishReason) parts.push(runtime.finishReason)
-  if (parts.length === 0) return null
-
-  return (
-    <div
-      className={cn(
-        typographyCaption,
-        'mt-0.5 tabular-nums text-[var(--basis-text-faint)]',
-        align === 'right' ? 'text-right' : 'text-left',
-      )}
-    >
-      {parts.join(' • ')}
     </div>
   )
 }

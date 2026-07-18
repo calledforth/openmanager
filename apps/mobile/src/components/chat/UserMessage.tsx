@@ -1,4 +1,4 @@
-import { Clock } from 'lucide-react-native'
+import { ClockIcon } from 'phosphor-react-native'
 import { View } from 'react-native'
 
 import { useTokens } from '../../theme/useTokens'
@@ -23,7 +23,7 @@ export function UserMessage({ content, isQueued }: { content: string; isQueued?:
         </AppText>
         {isQueued ? (
           <View className="mt-1 flex-row items-center justify-end gap-1">
-            <Clock size={11} color={tokens.textFaint} strokeWidth={2} />
+            <ClockIcon size={11} color={tokens.textFaint} />
             <AppText variant="text-11-regular" className="text-textFaint">
               queued
             </AppText>

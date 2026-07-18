@@ -1,18 +1,18 @@
 import {
-  Terminal,
-  FileEdit,
-  FilePlus,
-  FileSearch,
-  Search,
-  FolderSearch,
-  Globe,
-  Download,
-  ListTodo,
-  ClipboardList,
-  MessageSquare,
-  Wrench,
-  type LucideIcon,
-} from 'lucide-react'
+  TerminalIcon,
+  NotePencilIcon,
+  FilePlusIcon,
+  FileMagnifyingGlassIcon,
+  MagnifyingGlassIcon,
+  FoldersIcon,
+  GlobeIcon,
+  DownloadSimpleIcon,
+  ListChecksIcon,
+  ClipboardTextIcon,
+  ChatIcon,
+  WrenchIcon,
+  type Icon,
+} from '@phosphor-icons/react'
 import {
   canonicalizeToolName,
   getToolLabels,
@@ -23,31 +23,31 @@ import {
 export { canonicalizeToolName, isCardTool, isExploringTool }
 
 interface ToolMeta {
-  icon: LucideIcon
+  icon: Icon
   getTitle: (input: unknown) => string
   getSubtitle: (input: unknown) => string
 }
 
-const TOOL_ICONS: Record<string, LucideIcon> = {
-  Bash: Terminal,
-  Edit: FileEdit,
-  Write: FilePlus,
-  MultiEdit: FileEdit,
-  Read: FileSearch,
-  Grep: Search,
-  Glob: FolderSearch,
-  WebSearch: Globe,
-  WebFetch: Download,
-  TodoWrite: ListTodo,
-  Task: ClipboardList,
-  AskUserQuestion: MessageSquare,
+const TOOL_ICONS: Record<string, Icon> = {
+  Bash: TerminalIcon,
+  Edit: NotePencilIcon,
+  Write: FilePlusIcon,
+  MultiEdit: NotePencilIcon,
+  Read: FileMagnifyingGlassIcon,
+  Grep: MagnifyingGlassIcon,
+  Glob: FoldersIcon,
+  WebSearch: GlobeIcon,
+  WebFetch: DownloadSimpleIcon,
+  TodoWrite: ListChecksIcon,
+  Task: ClipboardTextIcon,
+  AskUserQuestion: ChatIcon,
 }
 
 export function getToolMeta(toolName: string): ToolMeta {
   const canonicalName = canonicalizeToolName(toolName)
   const labels = getToolLabels(toolName)
   return {
-    icon: TOOL_ICONS[canonicalName] ?? Wrench,
+    icon: TOOL_ICONS[canonicalName] ?? WrenchIcon,
     getTitle: labels.getTitle,
     getSubtitle: labels.getSubtitle,
   }
