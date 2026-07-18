@@ -27,6 +27,8 @@ import {
   useTrackedQuery,
 } from '../lib/convex-telemetry'
 import {
+  composerPreferencesFromDocs,
+  composerProfilesFromDocs,
   mergeProviderComposerProfiles,
   mergeWorkspaceComposerPreferences,
   resolveComposerChoice,
@@ -35,8 +37,10 @@ import {
   type ComposerModelOption,
   type ProviderComposerProfile,
   type ProviderComposerProfiles,
+  type ProviderComposerProfileDoc,
   type WorkspaceComposerPreference,
   type WorkspaceComposerPreferences,
+  type WorkspaceComposerPreferenceDoc,
 } from '../../../shared/composer-profile'
 import { resolveSessionProviderId, sessionsForProvider } from './session-provider'
 
@@ -150,6 +154,67 @@ export function resolveDraftComposerRuntime({
         }
       : {}),
     ...(runtime?.availableCommands ? { availableCommands: runtime.availableCommands } : {}),
+  }
+}
+
+// Resolve what the composer should display for an active session. Model
+// selection is provider-global agent state (not per session), so the workspace
+// preference — the single selection the job worker re-applies before every
+// prompt — is what the composer must show; live runtime and profile defaults
+// are fallbacks. Modes can be switched by the agent itself mid-session, so the
+// live runtime wins there. Catalogs fall back to the persisted provider
+// profile so controls render instantly, before any live session round-trip.
+export function resolveSessionComposerRuntime(
+  runtime: AcpSessionRuntimeState,
+  preference?: WorkspaceComposerPreference,
+  profile?: ProviderComposerProfile,
+): AcpSessionRuntimeState {
+  const availableModels = runtime.models?.availableModels?.length
+    ? runtime.models.availableModels
+    : profile?.availableModels
+  const availableModes = runtime.modes?.availableModes?.length
+    ? runtime.modes.availableModes
+    : profile?.availableModes
+  const currentModelId =
+    resolveComposerChoice(
+      [preference?.modelId, runtime.models?.currentModelId, profile?.defaultModelId],
+      availableModels?.map((model) => ({ id: model.modelId })),
+    ) ??
+    preference?.modelId ??
+    runtime.models?.currentModelId
+  const currentModeId =
+    resolveComposerChoice(
+      [runtime.modes?.currentModeId, preference?.modeId, profile?.defaultModeId],
+      availableModes,
+    ) ??
+    runtime.modes?.currentModeId ??
+    preference?.modeId
+  if (
+    availableModels === runtime.models?.availableModels &&
+    availableModes === runtime.modes?.availableModes &&
+    currentModelId === runtime.models?.currentModelId &&
+    currentModeId === runtime.modes?.currentModeId
+  ) {
+    return runtime
+  }
+  return {
+    ...runtime,
+    ...(availableModels?.length || currentModelId
+      ? {
+          models: {
+            ...(availableModels?.length ? { availableModels } : {}),
+            ...(currentModelId ? { currentModelId } : {}),
+          },
+        }
+      : {}),
+    ...(availableModes?.length || currentModeId
+      ? {
+          modes: {
+            ...(availableModes?.length ? { availableModes } : {}),
+            ...(currentModeId ? { currentModeId } : {}),
+          },
+        }
+      : {}),
   }
 }
 
@@ -317,6 +382,11 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
     [],
   )
 
+  const upsertComposerPreference = useTrackedMutation(
+    'composer.upsertPreference',
+    (api as any).composer.upsertPreference,
+  )
+
   const rememberWorkspaceComposerPreference = useCallback(
     (
       workspacePath: string,
@@ -336,8 +406,15 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       window.electronAPI
         .setWorkspaceComposerPreference(workspacePath, providerId, preference)
         .catch(() => undefined)
+      // Mirror to Convex so other devices (mobile) can read composer prefs.
+      void upsertComposerPreference({
+        workspacePath,
+        providerId,
+        ...(preference.modelId !== undefined ? { modelId: preference.modelId } : {}),
+        ...(preference.modeId !== undefined ? { modeId: preference.modeId } : {}),
+      }).catch(() => undefined)
     },
-    [],
+    [upsertComposerPreference],
   )
 
   const updateProviderComposerProfile = useCallback(
@@ -1138,6 +1215,52 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       .catch(() => undefined)
   }, [])
 
+  // Convex is the durable, cross-device source for composer profiles and
+  // preferences (the electron-store copy above is a machine-local fast path).
+  // Both subscriptions are tiny and only push when the projector actually
+  // learns something new; merges keep live in-memory state authoritative and
+  // bail out before setState when nothing changed, so no extra re-renders.
+  const composerProfileDocs = useTrackedQuery(
+    'composer.listProfiles',
+    (api as any).composer.listProfiles,
+    {},
+  ) as ProviderComposerProfileDoc[] | undefined
+  const composerPreferenceDocs = useTrackedQuery(
+    'composer.listPreferences',
+    (api as any).composer.listPreferences,
+    {},
+  ) as WorkspaceComposerPreferenceDoc[] | undefined
+
+  useEffect(() => {
+    if (!composerProfileDocs) return
+    const stored = composerProfilesFromDocs(composerProfileDocs)
+    const next = mergeProviderComposerProfiles(stored, providerComposerProfilesRef.current)
+    if (JSON.stringify(next) !== JSON.stringify(providerComposerProfilesRef.current)) {
+      providerComposerProfilesRef.current = next
+      setProviderComposerProfiles(next)
+    }
+    setAcpAgentInfoByProvider((current) => {
+      let changed = false
+      const restored = { ...current }
+      for (const [providerId, profile] of Object.entries(stored)) {
+        if (isProviderId(providerId) && profile?.agentInfo && !current[providerId]) {
+          restored[providerId] = profile.agentInfo
+          changed = true
+        }
+      }
+      return changed ? restored : current
+    })
+  }, [composerProfileDocs])
+
+  useEffect(() => {
+    if (!composerPreferenceDocs) return
+    const stored = composerPreferencesFromDocs(composerPreferenceDocs)
+    const next = mergeWorkspaceComposerPreferences(stored, workspaceComposerPreferencesRef.current)
+    if (JSON.stringify(next) === JSON.stringify(workspaceComposerPreferencesRef.current)) return
+    workspaceComposerPreferencesRef.current = next
+    setWorkspaceComposerPreferences(next)
+  }, [composerPreferenceDocs])
+
   useEffect(() => {
     window.electronAPI
       .getLastProviderId()
@@ -1281,13 +1404,17 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
                 models,
               })
               if (models.currentModelId) {
+                // Fill-only: model updates also fire when the main process
+                // restores a reopened session's own model, and that must not
+                // overwrite the workspace's last-chosen preference. Explicit
+                // user picks persist via setDraftModel/setSessionModel.
                 rememberWorkspaceComposerPreference(
                   eventWorkspacePath,
                   event.providerId,
                   {
                     modelId: models.currentModelId,
                   },
-                  event.sessionId === activeSessionId || event.sessionId === adoptedDraftSessionId,
+                  false,
                 )
               }
             }
@@ -1316,13 +1443,14 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
                 modes,
               })
               if (modes.currentModeId) {
+                // Fill-only, matching the model update handling above.
                 rememberWorkspaceComposerPreference(
                   eventWorkspacePath,
                   event.providerId,
                   {
                     modeId: modes.currentModeId,
                   },
-                  event.sessionId === activeSessionId || event.sessionId === adoptedDraftSessionId,
+                  false,
                 )
               }
             }
@@ -1415,10 +1543,27 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
     updateProviderComposerProfile,
   ])
 
-  const acpSessionState = useMemo(
-    () => (activeSessionId ? (acpSessionStateById[activeSessionId] ?? null) : null),
-    [acpSessionStateById, activeSessionId],
-  )
+  const acpSessionState = useMemo(() => {
+    if (!activeSessionId) return null
+    const runtime = acpSessionStateById[activeSessionId]
+    if (!runtime) return null
+    const preference = activeWorkspacePath
+      ? workspaceComposerPreferences[
+          workspaceComposerPreferenceKey(activeWorkspacePath, runtime.providerId)
+        ]
+      : undefined
+    return resolveSessionComposerRuntime(
+      runtime,
+      preference,
+      providerComposerProfiles[runtime.providerId],
+    )
+  }, [
+    acpSessionStateById,
+    activeSessionId,
+    activeWorkspacePath,
+    providerComposerProfiles,
+    workspaceComposerPreferences,
+  ])
 
   const draftSessionState = useMemo(() => {
     if (!activeWorkspacePath || !isSessionDraftOpen) return null

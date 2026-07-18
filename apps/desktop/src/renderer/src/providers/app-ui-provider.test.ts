@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { coordinateProviderConnection, resolveDraftComposerRuntime } from './app-ui-provider'
+import {
+  coordinateProviderConnection,
+  resolveDraftComposerRuntime,
+  resolveSessionComposerRuntime,
+} from './app-ui-provider'
 import type { ProviderComposerProfile } from '../../../shared/composer-profile'
 
 const profile: ProviderComposerProfile = {
@@ -61,6 +65,89 @@ describe('draft composer profiles', () => {
 
     expect(draft.models?.currentModelId).toBe('cursor/fast')
     expect(draft.modes?.currentModeId).toBe('plan')
+  })
+})
+
+describe('session composer resolution', () => {
+  it('shows the workspace model preference over the agent-reported global model', () => {
+    const resolved = resolveSessionComposerRuntime(
+      {
+        sessionId: 'session-1',
+        providerId: 'cursor',
+        models: {
+          currentModelId: 'cursor/default',
+          availableModels: profile.availableModels,
+        },
+      },
+      { modelId: 'cursor/fast' },
+      profile,
+    )
+
+    expect(resolved.models?.currentModelId).toBe('cursor/fast')
+    expect(resolved.models?.availableModels).toEqual(profile.availableModels)
+  })
+
+  it('lets the live runtime win for modes', () => {
+    const resolved = resolveSessionComposerRuntime(
+      {
+        sessionId: 'session-1',
+        providerId: 'cursor',
+        modes: { currentModeId: 'plan', availableModes: profile.availableModes },
+      },
+      { modeId: 'agent' },
+      profile,
+    )
+
+    expect(resolved.modes?.currentModeId).toBe('plan')
+  })
+
+  it('fills catalogs and defaults from the profile before the live session responds', () => {
+    const resolved = resolveSessionComposerRuntime(
+      { sessionId: 'session-1', providerId: 'cursor' },
+      undefined,
+      profile,
+    )
+
+    expect(resolved.models?.availableModels).toEqual(profile.availableModels)
+    expect(resolved.models?.currentModelId).toBe('cursor/default')
+    expect(resolved.modes?.currentModeId).toBe('agent')
+  })
+
+  it('falls back to the runtime selection when the preference is stale', () => {
+    const resolved = resolveSessionComposerRuntime(
+      {
+        sessionId: 'session-1',
+        providerId: 'cursor',
+        models: {
+          currentModelId: 'cursor/default',
+          availableModels: profile.availableModels,
+        },
+      },
+      { modelId: 'cursor/removed' },
+      profile,
+    )
+
+    expect(resolved.models?.currentModelId).toBe('cursor/default')
+  })
+
+  it('returns the runtime untouched when it already matches the resolution', () => {
+    const runtime = {
+      sessionId: 'session-1',
+      providerId: 'cursor' as const,
+      models: {
+        currentModelId: 'cursor/fast',
+        availableModels: profile.availableModels,
+      },
+      modes: {
+        currentModeId: 'plan',
+        availableModes: profile.availableModes,
+      },
+    }
+
+    expect(resolveSessionComposerRuntime(runtime, { modelId: 'cursor/fast' }, profile)).toBe(
+      runtime,
+    )
+    expect(resolveSessionComposerRuntime(runtime, undefined, undefined)).toBe(runtime)
   })
 })
 

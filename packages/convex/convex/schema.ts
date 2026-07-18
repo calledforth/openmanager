@@ -19,11 +19,56 @@ export default defineSchema({
     clientId: v.optional(v.string()),
     title: v.optional(v.string()),
     status: v.string(),
+    // Deprecated: model selection is provider-global (see
+    // workspace_composer_preferences), never per session. Kept optional only
+    // because existing documents still carry values.
+    modelId: v.optional(v.string()),
+    modeId: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
     .index('by_workspace', ['workspaceId'])
     .index('by_externalId', ['externalId']),
+
+  provider_profiles: defineTable({
+    providerId: v.string(),
+    agentInfo: v.optional(
+      v.object({
+        name: v.optional(v.string()),
+        version: v.optional(v.string()),
+      }),
+    ),
+    availableModels: v.optional(
+      v.array(
+        v.object({
+          modelId: v.string(),
+          name: v.string(),
+          description: v.optional(v.string()),
+          contextWindowTokens: v.optional(v.number()),
+        }),
+      ),
+    ),
+    availableModes: v.optional(
+      v.array(
+        v.object({
+          id: v.string(),
+          name: v.string(),
+          description: v.optional(v.string()),
+        }),
+      ),
+    ),
+    defaultModelId: v.optional(v.string()),
+    defaultModeId: v.optional(v.string()),
+    updatedAt: v.number(),
+  }).index('by_provider', ['providerId']),
+
+  workspace_composer_preferences: defineTable({
+    workspacePath: v.string(),
+    providerId: v.string(),
+    modelId: v.optional(v.string()),
+    modeId: v.optional(v.string()),
+    updatedAt: v.number(),
+  }).index('by_workspace_provider', ['workspacePath', 'providerId']),
 
   messages: defineTable({
     sessionId: v.id('sessions'),

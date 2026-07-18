@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  composerPreferencesFromDocs,
+  composerProfilesFromDocs,
   mergeProviderComposerProfiles,
   mergeWorkspaceComposerPreferences,
   resolveComposerChoice,
@@ -54,6 +56,42 @@ describe('composer profile resolution', () => {
       ),
     ).toEqual({
       '/repos/alpha::cursor': { modelId: 'model-a', modeId: 'plan' },
+    })
+  })
+})
+
+describe('convex document conversion', () => {
+  it('keys profiles by provider and drops unknown providers', () => {
+    const profiles = composerProfilesFromDocs([
+      {
+        providerId: 'cursor',
+        agentInfo: { name: 'Cursor', version: '1.0' },
+        availableModels: [{ modelId: 'model-a', name: 'Model A' }],
+        defaultModelId: 'model-a',
+        updatedAt: 10,
+      },
+      { providerId: 'not-a-provider', updatedAt: 5 },
+    ])
+
+    expect(Object.keys(profiles)).toEqual(['cursor'])
+    expect(profiles.cursor).toEqual({
+      agentInfo: { name: 'Cursor', version: '1.0' },
+      availableModels: [{ modelId: 'model-a', name: 'Model A' }],
+      defaultModelId: 'model-a',
+      updatedAt: 10,
+    })
+  })
+
+  it('keys preferences by workspace and provider', () => {
+    expect(
+      composerPreferencesFromDocs([
+        { workspacePath: '/repos/alpha', providerId: 'cursor', modelId: 'model-a' },
+        { workspacePath: '/repos/alpha', providerId: 'opencode', modeId: 'build' },
+        { workspacePath: '/repos/beta', providerId: 'bogus', modelId: 'model-x' },
+      ]),
+    ).toEqual({
+      '/repos/alpha::cursor': { modelId: 'model-a' },
+      '/repos/alpha::opencode': { modeId: 'build' },
     })
   })
 })

@@ -1,4 +1,4 @@
-import type { ProviderId } from '@agentpack/contract'
+import { isProviderId, type ProviderId } from '@agentpack/contract'
 
 export interface ComposerModelOption {
   modelId: string
@@ -65,6 +65,55 @@ export function mergeProviderComposerProfiles(
     } as ProviderComposerProfile
   }
   return merged
+}
+
+export interface ProviderComposerProfileDoc {
+  providerId: string
+  agentInfo?: { name?: string; version?: string }
+  availableModels?: ComposerModelOption[]
+  availableModes?: ComposerModeOption[]
+  defaultModelId?: string
+  defaultModeId?: string
+  updatedAt: number
+}
+
+export interface WorkspaceComposerPreferenceDoc {
+  workspacePath: string
+  providerId: string
+  modelId?: string
+  modeId?: string
+}
+
+export function composerProfilesFromDocs(
+  docs: ProviderComposerProfileDoc[],
+): ProviderComposerProfiles {
+  const profiles: ProviderComposerProfiles = {}
+  for (const doc of docs) {
+    if (!isProviderId(doc.providerId)) continue
+    profiles[doc.providerId] = {
+      ...(doc.agentInfo ? { agentInfo: doc.agentInfo } : {}),
+      ...(doc.availableModels?.length ? { availableModels: doc.availableModels } : {}),
+      ...(doc.availableModes?.length ? { availableModes: doc.availableModes } : {}),
+      ...(doc.defaultModelId ? { defaultModelId: doc.defaultModelId } : {}),
+      ...(doc.defaultModeId ? { defaultModeId: doc.defaultModeId } : {}),
+      updatedAt: doc.updatedAt,
+    }
+  }
+  return profiles
+}
+
+export function composerPreferencesFromDocs(
+  docs: WorkspaceComposerPreferenceDoc[],
+): WorkspaceComposerPreferences {
+  const preferences: WorkspaceComposerPreferences = {}
+  for (const doc of docs) {
+    if (!isProviderId(doc.providerId)) continue
+    preferences[workspaceComposerPreferenceKey(doc.workspacePath, doc.providerId)] = {
+      ...(doc.modelId ? { modelId: doc.modelId } : {}),
+      ...(doc.modeId ? { modeId: doc.modeId } : {}),
+    }
+  }
+  return preferences
 }
 
 export function mergeWorkspaceComposerPreferences(
