@@ -265,6 +265,7 @@ export class JobWorker {
             workspacePath: parsed.workspacePath,
             externalId: session.sessionId,
             status: 'idle',
+            providerId,
             title: parsed.title,
             clientId: this.clientId,
           })
@@ -306,6 +307,7 @@ export class JobWorker {
             workspacePath: parsed.workspacePath,
             externalId: session.sessionId,
             status: 'idle',
+            providerId,
             title: parsed.title,
             clientId: this.clientId,
           })
