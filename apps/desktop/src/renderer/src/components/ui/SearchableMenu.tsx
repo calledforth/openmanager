@@ -192,7 +192,7 @@ export function SearchableMenu({
                   setActiveIndex(0)
                 }}
                 placeholder={searchPlaceholder}
-                className="min-w-0 flex-1 bg-transparent text-11-regular text-[var(--basis-text)] outline-none placeholder:text-[var(--basis-text-faint)]"
+                className="min-w-0 flex-1 bg-transparent text-[11px] font-normal leading-[var(--lh-default)] tracking-[var(--tracking-normal)] text-[var(--basis-text)] outline-none [font-variation-settings:'wght'_450] placeholder:text-[var(--basis-text-muted)]"
               />
             </div>
           </div>

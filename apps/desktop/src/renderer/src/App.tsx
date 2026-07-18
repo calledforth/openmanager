@@ -11,6 +11,7 @@ import { FloatingChatComposer } from './components/chat/FloatingChatComposer'
 import { ConvexTelemetryPanel } from './components/telemetry/ConvexTelemetryPanel'
 import { ChatSectionHeader } from './components/chat/ChatSectionHeader'
 import { AppChrome } from './components/shell/AppChrome'
+import { UpdateNotification } from './components/updates/UpdateNotification'
 
 function AppShell() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true)
@@ -36,6 +37,7 @@ function AppShell() {
         </FloatingChatComposer>
       </div>
       <ConvexTelemetryPanel open={convexOpen} onOpenChange={setConvexOpen} />
+      <UpdateNotification />
     </div>
   )
 }

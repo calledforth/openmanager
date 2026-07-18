@@ -12,15 +12,37 @@ const data: SidebarWorkspace[] = [
     path: '/workspace/openmanager',
     name: 'openmanager',
     sessions: [
-      { externalId: 'sess-001', title: 'UI polish for timeline', status: 'idle' },
-      { externalId: 'sess-002', title: 'Streaming bug fix', status: 'running' },
-      { externalId: 'sess-003', title: 'Permission flow QA', status: 'busy' },
+      {
+        externalId: 'sess-001',
+        title: 'UI polish for timeline',
+        status: 'idle',
+        providerId: 'opencode',
+      },
+      {
+        externalId: 'sess-002',
+        title: 'Streaming bug fix',
+        status: 'running',
+        providerId: 'cursor',
+      },
+      {
+        externalId: 'sess-003',
+        title: 'Permission flow QA',
+        status: 'busy',
+        providerId: 'opencode',
+      },
     ],
   },
   {
     path: '/workspace/opencode.ref',
     name: 'opencode.ref',
-    sessions: [{ externalId: 'sess-101', title: 'Storybook docs', status: 'waiting' }],
+    sessions: [
+      {
+        externalId: 'sess-101',
+        title: 'Storybook docs',
+        status: 'waiting',
+        providerId: 'cursor',
+      },
+    ],
   },
 ]
 
@@ -56,7 +78,6 @@ function Demo({ collapsed }: { collapsed: boolean }) {
             onCreateSession={() => undefined}
             onSelectSession={(_, id) => setActiveSessionId(id)}
             onDeleteSession={() => undefined}
-            onRemoveWorkspace={() => undefined}
             onAddWorkspace={() => undefined}
           />
         </div>
