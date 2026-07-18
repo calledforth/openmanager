@@ -15,7 +15,6 @@ export function WorkspaceSidebar({
     activeWorkspacePath,
     activeSessionId,
     addWorkspace,
-    removeWorkspace,
     selectSession,
     createSession,
     deleteSession,
@@ -62,7 +61,6 @@ export function WorkspaceSidebar({
       onDeleteSession={(workspacePath, externalId, providerId) =>
         void deleteSession(workspacePath, externalId, providerId)
       }
-      onRemoveWorkspace={(path) => void removeWorkspace(path)}
       onAddWorkspace={() => void addWorkspace()}
     />
   )

@@ -694,7 +694,6 @@ function Demo() {
             onCreateSession={() => undefined}
             onSelectSession={() => undefined}
             onDeleteSession={() => undefined}
-            onRemoveWorkspace={() => undefined}
             onAddWorkspace={() => undefined}
           />
 

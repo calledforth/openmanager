@@ -1,14 +1,15 @@
 import {
-  ChatIcon,
   PlusIcon,
-  CaretDownIcon,
   CaretDoubleLeftIcon,
   FolderPlusIcon,
+  FolderSimpleIcon,
+  FolderOpenIcon,
   TrashIcon,
 } from '@phosphor-icons/react'
 import type { ProviderId } from '@agentpack/contract'
 import { cn } from '../../lib/utils'
 import { typographyBodySm, typographyLabel } from '../../lib/typography'
+import { ProviderIcon } from '../providers/ProviderIcon'
 import { SidebarSettingsMenu } from './SidebarSettingsMenu'
 
 export interface SidebarWorkspace {
@@ -33,7 +34,6 @@ export function WorkspaceSidebarView({
   onCreateSession,
   onSelectSession,
   onDeleteSession,
-  onRemoveWorkspace,
   onAddWorkspace,
 }: {
   collapsed: boolean
@@ -46,10 +46,10 @@ export function WorkspaceSidebarView({
   onCreateSession: (workspacePath: string) => void
   onSelectSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
   onDeleteSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
-  onRemoveWorkspace: (path: string) => void
   onAddWorkspace: () => void
 }) {
   const collapsedSet = new Set(collapsedWorkspacePaths)
+  const newThreadTarget = activeWorkspacePath ?? workspaces[0]?.path ?? null
 
   return (
     <aside
@@ -74,25 +74,43 @@ export function WorkspaceSidebarView({
           )}
         </div>
 
-        <div className="px-2 pb-2">
+        <div className="px-1.5 pb-1">
           <button
             type="button"
-            onClick={onAddWorkspace}
+            disabled={!newThreadTarget}
+            onClick={() => {
+              if (newThreadTarget) onCreateSession(newThreadTarget)
+            }}
             className={cn(
               typographyBodySm,
-              'flex w-full items-center gap-2 rounded-[var(--basis-chat-shell-radius)] px-2 py-1.5 text-[var(--basis-text-muted)] transition-default hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
+              'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[var(--basis-text)] transition-default hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-40',
             )}
           >
-            <FolderPlusIcon className="h-3.5 w-3.5 shrink-0" />
-            <span>Add repository</span>
+            <PlusIcon className="h-3.5 w-3.5 shrink-0" weight="bold" />
+            <span>New Thread</span>
           </button>
         </div>
 
-        {/* Workspace list */}
+        <div className="flex items-center gap-1 px-3 pb-1.5 pt-1">
+          <span className={cn(typographyBodySm, 'min-w-0 flex-1 text-[var(--basis-text-muted)]')}>
+            Projects
+          </span>
+          <button
+            type="button"
+            onClick={onAddWorkspace}
+            title="Add project"
+            aria-label="Add project"
+            className="flex h-6 w-6 items-center justify-center rounded text-[var(--basis-text-muted)] transition-default hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]"
+          >
+            <FolderPlusIcon className="h-5 w-5" weight="regular" />
+          </button>
+        </div>
+
+        {/* Project list */}
         <div className="flex-1 overflow-y-auto px-1.5 pb-3">
           {workspaces.length === 0 && (
             <div className={cn(typographyBodySm, 'px-3 py-5 text-center text-muted-foreground')}>
-              No workspaces yet
+              No projects yet
             </div>
           )}
           {workspaces.map((ws) => (
@@ -106,7 +124,6 @@ export function WorkspaceSidebarView({
               onSelectSession={onSelectSession}
               onCreateSession={onCreateSession}
               onDeleteSession={onDeleteSession}
-              onRemove={() => onRemoveWorkspace(ws.path)}
             />
           ))}
         </div>
@@ -129,7 +146,6 @@ function WorkspaceGroup({
   onSelectSession,
   onCreateSession,
   onDeleteSession,
-  onRemove,
 }: {
   workspace: SidebarWorkspace
   isActiveWorkspace: boolean
@@ -139,15 +155,16 @@ function WorkspaceGroup({
   onSelectSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
   onCreateSession: (workspacePath: string) => void
   onDeleteSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
-  onRemove: () => void
 }) {
+  const FolderIcon = isCollapsed ? FolderSimpleIcon : FolderOpenIcon
+
   return (
     <div className="mb-1">
-      {/* Workspace header row */}
+      {/* Project header row */}
       <div
         className={cn(
           typographyBodySm,
-          'group flex w-full items-center gap-1.5 rounded-md px-2 py-1 font-medium text-muted-foreground transition-default hover:bg-surface-hover hover:text-foreground',
+          'group flex w-full items-center gap-1 rounded-md px-2 py-1 font-medium text-[var(--basis-text-muted)] transition-default hover:bg-surface-hover hover:text-[var(--basis-text)]',
         )}
       >
         <button
@@ -155,44 +172,30 @@ function WorkspaceGroup({
           onClick={onToggleCollapse}
           className="flex min-w-0 flex-1 items-center gap-1.5"
         >
-          <CaretDownIcon
-            className={cn(
-              'h-3 w-3 shrink-0 transition-transform duration-150',
-              isCollapsed && '-rotate-90',
-            )}
-          />
+          <FolderIcon className="h-3.5 w-3.5 shrink-0" weight="regular" />
           <span className="flex-1 truncate text-left">{workspace.name}</span>
         </button>
         <button
           type="button"
           onClick={(e) => {
             e.stopPropagation()
-            onRemove()
+            onCreateSession(workspace.path)
           }}
-          className="rounded p-0.5 text-muted-foreground/50 opacity-0 group-hover:opacity-100 hover:text-foreground transition-default"
+          title="New Thread"
+          aria-label="New Thread"
+          className="flex h-5 w-0 shrink-0 items-center justify-center overflow-hidden rounded text-[var(--basis-text-muted)] opacity-0 transition-[width,opacity] group-hover:w-5 group-hover:opacity-100 hover:bg-[var(--basis-surface)] hover:text-[var(--basis-text)]"
         >
-          <TrashIcon className="h-3 w-3" />
+          <PlusIcon className="h-3.5 w-3.5" weight="bold" />
         </button>
       </div>
 
       {!isCollapsed && (
         <div className="ml-1">
-          {/* New session row */}
-          <button
-            onClick={() => onCreateSession(workspace.path)}
-            className={cn(
-              typographyLabel,
-              'flex w-full items-center gap-2 rounded-md px-3 py-1 font-normal text-muted-foreground/60 transition-default hover:bg-surface-hover hover:text-foreground',
-            )}
-          >
-            <PlusIcon className="h-3 w-3 shrink-0" />
-            <span>New session</span>
-          </button>
-
-          {/* Session rows */}
           {workspace.sessions.map((s) => {
             const isActive = isActiveWorkspace && s.externalId === activeSessionId
             const providerId = s.providerId ?? 'opencode'
+            const isBusy =
+              s.status === 'running' || s.status === 'busy' || s.status === 'waiting'
             return (
               <button
                 key={s.externalId}
@@ -200,27 +203,35 @@ function WorkspaceGroup({
                 className={cn(
                   'group flex w-full items-center gap-2 rounded-md px-2.5 py-1 mb-[1px] text-left transition-default',
                   isActive
-                    ? 'bg-surface-active text-foreground'
-                    : 'text-sidebar-foreground hover:bg-surface-hover hover:text-foreground',
+                    ? 'bg-surface-active text-[var(--basis-text)]'
+                    : 'text-[var(--basis-text)] hover:bg-surface-hover',
                 )}
               >
-                {s.status === 'running' || s.status === 'busy' || s.status === 'waiting' ? (
-                  <span className="custom-loader text-primary shrink-0 !w-3 !h-3 !border-2" />
-                ) : (
-                  <ChatIcon className="h-3 w-3 shrink-0 text-muted-foreground/40" />
-                )}
+                <ProviderIcon providerId={providerId} className="h-3 w-3 opacity-70" />
                 <span className={cn(typographyLabel, 'flex-1 truncate font-normal')}>
                   {s.title || s.externalId.slice(0, 10)}
                 </span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onDeleteSession(workspace.path, s.externalId, providerId)
-                  }}
-                  className="shrink-0 rounded p-1 text-muted-foreground/30 opacity-0 transition-default group-hover:opacity-100 hover:text-red-400 hover:bg-red-400/10"
+                <span
+                  className={cn(
+                    'relative flex h-4 shrink-0 items-center justify-center overflow-hidden transition-[width]',
+                    isBusy ? 'w-4' : 'w-0 group-hover:w-4',
+                  )}
                 >
-                  <TrashIcon className="h-3 w-3" />
-                </button>
+                  {isBusy && (
+                    <span className="custom-loader shrink-0 !h-3 !w-3 !border-2 text-[var(--basis-text)] transition-opacity group-hover:opacity-0" />
+                  )}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onDeleteSession(workspace.path, s.externalId, providerId)
+                    }}
+                    className="absolute inset-0 flex items-center justify-center rounded text-muted-foreground opacity-0 transition-default group-hover:opacity-100 hover:bg-red-400/10 hover:text-red-400"
+                    aria-label="Delete session"
+                  >
+                    <TrashIcon className="h-3 w-3" />
+                  </button>
+                </span>
               </button>
             )
           })}

@@ -12,6 +12,7 @@ import type {
   WorkspaceComposerPreference,
   WorkspaceComposerPreferences,
 } from '../shared/composer-profile'
+import type { AppUpdateEvent } from '../shared/app-update'
 
 const electronAPI = {
   platform: process.platform as NodeJS.Platform,
@@ -98,6 +99,12 @@ const electronAPI = {
     ipcRenderer.on('acp:event', handler)
     return () => ipcRenderer.removeListener('acp:event', handler)
   },
+  onAppUpdate: (callback: (data: AppUpdateEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: AppUpdateEvent) => callback(data)
+    ipcRenderer.on('updater:event', handler)
+    return () => ipcRenderer.removeListener('updater:event', handler)
+  },
+  quitAndInstallUpdate: () => ipcRenderer.invoke('updater:quit-and-install') as Promise<void>,
 }
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI)

@@ -12,6 +12,7 @@ import type {
   WorkspaceComposerPreference,
   WorkspaceComposerPreferences,
 } from '../../shared/composer-profile'
+import type { AppUpdateEvent } from '../../shared/app-update'
 
 interface ElectronAPI {
   platform: NodeJS.Platform
@@ -61,6 +62,8 @@ interface ElectronAPI {
   onStreamToken: (callback: (data: AgentEvent) => void) => () => void
   onTelemetryUpdate: (callback: (data: unknown) => void) => () => void
   onAcpEvent: (callback: (data: AgentEvent) => void) => () => void
+  onAppUpdate: (callback: (data: AppUpdateEvent) => void) => () => void
+  quitAndInstallUpdate: () => Promise<void>
 }
 
 declare global {
