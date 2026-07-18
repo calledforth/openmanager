@@ -2,7 +2,13 @@ import { useState, useEffect, useCallback } from 'react'
 import { useSidebarData } from '../../providers/sidebar-data-provider'
 import { WorkspaceSidebarView } from './WorkspaceSidebarView'
 
-export function WorkspaceSidebar({ collapsed }: { collapsed: boolean }) {
+export function WorkspaceSidebar({
+  collapsed,
+  onCollapse,
+}: {
+  collapsed: boolean
+  onCollapse: () => void
+}) {
   const {
     workspaces,
     sessionsByWorkspace,
@@ -50,6 +56,7 @@ export function WorkspaceSidebar({ collapsed }: { collapsed: boolean }) {
       activeSessionId={activeSessionId}
       collapsedWorkspacePaths={[...collapsedSet]}
       onToggleWorkspaceCollapse={toggleWorkspaceCollapse}
+      onCollapse={onCollapse}
       onCreateSession={(workspacePath) => void createSession(workspacePath)}
       onSelectSession={selectSession}
       onDeleteSession={(workspacePath, externalId, providerId) =>

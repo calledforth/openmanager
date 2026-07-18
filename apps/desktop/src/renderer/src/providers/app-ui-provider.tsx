@@ -277,9 +277,10 @@ interface AppUiValue {
     permissionId: string,
     approved: boolean,
   ) => Promise<void>
+  providerComposerProfiles: ProviderComposerProfiles
   setDraftModel: (modelId: string) => void
   setDraftMode: (modeId: string) => void
-  setDraftProvider: (providerId: ProviderId) => void
+  setDraftProvider: (providerId: ProviderId, modelId?: string) => void
   setSessionModel: (sessionExternalId: string, modelId: string) => Promise<void>
   setSessionMode: (sessionExternalId: string, modeId: string) => Promise<void>
 }
@@ -955,29 +956,32 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
   )
 
   const setDraftProvider = useCallback(
-    (providerId: ProviderId) => {
+    (providerId: ProviderId, modelId?: string) => {
       if (!activeWorkspacePath) return
       setDefaultProviderId(providerId)
       // Preference persistence is best-effort.
       window.electronAPI.setLastProviderId(providerId).catch(() => undefined)
+      if (modelId) {
+        rememberWorkspaceComposerPreference(activeWorkspacePath, providerId, { modelId })
+      }
       const workspaceRuntime = draftSessionStateByWorkspace[activeWorkspacePath]
       const resolvedDraft = resolveDraftComposerRuntime({
         workspacePath: activeWorkspacePath,
         providerId,
         runtime: workspaceRuntime?.providerId === providerId ? workspaceRuntime : undefined,
+        selection: modelId ? { providerId, modelId } : undefined,
         preference:
           workspaceComposerPreferencesRef.current[
             workspaceComposerPreferenceKey(activeWorkspacePath, providerId)
           ],
         profile: providerComposerProfilesRef.current[providerId],
       })
+      const nextModelId = modelId ?? resolvedDraft.models?.currentModelId
       setDraftSelectionByWorkspace((prev) => ({
         ...prev,
         [activeWorkspacePath]: {
           providerId,
-          ...(resolvedDraft.models?.currentModelId
-            ? { modelId: resolvedDraft.models.currentModelId }
-            : {}),
+          ...(nextModelId ? { modelId: nextModelId } : {}),
           ...(resolvedDraft.modes?.currentModeId
             ? { modeId: resolvedDraft.modes.currentModeId }
             : {}),
@@ -987,7 +991,14 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         ...prev,
         [activeWorkspacePath]: {
           providerId,
-          ...(resolvedDraft.models ? { models: resolvedDraft.models } : {}),
+          ...(resolvedDraft.models || nextModelId
+            ? {
+                models: {
+                  ...(resolvedDraft.models ?? {}),
+                  ...(nextModelId ? { currentModelId: nextModelId } : {}),
+                },
+              }
+            : {}),
           ...(resolvedDraft.modes ? { modes: resolvedDraft.modes } : {}),
           ...(resolvedDraft.availableCommands
             ? { availableCommands: resolvedDraft.availableCommands }
@@ -996,7 +1007,12 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       }))
       void ensureProvider(providerId, activeWorkspacePath)
     },
-    [activeWorkspacePath, draftSessionStateByWorkspace, ensureProvider],
+    [
+      activeWorkspacePath,
+      draftSessionStateByWorkspace,
+      ensureProvider,
+      rememberWorkspaceComposerPreference,
+    ],
   )
 
   const abortSession = useCallback(
@@ -1611,6 +1627,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       draftSessionState,
       error,
       retryProvider,
+      providerComposerProfiles,
       setActiveWorkspacePath,
       setActiveSessionId,
       addWorkspace,
@@ -1646,6 +1663,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       draftSessionState,
       error,
       retryProvider,
+      providerComposerProfiles,
       addWorkspace,
       removeWorkspace,
       selectSession,

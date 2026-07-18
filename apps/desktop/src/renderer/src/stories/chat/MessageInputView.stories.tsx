@@ -1,11 +1,21 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { MessageInputView } from '../../components/chat/MessageInputView'
+import { ThemeProvider } from '../../providers/theme-provider'
 
 const meta = {
   title: 'App/MessageInputView',
   component: MessageInputView,
   parameters: { layout: 'fullscreen' },
   tags: ['autodocs'],
+  decorators: [
+    (Story) => (
+      <ThemeProvider>
+        <div className="bg-[var(--basis-canvas-bg)] p-6">
+          <Story />
+        </div>
+      </ThemeProvider>
+    ),
+  ],
   args: {
     disabled: false,
     pendingDraftSessionStart: false,
@@ -13,35 +23,42 @@ const meta = {
     activeSessionId: 'sess-001',
     isSessionDraftOpen: false,
     providerReady: true,
-    providerOptions: [
-      { id: 'opencode', name: 'OpenCode' },
-      { id: 'cursor', name: 'Cursor' },
-    ],
     currentProviderId: 'opencode',
-    currentProviderName: 'OpenCode',
+    providerModelGroups: [
+      {
+        providerId: 'opencode',
+        providerName: 'OpenCode',
+        models: [
+          { id: 'gpt-5.1', name: 'GPT-5.1' },
+          { id: 'claude-sonnet', name: 'Claude Sonnet' },
+        ],
+      },
+      {
+        providerId: 'cursor',
+        providerName: 'Cursor',
+        models: [
+          { id: 'cursor/default', name: 'Default' },
+          { id: 'cursor/fast', name: 'Fast' },
+        ],
+      },
+    ],
+    currentModelId: 'gpt-5.1',
     modeOptions: [
       { id: 'default', name: 'Default' },
       { id: 'plan', name: 'Plan' },
       { id: 'debug', name: 'Debug' },
     ],
     currentModeId: 'default',
-    modelOptions: [
-      { id: 'gpt-5.1', name: 'GPT-5.1' },
-      { id: 'claude-sonnet', name: 'Claude Sonnet' },
-    ],
-    currentModelId: 'gpt-5.1',
     canChangeSettings: true,
-    canChangeProvider: false,
+    canChangeProvider: true,
     showModeControl: true,
     showModelControl: true,
-    agent: { name: 'OpenCode', version: '1.7.0' },
     isStreaming: false,
     draftKey: 'session:sess-001',
     imageUploadEnabled: true,
     imageSupportMessage: null,
     onModeChange: () => undefined,
-    onProviderChange: () => undefined,
-    onModelChange: () => undefined,
+    onProviderModelChange: () => undefined,
     onSend: async () => undefined,
     onAbort: () => undefined,
   },

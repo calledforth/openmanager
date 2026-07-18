@@ -712,12 +712,6 @@ function Demo() {
                           isFinal={msg.isFinal}
                           content={msg.content}
                           parts={msg.parts}
-                          runtime={{
-                            providerId: 'anthropic',
-                            modelId,
-                            modeId,
-                            tokens: { total: 1200 + messages.length * 33 },
-                          }}
                         />
                       ),
                     )}
@@ -801,36 +795,43 @@ function Demo() {
                   activeSessionId="sess-1"
                   isSessionDraftOpen={false}
                   providerReady={status === 'connected'}
-                  providerOptions={[
-                    { id: 'opencode', name: 'OpenCode' },
-                    { id: 'cursor', name: 'Cursor' },
-                  ]}
                   currentProviderId="opencode"
-                  currentProviderName="OpenCode"
+                  providerModelGroups={[
+                    {
+                      providerId: 'opencode',
+                      providerName: 'OpenCode',
+                      models: [
+                        { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5' },
+                        { id: 'claude-opus-4', name: 'Claude Opus 4' },
+                        { id: 'gpt-5.1', name: 'GPT-5.1' },
+                      ],
+                    },
+                    {
+                      providerId: 'cursor',
+                      providerName: 'Cursor',
+                      models: [
+                        { id: 'cursor/default', name: 'Default' },
+                        { id: 'cursor/fast', name: 'Fast' },
+                      ],
+                    },
+                  ]}
+                  currentModelId={modelId}
                   modeOptions={[
                     { id: 'default', name: 'Default' },
                     { id: 'plan', name: 'Plan' },
                     { id: 'debug', name: 'Debug' },
                   ]}
                   currentModeId={modeId}
-                  modelOptions={[
-                    { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5' },
-                    { id: 'claude-opus-4', name: 'Claude Opus 4' },
-                    { id: 'gpt-5.1', name: 'GPT-5.1' },
-                  ]}
-                  currentModelId={modelId}
                   canChangeSettings={true}
-                  canChangeProvider={false}
+                  canChangeProvider={true}
                   showModeControl={true}
                   showModelControl={true}
-                  agent={{ name: 'OpenCode', version: '1.7.0' }}
                   isStreaming={false}
                   draftKey="playground"
                   imageUploadEnabled={true}
                   imageSupportMessage={null}
                   onModeChange={setModeId}
-                  onProviderChange={() => {}}
-                  onModelChange={setModelId}
+                  onProviderModelChange={(_providerId, nextModelId) => setModelId(nextModelId)}
                   onSend={async (prompt) => startStream(prompt, preset)}
                   onAbort={() => {}}
                 />

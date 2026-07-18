@@ -7,7 +7,6 @@ import {
   ChatLoadingSkeleton,
   ChatViewPanel,
   UserMessage,
-  type RuntimeMetadata,
 } from './ChatViewPrimitives'
 import { trackedConvexQuery, useTrackedQuery } from '../../lib/convex-telemetry'
 import {
@@ -91,7 +90,7 @@ export function ChatView() {
         onScroll={handleScroll}
         className="custom-scrollbar flex-1 min-h-0 overflow-x-hidden overflow-y-auto"
       >
-        <div className="mx-auto max-w-3xl space-y-1 px-4 pt-2 pb-44">
+        <div className="mx-auto max-w-[52rem] space-y-1 px-4 pt-2 pb-44">
           <ConversationTimeline
             sessionId={activeSessionId}
             messages={chatMessages}
@@ -465,8 +464,6 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
   )
 
   const finalizedParts = (contentDoc?.metadata as { parts?: MessagePart[] } | undefined)?.parts
-  const runtimeMetadata = (contentDoc?.metadata as { runtime?: RuntimeMetadata } | undefined)
-    ?.runtime
   const drivenStreamingMessage = localStreamingMessage
 
   // Cache last-known streaming parts so the isFinal transition doesn't flash empty
@@ -529,17 +526,11 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
         parts={parts}
         optimisticAttachments={props.optimisticAttachments}
         sendError={optimisticJob?.status === 'failed' ? optimisticJob.lastError : undefined}
-        runtime={runtimeMetadata}
       />
     )
   }
 
   return (
-    <AssistantMessage
-      content={content}
-      isFinal={props.isFinal}
-      parts={parts}
-      runtime={runtimeMetadata}
-    />
+    <AssistantMessage content={content} isFinal={props.isFinal} parts={parts} />
   )
 })

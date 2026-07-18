@@ -1,39 +1,39 @@
 import {
-  ClipboardList,
-  Download,
-  FileEdit,
-  FilePlus,
-  FileSearch,
-  FolderSearch,
-  Globe,
-  ListTodo,
-  MessageSquare,
-  Search,
-  Terminal,
-  Wrench,
-  type LucideIcon,
-} from 'lucide-react-native'
+  ClipboardTextIcon,
+  DownloadSimpleIcon,
+  NotePencilIcon,
+  FilePlusIcon,
+  FileMagnifyingGlassIcon,
+  FoldersIcon,
+  GlobeIcon,
+  ListChecksIcon,
+  ChatIcon,
+  MagnifyingGlassIcon,
+  TerminalIcon,
+  WrenchIcon,
+  type Icon,
+} from 'phosphor-react-native'
 import { canonicalizeToolName } from '@openmanager/shared/lib/tool-meta'
 
-// lucide-react-native equivalents of the desktop `ToolRegistry` icon map. Kept
+// Phosphor equivalents of the desktop `ToolRegistry` icon map. Kept
 // 1:1 with apps/desktop/.../components/parts/ToolRegistry.ts so the two clients
 // present the same glyph per tool.
 
-const TOOL_ICONS: Record<string, LucideIcon> = {
-  Bash: Terminal,
-  Edit: FileEdit,
-  Write: FilePlus,
-  MultiEdit: FileEdit,
-  Read: FileSearch,
-  Grep: Search,
-  Glob: FolderSearch,
-  WebSearch: Globe,
-  WebFetch: Download,
-  TodoWrite: ListTodo,
-  Task: ClipboardList,
-  AskUserQuestion: MessageSquare,
+const TOOL_ICONS: Record<string, Icon> = {
+  Bash: TerminalIcon,
+  Edit: NotePencilIcon,
+  Write: FilePlusIcon,
+  MultiEdit: NotePencilIcon,
+  Read: FileMagnifyingGlassIcon,
+  Grep: MagnifyingGlassIcon,
+  Glob: FoldersIcon,
+  WebSearch: GlobeIcon,
+  WebFetch: DownloadSimpleIcon,
+  TodoWrite: ListChecksIcon,
+  Task: ClipboardTextIcon,
+  AskUserQuestion: ChatIcon,
 }
 
-export function getToolIcon(toolName: string): LucideIcon {
-  return TOOL_ICONS[canonicalizeToolName(toolName)] ?? Wrench
+export function getToolIcon(toolName: string): Icon {
+  return TOOL_ICONS[canonicalizeToolName(toolName)] ?? WrenchIcon
 }

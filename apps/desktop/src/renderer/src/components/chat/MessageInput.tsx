@@ -16,7 +16,6 @@ export function MessageInput() {
     localSessionStatus,
     acpSessionState,
     draftSessionState,
-    acpAgentInfoByProvider,
     setDraftModel,
     setDraftMode,
     setDraftProvider,
@@ -26,6 +25,7 @@ export function MessageInput() {
     defaultProviderId,
     agentEvents,
     providers,
+    providerComposerProfiles,
     currentClientId,
     acpPromptCapabilitiesByProvider,
   } = useAppUi()
@@ -85,6 +85,20 @@ export function MessageInput() {
     chrome.modelPicker?.currentModelId ??
     modelOptions[0]?.id ??
     ''
+  const providerModelGroups = providerOptions.map((provider) => {
+    const models =
+      provider.id === currentProviderId
+        ? modelOptions
+        : (providerComposerProfiles[provider.id]?.availableModels ?? []).map((model) => ({
+            id: model.modelId,
+            name: model.name,
+          }))
+    return {
+      providerId: provider.id,
+      providerName: provider.name,
+      models,
+    }
+  })
   const canChangeSettings = !!activeSessionId || isSessionDraftOpen
   const effectiveStatus = localSessionStatus ?? activeSession?.status
   const isStreaming = effectiveStatus === 'running' || effectiveStatus === 'busy'
@@ -177,18 +191,19 @@ export function MessageInput() {
       activeSessionId={activeSessionId}
       isSessionDraftOpen={isSessionDraftOpen}
       providerReady={providerReady}
-      providerOptions={providerOptions}
       currentProviderId={currentProviderId}
-      currentProviderName={currentProviderName}
+      providerModelGroups={providerModelGroups}
+      currentModelId={currentModelId}
       modeOptions={modeOptions}
       currentModeId={currentModeId}
-      modelOptions={modelOptions}
-      currentModelId={currentModelId}
       canChangeSettings={canChangeSettings}
       canChangeProvider={isSessionDraftOpen && !activeSessionId}
       showModeControl={chrome.modePicker !== null || modeOptions.length > 0}
-      showModelControl={chrome.modelPicker !== null || modelOptions.length > 0}
-      agent={acpAgentInfoByProvider[currentProviderId] ?? null}
+      showModelControl={
+        chrome.modelPicker !== null ||
+        modelOptions.length > 0 ||
+        providerModelGroups.some((group) => group.models.length > 0)
+      }
       isStreaming={isStreaming}
       draftKey={draftKey}
       imageUploadEnabled={
@@ -202,13 +217,18 @@ export function MessageInput() {
         }
         setDraftMode(id)
       }}
-      onProviderChange={setDraftProvider}
-      onModelChange={(id) => {
+      onProviderModelChange={(providerId, modelId) => {
         if (activeSessionId) {
-          void setSessionModel(activeSessionId, id)
+          if (providerId === currentProviderId) {
+            void setSessionModel(activeSessionId, modelId)
+          }
           return
         }
-        setDraftModel(id)
+        if (providerId !== currentProviderId) {
+          setDraftProvider(providerId, modelId)
+          return
+        }
+        setDraftModel(modelId)
       }}
       onSend={uploadAndSend}
       onAbort={() => {

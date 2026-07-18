@@ -17,22 +17,25 @@ function AppShell() {
   const [convexOpen, setConvexOpen] = useState(false)
 
   return (
-    <div className="flex h-screen w-screen min-w-0 flex-col overflow-hidden bg-[var(--basis-canvas-bg)] text-[var(--basis-text)]">
-      <AppChrome convexOpen={convexOpen} onToggleConvex={() => setConvexOpen((v) => !v)} />
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        <WorkspaceSidebar collapsed={sidebarCollapsed} />
-        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--basis-canvas-bg)]">
-          <ChatSectionHeader
-            sidebarCollapsed={sidebarCollapsed}
-            onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
-          />
-          <ChatView />
-          <FloatingChatComposer>
-            <MessageInput />
-          </FloatingChatComposer>
-        </div>
-        <ConvexTelemetryPanel open={convexOpen} onOpenChange={setConvexOpen} />
+    <div className="flex h-screen w-screen min-w-0 overflow-hidden bg-[var(--basis-canvas-bg)] text-[var(--basis-text)]">
+      <WorkspaceSidebar
+        collapsed={sidebarCollapsed}
+        onCollapse={() => setSidebarCollapsed(true)}
+      />
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--basis-canvas-bg)]">
+        <AppChrome
+          sidebarCollapsed={sidebarCollapsed}
+          onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
+          convexOpen={convexOpen}
+          onToggleConvex={() => setConvexOpen((v) => !v)}
+        />
+        <ChatSectionHeader />
+        <ChatView />
+        <FloatingChatComposer>
+          <MessageInput />
+        </FloatingChatComposer>
       </div>
+      <ConvexTelemetryPanel open={convexOpen} onOpenChange={setConvexOpen} />
     </div>
   )
 }
