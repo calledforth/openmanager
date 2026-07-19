@@ -46,7 +46,7 @@ export function PermissionStateProvider({ children }: { children: ReactNode }) {
   const ui = useAppUi()
   const pendingPermission = (useTrackedQuery(
     'permissions.getPendingForSession',
-    (api as any).permissions.getPendingForSession,
+    api.permissions.getPendingForSession,
     ui.activeSessionId ? { sessionExternalId: ui.activeSessionId } : 'skip',
   ) as PendingPermission | null | undefined) ?? null
 
@@ -59,10 +59,13 @@ export function PermissionStateProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const resolvePermission = async (selection: PermissionSelection) => {
-    if (!ui.activeSessionId || !pendingPermission) return
-    await ui.resolvePermission(ui.activeSessionId, pendingPermission.requestId, selection)
-  }
+  const resolvePermission = useCallback(
+    async (selection: PermissionSelection) => {
+      if (!ui.activeSessionId || !pendingPermission) return
+      await ui.resolvePermission(ui.activeSessionId, pendingPermission.requestId, selection)
+    },
+    [ui, pendingPermission],
+  )
 
   const isPermissionClaimed =
     pendingPermission != null && claimedRequestId === pendingPermission.requestId
@@ -75,7 +78,13 @@ export function PermissionStateProvider({ children }: { children: ReactNode }) {
       claimPermission,
       resolvePermission,
     }),
-    [ui.activeSessionId, pendingPermission, isPermissionClaimed, claimPermission],
+    [
+      ui.activeSessionId,
+      pendingPermission,
+      isPermissionClaimed,
+      claimPermission,
+      resolvePermission,
+    ],
   )
 
   return <PermissionStateContext.Provider value={value}>{children}</PermissionStateContext.Provider>

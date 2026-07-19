@@ -114,7 +114,7 @@ export class ConvexProjector {
 
   resolvePermission(threadId: string, requestId: string): void {
     this.enqueue(threadId, () =>
-      this.runMutation('permissions.resolve', (api as any).permissions.resolve, { requestId }),
+      this.runMutation('permissions.resolve', api.permissions.resolve, { requestId }),
     )
   }
 
@@ -148,10 +148,10 @@ export class ConvexProjector {
         if (workspacePath)
           await this.upsertSession(workspacePath, event.sessionId, 'idle', event.providerId)
         // Any permission/question that was pending before this (re)start died with its broker.
-        await this.runMutation('permissions.clearForSession', (api as any).permissions.clearForSession, {
+        await this.runMutation('permissions.clearForSession', api.permissions.clearForSession, {
           sessionExternalId: event.sessionId,
         })
-        await this.runMutation('questions.clearForSession', (api as any).questions.clearForSession, {
+        await this.runMutation('questions.clearForSession', api.questions.clearForSession, {
           sessionExternalId: event.sessionId,
         })
         await this.upsertProviderProfile(event.providerId, {
@@ -199,12 +199,12 @@ export class ConvexProjector {
         await this.upsertPermission(event.data)
         return
       case 'permission_resolved':
-        await this.runMutation('permissions.resolve', (api as any).permissions.resolve, {
+        await this.runMutation('permissions.resolve', api.permissions.resolve, {
           requestId: event.data.requestId,
         })
         return
       case 'question_request':
-        await this.runMutation('questions.upsertPending', (api as any).questions.upsertPending, {
+        await this.runMutation('questions.upsertPending', api.questions.upsertPending, {
           sessionExternalId: event.data.sessionId,
           requestId: event.data.requestId,
           title: event.data.title,
@@ -213,7 +213,7 @@ export class ConvexProjector {
         return
       case 'extension_resolved':
         // Questions ride the extension broker, so any settlement clears the row.
-        await this.runMutation('questions.resolve', (api as any).questions.resolve, {
+        await this.runMutation('questions.resolve', api.questions.resolve, {
           requestId: event.data.requestId,
         })
         return
@@ -446,7 +446,7 @@ export class ConvexProjector {
           ? metadata.parentDir
           : undefined
     const toolName = permission.toolCall.title || permission.toolCall.kind || 'unknown'
-    await this.runMutation('permissions.upsertPending', (api as any).permissions.upsertPending, {
+    await this.runMutation('permissions.upsertPending', api.permissions.upsertPending, {
       sessionExternalId: permission.sessionId,
       requestId: permission.requestId,
       toolCallId: permission.toolCall.toolCallId || undefined,

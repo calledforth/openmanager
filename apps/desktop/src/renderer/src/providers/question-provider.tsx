@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useMemo, type ReactNode } from 'react'
 import type { Question, QuestionOutcome } from '@agentpack/contract'
 import { api } from '@openmanager/convex/_generated/api'
 import { useTrackedQuery } from '../lib/convex-telemetry'
@@ -36,14 +36,17 @@ export function QuestionStateProvider({ children }: { children: ReactNode }) {
   const pendingQuestion =
     (useTrackedQuery(
       'questions.getPendingForSession',
-      (api as any).questions.getPendingForSession,
+      api.questions.getPendingForSession,
       ui.activeSessionId ? { sessionExternalId: ui.activeSessionId } : 'skip',
     ) as PendingQuestion | null | undefined) ?? null
 
-  const resolveQuestion = async (outcome: QuestionOutcome) => {
-    if (!ui.activeSessionId || !pendingQuestion) return
-    await ui.resolveQuestion(ui.activeSessionId, pendingQuestion.requestId, outcome)
-  }
+  const resolveQuestion = useCallback(
+    async (outcome: QuestionOutcome) => {
+      if (!ui.activeSessionId || !pendingQuestion) return
+      await ui.resolveQuestion(ui.activeSessionId, pendingQuestion.requestId, outcome)
+    },
+    [ui, pendingQuestion],
+  )
 
   const value = useMemo<QuestionStateValue>(
     () => ({
@@ -51,7 +54,7 @@ export function QuestionStateProvider({ children }: { children: ReactNode }) {
       pendingQuestion,
       resolveQuestion,
     }),
-    [ui.activeSessionId, pendingQuestion],
+    [ui.activeSessionId, pendingQuestion, resolveQuestion],
   )
 
   return <QuestionStateContext.Provider value={value}>{children}</QuestionStateContext.Provider>

@@ -296,13 +296,18 @@ export class AcpBackend implements Backend {
   }
 
   async start(args: BackendRoute & { cwd: string }): Promise<void> {
-    if (!this.alive()) await this.spawn(args)
-    if (this.initialized && this.authenticated) return
+    if (this.alive() && this.initialized && this.authenticated) return
     if (this.bootstrap) return this.bootstrap
-    this.bootstrap = this.handshake(args).finally(() => {
+    this.bootstrap = this.bootstrapRuntime(args).finally(() => {
       this.bootstrap = null
     })
     return this.bootstrap
+  }
+
+  private async bootstrapRuntime(args: BackendRoute & { cwd: string }): Promise<void> {
+    if (!this.alive()) await this.spawn(args)
+    if (this.initialized && this.authenticated) return
+    await this.handshake(args)
   }
 
   private async spawn(route: BackendRoute & { cwd: string }): Promise<void> {
@@ -1118,12 +1123,12 @@ export class AcpBackend implements Backend {
       }),
     )
     const outcome = await outcomePromise
-    await nativeQuestions.respond(
-      request.requestId,
+    if (outcome.outcome === 'cancelled' && outcome.reason !== 'timeout') return
+    const responseOutcome: QuestionOutcome =
       outcome.outcome === 'responded'
         ? (outcome.response as QuestionOutcome)
-        : { outcome: 'cancelled', reason: outcome.reason },
-    )
+        : { outcome: 'cancelled', reason: outcome.reason }
+    await nativeQuestions.respond(request.requestId, responseOutcome)
   }
   private awaitDeferred(
     requestId: string,
