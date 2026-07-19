@@ -10,7 +10,6 @@ import { ChatView } from './components/chat/ChatView'
 import { MessageInput } from './components/chat/MessageInput'
 import { FloatingChatComposer } from './components/chat/FloatingChatComposer'
 import { ConvexTelemetryPanel } from './components/telemetry/ConvexTelemetryPanel'
-import { ChatSectionHeader } from './components/chat/ChatSectionHeader'
 import { AppChrome } from './components/shell/AppChrome'
 import { UpdateNotification } from './components/updates/UpdateNotification'
 
@@ -31,7 +30,6 @@ function AppShell() {
           convexOpen={convexOpen}
           onToggleConvex={() => setConvexOpen((v) => !v)}
         />
-        <ChatSectionHeader />
         <ChatView />
         <FloatingChatComposer>
           <MessageInput />

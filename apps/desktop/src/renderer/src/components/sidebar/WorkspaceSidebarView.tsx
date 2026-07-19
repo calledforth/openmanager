@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import {
   PlusIcon,
   CaretDoubleLeftIcon,
@@ -5,12 +6,16 @@ import {
   FolderSimpleIcon,
   FolderOpenIcon,
   TrashIcon,
+  NotePencilIcon,
 } from '@phosphor-icons/react'
 import type { ProviderId } from '@agentpack/contract'
 import { cn } from '../../lib/utils'
 import { typographyBodySm, typographyLabel } from '../../lib/typography'
 import { ProviderIcon } from '../providers/ProviderIcon'
 import { SidebarSettingsMenu } from './SidebarSettingsMenu'
+
+const SESSION_PREVIEW_LIMIT = 5
+const SESSION_PAGE_SIZE = 10
 
 export interface SidebarWorkspace {
   path: string
@@ -83,11 +88,11 @@ export function WorkspaceSidebarView({
             }}
             className={cn(
               typographyBodySm,
-              'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[var(--basis-text)] transition-default hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-40',
+              'flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-[var(--basis-text)] transition-default hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-40',
             )}
           >
-            <PlusIcon className="h-3.5 w-3.5 shrink-0" weight="bold" />
-            <span>New Thread</span>
+            <NotePencilIcon className="h-3.5 w-3.5 shrink-0" weight="regular" />
+            <span>New Agent</span>
           </button>
         </div>
 
@@ -156,15 +161,26 @@ function WorkspaceGroup({
   onCreateSession: (workspacePath: string) => void
   onDeleteSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
 }) {
+  const [visibleCount, setVisibleCount] = useState(SESSION_PREVIEW_LIMIT)
   const FolderIcon = isCollapsed ? FolderSimpleIcon : FolderOpenIcon
+  const hasMoreSessions = workspace.sessions.length > visibleCount
+  const visibleSessions = workspace.sessions.slice(0, visibleCount)
+
+  useEffect(() => {
+    if (!isActiveWorkspace || !activeSessionId) return
+    const activeIndex = workspace.sessions.findIndex((s) => s.externalId === activeSessionId)
+    if (activeIndex >= 0) {
+      setVisibleCount((count) => Math.max(count, activeIndex + 1))
+    }
+  }, [isActiveWorkspace, activeSessionId, workspace.sessions])
 
   return (
-    <div className="mb-1">
+    <div className="mb-0">
       {/* Project header row */}
       <div
         className={cn(
           typographyBodySm,
-          'group flex w-full items-center gap-1 rounded-md px-2 py-1 font-medium text-[var(--basis-text-muted)] transition-default hover:bg-surface-hover hover:text-[var(--basis-text)]',
+          'group flex w-full items-center gap-1 rounded-md px-2 py-0.5 font-medium text-[color-mix(in_srgb,var(--basis-text)_72%,var(--basis-text-muted))] transition-default hover:bg-surface-hover hover:text-[var(--basis-text)]',
         )}
       >
         <button
@@ -181,8 +197,8 @@ function WorkspaceGroup({
             e.stopPropagation()
             onCreateSession(workspace.path)
           }}
-          title="New Thread"
-          aria-label="New Thread"
+          title="New Agent"
+          aria-label="New Agent"
           className="flex h-5 w-0 shrink-0 items-center justify-center overflow-hidden rounded text-[var(--basis-text-muted)] opacity-0 transition-[width,opacity] group-hover:w-5 group-hover:opacity-100 hover:bg-[var(--basis-surface)] hover:text-[var(--basis-text)]"
         >
           <PlusIcon className="h-3.5 w-3.5" weight="bold" />
@@ -191,7 +207,7 @@ function WorkspaceGroup({
 
       {!isCollapsed && (
         <div className="ml-1">
-          {workspace.sessions.map((s) => {
+          {visibleSessions.map((s) => {
             const isActive = isActiveWorkspace && s.externalId === activeSessionId
             const providerId = s.providerId ?? 'opencode'
             const isBusy =
@@ -235,6 +251,23 @@ function WorkspaceGroup({
               </button>
             )
           })}
+          {hasMoreSessions && (
+            <button
+              type="button"
+              onClick={() =>
+                setVisibleCount((count) =>
+                  Math.min(count + SESSION_PAGE_SIZE, workspace.sessions.length),
+                )
+              }
+              className={cn(
+                typographyLabel,
+                'flex w-full items-center gap-2 rounded-md px-2.5 py-1 text-left font-normal text-[var(--basis-text-muted)] transition-default hover:bg-surface-hover hover:text-[var(--basis-text)]',
+              )}
+            >
+              <span className="h-3 w-3 shrink-0" aria-hidden />
+              Show more
+            </button>
+          )}
         </div>
       )}
     </div>

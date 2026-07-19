@@ -14,7 +14,6 @@ import {
   PlusIcon,
   CaretDownIcon,
   SquareIcon,
-  MicrophoneIcon,
   XIcon,
   CircleNotchIcon,
   FadersHorizontalIcon,
@@ -703,19 +702,15 @@ export function MessageInputView({
           </div>
 
           <div className="flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              className="flex h-5 w-5 items-center justify-center rounded text-[var(--basis-text-muted)] transition-colors hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]"
-            >
-              <MicrophoneIcon size={12} />
-            </button>
             {isStreaming ? (
               <button
                 type="button"
                 onClick={onAbort}
-                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-red-500/90 text-white transition-colors hover:bg-red-500"
+                title="Stop"
+                aria-label="Stop"
+                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#141414] text-[#ef4444] ring-1 ring-inset ring-red-500/25 transition-colors hover:bg-black hover:text-[#f87171] hover:ring-red-500/40"
               >
-                <SquareIcon className="h-3 w-3" />
+                <SquareIcon className="h-2.5 w-2.5" weight="fill" />
               </button>
             ) : (
               <button
