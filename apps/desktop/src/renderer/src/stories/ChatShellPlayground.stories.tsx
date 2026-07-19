@@ -815,6 +815,7 @@ function Demo() {
                     },
                   ]}
                   currentModelId={modelId}
+                  configOptions={[]}
                   modeOptions={[
                     { id: 'default', name: 'Default' },
                     { id: 'plan', name: 'Plan' },
@@ -831,6 +832,7 @@ function Demo() {
                   imageSupportMessage={null}
                   onModeChange={setModeId}
                   onProviderModelChange={(_providerId, nextModelId) => setModelId(nextModelId)}
+                  onConfigOptionChange={() => undefined}
                   onSend={async (prompt) => startStream(prompt, preset)}
                   onAbort={() => {}}
                 />

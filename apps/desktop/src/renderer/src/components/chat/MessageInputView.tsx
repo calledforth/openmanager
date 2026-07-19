@@ -2,13 +2,13 @@ import {
   useState,
   useRef,
   useEffect,
-  useLayoutEffect,
   useCallback,
   useMemo,
   type KeyboardEvent,
   type ClipboardEvent,
   type DragEvent,
 } from 'react'
+import { createPortal } from 'react-dom'
 import {
   ArrowUpIcon,
   PlusIcon,
@@ -17,11 +17,13 @@ import {
   MicrophoneIcon,
   XIcon,
   CircleNotchIcon,
+  FadersHorizontalIcon,
 } from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
-import type { ProviderId } from '@agentpack/contract'
+import type { ProviderId, SessionConfigOption } from '@agentpack/contract'
 import { ProviderIcon } from '../providers/ProviderIcon'
 import { SearchableMenu, type SearchableMenuSection } from '../ui/SearchableMenu'
+import { usePortaledMenu } from '../ui/usePortaledMenu'
 import {
   chatInputShell,
   chatComposerTextarea,
@@ -34,6 +36,12 @@ import {
   MAX_IMAGE_BYTES,
   type DraftImageAttachment,
 } from '../../lib/attachments'
+import {
+  configurableSessionOptions,
+  isBooleanSelect,
+  sessionConfigSummary,
+  type SessionConfigValue,
+} from './modelConfig'
 
 export type ProviderModelGroup = {
   providerId: ProviderId
@@ -122,6 +130,7 @@ function ProviderModelSelect({
   onChange,
   disabled,
   canChangeProvider,
+  configSummary,
 }: {
   groups: ProviderModelGroup[]
   currentProviderId: ProviderId
@@ -129,6 +138,7 @@ function ProviderModelSelect({
   onChange: (providerId: ProviderId, modelId: string) => void
   disabled?: boolean
   canChangeProvider: boolean
+  configSummary: string[]
 }) {
   const visibleGroups = canChangeProvider
     ? groups.filter((group) => group.models.length > 0)
@@ -136,9 +146,10 @@ function ProviderModelSelect({
 
   const currentGroup = groups.find((group) => group.providerId === currentProviderId)
   const currentModel =
-    currentGroup?.models.find((model) => model.id === currentModelId) ??
-    currentGroup?.models[0]
+    currentGroup?.models.find((model) => model.id === currentModelId) ?? currentGroup?.models[0]
   const modelLabel = currentModel?.name ?? currentModelId.split('/').pop() ?? 'Model'
+  const displayLabel =
+    configSummary.length > 0 ? `${modelLabel} · ${configSummary.join(' · ')}` : modelLabel
   const selectedId = `${currentProviderId}:${currentModelId}`
 
   const sections = useMemo<SearchableMenuSection[]>(
@@ -185,7 +196,7 @@ function ProviderModelSelect({
           )}
         >
           <ProviderIcon providerId={currentProviderId} />
-          <span className="truncate">{modelLabel}</span>
+          <span className="truncate">{displayLabel}</span>
           <CaretDownIcon
             size={9}
             weight="light"
@@ -194,6 +205,142 @@ function ProviderModelSelect({
         </button>
       )}
     />
+  )
+}
+
+function ModelConfigMenu({
+  options,
+  onChange,
+  disabled,
+}: {
+  options: SessionConfigOption[]
+  onChange: (configId: string, value: SessionConfigValue) => void
+  disabled?: boolean
+}) {
+  const configurable = configurableSessionOptions(options)
+  const { open, toggle, menuCoords, wrapRef, triggerRef, menuRef } = usePortaledMenu({
+    placement: 'above',
+    minWidth: 280,
+    align: 'start',
+    deps: [configurable.length],
+  })
+
+  if (configurable.length === 0) return null
+
+  return (
+    <div ref={wrapRef} className="flex shrink-0">
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={toggle}
+        disabled={disabled}
+        title="Edit model settings"
+        aria-label="Edit model settings"
+        aria-expanded={open}
+        className={cn(
+          'flex h-5 w-5 items-center justify-center rounded text-[var(--basis-text-faint)] transition-colors',
+          'hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
+          open && 'bg-[var(--basis-surface-hover)] text-[var(--basis-text)]',
+          disabled && 'cursor-default opacity-40',
+        )}
+      >
+        <FadersHorizontalIcon size={12} weight="regular" />
+      </button>
+      {open &&
+        menuCoords &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className="fixed z-[9999] overflow-hidden rounded-xl border border-[var(--basis-border)] bg-[var(--basis-menu-bg,var(--basis-surface))] shadow-[0_12px_34px_rgba(0,0,0,0.18)]"
+            style={{
+              left: menuCoords.left,
+              top: menuCoords.top,
+              bottom: menuCoords.bottom,
+              width: menuCoords.width,
+            }}
+            role="dialog"
+            aria-label="Model settings"
+          >
+            <div className="border-b border-[var(--basis-border-muted)] px-3 py-2">
+              <div className="text-11-medium text-[var(--basis-text-strong)]">Model settings</div>
+              <div className="mt-0.5 text-[10px] leading-4 text-[var(--basis-text-muted)]">
+                Applied to prompts in this workspace
+              </div>
+            </div>
+            <div className="flex max-h-[320px] flex-col gap-0.5 overflow-y-auto p-1.5">
+              {configurable.map((option) => {
+                const booleanLike = option.type === 'boolean' || isBooleanSelect(option)
+                const checked =
+                  option.type === 'boolean'
+                    ? option.currentValue
+                    : option.currentValue.toLowerCase() === 'true'
+                return (
+                  <div
+                    key={option.id}
+                    className="flex min-h-10 items-center justify-between gap-3 rounded-lg px-2 py-1.5 hover:bg-[var(--basis-surface-hover)]"
+                  >
+                    <span className="min-w-0">
+                      <span className="block text-11-medium text-[var(--basis-text)]">
+                        {option.name}
+                      </span>
+                      {option.description && (
+                        <span className="mt-0.5 block text-[10px] leading-3.5 text-[var(--basis-text-muted)]">
+                          {option.description}
+                        </span>
+                      )}
+                    </span>
+                    {booleanLike ? (
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-label={option.name}
+                        aria-checked={checked}
+                        onClick={() => {
+                          if (option.type === 'boolean') {
+                            onChange(option.id, !option.currentValue)
+                            return
+                          }
+                          const nextValue = option.options.find(
+                            (entry) => entry.value.toLowerCase() === String(!checked),
+                          )?.value
+                          if (nextValue !== undefined) onChange(option.id, nextValue)
+                        }}
+                        className={cn(
+                          'relative h-[18px] w-8 shrink-0 rounded-full border transition-colors',
+                          checked
+                            ? 'border-[var(--basis-action-bg)] bg-[var(--basis-action-bg)]'
+                            : 'border-[var(--basis-border)] bg-[var(--basis-surface)]',
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            'absolute top-0.5 h-3 w-3 rounded-full bg-white shadow-sm transition-transform',
+                            checked ? 'translate-x-[15px]' : 'translate-x-0.5',
+                          )}
+                        />
+                      </button>
+                    ) : (
+                      <select
+                        value={option.currentValue}
+                        onChange={(event) => onChange(option.id, event.target.value)}
+                        className="h-7 max-w-[132px] shrink-0 rounded-md border border-[var(--basis-border)] bg-[var(--basis-surface)] px-2 text-11-regular text-[var(--basis-text)] outline-none hover:bg-[var(--basis-surface-hover)] focus:border-[var(--basis-action-bg)]"
+                        aria-label={option.name}
+                      >
+                        {option.options.map((entry) => (
+                          <option key={entry.value} value={entry.value}>
+                            {entry.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>,
+          document.body,
+        )}
+    </div>
   )
 }
 
@@ -207,6 +354,7 @@ export function MessageInputView({
   currentProviderId,
   providerModelGroups,
   currentModelId,
+  configOptions,
   modeOptions,
   currentModeId,
   canChangeSettings,
@@ -219,6 +367,7 @@ export function MessageInputView({
   imageSupportMessage,
   onModeChange,
   onProviderModelChange,
+  onConfigOptionChange,
   onSend,
   onAbort,
 }: {
@@ -231,6 +380,7 @@ export function MessageInputView({
   currentProviderId: ProviderId
   providerModelGroups: ProviderModelGroup[]
   currentModelId: string
+  configOptions: SessionConfigOption[]
   modeOptions: Array<{ id: string; name: string }>
   currentModeId: string
   canChangeSettings: boolean
@@ -243,6 +393,7 @@ export function MessageInputView({
   imageSupportMessage: string | null
   onModeChange: (id: string) => void
   onProviderModelChange: (providerId: ProviderId, modelId: string) => void
+  onConfigOptionChange: (configId: string, value: SessionConfigValue) => void
   onSend: (text: string, attachments: DraftImageAttachment[]) => Promise<void>
   onAbort: () => void
 }) {
@@ -419,6 +570,7 @@ export function MessageInputView({
   const isPlan = currentModeId === 'plan'
   const sendActive =
     hasContent && !disabled && !sending && (attachments.length === 0 || imageUploadEnabled)
+  const configSummary = sessionConfigSummary(configOptions)
 
   return (
     <div className="flex w-full flex-col">
@@ -515,8 +667,15 @@ export function MessageInputView({
                 onChange={onProviderModelChange}
                 disabled={!canChangeSettings}
                 canChangeProvider={canChangeProvider}
+                configSummary={configSummary}
               />
             )}
+
+            <ModelConfigMenu
+              options={configOptions}
+              onChange={onConfigOptionChange}
+              disabled={!canChangeSettings}
+            />
 
             {showModeControl && buildPlanToggle ? (
               <PillSelect
@@ -541,7 +700,6 @@ export function MessageInputView({
                 />
               )
             )}
-
           </div>
 
           <div className="flex shrink-0 items-center gap-1">

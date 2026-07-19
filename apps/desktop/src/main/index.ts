@@ -423,6 +423,12 @@ app.whenReady().then(() => {
           (providerId === 'opencode' ? models[workspacePath] : undefined)
         return typeof model === 'string' && model.length > 0 ? model : null
       },
+      (workspacePath, providerId) => {
+        const preference = store.get('workspaceComposerPreferences', {})[
+          workspaceComposerPreferenceKey(workspacePath, providerId)
+        ]
+        return preference?.configValues
+      },
       (workspacePath, providerId, modelId) => {
         const key = workspaceComposerPreferenceKey(workspacePath, providerId)
         const preferences = store.get('workspaceComposerPreferences', {})

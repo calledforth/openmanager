@@ -10,7 +10,7 @@ const meta = {
   decorators: [
     (Story) => (
       <ThemeProvider>
-        <div className="bg-[var(--basis-canvas-bg)] p-6">
+        <div className="flex min-h-screen items-end bg-[var(--basis-canvas-bg)] p-6">
           <Story />
         </div>
       </ThemeProvider>
@@ -43,6 +43,30 @@ const meta = {
       },
     ],
     currentModelId: 'gpt-5.1',
+    configOptions: [
+      {
+        type: 'select',
+        id: 'thought_level',
+        name: 'Reasoning effort',
+        category: 'thought_level',
+        currentValue: 'medium',
+        options: [
+          { value: 'low', name: 'Low' },
+          { value: 'medium', name: 'Medium' },
+          { value: 'high', name: 'High' },
+        ],
+      },
+      {
+        type: 'select',
+        id: 'fast',
+        name: 'Fast',
+        currentValue: 'false',
+        options: [
+          { value: 'false', name: 'Off' },
+          { value: 'true', name: 'On' },
+        ],
+      },
+    ],
     modeOptions: [
       { id: 'default', name: 'Default' },
       { id: 'plan', name: 'Plan' },
@@ -59,6 +83,7 @@ const meta = {
     imageSupportMessage: null,
     onModeChange: () => undefined,
     onProviderModelChange: () => undefined,
+    onConfigOptionChange: () => undefined,
     onSend: async () => undefined,
     onAbort: () => undefined,
   },
