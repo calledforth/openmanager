@@ -30,6 +30,30 @@ const data: SidebarWorkspace[] = [
         status: 'busy',
         providerId: 'opencode',
       },
+      {
+        externalId: 'sess-004',
+        title: 'Composer toolbar cleanup',
+        status: 'idle',
+        providerId: 'opencode',
+      },
+      {
+        externalId: 'sess-005',
+        title: 'Sidebar session collapse',
+        status: 'idle',
+        providerId: 'cursor',
+      },
+      {
+        externalId: 'sess-006',
+        title: 'Theme token audit',
+        status: 'idle',
+        providerId: 'opencode',
+      },
+      {
+        externalId: 'sess-007',
+        title: 'Agent rename pass',
+        status: 'waiting',
+        providerId: 'cursor',
+      },
     ],
   },
   {
