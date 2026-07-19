@@ -14,6 +14,7 @@ import type * as crons from "../crons.js";
 import type * as jobs from "../jobs.js";
 import type * as messages from "../messages.js";
 import type * as permissions from "../permissions.js";
+import type * as questions from "../questions.js";
 import type * as sessions from "../sessions.js";
 import type * as streamChunks from "../streamChunks.js";
 import type * as workspaces from "../workspaces.js";
@@ -31,6 +32,7 @@ declare const fullApi: ApiFromModules<{
   jobs: typeof jobs;
   messages: typeof messages;
   permissions: typeof permissions;
+  questions: typeof questions;
   sessions: typeof sessions;
   streamChunks: typeof streamChunks;
   workspaces: typeof workspaces;

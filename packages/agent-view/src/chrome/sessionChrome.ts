@@ -101,6 +101,7 @@ const NO_CAPABILITIES: ProviderCapabilities = {
   supportsThoughtStreaming: false,
   supportsSubtasks: false,
   supportsExtensions: false,
+  supportsQuestions: false,
 }
 
 function configControls(options: readonly SessionConfigOption[]): ConfigControl[] {

@@ -114,7 +114,7 @@ export class ConvexProjector {
 
   resolvePermission(threadId: string, requestId: string): void {
     this.enqueue(threadId, () =>
-      this.runMutation('permissions.resolve', (api as any).permissions.resolve, { requestId }),
+      this.runMutation('permissions.resolve', api.permissions.resolve, { requestId }),
     )
   }
 
@@ -147,6 +147,13 @@ export class ConvexProjector {
       case 'session_loaded':
         if (workspacePath)
           await this.upsertSession(workspacePath, event.sessionId, 'idle', event.providerId)
+        // Any permission/question that was pending before this (re)start died with its broker.
+        await this.runMutation('permissions.clearForSession', api.permissions.clearForSession, {
+          sessionExternalId: event.sessionId,
+        })
+        await this.runMutation('questions.clearForSession', api.questions.clearForSession, {
+          sessionExternalId: event.sessionId,
+        })
         await this.upsertProviderProfile(event.providerId, {
           models: event.data.models,
           modes: event.data.modes,
@@ -190,6 +197,25 @@ export class ConvexProjector {
         return
       case 'permission_request':
         await this.upsertPermission(event.data)
+        return
+      case 'permission_resolved':
+        await this.runMutation('permissions.resolve', api.permissions.resolve, {
+          requestId: event.data.requestId,
+        })
+        return
+      case 'question_request':
+        await this.runMutation('questions.upsertPending', api.questions.upsertPending, {
+          sessionExternalId: event.data.sessionId,
+          requestId: event.data.requestId,
+          title: event.data.title,
+          questions: event.data.questions,
+        })
+        return
+      case 'extension_resolved':
+        // Questions ride the extension broker, so any settlement clears the row.
+        await this.runMutation('questions.resolve', api.questions.resolve, {
+          requestId: event.data.requestId,
+        })
         return
       case 'current_model_update':
         this.updateRuntime(event.sessionId, { modelId: event.data.currentModelId })
@@ -420,7 +446,7 @@ export class ConvexProjector {
           ? metadata.parentDir
           : undefined
     const toolName = permission.toolCall.title || permission.toolCall.kind || 'unknown'
-    await this.runMutation('permissions.upsertPending', (api as any).permissions.upsertPending, {
+    await this.runMutation('permissions.upsertPending', api.permissions.upsertPending, {
       sessionExternalId: permission.sessionId,
       requestId: permission.requestId,
       toolCallId: permission.toolCall.toolCallId || undefined,
@@ -434,6 +460,8 @@ export class ConvexProjector {
       input: permission.toolCall.rawInput ?? metadata,
       patterns: metadata?.patterns,
       alwaysPatterns: metadata?.always,
+      options: permission.options,
+      expiresAt: permission.expiresAt ? Date.parse(permission.expiresAt) : undefined,
     })
   }
 

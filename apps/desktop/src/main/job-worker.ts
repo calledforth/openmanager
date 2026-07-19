@@ -405,7 +405,22 @@ export class JobWorker {
             providerId,
             threadId: parsed.sessionExternalId,
             requestId: parsed.permissionId,
-            approved: parsed.approved,
+            optionId: typeof parsed.optionId === 'string' ? parsed.optionId : undefined,
+            approved: typeof parsed.approved === 'boolean' ? parsed.approved : undefined,
+          })
+          break
+        case 'resolve_extension':
+          this.agentHost.respondExtension({
+            providerId,
+            requestId: parsed.requestId,
+            response: parsed.response,
+          })
+          break
+        case 'resolve_question':
+          this.agentHost.respondQuestion({
+            providerId,
+            requestId: parsed.requestId,
+            outcome: parsed.outcome,
           })
           break
         case 'set_model':

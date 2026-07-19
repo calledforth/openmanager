@@ -5,19 +5,26 @@ import type {
   AgentEvent,
   AuthMethod,
   ContentBlock,
+  ExtensionOutcome,
   ModeListing,
   ModelListing,
   PermissionOption,
   PermissionOutcome,
   PromptInput,
   ProviderId,
+  QuestionOutcome,
   SessionConfigOption,
   ToolCallContent,
 } from '@agentpack/contract'
 import type { HostDeps } from '../../host.js'
 import type { ProviderConfig } from '../../providers/index.js'
+import {
+  OpenCodeQuestions,
+  type OpenCodeQuestionRequest,
+} from '../../providers/opencode-questions.js'
+import { ExtensionBroker } from '../../core/ExtensionBroker.js'
 import { PermissionBroker } from '../../core/PermissionBroker.js'
-import { SessionStore } from '../../core/SessionStore.js'
+import { SessionStore, type SessionBinding } from '../../core/SessionStore.js'
 import { AuthRequiredError } from '../../core/errors.js'
 import type {
   Backend,
@@ -27,7 +34,8 @@ import type {
   BackendSessionArgs,
   SessionResult,
 } from '../Backend.js'
-import { ExtensionRegistry } from './extensions.js'
+import { ExtensionRegistry, type QuestionAdapter } from './extensions.js'
+import { parseAcpFormElicitation, type AcpFormQuestionAdapter } from './elicitation.js'
 
 type RecordValue = Record<string, unknown>
 type SpawnedChildProcess = ChildProcessWithoutNullStreams & {
@@ -61,6 +69,7 @@ const errorCode = (error: unknown): number | undefined => number(object(error).c
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : 'ACP operation failed'
 const isAuthRequired = (error: unknown): boolean => errorCode(error) === -32002
+const ACP_ELICITATION_METHOD = acp.methods.client.elicitation.create
 
 function normalizeModelListing(value: unknown): ModelListing {
   const listing = object(value)
@@ -217,9 +226,35 @@ export class AcpBackend implements Backend {
   private authenticated = false
   private bootstrap: Promise<void> | null = null
   private expectedExit = false
+  private nativeQuestions: OpenCodeQuestions | null = null
+  private activePromptSessionId: string | undefined
+  private promptTail: Promise<void> = Promise.resolve()
   private readonly listeners = new Set<BackendEventListener>()
   private readonly sessions = new SessionStore()
-  private readonly permissions = new PermissionBroker()
+  private readonly permissions = new PermissionBroker((settlement) =>
+    this.emit(
+      routeEvent(settlement, settlement.sessionId, 'permission', 'permission_resolved', {
+        requestId: settlement.requestId,
+        outcome: settlement.outcome,
+      }),
+    ),
+  )
+  private readonly questionContexts = new Map<
+    string,
+    | { adapter: QuestionAdapter; params: unknown }
+    | { elicitation: AcpFormQuestionAdapter }
+    | { native: string }
+  >()
+  private readonly extensionRequests = new ExtensionBroker((settlement) => {
+    this.questionContexts.delete(settlement.requestId)
+    this.emit(
+      routeEvent(settlement, settlement.sessionId, 'extension', 'extension_resolved', {
+        requestId: settlement.requestId,
+        method: settlement.method,
+        outcome: settlement.outcome,
+      }),
+    )
+  })
   private readonly extensions: ExtensionRegistry
 
   constructor(
@@ -261,16 +296,21 @@ export class AcpBackend implements Backend {
   }
 
   async start(args: BackendRoute & { cwd: string }): Promise<void> {
-    if (!this.alive()) this.spawn(args)
-    if (this.initialized && this.authenticated) return
+    if (this.alive() && this.initialized && this.authenticated) return
     if (this.bootstrap) return this.bootstrap
-    this.bootstrap = this.handshake(args).finally(() => {
+    this.bootstrap = this.bootstrapRuntime(args).finally(() => {
       this.bootstrap = null
     })
     return this.bootstrap
   }
 
-  private spawn(route: BackendRoute & { cwd: string }): void {
+  private async bootstrapRuntime(args: BackendRoute & { cwd: string }): Promise<void> {
+    if (!this.alive()) await this.spawn(args)
+    if (this.initialized && this.authenticated) return
+    await this.handshake(args)
+  }
+
+  private async spawn(route: BackendRoute & { cwd: string }): Promise<void> {
     this.sessions.nextGeneration()
     this.expectedExit = false
     const command =
@@ -279,23 +319,31 @@ export class AcpBackend implements Backend {
         ? process.env[this.config.command.fallbackEnvOverride]
         : undefined) ??
       this.config.command.bin
-    const child = spawn(command, this.config.command.args, {
+    this.nativeQuestions?.dispose()
+    this.nativeQuestions =
+      this.config.quirks.nativeQuestions === 'opencode' ? await OpenCodeQuestions.create() : null
+    const commandArgs = this.nativeQuestions
+      ? this.nativeQuestions.spawnArgs(this.config.command.args)
+      : this.config.command.args
+    const child = spawn(command, commandArgs, {
       cwd: route.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: process.platform === 'win32',
+      env: { ...process.env, ...this.config.command.env },
     }) as SpawnedChildProcess
     this.process = child
     this.emit(
       routeEvent(route, undefined, 'lifecycle', 'process_spawned', {
         cwd: route.cwd,
         command,
-        args: this.config.command.args,
+        args: commandArgs,
         processId: child.pid,
       }),
     )
     const client: acp.Client = {
       requestPermission: async (params) => this.permissionRequest(params),
       sessionUpdate: async (params) => this.sessionUpdate(params),
+      unstable_createElicitation: async (params) => this.elicitationRequest(params),
       extMethod: async (method, params) => this.extensionRequest(method, params),
       extNotification: async (method, params) => this.extensionNotification(method, params),
     }
@@ -327,6 +375,9 @@ export class AcpBackend implements Backend {
         expected: this.expectedExit,
       })
       this.permissions.settleProvider(this.providerId)
+      this.extensionRequests.settleProvider(this.providerId)
+      this.nativeQuestions?.dispose()
+      this.nativeQuestions = null
       this.process = null
       this.connection = null
       this.initialized = false
@@ -345,6 +396,7 @@ export class AcpBackend implements Backend {
           clientCapabilities: {
             fs: { readTextFile: false, writeTextFile: false },
             terminal: false,
+            elicitation: { form: {} },
             _meta: { parameterizedModelPicker: true },
           },
           clientInfo: { name: '@agentpack/runtime', version: '0.1.0' },
@@ -380,6 +432,25 @@ export class AcpBackend implements Backend {
         promptCapabilities: object(response.agentCapabilities).promptCapabilities,
         authMethods: methods,
       }),
+    )
+    this.nativeQuestions?.start(
+      (request) => {
+        void this.nativeQuestionRequest(request).catch((error) =>
+          this.host.log({
+            scope: 'acp',
+            level: 'error',
+            message: 'OpenCode question bridge failed',
+            data: { error: errorMessage(error), requestId: request.requestId },
+          }),
+        )
+      },
+      (error) =>
+        this.host.log({
+          scope: 'acp',
+          level: 'warn',
+          message: 'OpenCode question event stream stopped',
+          data: { error: errorMessage(error) },
+        }),
     )
     const methodId = this.pickAuthMethod(methods)
     if (!methodId) {
@@ -510,6 +581,20 @@ export class AcpBackend implements Backend {
       userMessageId?: string
     },
   ): Promise<void> {
+    if (!this.config.quirks.correlateSessionlessExtensionsToActivePrompt)
+      return this.promptNow(args)
+    const run = this.promptTail.catch(() => undefined).then(() => this.promptNow(args))
+    this.promptTail = run
+    return run
+  }
+  private async promptNow(
+    args: BackendRoute & {
+      cwd: string
+      sessionId: string
+      prompt: PromptInput
+      userMessageId?: string
+    },
+  ): Promise<void> {
     await this.start(args)
     const userMessageId = args.userMessageId ?? `agent_usr_${crypto.randomUUID()}`
     this.emit(
@@ -519,6 +604,7 @@ export class AcpBackend implements Backend {
         attachments: args.prompt.attachments,
       }),
     )
+    this.activePromptSessionId = args.sessionId
     try {
       const result = object(
         await this.conn().prompt({
@@ -534,16 +620,33 @@ export class AcpBackend implements Backend {
       )
     } catch (error) {
       throw this.rpcError(args, args.sessionId, 'session/prompt', error)
+    } finally {
+      if (this.activePromptSessionId === args.sessionId) this.activePromptSessionId = undefined
     }
   }
   async cancel(args: BackendRoute & { cwd: string; sessionId: string }): Promise<void> {
     await this.start(args)
     this.permissions.cancelThread(this.providerId, args.threadId)
+    this.extensionRequests.cancelThread(this.providerId, args.threadId)
     try {
       await this.conn().cancel({ sessionId: args.sessionId })
     } catch (error) {
       throw this.rpcError(args, args.sessionId, 'session/cancel', error)
     }
+  }
+  respondExtension(requestId: string, response: unknown): boolean {
+    return this.extensionRequests.respond(requestId, response)
+  }
+  respondQuestion(requestId: string, outcome: QuestionOutcome): boolean {
+    const context = this.questionContexts.get(requestId)
+    if (!context) return false
+    if ('native' in context) return this.extensionRequests.respond(requestId, outcome)
+    if ('elicitation' in context)
+      return this.extensionRequests.respond(requestId, context.elicitation.respond(outcome))
+    return this.extensionRequests.respond(
+      requestId,
+      context.adapter.respond(outcome, context.params),
+    )
   }
   respondPermission(requestId: string, outcome: PermissionOutcome): boolean {
     return this.permissions.respond(requestId, outcome)
@@ -575,7 +678,7 @@ export class AcpBackend implements Backend {
       return
     }
     try {
-      await this.conn().unstable_setSessionModel({
+      await this.conn().request('session/set_model', {
         sessionId: args.sessionId,
         modelId: args.modelId,
       })
@@ -710,6 +813,8 @@ export class AcpBackend implements Backend {
       this.permissions.add(requestId, {
         providerId: this.providerId,
         threadId: binding.threadId,
+        workspaceId: binding.workspaceId,
+        sessionId,
         options,
         resolve,
       }),
@@ -878,22 +983,168 @@ export class AcpBackend implements Backend {
       }),
     )
   }
+  /** Cursor extension params often omit sessionId entirely; fall back to the
+   * sole active session when the wire gives us nothing to correlate on. */
+  private extensionBinding(params: unknown): SessionBinding | undefined {
+    const sessionId = sessionIdOf(params)
+    if (sessionId) return this.sessions.forSession(sessionId)
+    if (
+      this.config.quirks.correlateSessionlessExtensionsToActivePrompt &&
+      this.activePromptSessionId
+    )
+      return this.sessions.forSession(this.activePromptSessionId)
+    const bindings = this.sessions.bindings()
+    return bindings.length === 1 ? bindings[0] : undefined
+  }
+  private elicitationBinding(params: acp.CreateElicitationRequest): SessionBinding | undefined {
+    const sessionId = sessionIdOf(params)
+    if (sessionId) return this.sessions.forSession(sessionId)
+    const bindings = this.sessions.bindings()
+    return bindings.length === 1 ? bindings[0] : undefined
+  }
+  private async elicitationRequest(
+    params: acp.CreateElicitationRequest,
+  ): Promise<acp.CreateElicitationResponse> {
+    this.logInbound(ACP_ELICITATION_METHOD, params)
+    const binding = this.elicitationBinding(params)
+    const adapter = parseAcpFormElicitation(params)
+    if (!binding || !adapter) {
+      this.host.log({
+        scope: 'acp',
+        level: 'warn',
+        message: 'Declining unsupported or unrouteable ACP elicitation',
+        data: { providerId: this.providerId, mode: string(object(params).mode) },
+      })
+      return { action: 'cancel' }
+    }
+
+    const requestId = crypto.randomUUID()
+    this.questionContexts.set(requestId, { elicitation: adapter })
+    const response = new Promise<ExtensionOutcome>((resolve) =>
+      this.extensionRequests.add(requestId, {
+        providerId: this.providerId,
+        threadId: binding.threadId,
+        workspaceId: binding.workspaceId,
+        sessionId: binding.sessionId,
+        method: ACP_ELICITATION_METHOD,
+        resolve,
+      }),
+    )
+    this.emit(
+      routeEvent(binding, binding.sessionId, 'session', 'question_request', {
+        requestId,
+        sessionId: binding.sessionId,
+        title: adapter.title,
+        questions: adapter.questions,
+      }),
+    )
+    const outcome = await response
+    return outcome.outcome === 'responded'
+      ? (outcome.response as acp.CreateElicitationResponse)
+      : { action: 'cancel' }
+  }
   private async extensionRequest(
     method: string,
     params: unknown,
   ): Promise<Record<string, unknown>> {
     this.logInbound(method, params)
-    const sessionId = sessionIdOf(params)
-    const binding = sessionId ? this.sessions.forSession(sessionId) : undefined
-    if (binding && sessionId)
+    const binding = this.extensionBinding(params)
+    const requestId = crypto.randomUUID()
+    const adapter = this.extensions.questionAdapter(method)
+    const parsed = adapter && binding ? adapter.parse(params) : undefined
+    if (binding && adapter && parsed) {
+      this.questionContexts.set(requestId, { adapter, params })
+      // The broker must exist before UI listeners see the request; a fast local
+      // renderer can otherwise answer before respondQuestion has anything to settle.
+      const outcomePromise = this.awaitDeferred(requestId, binding, method)
       this.emit(
-        routeEvent(binding, sessionId, 'extension', 'extension_request', {
-          requestId: crypto.randomUUID(),
+        routeEvent(binding, binding.sessionId, 'session', 'question_request', {
+          requestId,
+          sessionId: binding.sessionId,
+          title: parsed.title,
+          questions: parsed.questions,
+        }),
+      )
+      const outcome = await outcomePromise
+      if (outcome.outcome === 'responded') return object(outcome.response)
+      return object(await this.extensions.request(method, params))
+    }
+    if (binding)
+      this.emit(
+        routeEvent(binding, binding.sessionId, 'extension', 'extension_request', {
+          requestId,
           method,
           params,
         }),
       )
-    return object(await this.extensions.request(method, params))
+    if (binding && this.extensions.isDeferred(method)) {
+      const outcome = await this.awaitDeferred(requestId, binding, method)
+      if (outcome.outcome === 'responded') return object(outcome.response)
+      // Cancelled/timed out: fall back to the provider's static response.
+      return object(await this.extensions.request(method, params))
+    }
+    const response = object(await this.extensions.request(method, params))
+    if (binding)
+      this.emit(
+        routeEvent(binding, binding.sessionId, 'extension', 'extension_resolved', {
+          requestId,
+          method,
+          outcome: { outcome: 'responded', response },
+        }),
+      )
+    return response
+  }
+  private async nativeQuestionRequest(request: OpenCodeQuestionRequest): Promise<void> {
+    const nativeQuestions = this.nativeQuestions
+    const binding = this.sessions.forSession(request.sessionId)
+    if (!binding || !nativeQuestions) {
+      this.host.log({
+        scope: 'acp',
+        level: 'warn',
+        message: 'Rejecting question for an unknown OpenCode ACP session',
+        data: { sessionId: request.sessionId, requestId: request.requestId },
+      })
+      await nativeQuestions?.respond(request.requestId, {
+        outcome: 'cancelled',
+        reason: 'session_closed',
+      })
+      return
+    }
+    const requestId = `opencode:${request.requestId}`
+    if (this.questionContexts.has(requestId)) return
+    this.questionContexts.set(requestId, { native: request.requestId })
+    const outcomePromise = this.awaitDeferred(requestId, binding, 'opencode/question')
+    this.emit(
+      routeEvent(binding, binding.sessionId, 'session', 'question_request', {
+        requestId,
+        sessionId: binding.sessionId,
+        title: request.title,
+        questions: request.questions,
+      }),
+    )
+    const outcome = await outcomePromise
+    if (outcome.outcome === 'cancelled' && outcome.reason !== 'timeout') return
+    const responseOutcome: QuestionOutcome =
+      outcome.outcome === 'responded'
+        ? (outcome.response as QuestionOutcome)
+        : { outcome: 'cancelled', reason: outcome.reason }
+    await nativeQuestions.respond(request.requestId, responseOutcome)
+  }
+  private awaitDeferred(
+    requestId: string,
+    binding: SessionBinding,
+    method: string,
+  ): Promise<ExtensionOutcome> {
+    return new Promise<ExtensionOutcome>((resolve) =>
+      this.extensionRequests.add(requestId, {
+        providerId: this.providerId,
+        threadId: binding.threadId,
+        workspaceId: binding.workspaceId,
+        sessionId: binding.sessionId,
+        method,
+        resolve,
+      }),
+    )
   }
   private async extensionNotification(method: string, params: unknown): Promise<void> {
     this.logInbound(method, params)
@@ -908,6 +1159,9 @@ export class AcpBackend implements Backend {
   dispose(): void {
     this.expectedExit = true
     this.permissions.settleAll()
+    this.extensionRequests.settleAll()
+    this.nativeQuestions?.dispose()
+    this.nativeQuestions = null
     if (this.process?.exitCode === null) {
       this.process.kill()
       return

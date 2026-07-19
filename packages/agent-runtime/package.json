@@ -13,8 +13,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "1.2.1",
     "@agentpack/contract": "workspace:*",
-    "@agentclientprotocol/sdk": "^0.19.0"
+    "@opencode-ai/sdk": "1.18.3"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
