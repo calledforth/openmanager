@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ArrowClockwiseIcon, DownloadSimpleIcon, XIcon } from '@phosphor-icons/react'
-import type { AppUpdateEvent } from '../../../../shared/app-update'
+import { updateProgressPercent, type AppUpdateEvent } from '../../../../shared/app-update'
 import { cn } from '../../lib/utils'
 import { typographyBodySm, typographyCaption, typographyLabel } from '../../lib/typography'
 
@@ -26,8 +26,7 @@ export function UpdateNotification() {
 
   if (!event || dismissed || event.status === 'error') return null
 
-  const percent =
-    event.status === 'downloading' ? Math.max(0, Math.min(100, Math.round(event.percent))) : 100
+  const percent = updateProgressPercent(event)
   const isReady = event.status === 'ready'
   const version = event.version
 

@@ -85,12 +85,20 @@ describe('convex document conversion', () => {
   it('keys preferences by workspace and provider', () => {
     expect(
       composerPreferencesFromDocs([
-        { workspacePath: '/repos/alpha', providerId: 'cursor', modelId: 'model-a' },
+        {
+          workspacePath: '/repos/alpha',
+          providerId: 'cursor',
+          modelId: 'model-a',
+          configValues: { thought_level: 'high', fast: true },
+        },
         { workspacePath: '/repos/alpha', providerId: 'opencode', modeId: 'build' },
         { workspacePath: '/repos/beta', providerId: 'bogus', modelId: 'model-x' },
       ]),
     ).toEqual({
-      '/repos/alpha::cursor': { modelId: 'model-a' },
+      '/repos/alpha::cursor': {
+        modelId: 'model-a',
+        configValues: { thought_level: 'high', fast: true },
+      },
       '/repos/alpha::opencode': { modeId: 'build' },
     })
   })

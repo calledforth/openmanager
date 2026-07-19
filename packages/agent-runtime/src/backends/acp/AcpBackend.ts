@@ -345,6 +345,7 @@ export class AcpBackend implements Backend {
           clientCapabilities: {
             fs: { readTextFile: false, writeTextFile: false },
             terminal: false,
+            _meta: { parameterizedModelPicker: true },
           },
           clientInfo: { name: '@agentpack/runtime', version: '0.1.0' },
         }),

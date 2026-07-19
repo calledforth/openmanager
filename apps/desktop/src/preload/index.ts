@@ -12,7 +12,7 @@ import type {
   WorkspaceComposerPreference,
   WorkspaceComposerPreferences,
 } from '../shared/composer-profile'
-import type { AppUpdateEvent } from '../shared/app-update'
+import type { AppUpdateEvent, ManualUpdateCheckResult } from '../shared/app-update'
 
 const electronAPI = {
   platform: process.platform as NodeJS.Platform,
@@ -104,6 +104,7 @@ const electronAPI = {
     ipcRenderer.on('updater:event', handler)
     return () => ipcRenderer.removeListener('updater:event', handler)
   },
+  checkForUpdates: () => ipcRenderer.invoke('updater:check') as Promise<ManualUpdateCheckResult>,
   quitAndInstallUpdate: () => ipcRenderer.invoke('updater:quit-and-install') as Promise<void>,
 }
 

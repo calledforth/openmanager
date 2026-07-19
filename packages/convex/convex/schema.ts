@@ -67,6 +67,7 @@ export default defineSchema({
     providerId: v.string(),
     modelId: v.optional(v.string()),
     modeId: v.optional(v.string()),
+    configValues: v.optional(v.any()),
     updatedAt: v.number(),
   }).index('by_workspace_provider', ['workspacePath', 'providerId']),
 

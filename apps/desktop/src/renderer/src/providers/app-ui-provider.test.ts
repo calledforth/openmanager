@@ -69,6 +69,40 @@ describe('draft composer profiles', () => {
 })
 
 describe('session composer resolution', () => {
+  it('applies saved model configuration values to live option metadata', () => {
+    const resolved = resolveSessionComposerRuntime(
+      {
+        sessionId: 'session-1',
+        providerId: 'cursor',
+        configOptions: [
+          {
+            type: 'select',
+            id: 'thought_level',
+            name: 'Reasoning effort',
+            currentValue: 'medium',
+            options: [
+              { value: 'medium', name: 'Medium' },
+              { value: 'high', name: 'High' },
+            ],
+          },
+          {
+            type: 'boolean',
+            id: 'fast',
+            name: 'Fast',
+            currentValue: false,
+          },
+        ],
+      },
+      { configValues: { thought_level: 'high', fast: true } },
+      profile,
+    )
+
+    expect(resolved.configOptions).toMatchObject([
+      { id: 'thought_level', currentValue: 'high' },
+      { id: 'fast', currentValue: true },
+    ])
+  })
+
   it('shows the workspace model preference over the agent-reported global model', () => {
     const resolved = resolveSessionComposerRuntime(
       {

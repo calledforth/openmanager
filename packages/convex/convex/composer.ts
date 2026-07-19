@@ -94,6 +94,7 @@ export const upsertPreference = mutation({
     providerId: v.string(),
     modelId: v.optional(v.string()),
     modeId: v.optional(v.string()),
+    configValues: v.optional(v.any()),
   },
   handler: async (ctx, args) => {
     const existing = await ctx.db
@@ -111,6 +112,9 @@ export const upsertPreference = mutation({
       if (args.modeId !== undefined && args.modeId !== existing.modeId) {
         patch.modeId = args.modeId
       }
+      if (args.configValues !== undefined && !sameValue(args.configValues, existing.configValues)) {
+        patch.configValues = args.configValues
+      }
       if (Object.keys(patch).length === 0) return
       await ctx.db.patch(existing._id, { ...patch, updatedAt: Date.now() })
       return
@@ -121,6 +125,7 @@ export const upsertPreference = mutation({
       providerId: args.providerId,
       ...(args.modelId !== undefined ? { modelId: args.modelId } : {}),
       ...(args.modeId !== undefined ? { modeId: args.modeId } : {}),
+      ...(args.configValues !== undefined ? { configValues: args.configValues } : {}),
       updatedAt: Date.now(),
     })
   },

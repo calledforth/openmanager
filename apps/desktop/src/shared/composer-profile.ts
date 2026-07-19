@@ -28,6 +28,7 @@ export interface ProviderComposerProfile {
 export interface WorkspaceComposerPreference {
   modelId?: string
   modeId?: string
+  configValues?: Record<string, string | boolean>
 }
 
 export type ProviderComposerProfiles = Partial<Record<ProviderId, ProviderComposerProfile>>
@@ -82,6 +83,7 @@ export interface WorkspaceComposerPreferenceDoc {
   providerId: string
   modelId?: string
   modeId?: string
+  configValues?: Record<string, string | boolean>
 }
 
 export function composerProfilesFromDocs(
@@ -111,6 +113,7 @@ export function composerPreferencesFromDocs(
     preferences[workspaceComposerPreferenceKey(doc.workspacePath, doc.providerId)] = {
       ...(doc.modelId ? { modelId: doc.modelId } : {}),
       ...(doc.modeId ? { modeId: doc.modeId } : {}),
+      ...(doc.configValues ? { configValues: doc.configValues } : {}),
     }
   }
   return preferences

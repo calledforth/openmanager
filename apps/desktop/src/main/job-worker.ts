@@ -21,6 +21,8 @@ type JobDoc = {
   status: string
 }
 
+type SessionConfigValues = Record<string, string | boolean>
+
 const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
@@ -36,6 +38,10 @@ export class JobWorker {
       workspacePath: string,
       providerId: ProviderId,
     ) => string | null,
+    private getConfigValuesForWorkspace: (
+      workspacePath: string,
+      providerId: ProviderId,
+    ) => SessionConfigValues | undefined,
     private setLastModelForWorkspace: (
       workspacePath: string,
       providerId: ProviderId,
@@ -53,6 +59,40 @@ export class JobWorker {
       threadId,
       workspaceId: parsed.workspacePath as string,
       cwd: parsed.workspacePath as string,
+    }
+  }
+
+  private configValues(value: unknown): SessionConfigValues | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+    const entries = Object.entries(value).filter(
+      (entry): entry is [string, string | boolean] =>
+        entry[0].length > 0 && (typeof entry[1] === 'string' || typeof entry[1] === 'boolean'),
+    )
+    return entries.length > 0 ? Object.fromEntries(entries) : undefined
+  }
+
+  private async applyConfigValues(
+    parsed: Record<string, any>,
+    threadId: string,
+    sessionId: string,
+    values: SessionConfigValues | undefined,
+  ): Promise<void> {
+    if (!values) return
+    const route = this.route(parsed, threadId)
+    for (const [configId, value] of Object.entries(values)) {
+      try {
+        await this.agentHost.runtime.setConfigOption({
+          ...route,
+          sessionId,
+          configId,
+          value,
+        })
+      } catch (error) {
+        // Config availability is model-specific. A remembered setting may no
+        // longer exist after an agent or model update, so restore the valid
+        // options and leave stale ones non-fatal.
+        console.warn(`[job-worker] failed to apply config ${configId}: ${(error as Error).message}`)
+      }
     }
   }
 
@@ -236,6 +276,15 @@ export class JobWorker {
               )
             }
           }
+          const preferredConfigValues =
+            this.configValues(parsed.preferredConfigValues) ??
+            this.getConfigValuesForWorkspace(parsed.workspacePath, route.providerId)
+          await this.applyConfigValues(
+            parsed,
+            parsed.sessionExternalId,
+            parsed.sessionExternalId,
+            preferredConfigValues,
+          )
           await this.agentHost.runtime.prompt({
             ...route,
             sessionId: parsed.sessionExternalId,
@@ -261,6 +310,12 @@ export class JobWorker {
               )
             }
           }
+          await this.applyConfigValues(
+            parsed,
+            threadId,
+            session.sessionId,
+            this.getConfigValuesForWorkspace(parsed.workspacePath, providerId),
+          )
           await this.runTrackedMutation('sessions.upsertStatus', api.sessions.upsertStatus, {
             workspacePath: parsed.workspacePath,
             externalId: session.sessionId,
@@ -303,6 +358,10 @@ export class JobWorker {
               )
             }
           }
+          const preferredConfigValues =
+            this.configValues(parsed.preferredConfigValues) ??
+            this.getConfigValuesForWorkspace(parsed.workspacePath, providerId)
+          await this.applyConfigValues(parsed, threadId, session.sessionId, preferredConfigValues)
           await this.runTrackedMutation('sessions.upsertStatus', api.sessions.upsertStatus, {
             workspacePath: parsed.workspacePath,
             externalId: session.sessionId,
@@ -356,12 +415,26 @@ export class JobWorker {
             modelId: parsed.modelId,
           })
           this.setLastModelForWorkspace(parsed.workspacePath, providerId, parsed.modelId)
+          await this.applyConfigValues(
+            parsed,
+            parsed.sessionExternalId,
+            parsed.sessionExternalId,
+            this.getConfigValuesForWorkspace(parsed.workspacePath, providerId),
+          )
           break
         case 'set_mode':
           await this.agentHost.runtime.setMode({
             ...this.route(parsed, parsed.sessionExternalId),
             sessionId: parsed.sessionExternalId,
             modeId: parsed.modeId,
+          })
+          break
+        case 'set_config_option':
+          await this.agentHost.runtime.setConfigOption({
+            ...this.route(parsed, parsed.sessionExternalId),
+            sessionId: parsed.sessionExternalId,
+            configId: parsed.configId,
+            value: parsed.value,
           })
           break
         default:

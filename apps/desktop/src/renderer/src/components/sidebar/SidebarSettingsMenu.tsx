@@ -9,9 +9,13 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 import {
+  ArrowClockwiseIcon,
   CheckIcon,
+  CheckCircleIcon,
   CaretRightIcon,
   CircleIcon,
+  CircleNotchIcon,
+  DownloadSimpleIcon,
   HexagonIcon,
   MoonIcon,
   PaletteIcon,
@@ -19,6 +23,7 @@ import {
   GearIcon,
   SunIcon,
   TextTIcon,
+  WarningCircleIcon,
   type Icon,
 } from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
@@ -37,30 +42,13 @@ interface ProviderRow {
 
 type MenuCoords = { left: number; bottom: number; width: number }
 
-function formatProviderLabel(id: string): string {
-  return id
-    .split(/[-_]/)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ')
-}
-
-function extractModelProviders(models: Array<{ modelId?: unknown }> | undefined): ProviderRow[] {
-  if (!models?.length) return []
-  const seen = new Set<string>()
-  const rows: ProviderRow[] = []
-  for (const model of models) {
-    if (typeof model.modelId !== 'string' || !model.modelId.trim()) continue
-    const providerId = model.modelId.split('/')[0]
-    if (!providerId || seen.has(providerId)) continue
-    seen.add(providerId)
-    rows.push({
-      id: providerId,
-      label: formatProviderLabel(providerId),
-      connected: true,
-    })
-  }
-  return rows.sort((a, b) => a.label.localeCompare(b.label))
-}
+type UpdateCheckState =
+  | { status: 'idle' }
+  | { status: 'checking' }
+  | { status: 'current'; version: string }
+  | { status: 'available'; version: string }
+  | { status: 'unsupported'; message: string }
+  | { status: 'error'; message: string }
 
 function MenuFlyout({
   label,
@@ -81,9 +69,7 @@ function MenuFlyout({
       >
         <Icon className="h-3.5 w-3.5 shrink-0 text-[var(--basis-text-muted)]" />
         <span className="min-w-0 flex-1 text-left">{label}</span>
-        <CaretRightIcon
-          className="h-3 w-3 shrink-0 text-[var(--basis-text-faint)]"
-        />
+        <CaretRightIcon className="h-3 w-3 shrink-0 text-[var(--basis-text-faint)]" />
       </div>
       <div
         className={cn(
@@ -99,6 +85,9 @@ function MenuFlyout({
 export function SidebarSettingsMenu() {
   const [open, setOpen] = useState(false)
   const [convexSettingsOpen, setConvexSettingsOpen] = useState(false)
+  const [updateCheckState, setUpdateCheckState] = useState<UpdateCheckState>({
+    status: 'idle',
+  })
   const [menuCoords, setMenuCoords] = useState<MenuCoords | null>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -107,14 +96,25 @@ export function SidebarSettingsMenu() {
   const {
     agentStatusByProvider,
     agentUiStatusByProvider,
-    acpSessionState,
-    draftSessionState,
     acpAgentInfoByProvider,
     providers: registeredProviders,
     retryProvider,
   } = useAppUi()
 
   const close = useCallback(() => setOpen(false), [])
+  const checkForUpdates = useCallback(async () => {
+    if (updateCheckState.status === 'checking') return
+    setUpdateCheckState({ status: 'checking' })
+    try {
+      const result = await window.electronAPI.checkForUpdates()
+      setUpdateCheckState(result)
+    } catch (error) {
+      setUpdateCheckState({
+        status: 'error',
+        message: error instanceof Error ? error.message : 'Unable to check for updates.',
+      })
+    }
+  }, [updateCheckState.status])
 
   const updateMenuCoords = useCallback(() => {
     const el = triggerRef.current
@@ -170,14 +170,8 @@ export function SidebarSettingsMenu() {
     return () => document.removeEventListener('keydown', handler)
   }, [open, close])
 
-  const modelProviders = useMemo(() => {
-    const models =
-      acpSessionState?.models?.availableModels ?? draftSessionState?.models?.availableModels ?? []
-    return extractModelProviders(models)
-  }, [acpSessionState, draftSessionState])
-
   const providers = useMemo<ProviderRow[]>(() => {
-    const runtimeRows = registeredProviders.map((provider) => {
+    return registeredProviders.map((provider) => {
       const uiStatus = agentUiStatusByProvider[provider.id] ?? 'disconnected'
       const status = agentStatusByProvider[provider.id] ?? 'stopped'
       const agentInfo = acpAgentInfoByProvider[provider.id]
@@ -198,9 +192,7 @@ export function SidebarSettingsMenu() {
               : 'Unavailable',
       }
     })
-
-    return [...runtimeRows, ...modelProviders]
-  }, [acpAgentInfoByProvider, agentStatusByProvider, agentUiStatusByProvider, modelProviders, registeredProviders])
+  }, [acpAgentInfoByProvider, agentStatusByProvider, agentUiStatusByProvider, registeredProviders])
 
   const disconnectedProviders = useMemo(
     () =>
@@ -209,6 +201,26 @@ export function SidebarSettingsMenu() {
       ),
     [agentUiStatusByProvider, registeredProviders],
   )
+  const updateCheckDetail =
+    updateCheckState.status === 'checking'
+      ? 'Contacting update server…'
+      : updateCheckState.status === 'current'
+        ? `Version ${updateCheckState.version} is current`
+        : updateCheckState.status === 'available'
+          ? `Downloading version ${updateCheckState.version}`
+          : updateCheckState.status === 'unsupported' || updateCheckState.status === 'error'
+            ? updateCheckState.message
+            : null
+  const UpdateCheckIcon =
+    updateCheckState.status === 'checking'
+      ? CircleNotchIcon
+      : updateCheckState.status === 'current'
+        ? CheckCircleIcon
+        : updateCheckState.status === 'available'
+          ? DownloadSimpleIcon
+          : updateCheckState.status === 'unsupported' || updateCheckState.status === 'error'
+            ? WarningCircleIcon
+            : ArrowClockwiseIcon
 
   const menu =
     open &&
@@ -251,9 +263,7 @@ export function SidebarSettingsMenu() {
                 >
                   <TextTIcon className="h-3 w-3 shrink-0 opacity-60" />
                   <span className="min-w-0 flex-1 truncate">{option.label}</span>
-                  {selected && (
-                    <CheckIcon className="h-3 w-3 shrink-0 text-[var(--basis-text)]" />
-                  )}
+                  {selected && <CheckIcon className="h-3 w-3 shrink-0 text-[var(--basis-text)]" />}
                 </button>
               )
             })}
@@ -322,6 +332,38 @@ export function SidebarSettingsMenu() {
         </MenuFlyout>
 
         <div className="my-1 border-t border-[var(--basis-border-muted)]" />
+        <button
+          type="button"
+          role="menuitem"
+          disabled={updateCheckState.status === 'checking'}
+          onClick={() => void checkForUpdates()}
+          className={cn(
+            typographyBodySm,
+            'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[var(--basis-text)] transition-default hover:bg-[var(--basis-surface-hover)] disabled:cursor-wait',
+          )}
+        >
+          <UpdateCheckIcon
+            className={cn(
+              'h-3.5 w-3.5 shrink-0 text-[var(--basis-text-muted)]',
+              updateCheckState.status === 'checking' && 'animate-spin',
+              updateCheckState.status === 'current' && 'text-emerald-400',
+              updateCheckState.status === 'available' && 'text-[var(--basis-action-bg)]',
+              updateCheckState.status === 'error' && 'text-amber-400',
+            )}
+          />
+          <span className="min-w-0 flex-1">
+            <span className="block">Check for updates</span>
+            {updateCheckDetail && (
+              <span
+                className={cn(typographyCaption, 'block truncate text-[var(--basis-text-faint)]')}
+                title={updateCheckDetail}
+                aria-live="polite"
+              >
+                {updateCheckDetail}
+              </span>
+            )}
+          </span>
+        </button>
         <button
           type="button"
           role="menuitem"

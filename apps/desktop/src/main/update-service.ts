@@ -4,13 +4,14 @@ import electronUpdater, {
   type ProgressInfo,
   type UpdateInfo,
 } from 'electron-updater'
-import type { AppUpdateEvent } from '../shared/app-update'
+import type { AppUpdateEvent, ManualUpdateCheckResult } from '../shared/app-update'
 
 const INITIAL_CHECK_DELAY_MS = 10_000
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1_000
 
 let started = false
 let latestVersion: string | null = null
+let updateCheckInFlight: Promise<ManualUpdateCheckResult> | null = null
 
 function getAutoUpdater(): AppUpdater {
   // electron-updater is CommonJS; destructuring avoids ESM interop issues in bundled builds.
@@ -28,6 +29,39 @@ function broadcastUpdate(event: AppUpdateEvent): void {
   }
 }
 
+function updaterUnavailableReason(): string | null {
+  if (!app.isPackaged) return 'Update checks are available in installed builds.'
+  if (process.platform !== 'win32') return 'Automatic updates are currently available on Windows.'
+  if (isPortableBuild()) return 'Automatic updates are unavailable in portable builds.'
+  return null
+}
+
+async function checkForUpdatesNow(): Promise<ManualUpdateCheckResult> {
+  const unavailableReason = updaterUnavailableReason()
+  if (unavailableReason) return { status: 'unsupported', message: unavailableReason }
+  if (updateCheckInFlight) return updateCheckInFlight
+
+  const autoUpdater = getAutoUpdater()
+  const check = (async (): Promise<ManualUpdateCheckResult> => {
+    try {
+      const result = await autoUpdater.checkForUpdates()
+      if (!result) {
+        return {
+          status: 'unsupported',
+          message: 'The update service is unavailable for this build.',
+        }
+      }
+      return result.isUpdateAvailable
+        ? { status: 'available', version: result.updateInfo.version }
+        : { status: 'current', version: app.getVersion() }
+    } finally {
+      updateCheckInFlight = null
+    }
+  })()
+  updateCheckInFlight = check
+  return check
+}
+
 export function startUpdateService(): void {
   if (started) return
   started = true
@@ -36,8 +70,9 @@ export function startUpdateService(): void {
     if (!app.isPackaged || process.platform !== 'win32' || isPortableBuild()) return
     getAutoUpdater().quitAndInstall(false, true)
   })
+  ipcMain.handle('updater:check', () => checkForUpdatesNow())
 
-  if (!app.isPackaged || process.platform !== 'win32' || isPortableBuild()) return
+  if (updaterUnavailableReason()) return
 
   const autoUpdater = getAutoUpdater()
   autoUpdater.autoDownload = true
@@ -80,7 +115,7 @@ export function startUpdateService(): void {
   })
 
   const checkForUpdates = (): void => {
-    void autoUpdater.checkForUpdates().catch((error: unknown) => {
+    void checkForUpdatesNow().catch((error: unknown) => {
       console.error('[updater] unable to check for updates:', error)
     })
   }

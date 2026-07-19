@@ -18,9 +18,11 @@ export function MessageInput() {
     draftSessionState,
     setDraftModel,
     setDraftMode,
+    setDraftConfigOption,
     setDraftProvider,
     setSessionModel,
     setSessionMode,
+    setSessionConfigOption,
     agentUiStatusByProvider,
     defaultProviderId,
     agentEvents,
@@ -194,6 +196,7 @@ export function MessageInput() {
       currentProviderId={currentProviderId}
       providerModelGroups={providerModelGroups}
       currentModelId={currentModelId}
+      configOptions={runtimeState?.configOptions ?? []}
       modeOptions={modeOptions}
       currentModeId={currentModeId}
       canChangeSettings={canChangeSettings}
@@ -229,6 +232,13 @@ export function MessageInput() {
           return
         }
         setDraftModel(modelId)
+      }}
+      onConfigOptionChange={(configId, value) => {
+        if (activeSessionId) {
+          void setSessionConfigOption(activeSessionId, configId, value)
+          return
+        }
+        setDraftConfigOption(configId, value)
       }}
       onSend={uploadAndSend}
       onAbort={() => {
