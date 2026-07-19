@@ -384,6 +384,12 @@ export type AgentEvent = AgentEventBase &
       }
     | {
         category: 'session'
+        event: 'question_request'
+        sessionId: string
+        data: QuestionRequest
+      }
+    | {
+        category: 'session'
         event: 'current_model_update'
         sessionId: string
         data: ModelListing

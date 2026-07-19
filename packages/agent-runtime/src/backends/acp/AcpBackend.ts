@@ -35,6 +35,7 @@ import type {
   SessionResult,
 } from '../Backend.js'
 import { ExtensionRegistry, type QuestionAdapter } from './extensions.js'
+import { parseAcpFormElicitation, type AcpFormQuestionAdapter } from './elicitation.js'
 
 type RecordValue = Record<string, unknown>
 type SpawnedChildProcess = ChildProcessWithoutNullStreams & {
@@ -68,6 +69,7 @@ const errorCode = (error: unknown): number | undefined => number(object(error).c
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : 'ACP operation failed'
 const isAuthRequired = (error: unknown): boolean => errorCode(error) === -32002
+const ACP_ELICITATION_METHOD = acp.methods.client.elicitation.create
 
 function normalizeModelListing(value: unknown): ModelListing {
   const listing = object(value)
@@ -239,7 +241,9 @@ export class AcpBackend implements Backend {
   )
   private readonly questionContexts = new Map<
     string,
-    { adapter: QuestionAdapter; params: unknown } | { native: string }
+    | { adapter: QuestionAdapter; params: unknown }
+    | { elicitation: AcpFormQuestionAdapter }
+    | { native: string }
   >()
   private readonly extensionRequests = new ExtensionBroker((settlement) => {
     this.questionContexts.delete(settlement.requestId)
@@ -334,6 +338,7 @@ export class AcpBackend implements Backend {
     const client: acp.Client = {
       requestPermission: async (params) => this.permissionRequest(params),
       sessionUpdate: async (params) => this.sessionUpdate(params),
+      unstable_createElicitation: async (params) => this.elicitationRequest(params),
       extMethod: async (method, params) => this.extensionRequest(method, params),
       extNotification: async (method, params) => this.extensionNotification(method, params),
     }
@@ -386,6 +391,7 @@ export class AcpBackend implements Backend {
           clientCapabilities: {
             fs: { readTextFile: false, writeTextFile: false },
             terminal: false,
+            elicitation: { form: {} },
             _meta: { parameterizedModelPicker: true },
           },
           clientInfo: { name: '@agentpack/runtime', version: '0.1.0' },
@@ -630,6 +636,8 @@ export class AcpBackend implements Backend {
     const context = this.questionContexts.get(requestId)
     if (!context) return false
     if ('native' in context) return this.extensionRequests.respond(requestId, outcome)
+    if ('elicitation' in context)
+      return this.extensionRequests.respond(requestId, context.elicitation.respond(outcome))
     return this.extensionRequests.respond(
       requestId,
       context.adapter.respond(outcome, context.params),
@@ -665,7 +673,7 @@ export class AcpBackend implements Backend {
       return
     }
     try {
-      await this.conn().unstable_setSessionModel({
+      await this.conn().request('session/set_model', {
         sessionId: args.sessionId,
         modelId: args.modelId,
       })
@@ -982,6 +990,53 @@ export class AcpBackend implements Backend {
       return this.sessions.forSession(this.activePromptSessionId)
     const bindings = this.sessions.bindings()
     return bindings.length === 1 ? bindings[0] : undefined
+  }
+  private elicitationBinding(params: acp.CreateElicitationRequest): SessionBinding | undefined {
+    const sessionId = sessionIdOf(params)
+    if (sessionId) return this.sessions.forSession(sessionId)
+    const bindings = this.sessions.bindings()
+    return bindings.length === 1 ? bindings[0] : undefined
+  }
+  private async elicitationRequest(
+    params: acp.CreateElicitationRequest,
+  ): Promise<acp.CreateElicitationResponse> {
+    this.logInbound(ACP_ELICITATION_METHOD, params)
+    const binding = this.elicitationBinding(params)
+    const adapter = parseAcpFormElicitation(params)
+    if (!binding || !adapter) {
+      this.host.log({
+        scope: 'acp',
+        level: 'warn',
+        message: 'Declining unsupported or unrouteable ACP elicitation',
+        data: { providerId: this.providerId, mode: string(object(params).mode) },
+      })
+      return { action: 'cancel' }
+    }
+
+    const requestId = crypto.randomUUID()
+    this.questionContexts.set(requestId, { elicitation: adapter })
+    const response = new Promise<ExtensionOutcome>((resolve) =>
+      this.extensionRequests.add(requestId, {
+        providerId: this.providerId,
+        threadId: binding.threadId,
+        workspaceId: binding.workspaceId,
+        sessionId: binding.sessionId,
+        method: ACP_ELICITATION_METHOD,
+        resolve,
+      }),
+    )
+    this.emit(
+      routeEvent(binding, binding.sessionId, 'session', 'question_request', {
+        requestId,
+        sessionId: binding.sessionId,
+        title: adapter.title,
+        questions: adapter.questions,
+      }),
+    )
+    const outcome = await response
+    return outcome.outcome === 'responded'
+      ? (outcome.response as acp.CreateElicitationResponse)
+      : { action: 'cancel' }
   }
   private async extensionRequest(
     method: string,

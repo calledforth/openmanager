@@ -1,4 +1,9 @@
-import type { ExtensionOutcome, PermissionCancellationReason, ProviderId } from '@agentpack/contract'
+import type {
+  ExtensionOutcome,
+  PermissionCancellationReason,
+  ProviderId,
+} from '@agentpack/contract'
+
 export const EXTENSION_TIMEOUT_MS = 5 * 60 * 1000
 type Pending = {
   providerId: ProviderId
@@ -20,6 +25,7 @@ export type ExtensionSettlement = {
 }
 export class ExtensionBroker {
   private readonly pending = new Map<string, Pending>()
+
   constructor(private readonly onSettle?: (settlement: ExtensionSettlement) => void) {}
   add(requestId: string, args: Omit<Pending, 'timer'>): void {
     const timer = setTimeout(
@@ -32,12 +38,15 @@ export class ExtensionBroker {
   respond(requestId: string, response: unknown): boolean {
     return this.settleOne(requestId, { outcome: 'responded', response })
   }
+
   cancelThread(providerId: ProviderId, threadId: string): void {
     this.settle('tool_cancelled', providerId, threadId)
   }
+
   settleProvider(providerId: ProviderId): void {
     this.settle('session_closed', providerId)
   }
+
   settleAll(): void {
     this.settle('runtime_disposed')
   }

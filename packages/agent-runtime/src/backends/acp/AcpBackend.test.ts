@@ -10,6 +10,10 @@ type BackendInternals = {
   process: { exitCode: null }
   initialized: boolean
   authenticated: boolean
+  handshake(route: { threadId: string; workspaceId?: string }): Promise<void>
+  elicitationRequest(
+    params: import('@agentclientprotocol/sdk').CreateElicitationRequest,
+  ): Promise<import('@agentclientprotocol/sdk').CreateElicitationResponse>
   sessionUpdate(params: { sessionId: string; update: Record<string, unknown> }): Promise<void>
   activePromptSessionId?: string
 }
@@ -426,11 +430,11 @@ describe('AcpBackend session compatibility', () => {
   })
 
   it('falls back to legacy model and mode methods without config options', async () => {
-    const unstableSetSessionModel = vi.fn(async () => ({}))
+    const request = vi.fn(async () => ({}))
     const setSessionMode = vi.fn(async () => ({}))
     const { backend } = setup({
       newSession: async () => ({ sessionId: 'session-1' }),
-      unstable_setSessionModel: unstableSetSessionModel,
+      request,
       setSessionMode,
     })
     await backend.ensureSession(route)
@@ -438,7 +442,7 @@ describe('AcpBackend session compatibility', () => {
     await backend.setModel({ ...route, sessionId: 'session-1', modelId: 'legacy-model' })
     await backend.setMode({ ...route, sessionId: 'session-1', modeId: 'legacy-mode' })
 
-    expect(unstableSetSessionModel).toHaveBeenCalledWith({
+    expect(request).toHaveBeenCalledWith('session/set_model', {
       sessionId: 'session-1',
       modelId: 'legacy-model',
     })
@@ -480,6 +484,124 @@ describe('AcpBackend session compatibility', () => {
     expect(events.find((event) => event.event === 'prompt_started')?.data).toMatchObject({
       prompt: 'Describe this',
       attachments: [{ id: 'attachment-1', name: 'icon.png' }],
+    })
+  })
+
+  it('advertises form elicitation support during initialization', async () => {
+    const initialize = vi.fn(async () => ({ protocolVersion: 1, authMethods: [] }))
+    const { internals } = setup({ initialize })
+
+    await internals.handshake(route)
+
+    expect(initialize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clientCapabilities: expect.objectContaining({
+          elicitation: { form: {} },
+        }),
+      }),
+    )
+  })
+
+  it('routes standard ACP form elicitation through the canonical question broker', async () => {
+    const { backend, events, internals } = setup({
+      newSession: async () => ({ sessionId: 'session-1' }),
+    })
+    await backend.ensureSession(route)
+
+    const pending = internals.elicitationRequest({
+      sessionId: 'session-1',
+      mode: 'form',
+      message: 'Choose and configure',
+      requestedSchema: {
+        type: 'object',
+        properties: {
+          strategy: {
+            type: 'string',
+            title: 'Strategy',
+            oneOf: [
+              { const: 'safe', title: 'Safe' },
+              { const: 'fast', title: 'Fast' },
+            ],
+          },
+          retries: {
+            type: 'integer',
+            title: 'Retries',
+            minimum: 0,
+          },
+        },
+        required: ['strategy', 'retries'],
+      },
+    })
+    const request = events.find((event) => event.event === 'question_request')
+    expect(request).toMatchObject({
+      category: 'session',
+      sessionId: 'session-1',
+      data: {
+        title: 'Choose and configure',
+        questions: [
+          {
+            questionId: 'strategy',
+            options: [
+              { optionId: 'safe', label: 'Safe' },
+              { optionId: 'fast', label: 'Fast' },
+            ],
+          },
+          { questionId: 'retries', options: [] },
+        ],
+      },
+    })
+
+    const requestId = (request?.data as { requestId: string }).requestId
+    expect(
+      backend.respondQuestion(requestId, {
+        outcome: 'answered',
+        answers: [
+          { questionId: 'strategy', selectedOptionIds: ['fast'] },
+          { questionId: 'retries', text: '3' },
+        ],
+      }),
+    ).toBe(true)
+    await expect(pending).resolves.toEqual({
+      action: 'accept',
+      content: { strategy: 'fast', retries: 3 },
+    })
+    expect(events.find((event) => event.event === 'extension_resolved')).toMatchObject({
+      data: {
+        requestId,
+        method: 'elicitation/create',
+        outcome: { outcome: 'responded' },
+      },
+    })
+    expect(backend.respondQuestion(requestId, { outcome: 'cancelled' })).toBe(false)
+  })
+
+  it('cancels pending ACP form elicitation with the prompt turn', async () => {
+    const cancel = vi.fn(async () => undefined)
+    const { backend, events, internals } = setup({
+      newSession: async () => ({ sessionId: 'session-1' }),
+      cancel,
+    })
+    await backend.ensureSession(route)
+    const pending = internals.elicitationRequest({
+      sessionId: 'session-1',
+      mode: 'form',
+      message: 'Name it',
+      requestedSchema: {
+        type: 'object',
+        properties: { name: { type: 'string', title: 'Name' } },
+        required: ['name'],
+      },
+    })
+
+    await backend.cancel({ ...route, sessionId: 'session-1' })
+
+    await expect(pending).resolves.toEqual({ action: 'cancel' })
+    expect(cancel).toHaveBeenCalledWith({ sessionId: 'session-1' })
+    expect(events.find((event) => event.event === 'extension_resolved')).toMatchObject({
+      data: {
+        method: 'elicitation/create',
+        outcome: { outcome: 'cancelled', reason: 'tool_cancelled' },
+      },
     })
   })
 })

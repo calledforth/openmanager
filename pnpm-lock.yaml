@@ -290,8 +290,8 @@ importers:
   packages/agent-runtime:
     dependencies:
       '@agentclientprotocol/sdk':
-        specifier: ^0.19.0
-        version: 0.19.2(zod@4.4.3)
+        specifier: 1.2.1
+        version: 1.2.1(zod@4.4.3)
       '@agentpack/contract':
         specifier: workspace:*
         version: link:../agent-contract
@@ -349,8 +349,8 @@ packages:
   '@adobe/css-tools@4.5.0':
     resolution: {integrity: sha512-6OzddxPio9UiWTCemp4N8cYLV2ZN1ncRnV1cVGtve7dhPOtRkleRyx32GQCYSwDYgaHU3USMm84tNsvKzRCa1Q==}
 
-  '@agentclientprotocol/sdk@0.19.2':
-    resolution: {integrity: sha512-G1Qi50Kc2GZxYjvH6t6yG8KFZMVe5vWTzZH4c7ylb0yiqMfNQSBDHPy0FMxYLPsorMqlM+eyV4yRp4oeUjl/Lw==}
+  '@agentclientprotocol/sdk@1.2.1':
+    resolution: {integrity: sha512-jwYUdOQR7tc+Zfch53VL4JJyUNK/46q03uUTYb+PjECsmnNl94XFXOfYLJ8RBpMNidXd1rpOAVgb0vqD98xImA==}
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
 
@@ -7697,7 +7697,7 @@ snapshots:
 
   '@adobe/css-tools@4.5.0': {}
 
-  '@agentclientprotocol/sdk@0.19.2(zod@4.4.3)':
+  '@agentclientprotocol/sdk@1.2.1(zod@4.4.3)':
     dependencies:
       zod: 4.4.3
 
