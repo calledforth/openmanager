@@ -1,6 +1,6 @@
 {
   "name": "@openmanager/desktop",
-  "version": "0.1.6-alpha.1",
+  "version": "0.1.7-alpha.1",
   "private": true,
   "description": "Desktop GUI for managing OpenCode agent sessions",
   "main": "./out/main/index.js",
