@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { api } from '@openmanager/convex/_generated/api'
 import { useAppUi } from '../../providers/app-ui-provider'
 import { useActiveSession } from '../../providers/active-session-provider'
+import { useQuestionStateOptional } from '../../providers/question-provider'
+import { ComposerQuestionPrompt } from '../questions/ComposerQuestionPrompt'
 import { MessageInputView } from './MessageInputView'
 import { deriveSessionChrome } from '@agentpack/view'
 import { useTrackedMutation } from '../../lib/convex-telemetry'
@@ -32,6 +34,8 @@ export function MessageInput() {
     acpPromptCapabilitiesByProvider,
   } = useAppUi()
   const { sendMessage, abortSession, activeSession } = useActiveSession()
+  const questionState = useQuestionStateOptional()
+  const pendingQuestion = questionState?.pendingQuestion ?? null
   const generateUploadUrl = useTrackedMutation(
     'attachments.generateUploadUrl',
     (api as any).attachments.generateUploadUrl,
@@ -128,6 +132,20 @@ export function MessageInput() {
   }, [currentModelId, currentProviderId])
 
   const uploadAndSend = async (text: string, drafts: DraftImageAttachment[]) => {
+    // A pending single question claims the composer: sent text answers it as
+    // the user's own free-text option instead of becoming a prompt.
+    if (
+      pendingQuestion?.questions.length === 1 &&
+      pendingQuestion.questions[0].allowFreeText &&
+      questionState &&
+      text.trim()
+    ) {
+      await questionState.resolveQuestion({
+        outcome: 'answered',
+        answers: [{ questionId: pendingQuestion.questions[0].questionId, text: text.trim() }],
+      })
+      return
+    }
     if (!currentClientId) throw new Error('Client identity unavailable')
     const uploaded: UploadedImageAttachment[] = []
     try {
@@ -186,66 +204,69 @@ export function MessageInput() {
             : null
 
   return (
-    <MessageInputView
-      disabled={disabled}
-      pendingDraftSessionStart={pendingDraftSessionStart}
-      activeWorkspacePath={activeWorkspacePath}
-      activeSessionId={activeSessionId}
-      isSessionDraftOpen={isSessionDraftOpen}
-      providerReady={providerReady}
-      currentProviderId={currentProviderId}
-      providerModelGroups={providerModelGroups}
-      currentModelId={currentModelId}
-      configOptions={runtimeState?.configOptions ?? []}
-      modeOptions={modeOptions}
-      currentModeId={currentModeId}
-      canChangeSettings={canChangeSettings}
-      canChangeProvider={isSessionDraftOpen && !activeSessionId}
-      showModeControl={chrome.modePicker !== null || modeOptions.length > 0}
-      showModelControl={
-        chrome.modelPicker !== null ||
-        modelOptions.length > 0 ||
-        providerModelGroups.some((group) => group.models.length > 0)
-      }
-      isStreaming={isStreaming}
-      draftKey={draftKey}
-      imageUploadEnabled={
-        providerSupportsImages && modelImageSupport !== false && modelImageSupport !== undefined
-      }
-      imageSupportMessage={imageSupportMessage}
-      onModeChange={(id) => {
-        if (activeSessionId) {
-          void setSessionMode(activeSessionId, id)
-          return
+    <div className="flex w-full flex-col">
+      <ComposerQuestionPrompt />
+      <MessageInputView
+        disabled={disabled}
+        pendingDraftSessionStart={pendingDraftSessionStart}
+        activeWorkspacePath={activeWorkspacePath}
+        activeSessionId={activeSessionId}
+        isSessionDraftOpen={isSessionDraftOpen}
+        providerReady={providerReady}
+        currentProviderId={currentProviderId}
+        providerModelGroups={providerModelGroups}
+        currentModelId={currentModelId}
+        configOptions={runtimeState?.configOptions ?? []}
+        modeOptions={modeOptions}
+        currentModeId={currentModeId}
+        canChangeSettings={canChangeSettings}
+        canChangeProvider={isSessionDraftOpen && !activeSessionId}
+        showModeControl={chrome.modePicker !== null || modeOptions.length > 0}
+        showModelControl={
+          chrome.modelPicker !== null ||
+          modelOptions.length > 0 ||
+          providerModelGroups.some((group) => group.models.length > 0)
         }
-        setDraftMode(id)
-      }}
-      onProviderModelChange={(providerId, modelId) => {
-        if (activeSessionId) {
-          if (providerId === currentProviderId) {
-            void setSessionModel(activeSessionId, modelId)
+        isStreaming={isStreaming}
+        draftKey={draftKey}
+        imageUploadEnabled={
+          providerSupportsImages && modelImageSupport !== false && modelImageSupport !== undefined
+        }
+        imageSupportMessage={imageSupportMessage}
+        onModeChange={(id) => {
+          if (activeSessionId) {
+            void setSessionMode(activeSessionId, id)
+            return
           }
-          return
-        }
-        if (providerId !== currentProviderId) {
-          setDraftProvider(providerId, modelId)
-          return
-        }
-        setDraftModel(modelId)
-      }}
-      onConfigOptionChange={(configId, value) => {
-        if (activeSessionId) {
-          void setSessionConfigOption(activeSessionId, configId, value)
-          return
-        }
-        setDraftConfigOption(configId, value)
-      }}
-      onSend={uploadAndSend}
-      onAbort={() => {
-        if (activeSessionId) {
-          void abortSession(activeSessionId)
-        }
-      }}
-    />
+          setDraftMode(id)
+        }}
+        onProviderModelChange={(providerId, modelId) => {
+          if (activeSessionId) {
+            if (providerId === currentProviderId) {
+              void setSessionModel(activeSessionId, modelId)
+            }
+            return
+          }
+          if (providerId !== currentProviderId) {
+            setDraftProvider(providerId, modelId)
+            return
+          }
+          setDraftModel(modelId)
+        }}
+        onConfigOptionChange={(configId, value) => {
+          if (activeSessionId) {
+            void setSessionConfigOption(activeSessionId, configId, value)
+            return
+          }
+          setDraftConfigOption(configId, value)
+        }}
+        onSend={uploadAndSend}
+        onAbort={() => {
+          if (activeSessionId) {
+            void abortSession(activeSessionId)
+          }
+        }}
+      />
+    </div>
   )
 }

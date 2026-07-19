@@ -19,6 +19,7 @@ import {
   type ProviderMetadata,
   type PromptAttachment,
   type PromptCapabilities,
+  type QuestionOutcome,
   type SessionConfigOption,
 } from '@agentpack/contract'
 import {
@@ -51,6 +52,10 @@ import {
 } from '../components/chat/modelConfig'
 
 export type ProviderUiStatus = 'disconnected' | 'connecting' | 'connected'
+
+/** How the user answered a permission request: an exact provider option, or a
+ * plain approve/deny the main process maps to an option by kind. */
+export type PermissionSelection = { optionId: string } | { approved: boolean }
 
 export type AgentInfo = { name?: string; version?: string }
 
@@ -287,7 +292,12 @@ interface AppUiValue {
   resolvePermission: (
     sessionExternalId: string,
     permissionId: string,
-    approved: boolean,
+    selection: PermissionSelection,
+  ) => Promise<void>
+  resolveQuestion: (
+    sessionExternalId: string,
+    requestId: string,
+    outcome: QuestionOutcome,
   ) => Promise<void>
   providerComposerProfiles: ProviderComposerProfiles
   setDraftModel: (modelId: string) => void
@@ -1121,7 +1131,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
   )
 
   const resolvePermission = useCallback(
-    async (sessionExternalId: string, permissionId: string, approved: boolean) => {
+    async (sessionExternalId: string, permissionId: string, selection: PermissionSelection) => {
       if (!activeWorkspacePath) return
       if (!currentClientId) {
         setError('Client identity unavailable')
@@ -1135,7 +1145,35 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
             workspacePath: activeWorkspacePath,
             sessionExternalId,
             permissionId,
-            approved,
+            ...selection,
+            providerId: acpSessionStateById[sessionExternalId]?.providerId ?? defaultProviderId,
+          }),
+          clientId: currentClientId,
+          sessionExternalId,
+        })
+      } catch (err) {
+        setError((err as Error).message)
+      }
+    },
+    [acpSessionStateById, activeWorkspacePath, currentClientId, defaultProviderId, submitJob],
+  )
+
+  const resolveQuestion = useCallback(
+    async (sessionExternalId: string, requestId: string, outcome: QuestionOutcome) => {
+      if (!activeWorkspacePath) return
+      if (!currentClientId) {
+        setError('Client identity unavailable')
+        return
+      }
+      try {
+        await submitJob({
+          workspacePath: activeWorkspacePath,
+          type: 'resolve_question',
+          payload: JSON.stringify({
+            workspacePath: activeWorkspacePath,
+            sessionExternalId,
+            requestId,
+            outcome,
             providerId: acpSessionStateById[sessionExternalId]?.providerId ?? defaultProviderId,
           }),
           clientId: currentClientId,
@@ -1693,9 +1731,12 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         case 'tool_call_content':
         case 'plan_update':
         case 'permission_request':
+        case 'permission_resolved':
+        case 'question_request':
         case 'session_info_update':
         case 'usage_update':
         case 'extension_request':
+        case 'extension_resolved':
         case 'extension_notification':
         case 'auth_required':
         case 'capability_missing':
@@ -1794,6 +1835,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       sendMessage,
       abortSession,
       resolvePermission,
+      resolveQuestion,
       setDraftModel,
       setDraftMode,
       setDraftConfigOption,
@@ -1830,6 +1872,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       sendMessage,
       abortSession,
       resolvePermission,
+      resolveQuestion,
       setDraftModel,
       setDraftMode,
       setDraftConfigOption,

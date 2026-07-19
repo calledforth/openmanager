@@ -1,4 +1,10 @@
-import type { AgentEvent, PermissionOutcome, PromptInput, ProviderId } from '@agentpack/contract'
+import type {
+  AgentEvent,
+  PermissionOutcome,
+  PromptInput,
+  ProviderId,
+  QuestionOutcome,
+} from '@agentpack/contract'
 
 export type BackendRoute = { threadId: string; workspaceId?: string }
 export type BackendSessionArgs = BackendRoute & {
@@ -28,6 +34,12 @@ export interface Backend {
   ): Promise<void>
   cancel(args: BackendRoute & { cwd: string; sessionId: string }): Promise<void>
   respondPermission(requestId: string, outcome: PermissionOutcome): boolean
+  /** Answer a deferred extension request (see ExtensionHandlers.deferred). The
+   * response is the provider-native payload returned verbatim on the wire. */
+  respondExtension(requestId: string, response: unknown): boolean
+  /** Answer a structured question (question_request event) with a provider-neutral
+   * outcome; the provider's question adapter builds the wire response. */
+  respondQuestion(requestId: string, outcome: QuestionOutcome): boolean
   setModel(args: BackendRoute & { cwd: string; sessionId: string; modelId: string }): Promise<void>
   setMode(args: BackendRoute & { cwd: string; sessionId: string; modeId: string }): Promise<void>
   setConfigOption(

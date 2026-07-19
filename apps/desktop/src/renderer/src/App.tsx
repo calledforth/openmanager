@@ -4,6 +4,7 @@ import { ThemeProvider } from './providers/theme-provider'
 import { SidebarDataProvider } from './providers/sidebar-data-provider'
 import { ActiveSessionProvider } from './providers/active-session-provider'
 import { PermissionStateProvider } from './providers/permission-provider'
+import { QuestionStateProvider } from './providers/question-provider'
 import { WorkspaceSidebar } from './components/sidebar/WorkspaceSidebar'
 import { ChatView } from './components/chat/ChatView'
 import { MessageInput } from './components/chat/MessageInput'
@@ -49,7 +50,9 @@ function App() {
         <SidebarDataProvider>
           <ActiveSessionProvider>
             <PermissionStateProvider>
-              <AppShell />
+              <QuestionStateProvider>
+                <AppShell />
+              </QuestionStateProvider>
             </PermissionStateProvider>
           </ActiveSessionProvider>
         </SidebarDataProvider>

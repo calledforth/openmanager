@@ -1,4 +1,6 @@
 import { useLayoutEffect } from 'react'
+import type { PermissionOption } from '@agentpack/contract'
+import type { PermissionSelection } from '../../providers/app-ui-provider'
 import {
   usePermissionStateOptional,
   type PendingPermission,
@@ -15,16 +17,33 @@ function formatValue(value: unknown): string | null {
   }
 }
 
+const isAllowKind = (kind: PermissionOption['kind']) =>
+  kind === 'allow_once' || kind === 'allow_always'
+
+const OPTION_LABELS: Record<PermissionOption['kind'], string> = {
+  allow_once: 'Allow',
+  allow_always: 'Always allow',
+  reject_once: 'Deny',
+  reject_always: 'Always deny',
+}
+
+const denyButtonClass = `rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)] bg-[var(--basis-surface)] px-2.5 py-1 ${typographyLabelSm} text-[var(--basis-text-muted)] transition-colors hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]`
+const allowButtonClass = `rounded-[var(--basis-chat-shell-radius)] bg-[var(--basis-action-bg)] px-2.5 py-1 ${typographyLabelSm} text-[var(--basis-action-fg)] transition-colors hover:bg-[var(--basis-action-hover)]`
+
 function PermissionCard({
   pending,
   onResolve,
   showDetails,
 }: {
   pending: PendingPermission
-  onResolve: (approved: boolean) => void
+  onResolve: (selection: PermissionSelection) => void
   showDetails: boolean
 }) {
   const inputPreview = showDetails ? formatValue(pending.input) : null
+  // Reject options left, allow options right; provider order kept within each group.
+  const options = [...(pending.options ?? [])].sort(
+    (a, b) => Number(isAllowKind(a.kind)) - Number(isAllowKind(b.kind)),
+  )
 
   return (
     <div className="my-1.5 overflow-hidden rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)] bg-[var(--basis-surface-elevated)]">
@@ -43,18 +62,26 @@ function PermissionCard({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          <button
-            onClick={() => onResolve(false)}
-            className={`rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)] bg-[var(--basis-surface)] px-2.5 py-1 ${typographyLabelSm} text-[var(--basis-text-muted)] transition-colors hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]`}
-          >
-            Deny
-          </button>
-          <button
-            onClick={() => onResolve(true)}
-            className={`rounded-[var(--basis-chat-shell-radius)] bg-[var(--basis-action-bg)] px-2.5 py-1 ${typographyLabelSm} text-[var(--basis-action-fg)] transition-colors hover:bg-[var(--basis-action-hover)]`}
-          >
-            Approve
-          </button>
+          {options.length > 0 ? (
+            options.map((option) => (
+              <button
+                key={option.optionId}
+                onClick={() => onResolve({ optionId: option.optionId })}
+                className={isAllowKind(option.kind) ? allowButtonClass : denyButtonClass}
+              >
+                {option.name || OPTION_LABELS[option.kind] || option.kind}
+              </button>
+            ))
+          ) : (
+            <>
+              <button onClick={() => onResolve({ approved: false })} className={denyButtonClass}>
+                Deny
+              </button>
+              <button onClick={() => onResolve({ approved: true })} className={allowButtonClass}>
+                Approve
+              </button>
+            </>
+          )}
         </div>
       </div>
       {inputPreview ? (

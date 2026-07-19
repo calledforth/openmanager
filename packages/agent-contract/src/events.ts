@@ -1,5 +1,10 @@
 import type { CapabilityKey, ProviderCapabilities } from './capabilities.js'
-import type { PermissionRequest } from './permissions.js'
+import type {
+  PermissionCancellationReason,
+  PermissionOutcome,
+  PermissionRequest,
+} from './permissions.js'
+import type { QuestionRequest } from './questions.js'
 import type { ModeListing, ModelListing, ProviderId } from './providers.js'
 
 export type AgentEventCategory =
@@ -23,6 +28,8 @@ export type AgentEventName =
   | 'tool_call_content'
   | 'plan_update'
   | 'permission_request'
+  | 'permission_resolved'
+  | 'question_request'
   | 'current_model_update'
   | 'current_mode_update'
   | 'config_option_update'
@@ -30,6 +37,7 @@ export type AgentEventName =
   | 'usage_update'
   | 'available_commands_update'
   | 'extension_request'
+  | 'extension_resolved'
   | 'extension_notification'
   | 'rpc_error'
   | 'runtime_error'
@@ -58,6 +66,12 @@ export type AuthMethod = {
   displayName: string
   description?: string
 }
+
+/** How a UI-answerable extension request was settled. Cancellation reuses the
+ * permission cancellation vocabulary (timeout, session_closed, ...). */
+export type ExtensionOutcome =
+  | { outcome: 'responded'; response: unknown }
+  | { outcome: 'cancelled'; reason?: PermissionCancellationReason }
 
 export type ContentBlock =
   | { type: 'text'; text: string }
@@ -357,6 +371,18 @@ export type AgentEvent = AgentEventBase &
         data: PermissionRequest
       }
     | {
+        category: 'permission'
+        event: 'permission_resolved'
+        sessionId: string
+        data: { requestId: string; outcome: PermissionOutcome }
+      }
+    | {
+        category: 'session'
+        event: 'question_request'
+        sessionId: string
+        data: QuestionRequest
+      }
+    | {
         category: 'session'
         event: 'current_model_update'
         sessionId: string
@@ -397,6 +423,12 @@ export type AgentEvent = AgentEventBase &
         event: 'extension_request'
         sessionId: string
         data: { requestId: string; method: string; params: unknown }
+      }
+    | {
+        category: 'extension'
+        event: 'extension_resolved'
+        sessionId: string
+        data: { requestId: string; method: string; outcome: ExtensionOutcome }
       }
     | {
         category: 'extension'

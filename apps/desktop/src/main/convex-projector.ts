@@ -147,6 +147,13 @@ export class ConvexProjector {
       case 'session_loaded':
         if (workspacePath)
           await this.upsertSession(workspacePath, event.sessionId, 'idle', event.providerId)
+        // Any permission/question that was pending before this (re)start died with its broker.
+        await this.runMutation('permissions.clearForSession', (api as any).permissions.clearForSession, {
+          sessionExternalId: event.sessionId,
+        })
+        await this.runMutation('questions.clearForSession', (api as any).questions.clearForSession, {
+          sessionExternalId: event.sessionId,
+        })
         await this.upsertProviderProfile(event.providerId, {
           models: event.data.models,
           modes: event.data.modes,
@@ -190,6 +197,25 @@ export class ConvexProjector {
         return
       case 'permission_request':
         await this.upsertPermission(event.data)
+        return
+      case 'permission_resolved':
+        await this.runMutation('permissions.resolve', (api as any).permissions.resolve, {
+          requestId: event.data.requestId,
+        })
+        return
+      case 'question_request':
+        await this.runMutation('questions.upsertPending', (api as any).questions.upsertPending, {
+          sessionExternalId: event.data.sessionId,
+          requestId: event.data.requestId,
+          title: event.data.title,
+          questions: event.data.questions,
+        })
+        return
+      case 'extension_resolved':
+        // Questions ride the extension broker, so any settlement clears the row.
+        await this.runMutation('questions.resolve', (api as any).questions.resolve, {
+          requestId: event.data.requestId,
+        })
         return
       case 'current_model_update':
         this.updateRuntime(event.sessionId, { modelId: event.data.currentModelId })
@@ -434,6 +460,8 @@ export class ConvexProjector {
       input: permission.toolCall.rawInput ?? metadata,
       patterns: metadata?.patterns,
       alwaysPatterns: metadata?.always,
+      options: permission.options,
+      expiresAt: permission.expiresAt ? Date.parse(permission.expiresAt) : undefined,
     })
   }
 

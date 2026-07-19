@@ -1,7 +1,8 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
+import type { PermissionOption } from '@agentpack/contract'
 import { api } from '@openmanager/convex/_generated/api'
 import { useTrackedQuery } from '../lib/convex-telemetry'
-import { useAppUi } from './app-ui-provider'
+import { useAppUi, type PermissionSelection } from './app-ui-provider'
 
 export interface PendingPermission {
   requestId: string
@@ -12,6 +13,8 @@ export interface PendingPermission {
   input?: unknown
   patterns?: unknown
   alwaysPatterns?: unknown
+  options?: PermissionOption[]
+  expiresAt?: number
   createdAt: number
   updatedAt: number
 }
@@ -23,7 +26,7 @@ interface PermissionStateValue {
   isPermissionClaimed: boolean
   /** Called by the inline tool-call prompt to suppress the fallback card. Returns a release fn. */
   claimPermission: (requestId: string) => () => void
-  resolvePermission: (approved: boolean) => Promise<void>
+  resolvePermission: (selection: PermissionSelection) => Promise<void>
 }
 
 const PermissionStateContext = createContext<PermissionStateValue | null>(null)
@@ -56,9 +59,9 @@ export function PermissionStateProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const resolvePermission = async (approved: boolean) => {
+  const resolvePermission = async (selection: PermissionSelection) => {
     if (!ui.activeSessionId || !pendingPermission) return
-    await ui.resolvePermission(ui.activeSessionId, pendingPermission.requestId, approved)
+    await ui.resolvePermission(ui.activeSessionId, pendingPermission.requestId, selection)
   }
 
   const isPermissionClaimed =

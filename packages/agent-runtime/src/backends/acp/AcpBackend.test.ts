@@ -1,6 +1,7 @@
 import type { SessionConfigOption } from '@agentpack/contract'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BackendEvent } from '../Backend.js'
+import { cursor } from '../../providers/cursor.js'
 import { opencode } from '../../providers/opencode.js'
 import { AcpBackend } from './AcpBackend.js'
 
@@ -10,6 +11,7 @@ type BackendInternals = {
   initialized: boolean
   authenticated: boolean
   sessionUpdate(params: { sessionId: string; update: Record<string, unknown> }): Promise<void>
+  activePromptSessionId?: string
 }
 
 const route = {
@@ -19,9 +21,9 @@ const route = {
   cwd: 'C:/workspace',
 }
 
-function setup(connection: Record<string, unknown>) {
+function setup(connection: Record<string, unknown>, config = opencode) {
   const events: BackendEvent[] = []
-  const backend = new AcpBackend(opencode, {
+  const backend = new AcpBackend(config, {
     log: vi.fn(),
     onSessionTitle: vi.fn(),
   })
@@ -33,6 +35,295 @@ function setup(connection: Record<string, unknown>) {
   backend.events((event) => events.push(event))
   return { backend, events, internals }
 }
+
+describe('AcpBackend permission round-trip', () => {
+  type PermissionInternals = {
+    permissionRequest(params: Record<string, unknown>): Promise<unknown>
+  }
+
+  async function setupWithSession() {
+    const connection = {
+      async newSession() {
+        return { sessionId: 'session-1' }
+      },
+    }
+    const result = setup(connection)
+    await result.backend.ensureSession({ ...route })
+    const responsePromise = (result.backend as unknown as PermissionInternals).permissionRequest({
+      sessionId: 'session-1',
+      toolCall: { toolCallId: 'tool-1', title: 'Write file', kind: 'edit' },
+      options: [
+        { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+        { optionId: 'deny', name: 'Deny', kind: 'reject_once' },
+      ],
+    })
+    const request = result.events.find((event) => event.event === 'permission_request')
+    const requestId = (request?.data as { requestId: string }).requestId
+    return { ...result, responsePromise, requestId }
+  }
+
+  it('emits permission_resolved when the request is answered', async () => {
+    const { backend, events, responsePromise, requestId } = await setupWithSession()
+    expect(backend.respondPermission(requestId, { outcome: 'selected', optionId: 'allow' })).toBe(
+      true,
+    )
+    await expect(responsePromise).resolves.toEqual({
+      outcome: { outcome: 'selected', optionId: 'allow' },
+    })
+    expect(events.find((event) => event.event === 'permission_resolved')).toMatchObject({
+      threadId: 'thread-1',
+      sessionId: 'session-1',
+      data: { requestId, outcome: { outcome: 'selected', optionId: 'allow' } },
+    })
+  })
+
+  it('emits permission_resolved when dispose cancels pending requests', async () => {
+    const { backend, events, internals, responsePromise, requestId } = await setupWithSession()
+    ;(internals as unknown as { process: { exitCode: number | null; kill: () => void } }).process =
+      { exitCode: null, kill: vi.fn() }
+    backend.dispose()
+    await expect(responsePromise).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+    expect(events.find((event) => event.event === 'permission_resolved')).toMatchObject({
+      data: { requestId, outcome: { outcome: 'cancelled', reason: 'runtime_disposed' } },
+    })
+  })
+})
+
+describe('AcpBackend deferred extension requests', () => {
+  type ExtensionInternals = {
+    extensionRequest(method: string, params: unknown): Promise<Record<string, unknown>>
+  }
+
+  const deferredConfig = {
+    ...opencode,
+    extensions: {
+      deferred: ['test/ask'],
+      requests: {
+        'test/ask': () => ({ outcome: { outcome: 'skipped', reason: 'fallback' } }),
+      },
+    },
+  }
+
+  async function setupWithSession(config = deferredConfig) {
+    const connection = {
+      async newSession() {
+        return { sessionId: 'session-1' }
+      },
+    }
+    const result = setup(connection, config)
+    await result.backend.ensureSession({ ...route })
+    const responsePromise = (result.backend as unknown as ExtensionInternals).extensionRequest(
+      'test/ask',
+      { sessionId: 'session-1', title: 'Pick one', questions: [] },
+    )
+    const request = result.events.find((event) => event.event === 'extension_request')
+    const requestId = (request?.data as { requestId: string }).requestId
+    return { ...result, responsePromise, requestId }
+  }
+
+  it('holds the request open until respondExtension supplies the answer', async () => {
+    const { backend, events, responsePromise, requestId } = await setupWithSession()
+    const response = { outcome: { outcome: 'answered', answers: ['A'] } }
+    expect(backend.respondExtension(requestId, response)).toBe(true)
+    await expect(responsePromise).resolves.toEqual(response)
+    expect(events.find((event) => event.event === 'extension_resolved')).toMatchObject({
+      threadId: 'thread-1',
+      sessionId: 'session-1',
+      data: { requestId, method: 'test/ask', outcome: { outcome: 'responded', response } },
+    })
+  })
+
+  it('falls back to the registered handler when dispose cancels the wait', async () => {
+    const { backend, events, internals, responsePromise, requestId } = await setupWithSession()
+    ;(internals as unknown as { process: { exitCode: number | null; kill: () => void } }).process =
+      { exitCode: null, kill: vi.fn() }
+    backend.dispose()
+    await expect(responsePromise).resolves.toEqual({
+      outcome: { outcome: 'skipped', reason: 'fallback' },
+    })
+    expect(events.find((event) => event.event === 'extension_resolved')).toMatchObject({
+      data: { requestId, outcome: { outcome: 'cancelled', reason: 'runtime_disposed' } },
+    })
+    expect(backend.respondExtension(requestId, {})).toBe(false)
+  })
+
+  it('answers non-deferred methods immediately and reports the response', async () => {
+    const connection = {
+      async newSession() {
+        return { sessionId: 'session-1' }
+      },
+    }
+    const { backend, events } = setup(connection, deferredConfig)
+    await backend.ensureSession({ ...route })
+    const response = await (backend as unknown as ExtensionInternals).extensionRequest(
+      'test/other',
+      { sessionId: 'session-1' },
+    )
+    expect(response).toEqual({ outcome: { outcome: 'cancelled' } })
+    expect(events.find((event) => event.event === 'extension_resolved')).toMatchObject({
+      data: {
+        method: 'test/other',
+        outcome: { outcome: 'responded', response: { outcome: { outcome: 'cancelled' } } },
+      },
+    })
+  })
+})
+
+describe('AcpBackend structured questions (cursor/ask_question)', () => {
+  type ExtensionInternals = {
+    extensionRequest(method: string, params: unknown): Promise<Record<string, unknown>>
+  }
+
+  // Real wire shape: no sessionId anywhere in params (exercises the
+  // sole-active-session fallback).
+  const askParams = {
+    toolCallId: 'tool-1',
+    title: 'Favorite color',
+    questions: [
+      {
+        id: 'q1',
+        prompt: 'Pick a color',
+        options: [
+          { id: 'o1', label: 'Red' },
+          { id: 'o2', label: 'Blue' },
+        ],
+        allowMultiple: false,
+      },
+    ],
+  }
+
+  async function setupWithQuestion() {
+    const connection = {
+      async newSession() {
+        return { sessionId: 'session-1' }
+      },
+    }
+    const result = setup(connection, cursor)
+    await result.backend.ensureSession({ ...route })
+    const responsePromise = (result.backend as unknown as ExtensionInternals).extensionRequest(
+      'cursor/ask_question',
+      askParams,
+    )
+    const request = result.events.find((event) => event.event === 'question_request')
+    const requestId = (request?.data as { requestId: string } | undefined)?.requestId
+    return { ...result, responsePromise, requestId, request }
+  }
+
+  it('emits question_request via the sole-session fallback and answers with smuggled text', async () => {
+    const { backend, responsePromise, requestId, request } = await setupWithQuestion()
+    expect(request).toMatchObject({
+      sessionId: 'session-1',
+      data: {
+        sessionId: 'session-1',
+        title: 'Favorite color',
+        questions: [
+          {
+            questionId: 'q1',
+            prompt: 'Pick a color',
+            options: [
+              { optionId: 'o1', label: 'Red' },
+              { optionId: 'o2', label: 'Blue' },
+            ],
+            allowMultiple: false,
+          },
+        ],
+      },
+    })
+    expect(
+      backend.respondQuestion(requestId!, {
+        outcome: 'answered',
+        answers: [{ questionId: 'q1', selectedOptionIds: ['o2'], text: 'turquoise, actually' }],
+      }),
+    ).toBe(true)
+    await expect(responsePromise).resolves.toEqual({
+      outcome: {
+        outcome: 'answered',
+        answers: [{ questionId: 'q1', selectedOptionIds: ['o2', 'turquoise, actually'] }],
+      },
+    })
+  })
+
+  it('maps a cancelled outcome to the skipped wire response', async () => {
+    const { backend, responsePromise, requestId } = await setupWithQuestion()
+    expect(backend.respondQuestion(requestId!, { outcome: 'cancelled', reason: 'user' })).toBe(true)
+    await expect(responsePromise).resolves.toEqual({
+      outcome: { outcome: 'skipped', reason: 'User skipped questions' },
+    })
+  })
+
+  it('answers immediately with the static fallback when multiple sessions are active', async () => {
+    let sessionCounter = 0
+    const connection = {
+      async newSession() {
+        sessionCounter += 1
+        return { sessionId: `session-${sessionCounter}` }
+      },
+    }
+    const { backend, events } = setup(connection, cursor)
+    await backend.ensureSession({ ...route })
+    await backend.ensureSession({ ...route, threadId: 'thread-2' })
+    const response = await (backend as unknown as ExtensionInternals).extensionRequest(
+      'cursor/ask_question',
+      askParams,
+    )
+    expect(response).toEqual({ outcome: { outcome: 'skipped', reason: 'User skipped questions' } })
+    expect(events.find((event) => event.event === 'question_request')).toBeUndefined()
+  })
+
+  it('correlates sessionless questions to the active prompt with multiple sessions', async () => {
+    let sessionCounter = 0
+    const connection = {
+      async newSession() {
+        sessionCounter += 1
+        return { sessionId: `session-${sessionCounter}` }
+      },
+    }
+    const { backend, events, internals } = setup(connection, cursor)
+    await backend.ensureSession({ ...route })
+    await backend.ensureSession({ ...route, threadId: 'thread-2' })
+    internals.activePromptSessionId = 'session-2'
+    const responsePromise = (backend as unknown as ExtensionInternals).extensionRequest(
+      'cursor/ask_question',
+      askParams,
+    )
+    const request = events.find((event) => event.event === 'question_request')
+    expect(request).toMatchObject({ threadId: 'thread-2', sessionId: 'session-2' })
+    const requestId = (request?.data as { requestId: string }).requestId
+    backend.respondQuestion(requestId, {
+      outcome: 'answered',
+      answers: [{ questionId: 'q1', selectedOptionIds: ['o1'] }],
+    })
+    await expect(responsePromise).resolves.toMatchObject({
+      outcome: { outcome: 'answered' },
+    })
+  })
+
+  it('registers a question before emitting it to synchronous listeners', async () => {
+    const connection = {
+      async newSession() {
+        return { sessionId: 'session-1' }
+      },
+    }
+    const { backend } = setup(connection, cursor)
+    await backend.ensureSession({ ...route })
+    let accepted = false
+    backend.events((event) => {
+      if (event.event !== 'question_request') return
+      const requestId = (event.data as { requestId: string }).requestId
+      accepted = backend.respondQuestion(requestId, {
+        outcome: 'answered',
+        answers: [{ questionId: 'q1', selectedOptionIds: ['o2'] }],
+      })
+    })
+    await expect(
+      (backend as unknown as ExtensionInternals).extensionRequest(
+        'cursor/ask_question',
+        askParams,
+      ),
+    ).resolves.toMatchObject({ outcome: { outcome: 'answered' } })
+    expect(accepted).toBe(true)
+  })
+})
 
 describe('AcpBackend session compatibility', () => {
   beforeEach(() => {

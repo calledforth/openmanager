@@ -14,6 +14,7 @@ export type ProviderCapabilities = {
   supportsThoughtStreaming: boolean
   supportsSubtasks: boolean
   supportsExtensions: boolean
+  supportsQuestions: boolean
 }
 
 /** A capability name usable in typed `capability_missing` events. */
@@ -32,3 +33,4 @@ export type CapabilityKey =
   | 'supportsThoughtStreaming'
   | 'supportsSubtasks'
   | 'supportsExtensions'
+  | 'supportsQuestions'

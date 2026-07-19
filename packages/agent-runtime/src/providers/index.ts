@@ -6,9 +6,19 @@ import { opencode } from './opencode.js'
 export type ProviderConfig = {
   id: ProviderId
   displayName: string
-  command: { bin: string; args: string[]; envOverride: string; fallbackEnvOverride?: string }
+  command: {
+    bin: string
+    args: string[]
+    envOverride: string
+    fallbackEnvOverride?: string
+    env?: Record<string, string>
+  }
   auth: { methodHints: string[]; tolerateAuthenticateFailure: boolean; loginInstruction: string }
-  quirks: { suppressPlanUpdates?: boolean }
+  quirks: {
+    suppressPlanUpdates?: boolean
+    nativeQuestions?: 'opencode'
+    correlateSessionlessExtensionsToActivePrompt?: boolean
+  }
   capabilities: ProviderCapabilities
   extensions: ExtensionHandlers
 }

@@ -125,6 +125,19 @@ export default defineSchema({
     input: v.optional(v.any()),
     patterns: v.optional(v.any()),
     alwaysPatterns: v.optional(v.any()),
+    options: v.optional(v.any()),
+    expiresAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index('by_sessionExternalId', ['sessionExternalId'])
+    .index('by_requestId', ['requestId']),
+
+  pending_questions: defineTable({
+    sessionExternalId: v.string(),
+    requestId: v.string(),
+    title: v.optional(v.string()),
+    questions: v.any(),
     createdAt: v.number(),
     updatedAt: v.number(),
   })

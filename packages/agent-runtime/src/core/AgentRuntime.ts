@@ -4,6 +4,7 @@ import type {
   PermissionOutcome,
   PromptInput,
   ProviderId,
+  QuestionOutcome,
 } from '@agentpack/contract'
 import { AcpBackend } from '../backends/acp/AcpBackend.js'
 import type { Backend, BackendEvent, SessionResult } from '../backends/Backend.js'
@@ -142,6 +143,20 @@ export class AgentRuntime {
   }): boolean {
     const found = this.backend(args.providerId).respondPermission(args.requestId, args.outcome)
     if (!found) throw new Error('Permission request not found or already resolved')
+    return true
+  }
+  respondExtension(args: { providerId: ProviderId; requestId: string; response: unknown }): boolean {
+    const found = this.backend(args.providerId).respondExtension(args.requestId, args.response)
+    if (!found) throw new Error('Extension request not found or already resolved')
+    return true
+  }
+  respondQuestion(args: {
+    providerId: ProviderId
+    requestId: string
+    outcome: QuestionOutcome
+  }): boolean {
+    const found = this.backend(args.providerId).respondQuestion(args.requestId, args.outcome)
+    if (!found) throw new Error('Question not found or already resolved')
     return true
   }
   async setModel(args: RuntimeRoute & { sessionId: string; modelId: string }): Promise<void> {
