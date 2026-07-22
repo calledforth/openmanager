@@ -1,7 +1,69 @@
-import type { Question } from '@agentpack/contract'
+import type {
+  PlanDocument,
+  PlanReviewOutcome,
+  PlanTodo,
+  PlanTodoStatus,
+  Question,
+} from '@agentpack/contract'
 import type { ProviderConfig } from './index.js'
 
 const str = (value: unknown): string => (typeof value === 'string' ? value : '')
+
+const TODO_STATUSES: readonly PlanTodoStatus[] = [
+  'pending',
+  'in_progress',
+  'completed',
+  'cancelled',
+]
+const todoStatus = (value: unknown): PlanTodoStatus =>
+  TODO_STATUSES.includes(value as PlanTodoStatus) ? (value as PlanTodoStatus) : 'pending'
+const parseTodos = (value: unknown): PlanTodo[] =>
+  (Array.isArray(value) ? value : []).map((raw, index) => {
+    const todo = (raw ?? {}) as Record<string, unknown>
+    return {
+      id: str(todo.id) || `todo-${index}`,
+      content: str(todo.content),
+      status: todoStatus(todo.status),
+    }
+  })
+
+/** Wire shape (cursor-agent 2026.07.01): {toolCallId, name?, overview?, plan:string,
+ * todos:[{id,content,status}], isProject?, phases?:[{name, todos:[...]}]}. Params
+ * carry no sessionId. An empty plan string is still a valid document. */
+function parseCreatePlan(
+  params: unknown,
+): Omit<PlanDocument, 'requestId' | 'sessionId'> | undefined {
+  if (!params || typeof params !== 'object') return undefined
+  const p = params as Record<string, unknown>
+  const phases = Array.isArray(p.phases)
+    ? p.phases.map((raw) => {
+        const phase = (raw ?? {}) as Record<string, unknown>
+        return { name: str(phase.name), todos: parseTodos(phase.todos) }
+      })
+    : undefined
+  return {
+    ...(str(p.name) ? { name: str(p.name) } : {}),
+    ...(str(p.overview) ? { overview: str(p.overview) } : {}),
+    markdown: str(p.plan),
+    todos: parseTodos(p.todos),
+    ...(phases ? { phases } : {}),
+  }
+}
+
+function respondCreatePlan(outcome: PlanReviewOutcome): unknown {
+  if (outcome.outcome === 'accepted') return { outcome: { outcome: 'accepted' } }
+  if (outcome.outcome === 'rejected')
+    return { outcome: { outcome: 'rejected', reason: outcome.reason ?? 'User rejected plan' } }
+  return { outcome: { outcome: 'cancelled' } }
+}
+
+/** Wire shape: {toolCallId, todos:[{id,content,status}], merge:boolean}. The
+ * bridge discards the response. */
+function parseUpdateTodos(params: unknown): { todos: PlanTodo[]; merge: boolean } | undefined {
+  const p = (params ?? {}) as Record<string, unknown>
+  if (!Array.isArray(p.todos)) return undefined
+  return { todos: parseTodos(p.todos), merge: p.merge === true }
+}
 
 /** Wire shape (cursor-agent 2026.07.01): {toolCallId, title, questions:[{id, prompt,
  * options:[{id,label}], allowMultiple}]}. Params carry no sessionId. */
@@ -88,6 +150,12 @@ export const cursor: ProviderConfig = {
           }
         },
       },
+    },
+    plans: {
+      'cursor/create_plan': { parse: parseCreatePlan, respond: respondCreatePlan },
+    },
+    planSnapshots: {
+      'cursor/update_todos': parseUpdateTodos,
     },
   },
 }

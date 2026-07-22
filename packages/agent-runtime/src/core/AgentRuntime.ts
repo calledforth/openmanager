@@ -2,6 +2,7 @@ import type {
   AgentEvent,
   CapabilityKey,
   PermissionOutcome,
+  PlanReviewOutcome,
   PromptInput,
   ProviderId,
   QuestionOutcome,
@@ -129,6 +130,12 @@ export class AgentRuntime {
   ): Promise<SessionResult> {
     return this.prompt(args)
   }
+  /** Wait until the current prompt for a thread has fully settled. Interactive
+   * review responses use this before changing mode and starting a follow-up. */
+  async waitForPromptIdle(threadId: string): Promise<void> {
+    const pending = this.promptQueues.get(threadId)
+    if (pending) await pending.catch(() => undefined)
+  }
   async cancel(args: RuntimeRoute & { sessionId: string }): Promise<void> {
     this.require(args, 'canCancelPrompt', 'cancel prompt')
     await this.backend(args.providerId).cancel(args)
@@ -145,7 +152,11 @@ export class AgentRuntime {
     if (!found) throw new Error('Permission request not found or already resolved')
     return true
   }
-  respondExtension(args: { providerId: ProviderId; requestId: string; response: unknown }): boolean {
+  respondExtension(args: {
+    providerId: ProviderId
+    requestId: string
+    response: unknown
+  }): boolean {
     const found = this.backend(args.providerId).respondExtension(args.requestId, args.response)
     if (!found) throw new Error('Extension request not found or already resolved')
     return true
@@ -157,6 +168,15 @@ export class AgentRuntime {
   }): boolean {
     const found = this.backend(args.providerId).respondQuestion(args.requestId, args.outcome)
     if (!found) throw new Error('Question not found or already resolved')
+    return true
+  }
+  respondPlan(args: {
+    providerId: ProviderId
+    requestId: string
+    outcome: PlanReviewOutcome
+  }): boolean {
+    const found = this.backend(args.providerId).respondPlan(args.requestId, args.outcome)
+    if (!found) throw new Error('Plan review not found or already resolved')
     return true
   }
   async setModel(args: RuntimeRoute & { sessionId: string; modelId: string }): Promise<void> {

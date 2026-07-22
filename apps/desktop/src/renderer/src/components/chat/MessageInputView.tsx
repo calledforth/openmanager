@@ -361,6 +361,7 @@ export function MessageInputView({
   showModeControl,
   showModelControl,
   isStreaming,
+  isAwaitingPlanReview = false,
   draftKey,
   imageUploadEnabled,
   imageSupportMessage,
@@ -387,6 +388,7 @@ export function MessageInputView({
   showModeControl: boolean
   showModelControl: boolean
   isStreaming: boolean
+  isAwaitingPlanReview?: boolean
   draftKey: string
   imageUploadEnabled: boolean
   imageSupportMessage: string | null
@@ -522,6 +524,10 @@ export function MessageInputView({
   const send = async () => {
     const trimmed = text.trim()
     if ((!trimmed && attachments.length === 0) || disabled || sending) return
+    if (isAwaitingPlanReview && attachments.length > 0) {
+      setAttachmentError('Remove image attachments before requesting plan changes.')
+      return
+    }
     if (attachments.length && !imageUploadEnabled) {
       setAttachmentError(imageSupportMessage ?? 'The selected model cannot read images.')
       return
@@ -564,11 +570,16 @@ export function MessageInputView({
           ? 'Select a session...'
           : !providerReady
             ? `Connecting to ${currentProviderName}...`
-            : 'Ask anything, @ to mention, / for workflows'
+            : isAwaitingPlanReview
+              ? 'Describe what should change in the plan…'
+              : 'Ask anything, @ to mention, / for workflows'
 
   const isPlan = currentModeId === 'plan'
   const sendActive =
-    hasContent && !disabled && !sending && (attachments.length === 0 || imageUploadEnabled)
+    (isAwaitingPlanReview ? text.trim().length > 0 && attachments.length === 0 : hasContent) &&
+    !disabled &&
+    !sending &&
+    (attachments.length === 0 || imageUploadEnabled)
   const configSummary = sessionConfigSummary(configOptions)
 
   return (
@@ -648,8 +659,12 @@ export function MessageInputView({
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              disabled={disabled || !imageUploadEnabled || sending}
-              title={imageSupportMessage ?? 'Attach images'}
+              disabled={disabled || !imageUploadEnabled || sending || isAwaitingPlanReview}
+              title={
+                isAwaitingPlanReview
+                  ? 'Plan revision feedback currently supports text only'
+                  : (imageSupportMessage ?? 'Attach images')
+              }
               aria-label="Attach images"
               className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--basis-text-muted)] transition-colors hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)] disabled:cursor-not-allowed disabled:opacity-35"
             >
@@ -702,7 +717,38 @@ export function MessageInputView({
           </div>
 
           <div className="flex shrink-0 items-center gap-1">
-            {isStreaming ? (
+            {isAwaitingPlanReview ? (
+              <>
+                <button
+                  type="button"
+                  onClick={onAbort}
+                  title="Cancel planning"
+                  aria-label="Cancel planning"
+                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--basis-text-faint)] transition-colors hover:bg-red-500/10 hover:text-red-400"
+                >
+                  <SquareIcon className="h-2.5 w-2.5" weight="fill" />
+                </button>
+                <button
+                  type="button"
+                  onClick={send}
+                  disabled={!sendActive}
+                  title="Request plan changes"
+                  aria-label="Request plan changes"
+                  className={cn(
+                    btnSend,
+                    sendActive && 'theme-btn-plan !h-6 !w-6 !rounded-full !p-0',
+                    !sendActive &&
+                      '!bg-[var(--basis-surface-hover)] !text-[var(--basis-text-faint)]',
+                  )}
+                >
+                  {sending ? (
+                    <CircleNotchIcon size={13} className="animate-spin" />
+                  ) : (
+                    <ArrowUpIcon size={14} />
+                  )}
+                </button>
+              </>
+            ) : isStreaming ? (
               <button
                 type="button"
                 onClick={onAbort}

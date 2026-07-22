@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { api } from '@openmanager/convex/_generated/api'
 import { useAppUi } from '../../providers/app-ui-provider'
 import { useActiveSession } from '../../providers/active-session-provider'
 import { useQuestionStateOptional } from '../../providers/question-provider'
+import { usePlanStateOptional } from '../../providers/plan-provider'
 import { ComposerQuestionPrompt } from '../questions/ComposerQuestionPrompt'
+import { ComposerPlanPrompt } from '../plans/ComposerPlanPrompt'
 import { MessageInputView } from './MessageInputView'
 import { deriveSessionChrome } from '@agentpack/view'
 import { useTrackedMutation } from '../../lib/convex-telemetry'
@@ -25,6 +27,7 @@ export function MessageInput() {
     setSessionModel,
     setSessionMode,
     setSessionConfigOption,
+    buildPlan: submitBuildPlan,
     agentUiStatusByProvider,
     defaultProviderId,
     agentEvents,
@@ -36,6 +39,8 @@ export function MessageInput() {
   const { sendMessage, abortSession, activeSession } = useActiveSession()
   const questionState = useQuestionStateOptional()
   const pendingQuestion = questionState?.pendingQuestion ?? null
+  const planState = usePlanStateOptional()
+  const pendingPlan = planState?.pendingPlan ?? null
   const generateUploadUrl = useTrackedMutation(
     'attachments.generateUploadUrl',
     (api as any).attachments.generateUploadUrl,
@@ -146,6 +151,12 @@ export function MessageInput() {
       })
       return
     }
+    // A pending plan turns composer text into rejection feedback rather than a
+    // prompt. Question interception above keeps priority when both are pending.
+    if (pendingPlan && planState && text.trim()) {
+      await planState.resolvePlan({ outcome: 'rejected', reason: text.trim() })
+      return
+    }
     if (!currentClientId) throw new Error('Client identity unavailable')
     const uploaded: UploadedImageAttachment[] = []
     try {
@@ -203,9 +214,27 @@ export function MessageInput() {
             ? `${modelOptions.find((model) => model.id === currentModelId)?.name ?? currentModelId} cannot read images. Choose a vision-capable model.`
             : null
 
+  const planBuildModeId =
+    modeOptions.find((mode) => mode.id === 'agent')?.id ??
+    modeOptions.find((mode) => mode.id !== 'plan')?.id
+
+  // Plan execution is submitted as one ordered job: accept the review, wait
+  // for the planning prompt to settle, switch mode, then start the build.
+  const buildPlan = useCallback(async () => {
+    if (!activeSessionId || !pendingPlan) return
+    await submitBuildPlan(activeSessionId, pendingPlan.requestId, planBuildModeId)
+  }, [activeSessionId, pendingPlan, planBuildModeId, submitBuildPlan])
+
+  useEffect(() => {
+    if (!planState) return
+    planState.setBuildHandler(buildPlan)
+    return () => planState.setBuildHandler(null)
+  }, [buildPlan, planState])
+
   return (
     <div className="flex w-full flex-col">
       <ComposerQuestionPrompt />
+      <ComposerPlanPrompt />
       <MessageInputView
         disabled={disabled}
         pendingDraftSessionStart={pendingDraftSessionStart}
@@ -228,6 +257,7 @@ export function MessageInput() {
           providerModelGroups.some((group) => group.models.length > 0)
         }
         isStreaming={isStreaming}
+        isAwaitingPlanReview={!!pendingPlan}
         draftKey={draftKey}
         imageUploadEnabled={
           providerSupportsImages && modelImageSupport !== false && modelImageSupport !== undefined

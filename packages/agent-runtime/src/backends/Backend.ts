@@ -1,6 +1,7 @@
 import type {
   AgentEvent,
   PermissionOutcome,
+  PlanReviewOutcome,
   PromptInput,
   ProviderId,
   QuestionOutcome,
@@ -40,6 +41,9 @@ export interface Backend {
   /** Answer a structured question (question_request event) with a provider-neutral
    * outcome; the provider's question adapter builds the wire response. */
   respondQuestion(requestId: string, outcome: QuestionOutcome): boolean
+  /** Review a plan (plan_review_request event) with a provider-neutral outcome;
+   * the provider's plan adapter builds the wire response. */
+  respondPlan(requestId: string, outcome: PlanReviewOutcome): boolean
   setModel(args: BackendRoute & { cwd: string; sessionId: string; modelId: string }): Promise<void>
   setMode(args: BackendRoute & { cwd: string; sessionId: string; modeId: string }): Promise<void>
   setConfigOption(

@@ -1,4 +1,5 @@
 import { Fragment, useMemo, type ReactNode } from 'react'
+import type { PlanEntry, PlanEntryStatus } from '@agentpack/contract'
 import { TextPart } from './TextPart'
 import { ToolCallPermission } from '../permissions/InlinePermissionPrompt'
 import { ToolCallPart } from './ToolCallPart'
@@ -22,6 +23,42 @@ function getPartKey(part: Part, index: number): string {
     return `tool:${String(part.tool ?? 'unknown')}:${index}`
   }
   return `${part.type}:${index}`
+}
+
+function PlanStatusGlyph({ status }: { status: PlanEntryStatus }) {
+  if (status === 'completed') return <span className="text-[#22c55e]">✓</span>
+  if (status === 'in_progress') return <span className="text-[var(--basis-text)]">●</span>
+  return <span className="text-[var(--basis-text-faint)]">○</span>
+}
+
+/** Compact, read-only plan checklist — the persisted/live per-turn plan part. */
+function PlanChecklistPart({ entries }: { entries: PlanEntry[] }) {
+  if (entries.length === 0) return null
+  return (
+    <div className="my-1 rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border-muted)] bg-[var(--basis-surface)] px-3 py-2">
+      <div className="mb-1 text-ui-2xs uppercase tracking-[0.12em] text-[var(--basis-text-faint)]">
+        Plan
+      </div>
+      <ul className="flex flex-col gap-0.5">
+        {entries.map((entry, idx) => (
+          <li key={idx} className="flex items-start gap-2 text-ui-xs leading-ui-normal">
+            <span className="mt-px w-3 shrink-0 text-center leading-none">
+              <PlanStatusGlyph status={entry.status} />
+            </span>
+            <span
+              className={
+                entry.status === 'in_progress'
+                  ? 'text-[var(--basis-text)]'
+                  : 'text-[var(--basis-text-muted)]'
+              }
+            >
+              {entry.content}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
 }
 
 function FallbackPart({ part }: { part: Part }) {
@@ -103,6 +140,10 @@ function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode
           Session compacted
         </div>
       )
+    case 'plan': {
+      const entries = Array.isArray(part.entries) ? (part.entries as PlanEntry[]) : []
+      return <PlanChecklistPart key={key} entries={entries} />
+    }
     default:
       return <FallbackPart key={key} part={part} />
   }

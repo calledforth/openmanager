@@ -1,6 +1,7 @@
 import type {
   AgentEvent,
   ContentBlock,
+  ExtensionOutcome,
   ModeListing,
   ModelListing,
   PermissionRequest,
@@ -154,6 +155,9 @@ export class ConvexProjector {
         await this.runMutation('questions.clearForSession', api.questions.clearForSession, {
           sessionExternalId: event.sessionId,
         })
+        await this.runMutation('plans.clearForSession', api.plans.clearForSession, {
+          sessionExternalId: event.sessionId,
+        })
         await this.upsertProviderProfile(event.providerId, {
           models: event.data.models,
           modes: event.data.modes,
@@ -211,12 +215,34 @@ export class ConvexProjector {
           questions: event.data.questions,
         })
         return
-      case 'extension_resolved':
+      case 'plan_review_request':
+        await this.runMutation('plans.upsertPending', api.plans.upsertPending, {
+          sessionExternalId: event.data.sessionId,
+          requestId: event.data.requestId,
+          name: event.data.name,
+          overview: event.data.overview,
+          markdown: event.data.markdown,
+          todos: event.data.todos,
+          phases: event.data.phases,
+        })
+        return
+      case 'plan_update':
+        await this.appendPlanUpdate(event)
+        return
+      case 'extension_resolved': {
         // Questions ride the extension broker, so any settlement clears the row.
         await this.runMutation('questions.resolve', api.questions.resolve, {
           requestId: event.data.requestId,
         })
+        // Plans also ride the broker; settle the persisted plan by its outcome.
+        const planResolution = this.planResolutionFor(event.data.outcome)
+        await this.runMutation('plans.resolve', api.plans.resolve, {
+          requestId: event.data.requestId,
+          status: planResolution.status,
+          resolutionReason: planResolution.reason,
+        })
         return
+      }
       case 'current_model_update':
         this.updateRuntime(event.sessionId, { modelId: event.data.currentModelId })
         await this.upsertProviderProfile(event.providerId, { models: event.data })
@@ -432,6 +458,40 @@ export class ConvexProjector {
     const content = Array.isArray(existing.content) ? existing.content : []
     const part = { ...existing, content: [...content, item] }
     buffer.parts.set(toolCallId, part)
+    await this.appendChunk(turn.assistantMessageId, buffer, '', {
+      partUpdate: { kind: 'part.updated', part },
+    })
+  }
+
+  private planResolutionFor(outcome: ExtensionOutcome): { status: string; reason?: string } {
+    if (outcome.outcome !== 'responded') return { status: 'cancelled' }
+    const response = (outcome.response as any)?.outcome
+    if (response?.outcome === 'accepted') return { status: 'accepted' }
+    if (response?.outcome === 'rejected') {
+      return {
+        status: 'rejected',
+        ...(typeof response.reason === 'string' && response.reason.trim()
+          ? { reason: response.reason.trim() }
+          : {}),
+      }
+    }
+    return { status: 'cancelled' }
+  }
+
+  private async appendPlanUpdate(
+    event: Extract<AgentEvent, { event: 'plan_update' }>,
+  ): Promise<void> {
+    const turn = this.ensureTurn(event)
+    const buffer = this.buffer(
+      turn.assistantMessageId,
+      event.sessionId,
+      'assistant',
+      event.providerId,
+    )
+    await this.ensurePlaceholder(turn.assistantMessageId, buffer)
+    this.finishActiveParts(turn, buffer)
+    const part: PartData = { type: 'plan', id: 'plan', entries: event.data.entries }
+    buffer.parts.set('plan', part)
     await this.appendChunk(turn.assistantMessageId, buffer, '', {
       partUpdate: { kind: 'part.updated', part },
     })

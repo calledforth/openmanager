@@ -61,6 +61,32 @@ describe('ExtensionBroker', () => {
     expect(broker.respond('req-1', {})).toBe(false)
   })
 
+  it('honors a custom per-request timeout', async () => {
+    vi.useFakeTimers()
+    let outcome: unknown
+    const promise = new Promise((resolve) => {
+      broker.add(
+        'req-1',
+        {
+          providerId: 'cursor',
+          threadId: 'thread-1',
+          workspaceId: 'workspace-1',
+          sessionId: 'session-1',
+          method: 'cursor/create_plan',
+          resolve,
+        },
+        10_000,
+      )
+    }).then((value) => {
+      outcome = value
+      return value
+    })
+    vi.advanceTimersByTime(9_999)
+    expect(outcome).toBeUndefined()
+    vi.advanceTimersByTime(2)
+    await expect(promise).resolves.toEqual({ outcome: 'cancelled', reason: 'timeout' })
+  })
+
   it('cancelThread settles only the matching thread', async () => {
     const one = addPending(broker, 'req-1', 'thread-1')
     addPending(broker, 'req-2', 'thread-2')

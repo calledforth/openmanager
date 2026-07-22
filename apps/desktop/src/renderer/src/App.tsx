@@ -5,11 +5,13 @@ import { SidebarDataProvider } from './providers/sidebar-data-provider'
 import { ActiveSessionProvider } from './providers/active-session-provider'
 import { PermissionStateProvider } from './providers/permission-provider'
 import { QuestionStateProvider } from './providers/question-provider'
+import { PlanStateProvider } from './providers/plan-provider'
 import { WorkspaceSidebar } from './components/sidebar/WorkspaceSidebar'
 import { ChatView } from './components/chat/ChatView'
 import { MessageInput } from './components/chat/MessageInput'
 import { FloatingChatComposer } from './components/chat/FloatingChatComposer'
 import { ConvexTelemetryPanel } from './components/telemetry/ConvexTelemetryPanel'
+import { PlanPanel } from './components/plans/PlanPanel'
 import { AppChrome } from './components/shell/AppChrome'
 import { UpdateNotification } from './components/updates/UpdateNotification'
 
@@ -19,10 +21,7 @@ function AppShell() {
 
   return (
     <div className="flex h-screen w-screen min-w-0 overflow-hidden bg-[var(--basis-canvas-bg)] text-[var(--basis-text)]">
-      <WorkspaceSidebar
-        collapsed={sidebarCollapsed}
-        onCollapse={() => setSidebarCollapsed(true)}
-      />
+      <WorkspaceSidebar collapsed={sidebarCollapsed} onCollapse={() => setSidebarCollapsed(true)} />
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--basis-canvas-bg)]">
         <AppChrome
           sidebarCollapsed={sidebarCollapsed}
@@ -35,6 +34,7 @@ function AppShell() {
           <MessageInput />
         </FloatingChatComposer>
       </div>
+      <PlanPanel />
       <ConvexTelemetryPanel open={convexOpen} onOpenChange={setConvexOpen} />
       <UpdateNotification />
     </div>
@@ -49,7 +49,9 @@ function App() {
           <ActiveSessionProvider>
             <PermissionStateProvider>
               <QuestionStateProvider>
-                <AppShell />
+                <PlanStateProvider>
+                  <AppShell />
+                </PlanStateProvider>
               </QuestionStateProvider>
             </PermissionStateProvider>
           </ActiveSessionProvider>

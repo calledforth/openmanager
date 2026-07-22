@@ -4,6 +4,7 @@ import type {
   PermissionOutcome,
   PermissionRequest,
 } from './permissions.js'
+import type { PlanDocument } from './plans.js'
 import type { QuestionRequest } from './questions.js'
 import type { ModeListing, ModelListing, ProviderId } from './providers.js'
 
@@ -30,6 +31,7 @@ export type AgentEventName =
   | 'permission_request'
   | 'permission_resolved'
   | 'question_request'
+  | 'plan_review_request'
   | 'current_model_update'
   | 'current_mode_update'
   | 'config_option_update'
@@ -387,6 +389,12 @@ export type AgentEvent = AgentEventBase &
         event: 'question_request'
         sessionId: string
         data: QuestionRequest
+      }
+    | {
+        category: 'session'
+        event: 'plan_review_request'
+        sessionId: string
+        data: PlanDocument
       }
     | {
         category: 'session'

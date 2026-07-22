@@ -423,6 +423,38 @@ export class JobWorker {
             outcome: parsed.outcome,
           })
           break
+        case 'resolve_plan':
+          this.agentHost.respondPlan({
+            providerId,
+            requestId: parsed.requestId,
+            outcome: parsed.outcome,
+          })
+          break
+        case 'build_plan': {
+          const route = this.route(parsed, parsed.sessionExternalId)
+          this.agentHost.respondPlan({
+            providerId,
+            requestId: parsed.requestId,
+            outcome: { outcome: 'accepted' },
+          })
+          // Accepting the plan releases the original Cursor prompt. Wait for
+          // that prompt to finish before switching mode and starting execution.
+          await this.agentHost.runtime.waitForPromptIdle(parsed.sessionExternalId)
+          if (typeof parsed.modeId === 'string' && parsed.modeId) {
+            await this.agentHost.runtime.setMode({
+              ...route,
+              sessionId: parsed.sessionExternalId,
+              modeId: parsed.modeId,
+            })
+          }
+          await this.agentHost.runtime.prompt({
+            ...route,
+            sessionId: parsed.sessionExternalId,
+            prompt: await this.promptInput(parsed),
+            userMessageId: parsed.userMessageId,
+          })
+          break
+        }
         case 'set_model':
           await this.agentHost.runtime.setModel({
             ...this.route(parsed, parsed.sessionExternalId),
