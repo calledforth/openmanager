@@ -329,6 +329,140 @@ describe('AcpBackend structured questions (cursor/ask_question)', () => {
   })
 })
 
+describe('AcpBackend plan review (cursor/create_plan)', () => {
+  type ExtensionInternals = {
+    extensionRequest(method: string, params: unknown): Promise<Record<string, unknown>>
+  }
+
+  // Real wire shape: no sessionId anywhere (exercises the sole-session fallback).
+  const planParams = {
+    toolCallId: 'tool-1',
+    name: 'Implementation Plan',
+    overview: 'Overview',
+    plan: '# Plan\n\n- step',
+    todos: [{ id: 't1', content: 'Step 1', status: 'pending' }],
+  }
+
+  async function setupWithPlan() {
+    const connection = {
+      async newSession() {
+        return { sessionId: 'session-1' }
+      },
+    }
+    const result = setup(connection, cursor)
+    await result.backend.ensureSession({ ...route })
+    const responsePromise = (result.backend as unknown as ExtensionInternals).extensionRequest(
+      'cursor/create_plan',
+      planParams,
+    )
+    const request = result.events.find((event) => event.event === 'plan_review_request')
+    const requestId = (request?.data as { requestId: string } | undefined)?.requestId
+    return { ...result, responsePromise, requestId, request }
+  }
+
+  it('emits plan_review_request via the sole-session fallback and accepts', async () => {
+    const { backend, responsePromise, requestId, request } = await setupWithPlan()
+    expect(request).toMatchObject({
+      sessionId: 'session-1',
+      data: {
+        sessionId: 'session-1',
+        name: 'Implementation Plan',
+        overview: 'Overview',
+        markdown: '# Plan\n\n- step',
+        todos: [{ id: 't1', content: 'Step 1', status: 'pending' }],
+      },
+    })
+    expect(backend.respondPlan(requestId!, { outcome: 'accepted' })).toBe(true)
+    await expect(responsePromise).resolves.toEqual({ outcome: { outcome: 'accepted' } })
+  })
+
+  it('maps a rejected outcome to the wire response with its reason', async () => {
+    const { backend, responsePromise, requestId } = await setupWithPlan()
+    expect(backend.respondPlan(requestId!, { outcome: 'rejected', reason: 'needs tests' })).toBe(
+      true,
+    )
+    await expect(responsePromise).resolves.toEqual({
+      outcome: { outcome: 'rejected', reason: 'needs tests' },
+    })
+  })
+
+  it('falls back to cancelled when dispose cancels the review', async () => {
+    const { backend, internals, responsePromise } = await setupWithPlan()
+    ;(internals as unknown as { process: { exitCode: number | null; kill: () => void } }).process =
+      { exitCode: null, kill: vi.fn() }
+    backend.dispose()
+    await expect(responsePromise).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+  })
+})
+
+describe('AcpBackend plan snapshots (cursor/update_todos)', () => {
+  type ExtensionInternals = {
+    extensionRequest(method: string, params: unknown): Promise<Record<string, unknown>>
+  }
+
+  async function setupWithSession() {
+    const connection = {
+      async newSession() {
+        return { sessionId: 'session-1' }
+      },
+    }
+    const result = setup(connection, cursor)
+    await result.backend.ensureSession({ ...route })
+    return result
+  }
+
+  it('acks immediately and emits plan_update, dropping cancelled todos', async () => {
+    const { backend, events } = await setupWithSession()
+    const response = await (backend as unknown as ExtensionInternals).extensionRequest(
+      'cursor/update_todos',
+      {
+        toolCallId: 't',
+        todos: [
+          { id: '1', content: 'A', status: 'in_progress' },
+          { id: '2', content: 'B', status: 'cancelled' },
+        ],
+        merge: false,
+      },
+    )
+    expect(response).toEqual({})
+    const update = events.find((event) => event.event === 'plan_update')
+    expect(update).toMatchObject({
+      sessionId: 'session-1',
+      data: { entries: [{ content: 'A', priority: 'medium', status: 'in_progress' }] },
+    })
+  })
+
+  it('merges incoming todos by id on merge:true', async () => {
+    const { backend, events } = await setupWithSession()
+    const internals = backend as unknown as ExtensionInternals
+    await internals.extensionRequest('cursor/update_todos', {
+      toolCallId: 't',
+      todos: [
+        { id: '1', content: 'A', status: 'in_progress' },
+        { id: '2', content: 'B', status: 'cancelled' },
+      ],
+      merge: false,
+    })
+    await internals.extensionRequest('cursor/update_todos', {
+      toolCallId: 't',
+      todos: [
+        { id: '1', content: 'A', status: 'completed' },
+        { id: '3', content: 'C', status: 'pending' },
+      ],
+      merge: true,
+    })
+    const updates = events.filter((event) => event.event === 'plan_update')
+    expect(updates.at(-1)).toMatchObject({
+      data: {
+        entries: [
+          { content: 'A', priority: 'medium', status: 'completed' },
+          { content: 'C', priority: 'medium', status: 'pending' },
+        ],
+      },
+    })
+  })
+})
+
 describe('AcpBackend session compatibility', () => {
   beforeEach(() => {
     vi.restoreAllMocks()

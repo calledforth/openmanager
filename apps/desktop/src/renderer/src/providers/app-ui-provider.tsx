@@ -17,6 +17,7 @@ import {
   type AvailableCommand,
   type ProviderId,
   type ProviderMetadata,
+  type PlanReviewOutcome,
   type PromptAttachment,
   type PromptCapabilities,
   type QuestionOutcome,
@@ -299,6 +300,12 @@ interface AppUiValue {
     requestId: string,
     outcome: QuestionOutcome,
   ) => Promise<void>
+  resolvePlan: (
+    sessionExternalId: string,
+    requestId: string,
+    outcome: PlanReviewOutcome,
+  ) => Promise<void>
+  buildPlan: (sessionExternalId: string, requestId: string, modeId?: string) => Promise<void>
   providerComposerProfiles: ProviderComposerProfiles
   setDraftModel: (modelId: string) => void
   setDraftMode: (modeId: string) => void
@@ -501,6 +508,14 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const submitJob = useTrackedMutation('jobs.submit', api.jobs.submit, telemetryContext)
+  const persistPlanFeedback = useTrackedMutation(
+    'messages.upsertFinalized.plan-feedback',
+    api.messages.upsertFinalized,
+  )
+  const removeMessage = useTrackedMutation(
+    'messages.removeByExternalId.plan-feedback',
+    api.messages.removeByExternalId,
+  )
   const ensureWorkspace = useTrackedMutation('workspaces.ensureByPath', api.workspaces.ensureByPath)
   const removeWorkspaceMutation = useTrackedMutation('workspaces.remove', api.workspaces.remove)
   const localSessionJob = useTrackedQuery(
@@ -1186,6 +1201,105 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
     [acpSessionStateById, activeWorkspacePath, currentClientId, defaultProviderId, submitJob],
   )
 
+  const resolvePlan = useCallback(
+    async (sessionExternalId: string, requestId: string, outcome: PlanReviewOutcome) => {
+      if (!activeWorkspacePath) return
+      if (!currentClientId) {
+        setError('Client identity unavailable')
+        return
+      }
+      const feedback = outcome.outcome === 'rejected' ? outcome.reason?.trim() : undefined
+      const feedbackMessageId = feedback ? `agent_usr_plan_feedback_${crypto.randomUUID()}` : null
+      try {
+        if (feedback && feedbackMessageId) {
+          await persistPlanFeedback({
+            sessionExternalId,
+            externalId: feedbackMessageId,
+            content: feedback,
+            role: 'user',
+            parts: [{ type: 'text', id: `${feedbackMessageId}_text`, text: feedback }],
+            runtimeMetadata: { kind: 'plan_feedback', planRequestId: requestId },
+          })
+        }
+        await submitJob({
+          workspacePath: activeWorkspacePath,
+          type: 'resolve_plan',
+          payload: JSON.stringify({
+            workspacePath: activeWorkspacePath,
+            sessionExternalId,
+            requestId,
+            outcome,
+            providerId: acpSessionStateById[sessionExternalId]?.providerId ?? defaultProviderId,
+          }),
+          clientId: currentClientId,
+          sessionExternalId,
+        })
+      } catch (err) {
+        if (feedbackMessageId) {
+          await removeMessage({ externalId: feedbackMessageId }).catch(() => undefined)
+        }
+        setError((err as Error).message)
+        throw err
+      }
+    },
+    [
+      acpSessionStateById,
+      activeWorkspacePath,
+      currentClientId,
+      defaultProviderId,
+      persistPlanFeedback,
+      removeMessage,
+      submitJob,
+    ],
+  )
+
+  const buildPlan = useCallback(
+    async (sessionExternalId: string, requestId: string, modeId?: string) => {
+      if (!activeWorkspacePath) throw new Error('Workspace unavailable')
+      if (!currentClientId) throw new Error('Client identity unavailable')
+      const providerId = acpSessionStateById[sessionExternalId]?.providerId ?? defaultProviderId
+      setError(null)
+      setLocalSessionStatus('running')
+      try {
+        const userMessageId = `agent_usr_${crypto.randomUUID()}`
+        const jobId = (await submitJob({
+          workspacePath: activeWorkspacePath,
+          type: 'build_plan',
+          payload: JSON.stringify({
+            workspacePath: activeWorkspacePath,
+            sessionExternalId,
+            requestId,
+            content: 'Build the plan.',
+            userMessageId,
+            providerId,
+            ...(modeId ? { modeId } : {}),
+          }),
+          clientId: currentClientId,
+          sessionExternalId,
+        })) as Id<'pending_jobs'>
+        setLocalSessionJobId(jobId)
+        if (modeId) {
+          setAcpSessionStateById((prev) => ({
+            ...prev,
+            [sessionExternalId]: {
+              ...(prev[sessionExternalId] ?? { sessionId: sessionExternalId, providerId }),
+              modes: {
+                ...(prev[sessionExternalId]?.modes ?? {}),
+                currentModeId: modeId,
+              },
+            },
+          }))
+        }
+      } catch (err) {
+        setLocalSessionStatus(null)
+        setLocalSessionJobId(null)
+        setError((err as Error).message)
+        throw err
+      }
+    },
+    [acpSessionStateById, activeWorkspacePath, currentClientId, defaultProviderId, submitJob],
+  )
+
   const setSessionModel = useCallback(
     async (sessionExternalId: string, modelId: string) => {
       if (!activeWorkspacePath || !currentClientId) return
@@ -1733,6 +1847,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         case 'permission_request':
         case 'permission_resolved':
         case 'question_request':
+        case 'plan_review_request':
         case 'session_info_update':
         case 'usage_update':
         case 'extension_request':
@@ -1836,6 +1951,8 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       abortSession,
       resolvePermission,
       resolveQuestion,
+      resolvePlan,
+      buildPlan,
       setDraftModel,
       setDraftMode,
       setDraftConfigOption,
@@ -1873,6 +1990,8 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       abortSession,
       resolvePermission,
       resolveQuestion,
+      resolvePlan,
+      buildPlan,
       setDraftModel,
       setDraftMode,
       setDraftConfigOption,

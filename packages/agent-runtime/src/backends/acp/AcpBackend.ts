@@ -10,6 +10,9 @@ import type {
   ModelListing,
   PermissionOption,
   PermissionOutcome,
+  PlanEntry,
+  PlanReviewOutcome,
+  PlanTodo,
   PromptInput,
   ProviderId,
   QuestionOutcome,
@@ -34,7 +37,12 @@ import type {
   BackendSessionArgs,
   SessionResult,
 } from '../Backend.js'
-import { ExtensionRegistry, type QuestionAdapter } from './extensions.js'
+import {
+  ExtensionRegistry,
+  type PlanAdapter,
+  type PlanSnapshot,
+  type QuestionAdapter,
+} from './extensions.js'
 import { parseAcpFormElicitation, type AcpFormQuestionAdapter } from './elicitation.js'
 
 type RecordValue = Record<string, unknown>
@@ -70,6 +78,8 @@ const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : 'ACP operation failed'
 const isAuthRequired = (error: unknown): boolean => errorCode(error) === -32002
 const ACP_ELICITATION_METHOD = acp.methods.client.elicitation.create
+/** Plans deserve a longer review window than the default extension timeout. */
+const PLAN_REVIEW_TIMEOUT_MS = 30 * 60 * 1000
 
 function normalizeModelListing(value: unknown): ModelListing {
   const listing = object(value)
@@ -244,7 +254,9 @@ export class AcpBackend implements Backend {
     | { adapter: QuestionAdapter; params: unknown }
     | { elicitation: AcpFormQuestionAdapter }
     | { native: string }
+    | { plan: PlanAdapter; params: unknown }
   >()
+  private readonly lastPlanTodos = new Map<string, PlanTodo[]>()
   private readonly extensionRequests = new ExtensionBroker((settlement) => {
     this.questionContexts.delete(settlement.requestId)
     this.emit(
@@ -643,9 +655,18 @@ export class AcpBackend implements Backend {
     if ('native' in context) return this.extensionRequests.respond(requestId, outcome)
     if ('elicitation' in context)
       return this.extensionRequests.respond(requestId, context.elicitation.respond(outcome))
+    if ('plan' in context) return false
     return this.extensionRequests.respond(
       requestId,
       context.adapter.respond(outcome, context.params),
+    )
+  }
+  respondPlan(requestId: string, outcome: PlanReviewOutcome): boolean {
+    const context = this.questionContexts.get(requestId)
+    if (!context || !('plan' in context)) return false
+    return this.extensionRequests.respond(
+      requestId,
+      context.plan.respond(outcome, context.params),
     )
   }
   respondPermission(requestId: string, outcome: PermissionOutcome): boolean {
@@ -1050,6 +1071,40 @@ export class AcpBackend implements Backend {
     this.logInbound(method, params)
     const binding = this.extensionBinding(params)
     const requestId = crypto.randomUUID()
+    const planSnapshot = this.extensions.planSnapshot(method)
+    if (planSnapshot && binding) {
+      const snapshot = planSnapshot(params)
+      if (snapshot) {
+        const merged = this.mergePlanTodos(binding.sessionId, snapshot)
+        this.emit(
+          routeEvent(binding, binding.sessionId, 'session', 'plan_update', {
+            entries: this.planEntries(merged),
+          }),
+        )
+        // Snapshot requests are acked immediately; the bridge discards the
+        // response and they never ride the extension broker.
+        return {}
+      }
+    }
+    const planAdapter = this.extensions.planAdapter(method)
+    const parsedPlan = planAdapter && binding ? planAdapter.parse(params) : undefined
+    if (binding && planAdapter && parsedPlan) {
+      this.questionContexts.set(requestId, { plan: planAdapter, params })
+      // Register the broker before the review request reaches UI listeners so a
+      // fast local renderer cannot answer before respondPlan has anything to settle.
+      const outcomePromise = this.awaitDeferred(requestId, binding, method, PLAN_REVIEW_TIMEOUT_MS)
+      this.emit(
+        routeEvent(binding, binding.sessionId, 'session', 'plan_review_request', {
+          ...parsedPlan,
+          requestId,
+          sessionId: binding.sessionId,
+        }),
+      )
+      const outcome = await outcomePromise
+      if (outcome.outcome === 'responded') return object(outcome.response)
+      // Cancelled/timed out: the registry default maps to "User cancelled".
+      return object(await this.extensions.request(method, params))
+    }
     const adapter = this.extensions.questionAdapter(method)
     const parsed = adapter && binding ? adapter.parse(params) : undefined
     if (binding && adapter && parsed) {
@@ -1134,17 +1189,51 @@ export class AcpBackend implements Backend {
     requestId: string,
     binding: SessionBinding,
     method: string,
+    timeoutMs?: number,
   ): Promise<ExtensionOutcome> {
     return new Promise<ExtensionOutcome>((resolve) =>
-      this.extensionRequests.add(requestId, {
-        providerId: this.providerId,
-        threadId: binding.threadId,
-        workspaceId: binding.workspaceId,
-        sessionId: binding.sessionId,
-        method,
-        resolve,
-      }),
+      this.extensionRequests.add(
+        requestId,
+        {
+          providerId: this.providerId,
+          threadId: binding.threadId,
+          workspaceId: binding.workspaceId,
+          sessionId: binding.sessionId,
+          method,
+          resolve,
+        },
+        timeoutMs,
+      ),
     )
+  }
+  private mergePlanTodos(sessionId: string, snapshot: PlanSnapshot): PlanTodo[] {
+    if (!snapshot.merge) {
+      this.lastPlanTodos.set(sessionId, snapshot.todos)
+      return snapshot.todos
+    }
+    const previous = this.lastPlanTodos.get(sessionId) ?? []
+    const incoming = new Map(snapshot.todos.map((todo) => [todo.id, todo]))
+    const seen = new Set<string>()
+    const merged: PlanTodo[] = []
+    for (const todo of previous) {
+      merged.push(incoming.get(todo.id) ?? todo)
+      seen.add(todo.id)
+    }
+    for (const todo of snapshot.todos) if (!seen.has(todo.id)) merged.push(todo)
+    this.lastPlanTodos.set(sessionId, merged)
+    return merged
+  }
+  private planEntries(todos: readonly PlanTodo[]): PlanEntry[] {
+    return todos.flatMap((todo) => {
+      if (todo.status === 'cancelled') return []
+      const status =
+        todo.status === 'in_progress'
+          ? 'in_progress'
+          : todo.status === 'completed'
+            ? 'completed'
+            : 'pending'
+      return [{ content: todo.content, priority: 'medium' as const, status }]
+    })
   }
   private async extensionNotification(method: string, params: unknown): Promise<void> {
     this.logInbound(method, params)

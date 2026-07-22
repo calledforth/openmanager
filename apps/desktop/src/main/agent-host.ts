@@ -2,6 +2,8 @@ import type {
   AgentEvent,
   PermissionOutcome,
   PermissionRequest,
+  PlanDocument,
+  PlanReviewOutcome,
   PromptCapabilities,
   ProviderId,
   QuestionOutcome,
@@ -20,6 +22,7 @@ export class AgentHost {
   private readonly pendingPermissions = new Map<string, PermissionRequest>()
   private readonly pendingExtensions = new Map<string, { method: string; params: unknown }>()
   private readonly pendingQuestions = new Map<string, QuestionRequest>()
+  private readonly pendingPlans = new Map<string, PlanDocument>()
 
   constructor(
     readonly projector: ConvexProjector,
@@ -95,6 +98,17 @@ export class AgentHost {
     // Map cleanup happens on the extension_resolved event the broker emits.
   }
 
+  respondPlan(args: {
+    providerId: ProviderId
+    requestId: string
+    outcome: PlanReviewOutcome
+  }): void {
+    if (!this.pendingPlans.has(args.requestId))
+      throw new Error('Plan review not found or already resolved')
+    this.runtime.respondPlan(args)
+    // Map cleanup happens on the extension_resolved event the broker emits.
+  }
+
   private permissionOutcome(
     request: PermissionRequest,
     args: { optionId?: string; approved?: boolean },
@@ -163,9 +177,13 @@ export class AgentHost {
     if (event.event === 'question_request') {
       this.pendingQuestions.set(event.data.requestId, event.data)
     }
+    if (event.event === 'plan_review_request') {
+      this.pendingPlans.set(event.data.requestId, event.data)
+    }
     if (event.event === 'extension_resolved') {
       this.pendingExtensions.delete(event.data.requestId)
       this.pendingQuestions.delete(event.data.requestId)
+      this.pendingPlans.delete(event.data.requestId)
     }
     this.projector.consume(event)
     const window = this.getMainWindow()
@@ -174,6 +192,7 @@ export class AgentHost {
     if (
       event.category === 'stream' ||
       event.category === 'tool' ||
+      event.event === 'plan_update' ||
       event.event === 'prompt_started' ||
       event.event === 'prompt_completed' ||
       event.event === 'rpc_error' ||

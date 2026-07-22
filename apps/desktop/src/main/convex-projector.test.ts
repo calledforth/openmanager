@@ -211,4 +211,29 @@ describe('ConvexProjector streaming contracts', () => {
       Record<string, unknown> | undefined
     expect(toolState?.status).toBe('completed')
   })
+
+  it('keeps requested plan changes with the rejected revision', async () => {
+    const { projector, mutations } = setup()
+    projector.consume(
+      event(1, {
+        category: 'extension',
+        event: 'extension_resolved',
+        data: {
+          requestId: 'plan-1',
+          method: 'cursor/create_plan',
+          outcome: {
+            outcome: 'responded',
+            response: { outcome: { outcome: 'rejected', reason: '  Add rollback tests.  ' } },
+          },
+        },
+      }),
+    )
+    await projector.waitForThread(base.threadId)
+
+    expect(mutations).toContainEqual({
+      requestId: 'plan-1',
+      status: 'rejected',
+      resolutionReason: 'Add rollback tests.',
+    })
+  })
 })

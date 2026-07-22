@@ -144,6 +144,22 @@ export default defineSchema({
     .index('by_sessionExternalId', ['sessionExternalId'])
     .index('by_requestId', ['requestId']),
 
+  plans: defineTable({
+    sessionExternalId: v.string(),
+    requestId: v.string(),
+    name: v.optional(v.string()),
+    overview: v.optional(v.string()),
+    markdown: v.string(),
+    todos: v.any(),
+    phases: v.optional(v.any()),
+    status: v.string(), // 'pending' | 'accepted' | 'rejected' | 'cancelled'
+    resolutionReason: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index('by_sessionExternalId', ['sessionExternalId'])
+    .index('by_requestId', ['requestId']),
+
   stream_chunks: defineTable({
     messageId: v.id('messages'),
     messageExternalId: v.string(),

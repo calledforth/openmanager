@@ -27,10 +27,10 @@ export class ExtensionBroker {
   private readonly pending = new Map<string, Pending>()
 
   constructor(private readonly onSettle?: (settlement: ExtensionSettlement) => void) {}
-  add(requestId: string, args: Omit<Pending, 'timer'>): void {
+  add(requestId: string, args: Omit<Pending, 'timer'>, timeoutMs = EXTENSION_TIMEOUT_MS): void {
     const timer = setTimeout(
       () => this.settleOne(requestId, { outcome: 'cancelled', reason: 'timeout' }),
-      EXTENSION_TIMEOUT_MS,
+      timeoutMs,
     )
     timer.unref?.()
     this.pending.set(requestId, { ...args, timer })

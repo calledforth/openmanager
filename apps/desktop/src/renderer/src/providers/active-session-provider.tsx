@@ -117,6 +117,12 @@ export class StreamingMessagesStore {
         this.finishActiveParts(state)
         changed = this.appendToolContent(state, event.data.toolCallId, event.data.item)
         break
+      case 'plan_update':
+        // One stable part keyed 'plan', replaced wholesale on every update —
+        // the live analogue of the persisted per-turn plan checklist.
+        state.parts.set('plan', { type: 'plan', id: 'plan', entries: event.data.entries })
+        changed = true
+        break
       case 'prompt_completed':
         this.finishActiveParts(state)
         this.finishRunningTools(state, event.data.stopReason)
