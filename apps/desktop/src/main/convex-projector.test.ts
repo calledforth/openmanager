@@ -212,6 +212,184 @@ describe('ConvexProjector streaming contracts', () => {
     expect(toolState?.status).toBe('completed')
   })
 
+  it('settles Cursor subtasks from the provider turn result when cancel has no task terminal', async () => {
+    const { projector, mutations } = setup()
+    projector.consume(
+      event(1, {
+        providerId: 'cursor',
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'Delegate', userMessageId: 'user-1' },
+      }),
+    )
+    projector.consume(
+      event(2, {
+        providerId: 'cursor',
+        category: 'session',
+        event: 'subtask_update',
+        data: {
+          taskId: 'task-1',
+          status: 'running',
+          statusSource: 'task_event',
+        },
+      }),
+    )
+    projector.consume(
+      event(3, {
+        providerId: 'cursor',
+        category: 'lifecycle',
+        event: 'prompt_completed',
+        data: { stopReason: 'cancelled' },
+      }),
+    )
+    await projector.waitForThread(base.threadId)
+
+    const finalized = [...mutations]
+      .reverse()
+      .find((args) => args.externalId === base.messageId && args.role === 'assistant')
+    expect((finalized?.parts as Array<Record<string, unknown>>)[0]).toMatchObject({
+      type: 'subtask',
+      status: 'cancelled',
+      statusSource: 'turn_result',
+      statusReason: 'cancelled',
+    })
+  })
+
+  it('keeps Cursor completion authoritative when cursor/task enrichment arrives afterward', async () => {
+    const { projector, mutations } = setup()
+    projector.consume(
+      event(1, {
+        providerId: 'cursor',
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'Delegate', userMessageId: 'user-1' },
+      }),
+    )
+    projector.consume(
+      event(2, {
+        providerId: 'cursor',
+        category: 'session',
+        event: 'subtask_update',
+        data: {
+          taskId: 'task-1',
+          status: 'completed',
+          statusSource: 'task_event',
+          durationMs: 7420,
+        },
+      }),
+    )
+    projector.consume(
+      event(3, {
+        providerId: 'cursor',
+        category: 'session',
+        event: 'subtask_update',
+        data: {
+          taskId: 'task-1',
+          description: 'Read package.json name',
+          modelId: 'composer-2.5',
+        },
+      }),
+    )
+    projector.consume(
+      event(4, {
+        providerId: 'cursor',
+        category: 'lifecycle',
+        event: 'prompt_completed',
+        data: { stopReason: 'end_turn' },
+      }),
+    )
+    await projector.waitForThread(base.threadId)
+
+    const finalized = [...mutations]
+      .reverse()
+      .find((args) => args.externalId === base.messageId && args.role === 'assistant')
+    expect((finalized?.parts as Array<Record<string, unknown>>)[0]).toMatchObject({
+      type: 'subtask',
+      status: 'completed',
+      statusSource: 'task_event',
+      description: 'Read package.json name',
+      modelId: 'composer-2.5',
+      durationMs: 7420,
+    })
+  })
+
+  it('preserves OpenCode interrupted task status when the parent turn is cancelled', async () => {
+    const { projector, mutations } = setup()
+    projector.consume(
+      event(1, {
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'Delegate', userMessageId: 'user-1' },
+      }),
+    )
+    projector.consume(
+      event(2, {
+        category: 'session',
+        event: 'subtask_update',
+        data: {
+          taskId: 'task-1',
+          status: 'interrupted',
+          statusSource: 'task_event',
+          statusReason: 'Tool execution aborted',
+        },
+      }),
+    )
+    projector.consume(
+      event(3, {
+        category: 'lifecycle',
+        event: 'prompt_completed',
+        data: { stopReason: 'cancelled' },
+      }),
+    )
+    await projector.waitForThread(base.threadId)
+
+    const finalized = [...mutations]
+      .reverse()
+      .find((args) => args.externalId === base.messageId && args.role === 'assistant')
+    expect((finalized?.parts as Array<Record<string, unknown>>)[0]).toMatchObject({
+      type: 'subtask',
+      status: 'interrupted',
+      statusSource: 'task_event',
+      statusReason: 'Tool execution aborted',
+    })
+  })
+
+  it('marks a missing successful-turn subtask terminal as unknown', async () => {
+    const { projector, mutations } = setup()
+    projector.consume(
+      event(1, {
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'Delegate', userMessageId: 'user-1' },
+      }),
+    )
+    projector.consume(
+      event(2, {
+        category: 'session',
+        event: 'subtask_update',
+        data: { taskId: 'task-1', status: 'running', statusSource: 'task_event' },
+      }),
+    )
+    projector.consume(
+      event(3, {
+        category: 'lifecycle',
+        event: 'prompt_completed',
+        data: { stopReason: 'end_turn' },
+      }),
+    )
+    await projector.waitForThread(base.threadId)
+
+    const finalized = [...mutations]
+      .reverse()
+      .find((args) => args.externalId === base.messageId && args.role === 'assistant')
+    expect((finalized?.parts as Array<Record<string, unknown>>)[0]).toMatchObject({
+      type: 'subtask',
+      status: 'unknown',
+      statusSource: 'turn_result',
+      statusReason: 'end_turn',
+    })
+  })
+
   it('keeps requested plan changes with the rejected revision', async () => {
     const { projector, mutations } = setup()
     projector.consume(

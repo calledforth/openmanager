@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   PlusIcon,
   CaretDoubleLeftIcon,
@@ -7,6 +7,7 @@ import {
   FolderOpenIcon,
   TrashIcon,
   NotePencilIcon,
+  GitBranchIcon,
 } from '@phosphor-icons/react'
 import type { ProviderId } from '@agentpack/contract'
 import { cn } from '../../lib/utils'
@@ -17,15 +18,66 @@ import { SidebarSettingsMenu } from './SidebarSettingsMenu'
 const SESSION_PREVIEW_LIMIT = 5
 const SESSION_PAGE_SIZE = 10
 
+export interface SidebarSession {
+  externalId: string
+  title?: string
+  status: string
+  providerId?: ProviderId
+  parentExternalId?: string
+}
+
 export interface SidebarWorkspace {
   path: string
   name: string
-  sessions: Array<{
-    externalId: string
-    title?: string
-    status: string
-    providerId?: ProviderId
-  }>
+  sessions: SidebarSession[]
+}
+
+export interface SidebarSessionRow {
+  session: SidebarSession
+  depth: number
+  isChild: boolean
+  isOrphan: boolean
+}
+
+/** Preserve recency order within each level while placing child transcripts
+ * directly beneath their parent. Missing parents and cycles remain visible. */
+export function flattenSidebarSessions(sessions: SidebarSession[]): SidebarSessionRow[] {
+  const byId = new Map(sessions.map((session) => [session.externalId, session]))
+  const children = new Map<string, SidebarSession[]>()
+  const roots: SidebarSession[] = []
+  for (const session of sessions) {
+    if (session.parentExternalId && byId.has(session.parentExternalId)) {
+      const siblings = children.get(session.parentExternalId) ?? []
+      siblings.push(session)
+      children.set(session.parentExternalId, siblings)
+    } else {
+      roots.push(session)
+    }
+  }
+
+  const rows: SidebarSessionRow[] = []
+  const visited = new Set<string>()
+  const visit = (session: SidebarSession, depth: number, isOrphan: boolean) => {
+    if (visited.has(session.externalId)) return
+    visited.add(session.externalId)
+    rows.push({
+      session,
+      depth,
+      isChild: !!session.parentExternalId,
+      isOrphan,
+    })
+    for (const child of children.get(session.externalId) ?? []) {
+      visit(child, depth + 1, false)
+    }
+  }
+
+  for (const root of roots) {
+    visit(root, 0, !!root.parentExternalId)
+  }
+  for (const session of sessions) {
+    if (!visited.has(session.externalId)) visit(session, 0, true)
+  }
+  return rows
 }
 
 export function WorkspaceSidebarView({
@@ -163,16 +215,22 @@ function WorkspaceGroup({
 }) {
   const [visibleCount, setVisibleCount] = useState(SESSION_PREVIEW_LIMIT)
   const FolderIcon = isCollapsed ? FolderSimpleIcon : FolderOpenIcon
-  const hasMoreSessions = workspace.sessions.length > visibleCount
-  const visibleSessions = workspace.sessions.slice(0, visibleCount)
+  const orderedSessions = useMemo(
+    () => flattenSidebarSessions(workspace.sessions),
+    [workspace.sessions],
+  )
+  const hasMoreSessions = orderedSessions.length > visibleCount
+  const visibleSessions = orderedSessions.slice(0, visibleCount)
 
   useEffect(() => {
     if (!isActiveWorkspace || !activeSessionId) return
-    const activeIndex = workspace.sessions.findIndex((s) => s.externalId === activeSessionId)
+    const activeIndex = orderedSessions.findIndex(
+      ({ session }) => session.externalId === activeSessionId,
+    )
     if (activeIndex >= 0) {
       setVisibleCount((count) => Math.max(count, activeIndex + 1))
     }
-  }, [isActiveWorkspace, activeSessionId, workspace.sessions])
+  }, [isActiveWorkspace, activeSessionId, orderedSessions])
 
   return (
     <div className="mb-0">
@@ -207,11 +265,10 @@ function WorkspaceGroup({
 
       {!isCollapsed && (
         <div className="ml-1">
-          {visibleSessions.map((s) => {
+          {visibleSessions.map(({ session: s, depth, isChild, isOrphan }) => {
             const isActive = isActiveWorkspace && s.externalId === activeSessionId
             const providerId = s.providerId ?? 'opencode'
-            const isBusy =
-              s.status === 'running' || s.status === 'busy' || s.status === 'waiting'
+            const isBusy = s.status === 'running' || s.status === 'busy' || s.status === 'waiting'
             return (
               <button
                 key={s.externalId}
@@ -222,11 +279,29 @@ function WorkspaceGroup({
                     ? 'bg-surface-active text-[var(--basis-text)]'
                     : 'text-[var(--basis-text)] hover:bg-surface-hover',
                 )}
+                style={{ paddingLeft: `${10 + Math.min(depth, 4) * 14}px` }}
               >
-                <ProviderIcon providerId={providerId} className="h-3 w-3 opacity-70" />
+                {isChild ? (
+                  <GitBranchIcon
+                    className="h-3 w-3 shrink-0 text-[var(--basis-text-faint)]"
+                    weight="regular"
+                  />
+                ) : (
+                  <ProviderIcon providerId={providerId} className="h-3 w-3 opacity-70" />
+                )}
                 <span className={cn(typographyLabel, 'flex-1 truncate font-normal')}>
                   {s.title || s.externalId.slice(0, 10)}
                 </span>
+                {isChild && !isBusy ? (
+                  <span
+                    className="shrink-0 rounded-sm border border-[var(--basis-border-muted)] px-1 py-px text-[9px] leading-none tracking-wide text-[var(--basis-text-faint)]"
+                    title={
+                      isOrphan ? 'Subagent transcript (parent unavailable)' : 'Subagent transcript'
+                    }
+                  >
+                    {isOrphan ? 'ORPHAN' : 'SUBAGENT'}
+                  </span>
+                ) : null}
                 <span
                   className={cn(
                     'relative flex h-4 shrink-0 items-center justify-center overflow-hidden transition-[width]',
@@ -256,7 +331,7 @@ function WorkspaceGroup({
               type="button"
               onClick={() =>
                 setVisibleCount((count) =>
-                  Math.min(count + SESSION_PAGE_SIZE, workspace.sessions.length),
+                  Math.min(count + SESSION_PAGE_SIZE, orderedSessions.length),
                 )
               }
               className={cn(

@@ -205,6 +205,77 @@ describe('agent streaming regressions', () => {
     expect((snapshot.parts[1]?.state as { status?: string }).status).toBe('completed')
   })
 
+  it('renders subtask updates live and settles Cursor cancellation from the turn result', () => {
+    const messageId = 'assistant-subtask'
+    const store = new StreamingMessagesStore()
+    store.update(
+      event({
+        messageId,
+        category: 'session',
+        event: 'subtask_update',
+        data: {
+          taskId: 'task-1',
+          status: 'running',
+          statusSource: 'task_event',
+          title: 'Inspect workspace',
+        },
+      }),
+    )
+    store.update(
+      event({
+        id: 'cancelled-turn',
+        messageId,
+        seq: 2,
+        providerId: 'cursor',
+        category: 'lifecycle',
+        event: 'prompt_completed',
+        data: { stopReason: 'cancelled' },
+      }),
+    )
+
+    expect(store.get(messageId)?.parts[0]).toMatchObject({
+      type: 'subtask',
+      title: 'Inspect workspace',
+      status: 'cancelled',
+      statusSource: 'turn_result',
+      statusReason: 'cancelled',
+    })
+  })
+
+  it('does not overwrite an OpenCode interrupted task with parent cancellation fallback', () => {
+    const messageId = 'assistant-interrupted-subtask'
+    const store = new StreamingMessagesStore()
+    store.update(
+      event({
+        messageId,
+        category: 'session',
+        event: 'subtask_update',
+        data: {
+          taskId: 'task-1',
+          status: 'interrupted',
+          statusSource: 'task_event',
+          statusReason: 'Tool execution aborted',
+        },
+      }),
+    )
+    store.update(
+      event({
+        id: 'cancelled-turn',
+        messageId,
+        seq: 2,
+        category: 'lifecycle',
+        event: 'prompt_completed',
+        data: { stopReason: 'cancelled' },
+      }),
+    )
+
+    expect(store.get(messageId)?.parts[0]).toMatchObject({
+      status: 'interrupted',
+      statusSource: 'task_event',
+      statusReason: 'Tool execution aborted',
+    })
+  })
+
   it('ignores replayed events by host event identity', () => {
     const store = new StreamingMessagesStore()
     const chunk = event({

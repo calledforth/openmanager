@@ -17,7 +17,10 @@ import type {
   ProviderId,
   QuestionOutcome,
   SessionConfigOption,
+  SubtaskUpdate,
+  ToolCall,
   ToolCallContent,
+  ToolCallUpdate,
 } from '@agentpack/contract'
 import type { HostDeps } from '../../host.js'
 import type { ProviderConfig } from '../../providers/index.js'
@@ -39,6 +42,7 @@ import type {
 } from '../Backend.js'
 import {
   ExtensionRegistry,
+  subtaskStatusFromTool,
   type PlanAdapter,
   type PlanSnapshot,
   type QuestionAdapter,
@@ -257,6 +261,8 @@ export class AcpBackend implements Backend {
     | { plan: PlanAdapter; params: unknown }
   >()
   private readonly lastPlanTodos = new Map<string, PlanTodo[]>()
+  /** toolCallIds claimed as subtasks, keyed `${sessionId}:${toolCallId}`. */
+  private readonly subtaskToolIds = new Set<string>()
   private readonly extensionRequests = new ExtensionBroker((settlement) => {
     this.questionContexts.delete(settlement.requestId)
     this.emit(
@@ -396,6 +402,7 @@ export class AcpBackend implements Backend {
       this.authenticated = false
       this.bootstrap = null
       this.sessions.clear()
+      this.subtaskToolIds.clear()
     })
   }
 
@@ -634,6 +641,7 @@ export class AcpBackend implements Backend {
       throw this.rpcError(args, args.sessionId, 'session/prompt', error)
     } finally {
       if (this.activePromptSessionId === args.sessionId) this.activePromptSessionId = undefined
+      this.clearSubtaskTools(args.sessionId)
     }
   }
   async cancel(args: BackendRoute & { cwd: string; sessionId: string }): Promise<void> {
@@ -664,10 +672,7 @@ export class AcpBackend implements Backend {
   respondPlan(requestId: string, outcome: PlanReviewOutcome): boolean {
     const context = this.questionContexts.get(requestId)
     if (!context || !('plan' in context)) return false
-    return this.extensionRequests.respond(
-      requestId,
-      context.plan.respond(outcome, context.params),
-    )
+    return this.extensionRequests.respond(requestId, context.plan.respond(outcome, context.params))
   }
   respondPermission(requestId: string, outcome: PermissionOutcome): boolean {
     return this.permissions.respond(requestId, outcome)
@@ -874,35 +879,42 @@ export class AcpBackend implements Backend {
       return
     }
     if (kind === 'tool_call') {
+      const tool: ToolCall = {
+        toolCallId: string(update.toolCallId) ?? '',
+        title: string(update.title) ?? '',
+        kind: update.kind as ToolCall['kind'],
+        status: update.status as ToolCall['status'],
+        rawInput: update.rawInput,
+        rawOutput: update.rawOutput,
+        content: Array.isArray(update.content) ? update.content.map(toolContent) : undefined,
+        locations: update.locations as ToolCall['locations'],
+        metadata: update._meta as ToolCall['metadata'],
+      }
+      const subtask = this.subtaskFromTool(sessionId, tool, 'call')
       this.emit(
-        routeEvent(binding, sessionId, 'tool', 'tool_call', {
-          toolCallId: string(update.toolCallId) ?? '',
-          title: string(update.title) ?? '',
-          kind: update.kind,
-          status: update.status,
-          rawInput: update.rawInput,
-          rawOutput: update.rawOutput,
-          content: Array.isArray(update.content) ? update.content.map(toolContent) : undefined,
-          locations: update.locations,
-          metadata: update._meta,
-        }),
+        subtask
+          ? routeEvent(binding, sessionId, 'session', 'subtask_update', subtask)
+          : routeEvent(binding, sessionId, 'tool', 'tool_call', tool),
       )
       return
     }
     if (kind === 'tool_call_update') {
-      const content = Array.isArray(update.content) ? update.content.map(toolContent) : []
+      const tool: ToolCallUpdate = {
+        toolCallId: string(update.toolCallId) ?? '',
+        title: string(update.title),
+        kind: update.kind as ToolCallUpdate['kind'],
+        status: update.status as ToolCallUpdate['status'],
+        rawInput: update.rawInput,
+        rawOutput: update.rawOutput,
+        content: Array.isArray(update.content) ? update.content.map(toolContent) : [],
+        locations: update.locations as ToolCallUpdate['locations'],
+        metadata: update._meta as ToolCallUpdate['metadata'],
+      }
+      const subtask = this.subtaskFromTool(sessionId, tool, 'update')
       this.emit(
-        routeEvent(binding, sessionId, 'tool', 'tool_call_update', {
-          toolCallId: string(update.toolCallId) ?? '',
-          title: string(update.title),
-          kind: update.kind,
-          status: update.status,
-          rawInput: update.rawInput,
-          rawOutput: update.rawOutput,
-          content,
-          locations: update.locations,
-          metadata: update._meta,
-        }),
+        subtask
+          ? routeEvent(binding, sessionId, 'session', 'subtask_update', subtask)
+          : routeEvent(binding, sessionId, 'tool', 'tool_call_update', tool),
       )
       return
     }
@@ -1004,6 +1016,39 @@ export class AcpBackend implements Backend {
       }),
     )
   }
+  /** Route a tool call through the provider's subtask classifier. A claimed
+   * toolCallId never emits raw tool events again: if the adapter passes on a
+   * later update we synthesize a status-only SubtaskUpdate to keep the part
+   * consistent. */
+  private subtaskFromTool(
+    sessionId: string,
+    tool: ToolCall | ToolCallUpdate,
+    phase: 'call' | 'update',
+  ): SubtaskUpdate | undefined {
+    const fromToolCall = this.config.subtasks?.fromToolCall
+    if (!fromToolCall || !tool.toolCallId) return undefined
+    const key = `${sessionId}:${tool.toolCallId}`
+    const tracked = this.subtaskToolIds.has(key)
+    const update = fromToolCall(tool, { phase, tracked })
+    if (update) {
+      this.subtaskToolIds.add(key)
+      return update.status
+        ? { ...update, statusSource: update.statusSource ?? 'task_event' }
+        : update
+    }
+    if (!tracked) return undefined
+    const status = subtaskStatusFromTool(tool.status)
+    return {
+      taskId: tool.toolCallId,
+      ...(status ? { status, statusSource: 'task_event' as const } : {}),
+    }
+  }
+  private clearSubtaskTools(sessionId: string): void {
+    const prefix = `${sessionId}:`
+    for (const key of this.subtaskToolIds) {
+      if (key.startsWith(prefix)) this.subtaskToolIds.delete(key)
+    }
+  }
   /** Cursor extension params often omit sessionId entirely; fall back to the
    * sole active session when the wire gives us nothing to correlate on. */
   private extensionBinding(params: unknown): SessionBinding | undefined {
@@ -1071,6 +1116,16 @@ export class AcpBackend implements Backend {
     this.logInbound(method, params)
     const binding = this.extensionBinding(params)
     const requestId = crypto.randomUUID()
+    const subtaskParser = this.config.subtasks?.fromExtension?.[method]
+    if (subtaskParser && binding) {
+      const parsed = subtaskParser(params)
+      if (parsed) {
+        this.emit(routeEvent(binding, binding.sessionId, 'session', 'subtask_update', parsed))
+        // Metadata-bearing requests (cursor/task) block the provider's turn;
+        // ack immediately, there is nothing to review.
+        return {}
+      }
+    }
     const planSnapshot = this.extensions.planSnapshot(method)
     if (planSnapshot && binding) {
       const snapshot = planSnapshot(params)
@@ -1237,11 +1292,23 @@ export class AcpBackend implements Backend {
   }
   private async extensionNotification(method: string, params: unknown): Promise<void> {
     this.logInbound(method, params)
-    const sessionId = sessionIdOf(params)
-    const binding = sessionId ? this.sessions.forSession(sessionId) : undefined
-    if (binding && sessionId)
+    // Sessionless notifications (e.g. cursor/*) fall back to the active-prompt
+    // binding like requests do, instead of being silently dropped.
+    const binding = this.extensionBinding(params)
+    const subtaskParser = this.config.subtasks?.fromExtension?.[method]
+    if (subtaskParser && binding) {
+      const parsed = subtaskParser(params)
+      if (parsed) {
+        this.emit(routeEvent(binding, binding.sessionId, 'session', 'subtask_update', parsed))
+        return
+      }
+    }
+    if (binding)
       this.emit(
-        routeEvent(binding, sessionId, 'extension', 'extension_notification', { method, params }),
+        routeEvent(binding, binding.sessionId, 'extension', 'extension_notification', {
+          method,
+          params,
+        }),
       )
     await this.extensions.notification(method, params)
   }
@@ -1261,5 +1328,6 @@ export class AcpBackend implements Backend {
     this.authenticated = false
     this.bootstrap = null
     this.sessions.clear()
+    this.subtaskToolIds.clear()
   }
 }

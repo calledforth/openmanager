@@ -131,6 +131,51 @@ export const upsertTitle = mutation({
   },
 })
 
+/** Mark (or create) a session as a subagent child of another session, so the
+ * sidebar can nest it and the transcript opens read-only. Runs before
+ * load-session replay so the projector's own upsert only patches the row. */
+export const registerChild = mutation({
+  args: {
+    workspacePath: v.string(),
+    externalId: v.string(),
+    parentExternalId: v.string(),
+    title: v.optional(v.string()),
+    providerId: v.optional(v.string()),
+    clientId: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query('sessions')
+      .withIndex('by_externalId', (q) => q.eq('externalId', args.externalId))
+      .first()
+    if (existing) {
+      if (existing.parentExternalId === args.parentExternalId) return { registered: true }
+      await ctx.db.patch(existing._id, {
+        parentExternalId: args.parentExternalId,
+        updatedAt: Date.now(),
+      })
+      return { registered: true }
+    }
+    const workspace = await ctx.db
+      .query('workspaces')
+      .withIndex('by_path', (q) => q.eq('path', args.workspacePath))
+      .first()
+    if (!workspace) throw new Error(`Workspace not found: ${args.workspacePath}`)
+    await ctx.db.insert('sessions', {
+      workspaceId: workspace._id,
+      externalId: args.externalId,
+      providerId: args.providerId,
+      clientId: args.clientId,
+      title: args.title,
+      status: 'idle',
+      parentExternalId: args.parentExternalId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    })
+    return { registered: true }
+  },
+})
+
 export const listByWorkspace = query({
   args: { workspacePath: v.string() },
   handler: async (ctx, args) => {
@@ -139,10 +184,11 @@ export const listByWorkspace = query({
       .withIndex('by_path', (q) => q.eq('path', args.workspacePath))
       .first()
     if (!workspace) return []
-    return await ctx.db
+    const sessions = await ctx.db
       .query('sessions')
       .withIndex('by_workspace', (q) => q.eq('workspaceId', workspace._id))
       .collect()
+    return sessions.filter((session) => !session.parentExternalId)
   },
 })
 
@@ -158,6 +204,7 @@ export const listForSidebar = query({
       status: string
       providerId?: string
       clientId?: string
+      parentExternalId?: string
       updatedAt: number
     }> = []
 
@@ -179,6 +226,7 @@ export const listForSidebar = query({
           status: session.status,
           providerId: session.providerId,
           clientId: session.clientId,
+          parentExternalId: session.parentExternalId,
           updatedAt: session.updatedAt,
         })
       }

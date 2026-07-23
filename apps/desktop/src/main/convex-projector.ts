@@ -5,6 +5,7 @@ import type {
   ModeListing,
   ModelListing,
   PermissionRequest,
+  SubtaskUpdate,
   TokenUsage,
   ToolCall,
   ToolCallContent,
@@ -69,6 +70,32 @@ function toolStatusRank(status: unknown): number {
   if (status === 'completed' || status === 'error') return 2
   if (status === 'running') return 1
   return 0
+}
+
+function isTerminalSubtaskStatus(status: unknown): boolean {
+  return (
+    status === 'completed' ||
+    status === 'failed' ||
+    status === 'cancelled' ||
+    status === 'interrupted' ||
+    status === 'unknown'
+  )
+}
+
+function subtaskStatusFromTurnResult(
+  stopReason?: string,
+): Pick<SubtaskUpdate, 'status' | 'statusSource' | 'statusReason'> {
+  const reason = stopReason?.trim() || 'missing_provider_terminal_status'
+  if (/cancel|abort/i.test(reason)) {
+    return { status: 'cancelled', statusSource: 'turn_result', statusReason: reason }
+  }
+  if (/interrupt/i.test(reason)) {
+    return { status: 'interrupted', statusSource: 'turn_result', statusReason: reason }
+  }
+  if (/error|fail/i.test(reason)) {
+    return { status: 'failed', statusSource: 'turn_result', statusReason: reason }
+  }
+  return { status: 'unknown', statusSource: 'turn_result', statusReason: reason }
 }
 
 function titleFromPrompt(prompt: string): string | undefined {
@@ -228,6 +255,9 @@ export class ConvexProjector {
         return
       case 'plan_update':
         await this.appendPlanUpdate(event)
+        return
+      case 'subtask_update':
+        await this.upsertSubtask(event)
         return
       case 'extension_resolved': {
         // Questions ride the extension broker, so any settlement clears the row.
@@ -497,6 +527,56 @@ export class ConvexProjector {
     })
   }
 
+  private async upsertSubtask(
+    event: Extract<AgentEvent, { event: 'subtask_update' }>,
+  ): Promise<void> {
+    const turn = this.ensureTurn(event)
+    const buffer = this.buffer(
+      turn.assistantMessageId,
+      event.sessionId,
+      'assistant',
+      event.providerId,
+    )
+    await this.ensurePlaceholder(turn.assistantMessageId, buffer)
+    this.finishActiveParts(turn, buffer)
+    const data = event.data
+    const existing = buffer.parts.get(data.taskId)
+    // Late metadata (e.g. cursor/task) arrives statusless after the terminal
+    // update; never let a stale non-terminal status regress a settled subtask.
+    const acceptsStatus =
+      !!data.status &&
+      !(isTerminalSubtaskStatus(existing?.status) && !isTerminalSubtaskStatus(data.status))
+    const assign: Partial<SubtaskUpdate> & { targetSessionId?: string } = {
+      ...(acceptsStatus
+        ? {
+            status: data.status,
+            ...(data.statusSource ? { statusSource: data.statusSource } : {}),
+            ...(data.statusReason ? { statusReason: data.statusReason } : {}),
+          }
+        : {}),
+      ...(data.title ? { title: data.title } : {}),
+      ...(data.description ? { description: data.description } : {}),
+      ...(data.prompt ? { prompt: data.prompt } : {}),
+      ...(data.subagentType ? { subagentType: data.subagentType } : {}),
+      ...(data.modelId ? { modelId: data.modelId } : {}),
+      ...(data.childSessionId ? { targetSessionId: data.childSessionId } : {}),
+      ...(data.durationMs !== undefined ? { durationMs: data.durationMs } : {}),
+      ...(data.resultText ? { resultText: data.resultText } : {}),
+      ...(data.currentActivity ? { currentActivity: data.currentActivity } : {}),
+      ...(data.toolCallCount !== undefined ? { toolCallCount: data.toolCallCount } : {}),
+    }
+    const part: PartData = {
+      ...(existing ?? { status: 'pending' }),
+      ...assign,
+      type: 'subtask',
+      id: data.taskId,
+    }
+    buffer.parts.set(part.id, part)
+    await this.appendChunk(turn.assistantMessageId, buffer, '', {
+      partUpdate: { kind: 'part.updated', part },
+    })
+  }
+
   private async upsertPermission(permission: PermissionRequest): Promise<void> {
     const metadata = permission.metadata
     const targetPath =
@@ -664,6 +744,7 @@ export class ConvexProjector {
     if (buffer) {
       this.finishActiveParts(turn, buffer)
       this.finishRunningTools(buffer, stopReason)
+      this.finishRunningSubtasks(buffer, stopReason)
       await this.finalize(turn.assistantMessageId, buffer)
     }
     this.turns.delete(threadId)
@@ -697,6 +778,14 @@ export class ConvexProjector {
         ...part,
         state: { ...state, status: failed ? 'error' : 'completed' },
       })
+    }
+  }
+
+  private finishRunningSubtasks(buffer: MessageBuffer, stopReason?: string): void {
+    const settlement = subtaskStatusFromTurnResult(stopReason)
+    for (const [id, part] of buffer.parts) {
+      if (part.type !== 'subtask' || isTerminalSubtaskStatus(part.status)) continue
+      buffer.parts.set(id, { ...part, ...settlement })
     }
   }
 

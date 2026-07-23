@@ -16,7 +16,7 @@ All file:line refs checked against main @ `3854697`.
   renderer + `docs/cursor-tool-calls.md`). The wire inventory doc only exists on that
   branch and is needed by P4/P6 below. Branched off an older main — rebase needed.
 - **Prune stale branches**: `cursor-provider`, `codex/fix-session-provider-persistence`,
-  and the old release worktrees are all *behind* main (their content was merged via other
+  and the old release worktrees are all _behind_ main (their content was merged via other
   PRs). Delete to remove confusion about where truth lives.
 
 ## P1 — Option-based permissions end-to-end
@@ -98,20 +98,46 @@ accept-plan / proceed-to-agent-mode flow.
 - This decides the plan doc's open question Q2 (Claude `ExitPlanMode`): same approve-plan
   permission flow, no deny-and-wait hack.
 
-## P6 — Subtasks / subagent tasks
+## P6 — Subtasks / subagent tasks ✅ (implemented 2026-07-22)
 
-The contract has `SubtaskPart` and `supportsSubtasks`, `agent-view` can fold
-`cursor/task` into a `FoldedSubagentRow`, and the renderer has a minimal `subtask` case —
-but no runtime/projector path ever produces the part, so the whole chain is dormant. Both
-providers declare `supportsSubtasks: false`.
+Live probes (2026-07-22 and cancellation verification on 2026-07-23) reset the
+design: **neither provider streams subagent activity live** — the parent sees one opaque
+task tool call. Key wire facts:
 
-- Contract: add a typed `subtask_update` event.
-- Normalize `cursor/task` notifications into it; projector upserts one subtask part per
-  task id; live store mirrors; renderer row shows title/status/model/tool-count, optional
-  navigation to the child session.
-- Flip Cursor `supportsSubtasks: true` only when end-to-end works. OpenCode stays generic
-  tool rows until it exposes stable child-task metadata. Claude's `Task` tool and Codex's
-  sub-agent items later map into the same event.
+- **Cursor**: `cursor/task` is a **blocking REQUEST** (not the notification the decompile
+  doc claimed), fired once ~2ms after the Task tool completes, carrying
+  `{toolCallId, description, prompt, subagentType, model, agentId, durationMs}`;
+  `subagentType` is a nested tagged enum (`{"custom":{"unspecified":{}}}`), and `agentId`
+  is NOT a loadable session (`session/load` rejects it; absent from `session/list`).
+  Subagent permission requests bubble to the parent under orphan toolCallIds. Completion
+  orders `pending → in_progress → completed → cursor/task → end_turn`. Cancellation emits
+  no terminal Task update; the authoritative terminal signal is parent
+  `stopReason:"cancelled"`.
+- **OpenCode** (1.17.15): `task` tool call (`title:"task"`, `kind:"think"`); in_progress
+  carries `{description, subagent_type, prompt}`; completed `rawOutput.metadata` leaks the
+  **child sessionId** (+ parentSessionId + model), and `session/load` on it fully replays
+  the subagent transcript. Cancellation emits Task `failed` with
+  `rawOutput.metadata.interrupted:true`, followed by parent `stopReason:"cancelled"`; the
+  normalized subtask status is `interrupted`.
+
+Shipped: `subtask_update` contract event (+ `SubtaskUpdate`, extended `SubtaskPart` with
+live-activity fields `currentActivity`/`toolCallCount` reserved for Claude Code);
+`ProviderConfig.subtasks` adapter (`fromToolCall` classifier suppresses the raw tool
+events for claimed ids, `fromExtension` acks `cursor/task` with `{}` and emits the
+enrichment); `extensionNotification` now uses the sessionless fallback binding; projector
+upserts one merged `subtask` part per taskId (no status regression after settle), records
+whether status came from a provider task event or provider turn result, and terminalizes
+missing Task updates as cancelled/failed/unknown from the turn stop reason; the live
+renderer store mirrors the same reducer;
+`SubtaskCard` renderer (status shimmer, type/model/duration chips, expandable
+prompt/result, including explicit cancelled/interrupted/unknown labels); OpenCode-only
+**View transcript** → `sessions.registerChild` (`parentExternalId`) → existing
+`acp:load-session` replay → read-only chat pane with ancestry-derived back banner. Child
+transcripts appear nested beneath their parent in the sidebar. Both providers now declare
+`supportsSubtasks: true`. Deliberately deferred: live-follow (poll `session/list` mid-run +
+`session/load` the child while running) — revisit when Claude Code lands, since its SDK
+streams child activity with `parent_tool_use_id` and can populate `currentActivity`
+directly.
 
 ## P7 — Smaller parity / robustness (fit in where convenient)
 

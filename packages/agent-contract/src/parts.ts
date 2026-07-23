@@ -49,11 +49,20 @@ export type RetryPart = MessagePartBase & {
 
 export type SubtaskPart = MessagePartBase & {
   type: 'subtask'
+  title?: string
   description?: string
   prompt?: string
-  status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unknown'
+  status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'unknown'
+  statusSource?: 'task_event' | 'turn_result'
+  statusReason?: string
   targetSessionId?: string
   modelId?: string
+  subagentType?: string
+  durationMs?: number
+  resultText?: string
+  /** Latest child activity, for providers that stream it (e.g. Claude Code). */
+  currentActivity?: string
+  toolCallCount?: number
 }
 
 export type CompactionPart = MessagePartBase & {
