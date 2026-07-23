@@ -19,6 +19,9 @@ export default defineSchema({
     clientId: v.optional(v.string()),
     title: v.optional(v.string()),
     status: v.string(),
+    /** Set when this session is a subagent transcript; hidden from the
+     * sidebar and opened read-only from its parent's subtask card. */
+    parentExternalId: v.optional(v.string()),
     // Deprecated: model selection is provider-global (see
     // workspace_composer_preferences), never per session. Kept optional only
     // because existing documents still carry values.

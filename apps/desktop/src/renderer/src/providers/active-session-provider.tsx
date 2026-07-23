@@ -53,6 +53,8 @@ interface ActiveSessionDetails {
   title?: string
   status: string
   clientId?: string
+  providerId?: AgentEvent['providerId']
+  parentExternalId?: string
   isDriven: boolean
 }
 
@@ -123,9 +125,14 @@ export class StreamingMessagesStore {
         state.parts.set('plan', { type: 'plan', id: 'plan', entries: event.data.entries })
         changed = true
         break
+      case 'subtask_update':
+        this.finishActiveParts(state)
+        changed = this.mergeSubtask(state, event.data)
+        break
       case 'prompt_completed':
         this.finishActiveParts(state)
         this.finishRunningTools(state, event.data.stopReason)
+        this.finishRunningSubtasks(state, event.data.stopReason)
         changed = true
         break
       case 'rpc_error':
@@ -133,6 +140,7 @@ export class StreamingMessagesStore {
       case 'process_exited':
         this.finishActiveParts(state)
         this.finishRunningTools(state, 'error')
+        this.finishRunningSubtasks(state, 'error')
         changed = true
         break
       default:
@@ -285,6 +293,49 @@ export class StreamingMessagesStore {
     return true
   }
 
+  private terminalSubtaskStatus(status: unknown): boolean {
+    return (
+      status === 'completed' ||
+      status === 'failed' ||
+      status === 'cancelled' ||
+      status === 'interrupted' ||
+      status === 'unknown'
+    )
+  }
+
+  private mergeSubtask(
+    state: LiveThreadState,
+    update: Extract<AgentEvent, { event: 'subtask_update' }>['data'],
+  ): boolean {
+    const existing = state.parts.get(update.taskId)
+    const acceptsStatus =
+      !!update.status &&
+      !(this.terminalSubtaskStatus(existing?.status) && !this.terminalSubtaskStatus(update.status))
+    state.parts.set(update.taskId, {
+      ...(existing ?? { status: 'pending' }),
+      type: 'subtask',
+      id: update.taskId,
+      ...(acceptsStatus
+        ? {
+            status: update.status,
+            ...(update.statusSource ? { statusSource: update.statusSource } : {}),
+            ...(update.statusReason ? { statusReason: update.statusReason } : {}),
+          }
+        : {}),
+      ...(update.title ? { title: update.title } : {}),
+      ...(update.description ? { description: update.description } : {}),
+      ...(update.prompt ? { prompt: update.prompt } : {}),
+      ...(update.subagentType ? { subagentType: update.subagentType } : {}),
+      ...(update.modelId ? { modelId: update.modelId } : {}),
+      ...(update.childSessionId ? { targetSessionId: update.childSessionId } : {}),
+      ...(update.durationMs !== undefined ? { durationMs: update.durationMs } : {}),
+      ...(update.resultText ? { resultText: update.resultText } : {}),
+      ...(update.currentActivity ? { currentActivity: update.currentActivity } : {}),
+      ...(update.toolCallCount !== undefined ? { toolCallCount: update.toolCallCount } : {}),
+    })
+    return true
+  }
+
   private finishRunningTools(state: LiveThreadState, stopReason?: string): void {
     const failed = !!stopReason && /error|fail|cancel|abort/i.test(stopReason)
     for (const [id, part] of state.parts) {
@@ -294,6 +345,26 @@ export class StreamingMessagesStore {
       state.parts.set(id, {
         ...part,
         state: { ...toolState, status: failed ? 'error' : 'completed' },
+      })
+    }
+  }
+
+  private finishRunningSubtasks(state: LiveThreadState, stopReason?: string): void {
+    const reason = stopReason?.trim() || 'missing_provider_terminal_status'
+    const status = /cancel|abort/i.test(reason)
+      ? 'cancelled'
+      : /interrupt/i.test(reason)
+        ? 'interrupted'
+        : /error|fail/i.test(reason)
+          ? 'failed'
+          : 'unknown'
+    for (const [id, part] of state.parts) {
+      if (part.type !== 'subtask' || this.terminalSubtaskStatus(part.status)) continue
+      state.parts.set(id, {
+        ...part,
+        status,
+        statusSource: 'turn_result',
+        statusReason: reason,
       })
     }
   }
@@ -387,7 +458,17 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
     'sessions.getByExternalId.active',
     api.sessions.getByExternalId,
     activeSessionId ? { externalId: activeSessionId } : 'skip',
-  ) as { externalId: string; title?: string; status: string; clientId?: string } | null | undefined
+  ) as
+    | {
+        externalId: string
+        title?: string
+        status: string
+        clientId?: string
+        providerId?: AgentEvent['providerId']
+        parentExternalId?: string
+      }
+    | null
+    | undefined
 
   const rawMessages = useTrackedQuery(
     'messages.listMetadata',
@@ -408,6 +489,8 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
             title: rawSession.title,
             status: rawSession.status,
             clientId: rawSession.clientId,
+            providerId: rawSession.providerId,
+            parentExternalId: rawSession.parentExternalId,
             isDriven: activeSessionDriven,
           }
         : null,

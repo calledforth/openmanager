@@ -278,6 +278,8 @@ interface AppUiValue {
   addWorkspace: () => Promise<void>
   removeWorkspace: (path: string) => Promise<void>
   selectSession: (workspacePath: string, externalId: string, providerId?: ProviderId) => void
+  openChildSession: (childExternalId: string, parentExternalId: string) => Promise<void>
+  closeChildSession: (parentExternalId: string) => void
   createSession: (workspacePath: string) => Promise<void>
   deleteSession: (
     workspacePath: string,
@@ -518,6 +520,10 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
   )
   const ensureWorkspace = useTrackedMutation('workspaces.ensureByPath', api.workspaces.ensureByPath)
   const removeWorkspaceMutation = useTrackedMutation('workspaces.remove', api.workspaces.remove)
+  const registerChildSession = useTrackedMutation(
+    'sessions.registerChild',
+    (api as any).sessions.registerChild,
+  )
   const localSessionJob = useTrackedQuery(
     'jobs.getStatus.local-session',
     api.jobs.getStatus,
@@ -671,8 +677,8 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
     [activeWorkspacePath, rememberActiveWorkspacePath, removeWorkspaceMutation],
   )
 
-  const selectSession = useCallback(
-    (workspacePath: string, externalId: string, persistedProviderId?: ProviderId) => {
+  const activateSession = useCallback(
+    (workspacePath: string, externalId: string, providerId: ProviderId) => {
       rememberActiveWorkspacePath(workspacePath)
       setActiveSessionId(externalId)
       setIsSessionDraftOpen(false)
@@ -680,20 +686,76 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       setLocalSessionStatus(null)
       setLocalSessionJobId(null)
       setAdoptedDraftSessionId(null)
-      const providerId =
-        acpSessionStateById[externalId]?.providerId ?? persistedProviderId ?? 'opencode'
       setAcpSessionStateById((prev) => ({
         ...prev,
         [externalId]: prev[externalId] ?? { sessionId: externalId, providerId },
       }))
-      ensureProvider(providerId, workspacePath).catch(console.error)
+    },
+    [rememberActiveWorkspacePath],
+  )
+
+  const selectSession = useCallback(
+    (workspacePath: string, externalId: string, persistedProviderId?: ProviderId) => {
+      const providerId =
+        acpSessionStateById[externalId]?.providerId ?? persistedProviderId ?? 'opencode'
+      activateSession(workspacePath, externalId, providerId)
+      void ensureProvider(providerId, workspacePath)
       if (typeof window.electronAPI.loadAcpSession === 'function') {
-        window.electronAPI
+        void window.electronAPI
           .loadAcpSession(providerId, workspacePath, externalId)
           .catch(() => undefined)
       }
     },
-    [acpSessionStateById, ensureProvider, rememberActiveWorkspacePath],
+    [acpSessionStateById, activateSession, ensureProvider],
+  )
+
+  const openChildSession = useCallback(
+    async (childExternalId: string, parentExternalId: string) => {
+      if (!activeWorkspacePath) return
+      const workspacePath = activeWorkspacePath
+      const providerId = acpSessionStateById[parentExternalId]?.providerId ?? defaultProviderId
+      setError(null)
+      try {
+        // Persist ancestry before replay starts so read-only state and sidebar
+        // nesting come from the session record, not transient navigation state.
+        await registerChildSession({
+          workspacePath,
+          externalId: childExternalId,
+          parentExternalId,
+          providerId,
+          ...(currentClientId ? { clientId: currentClientId } : {}),
+        })
+        const ready = await ensureProvider(providerId, workspacePath)
+        if (!ready) throw new Error(`Failed to connect to ${providerDisplayName(providerId)}.`)
+        if (typeof window.electronAPI.loadAcpSession === 'function') {
+          await window.electronAPI.loadAcpSession(providerId, workspacePath, childExternalId)
+        }
+        activateSession(workspacePath, childExternalId, providerId)
+      } catch (err) {
+        const message = `Unable to open subagent transcript: ${(err as Error).message}`
+        setError(message)
+        throw new Error(message, { cause: err })
+      }
+    },
+    [
+      acpSessionStateById,
+      activateSession,
+      activeWorkspacePath,
+      currentClientId,
+      defaultProviderId,
+      ensureProvider,
+      providerDisplayName,
+      registerChildSession,
+    ],
+  )
+
+  const closeChildSession = useCallback(
+    (parentExternalId: string) => {
+      if (!activeWorkspacePath) return
+      const providerId = acpSessionStateById[parentExternalId]?.providerId ?? defaultProviderId
+      selectSession(activeWorkspacePath, parentExternalId, providerId)
+    },
+    [acpSessionStateById, activeWorkspacePath, defaultProviderId, selectSession],
   )
 
   const createSession = useCallback(
@@ -1844,6 +1906,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         case 'tool_call_update':
         case 'tool_call_content':
         case 'plan_update':
+        case 'subtask_update':
         case 'permission_request':
         case 'permission_resolved':
         case 'question_request':
@@ -1945,6 +2008,8 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       addWorkspace,
       removeWorkspace,
       selectSession,
+      openChildSession,
+      closeChildSession,
       createSession,
       deleteSession,
       sendMessage,
@@ -1984,6 +2049,8 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       addWorkspace,
       removeWorkspace,
       selectSession,
+      openChildSession,
+      closeChildSession,
       createSession,
       deleteSession,
       sendMessage,

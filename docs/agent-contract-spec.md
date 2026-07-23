@@ -245,11 +245,7 @@ Rationale: `ProviderId` remains a closed union so exhaustive adapter switches fa
 /**
  * ACP-compatible semantic kinds for permission options.
  */
-export type PermissionOptionKind =
-  | "allow_once"
-  | "allow_always"
-  | "reject_once"
-  | "reject_always";
+export type PermissionOptionKind = "allow_once" | "allow_always" | "reject_once" | "reject_always";
 
 /**
  * One provider-supplied choice in a permission request.
@@ -313,11 +309,7 @@ export type PermissionRequest = {
  * Why an unresolved permission request was cancelled.
  */
 export type PermissionCancellationReason =
-  | "user"
-  | "timeout"
-  | "session_closed"
-  | "tool_cancelled"
-  | "runtime_disposed";
+  "user" | "timeout" | "session_closed" | "tool_cancelled" | "runtime_disposed";
 
 /**
  * Outcome returned to the runtime for a permission request.
@@ -348,12 +340,7 @@ Rationale: both `requestId` and `toolCallId` are mandatory and serve different c
 ## `parts.ts`
 
 ```ts
-import type {
-  ToolCallContent,
-  ToolCallLocation,
-  ToolCallStatus,
-  ToolKind,
-} from "./events.js";
+import type { ToolCallContent, ToolCallLocation, ToolCallStatus, ToolKind } from "./events.js";
 
 /**
  * Fields shared by every normalized message part.
@@ -449,17 +436,20 @@ export type RetryPart = MessagePartBase & {
  */
 export type SubtaskPart = MessagePartBase & {
   type: "subtask";
+  title?: string;
   description?: string;
   prompt?: string;
-  status?:
-    | "pending"
-    | "running"
-    | "completed"
-    | "failed"
-    | "cancelled"
-    | "unknown";
+  status?: "pending" | "running" | "completed" | "failed" | "cancelled" | "interrupted" | "unknown";
+  statusSource?: "task_event" | "turn_result";
+  statusReason?: string;
   targetSessionId?: string;
   modelId?: string;
+  subagentType?: string;
+  durationMs?: number;
+  resultText?: string;
+  /** Latest child activity, for providers that stream it (e.g. Claude Code). */
+  currentActivity?: string;
+  toolCallCount?: number;
 };
 
 /**
@@ -541,28 +531,15 @@ Rationale: `SnapshotPart.data` and `AgentPart.payload` remain `unknown` because 
 ## `events.ts`
 
 ```ts
-import type {
-  CapabilityKey,
-  ProviderCapabilities,
-} from "./capabilities.js";
+import type { CapabilityKey, ProviderCapabilities } from "./capabilities.js";
 import type { PermissionRequest } from "./permissions.js";
-import type {
-  ModeListing,
-  ModelListing,
-  ProviderId,
-} from "./providers.js";
+import type { ModeListing, ModelListing, ProviderId } from "./providers.js";
 
 /**
  * High-level event categories retained for activity filtering.
  */
 export type AgentEventCategory =
-  | "lifecycle"
-  | "stream"
-  | "tool"
-  | "permission"
-  | "session"
-  | "extension"
-  | "error";
+  "lifecycle" | "stream" | "tool" | "permission" | "session" | "extension" | "error";
 
 /**
  * Every event discriminant in this contract version.
@@ -584,6 +561,7 @@ export type AgentEventName =
   | "tool_call_update"
   | "tool_call_content"
   | "plan_update"
+  | "subtask_update"
   | "permission_request"
   | "current_model_update"
   | "current_mode_update"
@@ -707,11 +685,7 @@ export type ToolKind =
 /**
  * ACP tool-call lifecycle.
  */
-export type ToolCallStatus =
-  | "pending"
-  | "in_progress"
-  | "completed"
-  | "failed";
+export type ToolCallStatus = "pending" | "in_progress" | "completed" | "failed";
 
 /**
  * A location accessed or modified by a tool.
@@ -800,6 +774,41 @@ export type PlanUpdate = {
   explanation?: string | null;
 };
 
+export type SubtaskStatus =
+  "pending" | "running" | "completed" | "failed" | "cancelled" | "interrupted" | "unknown";
+
+export type SubtaskStatusSource = "task_event" | "turn_result";
+
+/**
+ * Incremental update for one delegated child-agent task. Updates sharing a
+ * taskId merge onto the same subtask part; undefined fields keep their prior
+ * value. Providers normalize their native shapes into this event: Cursor's
+ * `Task` tool call + `cursor/task` request, OpenCode's `task` tool call,
+ * Claude Code's `Task` tool + parent_tool_use_id stream, Codex's sub-agent
+ * items.
+ */
+export type SubtaskUpdate = {
+  /** Provider-stable task identity (the delegating tool call's id). */
+  taskId: string;
+  status?: SubtaskStatus;
+  /** Provider event used to establish the status, retained for diagnostics. */
+  statusSource?: SubtaskStatusSource;
+  /** Provider-supplied status detail such as a turn stop reason or tool error. */
+  statusReason?: string;
+  title?: string;
+  description?: string;
+  prompt?: string;
+  subagentType?: string;
+  modelId?: string;
+  /** Set only when the provider exposes the child as a loadable session. */
+  childSessionId?: string;
+  durationMs?: number;
+  resultText?: string;
+  /** Latest child activity, for providers that stream it (e.g. Claude Code). */
+  currentActivity?: string;
+  toolCallCount?: number;
+};
+
 /**
  * Input shape for a slash command.
  */
@@ -822,11 +831,7 @@ export type AvailableCommand = {
  *
  * The open string arm preserves future ACP and provider-extension categories.
  */
-export type SessionConfigCategory =
-  | "mode"
-  | "model"
-  | "thought_level"
-  | (string & {});
+export type SessionConfigCategory = "mode" | "model" | "thought_level" | (string & {});
 
 /**
  * One selectable value for a session configuration option.
@@ -903,13 +908,7 @@ export type RpcErrorData = {
  * Typed non-RPC runtime failure.
  */
 export type RuntimeErrorData = {
-  kind:
-    | "transport"
-    | "process"
-    | "protocol"
-    | "provider"
-    | "validation"
-    | "unknown";
+  kind: "transport" | "process" | "protocol" | "provider" | "validation" | "unknown";
   message: string;
   recoverable?: boolean;
   details?: unknown;
@@ -1045,6 +1044,12 @@ export type AgentEvent = AgentEventBase &
         data: PlanUpdate;
       }
     | {
+        category: "session";
+        event: "subtask_update";
+        sessionId: string;
+        data: SubtaskUpdate;
+      }
+    | {
         category: "permission";
         event: "permission_request";
         sessionId: string;
@@ -1163,10 +1168,7 @@ A consumer should process events in this order:
 
 ```ts
 const ordered = [...events].sort(
-  (a, b) =>
-    a.seq - b.seq ||
-    a.timestamp.localeCompare(b.timestamp) ||
-    a.id.localeCompare(b.id),
+  (a, b) => a.seq - b.seq || a.timestamp.localeCompare(b.timestamp) || a.id.localeCompare(b.id),
 );
 ```
 

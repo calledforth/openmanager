@@ -16,6 +16,7 @@ export interface SidebarSessionEntry {
   status: string
   providerId: ProviderId
   clientId?: string
+  parentExternalId?: string
   isDriven: boolean
 }
 
@@ -46,6 +47,7 @@ const EMPTY_SIDEBAR_ROWS: Array<{
   status: string
   providerId?: unknown
   clientId?: string
+  parentExternalId?: string
 }> = []
 
 export function resolveInitialWorkspacePath(
@@ -128,6 +130,7 @@ export function SidebarDataProvider({ children }: { children: ReactNode }) {
         status: row.status,
         providerId: resolveSessionProviderId(row.providerId),
         clientId: row.clientId,
+        parentExternalId: row.parentExternalId,
         isDriven: !!ui.currentClientId && row.clientId === ui.currentClientId,
       })
       grouped[row.workspacePath] = current

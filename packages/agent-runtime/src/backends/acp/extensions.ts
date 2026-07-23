@@ -4,6 +4,11 @@ import type {
   PlanTodo,
   Question,
   QuestionOutcome,
+  SubtaskStatus,
+  SubtaskUpdate,
+  ToolCall,
+  ToolCallStatus,
+  ToolCallUpdate,
 } from '@agentpack/contract'
 
 export type ExtensionRequestHandler = (params: unknown) => unknown | Promise<unknown>
@@ -23,6 +28,29 @@ export type PlanAdapter = {
   respond: (outcome: PlanReviewOutcome, params: unknown) => unknown
 }
 export type PlanSnapshot = { todos: PlanTodo[]; merge: boolean }
+export type SubtaskToolContext = {
+  phase: 'call' | 'update'
+  /** The toolCallId was already classified as a subtask by an earlier event. */
+  tracked: boolean
+}
+export type SubtaskAdapter = {
+  /** Classify a tool call as a delegated child-agent task and map it to a
+   * SubtaskUpdate. A non-undefined return claims the toolCallId: its raw tool
+   * events are suppressed and every later update is routed back through here. */
+  fromToolCall?: (
+    tool: ToolCall | ToolCallUpdate,
+    context: SubtaskToolContext,
+  ) => SubtaskUpdate | undefined
+  /** Extension methods carrying subtask metadata (e.g. cursor/task). The parsed
+   * update is emitted and, for requests, the wire is acked `{}` immediately. */
+  fromExtension?: Record<string, (params: unknown) => SubtaskUpdate | undefined>
+}
+export const subtaskStatusFromTool = (status?: ToolCallStatus): SubtaskStatus | undefined => {
+  if (!status) return undefined
+  if (status === 'pending') return 'pending'
+  if (status === 'in_progress') return 'running'
+  return status
+}
 export type ExtensionHandlers = {
   requests?: Record<string, ExtensionRequestHandler>
   notifications?: Record<string, ExtensionNotificationHandler>

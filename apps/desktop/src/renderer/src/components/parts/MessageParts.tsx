@@ -7,6 +7,7 @@ import { BashToolPart } from './BashToolPart'
 import { EditToolPart } from './EditToolPart'
 import { ThinkingPart } from './ThinkingPart'
 import { CollapsibleSteps } from './CollapsibleSteps'
+import { SubtaskCard } from './SubtaskCard'
 import { canonicalizeToolName } from './ToolRegistry'
 
 interface Part {
@@ -129,11 +130,7 @@ function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode
         </div>
       )
     case 'subtask':
-      return (
-        <div key={key} className="py-0.5 text-ui-xs text-violet-500/90">
-          Subtask: {(part.description as string) ?? (part.prompt as string) ?? 'running'}
-        </div>
-      )
+      return <SubtaskCard key={key} part={part as Parameters<typeof SubtaskCard>[0]['part']} />
     case 'compaction':
       return (
         <div key={key} className="py-0.5 text-ui-xs italic text-[var(--basis-text-muted)]">

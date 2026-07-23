@@ -4,7 +4,9 @@ import type {
   PlanTodo,
   PlanTodoStatus,
   Question,
+  SubtaskUpdate,
 } from '@agentpack/contract'
+import { subtaskStatusFromTool } from '../backends/acp/extensions.js'
 import type { ProviderConfig } from './index.js'
 
 const str = (value: unknown): string => (typeof value === 'string' ? value : '')
@@ -87,6 +89,38 @@ function parseAskQuestion(params: unknown): { title?: string; questions: Questio
   return { title: str(p.title) || undefined, questions }
 }
 
+/** Wire shape (cursor-agent 2026.07.01): subagentType is a nested tagged enum,
+ * e.g. `{"custom":{"unspecified":{}}}` or `{"explore":{}}` — not the flat string
+ * the tool docs suggest. Unwrap single-key objects to the innermost tag. */
+function parseSubagentType(value: unknown, depth = 0): string | undefined {
+  if (typeof value === 'string') return value.trim() || undefined
+  if (!value || typeof value !== 'object' || depth > 4) return undefined
+  const keys = Object.keys(value as Record<string, unknown>)
+  if (keys.length !== 1) return undefined
+  const inner = (value as Record<string, unknown>)[keys[0]]
+  return parseSubagentType(inner, depth + 1) ?? keys[0]
+}
+
+/** `cursor/task` fires as a BLOCKING request ~ms after the Task tool call
+ * completes, carrying the metadata the fast-path tool_call never had:
+ * {toolCallId, description, prompt, subagentType, model, agentId, durationMs}.
+ * agentId is opaque — not loadable via session/load (verified live). */
+function parseCursorTask(params: unknown): SubtaskUpdate | undefined {
+  const p = (params ?? {}) as Record<string, unknown>
+  const taskId = str(p.toolCallId)
+  if (!taskId) return undefined
+  return {
+    taskId,
+    ...(str(p.description) ? { description: str(p.description) } : {}),
+    ...(str(p.prompt) ? { prompt: str(p.prompt) } : {}),
+    ...(str(p.model) ? { modelId: str(p.model) } : {}),
+    ...(typeof p.durationMs === 'number' ? { durationMs: p.durationMs } : {}),
+    ...(parseSubagentType(p.subagentType)
+      ? { subagentType: parseSubagentType(p.subagentType) }
+      : {}),
+  }
+}
+
 export const cursor: ProviderConfig = {
   id: 'cursor',
   displayName: 'Cursor',
@@ -115,7 +149,7 @@ export const cursor: ProviderConfig = {
     supportsPermissionRequests: true,
     supportsAuthentication: true,
     supportsThoughtStreaming: true,
-    supportsSubtasks: false,
+    supportsSubtasks: true,
     supportsExtensions: true,
     supportsQuestions: true,
   },
@@ -156,6 +190,33 @@ export const cursor: ProviderConfig = {
     },
     planSnapshots: {
       'cursor/update_todos': parseUpdateTodos,
+    },
+  },
+  subtasks: {
+    // Live: one opaque `Task` tool_call (fast path: title "Task: Subagent task",
+    // rawInput only {_toolName:"task"}); the subagent's own activity never
+    // streams. Completion rawOutput is {durationMs, isBackground}.
+    fromToolCall: (tool, { tracked }) => {
+      const input = (tool.rawInput ?? {}) as Record<string, unknown>
+      if (!tracked && input._toolName !== 'task') return undefined
+      const output = (tool.rawOutput ?? {}) as Record<string, unknown>
+      const title = str(tool.title)
+        .replace(/^Task:\s*/, '')
+        .trim()
+      return {
+        taskId: tool.toolCallId,
+        status: subtaskStatusFromTool(tool.status),
+        ...(title ? { title } : {}),
+        ...(str(input.description) ? { description: str(input.description) } : {}),
+        ...(str(input.prompt) ? { prompt: str(input.prompt) } : {}),
+        ...(parseSubagentType(input.subagentType)
+          ? { subagentType: parseSubagentType(input.subagentType) }
+          : {}),
+        ...(typeof output.durationMs === 'number' ? { durationMs: output.durationMs } : {}),
+      }
+    },
+    fromExtension: {
+      'cursor/task': parseCursorTask,
     },
   },
 }

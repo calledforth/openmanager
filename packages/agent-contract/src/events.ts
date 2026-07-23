@@ -28,6 +28,7 @@ export type AgentEventName =
   | 'tool_call_update'
   | 'tool_call_content'
   | 'plan_update'
+  | 'subtask_update'
   | 'permission_request'
   | 'permission_resolved'
   | 'question_request'
@@ -178,6 +179,35 @@ export type PlanEntry = {
 export type PlanUpdate = {
   entries: PlanEntry[]
   explanation?: string | null
+}
+
+export type SubtaskStatus =
+  'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'unknown'
+
+export type SubtaskStatusSource = 'task_event' | 'turn_result'
+
+/** Incremental update for one delegated child-agent task. Updates sharing a
+ * taskId merge onto the same subtask; undefined fields keep their prior value. */
+export type SubtaskUpdate = {
+  /** Provider-stable task identity (the delegating tool call's id). */
+  taskId: string
+  status?: SubtaskStatus
+  /** Provider event used to establish the status, retained for diagnostics. */
+  statusSource?: SubtaskStatusSource
+  /** Provider-supplied status detail such as a turn stop reason or tool error. */
+  statusReason?: string
+  title?: string
+  description?: string
+  prompt?: string
+  subagentType?: string
+  modelId?: string
+  /** Set only when the provider exposes the child as a loadable session. */
+  childSessionId?: string
+  durationMs?: number
+  resultText?: string
+  /** Latest child activity, for providers that stream it (e.g. Claude Code). */
+  currentActivity?: string
+  toolCallCount?: number
 }
 
 export type AvailableCommandInput = {
@@ -365,6 +395,12 @@ export type AgentEvent = AgentEventBase &
         event: 'plan_update'
         sessionId: string
         data: PlanUpdate
+      }
+    | {
+        category: 'session'
+        event: 'subtask_update'
+        sessionId: string
+        data: SubtaskUpdate
       }
     | {
         category: 'permission'

@@ -320,10 +320,7 @@ describe('AcpBackend structured questions (cursor/ask_question)', () => {
       })
     })
     await expect(
-      (backend as unknown as ExtensionInternals).extensionRequest(
-        'cursor/ask_question',
-        askParams,
-      ),
+      (backend as unknown as ExtensionInternals).extensionRequest('cursor/ask_question', askParams),
     ).resolves.toMatchObject({ outcome: { outcome: 'answered' } })
     expect(accepted).toBe(true)
   })
@@ -736,6 +733,234 @@ describe('AcpBackend session compatibility', () => {
         method: 'elicitation/create',
         outcome: { outcome: 'cancelled', reason: 'tool_cancelled' },
       },
+    })
+  })
+})
+
+describe('AcpBackend subtask normalization', () => {
+  type SubtaskInternals = {
+    sessionUpdate(params: { sessionId: string; update: Record<string, unknown> }): Promise<void>
+    extensionRequest(method: string, params: unknown): Promise<Record<string, unknown>>
+    extensionNotification(method: string, params: unknown): Promise<void>
+  }
+
+  async function setupSession(config = opencode) {
+    const connection = {
+      async newSession() {
+        return { sessionId: 'session-1' }
+      },
+    }
+    const result = setup(connection, config)
+    await result.backend.ensureSession({ ...route })
+    return { ...result, internals: result.backend as unknown as SubtaskInternals }
+  }
+
+  const subtaskEvents = (events: BackendEvent[]) =>
+    events.filter((event) => event.event === 'subtask_update').map((event) => event.data)
+  const toolEvents = (events: BackendEvent[]) =>
+    events.filter((event) => event.event === 'tool_call' || event.event === 'tool_call_update')
+
+  it('normalizes the OpenCode task lifecycle and suppresses raw tool events', async () => {
+    const { internals, events } = await setupSession(opencode)
+    // Live wire shapes, OpenCode 1.17.15.
+    await internals.sessionUpdate({
+      sessionId: 'session-1',
+      update: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'call_1',
+        title: 'task',
+        kind: 'think',
+        status: 'pending',
+        rawInput: {},
+      },
+    })
+    await internals.sessionUpdate({
+      sessionId: 'session-1',
+      update: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'call_1',
+        title: 'Summarize folder structure',
+        status: 'in_progress',
+        rawInput: {
+          description: 'Summarize folder structure',
+          subagent_type: 'explore',
+          prompt: 'Explore the current working directory.',
+        },
+      },
+    })
+    await internals.sessionUpdate({
+      sessionId: 'session-1',
+      update: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'call_1',
+        status: 'completed',
+        rawOutput: {
+          output:
+            '<task id="ses_child" state="completed">\n<task_result>\nA tidy summary.\n</task_result>\n</task>',
+          metadata: {
+            parentSessionId: 'session-1',
+            sessionId: 'ses_child',
+            model: { modelID: 'gpt-5.5', providerID: 'openai' },
+            truncated: false,
+          },
+        },
+      },
+    })
+    expect(toolEvents(events)).toHaveLength(0)
+    expect(subtaskEvents(events)).toEqual([
+      { taskId: 'call_1', status: 'pending', statusSource: 'task_event' },
+      {
+        taskId: 'call_1',
+        status: 'running',
+        statusSource: 'task_event',
+        title: 'Summarize folder structure',
+        description: 'Summarize folder structure',
+        prompt: 'Explore the current working directory.',
+        subagentType: 'explore',
+      },
+      {
+        taskId: 'call_1',
+        status: 'completed',
+        statusSource: 'task_event',
+        modelId: 'openai/gpt-5.5',
+        childSessionId: 'ses_child',
+        resultText: 'A tidy summary.',
+      },
+    ])
+  })
+
+  it('passes non-task OpenCode tool calls through untouched', async () => {
+    const { internals, events } = await setupSession(opencode)
+    await internals.sessionUpdate({
+      sessionId: 'session-1',
+      update: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'call_2',
+        title: 'read',
+        kind: 'read',
+        status: 'pending',
+        rawInput: { filePath: 'a.txt' },
+      },
+    })
+    expect(subtaskEvents(events)).toHaveLength(0)
+    expect(toolEvents(events)).toHaveLength(1)
+  })
+
+  it('normalizes the Cursor Task tool and keeps claimed ids suppressed', async () => {
+    const { internals, events } = await setupSession(cursor)
+    // Fast-path wire shape: generic title, rawInput only carries _toolName.
+    await internals.sessionUpdate({
+      sessionId: 'session-1',
+      update: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'tool_1',
+        title: 'Task: Subagent task',
+        kind: 'other',
+        status: 'pending',
+        rawInput: { _toolName: 'task' },
+      },
+    })
+    await internals.sessionUpdate({
+      sessionId: 'session-1',
+      update: { sessionUpdate: 'tool_call_update', toolCallId: 'tool_1', status: 'in_progress' },
+    })
+    await internals.sessionUpdate({
+      sessionId: 'session-1',
+      update: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'tool_1',
+        status: 'completed',
+        rawOutput: { durationMs: 28086, isBackground: false },
+      },
+    })
+    expect(toolEvents(events)).toHaveLength(0)
+    expect(subtaskEvents(events)).toEqual([
+      {
+        taskId: 'tool_1',
+        status: 'pending',
+        statusSource: 'task_event',
+        title: 'Subagent task',
+      },
+      { taskId: 'tool_1', status: 'running', statusSource: 'task_event' },
+      {
+        taskId: 'tool_1',
+        status: 'completed',
+        statusSource: 'task_event',
+        durationMs: 28086,
+      },
+    ])
+  })
+
+  it('acks cursor/task immediately and emits enrichment via the sole-session fallback', async () => {
+    const { internals, events } = await setupSession(cursor)
+    // Real payload shape (no sessionId; nested tagged-enum subagentType).
+    const response = await internals.extensionRequest('cursor/task', {
+      toolCallId: 'tool_1',
+      description: 'Explore folder structure summary',
+      prompt: 'Explore the workspace directory.',
+      subagentType: { custom: { unspecified: {} } },
+      model: 'composer-2.5-fast',
+      agentId: '2dbea804-4e9e-4e4f-8c47-234a4077187b',
+      durationMs: 28086,
+    })
+    expect(response).toEqual({})
+    expect(events.find((event) => event.event === 'extension_request')).toBeUndefined()
+    expect(subtaskEvents(events)).toEqual([
+      {
+        taskId: 'tool_1',
+        description: 'Explore folder structure summary',
+        prompt: 'Explore the workspace directory.',
+        modelId: 'composer-2.5-fast',
+        durationMs: 28086,
+        subagentType: 'unspecified',
+      },
+    ])
+  })
+
+  it('routes sessionless extension notifications through the fallback binding', async () => {
+    const { internals, events } = await setupSession(cursor)
+    await internals.extensionNotification('cursor/task', {
+      toolCallId: 'tool_9',
+      description: 'Background task',
+      subagentType: 'explore',
+    })
+    expect(subtaskEvents(events)).toEqual([
+      { taskId: 'tool_9', description: 'Background task', subagentType: 'explore' },
+    ])
+    expect(events.find((event) => event.event === 'extension_notification')).toBeUndefined()
+  })
+
+  it('maps OpenCode aborted task output to interrupted with provider detail', async () => {
+    const { internals, events } = await setupSession(opencode)
+    await internals.sessionUpdate({
+      sessionId: 'session-1',
+      update: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'call_cancelled',
+        title: 'task',
+        kind: 'think',
+        status: 'pending',
+        rawInput: {},
+      },
+    })
+    await internals.sessionUpdate({
+      sessionId: 'session-1',
+      update: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'call_cancelled',
+        status: 'failed',
+        rawOutput: {
+          error: 'Tool execution aborted',
+          metadata: { interrupted: true },
+        },
+      },
+    })
+
+    expect(subtaskEvents(events).at(-1)).toEqual({
+      taskId: 'call_cancelled',
+      status: 'interrupted',
+      statusSource: 'task_event',
+      statusReason: 'Tool execution aborted',
     })
   })
 })
