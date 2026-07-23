@@ -6,6 +6,7 @@ import {
   mergePersistedAndOptimisticMessages,
   StreamingMessagesStore,
 } from './active-session-provider'
+import { selectStreamingSnapshot, shouldRecoverRemoteStream } from '../lib/stream-continuity'
 
 const base = {
   threadId: 'thread-1',
@@ -288,6 +289,186 @@ describe('agent streaming regressions', () => {
     store.update(chunk)
     store.update(chunk)
     expect(store.get('assistant-1')?.content).toBe('once')
+  })
+
+  it('retains and updates a streaming session while another session is selected', () => {
+    const store = new StreamingMessagesStore()
+    const sessionA = {
+      sessionId: 'session-a',
+      threadId: 'thread-a',
+      messageId: 'assistant-a',
+    }
+    const sessionB = {
+      sessionId: 'session-b',
+      threadId: 'thread-b',
+      messageId: 'assistant-b',
+    }
+
+    store.update(
+      event({
+        ...sessionA,
+        id: 'a-start',
+        seq: 1,
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'A', userMessageId: 'user-a' },
+      }),
+    )
+    store.update(
+      event({
+        ...sessionA,
+        id: 'a-first',
+        seq: 2,
+        category: 'stream',
+        event: 'agent_message_chunk',
+        data: { content: { type: 'text', text: 'before navigation ' } },
+      }),
+    )
+    store.update(
+      event({
+        ...sessionB,
+        id: 'b-start',
+        seq: 1,
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'B', userMessageId: 'user-b' },
+      }),
+    )
+    store.update(
+      event({
+        ...sessionA,
+        id: 'a-second',
+        seq: 3,
+        category: 'stream',
+        event: 'agent_message_chunk',
+        data: { content: { type: 'text', text: 'after navigation' } },
+      }),
+    )
+
+    expect(store.get('assistant-a')).toMatchObject({
+      content: 'before navigation after navigation',
+      hasCompleteHistory: true,
+    })
+    expect(store.get('assistant-b')).toMatchObject({ hasCompleteHistory: true })
+    expect(shouldRecoverRemoteStream('assistant', false, store.get('assistant-a'))).toBe(false)
+  })
+
+  it('marks a renderer-reload snapshot incomplete and recovers it as one remote snapshot', () => {
+    const store = new StreamingMessagesStore()
+    store.update(
+      event({
+        id: 'mid-stream-after-reload',
+        messageId: 'assistant-reload',
+        seq: 8,
+        category: 'stream',
+        event: 'agent_message_chunk',
+        data: { content: { type: 'text', text: 'local tail' } },
+      }),
+    )
+
+    const local = store.get('assistant-reload')
+    expect(local?.hasCompleteHistory).toBe(false)
+    expect(shouldRecoverRemoteStream('assistant', false, local)).toBe(true)
+    expect(
+      selectStreamingSnapshot(local, {
+        content: 'persisted prefix and local tail',
+        parts: [{ type: 'text', id: 'remote-text', text: 'persisted prefix and local tail' }],
+      }),
+    ).toMatchObject({
+      content: 'persisted prefix and local tail',
+      parts: [{ id: 'remote-text' }],
+    })
+  })
+
+  it('falls back to Convex after an IPC sequence gap', () => {
+    const store = new StreamingMessagesStore()
+    store.update(
+      event({
+        id: 'gap-start',
+        messageId: 'assistant-gap',
+        seq: 4,
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'Start', userMessageId: 'user-gap' },
+      }),
+    )
+    store.update(
+      event({
+        id: 'gap-tail',
+        messageId: 'assistant-gap',
+        seq: 6,
+        category: 'stream',
+        event: 'agent_message_chunk',
+        data: { content: { type: 'text', text: 'tail' } },
+      }),
+    )
+
+    const local = store.get('assistant-gap')
+    expect(local?.hasCompleteHistory).toBe(false)
+    expect(shouldRecoverRemoteStream('assistant', false, local)).toBe(true)
+  })
+
+  it('keeps a newer local tail visible until Convex replay catches up', () => {
+    const local = {
+      content: 'newer local tail',
+      parts: [{ type: 'text', id: 'local-text', text: 'newer local tail' }],
+      hasCompleteHistory: false,
+    }
+
+    expect(
+      selectStreamingSnapshot(local, {
+        content: 'old',
+        parts: [{ type: 'text', id: 'remote-text', text: 'old' }],
+      }),
+    ).toBe(local)
+  })
+
+  it('stops late-join recovery when the message finalizes', () => {
+    expect(shouldRecoverRemoteStream('assistant', false, undefined)).toBe(true)
+    expect(shouldRecoverRemoteStream('assistant', true, undefined)).toBe(false)
+  })
+
+  it('evicts the least-recently-updated streaming snapshot at the configured bound', () => {
+    const store = new StreamingMessagesStore(2)
+    for (const [index, messageId] of ['assistant-a', 'assistant-b'].entries()) {
+      store.update(
+        event({
+          id: `event-${messageId}`,
+          threadId: `thread-${messageId}`,
+          messageId,
+          seq: index + 1,
+          category: 'stream',
+          event: 'agent_message_chunk',
+          data: { content: { type: 'text', text: messageId } },
+        }),
+      )
+    }
+    store.update(
+      event({
+        id: 'event-assistant-a-again',
+        threadId: 'thread-assistant-a',
+        messageId: 'assistant-a',
+        seq: 3,
+        category: 'stream',
+        event: 'agent_message_chunk',
+        data: { content: { type: 'text', text: '-again' } },
+      }),
+    )
+    store.update(
+      event({
+        id: 'event-assistant-c',
+        threadId: 'thread-assistant-c',
+        messageId: 'assistant-c',
+        seq: 4,
+        category: 'stream',
+        event: 'agent_message_chunk',
+        data: { content: { type: 'text', text: 'assistant-c' } },
+      }),
+    )
+
+    expect(store.get('assistant-a')?.content).toBe('assistant-a-again')
+    expect(store.get('assistant-b')).toBeUndefined()
+    expect(store.get('assistant-c')?.content).toBe('assistant-c')
   })
 
   it('reconciles optimistic messages by canonical identity, not message counts', () => {

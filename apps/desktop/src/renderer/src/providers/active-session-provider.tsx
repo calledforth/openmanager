@@ -37,12 +37,15 @@ export interface UIMessage {
 export interface LocalStreamingMessage {
   content: string
   parts: MessagePart[]
+  hasCompleteHistory: boolean
 }
 
 type LiveThreadState = {
   messageId: string
   parts: Map<string, MessagePart>
   seenEventIds: Set<string>
+  hasCompleteHistory: boolean
+  lastSeq: number
   activeTextPartId?: string
   activeReasoningPartId?: string
   nextPartOrdinal: number
@@ -62,6 +65,8 @@ export class StreamingMessagesStore {
   private messages = new Map<string, LocalStreamingMessage>()
   private listeners = new Map<string, Set<() => void>>()
   private threads = new Map<string, LiveThreadState>()
+
+  constructor(private readonly maxMessages = 100) {}
 
   subscribe(messageExternalId: string, listener: () => void) {
     const current = this.listeners.get(messageExternalId) ?? new Set<() => void>()
@@ -90,12 +95,18 @@ export class StreamingMessagesStore {
         messageId,
         parts: new Map(),
         seenEventIds: new Set(),
+        hasCompleteHistory: event.event === 'prompt_started',
+        lastSeq: event.seq,
         nextPartOrdinal: 0,
       }
       this.threads.set(event.threadId, state)
     }
     if (state.seenEventIds.has(event.id)) return
     state.seenEventIds.add(event.id)
+    if (event.seq > state.lastSeq + 1) {
+      state.hasCompleteHistory = false
+    }
+    state.lastSeq = Math.max(state.lastSeq, event.seq)
 
     let changed = false
     switch (event.event) {
@@ -153,7 +164,15 @@ export class StreamingMessagesStore {
       .filter((part) => part.type === 'text')
       .map((part) => String(part.text ?? ''))
       .join('')
-    this.messages = new Map(this.messages).set(messageId, { content, parts })
+    const messages = new Map(this.messages)
+    messages.delete(messageId)
+    messages.set(messageId, {
+      content,
+      parts,
+      hasCompleteHistory: state.hasCompleteHistory,
+    })
+    this.messages = messages
+    this.evictOverflow()
     this.emit(messageId)
   }
 
@@ -167,13 +186,12 @@ export class StreamingMessagesStore {
     this.emit(messageExternalId)
   }
 
-  reset() {
-    if (this.messages.size === 0) return
-    const ids = [...this.messages.keys()]
-    this.messages = new Map()
-    this.threads = new Map()
-    for (const id of ids) {
-      this.emit(id)
+  private evictOverflow() {
+    const limit = Math.max(1, this.maxMessages)
+    while (this.messages.size > limit) {
+      const oldestMessageId = this.messages.keys().next().value
+      if (typeof oldestMessageId !== 'string') return
+      this.remove(oldestMessageId)
     }
   }
 
@@ -499,12 +517,10 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const cleanup = window.electronAPI.onStreamToken((event) => {
-      if (!activeSessionId || event.sessionId !== activeSessionId) return
-      if (!activeSessionDriven) return
       streamingStore.update(event)
     })
     return cleanup
-  }, [activeSessionDriven, streamingStore, activeSessionId])
+  }, [streamingStore])
 
   useEffect(() => {
     const finalIds = new Set(
@@ -536,8 +552,7 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
         return []
       })
     }
-    streamingStore.reset()
-  }, [activeSessionId, adoptedDraftSessionId, streamingStore])
+  }, [activeSessionId, adoptedDraftSessionId])
 
   const acknowledgeOptimisticMessage = useCallback((externalId: string) => {
     setOptimisticUserMessages((prev) => {
