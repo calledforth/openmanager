@@ -92,6 +92,7 @@ const NO_CAPABILITIES: ProviderCapabilities = {
   canSetConfigOption: false,
   canDeleteSession: false,
   canLoadSession: false,
+  canListSessions: false,
   canCancelPrompt: false,
   supportsPlans: false,
   supportsAvailableCommands: false,

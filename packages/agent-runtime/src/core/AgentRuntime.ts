@@ -5,6 +5,7 @@ import type {
   PlanReviewOutcome,
   PromptInput,
   ProviderId,
+  ProviderSessionInfo,
   QuestionOutcome,
 } from '@agentpack/contract'
 import { AcpBackend } from '../backends/acp/AcpBackend.js'
@@ -104,6 +105,10 @@ export class AgentRuntime {
     this.bindProvider(args.threadId, args.providerId)
     if (args.sessionId) this.require(args, 'canLoadSession', 'load session')
     return this.backend(args.providerId).ensureSession(args)
+  }
+  async listSessions(args: RuntimeRoute): Promise<ProviderSessionInfo[]> {
+    this.require(args, 'canListSessions', 'list sessions')
+    return this.backend(args.providerId).listSessions(args)
   }
   ensureThreadSession(args: RuntimeSessionArgs): Promise<SessionResult> {
     return this.ensureSession(args)

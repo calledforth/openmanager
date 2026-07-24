@@ -5,6 +5,7 @@ export type ProviderCapabilities = {
   canSetConfigOption: boolean
   canDeleteSession: boolean
   canLoadSession: boolean
+  canListSessions: boolean
   canCancelPrompt: boolean
   supportsPlans: boolean
   supportsAvailableCommands: boolean
@@ -24,6 +25,7 @@ export type CapabilityKey =
   | 'canSetConfigOption'
   | 'canDeleteSession'
   | 'canLoadSession'
+  | 'canListSessions'
   | 'canCancelPrompt'
   | 'supportsPlans'
   | 'supportsAvailableCommands'

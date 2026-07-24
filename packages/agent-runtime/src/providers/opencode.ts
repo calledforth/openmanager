@@ -76,6 +76,7 @@ export const opencode: ProviderConfig = {
     canSetConfigOption: true,
     canDeleteSession: false,
     canLoadSession: true,
+    canListSessions: false,
     canCancelPrompt: true,
     supportsPlans: false,
     supportsAvailableCommands: true,

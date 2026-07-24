@@ -40,6 +40,13 @@ export type ProviderMetadata = {
   modes?: ModeListing
 }
 
+export type ProviderSessionInfo = {
+  sessionId: string
+  cwd: string
+  title?: string
+  updatedAt?: string
+}
+
 export type ProviderModelSelection = {
   providerId: ProviderId
   modelId: string

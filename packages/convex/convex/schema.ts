@@ -18,6 +18,9 @@ export default defineSchema({
     providerId: v.optional(v.string()),
     clientId: v.optional(v.string()),
     title: v.optional(v.string()),
+    titleSource: v.optional(
+      v.union(v.literal('fallback'), v.literal('provider'), v.literal('user')),
+    ),
     status: v.string(),
     /** Set when this session is a subagent transcript; hidden from the
      * sidebar and opened read-only from its parent's subtask card. */

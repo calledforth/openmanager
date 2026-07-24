@@ -15,6 +15,7 @@ import type {
   PlanTodo,
   PromptInput,
   ProviderId,
+  ProviderSessionInfo,
   QuestionOutcome,
   SessionConfigOption,
   SubtaskUpdate,
@@ -238,6 +239,7 @@ export class AcpBackend implements Backend {
   private connection: acp.ClientSideConnection | null = null
   private initialized = false
   private authenticated = false
+  private sessionListAdvertised = false
   private bootstrap: Promise<void> | null = null
   private expectedExit = false
   private nativeQuestions: OpenCodeQuestions | null = null
@@ -331,6 +333,7 @@ export class AcpBackend implements Backend {
   private async spawn(route: BackendRoute & { cwd: string }): Promise<void> {
     this.sessions.nextGeneration()
     this.expectedExit = false
+    this.sessionListAdvertised = false
     const command =
       process.env[this.config.command.envOverride] ??
       (this.config.command.fallbackEnvOverride
@@ -400,6 +403,7 @@ export class AcpBackend implements Backend {
       this.connection = null
       this.initialized = false
       this.authenticated = false
+      this.sessionListAdvertised = false
       this.bootstrap = null
       this.sessions.clear()
       this.subtaskToolIds.clear()
@@ -426,6 +430,13 @@ export class AcpBackend implements Backend {
       throw error
     }
     this.initialized = true
+    const agentCapabilities = object(response.agentCapabilities)
+    const sessionCapabilities = object(agentCapabilities.sessionCapabilities)
+    this.sessionListAdvertised =
+      this.config.capabilities.canListSessions &&
+      sessionCapabilities.list !== undefined &&
+      sessionCapabilities.list !== null &&
+      sessionCapabilities.list !== false
     const methods = Array.isArray(response.authMethods)
       ? response.authMethods
           .map((v): AuthMethod => {
@@ -447,8 +458,11 @@ export class AcpBackend implements Backend {
       routeEvent(route, undefined, 'lifecycle', 'initialized', {
         protocolVersion: string(response.protocolVersion),
         agentInfo,
-        capabilities: this.config.capabilities,
-        promptCapabilities: object(response.agentCapabilities).promptCapabilities,
+        capabilities: {
+          ...this.config.capabilities,
+          canListSessions: this.sessionListAdvertised,
+        },
+        promptCapabilities: agentCapabilities.promptCapabilities,
         authMethods: methods,
       }),
     )
@@ -509,6 +523,58 @@ export class AcpBackend implements Backend {
       }),
     )
     return new AuthRequiredError(this.providerId, message, this.config.auth.loginInstruction)
+  }
+
+  async listSessions(args: BackendRoute & { cwd: string }): Promise<ProviderSessionInfo[]> {
+    await this.start(args)
+    if (!this.sessionListAdvertised) {
+      throw new Error(`${this.providerId} does not advertise ACP session/list support`)
+    }
+
+    const sessions: ProviderSessionInfo[] = []
+    const seenSessionIds = new Set<string>()
+    const seenCursors = new Set<string>()
+    let cursor: string | undefined
+
+    try {
+      do {
+        const response = object(
+          await this.conn().listSessions({
+            cwd: args.cwd,
+            ...(cursor ? { cursor } : {}),
+          }),
+        )
+        const page = Array.isArray(response.sessions) ? response.sessions : []
+        for (const value of page) {
+          const info = object(value)
+          const sessionId = string(info.sessionId)?.trim()
+          const cwd = string(info.cwd)?.trim()
+          if (!sessionId || !cwd || seenSessionIds.has(sessionId)) continue
+          seenSessionIds.add(sessionId)
+          const title = string(info.title)?.trim()
+          const updatedAt = string(info.updatedAt)?.trim()
+          sessions.push({
+            sessionId,
+            cwd,
+            ...(title ? { title } : {}),
+            ...(updatedAt ? { updatedAt } : {}),
+          })
+        }
+
+        const nextCursor = string(response.nextCursor)?.trim()
+        if (!nextCursor) break
+        if (seenCursors.has(nextCursor)) {
+          throw new Error('ACP session/list returned a repeated pagination cursor')
+        }
+        seenCursors.add(nextCursor)
+        cursor = nextCursor
+      } while (cursor)
+    } catch (error) {
+      if (isAuthRequired(error)) throw this.authRequired(args, undefined, errorMessage(error))
+      throw error
+    }
+
+    return sessions
   }
 
   async ensureSession(args: BackendSessionArgs): Promise<SessionResult> {
@@ -1326,6 +1392,7 @@ export class AcpBackend implements Backend {
     this.process = null
     this.initialized = false
     this.authenticated = false
+    this.sessionListAdvertised = false
     this.bootstrap = null
     this.sessions.clear()
     this.subtaskToolIds.clear()

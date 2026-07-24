@@ -5,6 +5,8 @@ import type {
   ModeListing,
   ModelListing,
   PermissionRequest,
+  ProviderId,
+  ProviderSessionInfo,
   SubtaskUpdate,
   TokenUsage,
   ToolCall,
@@ -134,9 +136,26 @@ export class ConvexProjector {
         workspacePath,
         externalId: sessionId,
         title,
+        source: 'provider',
         ...(providerId ? { providerId } : {}),
-        clientId: this.clientId,
       })
+    })
+  }
+
+  async syncProviderSessionTitles(
+    workspacePath: string,
+    providerId: ProviderId,
+    sessions: ProviderSessionInfo[],
+  ): Promise<void> {
+    const titledSessions = sessions.flatMap((session) => {
+      const title = session.title?.trim()
+      return title ? [{ externalId: session.sessionId, title }] : []
+    })
+    if (titledSessions.length === 0) return
+    await this.runMutation('sessions.syncProviderTitles', api.sessions.syncProviderTitles, {
+      workspacePath,
+      providerId,
+      sessions: titledSessions,
     })
   }
 
@@ -287,8 +306,8 @@ export class ConvexProjector {
             workspacePath,
             externalId: event.sessionId,
             title: event.data.title,
+            source: 'provider',
             providerId: event.providerId,
-            clientId: this.clientId,
           })
         }
         return
@@ -366,6 +385,7 @@ export class ConvexProjector {
         workspacePath,
         externalId: event.sessionId,
         title,
+        source: 'fallback',
         providerId: event.providerId,
         clientId: this.clientId,
       })
