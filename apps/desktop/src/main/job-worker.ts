@@ -294,8 +294,15 @@ export class JobWorker {
           break
         }
         case 'create_session': {
-          const threadId = crypto.randomUUID()
-          const session = await this.agentHost.runtime.ensureSession(this.route(parsed, threadId))
+          const provisionalThreadId = crypto.randomUUID()
+          const session = await this.agentHost.runtime.ensureSession(
+            this.route(parsed, provisionalThreadId),
+          )
+          const threadId = session.sessionId
+          await this.agentHost.runtime.ensureSession({
+            ...this.route(parsed, threadId),
+            sessionId: session.sessionId,
+          })
           const rememberedModel = this.getLastModelForWorkspace(parsed.workspacePath, providerId)
           if (rememberedModel) {
             try {
@@ -328,8 +335,15 @@ export class JobWorker {
           break
         }
         case 'start_session_with_message': {
-          const threadId = crypto.randomUUID()
-          const session = await this.agentHost.runtime.ensureSession(this.route(parsed, threadId))
+          const provisionalThreadId = crypto.randomUUID()
+          const session = await this.agentHost.runtime.ensureSession(
+            this.route(parsed, provisionalThreadId),
+          )
+          const threadId = session.sessionId
+          await this.agentHost.runtime.ensureSession({
+            ...this.route(parsed, threadId),
+            sessionId: session.sessionId,
+          })
           const preferredModel =
             parsed.preferredModelId ??
             this.getLastModelForWorkspace(parsed.workspacePath, providerId)

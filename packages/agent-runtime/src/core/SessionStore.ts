@@ -37,6 +37,24 @@ export class SessionStore {
     const v = this.bySession.get(sessionId)
     return v?.generation === this.generation ? v : undefined
   }
+  rebindThread(
+    sessionId: string,
+    threadId: string,
+    workspaceId?: string,
+  ): SessionBinding | undefined {
+    const current = this.forSession(sessionId)
+    if (!current) return undefined
+    return this.bind({
+      providerId: current.providerId,
+      threadId,
+      sessionId,
+      ...(workspaceId ?? current.workspaceId
+        ? { workspaceId: workspaceId ?? current.workspaceId }
+        : {}),
+      ...(current.resumeCursor ? { resumeCursor: current.resumeCursor } : {}),
+      ...(current.configOptions ? { configOptions: current.configOptions } : {}),
+    })
+  }
   setResumeCursor(threadId: string, cursor?: string): void {
     const v = this.forThread(threadId)
     if (v) v.resumeCursor = cursor

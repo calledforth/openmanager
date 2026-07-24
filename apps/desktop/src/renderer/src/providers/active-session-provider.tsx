@@ -37,15 +37,12 @@ export interface UIMessage {
 export interface LocalStreamingMessage {
   content: string
   parts: MessagePart[]
-  hasCompleteHistory: boolean
 }
 
 type LiveThreadState = {
   messageId: string
   parts: Map<string, MessagePart>
   seenEventIds: Set<string>
-  hasCompleteHistory: boolean
-  lastSeq: number
   activeTextPartId?: string
   activeReasoningPartId?: string
   nextPartOrdinal: number
@@ -95,18 +92,12 @@ export class StreamingMessagesStore {
         messageId,
         parts: new Map(),
         seenEventIds: new Set(),
-        hasCompleteHistory: event.event === 'prompt_started',
-        lastSeq: event.seq,
         nextPartOrdinal: 0,
       }
       this.threads.set(event.threadId, state)
     }
     if (state.seenEventIds.has(event.id)) return
     state.seenEventIds.add(event.id)
-    if (event.seq > state.lastSeq + 1) {
-      state.hasCompleteHistory = false
-    }
-    state.lastSeq = Math.max(state.lastSeq, event.seq)
 
     let changed = false
     switch (event.event) {
@@ -169,7 +160,6 @@ export class StreamingMessagesStore {
     messages.set(messageId, {
       content,
       parts,
-      hasCompleteHistory: state.hasCompleteHistory,
     })
     this.messages = messages
     this.evictOverflow()

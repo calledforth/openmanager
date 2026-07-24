@@ -417,7 +417,8 @@ export class ConvexProjector {
     event: Extract<AgentEvent, { event: 'agent_message_chunk' | 'agent_thought_chunk' }>,
     reasoning: boolean,
   ): Promise<void> {
-    const turn = this.ensureTurn(event)
+    const turn = this.activeTurn(event)
+    if (!turn) return
     const buffer = this.buffer(
       turn.assistantMessageId,
       event.sessionId,
@@ -445,7 +446,8 @@ export class ConvexProjector {
     event: Extract<AgentEvent, { event: 'tool_call' | 'tool_call_update' }>,
     tool: ToolCall | ToolCallUpdate,
   ): Promise<void> {
-    const turn = this.ensureTurn(event)
+    const turn = this.activeTurn(event)
+    if (!turn) return
     const buffer = this.buffer(
       turn.assistantMessageId,
       event.sessionId,
@@ -489,7 +491,8 @@ export class ConvexProjector {
     toolCallId: string,
     item: ToolCallContent,
   ): Promise<void> {
-    const turn = this.ensureTurn(event)
+    const turn = this.activeTurn(event)
+    if (!turn) return
     const buffer = this.buffer(
       turn.assistantMessageId,
       event.sessionId,
@@ -531,7 +534,8 @@ export class ConvexProjector {
   private async appendPlanUpdate(
     event: Extract<AgentEvent, { event: 'plan_update' }>,
   ): Promise<void> {
-    const turn = this.ensureTurn(event)
+    const turn = this.activeTurn(event)
+    if (!turn) return
     const buffer = this.buffer(
       turn.assistantMessageId,
       event.sessionId,
@@ -550,7 +554,8 @@ export class ConvexProjector {
   private async upsertSubtask(
     event: Extract<AgentEvent, { event: 'subtask_update' }>,
   ): Promise<void> {
-    const turn = this.ensureTurn(event)
+    const turn = this.activeTurn(event)
+    if (!turn) return
     const buffer = this.buffer(
       turn.assistantMessageId,
       event.sessionId,
@@ -625,16 +630,9 @@ export class ConvexProjector {
     })
   }
 
-  private ensureTurn(event: AgentEvent & { sessionId: string }): ActiveTurn {
-    let turn = this.turns.get(event.threadId)
-    if (!turn) {
-      turn = {
-        sessionId: event.sessionId,
-        userMessageId: `agent_usr_${event.id}`,
-        assistantMessageId: `agent_asst_${event.id}`,
-      }
-      this.turns.set(event.threadId, turn)
-    }
+  private activeTurn(event: AgentEvent & { sessionId: string }): ActiveTurn | undefined {
+    const turn = this.turns.get(event.threadId)
+    if (!turn || !event.messageId || turn.assistantMessageId !== event.messageId) return undefined
     return turn
   }
 

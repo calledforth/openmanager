@@ -14,7 +14,7 @@ import {
   createPartOrdinalState,
   type StreamMessagePart,
 } from '@openmanager/shared/lib/remote-stream-parts'
-import { selectStreamingSnapshot, shouldRecoverRemoteStream } from '../../lib/stream-continuity'
+import { shouldUseRemoteStreaming } from '../../lib/stream-continuity'
 import { cn } from '../../lib/utils'
 import type { UploadedImageAttachment } from '../../lib/attachments'
 import { PendingPermissionFallback } from '../permissions/InlinePermissionPrompt'
@@ -24,8 +24,13 @@ const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96
 const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 8
 
 export function ChatView() {
-  const { activeSessionId, messages, isMessagesLoading, acknowledgeOptimisticMessage } =
-    useActiveSession()
+  const {
+    activeSessionId,
+    messages,
+    activeSessionDriven,
+    isMessagesLoading,
+    acknowledgeOptimisticMessage,
+  } = useActiveSession()
   const scrollRef = useRef<HTMLDivElement>(null)
   const shouldAutoScrollRef = useRef(true)
   const lastKnownScrollTopRef = useRef(0)
@@ -92,6 +97,7 @@ export function ChatView() {
             messages={chatMessages}
             isMessagesLoading={isMessagesLoading}
             scrollElement={scrollRef.current}
+            isDriven={activeSessionDriven}
             onStreamUpdate={scheduleStickToBottom}
             onPersistedContentReady={acknowledgeOptimisticMessage}
           />
@@ -107,6 +113,7 @@ function ConversationTimeline({
   messages,
   isMessagesLoading,
   scrollElement,
+  isDriven,
   onStreamUpdate,
   onPersistedContentReady,
 }: {
@@ -122,6 +129,7 @@ function ConversationTimeline({
   }>
   isMessagesLoading: boolean
   scrollElement: HTMLDivElement | null
+  isDriven: boolean
   onStreamUpdate: () => void
   onPersistedContentReady: (messageId: string) => void
 }) {
@@ -160,6 +168,7 @@ function ConversationTimeline({
         <MessageTimeline
           messages={messages}
           scrollElement={scrollElement}
+          isDriven={isDriven}
           onStreamUpdate={onStreamUpdate}
           hidden={isHydrating}
           onHydrated={handleHydrated}
@@ -173,6 +182,7 @@ function ConversationTimeline({
 function MessageTimeline({
   messages,
   scrollElement,
+  isDriven,
   onStreamUpdate,
   hidden,
   onHydrated,
@@ -188,6 +198,7 @@ function MessageTimeline({
     isOptimistic?: boolean
   }>
   scrollElement: HTMLDivElement | null
+  isDriven: boolean
   onStreamUpdate: () => void
   hidden: boolean
   onHydrated: () => void
@@ -256,6 +267,7 @@ function MessageTimeline({
               >
                 <MessageRow
                   message={message}
+                  isDriven={isDriven}
                   onStreamUpdate={onStreamUpdate}
                   onReady={handleMessageReady}
                   onPersistedContentReady={onPersistedContentReady}
@@ -271,6 +283,7 @@ function MessageTimeline({
         <MessageRow
           key={`tail-row:${message.externalId}`}
           message={message}
+          isDriven={isDriven}
           onStreamUpdate={onStreamUpdate}
           onReady={handleMessageReady}
           onPersistedContentReady={onPersistedContentReady}
@@ -283,6 +296,7 @@ function MessageTimeline({
 
 function MessageRow({
   message,
+  isDriven,
   onStreamUpdate,
   onReady,
   onPersistedContentReady,
@@ -297,6 +311,7 @@ function MessageRow({
     optimisticJobId?: string
     isOptimistic?: boolean
   }
+  isDriven: boolean
   onStreamUpdate: () => void
   onReady: (messageId: string) => void
   onPersistedContentReady: (messageId: string) => void
@@ -312,6 +327,7 @@ function MessageRow({
         optimisticAttachments={message.optimisticAttachments}
         optimisticJobId={message.optimisticJobId}
         isOptimistic={message.isOptimistic}
+        isDriven={isDriven}
         onStreamUpdate={onStreamUpdate}
         onReady={onReady}
         onPersistedContentReady={onPersistedContentReady}
@@ -420,15 +436,16 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
   optimisticAttachments?: UploadedImageAttachment[]
   optimisticJobId?: string
   isOptimistic?: boolean
+  isDriven: boolean
   onStreamUpdate: () => void
   onReady?: (messageId: string) => void
   onPersistedContentReady?: (messageId: string) => void
 }) {
   const localStreamingMessage = useStreamingMessage(props.externalId)
-  const shouldUseRemoteStreaming = shouldRecoverRemoteStream(
+  const useRemoteStreaming = shouldUseRemoteStreaming(
     props.role,
     props.isFinal,
-    localStreamingMessage,
+    props.isDriven,
   )
   const contentDoc = useTrackedQuery(
     'messages.getContent',
@@ -446,7 +463,7 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
   ) as { status: string; lastError?: string } | null | undefined
   const remoteStreaming = useRemoteStreamingMessage(
     props.externalId,
-    shouldUseRemoteStreaming,
+    useRemoteStreaming,
     props.onStreamUpdate,
   )
 
@@ -455,13 +472,14 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
   // (getContent query needs a round-trip to resolve after listMetadata flips isFinal)
   const lastStreamingPartsRef = useRef<MessagePart[] | undefined>(undefined)
   const lastStreamingContentRef = useRef<string>('')
-  const streamingSnapshot = selectStreamingSnapshot(localStreamingMessage, remoteStreaming)
-  const streamingParts = streamingSnapshot.parts
+  const streamingParts = props.isDriven ? localStreamingMessage?.parts : remoteStreaming.parts
   if (streamingParts && streamingParts.length > 0) {
     lastStreamingPartsRef.current = streamingParts
   }
 
-  const streamingContent = streamingSnapshot.content
+  const streamingContent = props.isDriven
+    ? (localStreamingMessage?.content ?? '')
+    : remoteStreaming.content
   if (streamingContent.length > 0) {
     lastStreamingContentRef.current = streamingContent
   }
