@@ -110,6 +110,12 @@ export function MessageInput() {
       models,
     }
   })
+  // Runtime state first, chrome as fallback — mirrors the model/mode resolution
+  // above. Runtime state also carries the per-workspace draft copy, so the picker
+  // works in a fresh draft before the session's own events have replayed.
+  const slashCommands = runtimeState?.availableCommands?.length
+    ? runtimeState.availableCommands
+    : chrome.slashCommands
   const canChangeSettings = !!activeSessionId || isSessionDraftOpen
   const effectiveStatus = localSessionStatus ?? activeSession?.status
   const isStreaming = effectiveStatus === 'running' || effectiveStatus === 'busy'
@@ -263,6 +269,8 @@ export function MessageInput() {
           providerSupportsImages && modelImageSupport !== false && modelImageSupport !== undefined
         }
         imageSupportMessage={imageSupportMessage}
+        slashCommands={slashCommands}
+        usage={chrome.usage ?? null}
         onModeChange={(id) => {
           if (activeSessionId) {
             void setSessionMode(activeSessionId, id)
