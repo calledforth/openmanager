@@ -290,7 +290,7 @@ function WorkspaceGroup({
                   <ProviderIcon providerId={providerId} className="h-3 w-3 opacity-70" />
                 )}
                 <span className={cn(typographyLabel, 'flex-1 truncate font-normal')}>
-                  {s.title || s.externalId.slice(0, 10)}
+                  {s.title || 'New session'}
                 </span>
                 {isChild && !isBusy ? (
                   <span

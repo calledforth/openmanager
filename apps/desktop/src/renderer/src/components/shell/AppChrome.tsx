@@ -27,7 +27,7 @@ const windowControlBtnClass =
 
 function useTitlebarTrail() {
   const { activeSessionId, activeSession } = useActiveSession()
-  const { activeWorkspacePath, isSessionDraftOpen } = useAppUi()
+  const { activeWorkspacePath } = useAppUi()
   const { workspaces } = useSidebarData()
 
   const projectName =
@@ -39,10 +39,6 @@ function useTitlebarTrail() {
   let chatTitle = 'New session'
   if (activeSessionId && activeSession?.title) {
     chatTitle = activeSession.title
-  } else if (activeSessionId) {
-    chatTitle = activeSessionId.slice(0, 12)
-  } else if (isSessionDraftOpen && projectName) {
-    chatTitle = 'New session'
   }
 
   return { projectName, chatTitle }
