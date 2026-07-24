@@ -580,8 +580,22 @@ export class AcpBackend implements Backend {
   async ensureSession(args: BackendSessionArgs): Promise<SessionResult> {
     await this.start(args)
     const active = this.sessions.forThread(args.threadId)
-    if (active)
+    if (active && (!args.sessionId || active.sessionId === args.sessionId))
       return { sessionId: active.sessionId, state: 'reused', resumeCursor: active.resumeCursor }
+    if (args.sessionId) {
+      const rebound = this.sessions.rebindThread(
+        args.sessionId,
+        args.threadId,
+        args.workspaceId,
+      )
+      if (rebound) {
+        return {
+          sessionId: rebound.sessionId,
+          state: 'reused',
+          resumeCursor: rebound.resumeCursor,
+        }
+      }
+    }
     if (args.sessionId && this.config.capabilities.canLoadSession) {
       // Agents replay session/update notifications before session/load returns.
       // Install the route first so those events are not dropped as unknown.

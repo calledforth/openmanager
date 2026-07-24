@@ -224,6 +224,75 @@ describe('ConvexProjector streaming contracts', () => {
     expect(chunks[1]).toMatchObject({ chunkText: 'One two three.' })
   })
 
+  it('ignores session/load replay until a real prompt establishes the active turn', async () => {
+    const { projector, mutations } = setup()
+    projector.consume(
+      event(1, {
+        messageId: undefined,
+        category: 'stream',
+        event: 'agent_thought_chunk',
+        data: { content: { type: 'text', text: 'Old reasoning' } },
+      }),
+    )
+    projector.consume(
+      event(2, {
+        messageId: undefined,
+        category: 'tool',
+        event: 'tool_call',
+        data: {
+          toolCallId: 'replay-0-2',
+          title: 'Read old file',
+          status: 'completed',
+          rawOutput: { content: 'old' },
+        },
+      }),
+    )
+    projector.consume(
+      event(3, {
+        messageId: undefined,
+        category: 'stream',
+        event: 'agent_message_chunk',
+        data: { content: { type: 'text', text: 'Old answer' } },
+      }),
+    )
+    await projector.waitForThread(base.threadId)
+
+    expect(mutations).toEqual([])
+
+    projector.consume(
+      event(4, {
+        messageId: 'assistant-real',
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'New prompt', userMessageId: 'user-real' },
+      }),
+    )
+    projector.consume(
+      event(5, {
+        messageId: 'assistant-real',
+        category: 'tool',
+        event: 'tool_call',
+        data: { toolCallId: 'tool-real', title: 'Read new file', status: 'completed' },
+      }),
+    )
+    projector.consume(
+      event(6, {
+        messageId: 'assistant-real',
+        category: 'lifecycle',
+        event: 'prompt_completed',
+        data: { stopReason: 'end_turn' },
+      }),
+    )
+    await projector.waitForThread(base.threadId)
+
+    const finalized = [...mutations]
+      .reverse()
+      .find((args) => args.externalId === 'assistant-real' && args.role === 'assistant')
+    expect(finalized?.parts).toEqual([
+      expect.objectContaining({ type: 'tool', id: 'tool-real' }),
+    ])
+  })
+
   it('finalizes reasoning and unfinished tools at prompt completion', async () => {
     const { projector, mutations } = setup()
     projector.consume(

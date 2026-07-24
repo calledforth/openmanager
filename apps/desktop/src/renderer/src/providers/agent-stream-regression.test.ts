@@ -6,7 +6,7 @@ import {
   mergePersistedAndOptimisticMessages,
   StreamingMessagesStore,
 } from './active-session-provider'
-import { selectStreamingSnapshot, shouldRecoverRemoteStream } from '../lib/stream-continuity'
+import { shouldUseRemoteStreaming } from '../lib/stream-continuity'
 
 const base = {
   threadId: 'thread-1',
@@ -345,48 +345,17 @@ describe('agent streaming regressions', () => {
       }),
     )
 
-    expect(store.get('assistant-a')).toMatchObject({
-      content: 'before navigation after navigation',
-      hasCompleteHistory: true,
-    })
-    expect(store.get('assistant-b')).toMatchObject({ hasCompleteHistory: true })
-    expect(shouldRecoverRemoteStream('assistant', false, store.get('assistant-a'))).toBe(false)
+    expect(store.get('assistant-a')?.content).toBe('before navigation after navigation')
+    expect(store.get('assistant-b')).toBeDefined()
   })
 
-  it('marks a renderer-reload snapshot incomplete and recovers it as one remote snapshot', () => {
-    const store = new StreamingMessagesStore()
-    store.update(
-      event({
-        id: 'mid-stream-after-reload',
-        messageId: 'assistant-reload',
-        seq: 8,
-        category: 'stream',
-        event: 'agent_message_chunk',
-        data: { content: { type: 'text', text: 'local tail' } },
-      }),
-    )
-
-    const local = store.get('assistant-reload')
-    expect(local?.hasCompleteHistory).toBe(false)
-    expect(shouldRecoverRemoteStream('assistant', false, local)).toBe(true)
-    expect(
-      selectStreamingSnapshot(local, {
-        content: 'persisted prefix and local tail',
-        parts: [{ type: 'text', id: 'remote-text', text: 'persisted prefix and local tail' }],
-      }),
-    ).toMatchObject({
-      content: 'persisted prefix and local tail',
-      parts: [{ id: 'remote-text' }],
-    })
-  })
-
-  it('falls back to Convex after an IPC sequence gap', () => {
+  it('keeps driven IPC accumulation authoritative across unrelated AgentEvent sequence gaps', () => {
     const store = new StreamingMessagesStore()
     store.update(
       event({
         id: 'gap-start',
         messageId: 'assistant-gap',
-        seq: 4,
+        seq: 5,
         category: 'lifecycle',
         event: 'prompt_started',
         data: { prompt: 'Start', userMessageId: 'user-gap' },
@@ -396,36 +365,22 @@ describe('agent streaming regressions', () => {
       event({
         id: 'gap-tail',
         messageId: 'assistant-gap',
-        seq: 6,
+        seq: 8,
         category: 'stream',
         event: 'agent_message_chunk',
         data: { content: { type: 'text', text: 'tail' } },
       }),
     )
 
-    const local = store.get('assistant-gap')
-    expect(local?.hasCompleteHistory).toBe(false)
-    expect(shouldRecoverRemoteStream('assistant', false, local)).toBe(true)
+    expect(store.get('assistant-gap')?.content).toBe('tail')
+    expect(shouldUseRemoteStreaming('assistant', false, true)).toBe(false)
   })
 
-  it('keeps a newer local tail visible until Convex replay catches up', () => {
-    const local = {
-      content: 'newer local tail',
-      parts: [{ type: 'text', id: 'local-text', text: 'newer local tail' }],
-      hasCompleteHistory: false,
-    }
-
-    expect(
-      selectStreamingSnapshot(local, {
-        content: 'old',
-        parts: [{ type: 'text', id: 'remote-text', text: 'old' }],
-      }),
-    ).toBe(local)
-  })
-
-  it('stops late-join recovery when the message finalizes', () => {
-    expect(shouldRecoverRemoteStream('assistant', false, undefined)).toBe(true)
-    expect(shouldRecoverRemoteStream('assistant', true, undefined)).toBe(false)
+  it('routes live streaming by session ownership', () => {
+    expect(shouldUseRemoteStreaming('assistant', false, true)).toBe(false)
+    expect(shouldUseRemoteStreaming('assistant', false, false)).toBe(true)
+    expect(shouldUseRemoteStreaming('assistant', true, false)).toBe(false)
+    expect(shouldUseRemoteStreaming('user', false, false)).toBe(false)
   })
 
   it('evicts the least-recently-updated streaming snapshot at the configured bound', () => {

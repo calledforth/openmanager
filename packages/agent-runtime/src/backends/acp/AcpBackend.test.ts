@@ -578,6 +578,43 @@ describe('AcpBackend session compatibility', () => {
     ])
   })
 
+  it('rebinds a newly created session to its stable thread without session/load', async () => {
+    const loadSession = vi.fn()
+    const setupResult = setup(
+      {
+        newSession: async () => ({ sessionId: 'session-1' }),
+        loadSession,
+      },
+      cursor,
+    )
+
+    await expect(
+      setupResult.backend.ensureSession({ ...route, threadId: 'provisional-thread' }),
+    ).resolves.toMatchObject({ sessionId: 'session-1', state: 'created' })
+    await expect(
+      setupResult.backend.ensureSession({
+        ...route,
+        threadId: 'session-1',
+        sessionId: 'session-1',
+      }),
+    ).resolves.toMatchObject({ sessionId: 'session-1', state: 'reused' })
+
+    await setupResult.internals.sessionUpdate({
+      sessionId: 'session-1',
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'stable route' },
+      },
+    })
+
+    expect(loadSession).not.toHaveBeenCalled()
+    expect(setupResult.events.at(-1)).toMatchObject({
+      threadId: 'session-1',
+      sessionId: 'session-1',
+      event: 'agent_message_chunk',
+    })
+  })
+
   it('uses advertised config option ids for model and mode selection', async () => {
     let configOptions: SessionConfigOption[] = [
       {
