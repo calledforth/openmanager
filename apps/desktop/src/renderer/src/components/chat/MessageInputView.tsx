@@ -41,6 +41,14 @@ import {
   sessionConfigSummary,
   type SessionConfigValue,
 } from './modelConfig'
+import { ContextMeter, type ComposerUsage } from './ContextMeter'
+import { SlashCommandPopup } from './SlashCommandPopup'
+import {
+  applySlashCommand,
+  matchSlashCommands,
+  slashQueryFromText,
+  type SlashCommandItem,
+} from './slashCommands'
 
 export type ProviderModelGroup = {
   providerId: ProviderId
@@ -365,6 +373,8 @@ export function MessageInputView({
   draftKey,
   imageUploadEnabled,
   imageSupportMessage,
+  slashCommands = [],
+  usage = null,
   onModeChange,
   onProviderModelChange,
   onConfigOptionChange,
@@ -392,6 +402,8 @@ export function MessageInputView({
   draftKey: string
   imageUploadEnabled: boolean
   imageSupportMessage: string | null
+  slashCommands?: SlashCommandItem[]
+  usage?: ComposerUsage | null
   onModeChange: (id: string) => void
   onProviderModelChange: (providerId: ProviderId, modelId: string) => void
   onConfigOptionChange: (configId: string, value: SessionConfigValue) => void
@@ -404,7 +416,10 @@ export function MessageInputView({
   const [sending, setSending] = useState(false)
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [isDragging, setIsDragging] = useState(false)
+  const [slashDismissed, setSlashDismissed] = useState(false)
+  const [slashActiveIndex, setSlashActiveIndex] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const shellRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const draftsRef = useRef(drafts)
   const draft = drafts[draftKey] ?? { text: '', attachments: [] }
@@ -437,6 +452,33 @@ export function MessageInputView({
       })
     },
     [draftKey],
+  )
+
+  const slashQuery = useMemo(() => slashQueryFromText(text), [text])
+
+  const slashMatches = useMemo(
+    () => (slashQuery === null ? [] : matchSlashCommands(slashCommands, slashQuery)),
+    [slashCommands, slashQuery],
+  )
+
+  const slashOpen = slashQuery !== null && !slashDismissed && slashMatches.length > 0 && !disabled
+
+  useEffect(() => {
+    setSlashActiveIndex(0)
+  }, [slashQuery])
+
+  // Leaving slash context re-arms the picker for the next `/`.
+  useEffect(() => {
+    if (slashQuery === null) setSlashDismissed(false)
+  }, [slashQuery])
+
+  const acceptSlashCommand = useCallback(
+    (command: SlashCommandItem) => {
+      updateDraft((current) => ({ ...current, text: applySlashCommand(command) }))
+      setSlashDismissed(false)
+      textareaRef.current?.focus()
+    },
+    [updateDraft],
   )
 
   const planOption = modeOptions.find((m) => m.id === 'plan')
@@ -550,6 +592,33 @@ export function MessageInputView({
   }
 
   const onKeyDown = (e: KeyboardEvent) => {
+    // Must run before Enter-to-send, otherwise accepting a completion would
+    // instead submit the half-typed `/name` as a literal prompt.
+    if (slashOpen) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSlashActiveIndex((index) => (index + 1) % slashMatches.length)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSlashActiveIndex((index) => (index - 1 + slashMatches.length) % slashMatches.length)
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setSlashDismissed(true)
+        return
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        const command = slashMatches[slashActiveIndex]
+        if (command) {
+          e.preventDefault()
+          acceptSlashCommand(command)
+          return
+        }
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       void send()
@@ -584,7 +653,18 @@ export function MessageInputView({
 
   return (
     <div className="flex w-full flex-col">
+      {slashOpen && (
+        <SlashCommandPopup
+          anchorRef={shellRef}
+          commands={slashMatches}
+          activeIndex={slashActiveIndex}
+          onActiveIndexChange={setSlashActiveIndex}
+          onSelect={acceptSlashCommand}
+          onDismiss={() => setSlashDismissed(true)}
+        />
+      )}
       <div
+        ref={shellRef}
         className={cn(
           chatInputShell,
           'gap-1 p-1 transition-[border-color,box-shadow]',
@@ -713,6 +793,13 @@ export function MessageInputView({
                   disabled={!canChangeSettings}
                 />
               )
+            )}
+
+            {usage && (
+              <>
+                <div className="mx-0.5 h-3.5 w-px shrink-0 bg-[var(--basis-border-muted)]" />
+                <ContextMeter usage={usage} />
+              </>
             )}
           </div>
 

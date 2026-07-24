@@ -146,7 +146,9 @@ export const cursor: ProviderConfig = {
     canCancelPrompt: true,
     supportsPlans: true,
     supportsAvailableCommands: true,
-    supportsUsage: true,
+    // Probed 2026-07-24 (cursor-agent 2026.07.23): cursor emits no `usage_update`
+    // and its PromptResponse carries no `usage`, so there is nothing to meter.
+    supportsUsage: false,
     supportsPermissionRequests: true,
     supportsAuthentication: true,
     supportsThoughtStreaming: true,
