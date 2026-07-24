@@ -754,7 +754,7 @@ export function MessageInputView({
                 onClick={onAbort}
                 title="Stop"
                 aria-label="Stop"
-                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#141414] text-[#ef4444] ring-1 ring-inset ring-red-500/25 transition-colors hover:bg-black hover:text-[#f87171] hover:ring-red-500/40"
+                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--basis-surface-hover)] text-[var(--basis-text-muted)] transition-colors hover:bg-red-500/10 hover:text-red-400"
               >
                 <SquareIcon className="h-2.5 w-2.5" weight="fill" />
               </button>
