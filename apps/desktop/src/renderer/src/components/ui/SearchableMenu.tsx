@@ -40,7 +40,7 @@ type SearchableMenuProps = {
   trigger: (api: SearchableMenuTriggerApi) => ReactNode
   sections: SearchableMenuSection[]
   value?: string
-  onSelect: (optionId: string, sectionId: string) => void
+  onSelect: (optionId: string, sectionId: string) => void | boolean
   searchable?: boolean
   searchPlaceholder?: string
   emptyText?: string
@@ -130,8 +130,8 @@ export function SearchableMenu({
 
   const selectOption = (option: FlatOption) => {
     if (option.disabled) return
-    onSelect(option.id, option.sectionId)
-    close()
+    const shouldClose = onSelect(option.id, option.sectionId)
+    if (shouldClose !== false) close()
   }
 
   const onMenuKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {

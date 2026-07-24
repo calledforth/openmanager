@@ -8,6 +8,7 @@ import {
   TrashIcon,
   NotePencilIcon,
   GitBranchIcon,
+  CircleNotchIcon,
 } from '@phosphor-icons/react'
 import type { ProviderId } from '@agentpack/contract'
 import { cn } from '../../lib/utils'
@@ -223,6 +224,10 @@ function WorkspaceGroup({
   const visibleSessions = orderedSessions.slice(0, visibleCount)
 
   useEffect(() => {
+    if (isCollapsed) setVisibleCount(SESSION_PREVIEW_LIMIT)
+  }, [isCollapsed])
+
+  useEffect(() => {
     if (!isActiveWorkspace || !activeSessionId) return
     const activeIndex = orderedSessions.findIndex(
       ({ session }) => session.externalId === activeSessionId,
@@ -264,7 +269,7 @@ function WorkspaceGroup({
       </div>
 
       {!isCollapsed && (
-        <div className="ml-1">
+        <div className="mx-1">
           {visibleSessions.map(({ session: s, depth, isChild, isOrphan }) => {
             const isActive = isActiveWorkspace && s.externalId === activeSessionId
             const providerId = s.providerId ?? 'opencode'
@@ -274,12 +279,12 @@ function WorkspaceGroup({
                 key={s.externalId}
                 onClick={() => onSelectSession(workspace.path, s.externalId, providerId)}
                 className={cn(
-                  'group flex w-full items-center gap-2 rounded-md px-2.5 py-1 mb-[1px] text-left transition-default',
+                  'group flex w-full items-center gap-1.5 rounded px-2 py-0.5 mb-1 text-left transition-default',
                   isActive
                     ? 'bg-surface-active text-[var(--basis-text)]'
                     : 'text-[var(--basis-text)] hover:bg-surface-hover',
                 )}
-                style={{ paddingLeft: `${10 + Math.min(depth, 4) * 14}px` }}
+                style={{ paddingLeft: `${8 + Math.min(depth, 4) * 12}px` }}
               >
                 {isChild ? (
                   <GitBranchIcon
@@ -309,7 +314,10 @@ function WorkspaceGroup({
                   )}
                 >
                   {isBusy && (
-                    <span className="custom-loader shrink-0 !h-3 !w-3 !border-2 text-[var(--basis-text)] transition-opacity group-hover:opacity-0" />
+                    <CircleNotchIcon
+                      className="h-3 w-3 shrink-0 animate-spin text-[var(--basis-text-muted)] transition-opacity group-hover:opacity-0"
+                      weight="bold"
+                    />
                   )}
                   <button
                     type="button"
@@ -336,7 +344,7 @@ function WorkspaceGroup({
               }
               className={cn(
                 typographyLabel,
-                'flex w-full items-center gap-2 rounded-md px-2.5 py-1 text-left font-normal text-[var(--basis-text-muted)] transition-default hover:bg-surface-hover hover:text-[var(--basis-text)]',
+                'flex w-full items-center gap-1.5 rounded px-2 py-0.5 text-left font-normal text-[var(--basis-text-muted)] transition-default hover:bg-surface-hover hover:text-[var(--basis-text)]',
               )}
             >
               <span className="h-3 w-3 shrink-0" aria-hidden />
