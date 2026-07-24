@@ -16,6 +16,7 @@ import type * as messages from "../messages.js";
 import type * as permissions from "../permissions.js";
 import type * as plans from "../plans.js";
 import type * as questions from "../questions.js";
+import type * as sessionTitle from "../sessionTitle.js";
 import type * as sessions from "../sessions.js";
 import type * as streamChunks from "../streamChunks.js";
 import type * as workspaces from "../workspaces.js";
@@ -35,6 +36,7 @@ declare const fullApi: ApiFromModules<{
   permissions: typeof permissions;
   plans: typeof plans;
   questions: typeof questions;
+  sessionTitle: typeof sessionTitle;
   sessions: typeof sessions;
   streamChunks: typeof streamChunks;
   workspaces: typeof workspaces;

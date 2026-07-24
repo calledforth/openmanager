@@ -23,6 +23,7 @@ export class AgentHost {
   private readonly pendingExtensions = new Map<string, { method: string; params: unknown }>()
   private readonly pendingQuestions = new Map<string, QuestionRequest>()
   private readonly pendingPlans = new Map<string, PlanDocument>()
+  private readonly titleRefreshes = new Map<string, Promise<void>>()
 
   constructor(
     readonly projector: ConvexProjector,
@@ -44,6 +45,7 @@ export class AgentHost {
     this.setStatus(providerId, 'starting')
     try {
       await this.runtime.start({ providerId, threadId, workspaceId: cwd, cwd })
+      await this.refreshSessionTitles(providerId, cwd)
       this.setStatus(providerId, 'healthy')
       return { ready: true }
     } catch (error) {
@@ -186,6 +188,9 @@ export class AgentHost {
       this.pendingPlans.delete(event.data.requestId)
     }
     this.projector.consume(event)
+    if (event.event === 'prompt_completed' && event.workspaceId) {
+      void this.refreshSessionTitles(event.providerId, event.workspaceId)
+    }
     const window = this.getMainWindow()
     if (window?.isDestroyed() !== false) return
     window.webContents.send('acp:event', event)
@@ -213,6 +218,39 @@ export class AgentHost {
     if (window?.isDestroyed() === false) {
       window.webContents.send('agent:status-changed', { providerId, status })
     }
+  }
+
+  private refreshSessionTitles(providerId: ProviderId, workspacePath: string): Promise<void> {
+    if (!this.runtime.getProvider(providerId).capabilities.canListSessions) {
+      return Promise.resolve()
+    }
+    const key = `${providerId}\u0000${workspacePath}`
+    const active = this.titleRefreshes.get(key)
+    if (active) return active
+
+    const refresh = this.runtime
+      .listSessions({
+        providerId,
+        threadId: `session-metadata:${providerId}`,
+        workspaceId: workspacePath,
+        cwd: workspacePath,
+      })
+      .then((sessions) =>
+        this.projector.syncProviderSessionTitles(workspacePath, providerId, sessions),
+      )
+      .catch((error) => {
+        this.log({
+          scope: 'agent-runtime',
+          level: 'warn',
+          message: 'Could not refresh provider session titles',
+          data: { providerId, workspacePath, error: (error as Error).message },
+        })
+      })
+      .finally(() => {
+        if (this.titleRefreshes.get(key) === refresh) this.titleRefreshes.delete(key)
+      })
+    this.titleRefreshes.set(key, refresh)
+    return refresh
   }
 
   private log(entry: HostLogEntry): void {

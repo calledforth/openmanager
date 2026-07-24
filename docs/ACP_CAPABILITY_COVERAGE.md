@@ -22,7 +22,7 @@ Convex policy for this phase:
 | Auth required | RPC error / auth-required path | PARTIAL | Runtime emits `acp:event` + error status; retry UX basic | None |
 | New session | `session/new` | DONE | Job create-session path works, session created and upserted | None |
 | Load session | `session/load` | TODO | Not wired from app actions yet | Optional schema if persisting ACP metadata |
-| List sessions | `session/list` (or unstable equivalent) | TODO | Not wired from app actions yet | None required |
+| List sessions | `session/list` | DONE | Runtime paginates provider sessions; desktop syncs Cursor titles for existing OpenManager sessions after connect and prompt completion | Optional `sessions.titleSource` records title precedence |
 | Fork session | `session/fork` | TODO | Not wired | None required |
 | Resume session | `session/resume` | TODO | Not wired | None required |
 | Cancel | `session/cancel` | DONE | Abort job maps to ACP cancel | None |
@@ -128,4 +128,3 @@ OpenManager is “full ACP-capability ready” when:
 - Session capabilities used by OpenCode (load/list/fork/resume/set-model/set-mode) are callable from UI.
 - Permission and tool lifecycle remain parity-safe with existing Convex mutation semantics.
 - Unknown ACP updates are observable and non-breaking by design.
-

@@ -42,6 +42,62 @@ function setup() {
 }
 
 describe('ConvexProjector streaming contracts', () => {
+  it('syncs only titled provider sessions through the metadata mutation', async () => {
+    const { projector, mutations } = setup()
+
+    await projector.syncProviderSessionTitles('C:/workspace', 'cursor', [
+      {
+        sessionId: 'session-1',
+        cwd: 'C:/workspace',
+        title: ' Cursor title ',
+        updatedAt: '2026-07-19T14:32:22.082Z',
+      },
+      { sessionId: 'session-2', cwd: 'C:/workspace' },
+      { sessionId: 'session-3', cwd: 'C:/workspace', title: '  ' },
+    ])
+
+    expect(mutations).toContainEqual({
+      workspacePath: 'C:/workspace',
+      providerId: 'cursor',
+      sessions: [{ externalId: 'session-1', title: 'Cursor title' }],
+    })
+  })
+
+  it('marks first-prompt titles as fallbacks and provider titles as authoritative', async () => {
+    const { projector, mutations } = setup()
+    projector.consume(
+      event(1, {
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'First prompt', userMessageId: 'user-1' },
+      }),
+    )
+    projector.consume(
+      event(2, {
+        providerId: 'cursor',
+        category: 'session',
+        event: 'session_info_update',
+        data: { title: 'Provider title', updatedAt: null },
+      }),
+    )
+    await projector.waitForThread(base.threadId)
+
+    expect(mutations).toContainEqual(
+      expect.objectContaining({
+        externalId: 'session-1',
+        title: 'First prompt',
+        source: 'fallback',
+      }),
+    )
+    expect(mutations).toContainEqual(
+      expect.objectContaining({
+        externalId: 'session-1',
+        title: 'Provider title',
+        source: 'provider',
+      }),
+    )
+  })
+
   it('persists the provider with a session so it survives an app restart', async () => {
     const { projector, mutations } = setup()
     projector.consume(

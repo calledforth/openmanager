@@ -322,6 +322,7 @@ export class JobWorker {
             status: 'idle',
             providerId,
             title: parsed.title,
+            ...(parsed.title ? { titleSource: 'fallback' } : {}),
             clientId: this.clientId,
           })
           break
@@ -368,6 +369,7 @@ export class JobWorker {
             status: 'idle',
             providerId,
             title: parsed.title,
+            ...(parsed.title ? { titleSource: 'fallback' } : {}),
             clientId: this.clientId,
           })
           await this.agentHost.runtime.prompt({

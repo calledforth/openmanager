@@ -4,6 +4,7 @@ import type {
   PlanReviewOutcome,
   PromptInput,
   ProviderId,
+  ProviderSessionInfo,
   QuestionOutcome,
 } from '@agentpack/contract'
 
@@ -24,6 +25,7 @@ export type SessionResult = {
 export interface Backend {
   readonly providerId: ProviderId
   start(args: BackendRoute & { cwd: string }): Promise<void>
+  listSessions(args: BackendRoute & { cwd: string }): Promise<ProviderSessionInfo[]>
   ensureSession(args: BackendSessionArgs): Promise<SessionResult>
   prompt(
     args: BackendRoute & {

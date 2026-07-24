@@ -10,6 +10,7 @@ type BackendInternals = {
   process: { exitCode: null }
   initialized: boolean
   authenticated: boolean
+  sessionListAdvertised: boolean
   handshake(route: { threadId: string; workspaceId?: string }): Promise<void>
   elicitationRequest(
     params: import('@agentclientprotocol/sdk').CreateElicitationRequest,
@@ -463,6 +464,87 @@ describe('AcpBackend plan snapshots (cursor/update_todos)', () => {
 describe('AcpBackend session compatibility', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+  })
+
+  it('negotiates Cursor session listing from initialize capabilities', async () => {
+    const result = setup(
+      {
+        initialize: async () => ({
+          protocolVersion: 1,
+          agentCapabilities: {
+            sessionCapabilities: { list: {} },
+          },
+          authMethods: [],
+        }),
+      },
+      cursor,
+    )
+    result.internals.initialized = false
+    result.internals.authenticated = false
+
+    await result.internals.handshake(route)
+
+    expect(result.internals.sessionListAdvertised).toBe(true)
+    expect(result.events.find((event) => event.event === 'initialized')).toMatchObject({
+      data: {
+        capabilities: {
+          canListSessions: true,
+        },
+      },
+    })
+  })
+
+  it('lists, normalizes, deduplicates, and paginates Cursor sessions', async () => {
+    const listSessions = vi
+      .fn()
+      .mockResolvedValueOnce({
+        sessions: [
+          {
+            sessionId: ' session-1 ',
+            cwd: ' C:/workspace ',
+            title: ' Provider title ',
+            updatedAt: ' 2026-07-19T14:32:22.082Z ',
+          },
+          { sessionId: '', cwd: 'C:/workspace', title: 'Invalid' },
+        ],
+        nextCursor: 'page-2',
+      })
+      .mockResolvedValueOnce({
+        sessions: [
+          { sessionId: 'session-1', cwd: 'C:/workspace', title: 'Duplicate' },
+          { sessionId: 'session-2', cwd: 'C:/workspace', title: '  ' },
+        ],
+      })
+    const result = setup({ listSessions }, cursor)
+    result.internals.sessionListAdvertised = true
+
+    await expect(result.backend.listSessions(route)).resolves.toEqual([
+      {
+        sessionId: 'session-1',
+        cwd: 'C:/workspace',
+        title: 'Provider title',
+        updatedAt: '2026-07-19T14:32:22.082Z',
+      },
+      {
+        sessionId: 'session-2',
+        cwd: 'C:/workspace',
+      },
+    ])
+    expect(listSessions).toHaveBeenNthCalledWith(1, { cwd: 'C:/workspace' })
+    expect(listSessions).toHaveBeenNthCalledWith(2, {
+      cwd: 'C:/workspace',
+      cursor: 'page-2',
+    })
+  })
+
+  it('does not call session/list when the agent did not advertise it', async () => {
+    const listSessions = vi.fn()
+    const result = setup({ listSessions }, cursor)
+
+    await expect(result.backend.listSessions(route)).rejects.toThrow(
+      'cursor does not advertise ACP session/list support',
+    )
+    expect(listSessions).not.toHaveBeenCalled()
   })
 
   it('routes replayed updates while session/load is in flight', async () => {

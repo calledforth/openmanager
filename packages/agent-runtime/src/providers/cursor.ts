@@ -142,6 +142,7 @@ export const cursor: ProviderConfig = {
     canSetConfigOption: true,
     canDeleteSession: false,
     canLoadSession: true,
+    canListSessions: true,
     canCancelPrompt: true,
     supportsPlans: true,
     supportsAvailableCommands: true,
