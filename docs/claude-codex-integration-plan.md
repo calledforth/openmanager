@@ -44,6 +44,7 @@ What a new provider plugs into:
 | 1 | `AgentRuntime` constructs `new AcpBackend(config, host)` for **every** registered provider | `packages/agent-runtime/src/core/AgentRuntime.ts:36` |
 | 2 | `ProviderConfig` is ACP-only (spawn command, ACP auth hints, ACP extensions) | `packages/agent-runtime/src/providers/index.ts:6-14` |
 | 3 | `PROVIDER_IDS = ['opencode', 'cursor']` is a closed compile-time union used everywhere | `packages/agent-contract/src/providers.ts:3` |
+| 4 | `agent_thought_chunk` assumes reasoning is a text stream. Claude Code emits **no** thinking text and Codex emits one-line summaries — neither fits. Reasoning part needs a shape change | §3a, open question 6 |
 
 Secondary friction (all verified):
 
@@ -102,7 +103,7 @@ Live query controls used: `interrupt()`, `setModel()`, `setPermissionMode()`,
 | SDK message | t3code handling |
 |---|---|
 | `stream_event` → `content_block_delta.text_delta` | assistant text delta |
-| `stream_event` → `content_block_delta.thinking_delta` | reasoning delta |
+| `stream_event` → `content_block_delta.thinking_delta` | reasoning delta — **text is always empty, see §3a** |
 | `stream_event` → `content_block_start` (`tool_use`/`server_tool_use`/`mcp_tool_use`) | tool item started |
 | `stream_event` → `content_block_delta.input_json_delta` | accumulate partial JSON → tool input update; `TodoWrite` input also → plan update |
 | `user` message `tool_result` blocks | tool completed/failed (matched by `tool_use_id`) |
@@ -182,7 +183,7 @@ implements exactly three (`CodexSessionRuntime.ts:952/1008/1066`); everything el
 | `thread/started` | capture/refresh durable Codex thread id |
 | `turn/started` / `turn/completed` | turn lifecycle (+usage flush) |
 | `item/agentMessage/delta` | assistant text delta |
-| `item/reasoning/textDelta`, `item/reasoning/summaryTextDelta` | reasoning deltas |
+| `item/reasoning/textDelta`, `item/reasoning/summaryTextDelta` | reasoning deltas — **`textDelta` never fires; summaries are opt-in, see §3a** |
 | `item/started` / `item/completed` | tool/item lifecycle — item union covers command execution, file change, MCP call, web search, plan, reasoning, sub-agent, review, compaction |
 | `item/commandExecution/outputDelta` | live command output |
 | `turn/plan/updated` | structured plan `{step, status: pending\|inProgress\|completed}` |
@@ -211,6 +212,92 @@ protocol (two known benign `state db` errors suppressed); `turn/start` response 
 early — completion is notification-driven; generated `V2TurnStartParams` omits
 `collaborationMode` (t3code patches the schema locally); pending approvals settled as
 `cancel` on session close so the JSON-RPC handler never hangs.
+
+---
+
+## 3a. Reasoning/thinking across providers (live-probed 2026-07-25)
+
+**This section overrides any "thought streaming works like Cursor's" assumption elsewhere in
+this doc.** All three providers were probed live against this repo on 2026-07-25
+(cursor-agent `2026.07.23-e383d2b`, `claude` 2.1.220, `codex-cli` 0.144.6). Reasoning text
+availability differs radically, and two of the three give you *no usable body text*:
+
+| Provider / model | Reasoning on the wire |
+|---|---|
+| Cursor ACP + `composer-2.5` | ✅ full paragraphs — but it is **narration**, not CoT |
+| Cursor ACP + `claude-opus-5`, `gpt-5.6-sol` | ❌ nothing (Cursor's bridge drops it) |
+| **Claude Code** — opus-5 **and** sonnet | ❌ blocks arrive, **text always empty** |
+| **Codex** app-server — gpt-5.6-sol | ⚠️ short headline **summaries only**, opt-in |
+
+### Claude Code — indicator only, no text
+
+`thinking` content blocks and `thinking_delta`s do arrive, but the text is empty every time:
+
+```json
+{"type":"thinking_delta","thinking":"","estimated_tokens":50}
+{"content_block":{"type":"thinking","thinking":"","signature":""}}
+```
+
+The `assistant` snapshot confirms it: `thinking.length === 0`, `signature.length` 1268–1380
+(the encrypted blob for API round-tripping). Verified identical on `claude-opus-5` and
+`claude-sonnet-5` — this is not model-specific and no flag exposes plaintext.
+
+What *is* usable: block start/stop boundaries (real durations — 2833 ms and 2881 ms observed)
+and `delta.estimated_tokens` (monotonic, 50 → 100). So the only renderable Claude thinking UI
+is a live indicator: `Thinking… (~N tokens, Xs)`.
+
+**Implementation:** do NOT map `thinking_delta` to `agent_thought_chunk` with empty content —
+that produces blank thinking rows in the desktop renderer (`foldEvents` drops
+whitespace-only buffers, so it would silently render nothing while the model thinks for
+seconds). Emit a reasoning part carrying `tokens` + timing instead (see contract note below).
+
+### Codex — summaries, and they are off by default
+
+Default config produced `reasoning` items with `summary: []` **and** `content: []` — entirely
+empty. Spawn the app-server with `-c model_reasoning_summary="detailed"` to get:
+
+```
+item/reasoning/summaryPartAdded → item/reasoning/summaryTextDelta → item/completed
+  summary: ["**Narrowing search to package files**"]
+```
+
+Two hard limits:
+
+- `item.content` (raw CoT) stayed `[]` **even with `show_raw_agent_reasoning=true`**. OpenAI
+  does not return raw chain-of-thought over this protocol. Summaries are the ceiling.
+- Each summary is a **single bolded headline**, 35–58 chars, delivered as one instant delta —
+  not a paragraph. Observed: `"**Investigating shell access limitations**"`,
+  `"**Implementing recursive file walk ignoring node_modules**"`.
+
+`item/reasoning/textDelta` never fired in any probe. Treat it as dead surface; handle it
+defensively but do not design around it.
+
+### Contract implication (decide in Phase 0, affects both backends)
+
+`agent_thought_chunk` currently assumes "a stream of text that concatenates into a paragraph".
+That models exactly one of the four cases above. The reasoning part should instead carry:
+
+```ts
+{ kind: 'reasoning', text?: string, tokens?: number, startedAt: string, endedAt?: string }
+```
+
+…and the renderer branches on shape, not provider: headline-styled when `text` is a single
+short line (Codex), collapsible body when `text` is multi-sentence (Cursor/composer), and
+indicator-only when `text` is absent but `tokens`/timing exist (Claude). A component that
+assumes `text` exists renders visibly broken rows for Claude Code.
+
+Note also the burst-vs-streamed heuristic documented for Cursor (interstitial narration
+arrives 4–22 chunks in 2–8 ms; real generation streams over seconds) **does not generalize** —
+Codex summaries also arrive as one instant chunk. Provider must factor in alongside timing.
+
+### Probe gotchas worth inheriting
+
+- Codex `turn/start`'s `sandboxPolicy` is an internally-tagged enum, not a string; simplest
+  is to omit it and inherit the thread's `sandbox` from `thread/start`.
+- `codex-windows-sandbox-setup.exe` is missing on this machine, so Codex shell tools fall
+  back to MCP tool calls. Unrelated to reasoning, but it will surface during manual testing.
+- Cursor's `session/set_config_option` takes **`configId`**, not the ACP spec's
+  `configOptionId` (relevant if the probe scripts are reused).
 
 ---
 
@@ -265,7 +352,9 @@ session = one streaming-input `query()` (t3code pattern):
 |---|---|
 | query start | `process_spawned` (first session), `initialized` (static caps + `supportedModels()` if available) |
 | `content_block_delta.text_delta` | `agent_message_chunk` `{content:{type:'text',text}}` |
-| `content_block_delta.thinking_delta` | `agent_thought_chunk` |
+| `content_block_start` type `thinking` | reasoning part **started** (`startedAt`) — see §3a |
+| `content_block_delta.thinking_delta` | reasoning **progress** `{tokens: delta.estimated_tokens}` — `delta.thinking` is **always `''`**; never emit it as thought text |
+| `content_block_stop` after a thinking block | reasoning part **ended** (`endedAt`); `signature` is the encrypted blob — persist only if we later round-trip it, never render |
 | `content_block_start` tool_use | `tool_call` `{toolCallId: block.id, title, kind: classified, status:'pending', rawInput}` |
 | `input_json_delta` (accumulated, parseable) | `tool_call_update` `{rawInput}`; `TodoWrite` input additionally → `plan_update` |
 | `user` msg `tool_result` | `tool_call_update` `{status: completed\|failed, rawOutput, content}` — Edit/Write/MultiEdit inputs mapped to `{type:'diff', path, oldText, newText}` content so the desktop diff renderer works |
@@ -297,7 +386,8 @@ Bash → `execute`, Edit/Write/MultiEdit/NotebookEdit → `edit`, WebFetch/WebSe
 **Capabilities**: `canSetModel ✓, canSetMode ✓, canSetConfigOption ✗, canDeleteSession ✗,
 canLoadSession ✓, canCancelPrompt ✓, supportsPlans ✓ (TodoWrite), supportsAvailableCommands ✗ (v1),
 supportsUsage ✓, supportsPermissionRequests ✓, supportsAuthentication ✗ (CLI-owned; we emit
-auth_required with instructions), supportsThoughtStreaming ✓, supportsSubtasks ✗ (v1),
+auth_required with instructions), supportsThoughtStreaming ⚠️ **indicator only — no text, §3a**,
+supportsSubtasks ✗ (v1),
 supportsExtensions ✗`.
 
 ### Phase 2 — `CodexAppServerBackend` (codex app-server)
@@ -313,6 +403,10 @@ adopt their generator later if drift becomes a problem.
 over it (protocol supports this; t3code's per-thread processes exist only for multi-account
 CODEX_HOME isolation we don't need). Binary: `codex` with `CODEX_APP_SERVER_BIN` override;
 Windows `.cmd` handling via the existing `shell: win32` spawn pattern AcpBackend uses.
+
+**Required spawn args**: `codex -c model_reasoning_summary="detailed" app-server`. Without
+that flag every `reasoning` item arrives with `summary: []` and no reasoning is visible at all
+(§3a). `-c` flags must precede the `app-server` subcommand.
 
 **Lifecycle mapping**:
 
@@ -335,7 +429,10 @@ Windows `.cmd` handling via the existing `shell: win32` spawn pattern AcpBackend
 | Codex notification | AgentEvent |
 |---|---|
 | `item/agentMessage/delta` | `agent_message_chunk` |
-| `item/reasoning/textDelta`, `.../summaryTextDelta` | `agent_thought_chunk` |
+| `item/started` (reasoning) | reasoning part started |
+| `item/reasoning/summaryTextDelta` | reasoning `text` (one short bold headline per part) — **requires spawning with `-c model_reasoning_summary="detailed"`, otherwise every summary is empty**; see §3a |
+| `item/reasoning/textDelta` | never observed firing; handle defensively, do not design around |
+| `item/completed` (reasoning) | reasoning part ended; `item.summary[]` is the authoritative text, `item.content` is **always `[]`** |
 | `item/started` (commandExecution) | `tool_call` `{kind:'execute', title: command, rawInput}` |
 | `item/commandExecution/outputDelta` | `tool_call_update` (append rawOutput) or `tool_call_content` |
 | `item/started` (fileChange) | `tool_call` `{kind:'edit'}` + `{type:'diff'}` content from the change set |
@@ -365,7 +462,8 @@ workspace-write), `full-access` (never / danger-full-access) — re-sent on ever
 **Capabilities**: `canSetModel ✓ (per-turn param), canSetMode ✓, canSetConfigOption ✗,
 canDeleteSession ✗, canLoadSession ✓, canCancelPrompt ✓, supportsPlans ✓,
 supportsAvailableCommands ✗, supportsUsage ✓, supportsPermissionRequests ✓,
-supportsAuthentication ✗ (external `codex login`), supportsThoughtStreaming ✓,
+supportsAuthentication ✗ (external `codex login`),
+supportsThoughtStreaming ⚠️ **headline summaries only, opt-in via spawn flag — §3a**,
 supportsSubtasks ✗ (v1), supportsExtensions ✗`.
 
 ### File-by-file change list
@@ -427,6 +525,14 @@ fallback defaults; branded provider icons (no icon system exists today — text 
    `claude` (user's login/settings already there). Proposal: system `claude` first with
    bundled CLI as fallback — matches how users already authenticate.
 5. **Phasing/PRs**: one PR per phase (0/1/2) as laid out, or land 0+1 together?
+6. **Reasoning part shape (§3a)** — blocks both phases, decide in Phase 0. Claude gives no
+   thinking text (indicator + token count only), Codex gives one short headline per step,
+   Cursor/composer gives paragraphs. Proposal: widen the reasoning part to
+   `{ text?, tokens?, startedAt, endedAt? }` and branch the renderer on shape. Alternative:
+   keep `agent_thought_chunk` as-is and synthesize placeholder text for Claude
+   (e.g. `"Thinking…"`) — cheaper, but bakes a fake string into persisted history.
+7. **Claude thinking indicator UX**: what do we show during a 3-second textless thinking
+   block — shimmer + `~N tokens`, elapsed timer, or nothing until the next tool call?
 
 ## 7. Risks & testing
 
@@ -455,6 +561,17 @@ Every quoted line number was independently checked in this session:
 openmanager — `Backend.ts` (full read), `providers.ts:3`, `AgentRuntime.ts:36`,
 `cursor.ts`/`index.ts` provider configs, `events.ts`/`parts.ts`/`permissions.ts`/`capabilities.ts`
 (full reads), `apps/desktop/src/main/index.ts:221,337`, `job-worker.ts:273,342`.
+**§3a reasoning findings (added 2026-07-25)** are from live probes, not source reading:
+`claude -p --output-format stream-json --include-partial-messages` on `claude-opus-5` and
+`claude-sonnet-5`; `codex app-server` with and without
+`-c model_reasoning_summary="detailed" -c show_raw_agent_reasoning=true`; and four
+`cursor-agent acp` sessions (`claude-opus-5`, `gpt-5.6-sol`, `composer-2.5` ×2). Cursor's
+`textDelta`→`agent_message_chunk` / `thinkingDelta`→`agent_thought_chunk` mapping was
+additionally confirmed by decompiling `351.index.js` in cursor-agent `2026.07.23-e383d2b`.
+Re-run the probes before implementing if the CLIs have been upgraded — all three surfaces
+are version-sensitive and two are explicitly experimental. The scripts are checked in at
+[`docs/probes/`](./probes/README.md).
+
 t3code — `ClaudeAdapter.ts:233,3133,3432,3446-3463`, `CodexSessionRuntime.ts:80,265,952,1008,1066`,
 `generate.ts:20`, `apps/server/package.json` (SDK version). The three underlying research
 reports contain deeper per-file walkthroughs; ask if you want them saved alongside this doc.
