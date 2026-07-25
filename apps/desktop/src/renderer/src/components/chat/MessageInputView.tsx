@@ -50,6 +50,11 @@ import {
   type SlashCommandItem,
 } from './slashCommands'
 
+/** Matches the `prefers-reduced-motion` guard globals.css applies to chat animations. */
+function prefersReducedMotion() {
+  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+}
+
 export type ProviderModelGroup = {
   providerId: ProviderId
   providerName: string
@@ -419,6 +424,7 @@ export function MessageInputView({
   const [slashDismissed, setSlashDismissed] = useState(false)
   const [slashActiveIndex, setSlashActiveIndex] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const lastHeightRef = useRef<number | null>(null)
   const shellRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const draftsRef = useRef(drafts)
@@ -488,10 +494,24 @@ export function MessageInputView({
   const buildModeId = nonPlanModes[0]?.id ?? ''
 
   useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto'
-      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, COMPOSER_TEXTAREA_MAX_PX)}px`
+    const el = textareaRef.current
+    if (!el) return
+    const previous = lastHeightRef.current
+    // Measuring needs `auto`, which is not animatable — so the transition is
+    // always off while measuring and re-armed only for the case worth easing.
+    el.style.transition = 'none'
+    el.style.height = 'auto'
+    const next = Math.min(el.scrollHeight, COMPOSER_TEXTAREA_MAX_PX)
+    // Growing must land instantly: a box lagging behind the caret while you
+    // type reads worse than a hard jump. Only the collapse back to one line —
+    // what a send does — gets eased, and only there do we pay for the reflow.
+    if (previous !== null && next < previous && !prefersReducedMotion()) {
+      el.style.height = `${previous}px`
+      void el.offsetHeight
+      el.style.transition = 'height 120ms ease-out'
     }
+    el.style.height = `${next}px`
+    lastHeightRef.current = next
   }, [text])
 
   useEffect(() => {
@@ -576,15 +596,35 @@ export function MessageInputView({
     }
     setSending(true)
     setAttachmentError(null)
+    // Clear before awaiting, not after. The transcript pushes its optimistic
+    // bubble synchronously, so holding the text here until the round trip
+    // settles leaves the same message on screen twice — worst on a fresh
+    // session, where the send waits on a provider handshake before the job is
+    // even submitted. Restored verbatim if the send fails, so nothing is lost.
+    const restore = draft
+    setDrafts((current) => {
+      const next = { ...current }
+      delete next[draftKey]
+      return next
+    })
     try {
       await onSend(trimmed, attachments)
-      setDrafts((current) => {
-        const next = { ...current }
-        delete next[draftKey]
-        return next
-      })
-      if (textareaRef.current) textareaRef.current.style.height = 'auto'
     } catch (error) {
+      setDrafts((current) => {
+        // The composer stays live during an in-flight send, so anything typed
+        // since must survive the rollback: the failed text goes back in front
+        // of it rather than over it. Normally the box is still empty and this
+        // restores the message verbatim.
+        const active = current[draftKey]
+        if (!active) return { ...current, [draftKey]: restore }
+        return {
+          ...current,
+          [draftKey]: {
+            text: active.text ? `${restore.text}\n${active.text}` : restore.text,
+            attachments: [...restore.attachments, ...active.attachments],
+          },
+        }
+      })
       setAttachmentError(error instanceof Error ? error.message : 'Failed to send message')
     } finally {
       setSending(false)
