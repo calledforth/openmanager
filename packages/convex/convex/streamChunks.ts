@@ -25,6 +25,7 @@ export const appendChunk = mutation({
     chunkIndex: v.number(),
     chunkText: v.string(),
     partUpdate: v.optional(v.any()),
+    seq: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     const message = await getMessageByExternalId(ctx, args.messageExternalId)
@@ -38,6 +39,7 @@ export const appendChunk = mutation({
       chunkIndex: args.chunkIndex,
       chunkText: args.chunkText,
       partUpdate: args.partUpdate,
+      ...(args.seq !== undefined ? { seq: args.seq } : {}),
       createdAt: Date.now(),
     })
   },
@@ -73,6 +75,7 @@ export const getChunksSince = query({
       chunkIndex: chunk.chunkIndex,
       chunkText: chunk.chunkText,
       partUpdate: chunk.partUpdate,
+      seq: chunk.seq,
     }))
   },
 })

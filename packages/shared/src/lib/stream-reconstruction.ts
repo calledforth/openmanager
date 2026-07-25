@@ -14,6 +14,8 @@ export interface StreamChunk {
   chunkIndex: number
   chunkText: string
   partUpdate?: unknown
+  /** Highest AgentEvent seq fully reflected by this chunk. */
+  seq?: number
 }
 
 export interface StreamReconstructionState {
@@ -103,5 +105,32 @@ export function applyChunkBatch(
     content: state.content + appended,
     parts,
     lastChunkIndex: maxIndex,
+  }
+}
+
+export interface StreamSnapshot {
+  content: string
+  parts: StreamMessagePart[] | undefined
+  /** Highest AgentEvent seq this snapshot fully covers, when the projector
+   * recorded it. A client replaying a live event tail on top of the snapshot
+   * drops everything at or below it. Undefined for chunks written before the
+   * projector started stamping sequences. */
+  throughSeq?: number
+}
+
+// Rebuild a whole message from its persisted chunks — the reconnect path, when
+// a client attaches to a turn whose earlier events it never saw.
+export function reconstructSnapshot(chunks: StreamChunk[]): StreamSnapshot {
+  const initial = createStreamReconstructionState()
+  const state = applyChunkBatch(initial, chunks, null) ?? initial
+  let throughSeq: number | undefined
+  for (const chunk of chunks) {
+    if (typeof chunk.seq !== 'number') continue
+    throughSeq = throughSeq === undefined ? chunk.seq : Math.max(throughSeq, chunk.seq)
+  }
+  return {
+    content: state.content,
+    parts: state.parts,
+    ...(throughSeq !== undefined ? { throughSeq } : {}),
   }
 }

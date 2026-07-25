@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   applyChunkBatch,
   createStreamReconstructionState,
+  reconstructSnapshot,
   reduceLatestChunk,
   type StreamChunk,
 } from './stream-reconstruction'
@@ -144,5 +145,36 @@ describe('applyChunkBatch (gap fill / late join)', () => {
       null,
     )
     expect(next?.parts?.map((p) => p.id)).toEqual(['p1', 'p2'])
+  })
+})
+
+describe('reconstructSnapshot', () => {
+  it('rebuilds content and parts from an unordered chunk set', () => {
+    const snapshot = reconstructSnapshot([
+      { chunkIndex: 1, chunkText: 'world', partUpdate: textPart('p2', 'world'), seq: 7 },
+      { chunkIndex: 0, chunkText: 'hello ', partUpdate: textPart('p1', 'hello '), seq: 4 },
+    ])
+    expect(snapshot.content).toBe('hello world')
+    expect(snapshot.parts?.map((part) => part.id)).toEqual(['p1', 'p2'])
+    expect(snapshot.throughSeq).toBe(7)
+  })
+
+  it('reports the highest sequence any chunk recorded', () => {
+    const snapshot = reconstructSnapshot([
+      { chunkIndex: 0, chunkText: 'a', seq: 9 },
+      { chunkIndex: 1, chunkText: 'b' },
+      { chunkIndex: 2, chunkText: 'c', seq: 3 },
+    ])
+    expect(snapshot.throughSeq).toBe(9)
+  })
+
+  it('leaves throughSeq unset when no chunk recorded one', () => {
+    const snapshot = reconstructSnapshot([{ chunkIndex: 0, chunkText: 'a' }])
+    expect(snapshot.throughSeq).toBeUndefined()
+    expect(snapshot.content).toBe('a')
+  })
+
+  it('returns an empty snapshot for no chunks', () => {
+    expect(reconstructSnapshot([])).toEqual({ content: '', parts: undefined })
   })
 })
