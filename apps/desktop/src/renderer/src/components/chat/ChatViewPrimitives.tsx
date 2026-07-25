@@ -156,27 +156,22 @@ export function UserMessage({
       <div className={cn(chatInputShell, 'max-w-none')}>
         <div className={chatUserInner}>
           {images.length > 0 && (
-            <div
-              className={cn(
-                'mb-2 grid gap-1.5',
-                images.length === 1 ? 'grid-cols-1' : 'grid-cols-2',
-              )}
-            >
+            <div className="mb-2 flex flex-wrap gap-1.5">
               {images.map((image) => (
                 <button
                   type="button"
                   key={image.id}
                   onClick={() => setPreviewImage(image)}
-                  className="group relative block overflow-hidden rounded-[calc(var(--basis-chat-shell-radius)-4px)] border border-[var(--basis-border-muted)] bg-[var(--basis-surface)]"
+                  className="group relative h-14 w-14 shrink-0 overflow-hidden rounded-md border border-[var(--basis-border-muted)] bg-[var(--basis-surface)]"
                   aria-label={`Preview ${image.name}`}
                 >
                   <img
                     src={image.url}
                     alt={image.name}
-                    className="max-h-64 w-full object-contain transition-transform duration-200 group-hover:scale-[1.01]"
+                    className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.03]"
                   />
-                  <span className="pointer-events-none absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-md border border-white/15 bg-black/55 text-white/75 opacity-0 shadow-sm backdrop-blur-sm transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
-                    <ArrowsOutIcon className="h-3 w-3" />
+                  <span className="pointer-events-none absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded border border-white/15 bg-black/55 text-white/75 opacity-0 shadow-sm backdrop-blur-sm transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+                    <ArrowsOutIcon className="h-2.5 w-2.5" />
                   </span>
                 </button>
               ))}

@@ -84,7 +84,7 @@ function extractCommand(input: unknown): string {
   return cmd.length > 120 ? cmd.slice(0, 117) + '...' : cmd
 }
 
-function countDiffStats(output: string): { added: number; removed: number } {
+export function countDiffStats(output: string): { added: number; removed: number } {
   let added = 0
   let removed = 0
   for (const line of output.split('\n')) {

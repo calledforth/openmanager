@@ -103,6 +103,8 @@ function Demo({ collapsed }: { collapsed: boolean }) {
             onSelectSession={(_, id) => setActiveSessionId(id)}
             onDeleteSession={() => undefined}
             onAddWorkspace={() => undefined}
+            convexOpen={false}
+            onToggleConvex={() => undefined}
           />
         </div>
       </AppUiProvider>

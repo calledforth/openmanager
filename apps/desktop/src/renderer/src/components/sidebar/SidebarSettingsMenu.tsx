@@ -28,7 +28,13 @@ type UpdateCheckState =
   | { status: 'unsupported'; message: string }
   | { status: 'error'; message: string }
 
-export function SidebarSettingsMenu() {
+export function SidebarSettingsMenu({
+  convexOpen,
+  onToggleConvex,
+}: {
+  convexOpen: boolean
+  onToggleConvex: () => void
+}) {
   const [convexSettingsOpen, setConvexSettingsOpen] = useState(false)
   const [updateCheckState, setUpdateCheckState] = useState<UpdateCheckState>({
     status: 'idle',
@@ -112,8 +118,19 @@ export function SidebarSettingsMenu() {
           },
         ],
       },
+      {
+        id: 'developer',
+        label: 'Developer',
+        options: [
+          {
+            id: 'toggle-convex-trace',
+            label: convexOpen ? 'Hide Convex trace' : 'Show Convex trace',
+            icon: <HexagonIcon className="h-3 w-3 text-[var(--basis-text-muted)]" />,
+          },
+        ],
+      },
     ],
-    [theme],
+    [convexOpen, theme],
   )
 
   const updateCheckDetail =
@@ -160,6 +177,10 @@ export function SidebarSettingsMenu() {
           }
           if (optionId === 'toggle-theme') {
             toggleTheme()
+            return false
+          }
+          if (optionId === 'toggle-convex-trace') {
+            onToggleConvex()
             return false
           }
         }}

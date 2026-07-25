@@ -41,13 +41,16 @@ function AppShell() {
 
   return (
     <div className="flex h-screen w-screen min-w-0 overflow-hidden bg-[var(--basis-canvas-bg)] text-[var(--basis-text)]">
-      <WorkspaceSidebar collapsed={sidebarCollapsed} onCollapse={() => setSidebarCollapsed(true)} />
+      <WorkspaceSidebar
+        collapsed={sidebarCollapsed}
+        onCollapse={() => setSidebarCollapsed(true)}
+        convexOpen={convexOpen}
+        onToggleConvex={() => setConvexOpen((v) => !v)}
+      />
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--basis-canvas-bg)]">
         <AppChrome
           sidebarCollapsed={sidebarCollapsed}
           onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
-          convexOpen={convexOpen}
-          onToggleConvex={() => setConvexOpen((v) => !v)}
         />
         <ChatView />
         {parentExternalId ? (

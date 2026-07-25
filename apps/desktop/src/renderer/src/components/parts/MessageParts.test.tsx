@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { MessageParts } from './MessageParts'
 
 describe('MessageParts', () => {
-  it('keeps reasoning visible in collapsed steps when final text exists', () => {
+  it('keeps reasoning and the final answer visible side by side', () => {
     const html = renderToStaticMarkup(
       <MessageParts
         parts={[
@@ -23,7 +23,62 @@ describe('MessageParts', () => {
       />,
     )
 
-    expect(html).toContain('1 step')
+    expect(html).toContain('Thought')
+    expect(html).toContain('done')
+  })
+
+  it('leaves the summary rows visible once the turn ends', () => {
+    const html = renderToStaticMarkup(
+      <MessageParts
+        parts={[
+          {
+            type: 'tool',
+            id: 'tool-1',
+            tool: 'Read File',
+            kind: 'read',
+            state: { status: 'completed' },
+          },
+          {
+            type: 'tool',
+            id: 'tool-2',
+            tool: 'Read File',
+            kind: 'read',
+            state: { status: 'completed' },
+          },
+          { type: 'text', id: 't1', text: 'Both files check out.' },
+        ]}
+        isStreaming={false}
+      />,
+    )
+
+    expect(html).toContain('Explored 2 files')
+    expect(html).toContain('Both files check out.')
+    expect(html).not.toContain('step')
+  })
+
+  it('labels a settled thought with its duration once it passes a second', () => {
+    const html = renderToStaticMarkup(
+      <MessageParts
+        parts={[
+          { type: 'reasoning', id: 'r1', text: 'considering', time: { start: 0, end: 2400 } },
+        ]}
+        isStreaming={false}
+      />,
+    )
+
+    expect(html).toContain('Thought for 2s')
+  })
+
+  it('omits the duration for a sub-second thought', () => {
+    const html = renderToStaticMarkup(
+      <MessageParts
+        parts={[{ type: 'reasoning', id: 'r1', text: 'quick', time: { start: 0, end: 400 } }]}
+        isStreaming={false}
+      />,
+    )
+
+    expect(html).toContain('Thought')
+    expect(html).not.toContain('Thought for')
   })
 
   it('renders Cursor structured tool output without passing objects to React', () => {
@@ -49,6 +104,55 @@ describe('MessageParts', () => {
 
     expect(html).toContain('working tree clean')
     expect(html).not.toContain('exitCode')
+  })
+
+  it('summarises a run of consecutive tool calls on one row', () => {
+    const html = renderToStaticMarkup(
+      <MessageParts
+        parts={[
+          {
+            type: 'tool',
+            id: 'tool-1',
+            tool: 'Edit',
+            state: { status: 'completed', input: { path: 'a.ts' } },
+          },
+          {
+            type: 'tool',
+            id: 'tool-2',
+            tool: 'Edit',
+            state: { status: 'completed', input: { path: 'b.ts' } },
+          },
+          {
+            type: 'tool',
+            id: 'tool-3',
+            tool: 'Bash',
+            state: { status: 'completed', input: { command: 'pnpm test' } },
+          },
+        ]}
+        isStreaming={false}
+      />,
+    )
+
+    expect(html).toContain('Edited 2 files, ran 1 command')
+  })
+
+  it('splits a tool run around reasoning', () => {
+    const html = renderToStaticMarkup(
+      <MessageParts
+        parts={[
+          { type: 'tool', id: 'tool-1', tool: 'Read', state: { status: 'completed', input: {} } },
+          { type: 'tool', id: 'tool-2', tool: 'Read', state: { status: 'completed', input: {} } },
+          { type: 'reasoning', id: 'r1', text: 'considering', time: { start: 1, end: 2 } },
+          { type: 'tool', id: 'tool-3', tool: 'Bash', state: { status: 'completed', input: {} } },
+          { type: 'tool', id: 'tool-4', tool: 'Bash', state: { status: 'completed', input: {} } },
+        ]}
+        isStreaming={false}
+      />,
+    )
+
+    expect(html).toContain('Explored 2 files')
+    expect(html).toContain('Ran 2 commands')
+    expect(html).toContain('Thought')
   })
 
   it('renders non-envelope structured OpenCode output as readable JSON', () => {

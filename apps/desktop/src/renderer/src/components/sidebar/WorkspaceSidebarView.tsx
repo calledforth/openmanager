@@ -12,7 +12,7 @@ import {
 } from '@phosphor-icons/react'
 import type { ProviderId } from '@agentpack/contract'
 import { cn } from '../../lib/utils'
-import { typographyBodySm, typographyLabel } from '../../lib/typography'
+import { typographyBodySm, typographyCaptionTiny, typographyLabel } from '../../lib/typography'
 import { ProviderIcon } from '../providers/ProviderIcon'
 import { SidebarSettingsMenu } from './SidebarSettingsMenu'
 
@@ -93,6 +93,8 @@ export function WorkspaceSidebarView({
   onSelectSession,
   onDeleteSession,
   onAddWorkspace,
+  convexOpen,
+  onToggleConvex,
 }: {
   collapsed: boolean
   workspaces: SidebarWorkspace[]
@@ -105,6 +107,8 @@ export function WorkspaceSidebarView({
   onSelectSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
   onDeleteSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
   onAddWorkspace: () => void
+  convexOpen: boolean
+  onToggleConvex: () => void
 }) {
   const collapsedSet = new Set(collapsedWorkspacePaths)
   const newThreadTarget = activeWorkspacePath ?? workspaces[0]?.path ?? null
@@ -188,7 +192,7 @@ export function WorkspaceSidebarView({
 
         {/* Footer */}
         <div className="flex items-center justify-end border-t border-[var(--basis-border-muted)] px-2 py-1.5">
-          <SidebarSettingsMenu />
+          <SidebarSettingsMenu convexOpen={convexOpen} onToggleConvex={onToggleConvex} />
         </div>
       </div>
     </aside>
@@ -269,7 +273,7 @@ function WorkspaceGroup({
       </div>
 
       {!isCollapsed && (
-        <div className="mx-1">
+        <div className="mx-1 flex flex-col gap-0.5">
           {visibleSessions.map(({ session: s, depth, isChild, isOrphan }) => {
             const isActive = isActiveWorkspace && s.externalId === activeSessionId
             const providerId = s.providerId ?? 'opencode'
@@ -279,7 +283,7 @@ function WorkspaceGroup({
                 key={s.externalId}
                 onClick={() => onSelectSession(workspace.path, s.externalId, providerId)}
                 className={cn(
-                  'group flex w-full items-center gap-1.5 rounded px-2 py-0.5 mb-1 text-left transition-default',
+                  'group flex w-full items-center gap-1.5 rounded px-2 py-0.5 text-left transition-default',
                   isActive
                     ? 'bg-surface-active text-[var(--basis-text)]'
                     : 'text-[var(--basis-text)] hover:bg-surface-hover',
@@ -343,8 +347,8 @@ function WorkspaceGroup({
                 )
               }
               className={cn(
-                typographyLabel,
-                'flex w-full items-center gap-1.5 rounded px-2 py-0.5 text-left font-normal text-[var(--basis-text-muted)] transition-default hover:bg-surface-hover hover:text-[var(--basis-text)]',
+                typographyCaptionTiny,
+                'flex w-full items-center gap-1.5 rounded px-2 py-0.5 text-left text-[var(--basis-text-faint)] transition-default hover:bg-surface-hover hover:text-[var(--basis-text-muted)]',
               )}
             >
               <span className="h-3 w-3 shrink-0" aria-hidden />
