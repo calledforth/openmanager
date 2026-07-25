@@ -206,7 +206,18 @@ function MessageTimeline({
 }) {
   const [readyMessageIds, setReadyMessageIds] = useState<Set<string>>(() => new Set())
   const didReportHydratedRef = useRef(false)
-  const initialMessageIdsRef = useRef(new Set(messages.map((message) => message.externalId)))
+  // Messages already present at mount are restored history and must not replay
+  // their entrance. An optimistic message is never history — it exists only
+  // because this client just sent it, so it keeps its slide-up. That matters on
+  // a fresh session, where the timeline mounts 0 → 1 on the very first send and
+  // would otherwise pop the first bubble in with no transition at all.
+  const initialMessageIdsRef = useRef(
+    new Set(
+      messages
+        .filter((message) => !message.isOptimistic)
+        .map((message) => message.externalId),
+    ),
+  )
   const firstUnvirtualizedIndex = useMemo(() => {
     const firstTailIndex = Math.max(messages.length - ALWAYS_UNVIRTUALIZED_TAIL_ROWS, 0)
     const firstLiveIndex = messages.findIndex(

@@ -983,7 +983,9 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           workspaceComposerPreferencesRef.current[
             workspaceComposerPreferenceKey(activeWorkspacePath, providerId)
           ]?.configValues
-        await recordRendererTelemetry({
+        // Fire-and-forget, as everywhere else it is called: awaiting an IPC
+        // round trip here delays the job submission behind a trace write.
+        void recordRendererTelemetry({
           kind: 'trace',
           phase: 'mark',
           name: 'message.send',
