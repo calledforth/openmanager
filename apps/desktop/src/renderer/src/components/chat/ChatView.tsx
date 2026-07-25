@@ -14,7 +14,7 @@ import {
   createPartOrdinalState,
   type StreamMessagePart,
 } from '@openmanager/shared/lib/remote-stream-parts'
-import { shouldUseRemoteStreaming } from '../../lib/stream-continuity'
+import { shouldHydrateLocalStream, shouldUseRemoteStreaming } from '../../lib/stream-continuity'
 import { cn } from '../../lib/utils'
 import type { UploadedImageAttachment } from '../../lib/attachments'
 import { PendingPermissionFallback } from '../permissions/InlinePermissionPrompt'
@@ -441,11 +441,13 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
   onReady?: (messageId: string) => void
   onPersistedContentReady?: (messageId: string) => void
 }) {
-  const localStreamingMessage = useStreamingMessage(props.externalId)
-  const useRemoteStreaming = shouldUseRemoteStreaming(
-    props.role,
-    props.isFinal,
-    props.isDriven,
+  const useRemoteStreaming = shouldUseRemoteStreaming(props.role, props.isFinal, props.isDriven)
+  // A driven session takes its tokens from IPC, but the renderer's copy starts
+  // empty on every reload. Hydrating from Convex restores the turn so far;
+  // everything after keeps arriving over IPC.
+  const localStreamingMessage = useStreamingMessage(
+    props.externalId,
+    shouldHydrateLocalStream(props.role, props.isFinal, props.isDriven),
   )
   const contentDoc = useTrackedQuery(
     'messages.getContent',

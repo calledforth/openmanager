@@ -426,19 +426,28 @@ export class ConvexProjector {
       event.providerId,
     )
     await this.ensurePlaceholder(turn.assistantMessageId, buffer)
+    const closed: string[] = []
     if (reasoning) {
+      if (turn.textPartId) closed.push(turn.textPartId)
       turn.textPartId = undefined
     } else {
-      this.finishReasoning(turn, buffer)
+      const reasoningPartId = this.finishReasoning(turn, buffer)
+      if (reasoningPartId) closed.push(reasoningPartId)
     }
+    await this.flushParts(turn.assistantMessageId, buffer, closed, event.seq)
+    // Part ids key the merge between a Convex snapshot and the live IPC stream
+    // on reconnect, so they are derived from the event that opened the run
+    // rather than a positional counter: a renderer that starts mid-turn can
+    // never mint an id that collides with a run it did not witness.
     const partId = reasoning
-      ? (turn.reasoningPartId ??= `${turn.assistantMessageId}_reasoning_${buffer.parts.size}`)
-      : (turn.textPartId ??= `${turn.assistantMessageId}_text_${buffer.parts.size}`)
+      ? (turn.reasoningPartId ??= `${turn.assistantMessageId}_reasoning_${event.id}`)
+      : (turn.textPartId ??= `${turn.assistantMessageId}_text_${event.id}`)
     const part = this.appendContent(buffer, partId, event.data.content, reasoning)
     const text = !reasoning && event.data.content.type === 'text' ? event.data.content.text : ''
     await this.appendChunk(turn.assistantMessageId, buffer, text, {
       partUpdate: { kind: 'part.updated', part },
       coalescePartUpdate: true,
+      seq: event.seq,
     })
   }
 
@@ -455,7 +464,12 @@ export class ConvexProjector {
       event.providerId,
     )
     await this.ensurePlaceholder(turn.assistantMessageId, buffer)
-    this.finishActiveParts(turn, buffer)
+    await this.flushParts(
+      turn.assistantMessageId,
+      buffer,
+      this.finishActiveParts(turn, buffer),
+      event.seq,
+    )
     const existing = buffer.parts.get(tool.toolCallId)
     const existingState = (existing?.state as Record<string, unknown> | undefined) ?? {}
     const proposedStatus = statusForTool(tool.status)
@@ -483,6 +497,7 @@ export class ConvexProjector {
     buffer.parts.set(part.id, part)
     await this.appendChunk(turn.assistantMessageId, buffer, '', {
       partUpdate: { kind: 'part.updated', part },
+      seq: event.seq,
     })
   }
 
@@ -500,7 +515,12 @@ export class ConvexProjector {
       event.providerId,
     )
     await this.ensurePlaceholder(turn.assistantMessageId, buffer)
-    this.finishActiveParts(turn, buffer)
+    await this.flushParts(
+      turn.assistantMessageId,
+      buffer,
+      this.finishActiveParts(turn, buffer),
+      event.seq,
+    )
     const existing = buffer.parts.get(toolCallId) ?? {
       type: 'tool',
       id: toolCallId,
@@ -513,6 +533,7 @@ export class ConvexProjector {
     buffer.parts.set(toolCallId, part)
     await this.appendChunk(turn.assistantMessageId, buffer, '', {
       partUpdate: { kind: 'part.updated', part },
+      seq: event.seq,
     })
   }
 
@@ -543,11 +564,17 @@ export class ConvexProjector {
       event.providerId,
     )
     await this.ensurePlaceholder(turn.assistantMessageId, buffer)
-    this.finishActiveParts(turn, buffer)
+    await this.flushParts(
+      turn.assistantMessageId,
+      buffer,
+      this.finishActiveParts(turn, buffer),
+      event.seq,
+    )
     const part: PartData = { type: 'plan', id: 'plan', entries: event.data.entries }
     buffer.parts.set('plan', part)
     await this.appendChunk(turn.assistantMessageId, buffer, '', {
       partUpdate: { kind: 'part.updated', part },
+      seq: event.seq,
     })
   }
 
@@ -563,7 +590,12 @@ export class ConvexProjector {
       event.providerId,
     )
     await this.ensurePlaceholder(turn.assistantMessageId, buffer)
-    this.finishActiveParts(turn, buffer)
+    await this.flushParts(
+      turn.assistantMessageId,
+      buffer,
+      this.finishActiveParts(turn, buffer),
+      event.seq,
+    )
     const data = event.data
     const existing = buffer.parts.get(data.taskId)
     // Late metadata (e.g. cursor/task) arrives statusless after the terminal
@@ -599,6 +631,7 @@ export class ConvexProjector {
     buffer.parts.set(part.id, part)
     await this.appendChunk(turn.assistantMessageId, buffer, '', {
       partUpdate: { kind: 'part.updated', part },
+      seq: event.seq,
     })
   }
 
@@ -724,6 +757,7 @@ export class ConvexProjector {
     options: {
       partUpdate?: { kind: 'part.updated'; part: PartData }
       coalescePartUpdate?: boolean
+      seq?: number
     } = {},
   ): Promise<void> {
     const boundary = this.sentenceBoundary(buffer.content, buffer.flushedLength)
@@ -752,7 +786,32 @@ export class ConvexProjector {
       chunkIndex: buffer.chunkIndex,
       chunkText,
       partUpdate,
+      ...(options.seq !== undefined ? { seq: options.seq } : {}),
     })
+  }
+
+  // Coalescing may have skipped the most recent update of a part that is now
+  // closed; nothing will ever revisit it, so persist it before moving on. This
+  // is what lets a chunk claim its event sequence as fully covered, and what
+  // keeps a snapshot rebuilt from chunks complete rather than trailing by up to
+  // PART_UPDATE_CHUNK_INTERVAL updates.
+  private async flushParts(
+    messageId: string,
+    buffer: MessageBuffer,
+    partIds: string[],
+    seq?: number,
+  ): Promise<void> {
+    const dirty = partIds.filter((partId) => (buffer.pendingPartUpdates.get(partId) ?? 0) > 0)
+    if (dirty.length === 0) return
+    for (const partId of dirty) buffer.pendingPartUpdates.set(partId, 0)
+    for (const partId of dirty) {
+      const part = buffer.parts.get(partId)
+      if (!part) continue
+      await this.appendChunk(messageId, buffer, '', {
+        partUpdate: { kind: 'part.updated', part },
+        seq,
+      })
+    }
   }
 
   private async finalizeTurn(threadId: string, stopReason?: string): Promise<void> {
@@ -768,22 +827,26 @@ export class ConvexProjector {
     this.turns.delete(threadId)
   }
 
-  private finishReasoning(turn: ActiveTurn, buffer: MessageBuffer): void {
+  /** Returns the closed part id so callers can flush it; see flushParts. */
+  private finishReasoning(turn: ActiveTurn, buffer: MessageBuffer): string | undefined {
     const partId = turn.reasoningPartId
     turn.reasoningPartId = undefined
-    if (!partId) return
+    if (!partId) return undefined
     const part = buffer.parts.get(partId)
-    if (!part) return
+    if (!part) return undefined
     const time =
       part.time && typeof part.time === 'object'
         ? (part.time as Record<string, number>)
         : { start: Date.now() }
     buffer.parts.set(partId, { ...part, time: { ...time, end: time.end ?? Date.now() } })
+    return partId
   }
 
-  private finishActiveParts(turn: ActiveTurn, buffer: MessageBuffer): void {
+  private finishActiveParts(turn: ActiveTurn, buffer: MessageBuffer): string[] {
+    const closed = turn.textPartId ? [turn.textPartId] : []
     turn.textPartId = undefined
-    this.finishReasoning(turn, buffer)
+    const reasoningPartId = this.finishReasoning(turn, buffer)
+    return reasoningPartId ? [...closed, reasoningPartId] : closed
   }
 
   private finishRunningTools(buffer: MessageBuffer, stopReason?: string): void {

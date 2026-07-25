@@ -173,6 +173,10 @@ export default defineSchema({
     chunkIndex: v.number(),
     chunkText: v.string(),
     partUpdate: v.optional(v.any()),
+    /** Sequence number of the AgentEvent this chunk was projected from. A
+     * client that rebuilds a snapshot from chunks and then attaches to the
+     * live IPC stream uses it to drop events the snapshot already covers. */
+    seq: v.optional(v.number()),
     createdAt: v.number(),
   })
     .index('by_message_and_index', ['messageExternalId', 'chunkIndex'])

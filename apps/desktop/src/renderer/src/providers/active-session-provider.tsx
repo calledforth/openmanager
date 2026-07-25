@@ -11,7 +11,11 @@ import {
 } from 'react'
 import { api } from '@openmanager/convex/_generated/api'
 import type { AgentEvent, ContentBlock, ToolCallStatus } from '@agentpack/contract'
-import { useTrackedQuery } from '../lib/convex-telemetry'
+import {
+  reconstructSnapshot,
+  type StreamChunk,
+} from '@openmanager/shared/lib/stream-reconstruction'
+import { trackedConvexQuery, useTrackedQuery } from '../lib/convex-telemetry'
 import { useAppUi } from './app-ui-provider'
 import type { UploadedImageAttachment } from '../lib/attachments'
 import { promptAttachment } from '../lib/attachments'
@@ -37,15 +41,32 @@ export interface UIMessage {
 export interface LocalStreamingMessage {
   content: string
   parts: MessagePart[]
+  /** True when this snapshot covers the turn from its start: either the
+   * renderer watched it from `prompt_started`, or the Convex snapshot of
+   * everything before it has been folded in. Note that AgentEvent sequence
+   * numbers cannot be used to infer this — the renderer is sent a filtered
+   * subset of the stream, so ordinary turns skip sequences. */
+  hasCompleteHistory: boolean
 }
+
+/** What a reconnecting client needs to resume a turn it did not watch from the
+ * start: the parts as persisted, and how far into the event stream they reach. */
+export interface StreamHydrationSnapshot {
+  parts?: MessagePart[]
+  throughSeq?: number
+}
+
+export type StreamSnapshotSource = (
+  messageExternalId: string,
+) => Promise<StreamHydrationSnapshot | null>
 
 type LiveThreadState = {
   messageId: string
   parts: Map<string, MessagePart>
   seenEventIds: Set<string>
+  hasCompleteHistory: boolean
   activeTextPartId?: string
   activeReasoningPartId?: string
-  nextPartOrdinal: number
 }
 
 interface ActiveSessionDetails {
@@ -61,9 +82,26 @@ interface ActiveSessionDetails {
 export class StreamingMessagesStore {
   private messages = new Map<string, LocalStreamingMessage>()
   private listeners = new Map<string, Set<() => void>>()
+  // Keyed by assistant message id, not thread id: a turn is the unit that gets
+  // hydrated, and hydration can be requested for a turn that has stopped
+  // emitting events entirely (the app was restarted mid-stream).
   private threads = new Map<string, LiveThreadState>()
+  private queuedEvents = new Map<string, AgentEvent[]>()
+  private hydrationRequested = new Set<string>()
+  private snapshotSource?: StreamSnapshotSource
 
   constructor(private readonly maxMessages = 100) {}
+
+  setSnapshotSource(source: StreamSnapshotSource | undefined) {
+    this.snapshotSource = source
+  }
+
+  /** Pull the persisted snapshot for a turn this renderer may have joined late.
+   * Idempotent: only the first call per message does any work. */
+  ensureHydrated(messageExternalId: string) {
+    if (this.threads.get(messageExternalId)?.hasCompleteHistory) return
+    this.beginHydration(messageExternalId)
+  }
 
   subscribe(messageExternalId: string, listener: () => void) {
     const current = this.listeners.get(messageExternalId) ?? new Set<() => void>()
@@ -86,15 +124,25 @@ export class StreamingMessagesStore {
   update(event: AgentEvent) {
     const messageId = event.messageId
     if (!messageId) return
-    let state = this.threads.get(event.threadId)
-    if (!state || state.messageId !== messageId) {
+    const queued = this.queuedEvents.get(messageId)
+    if (queued) {
+      queued.push(event)
+      return
+    }
+    let state = this.threads.get(messageId)
+    if (!state) {
+      // A turn that does not open with prompt_started is one this renderer
+      // joined in flight — after a reload, a crash, or from a second window.
+      // Everything before this event exists only in Convex, so fetch that
+      // snapshot first and replay the live tail onto it.
+      if (event.event !== 'prompt_started' && this.beginHydration(messageId, event)) return
       state = {
         messageId,
         parts: new Map(),
         seenEventIds: new Set(),
-        nextPartOrdinal: 0,
+        hasCompleteHistory: event.event === 'prompt_started',
       }
-      this.threads.set(event.threadId, state)
+      this.threads.set(messageId, state)
     }
     if (state.seenEventIds.has(event.id)) return
     state.seenEventIds.add(event.id)
@@ -106,11 +154,11 @@ export class StreamingMessagesStore {
         break
       case 'agent_message_chunk':
         this.finishReasoning(state)
-        changed = this.appendText(state, event.data.content, false)
+        changed = this.appendText(state, event.data.content, event.id, false)
         break
       case 'agent_thought_chunk':
         state.activeTextPartId = undefined
-        changed = this.appendText(state, event.data.content, true)
+        changed = this.appendText(state, event.data.content, event.id, true)
         break
       case 'tool_call':
       case 'tool_call_update':
@@ -150,29 +198,83 @@ export class StreamingMessagesStore {
     }
 
     if (!changed) return
+    this.publish(state)
+  }
+
+  private publish(state: LiveThreadState) {
     const parts = [...state.parts.values()]
     const content = parts
       .filter((part) => part.type === 'text')
       .map((part) => String(part.text ?? ''))
       .join('')
     const messages = new Map(this.messages)
-    messages.delete(messageId)
-    messages.set(messageId, {
+    messages.delete(state.messageId)
+    messages.set(state.messageId, {
       content,
       parts,
+      hasCompleteHistory: state.hasCompleteHistory,
     })
     this.messages = messages
     this.evictOverflow()
-    this.emit(messageId)
+    this.emit(state.messageId)
+  }
+
+  private beginHydration(messageExternalId: string, event?: AgentEvent): boolean {
+    if (!this.snapshotSource) return false
+    if (this.hydrationRequested.has(messageExternalId)) return false
+    this.hydrationRequested.add(messageExternalId)
+    // Queue from this instant so the join has neither a gap nor an unbounded
+    // overlap: everything from here is either covered by the snapshot (dropped
+    // by sequence below) or replayed.
+    this.queuedEvents.set(messageExternalId, event ? [event] : [])
+    this.snapshotSource(messageExternalId)
+      .then((snapshot) => this.completeHydration(messageExternalId, snapshot))
+      .catch(() => this.completeHydration(messageExternalId, null))
+    return true
+  }
+
+  private completeHydration(
+    messageExternalId: string,
+    snapshot: StreamHydrationSnapshot | null,
+  ): void {
+    const queued = this.queuedEvents.get(messageExternalId)
+    // Removed (finalized or evicted) while the snapshot was in flight.
+    if (!queued) return
+    this.queuedEvents.delete(messageExternalId)
+
+    const hydratedParts = snapshot?.parts ?? []
+    if (hydratedParts.length > 0) {
+      // Queueing means no live event has been applied yet, so the snapshot is
+      // the whole state; the tail below builds on it through the normal merge
+      // paths, which is what keeps a half-described tool from replacing a
+      // fully described one.
+      const state: LiveThreadState = {
+        messageId: messageExternalId,
+        parts: new Map(hydratedParts.map((part) => [part.id, part])),
+        seenEventIds: new Set<string>(),
+        hasCompleteHistory: true,
+      }
+      this.threads.set(messageExternalId, state)
+      this.publish(state)
+    }
+
+    const throughSeq = snapshot?.throughSeq
+    for (const event of queued) {
+      // Chunks written before the projector stamped sequences leave nothing to
+      // join on; replay everything rather than risk dropping live events. With
+      // event-derived part ids a repeated fragment lands in its own part and
+      // can never corrupt what the snapshot restored.
+      if (throughSeq !== undefined && event.seq <= throughSeq) continue
+      this.update(event)
+    }
   }
 
   remove(messageExternalId: string) {
+    this.threads.delete(messageExternalId)
+    this.queuedEvents.delete(messageExternalId)
+    this.hydrationRequested.delete(messageExternalId)
     if (!this.messages.has(messageExternalId)) return
     this.messages.delete(messageExternalId)
-    for (const [threadId, state] of this.threads) {
-      if (state.messageId !== messageExternalId) continue
-      this.threads.delete(threadId)
-    }
     this.emit(messageExternalId)
   }
 
@@ -200,15 +302,25 @@ export class StreamingMessagesStore {
     return ''
   }
 
-  private nextPartId(state: LiveThreadState, kind: 'text' | 'reasoning'): string {
-    return `${state.messageId}_${kind}_${state.nextPartOrdinal++}`
+  // Derived from the event that opened the run rather than a positional
+  // counter, and identically to the projector: a renderer that starts mid-turn
+  // can never mint an id that collides with a run it did not witness, so a
+  // hydrated snapshot and the live tail always merge instead of overwriting.
+  private nextPartId(state: LiveThreadState, kind: 'text' | 'reasoning', eventId: string): string {
+    return `${state.messageId}_${kind}_${eventId}`
   }
 
-  private appendText(state: LiveThreadState, block: ContentBlock, reasoning: boolean): boolean {
+  private appendText(
+    state: LiveThreadState,
+    block: ContentBlock,
+    eventId: string,
+    reasoning: boolean,
+  ): boolean {
     const text = this.text(block)
     if (!text) return false
     const activeKey = reasoning ? 'activeReasoningPartId' : 'activeTextPartId'
-    const partId = state[activeKey] ?? this.nextPartId(state, reasoning ? 'reasoning' : 'text')
+    const partId =
+      state[activeKey] ?? this.nextPartId(state, reasoning ? 'reasoning' : 'text', eventId)
     state[activeKey] = partId
     const existing = state.parts.get(partId)
     state.parts.set(partId, {
@@ -439,13 +551,40 @@ export function useActiveSession() {
   return ctx
 }
 
-export function useStreamingMessage(messageExternalId: string) {
+/** `hydrate` asks the store to backfill this message from Convex when the local
+ * snapshot cannot cover the whole turn. Callers pass it for driven, unfinished
+ * assistant messages — including turns that stopped emitting events entirely,
+ * which no live event would ever trigger hydration for. */
+export function useStreamingMessage(messageExternalId: string, hydrate = false) {
   const { streamingStore } = useActiveSession()
+  useEffect(() => {
+    if (!hydrate) return
+    streamingStore.ensureHydrated(messageExternalId)
+  }, [hydrate, messageExternalId, streamingStore])
   return useSyncExternalStore(
     (listener) => streamingStore.subscribe(messageExternalId, listener),
     () => streamingStore.get(messageExternalId),
     () => streamingStore.get(messageExternalId),
   )
+}
+
+// Rebuild a turn from its persisted chunks. The desktop reads these only to
+// recover history it missed; subsequent tokens keep arriving over IPC, which is
+// both faster and the only source once the chunks are swept.
+async function hydrateStreamSnapshot(
+  messageExternalId: string,
+): Promise<StreamHydrationSnapshot | null> {
+  const chunks = (await trackedConvexQuery(
+    'streamChunks.getChunksSince.hydrate',
+    api.streamChunks.getChunksSince,
+    { messageExternalId, afterIndex: -1 },
+  )) as StreamChunk[] | null
+  if (!chunks?.length) return null
+  const snapshot = reconstructSnapshot(chunks)
+  return {
+    parts: snapshot.parts as MessagePart[] | undefined,
+    ...(snapshot.throughSeq !== undefined ? { throughSeq: snapshot.throughSeq } : {}),
+  }
 }
 
 export function ActiveSessionProvider({ children }: { children: ReactNode }) {
@@ -458,7 +597,13 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
     sendMessage: uiSendMessage,
     abortSession: uiAbortSession,
   } = useAppUi()
-  const streamingStore = useMemo(() => new StreamingMessagesStore(), [])
+  // The source is attached at construction so it is in place before the IPC
+  // listener below can deliver the first event of an in-flight turn.
+  const streamingStore = useMemo(() => {
+    const store = new StreamingMessagesStore()
+    store.setSnapshotSource(hydrateStreamSnapshot)
+    return store
+  }, [])
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<UIMessage[]>([])
   const previousActiveSessionIdRef = useRef(activeSessionId)
 

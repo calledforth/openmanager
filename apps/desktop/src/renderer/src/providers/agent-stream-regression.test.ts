@@ -1,12 +1,13 @@
 import type { AgentEvent } from '@agentpack/contract'
 import { AgentRuntime, type BackendEvent } from '@agentpack/runtime'
 import { foldAgentEvents } from '@agentpack/view'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   mergePersistedAndOptimisticMessages,
   StreamingMessagesStore,
+  type StreamHydrationSnapshot,
 } from './active-session-provider'
-import { shouldUseRemoteStreaming } from '../lib/stream-continuity'
+import { shouldHydrateLocalStream, shouldUseRemoteStreaming } from '../lib/stream-continuity'
 
 const base = {
   threadId: 'thread-1',
@@ -349,8 +350,14 @@ describe('agent streaming regressions', () => {
     expect(store.get('assistant-b')).toBeDefined()
   })
 
-  it('keeps driven IPC accumulation authoritative across unrelated AgentEvent sequence gaps', () => {
+  it('stays authoritative across unrelated AgentEvent sequence gaps', () => {
+    // The renderer is sent a filtered subset of the stream (no permission,
+    // usage or session-info events), so a turn watched from the very start
+    // still skips sequence numbers. That must never be read as missing history.
     const store = new StreamingMessagesStore()
+    store.setSnapshotSource(async () => {
+      throw new Error('hydration must not be attempted here')
+    })
     store.update(
       event({
         id: 'gap-start',
@@ -373,14 +380,188 @@ describe('agent streaming regressions', () => {
     )
 
     expect(store.get('assistant-gap')?.content).toBe('tail')
-    expect(shouldUseRemoteStreaming('assistant', false, true)).toBe(false)
+    expect(store.get('assistant-gap')?.hasCompleteHistory).toBe(true)
   })
 
-  it('routes live streaming by session ownership', () => {
+  it('rebuilds a reloaded turn from the Convex snapshot and resumes over IPC', async () => {
+    const messageId = 'assistant-reload'
+    const store = new StreamingMessagesStore()
+    let resolveSnapshot: (value: StreamHydrationSnapshot | null) => void = () => {}
+    store.setSnapshotSource(
+      () =>
+        new Promise<StreamHydrationSnapshot | null>((resolve) => {
+          resolveSnapshot = resolve
+        }),
+    )
+
+    // A reloaded renderer never sees prompt_started; the first thing it gets is
+    // whatever the turn happens to be doing right now.
+    store.update(
+      event({
+        id: 'covered',
+        messageId,
+        seq: 12,
+        category: 'stream',
+        event: 'agent_message_chunk',
+        data: { content: { type: 'text', text: 'before reload. ' } },
+      }),
+    )
+    store.update(
+      event({
+        id: 'fresh',
+        messageId,
+        seq: 13,
+        category: 'stream',
+        event: 'agent_message_chunk',
+        data: { content: { type: 'text', text: 'after reload' } },
+      }),
+    )
+    // Nothing is rendered from a half-turn: the live tail waits for the snapshot.
+    expect(store.get(messageId)).toBeUndefined()
+
+    resolveSnapshot({
+      parts: [
+        { type: 'reasoning', id: `${messageId}_reasoning_e1`, text: 'thinking' },
+        {
+          type: 'tool',
+          id: 'tool-1',
+          callID: 'tool-1',
+          tool: 'Read',
+          state: { status: 'completed', input: { path: 'a.ts' } },
+        },
+        { type: 'text', id: `${messageId}_text_e2`, text: 'before reload. ' },
+      ],
+      throughSeq: 12,
+    })
+    await vi.waitFor(() =>
+      expect(store.get(messageId)?.content).toBe('before reload. after reload'),
+    )
+
+    const snapshot = store.get(messageId)!
+    expect(snapshot.hasCompleteHistory).toBe(true)
+    // The seq-12 event was already in the snapshot, so it is dropped rather
+    // than replayed into a second, duplicate text part.
+    expect(snapshot.parts.map((part) => part.type)).toEqual([
+      'reasoning',
+      'tool',
+      'text',
+      'text',
+    ])
+    expect(snapshot.parts[1]).toMatchObject({
+      tool: 'Read',
+      state: { status: 'completed', input: { path: 'a.ts' } },
+    })
+  })
+
+  it('replays a thin live tool update onto the richer hydrated part', async () => {
+    const messageId = 'assistant-merge'
+    const store = new StreamingMessagesStore()
+    let resolveSnapshot: (value: StreamHydrationSnapshot | null) => void = () => {}
+    store.setSnapshotSource(
+      () =>
+        new Promise<StreamHydrationSnapshot | null>((resolve) => {
+          resolveSnapshot = resolve
+        }),
+    )
+
+    store.update(
+      event({
+        id: 'thin-update',
+        messageId,
+        seq: 20,
+        category: 'tool',
+        event: 'tool_call_update',
+        data: { toolCallId: 'tool-1', status: 'completed' },
+      }),
+    )
+    resolveSnapshot({
+      parts: [
+        {
+          type: 'tool',
+          id: 'tool-1',
+          callID: 'tool-1',
+          tool: 'Read',
+          state: { status: 'running', input: { path: 'a.ts' } },
+        },
+      ],
+      throughSeq: 19,
+    })
+    await vi.waitFor(() =>
+      expect((store.get(messageId)?.parts[0]?.state as { status?: string })?.status).toBe(
+        'completed',
+      ),
+    )
+
+    expect(store.get(messageId)?.parts[0]).toMatchObject({
+      tool: 'Read',
+      state: { status: 'completed', input: { path: 'a.ts' } },
+    })
+  })
+
+  it('restores a turn that stopped emitting events when the app was restarted', async () => {
+    const store = new StreamingMessagesStore()
+    store.setSnapshotSource(async () => ({
+      parts: [{ type: 'text', id: 'orphan-text', text: 'the turn nobody finalized' }],
+      throughSeq: 40,
+    }))
+
+    // No live event will ever arrive for this message, so the view layer has to
+    // be the one that asks.
+    store.ensureHydrated('assistant-orphan')
+    await vi.waitFor(() =>
+      expect(store.get('assistant-orphan')?.content).toBe('the turn nobody finalized'),
+    )
+  })
+
+  it('falls back to the live tail when the snapshot cannot be fetched', async () => {
+    const store = new StreamingMessagesStore()
+    store.setSnapshotSource(async () => {
+      throw new Error('offline')
+    })
+    store.update(
+      event({
+        id: 'tail-only',
+        messageId: 'assistant-offline',
+        seq: 4,
+        category: 'stream',
+        event: 'agent_message_chunk',
+        data: { content: { type: 'text', text: 'tail only' } },
+      }),
+    )
+
+    await vi.waitFor(() => expect(store.get('assistant-offline')?.content).toBe('tail only'))
+  })
+
+  it('replays the whole tail when the snapshot carries no sequence to join on', async () => {
+    const messageId = 'assistant-legacy'
+    const store = new StreamingMessagesStore()
+    store.setSnapshotSource(async () => ({
+      parts: [{ type: 'text', id: 'legacy-text', text: 'persisted. ' }],
+    }))
+    store.update(
+      event({
+        id: 'legacy-tail',
+        messageId,
+        seq: 9,
+        category: 'stream',
+        event: 'agent_message_chunk',
+        data: { content: { type: 'text', text: 'live' } },
+      }),
+    )
+
+    await vi.waitFor(() => expect(store.get(messageId)?.content).toBe('persisted. live'))
+  })
+
+  it('routes live streaming by session ownership and backfills the driven side', () => {
     expect(shouldUseRemoteStreaming('assistant', false, true)).toBe(false)
     expect(shouldUseRemoteStreaming('assistant', false, false)).toBe(true)
     expect(shouldUseRemoteStreaming('assistant', true, false)).toBe(false)
     expect(shouldUseRemoteStreaming('user', false, false)).toBe(false)
+
+    expect(shouldHydrateLocalStream('assistant', false, true)).toBe(true)
+    expect(shouldHydrateLocalStream('assistant', true, true)).toBe(false)
+    expect(shouldHydrateLocalStream('assistant', false, false)).toBe(false)
+    expect(shouldHydrateLocalStream('user', false, true)).toBe(false)
   })
 
   it('evicts the least-recently-updated streaming snapshot at the configured bound', () => {

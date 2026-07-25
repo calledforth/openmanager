@@ -1,6 +1,10 @@
 import type { AgentEvent } from '@agentpack/contract'
 import type { ConvexClient } from 'convex/browser'
 import { describe, expect, it, vi } from 'vitest'
+import {
+  reconstructSnapshot,
+  type StreamChunk,
+} from '@openmanager/shared/lib/stream-reconstruction'
 import { ConvexProjector } from './convex-projector'
 
 vi.mock('./convex-telemetry', () => ({
@@ -154,6 +158,89 @@ describe('ConvexProjector streaming contracts', () => {
     const userWrites = mutations.filter((args) => args.role === 'user')
     expect(userWrites).toHaveLength(1)
     expect(userWrites[0]).toMatchObject({ externalId: 'user-1', content: 'Hello' })
+  })
+
+  it('persists enough mid-turn for a reconnecting client to rebuild everything', async () => {
+    const { projector, mutations } = setup()
+    projector.consume(
+      event(1, {
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'Go', userMessageId: 'user-1' },
+      }),
+    )
+    // Coalescing skips most of these; closing the run has to flush the rest,
+    // or a snapshot rebuilt from chunks silently loses ' beta gamma'.
+    for (const [index, text] of ['alpha', ' beta', ' gamma'].entries()) {
+      projector.consume(
+        event(index + 2, {
+          category: 'stream',
+          event: 'agent_message_chunk',
+          data: { content: { type: 'text', text } },
+        }),
+      )
+    }
+    projector.consume(
+      event(5, {
+        category: 'tool',
+        event: 'tool_call',
+        data: { toolCallId: 'tool-1', title: 'Read', status: 'in_progress' },
+      }),
+    )
+    projector.consume(
+      event(6, {
+        category: 'stream',
+        event: 'agent_message_chunk',
+        data: { content: { type: 'text', text: ' done.' } },
+      }),
+    )
+    await projector.waitForThread(base.threadId)
+
+    const chunks = mutations.filter((args) => 'chunkIndex' in args) as unknown as StreamChunk[]
+    const snapshot = reconstructSnapshot(chunks)
+    const parts = snapshot.parts ?? []
+    expect(
+      parts
+        .filter((part) => part.type === 'text')
+        .map((part) => String(part.text ?? ''))
+        .join(''),
+    ).toBe('alpha beta gamma done.')
+    expect(parts.find((part) => part.type === 'tool')).toMatchObject({ tool: 'Read' })
+    // Every event is now represented, so the snapshot covers the whole stream.
+    expect(snapshot.throughSeq).toBe(6)
+  })
+
+  it('keys text parts by the event that opened the run, not by part position', async () => {
+    const { projector, mutations } = setup()
+    projector.consume(
+      event(1, {
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'Go', userMessageId: 'user-1' },
+      }),
+    )
+    projector.consume(
+      event(2, {
+        category: 'tool',
+        event: 'tool_call',
+        data: { toolCallId: 'tool-1', title: 'Read', status: 'completed' },
+      }),
+    )
+    projector.consume(
+      event(3, {
+        category: 'stream',
+        event: 'agent_message_chunk',
+        data: { content: { type: 'text', text: 'after the tool.' } },
+      }),
+    )
+    await projector.waitForThread(base.threadId)
+
+    const textChunk = mutations.find(
+      (args) => (args.partUpdate as { part?: { type?: string } } | undefined)?.part?.type === 'text',
+    )
+    expect((textChunk?.partUpdate as { part: { id: string } }).part.id).toBe(
+      'assistant-1_text_event-3',
+    )
   })
 
   it('persists image references with the canonical user message', async () => {
