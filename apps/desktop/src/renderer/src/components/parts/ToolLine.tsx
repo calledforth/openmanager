@@ -1,10 +1,21 @@
-import type { ReactNode } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import { cn } from '../../lib/utils'
 
 export const activityRowBare = 'w-full max-w-none py-px text-ui-base leading-snug'
 export const activityRow = activityRowBare
 export const activityDetailsSummary =
   'flex cursor-pointer list-none items-start gap-1.5 text-ui-base leading-snug [&::-webkit-details-marker]:hidden'
+
+export const shimmerTextClass = 'inline basis-tool-shimmer'
+export const shimmerTextStyle: CSSProperties = {
+  background:
+    'linear-gradient(90deg, color-mix(in srgb, var(--basis-text-faint) 65%, transparent) 25%, color-mix(in srgb, var(--basis-text-muted) 92%, transparent) 50%, color-mix(in srgb, var(--basis-text-faint) 65%, transparent) 75%)',
+  backgroundSize: '200% 100%',
+  backgroundClip: 'text',
+  WebkitBackgroundClip: 'text',
+  WebkitTextFillColor: 'transparent',
+  animation: 'shimmer 1.6s infinite linear',
+}
 
 export function ToolLine({
   verb,
@@ -22,18 +33,7 @@ export function ToolLine({
   return (
     <span className={cn('min-w-0', className)}>
       {isRunning ? (
-        <span
-          className="inline basis-tool-shimmer"
-          style={{
-            background:
-              'linear-gradient(90deg, color-mix(in srgb, var(--basis-text-faint) 65%, transparent) 25%, color-mix(in srgb, var(--basis-text-muted) 92%, transparent) 50%, color-mix(in srgb, var(--basis-text-faint) 65%, transparent) 75%)',
-            backgroundSize: '200% 100%',
-            backgroundClip: 'text',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-            animation: 'shimmer 1.6s infinite linear',
-          }}
-        >
+        <span className={shimmerTextClass} style={shimmerTextStyle}>
           {verb}
           {detail ? ` ${detail}` : ''}
         </span>

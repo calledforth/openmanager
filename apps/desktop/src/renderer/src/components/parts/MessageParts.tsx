@@ -1,12 +1,14 @@
 import { Fragment, useMemo, type ReactNode } from 'react'
 import type { PlanEntry, PlanEntryStatus } from '@agentpack/contract'
+import { groupActivityParts } from '@openmanager/shared/lib/activity-groups'
 import { TextPart } from './TextPart'
 import { ToolCallPermission } from '../permissions/InlinePermissionPrompt'
+import { usePermissionStateOptional } from '../../providers/permission-provider'
 import { ToolCallPart } from './ToolCallPart'
 import { BashToolPart } from './BashToolPart'
 import { EditToolPart } from './EditToolPart'
 import { ThinkingPart } from './ThinkingPart'
-import { CollapsibleSteps } from './CollapsibleSteps'
+import { ActivityGroup } from './ActivityGroup'
 import { SubtaskCard } from './SubtaskCard'
 import { canonicalizeToolName } from './ToolRegistry'
 
@@ -146,17 +148,10 @@ function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode
   }
 }
 
-function isToolOrExploringStep(part: Part): boolean {
-  return (
-    part.type === 'tool' ||
-    part.type === 'reasoning' ||
-    part.type === 'retry' ||
-    part.type === 'subtask'
-  )
-}
-
 export function MessageParts({ parts, isStreaming }: { parts: Part[]; isStreaming?: boolean }) {
   const safeParts = parts ?? []
+  const pendingPermissionCallId =
+    usePermissionStateOptional()?.pendingPermission?.toolCallId ?? null
 
   const deduped = useMemo(() => {
     const seen = new Set<string>()
@@ -168,65 +163,27 @@ export function MessageParts({ parts, isStreaming }: { parts: Part[]; isStreamin
     })
   }, [safeParts])
 
-  const { stepParts, hasFinalText, stepsCount, finalParts } = useMemo(() => {
-    let lastTextIdx = -1
-    for (let i = deduped.length - 1; i >= 0; i -= 1) {
-      if (deduped[i].type === 'text' && !deduped[i].synthetic && !deduped[i].ignored) {
-        const text = (deduped[i].text as string) ?? ''
-        if (text.trim()) {
-          lastTextIdx = i
-          break
-        }
-      }
-    }
-
-    const hasToolsBefore =
-      lastTextIdx > 0 && deduped.slice(0, lastTextIdx).some(isToolOrExploringStep)
-    const nextHasFinalText = lastTextIdx > 0 && hasToolsBefore
-    const nextStepParts = nextHasFinalText ? deduped.slice(0, lastTextIdx) : deduped
-    const nextFinalParts = nextHasFinalText ? deduped.slice(lastTextIdx) : []
-
-    let nextStepsCount = 0
-    if (nextHasFinalText) {
-      for (const part of nextStepParts) {
-        if (
-          part.type === 'tool' ||
-          part.type === 'reasoning' ||
-          part.type === 'retry' ||
-          part.type === 'subtask' ||
-          (part.type === 'text' && (part.text as string)?.trim())
-        ) {
-          nextStepsCount += 1
-        }
-      }
-    }
-
-    return {
-      stepParts: nextStepParts,
-      hasFinalText: nextHasFinalText,
-      stepsCount: nextStepsCount,
-      finalParts: nextFinalParts,
-    }
-  }, [deduped])
+  // Runs of consecutive tool calls collapse into one summary row; thinking,
+  // text, plans, failures and permission prompts break the run. Each group is
+  // its own toggle, so the turn needs no second collapse wrapped around them.
+  const activityNodes = useMemo(
+    () => groupActivityParts(deduped, { pendingPermissionCallId }),
+    [deduped, pendingPermissionCallId],
+  )
 
   if (safeParts.length === 0) return null
 
-  const renderedSteps = <>{stepParts.map((part, idx) => renderPart(part, idx, isStreaming))}</>
-
-  if (hasFinalText && !isStreaming) {
-    return (
-      <>
-        <CollapsibleSteps stepsCount={stepsCount}>{renderedSteps}</CollapsibleSteps>
-        {finalParts.map((part, idx) => renderPart(part, stepParts.length + idx, isStreaming))}
-      </>
-    )
-  }
-
   return (
     <>
-      {renderedSteps}
-      {hasFinalText &&
-        finalParts.map((part, idx) => renderPart(part, stepParts.length + idx, isStreaming))}
+      {activityNodes.map((node, idx) =>
+        node.kind === 'part' ? (
+          renderPart(node.part, idx, isStreaming)
+        ) : (
+          <ActivityGroup key={node.id} summary={node.summary}>
+            {node.items.map((item, itemIdx) => renderPart(item, itemIdx, isStreaming))}
+          </ActivityGroup>
+        ),
+      )}
     </>
   )
 }

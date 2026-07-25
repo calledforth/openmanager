@@ -5,9 +5,13 @@ import { WorkspaceSidebarView } from './WorkspaceSidebarView'
 export function WorkspaceSidebar({
   collapsed,
   onCollapse,
+  convexOpen,
+  onToggleConvex,
 }: {
   collapsed: boolean
   onCollapse: () => void
+  convexOpen: boolean
+  onToggleConvex: () => void
 }) {
   const {
     workspaces,
@@ -62,6 +66,8 @@ export function WorkspaceSidebar({
         void deleteSession(workspacePath, externalId, providerId)
       }
       onAddWorkspace={() => void addWorkspace()}
+      convexOpen={convexOpen}
+      onToggleConvex={onToggleConvex}
     />
   )
 }

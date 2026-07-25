@@ -695,6 +695,8 @@ function Demo() {
             onSelectSession={() => undefined}
             onDeleteSession={() => undefined}
             onAddWorkspace={() => undefined}
+            convexOpen={false}
+            onToggleConvex={() => undefined}
           />
 
           <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden pt-2 pr-2 pb-0 pl-0 transition-all duration-300 ease-in-out">
