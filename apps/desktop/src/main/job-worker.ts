@@ -7,6 +7,7 @@ import {
   type PromptInput,
   type ProviderId,
 } from '@agentpack/contract'
+import type { DesiredSessionConfig } from '@agentpack/runtime'
 import {
   estimateConvexPayloadBytes,
   extractConvexTelemetryContext,
@@ -23,12 +24,53 @@ type JobDoc = {
 
 type SessionConfigValues = Record<string, string | boolean>
 
+export type DeleteSessionHost = {
+  runtime: Pick<AgentHost['runtime'], 'getProvider' | 'closeThread'>
+  projector: Pick<AgentHost['projector'], 'waitForThread'>
+  emitSessionDeleted: AgentHost['emitSessionDeleted']
+}
+
+export async function deleteSession(
+  host: DeleteSessionHost,
+  args: {
+    providerId: ProviderId
+    sessionExternalId: string
+    workspacePath: string
+  },
+): Promise<void> {
+  const capabilities = host.runtime.getProvider(args.providerId).capabilities
+  if (capabilities.canDeleteSession) {
+    throw new Error(
+      `Provider ${args.providerId} advertises session deletion without a runtime operation`,
+    )
+  }
+  host.emitSessionDeleted({
+    providerId: args.providerId,
+    threadId: args.sessionExternalId,
+    workspacePath: args.workspacePath,
+    sessionId: args.sessionExternalId,
+  })
+  await host.projector.waitForThread(args.sessionExternalId)
+  // Reclaim the process. A deleted session's runtime is unreachable —
+  // nothing will ever prompt that thread again — so leaving it for the idle
+  // reaper holds a ~230 MB CLI for up to half an hour for a session the user
+  // has already thrown away. Stopped after the projector settles so the
+  // deletion the UI sees is not interleaved with this thread's process_exited.
+  await host.runtime.closeThread({
+    providerId: args.providerId,
+    threadId: args.sessionExternalId,
+  })
+}
+
 const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 export class JobWorker {
   private unsubscribe: (() => void) | null = null
-  private processing = new Set<string>()
+  /** Jobs claimed and still running, so `stop()` can wait for them. */
+  private processing = new Map<string, Promise<void>>()
+  /** Set by `stop()`. The app is quitting; do not claim anything else. */
+  private stopped = false
 
   constructor(
     private convex: ConvexClient,
@@ -71,29 +113,36 @@ export class JobWorker {
     return entries.length > 0 ? Object.fromEntries(entries) : undefined
   }
 
-  private async applyConfigValues(
+  /** What the composer shows, from the job's own overrides where present and
+   * the workspace's remembered preferences otherwise.
+   *
+   * This used to be applied by hand before every prompt: an unconditional
+   * `set_model` plus one `set_config_option` per remembered key, ~11.5s of
+   * dead time per Cursor message. It is now handed to the runtime, which
+   * reconciles it against the state its session actually reported and issues a
+   * write only for what genuinely differs. The enforcement is the same; only
+   * the round trips that changed nothing are gone. */
+  private desiredConfig(
     parsed: Record<string, any>,
-    threadId: string,
-    sessionId: string,
-    values: SessionConfigValues | undefined,
-  ): Promise<void> {
-    if (!values) return
-    const route = this.route(parsed, threadId)
-    for (const [configId, value] of Object.entries(values)) {
-      try {
-        await this.agentHost.runtime.setConfigOption({
-          ...route,
-          sessionId,
-          configId,
-          value,
-        })
-      } catch (error) {
-        // Config availability is model-specific. A remembered setting may no
-        // longer exist after an agent or model update, so restore the valid
-        // options and leave stale ones non-fatal.
-        console.warn(`[job-worker] failed to apply config ${configId}: ${(error as Error).message}`)
-      }
+    providerId: ProviderId,
+  ): DesiredSessionConfig | undefined {
+    const modelId =
+      typeof parsed.preferredModelId === 'string' && parsed.preferredModelId
+        ? parsed.preferredModelId
+        : (this.getLastModelForWorkspace(parsed.workspacePath, providerId) ?? undefined)
+    const modeId =
+      typeof parsed.preferredModeId === 'string' && parsed.preferredModeId
+        ? parsed.preferredModeId
+        : undefined
+    const values =
+      this.configValues(parsed.preferredConfigValues) ??
+      this.getConfigValuesForWorkspace(parsed.workspacePath, providerId)
+    const desired: DesiredSessionConfig = {
+      ...(modelId ? { modelId } : {}),
+      ...(modeId ? { modeId } : {}),
+      ...(values ? { values } : {}),
     }
+    return Object.keys(desired).length > 0 ? desired : undefined
   }
 
   private async promptInput(parsed: Record<string, any>): Promise<PromptInput> {
@@ -209,19 +258,28 @@ export class JobWorker {
           responseBytes: estimateConvexPayloadBytes(jobs),
         })
         if (!jobs) return
+        if (this.stopped) return
         console.log(`[job-worker] ${jobs.length} pending job(s)`)
         for (const job of jobs as JobDoc[]) {
-          if (!this.processing.has(job._id)) {
-            this.processing.add(job._id)
-            this.processJob(job).finally(() => this.processing.delete(job._id))
-          }
+          if (this.processing.has(job._id)) continue
+          const run = this.processJob(job).finally(() => this.processing.delete(job._id))
+          this.processing.set(job._id, run)
         }
       },
     )
     this.unsubscribe = unsub
   }
 
-  stop(): void {
+  /** Stop claiming work and wait for what is already claimed.
+   *
+   * Unsubscribing alone was not enough for a quit: a job claimed a moment
+   * earlier keeps running, and the very next thing it does is `ensureSession`,
+   * which spawns a CLI the shutdown sweep has already walked past. Waiting
+   * here — before the host tears the runtimes down — is what makes that
+   * ordering deterministic instead of a race. A job that throws still settles;
+   * `processJob` reports failures rather than rejecting. */
+  async stop(): Promise<void> {
+    this.stopped = true
     this.unsubscribe?.()
     this.unsubscribe = null
     recordConvexTelemetry({
@@ -231,6 +289,11 @@ export class JobWorker {
       name: 'jobs.listPending',
       requestBytes: estimateConvexPayloadBytes({ clientId: this.clientId }),
     })
+    const inFlight = [...this.processing.values()]
+    if (inFlight.length > 0) {
+      console.log(`[job-worker] waiting for ${inFlight.length} in-flight job(s)`)
+      await Promise.allSettled(inFlight)
+    }
   }
 
   private async processJob(job: JobDoc): Promise<void> {
@@ -251,78 +314,39 @@ export class JobWorker {
       switch (job.type) {
         case 'send_message': {
           const route = this.route(parsed, parsed.sessionExternalId)
-          await this.agentHost.runtime.ensureSession({
-            ...route,
-            sessionId: parsed.sessionExternalId,
-          })
-          // Model selection is provider-global agent state (another session may
-          // have changed it since this one was last used), so re-apply the
-          // workspace's current selection before every prompt. This is the one
-          // sync point that keeps "what the composer shows" and "what the
-          // agent runs" identical, for prompts from any device.
-          const preferredModel =
-            parsed.preferredModelId ??
-            this.getLastModelForWorkspace(parsed.workspacePath, route.providerId)
-          if (preferredModel) {
-            try {
-              await this.agentHost.runtime.setModel({
-                ...route,
-                sessionId: parsed.sessionExternalId,
-                modelId: preferredModel,
-              })
-            } catch (error) {
-              console.warn(
-                `[job-worker] failed to apply model ${preferredModel}: ${(error as Error).message}`,
-              )
-            }
-          }
-          const preferredConfigValues =
-            this.configValues(parsed.preferredConfigValues) ??
-            this.getConfigValuesForWorkspace(parsed.workspacePath, route.providerId)
-          await this.applyConfigValues(
-            parsed,
-            parsed.sessionExternalId,
-            parsed.sessionExternalId,
-            preferredConfigValues,
-          )
+          const desired = this.desiredConfig(parsed, route.providerId)
+          // The composer's selection is still enforced before every prompt —
+          // it has to be, because prompts arrive from other devices too — but
+          // it is handed to `prompt` rather than applied here. Applying it
+          // first and prompting second used to leave a window that a network
+          // round trip sat inside: `promptInput` resolves and downloads image
+          // attachments, and any config a *different* job applied during that
+          // download would be what this turn ran on. The runtime now applies
+          // it atomically with dispatch, so there is no window to widen.
+          const prompt = await this.promptInput(parsed)
           await this.agentHost.runtime.prompt({
             ...route,
             sessionId: parsed.sessionExternalId,
-            prompt: await this.promptInput(parsed),
+            ...(desired ? { desiredConfig: desired } : {}),
+            prompt,
             userMessageId: parsed.userMessageId,
           })
           break
         }
         case 'create_session': {
           const provisionalThreadId = crypto.randomUUID()
-          const session = await this.agentHost.runtime.ensureSession(
-            this.route(parsed, provisionalThreadId),
-          )
+          const desired = this.desiredConfig(parsed, providerId)
+          // Carried on the spec so a cold process reconciles while the cache is
+          // still warm from the `session/new` response.
+          const session = await this.agentHost.runtime.ensureSession({
+            ...this.route(parsed, provisionalThreadId),
+            ...(desired ? { desiredConfig: desired } : {}),
+          })
           const threadId = session.sessionId
           await this.agentHost.runtime.ensureSession({
             ...this.route(parsed, threadId),
             sessionId: session.sessionId,
           })
-          const rememberedModel = this.getLastModelForWorkspace(parsed.workspacePath, providerId)
-          if (rememberedModel) {
-            try {
-              await this.agentHost.runtime.setModel({
-                ...this.route(parsed, threadId),
-                sessionId: session.sessionId,
-                modelId: rememberedModel,
-              })
-            } catch (error) {
-              console.warn(
-                `[job-worker] failed to apply remembered model ${rememberedModel}: ${(error as Error).message}`,
-              )
-            }
-          }
-          await this.applyConfigValues(
-            parsed,
-            threadId,
-            session.sessionId,
-            this.getConfigValuesForWorkspace(parsed.workspacePath, providerId),
-          )
           await this.runTrackedMutation('sessions.upsertStatus', api.sessions.upsertStatus, {
             workspacePath: parsed.workspacePath,
             externalId: session.sessionId,
@@ -336,47 +360,16 @@ export class JobWorker {
         }
         case 'start_session_with_message': {
           const provisionalThreadId = crypto.randomUUID()
-          const session = await this.agentHost.runtime.ensureSession(
-            this.route(parsed, provisionalThreadId),
-          )
+          const desired = this.desiredConfig(parsed, providerId)
+          const session = await this.agentHost.runtime.ensureSession({
+            ...this.route(parsed, provisionalThreadId),
+            ...(desired ? { desiredConfig: desired } : {}),
+          })
           const threadId = session.sessionId
           await this.agentHost.runtime.ensureSession({
             ...this.route(parsed, threadId),
             sessionId: session.sessionId,
           })
-          const preferredModel =
-            parsed.preferredModelId ??
-            this.getLastModelForWorkspace(parsed.workspacePath, providerId)
-          if (preferredModel) {
-            try {
-              await this.agentHost.runtime.setModel({
-                ...this.route(parsed, threadId),
-                sessionId: session.sessionId,
-                modelId: preferredModel,
-              })
-            } catch (error) {
-              console.warn(
-                `[job-worker] failed to apply model ${preferredModel}: ${(error as Error).message}`,
-              )
-            }
-          }
-          if (parsed.preferredModeId) {
-            try {
-              await this.agentHost.runtime.setMode({
-                ...this.route(parsed, threadId),
-                sessionId: session.sessionId,
-                modeId: parsed.preferredModeId,
-              })
-            } catch (error) {
-              console.warn(
-                `[job-worker] failed to apply mode ${parsed.preferredModeId}: ${(error as Error).message}`,
-              )
-            }
-          }
-          const preferredConfigValues =
-            this.configValues(parsed.preferredConfigValues) ??
-            this.getConfigValuesForWorkspace(parsed.workspacePath, providerId)
-          await this.applyConfigValues(parsed, threadId, session.sessionId, preferredConfigValues)
           await this.runTrackedMutation('sessions.upsertStatus', api.sessions.upsertStatus, {
             workspacePath: parsed.workspacePath,
             externalId: session.sessionId,
@@ -386,10 +379,12 @@ export class JobWorker {
             ...(parsed.title ? { titleSource: 'fallback' } : {}),
             clientId: this.clientId,
           })
+          const prompt = await this.promptInput(parsed)
           await this.agentHost.runtime.prompt({
             ...this.route(parsed, threadId),
             sessionId: session.sessionId,
-            prompt: await this.promptInput(parsed),
+            ...(desired ? { desiredConfig: desired } : {}),
+            prompt,
             userMessageId: parsed.userMessageId,
           })
           break
@@ -400,22 +395,13 @@ export class JobWorker {
             sessionId: parsed.sessionExternalId,
           })
           break
-        case 'delete_session': {
-          const capabilities = this.agentHost.runtime.getProvider(providerId).capabilities
-          if (capabilities.canDeleteSession) {
-            throw new Error(
-              `Provider ${providerId} advertises session deletion without a runtime operation`,
-            )
-          }
-          this.agentHost.emitSessionDeleted({
+        case 'delete_session':
+          await deleteSession(this.agentHost, {
             providerId,
-            threadId: parsed.sessionExternalId,
+            sessionExternalId: parsed.sessionExternalId,
             workspacePath: parsed.workspacePath,
-            sessionId: parsed.sessionExternalId,
           })
-          await this.agentHost.projector.waitForThread(parsed.sessionExternalId)
           break
-        }
         case 'resolve_permission':
           this.agentHost.respondPermission({
             providerId,
@@ -456,35 +442,44 @@ export class JobWorker {
           // Accepting the plan releases the original Cursor prompt. Wait for
           // that prompt to finish before switching mode and starting execution.
           await this.agentHost.runtime.waitForPromptIdle(parsed.sessionExternalId)
-          if (typeof parsed.modeId === 'string' && parsed.modeId) {
+          const modeId =
+            typeof parsed.modeId === 'string' && parsed.modeId ? parsed.modeId : undefined
+          if (modeId) {
             await this.agentHost.runtime.setMode({
               ...route,
               sessionId: parsed.sessionExternalId,
-              modeId: parsed.modeId,
+              modeId,
             })
           }
+          const prompt = await this.promptInput(parsed)
           await this.agentHost.runtime.prompt({
             ...route,
             sessionId: parsed.sessionExternalId,
-            prompt: await this.promptInput(parsed),
+            // Carried on the prompt as well as set above: the mode this turn
+            // must run in is the point of the job, and only reconciling it
+            // inside the dispatch guarantees another job cannot change it in
+            // between. It costs no round trip once `setMode` has landed.
+            ...(modeId ? { desiredConfig: { modeId } } : {}),
+            prompt,
             userMessageId: parsed.userMessageId,
           })
           break
         }
-        case 'set_model':
+        case 'set_model': {
+          const route = this.route(parsed, parsed.sessionExternalId)
           await this.agentHost.runtime.setModel({
-            ...this.route(parsed, parsed.sessionExternalId),
+            ...route,
             sessionId: parsed.sessionExternalId,
             modelId: parsed.modelId,
           })
           this.setLastModelForWorkspace(parsed.workspacePath, providerId, parsed.modelId)
-          await this.applyConfigValues(
-            parsed,
-            parsed.sessionExternalId,
-            parsed.sessionExternalId,
-            this.getConfigValuesForWorkspace(parsed.workspacePath, providerId),
-          )
+          // A model change rewrites which options are legal, so the remembered
+          // values are re-reconciled against the refreshed option list. Ones
+          // the new model dropped are pruned rather than attempted.
+          const values = this.getConfigValuesForWorkspace(parsed.workspacePath, providerId)
+          if (values) await this.agentHost.runtime.applyDesiredConfig(route, { values })
           break
+        }
         case 'set_mode':
           await this.agentHost.runtime.setMode({
             ...this.route(parsed, parsed.sessionExternalId),

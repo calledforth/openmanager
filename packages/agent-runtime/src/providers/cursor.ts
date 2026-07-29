@@ -135,7 +135,10 @@ export const cursor: ProviderConfig = {
     tolerateAuthenticateFailure: false,
     loginInstruction: 'Sign in to Cursor and retry.',
   },
-  quirks: { correlateSessionlessExtensionsToActivePrompt: true },
+  // Cursor sends `cursor/ask_question` and `cursor/create_plan` with a
+  // toolCallId but no sessionId. One process owns one session, so the
+  // correlation target is unambiguous and no quirk is needed.
+  quirks: {},
   capabilities: {
     canSetModel: true,
     canSetMode: true,

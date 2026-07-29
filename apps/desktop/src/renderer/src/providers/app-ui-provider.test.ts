@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   coordinateProviderConnection,
+  providerBlocksComposer,
   resolveDraftComposerRuntime,
   resolveSessionComposerRuntime,
 } from './app-ui-provider'
@@ -208,5 +209,24 @@ describe('provider connection coordination', () => {
     const third = coordinateProviderConnection(connections, 'cursor', async () => true)
     expect(third).not.toBe(first)
     await expect(third).resolves.toBe(true)
+  })
+})
+
+describe('composer gating on provider health', () => {
+  it('does not treat a provider we have not checked yet as broken', () => {
+    // At launch only the last-used provider is started, so `undefined` and
+    // `'unknown'` are the normal reading for the other one. Blocking the
+    // composer on them is the bug; `ensureProvider` still runs before a send.
+    expect(providerBlocksComposer(undefined)).toBe(false)
+    expect(providerBlocksComposer('unknown')).toBe(false)
+    expect(providerBlocksComposer('ready')).toBe(false)
+    expect(providerBlocksComposer('degraded')).toBe(false)
+  })
+
+  it('blocks on a probe in flight and on every known failure', () => {
+    expect(providerBlocksComposer('probing')).toBe(true)
+    expect(providerBlocksComposer('auth_required')).toBe(true)
+    expect(providerBlocksComposer('binary_missing')).toBe(true)
+    expect(providerBlocksComposer('failed')).toBe(true)
   })
 })

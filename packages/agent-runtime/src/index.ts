@@ -1,17 +1,26 @@
 export { AgentRuntime } from './core/AgentRuntime.js'
-export type { RuntimeRoute, RuntimeSessionArgs } from './core/AgentRuntime.js'
+export type { AgentRuntimeOptions, RuntimeRoute, RuntimeSessionArgs } from './core/AgentRuntime.js'
 export { PermissionBroker, PERMISSION_TIMEOUT_MS } from './core/PermissionBroker.js'
 export { ExtensionBroker, EXTENSION_TIMEOUT_MS } from './core/ExtensionBroker.js'
 export type { ExtensionSettlement } from './core/ExtensionBroker.js'
-export { SessionStore } from './core/SessionStore.js'
-export type { SessionBinding } from './core/SessionStore.js'
 export { AuthRequiredError, CapabilityMissingError } from './core/errors.js'
-export { AcpBackend } from './backends/acp/AcpBackend.js'
+export {
+  PROVIDER_HEALTH_PROBE_TIMEOUT_MS,
+  PROVIDER_HEALTH_REFRESH_INTERVAL_MS,
+  ProbeTimeoutError,
+  ProviderHealthMonitor,
+} from './core/ProviderHealthMonitor.js'
 export type {
-  Backend,
+  ProviderHealthMonitorDeps,
+  ProviderHealthRefreshReason,
+  ProviderRuntimeCensus,
+} from './core/ProviderHealthMonitor.js'
+export { SessionReaper } from './core/SessionReaper.js'
+export type { SessionReaperDeps } from './core/SessionReaper.js'
+export type {
   BackendEvent,
+  BackendEventListener,
   BackendRoute,
-  BackendSessionArgs,
   SessionResult,
 } from './backends/Backend.js'
 export { ExtensionRegistry } from './backends/acp/extensions.js'
@@ -22,6 +31,63 @@ export type {
   ExtensionNotificationHandler,
   ExtensionRequestHandler,
 } from './backends/acp/extensions.js'
+// The session-scoped runtime: one child process per thread, no shared
+// per-provider process. See docs/session-runtime-design.md.
+export {
+  AcpProbeRuntimeFactoryImpl,
+  AcpProbeRuntimeImpl,
+  AcpSessionRuntimeFactory,
+  AcpSessionRuntimeImpl,
+  AppliedConfigCache,
+  ChildProcessConnection,
+  ChildProcessConnectionFactory,
+  configValueAdvertised,
+  configValueMatches,
+  DEFAULT_RUNTIME_TIMEOUTS,
+  isRuntimeAlive,
+  MAX_SESSION_RUNTIMES,
+  RpcTimeoutError,
+  SESSION_IDLE_TIMEOUT_MS,
+  SESSION_REAP_INTERVAL_MS,
+  SessionRuntimeRegistryImpl,
+  SHUTDOWN_BUDGET_MS,
+  withTimeout,
+} from './session/index.js'
+export type {
+  AcpConnection,
+  AcpConnectionFactory,
+  AcpConnectionSpec,
+  AcpProbeDeps,
+  AcpProbeResult,
+  AcpProbeRuntime,
+  AcpProbeRuntimeFactory,
+  AcpProbeSpec,
+  AcpSessionRuntime,
+  ActiveTurn,
+  AppliedSessionState,
+  AppliedStateSource,
+  ConfigApplyDecision,
+  ConfigApplyPlan,
+  DesiredSessionConfig,
+  ManagedSessionRuntime,
+  ManagedSessionRuntimeFactory,
+  ProcessExit,
+  RuntimeTimeouts,
+  SessionResumeRecord,
+  SessionRuntimeDeps,
+  SessionRuntimeEntry,
+  SessionRuntimeExit,
+  SessionRuntimeFactory,
+  SessionRuntimePhase,
+  SessionRuntimeRegistry,
+  SessionRuntimeRegistryDeps,
+  SessionRuntimeSpec,
+  SessionRuntimeStopReason,
+  StartedEntry,
+  TerminableChild,
+  TerminationRequest,
+  ThreadId,
+} from './session/index.js'
 export { cursor, opencode, providers } from './providers/index.js'
 export type { ProviderConfig } from './providers/index.js'
 export type { HostDeps, HostLogEntry } from './host.js'

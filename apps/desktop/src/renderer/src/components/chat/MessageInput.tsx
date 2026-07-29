@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '@openmanager/convex/_generated/api'
-import { useAppUi } from '../../providers/app-ui-provider'
+import { providerBlocksComposer, useAppUi } from '../../providers/app-ui-provider'
 import { useActiveSession } from '../../providers/active-session-provider'
 import { useQuestionStateOptional } from '../../providers/question-provider'
 import { usePlanStateOptional } from '../../providers/plan-provider'
@@ -68,7 +68,7 @@ export function MessageInput() {
     name: provider.label,
   }))
   const currentProviderId = chrome.providerPicker.currentProviderId ?? defaultProviderId
-  const providerReady = agentUiStatusByProvider[currentProviderId] === 'connected'
+  const providerReady = !providerBlocksComposer(agentUiStatusByProvider[currentProviderId])
   const currentProviderName =
     providerOptions.find((provider) => provider.id === currentProviderId)?.name ?? currentProviderId
   const chromeModeOptions = (chrome.modePicker?.options ?? []).map((mode) => ({

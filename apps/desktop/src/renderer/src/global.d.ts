@@ -1,4 +1,5 @@
-import type { SidecarHandshake, SidecarStatus } from '@openmanager/shared/contracts/sidecar'
+import type { SidecarHandshake } from '@openmanager/shared/contracts/sidecar'
+import type { ProviderHealthReport } from '@openmanager/shared/contracts/provider-health'
 import type {
   AgentEvent,
   PromptCapabilities,
@@ -29,7 +30,7 @@ interface ElectronAPI {
   clearTelemetry: () => Promise<void>
   recordTelemetry: (event: Record<string, unknown>) => Promise<void>
   ensureAgentProvider: (providerId: ProviderId, cwd: string) => Promise<SidecarHandshake>
-  getAgentStatuses: () => Promise<Partial<Record<ProviderId, SidecarStatus>>>
+  getAgentStatuses: () => Promise<Partial<Record<ProviderId, ProviderHealthReport>>>
   getAgentPromptCapabilities: () => Promise<Partial<Record<ProviderId, PromptCapabilities>>>
   getAgentProviders: () => Promise<ProviderMetadata[]>
   getModelImageSupport: (providerId: ProviderId, modelId: string) => Promise<boolean | null>
@@ -57,7 +58,7 @@ interface ElectronAPI {
     preference: WorkspaceComposerPreference,
   ) => Promise<void>
   onAgentStatusChanged: (
-    callback: (data: { providerId: ProviderId; status: string }) => void,
+    callback: (data: { providerId: ProviderId; report: ProviderHealthReport }) => void,
   ) => () => void
   onStreamToken: (callback: (data: AgentEvent) => void) => () => void
   onTelemetryUpdate: (callback: (data: unknown) => void) => () => void

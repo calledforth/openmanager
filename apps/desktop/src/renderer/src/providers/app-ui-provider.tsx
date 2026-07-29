@@ -10,7 +10,11 @@ import {
 } from 'react'
 import { api } from '@openmanager/convex/_generated/api'
 import type { Id } from '@openmanager/convex/_generated/dataModel'
-import type { SidecarStatus } from '@openmanager/shared/contracts/sidecar'
+import {
+  deriveProviderUiStatus,
+  type ProviderHealthReport,
+  type ProviderUiStatus,
+} from '@openmanager/shared/contracts/provider-health'
 import {
   isProviderId,
   type AgentEvent,
@@ -52,7 +56,22 @@ import {
   type SessionConfigValue,
 } from '../components/chat/modelConfig'
 
-export type ProviderUiStatus = 'disconnected' | 'connecting' | 'connected'
+export type { ProviderUiStatus }
+
+/** Whether a provider's health should stop the composer offering to send.
+ *
+ * Only a positively-known failure does. "We have not checked yet" must not:
+ * at launch only one provider is started, so treating unknown as broken is
+ * what made a perfectly good provider read as unavailable. `ensureProvider`
+ * still runs before a send and surfaces a real failure then. */
+export function providerBlocksComposer(status: ProviderUiStatus | undefined): boolean {
+  return (
+    status === 'probing' ||
+    status === 'auth_required' ||
+    status === 'binary_missing' ||
+    status === 'failed'
+  )
+}
 
 /** How the user answered a permission request: an exact provider option, or a
  * plain approve/deny the main process maps to an option by kind. */
@@ -262,7 +281,7 @@ interface AppUiValue {
   localSessionStatus: LocalSessionStatus | null
   adoptedDraftSessionId: string | null
   currentClientId: string | null
-  agentStatusByProvider: Partial<Record<ProviderId, SidecarStatus>>
+  providerHealthByProvider: Partial<Record<ProviderId, ProviderHealthReport>>
   agentUiStatusByProvider: Partial<Record<ProviderId, ProviderUiStatus>>
   acpAgentInfoByProvider: Partial<Record<ProviderId, AgentInfo>>
   acpPromptCapabilitiesByProvider: Partial<Record<ProviderId, PromptCapabilities>>
@@ -355,8 +374,8 @@ export function useAppUi() {
 }
 
 export function AppUiProvider({ children }: { children: ReactNode }) {
-  const [agentStatusByProvider, setAgentStatusByProvider] = useState<
-    Partial<Record<ProviderId, SidecarStatus>>
+  const [providerHealthByProvider, setProviderHealthByProvider] = useState<
+    Partial<Record<ProviderId, ProviderHealthReport>>
   >({})
   const [connectingProviders, setConnectingProviders] = useState<
     Partial<Record<ProviderId, boolean>>
@@ -544,34 +563,34 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
     }
   }, [localSessionJob])
 
-  const applyProviderStatus = useCallback((providerId: ProviderId, status: SidecarStatus) => {
-    setAgentStatusByProvider((prev) => ({ ...prev, [providerId]: status }))
+  const applyProviderHealth = useCallback((providerId: ProviderId, report: ProviderHealthReport) => {
+    setProviderHealthByProvider((prev) => ({ ...prev, [providerId]: report }))
   }, [])
 
   const setProviderConnecting = useCallback((providerId: ProviderId, connecting: boolean) => {
     setConnectingProviders((prev) => ({ ...prev, [providerId]: connecting }))
   }, [])
 
-  // Pushed sidecar statuses are the source of truth; the local connecting flag
-  // only bridges the gap while an ensure IPC round-trip is in flight.
+  // The pushed health snapshot is the source of truth; the local connecting
+  // flag only bridges the gap between clicking Retry and the main process's
+  // first push. Health is re-derived on every push, so a snapshot ageing out
+  // is picked up by the next one — no ticking clock, which would re-render
+  // every consumer of this context on a timer.
   const agentUiStatusByProvider = useMemo(() => {
+    const now = Date.now()
     const result: Partial<Record<ProviderId, ProviderUiStatus>> = {}
     const providerIds = new Set([
-      ...Object.keys(agentStatusByProvider),
+      ...Object.keys(providerHealthByProvider),
       ...Object.keys(connectingProviders),
     ])
     for (const providerId of providerIds) {
       if (!isProviderId(providerId)) continue
-      const status = agentStatusByProvider[providerId]
+      const status = deriveProviderUiStatus(providerHealthByProvider[providerId], now)
       result[providerId] =
-        status === 'healthy'
-          ? 'connected'
-          : connectingProviders[providerId] || status === 'starting'
-            ? 'connecting'
-            : 'disconnected'
+        status === 'unknown' && connectingProviders[providerId] ? 'probing' : status
     }
     return result
-  }, [agentStatusByProvider, connectingProviders])
+  }, [providerHealthByProvider, connectingProviders])
 
   const providerDisplayName = useCallback(
     (providerId: ProviderId) =>
@@ -1654,17 +1673,17 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     window.electronAPI
       .getAgentStatuses()
-      .then((statuses) => {
-        for (const [providerId, status] of Object.entries(statuses)) {
-          if (isProviderId(providerId) && status) applyProviderStatus(providerId, status)
+      .then((reports) => {
+        for (const [providerId, report] of Object.entries(reports)) {
+          if (isProviderId(providerId) && report) applyProviderHealth(providerId, report)
         }
       })
       .catch(() => undefined)
-    const cleanup = window.electronAPI.onAgentStatusChanged(({ providerId, status }) => {
-      applyProviderStatus(providerId, status as SidecarStatus)
+    const cleanup = window.electronAPI.onAgentStatusChanged(({ providerId, report }) => {
+      applyProviderHealth(providerId, report)
     })
     return cleanup
-  }, [applyProviderStatus])
+  }, [applyProviderHealth])
 
   useEffect(() => {
     const cleanup = window.electronAPI.onAcpEvent((event) => {
@@ -1993,7 +2012,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       localSessionStatus,
       adoptedDraftSessionId,
       currentClientId,
-      agentStatusByProvider,
+      providerHealthByProvider,
       agentUiStatusByProvider,
       acpAgentInfoByProvider,
       acpPromptCapabilitiesByProvider,
@@ -2036,7 +2055,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       localSessionStatus,
       adoptedDraftSessionId,
       currentClientId,
-      agentStatusByProvider,
+      providerHealthByProvider,
       agentUiStatusByProvider,
       acpAgentInfoByProvider,
       acpPromptCapabilitiesByProvider,

@@ -14,11 +14,25 @@ import {
 } from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
 import { UI_FONTS, type UiFontId } from '../../lib/fonts'
+import {
+  describeProviderHealth,
+  type ProviderHealthTone,
+} from '../../lib/provider-health-view'
 import { typographyCaption } from '../../lib/typography'
 import { useTheme } from '../../providers/theme-provider'
 import { useAppUi } from '../../providers/app-ui-provider'
 import { ConvexSettingsDialog } from '../settings/ConvexSettingsDialog'
 import { SearchableMenu, type SearchableMenuSection } from '../ui/SearchableMenu'
+
+/** Same palette the update-check row uses, so the two footer sections read as
+ * one thing. `muted` is deliberately the same faint grey as an idle provider:
+ * "not checked yet" is not a warning. */
+const PROVIDER_TONE_CLASS: Record<ProviderHealthTone, string> = {
+  ready: 'text-emerald-400',
+  warning: 'text-amber-400',
+  error: 'text-red-400',
+  muted: 'text-[var(--basis-text-faint)]',
+}
 
 type UpdateCheckState =
   | { status: 'idle' }
@@ -41,8 +55,7 @@ export function SidebarSettingsMenu({
   })
   const { theme, toggleTheme, font, setFont } = useTheme()
   const {
-    agentStatusByProvider,
-    agentUiStatusByProvider,
+    providerHealthByProvider,
     acpAgentInfoByProvider,
     providers: registeredProviders,
     retryProvider,
@@ -63,32 +76,21 @@ export function SidebarSettingsMenu({
   }, [updateCheckState.status])
 
   const providers = useMemo(() => {
+    const now = Date.now()
     return registeredProviders.map((provider) => {
-      const uiStatus = agentUiStatusByProvider[provider.id] ?? 'disconnected'
-      const status = agentStatusByProvider[provider.id] ?? 'stopped'
+      const health = describeProviderHealth(providerHealthByProvider[provider.id], now)
       const agentInfo = acpAgentInfoByProvider[provider.id]
+      // The CLI's own name and version when we have heard from it, which is
+      // more useful than our label for telling two installs apart.
       const label = agentInfo?.name
         ? `${agentInfo.name}${agentInfo.version ? ` ${agentInfo.version}` : ''}`
         : `${provider.displayName} ACP`
-      return {
-        id: provider.id,
-        displayName: provider.displayName,
-        label,
-        connected: uiStatus === 'connected',
-        detail:
-          uiStatus === 'connecting'
-            ? 'Connecting…'
-            : uiStatus === 'connected'
-              ? status === 'healthy'
-                ? 'Healthy'
-                : status
-              : 'Unavailable',
-      }
+      return { id: provider.id, displayName: provider.displayName, label, health }
     })
-  }, [acpAgentInfoByProvider, agentStatusByProvider, agentUiStatusByProvider, registeredProviders])
+  }, [acpAgentInfoByProvider, providerHealthByProvider, registeredProviders])
 
-  const disconnectedProviders = useMemo(
-    () => providers.filter((provider) => !provider.connected),
+  const retryableProviders = useMemo(
+    () => providers.filter((provider) => provider.health.canRetry),
     [providers],
   )
 
@@ -194,26 +196,27 @@ export function SidebarSettingsMenu({
                 key={provider.id}
                 className="flex items-center gap-2 px-2.5 py-1 text-11-regular text-[var(--basis-text)]"
               >
-                <CircleIcon
-                  weight="fill"
-                  className={cn(
-                    'h-2 w-2 shrink-0',
-                    provider.connected ? 'text-emerald-400' : 'text-[var(--basis-text-faint)]',
-                  )}
-                />
+                {provider.health.status === 'probing' ? (
+                  <CircleNotchIcon className="h-2.5 w-2.5 shrink-0 animate-spin text-[var(--basis-text-faint)]" />
+                ) : (
+                  <CircleIcon
+                    weight="fill"
+                    className={cn('h-2 w-2 shrink-0', PROVIDER_TONE_CLASS[provider.health.tone])}
+                  />
+                )}
                 <div className="min-w-0 flex-1">
                   <div className="truncate">{provider.label}</div>
-                  {provider.detail && (
-                    <div
-                      className={cn(typographyCaption, 'truncate text-[var(--basis-text-faint)]')}
-                    >
-                      {provider.detail}
-                    </div>
-                  )}
+                  <div
+                    className={cn(typographyCaption, 'truncate text-[var(--basis-text-faint)]')}
+                    title={provider.health.detail ?? provider.health.label}
+                  >
+                    {provider.health.label}
+                    {provider.health.detail ? ` · ${provider.health.detail}` : ''}
+                  </div>
                 </div>
               </div>
             ))}
-            {disconnectedProviders.map((provider) => (
+            {retryableProviders.map((provider) => (
               <button
                 key={`retry:${provider.id}`}
                 type="button"

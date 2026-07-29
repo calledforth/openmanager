@@ -10,6 +10,7 @@ import { ConvexProjector } from './convex-projector'
 import { isProviderId, type ProviderId, type ProviderMetadata } from '@agentpack/contract'
 import { providers } from '@agentpack/runtime'
 import { loadOrCreateClientId } from './client-id'
+import { sanitizeProviderHealthCache } from './provider-health-cache'
 import store from './store'
 import { normalizeConvexUrl, resolveRuntimeConfig } from './convex-config'
 import type { ConvexConnectionResult, RuntimeConfig } from '../shared/runtime-config'
@@ -37,6 +38,54 @@ let clientId: string | null = null
 let userDataPath = ''
 const execFileAsync = promisify(execFile)
 const modelImageSupportCache = new Map<string, boolean | null>()
+
+/** The workspace's remembered model for a provider, preferring the composer
+ * preference and falling back to the pre-Cursor `lastSelectedModelByWorkspace`
+ * shape. */
+function lastModelForWorkspace(workspacePath: string, providerId: ProviderId): string | null {
+  const preference = store.get('workspaceComposerPreferences', {})[
+    workspaceComposerPreferenceKey(workspacePath, providerId)
+  ]
+  if (preference?.modelId) return preference.modelId
+  const models = store.get('lastSelectedModelByWorkspace', {})
+  // Legacy entries were keyed by workspace alone, before Cursor support.
+  const model =
+    models[`${workspacePath}::${providerId}`] ??
+    (providerId === 'opencode' ? models[workspacePath] : undefined)
+  return typeof model === 'string' && model.length > 0 ? model : null
+}
+
+function configValuesForWorkspace(
+  workspacePath: string,
+  providerId: ProviderId,
+): Record<string, string | boolean> | undefined {
+  return store.get('workspaceComposerPreferences', {})[
+    workspaceComposerPreferenceKey(workspacePath, providerId)
+  ]?.configValues
+}
+
+/** The durable desired config for a workspace + provider, from the one place
+ * it is persisted.
+ *
+ * Both the job worker (which layers per-job overrides on top) and the agent
+ * runtime (which asks for it whenever it opens a session with no explicit
+ * config) read the workspace's intent through these two functions, so there is
+ * no second copy to go stale. Mode is deliberately left out: it is persisted
+ * for the composer's benefit, but applying a remembered mode to every session
+ * a respawn touches would fight the plan/execute flow, which sets mode per
+ * turn. */
+function desiredConfigForWorkspace(
+  workspacePath: string,
+  providerId: ProviderId,
+): { modelId?: string; values?: Record<string, string | boolean> } | undefined {
+  const modelId = lastModelForWorkspace(workspacePath, providerId) ?? undefined
+  const values = configValuesForWorkspace(workspacePath, providerId)
+  const desired = {
+    ...(modelId ? { modelId } : {}),
+    ...(values ? { values } : {}),
+  }
+  return Object.keys(desired).length > 0 ? desired : undefined
+}
 
 function jsonObjects(output: string): Array<Record<string, any>> {
   const objects: Array<Record<string, any>> = []
@@ -194,7 +243,7 @@ ipcMain.handle('agent:ensure', async (_e, providerId: unknown, cwd: string) => {
 })
 
 ipcMain.handle('agent:status', async () => {
-  return agentHost?.getStatuses() ?? {}
+  return agentHost?.getHealth() ?? {}
 })
 
 ipcMain.handle('agent:prompt-capabilities', async () => {
@@ -225,6 +274,11 @@ ipcMain.handle(
     if (!host.runtime.getProvider(providerId).capabilities.canLoadSession) {
       return { ok: false, reason: 'load_session_not_supported' }
     }
+    // No `desiredConfig` here on purpose: the runtime asks
+    // `desiredSessionConfig` for the workspace's current selection, which is
+    // the same answer this handler could compute and cannot be a stale copy of
+    // it. Opening a session from the sidebar therefore configures its process
+    // exactly as sending a message would.
     await host.runtime.ensureSession({
       providerId,
       threadId: sessionId,
@@ -397,38 +451,52 @@ app.whenReady().then(() => {
 
   if (convexClient && clientId) {
     const projector = new ConvexProjector(convexClient, clientId)
-    agentHost = new AgentHost(projector, () => mainWindow)
     const lastUsed = store.get('lastUsedProviderId', 'opencode')
     const startupProviderId: ProviderId = isProviderId(lastUsed) ? lastUsed : 'opencode'
-    agentHost.ensureProvider(startupProviderId, process.cwd()).catch((error) => {
-      console.error(
-        `[agent] failed to start ${startupProviderId} at app launch:`,
-        (error as Error).message,
-      )
+    // Probe in the workspace the user was last in. Electron's own cwd is not a
+    // workspace, and there is no longer a session-less shared process that
+    // could usefully be started there; with no remembered workspace the
+    // renderer's `agent:ensure` covers the first real one.
+    const startupWorkspace = store.get('lastActiveWorkspacePath', '')
+    agentHost = new AgentHost(projector, () => mainWindow, {
+      healthCache: {
+        load: () => sanitizeProviderHealthCache(store.get('providerHealth', {})),
+        save: (cache) => store.set('providerHealth', cache),
+      },
+      // Every provider's health probe needs a real directory, not just the one
+      // the user last used: at launch only one provider is started, and the
+      // other must still be checkable.
+      ...(startupWorkspace ? { probeCwd: startupWorkspace } : {}),
+      // The one place the durable composer selection lives. The runtime asks
+      // this whenever it opens a session it was given no explicit config for —
+      // a respawn after a reap, a `set_model` on a dead thread, a session
+      // opened from the sidebar — so a fresh Cursor process is corrected off
+      // the model it restored from disk rather than inheriting it.
+      desiredSessionConfig: ({ providerId, workspacePath }) =>
+        desiredConfigForWorkspace(workspacePath, providerId),
     })
+    // Order matters, and it is load-bearing. `ensureProvider` registers its
+    // throwaway probe with the health monitor synchronously, before its first
+    // await; starting the monitor afterwards lets its boot sweep adopt that
+    // probe instead of spawning a second CLI for the same handshake. Starting
+    // the monitor first (which constructing the host used to do) put two
+    // `cursor-agent` processes on every launch.
+    if (startupWorkspace) {
+      agentHost.ensureProvider(startupProviderId, startupWorkspace).catch((error) => {
+        console.error(
+          `[agent] failed to probe ${startupProviderId} at app launch:`,
+          (error as Error).message,
+        )
+      })
+    }
+    agentHost.startHealthMonitor()
     console.log('[job-worker] starting')
     jobWorker = new JobWorker(
       convexClient,
       agentHost,
       clientId,
-      (workspacePath, providerId) => {
-        const preference = store.get('workspaceComposerPreferences', {})[
-          workspaceComposerPreferenceKey(workspacePath, providerId)
-        ]
-        if (preference?.modelId) return preference.modelId
-        const models = store.get('lastSelectedModelByWorkspace', {})
-        // Legacy entries were keyed by workspace alone, before Cursor support.
-        const model =
-          models[`${workspacePath}::${providerId}`] ??
-          (providerId === 'opencode' ? models[workspacePath] : undefined)
-        return typeof model === 'string' && model.length > 0 ? model : null
-      },
-      (workspacePath, providerId) => {
-        const preference = store.get('workspaceComposerPreferences', {})[
-          workspaceComposerPreferenceKey(workspacePath, providerId)
-        ]
-        return preference?.configValues
-      },
+      lastModelForWorkspace,
+      configValuesForWorkspace,
       (workspacePath, providerId, modelId) => {
         const key = workspaceComposerPreferenceKey(workspacePath, providerId)
         const preferences = store.get('workspaceComposerPreferences', {})
@@ -460,8 +528,40 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', async () => {
-  jobWorker?.stop()
-  agentHost?.dispose()
+let quitting = false
+
+// Electron does not await an async `before-quit` listener, so the previous
+// shape sent SIGTERM to every CLI and then let the app exit immediately — the
+// SIGKILL escalation never got to run and a child that ignored SIGTERM was
+// orphaned. Hold the quit open explicitly instead, and re-emit it once every
+// child is actually gone. `AgentRuntime.shutdown` is bounded, so this cannot
+// wedge the quit.
+app.on('before-quit', (event) => {
+  if (quitting) return
+  quitting = true
+  event.preventDefault()
+  const worker = jobWorker
+  jobWorker = null
+  const host = agentHost
   agentHost = null
+  void (async () => {
+    try {
+      // Drain the worker *before* tearing runtimes down. A job that was
+      // claimed a moment ago is about to call `ensureSession`, and a CLI
+      // spawned after the shutdown sweep has taken its snapshot is an orphan.
+      // The registry also refuses to start anything once shutdown begins, so
+      // this is belt and braces — but the belt is what keeps the job from
+      // failing with a confusing error instead of finishing.
+      await worker?.stop()
+    } catch (error) {
+      console.error('[job-worker] stop failed:', (error as Error).message)
+    }
+    try {
+      await host?.shutdown()
+    } catch (error) {
+      console.error('[agent] shutdown failed:', (error as Error).message)
+    } finally {
+      app.quit()
+    }
+  })()
 })

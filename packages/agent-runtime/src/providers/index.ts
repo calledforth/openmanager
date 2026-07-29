@@ -17,7 +17,6 @@ export type ProviderConfig = {
   quirks: {
     suppressPlanUpdates?: boolean
     nativeQuestions?: 'opencode'
-    correlateSessionlessExtensionsToActivePrompt?: boolean
   }
   capabilities: ProviderCapabilities
   extensions: ExtensionHandlers

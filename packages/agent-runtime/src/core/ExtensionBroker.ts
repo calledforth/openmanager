@@ -43,6 +43,28 @@ export class ExtensionBroker {
     this.settle('tool_cancelled', providerId, threadId)
   }
 
+  /** See `PermissionBroker.rekeyThread`: a `create_session` rebind renames the
+   * thread every pending record here is tagged with. */
+  rekeyThread(
+    providerId: ProviderId,
+    from: string,
+    to: string,
+    workspaceId: string | undefined,
+  ): void {
+    if (from === to) return
+    for (const request of this.pending.values()) {
+      if (request.providerId !== providerId || request.threadId !== from) continue
+      request.threadId = to
+      if (workspaceId !== undefined) request.workspaceId = workspaceId
+    }
+  }
+
+  /** The thread's process is gone. Distinct from `cancelThread`, which reports
+   * `tool_cancelled` because a user asked for it. */
+  settleThread(providerId: ProviderId, threadId: string): void {
+    this.settle('session_closed', providerId, threadId)
+  }
+
   settleProvider(providerId: ProviderId): void {
     this.settle('session_closed', providerId)
   }
