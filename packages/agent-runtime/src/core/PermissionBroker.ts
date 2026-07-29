@@ -55,6 +55,30 @@ export class PermissionBroker {
   cancelThread(providerId: ProviderId, threadId: string): void {
     this.settle('tool_cancelled', providerId, threadId)
   }
+  /** `create_session` renames a thread mid-flight: the runtime is created
+   * under a provisional uuid and rebound to the created session id. Requests
+   * already parked here still carry the provisional id, and every later lookup
+   * — `settleThread` when the process dies, `cancelThread` when the user stops
+   * the turn — uses the permanent one. Migrating them is what stops a request
+   * being orphaned until its 5-minute timeout for a process that is gone. */
+  rekeyThread(
+    providerId: ProviderId,
+    from: string,
+    to: string,
+    workspaceId: string | undefined,
+  ): void {
+    if (from === to) return
+    for (const request of this.pending.values()) {
+      if (request.providerId !== providerId || request.threadId !== from) continue
+      request.threadId = to
+      if (workspaceId !== undefined) request.workspaceId = workspaceId
+    }
+  }
+  /** The thread's process is gone. Distinct from `cancelThread`, which reports
+   * `tool_cancelled` because a user asked for it. */
+  settleThread(providerId: ProviderId, threadId: string): void {
+    this.settle('session_closed', providerId, threadId)
+  }
   settleProvider(providerId: ProviderId): void {
     this.settle('session_closed', providerId)
   }

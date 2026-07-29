@@ -1,5 +1,6 @@
 import Store from 'electron-store'
 import { configureStableUserDataPath } from './app-paths'
+import type { ProviderHealthCache } from './provider-health-cache'
 import type {
   ProviderComposerProfiles,
   WorkspaceComposerPreferences,
@@ -17,6 +18,10 @@ interface StoreSchema {
   lastActiveWorkspacePath: string
   providerComposerProfiles: ProviderComposerProfiles
   workspaceComposerPreferences: WorkspaceComposerPreferences
+  /** Last provider health snapshot, so the sidebar renders known state at
+   * launch instead of "unavailable" while the first probe runs. Aged out by
+   * `isProviderHealthStale`; never a source of current truth. */
+  providerHealth: ProviderHealthCache
 }
 
 const store = new Store<StoreSchema>({
@@ -29,6 +34,7 @@ const store = new Store<StoreSchema>({
     lastActiveWorkspacePath: '',
     providerComposerProfiles: {},
     workspaceComposerPreferences: {},
+    providerHealth: {},
   },
 })
 

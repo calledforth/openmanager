@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type {
+  ProviderHealth,
   SidecarHandshake,
-  SidecarStatus,
   Workspace,
   Session,
   Message,
@@ -18,9 +18,19 @@ describe('contract types', () => {
     expect(handshake.ready).toBe(true)
   })
 
-  it('SidecarStatus covers all lifecycle states', () => {
-    const states: SidecarStatus[] = ['stopped', 'starting', 'healthy', 'unhealthy', 'crashed']
-    expect(states).toHaveLength(5)
+  it('ProviderHealth models install, auth, runtime and probe independently', () => {
+    // The shape `SidecarStatus` could not express: the CLI is installed and
+    // signed in, and no session happens to be running.
+    const health: ProviderHealth = {
+      install: { state: 'installed', version: '2026.07.23' },
+      auth: { state: 'authenticated' },
+      runtime: { state: 'never_started', liveProcesses: 0, activeTurns: 0 },
+      models: { models: [], refreshedAt: null },
+      lastProbe: { outcome: 'ok', at: new Date().toISOString(), durationMs: 12 },
+      update: { state: 'unknown' },
+    }
+    expect(health.install.state).toBe('installed')
+    expect(health.runtime.state).toBe('never_started')
   })
 
   it('Workspace domain type is structurally correct', () => {

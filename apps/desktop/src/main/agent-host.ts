@@ -6,18 +6,45 @@ import type {
   PlanReviewOutcome,
   PromptCapabilities,
   ProviderId,
+  ProviderSessionInfo,
   QuestionOutcome,
   QuestionRequest,
 } from '@agentpack/contract'
-import { AgentRuntime, type HostLogEntry } from '@agentpack/runtime'
+import { AgentRuntime, type DesiredSessionConfig, type HostLogEntry } from '@agentpack/runtime'
 import type { BrowserWindow } from 'electron'
-import type { SidecarHandshake, SidecarStatus } from '@openmanager/shared/contracts/sidecar'
+import type { ProviderHealthReport } from '@openmanager/shared/contracts/provider-health'
+import type { SidecarHandshake } from '@openmanager/shared/contracts/sidecar'
 import { ConvexProjector } from './convex-projector'
+import { toProviderHealthCache, type ProviderHealthCache } from './provider-health-cache'
+
+/** How long to sit on health changes before writing the boot cache. Health
+ * churns in bursts (a handshake fires initialized + authenticated + probe
+ * within a second); the cache only has to be roughly current at the next
+ * launch, so it is not worth a disk write per event. */
+const HEALTH_CACHE_WRITE_DELAY_MS = 2_000
+
+export type AgentHostOptions = {
+  /** Boot cache. Read once at construction, written back as health changes. */
+  healthCache?: {
+    load: () => ProviderHealthCache
+    save: (cache: ProviderHealthCache) => void
+  }
+  /** Directory health probes spawn in for providers the user has not opened
+   * this run — normally the last active workspace. */
+  probeCwd?: string
+  /** The workspace's persisted composer selection, read on demand. The runtime
+   * keeps no copy: a respawn asks for the current answer rather than replaying
+   * whatever was remembered when the thread first started. */
+  desiredSessionConfig?: (args: {
+    providerId: ProviderId
+    workspacePath: string
+  }) => DesiredSessionConfig | undefined
+}
 
 export class AgentHost {
   readonly runtime: AgentRuntime
-  private readonly statusByProvider = new Map<ProviderId, SidecarStatus>()
   private readonly promptCapabilitiesByProvider = new Map<ProviderId, PromptCapabilities>()
+  private healthCacheTimer: NodeJS.Timeout | undefined
   private localSequence = 0
   private readonly pendingPermissions = new Map<string, PermissionRequest>()
   private readonly pendingExtensions = new Map<string, { method: string; params: unknown }>()
@@ -28,34 +55,93 @@ export class AgentHost {
   constructor(
     readonly projector: ConvexProjector,
     private readonly getMainWindow: () => BrowserWindow | null,
+    private readonly options: AgentHostOptions = {},
   ) {
     this.runtime = new AgentRuntime({
       emitEvent: (event) => this.emitEvent(event),
       log: (entry) => this.log(entry),
       onSessionTitle: ({ threadId, workspaceId, title }) =>
         this.projector.updateSessionTitle(threadId, workspaceId, title),
+      ...(options.desiredSessionConfig
+        ? { desiredSessionConfig: options.desiredSessionConfig }
+        : {}),
     })
+    // Render last run's answer immediately rather than "unavailable" for the
+    // ~10s a cold Cursor probe takes. Hydration restores past-tense axes only;
+    // the runtime axis is rebuilt from the live registry, which is empty here.
+    const cached = options.healthCache?.load()
+    if (cached) this.runtime.health.hydrate(cached)
+    this.runtime.setDefaultProbeCwd(options.probeCwd)
+    this.runtime.health.onChange((providerId, report) => this.pushHealth(providerId, report))
   }
 
+  /** Start the continuous health loop.
+   *
+   * Deliberately *not* done in the constructor. `ProviderHealthMonitor.start()`
+   * runs a boot refresh for every provider, and a provider the desktop is
+   * already bootstrapping does not need one — `ensureProvider` registers its
+   * throwaway probe with the monitor synchronously, and the monitor declines to
+   * spawn against an adopted probe. Constructing the host and starting the loop
+   * in one step meant the monitor always registered first and the bootstrap
+   * always duplicated it: two `cursor-agent` processes at every launch, each
+   * ~9s and ~230 MB, answering the same handshake.
+   *
+   * So the contract is ordering, and it is the caller's to keep: kick off the
+   * bootstrap `ensureProvider` first, then call this. Providers the bootstrap
+   * does not cover are probed here as before. */
+  startHealthMonitor(): void {
+    this.runtime.health.start()
+  }
+
+  /** Verify the provider's CLI works, in a throwaway process, and refresh its
+   * session titles. There is no shared per-provider process to start any more:
+   * session processes belong to threads, and a pseudo-thread is not a thread.
+   *
+   * No status is latched here. The probe's outcome is adopted by the health
+   * monitor, which keeps re-verifying it; this call only reports whether this
+   * one round trip answered. */
   async ensureProvider(
     providerId: ProviderId,
     cwd: string,
     threadId = `desktop-bootstrap:${providerId}`,
   ): Promise<SidecarHandshake> {
-    this.setStatus(providerId, 'starting')
+    this.runtime.setDefaultProbeCwd(cwd)
+    const { sessions } = await this.runtime.probeProvider({
+      providerId,
+      threadId,
+      workspaceId: cwd,
+      cwd,
+    })
+    // The bootstrap probe already answered `session/list` on the process it had
+    // open, so there is nothing here for `refreshSessionTitles` to spawn a
+    // second CLI for. `undefined` means the agent does not advertise listing —
+    // in which case a separate probe could not have answered either.
+    if (sessions) await this.syncSessionTitles(providerId, cwd, sessions)
+    return { ready: true }
+  }
+
+  /** Project a session list onto Convex, tolerating failure. A title sync that
+   * fails must not turn a working provider into "unavailable" in the renderer,
+   * which is what `ensureProvider` rejecting would mean. */
+  private async syncSessionTitles(
+    providerId: ProviderId,
+    workspacePath: string,
+    sessions: ProviderSessionInfo[],
+  ): Promise<void> {
     try {
-      await this.runtime.start({ providerId, threadId, workspaceId: cwd, cwd })
-      await this.refreshSessionTitles(providerId, cwd)
-      this.setStatus(providerId, 'healthy')
-      return { ready: true }
+      await this.projector.syncProviderSessionTitles(workspacePath, providerId, sessions)
     } catch (error) {
-      this.setStatus(providerId, 'crashed')
-      throw error
+      this.log({
+        scope: 'agent-runtime',
+        level: 'warn',
+        message: 'Could not sync provider session titles',
+        data: { providerId, workspacePath, error: (error as Error).message },
+      })
     }
   }
 
-  getStatuses(): Partial<Record<ProviderId, SidecarStatus>> {
-    return Object.fromEntries(this.statusByProvider) as Partial<Record<ProviderId, SidecarStatus>>
+  getHealth(): Partial<Record<ProviderId, ProviderHealthReport>> {
+    return this.runtime.health.reports()
   }
 
   getPromptCapabilities(): Partial<Record<ProviderId, PromptCapabilities>> {
@@ -155,9 +241,28 @@ export class AgentHost {
     })
   }
 
+  /** Orderly shutdown for app quit: waits for every CLI child to be gone
+   * before resolving, so nothing is orphaned when Electron exits. Bounded
+   * internally by the runtime's shutdown budget. */
+  async shutdown(): Promise<void> {
+    this.flushHealthCache()
+    await this.runtime.shutdown()
+  }
+
+  /** Synchronous best-effort teardown. Signals the children but does not wait
+   * for them; prefer `shutdown()` wherever there is somewhere to await. */
   dispose(): void {
+    this.flushHealthCache()
     this.runtime.dispose()
-    for (const providerId of this.statusByProvider.keys()) this.setStatus(providerId, 'stopped')
+  }
+
+  private flushHealthCache(): void {
+    if (this.healthCacheTimer) {
+      clearTimeout(this.healthCacheTimer)
+      this.healthCacheTimer = undefined
+    }
+    // Write the final snapshot before the monitor stops emitting.
+    this.writeHealthCache()
   }
 
   private emitEvent(event: AgentEvent): void {
@@ -206,20 +311,49 @@ export class AgentHost {
     ) {
       window.webContents.send('stream:token', event)
     }
-    if (event.event === 'process_exited') {
-      this.setStatus(event.providerId, event.data.expected ? 'stopped' : 'crashed')
-    }
+    // `process_exited` deliberately does *not* set provider status here. One
+    // session's process dying says nothing about the other three that are
+    // still serving turns; the health monitor folds it into a rollup over all
+    // of this provider's runtimes and its probes.
   }
 
-  private setStatus(providerId: ProviderId, status: SidecarStatus): void {
-    if (this.statusByProvider.get(providerId) === status) return
-    this.statusByProvider.set(providerId, status)
+  private pushHealth(providerId: ProviderId, report: ProviderHealthReport): void {
     const window = this.getMainWindow()
     if (window?.isDestroyed() === false) {
-      window.webContents.send('agent:status-changed', { providerId, status })
+      window.webContents.send('agent:status-changed', { providerId, report })
+    }
+    this.scheduleHealthCacheWrite()
+  }
+
+  private scheduleHealthCacheWrite(): void {
+    if (!this.options.healthCache || this.healthCacheTimer) return
+    this.healthCacheTimer = setTimeout(() => {
+      this.healthCacheTimer = undefined
+      this.writeHealthCache()
+    }, HEALTH_CACHE_WRITE_DELAY_MS)
+    this.healthCacheTimer.unref?.()
+  }
+
+  private writeHealthCache(): void {
+    const cache = this.options.healthCache
+    if (!cache) return
+    try {
+      cache.save(toProviderHealthCache(this.runtime.health.reports()))
+    } catch (error) {
+      this.log({
+        scope: 'agent-runtime',
+        level: 'warn',
+        message: 'Could not persist the provider health cache',
+        data: { error: (error as Error).message },
+      })
     }
   }
 
+  /** `session/list`, preferring a live runtime for this provider + workspace
+   * and falling back to a throwaway process only when none exists. See
+   * `AgentRuntime.listSessions`: after a prompt completes that thread's
+   * runtime is alive by definition, so the common case costs one ~55ms read
+   * rather than a full CLI spawn. */
   private refreshSessionTitles(providerId: ProviderId, workspacePath: string): Promise<void> {
     if (!this.runtime.getProvider(providerId).capabilities.canListSessions) {
       return Promise.resolve()

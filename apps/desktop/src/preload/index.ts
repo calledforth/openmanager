@@ -5,6 +5,7 @@ import type {
   ProviderId,
   ProviderMetadata,
 } from '@agentpack/contract'
+import type { ProviderHealthReport } from '@openmanager/shared/contracts/provider-health'
 import type { ConvexConnectionResult, RuntimeConfig } from '../shared/runtime-config'
 import type {
   ProviderComposerProfile,
@@ -78,9 +79,11 @@ const electronAPI = {
       providerId,
       preference,
     ),
-  onAgentStatusChanged: (callback: (data: { providerId: ProviderId; status: string }) => void) => {
+  onAgentStatusChanged: (
+    callback: (data: { providerId: ProviderId; report: ProviderHealthReport }) => void,
+  ) => {
     const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
-      callback(data as { providerId: ProviderId; status: string })
+      callback(data as { providerId: ProviderId; report: ProviderHealthReport })
     ipcRenderer.on('agent:status-changed', handler)
     return () => ipcRenderer.removeListener('agent:status-changed', handler)
   },
