@@ -408,10 +408,24 @@ export type ToolPart = MessagePartBase & {
 
 /**
  * Streamed or completed agent reasoning.
+ *
+ * A part is renderable if it has text, a token estimate, or both. Providers
+ * that stream reasoning as text fill `text`; providers whose thinking blocks
+ * carry no text at all (Claude Code) fill only `tokens` and `time`, and the UI
+ * renders an indicator row rather than a transcript.
  */
 export type ReasoningPart = MessagePartBase & {
   type: "reasoning";
-  text: string;
+
+  /** Absent or empty when the provider streams no reasoning text. */
+  text?: string;
+
+  /** The provider's running estimate of thinking tokens. Monotonic — a
+   * cumulative total, never an increment. `0` is a real reading. */
+  tokens?: number;
+
+  /** Deliberately not `startedAt`/`endedAt`: this shape is already written into
+   * persisted `messages.metadata.parts`, and renaming it would orphan history. */
   time?: {
     /** Unix time in milliseconds. */
     start: number;
@@ -528,6 +542,54 @@ Rationale: `SnapshotPart.data` and `AgentPart.payload` remain `unknown` because 
 
 ---
 
+## `plans.ts` and `questions.ts`
+
+Only the members the resolution events depend on are reproduced here.
+
+```ts
+/**
+ * What accepting a plan does to the turn that proposed it.
+ *
+ * - `follow_up_turn` — plan review is a blocking side-channel request and
+ *   answering it *ends* the proposing turn (Cursor's `cursor/create_plan`).
+ *   Implementation happens only if the host dispatches a second prompt.
+ * - `same_turn` — approval releases the SAME turn to continue straight into
+ *   implementation (Claude Code's `ExitPlanMode` tool call). A host that also
+ *   dispatched a follow-up prompt here would execute the plan twice.
+ */
+export type PlanContinuation = "same_turn" | "follow_up_turn";
+
+export type PlanDocument = {
+  requestId: string;
+  sessionId: string;
+  name?: string;
+  overview?: string;
+  markdown: string;
+  todos: PlanTodo[];
+  phases?: PlanPhase[];
+
+  /** Required, so every adapter states how its provider continues. */
+  continuation: PlanContinuation;
+};
+
+export type PlanReviewOutcome =
+  | { outcome: "accepted" }
+  | { outcome: "rejected"; reason?: string }
+  | { outcome: "cancelled"; reason?: PermissionCancellationReason };
+
+export type QuestionOutcome =
+  | { outcome: "answered"; answers: QuestionAnswer[] }
+  | { outcome: "cancelled"; reason?: PermissionCancellationReason };
+```
+
+Rationale: `continuation` lives on the plan document rather than being inferred
+from `providerId` because it describes *how the provider asked*, and a single
+provider may eventually ask both ways. Applications must not branch on provider
+identity (see the capability rule above); this is the same rule applied to
+control flow rather than to UI gating.
+
+---
+
 ## `events.ts`
 
 ```ts
@@ -563,6 +625,11 @@ export type AgentEventName =
   | "plan_update"
   | "subtask_update"
   | "permission_request"
+  | "permission_resolved"
+  | "question_request"
+  | "question_resolved"
+  | "plan_review_request"
+  | "plan_review_resolved"
   | "current_model_update"
   | "current_mode_update"
   | "config_option_update"
@@ -659,12 +726,38 @@ export type ContentBlock =
     };
 
 /**
- * One streamed ACP message or thought chunk.
+ * One streamed message chunk.
  */
 export type StreamedMessageChunk = {
   /** Groups successive chunks belonging to the same logical message. */
   messageId?: string;
   content: ContentBlock;
+};
+
+/**
+ * One reasoning chunk.
+ *
+ * Reasoning is not always text. ACP providers stream it as ordinary text
+ * blocks; Claude Code's `thinking` blocks carry an always-empty string (the
+ * payload is an encrypted signature), leaving block timing and a running token
+ * estimate as the only observable signals. Both payload fields are therefore
+ * optional and `phase` is not.
+ */
+export type ThoughtChunk = {
+  messageId?: string;
+
+  /** Required. Emitting nothing at block stop cannot close a UI part, so a
+   * reasoning block with no text would otherwise shimmer forever. Providers
+   * that stream text and have no block framing send `delta`. */
+  phase: "start" | "delta" | "stop";
+
+  /** Absent when the provider has no text for this chunk. */
+  content?: ContentBlock;
+
+  /** The provider's running estimate of thinking tokens. Monotonic — a
+   * cumulative total, never an increment. Consumers take `Math.max(previous,
+   * next)` and test `!== undefined`, because `0` is a real first reading. */
+  tokens?: number;
 };
 
 /**
@@ -1014,7 +1107,37 @@ export type AgentEvent = AgentEventBase &
         category: "stream";
         event: "agent_thought_chunk";
         sessionId: string;
-        data: StreamedMessageChunk;
+        data: ThoughtChunk;
+      }
+    | {
+        category: "session";
+        event: "question_request";
+        sessionId: string;
+        data: QuestionRequest;
+      }
+    | {
+        /** Every settlement of a question — answered, cancelled or timed out —
+         * whatever transport carried it. Hosts clear their pending question
+         * rows on this, never on `extension_resolved`, which only fires for
+         * interactions that travelled over ACP's `_ext` methods. */
+        category: "session";
+        event: "question_resolved";
+        sessionId: string;
+        data: { requestId: string; outcome: QuestionOutcome };
+      }
+    | {
+        category: "session";
+        event: "plan_review_request";
+        sessionId: string;
+        data: PlanDocument;
+      }
+    | {
+        /** See `question_resolved`. Carries the semantic review outcome rather
+         * than a provider-native wire response. */
+        category: "session";
+        event: "plan_review_resolved";
+        sessionId: string;
+        data: { requestId: string; outcome: PlanReviewOutcome };
       }
     | {
         category: "tool";

@@ -64,11 +64,18 @@ function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode
           ? (part.time as Record<string, number>)
           : undefined
       const reasoningStreaming = partTime ? typeof partTime.end !== 'number' : !!isStreaming
+      // Old persisted parts are `{text, time}` and new ones may be
+      // `{tokens, time}` with no text at all; both must render forever, so the
+      // shape of the part decides what is passed down — never the provider id.
       return (
         <ThinkingPart
           key={key}
-          text={(part.text as string) ?? ''}
+          text={typeof part.text === 'string' ? part.text : ''}
+          tokens={typeof part.tokens === 'number' ? part.tokens : undefined}
           isStreaming={reasoningStreaming}
+          duration={
+            partTime ? (partTime.end ?? Date.now()) - (partTime.start ?? Date.now()) : undefined
+          }
         />
       )
     }

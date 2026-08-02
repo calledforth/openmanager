@@ -1,5 +1,5 @@
 import type { ProviderId } from '@agentpack/contract'
-import type { ExtensionBroker } from '../core/ExtensionBroker.js'
+import type { InteractionBroker } from '../core/InteractionBroker.js'
 import type { PermissionBroker } from '../core/PermissionBroker.js'
 import type { HostDeps } from '../host.js'
 import type { ProviderConfig } from '../providers/index.js'
@@ -35,7 +35,7 @@ export type ProviderSessionRuntimeFactoryDeps = {
   configs: Readonly<Record<ProviderId, ProviderConfig>>
   host: Pick<HostDeps, 'log' | 'onSessionTitle'>
   permissions: PermissionBroker
-  extensions: ExtensionBroker
+  interactions: InteractionBroker
   connections: AcpTransport
   timeouts?: Partial<RuntimeTimeouts>
 }
@@ -70,7 +70,7 @@ export class ProviderSessionRuntimeFactory implements ManagedSessionRuntimeFacto
       configs: this.deps.configs,
       host: this.deps.host,
       permissions: this.deps.permissions,
-      extensions: this.deps.extensions,
+      interactions: this.deps.interactions,
       connections: this.deps.connections(),
       ...(this.deps.timeouts ? { timeouts: this.deps.timeouts } : {}),
     })

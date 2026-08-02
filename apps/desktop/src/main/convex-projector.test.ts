@@ -318,7 +318,7 @@ describe('ConvexProjector streaming contracts', () => {
         messageId: undefined,
         category: 'stream',
         event: 'agent_thought_chunk',
-        data: { content: { type: 'text', text: 'Old reasoning' } },
+        data: { phase: 'delta', content: { type: 'text', text: 'Old reasoning' } },
       }),
     )
     projector.consume(
@@ -393,7 +393,7 @@ describe('ConvexProjector streaming contracts', () => {
       event(2, {
         category: 'stream',
         event: 'agent_thought_chunk',
-        data: { content: { type: 'text', text: 'Thinking' } },
+        data: { phase: 'delta', content: { type: 'text', text: 'Thinking' } },
       }),
     )
     projector.consume(
@@ -422,6 +422,67 @@ describe('ConvexProjector streaming contracts', () => {
     const toolState = parts.find((part) => part.type === 'tool')?.state as
       Record<string, unknown> | undefined
     expect(toolState?.status).toBe('completed')
+  })
+
+  it('persists a textless reasoning block from its phases and token estimate', async () => {
+    const { projector, mutations } = setup()
+    projector.consume(
+      event(1, {
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'Think', userMessageId: 'user-1' },
+      }),
+    )
+    // Claude Code's thinking blocks: empty text throughout, a monotonic token
+    // estimate, and start/stop framing as the only other signal.
+    projector.consume(
+      event(2, { category: 'stream', event: 'agent_thought_chunk', data: { phase: 'start' } }),
+    )
+    projector.consume(
+      event(3, {
+        category: 'stream',
+        event: 'agent_thought_chunk',
+        data: { phase: 'delta', content: { type: 'text', text: '' }, tokens: 0 },
+      }),
+    )
+    projector.consume(
+      event(4, {
+        category: 'stream',
+        event: 'agent_thought_chunk',
+        data: { phase: 'delta', tokens: 150 },
+      }),
+    )
+    // A duplicated/late delta must not inflate a cumulative counter.
+    projector.consume(
+      event(5, {
+        category: 'stream',
+        event: 'agent_thought_chunk',
+        data: { phase: 'delta', tokens: 150 },
+      }),
+    )
+    projector.consume(
+      event(6, { category: 'stream', event: 'agent_thought_chunk', data: { phase: 'stop' } }),
+    )
+    projector.consume(
+      event(7, {
+        category: 'lifecycle',
+        event: 'prompt_completed',
+        data: { stopReason: 'end_turn' },
+      }),
+    )
+    await projector.waitForThread(base.threadId)
+
+    const finalized = [...mutations]
+      .reverse()
+      .find((args) => args.externalId === base.messageId && args.role === 'assistant')
+    const reasoning = (finalized?.parts as Array<Record<string, unknown>>).find(
+      (part) => part.type === 'reasoning',
+    )
+    expect(reasoning).toMatchObject({ text: '', tokens: 150 })
+    const time = reasoning?.time as { start: number; end?: number }
+    expect(time.start).toEqual(expect.any(Number))
+    // `stop` is the only thing that can close a block with no text in it.
+    expect(time.end).toEqual(expect.any(Number))
   })
 
   it('settles Cursor subtasks from the provider turn result when cancel has no task terminal', async () => {
@@ -606,15 +667,11 @@ describe('ConvexProjector streaming contracts', () => {
     const { projector, mutations } = setup()
     projector.consume(
       event(1, {
-        category: 'extension',
-        event: 'extension_resolved',
+        category: 'session',
+        event: 'plan_review_resolved',
         data: {
           requestId: 'plan-1',
-          method: 'cursor/create_plan',
-          outcome: {
-            outcome: 'responded',
-            response: { outcome: { outcome: 'rejected', reason: '  Add rollback tests.  ' } },
-          },
+          outcome: { outcome: 'rejected', reason: '  Add rollback tests.  ' },
         },
       }),
     )
@@ -625,5 +682,34 @@ describe('ConvexProjector streaming contracts', () => {
       status: 'rejected',
       resolutionReason: 'Add rollback tests.',
     })
+  })
+
+  it('clears a question row on its own settlement, not on an extension one', async () => {
+    const { projector, mutations } = setup()
+    // Regression: questions and plans used to be cleared off extension_resolved,
+    // which never fires for a provider that raises them off-wire.
+    projector.consume(
+      event(1, {
+        category: 'extension',
+        event: 'extension_resolved',
+        data: {
+          requestId: 'question-1',
+          method: 'cursor/ask_question',
+          outcome: { outcome: 'responded', response: {} },
+        },
+      }),
+    )
+    await projector.waitForThread(base.threadId)
+    expect(mutations).toEqual([])
+
+    projector.consume(
+      event(2, {
+        category: 'session',
+        event: 'question_resolved',
+        data: { requestId: 'question-1', outcome: { outcome: 'cancelled', reason: 'timeout' } },
+      }),
+    )
+    await projector.waitForThread(base.threadId)
+    expect(mutations).toContainEqual({ requestId: 'question-1' })
   })
 })

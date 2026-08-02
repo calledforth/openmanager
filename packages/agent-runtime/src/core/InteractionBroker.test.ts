@@ -1,14 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  EXTENSION_TIMEOUT_MS,
-  ExtensionBroker,
-  type ExtensionSettlement,
-} from './ExtensionBroker.js'
+  INTERACTION_TIMEOUT_MS,
+  InteractionBroker,
+  type InteractionSettlement,
+} from './InteractionBroker.js'
 
-function addPending(broker: ExtensionBroker, requestId: string, threadId = 'thread-1') {
+function addPending(broker: InteractionBroker, requestId: string, threadId = 'thread-1') {
   let resolved: unknown
   const promise = new Promise((resolve) => {
     broker.add(requestId, {
+      kind: 'question',
       providerId: 'cursor',
       threadId,
       workspaceId: 'workspace-1',
@@ -23,13 +24,13 @@ function addPending(broker: ExtensionBroker, requestId: string, threadId = 'thre
   return { promise, isResolved: () => resolved !== undefined }
 }
 
-describe('ExtensionBroker', () => {
-  let settlements: ExtensionSettlement[]
-  let broker: ExtensionBroker
+describe('InteractionBroker', () => {
+  let settlements: InteractionSettlement[]
+  let broker: InteractionBroker
 
   beforeEach(() => {
     settlements = []
-    broker = new ExtensionBroker((settlement) => settlements.push(settlement))
+    broker = new InteractionBroker((settlement) => settlements.push(settlement))
   })
   afterEach(() => {
     vi.useRealTimers()
@@ -43,6 +44,7 @@ describe('ExtensionBroker', () => {
     expect(settlements).toEqual([
       {
         requestId: 'req-1',
+        kind: 'question',
         providerId: 'cursor',
         threadId: 'thread-1',
         workspaceId: 'workspace-1',
@@ -56,7 +58,7 @@ describe('ExtensionBroker', () => {
   it('times out as cancelled', async () => {
     vi.useFakeTimers()
     const pending = addPending(broker, 'req-1')
-    vi.advanceTimersByTime(EXTENSION_TIMEOUT_MS + 1)
+    vi.advanceTimersByTime(INTERACTION_TIMEOUT_MS + 1)
     await expect(pending.promise).resolves.toEqual({ outcome: 'cancelled', reason: 'timeout' })
     expect(broker.respond('req-1', {})).toBe(false)
   })
@@ -68,6 +70,7 @@ describe('ExtensionBroker', () => {
       broker.add(
         'req-1',
         {
+          kind: 'plan_review',
           providerId: 'cursor',
           threadId: 'thread-1',
           workspaceId: 'workspace-1',
@@ -106,5 +109,50 @@ describe('ExtensionBroker', () => {
       outcome: 'cancelled',
       reason: 'runtime_disposed',
     })
+  })
+
+  it('reports the semantic resolution alongside the wire response', () => {
+    addPending(broker, 'req-1')
+    broker.respond(
+      'req-1',
+      { some: 'provider native payload' },
+      { kind: 'question', outcome: { outcome: 'answered', answers: [{ questionId: 'q1' }] } },
+    )
+    expect(settlements[0]?.resolution).toEqual({
+      kind: 'question',
+      outcome: { outcome: 'answered', answers: [{ questionId: 'q1' }] },
+    })
+  })
+
+  it('synthesizes a cancellation resolution for sweeps that have nobody to supply one', () => {
+    addPending(broker, 'req-1')
+    broker.settleThread('cursor', 'thread-1')
+    expect(settlements[0]?.resolution).toEqual({
+      kind: 'question',
+      outcome: { outcome: 'cancelled', reason: 'session_closed' },
+    })
+  })
+
+  it('leaves opaque extension requests without a resolution', () => {
+    broker.add('req-1', {
+      kind: 'extension',
+      providerId: 'cursor',
+      threadId: 'thread-1',
+      sessionId: 'session-1',
+      method: 'cursor/whatever',
+      resolve: () => undefined,
+    })
+    broker.settleAll()
+    expect(settlements[0]).toMatchObject({ kind: 'extension' })
+    expect(settlements[0]?.resolution).toBeUndefined()
+  })
+
+  it('is strictly one-shot: a late answer after a timeout changes nothing', () => {
+    vi.useFakeTimers()
+    addPending(broker, 'req-1')
+    vi.advanceTimersByTime(INTERACTION_TIMEOUT_MS + 1)
+    expect(broker.respond('req-1', { late: true })).toBe(false)
+    expect(settlements).toHaveLength(1)
+    expect(settlements[0]?.outcome).toEqual({ outcome: 'cancelled', reason: 'timeout' })
   })
 })

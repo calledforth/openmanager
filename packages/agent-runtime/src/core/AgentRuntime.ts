@@ -25,7 +25,7 @@ import { withTimeout } from '../session/timeout.js'
 import { SessionRuntimeRegistryImpl } from '../session/SessionRuntimeRegistryImpl.js'
 import type { SessionRuntimeEntry } from '../session/SessionRuntimeRegistry.js'
 import { isRuntimeAlive } from '../session/lifecycle.js'
-import { ExtensionBroker } from './ExtensionBroker.js'
+import { InteractionBroker, type InteractionSettlement } from './InteractionBroker.js'
 import { PermissionBroker } from './PermissionBroker.js'
 import { CapabilityMissingError } from './errors.js'
 import {
@@ -152,7 +152,7 @@ export class AgentRuntime {
    * provider/thread/workspace/session, so responding needs no lookup table and
    * a dying runtime settles only its own thread's requests. */
   private readonly permissions: PermissionBroker
-  private readonly extensions: ExtensionBroker
+  private readonly interactions: InteractionBroker
 
   constructor(
     private readonly host: HostDeps,
@@ -172,26 +172,15 @@ export class AgentRuntime {
         data: { requestId: settlement.requestId, outcome: settlement.outcome },
       } as BackendEvent),
     )
-    this.extensions = new ExtensionBroker((settlement) =>
-      this.forward(settlement.providerId, {
-        threadId: settlement.threadId,
-        workspaceId: settlement.workspaceId,
-        sessionId: settlement.sessionId,
-        category: 'extension',
-        event: 'extension_resolved',
-        data: {
-          requestId: settlement.requestId,
-          method: settlement.method,
-          outcome: settlement.outcome,
-        },
-      } as BackendEvent),
+    this.interactions = new InteractionBroker((settlement) =>
+      this.forward(settlement.providerId, this.interactionResolved(settlement)),
     )
     this.registry = new SessionRuntimeRegistryImpl({
       runtimes: new ProviderSessionRuntimeFactory({
         configs,
         host,
         permissions: this.permissions,
-        extensions: this.extensions,
+        interactions: this.interactions,
         connections: () => this.acpConnections(),
         ...(options.timeouts ? { timeouts: options.timeouts } : {}),
       }),
@@ -297,6 +286,50 @@ export class AgentRuntime {
       default:
         return
     }
+  }
+
+  /** Which resolution event a settled interaction becomes.
+   *
+   * Questions and plan reviews get their own events rather than riding
+   * `extension_resolved`, which is what every consumer used to clear their
+   * pending rows on. That only ever worked for providers whose questions and
+   * plans arrive over ACP's `_ext` methods; a provider raising the same
+   * interactions from an SDK callback would answer correctly and then leave the
+   * row pending forever in the host map, in Convex and on mobile. The kind
+   * travels on the pending record, so the transport no longer decides. */
+  private interactionResolved(settlement: InteractionSettlement): BackendEvent {
+    const route = {
+      threadId: settlement.threadId,
+      workspaceId: settlement.workspaceId,
+      sessionId: settlement.sessionId,
+    }
+    const resolution = settlement.resolution
+    if (resolution?.kind === 'question') {
+      return {
+        ...route,
+        category: 'session',
+        event: 'question_resolved',
+        data: { requestId: settlement.requestId, outcome: resolution.outcome },
+      } as BackendEvent
+    }
+    if (resolution?.kind === 'plan_review') {
+      return {
+        ...route,
+        category: 'session',
+        event: 'plan_review_resolved',
+        data: { requestId: settlement.requestId, outcome: resolution.outcome },
+      } as BackendEvent
+    }
+    return {
+      ...route,
+      category: 'extension',
+      event: 'extension_resolved',
+      data: {
+        requestId: settlement.requestId,
+        method: settlement.method,
+        outcome: settlement.outcome,
+      },
+    } as BackendEvent
   }
 
   private forward(providerId: ProviderId, event: BackendEvent): void {
@@ -767,7 +800,7 @@ export class AgentRuntime {
     requestId: string
     response: unknown
   }): boolean {
-    if (!this.extensions.respond(args.requestId, args.response))
+    if (!this.interactions.respond(args.requestId, args.response))
       throw new Error('Extension request not found or already resolved')
     return true
   }
@@ -838,7 +871,7 @@ export class AgentRuntime {
   async shutdown(): Promise<void> {
     this.stopBackground()
     this.permissions.settleAll()
-    this.extensions.settleAll()
+    this.interactions.settleAll()
     try {
       await withTimeout(
         this.registry.shutdown({ reason: 'disposed' }),
@@ -864,7 +897,7 @@ export class AgentRuntime {
     // reports `session_closed`, which is why the brokers settle first.
     this.stopBackground()
     this.permissions.settleAll()
-    this.extensions.settleAll()
+    this.interactions.settleAll()
     this.registry.disposeAll()
     this.clearBookkeeping()
   }

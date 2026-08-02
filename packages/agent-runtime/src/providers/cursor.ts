@@ -49,6 +49,10 @@ function parseCreatePlan(
     markdown: str(p.plan),
     todos: parseTodos(p.todos),
     ...(phases ? { phases } : {}),
+    // `cursor/create_plan` is a blocking side-channel request: answering it
+    // ends the turn that proposed the plan, so implementation only happens if
+    // the host dispatches a fresh prompt afterwards.
+    continuation: 'follow_up_turn',
   }
 }
 

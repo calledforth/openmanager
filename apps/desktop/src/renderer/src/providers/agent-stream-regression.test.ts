@@ -160,7 +160,7 @@ describe('agent streaming regressions', () => {
         seq: 1,
         category: 'stream',
         event: 'agent_thought_chunk',
-        data: { content: { type: 'text', text: 'Checking' } },
+        data: { phase: 'delta', content: { type: 'text', text: 'Checking' } },
       }),
       event({
         messageId,
@@ -205,6 +205,72 @@ describe('agent streaming regressions', () => {
     expect(snapshot.parts.map((part) => part.type)).toEqual(['reasoning', 'tool', 'text', 'text'])
     expect((snapshot.parts[0]?.time as { end?: number }).end).toEqual(expect.any(Number))
     expect((snapshot.parts[1]?.state as { status?: string }).status).toBe('completed')
+  })
+
+  it('opens, updates and closes a reasoning part that never carries any text', () => {
+    const messageId = 'assistant-textless-thought'
+    const store = new StreamingMessagesStore()
+    const thought = (
+      seq: number,
+      data: Extract<AgentEvent, { event: 'agent_thought_chunk' }>['data'],
+    ) => event({ messageId, seq, category: 'stream', event: 'agent_thought_chunk', data })
+
+    // The block opens with nothing to show: no start would mean no shimmer for
+    // the several seconds it runs.
+    store.update(thought(1, { phase: 'start' }))
+    expect(store.get(messageId)?.parts[0]).toMatchObject({ type: 'reasoning', text: '' })
+    expect((store.get(messageId)?.parts[0]?.time as { start: number }).start).toEqual(
+      expect.any(Number),
+    )
+
+    // `tokens: 0` is a real reading, so it must not be treated as absent.
+    store.update(thought(2, { phase: 'delta', tokens: 0 }))
+    expect(store.get(messageId)?.parts[0]?.tokens).toBe(0)
+
+    store.update(thought(3, { phase: 'delta', tokens: 150 }))
+    // estimated_tokens is cumulative: a repeat must not accumulate.
+    store.update(thought(4, { phase: 'delta', tokens: 150 }))
+    expect(store.get(messageId)?.parts[0]?.tokens).toBe(150)
+    expect((store.get(messageId)?.parts[0]?.time as { end?: number }).end).toBeUndefined()
+
+    store.update(thought(5, { phase: 'stop' }))
+    expect((store.get(messageId)?.parts[0]?.time as { end?: number }).end).toEqual(
+      expect.any(Number),
+    )
+
+    // A second block after the first one stopped is its own part.
+    store.update(thought(6, { phase: 'start', tokens: 20 }))
+    const parts = store.get(messageId)!.parts
+    expect(parts).toHaveLength(2)
+    expect(parts[1]?.tokens).toBe(20)
+  })
+
+  it('folds a textless reasoning run into one thinking row carrying its tokens', () => {
+    const rows = foldAgentEvents(
+      [
+        event({
+          seq: 1,
+          category: 'stream',
+          event: 'agent_thought_chunk',
+          data: { phase: 'start' },
+        }),
+        event({
+          seq: 2,
+          category: 'stream',
+          event: 'agent_thought_chunk',
+          data: { phase: 'delta', tokens: 150 },
+        }),
+        event({
+          seq: 3,
+          category: 'stream',
+          event: 'agent_thought_chunk',
+          data: { phase: 'stop' },
+        }),
+      ],
+      { summarizeWork: false },
+    )
+
+    expect(rows).toEqual([{ type: 'thinking', id: expect.any(String), text: '', tokens: 150 }])
   })
 
   it('renders subtask updates live and settles Cursor cancellation from the turn result', () => {

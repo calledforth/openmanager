@@ -1,8 +1,12 @@
 export { AgentRuntime } from './core/AgentRuntime.js'
 export type { AgentRuntimeOptions, RuntimeRoute, RuntimeSessionArgs } from './core/AgentRuntime.js'
 export { PermissionBroker, PERMISSION_TIMEOUT_MS } from './core/PermissionBroker.js'
-export { ExtensionBroker, EXTENSION_TIMEOUT_MS } from './core/ExtensionBroker.js'
-export type { ExtensionSettlement } from './core/ExtensionBroker.js'
+export { InteractionBroker, INTERACTION_TIMEOUT_MS } from './core/InteractionBroker.js'
+export type {
+  InteractionKind,
+  InteractionResolution,
+  InteractionSettlement,
+} from './core/InteractionBroker.js'
 export { AuthRequiredError, CapabilityMissingError } from './core/errors.js'
 export {
   PROVIDER_HEALTH_PROBE_TIMEOUT_MS,

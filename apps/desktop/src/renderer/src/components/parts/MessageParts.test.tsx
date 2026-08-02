@@ -81,6 +81,43 @@ describe('MessageParts', () => {
     expect(html).not.toContain('Thought for')
   })
 
+  it('renders a textless thought from its token estimate and duration', () => {
+    const html = renderToStaticMarkup(
+      <MessageParts
+        parts={[
+          { type: 'reasoning', id: 'r1', tokens: 1500, time: { start: 0, end: 2800 } },
+        ]}
+        isStreaming={false}
+      />,
+    )
+
+    expect(html).toContain('Thought for 3s')
+    expect(html).toContain('~1.5k tokens')
+    // Nothing to disclose, so no expandable transcript.
+    expect(html).not.toContain('<details')
+  })
+
+  it('still renders reasoning parts persisted before tokens existed', () => {
+    const html = renderToStaticMarkup(
+      <MessageParts
+        parts={[{ type: 'reasoning', id: 'r1', text: 'considering', time: { start: 0, end: 2400 } }]}
+        isStreaming={false}
+      />,
+    )
+
+    expect(html).toContain('Thought for 2s')
+    expect(html).toContain('considering')
+    expect(html).not.toContain('tokens')
+  })
+
+  it('drops a reasoning part carrying neither text nor tokens', () => {
+    const html = renderToStaticMarkup(
+      <MessageParts parts={[{ type: 'reasoning', id: 'r1', time: { start: 0, end: 5 } }]} />,
+    )
+
+    expect(html).not.toContain('Thought')
+  })
+
   it('renders Cursor structured tool output without passing objects to React', () => {
     const html = renderToStaticMarkup(
       <MessageParts

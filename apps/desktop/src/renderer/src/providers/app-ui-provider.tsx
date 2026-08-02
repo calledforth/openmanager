@@ -1931,7 +1931,9 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         case 'permission_request':
         case 'permission_resolved':
         case 'question_request':
+        case 'question_resolved':
         case 'plan_review_request':
+        case 'plan_review_resolved':
         case 'session_info_update':
         case 'usage_update':
         case 'extension_request':

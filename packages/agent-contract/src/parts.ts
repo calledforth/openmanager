@@ -33,7 +33,15 @@ export type ToolPart = MessagePartBase & {
 
 export type ReasoningPart = MessagePartBase & {
   type: 'reasoning'
-  text: string
+  /** Absent or empty whenever the provider streams no reasoning text — see
+   * `ThoughtChunk`. A part with neither text nor tokens is not renderable. */
+  text?: string
+  /** The provider's running estimate of thinking tokens, monotonic. This is the
+   * only progress signal for providers whose thinking blocks carry no text. */
+  tokens?: number
+  /** Deliberately NOT renamed to `startedAt`/`endedAt`: this exact shape is
+   * already written into persisted `messages.metadata.parts`, so a rename would
+   * orphan every reasoning part in existing history. */
   time?: {
     start: number
     end?: number

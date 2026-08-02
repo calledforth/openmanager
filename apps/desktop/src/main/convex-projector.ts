@@ -1,7 +1,7 @@
 import type {
   AgentEvent,
   ContentBlock,
-  ExtensionOutcome,
+  PlanReviewOutcome,
   ModeListing,
   ModelListing,
   PermissionRequest,
@@ -98,6 +98,25 @@ function subtaskStatusFromTurnResult(
     return { status: 'failed', statusSource: 'turn_result', statusReason: reason }
   }
   return { status: 'unknown', statusSource: 'turn_result', statusReason: reason }
+}
+
+/** Reasoning text extraction, matching `StreamingMessagesStore.text` exactly:
+ * live rendering and persistence must not disagree about what a block says. */
+function textFromBlock(block: ContentBlock | undefined): string {
+  if (!block) return ''
+  if (block.type === 'text') return block.text
+  if (block.type === 'resource_link') return block.uri
+  if (block.type === 'resource') return block.text ?? block.uri ?? ''
+  return ''
+}
+
+function planResolutionFor(outcome: PlanReviewOutcome): { status: string; reason?: string } {
+  if (outcome.outcome === 'accepted') return { status: 'accepted' }
+  if (outcome.outcome === 'rejected') {
+    const reason = outcome.reason?.trim()
+    return { status: 'rejected', ...(reason ? { reason } : {}) }
+  }
+  return { status: 'cancelled' }
 }
 
 function titleFromPrompt(prompt: string): string | undefined {
@@ -278,17 +297,24 @@ export class ConvexProjector {
       case 'subtask_update':
         await this.upsertSubtask(event)
         return
-      case 'extension_resolved': {
-        // Questions ride the extension broker, so any settlement clears the row.
+      // Questions and plan reviews clear on their own settlement events. Both
+      // used to be cleared off `extension_resolved`, which is emitted only for
+      // interactions that travelled over ACP's `_ext` methods — anything else
+      // was answered and then left pending forever in Convex, so mobile kept
+      // showing a question the user had already dealt with.
+      case 'question_resolved':
         await this.runMutation('questions.resolve', api.questions.resolve, {
           requestId: event.data.requestId,
         })
-        // Plans also ride the broker; settle the persisted plan by its outcome.
-        const planResolution = this.planResolutionFor(event.data.outcome)
+        return
+      case 'plan_review_resolved': {
+        // The event carries the review outcome itself, so the persisted status
+        // no longer has to be reverse-engineered out of a provider's payload.
+        const resolution = planResolutionFor(event.data.outcome)
         await this.runMutation('plans.resolve', api.plans.resolve, {
           requestId: event.data.requestId,
-          status: planResolution.status,
-          resolutionReason: planResolution.reason,
+          status: resolution.status,
+          resolutionReason: resolution.reason,
         })
         return
       }
@@ -439,16 +465,81 @@ export class ConvexProjector {
     // on reconnect, so they are derived from the event that opened the run
     // rather than a positional counter: a renderer that starts mid-turn can
     // never mint an id that collides with a run it did not witness.
-    const partId = reasoning
-      ? (turn.reasoningPartId ??= `${turn.assistantMessageId}_reasoning_${event.id}`)
-      : (turn.textPartId ??= `${turn.assistantMessageId}_text_${event.id}`)
-    const part = this.appendContent(buffer, partId, event.data.content, reasoning)
-    const text = !reasoning && event.data.content.type === 'text' ? event.data.content.text : ''
+    if (event.event === 'agent_thought_chunk') {
+      await this.appendThoughtChunk(event, turn, buffer)
+      return
+    }
+    const partId = (turn.textPartId ??= `${turn.assistantMessageId}_text_${event.id}`)
+    const part = this.appendContent(buffer, partId, event.data.content)
+    const text = event.data.content.type === 'text' ? event.data.content.text : ''
     await this.appendChunk(turn.assistantMessageId, buffer, text, {
       partUpdate: { kind: 'part.updated', part },
       coalescePartUpdate: true,
       seq: event.seq,
     })
+  }
+
+  /** The persisted mirror of `StreamingMessagesStore.appendThought`.
+   *
+   * This path used to share `appendContent` with message chunks, which has no
+   * empty-text guard where the renderer has one — so a provider whose thinking
+   * blocks carry no text (Claude Code) would have persisted an empty reasoning
+   * part the live UI never showed, and live and history would disagree the
+   * moment the message finalized. Both sides now agree on the same rule: a
+   * chunk opens or updates the part when it carries text, a token count, or a
+   * `start`, and `stop` closes it. */
+  private async appendThoughtChunk(
+    event: Extract<AgentEvent, { event: 'agent_thought_chunk' }>,
+    turn: ActiveTurn,
+    buffer: MessageBuffer,
+  ): Promise<void> {
+    const { phase, tokens } = event.data
+    const text = textFromBlock(event.data.content)
+    // `tokens: 0` is a real first reading, so this tests presence, not truth.
+    const opens = phase === 'start' || text !== '' || tokens !== undefined
+    if (!opens && phase !== 'stop') return
+    let part: PartData | undefined
+    if (opens) {
+      const partId = (turn.reasoningPartId ??= `${turn.assistantMessageId}_reasoning_${event.id}`)
+      part = this.appendReasoning(buffer, partId, text, tokens)
+    }
+    if (phase === 'stop') {
+      const closedPartId = this.finishReasoning(turn, buffer)
+      if (closedPartId) part = buffer.parts.get(closedPartId) ?? part
+    }
+    if (!part) return
+    await this.appendChunk(turn.assistantMessageId, buffer, '', {
+      partUpdate: { kind: 'part.updated', part },
+      // A stop is the last word on this part, so it is never coalesced away —
+      // dropping it would leave the persisted part without its `time.end` and
+      // the reader with a thought that never finished.
+      coalescePartUpdate: phase !== 'stop',
+      seq: event.seq,
+    })
+  }
+
+  private appendReasoning(
+    buffer: MessageBuffer,
+    partId: string,
+    text: string,
+    tokens: number | undefined,
+  ): PartData {
+    const existing = buffer.parts.get(partId)
+    const previousTokens = typeof existing?.tokens === 'number' ? existing.tokens : undefined
+    // estimated_tokens is a cumulative total, never an increment: summing it
+    // would multiply the count, and a late duplicate would inflate it.
+    const merged =
+      tokens !== undefined ? Math.max(previousTokens ?? 0, tokens) : previousTokens
+    const part: PartData = {
+      ...(existing ?? {}),
+      type: 'reasoning',
+      id: partId,
+      text: `${String(existing?.text ?? '')}${text}`,
+      ...(merged !== undefined ? { tokens: merged } : {}),
+      time: (existing?.time as { start: number; end?: number } | undefined) ?? { start: Date.now() },
+    }
+    buffer.parts.set(partId, part)
+    return part
   }
 
   private async updateTool(
@@ -535,21 +626,6 @@ export class ConvexProjector {
       partUpdate: { kind: 'part.updated', part },
       seq: event.seq,
     })
-  }
-
-  private planResolutionFor(outcome: ExtensionOutcome): { status: string; reason?: string } {
-    if (outcome.outcome !== 'responded') return { status: 'cancelled' }
-    const response = (outcome.response as any)?.outcome
-    if (response?.outcome === 'accepted') return { status: 'accepted' }
-    if (response?.outcome === 'rejected') {
-      return {
-        status: 'rejected',
-        ...(typeof response.reason === 'string' && response.reason.trim()
-          ? { reason: response.reason.trim() }
-          : {}),
-      }
-    }
-    return { status: 'cancelled' }
   }
 
   private async appendPlanUpdate(
@@ -693,21 +769,15 @@ export class ConvexProjector {
     return buffer
   }
 
-  private appendContent(
-    buffer: MessageBuffer,
-    partId: string,
-    content: ContentBlock,
-    reasoning = false,
-  ): PartData {
+  private appendContent(buffer: MessageBuffer, partId: string, content: ContentBlock): PartData {
     const existing = buffer.parts.get(partId)
     let part: PartData
     if (content.type === 'text') {
       part = {
         ...(existing ?? {}),
-        type: reasoning ? 'reasoning' : 'text',
+        type: 'text',
         id: partId,
         text: `${String(existing?.text ?? '')}${content.text}`,
-        ...(reasoning ? { time: existing?.time ?? { start: Date.now() } } : {}),
       }
     } else {
       part = { ...content, id: partId }

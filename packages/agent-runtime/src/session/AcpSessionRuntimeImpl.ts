@@ -31,7 +31,11 @@ import {
   type QuestionAdapter,
 } from '../backends/acp/extensions.js'
 import { AuthRequiredError } from '../core/errors.js'
-import type { ExtensionBroker } from '../core/ExtensionBroker.js'
+import type {
+  InteractionBroker,
+  InteractionKind,
+  InteractionOutcome,
+} from '../core/InteractionBroker.js'
 import type { PermissionBroker } from '../core/PermissionBroker.js'
 import type { HostDeps } from '../host.js'
 import {
@@ -102,7 +106,7 @@ export type SessionRuntimeDeps = {
   config: AcpProviderConfig
   host: Pick<HostDeps, 'log' | 'onSessionTitle'>
   permissions: PermissionBroker
-  extensions: ExtensionBroker
+  interactions: InteractionBroker
   /** Overrides for DEFAULT_RUNTIME_TIMEOUTS. */
   timeouts?: Partial<RuntimeTimeouts>
   /** Transport seam. Defaults to spawning `config.command`; tests inject a
@@ -162,7 +166,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
   private readonly config: AcpProviderConfig
   private readonly host: Pick<HostDeps, 'log' | 'onSessionTitle'>
   private readonly permissions: PermissionBroker
-  private readonly extensionRequests: ExtensionBroker
+  private readonly interactions: InteractionBroker
   private readonly connections: AcpConnectionFactory
   private readonly timeouts: RuntimeTimeouts
   private readonly extensions: ExtensionRegistry
@@ -185,7 +189,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
     this.config = deps.config
     this.host = deps.host
     this.permissions = deps.permissions
-    this.extensionRequests = deps.extensions
+    this.interactions = deps.interactions
     this.connections = deps.connections
     this.timeouts = { ...DEFAULT_RUNTIME_TIMEOUTS, ...deps.timeouts }
     this.extensions = new ExtensionRegistry(deps.config.extensions)
@@ -230,7 +234,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
     // caller waits out the broker's 5-minute timeout for a process that is
     // already gone.
     this.permissions.rekeyThread(this.providerId, previous, threadId, this.workspaceIdValue)
-    this.extensionRequests.rekeyThread(this.providerId, previous, threadId, this.workspaceIdValue)
+    this.interactions.rekeyThread(this.providerId, previous, threadId, this.workspaceIdValue)
   }
 
   /** Serialise everything that can change this session's agent-side config
@@ -539,7 +543,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
     const expected = this.stopRequest !== undefined
     this.phaseValue = 'exited'
     this.permissions.settleThread(this.providerId, this.threadIdValue)
-    this.extensionRequests.settleThread(this.providerId, this.threadIdValue)
+    this.interactions.settleThread(this.providerId, this.threadIdValue)
     this.nativeQuestions?.dispose()
     this.nativeQuestions = null
     if (emitted)
@@ -624,7 +628,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
   async cancel(): Promise<void> {
     const sessionId = await this.ready()
     this.permissions.cancelThread(this.providerId, this.threadIdValue)
-    this.extensionRequests.cancelThread(this.providerId, this.threadIdValue)
+    this.interactions.cancelThread(this.providerId, this.threadIdValue)
     try {
       await this.rpc(
         'session/cancel',
@@ -981,24 +985,33 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
     return this.permissions.respond(requestId, outcome)
   }
   respondExtension(requestId: string, response: unknown): boolean {
-    return this.extensionRequests.respond(requestId, response)
+    return this.interactions.respond(requestId, response)
   }
+  // Each of these hands the broker two things: the provider-native wire payload
+  // it must reply with, and the same answer in the interaction's own vocabulary
+  // so the settlement event can report what the user actually decided without
+  // anybody downstream having to reverse-engineer a Cursor/OpenCode payload.
   respondQuestion(requestId: string, outcome: QuestionOutcome): boolean {
     const context = this.questionContexts.get(requestId)
     if (!context) return false
-    if ('native' in context) return this.extensionRequests.respond(requestId, outcome)
+    const resolution = { kind: 'question', outcome } as const
+    if ('native' in context) return this.interactions.respond(requestId, outcome, resolution)
     if ('elicitation' in context)
-      return this.extensionRequests.respond(requestId, context.elicitation.respond(outcome))
+      return this.interactions.respond(requestId, context.elicitation.respond(outcome), resolution)
     if ('plan' in context) return false
-    return this.extensionRequests.respond(
+    return this.interactions.respond(
       requestId,
       context.adapter.respond(outcome, context.params),
+      resolution,
     )
   }
   respondPlan(requestId: string, outcome: PlanReviewOutcome): boolean {
     const context = this.questionContexts.get(requestId)
     if (!context || !('plan' in context)) return false
-    return this.extensionRequests.respond(requestId, context.plan.respond(outcome, context.params))
+    return this.interactions.respond(requestId, context.plan.respond(outcome, context.params), {
+      kind: 'plan_review',
+      outcome,
+    })
   }
 
   // ------------------------------------------------------------------ inbound
@@ -1064,11 +1077,23 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
     const cursor = string(update.resumeCursor) ?? string(object(update._meta).cursor)
     if (cursor) this.resumeCursorValue = cursor
     const kind = string(update.sessionUpdate)
-    if (
-      kind === 'user_message_chunk' ||
-      kind === 'agent_message_chunk' ||
-      kind === 'agent_thought_chunk'
-    ) {
+    if (kind === 'agent_thought_chunk') {
+      // ACP has no block framing for reasoning: it streams thinking as plain
+      // text chunks and says nothing when a block ends, so every chunk is a
+      // `delta`. The run is opened by the first delta and closed by the next
+      // non-thought event (an agent message chunk, a tool call, the end of the
+      // turn) exactly as it always was — `phase` exists for providers whose
+      // thinking blocks carry no text and therefore cannot be closed that way.
+      this.emit(
+        routeEvent(this.route(), sessionId, 'stream', kind, {
+          messageId: string(update.messageId),
+          phase: 'delta',
+          content: contentBlock(update.content),
+        }),
+      )
+      return
+    }
+    if (kind === 'user_message_chunk' || kind === 'agent_message_chunk') {
       this.emit(
         routeEvent(this.route(), sessionId, 'stream', kind, {
           messageId: string(update.messageId),
@@ -1257,7 +1282,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
 
     const requestId = crypto.randomUUID()
     this.questionContexts.set(requestId, { elicitation: adapter })
-    const response = this.awaitDeferred(requestId, sessionId, ACP_ELICITATION_METHOD)
+    const response = this.awaitDeferred(requestId, sessionId, ACP_ELICITATION_METHOD, 'question')
     this.emit(
       routeEvent(this.route(), sessionId, 'session', 'question_request', {
         requestId,
@@ -1314,6 +1339,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
         requestId,
         sessionId,
         method,
+        'plan_review',
         PLAN_REVIEW_TIMEOUT_MS,
       )
       this.emit(
@@ -1334,7 +1360,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
       this.questionContexts.set(requestId, { adapter, params })
       // The broker must exist before UI listeners see the request; a fast local
       // renderer can otherwise answer before respondQuestion has anything to settle.
-      const outcomePromise = this.awaitDeferred(requestId, sessionId, method)
+      const outcomePromise = this.awaitDeferred(requestId, sessionId, method, 'question')
       this.emit(
         routeEvent(this.route(), sessionId, 'session', 'question_request', {
           requestId,
@@ -1356,7 +1382,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
         }),
       )
     if (sessionId && this.extensions.isDeferred(method)) {
-      const outcome = await this.awaitDeferred(requestId, sessionId, method)
+      const outcome = await this.awaitDeferred(requestId, sessionId, method, 'extension')
       if (outcome.outcome === 'responded') return object(outcome.response)
       // Cancelled/timed out: fall back to the provider's static response.
       return object(await this.extensions.request(method, params))
@@ -1414,7 +1440,12 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
     const requestId = `opencode:${request.requestId}`
     if (this.questionContexts.has(requestId)) return
     this.questionContexts.set(requestId, { native: request.requestId })
-    const outcomePromise = this.awaitDeferred(requestId, request.sessionId, 'opencode/question')
+    const outcomePromise = this.awaitDeferred(
+      requestId,
+      request.sessionId,
+      'opencode/question',
+      'question',
+    )
     this.emit(
       routeEvent(this.route(), request.sessionId, 'session', 'question_request', {
         requestId,
@@ -1432,19 +1463,25 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
     await nativeQuestions.respond(request.requestId, responseOutcome)
   }
 
-  /** Park a request on the app-wide extension broker until the UI answers it.
+  /** Park a request on the app-wide interaction broker until the UI answers it.
    * The question context is dropped here rather than in the broker's settle
-   * hook, because the broker is shared by every runtime. */
+   * hook, because the broker is shared by every runtime.
+   *
+   * `kind` is what tells the broker which resolution event this settlement
+   * becomes. Everything ACP parks arrives over `_ext`, but the kind is a
+   * property of what is being asked, not of the transport that carried it. */
   private awaitDeferred(
     requestId: string,
     sessionId: string,
     method: string,
+    kind: InteractionKind,
     timeoutMs?: number,
-  ): Promise<ExtensionOutcome> {
-    return new Promise<ExtensionOutcome>((resolve) =>
-      this.extensionRequests.add(
+  ): Promise<InteractionOutcome> {
+    return new Promise<InteractionOutcome>((resolve) =>
+      this.interactions.add(
         requestId,
         {
+          kind,
           providerId: this.providerId,
           threadId: this.threadIdValue,
           workspaceId: this.workspaceIdValue,
@@ -1577,7 +1614,7 @@ export type AcpSessionRuntimeFactoryDeps = {
   configs: Readonly<Record<ProviderId, ProviderConfig>>
   host: Pick<HostDeps, 'log' | 'onSessionTitle'>
   permissions: PermissionBroker
-  extensions: ExtensionBroker
+  interactions: InteractionBroker
   connections: AcpConnectionFactory
   timeouts?: Partial<RuntimeTimeouts>
 }
@@ -1590,7 +1627,7 @@ export class AcpSessionRuntimeFactory implements ManagedSessionRuntimeFactory {
       config: requireAcpConfig(this.deps.configs, spec.providerId),
       host: this.deps.host,
       permissions: this.deps.permissions,
-      extensions: this.deps.extensions,
+      interactions: this.deps.interactions,
       connections: this.deps.connections,
       ...(this.deps.timeouts ? { timeouts: this.deps.timeouts } : {}),
     })
