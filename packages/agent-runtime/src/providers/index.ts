@@ -1,5 +1,6 @@
 import type { ProviderCapabilities, ProviderId } from '@agentpack/contract'
 import type { ExtensionHandlers, SubtaskAdapter } from '../backends/acp/extensions.js'
+import { claude } from './claude.js'
 import { cursor } from './cursor.js'
 import { opencode } from './opencode.js'
 
@@ -42,10 +43,7 @@ export type AcpProviderConfig = ProviderConfigBase & {
  * the SDK owns the transport and the credentials, and there is no JSON-RPC
  * surface for an agent to reach back through. `binary` remains because the SDK
  * still shells out to the Claude Code CLI, and the same env-override escape
- * hatch the ACP providers have is what makes a non-PATH install usable.
- *
- * Declared now, instantiated later: `PROVIDER_IDS` has no `'claude'` yet, so
- * this arm is unreachable until the provider itself lands. */
+ * hatch the ACP providers have is what makes a non-PATH install usable. */
 export type ClaudeProviderConfig = ProviderConfigBase & {
   kind: 'claude'
   binary: { bin: string; envOverride: string }
@@ -72,5 +70,5 @@ export function requireAcpConfig(
   return config
 }
 
-export const providers: Readonly<Record<ProviderId, ProviderConfig>> = { cursor, opencode }
-export { cursor, opencode }
+export const providers: Readonly<Record<ProviderId, ProviderConfig>> = { cursor, opencode, claude }
+export { claude, cursor, opencode }

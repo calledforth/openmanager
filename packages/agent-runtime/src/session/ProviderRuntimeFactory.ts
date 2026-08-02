@@ -10,6 +10,8 @@ import {
   type ManagedSessionRuntime,
   type ManagedSessionRuntimeFactory,
 } from './AcpSessionRuntimeImpl.js'
+import { ClaudeProbeRuntime } from './claude/ClaudeProbeRuntime.js'
+import { ClaudeSessionRuntime } from './claude/ClaudeSessionRuntime.js'
 import type { RuntimeTimeouts } from './constants.js'
 import type { ProbeRuntime, ProbeRuntimeFactory, ProbeRuntimeOptions } from './ProbeRuntime.js'
 import type { SessionRuntimeSpec } from './SessionRuntime.js'
@@ -61,7 +63,15 @@ export class ProviderSessionRuntimeFactory implements ManagedSessionRuntimeFacto
       case 'acp':
         return this.acpFactory().create(spec)
       case 'claude':
-        throw notImplemented(config.id, 'session runtime')
+        // No shared transport to build and nothing to memoise: the SDK owns
+        // its own subprocess per query, so each runtime is standalone.
+        return new ClaudeSessionRuntime(spec, {
+          config,
+          host: this.deps.host,
+          permissions: this.deps.permissions,
+          interactions: this.deps.interactions,
+          ...(this.deps.timeouts ? { timeouts: this.deps.timeouts } : {}),
+        })
     }
   }
 
@@ -90,7 +100,20 @@ export class ProviderProbeRuntimeFactory implements ProbeRuntimeFactory {
       case 'acp':
         return this.acpFactory().create(providerId, cwd, options)
       case 'claude':
-        throw notImplemented(config.id, 'probe runtime')
+        return new ClaudeProbeRuntime(
+          {
+            providerId,
+            cwd,
+            ...(options?.threadId ? { threadId: options.threadId } : {}),
+            ...(options?.workspaceId ? { workspaceId: options.workspaceId } : {}),
+          },
+          {
+            config,
+            host: this.deps.host,
+            ...(this.deps.timeouts ? { timeouts: this.deps.timeouts } : {}),
+            ...(options?.onEvent ? { onEvent: options.onEvent } : {}),
+          },
+        )
     }
   }
 
@@ -103,12 +126,4 @@ export class ProviderProbeRuntimeFactory implements ProbeRuntimeFactory {
     })
     return this.acp
   }
-}
-
-/** Unreachable today — `PROVIDER_IDS` has no `'claude'`, so no config can
- * carry that kind. It throws rather than falling through to the ACP arm
- * because the failure mode of guessing is spawning some other provider's CLI;
- * a named error is what the commit that adds the implementation deletes. */
-function notImplemented(providerId: ProviderId, what: string): Error {
-  return new Error(`The ${providerId} ${what} is not implemented yet`)
 }

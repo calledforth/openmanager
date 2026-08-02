@@ -22,6 +22,18 @@ export type RuntimeTimeouts = {
   controlRequestMs: number
   /** SIGTERM, then SIGKILL after this long. */
   terminateGraceMs: number
+  /** How long a cancelled turn has to produce its terminal result before the
+   * runtime stops trusting the process and replaces it.
+   *
+   * Only the Claude runtime uses this, because only it has to *infer* that a
+   * cancel landed. ACP's `session/cancel` is answered by the same `session/
+   * prompt` RPC that was cancelled, so the turn settles or the connection is
+   * dead; the SDK's `interrupt()` resolves on receipt, and the turn's own
+   * `result` message arrives (or does not) separately. A result that never
+   * arrives wedges `AgentRuntime.promptQueues` forever, and `SessionReaper`
+   * cannot rescue it — it skips threads with an active turn, which is exactly
+   * what this is. */
+  interruptGraceMs: number
 }
 
 /** Budgets sized off the measured latencies quoted in `RuntimeTimeouts`.
@@ -45,6 +57,10 @@ export const DEFAULT_RUNTIME_TIMEOUTS: RuntimeTimeouts = {
   loadSessionMs: 90_000,
   controlRequestMs: 30_000,
   terminateGraceMs: 2_000,
+  // Generous on purpose: an interrupted turn still has to finish the tool call
+  // it was inside, and killing a process that was about to answer costs the
+  // user a respawn plus a resume for nothing.
+  interruptGraceMs: 15_000,
 }
 
 /** There is deliberately no prompt timeout: a turn legitimately runs for

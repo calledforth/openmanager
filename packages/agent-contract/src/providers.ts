@@ -1,6 +1,6 @@
 import type { ProviderCapabilities } from './capabilities.js'
 
-export const PROVIDER_IDS = ['opencode', 'cursor'] as const
+export const PROVIDER_IDS = ['opencode', 'cursor', 'claude'] as const
 
 export type ProviderId = (typeof PROVIDER_IDS)[number]
 

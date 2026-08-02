@@ -4,7 +4,16 @@ import type { DesiredSessionConfig } from './lifecycle.js'
 /** Where the current option list came from. Every one of these is a wire
  * response or notification — there is no local guessing. */
 export type AppliedStateSource =
-  'session/new' | 'session/load' | 'session/set_config_option' | 'config_option_update'
+  | 'session/new'
+  | 'session/load'
+  | 'session/set_config_option'
+  | 'config_option_update'
+  /** No read-back exists: the value is what this runtime last successfully
+   * wrote. Claude Code's `setModel`/`setPermissionMode` resolve without
+   * echoing state, so "applied" there means "the write returned", which is a
+   * weaker claim than the wire-confirmed sources above and is labelled as
+   * such rather than being laundered into one of them. */
+  | 'write_through'
 
 /** Live mirror of one ACP session's config options.
  *
