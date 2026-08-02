@@ -1,6 +1,7 @@
 import type {
   Options,
   PermissionMode,
+  SDKControlGetContextUsageResponse,
   SDKControlInitializeResponse,
   SDKMessage,
   SDKSessionInfo,
@@ -26,6 +27,14 @@ export interface ClaudeQuerySession extends AsyncIterable<SDKMessage> {
    * subprocess is known to be alive, authenticated and usable — everything the
    * runtime emits as `initialized` comes from here. */
   initializationResult(): Promise<SDKControlInitializeResponse>
+  /** Context-window occupancy, asked for directly rather than inferred.
+   *
+   * This is the ONLY correct source of `usage_update`: `SessionUsage` is
+   * `{used, size}` — how full the window is — and no message on the stream
+   * carries both halves. `result.usage` and `message_delta.usage` are token
+   * *counts* for a turn (`TokenUsage`), a different contract entirely, and
+   * publishing one as the other draws the meter at an invented percentage. */
+  getContextUsage(): Promise<SDKControlGetContextUsageResponse>
   /** Synchronous and fire-and-forget: it *starts* the SDK's cleanup and
    * returns without awaiting it. See `ClaudeSessionRuntime.settleExit`. */
   close(): void

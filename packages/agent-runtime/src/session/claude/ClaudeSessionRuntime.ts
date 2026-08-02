@@ -1,10 +1,13 @@
 import type {
+  CanUseTool,
   Options,
   PermissionMode,
+  PermissionResult,
   SDKMessage,
   SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk'
 import type {
+  PermissionOption,
   PermissionOutcome,
   PlanReviewOutcome,
   PromptInput,
@@ -20,8 +23,12 @@ import type {
   SessionResult,
 } from '../../backends/Backend.js'
 import { CapabilityMissingError } from '../../core/errors.js'
-import type { InteractionBroker } from '../../core/InteractionBroker.js'
-import type { PermissionBroker } from '../../core/PermissionBroker.js'
+import type {
+  InteractionBroker,
+  InteractionKind,
+  InteractionOutcome,
+} from '../../core/InteractionBroker.js'
+import { PERMISSION_TIMEOUT_MS, type PermissionBroker } from '../../core/PermissionBroker.js'
 import type { HostDeps } from '../../host.js'
 import type { ClaudeProviderConfig } from '../../providers/index.js'
 import type { AppliedSessionState } from '../AppliedConfigCache.js'
@@ -37,10 +44,43 @@ import type {
 import type { ManagedSessionRuntime } from '../AcpSessionRuntimeImpl.js'
 import type { SessionRuntimeSpec } from '../SessionRuntime.js'
 import { RpcTimeoutError, withTimeout } from '../timeout.js'
-import { errorMessage, routeEvent } from '../wire.js'
+import { errorMessage, PLAN_REVIEW_TIMEOUT_MS, routeEvent } from '../wire.js'
 import { ClaudeMessageTranslator, type TranslatedMessage } from './ClaudeMessageTranslator.js'
+import {
+  claudeQuestionAnswers,
+  parseAskUserQuestion,
+  planFromExitPlanMode,
+  type PendingClaudeQuestions,
+} from './claude-interactions.js'
+import { claudePromptContent, CLAUDE_PROMPT_CAPABILITIES } from './claude-prompt.js'
+import { claudeToolKind } from './claude-tools.js'
 import { resolveClaudeExecutable } from './executable.js'
 import { loadClaudeSdk, type ClaudeQuerySession, type ClaudeSdk } from './sdk.js'
+
+/** The callback's third argument, named once so the routing methods below can
+ * take it without re-declaring the SDK's inline option bag. */
+type CanUseToolOptions = Parameters<CanUseTool>[2]
+
+/** The two permission modes in which the user has said, up front, that they do
+ * not want to be asked. Both must be checked AFTER the two interactive tools:
+ * `AskUserQuestion` and `ExitPlanMode` are not permission prompts, they are the
+ * model asking the user a question and proposing a plan, and short-circuiting
+ * them here would silently answer both on the user's behalf. */
+const FULL_ACCESS_MODES: readonly PermissionMode[] = ['bypassPermissions', 'dontAsk']
+
+/** What a cancelled, timed-out or rejected interaction tells Claude Code. The
+ * SDK treats this as an ordinary tool denial and lets the model continue, which
+ * is what should happen when a user dismisses a question. */
+const USER_CANCELLED: PermissionResult = {
+  behavior: 'deny',
+  message: 'User cancelled tool execution.',
+}
+
+/** `PermissionBroker`'s reply shape, restated structurally because the broker
+ * does not export it. Kept exact so a change there is a compile error here. */
+type PermissionProtocolResponse = {
+  outcome: { outcome: 'selected'; optionId: string } | { outcome: 'cancelled' }
+}
 
 export type ClaudeSessionRuntimeDeps = {
   config: ClaudeProviderConfig
@@ -134,6 +174,22 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
   private readonly translator: ClaudeMessageTranslator
   private readonly listeners = new Set<BackendEventListener>()
   private readonly exitListeners = new Set<(exit: SessionRuntimeExit) => void>()
+  /** Parked `AskUserQuestion` calls, by requestId. Holds the original question
+   * texts and option labels, which is the only way the composer's answers —
+   * keyed by a synthetic `${requestId}:${index}` — can be translated back into
+   * the `{[questionText]: string}` map the SDK looks answers up in. */
+  private readonly questionContexts = new Map<string, PendingClaudeQuestions>()
+  /** Parked plan reviews, by requestId. A set rather than a map because the
+   * review needs no context to answer — but `respondPlan` must still be able to
+   * refuse a requestId that belongs to a question, and vice versa. */
+  private readonly planRequestIds = new Set<string>()
+  /** Decisions already made for an `ExitPlanMode` tool call, by `toolUseID`.
+   *
+   * The SDK may invoke `canUseTool` more than once for the same tool call (a
+   * retry after an API error re-runs the turn's tail). Asking the user to
+   * review the same plan twice is at best confusing and at worst re-runs an
+   * approved plan, so the first answer is reused. */
+  private readonly planDecisions = new Map<string, PermissionResult>()
 
   constructor(
     private readonly spec: SessionRuntimeSpec,
@@ -150,7 +206,11 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     this.timeouts = { ...DEFAULT_RUNTIME_TIMEOUTS, ...deps.timeouts }
     this.sdk = deps.sdk
     this.env = deps.env ?? process.env
-    this.translator = new ClaudeMessageTranslator(() => this.route(), this.host.log)
+    this.translator = new ClaudeMessageTranslator({
+      route: () => this.route(),
+      log: this.host.log,
+      ...(this.config.subtasks ? { subtasks: this.config.subtasks } : {}),
+    })
     this.exited = new Promise<SessionRuntimeExit>((resolve) => {
       this.resolveExited = resolve
     })
@@ -229,6 +289,12 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     // issues on exit would match none of them.
     this.permissions.rekeyThread(this.providerId, previous, threadId, this.workspaceIdValue)
     this.interactions.rekeyThread(this.providerId, previous, threadId, this.workspaceIdValue)
+    // The runtime's own interaction stores — `questionContexts`,
+    // `planRequestIds`, `planDecisions` — deliberately need no rekey: they are
+    // keyed by requestId and toolUseID, both globally unique and both
+    // thread-independent. Keying any of them by thread would have made a
+    // rebind lose a parked question's option labels, which is the one thing
+    // that cannot be reconstructed after the fact.
   }
 
   events(listener: BackendEventListener): () => void {
@@ -309,6 +375,10 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       // model.
       ...(desiredModel ? { model: desiredModel } : {}),
       ...(desiredMode ? { permissionMode: desiredMode } : {}),
+      // Every tool the CLI wants to run comes back through here — permission
+      // prompts, but also the two tools that are really user interactions.
+      canUseTool: (toolName, input, callbackOptions) =>
+        this.canUseTool(toolName, input, callbackOptions),
       stderr: (data: string) =>
         this.host.log({ scope: 'claude', level: 'warn', message: '[stderr]', data }),
     }
@@ -357,6 +427,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       routeEvent(this.route(), undefined, 'lifecycle', 'initialized', {
         agentInfo: { name: 'Claude Code' },
         capabilities: this.config.capabilities,
+        promptCapabilities: CLAUDE_PROMPT_CAPABILITIES,
         // No auth step exists — the CLI owns the credentials and a successful
         // initialize *is* the proof. Reporting an empty list is the honest
         // answer, not a missing one.
@@ -484,6 +555,10 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     const input = this.input
     if (!input) throw new Error(`Claude runtime unavailable for ${this.providerId}`)
     if (args.desiredConfig) await this.applyDesiredConfig(args.desiredConfig)
+    // Converted BEFORE `prompt_started` is emitted and before a turn is opened.
+    // An unsupported block throws here, which fails `prompt()` visibly; doing it
+    // after would leave the UI showing a started turn that never runs.
+    const content = claudePromptContent(args.prompt)
     const userMessageId = args.userMessageId ?? `agent_usr_${crypto.randomUUID()}`
     this.emit(
       routeEvent(this.route(), sessionId, 'lifecycle', 'prompt_started', {
@@ -493,11 +568,13 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       }),
     )
     const turn = this.openTurn(sessionId)
-    // 3a sends text only. Commit 3b converts `PromptInput.blocks` — images,
-    // resource links, pasted files — into the SDK's content-block shape.
     input.push({
       type: 'user',
-      message: { role: 'user', content: args.prompt.text },
+      message: { role: 'user', content },
+      // Null, always: this is the user talking to the top-level agent. A
+      // non-null parent would make the CLI attribute the message to a subagent
+      // loop, and every frame it produced would then be dropped as subagent
+      // traffic by the translator.
       parent_tool_use_id: null,
       session_id: sessionId,
     } as SDKUserMessage)
@@ -561,9 +638,53 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     this.emit(
       routeEvent(this.route(), completed.sessionId, 'lifecycle', 'prompt_completed', {
         ...(completed.stopReason ? { stopReason: completed.stopReason } : {}),
+        // `TokenUsage` — what this turn cost. NOT `usage_update`, which is
+        // `SessionUsage` and answers a different question entirely.
+        ...(completed.usage ? { usage: completed.usage } : {}),
       }),
     )
     turn.settle()
+    // Deliberately not awaited. A control request that hangs or is not
+    // implemented by an older CLI must not delay the turn's settlement, and a
+    // missing context meter is a cosmetic loss next to a wedged prompt queue.
+    void this.publishContextUsage(completed.sessionId)
+  }
+
+  /** `usage_update` — how full the context window is, straight from the only
+   * thing that knows.
+   *
+   * `getContextUsage()` is the ONLY correct source for this event. The stream's
+   * token counts (`message_delta.usage`, `result.usage`) are per-turn totals
+   * with no window size attached, so deriving occupancy from them means
+   * inventing the denominator. Polled once per completed turn rather than
+   * streamed, because the number only meaningfully changes when a turn ends. */
+  private async publishContextUsage(sessionId: string): Promise<void> {
+    const query = this.query
+    if (!query) return
+    try {
+      const usage = await withTimeout(
+        query.getContextUsage(),
+        this.timeouts.controlRequestMs,
+        () =>
+          new RpcTimeoutError(this.providerId, 'getContextUsage', this.timeouts.controlRequestMs),
+      )
+      // Both halves or nothing: a meter with a zero denominator renders as
+      // either 0% or NaN%, and both are worse than no meter.
+      if (!usage || !usage.maxTokens) return
+      this.emit(
+        routeEvent(this.route(), sessionId, 'session', 'usage_update', {
+          used: usage.totalTokens,
+          size: usage.maxTokens,
+        }),
+      )
+    } catch (error) {
+      this.host.log({
+        scope: 'claude',
+        level: 'warn',
+        message: 'Could not read Claude Code context usage',
+        data: { error: errorMessage(error) },
+      })
+    }
   }
 
   /** Reject whatever turn is in flight. Used by every terminal path; a turn
@@ -711,13 +832,280 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
   respondExtension(_requestId: string, _response: unknown): boolean {
     return false
   }
+  /** The wire response handed to the broker is the `QuestionOutcome` itself:
+   * unlike ACP, there is no provider-native payload to build here, because the
+   * answer is turned into Claude's `{questions, answers}` shape by the parked
+   * `canUseTool` callback — which is the only place the original question texts
+   * and option labels are still available. The guard matters: request ids are
+   * globally unique across kinds, and answering a plan review as if it were a
+   * question would settle it with a payload the plan branch cannot read. */
   respondQuestion(requestId: string, outcome: QuestionOutcome): boolean {
-    // 3b registers the AskUserQuestion tool's interactions; until then there
-    // is never a matching pending record and the broker says so.
+    if (!this.questionContexts.has(requestId)) return false
     return this.interactions.respond(requestId, outcome, { kind: 'question', outcome })
   }
   respondPlan(requestId: string, outcome: PlanReviewOutcome): boolean {
+    if (!this.planRequestIds.has(requestId)) return false
     return this.interactions.respond(requestId, outcome, { kind: 'plan_review', outcome })
+  }
+
+  // -------------------------------------------------------------- canUseTool
+
+  /** Everything the CLI wants to run, in a precedence that is load-bearing.
+   *
+   * The order is the whole design. `AskUserQuestion` and `ExitPlanMode` are not
+   * permission prompts — they are the model asking the user something and the
+   * model proposing a plan — and they arrive through the same callback only
+   * because that is the SDK's one hook for "before this tool runs". Putting the
+   * full-access short circuit ahead of them would silently answer every
+   * question and approve every plan the moment a user picks `bypassPermissions`
+   * or `dontAsk`, which are statements about *permission*, not about whether
+   * the user wants to be talked to.
+   *
+   * Returning `null` is never correct here: the SDK reads it as "the host
+   * already answered out of band" and, if we have not, the tool stays blocked
+   * with no deadline. Every path below returns an explicit allow or deny. */
+  private async canUseTool(
+    toolName: string,
+    input: Record<string, unknown>,
+    options: CanUseToolOptions,
+  ): Promise<PermissionResult> {
+    const sessionId = this.sessionIdValue
+    if (!sessionId)
+      return { behavior: 'deny', message: `${this.providerId} has no session for this tool call` }
+    try {
+      if (toolName === 'AskUserQuestion') {
+        const answered = await this.askUserQuestion(sessionId, input, options)
+        // Undefined only when the input was not a recognisable question set, in
+        // which case it falls through and is treated as an ordinary tool.
+        if (answered) return answered
+      }
+      if (toolName === 'ExitPlanMode') return await this.reviewPlan(sessionId, input, options)
+      if (FULL_ACCESS_MODES.includes(this.appliedModeId as PermissionMode))
+        return { behavior: 'allow' }
+      return await this.requestPermission(sessionId, toolName, input, options)
+    } catch (error) {
+      // A throw out of this callback is swallowed by the SDK and leaves the
+      // tool parked forever. Denying is the only safe failure.
+      this.host.log({
+        scope: 'claude',
+        level: 'error',
+        message: 'Claude Code permission routing failed',
+        data: { toolName, error: errorMessage(error) },
+      })
+      return { behavior: 'deny', message: `Permission routing failed: ${errorMessage(error)}` }
+    }
+  }
+
+  /** The model asking the user a multiple-choice question.
+   *
+   * The response REPLACES the tool input rather than extending it — `{questions,
+   * answers}`, not a spread — because that is the shape `AskUserQuestionOutput`
+   * describes, and `answers` is keyed by the FULL ORIGINAL QUESTION TEXT: the
+   * SDK looks each answer up by the question string it sent. */
+  private async askUserQuestion(
+    sessionId: string,
+    input: Record<string, unknown>,
+    options: CanUseToolOptions,
+  ): Promise<PermissionResult | undefined> {
+    const requestId = crypto.randomUUID()
+    const parsed = parseAskUserQuestion(requestId, input)
+    if (!parsed) return undefined
+    if (parsed.pending.duplicateTexts.length > 0)
+      // Not survivable in the SDK's shape: `answers` is one string per question
+      // text, so two questions sharing a text share a key. The answers are
+      // merged rather than one silently overwriting the other.
+      this.host.log({
+        scope: 'claude',
+        level: 'warn',
+        message: 'AskUserQuestion repeated a question text; answers will be merged',
+        data: { texts: parsed.pending.duplicateTexts },
+      })
+    this.questionContexts.set(requestId, parsed.pending)
+    // Registered before the request reaches any listener: a fast local renderer
+    // can otherwise answer before `respondQuestion` has anything to settle.
+    const settlement = this.awaitInteraction(requestId, sessionId, 'question', options.signal)
+    this.emit(
+      routeEvent(this.route(), sessionId, 'session', 'question_request', {
+        requestId,
+        sessionId,
+        ...(parsed.title ? { title: parsed.title } : {}),
+        questions: parsed.questions,
+      }),
+    )
+    const outcome = await settlement
+    if (outcome.outcome !== 'responded') return USER_CANCELLED
+    const answer = outcome.response as QuestionOutcome
+    if (answer.outcome !== 'answered') return USER_CANCELLED
+    return {
+      behavior: 'allow',
+      updatedInput: {
+        questions: input.questions,
+        answers: claudeQuestionAnswers(parsed.pending, answer),
+      },
+    }
+  }
+
+  /** The model proposing a plan and waiting to be released into implementation.
+   *
+   * `continuation: 'same_turn'` is the field that makes this correct: approval
+   * releases THIS turn to carry on, so the host must not dispatch a follow-up
+   * prompt. Without it `build_plan` sends a second turn and the entire plan runs
+   * twice — every edit, every command, duplicated. */
+  private async reviewPlan(
+    sessionId: string,
+    input: Record<string, unknown>,
+    options: CanUseToolOptions,
+  ): Promise<PermissionResult> {
+    const memo = this.planDecisions.get(options.toolUseID)
+    if (memo) return memo
+    const requestId = crypto.randomUUID()
+    this.planRequestIds.add(requestId)
+    const settlement = this.awaitInteraction(
+      requestId,
+      sessionId,
+      'plan_review',
+      options.signal,
+      // A plan is read, not clicked through; the default interaction timeout is
+      // far too short for one.
+      PLAN_REVIEW_TIMEOUT_MS,
+    )
+    this.emit(
+      routeEvent(this.route(), sessionId, 'session', 'plan_review_request', {
+        ...planFromExitPlanMode(input),
+        requestId,
+        sessionId,
+      }),
+    )
+    const outcome = await settlement
+    const review = outcome.outcome === 'responded' ? (outcome.response as PlanReviewOutcome) : undefined
+    const result: PermissionResult =
+      review?.outcome === 'accepted'
+        ? // No `updatedInput`: the plan is unchanged and the SDK treats an
+          // omitted `updatedInput` as "use what I sent".
+          { behavior: 'allow' }
+        : review?.outcome === 'rejected'
+          ? { behavior: 'deny', message: review.reason ?? 'User rejected the plan.' }
+          : USER_CANCELLED
+    this.planDecisions.set(options.toolUseID, result)
+    return result
+  }
+
+  /** Everything else: an ordinary permission prompt.
+   *
+   * The prompt text comes from the SDK's own `title` ("Claude wants to read
+   * foo.txt"), which the bridge renders with the same wording the CLI uses.
+   * Reconstructing a sentence from `toolName` + `input` would drift from it and
+   * would be wrong for MCP tools we know nothing about. `displayName` is the
+   * compact noun phrase and becomes the row's label. */
+  private async requestPermission(
+    sessionId: string,
+    toolName: string,
+    input: Record<string, unknown>,
+    options: CanUseToolOptions,
+  ): Promise<PermissionResult> {
+    const requestId = crypto.randomUUID()
+    const permissionOptions: PermissionOption[] = [
+      { optionId: 'allow_once', name: 'Allow', kind: 'allow_once' },
+      { optionId: 'allow_always', name: 'Always allow', kind: 'allow_always' },
+      { optionId: 'reject_once', name: 'Deny', kind: 'reject_once' },
+    ]
+    const response = new Promise<PermissionProtocolResponse>((resolve) =>
+      this.permissions.add(requestId, {
+        providerId: this.providerId,
+        threadId: this.threadIdValue,
+        workspaceId: this.workspaceIdValue,
+        sessionId,
+        options: permissionOptions,
+        resolve,
+      }),
+    )
+    const abort = () => this.permissions.respond(requestId, { outcome: 'cancelled', reason: 'tool_cancelled' })
+    const detach = this.onAbort(options.signal, abort)
+    this.emit(
+      routeEvent(this.route(), sessionId, 'permission', 'permission_request', {
+        requestId,
+        sessionId,
+        toolCall: {
+          toolCallId: options.toolUseID,
+          // The compact label. `convex-projector.upsertPermission` reads this as
+          // the tool name for the prompt's heading.
+          title: options.displayName ?? toolName,
+          kind: claudeToolKind(toolName),
+          rawInput: input,
+        },
+        options: permissionOptions,
+        expiresAt: new Date(Date.now() + PERMISSION_TIMEOUT_MS).toISOString(),
+        metadata: {
+          toolName,
+          // Read as the prompt's description downstream, which is exactly what
+          // the SDK says this field is for.
+          ...(options.title ? { title: options.title } : {}),
+          ...(options.description ? { description: options.description } : {}),
+          ...(options.decisionReason ? { decisionReason: options.decisionReason } : {}),
+          ...(options.blockedPath ? { filepath: options.blockedPath } : {}),
+        },
+      }),
+    )
+    const outcome = await response.finally(detach)
+    if (outcome.outcome.outcome !== 'selected') return USER_CANCELLED
+    if (outcome.outcome.optionId === 'reject_once')
+      return { behavior: 'deny', message: 'User denied permission for this tool call.' }
+    // `updatedInput` is deliberately omitted: the input is unchanged, and the
+    // SDK's allow arm treats an absent one as "run what you asked to run".
+    // `updatedPermissions` carries ONLY what the SDK itself suggested, and only
+    // for "always" — synthesizing a rule would write a permission the CLI never
+    // proposed into the user's settings.
+    if (outcome.outcome.optionId === 'allow_always' && options.suggestions?.length)
+      return { behavior: 'allow', updatedPermissions: [...options.suggestions] }
+    return { behavior: 'allow' }
+  }
+
+  /** Park an interaction on the app-wide broker until the UI answers it, with
+   * the callback's abort as a second way out.
+   *
+   * There is exactly ONE settlement point — the broker's record, which is
+   * deleted before its `resolve` runs — so an abort arriving at the same
+   * instant as the user's answer produces one outcome, not two, and the loser
+   * simply reports `false`. */
+  private awaitInteraction(
+    requestId: string,
+    sessionId: string,
+    kind: InteractionKind,
+    signal: AbortSignal,
+    timeoutMs?: number,
+  ): Promise<InteractionOutcome> {
+    const settlement = new Promise<InteractionOutcome>((resolve) =>
+      this.interactions.add(
+        requestId,
+        {
+          kind,
+          providerId: this.providerId,
+          threadId: this.threadIdValue,
+          workspaceId: this.workspaceIdValue,
+          sessionId,
+          resolve,
+        },
+        timeoutMs,
+      ),
+    )
+    const detach = this.onAbort(signal, () => this.interactions.cancel(requestId))
+    return settlement.finally(() => {
+      detach()
+      this.questionContexts.delete(requestId)
+      this.planRequestIds.delete(requestId)
+    })
+  }
+
+  /** Subscribe to an abort that may already have happened. Returns the detach,
+   * so a settled interaction stops holding a listener on a signal the SDK keeps
+   * alive for the rest of the turn. */
+  private onAbort(signal: AbortSignal, onAbort: () => void): () => void {
+    if (signal.aborted) {
+      onAbort()
+      return () => undefined
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    return () => signal.removeEventListener('abort', onAbort)
   }
 
   // ------------------------------------------------------------------- teardown

@@ -1,6 +1,7 @@
 import type {
   Options,
   PermissionMode,
+  SDKControlGetContextUsageResponse,
   SDKControlInitializeResponse,
   SDKMessage,
   SDKSessionInfo,
@@ -43,6 +44,18 @@ export class FakeClaudeQuery implements ClaudeQuerySession {
   initializeError: Error | undefined
   /** Set to make `interrupt()` reject. */
   interruptError: Error | undefined
+  /** Set to make `getContextUsage()` reject — an older CLI that does not answer
+   * the control request. A turn must still settle when it does. */
+  contextUsageError: Error | undefined
+  contextUsageCalls = 0
+  contextUsage = {
+    categories: [],
+    totalTokens: 12_000,
+    maxTokens: 200_000,
+    rawMaxTokens: 200_000,
+    percentage: 6,
+    model: 'claude-opus-5',
+  } as unknown as SDKControlGetContextUsageResponse
 
   private readonly pending: SDKMessage[] = []
   private waiting: ((message: SDKMessage | undefined) => void) | undefined
@@ -145,6 +158,119 @@ export class FakeClaudeQuery implements ClaudeQuerySession {
     } as unknown as SDKMessage)
   }
 
+  // ------------------------------------------------------- streaming frames
+
+  /** One raw Anthropic streaming envelope. Everything below is sugar over it. */
+  emitStream(event: Record<string, unknown>, parentToolUseId: string | null = null): void {
+    this.emit({
+      type: 'stream_event',
+      event,
+      parent_tool_use_id: parentToolUseId,
+      uuid: crypto.randomUUID(),
+      session_id: this.sessionId,
+    } as unknown as SDKMessage)
+  }
+
+  /** Opens a fresh content-block index space, exactly as the CLI does between
+   * assistant messages within one turn. */
+  emitMessageStart(): void {
+    this.emitStream({ type: 'message_start', message: { role: 'assistant', content: [] } })
+  }
+
+  emitMessageDelta(usage: Record<string, number>, parentToolUseId: string | null = null): void {
+    this.emitStream({ type: 'message_delta', delta: {}, usage }, parentToolUseId)
+  }
+
+  emitTextBlock(index: number, chunks: string[]): void {
+    this.emitStream({ type: 'content_block_start', index, content_block: { type: 'text', text: '' } })
+    for (const text of chunks)
+      this.emitStream({ type: 'content_block_delta', index, delta: { type: 'text_delta', text } })
+    this.emitStream({ type: 'content_block_stop', index })
+  }
+
+  /** A thinking block. `thinking` is always the empty string on the wire — the
+   * fake reproduces that deliberately, because a fake that emitted text would
+   * hide the bug this provider's whole reasoning story exists to avoid. */
+  emitThinkingStart(index: number): void {
+    this.emitStream({
+      type: 'content_block_start',
+      index,
+      content_block: { type: 'thinking', thinking: '', signature: '' },
+    })
+  }
+  emitThinkingDelta(index: number, estimatedTokens: number): void {
+    this.emitStream({
+      type: 'content_block_delta',
+      index,
+      delta: { type: 'thinking_delta', thinking: '', estimated_tokens: estimatedTokens },
+    })
+  }
+  emitBlockStop(index: number): void {
+    this.emitStream({ type: 'content_block_stop', index })
+  }
+
+  /** A tool call opening. `input` is `{}` on the wire; the arguments arrive as
+   * `input_json_delta` fragments. */
+  emitToolStart(index: number, id: string, name: string, type = 'tool_use'): void {
+    this.emitStream({
+      type: 'content_block_start',
+      index,
+      content_block: { type, id, name, input: {} },
+    })
+  }
+  emitToolInput(index: number, partialJson: string): void {
+    this.emitStream({
+      type: 'content_block_delta',
+      index,
+      delta: { type: 'input_json_delta', partial_json: partialJson },
+    })
+  }
+
+  /** The synthesized user message the CLI reports a tool's outcome through. */
+  emitToolResult(toolUseId: string, content: unknown, isError = false): void {
+    this.emit({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: toolUseId, content, is_error: isError }],
+      },
+      parent_tool_use_id: null,
+      uuid: crypto.randomUUID(),
+      session_id: this.sessionId,
+    } as unknown as SDKMessage)
+  }
+
+  /** A finished assistant message. `parentToolUseId` makes it a subagent's. */
+  emitAssistantBlocks(blocks: unknown[], parentToolUseId: string | null = null): void {
+    this.emit({
+      type: 'assistant',
+      message: { role: 'assistant', content: blocks },
+      parent_tool_use_id: parentToolUseId,
+      uuid: crypto.randomUUID(),
+      session_id: this.sessionId,
+    } as unknown as SDKMessage)
+  }
+
+  /** Drive the runtime's `canUseTool` the way the CLI does. The abort
+   * controller is returned so a test can abort a parked interaction. */
+  useTool(
+    toolName: string,
+    input: Record<string, unknown>,
+    overrides: Record<string, unknown> = {},
+  ): { result: Promise<unknown>; controller: AbortController } {
+    const controller = new AbortController()
+    const canUseTool = this.options.canUseTool
+    if (!canUseTool) throw new Error('the runtime did not install a canUseTool callback')
+    const result = canUseTool(toolName, input, {
+      signal: controller.signal,
+      toolUseID: `toolu_${toolName}`,
+      requestId: crypto.randomUUID(),
+      ...overrides,
+    } as Parameters<typeof canUseTool>[2])
+    void result.catch(() => undefined)
+    return { result, controller }
+  }
+
   /** A member of the union this build knows nothing about — the case the
    * translator must survive rather than throw on. */
   emitUnknown(type: string): void {
@@ -221,6 +347,11 @@ export class FakeClaudeQuery implements ClaudeQuerySession {
   async initializationResult(): Promise<SDKControlInitializeResponse> {
     if (this.initializeError) throw this.initializeError
     return this.initialize
+  }
+  async getContextUsage(): Promise<SDKControlGetContextUsageResponse> {
+    this.contextUsageCalls += 1
+    if (this.contextUsageError) throw this.contextUsageError
+    return this.contextUsage
   }
   close(): void {
     this.closed = true

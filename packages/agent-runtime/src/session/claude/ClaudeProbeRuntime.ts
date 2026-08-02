@@ -16,6 +16,7 @@ import type { ThreadId } from '../lifecycle.js'
 import type { ProbeResult, ProbeRuntime } from '../ProbeRuntime.js'
 import { RpcTimeoutError, withTimeout } from '../timeout.js'
 import { routeEvent } from '../wire.js'
+import { CLAUDE_PROMPT_CAPABILITIES } from './claude-prompt.js'
 import { resolveClaudeExecutable } from './executable.js'
 import { loadClaudeSdk, type ClaudeQuerySession, type ClaudeSdk } from './sdk.js'
 
@@ -121,6 +122,7 @@ export class ClaudeProbeRuntime implements ProbeRuntime {
       authenticated: true,
       sessionListAdvertised: false,
       loadSessionAdvertised: this.deps.config.capabilities.canLoadSession,
+      promptCapabilities: CLAUDE_PROMPT_CAPABILITIES,
       commands: init.commands.map((command): AvailableCommand => ({
         name: command.name,
         description: command.description,
@@ -133,6 +135,7 @@ export class ClaudeProbeRuntime implements ProbeRuntime {
       routeEvent(this.route(), undefined, 'lifecycle', 'initialized', {
         agentInfo,
         capabilities: this.deps.config.capabilities,
+        promptCapabilities: CLAUDE_PROMPT_CAPABILITIES,
         authMethods: [],
       }),
     )

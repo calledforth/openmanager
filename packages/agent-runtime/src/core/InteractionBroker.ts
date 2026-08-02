@@ -104,6 +104,21 @@ export class InteractionBroker {
     return this.settleOne(requestId, { outcome: 'responded', response }, resolution)
   }
 
+  /** Cancel ONE parked request, for a provider that learns a single interaction
+   * is dead without its thread being dead.
+   *
+   * The SDK backends need this: a `canUseTool` callback carries its own
+   * `AbortSignal`, so an individual tool call can be abandoned (a hook denied
+   * it, the model changed its mind, a nested agent was stopped) while the turn
+   * and every other parked request continue. Without it the record would sit
+   * until the five-minute timeout. Returns false when nothing was pending,
+   * which is how a losing race reports itself: `settleOne` deletes before it
+   * resolves, so an abort and a user answer arriving together still produce
+   * exactly one settlement. */
+  cancel(requestId: string, reason: PermissionCancellationReason = 'tool_cancelled'): boolean {
+    return this.settleOne(requestId, { outcome: 'cancelled', reason })
+  }
+
   cancelThread(providerId: ProviderId, threadId: string): void {
     this.settle('tool_cancelled', providerId, threadId)
   }

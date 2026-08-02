@@ -1,3 +1,4 @@
+import { subtaskFromClaudeTool } from '../session/claude/claude-tools.js'
 import type { ClaudeProviderConfig } from './index.js'
 
 /** Claude Code, driven through `@anthropic-ai/claude-agent-sdk` rather than ACP.
@@ -60,18 +61,35 @@ export const claude: ClaudeProviderConfig = {
     canDeleteSession: false,
     canListSessions: false,
 
-    // --- commit 3b turns these on -----------------------------------------
-    // Each needs the full message translator: plan mode and the ExitPlanMode
-    // tool (supportsPlans), `result.usage`/`getContextUsage` metering
-    // (supportsUsage), `canUseTool` routing into the PermissionBroker
-    // (supportsPermissionRequests), `thinking_delta` stream events
-    // (supportsThoughtStreaming), Task tool correlation (supportsSubtasks),
-    // and the AskUserQuestion tool (supportsQuestions).
-    supportsPlans: false,
-    supportsUsage: false,
-    supportsPermissionRequests: false,
-    supportsThoughtStreaming: false,
-    supportsSubtasks: false,
-    supportsQuestions: false,
+    // --- delivered by the message translator and canUseTool routing --------
+    // Two independent surfaces, both live: `TodoWrite` inputs become
+    // `plan_update` snapshots, and the `ExitPlanMode` tool call becomes a
+    // reviewable `plan_review_request` carrying `continuation: 'same_turn'`.
+    supportsPlans: true,
+    // `query.getContextUsage()` after every completed turn, which is the only
+    // source that carries both halves of `SessionUsage`. `prompt_completed`
+    // additionally carries per-turn `TokenUsage` accumulated from the stream.
+    supportsUsage: true,
+    // `canUseTool` parks the call on the app-wide `PermissionBroker` with
+    // allow_once / allow_always / reject_once, and answers with the SDK's own
+    // `updatedPermissions` suggestions for "always".
+    supportsPermissionRequests: true,
+    // Indicator only, and deliberately advertised anyway: Claude Code's
+    // thinking blocks carry an always-empty string, so what streams is
+    // start/stop framing plus a monotonic `estimated_tokens` reading. That is
+    // what `ThoughtChunk.phase`/`tokens` exist for — the capability means
+    // "reasoning is observable", not "reasoning arrives as prose".
+    supportsThoughtStreaming: true,
+    // `Task` tool calls are claimed by `subtasks.fromToolCall` below and become
+    // `subtask_update`s instead of tool rows, with the subagent's own frames
+    // feeding the row's activity.
+    supportsSubtasks: true,
+    // The `AskUserQuestion` tool, surfaced through the `InteractionBroker` and
+    // answered back into the tool's `{questions, answers}` input shape.
+    supportsQuestions: true,
   },
+  // Attaching the adapter is not enough on its own — `ClaudeMessageTranslator`
+  // has to invoke it and track the ids it claims, the way
+  // `AcpSessionRuntimeImpl.subtaskFromTool` does for the ACP transport.
+  subtasks: { fromToolCall: subtaskFromClaudeTool },
 }
