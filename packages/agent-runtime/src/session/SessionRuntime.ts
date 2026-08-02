@@ -1,4 +1,3 @@
-import type * as acp from '@agentclientprotocol/sdk'
 import type {
   PermissionOutcome,
   PlanReviewOutcome,
@@ -8,15 +7,9 @@ import type {
   QuestionOutcome,
 } from '@agentpack/contract'
 import type { BackendEventListener, SessionResult } from '../backends/Backend.js'
-import type { ExtensionBroker } from '../core/ExtensionBroker.js'
-import type { PermissionBroker } from '../core/PermissionBroker.js'
-import type { HostDeps } from '../host.js'
-import type { ProviderConfig } from '../providers/index.js'
 import type { AppliedSessionState } from './AppliedConfigCache.js'
-import type { RuntimeTimeouts } from './constants.js'
 import type {
   DesiredSessionConfig,
-  ProcessExit,
   SessionRuntimePhase,
   SessionRuntimeExit,
   TerminationRequest,
@@ -43,67 +36,20 @@ export type SessionRuntimeSpec = {
   desiredConfig?: DesiredSessionConfig
 }
 
-/** What a runtime needs from the outside world.
- *
- * The two brokers are deliberately app-wide, not per-runtime: they are already
- * keyed by requestId and every pending record carries its own
- * providerId/threadId/workspaceId/sessionId, so `respondPermission(requestId,
- * …)` keeps working without a requestId -> thread lookup table. A runtime
- * settles only its own thread's requests when it exits. */
-export type SessionRuntimeDeps = {
-  config: ProviderConfig
-  host: Pick<HostDeps, 'log' | 'onSessionTitle'>
-  permissions: PermissionBroker
-  extensions: ExtensionBroker
-  /** Overrides for DEFAULT_RUNTIME_TIMEOUTS. */
-  timeouts?: Partial<RuntimeTimeouts>
-  /** Transport seam. Defaults to spawning `config.command`; tests inject a
-   * fake so the runtime can be exercised without a CLI, instead of reaching
-   * into private fields the way the current AcpBackend tests do. */
-  connections?: AcpConnectionFactory
-}
-
-export type AcpConnectionSpec = {
-  providerId: ProviderId
-  command: string
-  args: readonly string[]
-  cwd: string
-  env: Readonly<Record<string, string>>
-  /** Handlers for agent-initiated traffic, installed before the first byte. */
-  client: acp.Client
-  /** Reject the spawn if the child has not produced a connection in time. */
-  spawnTimeoutMs: number
-  /** Default grace between SIGTERM and SIGKILL in `terminate`, when the
-   * `TerminationRequest` does not name its own. */
-  terminateGraceMs: number
-}
-
-/** One live child process plus its ACP connection. Owns nothing above the
- * transport: no sessions, no config state, no event fan-out. */
-export interface AcpConnection {
-  readonly connection: acp.ClientSideConnection
-  readonly pid: number | undefined
-  /** Resolves when the child is gone, whatever the reason. Watching this is
-   * how a dead process is noticed *without* waiting for the next RPC to fail. */
-  readonly exited: Promise<ProcessExit>
-  /** SIGTERM, then SIGKILL after `graceMs`. Idempotent. */
-  terminate(request: TerminationRequest): Promise<ProcessExit>
-}
-
-export interface AcpConnectionFactory {
-  connect(spec: AcpConnectionSpec): Promise<AcpConnection>
-}
-
-/** The per-session runtime: one child process, one ACP session, one applied
- * state cache, one liveness. It replaces `AcpBackend`, which owned one process
- * per *provider* shared by every workspace and session.
+/** The per-session runtime: one child process, one session, one applied state
+ * cache, one liveness. It replaces `AcpBackend`, which owned one process per
+ * *provider* shared by every workspace and session.
  *
  * Because a runtime hosts exactly one session, an incoming sessionless
  * `cursor/*` extension request has exactly one possible correlation target.
  * That is what lets Phase 1 delete `promptTail` and the
  * `correlateSessionlessExtensionsToActivePrompt` quirk, and with them the
- * app-wide serialisation of Cursor prompts. */
-export interface AcpSessionRuntime {
+ * app-wide serialisation of Cursor prompts.
+ *
+ * Nothing here mentions ACP on purpose. The one non-transport-neutral member
+ * left is `sessionId`, and a provider that has no session ids of its own can
+ * mint them — everything above this interface treats them as opaque. */
+export interface SessionRuntime {
   readonly threadId: ThreadId
   readonly providerId: ProviderId
   readonly workspaceId: string | undefined
@@ -180,5 +126,5 @@ export interface AcpSessionRuntime {
 }
 
 export interface SessionRuntimeFactory {
-  create(spec: SessionRuntimeSpec): AcpSessionRuntime
+  create(spec: SessionRuntimeSpec): SessionRuntime
 }

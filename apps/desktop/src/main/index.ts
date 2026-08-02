@@ -7,8 +7,13 @@ import { api } from '@openmanager/convex/_generated/api'
 import { JobWorker } from './job-worker'
 import { AgentHost } from './agent-host'
 import { ConvexProjector } from './convex-projector'
-import { isProviderId, type ProviderId, type ProviderMetadata } from '@agentpack/contract'
-import { providers } from '@agentpack/runtime'
+import {
+  isProviderId,
+  PROVIDER_IDS,
+  type ProviderId,
+  type ProviderMetadata,
+} from '@agentpack/contract'
+import { opencode as opencodeProvider, providers } from '@agentpack/runtime'
 import { loadOrCreateClientId } from './client-id'
 import { sanitizeProviderHealthCache } from './provider-health-cache'
 import store from './store'
@@ -127,7 +132,10 @@ async function modelSupportsImages(
   if (providerId !== 'opencode' || !modelId.includes('/')) return null
   if (modelImageSupportCache.has(modelId)) return modelImageSupportCache.get(modelId) ?? null
   const [modelProvider] = modelId.split('/', 1)
-  const command = process.env.ACP_OPENCODE_BIN ?? providers.opencode.command.bin
+  // Named directly rather than read out of `providers`, whose values are the
+  // whole provider union: `command` lives on the ACP arm, and this call is
+  // about OpenCode's own CLI, so there is nothing to narrow.
+  const command = process.env.ACP_OPENCODE_BIN ?? opencodeProvider.command.bin
   try {
     const { stdout } = await execFileAsync(
       command,
@@ -388,9 +396,11 @@ ipcMain.handle('store:get-workspace-composer-preferences', async () => {
   const legacyModels = store.get('lastSelectedModelByWorkspace', {})
   for (const [legacyKey, modelId] of Object.entries(legacyModels)) {
     if (!modelId) continue
-    const providerSuffix = (['opencode', 'cursor'] as const).find((providerId) =>
-      legacyKey.endsWith(`::${providerId}`),
-    )
+    // Every known provider, not a frozen pair: a key already suffixed with a
+    // provider this list is missing reads as unsuffixed and gets a second
+    // suffix appended (`…::claude` -> `…::claude::opencode`), which is a
+    // preference the renderer can never look up again.
+    const providerSuffix = PROVIDER_IDS.find((providerId) => legacyKey.endsWith(`::${providerId}`))
     const key = providerSuffix ? legacyKey : workspaceComposerPreferenceKey(legacyKey, 'opencode')
     preferences[key] = {
       ...(preferences[key] ?? {}),

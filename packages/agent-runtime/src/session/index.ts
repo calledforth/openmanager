@@ -33,12 +33,18 @@ export type {
   AcpConnection,
   AcpConnectionFactory,
   AcpConnectionSpec,
-  AcpSessionRuntime,
-  SessionRuntimeDeps,
+} from './AcpConnection.js'
+export type {
+  SessionRuntime,
   SessionRuntimeFactory,
   SessionRuntimeSpec,
-} from './AcpSessionRuntime.js'
-export type { AcpProbeResult, AcpProbeRuntime, AcpProbeRuntimeFactory } from './AcpProbeRuntime.js'
+} from './SessionRuntime.js'
+export type {
+  ProbeResult,
+  ProbeRuntime,
+  ProbeRuntimeFactory,
+  ProbeRuntimeOptions,
+} from './ProbeRuntime.js'
 export type {
   ActiveTurn,
   SessionRuntimeEntry,
@@ -49,6 +55,7 @@ export type {
   AcpSessionRuntimeFactoryDeps,
   ManagedSessionRuntime,
   ManagedSessionRuntimeFactory,
+  SessionRuntimeDeps,
 } from './AcpSessionRuntimeImpl.js'
 export { AcpProbeRuntimeFactoryImpl, AcpProbeRuntimeImpl } from './AcpProbeRuntimeImpl.js'
 export type {
@@ -56,6 +63,14 @@ export type {
   AcpProbeRuntimeFactoryDeps,
   AcpProbeSpec,
 } from './AcpProbeRuntimeImpl.js'
+export {
+  ProviderProbeRuntimeFactory,
+  ProviderSessionRuntimeFactory,
+} from './ProviderRuntimeFactory.js'
+export type {
+  ProviderProbeRuntimeFactoryDeps,
+  ProviderSessionRuntimeFactoryDeps,
+} from './ProviderRuntimeFactory.js'
 export { ChildProcessConnection, ChildProcessConnectionFactory } from './ChildProcessConnection.js'
 export type { TerminableChild } from './ChildProcessConnection.js'
 export { SessionRuntimeRegistryImpl } from './SessionRuntimeRegistryImpl.js'

@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { Readable, Writable } from 'node:stream'
 import * as acp from '@agentclientprotocol/sdk'
 import type { HostDeps } from '../host.js'
-import type { AcpConnection, AcpConnectionFactory, AcpConnectionSpec } from './AcpSessionRuntime.js'
+import type { AcpConnection, AcpConnectionFactory, AcpConnectionSpec } from './AcpConnection.js'
 import type { ProcessExit, TerminationRequest } from './lifecycle.js'
 
 /** The slice of a spawned child this connection actually uses.

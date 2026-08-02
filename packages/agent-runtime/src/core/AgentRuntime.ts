@@ -1,5 +1,6 @@
 import type {
   AgentEvent,
+  AvailableCommand,
   CapabilityKey,
   PermissionOutcome,
   PlanReviewOutcome,
@@ -11,17 +12,18 @@ import type {
 import type { BackendEvent, SessionResult } from '../backends/Backend.js'
 import type { HostDeps } from '../host.js'
 import { providers, type ProviderConfig } from '../providers/index.js'
-import type { AcpProbeResult } from '../session/AcpProbeRuntime.js'
-import { AcpProbeRuntimeImpl } from '../session/AcpProbeRuntimeImpl.js'
-import type { AcpConnectionFactory } from '../session/AcpSessionRuntime.js'
-import { AcpSessionRuntimeFactory } from '../session/AcpSessionRuntimeImpl.js'
+import type { AcpConnectionFactory } from '../session/AcpConnection.js'
+import type { ProbeResult, ProbeRuntime } from '../session/ProbeRuntime.js'
+import {
+  ProviderProbeRuntimeFactory,
+  ProviderSessionRuntimeFactory,
+} from '../session/ProviderRuntimeFactory.js'
 import { ChildProcessConnectionFactory } from '../session/ChildProcessConnection.js'
 import { SHUTDOWN_BUDGET_MS, type RuntimeTimeouts } from '../session/constants.js'
 import type { DesiredSessionConfig, SessionResumeRecord } from '../session/lifecycle.js'
 import { withTimeout } from '../session/timeout.js'
 import { SessionRuntimeRegistryImpl } from '../session/SessionRuntimeRegistryImpl.js'
 import type { SessionRuntimeEntry } from '../session/SessionRuntimeRegistry.js'
-import { AcpProbeRuntimeFactoryImpl } from '../session/AcpProbeRuntimeImpl.js'
 import { isRuntimeAlive } from '../session/lifecycle.js'
 import { ExtensionBroker } from './ExtensionBroker.js'
 import { PermissionBroker } from './PermissionBroker.js'
@@ -41,11 +43,16 @@ export type RuntimeRoute = {
 }
 /** What a provider bootstrap learned, from one throwaway process. */
 export type ProviderBootstrap = {
-  result: AcpProbeResult
+  result: ProbeResult
   /** The provider's sessions for this directory, or `undefined` when the agent
    * does not advertise `session/list` at all — which is not the same as `[]`,
    * "it listed and there are none". */
   sessions: ProviderSessionInfo[] | undefined
+  /** Slash commands the probe could answer without a session, hoisted out of
+   * `result` alongside `sessions` because it is the same kind of fact: what
+   * the bootstrap process learned about the provider before any thread exists.
+   * `undefined` over ACP, where the catalog only arrives on a live session. */
+  commands: AvailableCommand[] | undefined
 }
 
 export type RuntimeSessionArgs = RuntimeRoute & {
@@ -134,7 +141,12 @@ export class AgentRuntime {
   private readonly promptQueues = new Map<string, Promise<void>>()
   private readonly activeMessageIds = new Map<string, string>()
   private readonly configs: Readonly<Record<ProviderId, ProviderConfig>>
-  private readonly connections: AcpConnectionFactory
+  /** The ACP transport. Seeded by `options.connections` in tests and otherwise
+   * built on first use — see `acpConnections`. */
+  private connectionsValue: AcpConnectionFactory | undefined
+  /** Every probe this runtime builds, live or throwaway, comes from here.
+   * Shared with the health monitor so both go through the same dispatch. */
+  private readonly probes: ProviderProbeRuntimeFactory
   private readonly timeouts: Partial<RuntimeTimeouts> | undefined
   /** App-wide and keyed by requestId. Every pending record carries its own
    * provider/thread/workspace/session, so responding needs no lookup table and
@@ -148,7 +160,7 @@ export class AgentRuntime {
     options: AgentRuntimeOptions = {},
   ) {
     this.configs = configs
-    this.connections = options.connections ?? new ChildProcessConnectionFactory(host.log)
+    this.connectionsValue = options.connections
     this.timeouts = options.timeouts
     this.permissions = new PermissionBroker((settlement) =>
       this.forward(settlement.providerId, {
@@ -175,12 +187,12 @@ export class AgentRuntime {
       } as BackendEvent),
     )
     this.registry = new SessionRuntimeRegistryImpl({
-      runtimes: new AcpSessionRuntimeFactory({
+      runtimes: new ProviderSessionRuntimeFactory({
         configs,
         host,
         permissions: this.permissions,
         extensions: this.extensions,
-        connections: this.connections,
+        connections: () => this.acpConnections(),
         ...(options.timeouts ? { timeouts: options.timeouts } : {}),
       }),
       onEvent: (providerId, event) => this.forward(providerId, event),
@@ -192,14 +204,15 @@ export class AgentRuntime {
       log: host.log,
       ...(options.reaper ?? {}),
     })
+    this.probes = new ProviderProbeRuntimeFactory({
+      configs,
+      host,
+      connections: () => this.acpConnections(),
+      ...(options.timeouts ? { timeouts: options.timeouts } : {}),
+    })
     this.health = new ProviderHealthMonitor({
       providerIds: Object.keys(configs) as ProviderId[],
-      probes: new AcpProbeRuntimeFactoryImpl({
-        configs,
-        host,
-        connections: this.connections,
-        ...(options.timeouts ? { timeouts: options.timeouts } : {}),
-      }),
+      probes: this.probes,
       census: (providerId) => this.census(providerId),
       probeCwd: (providerId) => this.lastCwdByProvider.get(providerId) ?? this.defaultProbeCwd,
       host,
@@ -218,6 +231,18 @@ export class AgentRuntime {
       if (resume && exit.resumeCursor) resume.resumeCursor = exit.resumeCursor
     })
     this.reaper.start()
+  }
+
+  /** The child-process transport, built at most once and only when an ACP
+   * provider actually needs it.
+   *
+   * It used to be constructed unconditionally in the constructor, which quietly
+   * made "spawns a CLI" a property of the runtime rather than of the provider.
+   * Nothing observable changes for the two ACP providers — the first runtime or
+   * probe builds it, and every later one shares it. */
+  private acpConnections(): AcpConnectionFactory {
+    this.connectionsValue ??= new ChildProcessConnectionFactory(this.host.log)
+    return this.connectionsValue
   }
 
   /** Fallback directory for health probes of providers the user has not used
@@ -343,7 +368,11 @@ export class AgentRuntime {
     try {
       const result = await probe.probe()
       recorder.ok(result)
-      return { result, sessions: await this.bootstrapSessions(args, probe, result) }
+      return {
+        result,
+        sessions: await this.bootstrapSessions(args, probe, result),
+        commands: result.commands,
+      }
     } catch (error) {
       recorder.failed(error)
       throw error
@@ -362,8 +391,8 @@ export class AgentRuntime {
    * renderer reads as "provider ready". */
   private async bootstrapSessions(
     args: RuntimeRoute,
-    probe: AcpProbeRuntimeImpl,
-    result: AcpProbeResult,
+    probe: ProbeRuntime,
+    result: ProbeResult,
   ): Promise<ProviderSessionInfo[] | undefined> {
     if (!result.sessionListAdvertised) return undefined
     if (!this.configs[args.providerId].capabilities.canListSessions) return undefined
@@ -437,26 +466,14 @@ export class AgentRuntime {
     if (args.cwd.length > 0) this.lastCwdByProvider.set(args.providerId, args.cwd)
   }
 
-  private probeRuntime(args: RuntimeRoute, emitEvents: boolean): AcpProbeRuntimeImpl {
-    const config = this.configs[args.providerId]
-    if (!config) throw new Error(`Unknown provider: ${args.providerId}`)
-    return new AcpProbeRuntimeImpl(
-      {
-        providerId: args.providerId,
-        cwd: args.cwd,
-        threadId: args.threadId,
-        workspaceId: args.workspaceId,
-      },
-      {
-        config,
-        host: this.host,
-        connections: this.connections,
-        ...(this.timeouts ? { timeouts: this.timeouts } : {}),
-        ...(emitEvents
-          ? { onEvent: (event: BackendEvent) => this.forward(args.providerId, event) }
-          : {}),
-      },
-    )
+  private probeRuntime(args: RuntimeRoute, emitEvents: boolean): ProbeRuntime {
+    return this.probes.create(args.providerId, args.cwd, {
+      threadId: args.threadId,
+      ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
+      ...(emitEvents
+        ? { onEvent: (event: BackendEvent) => this.forward(args.providerId, event) }
+        : {}),
+    })
   }
 
   // ------------------------------------------------------------------ session

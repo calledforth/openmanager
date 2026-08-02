@@ -2,7 +2,7 @@ import type { AgentEvent, ProviderId } from '@agentpack/contract'
 import type { DesiredSessionConfig } from './session/lifecycle.js'
 
 export type HostLogEntry = {
-  scope: 'agent-runtime' | 'acp'
+  scope: 'agent-runtime' | 'acp' | 'claude'
   level: 'info' | 'warn' | 'error'
   message: string
   data?: unknown

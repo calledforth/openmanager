@@ -1,5 +1,5 @@
 import type * as acp from '@agentclientprotocol/sdk'
-import type { AcpConnection, AcpConnectionFactory, AcpConnectionSpec } from './AcpSessionRuntime.js'
+import type { AcpConnection, AcpConnectionFactory, AcpConnectionSpec } from './AcpConnection.js'
 import type { ProcessExit, TerminationRequest } from './lifecycle.js'
 
 /** The `AcpConnectionFactory` seam, faked.

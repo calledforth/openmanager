@@ -11,11 +11,7 @@ import {
   type ProviderRuntimeHealth,
   type ProviderRuntimeState,
 } from '@openmanager/shared/contracts/provider-health'
-import type {
-  AcpProbeResult,
-  AcpProbeRuntime,
-  AcpProbeRuntimeFactory,
-} from '../session/AcpProbeRuntime.js'
+import type { ProbeResult, ProbeRuntime, ProbeRuntimeFactory } from '../session/ProbeRuntime.js'
 import type { SessionRuntimeExit } from '../session/lifecycle.js'
 import { withTimeout } from '../session/timeout.js'
 import { AuthRequiredError } from './errors.js'
@@ -47,7 +43,7 @@ export type ProviderRuntimeCensus = {
 
 export type ProviderHealthMonitorDeps = {
   providerIds: readonly ProviderId[]
-  probes: AcpProbeRuntimeFactory
+  probes: ProbeRuntimeFactory
   /** Live-runtime rollup for one provider, read fresh on every use. */
   census: (providerId: ProviderId) => ProviderRuntimeCensus
   /** Where a throwaway probe should be spawned. `undefined` means we have no
@@ -66,7 +62,7 @@ export type ProviderHealthMonitorDeps = {
 /** Handle for a probe the monitor did not run itself. Exactly one of the two
  * methods must be called; the second call is ignored. */
 export type ProviderProbeRecorder = {
-  ok: (result: AcpProbeResult) => void
+  ok: (result: ProbeResult) => void
   failed: (error: unknown) => void
 }
 
@@ -457,7 +453,7 @@ export class ProviderHealthMonitor {
   ): Promise<ProviderHealth> {
     if (this.stopped) return this.health(providerId)
     const startedAt = this.now()
-    let runtime: AcpProbeRuntime | undefined
+    let runtime: ProbeRuntime | undefined
     try {
       runtime = this.deps.probes.create(providerId, cwd)
     } catch (error) {
@@ -496,7 +492,7 @@ export class ProviderHealthMonitor {
    * probe failure. */
   private applyProbeResult(
     record: ProviderRecord,
-    result: AcpProbeResult,
+    result: ProbeResult,
     startedAt: number,
   ): void {
     record.install = { state: 'installed', ...versionFields(result.agentInfo?.version) }

@@ -2,7 +2,8 @@ import type { AgentEvent, PromptInput, SessionConfigOption } from '@agentpack/co
 import { describe, expect, it, vi } from 'vitest'
 import { cursor } from '../providers/cursor.js'
 import { opencode } from '../providers/opencode.js'
-import type { AcpConnectionSpec } from '../session/AcpSessionRuntime.js'
+import type { ProviderConfig } from '../providers/index.js'
+import type { AcpConnectionSpec } from '../session/AcpConnection.js'
 import { FakeConnectionFactory, type FakeWire } from '../session/test-connection.js'
 import { AgentRuntime } from './AgentRuntime.js'
 
@@ -829,5 +830,56 @@ describe('AgentRuntime lazy respawn and resume', () => {
     ])
     release?.()
     await turn
+  })
+})
+
+describe('AgentRuntime provider dispatch', () => {
+  /** `PROVIDER_IDS` has no `'claude'` yet, so the only way to reach the
+   * non-ACP arm of the dispatch is to give an existing id a non-ACP config —
+   * which is exactly what the runtime keys on. It never looks at the id. */
+  const notAcp: ProviderConfig = {
+    kind: 'claude',
+    id: 'cursor',
+    displayName: 'Claude Code',
+    capabilities: cursor.capabilities,
+    binary: { bin: 'claude', envOverride: 'CLAUDE_BIN' },
+  }
+
+  function buildWith(config: ProviderConfig) {
+    const connections = new FakeConnectionFactory({
+      newSession: async () => ({ sessionId: 'session-1' }),
+    })
+    const runtime = new AgentRuntime(
+      { emitEvent: () => undefined, log: vi.fn() },
+      { cursor: config, opencode },
+      { connections },
+    )
+    return { runtime, connections }
+  }
+
+  it('drives an acp-kind provider over the ACP transport', async () => {
+    const { runtime, connections } = buildWith(cursor)
+    await runtime.ensureSession({ ...ROUTE, threadId: 'thread-1' })
+    // The spawned command is the proof: it comes from `AcpProviderConfig.
+    // command`, which only the ACP implementation reads.
+    expect(connections.last.spec.command).toBe(cursor.command.bin)
+  })
+
+  it('refuses a session runtime for a provider whose implementation has not landed', async () => {
+    const { runtime, connections } = buildWith(notAcp)
+    await expect(runtime.ensureSession({ ...ROUTE, threadId: 'thread-1' })).rejects.toThrow(
+      /not implemented yet/,
+    )
+    // Nothing was spawned: falling through to ACP would have started the
+    // wrong CLI rather than failing.
+    expect(connections.connections).toHaveLength(0)
+  })
+
+  it('refuses a probe runtime for a provider whose implementation has not landed', async () => {
+    const { runtime, connections } = buildWith(notAcp)
+    await expect(
+      runtime.probeProvider({ ...ROUTE, threadId: 'desktop-bootstrap:cursor' }),
+    ).rejects.toThrow(/not implemented yet/)
+    expect(connections.connections).toHaveLength(0)
   })
 })

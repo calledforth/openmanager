@@ -7,7 +7,7 @@ import type {
   SubtaskUpdate,
 } from '@agentpack/contract'
 import { subtaskStatusFromTool } from '../backends/acp/extensions.js'
-import type { ProviderConfig } from './index.js'
+import type { AcpProviderConfig } from './index.js'
 
 const str = (value: unknown): string => (typeof value === 'string' ? value : '')
 
@@ -121,7 +121,8 @@ function parseCursorTask(params: unknown): SubtaskUpdate | undefined {
   }
 }
 
-export const cursor: ProviderConfig = {
+export const cursor: AcpProviderConfig = {
+  kind: 'acp',
   id: 'cursor',
   displayName: 'Cursor',
   command: {

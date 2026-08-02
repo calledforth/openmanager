@@ -5,8 +5,9 @@ import { ExtensionBroker } from '../core/ExtensionBroker.js'
 import { PermissionBroker } from '../core/PermissionBroker.js'
 import { cursor } from '../providers/cursor.js'
 import { opencode } from '../providers/opencode.js'
-import type { ProviderConfig } from '../providers/index.js'
-import type { AcpConnectionSpec, SessionRuntimeSpec } from './AcpSessionRuntime.js'
+import type { AcpProviderConfig } from '../providers/index.js'
+import type { AcpConnectionSpec } from './AcpConnection.js'
+import type { SessionRuntimeSpec } from './SessionRuntime.js'
 import { AcpSessionRuntimeImpl } from './AcpSessionRuntimeImpl.js'
 import type { RuntimeTimeouts } from './constants.js'
 import {
@@ -27,7 +28,7 @@ const SPEC = {
  * events land in the same stream the runtime's own events do. */
 function build(
   wire: FakeWire | ((spec: AcpConnectionSpec) => FakeWire),
-  config: ProviderConfig = opencode,
+  config: AcpProviderConfig = opencode,
   spec: Partial<SessionRuntimeSpec> = {},
   timeouts?: Partial<RuntimeTimeouts>,
 ) {
@@ -74,7 +75,7 @@ function build(
 
 async function started(
   wire: FakeWire | ((spec: AcpConnectionSpec) => FakeWire) = {},
-  config: ProviderConfig = opencode,
+  config: AcpProviderConfig = opencode,
   spec: Partial<SessionRuntimeSpec> = {},
 ) {
   const harness = build(
@@ -140,7 +141,7 @@ describe('AcpSessionRuntime permission round-trip', () => {
 })
 
 describe('AcpSessionRuntime deferred extension requests', () => {
-  const deferredConfig: ProviderConfig = {
+  const deferredConfig: AcpProviderConfig = {
     ...opencode,
     extensions: {
       deferred: ['test/ask'],

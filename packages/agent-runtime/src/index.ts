@@ -46,6 +46,8 @@ export {
   DEFAULT_RUNTIME_TIMEOUTS,
   isRuntimeAlive,
   MAX_SESSION_RUNTIMES,
+  ProviderProbeRuntimeFactory,
+  ProviderSessionRuntimeFactory,
   RpcTimeoutError,
   SESSION_IDLE_TIMEOUT_MS,
   SESSION_REAP_INTERVAL_MS,
@@ -58,11 +60,7 @@ export type {
   AcpConnectionFactory,
   AcpConnectionSpec,
   AcpProbeDeps,
-  AcpProbeResult,
-  AcpProbeRuntime,
-  AcpProbeRuntimeFactory,
   AcpProbeSpec,
-  AcpSessionRuntime,
   ActiveTurn,
   AppliedSessionState,
   AppliedStateSource,
@@ -71,9 +69,16 @@ export type {
   DesiredSessionConfig,
   ManagedSessionRuntime,
   ManagedSessionRuntimeFactory,
+  ProbeResult,
+  ProbeRuntime,
+  ProbeRuntimeFactory,
+  ProbeRuntimeOptions,
   ProcessExit,
+  ProviderProbeRuntimeFactoryDeps,
+  ProviderSessionRuntimeFactoryDeps,
   RuntimeTimeouts,
   SessionResumeRecord,
+  SessionRuntime,
   SessionRuntimeDeps,
   SessionRuntimeEntry,
   SessionRuntimeExit,
@@ -88,6 +93,11 @@ export type {
   TerminationRequest,
   ThreadId,
 } from './session/index.js'
-export { cursor, opencode, providers } from './providers/index.js'
-export type { ProviderConfig } from './providers/index.js'
+export { cursor, opencode, providers, requireAcpConfig } from './providers/index.js'
+export type {
+  AcpProviderConfig,
+  ClaudeProviderConfig,
+  ProviderConfig,
+  ProviderConfigBase,
+} from './providers/index.js'
 export type { HostDeps, HostLogEntry } from './host.js'

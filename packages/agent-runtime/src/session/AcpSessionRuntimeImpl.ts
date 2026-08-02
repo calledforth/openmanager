@@ -38,15 +38,17 @@ import {
   OpenCodeQuestions,
   type OpenCodeQuestionRequest,
 } from '../providers/opencode-questions.js'
-import type { ProviderConfig } from '../providers/index.js'
+import {
+  requireAcpConfig,
+  type AcpProviderConfig,
+  type ProviderConfig,
+} from '../providers/index.js'
+import type { AcpConnection, AcpConnectionFactory } from './AcpConnection.js'
 import type {
-  AcpConnection,
-  AcpConnectionFactory,
-  AcpSessionRuntime,
-  SessionRuntimeDeps,
+  SessionRuntime,
   SessionRuntimeFactory,
   SessionRuntimeSpec,
-} from './AcpSessionRuntime.js'
+} from './SessionRuntime.js'
 import {
   AppliedConfigCache,
   configValueMatches,
@@ -89,13 +91,33 @@ import {
   toolContent,
 } from './wire.js'
 
-/** `AcpSessionRuntime` plus the one mutation the registry needs.
+/** What an ACP session runtime needs from the outside world.
+ *
+ * The two brokers are deliberately app-wide, not per-runtime: they are already
+ * keyed by requestId and every pending record carries its own
+ * providerId/threadId/workspaceId/sessionId, so `respondPermission(requestId,
+ * …)` keeps working without a requestId -> thread lookup table. A runtime
+ * settles only its own thread's requests when it exits. */
+export type SessionRuntimeDeps = {
+  config: AcpProviderConfig
+  host: Pick<HostDeps, 'log' | 'onSessionTitle'>
+  permissions: PermissionBroker
+  extensions: ExtensionBroker
+  /** Overrides for DEFAULT_RUNTIME_TIMEOUTS. */
+  timeouts?: Partial<RuntimeTimeouts>
+  /** Transport seam. Defaults to spawning `config.command`; tests inject a
+   * fake so the runtime can be exercised without a CLI, instead of reaching
+   * into private fields the way the current AcpBackend tests do. */
+  connections?: AcpConnectionFactory
+}
+
+/** `SessionRuntime` plus the one mutation the registry needs.
  *
  * Invariant 4 keys the registry on the *thread* id, but `create_session`
  * genuinely renames a thread: the job worker creates a session under a
  * provisional uuid and then rebinds it to the ACP session id. The runtime
  * stamps every event with its thread id, so the rename has to reach it. */
-export interface ManagedSessionRuntime extends AcpSessionRuntime {
+export interface ManagedSessionRuntime extends SessionRuntime {
   rebindThread(threadId: ThreadId, workspaceId: string | undefined): void
 }
 
@@ -137,7 +159,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
   /** Tail of the dispatch gate — see `withDispatchGate`. */
   private dispatchGate: Promise<unknown> = Promise.resolve()
 
-  private readonly config: ProviderConfig
+  private readonly config: AcpProviderConfig
   private readonly host: Pick<HostDeps, 'log' | 'onSessionTitle'>
   private readonly permissions: PermissionBroker
   private readonly extensionRequests: ExtensionBroker
@@ -1564,10 +1586,8 @@ export class AcpSessionRuntimeFactory implements ManagedSessionRuntimeFactory {
   constructor(private readonly deps: AcpSessionRuntimeFactoryDeps) {}
 
   create(spec: SessionRuntimeSpec): ManagedSessionRuntime {
-    const config = this.deps.configs[spec.providerId]
-    if (!config) throw new Error(`Unknown provider: ${spec.providerId}`)
     return new AcpSessionRuntimeImpl(spec, {
-      config,
+      config: requireAcpConfig(this.deps.configs, spec.providerId),
       host: this.deps.host,
       permissions: this.deps.permissions,
       extensions: this.deps.extensions,

@@ -1,5 +1,5 @@
 import type { ProviderId } from '@agentpack/contract'
-import type { AcpSessionRuntime, SessionRuntimeSpec } from './AcpSessionRuntime.js'
+import type { SessionRuntime, SessionRuntimeSpec } from './SessionRuntime.js'
 import type { SessionRuntimeExit, TerminationRequest, ThreadId } from './lifecycle.js'
 
 /** A prompt in flight. The idle reaper must never touch a runtime with one,
@@ -18,7 +18,7 @@ export type SessionRuntimeEntry = {
   readonly providerId: ProviderId
   readonly workspaceId: string | undefined
   readonly cwd: string
-  readonly runtime: AcpSessionRuntime
+  readonly runtime: SessionRuntime
   /** epoch ms. */
   readonly startedAt: number
   /** epoch ms of the last prompt, cancel, config write or inbound event. The
