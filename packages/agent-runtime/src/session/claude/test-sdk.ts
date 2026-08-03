@@ -101,9 +101,17 @@ export class FakeClaudeQuery implements ClaudeQuerySession {
   emitResult(
     overrides: {
       sessionId?: string
-      subtype?: 'success' | 'error_during_execution'
+      subtype?: 'success' | 'error_during_execution' | 'error_max_turns' | 'error_max_budget_usd'
       stopReason?: string | null
       parentToolUseId?: string
+      /** `SDKResultError.errors`, which is where the human-readable failure is. */
+      errors?: string[]
+      /** The field that separates an abort from a genuine failure; both arrive
+       * on an error-subtype result. */
+      terminalReason?: string
+      /** `SDKResultSuccess.user_message_uuid` — the correlation the runtime
+       * matches a result against the dispatch that produced it. */
+      userMessageUuid?: string
     } = {},
   ): void {
     this.emit({
@@ -119,9 +127,11 @@ export class FakeClaudeQuery implements ClaudeQuerySession {
       usage: {},
       modelUsage: {},
       permission_denials: [],
-      errors: [],
+      errors: overrides.errors ?? [],
       uuid: crypto.randomUUID(),
       session_id: overrides.sessionId ?? this.sessionId,
+      ...(overrides.terminalReason ? { terminal_reason: overrides.terminalReason } : {}),
+      ...(overrides.userMessageUuid ? { user_message_uuid: overrides.userMessageUuid } : {}),
       ...(overrides.parentToolUseId ? { parent_tool_use_id: overrides.parentToolUseId } : {}),
     } as unknown as SDKMessage)
   }

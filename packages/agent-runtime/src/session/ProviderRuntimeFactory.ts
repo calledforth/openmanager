@@ -12,6 +12,7 @@ import {
 } from './AcpSessionRuntimeImpl.js'
 import { ClaudeProbeRuntime } from './claude/ClaudeProbeRuntime.js'
 import { ClaudeSessionRuntime } from './claude/ClaudeSessionRuntime.js'
+import type { ClaudeSdk } from './claude/sdk.js'
 import type { RuntimeTimeouts } from './constants.js'
 import type { ProbeRuntime, ProbeRuntimeFactory, ProbeRuntimeOptions } from './ProbeRuntime.js'
 import type { SessionRuntimeSpec } from './SessionRuntime.js'
@@ -39,6 +40,11 @@ export type ProviderSessionRuntimeFactoryDeps = {
   permissions: PermissionBroker
   interactions: InteractionBroker
   connections: AcpTransport
+  /** The Claude arm's transport seam, the exact counterpart of `connections`.
+   * Defaults to loading the published SDK, which spawns the real CLI; tests
+   * inject `FakeClaudeSdk` so a Claude runtime can be driven end to end
+   * without one. */
+  claudeSdk?: ClaudeSdk
   timeouts?: Partial<RuntimeTimeouts>
 }
 
@@ -70,6 +76,7 @@ export class ProviderSessionRuntimeFactory implements ManagedSessionRuntimeFacto
           host: this.deps.host,
           permissions: this.deps.permissions,
           interactions: this.deps.interactions,
+          ...(this.deps.claudeSdk ? { sdk: this.deps.claudeSdk } : {}),
           ...(this.deps.timeouts ? { timeouts: this.deps.timeouts } : {}),
         })
     }

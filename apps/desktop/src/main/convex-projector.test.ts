@@ -712,4 +712,83 @@ describe('ConvexProjector streaming contracts', () => {
     await projector.waitForThread(base.threadId)
     expect(mutations).toContainEqual({ requestId: 'question-1' })
   })
+
+  /** A Claude Code `api_retry` reaches the projector as an `rpc_error` with
+   * `recoverable: true`. Finalizing the turn on it closed the assistant
+   * message for good: `finalizeTurn` deletes the thread's `ActiveTurn`, so
+   * every part the successful retry then produced was written against a turn
+   * that no longer existed and never reached `messages.metadata.parts`. The
+   * truncation was permanent, unlike the live one. */
+  it('does not finalize a turn on a recoverable error', async () => {
+    const { projector, mutations } = setup()
+    projector.consume(
+      event(1, {
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'Go', userMessageId: 'user-1' },
+      }),
+    )
+    projector.consume(
+      event(2, {
+        category: 'stream',
+        event: 'agent_message_chunk',
+        data: { content: { type: 'text', text: 'partial ' } },
+      }),
+    )
+    projector.consume(
+      event(3, {
+        category: 'error',
+        event: 'rpc_error',
+        data: { source: 'claude/api', message: 'Retrying after Overloaded', recoverable: true },
+      }),
+    )
+    projector.consume(
+      event(4, {
+        category: 'stream',
+        event: 'agent_message_chunk',
+        data: { content: { type: 'text', text: 'and the rest' } },
+      }),
+    )
+    projector.consume(
+      event(5, { category: 'lifecycle', event: 'prompt_completed', data: {} }),
+    )
+    await projector.waitForThread(base.threadId)
+
+    // The persisted turn, not the live stream: this is `messages.metadata.parts`,
+    // where the truncation used to be permanent.
+    expect(mutations.filter((args) => 'parts' in args).at(-1)).toMatchObject({
+      externalId: 'assistant-1',
+      content: 'partial and the rest',
+    })
+  })
+
+  /** The negative case: an error with no `recoverable` flag is still terminal,
+   * which is the behaviour every ACP provider depends on. */
+  it('still finalizes a turn on an ordinary rpc_error', async () => {
+    const { projector, mutations } = setup()
+    projector.consume(
+      event(1, {
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'Go', userMessageId: 'user-1' },
+      }),
+    )
+    projector.consume(
+      event(2, {
+        category: 'stream',
+        event: 'agent_message_chunk',
+        data: { content: { type: 'text', text: 'partial ' } },
+      }),
+    )
+    projector.consume(
+      event(3, {
+        category: 'error',
+        event: 'rpc_error',
+        data: { source: 'session/prompt', message: 'the agent gave up' },
+      }),
+    )
+    await projector.waitForThread(base.threadId)
+
+    expect(mutations).toContainEqual(expect.objectContaining({ status: 'error' }))
+  })
 })

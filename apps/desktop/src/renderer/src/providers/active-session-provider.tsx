@@ -11,6 +11,7 @@ import {
 } from 'react'
 import { api } from '@openmanager/convex/_generated/api'
 import type { AgentEvent, ContentBlock, ToolCallStatus } from '@agentpack/contract'
+import { isRecoverableError } from '@agentpack/contract'
 import {
   reconstructSnapshot,
   type StreamChunk,
@@ -187,6 +188,14 @@ export class StreamingMessagesStore {
         break
       case 'rpc_error':
       case 'runtime_error':
+        // See `isRecoverableError`: a retry notice must not close the running
+        // text part or fail the tool rows that the retry is about to finish.
+        if (isRecoverableError(event)) return
+        this.finishActiveParts(state)
+        this.finishRunningTools(state, 'error')
+        this.finishRunningSubtasks(state, 'error')
+        changed = true
+        break
       case 'process_exited':
         this.finishActiveParts(state)
         this.finishRunningTools(state, 'error')

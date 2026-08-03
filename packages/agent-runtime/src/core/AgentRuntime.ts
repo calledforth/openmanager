@@ -9,10 +9,12 @@ import type {
   ProviderSessionInfo,
   QuestionOutcome,
 } from '@agentpack/contract'
+import { isRecoverableError } from '@agentpack/contract'
 import type { BackendEvent, SessionResult } from '../backends/Backend.js'
 import type { HostDeps } from '../host.js'
 import { providers, type ProviderConfig } from '../providers/index.js'
 import type { AcpConnectionFactory } from '../session/AcpConnection.js'
+import type { ClaudeSdk } from '../session/claude/sdk.js'
 import type { ProbeResult, ProbeRuntime } from '../session/ProbeRuntime.js'
 import {
   ProviderProbeRuntimeFactory,
@@ -94,6 +96,9 @@ export type AgentRuntimeOptions = {
   /** Transport seam. Defaults to spawning the provider's CLI; tests inject a
    * fake so runtimes can be exercised without one. */
   connections?: AcpConnectionFactory
+  /** The same seam for the Claude arm, which spawns its CLI through the SDK
+   * rather than through `connections`. Tests inject `FakeClaudeSdk`. */
+  claudeSdk?: ClaudeSdk
   timeouts?: Partial<RuntimeTimeouts>
   /** Overrides for the health monitor's cadence, probe budget and clock. */
   health?: Pick<
@@ -182,6 +187,7 @@ export class AgentRuntime {
         permissions: this.permissions,
         interactions: this.interactions,
         connections: () => this.acpConnections(),
+        ...(options.claudeSdk ? { claudeSdk: options.claudeSdk } : {}),
         ...(options.timeouts ? { timeouts: options.timeouts } : {}),
       }),
       onEvent: (providerId, event) => this.forward(providerId, event),
@@ -355,9 +361,15 @@ export class AgentRuntime {
     this.host.emitEvent(stamped)
     if (
       event.event === 'prompt_completed' ||
-      event.event === 'rpc_error' ||
-      event.event === 'runtime_error' ||
-      event.event === 'process_exited'
+      event.event === 'process_exited' ||
+      // A recoverable error is a retry notice, not the end of the turn. Letting
+      // it release the message id would leave every later event in the turn —
+      // the assistant text that the retry then succeeds in producing, the tool
+      // rows, the `prompt_completed` itself — carrying no `messageId`, and both
+      // the projector and the live renderer drop those. The answer is truncated
+      // in the UI and, worse, in the persisted `messages.metadata.parts`.
+      ((event.event === 'rpc_error' || event.event === 'runtime_error') &&
+        !isRecoverableError(event))
     ) {
       this.activeMessageIds.delete(event.threadId)
     }

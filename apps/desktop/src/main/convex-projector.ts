@@ -13,6 +13,7 @@ import type {
   ToolCallContent,
   ToolCallUpdate,
 } from '@agentpack/contract'
+import { isRecoverableError } from '@agentpack/contract'
 import { api } from '@openmanager/convex/_generated/api'
 import { ConvexClient } from 'convex/browser'
 import {
@@ -340,6 +341,12 @@ export class ConvexProjector {
       case 'rpc_error':
       case 'runtime_error':
       case 'auth_required':
+        // A recoverable error is the provider saying "retrying, the turn is
+        // still running". Marking the session errored and finalizing the turn
+        // here would persist a truncated answer: `finalizeTurn` closes the
+        // assistant message, and everything the successful retry then produces
+        // arrives for a turn that is already written off.
+        if (isRecoverableError(event)) return
         if (event.sessionId && workspacePath) {
           await this.upsertSession(workspacePath, event.sessionId, 'error', event.providerId)
           await this.finalizeTurn(event.threadId, 'error')

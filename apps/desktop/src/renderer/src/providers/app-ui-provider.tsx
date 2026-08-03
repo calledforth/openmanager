@@ -26,6 +26,7 @@ import {
   type PromptCapabilities,
   type QuestionOutcome,
   type SessionConfigOption,
+  isRecoverableError,
 } from '@agentpack/contract'
 import {
   recordRendererTelemetry,
@@ -1908,6 +1909,10 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         case 'rpc_error':
         case 'runtime_error':
         case 'process_exited':
+          // See `isRecoverableError`: the turn is still running, so the
+          // composer must stay in its running state rather than unlocking and
+          // dropping the job id it still needs to cancel with.
+          if (isRecoverableError(event)) return
           if (
             !event.sessionId ||
             event.sessionId === activeSessionId ||

@@ -360,7 +360,11 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
         routeEvent(this.route(), undefined, 'error', 'runtime_error', {
           kind: 'process',
           message: errorMessage(error),
-          recoverable: true,
+          // Deliberately NOT `recoverable`. That flag now means "the turn is
+          // still running, more output is coming" (see `RpcErrorData`), and a
+          // spawn that never happened ends whatever asked for it. The runtime
+          // being replaceable is a separate, weaker claim that no consumer
+          // reads and that would suppress the terminal cleanup this needs.
         }),
       )
       throw error

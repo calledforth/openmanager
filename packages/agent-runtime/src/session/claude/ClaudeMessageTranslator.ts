@@ -38,6 +38,14 @@ export type TranslatedMessage = {
     stopReason?: string
     isError: boolean
     errorText?: string
+    /** Did this turn end because somebody stopped it?
+     *
+     * Separate from `isError` because the SDK does not separate them: an
+     * interrupt lands as a `result` whose subtype is an error like any other,
+     * and the only thing distinguishing "the user pressed Stop" from "Claude
+     * ran out of turns" is `terminal_reason`. Reporting the first as a failure
+     * makes every cancelled job show up as broken. */
+    interrupted: boolean
     usage?: TokenUsage
   }
 }
@@ -550,6 +558,7 @@ export class ClaudeMessageTranslator {
         sessionId: message.session_id,
         ...(message.stop_reason ? { stopReason: message.stop_reason } : {}),
         isError: message.is_error === true || message.subtype !== 'success',
+        interrupted: isInterrupted(message),
         ...(message.subtype === 'success'
           ? {}
           : { errorText: message.errors?.join('; ') || message.subtype }),
@@ -703,6 +712,20 @@ function parseJson(text: string): unknown {
   } catch {
     return undefined
   }
+}
+
+/** Did somebody stop this turn, as opposed to it failing?
+ *
+ * `terminal_reason` is the authoritative signal — `aborted_streaming` and
+ * `aborted_tools` are the two the SDK raises for an abort, and they arrive on a
+ * result whose subtype is an ordinary error. `stop_reason` is checked as well
+ * because it is the field the ACP providers populate for the same situation and
+ * because an older CLI may send no `terminal_reason` at all; the cost of the
+ * extra test is a turn that was going to be reported as cancelled either way. */
+function isInterrupted(message: Extract<SDKMessage, { type: 'result' }>): boolean {
+  const terminalReason = string(object(message).terminal_reason)
+  if (terminalReason === 'aborted_streaming' || terminalReason === 'aborted_tools') return true
+  return /abort|cancel|interrupt/i.test(message.stop_reason ?? '')
 }
 
 /** Anthropic usage as it appears on `message_delta` and on the result. Cache

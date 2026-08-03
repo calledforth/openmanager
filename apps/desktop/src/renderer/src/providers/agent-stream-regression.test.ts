@@ -693,4 +693,82 @@ describe('agent streaming regressions', () => {
       ).map((message) => message.externalId),
     ).toEqual(['user-remote', 'user-local'])
   })
+
+  /** The live half of the same truncation. `StreamingMessagesStore` closed the
+   * running text part and failed every running tool row on any error, so a
+   * Claude Code `api_retry` — which is a retry notice, not a failure — split
+   * the answer in two and painted the tools red while the retry was still
+   * working. */
+  it('does not close the live message on a recoverable error', () => {
+    const store = new StreamingMessagesStore()
+    const messageId = 'agent_asst_retry'
+    const live = (
+      patch: Partial<AgentEvent> & Pick<AgentEvent, 'category' | 'event' | 'data'>,
+    ): void => store.update(event({ ...patch, messageId }) as AgentEvent)
+
+    live({
+      category: 'lifecycle',
+      event: 'prompt_started',
+      data: { prompt: 'Go', userMessageId: 'user-1' },
+    })
+    live({
+      category: 'tool',
+      event: 'tool_call',
+      data: { toolCallId: 'tool-1', title: 'Read', status: 'in_progress' },
+    })
+    live({
+      category: 'stream',
+      event: 'agent_message_chunk',
+      data: { content: { type: 'text', text: 'partial ' } },
+    })
+    live({
+      category: 'error',
+      event: 'rpc_error',
+      data: { source: 'claude/api', message: 'Retrying after Overloaded', recoverable: true },
+    })
+    live({
+      category: 'stream',
+      event: 'agent_message_chunk',
+      data: { content: { type: 'text', text: 'and the rest' } },
+    })
+
+    const message = store.get(messageId)
+    // One part, not two: the retry did not close the run the text was landing in.
+    expect(message?.parts.filter((part) => part.type === 'text')).toEqual([
+      expect.objectContaining({ text: 'partial and the rest' }),
+    ])
+    expect(message?.parts.find((part) => part.type === 'tool')).toMatchObject({
+      state: expect.objectContaining({ status: 'running' }),
+    })
+  })
+
+  /** The negative case: an error carrying no `recoverable` flag still ends the
+   * live turn, which is what every ACP provider relies on. */
+  it('still closes the live message on an ordinary rpc_error', () => {
+    const store = new StreamingMessagesStore()
+    const messageId = 'agent_asst_failed'
+    const live = (
+      patch: Partial<AgentEvent> & Pick<AgentEvent, 'category' | 'event' | 'data'>,
+    ): void => store.update(event({ ...patch, messageId }) as AgentEvent)
+
+    live({
+      category: 'lifecycle',
+      event: 'prompt_started',
+      data: { prompt: 'Go', userMessageId: 'user-1' },
+    })
+    live({
+      category: 'tool',
+      event: 'tool_call',
+      data: { toolCallId: 'tool-1', title: 'Read', status: 'in_progress' },
+    })
+    live({
+      category: 'error',
+      event: 'rpc_error',
+      data: { source: 'session/prompt', message: 'the agent gave up' },
+    })
+
+    expect(store.get(messageId)?.parts.find((part) => part.type === 'tool')).toMatchObject({
+      state: expect.objectContaining({ status: 'error' }),
+    })
+  })
 })

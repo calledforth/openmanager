@@ -289,6 +289,75 @@ describe('ClaudeSessionRuntime turns', () => {
   })
 })
 
+/** Terminal results used to be reported as successes.
+ *
+ * `completeTurn` accepted every result the state machine matched and emitted an
+ * ordinary `prompt_completed` for it, never reading the `isError`/`errorText`
+ * the translator had already worked out. `error_during_execution`, max-turns,
+ * budget and structured-output exhaustion therefore settled the turn cleanly:
+ * the job worker recorded the job as completed and the user was shown nothing
+ * at all. */
+describe('ClaudeSessionRuntime turn failure', () => {
+  it('fails the turn and reports the error when the result is terminal', async () => {
+    const { runtime, events, sdk } = build()
+    await runtime.start()
+    const turn = runtime.prompt({ prompt: { text: 'hi', blocks: [] } })
+    void turn.catch(() => undefined)
+    await vi.waitFor(() => expect(sdk.last.prompts).toHaveLength(1))
+
+    sdk.last.emitResult({
+      subtype: 'error_during_execution',
+      stopReason: null,
+      errors: ['the model gave up'],
+    })
+
+    await expect(turn).rejects.toThrow('the model gave up')
+    const failure = events.find((event) => event.event === 'runtime_error')
+    expect(failure?.data).toMatchObject({ kind: 'provider', message: 'the model gave up' })
+    // Never both: each is terminal downstream, so a failure that also announced
+    // completion would finalize the turn twice.
+    expect(names(events)).not.toContain('prompt_completed')
+    // And the runtime is still usable — a failed turn is not a dead process.
+    expect(runtime.phase).toBe('ready')
+  })
+
+  it('reports max-turns exhaustion under its subtype when there is no message', async () => {
+    const { runtime, events, sdk } = build()
+    await runtime.start()
+    const turn = runtime.prompt({ prompt: { text: 'hi', blocks: [] } })
+    void turn.catch(() => undefined)
+    await vi.waitFor(() => expect(sdk.last.prompts).toHaveLength(1))
+
+    sdk.last.emitResult({ subtype: 'error_max_turns', stopReason: null })
+
+    await expect(turn).rejects.toThrow('error_max_turns')
+    expect(events.find((event) => event.event === 'runtime_error')?.data).toMatchObject({
+      message: 'error_max_turns',
+    })
+  })
+
+  it('treats an aborted result as an interrupt, not a failure', async () => {
+    const { runtime, events, sdk } = build()
+    await runtime.start()
+    const turn = runtime.prompt({ prompt: { text: 'hi', blocks: [] } })
+    await vi.waitFor(() => expect(sdk.last.prompts).toHaveLength(1))
+
+    // What `query.interrupt()` produces: an error subtype, distinguished from a
+    // real failure only by `terminal_reason`. Reporting this as a failure would
+    // fail every job the user stopped on purpose.
+    sdk.last.emitResult({
+      subtype: 'error_during_execution',
+      stopReason: null,
+      terminalReason: 'aborted_streaming',
+      errors: ['aborted'],
+    })
+
+    await expect(turn).resolves.toBeUndefined()
+    expect(names(events)).toContain('prompt_completed')
+    expect(names(events)).not.toContain('runtime_error')
+  })
+})
+
 describe('ClaudeSessionRuntime cancel', () => {
   it('interrupts and lets the turn settle on its own result', async () => {
     const { runtime, sdk } = build({}, { interruptGraceMs: 5_000 })
@@ -322,6 +391,76 @@ describe('ClaudeSessionRuntime cancel', () => {
     expect(exits).toHaveLength(1)
     expect(exits[0]?.reason).toBe('restart')
     expect(runtime.phase).toBe('exited')
+  })
+})
+
+/** The prompt/exit race.
+ *
+ * `prompt()` used to trust `ready()`'s memoised session id and push straight
+ * into the input queue. Both memos survive the process dying, and
+ * `performExit` closes the queue BEFORE it looks for a turn to fail — so an
+ * exit landing in that window left nothing to fail, the queue silently dropped
+ * the message, and the turn `prompt()` had just opened could never settle.
+ * `AgentRuntime.promptQueues` then held that thread forever, and `SessionReaper`
+ * would not rescue it: it skips threads with an active turn, which is exactly
+ * what a wedged one looks like. */
+describe('ClaudeSessionRuntime prompt liveness', () => {
+  it('refuses a prompt on a runtime that has already exited', async () => {
+    const { runtime, sdk } = build()
+    await runtime.start()
+    await runtime.stop({ reason: 'reaped' })
+
+    await expect(runtime.prompt({ prompt: { text: 'hi', blocks: [] } })).rejects.toThrow(
+      /has stopped/,
+    )
+    // Nothing was handed to a dead process, and no turn was opened for it.
+    expect(sdk.last.prompts).toHaveLength(0)
+  })
+
+  it('fails the prompt rather than opening a turn nothing can settle', async () => {
+    const { runtime, sdk, events } = build()
+    await runtime.start()
+    // The exit lands between `ready()` answering and the message being pushed,
+    // which is the whole window. Closing the queue underneath the runtime
+    // reproduces it exactly: `performExit` does this first.
+    ;(runtime as unknown as { input: { close: () => void } }).input.close()
+
+    await expect(runtime.prompt({ prompt: { text: 'hi', blocks: [] } })).rejects.toThrow(
+      /unavailable|closed/,
+    )
+    expect(sdk.last.prompts).toHaveLength(0)
+    // The turn must not be left dispatched — a second prompt has to be possible.
+    expect(names(events)).not.toContain('prompt_started')
+  })
+
+  it('does not resurrect a runtime that exited while it was starting', async () => {
+    const { runtime, sdk, log } = build({ sessionId: 'previous-session' })
+    sdk.knows('previous-session')
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const resolvable = sdk.getSessionInfo.bind(sdk)
+    sdk.getSessionInfo = async (sessionId: string) => {
+      await gate
+      return resolvable(sessionId)
+    }
+
+    const turn = runtime.prompt({ prompt: { text: 'hi', blocks: [] } })
+    void turn.catch(() => undefined)
+    const stopped = runtime.stop({ reason: 'reaped' })
+    release()
+
+    await expect(turn).rejects.toThrow()
+    await stopped
+    // Not 'ready': the handshake succeeding after the exit settled does not
+    // make the runtime usable again, and saying it does hands the next caller
+    // a closed input queue.
+    expect(runtime.phase).toBe('exited')
+    // And the process the late bootstrap spawned is not left running with
+    // nobody holding a handle on it.
+    await vi.waitFor(() => expect(sdk.last.closed).toBe(true))
+    expect(logged(log, 'finished starting after its runtime exited')).toBe(true)
   })
 })
 
@@ -578,11 +717,49 @@ describe('ClaudeSessionRuntime permissions', () => {
     expect(await question.result).toMatchObject({ behavior: 'deny' })
   })
 
-  it('does not ask at all under a full-access mode', async () => {
+  it('does not ask at all under bypassPermissions', async () => {
     const { runtime, events, sdk } = build({ desiredConfig: { modeId: 'bypassPermissions' } })
     await runtime.start()
 
     expect(await sdk.last.useTool('Bash', { command: 'ls' }).result).toEqual({ behavior: 'allow' })
+    expect(names(events)).not.toContain('permission_request')
+  })
+
+  /** The SDK requires `allowDangerouslySkipPermissions` alongside
+   * `permissionMode: 'bypassPermissions'` and rejects the mode without it, so a
+   * session that never passed it could not start in bypass — and could not be
+   * switched into it either, because there is no second chance to send a launch
+   * option. Advertising a mode that cannot be selected is worse than not
+   * advertising it. */
+  it('opts in to the flag bypassPermissions requires', async () => {
+    const { runtime, sdk } = build({ desiredConfig: { modeId: 'bypassPermissions' } })
+    await runtime.start()
+    expect(sdk.last.options.allowDangerouslySkipPermissions).toBe(true)
+  })
+
+  it('passes the flag even when the session does not start in bypass', async () => {
+    // `setPermissionMode('bypassPermissions')` mid-session has to work too, and
+    // the only place to say so is the launch options.
+    const { runtime, sdk } = build()
+    await runtime.start()
+    await runtime.setMode('bypassPermissions')
+    expect(sdk.last.options.allowDangerouslySkipPermissions).toBe(true)
+  })
+
+  /** `dontAsk` is "don't prompt for permissions, DENY if not pre-approved" —
+   * the most restrictive no-prompt mode, not the most permissive. It was
+   * grouped with `bypassPermissions` in the auto-allow branch, which turned it
+   * into allow-all: a user who asked to be protected without being interrupted
+   * got every tool call approved silently instead. */
+  it('denies rather than allows under dontAsk', async () => {
+    const { runtime, events, sdk } = build({ desiredConfig: { modeId: 'dontAsk' } })
+    await runtime.start()
+
+    expect(await sdk.last.useTool('Bash', { command: 'rm -rf /' }).result).toMatchObject({
+      behavior: 'deny',
+    })
+    // Still no prompt — that half of the mode was always right. Anything the
+    // user pre-approved is resolved by the CLI and never reaches the callback.
     expect(names(events)).not.toContain('permission_request')
   })
 })
@@ -753,6 +930,173 @@ describe('ClaudeSessionRuntime plan review', () => {
       behavior: 'allow',
     })
     expect(names(events).filter((name) => name === 'plan_review_request')).toHaveLength(1)
+  })
+})
+
+/** Results used to be correlated to nothing at all.
+ *
+ * `completeTurn` checked only "some turn is dispatched", and the outbound
+ * `SDKUserMessage` never carried the `uuid` the SDK sends back on the result as
+ * `user_message_uuid` — so a late or duplicated top-level result settled
+ * whichever turn happened to be active. Worse, the translator zeroed the
+ * turn-scoped token counters on its way past, before the runtime had decided
+ * whether the result was even ours, so a result that was correctly refused
+ * still corrupted the next turn's books. */
+/** Two ways a request could outlive — or precede — its own settlement.
+ *
+ * `onAbort` fires synchronously on a signal that has already aborted. Because
+ * the abort was subscribed BEFORE the request was emitted, an already-cancelled
+ * tool call published `*_resolved` and only then `*_request`: the host maps and
+ * the Convex queue were left holding a pending permission, question or plan
+ * whose deferred no longer existed, so nobody could answer it and its timeout
+ * had died with it.
+ *
+ * And a listener that threw while the request was being announced left the
+ * broker record parked for its full timeout — `canUseTool`'s outer catch
+ * returns a denial to the SDK without ever touching the broker — with the abort
+ * listener still attached, because the `finally` that detaches it was never
+ * reached. */
+describe('ClaudeSessionRuntime interaction atomicity', () => {
+  const question = {
+    questions: [
+      { question: 'A?', header: 'Pick', multiSelect: false, options: [{ label: 'x', description: '' }] },
+    ],
+  }
+
+  it('registers and announces nothing for an already-aborted callback', async () => {
+    const { runtime, events, sdk } = build()
+    await runtime.start()
+    const signal = AbortSignal.abort()
+
+    expect(await sdk.last.useTool('Bash', { command: 'ls' }, { signal }).result).toMatchObject({
+      behavior: 'deny',
+    })
+    expect(await sdk.last.useTool('AskUserQuestion', question, { signal }).result).toMatchObject({
+      behavior: 'deny',
+    })
+    expect(await sdk.last.useTool('ExitPlanMode', { plan: '# Plan' }, { signal }).result).toMatchObject(
+      { behavior: 'deny' },
+    )
+
+    // No request and no resolution for any of the three. A request that is
+    // never emitted cannot be emitted after its settlement.
+    for (const name of [
+      'permission_request',
+      'permission_resolved',
+      'question_request',
+      'plan_review_request',
+      'extension_resolved',
+    ])
+      expect(names(events)).not.toContain(name)
+  })
+
+  it('cancels the permission record when announcing it throws', async () => {
+    const { runtime, sdk } = build()
+    await runtime.start()
+    let requestId: string | undefined
+    runtime.events((event) => {
+      if (event.event !== 'permission_request') return
+      requestId = (event.data as { requestId: string }).requestId
+      throw new Error('the renderer blew up')
+    })
+
+    expect(await sdk.last.useTool('Bash', { command: 'ls' }).result).toMatchObject({
+      behavior: 'deny',
+    })
+    // Nothing is still parked: `respond` reports false when there is no record.
+    // Before the fix this row sat pending for the full permission timeout.
+    expect(requestId).toBeDefined()
+    expect(runtime.respondPermission(requestId!, { outcome: 'cancelled' })).toBe(false)
+  })
+
+  it('cancels a parked question when announcing it throws', async () => {
+    const { runtime, sdk } = build()
+    await runtime.start()
+    let requestId: string | undefined
+    runtime.events((event) => {
+      if (event.event !== 'question_request') return
+      requestId = (event.data as { requestId: string }).requestId
+      throw new Error('the renderer blew up')
+    })
+
+    expect(await sdk.last.useTool('AskUserQuestion', question).result).toMatchObject({
+      behavior: 'deny',
+    })
+    expect(requestId).toBeDefined()
+    expect(runtime.respondQuestion(requestId!, { outcome: 'cancelled' })).toBe(false)
+  })
+})
+
+describe('ClaudeSessionRuntime result correlation', () => {
+  it('stamps the dispatched message with the uuid the result comes back under', async () => {
+    const { runtime, sdk } = build()
+    await runtime.start()
+    const turn = runtime.prompt({ prompt: { text: 'hi', blocks: [] } })
+    await vi.waitFor(() => expect(sdk.last.prompts).toHaveLength(1))
+
+    const uuid = (sdk.last.prompts[0] as { uuid?: string }).uuid
+    expect(uuid).toEqual(expect.any(String))
+    sdk.last.emitResult({ userMessageUuid: uuid })
+    await turn
+  })
+
+  it('ignores a result that names a different user message', async () => {
+    const { runtime, events, sdk, log } = build()
+    await runtime.start()
+    const turn = runtime.prompt({ prompt: { text: 'hi', blocks: [] } })
+    await vi.waitFor(() => expect(sdk.last.prompts).toHaveLength(1))
+    sdk.last.emitMessageDelta({ input_tokens: 100, output_tokens: 20 })
+
+    // A straggler from a turn that was cancelled a moment ago. It must not end
+    // this one.
+    sdk.last.emitResult({ userMessageUuid: crypto.randomUUID() })
+    await vi.waitFor(() => expect(logged(log, 'named a different user message')).toBe(true))
+    expect(names(events)).not.toContain('prompt_completed')
+
+    // And it must not have taken this turn's token counters with it: the
+    // translator resets them on every result it is allowed to see.
+    const uuid = (sdk.last.prompts[0] as { uuid?: string }).uuid
+    sdk.last.emitResult({ userMessageUuid: uuid })
+    await turn
+    expect(
+      (events.find((event) => event.event === 'prompt_completed')?.data as {
+        usage?: { inputTokens: number }
+      }).usage,
+    ).toMatchObject({ inputTokens: 100 })
+  })
+
+  it('accepts a result from a CLI that reports no correlation', async () => {
+    // `user_message_uuid` is declared only on `SDKResultSuccess` and is
+    // optional even there — an error result carries none at all. A missing
+    // correlation proves nothing, so it falls back to the active dispatch.
+    const { runtime, sdk } = build()
+    await runtime.start()
+    const turn = runtime.prompt({ prompt: { text: 'hi', blocks: [] } })
+    await vi.waitFor(() => expect(sdk.last.prompts).toHaveLength(1))
+    sdk.last.emitResult()
+    await expect(turn).resolves.toBeUndefined()
+  })
+
+  it('does not let a result with no turn awaiting it reset the next turn', async () => {
+    const { runtime, events, sdk, log } = build()
+    await runtime.start()
+
+    // Nothing is dispatched, so this belongs to nobody. Drained before the
+    // prompt goes out, or the pump would hand it to the turn opened below.
+    sdk.last.emitResult()
+    await vi.waitFor(() => expect(logged(log, 'no turn awaiting it')).toBe(true))
+
+    const turn = runtime.prompt({ prompt: { text: 'hi', blocks: [] } })
+    await vi.waitFor(() => expect(sdk.last.prompts).toHaveLength(1))
+    sdk.last.emitMessageDelta({ input_tokens: 42, output_tokens: 7 })
+    sdk.last.emitResult({ userMessageUuid: (sdk.last.prompts[0] as { uuid?: string }).uuid })
+    await turn
+
+    expect(
+      (events.find((event) => event.event === 'prompt_completed')?.data as {
+        usage?: { inputTokens: number; outputTokens: number }
+      }).usage,
+    ).toMatchObject({ inputTokens: 42, outputTokens: 7 })
   })
 })
 

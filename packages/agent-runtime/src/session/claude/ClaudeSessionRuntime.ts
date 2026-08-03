@@ -61,12 +61,22 @@ import { loadClaudeSdk, type ClaudeQuerySession, type ClaudeSdk } from './sdk.js
  * take it without re-declaring the SDK's inline option bag. */
 type CanUseToolOptions = Parameters<CanUseTool>[2]
 
-/** The two permission modes in which the user has said, up front, that they do
- * not want to be asked. Both must be checked AFTER the two interactive tools:
- * `AskUserQuestion` and `ExitPlanMode` are not permission prompts, they are the
- * model asking the user a question and proposing a plan, and short-circuiting
- * them here would silently answer both on the user's behalf. */
-const FULL_ACCESS_MODES: readonly PermissionMode[] = ['bypassPermissions', 'dontAsk']
+/** What a `dontAsk` denial tells Claude Code.
+ *
+ * `dontAsk` is NOT a quieter `bypassPermissions`, which is how it was first
+ * read here. The SDK defines it as "don't prompt for permissions, deny if not
+ * pre-approved" — the most restrictive of the no-prompt modes, not the most
+ * permissive. Anything the user's rules already allow is resolved by the CLI
+ * and never reaches `canUseTool` at all (a refusal arrives as a
+ * `permission_denied` system frame instead), so a call that DOES reach the
+ * callback under this mode is by definition not pre-approved, and the mode's
+ * answer is no. Grouping it with `bypassPermissions` in the auto-allow branch
+ * inverted it completely: the user asked to be protected without being
+ * interrupted and got allow-all instead. */
+const NOT_PRE_APPROVED: PermissionResult = {
+  behavior: 'deny',
+  message: 'Not pre-approved, and this session is in "dontAsk" mode.',
+}
 
 /** What a cancelled, timed-out or rejected interaction tells Claude Code. The
  * SDK treats this as an ordinary tool denial and lets the model continue, which
@@ -122,6 +132,11 @@ const PERMISSION_MODES: readonly PermissionMode[] = [
 const TRANSIENT_SESSION_ID_SUBTYPES = new Set(['hook_started', 'hook_progress', 'hook_response'])
 
 type ActiveTurn = {
+  /** This turn's identity AND the `uuid` stamped on the `SDKUserMessage` that
+   * opened it — deliberately the same value, because they name the same thing.
+   * A `result` comes back carrying `user_message_uuid`, and comparing it to
+   * this is the only way to know a result belongs to *this* dispatch rather
+   * than to a turn that has already been settled or cancelled. */
   id: string
   sessionId: string
   state: 'dispatched' | 'completing'
@@ -317,9 +332,20 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     this.phaseValue = 'starting'
     const run = this.bootstrap().then(
       (result) => {
+        this.startPromise = null
+        // A `stop()`, a crash or a `worker_shutting_down` can settle while
+        // `bootstrap()` is still awaiting `initializationResult()`. Flipping to
+        // 'ready' here would resurrect a runtime whose input queue is already
+        // closed and whose query is already gone: the registry dropped its
+        // entry on `onExit` and will never reap it again, and the next prompt
+        // would park on a turn nothing can settle. A start that lost the race
+        // against its own exit failed, however well the handshake went.
+        if (this.exitSettlement) {
+          this.abandonQuery()
+          throw new Error(`${this.providerId} exited during startup`)
+        }
         this.startResult = result
         this.phaseValue = 'ready'
-        this.startPromise = null
         return result
       },
       async (error: unknown) => {
@@ -375,6 +401,22 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       // model.
       ...(desiredModel ? { model: desiredModel } : {}),
       ...(desiredMode ? { permissionMode: desiredMode } : {}),
+      // The SDK requires this alongside `permissionMode: 'bypassPermissions'`
+      // — its own words: "a safety measure to ensure intentional bypassing of
+      // permissions" — and rejects the mode without it. It is set here rather
+      // than only when the launch mode happens to be bypass, because
+      // `setPermissionMode('bypassPermissions')` mid-session has to work too
+      // and there is no second chance to pass a launch option; a session that
+      // accepted the mode only when it started in it would fail a switch the
+      // composer openly offers. What this flag grants is narrow: it does not
+      // change any other mode's behaviour and it never bypasses anything on
+      // its own. It says only that if the user selects bypass — which is an
+      // explicit, deliberate choice in our UI, exactly the intent the flag
+      // exists to confirm — the CLI should honour it rather than refuse.
+      // Removing `bypassPermissions` from `PERMISSION_MODES` is the
+      // alternative, and it would mean advertising one fewer mode than the CLI
+      // actually has.
+      allowDangerouslySkipPermissions: true,
       // Every tool the CLI wants to run comes back through here — permission
       // prompts, but also the two tools that are really user interactions.
       canUseTool: (toolName, input, callbackOptions) =>
@@ -454,6 +496,33 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     return { sessionId, state: resumeId ? 'loaded' : 'created' }
   }
 
+  /** Tear down a process the exit path could not have seen.
+   *
+   * `settleExit` is memoised, so an exit that settled while `bootstrap` was in
+   * flight ran its cleanup against a runtime that had no query yet — and
+   * `bootstrap` then went on to spawn one. Nothing will ever come back to it:
+   * the registry dropped its entry on `onExit` and the reaper only sweeps
+   * registered runtimes. This is the one chance to close it. */
+  private abandonQuery(): void {
+    const query = this.query
+    this.query = undefined
+    this.input?.close()
+    this.input = undefined
+    if (!query) return
+    this.host.log({
+      scope: 'claude',
+      level: 'warn',
+      message: 'Closing a Claude Code process that finished starting after its runtime exited',
+      data: { sessionId: this.sessionIdValue },
+    })
+    try {
+      query.close()
+    } catch {
+      // Best effort by definition — there is nobody left to report this to.
+    }
+    void query.return(undefined).catch(() => undefined)
+  }
+
   /** Classify a requested resume before committing to it.
    *
    * `getSessionInfo` reads the one transcript file rather than the whole
@@ -513,9 +582,64 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       void this.settleExit(unobservedExit())
       return
     }
+    // Ownership is decided BEFORE the translator sees the frame, not after.
+    // `result` is the one message type with turn-scoped side effects —
+    // `settleTurnUsage` zeroes the accumulated token counters and the
+    // dropped-subagent tally on its way past — so a result we are going to
+    // discard must not take the next turn's books with it. Translating first
+    // and deciding second meant a stray result corrupted a turn it had no
+    // business touching even when it was correctly refused.
+    if (message.type === 'result' && !this.ownsResult(message)) return
     const translated = this.translator.translate(message)
     for (const event of translated.events) this.emit(event)
-    if (translated.completed) this.completeTurn(message, translated.completed)
+    if (translated.completed) this.completeTurn(translated.completed)
+  }
+
+  /** Is this terminal result the one the active dispatch is waiting for?
+   *
+   * Three things disqualify it.
+   *
+   * A `parent_tool_use_id` means it terminated a subagent's inner loop rather
+   * than the user's turn; settling on one would end `prompt()` while the main
+   * turn is still streaming. (Live-verified on claude 2.1.220 that a top-level
+   * result carries no such key, so this is defensive — but a subagent result
+   * that ever grows one must not end the user's turn.)
+   *
+   * No active dispatch at all means a late frame from a turn that was
+   * cancelled or already settled. Guessing which turn it belonged to resolves
+   * somebody else's prompt, so it is logged and dropped.
+   *
+   * And a `user_message_uuid` that names a different dispatch is a late or
+   * duplicated result for a turn that is gone. Note the asymmetry in the SDK:
+   * `user_message_uuid` is declared only on `SDKResultSuccess`, NOT on
+   * `SDKResultError`, and it is optional even there. So this is a one-way
+   * check — a mismatch is proof the result is not ours, but its absence proves
+   * nothing and falls back to the active-dispatch test above, which is the
+   * strongest guard available for a failed turn. */
+  private ownsResult(message: Extract<SDKMessage, { type: 'result' }>): boolean {
+    const parent = (message as { parent_tool_use_id?: unknown }).parent_tool_use_id
+    if (typeof parent === 'string' && parent) return false
+    const turn = this.turn
+    if (!turn || turn.state !== 'dispatched') {
+      this.host.log({
+        scope: 'claude',
+        level: 'warn',
+        message: 'Claude Code result arrived with no turn awaiting it',
+        data: { sessionId: message.session_id, turnId: turn?.id, turnState: turn?.state },
+      })
+      return false
+    }
+    const correlation = (message as { user_message_uuid?: unknown }).user_message_uuid
+    if (typeof correlation === 'string' && correlation && correlation !== turn.id) {
+      this.host.log({
+        scope: 'claude',
+        level: 'warn',
+        message: 'Claude Code result named a different user message; ignoring it',
+        data: { sessionId: message.session_id, turnId: turn.id, resultFor: correlation },
+      })
+      return false
+    }
+    return true
   }
 
   /** Adopt the durable session id, ignoring the transient ones.
@@ -552,14 +676,24 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       throw new Error(
         `${this.providerId} already has a turn in flight on thread ${this.threadIdValue}`,
       )
-    const input = this.input
-    if (!input) throw new Error(`Claude runtime unavailable for ${this.providerId}`)
     if (args.desiredConfig) await this.applyDesiredConfig(args.desiredConfig)
     // Converted BEFORE `prompt_started` is emitted and before a turn is opened.
     // An unsupported block throws here, which fails `prompt()` visibly; doing it
     // after would leave the UI showing a started turn that never runs.
     const content = claudePromptContent(args.prompt)
     const userMessageId = args.userMessageId ?? `agent_usr_${crypto.randomUUID()}`
+    // Re-checked HERE, after the last await and immediately before a turn
+    // exists. `ready()` proved the runtime was alive when it answered, but
+    // every await since — `applyDesiredConfig`'s two control requests above,
+    // and `ready()`'s own — is a window in which the process can die. What
+    // makes the window lethal rather than merely unlucky is the order inside
+    // `performExit`: it closes the input queue and then fails the active turn,
+    // so an exit that lands while there is no turn yet leaves nothing behind to
+    // fail. A turn opened afterwards would push into a closed queue, be
+    // dropped, and never settle — wedging this thread's entry in
+    // `AgentRuntime.promptQueues` for the life of the app, with `SessionReaper`
+    // declining to rescue it because a thread with an active turn looks busy.
+    const input = this.usableInput()
     this.emit(
       routeEvent(this.route(), sessionId, 'lifecycle', 'prompt_started', {
         prompt: args.prompt.text,
@@ -568,17 +702,47 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       }),
     )
     const turn = this.openTurn(sessionId)
-    input.push({
-      type: 'user',
-      message: { role: 'user', content },
-      // Null, always: this is the user talking to the top-level agent. A
-      // non-null parent would make the CLI attribute the message to a subagent
-      // loop, and every frame it produced would then be dropped as subagent
-      // traffic by the translator.
-      parent_tool_use_id: null,
-      session_id: sessionId,
-    } as SDKUserMessage)
+    try {
+      input.push({
+        type: 'user',
+        // The correlation token. The SDK sends it back on the turn's terminal
+        // result as `user_message_uuid`, which is what lets `ownsResult` tell
+        // "this result is mine" from "this result belongs to a turn that was
+        // already settled". Without it the only available check is "some turn
+        // is active", and a late or duplicated result settles whichever turn
+        // happens to be in flight.
+        uuid: turn.id as SDKUserMessage['uuid'],
+        message: { role: 'user', content },
+        // Null, always: this is the user talking to the top-level agent. A
+        // non-null parent would make the CLI attribute the message to a subagent
+        // loop, and every frame it produced would then be dropped as subagent
+        // traffic by the translator.
+        parent_tool_use_id: null,
+        session_id: sessionId,
+      } as SDKUserMessage)
+    } catch (error) {
+      // The queue closed between the check above and this line — a window of a
+      // few synchronous statements, but the failure it produces is permanent,
+      // so it is unwound rather than hoped away. The turn is torn back down so
+      // the thread is not left holding a dispatch nothing can settle, and the
+      // error propagates so the job fails instead of hanging.
+      this.failActiveTurn(error)
+      throw error instanceof Error ? error : new Error(errorMessage(error))
+    }
     return turn.done.then(() => undefined)
+  }
+
+  /** The input stream, proving it can still be written to.
+   *
+   * Separate from `assertUsable` because the queue closing and the phase
+   * flipping are not the same instant: `performExit` closes the queue on its
+   * way through, and `input` itself is undefined until `bootstrap` builds it. */
+  private usableInput(): InputQueue {
+    this.assertUsable()
+    const input = this.input
+    if (!input || input.isClosed)
+      throw new Error(`Claude runtime unavailable for ${this.providerId}`)
+    return input
   }
 
   /** Move `idle -> dispatched`. The returned promise is what `prompt()` hands
@@ -603,38 +767,55 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     return turn
   }
 
-  /** `dispatched -> completing -> idle`, for a result that is genuinely ours.
-   *
-   * Two things disqualify a result. A `parent_tool_use_id` means it terminated
-   * a subagent's inner loop, not the user's turn — settling on one would end
-   * `prompt()` while the main turn is still streaming. And a result arriving
-   * with no active turn at all is a late frame from a cancelled or already
-   * settled turn; v1 logs and drops it rather than guessing which turn it
-   * belonged to, because guessing wrong resolves somebody else's prompt. */
-  private completeTurn(
-    message: SDKMessage,
-    completed: NonNullable<TranslatedMessage['completed']>,
-  ): void {
-    // Live-verified (claude 2.1.220): a top-level `result` carries no
-    // `parent_tool_use_id` key at all, so this guard is defensive rather than
-    // load-bearing — but a subagent result that ever grows one must not end
-    // the user's turn, and the check costs nothing.
-    const parent = (message as { parent_tool_use_id?: unknown }).parent_tool_use_id
-    if (typeof parent === 'string' && parent) return
+  /** `dispatched -> completing -> idle`, for a result `ownsResult` has already
+   * proved is ours. That proof lives there rather than here because it has to
+   * run before the translator does — see `handle`. */
+  private completeTurn(completed: NonNullable<TranslatedMessage['completed']>): void {
+    // Ownership was settled by `ownsResult` before the translator ran and
+    // nothing awaits in between, so the turn is still the one that was checked.
+    // Re-read rather than passed so this cannot be called out of that context
+    // and silently settle whatever it finds.
     const turn = this.turn
-    if (!turn || turn.state !== 'dispatched') {
-      this.host.log({
-        scope: 'claude',
-        level: 'warn',
-        message: 'Claude Code result arrived with no turn awaiting it',
-        data: { sessionId: completed.sessionId, turnId: turn?.id, turnState: turn?.state },
-      })
-      return
-    }
+    if (!turn || turn.state !== 'dispatched') return
     turn.state = 'completing'
     this.turn = undefined
+    // A failed result is a failure, not a quiet completion.
+    //
+    // This used to emit `prompt_completed` and settle cleanly for every result
+    // the state machine accepted, `error_during_execution`, max-turns, budget
+    // and structured-output exhaustion included. The job worker recorded those
+    // jobs as completed and the user saw a turn that simply stopped mid-answer,
+    // with the failure reported precisely nowhere.
+    //
+    // `runtime_error` rather than `rpc_error`: `rpc_error` describes a request
+    // on a wire failing and requires a `source` naming that request. There is
+    // no wire here — the SDK is an in-process API — and this frame is Claude
+    // Code itself declaring the turn over, which is what `kind: 'provider'`
+    // means. Deliberately NOT accompanied by a `prompt_completed`: both are
+    // terminal downstream, and emitting both would finalize the turn twice,
+    // the second time against a turn that no longer exists.
+    if (completed.isError && !completed.interrupted) {
+      const message = completed.errorText ?? 'Claude Code ended the turn with an error'
+      this.emit(
+        routeEvent(this.route(), completed.sessionId, 'error', 'runtime_error', {
+          kind: 'provider',
+          message,
+          // The counts still happened, and this is the only frame left to carry
+          // them; `prompt_completed`'s `usage` field has no failure counterpart.
+          details: {
+            ...(completed.stopReason ? { stopReason: completed.stopReason } : {}),
+            ...(completed.usage ? { usage: completed.usage } : {}),
+          },
+        }),
+      )
+      turn.settle(new Error(message))
+      void this.publishContextUsage(completed.sessionId)
+      return
+    }
     // Emitted here rather than by the translator: only a result the state
-    // machine accepted means the *user's* turn is over.
+    // machine accepted means the *user's* turn is over. An interrupted turn
+    // reaches this branch on purpose — the user stopping their own turn is not
+    // a failure, and reporting it as one would fail every cancelled job.
     this.emit(
       routeEvent(this.route(), completed.sessionId, 'lifecycle', 'prompt_completed', {
         ...(completed.stopReason ? { stopReason: completed.stopReason } : {}),
@@ -711,6 +892,12 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
    * neither a terminal result nor an exit lands inside the grace, the process
    * is no longer trustworthy and is replaced. */
   async cancel(): Promise<void> {
+    // Cancelling something already dead is a no-op, not an error: the exit path
+    // has already cancelled this thread's interactions and failed its turn, and
+    // a Stop button that throws because the process beat it there would surface
+    // a failure the user cannot act on. Every other entry point goes through
+    // `ready()`, which refuses.
+    if (this.exitSettlement) return
     const sessionId = await this.ready()
     this.permissions.cancelThread(this.providerId, this.threadIdValue)
     this.interactions.cancelThread(this.providerId, this.threadIdValue)
@@ -880,8 +1067,16 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
         if (answered) return answered
       }
       if (toolName === 'ExitPlanMode') return await this.reviewPlan(sessionId, input, options)
-      if (FULL_ACCESS_MODES.includes(this.appliedModeId as PermissionMode))
-        return { behavior: 'allow' }
+      // Both mode short circuits sit AFTER the two interactive tools above:
+      // `AskUserQuestion` and `ExitPlanMode` are not permission prompts, they
+      // are the model asking the user something and proposing a plan, and
+      // answering them from a permission mode would speak for the user.
+      const mode = this.appliedModeId as PermissionMode | undefined
+      // The only mode that means "allow everything", and the only one the SDK
+      // makes us opt into with `allowDangerouslySkipPermissions` — see
+      // `bootstrap`.
+      if (mode === 'bypassPermissions') return { behavior: 'allow' }
+      if (mode === 'dontAsk') return NOT_PRE_APPROVED
       return await this.requestPermission(sessionId, toolName, input, options)
     } catch (error) {
       // A throw out of this callback is swallowed by the SDK and leaves the
@@ -921,18 +1116,21 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
         data: { texts: parsed.pending.duplicateTexts },
       })
     this.questionContexts.set(requestId, parsed.pending)
-    // Registered before the request reaches any listener: a fast local renderer
-    // can otherwise answer before `respondQuestion` has anything to settle.
-    const settlement = this.awaitInteraction(requestId, sessionId, 'question', options.signal)
-    this.emit(
-      routeEvent(this.route(), sessionId, 'session', 'question_request', {
-        requestId,
-        sessionId,
-        ...(parsed.title ? { title: parsed.title } : {}),
-        questions: parsed.questions,
-      }),
-    )
-    const outcome = await settlement
+    const outcome = await this.awaitInteraction({
+      requestId,
+      sessionId,
+      kind: 'question',
+      signal: options.signal,
+      emitRequest: () =>
+        this.emit(
+          routeEvent(this.route(), sessionId, 'session', 'question_request', {
+            requestId,
+            sessionId,
+            ...(parsed.title ? { title: parsed.title } : {}),
+            questions: parsed.questions,
+          }),
+        ),
+    })
     if (outcome.outcome !== 'responded') return USER_CANCELLED
     const answer = outcome.response as QuestionOutcome
     if (answer.outcome !== 'answered') return USER_CANCELLED
@@ -960,23 +1158,23 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     if (memo) return memo
     const requestId = crypto.randomUUID()
     this.planRequestIds.add(requestId)
-    const settlement = this.awaitInteraction(
+    const outcome = await this.awaitInteraction({
       requestId,
       sessionId,
-      'plan_review',
-      options.signal,
+      kind: 'plan_review',
+      signal: options.signal,
       // A plan is read, not clicked through; the default interaction timeout is
       // far too short for one.
-      PLAN_REVIEW_TIMEOUT_MS,
-    )
-    this.emit(
-      routeEvent(this.route(), sessionId, 'session', 'plan_review_request', {
-        ...planFromExitPlanMode(input),
-        requestId,
-        sessionId,
-      }),
-    )
-    const outcome = await settlement
+      timeoutMs: PLAN_REVIEW_TIMEOUT_MS,
+      emitRequest: () =>
+        this.emit(
+          routeEvent(this.route(), sessionId, 'session', 'plan_review_request', {
+            ...planFromExitPlanMode(input),
+            requestId,
+            sessionId,
+          }),
+        ),
+    })
     const review = outcome.outcome === 'responded' ? (outcome.response as PlanReviewOutcome) : undefined
     const result: PermissionResult =
       review?.outcome === 'accepted'
@@ -1003,6 +1201,14 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     input: Record<string, unknown>,
     options: CanUseToolOptions,
   ): Promise<PermissionResult> {
+    // The same rule `awaitInteraction` documents, and for the same reason: an
+    // already-aborted call registers nothing and emits nothing, so a permission
+    // row can never appear after the settlement that closes it.
+    const abortedCancellation: PermissionOutcome = {
+      outcome: 'cancelled',
+      reason: 'tool_cancelled',
+    }
+    if (options.signal.aborted) return USER_CANCELLED
     const requestId = crypto.randomUUID()
     const permissionOptions: PermissionOption[] = [
       { optionId: 'allow_once', name: 'Allow', kind: 'allow_once' },
@@ -1019,33 +1225,46 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
         resolve,
       }),
     )
-    const abort = () => this.permissions.respond(requestId, { outcome: 'cancelled', reason: 'tool_cancelled' })
-    const detach = this.onAbort(options.signal, abort)
-    this.emit(
-      routeEvent(this.route(), sessionId, 'permission', 'permission_request', {
-        requestId,
-        sessionId,
-        toolCall: {
-          toolCallId: options.toolUseID,
-          // The compact label. `convex-projector.upsertPermission` reads this as
-          // the tool name for the prompt's heading.
-          title: options.displayName ?? toolName,
-          kind: claudeToolKind(toolName),
-          rawInput: input,
-        },
-        options: permissionOptions,
-        expiresAt: new Date(Date.now() + PERMISSION_TIMEOUT_MS).toISOString(),
-        metadata: {
-          toolName,
-          // Read as the prompt's description downstream, which is exactly what
-          // the SDK says this field is for.
-          ...(options.title ? { title: options.title } : {}),
-          ...(options.description ? { description: options.description } : {}),
-          ...(options.decisionReason ? { decisionReason: options.decisionReason } : {}),
-          ...(options.blockedPath ? { filepath: options.blockedPath } : {}),
-        },
-      }),
-    )
+    let detach: () => void = () => undefined
+    try {
+      this.emit(
+        routeEvent(this.route(), sessionId, 'permission', 'permission_request', {
+          requestId,
+          sessionId,
+          toolCall: {
+            toolCallId: options.toolUseID,
+            // The compact label. `convex-projector.upsertPermission` reads this as
+            // the tool name for the prompt's heading.
+            title: options.displayName ?? toolName,
+            kind: claudeToolKind(toolName),
+            rawInput: input,
+          },
+          options: permissionOptions,
+          expiresAt: new Date(Date.now() + PERMISSION_TIMEOUT_MS).toISOString(),
+          metadata: {
+            toolName,
+            // Read as the prompt's description downstream, which is exactly what
+            // the SDK says this field is for.
+            ...(options.title ? { title: options.title } : {}),
+            ...(options.description ? { description: options.description } : {}),
+            ...(options.decisionReason ? { decisionReason: options.decisionReason } : {}),
+            ...(options.blockedPath ? { filepath: options.blockedPath } : {}),
+          },
+        }),
+      )
+      // Subscribed only once the request is out — see `awaitInteraction`.
+      detach = this.onAbort(options.signal, () =>
+        this.permissions.respond(requestId, abortedCancellation),
+      )
+    } catch (error) {
+      // Registration and announcement settle together. A listener that threw
+      // here used to leave the row pending for the full five-minute permission
+      // timeout, and — because `response.finally(detach)` below was never
+      // reached — with its abort listener still attached to a signal the SDK
+      // keeps alive for the rest of the turn.
+      this.permissions.respond(requestId, abortedCancellation)
+      throw error
+    }
     const outcome = await response.finally(detach)
     if (outcome.outcome.outcome !== 'selected') return USER_CANCELLED
     if (outcome.outcome.optionId === 'reject_once')
@@ -1066,34 +1285,75 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
    * There is exactly ONE settlement point — the broker's record, which is
    * deleted before its `resolve` runs — so an abort arriving at the same
    * instant as the user's answer produces one outcome, not two, and the loser
-   * simply reports `false`. */
-  private awaitInteraction(
-    requestId: string,
-    sessionId: string,
-    kind: InteractionKind,
-    signal: AbortSignal,
-    timeoutMs?: number,
-  ): Promise<InteractionOutcome> {
+   * simply reports `false`.
+   *
+   * The request is emitted from here rather than by the caller because the
+   * order of the three steps is the whole correctness argument, and a caller
+   * that owns the middle one can get it wrong. Register, THEN announce, THEN
+   * subscribe to the abort:
+   *
+   * - Registering first is what lets a fast local renderer answer the instant
+   *   it sees the request; announcing first leaves `respond` nothing to settle.
+   * - Subscribing LAST is what stops a settlement from being published before
+   *   the request it settles. `onAbort` fires synchronously on a signal that
+   *   has already aborted, so subscribing first turned an already-dead call
+   *   into `*_resolved` followed by `*_request` — leaving every consumer
+   *   holding a pending interaction whose deferred no longer exists, which
+   *   nobody can answer and whose timeout died with it. */
+  private awaitInteraction(args: {
+    requestId: string
+    sessionId: string
+    kind: InteractionKind
+    signal: AbortSignal
+    emitRequest: () => void
+    timeoutMs?: number
+  }): Promise<InteractionOutcome> {
+    // Already cancelled before any of it exists. Nothing is registered and
+    // nothing is announced: the strongest form of "a request is never emitted
+    // after its settlement" is not emitting one at all.
+    if (args.signal.aborted) {
+      this.forgetInteraction(args.requestId)
+      return Promise.resolve({ outcome: 'cancelled', reason: 'tool_cancelled' })
+    }
     const settlement = new Promise<InteractionOutcome>((resolve) =>
       this.interactions.add(
-        requestId,
+        args.requestId,
         {
-          kind,
+          kind: args.kind,
           providerId: this.providerId,
           threadId: this.threadIdValue,
           workspaceId: this.workspaceIdValue,
-          sessionId,
+          sessionId: args.sessionId,
           resolve,
         },
-        timeoutMs,
+        args.timeoutMs,
       ),
     )
-    const detach = this.onAbort(signal, () => this.interactions.cancel(requestId))
+    let detach: () => void = () => undefined
+    try {
+      args.emitRequest()
+      detach = this.onAbort(args.signal, () => this.interactions.cancel(args.requestId))
+    } catch (error) {
+      // Registration and announcement settle together or not at all. A listener
+      // that throws mid-emit used to leave the record parked for its full
+      // timeout — five minutes for a question, an hour for a plan review —
+      // because `canUseTool`'s outer catch returns a denial to the SDK without
+      // ever touching the broker. The tool was denied and the row stayed up.
+      this.interactions.cancel(args.requestId)
+      this.forgetInteraction(args.requestId)
+      throw error
+    }
     return settlement.finally(() => {
       detach()
-      this.questionContexts.delete(requestId)
-      this.planRequestIds.delete(requestId)
+      this.forgetInteraction(args.requestId)
     })
+  }
+
+  /** Drop whatever this runtime was holding for a requestId. Safe to call for
+   * a kind that owns neither map — both deletes are no-ops on a miss. */
+  private forgetInteraction(requestId: string): void {
+    this.questionContexts.delete(requestId)
+    this.planRequestIds.delete(requestId)
   }
 
   /** Subscribe to an abort that may already have happened. Returns the detach,
@@ -1199,10 +1459,38 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     if (!this.query) throw new Error(`Claude runtime unavailable for ${this.providerId}`)
     return this.query
   }
+  /** The session id, proving the runtime is alive at the moment it answers.
+   *
+   * The liveness check is not decoration. `sessionIdValue` and `startResult`
+   * both survive the process dying — they are memos of a successful start, not
+   * of a running child — so trusting them alone answers "did this runtime ever
+   * start" when every caller is asking "can I use it now". A dead runtime that
+   * answers the first question sends `prompt()` on to push into a closed input
+   * queue and `setModel()` on to a query that no longer exists. */
   private async ready(): Promise<string> {
+    this.assertUsable()
     if (this.sessionIdValue && this.startResult) return this.sessionIdValue
     const result = await this.start()
+    // `start()` memoises, so this can be somebody else's in-flight bootstrap
+    // that resolved after an exit settled; the same window the success
+    // continuation above closes, re-checked from the other side.
+    this.assertUsable()
     return result.sessionId
+  }
+
+  /** Throw unless this runtime is still usable.
+   *
+   * `exitSettlement` rather than `exitValue`: `performExit` closes the input
+   * queue and clears the query on its first await, long before `exitValue` is
+   * assigned, so a caller that only checked the settled exit would be waved
+   * through into exactly the window this exists to close. */
+  private assertUsable(): void {
+    if (
+      this.exitSettlement ||
+      this.phaseValue === 'stopping' ||
+      this.phaseValue === 'exited'
+    )
+      throw new Error(`Claude runtime for ${this.providerId} has stopped`)
   }
 }
 
@@ -1244,8 +1532,19 @@ class InputQueue {
   private waiting: ((message: SDKUserMessage | undefined) => void) | undefined
   private closed = false
 
+  get isClosed(): boolean {
+    return this.closed
+  }
+
+  /** Throws on a closed queue rather than returning.
+   *
+   * Dropping the message silently is what made a lost prompt invisible: the
+   * caller had already opened a turn, nothing would ever deliver the message,
+   * and nothing would ever produce the `result` that settles it. A closed queue
+   * is not a condition a caller can usefully ignore, so it is not one it is
+   * allowed to miss. */
   push(message: SDKUserMessage): void {
-    if (this.closed) return
+    if (this.closed) throw new Error('the Claude Code input stream is closed')
     const waiting = this.waiting
     if (waiting) {
       this.waiting = undefined

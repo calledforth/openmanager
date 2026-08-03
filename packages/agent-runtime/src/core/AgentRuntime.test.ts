@@ -5,6 +5,7 @@ import { cursor } from '../providers/cursor.js'
 import { opencode } from '../providers/opencode.js'
 import type { ProviderConfig } from '../providers/index.js'
 import type { AcpConnectionSpec } from '../session/AcpConnection.js'
+import { FakeClaudeSdk } from '../session/claude/test-sdk.js'
 import { FakeConnectionFactory, type FakeWire } from '../session/test-connection.js'
 import { AgentRuntime } from './AgentRuntime.js'
 
@@ -887,5 +888,98 @@ describe('AgentRuntime provider dispatch', () => {
     ).rejects.toThrow(/CLAUDE_CODE_BIN/)
     expect(connections.connections).toHaveLength(0)
     vi.unstubAllEnvs()
+  })
+})
+
+/** The turn-lifetime half of `isRecoverableError`.
+ *
+ * `forward` stamps every event with the thread's active assistant message id
+ * and releases it on the terminal ones. It used to release on ANY `rpc_error`,
+ * so a Claude Code `api_retry` — the CLI saying "that request failed, I am
+ * retrying" — ended the turn as far as every consumer was concerned. The
+ * retry then succeeded and every event it produced arrived with no
+ * `messageId`, which both the Convex projector and the live renderer drop: the
+ * answer was truncated on screen and in persisted history. */
+describe('AgentRuntime recoverable errors', () => {
+  const CLAUDE_ROUTE = {
+    providerId: 'claude' as const,
+    workspaceId: 'C:/workspace',
+    cwd: 'C:/workspace',
+  }
+
+  function buildClaude() {
+    // The resolver stats a real file and the runtime must not care which; the
+    // test's own node binary exercises real resolution without requiring
+    // Claude Code to be installed.
+    vi.stubEnv('CLAUDE_CODE_BIN', process.execPath)
+    const events: AgentEvent[] = []
+    const claudeSdk = new FakeClaudeSdk()
+    const runtime = new AgentRuntime(
+      { emitEvent: (event) => events.push(event), log: vi.fn() },
+      configs,
+      { claudeSdk },
+    )
+    return { runtime, events, claudeSdk }
+  }
+
+  it('keeps the assistant message id alive across an api_retry', async () => {
+    const { runtime, events, claudeSdk } = buildClaude()
+    const session = await runtime.ensureSession({ ...CLAUDE_ROUTE, threadId: 'thread-1' })
+    const query = claudeSdk.last
+    const turn = runtime.prompt({ ...CLAUDE_ROUTE, threadId: 'thread-1', prompt: PROMPT })
+    await vi.waitFor(() => expect(query.prompts).toHaveLength(1))
+
+    query.emitText('partial ')
+    query.emitSystem('api_retry', session.sessionId, {
+      error: 'Overloaded',
+      attempt: 1,
+      max_retries: 3,
+    })
+    // What the retry then produces. Before the fix this text carried no
+    // messageId at all and was dropped by every consumer downstream.
+    query.emitText('and the rest')
+    query.emitResult({ sessionId: session.sessionId })
+    await turn
+
+    const started = events.find((event) => event.event === 'prompt_started')
+    const retry = events.find((event) => event.event === 'rpc_error')
+    expect(retry?.data).toMatchObject({ recoverable: true })
+    const chunks = events.filter((event) => event.event === 'agent_message_chunk')
+    expect(chunks).toHaveLength(2)
+    for (const chunk of chunks) expect(chunk.messageId).toBe(started?.messageId)
+    expect(events.find((event) => event.event === 'prompt_completed')?.messageId).toBe(
+      started?.messageId,
+    )
+    vi.unstubAllEnvs()
+  })
+
+  /** The other half, over ACP: an `rpc_error` that says nothing about
+   * recoverability is still terminal, so the guard cannot be a blanket
+   * exemption for the whole event. Cursor and OpenCode both reach this path. */
+  it('still releases the message id for an ordinary rpc_error', async () => {
+    const events: AgentEvent[] = []
+    const connections = new FakeConnectionFactory({
+      newSession: async () => ({ sessionId: 'session-1' }),
+      prompt: async () => {
+        await connections.last.sessionUpdate({
+          sessionId: 'session-1',
+          update: { sessionUpdate: 'something_this_build_has_never_heard_of' },
+        })
+        await connections.last.sessionUpdate({
+          sessionId: 'session-1',
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'late' } },
+        })
+        return { stopReason: 'end_turn' }
+      },
+    })
+    const runtime = new AgentRuntime(
+      { emitEvent: (event) => events.push(event), log: vi.fn() },
+      configs,
+      { connections },
+    )
+    await runtime.prompt({ ...ROUTE, threadId: 'thread-1', prompt: PROMPT })
+    const failure = events.find((event) => event.event === 'rpc_error')
+    expect(failure?.data).not.toMatchObject({ recoverable: true })
+    expect(events.find((event) => event.event === 'agent_message_chunk')?.messageId).toBeUndefined()
   })
 })

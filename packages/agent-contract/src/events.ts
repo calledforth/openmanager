@@ -306,10 +306,25 @@ export type SessionUsage = {
   cost?: SessionCost
 }
 
+/** `recoverable: true` is a statement about the TURN, not about the process.
+ *
+ * It means: the operation that failed is being retried and the turn this error
+ * belongs to is still running, so more of its output is still coming. Every
+ * consumer that performs terminal cleanup on an error — closing the assistant
+ * message, finalizing the persisted turn, marking running tool rows failed,
+ * dropping the composer out of its running state — MUST skip that cleanup when
+ * this flag is set, because the turn will still emit its own `prompt_completed`
+ * (or a real terminal error) afterwards. Treating a retry as terminal
+ * permanently truncates the answer: every later event in the turn arrives with
+ * the message id already released and is dropped.
+ *
+ * An error that ends the turn must NOT set it, even when the *runtime* could be
+ * respawned afterwards — "we can start another process" is not the same claim. */
 export type RpcErrorData = {
   source: string
   message: string
   code?: number
+  /** See the note above `RpcErrorData`: the turn survives this error. */
   recoverable?: boolean
   details?: unknown
 }
@@ -317,6 +332,7 @@ export type RpcErrorData = {
 export type RuntimeErrorData = {
   kind: 'transport' | 'process' | 'protocol' | 'provider' | 'validation' | 'unknown'
   message: string
+  /** See the note above `RpcErrorData`: the turn survives this error. */
   recoverable?: boolean
   details?: unknown
 }
@@ -551,3 +567,22 @@ export type AgentEvent = AgentEventBase &
         }
       }
   )
+
+/** Is this error one the turn survives?
+ *
+ * The single predicate every terminal-cleanup site shares, so the four
+ * consumers that close a turn on an error — `AgentRuntime.forward`, the Convex
+ * projector, the live renderer and the composer's status tracking — cannot
+ * drift apart. Anything that is not an error event is not recoverable: the
+ * question only has meaning for the two error shapes that carry the flag.
+ *
+ * Takes the loose `BackendEvent`-shaped object rather than a narrowed
+ * `AgentEvent` so it can be called before an event is stamped, where the union
+ * has been collapsed and `data` cannot be narrowed by `event`. */
+export function isRecoverableError(event: {
+  event: AgentEventName
+  data?: unknown
+}): boolean {
+  if (event.event !== 'rpc_error' && event.event !== 'runtime_error') return false
+  return (event.data as { recoverable?: unknown } | undefined)?.recoverable === true
+}
