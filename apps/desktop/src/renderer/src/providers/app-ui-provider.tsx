@@ -1564,11 +1564,32 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
     ],
   )
 
+  // Provider metadata is not frozen at launch. `models` is filled in by the
+  // first successful probe of each provider, and the health monitor probes
+  // every provider at boot — so re-reading on each health change is what turns
+  // "Claude Code has no models yet" into a populated composer picker without
+  // the user having to select it first. The identity guard matters: this
+  // fires several times per handshake, and a fresh array every time would
+  // re-render every consumer of `providers` for an unchanged answer.
   useEffect(() => {
-    window.electronAPI
-      .getAgentProviders()
-      .then(setProviders)
-      .catch(() => setProviders([]))
+    let cancelled = false
+    const load = (): void => {
+      window.electronAPI
+        .getAgentProviders()
+        .then((next) => {
+          if (cancelled) return
+          setProviders((current) =>
+            JSON.stringify(current) === JSON.stringify(next) ? current : next,
+          )
+        })
+        .catch(() => undefined)
+    }
+    load()
+    const cleanup = window.electronAPI.onAgentStatusChanged(() => load())
+    return () => {
+      cancelled = true
+      cleanup()
+    }
   }, [])
 
   useEffect(() => {

@@ -258,13 +258,19 @@ ipcMain.handle('agent:prompt-capabilities', async () => {
   return agentHost?.getPromptCapabilities() ?? {}
 })
 
-ipcMain.handle('agent:providers', (): ProviderMetadata[] =>
-  Object.values(providers).map(({ id, displayName, capabilities }) => ({
+// Static config plus whatever the probes have learned. `models` is the part
+// that changes after launch: a provider that can answer its catalog at
+// handshake time has none here until its first probe lands, so the renderer
+// re-reads this whenever provider health changes rather than once on mount.
+ipcMain.handle('agent:providers', (): ProviderMetadata[] => {
+  const models = agentHost?.getProviderModels() ?? {}
+  return Object.values(providers).map(({ id, displayName, capabilities }) => ({
     id,
     displayName,
     capabilities,
-  })),
-)
+    ...(models[id] ? { models: models[id] } : {}),
+  }))
+})
 
 ipcMain.handle(
   'agent:model-image-support',

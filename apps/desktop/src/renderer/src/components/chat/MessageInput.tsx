@@ -9,6 +9,7 @@ import { ComposerPlanPrompt } from '../plans/ComposerPlanPrompt'
 import { MessageInputView } from './MessageInputView'
 import { deriveSessionChrome } from '@agentpack/view'
 import { useTrackedMutation } from '../../lib/convex-telemetry'
+import { buildProviderModelGroups, metadataModelOptions } from './providerModelGroups'
 import type { DraftImageAttachment, UploadedImageAttachment } from '../../lib/attachments'
 
 export function MessageInput() {
@@ -90,25 +91,25 @@ export function MessageInput() {
     id: model.modelId,
     name: model.name,
   }))
-  const modelOptions = runtimeModelOptions.length > 0 ? runtimeModelOptions : chromeModelOptions
+  // Provider metadata is the last resort behind runtime state and chrome, and
+  // the only one that does not require the provider to have been used already.
+  const modelOptions =
+    runtimeModelOptions.length > 0
+      ? runtimeModelOptions
+      : chromeModelOptions.length > 0
+        ? chromeModelOptions
+        : metadataModelOptions(providers, currentProviderId)
   const currentModelId =
     runtimeState?.models?.currentModelId ??
     chrome.modelPicker?.currentModelId ??
     modelOptions[0]?.id ??
     ''
-  const providerModelGroups = providerOptions.map((provider) => {
-    const models =
-      provider.id === currentProviderId
-        ? modelOptions
-        : (providerComposerProfiles[provider.id]?.availableModels ?? []).map((model) => ({
-            id: model.modelId,
-            name: model.name,
-          }))
-    return {
-      providerId: provider.id,
-      providerName: provider.name,
-      models,
-    }
+  const providerModelGroups = buildProviderModelGroups({
+    providerOptions,
+    currentProviderId,
+    currentModels: modelOptions,
+    composerProfiles: providerComposerProfiles,
+    providers,
   })
   // Runtime state first, chrome as fallback — mirrors the model/mode resolution
   // above. Runtime state also carries the per-workspace draft copy, so the picker

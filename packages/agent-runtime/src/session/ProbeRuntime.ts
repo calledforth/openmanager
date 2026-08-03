@@ -57,6 +57,18 @@ export type ProbeResult = {
    * time fills it in, and the bootstrap surfaces it without waiting for a
    * session. */
   commands?: AvailableCommand[]
+  /** Model catalog the provider knows about before any session exists.
+   *
+   * Absent over ACP for the same reason `commands` is: a model list only ever
+   * arrives as `current_mode_update`/`session/new` state on a live session, so
+   * an ACP probe leaves this undefined rather than reporting an empty catalog.
+   * Claude Code answers it at handshake time — `initialize` carries `models`
+   * — which is what lets the composer offer a provider the user has never run
+   * a session with. Without it the picker can only list providers it has
+   * already seen models from, and a never-used provider is invisible and
+   * therefore unselectable: it cannot produce models until it is chosen, and
+   * it cannot be chosen until it has produced models. */
+  models?: ModelListing
 }
 
 /** What a probe needs beyond a provider and a directory.

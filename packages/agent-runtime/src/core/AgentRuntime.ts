@@ -2,6 +2,7 @@ import type {
   AgentEvent,
   AvailableCommand,
   CapabilityKey,
+  ModelListing,
   PermissionOutcome,
   PlanReviewOutcome,
   PromptInput,
@@ -15,7 +16,7 @@ import type { HostDeps } from '../host.js'
 import { providers, type ProviderConfig } from '../providers/index.js'
 import type { AcpConnectionFactory } from '../session/AcpConnection.js'
 import type { ClaudeSdk } from '../session/claude/sdk.js'
-import type { ProbeResult, ProbeRuntime } from '../session/ProbeRuntime.js'
+import type { ProbeResult, ProbeRuntime, ProbeRuntimeFactory } from '../session/ProbeRuntime.js'
 import {
   ProviderProbeRuntimeFactory,
   ProviderSessionRuntimeFactory,
@@ -55,6 +56,9 @@ export type ProviderBootstrap = {
    * the bootstrap process learned about the provider before any thread exists.
    * `undefined` over ACP, where the catalog only arrives on a live session. */
   commands: AvailableCommand[] | undefined
+  /** Model catalog the probe could answer without a session, hoisted for the
+   * same reason as `commands`. `undefined` over ACP. */
+  models: ModelListing | undefined
 }
 
 export type RuntimeSessionArgs = RuntimeRoute & {
@@ -151,7 +155,15 @@ export class AgentRuntime {
   private connectionsValue: AcpConnectionFactory | undefined
   /** Every probe this runtime builds, live or throwaway, comes from here.
    * Shared with the health monitor so both go through the same dispatch. */
-  private readonly probes: ProviderProbeRuntimeFactory
+  private readonly probes: ProbeRuntimeFactory
+  /** Last model catalog each provider reported at handshake time.
+   *
+   * Fed by every probe, which is the point: the desktop only bootstraps the
+   * provider the user is about to talk to, while the health monitor probes
+   * *all* of them at boot. A catalog learned there is what lets the composer
+   * list a provider nobody has selected yet. Providers whose models only
+   * exist on a live session (every ACP one) never appear in this map. */
+  private readonly modelsByProvider = new Map<ProviderId, ModelListing>()
   private readonly timeouts: Partial<RuntimeTimeouts> | undefined
   /** App-wide and keyed by requestId. Every pending record carries its own
    * provider/thread/workspace/session, so responding needs no lookup table and
@@ -199,12 +211,33 @@ export class AgentRuntime {
       log: host.log,
       ...(options.reaper ?? {}),
     })
-    this.probes = new ProviderProbeRuntimeFactory({
+    // Decorated, not subclassed, so *every* probe result is observed exactly
+    // once no matter who asked for it — the bootstrap, the health loop, or a
+    // metadata refresh. Recording the catalog anywhere further downstream
+    // would miss the health monitor's probes, which are the only ones a
+    // provider the user has never selected ever gets.
+    const probes = new ProviderProbeRuntimeFactory({
       configs,
       host,
       connections: () => this.acpConnections(),
       ...(options.timeouts ? { timeouts: options.timeouts } : {}),
     })
+    this.probes = {
+      create: (providerId, cwd, probeOptions) => {
+        const probe = probes.create(providerId, cwd, probeOptions)
+        return {
+          providerId: probe.providerId,
+          probe: async () => {
+            const result = await probe.probe()
+            if (result.models) this.modelsByProvider.set(providerId, result.models)
+            return result
+          },
+          listSessions: (dir) => probe.listSessions(dir),
+          listModels: (dir) => probe.listModels(dir),
+          dispose: () => probe.dispose(),
+        }
+      },
+    }
     this.health = new ProviderHealthMonitor({
       providerIds: Object.keys(configs) as ProviderId[],
       probes: this.probes,
@@ -392,6 +425,17 @@ export class AgentRuntime {
 
   // ------------------------------------------------------------------- probes
 
+  /** Model catalogs learned from handshakes, for every provider probed so far.
+   *
+   * Cached rather than asked for on demand: the caller is an IPC handler the
+   * renderer polls, and answering it by spawning a CLI would put a ~230 MB
+   * process behind a dropdown opening. Empty until the first probe answers,
+   * and permanently empty for providers that only list models on a live
+   * session. */
+  providerModels(): Partial<Record<ProviderId, ModelListing>> {
+    return Object.fromEntries(this.modelsByProvider) as Partial<Record<ProviderId, ModelListing>>
+  }
+
   /** Provider-level bootstrap in a throwaway process: spawn, `initialize`,
    * `authenticate`, then `session/list` on that same process. This replaces the
    * old `start()`, which spawned the one shared per-provider process.
@@ -417,6 +461,7 @@ export class AgentRuntime {
         result,
         sessions: await this.bootstrapSessions(args, probe, result),
         commands: result.commands,
+        models: result.models,
       }
     } catch (error) {
       recorder.failed(error)

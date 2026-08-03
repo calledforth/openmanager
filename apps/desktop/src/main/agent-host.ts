@@ -1,5 +1,6 @@
 import type {
   AgentEvent,
+  ModelListing,
   PermissionOutcome,
   PermissionRequest,
   PlanDocument,
@@ -142,6 +143,13 @@ export class AgentHost {
 
   getHealth(): Partial<Record<ProviderId, ProviderHealthReport>> {
     return this.runtime.health.reports()
+  }
+
+  /** Model catalogs the runtime has learned from handshakes. Merged into
+   * `agent:providers` so the composer can list a provider before the user has
+   * ever run a session with it. */
+  getProviderModels(): Partial<Record<ProviderId, ModelListing>> {
+    return this.runtime.providerModels()
   }
 
   getPromptCapabilities(): Partial<Record<ProviderId, PromptCapabilities>> {

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import type { Options, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { ModelInfo, Options, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import type {
   AvailableCommand,
   ModelListing,
@@ -130,6 +130,14 @@ export class ClaudeProbeRuntime implements ProbeRuntime {
           ? { input: { type: 'unstructured', placeholder: command.argumentHint } }
           : {}),
       })),
+      // The catalog comes out of the handshake we were already paying for, so
+      // the composer can offer Claude models before anybody has run a Claude
+      // session. `resolvedModel` is deliberately dropped: it exists so a host
+      // can match a persisted wire id (`claude-sonnet-5`) back to the alias
+      // row that covers it (`sonnet`), and nothing in openmanager ever learns
+      // a wire id — the only Claude model ids it stores are ones this list
+      // handed the picker. Carry it through the day something else does.
+      models: { availableModels: modelCatalog(init.models) },
     }
     this.emit(
       routeEvent(this.route(), undefined, 'lifecycle', 'initialized', {
@@ -146,6 +154,7 @@ export class ClaudeProbeRuntime implements ProbeRuntime {
       data: {
         version,
         commands: result.commands?.length ?? 0,
+        models: result.models?.availableModels?.length ?? 0,
         ...(account?.email ? { account: account.email } : {}),
         ...(account?.subscriptionType ? { subscription: account.subscriptionType } : {}),
       },
@@ -160,18 +169,14 @@ export class ClaudeProbeRuntime implements ProbeRuntime {
     )
   }
 
-  /** A static catalog, gated on the CLI version.
-   *
-   * The SDK does expose a live list (`initialize` carries `models`, and
-   * `Query.supportedModels()` re-reads it), but every path to it costs a
-   * subprocess spawn, and the health monitor asks for models on a schedule.
-   * A hand-maintained list is the honest trade for now: it is small, it is
-   * obviously editable, and the version gate is what stops it from offering a
-   * model an older CLI would reject. Deleting this in favour of `init.models`
-   * is a one-line change once the probe result is cached across calls. */
+  /** The handshake's own list, free: `probe()` is memoised, so asking twice
+   * costs one CLI. Nothing hand-maintained survives here — a list this file
+   * guessed at would go stale silently and could offer a model the installed
+   * CLI rejects, whereas the CLI answering `initialize` cannot be wrong about
+   * what it accepts. */
   async listModels(_cwd: string): Promise<ModelListing> {
     const result = await this.probe()
-    return { availableModels: modelCatalog(result.agentInfo?.version) }
+    return result.models ?? {}
   }
 
   async dispose(): Promise<void> {
@@ -229,33 +234,19 @@ function readVersion(executable: string, timeoutMs: number): Promise<string | un
   })
 }
 
-/** Deliberately short and deliberately hand-written. Add a row when a model
- * ships; the `minVersion` is the CLI release that first accepted the id. */
-const MODELS: readonly (ModelOption & { minVersion?: string })[] = [
-  { id: 'default', displayName: 'Default', description: 'Whatever the CLI is configured to use' },
-  { id: 'opus', displayName: 'Opus', description: 'Most capable' },
-  { id: 'sonnet', displayName: 'Sonnet', description: 'Balanced capability and speed' },
-  { id: 'haiku', displayName: 'Haiku', description: 'Fastest' },
-]
-
-function modelCatalog(version: string | undefined): ModelOption[] {
-  return MODELS.filter((model) => !model.minVersion || atLeast(version, model.minVersion)).map(
-    ({ minVersion: _minVersion, ...model }) => model,
-  )
-}
-
-/** Absent version -> assume new enough. A probe that could not read
- * `--version` has bigger problems than an over-generous model list, and
- * hiding every model would look like an empty account. */
-function atLeast(version: string | undefined, minimum: string): boolean {
-  if (!version) return true
-  const parse = (value: string): number[] =>
-    value.split('.').map((part) => Number.parseInt(part, 10) || 0)
-  const [a, b] = [parse(version), parse(minimum)]
-  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
-    const left = a[index] ?? 0
-    const right = b[index] ?? 0
-    if (left !== right) return left > right
-  }
-  return true
+/** `ModelInfo[]` from the handshake, narrowed to what the composer shows.
+ *
+ * `models` is non-optional in the SDK's own types, but the response comes off
+ * a wire from whatever `claude` binary is on this machine — a CLI old enough
+ * to predate the field sends nothing, and a runtime `undefined` through a
+ * `.map()` would fail the whole probe over a model list. An empty catalog is
+ * the honest answer there; guessing one is how you offer a model the CLI will
+ * reject. `contextWindowTokens` is left unset because `ModelInfo` carries no
+ * window size to set it from. */
+function modelCatalog(models: readonly ModelInfo[] | undefined): ModelOption[] {
+  return (models ?? []).map((model) => ({
+    id: model.value,
+    displayName: model.displayName,
+    ...(model.description ? { description: model.description } : {}),
+  }))
 }
