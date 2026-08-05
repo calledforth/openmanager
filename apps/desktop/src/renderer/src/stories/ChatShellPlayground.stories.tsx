@@ -799,20 +799,43 @@ function Demo() {
                   currentProviderId="opencode"
                   providerModelGroups={[
                     {
-                      providerId: 'opencode',
-                      providerName: 'OpenCode',
+                      providerId: 'claude',
+                      providerName: 'Claude Code',
                       models: [
-                        { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5' },
-                        { id: 'claude-opus-4', name: 'Claude Opus 4' },
-                        { id: 'gpt-5.1', name: 'GPT-5.1' },
+                        {
+                          id: 'sonnet',
+                          name: 'Sonnet',
+                          description: 'Sonnet 4.5 · Best for everyday tasks',
+                          effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+                          supportsFastMode: true,
+                          supportsAutoMode: true,
+                        },
+                        {
+                          id: 'opus',
+                          name: 'Opus',
+                          description: 'Opus 4.1 · Complex work',
+                          effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+                          supportsFastMode: true,
+                          supportsAutoMode: true,
+                        },
                       ],
                     },
                     {
                       providerId: 'cursor',
                       providerName: 'Cursor',
                       models: [
+                        { id: 'composer-2.5', name: 'Composer 2.5' },
                         { id: 'cursor/default', name: 'Default' },
                         { id: 'cursor/fast', name: 'Fast' },
+                      ],
+                    },
+                    {
+                      providerId: 'opencode',
+                      providerName: 'OpenCode',
+                      models: [
+                        { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5' },
+                        { id: 'claude-opus-4', name: 'Claude Opus 4' },
+                        { id: 'gpt-5.1', name: 'GPT-5.1' },
                       ],
                     },
                   ]}

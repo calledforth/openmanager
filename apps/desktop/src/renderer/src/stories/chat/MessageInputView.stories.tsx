@@ -26,19 +26,59 @@ const meta = {
     currentProviderId: 'opencode',
     providerModelGroups: [
       {
-        providerId: 'opencode',
-        providerName: 'OpenCode',
+        providerId: 'claude',
+        providerName: 'Claude Code',
         models: [
-          { id: 'gpt-5.1', name: 'GPT-5.1' },
-          { id: 'claude-sonnet', name: 'Claude Sonnet' },
+          {
+            id: 'sonnet',
+            name: 'Sonnet',
+            description: 'Sonnet 4.5 · Best for everyday tasks',
+            effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+            supportsFastMode: true,
+            supportsAutoMode: true,
+          },
+          {
+            id: 'opus',
+            name: 'Opus',
+            description: 'Opus 4.1 · Best for complex tasks',
+            effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+            supportsFastMode: true,
+            supportsAutoMode: true,
+          },
+          {
+            id: 'haiku',
+            name: 'Haiku',
+            description: 'Haiku 4.5 · Fastest',
+            supportsFastMode: false,
+            supportsAutoMode: false,
+          },
+          {
+            id: 'default',
+            name: 'Default (recommended)',
+            description: 'Sonnet 5 · Efficient for most tasks',
+            resolvedModel: 'claude-sonnet-5',
+            effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+            supportsFastMode: true,
+            supportsAutoMode: true,
+          },
         ],
       },
       {
         providerId: 'cursor',
         providerName: 'Cursor',
         models: [
+          { id: 'composer-2.5', name: 'Composer 2.5' },
           { id: 'cursor/default', name: 'Default' },
           { id: 'cursor/fast', name: 'Fast' },
+        ],
+      },
+      {
+        providerId: 'opencode',
+        providerName: 'OpenCode',
+        models: [
+          { id: 'gpt-5.1', name: 'GPT-5.1' },
+          { id: 'claude-sonnet', name: 'Claude Sonnet' },
+          { id: 'claude-opus', name: 'Claude Opus' },
         ],
       },
     ],

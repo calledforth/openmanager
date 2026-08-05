@@ -20,7 +20,6 @@ import {
 } from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
 import type { ProviderId, SessionConfigOption } from '@agentpack/contract'
-import { ProviderIcon } from '../providers/ProviderIcon'
 import { SearchableMenu, type SearchableMenuSection } from '../ui/SearchableMenu'
 import { usePortaledMenu } from '../ui/usePortaledMenu'
 import {
@@ -49,17 +48,16 @@ import {
   slashQueryFromText,
   type SlashCommandItem,
 } from './slashCommands'
-import { modelHint, modelLabel } from './modelLabel'
+import {
+  ProviderModelPicker,
+  type ProviderModelGroup,
+} from './ProviderModelPicker'
+
+export type { ProviderModelGroup }
 
 /** Matches the `prefers-reduced-motion` guard globals.css applies to chat animations. */
 function prefersReducedMotion() {
   return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
-}
-
-export type ProviderModelGroup = {
-  providerId: ProviderId
-  providerName: string
-  models: Array<{ id: string; name: string; description?: string }>
 }
 
 /** Mode / misc select. Menu is portaled — avoids overflow-x-auto / overflow-hidden clipping. */
@@ -139,100 +137,6 @@ function PillSelect<T extends string>({
           <span className="truncate">{label}</span>
           <CaretDownIcon
             size={ghost ? 9 : 10}
-            weight="light"
-            className="shrink-0 text-[var(--basis-text-faint)]"
-          />
-        </button>
-      )}
-    />
-  )
-}
-
-/** Single control: provider groups → models. Trigger shows provider SVG + model name. */
-function ProviderModelSelect({
-  groups,
-  currentProviderId,
-  currentModelId,
-  onChange,
-  disabled,
-  canChangeProvider,
-  configSummary,
-}: {
-  groups: ProviderModelGroup[]
-  currentProviderId: ProviderId
-  currentModelId: string
-  onChange: (providerId: ProviderId, modelId: string) => void
-  disabled?: boolean
-  canChangeProvider: boolean
-  configSummary: string[]
-}) {
-  const visibleGroups = canChangeProvider
-    ? groups.filter((group) => group.models.length > 0)
-    : groups.filter((group) => group.providerId === currentProviderId && group.models.length > 0)
-
-  const currentGroup = groups.find((group) => group.providerId === currentProviderId)
-  const currentModel =
-    currentGroup?.models.find((model) => model.id === currentModelId) ?? currentGroup?.models[0]
-  const currentLabel = currentModel
-    ? modelLabel(currentModel.name, currentModel.description)
-    : (currentModelId.split('/').pop() ?? 'Model')
-  const displayLabel =
-    configSummary.length > 0 ? `${currentLabel} · ${configSummary.join(' · ')}` : currentLabel
-  const selectedId = `${currentProviderId}:${currentModelId}`
-
-  const sections = useMemo<SearchableMenuSection[]>(
-    () =>
-      visibleGroups.map((group) => ({
-        id: group.providerId,
-        label: group.providerName,
-        icon: <ProviderIcon providerId={group.providerId} className="h-3 w-3" />,
-        options: group.models.map((model) => ({
-          id: `${group.providerId}:${model.id}`,
-          // "Opus 5", not "Opus" — the version lives in the description and
-          // has to be lifted, or Opus 5 and Opus 4.8 read identically.
-          label: modelLabel(model.name, model.description),
-          ...(modelHint(model.name, model.description)
-            ? { description: modelHint(model.name, model.description) }
-            : {}),
-          // Searching either name has to hit the row whichever way it renders.
-          keywords: `${group.providerName} ${model.id} ${model.name} ${model.description ?? ''}`,
-        })),
-      })),
-    [visibleGroups],
-  )
-
-  return (
-    <SearchableMenu
-      sections={sections}
-      value={selectedId}
-      onSelect={(optionId, sectionId) => {
-        const modelId = optionId.slice(sectionId.length + 1)
-        onChange(sectionId as ProviderId, modelId)
-      }}
-      searchable
-      searchPlaceholder="Search models…"
-      emptyText="No models"
-      disabled={disabled}
-      minWidth={260}
-      maxHeight={320}
-      aria-label="Select model"
-      trigger={({ ref, open, toggle, disabled: isDisabled }) => (
-        <button
-          ref={ref}
-          type="button"
-          onClick={toggle}
-          disabled={isDisabled}
-          className={cn(
-            'flex max-w-[240px] items-center gap-1.5 border-0 bg-transparent px-0.5 py-0 text-11-regular leading-none text-[var(--basis-text)] transition-colors duration-150',
-            'hover:text-[var(--basis-text-strong)]',
-            open && 'text-[var(--basis-text-strong)]',
-            isDisabled && 'cursor-default opacity-40',
-          )}
-        >
-          <ProviderIcon providerId={currentProviderId} />
-          <span className="truncate">{displayLabel}</span>
-          <CaretDownIcon
-            size={9}
             weight="light"
             className="shrink-0 text-[var(--basis-text-faint)]"
           />
@@ -823,7 +727,7 @@ export function MessageInputView({
             <div className="mx-0.5 h-3.5 w-px shrink-0 bg-[var(--basis-border-muted)]" />
 
             {showModelControl && (
-              <ProviderModelSelect
+              <ProviderModelPicker
                 groups={providerModelGroups}
                 currentProviderId={currentProviderId}
                 currentModelId={currentModelId}
