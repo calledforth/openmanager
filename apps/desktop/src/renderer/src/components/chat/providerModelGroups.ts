@@ -1,6 +1,6 @@
 import type { ProviderId, ProviderMetadata } from '@agentpack/contract'
 import type { ProviderComposerProfiles } from '../../../../shared/composer-profile'
-import type { ProviderModelGroup } from './MessageInputView'
+import type { ProviderModelGroup } from './ProviderModelPicker'
 
 /** `description` is load-bearing for Claude Code, not decoration: the CLI puts
  * the marketing name there rather than in `displayName`, so a row reads
@@ -11,6 +11,7 @@ export type ComposerModelChoice = {
   id: string
   name: string
   description?: string
+  resolvedModel?: string
   /** Carried so the composer can gate the effort pill, the fast-mode switch
    * and the `auto` permission mode on the model that is actually selected. */
   effortLevels?: string[]
@@ -32,6 +33,7 @@ export function metadataModelOptions(
       id: model.id,
       name: model.displayName,
       ...(model.description ? { description: model.description } : {}),
+      ...(model.resolvedModel ? { resolvedModel: model.resolvedModel } : {}),
       ...(model.effortLevels?.length ? { effortLevels: model.effortLevels } : {}),
       ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
       ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
@@ -76,22 +78,52 @@ export function buildProviderModelGroups(args: {
   providers: readonly ProviderMetadata[]
 }): ProviderModelGroup[] {
   return args.providerOptions.map((provider) => {
-    const profileModels = (args.composerProfiles[provider.id]?.availableModels ?? []).map(
-      (model) => ({
-        id: model.modelId,
-        name: model.name,
-        ...(model.description ? { description: model.description } : {}),
-        ...(model.effortLevels?.length ? { effortLevels: model.effortLevels } : {}),
-        ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
-        ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
-      }),
-    )
-    const models =
+    const profileModels: ComposerModelChoice[] = (
+      args.composerProfiles[provider.id]?.availableModels ?? []
+    ).map((model) => ({
+      id: model.modelId,
+      name: model.name,
+      ...(model.description ? { description: model.description } : {}),
+      ...(model.effortLevels?.length ? { effortLevels: model.effortLevels } : {}),
+      ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
+      ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
+    }))
+    const rawModels: ComposerModelChoice[] =
       provider.id === args.currentProviderId
-        ? args.currentModels
+        ? [...args.currentModels]
         : profileModels.length > 0
           ? profileModels
           : metadataModelOptions(args.providers, provider.id)
-    return { providerId: provider.id, providerName: provider.name, models: [...models] }
+    // Metadata fills capability gaps chrome/profile rows often lack, so the
+    // picker hover card can still explain Claude models.
+    const metaById = new Map(
+      metadataModelOptions(args.providers, provider.id).map((model) => [model.id, model]),
+    )
+    const models: ComposerModelChoice[] = rawModels.map((model) => {
+      const meta = metaById.get(model.id)
+      if (!meta) return model
+      return {
+        id: model.id,
+        name: model.name,
+        ...(model.description || meta.description
+          ? { description: model.description ?? meta.description }
+          : {}),
+        ...(model.resolvedModel || meta.resolvedModel
+          ? { resolvedModel: model.resolvedModel ?? meta.resolvedModel }
+          : {}),
+        ...((model.effortLevels?.length ? model.effortLevels : meta.effortLevels)?.length
+          ? {
+              effortLevels: model.effortLevels?.length ? model.effortLevels : meta.effortLevels,
+            }
+          : {}),
+        ...((model.supportsFastMode ?? meta.supportsFastMode)
+          ? { supportsFastMode: true }
+          : {}),
+        ...((model.supportsAutoMode ?? meta.supportsAutoMode)
+          ? { supportsAutoMode: true }
+          : {}),
+      }
+    })
+    return { providerId: provider.id, providerName: provider.name, models }
   })
 }
