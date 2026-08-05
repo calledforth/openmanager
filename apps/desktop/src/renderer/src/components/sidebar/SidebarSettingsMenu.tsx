@@ -1,38 +1,20 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   ArrowClockwiseIcon,
-  CheckCircleIcon,
-  CircleIcon,
   CircleNotchIcon,
-  DownloadSimpleIcon,
   GearIcon,
   HexagonIcon,
   MoonIcon,
   SunIcon,
-  TextTIcon,
-  WarningCircleIcon,
 } from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
-import { UI_FONTS, type UiFontId } from '../../lib/fonts'
-import {
-  describeProviderHealth,
-  type ProviderHealthTone,
-} from '../../lib/provider-health-view'
 import { typographyCaption } from '../../lib/typography'
 import { useTheme } from '../../providers/theme-provider'
-import { useAppUi } from '../../providers/app-ui-provider'
+import { usePortaledMenu } from '../ui/usePortaledMenu'
 import { ConvexSettingsDialog } from '../settings/ConvexSettingsDialog'
-import { SearchableMenu, type SearchableMenuSection } from '../ui/SearchableMenu'
-
-/** Same palette the update-check row uses, so the two footer sections read as
- * one thing. `muted` is deliberately the same faint grey as an idle provider:
- * "not checked yet" is not a warning. */
-const PROVIDER_TONE_CLASS: Record<ProviderHealthTone, string> = {
-  ready: 'text-emerald-400',
-  warning: 'text-amber-400',
-  error: 'text-red-400',
-  muted: 'text-[var(--basis-text-faint)]',
-}
+import { ExtraSettingsDialog } from '../settings/ExtraSettingsDialog'
+import packageJson from '../../../../../package.json'
 
 type UpdateCheckState =
   | { status: 'idle' }
@@ -42,6 +24,8 @@ type UpdateCheckState =
   | { status: 'unsupported'; message: string }
   | { status: 'error'; message: string }
 
+const APP_VERSION = packageJson.version
+
 export function SidebarSettingsMenu({
   convexOpen,
   onToggleConvex,
@@ -50,16 +34,24 @@ export function SidebarSettingsMenu({
   onToggleConvex: () => void
 }) {
   const [convexSettingsOpen, setConvexSettingsOpen] = useState(false)
+  const [extraSettingsOpen, setExtraSettingsOpen] = useState(false)
   const [updateCheckState, setUpdateCheckState] = useState<UpdateCheckState>({
     status: 'idle',
   })
-  const { theme, toggleTheme, font, setFont } = useTheme()
+  const { theme, setTheme } = useTheme()
   const {
-    providerHealthByProvider,
-    acpAgentInfoByProvider,
-    providers: registeredProviders,
-    retryProvider,
-  } = useAppUi()
+    open,
+    toggle,
+    close,
+    menuCoords,
+    wrapRef,
+    triggerRef,
+    menuRef,
+  } = usePortaledMenu({
+    placement: 'above',
+    align: 'end',
+    minWidth: 200,
+  })
 
   const checkForUpdates = useCallback(async () => {
     if (updateCheckState.status === 'checking') return
@@ -75,222 +67,175 @@ export function SidebarSettingsMenu({
     }
   }, [updateCheckState.status])
 
-  const providers = useMemo(() => {
-    const now = Date.now()
-    return registeredProviders.map((provider) => {
-      const health = describeProviderHealth(providerHealthByProvider[provider.id], now)
-      const agentInfo = acpAgentInfoByProvider[provider.id]
-      // The CLI's own name and version when we have heard from it, which is
-      // more useful than our label for telling two installs apart.
-      const label = agentInfo?.name
-        ? `${agentInfo.name}${agentInfo.version ? ` ${agentInfo.version}` : ''}`
-        : `${provider.displayName} ACP`
-      return { id: provider.id, displayName: provider.displayName, label, health }
-    })
-  }, [acpAgentInfoByProvider, providerHealthByProvider, registeredProviders])
+  const displayedVersion =
+    updateCheckState.status === 'current' ? updateCheckState.version : APP_VERSION
 
-  const retryableProviders = useMemo(
-    () => providers.filter((provider) => provider.health.canRetry),
-    [providers],
-  )
-
-  const sections = useMemo<SearchableMenuSection[]>(
-    () => [
-      {
-        id: 'font',
-        label: 'Font',
-        options: UI_FONTS.map((option) => ({
-          id: option.id,
-          label: option.label,
-          icon: <TextTIcon className="h-3 w-3 opacity-60" />,
-        })),
-      },
-      {
-        id: 'theme',
-        options: [
-          {
-            id: 'toggle-theme',
-            label: theme === 'dark' ? 'Light mode' : 'Dark mode',
-            icon:
-              theme === 'dark' ? (
-                <SunIcon className="h-3 w-3 text-[var(--basis-text-muted)]" />
-              ) : (
-                <MoonIcon className="h-3 w-3 text-[var(--basis-text-muted)]" />
-              ),
-          },
-        ],
-      },
-      {
-        id: 'developer',
-        label: 'Developer',
-        options: [
-          {
-            id: 'toggle-convex-trace',
-            label: convexOpen ? 'Hide Convex trace' : 'Show Convex trace',
-            icon: <HexagonIcon className="h-3 w-3 text-[var(--basis-text-muted)]" />,
-          },
-        ],
-      },
-    ],
-    [convexOpen, theme],
-  )
-
-  const updateCheckDetail =
+  const updateStatusMessage =
     updateCheckState.status === 'checking'
-      ? 'Contacting update server…'
-      : updateCheckState.status === 'current'
-        ? `Version ${updateCheckState.version} is current`
-        : updateCheckState.status === 'available'
-          ? `Downloading version ${updateCheckState.version}`
-          : updateCheckState.status === 'unsupported' || updateCheckState.status === 'error'
-            ? updateCheckState.message
-            : null
-  const UpdateCheckIcon =
-    updateCheckState.status === 'checking'
-      ? CircleNotchIcon
-      : updateCheckState.status === 'current'
-        ? CheckCircleIcon
-        : updateCheckState.status === 'available'
-          ? DownloadSimpleIcon
-          : updateCheckState.status === 'unsupported' || updateCheckState.status === 'error'
-            ? WarningCircleIcon
-            : ArrowClockwiseIcon
+      ? 'Checking…'
+      : updateCheckState.status === 'available'
+        ? `Update ${updateCheckState.version} available`
+        : updateCheckState.status === 'unsupported' || updateCheckState.status === 'error'
+          ? updateCheckState.message
+          : null
 
-  const footerItemClass = cn(
-    'flex w-full items-center gap-2 px-2.5 py-1 text-left text-11-regular transition-colors',
+  const menuItemClass = cn(
+    'flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-11-regular leading-tight transition-colors',
     'text-[var(--basis-text-muted)] hover:bg-[var(--basis-surface)] hover:text-[var(--basis-text)]',
   )
 
   return (
     <>
-      <SearchableMenu
-        sections={sections}
-        value={font}
-        searchable={false}
-        placement="above"
-        align="end"
-        minWidth={200}
-        maxHeight={400}
-        aria-label="Settings"
-        onSelect={(optionId, sectionId) => {
-          if (sectionId === 'font') {
-            setFont(optionId as UiFontId)
-            return false
-          }
-          if (optionId === 'toggle-theme') {
-            toggleTheme()
-            return false
-          }
-          if (optionId === 'toggle-convex-trace') {
-            onToggleConvex()
-            return false
-          }
-        }}
-        footer={({ close }) => (
-          <>
-            <div className="flex items-center gap-1.5 px-2.5 pb-0.5 pt-1 text-[10px] font-medium uppercase tracking-[0.08em] text-[var(--basis-text-faint)]">
-              Provider
-            </div>
-            {providers.map((provider) => (
-              <div
-                key={provider.id}
-                className="flex items-center gap-2 px-2.5 py-1 text-11-regular text-[var(--basis-text)]"
-              >
-                {provider.health.status === 'probing' ? (
-                  <CircleNotchIcon className="h-2.5 w-2.5 shrink-0 animate-spin text-[var(--basis-text-faint)]" />
-                ) : (
-                  <CircleIcon
-                    weight="fill"
-                    className={cn('h-2 w-2 shrink-0', PROVIDER_TONE_CLASS[provider.health.tone])}
-                  />
-                )}
-                <div className="min-w-0 flex-1">
-                  <div className="truncate">{provider.label}</div>
+      <div ref={wrapRef} className="relative shrink-0">
+        <button
+          ref={triggerRef}
+          type="button"
+          onClick={toggle}
+          aria-expanded={open}
+          aria-haspopup="menu"
+          title="Settings"
+          className={cn(
+            'flex h-7 w-7 items-center justify-center rounded-[var(--basis-chat-shell-radius)] text-[var(--basis-text-muted)] transition-default',
+            'hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
+            open && 'bg-[var(--basis-surface-hover)] text-[var(--basis-text)]',
+          )}
+        >
+          <GearIcon className="h-4 w-4" />
+        </button>
+
+        {open &&
+          menuCoords &&
+          createPortal(
+            <div
+              ref={menuRef}
+              role="menu"
+              aria-label="Settings"
+              className={cn(
+                'fixed z-[200] overflow-hidden border border-[var(--basis-border)] bg-[var(--basis-canvas-bg)] shadow-xl',
+                'rounded-[var(--basis-chat-shell-radius)]',
+              )}
+              style={{
+                left: menuCoords.left,
+                top: menuCoords.top,
+                bottom: menuCoords.bottom,
+                width: menuCoords.width,
+              }}
+            >
+              <div className="p-1">
+                <div className="flex items-center justify-between gap-2 px-1.5 py-1">
+                  <span className="text-11-regular leading-tight text-[var(--basis-text-muted)]">
+                    Theme
+                  </span>
                   <div
-                    className={cn(typographyCaption, 'truncate text-[var(--basis-text-faint)]')}
-                    title={provider.health.detail ?? provider.health.label}
+                    className="inline-flex items-center rounded-full border border-[var(--basis-border)] bg-[color-mix(in_srgb,var(--basis-canvas-bg)_72%,#000)] p-px"
+                    role="group"
+                    aria-label="Theme"
                   >
-                    {provider.health.label}
-                    {provider.health.detail ? ` · ${provider.health.detail}` : ''}
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={theme === 'light'}
+                      title="Light"
+                      onClick={() => setTheme('light')}
+                      className={cn(
+                        'flex h-5 w-5 items-center justify-center rounded-full transition-colors',
+                        theme === 'light'
+                          ? 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]'
+                          : 'text-[var(--basis-text-faint)] hover:text-[var(--basis-text)]',
+                      )}
+                    >
+                      <SunIcon className="h-3 w-3" />
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={theme === 'dark'}
+                      title="Dark"
+                      onClick={() => setTheme('dark')}
+                      className={cn(
+                        'flex h-5 w-5 items-center justify-center rounded-full transition-colors',
+                        theme === 'dark'
+                          ? 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]'
+                          : 'text-[var(--basis-text-faint)] hover:text-[var(--basis-text)]',
+                      )}
+                    >
+                      <MoonIcon className="h-3 w-3" />
+                    </button>
                   </div>
                 </div>
-              </div>
-            ))}
-            {retryableProviders.map((provider) => (
-              <button
-                key={`retry:${provider.id}`}
-                type="button"
-                onClick={() => void retryProvider(provider.id)}
-                className={footerItemClass}
-              >
-                <ArrowClockwiseIcon className="h-3 w-3 shrink-0 text-[var(--basis-text-muted)]" />
-                <span>Retry {provider.displayName}</span>
-              </button>
-            ))}
 
-            <div className="my-1 h-px bg-[var(--basis-border-muted)]" />
-
-            <button
-              type="button"
-              disabled={updateCheckState.status === 'checking'}
-              onClick={() => void checkForUpdates()}
-              className={cn(footerItemClass, 'disabled:cursor-wait')}
-            >
-              <UpdateCheckIcon
-                className={cn(
-                  'h-3.5 w-3.5 shrink-0 text-[var(--basis-text-muted)]',
-                  updateCheckState.status === 'checking' && 'animate-spin',
-                  updateCheckState.status === 'current' && 'text-emerald-400',
-                  updateCheckState.status === 'available' && 'text-[var(--basis-action-bg)]',
-                  updateCheckState.status === 'error' && 'text-amber-400',
-                )}
-              />
-              <span className="min-w-0 flex-1">
-                <span className="block">Check for updates</span>
-                {updateCheckDetail && (
-                  <span
-                    className={cn(
-                      typographyCaption,
-                      'block truncate text-[var(--basis-text-faint)]',
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={updateCheckState.status === 'checking'}
+                  onClick={() => void checkForUpdates()}
+                  title="Check for updates"
+                  className={cn(menuItemClass, 'disabled:cursor-wait')}
+                >
+                  {updateCheckState.status === 'checking' ? (
+                    <CircleNotchIcon className="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--basis-text-muted)]" />
+                  ) : (
+                    <ArrowClockwiseIcon className="h-3.5 w-3.5 shrink-0 text-[var(--basis-text-muted)]" />
+                  )}
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate">v{displayedVersion}</span>
+                    {updateStatusMessage && (
+                      <span
+                        className={cn(
+                          typographyCaption,
+                          'mt-0.5 block truncate leading-tight text-[var(--basis-text-faint)]',
+                          updateCheckState.status === 'available' && 'text-emerald-400',
+                          updateCheckState.status === 'error' && 'text-amber-400',
+                        )}
+                        title={updateStatusMessage}
+                        aria-live="polite"
+                      >
+                        {updateStatusMessage}
+                      </span>
                     )}
-                    title={updateCheckDetail}
-                    aria-live="polite"
-                  >
-                    {updateCheckDetail}
                   </span>
-                )}
-              </span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                close()
-                setConvexSettingsOpen(true)
-              }}
-              className={footerItemClass}
-            >
-              <HexagonIcon className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
-              <span className="min-w-0 flex-1">Convex deployment</span>
-            </button>
-          </>
-        )}
-        trigger={({ ref, open, toggle }) => (
-          <button
-            ref={ref}
-            type="button"
-            onClick={toggle}
-            aria-expanded={open}
-            aria-haspopup="menu"
-            title="Settings"
-            className={cn(
-              'flex h-7 w-7 items-center justify-center rounded-[var(--basis-chat-shell-radius)] text-[var(--basis-text-muted)] transition-default',
-              'hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
-              open && 'bg-[var(--basis-surface-hover)] text-[var(--basis-text)]',
-            )}
-          >
-            <GearIcon className="h-3.5 w-3.5" />
-          </button>
-        )}
+                </button>
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    close()
+                    setConvexSettingsOpen(true)
+                  }}
+                  className={menuItemClass}
+                >
+                  <HexagonIcon className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
+                  <span className="min-w-0 flex-1 truncate">Convex deployment</span>
+                </button>
+              </div>
+
+              <div className="mx-1 h-px bg-[var(--basis-border-muted)]" />
+
+              <div className="p-1">
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    close()
+                    setExtraSettingsOpen(true)
+                  }}
+                  className={menuItemClass}
+                >
+                  <GearIcon className="h-3.5 w-3.5 shrink-0 text-[var(--basis-text-muted)]" />
+                  <span className="min-w-0 flex-1 truncate">Extra Settings</span>
+                </button>
+              </div>
+            </div>,
+            document.body,
+          )}
+      </div>
+
+      <ExtraSettingsDialog
+        open={extraSettingsOpen}
+        onOpenChange={setExtraSettingsOpen}
+        convexOpen={convexOpen}
+        onToggleConvex={onToggleConvex}
       />
       <ConvexSettingsDialog open={convexSettingsOpen} onOpenChange={setConvexSettingsOpen} />
     </>

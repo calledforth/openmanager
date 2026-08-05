@@ -6,6 +6,7 @@ import { useQuestionStateOptional } from '../../providers/question-provider'
 import { usePlanStateOptional } from '../../providers/plan-provider'
 import { ComposerQuestionPrompt } from '../questions/ComposerQuestionPrompt'
 import { ComposerPlanPrompt } from '../plans/ComposerPlanPrompt'
+import { ComposerTodos, useSessionPlanEntries } from '../plans/ComposerTodos'
 import { MessageInputView } from './MessageInputView'
 import { deriveSessionChrome } from '@agentpack/view'
 import { useTrackedMutation } from '../../lib/convex-telemetry'
@@ -48,6 +49,7 @@ export function MessageInput() {
   const pendingQuestion = questionState?.pendingQuestion ?? null
   const planState = usePlanStateOptional()
   const pendingPlan = planState?.pendingPlan ?? null
+  const planEntries = useSessionPlanEntries()
   const generateUploadUrl = useTrackedMutation(
     'attachments.generateUploadUrl',
     (api as any).attachments.generateUploadUrl,
@@ -327,72 +329,76 @@ export function MessageInput() {
     <div className="flex w-full flex-col">
       <ComposerQuestionPrompt />
       <ComposerPlanPrompt />
-      <MessageInputView
-        disabled={disabled}
-        pendingDraftSessionStart={pendingDraftSessionStart}
-        activeWorkspacePath={activeWorkspacePath}
-        activeSessionId={activeSessionId}
-        isSessionDraftOpen={isSessionDraftOpen}
-        providerReady={providerReady}
-        currentProviderId={currentProviderId}
-        providerModelGroups={providerModelGroups}
-        currentModelId={currentModelId}
-        configOptions={runtimeState?.configOptions ?? []}
-        modeOptions={modeOptions}
-        currentModeId={currentModeId}
-        effortLevels={effortLevels}
-        currentEffort={currentEffort}
-        canChangeSettings={canChangeSettings}
-        canChangeProvider={isSessionDraftOpen && !activeSessionId}
-        showModeControl={chrome.modePicker !== null || modeOptions.length > 0}
-        showModelControl={
-          chrome.modelPicker !== null ||
-          modelOptions.length > 0 ||
-          providerModelGroups.some((group) => group.models.length > 0)
-        }
-        isStreaming={isStreaming}
-        isAwaitingPlanReview={!!pendingPlan}
-        draftKey={draftKey}
-        imageUploadEnabled={
-          providerSupportsImages && modelImageSupport !== false && modelImageSupport !== undefined
-        }
-        imageSupportMessage={imageSupportMessage}
-        slashCommands={slashCommands}
-        usage={chrome.usage ?? null}
-        onModeChange={(id) => {
-          if (activeSessionId) {
-            void setSessionMode(activeSessionId, id)
-            return
+      <div className="flex w-full flex-col">
+        <ComposerTodos entries={planEntries} />
+        <MessageInputView
+          disabled={disabled}
+          pendingDraftSessionStart={pendingDraftSessionStart}
+          activeWorkspacePath={activeWorkspacePath}
+          activeSessionId={activeSessionId}
+          isSessionDraftOpen={isSessionDraftOpen}
+          providerReady={providerReady}
+          currentProviderId={currentProviderId}
+          providerModelGroups={providerModelGroups}
+          currentModelId={currentModelId}
+          configOptions={runtimeState?.configOptions ?? []}
+          modeOptions={modeOptions}
+          currentModeId={currentModeId}
+          effortLevels={effortLevels}
+          currentEffort={currentEffort}
+          canChangeSettings={canChangeSettings}
+          canChangeProvider={isSessionDraftOpen && !activeSessionId}
+          showModeControl={chrome.modePicker !== null || modeOptions.length > 0}
+          showModelControl={
+            chrome.modelPicker !== null ||
+            modelOptions.length > 0 ||
+            providerModelGroups.some((group) => group.models.length > 0)
           }
-          setDraftMode(id)
-        }}
-        onProviderModelChange={(providerId, modelId) => {
-          if (activeSessionId) {
-            if (providerId === currentProviderId) {
-              void setSessionModel(activeSessionId, modelId)
+          isStreaming={isStreaming}
+          isAwaitingPlanReview={!!pendingPlan}
+          attachedTop={planEntries.length > 0}
+          draftKey={draftKey}
+          imageUploadEnabled={
+            providerSupportsImages && modelImageSupport !== false && modelImageSupport !== undefined
+          }
+          imageSupportMessage={imageSupportMessage}
+          slashCommands={slashCommands}
+          usage={chrome.usage ?? null}
+          onModeChange={(id) => {
+            if (activeSessionId) {
+              void setSessionMode(activeSessionId, id)
+              return
             }
-            return
-          }
-          if (providerId !== currentProviderId) {
-            setDraftProvider(providerId, modelId)
-            return
-          }
-          setDraftModel(modelId)
-        }}
-        onConfigOptionChange={(configId, value) => {
-          if (activeSessionId) {
-            void setSessionConfigOption(activeSessionId, configId, value)
-            return
-          }
-          setDraftConfigOption(configId, value)
-        }}
-        onSend={uploadAndSend}
-        onAbort={() => {
-          if (activeSessionId) {
-            void abortSession(activeSessionId)
-          }
-        }}
-      />
+            setDraftMode(id)
+          }}
+          onProviderModelChange={(providerId, modelId) => {
+            if (activeSessionId) {
+              if (providerId === currentProviderId) {
+                void setSessionModel(activeSessionId, modelId)
+              }
+              return
+            }
+            if (providerId !== currentProviderId) {
+              setDraftProvider(providerId, modelId)
+              return
+            }
+            setDraftModel(modelId)
+          }}
+          onConfigOptionChange={(configId, value) => {
+            if (activeSessionId) {
+              void setSessionConfigOption(activeSessionId, configId, value)
+              return
+            }
+            setDraftConfigOption(configId, value)
+          }}
+          onSend={uploadAndSend}
+          onAbort={() => {
+            if (activeSessionId) {
+              void abortSession(activeSessionId)
+            }
+          }}
+        />
+      </div>
     </div>
   )
 }

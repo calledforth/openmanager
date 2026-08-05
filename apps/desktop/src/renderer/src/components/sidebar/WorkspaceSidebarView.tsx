@@ -8,13 +8,13 @@ import {
   TrashIcon,
   NotePencilIcon,
   GitBranchIcon,
-  CircleNotchIcon,
 } from '@phosphor-icons/react'
 import type { ProviderId } from '@agentpack/contract'
 import { cn } from '../../lib/utils'
 import { typographyBodySm, typographyCaptionTiny, typographyLabel } from '../../lib/typography'
 import { ProviderIcon } from '../providers/ProviderIcon'
 import { SidebarSettingsMenu } from './SidebarSettingsMenu'
+import { SessionBusyLoader } from './SessionBusyLoader'
 
 const SESSION_PREVIEW_LIMIT = 5
 const SESSION_PAGE_SIZE = 10
@@ -191,7 +191,7 @@ export function WorkspaceSidebarView({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end border-t border-[var(--basis-border-muted)] px-2 py-1.5">
+        <div className="flex items-center justify-end px-2 py-1.5">
           <SidebarSettingsMenu convexOpen={convexOpen} onToggleConvex={onToggleConvex} />
         </div>
       </div>
@@ -318,10 +318,7 @@ function WorkspaceGroup({
                   )}
                 >
                   {isBusy && (
-                    <CircleNotchIcon
-                      className="h-3 w-3 shrink-0 animate-spin text-[var(--basis-text-muted)] transition-opacity group-hover:opacity-0"
-                      weight="bold"
-                    />
+                    <SessionBusyLoader className="h-4 w-4 shrink-0 transition-opacity group-hover:opacity-0" />
                   )}
                   <button
                     type="button"

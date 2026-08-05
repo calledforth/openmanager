@@ -303,6 +303,7 @@ export function MessageInputView({
   showModelControl,
   isStreaming,
   isAwaitingPlanReview = false,
+  attachedTop = false,
   draftKey,
   imageUploadEnabled,
   imageSupportMessage,
@@ -337,6 +338,8 @@ export function MessageInputView({
   showModelControl: boolean
   isStreaming: boolean
   isAwaitingPlanReview?: boolean
+  /** Flatten top radius/border so an attached strip (todos) can sit flush above. */
+  attachedTop?: boolean
   draftKey: string
   imageUploadEnabled: boolean
   imageSupportMessage: string | null
@@ -641,6 +644,7 @@ export function MessageInputView({
         className={cn(
           chatInputShell,
           'gap-1 p-1 transition-[border-color,box-shadow]',
+          attachedTop && 'rounded-t-none',
           isDragging && 'border-[var(--basis-action-bg)]',
         )}
         onDragEnter={(event) => {

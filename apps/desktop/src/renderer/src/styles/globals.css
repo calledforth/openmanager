@@ -109,6 +109,7 @@
   --basis-action-bg: #e5e5e5;
   --basis-action-fg: #111111;
   --basis-action-hover: #f4f4f4;
+  --basis-accent-blue: #4f8ff7;
   --basis-scrollbar-track: transparent;
   --basis-scrollbar-thumb: color-mix(in srgb, var(--basis-text-muted) 28%, transparent);
   --basis-scrollbar-thumb-hover: color-mix(in srgb, var(--basis-text-muted) 48%, transparent);
@@ -183,6 +184,7 @@ html[data-theme='light'] {
   --basis-action-bg: #2a2a2a;
   --basis-action-fg: #f3f3f3;
   --basis-action-hover: #1f1f1f;
+  --basis-accent-blue: #1f6feb;
   --basis-scrollbar-thumb: #d9d9d9;
   --basis-scrollbar-thumb-hover: #c4c4c4;
 }
@@ -684,11 +686,37 @@ textarea,
   }
 }
 
+.session-busy-dot {
+  fill: currentColor;
+  opacity: 0;
+  animation: session-busy-pulse 2400ms cubic-bezier(0.65, 0, 0.35, 1) infinite both;
+}
+
+@keyframes session-busy-pulse {
+  0% {
+    opacity: 0.05;
+  }
+  20% {
+    opacity: 1;
+  }
+  55% {
+    opacity: 0.18;
+  }
+  100% {
+    opacity: 0.05;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .chat-skeleton,
   .chat-animate-fade-in,
   .chat-animate-slide-up {
     animation: none;
+  }
+
+  .session-busy-dot {
+    animation: none;
+    opacity: 0.45;
   }
 }
 
