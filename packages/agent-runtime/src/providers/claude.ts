@@ -38,11 +38,15 @@ export const claude: ClaudeProviderConfig = {
     // only ever arrive as a `session/update` on a live session.
     supportsAvailableCommands: true,
 
+    // Reasoning effort, fast mode and output style. None has a dedicated
+    // control request — they are `Settings` keys written through
+    // `query.applyFlagSettings()`, which is a session-scoped flag layer above
+    // the user's own settings.json rather than an edit to it. The runtime
+    // validates every write first, because that call does not: an unknown
+    // output style is accepted and silently becomes current.
+    canSetConfigOption: true,
+
     // --- structurally absent, not deferred ---------------------------------
-    // There is no per-session key/value config surface: model and permission
-    // mode are their own control requests and everything else lives in
-    // settings.json, which is the user's file and not ours to write.
-    canSetConfigOption: false,
     // The SDK owns the credentials. There is no `authenticate` step to run and
     // no auth method to offer — a session either initializes or it does not,
     // and that is what the probe reports.

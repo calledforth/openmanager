@@ -569,10 +569,13 @@ describe('ClaudeSessionRuntime config', () => {
       name: 'CapabilityMissingError',
       capability: 'canListSessions',
     })
-    await expect(runtime.setConfigOption('effort', 'high')).rejects.toMatchObject({
-      name: 'CapabilityMissingError',
-      capability: 'canSetConfigOption',
-    })
+    // `setConfigOption` is no longer behind a missing capability — it now
+    // writes effort, fast mode and output style through the flag-settings
+    // layer. An unknown id is still refused, just as a plain error rather than
+    // a capability one.
+    await expect(runtime.setConfigOption('nonsense', 'high')).rejects.toThrow(
+      /no "nonsense" config option/,
+    )
     expect(runtime.listSessionsAdvertised).toBe(false)
     expect(runtime.resumeCursor).toBeUndefined()
     expect(runtime.respondExtension('anything', {})).toBe(false)
@@ -1218,5 +1221,241 @@ describe('ClaudeSessionRuntime rebindThread', () => {
       'session-thread',
       'workspace-1',
     )
+  })
+})
+
+describe('ClaudeSessionRuntime catalogs', () => {
+  /** Two rows in the CLI's own order — `default` first, which is what an
+   * unanchored composer falls back to. */
+  const MODELS = [
+    {
+      value: 'default',
+      displayName: 'Default (recommended)',
+      description: 'Sonnet 5 · Efficient',
+      resolvedModel: 'claude-sonnet-5',
+      supportsEffort: true,
+      supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      supportsAutoMode: true,
+    },
+    {
+      value: 'opus',
+      displayName: 'Opus',
+      description: 'Opus 5 · Best for everyday tasks',
+      resolvedModel: 'claude-opus-5',
+      supportsEffort: true,
+      supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      supportsFastMode: true,
+      supportsAutoMode: true,
+    },
+    // Haiku is the shape that matters: no effort, no fast mode, and the CLI
+    // rejects `auto` on it outright.
+    { value: 'haiku', displayName: 'Haiku', description: 'Haiku 4.5 · Fastest' },
+  ]
+  const withModels = (spec: Partial<SessionRuntimeSpec> = {}) => {
+    const built = build(spec)
+    built.sdk.initialize = { ...built.sdk.initialize, models: MODELS } as typeof built.sdk.initialize
+    return built
+  }
+  /** The *latest* matching event: a model change now republishes the mode
+   * listing too, so the first `current_mode_update` is not the one under
+   * test. */
+  const dataFor = (events: BackendEvent[], event: string) =>
+    [...events].reverse().find((candidate) => candidate.event === event)?.data as any
+
+  it('publishes both catalogs on session_created, anchored to the launch model', async () => {
+    const { runtime, events } = withModels()
+
+    await runtime.start()
+
+    const created = dataFor(events, 'session_created')
+    expect(created.models.availableModels).toMatchObject([
+      { id: 'default', displayName: 'Default (recommended)', resolvedModel: 'claude-sonnet-5' },
+      { id: 'opus', displayName: 'Opus', supportsFastMode: true },
+      { id: 'haiku', displayName: 'Haiku' },
+    ])
+    // Haiku reports no effort levels at all, which has to survive as absence
+    // rather than become an empty picker.
+    expect(created.models.availableModels[1].effortLevels).toHaveLength(5)
+    expect(created.models.availableModels[2].effortLevels).toBeUndefined()
+    // Nothing was asked for, so the CLI chose — which is exactly what its
+    // `default` row means. Reporting it is honest, not a placeholder.
+    expect(created.models.currentModelId).toBe('default')
+    expect(created.modes.currentModeId).toBe('default')
+    // The `default` row supports the classifier, so nothing is filtered.
+    expect(created.modes.availableModes).toHaveLength(6)
+  })
+
+  it('reports the launch selection rather than the CLI default', async () => {
+    // The bug this fixes: a session launched on Opus published no model at
+    // all, so the composer showed "Default (recommended)" and sent that back.
+    const { runtime, events } = withModels({
+      desiredConfig: { modelId: 'opus', modeId: 'plan' },
+    })
+
+    await runtime.start()
+
+    const created = dataFor(events, 'session_created')
+    expect(created.models.currentModelId).toBe('opus')
+    expect(created.modes.currentModeId).toBe('plan')
+  })
+
+  it('carries the catalog on every update, not just the id', async () => {
+    // Both the chrome reducer and the renderer *replace* their listing from
+    // this payload rather than merging into it, so a bare id empties the
+    // picker the first time the user switches.
+    const { runtime, events } = withModels()
+    await runtime.start()
+
+    await runtime.setModel('opus')
+    await runtime.setMode('plan')
+
+    const model = dataFor(events, 'current_model_update')
+    expect(model.currentModelId).toBe('opus')
+    expect(model.availableModels).toHaveLength(3)
+    const mode = dataFor(events, 'current_mode_update')
+    expect(mode.currentModeId).toBe('plan')
+    expect(mode.availableModes?.map((entry: { id: string }) => entry.id)).toContain(
+      'bypassPermissions',
+    )
+  })
+
+  it('reports an empty model catalog rather than inventing one', async () => {
+    const { runtime, events } = build()
+
+    await runtime.start()
+
+    const created = dataFor(events, 'session_created')
+    expect(created.models.availableModels).toEqual([])
+    expect(created.models.currentModelId).toBeUndefined()
+    // Modes are static, so they survive a CLI that reports no models at all —
+    // and with no model to gate on, nothing is filtered out.
+    expect(created.modes.availableModes).toHaveLength(6)
+  })
+})
+
+describe('ClaudeSessionRuntime settings', () => {
+  const MODELS = [
+    {
+      value: 'opus',
+      displayName: 'Opus',
+      supportsEffort: true,
+      supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      supportsFastMode: true,
+      supportsAutoMode: true,
+    },
+    { value: 'haiku', displayName: 'Haiku' },
+  ]
+  const withModels = (spec: Partial<SessionRuntimeSpec> = {}) => {
+    const built = build(spec)
+    built.sdk.initialize = {
+      ...built.sdk.initialize,
+      models: MODELS,
+      output_style: 'default',
+      available_output_styles: ['default', 'Explanatory', 'Learning'],
+    } as typeof built.sdk.initialize
+    return built
+  }
+  const optionIds = (runtime: { applied?: { options: Map<string, unknown> } }) =>
+    [...(runtime.applied?.options.keys() ?? [])]
+
+  it('writes effort through the flag-settings layer', async () => {
+    const { runtime, sdk } = withModels({ desiredConfig: { modelId: 'opus' } })
+    await runtime.start()
+
+    await runtime.setConfigOption('effort', 'xhigh')
+
+    expect(sdk.last.flagSettings).toContainEqual({ effortLevel: 'xhigh' })
+  })
+
+  it('refuses an effort level the selected model does not offer', async () => {
+    // The write would succeed at the CLI and silently do nothing: Haiku has no
+    // effort support at all, so the only place this can be caught is here.
+    const { runtime, sdk } = withModels({ desiredConfig: { modelId: 'haiku' } })
+    await runtime.start()
+
+    await expect(runtime.setConfigOption('effort', 'high')).rejects.toThrow(/does not accept/)
+    expect(sdk.last.flagSettings).toEqual([])
+  })
+
+  it('sends effort as a launch option rather than a write after the fact', async () => {
+    // The first turn would otherwise run at the CLI's default depth.
+    const { runtime, sdk } = withModels({
+      desiredConfig: { modelId: 'opus', values: { effort: 'high' } },
+    })
+    await runtime.start()
+
+    expect(sdk.last.options.effort).toBe('high')
+  })
+
+  it('opts into fast mode explicitly, and only on a model that takes it', async () => {
+    // An SDK consumer never inherits the interactive preference — the CLI
+    // reports `sdk_opt_in_required` until this write lands.
+    const { runtime, sdk } = withModels({
+      desiredConfig: { modelId: 'opus', values: { fast_mode: true } },
+    })
+    await runtime.start()
+
+    expect(sdk.last.flagSettings).toContainEqual({ fastMode: true })
+  })
+
+  it('drops a remembered fast mode on a model without support', async () => {
+    const { runtime, sdk } = withModels({
+      desiredConfig: { modelId: 'haiku', values: { fast_mode: true } },
+    })
+    await runtime.start()
+
+    expect(sdk.last.flagSettings).toEqual([])
+    expect(optionIds(runtime)).not.toContain('fast_mode')
+  })
+
+  it('validates output style against the CLI, which does not validate at all', async () => {
+    // `applyFlagSettings({outputStyle: 'NotAStyle'})` is accepted and becomes
+    // the session's current style, so this is the only check there is.
+    const { runtime, sdk } = withModels()
+    await runtime.start()
+
+    await runtime.setConfigOption('output_style', 'Explanatory')
+    expect(sdk.last.flagSettings).toContainEqual({ outputStyle: 'Explanatory' })
+
+    await expect(runtime.setConfigOption('output_style', 'NotAStyle')).rejects.toThrow(
+      /no output style/,
+    )
+  })
+
+  it('reshapes the settings block when the model changes', async () => {
+    const { runtime } = withModels({ desiredConfig: { modelId: 'opus' } })
+    await runtime.start()
+    expect(optionIds(runtime)).toEqual(
+      expect.arrayContaining(['effort', 'fast_mode', 'output_style']),
+    )
+
+    await runtime.setModel('haiku')
+
+    // Haiku takes neither, and leaving stale rows behind would offer settings
+    // the model ignores.
+    expect(optionIds(runtime)).not.toContain('effort')
+    expect(optionIds(runtime)).not.toContain('fast_mode')
+    expect(optionIds(runtime)).toContain('output_style')
+  })
+
+  it('filters auto mode out for a model the CLI would reject it on', async () => {
+    const { runtime, events } = withModels({ desiredConfig: { modelId: 'haiku' } })
+    await runtime.start()
+
+    const created = [...events].reverse().find((e) => e.event === 'session_created')?.data as any
+    expect(created.modes.availableModes.map((m: { id: string }) => m.id)).not.toContain('auto')
+    // Everything else is model-independent and must survive.
+    expect(created.modes.availableModes).toHaveLength(5)
+  })
+
+  it('steps off auto mode when the new model cannot serve it', async () => {
+    // Otherwise the session keeps a mode the CLI will reject on its next
+    // write, and the failure surfaces on an unrelated action.
+    const { runtime, sdk } = withModels({ desiredConfig: { modelId: 'opus', modeId: 'auto' } })
+    await runtime.start()
+
+    await runtime.setModel('haiku')
+
+    expect(sdk.last.modes).toContain('default')
   })
 })

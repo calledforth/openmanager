@@ -2,6 +2,7 @@ import type {
   AgentEvent,
   AvailableCommand,
   CapabilityKey,
+  ModeListing,
   ModelListing,
   PermissionOutcome,
   PlanReviewOutcome,
@@ -59,6 +60,9 @@ export type ProviderBootstrap = {
   /** Model catalog the probe could answer without a session, hoisted for the
    * same reason as `commands`. `undefined` over ACP. */
   models: ModelListing | undefined
+  /** Mode catalog the probe could answer without a session, hoisted for the
+   * same reason as `commands` and `models`. `undefined` over ACP. */
+  modes: ModeListing | undefined
 }
 
 export type RuntimeSessionArgs = RuntimeRoute & {
@@ -164,6 +168,11 @@ export class AgentRuntime {
    * list a provider nobody has selected yet. Providers whose models only
    * exist on a live session (every ACP one) never appear in this map. */
   private readonly modelsByProvider = new Map<ProviderId, ModelListing>()
+  /** Last mode catalog each provider reported at handshake time. Same
+   * lifecycle and same justification as `modelsByProvider` — a composer that
+   * can offer a never-selected provider's models but not its modes renders a
+   * model picker beside a missing mode picker. */
+  private readonly modesByProvider = new Map<ProviderId, ModeListing>()
   private readonly timeouts: Partial<RuntimeTimeouts> | undefined
   /** App-wide and keyed by requestId. Every pending record carries its own
    * provider/thread/workspace/session, so responding needs no lookup table and
@@ -230,6 +239,7 @@ export class AgentRuntime {
           probe: async () => {
             const result = await probe.probe()
             if (result.models) this.modelsByProvider.set(providerId, result.models)
+            if (result.modes) this.modesByProvider.set(providerId, result.modes)
             return result
           },
           listSessions: (dir) => probe.listSessions(dir),
@@ -436,6 +446,12 @@ export class AgentRuntime {
     return Object.fromEntries(this.modelsByProvider) as Partial<Record<ProviderId, ModelListing>>
   }
 
+  /** Mode catalogs learned from handshakes. Cached on the same terms, and for
+   * the same caller, as `providerModels()`. */
+  providerModes(): Partial<Record<ProviderId, ModeListing>> {
+    return Object.fromEntries(this.modesByProvider) as Partial<Record<ProviderId, ModeListing>>
+  }
+
   /** Provider-level bootstrap in a throwaway process: spawn, `initialize`,
    * `authenticate`, then `session/list` on that same process. This replaces the
    * old `start()`, which spawned the one shared per-provider process.
@@ -462,6 +478,7 @@ export class AgentRuntime {
         sessions: await this.bootstrapSessions(args, probe, result),
         commands: result.commands,
         models: result.models,
+        modes: result.modes,
       }
     } catch (error) {
       recorder.failed(error)

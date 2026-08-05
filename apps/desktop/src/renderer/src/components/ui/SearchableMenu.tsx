@@ -16,7 +16,12 @@ import { usePortaledMenu, type MenuPlacement } from './usePortaledMenu'
 export type SearchableMenuOption = {
   id: string
   label: string
+  /** Rendered as a second line under the label. */
   description?: string
+  /** Native tooltip. For menus where the explanation matters but should not
+   * cost a row of height every time the menu opens — the mode and effort
+   * pickers, where descriptions disambiguate rather than inform. */
+  title?: string
   icon?: ReactNode
   disabled?: boolean
   keywords?: string
@@ -57,7 +62,7 @@ type FlatOption = SearchableMenuOption & { sectionId: string }
 
 function matchesQuery(option: SearchableMenuOption, query: string) {
   if (!query) return true
-  const haystack = [option.label, option.description, option.keywords]
+  const haystack = [option.label, option.description, option.title, option.keywords]
     .filter(Boolean)
     .join(' ')
     .toLowerCase()
@@ -223,6 +228,7 @@ export function SearchableMenu({
                     role="option"
                     aria-selected={selected}
                     disabled={option.disabled}
+                    {...(option.title ? { title: option.title } : {})}
                     onMouseEnter={() => setActiveIndex(flatIndex)}
                     onClick={() => selectOption({ ...option, sectionId: section.id })}
                     className={cn(

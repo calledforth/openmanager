@@ -2,10 +2,20 @@ import type { SessionConfigOption } from '@agentpack/contract'
 
 export type SessionConfigValue = string | boolean
 
+/** Options the composer draws as their own control, so the "Model settings"
+ * menu must not draw them a second time. Effort joined model and mode when it
+ * got its own pill — it is per-model and changed often enough to deserve one. */
 function isPrimaryComposerOption(option: SessionConfigOption): boolean {
   const category = option.category?.toLowerCase()
   const id = option.id.toLowerCase()
-  return category === 'model' || category === 'mode' || id === 'model' || id === 'mode'
+  return (
+    category === 'model' ||
+    category === 'mode' ||
+    category === 'effort' ||
+    id === 'model' ||
+    id === 'mode' ||
+    id === 'effort'
+  )
 }
 
 export function configurableSessionOptions(

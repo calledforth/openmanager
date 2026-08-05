@@ -2,6 +2,7 @@ import type {
   AgentInfo,
   AuthMethod,
   AvailableCommand,
+  ModeListing,
   ModelListing,
   PromptCapabilities,
   ProviderId,
@@ -69,6 +70,15 @@ export type ProbeResult = {
    * therefore unselectable: it cannot produce models until it is chosen, and
    * it cannot be chosen until it has produced models. */
   models?: ModelListing
+  /** Permission/mode catalog the provider knows about before any session
+   * exists, on exactly the same terms as `models`.
+   *
+   * Absent over ACP, where modes arrive as `session/new` state. Claude Code
+   * fills it in from a static list rather than a handshake field — the CLI
+   * never sends one — which is still worth hoisting here: without it the
+   * composer's mode picker only renders for a provider that has already run a
+   * session, so a fresh Claude draft gets no mode control at all. */
+  modes?: ModeListing
 }
 
 /** What a probe needs beyond a provider and a directory.

@@ -1,4 +1,5 @@
 import type {
+  EffortLevel,
   Options,
   PermissionMode,
   SDKControlGetContextUsageResponse,
@@ -16,12 +17,30 @@ import type {
  * gets implemented as `as any`, and then the tests stop proving anything) and
  * makes the next SDK bump a compile error on the four members that matter
  * rather than a silent behaviour change across all of them. */
+/** The `Settings` keys this provider writes. Narrowed to three on purpose:
+ * `Settings` has ~80, and naming only what is used keeps the fake honest and
+ * makes an SDK rename a compile error here rather than a silent no-op. */
+export type ClaudeFlagSettings = {
+  effortLevel?: EffortLevel | null
+  fastMode?: boolean | null
+  outputStyle?: string | null
+}
+
 export interface ClaudeQuerySession extends AsyncIterable<SDKMessage> {
   /** Abort the running turn. Resolves to an interrupt receipt on CLIs that
    * advertise one, `undefined` on older ones — neither is load-bearing here,
    * because the runtime waits for the turn's own `result` either way. */
   interrupt(): Promise<unknown>
   setModel(model?: string): Promise<void>
+  /** The flag-settings layer, which is how everything that is not model or
+   * mode gets changed mid-session: effort, fast mode and output style are all
+   * `Settings` keys with no dedicated control request.
+   *
+   * Two verified quirks the callers have to own. It does NOT validate — an
+   * unknown `outputStyle` is accepted and becomes current — so the runtime
+   * checks against the CLI's own list first. And successive calls shallow-
+   * merge top-level keys only, so each call passes just the key it changes. */
+  applyFlagSettings(settings: ClaudeFlagSettings): Promise<void>
   setPermissionMode(mode: PermissionMode): Promise<void>
   /** Resolves once the CLI has answered `initialize`. This is the moment the
    * subprocess is known to be alive, authenticated and usable — everything the

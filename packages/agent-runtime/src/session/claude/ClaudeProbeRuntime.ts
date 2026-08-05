@@ -1,9 +1,8 @@
 import { execFile } from 'node:child_process'
-import type { ModelInfo, Options, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { Options, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import type {
   AvailableCommand,
   ModelListing,
-  ModelOption,
   ProviderId,
   ProviderSessionInfo,
 } from '@agentpack/contract'
@@ -16,6 +15,7 @@ import type { ThreadId } from '../lifecycle.js'
 import type { ProbeResult, ProbeRuntime } from '../ProbeRuntime.js'
 import { RpcTimeoutError, withTimeout } from '../timeout.js'
 import { routeEvent } from '../wire.js'
+import { claudeModeListing, claudeModelCatalog } from './claude-catalog.js'
 import { CLAUDE_PROMPT_CAPABILITIES } from './claude-prompt.js'
 import { resolveClaudeExecutable } from './executable.js'
 import { loadClaudeSdk, type ClaudeQuerySession, type ClaudeSdk } from './sdk.js'
@@ -137,7 +137,14 @@ export class ClaudeProbeRuntime implements ProbeRuntime {
       // row that covers it (`sonnet`), and nothing in openmanager ever learns
       // a wire id — the only Claude model ids it stores are ones this list
       // handed the picker. Carry it through the day something else does.
-      models: { availableModels: modelCatalog(init.models) },
+      models: { availableModels: claudeModelCatalog(init.models) },
+      // Static, unlike `models` — the CLI has no handshake field for modes.
+      // Reported from the probe anyway so the composer's mode picker renders
+      // on the same terms as its model picker: before the first session, for a
+      // provider nobody has selected yet. Without this the control never
+      // appears, because it is gated on a non-empty list and the only other
+      // source is a live session's own state.
+      modes: claudeModeListing(),
     }
     this.emit(
       routeEvent(this.route(), undefined, 'lifecycle', 'initialized', {
@@ -234,19 +241,3 @@ function readVersion(executable: string, timeoutMs: number): Promise<string | un
   })
 }
 
-/** `ModelInfo[]` from the handshake, narrowed to what the composer shows.
- *
- * `models` is non-optional in the SDK's own types, but the response comes off
- * a wire from whatever `claude` binary is on this machine — a CLI old enough
- * to predate the field sends nothing, and a runtime `undefined` through a
- * `.map()` would fail the whole probe over a model list. An empty catalog is
- * the honest answer there; guessing one is how you offer a model the CLI will
- * reject. `contextWindowTokens` is left unset because `ModelInfo` carries no
- * window size to set it from. */
-function modelCatalog(models: readonly ModelInfo[] | undefined): ModelOption[] {
-  return (models ?? []).map((model) => ({
-    id: model.value,
-    displayName: model.displayName,
-    ...(model.description ? { description: model.description } : {}),
-  }))
-}

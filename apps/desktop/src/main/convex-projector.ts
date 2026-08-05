@@ -1020,6 +1020,11 @@ export class ConvexProjector {
       ...(model.contextWindowTokens !== undefined
         ? { contextWindowTokens: model.contextWindowTokens }
         : {}),
+      // Persisted so a restored profile can still gate the effort pill and the
+      // `auto` permission mode before the provider is probed again.
+      ...(model.effortLevels?.length ? { effortLevels: model.effortLevels } : {}),
+      ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
+      ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
     }))
     const availableModes = source.modes?.availableModes?.map((mode) => ({
       id: mode.id,

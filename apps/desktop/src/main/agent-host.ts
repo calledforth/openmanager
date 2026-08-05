@@ -1,5 +1,6 @@
 import type {
   AgentEvent,
+  ModeListing,
   ModelListing,
   PermissionOutcome,
   PermissionRequest,
@@ -150,6 +151,13 @@ export class AgentHost {
    * ever run a session with it. */
   getProviderModels(): Partial<Record<ProviderId, ModelListing>> {
     return this.runtime.providerModels()
+  }
+
+  /** Mode catalogs the runtime has learned from handshakes, merged into
+   * `agent:providers` alongside `models` so the composer can render a mode
+   * picker for a provider before its first session. */
+  getProviderModes(): Partial<Record<ProviderId, ModeListing>> {
+    return this.runtime.providerModes()
   }
 
   getPromptCapabilities(): Partial<Record<ProviderId, PromptCapabilities>> {

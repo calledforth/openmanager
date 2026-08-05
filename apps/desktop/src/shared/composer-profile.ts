@@ -1,10 +1,23 @@
-import { isProviderId, type ProviderId } from '@agentpack/contract'
+import {
+  isProviderId,
+  type ModeListing,
+  type ModelListing,
+  type ProviderId,
+} from '@agentpack/contract'
 
 export interface ComposerModelOption {
   modelId: string
   name: string
   description?: string
   contextWindowTokens?: number
+  /** Reasoning-effort levels this model accepts. Absent or empty means the
+   * model has no effort control — the composer hides the pill rather than
+   * offering a setting the CLI ignores. */
+  effortLevels?: string[]
+  supportsFastMode?: boolean
+  /** Whether the `auto` permission mode works here. The CLI hard-rejects it
+   * otherwise, so the mode picker filters rather than letting the write fail. */
+  supportsAutoMode?: boolean
 }
 
 export interface ComposerModeOption {
@@ -131,4 +144,61 @@ export function mergeWorkspaceComposerPreferences(
     }
   }
   return merged
+}
+
+/** A composer profile backed by whatever the provider's handshake reported.
+ *
+ * The profile is the *remembered* catalog, and it is only ever written from
+ * session events — so a provider that answers its catalog at handshake time
+ * instead of on a live session has an empty profile until somebody runs a
+ * session with it. That is not a cosmetic gap: `resolveComposerChoice`
+ * validates the user's remembered pick against this catalog and discards
+ * anything it cannot find, so an empty one throws away every selection and the
+ * composer falls back to the head of whatever list it can see. For Claude Code
+ * that head is the CLI's own "Default (recommended)" row, which is why picking
+ * Opus appeared to snap back to Default — and why the launch then went out
+ * with no model at all.
+ *
+ * Read-side only, and fill-only: a profile that already has a catalog wins,
+ * because it came from a live session and therefore describes the exact
+ * process a prompt will run on. Nothing here is persisted — the probe's answer
+ * is re-derived on every launch and has no business in electron-store or
+ * Convex, where it would outlive the CLI version that produced it.
+ *
+ * Returns `profile` by identity when it adds nothing. Callers feed the result
+ * straight into `resolve*ComposerRuntime`, whose own change detection is `===`
+ * against the listings it was handed — a fresh object per render would defeat
+ * it and re-publish composer state on every pass. */
+export function withProviderCatalog(
+  profile: ProviderComposerProfile | undefined,
+  metadata: { models?: ModelListing; modes?: ModeListing } | undefined,
+): ProviderComposerProfile | undefined {
+  const models = profile?.availableModels?.length
+    ? undefined
+    : metadata?.models?.availableModels?.map(
+        (model): ComposerModelOption => ({
+          modelId: model.id,
+          name: model.displayName,
+          ...(model.description ? { description: model.description } : {}),
+          ...(model.contextWindowTokens ? { contextWindowTokens: model.contextWindowTokens } : {}),
+          ...(model.effortLevels?.length ? { effortLevels: [...model.effortLevels] } : {}),
+          ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
+          ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
+        }),
+      )
+  const modes = profile?.availableModes?.length
+    ? undefined
+    : metadata?.modes?.availableModes?.map(
+        (mode): ComposerModeOption => ({
+          id: mode.id,
+          name: mode.displayName,
+          ...(mode.description ? { description: mode.description } : {}),
+        }),
+      )
+  if (!models?.length && !modes?.length) return profile
+  return {
+    ...(profile ?? { updatedAt: 0 }),
+    ...(models?.length ? { availableModels: models } : {}),
+    ...(modes?.length ? { availableModes: modes } : {}),
+  }
 }

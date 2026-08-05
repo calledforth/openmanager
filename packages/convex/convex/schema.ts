@@ -51,6 +51,12 @@ export default defineSchema({
           name: v.string(),
           description: v.optional(v.string()),
           contextWindowTokens: v.optional(v.number()),
+          /** Per-model capability flags. Optional because only providers that report
+           * them have them, and a model with none is a real state — Claude's Haiku
+           * rows carry no effort levels, no fast mode and no classifier support. */
+          effortLevels: v.optional(v.array(v.string())),
+          supportsFastMode: v.optional(v.boolean()),
+          supportsAutoMode: v.optional(v.boolean()),
         }),
       ),
     ),

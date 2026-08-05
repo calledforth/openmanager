@@ -1,5 +1,6 @@
 import type {
   CanUseTool,
+  EffortLevel,
   Options,
   PermissionMode,
   PermissionResult,
@@ -7,6 +8,8 @@ import type {
   SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk'
 import type {
+  ModelListing,
+  ModelOption,
   PermissionOption,
   PermissionOutcome,
   PlanReviewOutcome,
@@ -52,10 +55,24 @@ import {
   planFromExitPlanMode,
   type PendingClaudeQuestions,
 } from './claude-interactions.js'
+import {
+  CLAUDE_CONFIG,
+  CLAUDE_DEFAULT_MODE,
+  CLAUDE_DEFAULT_MODEL_ID,
+  claudeConfigOptions,
+  claudeModeListing,
+  claudeModelCatalog,
+  claudePermissionMode,
+} from './claude-catalog.js'
 import { claudePromptContent, CLAUDE_PROMPT_CAPABILITIES } from './claude-prompt.js'
 import { claudeToolKind } from './claude-tools.js'
 import { resolveClaudeExecutable } from './executable.js'
-import { loadClaudeSdk, type ClaudeQuerySession, type ClaudeSdk } from './sdk.js'
+import {
+  loadClaudeSdk,
+  type ClaudeFlagSettings,
+  type ClaudeQuerySession,
+  type ClaudeSdk,
+} from './sdk.js'
 
 /** The callback's third argument, named once so the routing methods below can
  * take it without re-declaring the SDK's inline option bag. */
@@ -108,18 +125,6 @@ export type ClaudeSessionRuntimeDeps = {
    * process environment. */
   env?: NodeJS.ProcessEnv
 }
-
-/** The permission modes Claude Code accepts. Ours are opaque strings from the
- * composer, so an unknown one is refused here rather than sent to the CLI,
- * which would reject it asynchronously with the turn already dispatched. */
-const PERMISSION_MODES: readonly PermissionMode[] = [
-  'default',
-  'acceptEdits',
-  'bypassPermissions',
-  'plan',
-  'dontAsk',
-  'auto',
-]
 
 /** Which SDK `system` subtypes carry a session id that is NOT the durable one.
  *
@@ -176,6 +181,25 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
   private exitSettlement: Promise<SessionRuntimeExit> | undefined
   private spawned = false
   private turn: ActiveTurn | undefined
+  /** The model catalog this session's own CLI reported at `initialize`.
+   *
+   * Kept because every `ModelListing` this runtime emits has to carry the
+   * whole catalog, not just the current id: both the chrome reducer and the
+   * renderer *replace* their listing from the event rather than merging into
+   * it, so a `current_model_update` carrying only `currentModelId` empties the
+   * picker. Read off this session's process rather than the probe's, so a
+   * catalog that differs between them (a different account, a CLI upgraded
+   * mid-run) is the one the session will actually accept. */
+  private modelCatalogValue: ModelOption[] = []
+  /** Output styles this CLI has installed. Read from the handshake because the
+   * set is user-extensible — `~/.claude/output-styles/` — so a hard-coded list
+   * would miss the ones that matter most. Also the only defence available:
+   * `applyFlagSettings` does NOT validate `outputStyle`, and a typo becomes
+   * the session's current style. */
+  private outputStylesValue: string[] = []
+  private appliedEffort: string | undefined
+  private appliedFastMode = false
+  private appliedOutputStyle: string | undefined
   private appliedModelId: string | undefined
   private appliedModeId: string | undefined
   private appliedAt: string | undefined
@@ -276,6 +300,10 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
         currentValue: this.appliedModeId,
         options: [],
       })
+    // Everything past model and mode. Gated on the selected model inside
+    // `claudeConfigOptions`, so a model with no effort levels contributes no
+    // effort row rather than an empty one.
+    for (const option of this.settingConfigOptions()) options.set(option.id, option)
     return {
       ...(this.appliedModelId !== undefined ? { modelConfigId: 'model' } : {}),
       ...(this.appliedModeId !== undefined ? { modeConfigId: 'mode' } : {}),
@@ -381,7 +409,10 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     // and not two spreads.
     const sessionId = resumeId ?? crypto.randomUUID()
     const desiredModel = this.spec.desiredConfig?.modelId
-    const desiredMode = permissionMode(this.spec.desiredConfig?.modeId)
+    const desiredMode = claudePermissionMode(this.spec.desiredConfig?.modeId)
+    const desiredValues = this.spec.desiredConfig?.values ?? {}
+    const rawEffort = desiredValues[CLAUDE_CONFIG.effort]
+    const desiredEffort = typeof rawEffort === 'string' ? (rawEffort as EffortLevel) : undefined
     const options: Options = {
       cwd: this.cwd,
       pathToClaudeCodeExecutable: executable,
@@ -401,6 +432,13 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       // model.
       ...(desiredModel ? { model: desiredModel } : {}),
       ...(desiredMode ? { permissionMode: desiredMode } : {}),
+      // Effort is the one setting with a launch option, so it travels with the
+      // rest of the selection instead of as a write after `initialize` — the
+      // first turn would otherwise run at the CLI's default depth. It is not
+      // validated against the model here because the catalog is not known
+      // until the handshake answers; an effort the model ignores is harmless,
+      // an unvalidated *mode* is not.
+      ...(desiredEffort ? { effort: desiredEffort } : {}),
       // The SDK requires this alongside `permissionMode: 'bypassPermissions'`
       // — its own words: "a safety measure to ensure intentional bypassing of
       // permissions" — and rejects the mode without it. It is set here rather
@@ -450,6 +488,9 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     )
 
     this.sessionIdValue = sessionId
+    this.modelCatalogValue = claudeModelCatalog(init.models)
+    this.outputStylesValue = [...(init.available_output_styles ?? [])]
+    this.appliedOutputStyle = init.output_style
     // Applied by the launch itself, so the memo starts warm and
     // `applyDesiredConfig` does not immediately re-send what is already set.
     if (desiredModel || desiredMode)
@@ -457,6 +498,8 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
         ...(desiredModel ? { modelId: desiredModel } : {}),
         ...(desiredMode ? { modeId: desiredMode } : {}),
       })
+    // After `noteApplied`, so the model is known and can gate what applies.
+    await this.applyLaunchSettings(desiredValues)
 
     this.emit(
       routeEvent(this.route(), undefined, 'lifecycle', 'process_spawned', {
@@ -483,7 +526,19 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
         'lifecycle',
         resumeId ? 'session_loaded' : 'session_created',
         {
-          ...(this.applied ? { configOptions: [...this.applied.options.values()] } : {}),
+          configOptions: [
+            ...(this.applied
+              ? [...this.applied.options.values()]
+              : this.settingConfigOptions()),
+          ],
+          // Both catalogs, with whatever the launch actually applied as the
+          // current selection. Without this the composer has no anchor for a
+          // live Claude session: it falls back to the first row of whatever
+          // list it can find, which is the CLI's own "Default (recommended)" —
+          // so a session launched on Opus reads as Default, and the next
+          // prompt is sent with that mislabelled selection.
+          models: this.modelListing(),
+          modes: claudeModeListing(this.appliedModeId ?? CLAUDE_DEFAULT_MODE, this.currentModel()),
         },
       ),
     )
@@ -940,40 +995,191 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
 
   // ------------------------------------------------------------------- config
 
+  /** This session's catalog, plus the model actually in force.
+   *
+   * When nothing has been applied the answer is the CLI's own `default` row —
+   * and that is not a placeholder, it is the truth: launching without
+   * `options.model` means the CLI chooses, which is exactly what that row
+   * means (`{value: 'default', resolvedModel: 'claude-sonnet-5'}`). Falling
+   * back to the catalog's head covers a CLI too old to offer the row, whose
+   * list is ordered default-first anyway. */
+  private modelListing(): ModelListing {
+    const fallback =
+      this.modelCatalogValue.find((model) => model.id === CLAUDE_DEFAULT_MODEL_ID)?.id ??
+      this.modelCatalogValue[0]?.id
+    const currentModelId = this.appliedModelId ?? fallback
+    return {
+      availableModels: [...this.modelCatalogValue],
+      ...(currentModelId ? { currentModelId } : {}),
+    }
+  }
+
+  /** The catalog row the session is actually on, which is what gates effort,
+   * fast mode and the `auto` permission mode. */
+  private currentModel(): ModelOption | undefined {
+    const id = this.appliedModelId ?? CLAUDE_DEFAULT_MODEL_ID
+    return (
+      this.modelCatalogValue.find((model) => model.id === id) ?? this.modelCatalogValue[0]
+    )
+  }
+
+  private settingConfigOptions(): SessionConfigOption[] {
+    return claudeConfigOptions({
+      model: this.currentModel(),
+      effort: this.appliedEffort,
+      fastMode: this.appliedFastMode,
+      outputStyle: this.appliedOutputStyle,
+      outputStyles: this.outputStylesValue,
+    })
+  }
+
+  /** Republish the settings block.
+   *
+   * Emitted on model changes as well as on its own writes, because the *shape*
+   * depends on the model: switching to Haiku has to remove the effort row and
+   * the fast-mode switch, not leave stale ones behind pointing at settings
+   * that model ignores. */
+  private publishConfigOptions(sessionId: string): void {
+    this.emit(
+      routeEvent(this.route(), sessionId, 'session', 'config_option_update', {
+        configOptions: this.settingConfigOptions(),
+      }),
+    )
+  }
+
   async setModel(modelId: string): Promise<void> {
     const sessionId = await this.ready()
     await this.queryOrThrow().setModel(modelId)
     // Only after the control request resolves: emitting first would show the
     // composer a selection the session may have refused.
     this.noteApplied({ modelId })
+    // Catalog included for the same reason as `current_mode_update`: consumers
+    // replace their listing wholesale, so a bare id blanks the picker.
     this.emit(
-      routeEvent(this.route(), sessionId, 'session', 'current_model_update', {
-        currentModelId: modelId,
-      }),
+      routeEvent(this.route(), sessionId, 'session', 'current_model_update', this.modelListing()),
     )
+    // The new model may support a different set of effort levels — or none —
+    // and may or may not take fast mode.
+    this.publishConfigOptions(sessionId)
+    // A mode that the old model allowed and this one does not cannot be left
+    // in force: the CLI rejects `auto` outright on a model without classifier
+    // support, so the session would fail its next mode write instead of ours.
+    if (this.appliedModeId === 'auto' && !this.currentModel()?.supportsAutoMode) {
+      await this.setMode(CLAUDE_DEFAULT_MODE)
+    } else {
+      this.emit(
+        routeEvent(
+          this.route(),
+          sessionId,
+          'session',
+          'current_mode_update',
+          claudeModeListing(this.appliedModeId ?? CLAUDE_DEFAULT_MODE, this.currentModel()),
+        ),
+      )
+    }
   }
 
   async setMode(modeId: string): Promise<void> {
     const sessionId = await this.ready()
-    const mode = permissionMode(modeId)
+    const mode = claudePermissionMode(modeId)
     if (!mode) throw new Error(`${this.providerId} has no permission mode "${modeId}"`)
     await this.queryOrThrow().setPermissionMode(mode)
     this.noteApplied({ modeId: mode })
     this.emit(
-      routeEvent(this.route(), sessionId, 'session', 'current_mode_update', {
-        currentModeId: mode,
-      }),
+      // The catalog rides along with every update. Consumers replace their
+      // whole `ModeListing` from this payload rather than merging into it, so
+      // sending only `currentModeId` would blank the picker's options the
+      // first time the user switched mode.
+      routeEvent(
+        this.route(),
+        sessionId,
+        'session',
+        'current_mode_update',
+        claudeModeListing(mode, this.currentModel()),
+      ),
     )
   }
 
-  setConfigOption(configId: string, _value: string | boolean): Promise<void> {
-    return Promise.reject(
-      new CapabilityMissingError(
-        this.providerId,
-        'canSetConfigOption',
-        `setting the "${configId}" config option`,
-      ),
-    )
+  /** Effort, fast mode and output style — the three settings that have no
+   * dedicated control request and go through the flag-settings layer instead.
+   *
+   * Validated here rather than at the CLI, because the CLI does not validate
+   * either: `applyFlagSettings({outputStyle: 'NotAStyle'})` is accepted and
+   * becomes the session's current style. Effort is checked against the
+   * *selected model's* levels for the same reason — the write succeeds on a
+   * model with no effort support and simply does nothing. */
+  async setConfigOption(configId: string, value: string | boolean): Promise<void> {
+    const sessionId = await this.ready()
+    switch (configId) {
+      case CLAUDE_CONFIG.effort: {
+        const levels = this.currentModel()?.effortLevels ?? []
+        if (typeof value !== 'string' || !levels.includes(value))
+          throw new Error(
+            `${this.providerId} does not accept effort "${String(value)}" on this model`,
+          )
+        await this.queryOrThrow().applyFlagSettings({ effortLevel: value as EffortLevel })
+        this.appliedEffort = value
+        break
+      }
+      case CLAUDE_CONFIG.fastMode: {
+        const enabled = value === true || value === 'true'
+        if (enabled && !this.currentModel()?.supportsFastMode)
+          throw new Error(`${this.providerId} has no fast mode on this model`)
+        await this.queryOrThrow().applyFlagSettings({ fastMode: enabled })
+        this.appliedFastMode = enabled
+        break
+      }
+      case CLAUDE_CONFIG.outputStyle: {
+        if (typeof value !== 'string' || !this.outputStylesValue.includes(value))
+          throw new Error(`${this.providerId} has no output style "${String(value)}"`)
+        await this.queryOrThrow().applyFlagSettings({ outputStyle: value })
+        this.appliedOutputStyle = value
+        break
+      }
+      default:
+        throw new Error(`${this.providerId} has no "${configId}" config option`)
+    }
+    this.appliedAt = new Date().toISOString()
+    this.publishConfigOptions(sessionId)
+  }
+
+  /** Push the launch's remembered settings onto a freshly started process.
+   *
+   * Only `effort` can ride `Options` at launch; fast mode and output style are
+   * `Settings` keys with no launch equivalent, so they go out as one
+   * flag-settings write immediately after `initialize`. Best-effort by design
+   * — a rejected *setting* must not fail a session that is otherwise ready,
+   * and the composer re-publishes what actually landed either way. */
+  private async applyLaunchSettings(values: Readonly<Record<string, string | boolean>>): Promise<void> {
+    const model = this.currentModel()
+    const effort = values[CLAUDE_CONFIG.effort]
+    if (typeof effort === 'string' && (model?.effortLevels ?? []).includes(effort))
+      this.appliedEffort = effort
+    const fastMode = values[CLAUDE_CONFIG.fastMode] === true
+    const outputStyle = values[CLAUDE_CONFIG.outputStyle]
+    const settings: ClaudeFlagSettings = {
+      // Fast mode is off unless asked for, and asking is what clears the
+      // CLI's `sdk_opt_in_required` block — an SDK consumer never inherits the
+      // user's interactive preference, so silence here means off.
+      ...(fastMode && model?.supportsFastMode ? { fastMode: true } : {}),
+      ...(typeof outputStyle === 'string' && this.outputStylesValue.includes(outputStyle)
+        ? { outputStyle }
+        : {}),
+    }
+    if (fastMode && model?.supportsFastMode) this.appliedFastMode = true
+    if (typeof outputStyle === 'string' && this.outputStylesValue.includes(outputStyle))
+      this.appliedOutputStyle = outputStyle
+    if (Object.keys(settings).length === 0) return
+    try {
+      await this.queryOrThrow().applyFlagSettings(settings)
+    } catch (error) {
+      this.host.log({
+        scope: 'claude',
+        level: 'warn',
+        message: 'Claude Code refused a remembered session setting',
+        data: { settings, error: String(error) },
+      })
+    }
   }
 
   /** Model then mode, skipping what is already applied.
@@ -988,12 +1194,23 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     await this.ready()
     if (desired.modelId !== undefined && desired.modelId !== this.appliedModelId)
       await this.setModel(desired.modelId)
-    const mode = permissionMode(desired.modeId)
+    const mode = claudePermissionMode(desired.modeId)
     if (mode !== undefined && mode !== this.appliedModeId) await this.setMode(mode)
-    // `desired.values` is silently ignored: this provider advertises
-    // `canSetConfigOption: false`, so nothing upstream should be sending any,
-    // and throwing on a leftover remembered preference would break a prompt
-    // over a setting that cannot apply either way.
+    // Settings last, so they land against the model and mode that will
+    // actually run. Each is best-effort: a remembered effort level that this
+    // model dropped must not fail the prompt it was attached to.
+    for (const [configId, value] of Object.entries(desired.values ?? {})) {
+      try {
+        await this.setConfigOption(configId, value)
+      } catch (error) {
+        this.host.log({
+          scope: 'claude',
+          level: 'warn',
+          message: 'Claude Code refused a remembered session setting',
+          data: { configId, value, error: String(error) },
+        })
+      }
+    }
   }
 
   private noteApplied(applied: { modelId?: string; modeId?: string }): void {
@@ -1505,11 +1722,6 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
  * owns the kill. */
 function unobservedExit(): ProcessExit {
   return { exitCode: null, signal: null, forced: false, at: new Date().toISOString() }
-}
-
-function permissionMode(modeId: string | undefined): PermissionMode | undefined {
-  if (!modeId) return undefined
-  return PERMISSION_MODES.find((mode) => mode === modeId)
 }
 
 function sleep(ms: number): Promise<void> {

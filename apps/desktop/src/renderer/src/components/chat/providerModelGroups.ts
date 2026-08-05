@@ -2,7 +2,21 @@ import type { ProviderId, ProviderMetadata } from '@agentpack/contract'
 import type { ProviderComposerProfiles } from '../../../../shared/composer-profile'
 import type { ProviderModelGroup } from './MessageInputView'
 
-export type ComposerModelChoice = { id: string; name: string }
+/** `description` is load-bearing for Claude Code, not decoration: the CLI puts
+ * the marketing name there rather than in `displayName`, so a row reads
+ * `{name: 'Opus', description: 'Opus 5 · Best for everyday, complex tasks'}`.
+ * Drop it and the picker cannot tell Opus 5 from Opus 4.8, and cannot say what
+ * the `default` row currently resolves to. */
+export type ComposerModelChoice = {
+  id: string
+  name: string
+  description?: string
+  /** Carried so the composer can gate the effort pill, the fast-mode switch
+   * and the `auto` permission mode on the model that is actually selected. */
+  effortLevels?: string[]
+  supportsFastMode?: boolean
+  supportsAutoMode?: boolean
+}
 
 /** The catalog a provider reported at handshake time, before any session.
  *
@@ -14,7 +28,33 @@ export function metadataModelOptions(
   providerId: ProviderId,
 ): ComposerModelChoice[] {
   return (providers.find((provider) => provider.id === providerId)?.models?.availableModels ?? [])
-    .map((model) => ({ id: model.id, name: model.displayName }))
+    .map((model) => ({
+      id: model.id,
+      name: model.displayName,
+      ...(model.description ? { description: model.description } : {}),
+      ...(model.effortLevels?.length ? { effortLevels: model.effortLevels } : {}),
+      ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
+      ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
+    }))
+}
+
+/** The mode catalog a provider reported at handshake time, on exactly the same
+ * terms as `metadataModelOptions`.
+ *
+ * Claude Code's modes are static rather than wire-reported, but they still
+ * arrive this way: the composer gates its mode control on a non-empty list,
+ * and every other source of one requires a live session. */
+export function metadataModeOptions(
+  providers: readonly ProviderMetadata[],
+  providerId: ProviderId,
+): ComposerModelChoice[] {
+  return (providers.find((provider) => provider.id === providerId)?.modes?.availableModes ?? []).map(
+    (mode) => ({
+      id: mode.id,
+      name: mode.displayName,
+      ...(mode.description ? { description: mode.description } : {}),
+    }),
+  )
 }
 
 /** One group per provider for the composer's single provider→model control.
@@ -37,7 +77,14 @@ export function buildProviderModelGroups(args: {
 }): ProviderModelGroup[] {
   return args.providerOptions.map((provider) => {
     const profileModels = (args.composerProfiles[provider.id]?.availableModels ?? []).map(
-      (model) => ({ id: model.modelId, name: model.name }),
+      (model) => ({
+        id: model.modelId,
+        name: model.name,
+        ...(model.description ? { description: model.description } : {}),
+        ...(model.effortLevels?.length ? { effortLevels: model.effortLevels } : {}),
+        ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
+        ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
+      }),
     )
     const models =
       provider.id === args.currentProviderId

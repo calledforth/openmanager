@@ -73,6 +73,9 @@ const meta = {
       { id: 'debug', name: 'Debug' },
     ],
     currentModeId: 'default',
+    // The five levels Claude Code reports for an effort-capable model.
+    effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    currentEffort: 'high',
     canChangeSettings: true,
     canChangeProvider: true,
     showModeControl: true,

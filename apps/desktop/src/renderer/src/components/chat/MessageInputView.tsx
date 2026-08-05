@@ -49,6 +49,7 @@ import {
   slashQueryFromText,
   type SlashCommandItem,
 } from './slashCommands'
+import { modelHint, modelLabel } from './modelLabel'
 
 /** Matches the `prefers-reduced-motion` guard globals.css applies to chat animations. */
 function prefersReducedMotion() {
@@ -58,7 +59,7 @@ function prefersReducedMotion() {
 export type ProviderModelGroup = {
   providerId: ProviderId
   providerName: string
-  models: Array<{ id: string; name: string }>
+  models: Array<{ id: string; name: string; description?: string }>
 }
 
 /** Mode / misc select. Menu is portaled — avoids overflow-x-auto / overflow-hidden clipping. */
@@ -68,12 +69,17 @@ function PillSelect<T extends string>({
   onChange,
   disabled,
   variant = 'filled',
+  describeOnHover,
 }: {
   value: T
-  options: Array<{ id: T; name: string }>
+  options: Array<{ id: T; name: string; description?: string }>
   onChange: (id: T) => void
   disabled?: boolean
   variant?: 'filled' | 'ghost'
+  /** Show each option's description on hover instead of as a second line.
+   * Keeps a six-row mode menu compact — the descriptions exist to disambiguate
+   * "dontAsk" from "auto", not to be read every time the menu opens. */
+  describeOnHover?: boolean
 }) {
   const current = options.find((o) => o.id === value)
   const label = current?.name ?? value?.split('/').pop() ?? '—'
@@ -82,10 +88,18 @@ function PillSelect<T extends string>({
     () => [
       {
         id: 'options',
-        options: options.map((option) => ({ id: option.id, label: option.name })),
+        options: options.map((option) => ({
+          id: option.id,
+          label: option.name,
+          ...(option.description
+            ? describeOnHover
+              ? { title: option.description }
+              : { description: option.description }
+            : {}),
+        })),
       },
     ],
-    [options],
+    [describeOnHover, options],
   )
 
   return (
@@ -159,9 +173,11 @@ function ProviderModelSelect({
   const currentGroup = groups.find((group) => group.providerId === currentProviderId)
   const currentModel =
     currentGroup?.models.find((model) => model.id === currentModelId) ?? currentGroup?.models[0]
-  const modelLabel = currentModel?.name ?? currentModelId.split('/').pop() ?? 'Model'
+  const currentLabel = currentModel
+    ? modelLabel(currentModel.name, currentModel.description)
+    : (currentModelId.split('/').pop() ?? 'Model')
   const displayLabel =
-    configSummary.length > 0 ? `${modelLabel} · ${configSummary.join(' · ')}` : modelLabel
+    configSummary.length > 0 ? `${currentLabel} · ${configSummary.join(' · ')}` : currentLabel
   const selectedId = `${currentProviderId}:${currentModelId}`
 
   const sections = useMemo<SearchableMenuSection[]>(
@@ -172,8 +188,14 @@ function ProviderModelSelect({
         icon: <ProviderIcon providerId={group.providerId} className="h-3 w-3" />,
         options: group.models.map((model) => ({
           id: `${group.providerId}:${model.id}`,
-          label: model.name,
-          keywords: `${group.providerName} ${model.id}`,
+          // "Opus 5", not "Opus" — the version lives in the description and
+          // has to be lifted, or Opus 5 and Opus 4.8 read identically.
+          label: modelLabel(model.name, model.description),
+          ...(modelHint(model.name, model.description)
+            ? { description: modelHint(model.name, model.description) }
+            : {}),
+          // Searching either name has to hit the row whichever way it renders.
+          keywords: `${group.providerName} ${model.id} ${model.name} ${model.description ?? ''}`,
         })),
       })),
     [visibleGroups],
@@ -369,6 +391,8 @@ export function MessageInputView({
   configOptions,
   modeOptions,
   currentModeId,
+  effortLevels,
+  currentEffort,
   canChangeSettings,
   canChangeProvider,
   showModeControl,
@@ -396,7 +420,12 @@ export function MessageInputView({
   providerModelGroups: ProviderModelGroup[]
   currentModelId: string
   configOptions: SessionConfigOption[]
-  modeOptions: Array<{ id: string; name: string }>
+  modeOptions: Array<{ id: string; name: string; description?: string }>
+  /** Reasoning-effort levels the selected model accepts, cheapest first. Empty
+   * hides the pill entirely — a model with no effort control must not show
+   * one, and which levels exist is per-model, not per-provider. */
+  effortLevels: string[]
+  currentEffort: string
   currentModeId: string
   canChangeSettings: boolean
   canChangeProvider: boolean
@@ -831,8 +860,26 @@ export function MessageInputView({
                   options={modeOptions}
                   onChange={onModeChange}
                   disabled={!canChangeSettings}
+                  describeOnHover
                 />
               )
+            )}
+
+            {effortLevels.length > 0 && (
+              <PillSelect
+                variant="ghost"
+                // Blank until the session says otherwise: the CLI picks its own
+                // depth when nothing asked, and inventing "high" here would
+                // claim a setting we never sent.
+                value={currentEffort}
+                options={[
+                  { id: '', name: 'Auto effort', description: "Let Claude choose the depth." },
+                  ...effortLevels.map((level) => ({ id: level, name: level })),
+                ]}
+                onChange={(level) => onConfigOptionChange('effort', level)}
+                disabled={!canChangeSettings}
+                describeOnHover
+              />
             )}
 
             {usage && (

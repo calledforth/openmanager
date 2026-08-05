@@ -7,7 +7,7 @@ import type {
   SDKSessionInfo,
   SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk'
-import type { ClaudeQuerySession, ClaudeSdk } from './sdk.js'
+import type { ClaudeFlagSettings, ClaudeQuerySession, ClaudeSdk } from './sdk.js'
 
 /** The `ClaudeSdk` seam, faked — `test-connection.ts` for the SDK transport.
  *
@@ -35,6 +35,13 @@ export class FakeClaudeQuery implements ClaudeQuerySession {
   readonly prompts: SDKUserMessage[] = []
   readonly models: (string | undefined)[] = []
   readonly modes: PermissionMode[] = []
+  /** Every `applyFlagSettings` payload, in order. Tests assert on these
+   * because effort, fast mode and output style have no other observable
+   * effect from outside the CLI. */
+  readonly flagSettings: ClaudeFlagSettings[] = []
+  /** Reproduces the CLI's real refusal of `auto` on a model without classifier
+   * support, so the mode-filtering path is exercised rather than assumed. */
+  autoModeUnavailable = false
   interrupts = 0
   closed = false
   returned = false
@@ -352,7 +359,12 @@ export class FakeClaudeQuery implements ClaudeQuerySession {
     this.models.push(model)
   }
   async setPermissionMode(mode: PermissionMode): Promise<void> {
+    if (mode === 'auto' && this.autoModeUnavailable)
+      throw new Error('Cannot set permission mode to auto: auto mode unavailable for this model')
     this.modes.push(mode)
+  }
+  async applyFlagSettings(settings: ClaudeFlagSettings): Promise<void> {
+    this.flagSettings.push(settings)
   }
   async initializationResult(): Promise<SDKControlInitializeResponse> {
     if (this.initializeError) throw this.initializeError

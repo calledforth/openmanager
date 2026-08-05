@@ -48,7 +48,12 @@ describe('ClaudeProbeRuntime models', () => {
     // appear, and one it did list must appear even though this repo has never
     // heard of it.
     expect(result.models?.availableModels).toEqual([
-      { id: 'sonnet', displayName: 'Sonnet', description: 'Balanced capability and speed' },
+      {
+        id: 'sonnet',
+        displayName: 'Sonnet',
+        description: 'Balanced capability and speed',
+        resolvedModel: 'claude-sonnet-5',
+      },
       { id: 'opus', displayName: 'Opus', description: 'Most capable' },
     ])
     await probe.dispose()
@@ -78,6 +83,48 @@ describe('ClaudeProbeRuntime models', () => {
     const result = await probe.probe()
 
     expect(result.models).toEqual({ availableModels: [] })
+    await probe.dispose()
+  })
+})
+
+describe('ClaudeProbeRuntime modes', () => {
+  it('reports the permission-mode catalog without a session', async () => {
+    // The CLI sends no modes at `initialize` — this catalog is static. It is
+    // still reported from the probe, because the composer gates its mode
+    // control on a non-empty list and every other source of one needs a live
+    // session, so a never-used provider would render no mode control at all.
+    const { probe } = build()
+
+    const result = await probe.probe()
+
+    expect(result.modes?.availableModes?.map((mode) => mode.id)).toEqual([
+      'default',
+      'acceptEdits',
+      'plan',
+      'auto',
+      'dontAsk',
+      'bypassPermissions',
+    ])
+    // Safe-first ordering is load-bearing: the composer falls back to the head
+    // of this list whenever it has no better answer.
+    expect(result.modes?.availableModes?.[0]).toMatchObject({
+      id: 'default',
+      displayName: 'Default',
+    })
+    expect(result.modes?.currentModeId).toBeUndefined()
+    await probe.dispose()
+  })
+
+  it('describes every mode, including the ones whose names mislead', async () => {
+    const { probe } = build()
+
+    const result = await probe.probe()
+    const byId = new Map(result.modes?.availableModes?.map((mode) => [mode.id, mode]))
+
+    // "dontAsk" reads as "allow everything" and means the opposite.
+    expect(byId.get('dontAsk')?.description).toMatch(/denies/i)
+    expect(byId.get('bypassPermissions')?.description).toMatch(/without asking/i)
+    expect([...byId.values()].every((mode) => !!mode.description)).toBe(true)
     await probe.dispose()
   })
 })
