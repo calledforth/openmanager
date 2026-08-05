@@ -1,6 +1,9 @@
 import type {
   AgentEvent,
+  AvailableCommand,
   CapabilityKey,
+  ModeListing,
+  ModelListing,
   PermissionOutcome,
   PlanReviewOutcome,
   PromptInput,
@@ -8,22 +11,25 @@ import type {
   ProviderSessionInfo,
   QuestionOutcome,
 } from '@agentpack/contract'
+import { isRecoverableError } from '@agentpack/contract'
 import type { BackendEvent, SessionResult } from '../backends/Backend.js'
 import type { HostDeps } from '../host.js'
 import { providers, type ProviderConfig } from '../providers/index.js'
-import type { AcpProbeResult } from '../session/AcpProbeRuntime.js'
-import { AcpProbeRuntimeImpl } from '../session/AcpProbeRuntimeImpl.js'
-import type { AcpConnectionFactory } from '../session/AcpSessionRuntime.js'
-import { AcpSessionRuntimeFactory } from '../session/AcpSessionRuntimeImpl.js'
+import type { AcpConnectionFactory } from '../session/AcpConnection.js'
+import type { ClaudeSdk } from '../session/claude/sdk.js'
+import type { ProbeResult, ProbeRuntime, ProbeRuntimeFactory } from '../session/ProbeRuntime.js'
+import {
+  ProviderProbeRuntimeFactory,
+  ProviderSessionRuntimeFactory,
+} from '../session/ProviderRuntimeFactory.js'
 import { ChildProcessConnectionFactory } from '../session/ChildProcessConnection.js'
 import { SHUTDOWN_BUDGET_MS, type RuntimeTimeouts } from '../session/constants.js'
 import type { DesiredSessionConfig, SessionResumeRecord } from '../session/lifecycle.js'
 import { withTimeout } from '../session/timeout.js'
 import { SessionRuntimeRegistryImpl } from '../session/SessionRuntimeRegistryImpl.js'
 import type { SessionRuntimeEntry } from '../session/SessionRuntimeRegistry.js'
-import { AcpProbeRuntimeFactoryImpl } from '../session/AcpProbeRuntimeImpl.js'
 import { isRuntimeAlive } from '../session/lifecycle.js'
-import { ExtensionBroker } from './ExtensionBroker.js'
+import { InteractionBroker, type InteractionSettlement } from './InteractionBroker.js'
 import { PermissionBroker } from './PermissionBroker.js'
 import { CapabilityMissingError } from './errors.js'
 import {
@@ -41,11 +47,22 @@ export type RuntimeRoute = {
 }
 /** What a provider bootstrap learned, from one throwaway process. */
 export type ProviderBootstrap = {
-  result: AcpProbeResult
+  result: ProbeResult
   /** The provider's sessions for this directory, or `undefined` when the agent
    * does not advertise `session/list` at all — which is not the same as `[]`,
    * "it listed and there are none". */
   sessions: ProviderSessionInfo[] | undefined
+  /** Slash commands the probe could answer without a session, hoisted out of
+   * `result` alongside `sessions` because it is the same kind of fact: what
+   * the bootstrap process learned about the provider before any thread exists.
+   * `undefined` over ACP, where the catalog only arrives on a live session. */
+  commands: AvailableCommand[] | undefined
+  /** Model catalog the probe could answer without a session, hoisted for the
+   * same reason as `commands`. `undefined` over ACP. */
+  models: ModelListing | undefined
+  /** Mode catalog the probe could answer without a session, hoisted for the
+   * same reason as `commands` and `models`. `undefined` over ACP. */
+  modes: ModeListing | undefined
 }
 
 export type RuntimeSessionArgs = RuntimeRoute & {
@@ -87,6 +104,9 @@ export type AgentRuntimeOptions = {
   /** Transport seam. Defaults to spawning the provider's CLI; tests inject a
    * fake so runtimes can be exercised without one. */
   connections?: AcpConnectionFactory
+  /** The same seam for the Claude arm, which spawns its CLI through the SDK
+   * rather than through `connections`. Tests inject `FakeClaudeSdk`. */
+  claudeSdk?: ClaudeSdk
   timeouts?: Partial<RuntimeTimeouts>
   /** Overrides for the health monitor's cadence, probe budget and clock. */
   health?: Pick<
@@ -134,13 +154,31 @@ export class AgentRuntime {
   private readonly promptQueues = new Map<string, Promise<void>>()
   private readonly activeMessageIds = new Map<string, string>()
   private readonly configs: Readonly<Record<ProviderId, ProviderConfig>>
-  private readonly connections: AcpConnectionFactory
+  /** The ACP transport. Seeded by `options.connections` in tests and otherwise
+   * built on first use — see `acpConnections`. */
+  private connectionsValue: AcpConnectionFactory | undefined
+  /** Every probe this runtime builds, live or throwaway, comes from here.
+   * Shared with the health monitor so both go through the same dispatch. */
+  private readonly probes: ProbeRuntimeFactory
+  /** Last model catalog each provider reported at handshake time.
+   *
+   * Fed by every probe, which is the point: the desktop only bootstraps the
+   * provider the user is about to talk to, while the health monitor probes
+   * *all* of them at boot. A catalog learned there is what lets the composer
+   * list a provider nobody has selected yet. Providers whose models only
+   * exist on a live session (every ACP one) never appear in this map. */
+  private readonly modelsByProvider = new Map<ProviderId, ModelListing>()
+  /** Last mode catalog each provider reported at handshake time. Same
+   * lifecycle and same justification as `modelsByProvider` — a composer that
+   * can offer a never-selected provider's models but not its modes renders a
+   * model picker beside a missing mode picker. */
+  private readonly modesByProvider = new Map<ProviderId, ModeListing>()
   private readonly timeouts: Partial<RuntimeTimeouts> | undefined
   /** App-wide and keyed by requestId. Every pending record carries its own
    * provider/thread/workspace/session, so responding needs no lookup table and
    * a dying runtime settles only its own thread's requests. */
   private readonly permissions: PermissionBroker
-  private readonly extensions: ExtensionBroker
+  private readonly interactions: InteractionBroker
 
   constructor(
     private readonly host: HostDeps,
@@ -148,7 +186,7 @@ export class AgentRuntime {
     options: AgentRuntimeOptions = {},
   ) {
     this.configs = configs
-    this.connections = options.connections ?? new ChildProcessConnectionFactory(host.log)
+    this.connectionsValue = options.connections
     this.timeouts = options.timeouts
     this.permissions = new PermissionBroker((settlement) =>
       this.forward(settlement.providerId, {
@@ -160,27 +198,17 @@ export class AgentRuntime {
         data: { requestId: settlement.requestId, outcome: settlement.outcome },
       } as BackendEvent),
     )
-    this.extensions = new ExtensionBroker((settlement) =>
-      this.forward(settlement.providerId, {
-        threadId: settlement.threadId,
-        workspaceId: settlement.workspaceId,
-        sessionId: settlement.sessionId,
-        category: 'extension',
-        event: 'extension_resolved',
-        data: {
-          requestId: settlement.requestId,
-          method: settlement.method,
-          outcome: settlement.outcome,
-        },
-      } as BackendEvent),
+    this.interactions = new InteractionBroker((settlement) =>
+      this.forward(settlement.providerId, this.interactionResolved(settlement)),
     )
     this.registry = new SessionRuntimeRegistryImpl({
-      runtimes: new AcpSessionRuntimeFactory({
+      runtimes: new ProviderSessionRuntimeFactory({
         configs,
         host,
         permissions: this.permissions,
-        extensions: this.extensions,
-        connections: this.connections,
+        interactions: this.interactions,
+        connections: () => this.acpConnections(),
+        ...(options.claudeSdk ? { claudeSdk: options.claudeSdk } : {}),
         ...(options.timeouts ? { timeouts: options.timeouts } : {}),
       }),
       onEvent: (providerId, event) => this.forward(providerId, event),
@@ -192,14 +220,37 @@ export class AgentRuntime {
       log: host.log,
       ...(options.reaper ?? {}),
     })
+    // Decorated, not subclassed, so *every* probe result is observed exactly
+    // once no matter who asked for it — the bootstrap, the health loop, or a
+    // metadata refresh. Recording the catalog anywhere further downstream
+    // would miss the health monitor's probes, which are the only ones a
+    // provider the user has never selected ever gets.
+    const probes = new ProviderProbeRuntimeFactory({
+      configs,
+      host,
+      connections: () => this.acpConnections(),
+      ...(options.timeouts ? { timeouts: options.timeouts } : {}),
+    })
+    this.probes = {
+      create: (providerId, cwd, probeOptions) => {
+        const probe = probes.create(providerId, cwd, probeOptions)
+        return {
+          providerId: probe.providerId,
+          probe: async () => {
+            const result = await probe.probe()
+            if (result.models) this.modelsByProvider.set(providerId, result.models)
+            if (result.modes) this.modesByProvider.set(providerId, result.modes)
+            return result
+          },
+          listSessions: (dir) => probe.listSessions(dir),
+          listModels: (dir) => probe.listModels(dir),
+          dispose: () => probe.dispose(),
+        }
+      },
+    }
     this.health = new ProviderHealthMonitor({
       providerIds: Object.keys(configs) as ProviderId[],
-      probes: new AcpProbeRuntimeFactoryImpl({
-        configs,
-        host,
-        connections: this.connections,
-        ...(options.timeouts ? { timeouts: options.timeouts } : {}),
-      }),
+      probes: this.probes,
       census: (providerId) => this.census(providerId),
       probeCwd: (providerId) => this.lastCwdByProvider.get(providerId) ?? this.defaultProbeCwd,
       host,
@@ -218,6 +269,18 @@ export class AgentRuntime {
       if (resume && exit.resumeCursor) resume.resumeCursor = exit.resumeCursor
     })
     this.reaper.start()
+  }
+
+  /** The child-process transport, built at most once and only when an ACP
+   * provider actually needs it.
+   *
+   * It used to be constructed unconditionally in the constructor, which quietly
+   * made "spawns a CLI" a property of the runtime rather than of the provider.
+   * Nothing observable changes for the two ACP providers — the first runtime or
+   * probe builds it, and every later one shares it. */
+  private acpConnections(): AcpConnectionFactory {
+    this.connectionsValue ??= new ChildProcessConnectionFactory(this.host.log)
+    return this.connectionsValue
   }
 
   /** Fallback directory for health probes of providers the user has not used
@@ -274,6 +337,50 @@ export class AgentRuntime {
     }
   }
 
+  /** Which resolution event a settled interaction becomes.
+   *
+   * Questions and plan reviews get their own events rather than riding
+   * `extension_resolved`, which is what every consumer used to clear their
+   * pending rows on. That only ever worked for providers whose questions and
+   * plans arrive over ACP's `_ext` methods; a provider raising the same
+   * interactions from an SDK callback would answer correctly and then leave the
+   * row pending forever in the host map, in Convex and on mobile. The kind
+   * travels on the pending record, so the transport no longer decides. */
+  private interactionResolved(settlement: InteractionSettlement): BackendEvent {
+    const route = {
+      threadId: settlement.threadId,
+      workspaceId: settlement.workspaceId,
+      sessionId: settlement.sessionId,
+    }
+    const resolution = settlement.resolution
+    if (resolution?.kind === 'question') {
+      return {
+        ...route,
+        category: 'session',
+        event: 'question_resolved',
+        data: { requestId: settlement.requestId, outcome: resolution.outcome },
+      } as BackendEvent
+    }
+    if (resolution?.kind === 'plan_review') {
+      return {
+        ...route,
+        category: 'session',
+        event: 'plan_review_resolved',
+        data: { requestId: settlement.requestId, outcome: resolution.outcome },
+      } as BackendEvent
+    }
+    return {
+      ...route,
+      category: 'extension',
+      event: 'extension_resolved',
+      data: {
+        requestId: settlement.requestId,
+        method: settlement.method,
+        outcome: settlement.outcome,
+      },
+    } as BackendEvent
+  }
+
   private forward(providerId: ProviderId, event: BackendEvent): void {
     const seq = (this.sequences.get(event.threadId) ?? 0) + 1
     this.sequences.set(event.threadId, seq)
@@ -297,9 +404,15 @@ export class AgentRuntime {
     this.host.emitEvent(stamped)
     if (
       event.event === 'prompt_completed' ||
-      event.event === 'rpc_error' ||
-      event.event === 'runtime_error' ||
-      event.event === 'process_exited'
+      event.event === 'process_exited' ||
+      // A recoverable error is a retry notice, not the end of the turn. Letting
+      // it release the message id would leave every later event in the turn —
+      // the assistant text that the retry then succeeds in producing, the tool
+      // rows, the `prompt_completed` itself — carrying no `messageId`, and both
+      // the projector and the live renderer drop those. The answer is truncated
+      // in the UI and, worse, in the persisted `messages.metadata.parts`.
+      ((event.event === 'rpc_error' || event.event === 'runtime_error') &&
+        !isRecoverableError(event))
     ) {
       this.activeMessageIds.delete(event.threadId)
     }
@@ -322,6 +435,23 @@ export class AgentRuntime {
 
   // ------------------------------------------------------------------- probes
 
+  /** Model catalogs learned from handshakes, for every provider probed so far.
+   *
+   * Cached rather than asked for on demand: the caller is an IPC handler the
+   * renderer polls, and answering it by spawning a CLI would put a ~230 MB
+   * process behind a dropdown opening. Empty until the first probe answers,
+   * and permanently empty for providers that only list models on a live
+   * session. */
+  providerModels(): Partial<Record<ProviderId, ModelListing>> {
+    return Object.fromEntries(this.modelsByProvider) as Partial<Record<ProviderId, ModelListing>>
+  }
+
+  /** Mode catalogs learned from handshakes. Cached on the same terms, and for
+   * the same caller, as `providerModels()`. */
+  providerModes(): Partial<Record<ProviderId, ModeListing>> {
+    return Object.fromEntries(this.modesByProvider) as Partial<Record<ProviderId, ModeListing>>
+  }
+
   /** Provider-level bootstrap in a throwaway process: spawn, `initialize`,
    * `authenticate`, then `session/list` on that same process. This replaces the
    * old `start()`, which spawned the one shared per-provider process.
@@ -343,7 +473,13 @@ export class AgentRuntime {
     try {
       const result = await probe.probe()
       recorder.ok(result)
-      return { result, sessions: await this.bootstrapSessions(args, probe, result) }
+      return {
+        result,
+        sessions: await this.bootstrapSessions(args, probe, result),
+        commands: result.commands,
+        models: result.models,
+        modes: result.modes,
+      }
     } catch (error) {
       recorder.failed(error)
       throw error
@@ -362,8 +498,8 @@ export class AgentRuntime {
    * renderer reads as "provider ready". */
   private async bootstrapSessions(
     args: RuntimeRoute,
-    probe: AcpProbeRuntimeImpl,
-    result: AcpProbeResult,
+    probe: ProbeRuntime,
+    result: ProbeResult,
   ): Promise<ProviderSessionInfo[] | undefined> {
     if (!result.sessionListAdvertised) return undefined
     if (!this.configs[args.providerId].capabilities.canListSessions) return undefined
@@ -437,26 +573,14 @@ export class AgentRuntime {
     if (args.cwd.length > 0) this.lastCwdByProvider.set(args.providerId, args.cwd)
   }
 
-  private probeRuntime(args: RuntimeRoute, emitEvents: boolean): AcpProbeRuntimeImpl {
-    const config = this.configs[args.providerId]
-    if (!config) throw new Error(`Unknown provider: ${args.providerId}`)
-    return new AcpProbeRuntimeImpl(
-      {
-        providerId: args.providerId,
-        cwd: args.cwd,
-        threadId: args.threadId,
-        workspaceId: args.workspaceId,
-      },
-      {
-        config,
-        host: this.host,
-        connections: this.connections,
-        ...(this.timeouts ? { timeouts: this.timeouts } : {}),
-        ...(emitEvents
-          ? { onEvent: (event: BackendEvent) => this.forward(args.providerId, event) }
-          : {}),
-      },
-    )
+  private probeRuntime(args: RuntimeRoute, emitEvents: boolean): ProbeRuntime {
+    return this.probes.create(args.providerId, args.cwd, {
+      threadId: args.threadId,
+      ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
+      ...(emitEvents
+        ? { onEvent: (event: BackendEvent) => this.forward(args.providerId, event) }
+        : {}),
+    })
   }
 
   // ------------------------------------------------------------------ session
@@ -750,7 +874,7 @@ export class AgentRuntime {
     requestId: string
     response: unknown
   }): boolean {
-    if (!this.extensions.respond(args.requestId, args.response))
+    if (!this.interactions.respond(args.requestId, args.response))
       throw new Error('Extension request not found or already resolved')
     return true
   }
@@ -821,7 +945,7 @@ export class AgentRuntime {
   async shutdown(): Promise<void> {
     this.stopBackground()
     this.permissions.settleAll()
-    this.extensions.settleAll()
+    this.interactions.settleAll()
     try {
       await withTimeout(
         this.registry.shutdown({ reason: 'disposed' }),
@@ -847,7 +971,7 @@ export class AgentRuntime {
     // reports `session_closed`, which is why the brokers settle first.
     this.stopBackground()
     this.permissions.settleAll()
-    this.extensions.settleAll()
+    this.interactions.settleAll()
     this.registry.disposeAll()
     this.clearBookkeeping()
   }

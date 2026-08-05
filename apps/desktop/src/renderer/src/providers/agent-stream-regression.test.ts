@@ -160,7 +160,7 @@ describe('agent streaming regressions', () => {
         seq: 1,
         category: 'stream',
         event: 'agent_thought_chunk',
-        data: { content: { type: 'text', text: 'Checking' } },
+        data: { phase: 'delta', content: { type: 'text', text: 'Checking' } },
       }),
       event({
         messageId,
@@ -205,6 +205,72 @@ describe('agent streaming regressions', () => {
     expect(snapshot.parts.map((part) => part.type)).toEqual(['reasoning', 'tool', 'text', 'text'])
     expect((snapshot.parts[0]?.time as { end?: number }).end).toEqual(expect.any(Number))
     expect((snapshot.parts[1]?.state as { status?: string }).status).toBe('completed')
+  })
+
+  it('opens, updates and closes a reasoning part that never carries any text', () => {
+    const messageId = 'assistant-textless-thought'
+    const store = new StreamingMessagesStore()
+    const thought = (
+      seq: number,
+      data: Extract<AgentEvent, { event: 'agent_thought_chunk' }>['data'],
+    ) => event({ messageId, seq, category: 'stream', event: 'agent_thought_chunk', data })
+
+    // The block opens with nothing to show: no start would mean no shimmer for
+    // the several seconds it runs.
+    store.update(thought(1, { phase: 'start' }))
+    expect(store.get(messageId)?.parts[0]).toMatchObject({ type: 'reasoning', text: '' })
+    expect((store.get(messageId)?.parts[0]?.time as { start: number }).start).toEqual(
+      expect.any(Number),
+    )
+
+    // `tokens: 0` is a real reading, so it must not be treated as absent.
+    store.update(thought(2, { phase: 'delta', tokens: 0 }))
+    expect(store.get(messageId)?.parts[0]?.tokens).toBe(0)
+
+    store.update(thought(3, { phase: 'delta', tokens: 150 }))
+    // estimated_tokens is cumulative: a repeat must not accumulate.
+    store.update(thought(4, { phase: 'delta', tokens: 150 }))
+    expect(store.get(messageId)?.parts[0]?.tokens).toBe(150)
+    expect((store.get(messageId)?.parts[0]?.time as { end?: number }).end).toBeUndefined()
+
+    store.update(thought(5, { phase: 'stop' }))
+    expect((store.get(messageId)?.parts[0]?.time as { end?: number }).end).toEqual(
+      expect.any(Number),
+    )
+
+    // A second block after the first one stopped is its own part.
+    store.update(thought(6, { phase: 'start', tokens: 20 }))
+    const parts = store.get(messageId)!.parts
+    expect(parts).toHaveLength(2)
+    expect(parts[1]?.tokens).toBe(20)
+  })
+
+  it('folds a textless reasoning run into one thinking row carrying its tokens', () => {
+    const rows = foldAgentEvents(
+      [
+        event({
+          seq: 1,
+          category: 'stream',
+          event: 'agent_thought_chunk',
+          data: { phase: 'start' },
+        }),
+        event({
+          seq: 2,
+          category: 'stream',
+          event: 'agent_thought_chunk',
+          data: { phase: 'delta', tokens: 150 },
+        }),
+        event({
+          seq: 3,
+          category: 'stream',
+          event: 'agent_thought_chunk',
+          data: { phase: 'stop' },
+        }),
+      ],
+      { summarizeWork: false },
+    )
+
+    expect(rows).toEqual([{ type: 'thinking', id: expect.any(String), text: '', tokens: 150 }])
   })
 
   it('renders subtask updates live and settles Cursor cancellation from the turn result', () => {
@@ -626,5 +692,83 @@ describe('agent streaming regressions', () => {
         optimistic,
       ).map((message) => message.externalId),
     ).toEqual(['user-remote', 'user-local'])
+  })
+
+  /** The live half of the same truncation. `StreamingMessagesStore` closed the
+   * running text part and failed every running tool row on any error, so a
+   * Claude Code `api_retry` — which is a retry notice, not a failure — split
+   * the answer in two and painted the tools red while the retry was still
+   * working. */
+  it('does not close the live message on a recoverable error', () => {
+    const store = new StreamingMessagesStore()
+    const messageId = 'agent_asst_retry'
+    const live = (
+      patch: Partial<AgentEvent> & Pick<AgentEvent, 'category' | 'event' | 'data'>,
+    ): void => store.update(event({ ...patch, messageId }) as AgentEvent)
+
+    live({
+      category: 'lifecycle',
+      event: 'prompt_started',
+      data: { prompt: 'Go', userMessageId: 'user-1' },
+    })
+    live({
+      category: 'tool',
+      event: 'tool_call',
+      data: { toolCallId: 'tool-1', title: 'Read', status: 'in_progress' },
+    })
+    live({
+      category: 'stream',
+      event: 'agent_message_chunk',
+      data: { content: { type: 'text', text: 'partial ' } },
+    })
+    live({
+      category: 'error',
+      event: 'rpc_error',
+      data: { source: 'claude/api', message: 'Retrying after Overloaded', recoverable: true },
+    })
+    live({
+      category: 'stream',
+      event: 'agent_message_chunk',
+      data: { content: { type: 'text', text: 'and the rest' } },
+    })
+
+    const message = store.get(messageId)
+    // One part, not two: the retry did not close the run the text was landing in.
+    expect(message?.parts.filter((part) => part.type === 'text')).toEqual([
+      expect.objectContaining({ text: 'partial and the rest' }),
+    ])
+    expect(message?.parts.find((part) => part.type === 'tool')).toMatchObject({
+      state: expect.objectContaining({ status: 'running' }),
+    })
+  })
+
+  /** The negative case: an error carrying no `recoverable` flag still ends the
+   * live turn, which is what every ACP provider relies on. */
+  it('still closes the live message on an ordinary rpc_error', () => {
+    const store = new StreamingMessagesStore()
+    const messageId = 'agent_asst_failed'
+    const live = (
+      patch: Partial<AgentEvent> & Pick<AgentEvent, 'category' | 'event' | 'data'>,
+    ): void => store.update(event({ ...patch, messageId }) as AgentEvent)
+
+    live({
+      category: 'lifecycle',
+      event: 'prompt_started',
+      data: { prompt: 'Go', userMessageId: 'user-1' },
+    })
+    live({
+      category: 'tool',
+      event: 'tool_call',
+      data: { toolCallId: 'tool-1', title: 'Read', status: 'in_progress' },
+    })
+    live({
+      category: 'error',
+      event: 'rpc_error',
+      data: { source: 'session/prompt', message: 'the agent gave up' },
+    })
+
+    expect(store.get(messageId)?.parts.find((part) => part.type === 'tool')).toMatchObject({
+      state: expect.objectContaining({ status: 'error' }),
+    })
   })
 })

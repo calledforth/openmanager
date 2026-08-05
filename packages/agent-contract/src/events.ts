@@ -4,8 +4,8 @@ import type {
   PermissionOutcome,
   PermissionRequest,
 } from './permissions.js'
-import type { PlanDocument } from './plans.js'
-import type { QuestionRequest } from './questions.js'
+import type { PlanDocument, PlanReviewOutcome } from './plans.js'
+import type { QuestionOutcome, QuestionRequest } from './questions.js'
 import type { ModeListing, ModelListing, ProviderId } from './providers.js'
 
 export type AgentEventCategory =
@@ -32,7 +32,17 @@ export type AgentEventName =
   | 'permission_request'
   | 'permission_resolved'
   | 'question_request'
+  /** Emitted for every settlement of a question — answered, cancelled or timed
+   * out — whatever transport carried it. Questions used to be cleared off
+   * `extension_resolved`, which only exists for providers that drive them
+   * through ACP's `_ext` methods; anything else (an SDK permission callback,
+   * say) left the row pending forever in the host map, in Convex and on mobile. */
+  | 'question_resolved'
   | 'plan_review_request'
+  /** See `question_resolved`. Carries the semantic review outcome rather than a
+   * provider-native wire response, so consumers persisting the result do not
+   * have to sniff the shape of somebody else's payload. */
+  | 'plan_review_resolved'
   | 'current_model_update'
   | 'current_mode_update'
   | 'config_option_update'
@@ -117,6 +127,34 @@ export type PromptInput = {
 export type StreamedMessageChunk = {
   messageId?: string
   content: ContentBlock
+}
+
+/** Reasoning is not always text.
+ *
+ * ACP providers (Cursor, OpenCode) stream thinking as ordinary text blocks, so
+ * `content` carries everything there is to show. Claude Code does not: its
+ * `thinking` content blocks are live-verified to carry an ALWAYS-EMPTY string
+ * (on claude-opus-5 and claude-sonnet-5 alike — the payload is an encrypted
+ * ~1.3 KB `signature`). The only observable signals it emits are the block's
+ * start/stop timing and a running `estimated_tokens` count. A reasoning
+ * representation built on text alone therefore renders those 3-8 second blocks
+ * as a total freeze.
+ *
+ * Hence both fields are optional and `phase` is not:
+ * - `content` is absent whenever the provider has no text to give.
+ * - `tokens` is the provider's running estimate. It is MONOTONIC — a cumulative
+ *   total, not an increment — so consumers must take `Math.max(previous, next)`
+ *   and must test `tokens !== undefined` rather than truthiness, because
+ *   `tokens: 0` is a real first reading.
+ * - `phase` is required and load-bearing. Emitting nothing at block stop cannot
+ *   close a UI part, so a run interrupted between blocks would shimmer forever;
+ *   `stop` is the only thing that can settle a reasoning part whose text is
+ *   empty. Providers that stream text and have no block framing send `delta`. */
+export type ThoughtChunk = {
+  messageId?: string
+  phase: 'start' | 'delta' | 'stop'
+  content?: ContentBlock
+  tokens?: number
 }
 
 export type ToolKind =
@@ -268,10 +306,25 @@ export type SessionUsage = {
   cost?: SessionCost
 }
 
+/** `recoverable: true` is a statement about the TURN, not about the process.
+ *
+ * It means: the operation that failed is being retried and the turn this error
+ * belongs to is still running, so more of its output is still coming. Every
+ * consumer that performs terminal cleanup on an error — closing the assistant
+ * message, finalizing the persisted turn, marking running tool rows failed,
+ * dropping the composer out of its running state — MUST skip that cleanup when
+ * this flag is set, because the turn will still emit its own `prompt_completed`
+ * (or a real terminal error) afterwards. Treating a retry as terminal
+ * permanently truncates the answer: every later event in the turn arrives with
+ * the message id already released and is dropped.
+ *
+ * An error that ends the turn must NOT set it, even when the *runtime* could be
+ * respawned afterwards — "we can start another process" is not the same claim. */
 export type RpcErrorData = {
   source: string
   message: string
   code?: number
+  /** See the note above `RpcErrorData`: the turn survives this error. */
   recoverable?: boolean
   details?: unknown
 }
@@ -279,6 +332,7 @@ export type RpcErrorData = {
 export type RuntimeErrorData = {
   kind: 'transport' | 'process' | 'protocol' | 'provider' | 'validation' | 'unknown'
   message: string
+  /** See the note above `RpcErrorData`: the turn survives this error. */
   recoverable?: boolean
   details?: unknown
 }
@@ -370,7 +424,7 @@ export type AgentEvent = AgentEventBase &
         category: 'stream'
         event: 'agent_thought_chunk'
         sessionId: string
-        data: StreamedMessageChunk
+        data: ThoughtChunk
       }
     | {
         category: 'tool'
@@ -422,15 +476,21 @@ export type AgentEvent = AgentEventBase &
       }
     | {
         category: 'session'
-        event: 'question_request'
+        event: 'question_resolved'
         sessionId: string
-        data: QuestionRequest
+        data: { requestId: string; outcome: QuestionOutcome }
       }
     | {
         category: 'session'
         event: 'plan_review_request'
         sessionId: string
         data: PlanDocument
+      }
+    | {
+        category: 'session'
+        event: 'plan_review_resolved'
+        sessionId: string
+        data: { requestId: string; outcome: PlanReviewOutcome }
       }
     | {
         category: 'session'
@@ -507,3 +567,22 @@ export type AgentEvent = AgentEventBase &
         }
       }
   )
+
+/** Is this error one the turn survives?
+ *
+ * The single predicate every terminal-cleanup site shares, so the four
+ * consumers that close a turn on an error — `AgentRuntime.forward`, the Convex
+ * projector, the live renderer and the composer's status tracking — cannot
+ * drift apart. Anything that is not an error event is not recoverable: the
+ * question only has meaning for the two error shapes that carry the flag.
+ *
+ * Takes the loose `BackendEvent`-shaped object rather than a narrowed
+ * `AgentEvent` so it can be called before an event is stamped, where the union
+ * has been collapsed and `data` cannot be narrowed by `event`. */
+export function isRecoverableError(event: {
+  event: AgentEventName
+  data?: unknown
+}): boolean {
+  if (event.event !== 'rpc_error' && event.event !== 'runtime_error') return false
+  return (event.data as { recoverable?: unknown } | undefined)?.recoverable === true
+}

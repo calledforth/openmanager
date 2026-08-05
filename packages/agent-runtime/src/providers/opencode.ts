@@ -1,6 +1,6 @@
 import type { SubtaskUpdate, ToolCall, ToolCallUpdate } from '@agentpack/contract'
 import { subtaskStatusFromTool, type SubtaskToolContext } from '../backends/acp/extensions.js'
-import type { ProviderConfig } from './index.js'
+import type { AcpProviderConfig } from './index.js'
 
 const str = (value: unknown): string => (typeof value === 'string' ? value : '')
 
@@ -53,7 +53,8 @@ function opencodeSubtaskFromTool(
   }
 }
 
-export const opencode: ProviderConfig = {
+export const opencode: AcpProviderConfig = {
+  kind: 'acp',
   id: 'opencode',
   displayName: 'OpenCode',
   command: {

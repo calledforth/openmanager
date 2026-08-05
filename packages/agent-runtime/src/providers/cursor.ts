@@ -7,7 +7,7 @@ import type {
   SubtaskUpdate,
 } from '@agentpack/contract'
 import { subtaskStatusFromTool } from '../backends/acp/extensions.js'
-import type { ProviderConfig } from './index.js'
+import type { AcpProviderConfig } from './index.js'
 
 const str = (value: unknown): string => (typeof value === 'string' ? value : '')
 
@@ -49,6 +49,10 @@ function parseCreatePlan(
     markdown: str(p.plan),
     todos: parseTodos(p.todos),
     ...(phases ? { phases } : {}),
+    // `cursor/create_plan` is a blocking side-channel request: answering it
+    // ends the turn that proposed the plan, so implementation only happens if
+    // the host dispatches a fresh prompt afterwards.
+    continuation: 'follow_up_turn',
   }
 }
 
@@ -121,7 +125,8 @@ function parseCursorTask(params: unknown): SubtaskUpdate | undefined {
   }
 }
 
-export const cursor: ProviderConfig = {
+export const cursor: AcpProviderConfig = {
+  kind: 'acp',
   id: 'cursor',
   displayName: 'Cursor',
   command: {

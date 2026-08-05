@@ -1,6 +1,6 @@
 import { PassThrough } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AcpConnectionSpec } from './AcpSessionRuntime.js'
+import type { AcpConnectionSpec } from './AcpConnection.js'
 import { ChildProcessConnection, type TerminableChild } from './ChildProcessConnection.js'
 
 /** A child that can be told to ignore SIGTERM.

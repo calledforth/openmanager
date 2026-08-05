@@ -62,6 +62,72 @@ export async function deleteSession(
   })
 }
 
+export type BuildPlanHost = {
+  getPendingPlan: AgentHost['getPendingPlan']
+  respondPlan: AgentHost['respondPlan']
+  runtime: Pick<AgentHost['runtime'], 'waitForPromptIdle' | 'setMode' | 'prompt'>
+}
+
+export type BuildPlanArgs = {
+  route: { providerId: ProviderId; threadId: string; workspaceId: string; cwd: string }
+  sessionExternalId: string
+  requestId: string
+  userMessageId?: string
+  modeId?: string
+  /** Deferred: the `same_turn` branch never dispatches a prompt, and resolving
+   * one means reading attachments off disk for nothing. */
+  promptInput: () => Promise<PromptInput>
+}
+
+/** Accept a plan and get it implemented.
+ *
+ * What "implemented" costs depends entirely on how the provider asked, which is
+ * why `PlanDocument.continuation` exists and why this does not branch on the
+ * provider id. Cursor's `cursor/create_plan` is a blocking side-channel
+ * request: answering it *ends* the proposing turn, so the plan only gets built
+ * if we wait for that turn to drain, switch mode and send a fresh prompt.
+ * Claude Code's `ExitPlanMode` is the opposite — approving the tool call
+ * releases the SAME turn to carry straight on into implementation, and sending
+ * a second "build the plan" prompt on top of it would re-run the whole plan,
+ * repeating every edit and every command.
+ *
+ * An unknown request (already settled, or a host restart between the review and
+ * the job) falls back to `follow_up_turn`, which is what this always did. */
+export async function buildPlan(host: BuildPlanHost, args: BuildPlanArgs): Promise<void> {
+  const continuation = host.getPendingPlan(args.requestId)?.continuation ?? 'follow_up_turn'
+  host.respondPlan({
+    providerId: args.route.providerId,
+    requestId: args.requestId,
+    outcome: { outcome: 'accepted' },
+  })
+  // The accept is the whole job: the provider's own turn is already running the
+  // plan. The mode is not forced here either — for a same-turn provider the
+  // approval itself is what leaves plan mode.
+  if (continuation === 'same_turn') return
+
+  // Accepting the plan releases the original prompt. Wait for that prompt to
+  // finish before switching mode and starting execution.
+  await host.runtime.waitForPromptIdle(args.sessionExternalId)
+  if (args.modeId) {
+    await host.runtime.setMode({
+      ...args.route,
+      sessionId: args.sessionExternalId,
+      modeId: args.modeId,
+    })
+  }
+  await host.runtime.prompt({
+    ...args.route,
+    sessionId: args.sessionExternalId,
+    // Carried on the prompt as well as set above: the mode this turn must run
+    // in is the point of the job, and only reconciling it inside the dispatch
+    // guarantees another job cannot change it in between. It costs no round
+    // trip once `setMode` has landed.
+    ...(args.modeId ? { desiredConfig: { modeId: args.modeId } } : {}),
+    prompt: await args.promptInput(),
+    ...(args.userMessageId ? { userMessageId: args.userMessageId } : {}),
+  })
+}
+
 const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
@@ -432,39 +498,18 @@ export class JobWorker {
             outcome: parsed.outcome,
           })
           break
-        case 'build_plan': {
-          const route = this.route(parsed, parsed.sessionExternalId)
-          this.agentHost.respondPlan({
-            providerId,
+        case 'build_plan':
+          await buildPlan(this.agentHost, {
+            route: this.route(parsed, parsed.sessionExternalId),
+            sessionExternalId: parsed.sessionExternalId,
             requestId: parsed.requestId,
-            outcome: { outcome: 'accepted' },
-          })
-          // Accepting the plan releases the original Cursor prompt. Wait for
-          // that prompt to finish before switching mode and starting execution.
-          await this.agentHost.runtime.waitForPromptIdle(parsed.sessionExternalId)
-          const modeId =
-            typeof parsed.modeId === 'string' && parsed.modeId ? parsed.modeId : undefined
-          if (modeId) {
-            await this.agentHost.runtime.setMode({
-              ...route,
-              sessionId: parsed.sessionExternalId,
-              modeId,
-            })
-          }
-          const prompt = await this.promptInput(parsed)
-          await this.agentHost.runtime.prompt({
-            ...route,
-            sessionId: parsed.sessionExternalId,
-            // Carried on the prompt as well as set above: the mode this turn
-            // must run in is the point of the job, and only reconciling it
-            // inside the dispatch guarantees another job cannot change it in
-            // between. It costs no round trip once `setMode` has landed.
-            ...(modeId ? { desiredConfig: { modeId } } : {}),
-            prompt,
             userMessageId: parsed.userMessageId,
+            ...(typeof parsed.modeId === 'string' && parsed.modeId
+              ? { modeId: parsed.modeId }
+              : {}),
+            promptInput: () => this.promptInput(parsed),
           })
           break
-        }
         case 'set_model': {
           const route = this.route(parsed, parsed.sessionExternalId)
           await this.agentHost.runtime.setModel({

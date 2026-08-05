@@ -1,8 +1,12 @@
 export { AgentRuntime } from './core/AgentRuntime.js'
 export type { AgentRuntimeOptions, RuntimeRoute, RuntimeSessionArgs } from './core/AgentRuntime.js'
 export { PermissionBroker, PERMISSION_TIMEOUT_MS } from './core/PermissionBroker.js'
-export { ExtensionBroker, EXTENSION_TIMEOUT_MS } from './core/ExtensionBroker.js'
-export type { ExtensionSettlement } from './core/ExtensionBroker.js'
+export { InteractionBroker, INTERACTION_TIMEOUT_MS } from './core/InteractionBroker.js'
+export type {
+  InteractionKind,
+  InteractionResolution,
+  InteractionSettlement,
+} from './core/InteractionBroker.js'
 export { AuthRequiredError, CapabilityMissingError } from './core/errors.js'
 export {
   PROVIDER_HEALTH_PROBE_TIMEOUT_MS,
@@ -46,6 +50,8 @@ export {
   DEFAULT_RUNTIME_TIMEOUTS,
   isRuntimeAlive,
   MAX_SESSION_RUNTIMES,
+  ProviderProbeRuntimeFactory,
+  ProviderSessionRuntimeFactory,
   RpcTimeoutError,
   SESSION_IDLE_TIMEOUT_MS,
   SESSION_REAP_INTERVAL_MS,
@@ -58,11 +64,7 @@ export type {
   AcpConnectionFactory,
   AcpConnectionSpec,
   AcpProbeDeps,
-  AcpProbeResult,
-  AcpProbeRuntime,
-  AcpProbeRuntimeFactory,
   AcpProbeSpec,
-  AcpSessionRuntime,
   ActiveTurn,
   AppliedSessionState,
   AppliedStateSource,
@@ -71,9 +73,16 @@ export type {
   DesiredSessionConfig,
   ManagedSessionRuntime,
   ManagedSessionRuntimeFactory,
+  ProbeResult,
+  ProbeRuntime,
+  ProbeRuntimeFactory,
+  ProbeRuntimeOptions,
   ProcessExit,
+  ProviderProbeRuntimeFactoryDeps,
+  ProviderSessionRuntimeFactoryDeps,
   RuntimeTimeouts,
   SessionResumeRecord,
+  SessionRuntime,
   SessionRuntimeDeps,
   SessionRuntimeEntry,
   SessionRuntimeExit,
@@ -88,6 +97,11 @@ export type {
   TerminationRequest,
   ThreadId,
 } from './session/index.js'
-export { cursor, opencode, providers } from './providers/index.js'
-export type { ProviderConfig } from './providers/index.js'
+export { cursor, opencode, providers, requireAcpConfig } from './providers/index.js'
+export type {
+  AcpProviderConfig,
+  ClaudeProviderConfig,
+  ProviderConfig,
+  ProviderConfigBase,
+} from './providers/index.js'
 export type { HostDeps, HostLogEntry } from './host.js'

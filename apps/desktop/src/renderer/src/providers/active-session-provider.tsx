@@ -11,6 +11,7 @@ import {
 } from 'react'
 import { api } from '@openmanager/convex/_generated/api'
 import type { AgentEvent, ContentBlock, ToolCallStatus } from '@agentpack/contract'
+import { isRecoverableError } from '@agentpack/contract'
 import {
   reconstructSnapshot,
   type StreamChunk,
@@ -154,11 +155,11 @@ export class StreamingMessagesStore {
         break
       case 'agent_message_chunk':
         this.finishReasoning(state)
-        changed = this.appendText(state, event.data.content, event.id, false)
+        changed = this.appendText(state, event.data.content, event.id)
         break
       case 'agent_thought_chunk':
         state.activeTextPartId = undefined
-        changed = this.appendText(state, event.data.content, event.id, true)
+        changed = this.appendThought(state, event.data, event.id)
         break
       case 'tool_call':
       case 'tool_call_update':
@@ -187,6 +188,14 @@ export class StreamingMessagesStore {
         break
       case 'rpc_error':
       case 'runtime_error':
+        // See `isRecoverableError`: a retry notice must not close the running
+        // text part or fail the tool rows that the retry is about to finish.
+        if (isRecoverableError(event)) return
+        this.finishActiveParts(state)
+        this.finishRunningTools(state, 'error')
+        this.finishRunningSubtasks(state, 'error')
+        changed = true
+        break
       case 'process_exited':
         this.finishActiveParts(state)
         this.finishRunningTools(state, 'error')
@@ -310,27 +319,65 @@ export class StreamingMessagesStore {
     return `${state.messageId}_${kind}_${eventId}`
   }
 
-  private appendText(
-    state: LiveThreadState,
-    block: ContentBlock,
-    eventId: string,
-    reasoning: boolean,
-  ): boolean {
+  private appendText(state: LiveThreadState, block: ContentBlock, eventId: string): boolean {
     const text = this.text(block)
     if (!text) return false
-    const activeKey = reasoning ? 'activeReasoningPartId' : 'activeTextPartId'
-    const partId =
-      state[activeKey] ?? this.nextPartId(state, reasoning ? 'reasoning' : 'text', eventId)
-    state[activeKey] = partId
+    const partId = state.activeTextPartId ?? this.nextPartId(state, 'text', eventId)
+    state.activeTextPartId = partId
     const existing = state.parts.get(partId)
     state.parts.set(partId, {
       ...(existing ?? {}),
-      type: reasoning ? 'reasoning' : 'text',
+      type: 'text',
       id: partId,
       text: `${String(existing?.text ?? '')}${text}`,
-      ...(reasoning ? { time: existing?.time ?? { start: Date.now() } } : {}),
     })
     return true
+  }
+
+  /** Reasoning is deliberately NOT routed through `appendText`.
+   *
+   * `appendText` bails on empty text, which is exactly right for message
+   * chunks and exactly wrong here: a provider whose thinking blocks carry no
+   * text at all (Claude Code — see `ThoughtChunk`) would produce no part, no
+   * `time.start` and no shimmer, so the UI would sit frozen for the 3-8s the
+   * block runs. A chunk carrying only a token count, or only a phase, still has
+   * to open and update the part. */
+  private appendThought(
+    state: LiveThreadState,
+    data: Extract<AgentEvent, { event: 'agent_thought_chunk' }>['data'],
+    eventId: string,
+  ): boolean {
+    const text = data.content ? this.text(data.content) : ''
+    // `tokens: 0` is a real first reading, so this tests presence, not truth.
+    const carriesProgress = text !== '' || data.tokens !== undefined
+    const opens = data.phase === 'start' || carriesProgress
+    if (!opens && data.phase !== 'stop') return false
+    if (opens) {
+      const partId = state.activeReasoningPartId ?? this.nextPartId(state, 'reasoning', eventId)
+      state.activeReasoningPartId = partId
+      const existing = state.parts.get(partId)
+      const previousTokens = typeof existing?.tokens === 'number' ? existing.tokens : undefined
+      const tokens =
+        data.tokens !== undefined
+          ? Math.max(previousTokens ?? 0, data.tokens)
+          : /* keep whatever the run has already reported */ previousTokens
+      state.parts.set(partId, {
+        ...(existing ?? {}),
+        type: 'reasoning',
+        id: partId,
+        text: `${String(existing?.text ?? '')}${text}`,
+        // estimated_tokens is a cumulative total, never an increment: summing
+        // it would multiply the count, and a late duplicate would inflate it.
+        ...(tokens !== undefined ? { tokens } : {}),
+        time: existing?.time ?? { start: Date.now() },
+      })
+    }
+    if (data.phase !== 'stop') return true
+    // Only `stop` can settle a block whose text is empty; without it the
+    // shimmer would run until some later event happened to close the part.
+    const closing = state.activeReasoningPartId !== undefined
+    this.finishReasoning(state)
+    return opens || closing
   }
 
   private finishReasoning(state: LiveThreadState): void {

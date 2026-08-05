@@ -1,7 +1,7 @@
 import type { ProviderId } from '@agentpack/contract'
 import type { BackendEvent, SessionResult } from '../backends/Backend.js'
 import type { HostDeps } from '../host.js'
-import type { SessionRuntimeSpec } from './AcpSessionRuntime.js'
+import type { SessionRuntimeSpec } from './SessionRuntime.js'
 import type { ManagedSessionRuntime, ManagedSessionRuntimeFactory } from './AcpSessionRuntimeImpl.js'
 import { MAX_SESSION_RUNTIMES } from './constants.js'
 import {

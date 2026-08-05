@@ -1,5 +1,7 @@
 import type {
   AgentEvent,
+  ModeListing,
+  ModelListing,
   PermissionOutcome,
   PermissionRequest,
   PlanDocument,
@@ -144,6 +146,20 @@ export class AgentHost {
     return this.runtime.health.reports()
   }
 
+  /** Model catalogs the runtime has learned from handshakes. Merged into
+   * `agent:providers` so the composer can list a provider before the user has
+   * ever run a session with it. */
+  getProviderModels(): Partial<Record<ProviderId, ModelListing>> {
+    return this.runtime.providerModels()
+  }
+
+  /** Mode catalogs the runtime has learned from handshakes, merged into
+   * `agent:providers` alongside `models` so the composer can render a mode
+   * picker for a provider before its first session. */
+  getProviderModes(): Partial<Record<ProviderId, ModeListing>> {
+    return this.runtime.providerModes()
+  }
+
   getPromptCapabilities(): Partial<Record<ProviderId, PromptCapabilities>> {
     return Object.fromEntries(this.promptCapabilitiesByProvider) as Partial<
       Record<ProviderId, PromptCapabilities>
@@ -183,7 +199,18 @@ export class AgentHost {
     if (!this.pendingQuestions.has(args.requestId))
       throw new Error('Question not found or already resolved')
     this.runtime.respondQuestion(args)
-    // Map cleanup happens on the extension_resolved event the broker emits.
+    // Map cleanup happens on the question_resolved event the broker emits for
+    // every settlement (this one, a timeout, a dying process).
+  }
+
+  /** The plan document as the provider actually asked it, still parked and
+   * unanswered. This map — not the job payload and not the Convex row — is the
+   * source of truth for a pending review: it is written straight off the
+   * `plan_review_request` event, it is what `respondPlan` validates against,
+   * and it lives in the same process as the job worker. A caller that needs to
+   * know how the provider expects the plan to continue asks here. */
+  getPendingPlan(requestId: string): PlanDocument | undefined {
+    return this.pendingPlans.get(requestId)
   }
 
   respondPlan(args: {
@@ -194,7 +221,7 @@ export class AgentHost {
     if (!this.pendingPlans.has(args.requestId))
       throw new Error('Plan review not found or already resolved')
     this.runtime.respondPlan(args)
-    // Map cleanup happens on the extension_resolved event the broker emits.
+    // Map cleanup happens on the plan_review_resolved event the broker emits.
   }
 
   private permissionOutcome(
@@ -287,9 +314,18 @@ export class AgentHost {
     if (event.event === 'plan_review_request') {
       this.pendingPlans.set(event.data.requestId, event.data)
     }
+    // Each pending kind clears on its own settlement event. These used to share
+    // `extension_resolved`, which only fires for interactions that travelled
+    // over ACP's `_ext` methods — a provider raising questions or plans any
+    // other way answered correctly and then left the row pending forever here,
+    // in Convex and on mobile.
     if (event.event === 'extension_resolved') {
       this.pendingExtensions.delete(event.data.requestId)
+    }
+    if (event.event === 'question_resolved') {
       this.pendingQuestions.delete(event.data.requestId)
+    }
+    if (event.event === 'plan_review_resolved') {
       this.pendingPlans.delete(event.data.requestId)
     }
     this.projector.consume(event)

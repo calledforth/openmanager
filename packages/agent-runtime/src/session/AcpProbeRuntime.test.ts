@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { BackendEvent } from '../backends/Backend.js'
 import { cursor } from '../providers/cursor.js'
 import { opencode } from '../providers/opencode.js'
-import type { ProviderConfig } from '../providers/index.js'
+import type { AcpProviderConfig } from '../providers/index.js'
 import { AcpProbeRuntimeImpl } from './AcpProbeRuntimeImpl.js'
 import { FakeConnectionFactory, type FakeWire } from './test-connection.js'
 
@@ -16,7 +16,7 @@ const CURSOR_INITIALIZE = {
   authMethods: [{ id: 'cursor_login', name: 'Cursor' }],
 }
 
-function build(wire: FakeWire, config: ProviderConfig = cursor) {
+function build(wire: FakeWire, config: AcpProviderConfig = cursor) {
   const events: BackendEvent[] = []
   const connections = new FakeConnectionFactory(wire)
   const probe = new AcpProbeRuntimeImpl(

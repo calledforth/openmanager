@@ -1,12 +1,13 @@
 import type { SessionConfigOption } from '@agentpack/contract'
 import { describe, expect, it, vi } from 'vitest'
 import type { BackendEvent } from '../backends/Backend.js'
-import { ExtensionBroker } from '../core/ExtensionBroker.js'
+import { InteractionBroker } from '../core/InteractionBroker.js'
 import { PermissionBroker } from '../core/PermissionBroker.js'
 import { cursor } from '../providers/cursor.js'
 import { opencode } from '../providers/opencode.js'
-import type { ProviderConfig } from '../providers/index.js'
-import type { AcpConnectionSpec, SessionRuntimeSpec } from './AcpSessionRuntime.js'
+import type { AcpProviderConfig } from '../providers/index.js'
+import type { AcpConnectionSpec } from './AcpConnection.js'
+import type { SessionRuntimeSpec } from './SessionRuntime.js'
 import { AcpSessionRuntimeImpl } from './AcpSessionRuntimeImpl.js'
 import type { RuntimeTimeouts } from './constants.js'
 import {
@@ -27,7 +28,7 @@ const SPEC = {
  * events land in the same stream the runtime's own events do. */
 function build(
   wire: FakeWire | ((spec: AcpConnectionSpec) => FakeWire),
-  config: ProviderConfig = opencode,
+  config: AcpProviderConfig = opencode,
   spec: Partial<SessionRuntimeSpec> = {},
   timeouts?: Partial<RuntimeTimeouts>,
 ) {
@@ -42,18 +43,31 @@ function build(
       data: { requestId: settlement.requestId, outcome: settlement.outcome },
     } as BackendEvent),
   )
-  const extensions = new ExtensionBroker((settlement) =>
+  // Same mapping `AgentRuntime.interactionResolved` performs: the settled
+  // interaction's kind, not the transport that carried it, picks the event.
+  const interactions = new InteractionBroker((settlement) =>
     events.push({
       threadId: settlement.threadId,
       workspaceId: settlement.workspaceId,
       sessionId: settlement.sessionId,
-      category: 'extension',
-      event: 'extension_resolved',
-      data: {
-        requestId: settlement.requestId,
-        method: settlement.method,
-        outcome: settlement.outcome,
-      },
+      ...(settlement.resolution
+        ? {
+            category: 'session',
+            event:
+              settlement.resolution.kind === 'question'
+                ? 'question_resolved'
+                : 'plan_review_resolved',
+            data: { requestId: settlement.requestId, outcome: settlement.resolution.outcome },
+          }
+        : {
+            category: 'extension',
+            event: 'extension_resolved',
+            data: {
+              requestId: settlement.requestId,
+              method: settlement.method,
+              outcome: settlement.outcome,
+            },
+          }),
     } as BackendEvent),
   )
   const connections = new FakeConnectionFactory(wire)
@@ -63,18 +77,18 @@ function build(
       config,
       host: { log: vi.fn(), onSessionTitle: vi.fn() },
       permissions,
-      extensions,
+      interactions,
       connections,
       ...(timeouts ? { timeouts } : {}),
     },
   )
   runtime.events((event) => events.push(event))
-  return { runtime, events, connections, permissions, extensions }
+  return { runtime, events, connections, permissions, interactions }
 }
 
 async function started(
   wire: FakeWire | ((spec: AcpConnectionSpec) => FakeWire) = {},
-  config: ProviderConfig = opencode,
+  config: AcpProviderConfig = opencode,
   spec: Partial<SessionRuntimeSpec> = {},
 ) {
   const harness = build(
@@ -140,7 +154,7 @@ describe('AcpSessionRuntime permission round-trip', () => {
 })
 
 describe('AcpSessionRuntime deferred extension requests', () => {
-  const deferredConfig: ProviderConfig = {
+  const deferredConfig: AcpProviderConfig = {
     ...opencode,
     extensions: {
       deferred: ['test/ask'],
@@ -326,7 +340,7 @@ describe('AcpSessionRuntime plan review (cursor/create_plan)', () => {
   }
 
   it('emits plan_review_request for the sole session and accepts', async () => {
-    const { runtime, responsePromise, requestId, request } = await setupWithPlan()
+    const { runtime, events, responsePromise, requestId, request } = await setupWithPlan()
     expect(request).toMatchObject({
       sessionId: 'session-1',
       data: {
@@ -335,10 +349,19 @@ describe('AcpSessionRuntime plan review (cursor/create_plan)', () => {
         overview: 'Overview',
         markdown: '# Plan\n\n- step',
         todos: [{ id: 't1', content: 'Step 1', status: 'pending' }],
+        // Answering `cursor/create_plan` ends the proposing turn, so building
+        // the plan needs a second prompt from the host.
+        continuation: 'follow_up_turn',
       },
     })
     expect(runtime.respondPlan(requestId, { outcome: 'accepted' })).toBe(true)
     await expect(responsePromise).resolves.toEqual({ outcome: { outcome: 'accepted' } })
+    // The settlement reports the review outcome itself, so a consumer
+    // persisting it never has to sniff the provider's wire payload.
+    expect(events.find((event) => event.event === 'plan_review_resolved')).toMatchObject({
+      category: 'session',
+      data: { requestId, outcome: { outcome: 'accepted' } },
+    })
   })
 
   it('maps a rejected outcome to the wire response with its reason', async () => {
@@ -1011,8 +1034,11 @@ describe('AcpSessionRuntime ACP form elicitation', () => {
       action: 'accept',
       content: { strategy: 'fast', retries: 3 },
     })
-    expect(events.find((event) => event.event === 'extension_resolved')).toMatchObject({
-      data: { requestId, method: 'elicitation/create', outcome: { outcome: 'responded' } },
+    // Questions settle as `question_resolved` whatever transport carried them,
+    // so a host that clears its pending rows on it works for every provider.
+    expect(events.find((event) => event.event === 'question_resolved')).toMatchObject({
+      category: 'session',
+      data: { requestId, outcome: { outcome: 'answered' } },
     })
     expect(runtime.respondQuestion(requestId, { outcome: 'cancelled' })).toBe(false)
   })
@@ -1035,11 +1061,8 @@ describe('AcpSessionRuntime ACP form elicitation', () => {
 
     await expect(pending).resolves.toEqual({ action: 'cancel' })
     expect(cancel).toHaveBeenCalledWith({ sessionId: 'session-1' })
-    expect(events.find((event) => event.event === 'extension_resolved')).toMatchObject({
-      data: {
-        method: 'elicitation/create',
-        outcome: { outcome: 'cancelled', reason: 'tool_cancelled' },
-      },
+    expect(events.find((event) => event.event === 'question_resolved')).toMatchObject({
+      data: { outcome: { outcome: 'cancelled', reason: 'tool_cancelled' } },
     })
   })
 })

@@ -3,9 +3,18 @@ import type { AuthMethod, ModelListing, ProviderId, ProviderSessionInfo } from '
 import type { BackendEvent, BackendRoute } from '../backends/Backend.js'
 import { AuthRequiredError } from '../core/errors.js'
 import type { HostDeps } from '../host.js'
-import type { ProviderConfig } from '../providers/index.js'
-import type { AcpProbeResult, AcpProbeRuntime, AcpProbeRuntimeFactory } from './AcpProbeRuntime.js'
-import type { AcpConnection, AcpConnectionFactory } from './AcpSessionRuntime.js'
+import {
+  requireAcpConfig,
+  type AcpProviderConfig,
+  type ProviderConfig,
+} from '../providers/index.js'
+import type { AcpConnection, AcpConnectionFactory } from './AcpConnection.js'
+import type {
+  ProbeResult,
+  ProbeRuntime,
+  ProbeRuntimeFactory,
+  ProbeRuntimeOptions,
+} from './ProbeRuntime.js'
 import { DEFAULT_RUNTIME_TIMEOUTS, type RuntimeTimeouts } from './constants.js'
 import type { ThreadId } from './lifecycle.js'
 import { RpcTimeoutError, withTimeout } from './timeout.js'
@@ -33,7 +42,7 @@ export type AcpProbeSpec = {
 }
 
 export type AcpProbeDeps = {
-  config: ProviderConfig
+  config: AcpProviderConfig
   host: Pick<HostDeps, 'log'>
   connections: AcpConnectionFactory
   timeouts?: Partial<RuntimeTimeouts>
@@ -49,10 +58,10 @@ export type AcpProbeDeps = {
  * session: the handshake, `session/list`, model catalogs, and (Phase 3) health
  * probes. On Cursor every model/config write is process-global, so asking
  * these inside a session process would change the model a user's turn runs on. */
-export class AcpProbeRuntimeImpl implements AcpProbeRuntime {
+export class AcpProbeRuntimeImpl implements ProbeRuntime {
   readonly providerId: ProviderId
   private transport: AcpConnection | null = null
-  private result: AcpProbeResult | undefined
+  private result: ProbeResult | undefined
   private readonly timeouts: RuntimeTimeouts
 
   constructor(
@@ -63,7 +72,7 @@ export class AcpProbeRuntimeImpl implements AcpProbeRuntime {
     this.timeouts = { ...DEFAULT_RUNTIME_TIMEOUTS, ...deps.timeouts }
   }
 
-  async probe(): Promise<AcpProbeResult> {
+  async probe(): Promise<ProbeResult> {
     if (this.result) return this.result
     await this.connect()
     const transport = this.transport
@@ -82,7 +91,7 @@ export class AcpProbeRuntimeImpl implements AcpProbeRuntime {
     return this.result
   }
 
-  private async handshake(): Promise<AcpProbeResult> {
+  private async handshake(): Promise<ProbeResult> {
     let response
     try {
       response = object(
@@ -108,12 +117,12 @@ export class AcpProbeRuntimeImpl implements AcpProbeRuntime {
         authMethods: methods,
       }),
     )
-    const result: AcpProbeResult = {
+    const result: ProbeResult = {
       agentInfo: agentInfo(response),
       protocolVersion: string(response.protocolVersion),
       authMethods: methods,
       authenticated: true,
-      promptCapabilities: capabilities.promptCapabilities as AcpProbeResult['promptCapabilities'],
+      promptCapabilities: capabilities.promptCapabilities as ProbeResult['promptCapabilities'],
       sessionListAdvertised: advertised,
       loadSessionAdvertised: this.deps.config.capabilities.canLoadSession,
     }
@@ -264,22 +273,27 @@ export type AcpProbeRuntimeFactoryDeps = {
   timeouts?: Partial<RuntimeTimeouts>
 }
 
-/** Phase 0's factory shape: silent probes, for callers that only want the
- * answer (Phase 3's health monitor). `AgentRuntime` builds probes directly
- * when it also needs the lifecycle events. */
-export class AcpProbeRuntimeFactoryImpl implements AcpProbeRuntimeFactory {
+/** Every ACP probe, silent by default. The health monitor asks for nothing but
+ * the answer and so passes no options; the desktop bootstrap passes its
+ * pseudo-thread and an `onEvent`, which is the only difference between the two
+ * and the reason `AgentRuntime` no longer constructs probes by hand. */
+export class AcpProbeRuntimeFactoryImpl implements ProbeRuntimeFactory {
   constructor(private readonly deps: AcpProbeRuntimeFactoryDeps) {}
 
-  create(providerId: ProviderId, cwd: string): AcpProbeRuntime {
-    const config = this.deps.configs[providerId]
-    if (!config) throw new Error(`Unknown provider: ${providerId}`)
+  create(providerId: ProviderId, cwd: string, options: ProbeRuntimeOptions = {}): ProbeRuntime {
     return new AcpProbeRuntimeImpl(
-      { providerId, cwd },
       {
-        config,
+        providerId,
+        cwd,
+        ...(options.threadId ? { threadId: options.threadId } : {}),
+        ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
+      },
+      {
+        config: requireAcpConfig(this.deps.configs, providerId),
         host: this.deps.host,
         connections: this.deps.connections,
         ...(this.deps.timeouts ? { timeouts: this.deps.timeouts } : {}),
+        ...(options.onEvent ? { onEvent: options.onEvent } : {}),
       },
     )
   }

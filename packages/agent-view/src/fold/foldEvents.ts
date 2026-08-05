@@ -63,7 +63,9 @@ export type FoldedSubagentRow = {
 export type FoldedRow =
   | { type: 'user'; id: string; text: string }
   | { type: 'assistant'; id: string; text: string }
-  | { type: 'thinking'; id: string; text: string }
+  /** `text` may be empty when the provider reports reasoning as a token
+   * estimate only (see `ThoughtChunk`); such a row is still worth keeping. */
+  | { type: 'thinking'; id: string; text: string; tokens?: number }
   | FoldedToolRow
   | FoldedExploreGroupRow
   | FoldedWorkedGroupRow
@@ -104,7 +106,10 @@ export function deriveConnectionState(events: readonly AgentEvent[]): Connection
 }
 
 function textFromContent(event: Extract<AgentEvent, { category: 'stream' }>): string {
+  // Thought chunks carry no content at all when the provider reports reasoning
+  // as timing plus a token estimate, so `content` is optional on that member.
   const block = event.data.content
+  if (!block) return ''
   if (block.type === 'text') return block.text
   if (block.type === 'resource_link') return block.uri
   if (block.type === 'resource') return block.text ?? block.uri ?? ''
@@ -350,7 +355,7 @@ export function foldEvents(
   const rows: FoldedRow[] = []
   const tools = new Map<string, FoldedToolRow>()
   let pendingPrompt: { id: string; text: string } | undefined
-  let thinking: { id: string; text: string } | undefined
+  let thinking: { id: string; text: string; tokens?: number } | undefined
   let userMessageId: string | undefined
   let assistantMessageId: string | undefined
   let activeUser: Extract<FoldedRow, { type: 'user' }> | undefined
@@ -361,7 +366,12 @@ export function foldEvents(
     pendingPrompt = undefined
   }
   const flushThinking = () => {
-    if (thinking?.text.trim()) rows.push({ type: 'thinking', ...thinking })
+    // A run with a token estimate and no text is a real thought — dropping it
+    // would erase the only trace of a block that took seconds to produce.
+    // `tokens: 0` is a real reading, hence the presence test.
+    if (thinking && (thinking.text.trim() || thinking.tokens !== undefined)) {
+      rows.push({ type: 'thinking', ...thinking })
+    }
     thinking = undefined
   }
   const ensureTool = (toolCallId: string, id: string): FoldedToolRow => {
@@ -409,11 +419,20 @@ export function foldEvents(
         }
         break
       }
-      case 'agent_thought_chunk':
+      case 'agent_thought_chunk': {
         flushPrompt()
         thinking ??= { id: event.id, text: '' }
         thinking.text += textFromContent(event)
+        // estimated_tokens is a cumulative total, never an increment.
+        if (event.data.tokens !== undefined) {
+          thinking.tokens = Math.max(thinking.tokens ?? 0, event.data.tokens)
+        }
+        // Providers with real block framing get one row per block; ones that
+        // only stream deltas keep folding into a single row until some other
+        // event flushes it, exactly as before.
+        if (event.data.phase === 'stop') flushThinking()
         break
+      }
       case 'agent_message_chunk': {
         flushThinking()
         flushPrompt()

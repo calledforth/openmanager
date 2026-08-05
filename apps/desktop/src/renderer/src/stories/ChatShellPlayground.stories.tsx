@@ -824,6 +824,8 @@ function Demo() {
                     { id: 'debug', name: 'Debug' },
                   ]}
                   currentModeId={modeId}
+                  effortLevels={['low', 'medium', 'high', 'xhigh', 'max']}
+                  currentEffort="high"
                   canChangeSettings={true}
                   canChangeProvider={true}
                   showModeControl={true}

@@ -7,7 +7,7 @@ import type {
 } from '@agentpack/contract'
 import { describe, expect, it, vi } from 'vitest'
 import type { BackendEventListener, SessionResult } from '../backends/Backend.js'
-import type { SessionRuntimeSpec } from './AcpSessionRuntime.js'
+import type { SessionRuntimeSpec } from './SessionRuntime.js'
 import type {
   ManagedSessionRuntime,
   ManagedSessionRuntimeFactory,

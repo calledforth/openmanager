@@ -9,6 +9,12 @@ import { ComposerPlanPrompt } from '../plans/ComposerPlanPrompt'
 import { MessageInputView } from './MessageInputView'
 import { deriveSessionChrome } from '@agentpack/view'
 import { useTrackedMutation } from '../../lib/convex-telemetry'
+import {
+  buildProviderModelGroups,
+  metadataModeOptions,
+  metadataModelOptions,
+  type ComposerModelChoice,
+} from './providerModelGroups'
 import type { DraftImageAttachment, UploadedImageAttachment } from '../../lib/attachments'
 
 export function MessageInput() {
@@ -35,6 +41,7 @@ export function MessageInput() {
     providerComposerProfiles,
     currentClientId,
     acpPromptCapabilitiesByProvider,
+    composerConfigValues,
   } = useAppUi()
   const { sendMessage, abortSession, activeSession } = useActiveSession()
   const questionState = useQuestionStateOptional()
@@ -71,44 +78,123 @@ export function MessageInput() {
   const providerReady = !providerBlocksComposer(agentUiStatusByProvider[currentProviderId])
   const currentProviderName =
     providerOptions.find((provider) => provider.id === currentProviderId)?.name ?? currentProviderId
-  const chromeModeOptions = (chrome.modePicker?.options ?? []).map((mode) => ({
-    id: mode.id,
-    name: mode.label,
-  }))
-  const runtimeModeOptions = runtimeState?.modes?.availableModes ?? []
-  const modeOptions = runtimeModeOptions.length > 0 ? runtimeModeOptions : chromeModeOptions
-  const currentModeId =
-    runtimeState?.modes?.currentModeId ??
-    chrome.modePicker?.currentModeId ??
-    modeOptions[0]?.id ??
-    ''
   const chromeModelOptions = (chrome.modelPicker?.options ?? []).map((model) => ({
     id: model.id,
     name: model.label,
+    ...(model.description ? { description: model.description } : {}),
   }))
   const runtimeModelOptions = (runtimeState?.models?.availableModels ?? []).map((model) => ({
     id: model.modelId,
     name: model.name,
+    ...(model.description ? { description: model.description } : {}),
+    ...(model.effortLevels?.length ? { effortLevels: model.effortLevels } : {}),
+    ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
+    ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
   }))
-  const modelOptions = runtimeModelOptions.length > 0 ? runtimeModelOptions : chromeModelOptions
+  // Provider metadata is the last resort behind runtime state and chrome, and
+  // the only one that does not require the provider to have been used already.
+  // Annotated rather than inferred: the three sources carry different fields
+  // (only the runtime one knows capabilities), and the inferred union would
+  // narrow them away just where the effort pill and mode filter read them.
+  const modelOptions: ComposerModelChoice[] =
+    runtimeModelOptions.length > 0
+      ? runtimeModelOptions
+      : chromeModelOptions.length > 0
+        ? chromeModelOptions
+        : metadataModelOptions(providers, currentProviderId)
   const currentModelId =
     runtimeState?.models?.currentModelId ??
     chrome.modelPicker?.currentModelId ??
     modelOptions[0]?.id ??
     ''
-  const providerModelGroups = providerOptions.map((provider) => {
-    const models =
-      provider.id === currentProviderId
-        ? modelOptions
-        : (providerComposerProfiles[provider.id]?.availableModels ?? []).map((model) => ({
-            id: model.modelId,
-            name: model.name,
-          }))
-    return {
-      providerId: provider.id,
-      providerName: provider.name,
-      models,
-    }
+  // Models resolve before modes on purpose: what a model supports decides
+  // which modes are even offerable, and how much of the settings row renders.
+  //
+  // Capabilities are looked up separately from the row that supplies the
+  // *label*, and deliberately so. The display list can come from three places
+  // and two of them (chrome's picker projection, and any older persisted
+  // profile) carry only id/name/description — so binding capabilities to
+  // whichever list happened to win would make the effort pill blink out
+  // whenever a different source took over. The provider's own catalog is the
+  // stable answer: these flags describe the model, not the session.
+  const capabilityCatalog = metadataModelOptions(providers, currentProviderId)
+  const selectedModel =
+    [
+      modelOptions.find((model) => model.id === currentModelId),
+      capabilityCatalog.find((model) => model.id === currentModelId),
+    ].find((model) => model?.effortLevels?.length || model?.supportsAutoMode) ??
+    modelOptions.find((model) => model.id === currentModelId)
+
+  const chromeModeOptions = (chrome.modePicker?.options ?? []).map((mode) => ({
+    id: mode.id,
+    name: mode.label,
+    ...(mode.description ? { description: mode.description } : {}),
+  }))
+  const runtimeModeOptions = runtimeState?.modes?.availableModes ?? []
+  // Same three-source ladder the models use, and for the same reason: chrome
+  // and runtime state both require the provider to have been run, so a
+  // provider that answers its modes at handshake time would otherwise render
+  // no mode control at all until its first session.
+  const allModeOptions =
+    runtimeModeOptions.length > 0
+      ? runtimeModeOptions
+      : chromeModeOptions.length > 0
+        ? chromeModeOptions
+        : metadataModeOptions(providers, currentProviderId)
+  // Claude Code rejects `setPermissionMode('auto')` outright on a model
+  // without classifier support, so offering it would turn a mode switch into
+  // an error toast.
+  //
+  // The guard is doing real work. An absent `supportsAutoMode` means two
+  // different things — "this model cannot" and "nobody told us" — and the
+  // model that most needs filtering (Haiku) carries no capability fields at
+  // all, so the row itself cannot distinguish them. What can: whether *any*
+  // model in this list reports capabilities. If one does, the provider
+  // publishes them and silence on the selected model is a real "no". If none
+  // does, this is an ACP provider that has never reported any, and filtering
+  // would hide a mode that works.
+  const capabilitiesKnown = modelOptions.some(
+    (model) => model.supportsAutoMode || model.effortLevels?.length,
+  )
+  const modeOptions =
+    capabilitiesKnown && selectedModel && !selectedModel.supportsAutoMode
+      ? allModeOptions.filter((mode) => mode.id !== 'auto')
+      : allModeOptions
+  const rawModeId =
+    runtimeState?.modes?.currentModeId ??
+    chrome.modePicker?.currentModeId ??
+    modeOptions[0]?.id ??
+    ''
+  // A remembered `auto` on a model that cannot serve it must not be shown as
+  // current; the session will have been stepped off it anyway.
+  const currentModeId = modeOptions.some((mode) => mode.id === rawModeId)
+    ? rawModeId
+    : (modeOptions[0]?.id ?? '')
+
+  // The effort pill reads its levels off the selected model rather than off a
+  // config option, so it renders in a fresh draft too — config options only
+  // exist once a session has published them.
+  const effortLevels = selectedModel?.effortLevels ?? []
+  const effortOption = (runtimeState?.configOptions ?? []).find(
+    (option) => option.id === 'effort' && option.type === 'select',
+  )
+  // Live session state first, then what the workspace remembers — a draft has
+  // no published options yet, but the value it will launch with is already
+  // decided and the pill has to show it.
+  const rememberedEffort = composerConfigValues['effort']
+  const currentEffort =
+    typeof effortOption?.currentValue === 'string' && effortOption.currentValue
+      ? effortOption.currentValue
+      : typeof rememberedEffort === 'string'
+        ? rememberedEffort
+        : ''
+
+  const providerModelGroups = buildProviderModelGroups({
+    providerOptions,
+    currentProviderId,
+    currentModels: modelOptions,
+    composerProfiles: providerComposerProfiles,
+    providers,
   })
   // Runtime state first, chrome as fallback — mirrors the model/mode resolution
   // above. Runtime state also carries the per-workspace draft copy, so the picker
@@ -254,6 +340,8 @@ export function MessageInput() {
         configOptions={runtimeState?.configOptions ?? []}
         modeOptions={modeOptions}
         currentModeId={currentModeId}
+        effortLevels={effortLevels}
+        currentEffort={currentEffort}
         canChangeSettings={canChangeSettings}
         canChangeProvider={isSessionDraftOpen && !activeSessionId}
         showModeControl={chrome.modePicker !== null || modeOptions.length > 0}

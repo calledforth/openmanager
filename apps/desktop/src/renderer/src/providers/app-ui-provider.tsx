@@ -26,6 +26,7 @@ import {
   type PromptCapabilities,
   type QuestionOutcome,
   type SessionConfigOption,
+  isRecoverableError,
 } from '@agentpack/contract'
 import {
   recordRendererTelemetry,
@@ -39,6 +40,7 @@ import {
   mergeProviderComposerProfiles,
   mergeWorkspaceComposerPreferences,
   resolveComposerChoice,
+  withProviderCatalog,
   workspaceComposerPreferenceKey,
   type ComposerModeOption,
   type ComposerModelOption,
@@ -88,6 +90,12 @@ function toAcpModels(models: Extract<AgentEvent, { event: 'session_created' }>['
       name: model.displayName,
       description: model.description,
       contextWindowTokens: model.contextWindowTokens,
+      // Capability flags have to survive this hop: a live session's catalog
+      // wins over provider metadata in the composer's ladder, so dropping them
+      // here hides the effort pill for exactly the sessions that can use it.
+      ...(model.effortLevels?.length ? { effortLevels: model.effortLevels } : {}),
+      ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
+      ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
     })),
   }
 }
@@ -290,6 +298,13 @@ interface AppUiValue {
   providers: ProviderMetadata[]
   acpSessionState: AcpSessionRuntimeState | null
   draftSessionState: AcpSessionRuntimeState | null
+  /** Remembered per-workspace config values for the provider in the composer.
+   *
+   * The composer needs these to render a setting it has not applied yet: a
+   * fresh draft has no session and therefore no published `configOptions`, so
+   * a control reading only those would show nothing until the first prompt —
+   * even though the value is remembered and *will* be sent at launch. */
+  composerConfigValues: Record<string, string | boolean>
   error: string | null
   retryProvider: (providerId: ProviderId) => Promise<void>
   setActiveWorkspacePath: (path: string | null) => void
@@ -414,6 +429,28 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
     useState<WorkspaceComposerPreferences>({})
   const providerComposerProfilesRef = useRef<ProviderComposerProfiles>({})
   const workspaceComposerPreferencesRef = useRef<WorkspaceComposerPreferences>({})
+  /** `providers` for the callbacks that run outside React's render, mirroring
+   * the refs the composer profile and preferences already keep. Those
+   * callbacks fire from IPC events and job submission, where reading state
+   * would capture whatever `providers` was when the callback was built —
+   * which, for a catalog that arrives on the first probe, is empty. */
+  const providersRef = useRef<ProviderMetadata[]>([])
+  useEffect(() => {
+    providersRef.current = providers
+  }, [providers])
+
+  /** The remembered composer profile, backed by the provider's handshake
+   * catalog. Every `resolve*ComposerRuntime` caller goes through this or its
+   * render-time twin: validating a remembered pick against a catalog the
+   * provider never got to report is what silently discarded it. */
+  const composerProfileForRef = useCallback(
+    (providerId: ProviderId) =>
+      withProviderCatalog(
+        providerComposerProfilesRef.current[providerId],
+        providersRef.current.find((provider) => provider.id === providerId),
+      ),
+    [],
+  )
 
   const mergeDraftRuntimeForWorkspace = useCallback(
     (
@@ -813,7 +850,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
             : {}),
         },
         preference,
-        profile: providerComposerProfilesRef.current[draftProviderId],
+        profile: composerProfileForRef(draftProviderId),
       })
       setDraftSelectionByWorkspace((prev) => ({
         ...prev,
@@ -947,7 +984,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
             workspaceComposerPreferencesRef.current[
               workspaceComposerPreferenceKey(activeWorkspacePath, draftProviderId)
             ],
-          profile: providerComposerProfilesRef.current[draftProviderId],
+          profile: composerProfileForRef(draftProviderId),
         })
         const preferredModelId = resolvedDraft.models?.currentModelId
         const preferredModeId = resolvedDraft.modes?.currentModeId
@@ -1160,7 +1197,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           workspaceComposerPreferencesRef.current[
             workspaceComposerPreferenceKey(activeWorkspacePath, providerId)
           ],
-        profile: providerComposerProfilesRef.current[providerId],
+        profile: composerProfileForRef(providerId),
       })
       const nextModelId = modelId ?? resolvedDraft.models?.currentModelId
       setDraftSelectionByWorkspace((prev) => ({
@@ -1563,11 +1600,32 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
     ],
   )
 
+  // Provider metadata is not frozen at launch. `models` is filled in by the
+  // first successful probe of each provider, and the health monitor probes
+  // every provider at boot — so re-reading on each health change is what turns
+  // "Claude Code has no models yet" into a populated composer picker without
+  // the user having to select it first. The identity guard matters: this
+  // fires several times per handshake, and a fresh array every time would
+  // re-render every consumer of `providers` for an unchanged answer.
   useEffect(() => {
-    window.electronAPI
-      .getAgentProviders()
-      .then(setProviders)
-      .catch(() => setProviders([]))
+    let cancelled = false
+    const load = (): void => {
+      window.electronAPI
+        .getAgentProviders()
+        .then((next) => {
+          if (cancelled) return
+          setProviders((current) =>
+            JSON.stringify(current) === JSON.stringify(next) ? current : next,
+          )
+        })
+        .catch(() => undefined)
+    }
+    load()
+    const cleanup = window.electronAPI.onAgentStatusChanged(() => load())
+    return () => {
+      cancelled = true
+      cleanup()
+    }
   }, [])
 
   useEffect(() => {
@@ -1908,6 +1966,10 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         case 'rpc_error':
         case 'runtime_error':
         case 'process_exited':
+          // See `isRecoverableError`: the turn is still running, so the
+          // composer must stay in its running state rather than unlocking and
+          // dropping the job id it still needs to cancel with.
+          if (isRecoverableError(event)) return
           if (
             !event.sessionId ||
             event.sessionId === activeSessionId ||
@@ -1931,7 +1993,9 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         case 'permission_request':
         case 'permission_resolved':
         case 'question_request':
+        case 'question_resolved':
         case 'plan_review_request':
+        case 'plan_review_resolved':
         case 'session_info_update':
         case 'usage_update':
         case 'extension_request':
@@ -1967,13 +2031,42 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
     return resolveSessionComposerRuntime(
       runtime,
       preference,
-      providerComposerProfiles[runtime.providerId],
+      withProviderCatalog(
+        providerComposerProfiles[runtime.providerId],
+        providers.find((provider) => provider.id === runtime.providerId),
+      ),
     )
   }, [
     acpSessionStateById,
     activeSessionId,
     activeWorkspacePath,
     providerComposerProfiles,
+    providers,
+    workspaceComposerPreferences,
+  ])
+
+  /** The remembered config values for whichever provider the composer is
+   * pointed at — the live session's provider when there is one, the draft's
+   * otherwise. */
+  const composerConfigValues = useMemo(() => {
+    if (!activeWorkspacePath) return {}
+    const providerId = activeSessionId
+      ? (acpSessionStateById[activeSessionId]?.providerId ?? defaultProviderId)
+      : (draftSessionStateByWorkspace[activeWorkspacePath]?.providerId ??
+        draftSelectionByWorkspace[activeWorkspacePath]?.providerId ??
+        defaultProviderId)
+    return (
+      workspaceComposerPreferences[
+        workspaceComposerPreferenceKey(activeWorkspacePath, providerId)
+      ]?.configValues ?? {}
+    )
+  }, [
+    acpSessionStateById,
+    activeSessionId,
+    activeWorkspacePath,
+    defaultProviderId,
+    draftSelectionByWorkspace,
+    draftSessionStateByWorkspace,
     workspaceComposerPreferences,
   ])
 
@@ -1991,7 +2084,10 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         workspaceComposerPreferences[
           workspaceComposerPreferenceKey(activeWorkspacePath, providerId)
         ],
-      profile: providerComposerProfiles[providerId],
+      profile: withProviderCatalog(
+        providerComposerProfiles[providerId],
+        providers.find((provider) => provider.id === providerId),
+      ),
     })
   }, [
     activeWorkspacePath,
@@ -2000,6 +2096,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
     draftSessionStateByWorkspace,
     isSessionDraftOpen,
     providerComposerProfiles,
+    providers,
     workspaceComposerPreferences,
   ])
 
@@ -2021,6 +2118,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       providers,
       acpSessionState,
       draftSessionState,
+      composerConfigValues,
       error,
       retryProvider,
       providerComposerProfiles,
@@ -2064,6 +2162,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       providers,
       acpSessionState,
       draftSessionState,
+      composerConfigValues,
       error,
       retryProvider,
       providerComposerProfiles,

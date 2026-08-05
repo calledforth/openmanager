@@ -5,16 +5,12 @@ import {
   type ProviderHealth,
 } from '@openmanager/shared/contracts/provider-health'
 import { describe, expect, it, vi } from 'vitest'
-import type {
-  AcpProbeResult,
-  AcpProbeRuntime,
-  AcpProbeRuntimeFactory,
-} from '../session/AcpProbeRuntime.js'
+import type { ProbeResult, ProbeRuntime, ProbeRuntimeFactory } from '../session/ProbeRuntime.js'
 import type { SessionRuntimeExit } from '../session/lifecycle.js'
 import { AuthRequiredError } from './errors.js'
 import { ProviderHealthMonitor, type ProviderRuntimeCensus } from './ProviderHealthMonitor.js'
 
-const HEALTHY: AcpProbeResult = {
+const HEALTHY: ProbeResult = {
   agentInfo: { name: 'cursor-agent', version: '2026.07.23' },
   authMethods: [],
   authenticated: true,
@@ -22,14 +18,14 @@ const HEALTHY: AcpProbeResult = {
   loadSessionAdvertised: true,
 }
 
-class FakeProbe implements AcpProbeRuntime {
+class FakeProbe implements ProbeRuntime {
   disposed = 0
   constructor(
     readonly providerId: ProviderId,
     readonly cwd: string,
-    private readonly answer: () => Promise<AcpProbeResult>,
+    private readonly answer: () => Promise<ProbeResult>,
   ) {}
-  probe(): Promise<AcpProbeResult> {
+  probe(): Promise<ProbeResult> {
     return this.answer()
   }
   listSessions(): Promise<ProviderSessionInfo[]> {
@@ -43,12 +39,12 @@ class FakeProbe implements AcpProbeRuntime {
   }
 }
 
-class FakeProbeFactory implements AcpProbeRuntimeFactory {
+class FakeProbeFactory implements ProbeRuntimeFactory {
   readonly created: FakeProbe[] = []
   /** Per-provider answer; defaults to a healthy Cursor handshake. */
-  readonly answers = new Map<ProviderId, () => Promise<AcpProbeResult>>()
+  readonly answers = new Map<ProviderId, () => Promise<ProbeResult>>()
 
-  create(providerId: ProviderId, cwd: string): AcpProbeRuntime {
+  create(providerId: ProviderId, cwd: string): ProbeRuntime {
     const answer = this.answers.get(providerId) ?? (async () => HEALTHY)
     const probe = new FakeProbe(providerId, cwd, answer)
     this.created.push(probe)
@@ -174,7 +170,7 @@ describe('ProviderHealthMonitor axes', () => {
 
   it('leaves every axis unknown when a probe times out, and kills its process', async () => {
     const { monitor, probes } = build({ probeTimeoutMs: 10 })
-    probes.answers.set('cursor', () => new Promise<AcpProbeResult>(() => undefined))
+    probes.answers.set('cursor', () => new Promise<ProbeResult>(() => undefined))
     await monitor.refresh('cursor', 'user')
     const health = monitor.health('cursor')
     expect(health.lastProbe?.outcome).toBe('timeout')
@@ -300,7 +296,7 @@ describe('ProviderHealthMonitor refresh policy', () => {
     const { monitor, probes } = build()
     let live = 0
     let peak = 0
-    const slow = async (): Promise<AcpProbeResult> => {
+    const slow = async (): Promise<ProbeResult> => {
       live += 1
       peak = Math.max(peak, live)
       await new Promise<void>((resolve) => setTimeout(resolve, 5))

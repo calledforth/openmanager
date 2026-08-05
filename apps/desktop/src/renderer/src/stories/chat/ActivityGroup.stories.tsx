@@ -157,6 +157,29 @@ export const LongThinking: Story = {
   ),
 }
 
+/** Reasoning without a transcript.
+ *
+ * Some providers stream thinking as text; others report only that a block ran
+ * and roughly how many tokens it consumed — Claude Code's `thinking` blocks
+ * carry an empty string and nothing else usable. Such a part renders as a plain
+ * indicator row (there is nothing to expand), settled or still running, and the
+ * turn reads as making progress instead of freezing for several seconds. The
+ * middle row is a settled block whose count is genuinely zero: no token label,
+ * but still a row. */
+export const IndicatorOnlyThinking: Story = {
+  render: () => (
+    <Frame
+      parts={[
+        { type: 'reasoning', id: 'th-tokens', tokens: 1500, time: { start: 0, end: 2800 } },
+        { type: 'reasoning', id: 'th-zero', tokens: 0, time: { start: 0, end: 300 } },
+        read('r1', 'packages/agent-contract/src/events.ts'),
+        { type: 'reasoning', id: 'th-live', tokens: 320, time: { start: 0 } },
+        { type: 'text', id: 't1', text: 'Reasoning ran three times without saying a word.' },
+      ]}
+    />
+  ),
+}
+
 /** A live run stays collapsed to one shimmering line that rewrites as calls land. */
 export const Streaming: Story = {
   render: () => (
