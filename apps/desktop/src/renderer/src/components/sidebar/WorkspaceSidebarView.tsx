@@ -13,6 +13,7 @@ import type { ProviderId } from '@agentpack/contract'
 import { cn } from '../../lib/utils'
 import { typographyBodySm, typographyCaptionTiny, typographyLabel } from '../../lib/typography'
 import { ProviderIcon } from '../providers/ProviderIcon'
+import { Tooltip } from '../ui/Tooltip'
 import { SidebarSettingsMenu } from './SidebarSettingsMenu'
 import { SessionBusyLoader } from './SessionBusyLoader'
 
@@ -124,15 +125,16 @@ export function WorkspaceSidebarView({
       <div className={cn('flex min-h-0 flex-1 flex-col', collapsed && 'invisible')}>
         <div className="relative flex h-[var(--basis-titlebar-height)] shrink-0 items-center justify-end px-1.5">
           {onCollapse && (
-            <button
-              type="button"
-              onClick={onCollapse}
-              title="Close sidebar"
-              aria-label="Close sidebar"
-              className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--basis-text-strong)] opacity-0 transition-default hover:bg-[color-mix(in_srgb,var(--basis-text-strong)_14%,transparent)] group-hover/sidebar:opacity-100 focus-visible:opacity-100"
-            >
-              <CaretDoubleLeftIcon weight="light" className="h-[16px] w-[18px]" />
-            </button>
+            <Tooltip content="Close sidebar" side="bottom" align="end">
+              <button
+                type="button"
+                onClick={onCollapse}
+                aria-label="Close sidebar"
+                className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--basis-text-strong)] opacity-0 transition-default hover:bg-[color-mix(in_srgb,var(--basis-text-strong)_14%,transparent)] group-hover/sidebar:opacity-100 focus-visible:opacity-100"
+              >
+                <CaretDoubleLeftIcon weight="light" className="h-[16px] w-[18px]" />
+              </button>
+            </Tooltip>
           )}
         </div>
 
@@ -157,15 +159,16 @@ export function WorkspaceSidebarView({
           <span className={cn(typographyBodySm, 'min-w-0 flex-1 text-[var(--basis-text-muted)]')}>
             Projects
           </span>
-          <button
-            type="button"
-            onClick={onAddWorkspace}
-            title="Add project"
-            aria-label="Add project"
-            className="flex h-6 w-6 items-center justify-center rounded text-[var(--basis-text-muted)] transition-default hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]"
-          >
-            <FolderPlusIcon className="h-5 w-5" weight="regular" />
-          </button>
+          <Tooltip content="Add project" side="bottom" align="end">
+            <button
+              type="button"
+              onClick={onAddWorkspace}
+              aria-label="Add project"
+              className="flex h-6 w-6 items-center justify-center rounded text-[var(--basis-text-muted)] transition-default hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]"
+            >
+              <FolderPlusIcon className="h-5 w-5" weight="regular" />
+            </button>
+          </Tooltip>
         </div>
 
         {/* Project list */}
@@ -258,18 +261,19 @@ function WorkspaceGroup({
           <FolderIcon className="h-3.5 w-3.5 shrink-0" weight="regular" />
           <span className="flex-1 truncate text-left">{workspace.name}</span>
         </button>
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation()
-            onCreateSession(workspace.path)
-          }}
-          title="New Agent"
-          aria-label="New Agent"
-          className="flex h-5 w-0 shrink-0 items-center justify-center overflow-hidden rounded text-[var(--basis-text-muted)] opacity-0 transition-[width,opacity] group-hover:w-5 group-hover:opacity-100 hover:bg-[var(--basis-surface)] hover:text-[var(--basis-text)]"
-        >
-          <PlusIcon className="h-3.5 w-3.5" weight="bold" />
-        </button>
+        <Tooltip content="New agent in this project" side="bottom" align="end">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onCreateSession(workspace.path)
+            }}
+            aria-label="New Agent"
+            className="flex h-5 w-0 shrink-0 items-center justify-center overflow-hidden rounded text-[var(--basis-text-muted)] opacity-0 transition-[width,opacity] group-hover:w-5 group-hover:opacity-100 hover:bg-[var(--basis-surface)] hover:text-[var(--basis-text)]"
+          >
+            <PlusIcon className="h-3.5 w-3.5" weight="bold" />
+          </button>
+        </Tooltip>
       </div>
 
       {!isCollapsed && (
@@ -302,14 +306,16 @@ function WorkspaceGroup({
                   {s.title || 'New session'}
                 </span>
                 {isChild && !isBusy ? (
-                  <span
-                    className="shrink-0 rounded-sm border border-[var(--basis-border-muted)] px-1 py-px text-[9px] leading-none tracking-wide text-[var(--basis-text-faint)]"
-                    title={
+                  <Tooltip
+                    content={
                       isOrphan ? 'Subagent transcript (parent unavailable)' : 'Subagent transcript'
                     }
+                    side="right"
                   >
-                    {isOrphan ? 'ORPHAN' : 'SUBAGENT'}
-                  </span>
+                    <span className="shrink-0 rounded-sm border border-[var(--basis-border-muted)] px-1 py-px text-[9px] leading-none tracking-wide text-[var(--basis-text-faint)]">
+                      {isOrphan ? 'ORPHAN' : 'SUBAGENT'}
+                    </span>
+                  </Tooltip>
                 ) : null}
                 <span
                   className={cn(

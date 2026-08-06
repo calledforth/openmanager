@@ -9,15 +9,11 @@ import {
   type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
-import {
-  CaretDownIcon,
-  CheckIcon,
-  MagnifyingGlassIcon,
-  StarIcon,
-} from '@phosphor-icons/react'
+import { CaretDownIcon, CheckIcon, MagnifyingGlassIcon, StarIcon } from '@phosphor-icons/react'
 import type { ProviderId } from '@agentpack/contract'
 import { cn } from '../../lib/utils'
 import { ProviderIcon } from '../providers/ProviderIcon'
+import { Tooltip } from '../ui/Tooltip'
 import { usePortaledMenu } from '../ui/usePortaledMenu'
 import { modelHint, modelLabel } from './modelLabel'
 import {
@@ -74,9 +70,7 @@ type MetaRow = { label: string; value: string }
 
 function sortGroups(groups: ProviderModelGroup[]): ProviderModelGroup[] {
   const rank = new Map(PROVIDER_RAIL_ORDER.map((id, index) => [id, index]))
-  return [...groups].sort(
-    (a, b) => (rank.get(a.providerId) ?? 99) - (rank.get(b.providerId) ?? 99),
-  )
+  return [...groups].sort((a, b) => (rank.get(a.providerId) ?? 99) - (rank.get(b.providerId) ?? 99))
 }
 
 function matchesQuery(model: FlatModel, query: string) {
@@ -158,6 +152,9 @@ export function ProviderModelPicker({
   const [favorites, setFavorites] = useState<FavoriteModelKey[]>(() => readFavoriteModels())
   const [paneId, setPaneId] = useState<PaneId>(currentProviderId)
   const [hoverCardTop, setHoverCardTop] = useState<number | null>(null)
+  // The meta card is a hover affordance: it only appears once the user actually
+  // points at (or keyboard-navigates to) a row, never on the default row 0.
+  const [previewing, setPreviewing] = useState(false)
 
   const visibleGroups = useMemo(() => {
     const filtered = canChangeProvider
@@ -223,7 +220,7 @@ export function ProviderModelPicker({
   const showRail = !searching && canShowRail
 
   const activeModel = paneModels[activeIndex]
-  const metaRows = metaRowsFor(activeModel)
+  const metaRows = previewing ? metaRowsFor(activeModel) : null
 
   const { open, toggle, close, menuCoords, wrapRef, triggerRef, menuRef } = usePortaledMenu({
     placement: 'above',
@@ -237,12 +234,12 @@ export function ProviderModelPicker({
       setQuery('')
       setActiveIndex(0)
       setHoverCardTop(null)
+      setPreviewing(false)
       return
     }
-    const preferred: PaneId =
-      visibleGroups.some((group) => group.providerId === currentProviderId)
-        ? currentProviderId
-        : (visibleGroups[0]?.providerId ?? FAVORITES_PANE)
+    const preferred: PaneId = visibleGroups.some((group) => group.providerId === currentProviderId)
+      ? currentProviderId
+      : (visibleGroups[0]?.providerId ?? FAVORITES_PANE)
     setPaneId(preferred)
     setActiveIndex(0)
     requestAnimationFrame(() => searchRef.current?.focus())
@@ -298,17 +295,15 @@ export function ProviderModelPicker({
   const onMenuKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'ArrowDown') {
       event.preventDefault()
-      setActiveIndex((index) =>
-        paneModels.length === 0 ? 0 : (index + 1) % paneModels.length,
-      )
+      setPreviewing(true)
+      setActiveIndex((index) => (paneModels.length === 0 ? 0 : (index + 1) % paneModels.length))
       return
     }
     if (event.key === 'ArrowUp') {
       event.preventDefault()
+      setPreviewing(true)
       setActiveIndex((index) =>
-        paneModels.length === 0
-          ? 0
-          : (index - 1 + paneModels.length) % paneModels.length,
+        paneModels.length === 0 ? 0 : (index - 1 + paneModels.length) % paneModels.length,
       )
       return
     }
@@ -363,6 +358,7 @@ export function ProviderModelPicker({
                 onChange={(event) => {
                   setQuery(event.target.value)
                   setActiveIndex(0)
+                  setPreviewing(false)
                 }}
                 placeholder="Search models…"
                 className="min-w-0 flex-1 bg-transparent text-[11px] font-normal leading-[var(--lh-default)] tracking-[var(--tracking-normal)] text-[var(--basis-text)] outline-none [font-variation-settings:'wght'_450] placeholder:text-[var(--basis-text-muted)]"
@@ -383,6 +379,7 @@ export function ProviderModelPicker({
                   onSelect={() => {
                     setPaneId(FAVORITES_PANE)
                     setActiveIndex(0)
+                    setPreviewing(false)
                   }}
                 >
                   <StarIcon
@@ -404,6 +401,7 @@ export function ProviderModelPicker({
                     onSelect={() => {
                       setPaneId(group.providerId)
                       setActiveIndex(0)
+                      setPreviewing(false)
                     }}
                   >
                     <ProviderIcon providerId={group.providerId} className="h-3.5 w-3.5" />
@@ -424,7 +422,10 @@ export function ProviderModelPicker({
                 </div>
               )}
 
-              <div className="min-h-0 flex-1 overflow-y-auto py-0.5">
+              <div
+                className="min-h-0 flex-1 overflow-y-auto py-0.5"
+                onMouseLeave={() => setPreviewing(false)}
+              >
                 {paneModels.map((model, index) => {
                   const selected = model.key === selectedKey
                   const active = index === activeIndex
@@ -444,7 +445,10 @@ export function ProviderModelPicker({
                             ? 'bg-[var(--basis-surface)]'
                             : 'hover:bg-[var(--basis-surface)]',
                       )}
-                      onMouseEnter={() => setActiveIndex(index)}
+                      onMouseEnter={() => {
+                        setActiveIndex(index)
+                        setPreviewing(true)
+                      }}
                     >
                       <button
                         type="button"
@@ -466,27 +470,28 @@ export function ProviderModelPicker({
                           <CheckIcon className="h-3 w-3 shrink-0 text-[var(--basis-text)]" />
                         )}
                       </button>
-                      <button
-                        type="button"
-                        title={favorited ? 'Remove favorite' : 'Add favorite'}
-                        aria-label={
-                          favorited ? `Unfavorite ${model.label}` : `Favorite ${model.label}`
-                        }
-                        aria-pressed={favorited}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          onToggleFavorite(model.key)
-                        }}
-                        className={cn(
-                          'flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors',
-                          favorited
-                            ? 'text-[var(--basis-text)]'
-                            : 'text-[var(--basis-text-faint)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
-                          'hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
-                        )}
-                      >
-                        <StarIcon size={11} weight={favorited ? 'fill' : 'regular'} />
-                      </button>
+                      <Tooltip content={favorited ? 'Remove favorite' : 'Add favorite'} side="left">
+                        <button
+                          type="button"
+                          aria-label={
+                            favorited ? `Unfavorite ${model.label}` : `Favorite ${model.label}`
+                          }
+                          aria-pressed={favorited}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            onToggleFavorite(model.key)
+                          }}
+                          className={cn(
+                            'flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors',
+                            favorited
+                              ? 'text-[var(--basis-text)]'
+                              : 'text-[var(--basis-text-faint)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
+                            'hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
+                          )}
+                        >
+                          <StarIcon size={11} weight={favorited ? 'fill' : 'regular'} />
+                        </button>
+                      </Tooltip>
                     </div>
                   )
                 })}
@@ -505,9 +510,7 @@ export function ProviderModelPicker({
           </div>
         </div>
 
-        {metaRows && hoverCardTop !== null && (
-          <ModelMetaCard rows={metaRows} top={hoverCardTop} />
-        )}
+        {metaRows && hoverCardTop !== null && <ModelMetaCard rows={metaRows} top={hoverCardTop} />}
       </div>,
       document.body,
     )
@@ -556,7 +559,10 @@ function ModelMetaCard({ rows, top }: { rows: MetaRow[]; top: number }) {
         {rows.map((row) => (
           <div key={row.label} className="grid grid-cols-[72px_minmax(0,1fr)] items-start gap-2">
             <dt className="text-[10px] leading-4 text-[var(--basis-text-faint)]">{row.label}</dt>
-            <dd className="truncate text-[10px] leading-4 text-[var(--basis-text)]" title={row.value}>
+            <dd
+              className="truncate text-[10px] leading-4 text-[var(--basis-text)]"
+              title={row.value}
+            >
               {row.value}
             </dd>
           </div>
@@ -578,25 +584,26 @@ function RailButton({
   children: ReactNode
 }) {
   return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={selected}
-      aria-label={label}
-      title={label}
-      onClick={onSelect}
-      className={cn(
-        'relative flex w-full items-center justify-center px-0 py-2 text-[var(--basis-text-muted)] transition-colors',
-        'hover:bg-[var(--basis-surface)] hover:text-[var(--basis-text)]',
-        selected && 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]',
-      )}
-    >
-      {selected && (
-        <span className="absolute bottom-1.5 left-0 top-1.5 w-0.5 rounded-r-sm bg-[var(--basis-text-strong)]" />
-      )}
-      <span className={cn('opacity-75 transition-opacity', selected && 'opacity-100')}>
-        {children}
-      </span>
-    </button>
+    <Tooltip content={label} side="right">
+      <button
+        type="button"
+        role="tab"
+        aria-selected={selected}
+        aria-label={label}
+        onClick={onSelect}
+        className={cn(
+          'relative flex w-full items-center justify-center px-0 py-2 text-[var(--basis-text-muted)] transition-colors',
+          'hover:bg-[var(--basis-surface)] hover:text-[var(--basis-text)]',
+          selected && 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]',
+        )}
+      >
+        {selected && (
+          <span className="absolute bottom-1.5 left-0 top-1.5 w-0.5 rounded-r-sm bg-[var(--basis-text-strong)]" />
+        )}
+        <span className={cn('opacity-75 transition-opacity', selected && 'opacity-100')}>
+          {children}
+        </span>
+      </button>
+    </Tooltip>
   )
 }

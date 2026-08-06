@@ -11,6 +11,7 @@ import {
 import { cn } from '../../lib/utils'
 import { typographyCaption } from '../../lib/typography'
 import { useTheme } from '../../providers/theme-provider'
+import { Tooltip } from '../ui/Tooltip'
 import { usePortaledMenu } from '../ui/usePortaledMenu'
 import { ConvexSettingsDialog } from '../settings/ConvexSettingsDialog'
 import { ExtraSettingsDialog } from '../settings/ExtraSettingsDialog'
@@ -39,15 +40,7 @@ export function SidebarSettingsMenu({
     status: 'idle',
   })
   const { theme, setTheme } = useTheme()
-  const {
-    open,
-    toggle,
-    close,
-    menuCoords,
-    wrapRef,
-    triggerRef,
-    menuRef,
-  } = usePortaledMenu({
+  const { open, toggle, close, menuCoords, wrapRef, triggerRef, menuRef } = usePortaledMenu({
     placement: 'above',
     align: 'end',
     minWidth: 200,
@@ -87,21 +80,23 @@ export function SidebarSettingsMenu({
   return (
     <>
       <div ref={wrapRef} className="relative shrink-0">
-        <button
-          ref={triggerRef}
-          type="button"
-          onClick={toggle}
-          aria-expanded={open}
-          aria-haspopup="menu"
-          title="Settings"
-          className={cn(
-            'flex h-7 w-7 items-center justify-center rounded-[var(--basis-chat-shell-radius)] text-[var(--basis-text-muted)] transition-default',
-            'hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
-            open && 'bg-[var(--basis-surface-hover)] text-[var(--basis-text)]',
-          )}
-        >
-          <GearIcon className="h-4 w-4" />
-        </button>
+        <Tooltip content="Settings" side="top">
+          <button
+            ref={triggerRef}
+            type="button"
+            onClick={toggle}
+            aria-expanded={open}
+            aria-haspopup="menu"
+            aria-label="Settings"
+            className={cn(
+              'flex h-7 w-7 items-center justify-center rounded-[var(--basis-chat-shell-radius)] text-[var(--basis-text-muted)] transition-default',
+              'hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
+              open && 'bg-[var(--basis-surface-hover)] text-[var(--basis-text)]',
+            )}
+          >
+            <GearIcon className="h-4 w-4" />
+          </button>
+        </Tooltip>
 
         {open &&
           menuCoords &&
@@ -131,70 +126,78 @@ export function SidebarSettingsMenu({
                     role="group"
                     aria-label="Theme"
                   >
-                    <button
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={theme === 'light'}
-                      title="Light"
-                      onClick={() => setTheme('light')}
-                      className={cn(
-                        'flex h-5 w-5 items-center justify-center rounded-full transition-colors',
-                        theme === 'light'
-                          ? 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]'
-                          : 'text-[var(--basis-text-faint)] hover:text-[var(--basis-text)]',
-                      )}
-                    >
-                      <SunIcon className="h-3 w-3" />
-                    </button>
-                    <button
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={theme === 'dark'}
-                      title="Dark"
-                      onClick={() => setTheme('dark')}
-                      className={cn(
-                        'flex h-5 w-5 items-center justify-center rounded-full transition-colors',
-                        theme === 'dark'
-                          ? 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]'
-                          : 'text-[var(--basis-text-faint)] hover:text-[var(--basis-text)]',
-                      )}
-                    >
-                      <MoonIcon className="h-3 w-3" />
-                    </button>
+                    <Tooltip content="Light theme" side="top">
+                      <button
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={theme === 'light'}
+                        aria-label="Light theme"
+                        onClick={() => setTheme('light')}
+                        className={cn(
+                          'flex h-5 w-5 items-center justify-center rounded-full transition-colors',
+                          theme === 'light'
+                            ? 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]'
+                            : 'text-[var(--basis-text-faint)] hover:text-[var(--basis-text)]',
+                        )}
+                      >
+                        <SunIcon className="h-3 w-3" />
+                      </button>
+                    </Tooltip>
+                    <Tooltip content="Dark theme" side="top">
+                      <button
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={theme === 'dark'}
+                        aria-label="Dark theme"
+                        onClick={() => setTheme('dark')}
+                        className={cn(
+                          'flex h-5 w-5 items-center justify-center rounded-full transition-colors',
+                          theme === 'dark'
+                            ? 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]'
+                            : 'text-[var(--basis-text-faint)] hover:text-[var(--basis-text)]',
+                        )}
+                      >
+                        <MoonIcon className="h-3 w-3" />
+                      </button>
+                    </Tooltip>
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={updateCheckState.status === 'checking'}
-                  onClick={() => void checkForUpdates()}
-                  title="Check for updates"
-                  className={cn(menuItemClass, 'disabled:cursor-wait')}
+                <Tooltip
+                  content={updateStatusMessage ?? 'Check for updates'}
+                  side="right"
+                  wrapperClassName="w-full"
                 >
-                  {updateCheckState.status === 'checking' ? (
-                    <CircleNotchIcon className="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--basis-text-muted)]" />
-                  ) : (
-                    <ArrowClockwiseIcon className="h-3.5 w-3.5 shrink-0 text-[var(--basis-text-muted)]" />
-                  )}
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate">v{displayedVersion}</span>
-                    {updateStatusMessage && (
-                      <span
-                        className={cn(
-                          typographyCaption,
-                          'mt-0.5 block truncate leading-tight text-[var(--basis-text-faint)]',
-                          updateCheckState.status === 'available' && 'text-emerald-400',
-                          updateCheckState.status === 'error' && 'text-amber-400',
-                        )}
-                        title={updateStatusMessage}
-                        aria-live="polite"
-                      >
-                        {updateStatusMessage}
-                      </span>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={updateCheckState.status === 'checking'}
+                    onClick={() => void checkForUpdates()}
+                    className={cn(menuItemClass, 'disabled:cursor-wait')}
+                  >
+                    {updateCheckState.status === 'checking' ? (
+                      <CircleNotchIcon className="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--basis-text-muted)]" />
+                    ) : (
+                      <ArrowClockwiseIcon className="h-3.5 w-3.5 shrink-0 text-[var(--basis-text-muted)]" />
                     )}
-                  </span>
-                </button>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate">v{displayedVersion}</span>
+                      {updateStatusMessage && (
+                        <span
+                          className={cn(
+                            typographyCaption,
+                            'mt-0.5 block truncate leading-tight text-[var(--basis-text-faint)]',
+                            updateCheckState.status === 'available' && 'text-emerald-400',
+                            updateCheckState.status === 'error' && 'text-amber-400',
+                          )}
+                          aria-live="polite"
+                        >
+                          {updateStatusMessage}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                </Tooltip>
 
                 <button
                   type="button"

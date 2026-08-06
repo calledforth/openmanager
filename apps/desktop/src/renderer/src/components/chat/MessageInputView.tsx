@@ -21,6 +21,7 @@ import {
 import { cn } from '../../lib/utils'
 import type { ProviderId, SessionConfigOption } from '@agentpack/contract'
 import { SearchableMenu, type SearchableMenuSection } from '../ui/SearchableMenu'
+import { Tooltip } from '../ui/Tooltip'
 import { usePortaledMenu } from '../ui/usePortaledMenu'
 import {
   chatInputShell,
@@ -48,10 +49,7 @@ import {
   slashQueryFromText,
   type SlashCommandItem,
 } from './slashCommands'
-import {
-  ProviderModelPicker,
-  type ProviderModelGroup,
-} from './ProviderModelPicker'
+import { ProviderModelPicker, type ProviderModelGroup } from './ProviderModelPicker'
 
 export type { ProviderModelGroup }
 
@@ -167,23 +165,24 @@ function ModelConfigMenu({
 
   return (
     <div ref={wrapRef} className="flex shrink-0">
-      <button
-        ref={triggerRef}
-        type="button"
-        onClick={toggle}
-        disabled={disabled}
-        title="Edit model settings"
-        aria-label="Edit model settings"
-        aria-expanded={open}
-        className={cn(
-          'flex h-5 w-5 items-center justify-center rounded text-[var(--basis-text-faint)] transition-colors',
-          'hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
-          open && 'bg-[var(--basis-surface-hover)] text-[var(--basis-text)]',
-          disabled && 'cursor-default opacity-40',
-        )}
-      >
-        <FadersHorizontalIcon size={12} weight="regular" />
-      </button>
+      <Tooltip content="Edit model settings">
+        <button
+          ref={triggerRef}
+          type="button"
+          onClick={toggle}
+          disabled={disabled}
+          aria-label="Edit model settings"
+          aria-expanded={open}
+          className={cn(
+            'flex h-5 w-5 items-center justify-center rounded text-[var(--basis-text-faint)] transition-colors',
+            'hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
+            open && 'bg-[var(--basis-surface-hover)] text-[var(--basis-text)]',
+            disabled && 'cursor-default opacity-40',
+          )}
+        >
+          <FadersHorizontalIcon size={12} weight="regular" />
+        </button>
+      </Tooltip>
       {open &&
         menuCoords &&
         createPortal(
@@ -713,20 +712,23 @@ export function MessageInputView({
 
         <div className="flex items-center justify-between gap-1.5 px-1 pb-0.5">
           <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto scrollbar-hide">
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={disabled || !imageUploadEnabled || sending || isAwaitingPlanReview}
-              title={
+            <Tooltip
+              content={
                 isAwaitingPlanReview
                   ? 'Plan revision feedback currently supports text only'
                   : (imageSupportMessage ?? 'Attach images')
               }
-              aria-label="Attach images"
-              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--basis-text-muted)] transition-colors hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)] disabled:cursor-not-allowed disabled:opacity-35"
             >
-              <PlusIcon size={12} />
-            </button>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={disabled || !imageUploadEnabled || sending || isAwaitingPlanReview}
+                aria-label="Attach images"
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--basis-text-muted)] transition-colors hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)] disabled:cursor-not-allowed disabled:opacity-35"
+              >
+                <PlusIcon size={12} />
+              </button>
+            </Tooltip>
 
             <div className="mx-0.5 h-3.5 w-px shrink-0 bg-[var(--basis-border-muted)]" />
 
@@ -781,7 +783,7 @@ export function MessageInputView({
                 // claim a setting we never sent.
                 value={currentEffort}
                 options={[
-                  { id: '', name: 'Auto effort', description: "Let Claude choose the depth." },
+                  { id: '', name: 'Auto effort', description: 'Let Claude choose the depth.' },
                   ...effortLevels.map((level) => ({ id: level, name: level })),
                 ]}
                 onChange={(level) => onConfigOptionChange('effort', level)}
@@ -801,24 +803,61 @@ export function MessageInputView({
           <div className="flex shrink-0 items-center gap-1">
             {isAwaitingPlanReview ? (
               <>
+                <Tooltip content="Cancel planning">
+                  <button
+                    type="button"
+                    onClick={onAbort}
+                    aria-label="Cancel planning"
+                    className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--basis-text-faint)] transition-colors hover:bg-red-500/10 hover:text-red-400"
+                  >
+                    <SquareIcon className="h-2.5 w-2.5" weight="fill" />
+                  </button>
+                </Tooltip>
+                <Tooltip content="Request plan changes">
+                  <button
+                    type="button"
+                    onClick={send}
+                    disabled={!sendActive}
+                    aria-label="Request plan changes"
+                    className={cn(
+                      btnSend,
+                      sendActive && 'theme-btn-plan !h-6 !w-6 !rounded-full !p-0',
+                      !sendActive &&
+                        '!bg-[var(--basis-surface-hover)] !text-[var(--basis-text-faint)]',
+                    )}
+                  >
+                    {sending ? (
+                      <CircleNotchIcon size={13} className="animate-spin" />
+                    ) : (
+                      <ArrowUpIcon size={14} />
+                    )}
+                  </button>
+                </Tooltip>
+              </>
+            ) : isStreaming ? (
+              <Tooltip content="Stop" shortcut="Esc">
                 <button
                   type="button"
                   onClick={onAbort}
-                  title="Cancel planning"
-                  aria-label="Cancel planning"
-                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--basis-text-faint)] transition-colors hover:bg-red-500/10 hover:text-red-400"
+                  aria-label="Stop"
+                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--basis-surface-hover)] text-[var(--basis-text-muted)] transition-colors hover:bg-red-500/10 hover:text-red-400"
                 >
                   <SquareIcon className="h-2.5 w-2.5" weight="fill" />
                 </button>
+              </Tooltip>
+            ) : (
+              <Tooltip
+                content={sendActive ? (isPlan ? 'Start planning' : 'Send') : undefined}
+                shortcut="⏎"
+              >
                 <button
                   type="button"
                   onClick={send}
                   disabled={!sendActive}
-                  title="Request plan changes"
-                  aria-label="Request plan changes"
+                  aria-label={isPlan ? 'Start planning' : 'Send'}
                   className={cn(
                     btnSend,
-                    sendActive && 'theme-btn-plan !h-6 !w-6 !rounded-full !p-0',
+                    sendActive && isPlan && 'theme-btn-plan !rounded-full !h-6 !w-6 !p-0',
                     !sendActive &&
                       '!bg-[var(--basis-surface-hover)] !text-[var(--basis-text-faint)]',
                   )}
@@ -829,34 +868,7 @@ export function MessageInputView({
                     <ArrowUpIcon size={14} />
                   )}
                 </button>
-              </>
-            ) : isStreaming ? (
-              <button
-                type="button"
-                onClick={onAbort}
-                title="Stop"
-                aria-label="Stop"
-                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--basis-surface-hover)] text-[var(--basis-text-muted)] transition-colors hover:bg-red-500/10 hover:text-red-400"
-              >
-                <SquareIcon className="h-2.5 w-2.5" weight="fill" />
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={send}
-                disabled={!sendActive}
-                className={cn(
-                  btnSend,
-                  sendActive && isPlan && 'theme-btn-plan !rounded-full !h-6 !w-6 !p-0',
-                  !sendActive && '!bg-[var(--basis-surface-hover)] !text-[var(--basis-text-faint)]',
-                )}
-              >
-                {sending ? (
-                  <CircleNotchIcon size={13} className="animate-spin" />
-                ) : (
-                  <ArrowUpIcon size={14} />
-                )}
-              </button>
+              </Tooltip>
             )}
           </div>
         </div>
