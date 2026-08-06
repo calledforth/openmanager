@@ -56,7 +56,8 @@
   --font-geist-sans: 'Geist Variable', 'Geist', ui-sans-serif, system-ui, sans-serif;
   --font-inter-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, sans-serif;
   --font-public-sans: 'Public Sans Variable', 'Public Sans', ui-sans-serif, system-ui, sans-serif;
-  --font-system-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-system-sans:
+    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-sans: var(--font-geist-sans);
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 
@@ -162,7 +163,12 @@
   --tool-bg-active: transparent;
   --tool-border-active: transparent;
   --shimmer-anim: tool-shimmer-sweep 1.5s infinite;
-  --shimmer-bg: linear-gradient(to right, transparent, color-mix(in srgb, var(--basis-text) 10%, transparent), transparent);
+  --shimmer-bg: linear-gradient(
+    to right,
+    transparent,
+    color-mix(in srgb, var(--basis-text) 10%, transparent),
+    transparent
+  );
   --radius-chat: var(--basis-chat-shell-radius);
   --radius-panel: var(--basis-chat-shell-radius);
   --radius-tool: var(--basis-chat-shell-radius);
@@ -311,18 +317,7 @@ textarea,
   font-synthesis-weight: none;
 }
 
-/* Lock block markdown to the same size (avoids rem/em shrinking vs 13px body) */
-.chat-assistant :where(p, ul, ol, li, blockquote) {
-  font-size: inherit;
-  line-height: inherit;
-  font-weight: inherit;
-}
-
-/* Emphasis = color only, weight 400 (matches single-weight agentic body text) */
-.chat-assistant :where(strong, b) {
-  font-weight: 400;
-  color: var(--color-chat-emphasis);
-}
+/* Markdown block rhythm lives in §4 (.md) — do not add element rules here. */
 
 .chat-user :where(strong, b) {
   font-weight: 400;
@@ -427,112 +422,310 @@ textarea,
 }
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    §4  CHAT MARKDOWN — prose rhythm inside [data-chat-view]
+    §4  MARKDOWN — the single styling layer for rendered markdown.
+    Scoped to `.md`, which components/markdown/Markdown.tsx applies. Every
+    surface that renders model output (chat, plan panel, …) goes through that
+    component, so this block is the ONLY place markdown typography is defined.
+    Lives in @layer components so per-instance Tailwind utilities still win.
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-.chat-prose {
-  font-size: var(--chat-assistant-size);
-  line-height: var(--lh-prose);
-  letter-spacing: var(--tracking-normal);
-  font-family: var(--font-sans);
-}
+@layer components {
+  .md {
+    font-family: var(--font-sans);
+    font-size: var(--chat-assistant-size);
+    font-weight: 400;
+    line-height: var(--lh-prose);
+    letter-spacing: var(--tracking-normal);
+    color: var(--basis-text);
+    font-synthesis-weight: none;
+    overflow-wrap: anywhere;
+  }
 
-/* Tables in chat */
-[data-chat-view] table {
-  width: 100%;
-  border-collapse: collapse;
-  margin: 1.5em 0;
-  font-size: 0.875rem;
-}
+  .md-dimmed {
+    color: var(--basis-text-muted);
+  }
 
-[data-chat-view] th,
-[data-chat-view] td {
-  border: 1px solid var(--color-border);
-  padding: 0.75rem 1rem;
-  text-align: left;
-}
+  /* Blocks never push past the message's own padding. */
+  .md > :first-child {
+    margin-top: 0;
+  }
+  .md > :last-child {
+    margin-bottom: 0;
+  }
 
-[data-chat-view] th {
-  background-color: var(--color-surface-hover);
-  color: var(--color-foreground);
-  font-weight: 500;
-}
+  /* ── Paragraphs ─────────────────────────────────────── */
+  .md p {
+    margin: 0 0 0.7em;
+  }
 
-/* Inline code */
-[data-chat-view] p code,
-[data-chat-view] code:not(pre code) {
-  background: transparent;
-  color: var(--color-primary);
-  font-family: var(--font-mono);
-  font-size: 0.9em;
-  font-weight: 400;
-  padding: 0;
-}
+  /* ── Headings — size + color carry the hierarchy ─────── */
+  .md h1,
+  .md h2,
+  .md h3,
+  .md h4,
+  .md h5,
+  .md h6 {
+    margin: 1.5em 0 0.5em;
+    font-weight: 500;
+    line-height: var(--lh-snug);
+    letter-spacing: var(--tracking-normal);
+    color: var(--basis-text-strong);
+  }
+  .md h1 {
+    font-size: 1.32em;
+  }
+  .md h2 {
+    font-size: 1.16em;
+  }
+  .md h3 {
+    font-size: 1.04em;
+  }
+  .md h4 {
+    font-size: 1em;
+    color: var(--basis-text);
+  }
+  .md h5,
+  .md h6 {
+    font-size: 0.9em;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--basis-text-muted);
+  }
+  /* Stacked headings shouldn't compound their top margins. */
+  .md :is(h1, h2, h3, h4, h5, h6) + :is(h1, h2, h3, h4, h5, h6) {
+    margin-top: 0.85em;
+  }
 
-/* Blockquotes */
-[data-chat-view] blockquote {
-  border-left: 3px solid var(--color-primary);
-  padding-left: 1.25rem;
-  margin-left: 0;
-  margin-top: 1.5em;
-  margin-bottom: 1.5em;
-  color: var(--color-muted-foreground);
-  font-style: italic;
-}
+  /* ── Lists — markers restored (preflight strips them) ── */
+  .md ul,
+  .md ol {
+    margin: 0.7em 0;
+    padding-left: 1.35em;
+  }
+  .md ul {
+    list-style: disc;
+  }
+  .md ul ul {
+    list-style: circle;
+  }
+  .md ul ul ul {
+    list-style: square;
+  }
+  .md ol {
+    list-style: decimal;
+  }
+  .md ol ol {
+    list-style: lower-alpha;
+  }
+  .md ol ol ol {
+    list-style: lower-roman;
+  }
+  .md li {
+    margin: 0.22em 0;
+    padding-left: 0.15em;
+  }
+  .md li::marker {
+    color: var(--basis-text-faint);
+    font-variant-numeric: tabular-nums;
+  }
+  /* Nested lists and list paragraphs tighten up rather than double-space. */
+  .md li > ul,
+  .md li > ol {
+    margin: 0.22em 0 0.1em;
+  }
+  .md li > p {
+    margin-bottom: 0.35em;
+  }
+  .md li > p:last-child {
+    margin-bottom: 0;
+  }
 
-/* Lists */
-[data-chat-view] ul,
-[data-chat-view] ol {
-  padding-left: 1.5rem;
-  margin-top: 1em;
-  margin-bottom: 1em;
-}
+  /* ── GFM task lists ─────────────────────────────────── */
+  .md .contains-task-list {
+    list-style: none;
+    padding-left: 0.15em;
+  }
+  .md .task-list-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5em;
+    padding-left: 0;
+  }
+  .md-check {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 13px;
+    height: 13px;
+    margin-top: 0.3em;
+    border: 1px solid var(--basis-border);
+    border-radius: 3px;
+    color: transparent;
+  }
+  .md-check-on {
+    background: var(--basis-text-strong);
+    border-color: var(--basis-text-strong);
+    color: var(--basis-canvas-bg);
+  }
 
-[data-chat-view] li {
-  margin-bottom: 0.5em;
-}
+  /* ── Rules — a real divider, not a hairline ─────────── */
+  .md hr {
+    height: 1px;
+    margin: 1.6em 0;
+    border: 0;
+    background: linear-gradient(
+      90deg,
+      var(--basis-border),
+      color-mix(in srgb, var(--basis-border) 20%, transparent)
+    );
+  }
 
-[data-chat-view] li > p {
-  margin-top: 0.25em;
-}
+  /* ── Quotes ─────────────────────────────────────────── */
+  .md blockquote {
+    margin: 0.9em 0;
+    padding: 0.1em 0 0.1em 0.9em;
+    border-left: 2px solid var(--basis-border);
+    color: var(--basis-text-muted);
+  }
+  .md blockquote > :last-child {
+    margin-bottom: 0;
+  }
 
-/* Headings — regular weight; size provides hierarchy (agentic-style) */
-[data-chat-view] h1,
-[data-chat-view] h2,
-[data-chat-view] h3,
-[data-chat-view] h4 {
-  color: var(--color-foreground);
-  margin-top: 2em;
-  margin-bottom: 0.75em;
-  font-weight: 400;
-  letter-spacing: var(--tracking-normal);
-}
+  /* ── Emphasis ───────────────────────────────────────── */
+  .md strong {
+    font-weight: 500;
+    color: var(--basis-text-strong);
+  }
+  .md em {
+    font-style: italic;
+  }
+  .md del {
+    text-decoration: line-through;
+    color: var(--basis-text-faint);
+  }
 
-[data-chat-view] h1 {
-  font-size: 1.5em;
-}
-[data-chat-view] h2 {
-  font-size: 1.25em;
-  border-bottom: 1px solid var(--color-border);
-  padding-bottom: 0.25em;
-}
-[data-chat-view] h3 {
-  font-size: 1.1em;
-}
+  /* ── Links ──────────────────────────────────────────── */
+  .md a {
+    color: var(--basis-text-strong);
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--basis-text-strong) 35%, transparent);
+    text-underline-offset: 2px;
+  }
+  .md a:hover {
+    text-decoration-color: currentColor;
+  }
 
-[data-chat-view] p {
-  margin-top: 1px;
-  margin-bottom: 1px;
-}
+  /* ── Inline code ────────────────────────────────────── */
+  .md :not(pre) > code {
+    font-family: var(--font-mono);
+    font-size: 0.875em;
+    padding: 0.1em 0.34em;
+    border: 1px solid var(--basis-border-muted);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--basis-text) 7%, transparent);
+    color: var(--basis-text-strong);
+  }
 
-[data-chat-view] ul,
-[data-chat-view] ol {
-  margin-top: 4px;
-  margin-bottom: 4px;
-}
+  /* ── Code blocks ────────────────────────────────────── */
+  .md-code {
+    margin: 0.9em 0;
+    border: 1px solid var(--basis-border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--basis-surface);
+  }
+  .md-code-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5em;
+    min-height: 26px;
+    padding: 0.2em 0.35em 0.2em 0.75em;
+    border-bottom: 1px solid var(--basis-border-muted);
+    background: color-mix(in srgb, var(--basis-surface-elevated) 55%, transparent);
+  }
+  .md-code-lang {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--basis-text-faint);
+  }
+  .md-code pre {
+    margin: 0;
+    padding: 0.7em 0.85em;
+    overflow-x: auto;
+    font-size: 12.5px;
+    line-height: var(--lh-readable);
+    /* shiki writes a theme background inline; the shell owns it instead. */
+    background: transparent !important;
+  }
+  .md-code pre code {
+    display: block;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    font-family: var(--font-mono);
+    font-size: inherit;
+    color: inherit;
+  }
 
-[data-chat-view] pre {
-  margin-top: 8px;
-  margin-bottom: 8px;
+  /* Dual-theme shiki: one render carries both palettes as custom properties. */
+  .md .shiki,
+  .md .shiki span {
+    color: var(--shiki-dark);
+  }
+  html[data-theme='light'] .md .shiki,
+  html[data-theme='light'] .md .shiki span {
+    color: var(--shiki-light);
+  }
+
+  /* ── Tables — scroll horizontally instead of overflowing ── */
+  .md table {
+    display: block;
+    width: max-content;
+    max-width: 100%;
+    overflow-x: auto;
+    margin: 1em 0;
+    font-size: 0.92em;
+    border: 1px solid var(--basis-border);
+    border-radius: 6px;
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+  .md th,
+  .md td {
+    padding: 0.4em 0.7em;
+    text-align: left;
+    border-bottom: 1px solid var(--basis-border-muted);
+  }
+  .md th {
+    font-weight: 500;
+    color: var(--basis-text-strong);
+    background: var(--basis-surface);
+  }
+  .md tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  /* ── Media ──────────────────────────────────────────── */
+  .md img {
+    max-width: 100%;
+    height: auto;
+    margin: 0.6em 0;
+    border: 1px solid var(--basis-border-muted);
+    border-radius: 6px;
+  }
+
+  /* ── Footnotes (GFM) ────────────────────────────────── */
+  .md .footnotes {
+    margin-top: 1.6em;
+    padding-top: 0.8em;
+    border-top: 1px solid var(--basis-border-muted);
+    font-size: 0.92em;
+    color: var(--basis-text-muted);
+  }
 }
 
 /* Composer fade scrim — Basis-style canvas gradient (no glass) */
@@ -544,7 +737,6 @@ textarea,
     transparent 100%
   );
 }
-
 
 @layer utilities {
   .theme-btn-plan {
@@ -661,6 +853,28 @@ textarea,
 
 .chat-animate-fade-in {
   animation: chat-fade-in 200ms ease-out;
+}
+
+@keyframes basis-tooltip-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Shared hover-tip bubble motion — see components/ui/Tooltip.tsx. */
+.basis-tooltip-in {
+  animation: basis-tooltip-in 110ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .basis-tooltip-in {
+    animation: chat-fade-in 110ms ease-out;
+  }
 }
 .chat-animate-slide-up {
   animation: chat-slide-up 200ms ease-out;

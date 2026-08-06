@@ -15,13 +15,11 @@ import {
 import type { ProviderId } from '@agentpack/contract'
 import { cn } from '../../lib/utils'
 import { UI_FONTS, type UiFontId } from '../../lib/fonts'
-import {
-  describeProviderHealth,
-  type ProviderHealthTone,
-} from '../../lib/provider-health-view'
+import { describeProviderHealth, type ProviderHealthTone } from '../../lib/provider-health-view'
 import { typographyBodySm, typographyCaption, typographyLabel } from '../../lib/typography'
 import { useTheme, type ThemeMode } from '../../providers/theme-provider'
 import { useAppUi } from '../../providers/app-ui-provider'
+import { Tooltip } from '../ui/Tooltip'
 import { usePortaledMenu } from '../ui/usePortaledMenu'
 import { ProviderIcon } from '../providers/ProviderIcon'
 
@@ -275,7 +273,10 @@ export function ExtraSettingsDialog({
             <div className="space-y-1.5">
               <label
                 htmlFor="extra-settings-font"
-                className={cn(typographyLabel, 'flex items-center gap-1.5 text-[var(--basis-text)]')}
+                className={cn(
+                  typographyLabel,
+                  'flex items-center gap-1.5 text-[var(--basis-text)]',
+                )}
               >
                 <TextTIcon className="h-3.5 w-3.5 text-[var(--basis-text-muted)]" />
                 Font
@@ -292,7 +293,10 @@ export function ExtraSettingsDialog({
             <div className="space-y-1.5">
               <label
                 htmlFor="extra-settings-theme"
-                className={cn(typographyLabel, 'flex items-center gap-1.5 text-[var(--basis-text)]')}
+                className={cn(
+                  typographyLabel,
+                  'flex items-center gap-1.5 text-[var(--basis-text)]',
+                )}
               >
                 {theme === 'dark' ? (
                   <MoonIcon className="h-3.5 w-3.5 text-[var(--basis-text-muted)]" />
@@ -327,16 +331,21 @@ export function ExtraSettingsDialog({
                     <div className="truncate text-11-regular leading-tight text-[var(--basis-text)]">
                       {provider.label}
                     </div>
-                    <div
-                      className={cn(
-                        typographyCaption,
-                        'truncate leading-tight text-[var(--basis-text-faint)]',
-                      )}
-                      title={provider.health.detail ?? provider.health.label}
+                    <Tooltip
+                      content={provider.health.detail ?? provider.health.label}
+                      side="bottom"
+                      align="start"
                     >
-                      {provider.health.label}
-                      {provider.health.detail ? ` · ${provider.health.detail}` : ''}
-                    </div>
+                      <div
+                        className={cn(
+                          typographyCaption,
+                          'truncate leading-tight text-[var(--basis-text-faint)]',
+                        )}
+                      >
+                        {provider.health.label}
+                        {provider.health.detail ? ` · ${provider.health.detail}` : ''}
+                      </div>
+                    </Tooltip>
                   </div>
                   {provider.health.status === 'probing' ? (
                     <CircleNotchIcon className="h-3 w-3 shrink-0 animate-spin text-[var(--basis-text-faint)]" />
@@ -360,9 +369,7 @@ export function ExtraSettingsDialog({
                 </button>
               ))}
               {providers.length === 0 && (
-                <div
-                  className={cn(typographyBodySm, 'px-3 py-3 text-[var(--basis-text-faint)]')}
-                >
+                <div className={cn(typographyBodySm, 'px-3 py-3 text-[var(--basis-text-faint)]')}>
                   No providers registered
                 </div>
               )}

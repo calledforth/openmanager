@@ -13,6 +13,7 @@ import { useAppUi } from '../../providers/app-ui-provider'
 import { useSidebarData } from '../../providers/sidebar-data-provider'
 import { cn } from '../../lib/utils'
 import { typographyBody } from '../../lib/typography'
+import { Tooltip } from '../ui/Tooltip'
 
 const isMac = window.electronAPI.platform === 'darwin'
 const showWindowControls = !isMac
@@ -80,24 +81,28 @@ export function AppChrome({
           className="titlebar-no-drag flex shrink-0 items-center gap-0.5 pl-3.5 pr-2"
           data-sidebar-icons
         >
-          <button
-            type="button"
-            onClick={onToggleSidebar}
-            className={titlebarIconBtnClass}
-            title="Open sidebar"
-            aria-expanded={false}
-          >
-            <SidebarSimpleIcon weight="light" className="h-[16px] w-[18px]" />
-          </button>
-          <button
-            type="button"
-            onClick={handleNewSession}
-            disabled={!activeWorkspacePath}
-            className={titlebarIconBtnClass}
-            title="New thread"
-          >
-            <PlusIcon weight="light" className="h-[16px] w-[18px]" />
-          </button>
+          <Tooltip content="Open sidebar" side="bottom">
+            <button
+              type="button"
+              onClick={onToggleSidebar}
+              className={titlebarIconBtnClass}
+              aria-label="Open sidebar"
+              aria-expanded={false}
+            >
+              <SidebarSimpleIcon weight="light" className="h-[16px] w-[18px]" />
+            </button>
+          </Tooltip>
+          <Tooltip content="New thread" side="bottom">
+            <button
+              type="button"
+              onClick={handleNewSession}
+              disabled={!activeWorkspacePath}
+              className={titlebarIconBtnClass}
+              aria-label="New thread"
+            >
+              <PlusIcon weight="light" className="h-[16px] w-[18px]" />
+            </button>
+          </Tooltip>
         </div>
       )}
 
@@ -110,9 +115,7 @@ export function AppChrome({
       >
         {projectName ? (
           <>
-            <FolderSimpleIcon
-              className="h-4 w-4 shrink-0 text-[var(--basis-text-faint)]"
-            />
+            <FolderSimpleIcon className="h-4 w-4 shrink-0 text-[var(--basis-text-faint)]" />
             <span
               className={cn(
                 typographyBody,
@@ -124,9 +127,7 @@ export function AppChrome({
             <span className="shrink-0 text-[var(--basis-text-faint)]">/</span>
           </>
         ) : null}
-        <span
-          className={cn(typographyBody, 'min-w-0 truncate text-[var(--basis-text-muted)]')}
-        >
+        <span className={cn(typographyBody, 'min-w-0 truncate text-[var(--basis-text-muted)]')}>
           {chatTitle}
         </span>
       </div>

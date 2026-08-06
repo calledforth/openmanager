@@ -14,6 +14,11 @@ import { ConvexTelemetryPanel } from './components/telemetry/ConvexTelemetryPane
 import { PlanPanel } from './components/plans/PlanPanel'
 import { AppChrome } from './components/shell/AppChrome'
 import { UpdateNotification } from './components/updates/UpdateNotification'
+import { ensureShiki } from './lib/shiki'
+
+// Warm the grammars at boot so the first code block arrives already
+// highlighted instead of rendering plain and then repainting.
+void ensureShiki()
 
 /** Subagent transcripts are read-only: the composer is replaced by a banner
  * linking back to the parent session. */

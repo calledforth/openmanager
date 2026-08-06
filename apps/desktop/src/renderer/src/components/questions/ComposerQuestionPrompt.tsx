@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { Question, QuestionOutcome } from '@agentpack/contract'
 import { useQuestionStateOptional, type PendingQuestion } from '../../providers/question-provider'
 import { typographyCaption, typographyLabelSm } from '../../lib/typography'
+import { Tooltip } from '../ui/Tooltip'
 
 const chipBase = `rounded-[var(--basis-chat-shell-radius)] border px-2.5 py-1 ${typographyLabelSm} transition-colors`
 const chipIdle = `${chipBase} border-[var(--basis-border)] bg-[var(--basis-surface)] text-[var(--basis-text-muted)] hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]`
@@ -82,14 +83,14 @@ function QuestionCard({
             {question.options.map((option) => {
               const selected = (selections[question.questionId] ?? []).includes(option.optionId)
               return (
-                <button
-                  key={option.optionId}
-                  onClick={() => toggle(question, option.optionId)}
-                  title={option.description}
-                  className={selected ? chipSelected : chipIdle}
-                >
-                  {option.label || option.optionId}
-                </button>
+                <Tooltip key={option.optionId} content={option.description}>
+                  <button
+                    onClick={() => toggle(question, option.optionId)}
+                    className={selected ? chipSelected : chipIdle}
+                  >
+                    {option.label || option.optionId}
+                  </button>
+                </Tooltip>
               )
             })}
           </div>

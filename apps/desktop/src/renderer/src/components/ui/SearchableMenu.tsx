@@ -11,6 +11,7 @@ import {
 import { createPortal } from 'react-dom'
 import { CheckIcon, MagnifyingGlassIcon } from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
+import { Tooltip } from './Tooltip'
 import { usePortaledMenu, type MenuPlacement } from './usePortaledMenu'
 
 export type SearchableMenuOption = {
@@ -18,7 +19,7 @@ export type SearchableMenuOption = {
   label: string
   /** Rendered as a second line under the label. */
   description?: string
-  /** Native tooltip. For menus where the explanation matters but should not
+  /** Hover tip. For menus where the explanation matters but should not
    * cost a row of height every time the menu opens — the mode and effort
    * pickers, where descriptions disambiguate rather than inform. */
   title?: string
@@ -148,9 +149,7 @@ export function SearchableMenu({
     if (event.key === 'ArrowUp') {
       event.preventDefault()
       setActiveIndex((index) =>
-        flatOptions.length === 0
-          ? 0
-          : (index - 1 + flatOptions.length) % flatOptions.length,
+        flatOptions.length === 0 ? 0 : (index - 1 + flatOptions.length) % flatOptions.length,
       )
       return
     }
@@ -206,9 +205,7 @@ export function SearchableMenu({
         <div className="min-h-0 flex-1 overflow-y-auto py-1">
           {filteredSections.map((section, sectionIndex) => (
             <div key={section.id}>
-              {sectionIndex > 0 && (
-                <div className="my-1 h-px bg-[var(--basis-border-muted)]" />
-              )}
+              {sectionIndex > 0 && <div className="my-1 h-px bg-[var(--basis-border-muted)]" />}
               {section.label && (
                 <div className="flex items-center gap-1.5 px-2.5 pb-0.5 pt-1 text-[10px] font-medium uppercase tracking-[0.08em] text-[var(--basis-text-faint)]">
                   {section.icon}
@@ -222,39 +219,44 @@ export function SearchableMenu({
                 const selected = option.id === value
                 const active = flatIndex === activeIndex
                 return (
-                  <button
+                  <Tooltip
                     key={`${section.id}:${option.id}`}
-                    type="button"
-                    role="option"
-                    aria-selected={selected}
-                    disabled={option.disabled}
-                    {...(option.title ? { title: option.title } : {})}
-                    onMouseEnter={() => setActiveIndex(flatIndex)}
-                    onClick={() => selectOption({ ...option, sectionId: section.id })}
-                    className={cn(
-                      'flex w-full items-center gap-2 px-2.5 py-1 text-left transition-colors',
-                      'text-11-regular',
-                      option.disabled && 'cursor-default opacity-40',
-                      selected
-                        ? 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]'
-                        : active
-                          ? 'bg-[var(--basis-surface)] text-[var(--basis-text)]'
-                          : 'text-[var(--basis-text-muted)] hover:bg-[var(--basis-surface)] hover:text-[var(--basis-text)]',
-                    )}
+                    content={option.title}
+                    side="right"
+                    align="center"
                   >
-                    {option.icon && <span className="shrink-0">{option.icon}</span>}
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate">{option.label}</span>
-                      {option.description && (
-                        <span className="block truncate text-[10px] text-[var(--basis-text-faint)]">
-                          {option.description}
-                        </span>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={selected}
+                      disabled={option.disabled}
+                      onMouseEnter={() => setActiveIndex(flatIndex)}
+                      onClick={() => selectOption({ ...option, sectionId: section.id })}
+                      className={cn(
+                        'flex w-full items-center gap-2 px-2.5 py-1 text-left transition-colors',
+                        'text-11-regular',
+                        option.disabled && 'cursor-default opacity-40',
+                        selected
+                          ? 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]'
+                          : active
+                            ? 'bg-[var(--basis-surface)] text-[var(--basis-text)]'
+                            : 'text-[var(--basis-text-muted)] hover:bg-[var(--basis-surface)] hover:text-[var(--basis-text)]',
                       )}
-                    </span>
-                    {selected && (
-                      <CheckIcon className="h-3 w-3 shrink-0 text-[var(--basis-text)]" />
-                    )}
-                  </button>
+                    >
+                      {option.icon && <span className="shrink-0">{option.icon}</span>}
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate">{option.label}</span>
+                        {option.description && (
+                          <span className="block truncate text-[10px] text-[var(--basis-text-faint)]">
+                            {option.description}
+                          </span>
+                        )}
+                      </span>
+                      {selected && (
+                        <CheckIcon className="h-3 w-3 shrink-0 text-[var(--basis-text)]" />
+                      )}
+                    </button>
+                  </Tooltip>
                 )
               })}
             </div>
