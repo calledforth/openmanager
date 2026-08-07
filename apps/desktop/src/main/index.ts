@@ -26,6 +26,7 @@ import {
   type WorkspaceComposerPreferences,
 } from '../shared/composer-profile'
 import { startUpdateService } from './update-service'
+import { SessionNotifier } from './session-notifications'
 import {
   clearConvexTelemetry,
   getConvexTelemetrySnapshot,
@@ -460,6 +461,16 @@ ipcMain.handle('telemetry:record', async (_event, payload: Record<string, unknow
 })
 
 app.whenReady().then(() => {
+  // Windows routes every toast through the App User Model ID, and refuses to
+  // show one for an ID it cannot resolve to an installed app. Packaged, that is
+  // the NSIS appId from electron-builder.yml — keep the two in step. Running
+  // unpackaged there is no installed app, so point it at the Electron binary
+  // itself, which is registered and therefore allowed to raise toasts; without
+  // this, notifications simply never appear in `pnpm dev`.
+  if (process.platform === 'win32') {
+    app.setAppUserModelId(app.isPackaged ? 'com.openmanager.app' : process.execPath)
+  }
+
   userDataPath = app.getPath('userData')
   clientId = loadOrCreateClientId(userDataPath)
   initConvexTelemetry(userDataPath)
@@ -493,6 +504,7 @@ app.whenReady().then(() => {
       // the model it restored from disk rather than inheriting it.
       desiredSessionConfig: ({ providerId, workspacePath }) =>
         desiredConfigForWorkspace(workspacePath, providerId),
+      notifier: new SessionNotifier({ getWindow: () => mainWindow }),
     })
     // Order matters, and it is load-bearing. `ensureProvider` registers its
     // throwaway probe with the health monitor synchronously, before its first
