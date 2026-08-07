@@ -114,8 +114,8 @@ export function ComposerTodos({
   return (
     <div
       className={cn(
-        'overflow-hidden rounded-t-[var(--basis-chat-shell-radius)] border border-b-0 border-[var(--basis-border)]',
-        'bg-[color-mix(in_srgb,var(--basis-canvas-bg)_82%,#000)]',
+        'overflow-hidden rounded-t-[var(--basis-chat-shell-radius)] border border-b-0 border-[var(--basis-border-muted)]',
+        'bg-[var(--basis-surface)]',
       )}
     >
       <button
@@ -128,10 +128,10 @@ export function ComposerTodos({
           open && 'border-b border-[var(--basis-border-muted)]',
         )}
       >
-        <span className="flex min-w-0 items-center gap-1.5 text-11-regular leading-tight text-[var(--basis-text)]">
-          <ListChecksIcon className="h-3.5 w-3.5 shrink-0 text-[var(--basis-text-muted)]" />
+        <span className="flex min-w-0 items-center gap-1.5 text-11-regular leading-tight text-[var(--basis-text-muted)]">
+          <ListChecksIcon className="h-3.5 w-3.5 shrink-0 text-[var(--basis-text-faint)]" />
           <span>Todos</span>
-          <span className="text-[var(--basis-text-muted)]">
+          <span className="text-[var(--basis-text-faint)]">
             {completed}/{total}
           </span>
         </span>
