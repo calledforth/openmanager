@@ -5,7 +5,7 @@ import {
   usePermissionStateOptional,
   type PendingPermission,
 } from '../../providers/permission-provider'
-import { typographyCaption, typographyLabelSm } from '../../lib/typography'
+import { typographyCaption, typographyCaptionTiny } from '../../lib/typography'
 
 function formatValue(value: unknown): string | null {
   if (value == null) return null
@@ -27,8 +27,8 @@ const OPTION_LABELS: Record<PermissionOption['kind'], string> = {
   reject_always: 'Always deny',
 }
 
-const denyButtonClass = `rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)] bg-[var(--basis-surface)] px-2.5 py-1 ${typographyLabelSm} text-[var(--basis-text-muted)] transition-colors hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]`
-const allowButtonClass = `rounded-[var(--basis-chat-shell-radius)] bg-[var(--basis-action-bg)] px-2.5 py-1 ${typographyLabelSm} text-[var(--basis-action-fg)] transition-colors hover:bg-[var(--basis-action-hover)]`
+const denyButtonClass = `rounded-[3px] border-0 bg-[var(--basis-surface-hover)] px-1 py-px ${typographyCaptionTiny} leading-none text-[var(--basis-text-muted)] transition-colors hover:text-[var(--basis-text)]`
+const allowButtonClass = `rounded-[3px] border-0 bg-[var(--basis-action-bg)] px-1 py-px ${typographyCaptionTiny} leading-none text-[var(--basis-action-fg)] transition-colors hover:bg-[var(--basis-action-hover)]`
 
 function PermissionCard({
   pending,
@@ -44,49 +44,46 @@ function PermissionCard({
   const options = [...(pending.options ?? [])].sort(
     (a, b) => Number(isAllowKind(a.kind)) - Number(isAllowKind(b.kind)),
   )
+  const requestLabel = showDetails
+    ? `${pending.toolName} — ${pending.description}`
+    : pending.description
 
   return (
-    <div className="my-1.5 overflow-hidden rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)] bg-[var(--basis-surface-elevated)]">
-      <div className="flex items-center gap-3 px-3 py-2">
-        <div className="min-w-0 flex-1">
-          <div className={`${typographyLabelSm} text-[var(--basis-text)]`}>
-            Permission required
-            {pending.permission ? (
-              <span className={`${typographyCaption} ml-1.5 text-[var(--basis-text-muted)]`}>
-                {pending.permission}
-              </span>
-            ) : null}
-          </div>
-          <div className={`mt-0.5 truncate ${typographyCaption} text-[var(--basis-text-muted)]`}>
-            {showDetails ? `${pending.toolName} — ${pending.description}` : pending.description}
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          {options.length > 0 ? (
-            options.map((option) => (
-              <button
-                key={option.optionId}
-                onClick={() => onResolve({ optionId: option.optionId })}
-                className={isAllowKind(option.kind) ? allowButtonClass : denyButtonClass}
-              >
-                {option.name || OPTION_LABELS[option.kind] || option.kind}
-              </button>
-            ))
-          ) : (
-            <>
-              <button onClick={() => onResolve({ approved: false })} className={denyButtonClass}>
-                Deny
-              </button>
-              <button onClick={() => onResolve({ approved: true })} className={allowButtonClass}>
-                Approve
-              </button>
-            </>
-          )}
-        </div>
+    <div className="my-1 bg-transparent py-0.5">
+      <div className={`min-w-0 ${typographyCaption} text-[var(--basis-text)]`}>
+        <span className="text-[var(--basis-text-muted)]">Request</span>
+        {pending.permission ? (
+          <span className={`${typographyCaptionTiny} ml-1.5 text-[var(--basis-text-muted)]`}>
+            {pending.permission}
+          </span>
+        ) : null}
+        <div className="mt-0.5 truncate text-[var(--basis-text)]">{requestLabel}</div>
+      </div>
+      <div className="mt-1 flex flex-wrap items-center justify-end gap-1">
+        {options.length > 0 ? (
+          options.map((option) => (
+            <button
+              key={option.optionId}
+              onClick={() => onResolve({ optionId: option.optionId })}
+              className={isAllowKind(option.kind) ? allowButtonClass : denyButtonClass}
+            >
+              {option.name || OPTION_LABELS[option.kind] || option.kind}
+            </button>
+          ))
+        ) : (
+          <>
+            <button onClick={() => onResolve({ approved: false })} className={denyButtonClass}>
+              Deny
+            </button>
+            <button onClick={() => onResolve({ approved: true })} className={allowButtonClass}>
+              Approve
+            </button>
+          </>
+        )}
       </div>
       {inputPreview ? (
         <pre
-          className={`m-0 max-h-32 overflow-auto border-t border-[var(--basis-border-muted)] bg-[var(--basis-canvas-bg)] px-3 py-2 font-mono text-ui-xs leading-relaxed text-[var(--basis-text-muted)] whitespace-pre-wrap wrap-break-word custom-scrollbar`}
+          className={`m-0 mt-1 max-h-24 overflow-auto font-mono text-ui-2xs leading-relaxed text-[var(--basis-text-muted)] whitespace-pre-wrap wrap-break-word custom-scrollbar`}
         >
           {inputPreview}
         </pre>

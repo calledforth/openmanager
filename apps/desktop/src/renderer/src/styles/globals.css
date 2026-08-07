@@ -733,7 +733,17 @@ textarea,
   background: linear-gradient(
     to top,
     var(--basis-canvas-bg) 0%,
-    color-mix(in srgb, var(--basis-canvas-bg) 95%, transparent) 40%,
+    color-mix(in srgb, var(--basis-canvas-bg) 80%, transparent) 32%,
+    transparent 100%
+  );
+}
+
+/* Subtle top edge fade under the titlebar */
+.chat-pane-top-fade {
+  background: linear-gradient(
+    to bottom,
+    var(--basis-canvas-bg) 0%,
+    color-mix(in srgb, var(--basis-canvas-bg) 55%, transparent) 50%,
     transparent 100%
   );
 }

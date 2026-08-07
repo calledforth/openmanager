@@ -77,7 +77,11 @@ function ImagePreviewDialog({ image, onClose }: { image: PreviewImage; onClose: 
 
 export function ChatViewPanel({ children }: { children: ReactNode }) {
   return (
-    <div data-chat-view className="flex min-h-0 flex-1 flex-col">
+    <div data-chat-view className="relative flex min-h-0 flex-1 flex-col">
+      <div
+        aria-hidden="true"
+        className="chat-pane-top-fade pointer-events-none absolute inset-x-0 top-0 z-10 h-8"
+      />
       {children}
     </div>
   )
@@ -153,7 +157,7 @@ export function UserMessage({
       }))
   return (
     <div className="w-full py-1">
-      <div className={cn(chatInputShell, 'max-w-none')}>
+      <div className={cn(chatInputShell, 'max-w-none border-[var(--basis-border-muted)] shadow-none')}>
         <div className={chatUserInner}>
           {images.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-1.5">
