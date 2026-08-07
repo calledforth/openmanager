@@ -236,7 +236,8 @@ describe('ConvexProjector streaming contracts', () => {
     await projector.waitForThread(base.threadId)
 
     const textChunk = mutations.find(
-      (args) => (args.partUpdate as { part?: { type?: string } } | undefined)?.part?.type === 'text',
+      (args) =>
+        (args.partUpdate as { part?: { type?: string } } | undefined)?.part?.type === 'text',
     )
     expect((textChunk?.partUpdate as { part: { id: string } }).part.id).toBe(
       'assistant-1_text_event-3',
@@ -375,9 +376,7 @@ describe('ConvexProjector streaming contracts', () => {
     const finalized = [...mutations]
       .reverse()
       .find((args) => args.externalId === 'assistant-real' && args.role === 'assistant')
-    expect(finalized?.parts).toEqual([
-      expect.objectContaining({ type: 'tool', id: 'tool-real' }),
-    ])
+    expect(finalized?.parts).toEqual([expect.objectContaining({ type: 'tool', id: 'tool-real' })])
   })
 
   it('finalizes reasoning and unfinished tools at prompt completion', async () => {
@@ -422,6 +421,11 @@ describe('ConvexProjector streaming contracts', () => {
     const toolState = parts.find((part) => part.type === 'tool')?.state as
       Record<string, unknown> | undefined
     expect(toolState?.status).toBe('completed')
+    expect(finalized?.runtimeMetadata).toMatchObject({
+      startedAt: 1,
+      completedAt: 4,
+      finishReason: 'end_turn',
+    })
   })
 
   it('persists a textless reasoning block from its phases and token estimate', async () => {
@@ -749,9 +753,7 @@ describe('ConvexProjector streaming contracts', () => {
         data: { content: { type: 'text', text: 'and the rest' } },
       }),
     )
-    projector.consume(
-      event(5, { category: 'lifecycle', event: 'prompt_completed', data: {} }),
-    )
+    projector.consume(event(5, { category: 'lifecycle', event: 'prompt_completed', data: {} }))
     await projector.waitForThread(base.threadId)
 
     // The persisted turn, not the live stream: this is `messages.metadata.parts`,
@@ -790,5 +792,15 @@ describe('ConvexProjector streaming contracts', () => {
     await projector.waitForThread(base.threadId)
 
     expect(mutations).toContainEqual(expect.objectContaining({ status: 'error' }))
+    expect(mutations).toContainEqual(
+      expect.objectContaining({
+        externalId: base.messageId,
+        runtimeMetadata: expect.objectContaining({
+          startedAt: 1,
+          completedAt: 3,
+          finishReason: 'error',
+        }),
+      }),
+    )
   })
 })

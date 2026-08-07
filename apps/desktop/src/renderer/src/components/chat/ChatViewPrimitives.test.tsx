@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { ChatLoadingSkeleton, UserMessage } from './ChatViewPrimitives'
+import { AssistantMessage, ChatLoadingSkeleton, UserMessage } from './ChatViewPrimitives'
 
 describe('chat loading skeletons', () => {
   it('announces the conversation loading state once', () => {
@@ -36,5 +36,57 @@ describe('chat loading skeletons', () => {
     expect(html).toContain('src="https://example.convex.cloud/api/storage/image-1"')
     expect(html).toContain('aria-label="Preview image.png"')
     expect(html).not.toContain('target="_blank"')
+  })
+})
+
+describe('assistant turn work disclosure', () => {
+  const mixedParts = [
+    {
+      type: 'tool',
+      id: 'tool-1',
+      tool: 'Read',
+      state: { status: 'completed', input: { path: 'src/index.ts' } },
+    },
+    { type: 'text', id: 'final', text: 'Everything checks out.' },
+  ]
+
+  it('collapses settled work while leaving the final answer below it', () => {
+    const html = renderToStaticMarkup(
+      <AssistantMessage
+        content="Everything checks out."
+        isFinal
+        parts={mixedParts}
+        runtime={{ startedAt: 1_000, completedAt: 46_000, finishReason: 'end_turn' }}
+      />,
+    )
+
+    expect(html).toContain('data-turn-work-group')
+    expect(html).toContain('Worked for 45s')
+    expect(html).toContain('Everything checks out.')
+    expect(html.indexOf('Everything checks out.')).toBeGreaterThan(html.lastIndexOf('</details>'))
+    expect(html).toContain('class="mt-0.5" data-turn-work-group-body="true"')
+  })
+
+  it('does not collapse a turn until it is final', () => {
+    const html = renderToStaticMarkup(
+      <AssistantMessage content="" isFinal={false} parts={mixedParts} />,
+    )
+
+    expect(html).not.toContain('data-turn-work-group')
+    expect(html).toContain('Everything checks out.')
+  })
+
+  it('uses the stopped label for cancelled settled turns', () => {
+    const html = renderToStaticMarkup(
+      <AssistantMessage
+        content=""
+        isFinal
+        parts={mixedParts}
+        runtime={{ finishReason: 'cancelled' }}
+      />,
+    )
+
+    expect(html).toContain('>Stopped</span>')
+    expect(html).not.toContain('Worked')
   })
 })

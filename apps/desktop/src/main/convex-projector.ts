@@ -29,6 +29,8 @@ type RuntimeMetadata = {
   modelId?: string
   modeId?: string
   finishReason?: string
+  startedAt?: number
+  completedAt?: number
   tokens?: {
     input?: number
     output?: number
@@ -55,6 +57,7 @@ type ActiveTurn = {
   sessionId: string
   userMessageId: string
   assistantMessageId: string
+  startedAt: number
   textPartId?: string
   reasoningPartId?: string
 }
@@ -62,6 +65,11 @@ type ActiveTurn = {
 const FINALIZE_ATTEMPTS = 3
 const FINALIZE_RETRY_BASE_MS = 500
 const PART_UPDATE_CHUNK_INTERVAL = 8
+
+function timestampMs(timestamp: string): number {
+  const parsed = Date.parse(timestamp)
+  return Number.isFinite(parsed) ? parsed : Date.now()
+}
 
 function statusForTool(status: ToolCall['status']): string {
   if (status === 'in_progress') return 'running'
@@ -349,11 +357,11 @@ export class ConvexProjector {
         if (isRecoverableError(event)) return
         if (event.sessionId && workspacePath) {
           await this.upsertSession(workspacePath, event.sessionId, 'error', event.providerId)
-          await this.finalizeTurn(event.threadId, 'error')
+          await this.finalizeTurn(event.threadId, 'error', timestampMs(event.timestamp))
         }
         return
       case 'process_exited':
-        await this.finalizeTurn(event.threadId, 'error')
+        await this.finalizeTurn(event.threadId, 'error', timestampMs(event.timestamp))
         return
       default:
         return
@@ -390,6 +398,7 @@ export class ConvexProjector {
       sessionId: event.sessionId,
       userMessageId,
       assistantMessageId,
+      startedAt: timestampMs(event.timestamp),
     })
     if (workspacePath)
       await this.upsertSession(workspacePath, event.sessionId, 'running', event.providerId)
@@ -440,7 +449,7 @@ export class ConvexProjector {
           tokens: this.tokens(event.data.usage),
         }
       }
-      await this.finalizeTurn(event.threadId, event.data.stopReason)
+      await this.finalizeTurn(event.threadId, event.data.stopReason, timestampMs(event.timestamp))
     }
     if (workspacePath)
       await this.upsertSession(workspacePath, event.sessionId, 'idle', event.providerId)
@@ -457,6 +466,7 @@ export class ConvexProjector {
       event.sessionId,
       'assistant',
       event.providerId,
+      turn.startedAt,
     )
     await this.ensurePlaceholder(turn.assistantMessageId, buffer)
     const closed: string[] = []
@@ -535,15 +545,16 @@ export class ConvexProjector {
     const previousTokens = typeof existing?.tokens === 'number' ? existing.tokens : undefined
     // estimated_tokens is a cumulative total, never an increment: summing it
     // would multiply the count, and a late duplicate would inflate it.
-    const merged =
-      tokens !== undefined ? Math.max(previousTokens ?? 0, tokens) : previousTokens
+    const merged = tokens !== undefined ? Math.max(previousTokens ?? 0, tokens) : previousTokens
     const part: PartData = {
       ...(existing ?? {}),
       type: 'reasoning',
       id: partId,
       text: `${String(existing?.text ?? '')}${text}`,
       ...(merged !== undefined ? { tokens: merged } : {}),
-      time: (existing?.time as { start: number; end?: number } | undefined) ?? { start: Date.now() },
+      time: (existing?.time as { start: number; end?: number } | undefined) ?? {
+        start: Date.now(),
+      },
     }
     buffer.parts.set(partId, part)
     return part
@@ -560,6 +571,7 @@ export class ConvexProjector {
       event.sessionId,
       'assistant',
       event.providerId,
+      turn.startedAt,
     )
     await this.ensurePlaceholder(turn.assistantMessageId, buffer)
     await this.flushParts(
@@ -611,6 +623,7 @@ export class ConvexProjector {
       event.sessionId,
       'assistant',
       event.providerId,
+      turn.startedAt,
     )
     await this.ensurePlaceholder(turn.assistantMessageId, buffer)
     await this.flushParts(
@@ -645,6 +658,7 @@ export class ConvexProjector {
       event.sessionId,
       'assistant',
       event.providerId,
+      turn.startedAt,
     )
     await this.ensurePlaceholder(turn.assistantMessageId, buffer)
     await this.flushParts(
@@ -671,6 +685,7 @@ export class ConvexProjector {
       event.sessionId,
       'assistant',
       event.providerId,
+      turn.startedAt,
     )
     await this.ensurePlaceholder(turn.assistantMessageId, buffer)
     await this.flushParts(
@@ -757,6 +772,7 @@ export class ConvexProjector {
     sessionExternalId: string,
     role: string,
     providerId: string,
+    startedAt: number,
   ): MessageBuffer {
     let buffer = this.buffers.get(messageId)
     if (!buffer) {
@@ -768,7 +784,7 @@ export class ConvexProjector {
         placeholderInserted: false,
         chunkIndex: -1,
         flushedLength: 0,
-        runtimeMetadata: { providerId },
+        runtimeMetadata: { providerId, startedAt },
         pendingPartUpdates: new Map(),
       }
       this.buffers.set(messageId, buffer)
@@ -891,11 +907,21 @@ export class ConvexProjector {
     }
   }
 
-  private async finalizeTurn(threadId: string, stopReason?: string): Promise<void> {
+  private async finalizeTurn(
+    threadId: string,
+    stopReason?: string,
+    completedAt = Date.now(),
+  ): Promise<void> {
     const turn = this.turns.get(threadId)
     if (!turn) return
     const buffer = this.buffers.get(turn.assistantMessageId)
     if (buffer) {
+      buffer.runtimeMetadata = {
+        ...buffer.runtimeMetadata,
+        ...(stopReason ? { finishReason: stopReason } : {}),
+        startedAt: turn.startedAt,
+        completedAt,
+      }
       this.finishActiveParts(turn, buffer)
       this.finishRunningTools(buffer, stopReason)
       this.finishRunningSubtasks(buffer, stopReason)
