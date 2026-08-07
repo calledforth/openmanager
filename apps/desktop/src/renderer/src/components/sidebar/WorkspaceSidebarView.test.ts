@@ -1,11 +1,38 @@
 import { describe, expect, it } from 'vitest'
-import { flattenSidebarSessions, type SidebarSession } from './WorkspaceSidebarView'
+import {
+  flattenSidebarSessions,
+  isSidebarSessionActive,
+  type SidebarSession,
+} from './WorkspaceSidebarView'
+import { sessionBusyTone } from './SessionBusyLoader'
 
-const session = (externalId: string, parentExternalId?: string): SidebarSession => ({
+const session = (
+  externalId: string,
+  parentExternalId?: string,
+  status: string = 'idle',
+): SidebarSession => ({
   externalId,
   parentExternalId,
-  status: 'idle',
+  status,
   providerId: 'opencode',
+})
+
+describe('isSidebarSessionActive', () => {
+  it('keeps in-flight and waiting sessions visible under a collapsed project', () => {
+    expect(isSidebarSessionActive('running')).toBe(true)
+    expect(isSidebarSessionActive('busy')).toBe(true)
+    expect(isSidebarSessionActive('waiting')).toBe(true)
+    expect(isSidebarSessionActive('idle')).toBe(false)
+    expect(isSidebarSessionActive('error')).toBe(false)
+  })
+})
+
+describe('sessionBusyTone', () => {
+  it('maps waiting to the needs cross-blink and everything else active to working', () => {
+    expect(sessionBusyTone('waiting')).toBe('needs')
+    expect(sessionBusyTone('running')).toBe('working')
+    expect(sessionBusyTone('busy')).toBe('working')
+  })
 })
 
 describe('flattenSidebarSessions', () => {

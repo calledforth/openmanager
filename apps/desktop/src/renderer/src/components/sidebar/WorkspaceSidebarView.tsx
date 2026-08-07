@@ -15,7 +15,7 @@ import { typographyBodySm, typographyCaptionTiny, typographyLabel } from '../../
 import { ProviderIcon } from '../providers/ProviderIcon'
 import { Tooltip } from '../ui/Tooltip'
 import { SidebarSettingsMenu } from './SidebarSettingsMenu'
-import { SessionBusyLoader } from './SessionBusyLoader'
+import { SessionBusyLoader, sessionBusyTone } from './SessionBusyLoader'
 
 const SESSION_PREVIEW_LIMIT = 5
 const SESSION_PAGE_SIZE = 10
@@ -39,6 +39,12 @@ export interface SidebarSessionRow {
   depth: number
   isChild: boolean
   isOrphan: boolean
+}
+
+/** Sessions that should stay visible when their project is collapsed —
+ * anything still in flight or waiting on the user. */
+export function isSidebarSessionActive(status: string): boolean {
+  return status === 'running' || status === 'busy' || status === 'waiting'
 }
 
 /** Preserve recency order within each level while placing child transcripts
@@ -227,22 +233,28 @@ function WorkspaceGroup({
     () => flattenSidebarSessions(workspace.sessions),
     [workspace.sessions],
   )
-  const hasMoreSessions = orderedSessions.length > visibleCount
-  const visibleSessions = orderedSessions.slice(0, visibleCount)
+  const activeSessions = useMemo(
+    () => orderedSessions.filter(({ session }) => isSidebarSessionActive(session.status)),
+    [orderedSessions],
+  )
+  const hasMoreSessions = !isCollapsed && orderedSessions.length > visibleCount
+  const visibleSessions = isCollapsed
+    ? activeSessions
+    : orderedSessions.slice(0, visibleCount)
 
   useEffect(() => {
     if (isCollapsed) setVisibleCount(SESSION_PREVIEW_LIMIT)
   }, [isCollapsed])
 
   useEffect(() => {
-    if (!isActiveWorkspace || !activeSessionId) return
+    if (isCollapsed || !isActiveWorkspace || !activeSessionId) return
     const activeIndex = orderedSessions.findIndex(
       ({ session }) => session.externalId === activeSessionId,
     )
     if (activeIndex >= 0) {
       setVisibleCount((count) => Math.max(count, activeIndex + 1))
     }
-  }, [isActiveWorkspace, activeSessionId, orderedSessions])
+  }, [isCollapsed, isActiveWorkspace, activeSessionId, orderedSessions])
 
   return (
     <div className="mb-0">
@@ -276,12 +288,12 @@ function WorkspaceGroup({
         </Tooltip>
       </div>
 
-      {!isCollapsed && (
+      {visibleSessions.length > 0 && (
         <div className="mx-1 flex flex-col gap-0.5">
           {visibleSessions.map(({ session: s, depth, isChild, isOrphan }) => {
             const isActive = isActiveWorkspace && s.externalId === activeSessionId
             const providerId = s.providerId ?? 'opencode'
-            const isBusy = s.status === 'running' || s.status === 'busy' || s.status === 'waiting'
+            const isBusy = isSidebarSessionActive(s.status)
             return (
               <button
                 key={s.externalId}
@@ -320,14 +332,16 @@ function WorkspaceGroup({
                 <span
                   className={cn(
                     'relative flex h-4 shrink-0 items-center justify-center overflow-hidden transition-[width]',
-                    // The loader is a 3:1 strip, so a busy row needs 48px. On
-                    // hover it collapses back to the 16px delete-button slot,
-                    // which keeps that button in the same place on every row.
-                    isBusy ? 'w-12 group-hover:w-4' : 'w-0 group-hover:w-4',
+                    // Cube is 16×16 — same width as the delete slot, so busy
+                    // rows don't grow and the trash icon stays anchored.
+                    isBusy ? 'w-4' : 'w-0 group-hover:w-4',
                   )}
                 >
                   {isBusy && (
-                    <SessionBusyLoader className="h-4 w-12 shrink-0 transition-opacity group-hover:opacity-0" />
+                    <SessionBusyLoader
+                      tone={sessionBusyTone(s.status)}
+                      className="transition-opacity group-hover:opacity-0"
+                    />
                   )}
                   <button
                     type="button"

@@ -18,4 +18,10 @@ Thumbs.db
 .lovable-ref/  
 .cursor/  
 .claude/
-opencode.ref/ 
+opencode.ref/
+
+# T3 Code research deep-dives (local reference only)
+docs/t3code-*.html
+
+# Local UI indicator prototypes (experiment only)
+docs/ui-prototypes/
