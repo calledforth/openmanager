@@ -357,6 +357,8 @@ export class ConvexProjector {
         if (isRecoverableError(event)) return
         if (event.sessionId && workspacePath) {
           await this.upsertSession(workspacePath, event.sessionId, 'error', event.providerId)
+        }
+        if (event.sessionId) {
           await this.finalizeTurn(event.threadId, 'error', timestampMs(event.timestamp))
         }
         return

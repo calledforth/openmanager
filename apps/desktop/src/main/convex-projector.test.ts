@@ -764,6 +764,47 @@ describe('ConvexProjector streaming contracts', () => {
     })
   })
 
+  it('finalizes an errored turn when no workspace path is available', async () => {
+    const { projector, mutations } = setup()
+    projector.consume(
+      event(1, {
+        workspaceId: undefined,
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'Go', userMessageId: 'user-1' },
+      }),
+    )
+    projector.consume(
+      event(2, {
+        workspaceId: undefined,
+        category: 'stream',
+        event: 'agent_message_chunk',
+        data: { content: { type: 'text', text: 'partial' } },
+      }),
+    )
+    projector.consume(
+      event(3, {
+        workspaceId: undefined,
+        category: 'error',
+        event: 'rpc_error',
+        data: { source: 'session/prompt', message: 'the runtime stopped' },
+      }),
+    )
+    await projector.waitForThread(base.threadId)
+
+    expect(mutations).toContainEqual(
+      expect.objectContaining({
+        externalId: base.messageId,
+        runtimeMetadata: expect.objectContaining({
+          startedAt: 1,
+          completedAt: 3,
+          finishReason: 'error',
+        }),
+      }),
+    )
+    expect(mutations).not.toContainEqual(expect.objectContaining({ status: 'error' }))
+  })
+
   /** The negative case: an error with no `recoverable` flag is still terminal,
    * which is the behaviour every ACP provider depends on. */
   it('still finalizes a turn on an ordinary rpc_error', async () => {
