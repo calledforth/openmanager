@@ -36,6 +36,12 @@ import {
   type DraftImageAttachment,
 } from '../../lib/attachments'
 import {
+  pruneComposerDrafts,
+  readComposerDrafts,
+  writeComposerDrafts,
+  type PersistedDraft,
+} from './composerDrafts'
+import {
   configurableSessionOptions,
   isBooleanSelect,
   sessionConfigSummary,
@@ -281,6 +287,23 @@ function ModelConfigMenu({
   )
 }
 
+type ComposerDraft = { text: string; attachments: DraftImageAttachment[] }
+
+/** Long enough that typing doesn't hit storage on every keystroke, short enough
+ * that a crash costs at most a word. Exit handlers cover the rest. */
+const DRAFT_PERSIST_DEBOUNCE_MS = 400
+
+/** Attachments are `File` objects with `blob:` previews and are only uploaded at
+ * send time, so an unsent draft's images have nothing durable to restore from.
+ * Text comes back; images start empty. */
+function hydrateDrafts(stored: Record<string, PersistedDraft>): Record<string, ComposerDraft> {
+  const drafts: Record<string, ComposerDraft> = {}
+  for (const [key, draft] of Object.entries(stored)) {
+    drafts[key] = { text: draft.text, attachments: [] }
+  }
+  return drafts
+}
+
 export function MessageInputView({
   disabled,
   pendingDraftSessionStart,
@@ -350,9 +373,15 @@ export function MessageInputView({
   onSend: (text: string, attachments: DraftImageAttachment[]) => Promise<void>
   onAbort: () => void
 }) {
-  const [drafts, setDrafts] = useState<
-    Record<string, { text: string; attachments: DraftImageAttachment[] }>
-  >({})
+  // Reading localStorage is synchronous, so a restored draft is on screen at
+  // first paint — no frame of empty box before it appears.
+  const [initialStoredDrafts] = useState(readComposerDrafts)
+  const [drafts, setDrafts] = useState<Record<string, ComposerDraft>>(() =>
+    hydrateDrafts(initialStoredDrafts),
+  )
+  // Last snapshot written to storage, so an unchanged draft keeps its original
+  // `updatedAt` and the eviction order stays a real recency order.
+  const persistedRef = useRef<Record<string, PersistedDraft>>(initialStoredDrafts)
   const [sending, setSending] = useState(false)
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [isDragging, setIsDragging] = useState(false)
@@ -379,6 +408,46 @@ export function MessageInputView({
     },
     [],
   )
+
+  // Only text is durable. Attachments are deliberately skipped: they are `File`
+  // objects uploaded at send time, so an unsent one has nothing to restore from.
+  const persistDrafts = useCallback((current: Record<string, ComposerDraft>) => {
+    const now = Date.now()
+    const next: Record<string, PersistedDraft> = {}
+    for (const [key, item] of Object.entries(current)) {
+      if (!item.text.trim()) continue
+      const previous = persistedRef.current[key]
+      next[key] = {
+        text: item.text,
+        updatedAt: previous?.text === item.text ? previous.updatedAt : now,
+      }
+    }
+    const pruned = pruneComposerDrafts(next)
+    persistedRef.current = pruned
+    writeComposerDrafts(pruned)
+  }, [])
+
+  useEffect(() => {
+    const timer = setTimeout(() => persistDrafts(drafts), DRAFT_PERSIST_DEBOUNCE_MS)
+    return () => clearTimeout(timer)
+  }, [drafts, persistDrafts])
+
+  // The debounce is what makes the exit paths necessary: a quit or crash landing
+  // between keystrokes would otherwise drop the last few. The cleanup flush also
+  // covers the unmount when a subagent transcript replaces the composer.
+  useEffect(() => {
+    const flush = () => persistDrafts(draftsRef.current)
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') flush()
+    }
+    window.addEventListener('beforeunload', flush)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      window.removeEventListener('beforeunload', flush)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      flush()
+    }
+  }, [persistDrafts])
 
   const updateDraft = useCallback(
     (
