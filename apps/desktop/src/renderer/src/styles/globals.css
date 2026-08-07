@@ -99,6 +99,9 @@
   --basis-tab-active-bg: #242424;
   --basis-border: #363636;
   --basis-border-muted: #2e2e2e;
+  /* One step above --basis-border: the only outline strong enough to mark a
+     selected/focused control without adding a second visible line. */
+  --basis-border-strong: #4d4d4d;
   --basis-font-size: 14px;
   --basis-chat-font-size: 14px;
   --basis-thought-font-size: 13px;
@@ -182,6 +185,7 @@ html[data-theme='light'] {
   --basis-tab-active-bg: #e7e7e7;
   --basis-border: #dedede;
   --basis-border-muted: #e7e7e7;
+  --basis-border-strong: #b8b8b8;
   --basis-chat-text: #2d2d2d;
   --basis-text: #2d2d2d;
   --basis-text-strong: #000000;
@@ -888,6 +892,30 @@ textarea,
 }
 .chat-animate-slide-up {
   animation: chat-slide-up 200ms ease-out;
+}
+
+
+/* Composer question slides — direction comes from --question-slide-from, set
+   inline so forward and backward navigation travel opposite ways. */
+@keyframes question-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--question-slide-from, 8px));
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.question-animate-slide {
+  animation: question-slide-in 150ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .question-animate-slide {
+    animation: chat-fade-in 150ms ease-out;
+  }
 }
 
 .chat-skeleton {
