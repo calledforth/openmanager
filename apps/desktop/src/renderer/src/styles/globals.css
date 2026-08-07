@@ -114,9 +114,9 @@
   --basis-action-fg: #111111;
   --basis-action-hover: #f4f4f4;
   --basis-accent-blue: #4f8ff7;
-  /* Arcade palette for the session busy loader — deliberately off-system. */
-  --basis-pac: #ffd83d;
-  --basis-pac-pellet: #ffb897;
+  /* Session status cube — see SessionBusyLoader.tsx. */
+  --basis-session-cube: var(--basis-text-muted);
+  --basis-session-cube-needs: #d4a017;
   --basis-scrollbar-track: transparent;
   --basis-scrollbar-thumb: color-mix(in srgb, var(--basis-text-muted) 28%, transparent);
   --basis-scrollbar-thumb-hover: color-mix(in srgb, var(--basis-text-muted) 48%, transparent);
@@ -198,9 +198,9 @@ html[data-theme='light'] {
   --basis-action-fg: #f3f3f3;
   --basis-action-hover: #1f1f1f;
   --basis-accent-blue: #1f6feb;
-  /* Arcade yellow washes out on white, so both go darker in light mode. */
-  --basis-pac: #e8a900;
-  --basis-pac-pellet: #c98c6a;
+  /* Session status cube — warmer amber reads clearer on light canvas. */
+  --basis-session-cube: var(--basis-text-muted);
+  --basis-session-cube-needs: #b8860b;
   --basis-scrollbar-thumb: #d9d9d9;
   --basis-scrollbar-thumb-hover: #c4c4c4;
 }
@@ -944,40 +944,94 @@ textarea,
   }
 }
 
-/* Pac-Man feed loader — see SessionBusyLoader.tsx for the geometry constants.
- * The chomp is a `d` interpolation between a near-shut and a wide-open wedge;
- * both keyframes share the same M/L/A/Z command structure, which is what makes
- * them interpolable. The -240ms delay is half a chomp, so the mouth is at its
- * widest exactly as each pellet reaches it. */
-.session-busy-pac {
-  fill: var(--basis-pac);
-  animation: session-busy-chomp 480ms ease-in-out infinite;
-  animation-delay: -240ms;
+/* Session status cube — 3×3 face. Working = spiral light path; needs = cross
+ * blink on the plus (edges) with the center held. See SessionBusyLoader.tsx. */
+.session-busy-cube {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  gap: 1.5px;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
 }
 
-@keyframes session-busy-chomp {
+.session-busy-cell {
+  display: block;
+  min-width: 0;
+  min-height: 0;
+  border-radius: 1px;
+  background: var(--basis-session-cube);
+}
+
+.session-busy-cube--working .session-busy-cell {
+  animation: session-cube-spiral 1.8s ease-in-out infinite;
+}
+
+.session-busy-cube--working .session-busy-cell:nth-child(1) {
+  animation-delay: 0ms;
+}
+.session-busy-cube--working .session-busy-cell:nth-child(2) {
+  animation-delay: 100ms;
+}
+.session-busy-cube--working .session-busy-cell:nth-child(3) {
+  animation-delay: 200ms;
+}
+.session-busy-cube--working .session-busy-cell:nth-child(6) {
+  animation-delay: 300ms;
+}
+.session-busy-cube--working .session-busy-cell:nth-child(9) {
+  animation-delay: 400ms;
+}
+.session-busy-cube--working .session-busy-cell:nth-child(8) {
+  animation-delay: 500ms;
+}
+.session-busy-cube--working .session-busy-cell:nth-child(7) {
+  animation-delay: 600ms;
+}
+.session-busy-cube--working .session-busy-cell:nth-child(4) {
+  animation-delay: 700ms;
+}
+.session-busy-cube--working .session-busy-cell:nth-child(5) {
+  animation-delay: 800ms;
+}
+
+@keyframes session-cube-spiral {
   0%,
   100% {
-    d: path('M 0 0 L 7.995 -0.279 A 8 8 0 1 0 7.995 0.279 Z');
+    opacity: 0.22;
+  }
+  35%,
+  50% {
+    opacity: 1;
+  }
+}
+
+.session-busy-cube--needs .session-busy-cell {
+  background: var(--basis-session-cube-needs);
+  opacity: 0.28;
+}
+
+.session-busy-cube--needs .session-busy-cell:nth-child(5) {
+  opacity: 1;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--basis-session-cube-needs) 45%, transparent);
+}
+
+/* Plus / cross: north, west, east, south */
+.session-busy-cube--needs .session-busy-cell:nth-child(2),
+.session-busy-cube--needs .session-busy-cell:nth-child(4),
+.session-busy-cube--needs .session-busy-cell:nth-child(6),
+.session-busy-cube--needs .session-busy-cell:nth-child(8) {
+  animation: session-cube-cross 1.2s ease-in-out infinite;
+}
+
+@keyframes session-cube-cross {
+  0%,
+  100% {
+    opacity: 0.35;
   }
   50% {
-    d: path('M 0 0 L 6.304 -4.925 A 8 8 0 1 0 6.304 4.925 Z');
-  }
-}
-
-/* Four pellets, staggered a chomp apart, translating SPAWN_X → MOUTH_X. A pure
- * translate needs no transform-origin, so this is safe at any SVG scale. */
-.session-busy-pellet {
-  fill: var(--basis-pac-pellet);
-  animation: session-busy-feed 1920ms linear infinite;
-}
-
-@keyframes session-busy-feed {
-  from {
-    transform: translateX(0);
-  }
-  to {
-    transform: translateX(-62px);
+    opacity: 1;
   }
 }
 
@@ -988,11 +1042,21 @@ textarea,
     animation: none;
   }
 
-  /* Falls back to the static open-mouthed wedge from the `d` attribute, with
-   * the pellets spread along the run by their inline transform. */
-  .session-busy-pac,
-  .session-busy-pellet {
+  .session-busy-cube--working .session-busy-cell,
+  .session-busy-cube--needs .session-busy-cell {
     animation: none;
+  }
+
+  .session-busy-cube--working .session-busy-cell {
+    opacity: 0.7;
+  }
+
+  .session-busy-cube--needs .session-busy-cell:nth-child(2),
+  .session-busy-cube--needs .session-busy-cell:nth-child(4),
+  .session-busy-cube--needs .session-busy-cell:nth-child(5),
+  .session-busy-cube--needs .session-busy-cell:nth-child(6),
+  .session-busy-cube--needs .session-busy-cell:nth-child(8) {
+    opacity: 1;
   }
 }
 
