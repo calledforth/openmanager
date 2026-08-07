@@ -743,7 +743,8 @@ textarea,
   background: linear-gradient(
     to top,
     var(--basis-canvas-bg) 0%,
-    color-mix(in srgb, var(--basis-canvas-bg) 80%, transparent) 32%,
+    color-mix(in srgb, var(--basis-canvas-bg) 88%, transparent) 28%,
+    color-mix(in srgb, var(--basis-canvas-bg) 45%, transparent) 58%,
     transparent 100%
   );
 }
@@ -752,8 +753,8 @@ textarea,
 .chat-pane-top-fade {
   background: linear-gradient(
     to bottom,
-    var(--basis-canvas-bg) 0%,
-    color-mix(in srgb, var(--basis-canvas-bg) 55%, transparent) 50%,
+    color-mix(in srgb, var(--basis-canvas-bg) 70%, transparent) 0%,
+    color-mix(in srgb, var(--basis-canvas-bg) 25%, transparent) 55%,
     transparent 100%
   );
 }
@@ -1143,8 +1144,9 @@ textarea,
   background: transparent;
 }
 
-*::-webkit-scrollbar-track {
-  background: var(--basis-scrollbar-track);
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-track-piece {
+  background: transparent;
   border: none;
 }
 

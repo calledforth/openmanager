@@ -19,6 +19,8 @@ import { SessionBusyLoader, sessionBusyTone } from './SessionBusyLoader'
 
 const SESSION_PREVIEW_LIMIT = 5
 const SESSION_PAGE_SIZE = 10
+const sidebarToggleShortcut =
+  typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin' ? '⌘B' : 'Ctrl+B'
 
 export interface SidebarSession {
   externalId: string
@@ -131,7 +133,12 @@ export function WorkspaceSidebarView({
       <div className={cn('flex min-h-0 flex-1 flex-col', collapsed && 'invisible')}>
         <div className="relative flex h-[var(--basis-titlebar-height)] shrink-0 items-center justify-end px-1.5">
           {onCollapse && (
-            <Tooltip content="Close sidebar" side="bottom" align="end">
+            <Tooltip
+              content="Close sidebar"
+              shortcut={sidebarToggleShortcut}
+              side="bottom"
+              align="end"
+            >
               <button
                 type="button"
                 onClick={onCollapse}

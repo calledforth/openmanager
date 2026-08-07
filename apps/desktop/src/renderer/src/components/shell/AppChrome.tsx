@@ -81,7 +81,7 @@ export function AppChrome({
           className="titlebar-no-drag flex shrink-0 items-center gap-0.5 pl-3.5 pr-2"
           data-sidebar-icons
         >
-          <Tooltip content="Open sidebar" side="bottom">
+          <Tooltip content="Open sidebar" shortcut={isMac ? '⌘B' : 'Ctrl+B'} side="bottom">
             <button
               type="button"
               onClick={onToggleSidebar}
