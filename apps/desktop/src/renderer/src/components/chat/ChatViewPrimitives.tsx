@@ -2,6 +2,12 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ArrowsOutIcon, XIcon } from '@phosphor-icons/react'
 import { MessageParts } from '../parts/MessageParts'
+import { TurnWorkGroup } from '../parts/TurnWorkGroup'
+import {
+  partitionSettledTurnParts,
+  settledTurnLabel,
+  type TurnRuntimeMetadata,
+} from '../parts/turn-work-group'
 import { TextPart } from '../parts/TextPart'
 import { cn } from '../../lib/utils'
 import type { StreamMessagePart } from '@openmanager/shared/lib/remote-stream-parts'
@@ -203,18 +209,29 @@ export function AssistantMessage({
   content,
   isFinal,
   parts,
+  runtime,
 }: {
   content: string
   isFinal?: boolean
   parts?: MessagePart[]
+  runtime?: TurnRuntimeMetadata
 }) {
   const hasParts = !!parts && parts.length > 0
   const isStreaming = isFinal === false
+  const partition = hasParts && isFinal === true ? partitionSettledTurnParts(parts) : undefined
+  const workParts = partition?.workParts ?? []
+  const finalParts = partition?.finalParts ?? []
+  const hasWorkGroup = workParts.length > 0
 
   return (
     <div className="py-1">
       <div className={cn(chatStreamInner, isStreaming ? 'opacity-90' : 'opacity-100')}>
-        {hasParts ? (
+        {hasWorkGroup ? (
+          <>
+            <TurnWorkGroup label={settledTurnLabel(runtime)} parts={workParts} />
+            {finalParts.length > 0 && <MessageParts parts={finalParts} isStreaming={false} />}
+          </>
+        ) : hasParts ? (
           <MessageParts parts={parts} isStreaming={isStreaming} />
         ) : (
           <TextPart text={content} />

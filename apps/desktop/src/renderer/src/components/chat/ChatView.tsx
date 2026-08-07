@@ -19,6 +19,7 @@ import { cn } from '../../lib/utils'
 import type { UploadedImageAttachment } from '../../lib/attachments'
 import { PendingPermissionFallback } from '../permissions/InlinePermissionPrompt'
 import { NewSessionLanding } from './NewSessionLanding'
+import type { TurnRuntimeMetadata } from '../parts/turn-work-group'
 
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96
 const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 8
@@ -213,9 +214,7 @@ function MessageTimeline({
   // would otherwise pop the first bubble in with no transition at all.
   const initialMessageIdsRef = useRef(
     new Set(
-      messages
-        .filter((message) => !message.isOptimistic)
-        .map((message) => message.externalId),
+      messages.filter((message) => !message.isOptimistic).map((message) => message.externalId),
     ),
   )
   const firstUnvirtualizedIndex = useMemo(() => {
@@ -480,7 +479,9 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
     props.onStreamUpdate,
   )
 
-  const finalizedParts = (contentDoc?.metadata as { parts?: MessagePart[] } | undefined)?.parts
+  const finalizedMetadata = contentDoc?.metadata as
+    { parts?: MessagePart[]; runtime?: TurnRuntimeMetadata } | undefined
+  const finalizedParts = finalizedMetadata?.parts
   // Cache last-known streaming parts so the isFinal transition doesn't flash empty
   // (getContent query needs a round-trip to resolve after listMetadata flips isFinal)
   const lastStreamingPartsRef = useRef<MessagePart[] | undefined>(undefined)
@@ -543,5 +544,12 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
     )
   }
 
-  return <AssistantMessage content={content} isFinal={props.isFinal} parts={parts} />
+  return (
+    <AssistantMessage
+      content={content}
+      isFinal={props.isFinal}
+      parts={parts}
+      runtime={finalizedMetadata?.runtime}
+    />
+  )
 })
