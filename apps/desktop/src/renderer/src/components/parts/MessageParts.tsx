@@ -10,6 +10,8 @@ import { ThinkingPart } from './ThinkingPart'
 import { ActivityGroup } from './ActivityGroup'
 import { SubtaskCard } from './SubtaskCard'
 import { canonicalizeToolName } from './ToolRegistry'
+import { AskedQuestionPart } from '../questions/AskedQuestionPart'
+import { readAskedQuestions } from '../questions/askedQuestion'
 
 interface Part {
   type: string
@@ -57,7 +59,10 @@ function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode
       const toolName = canonicalizeToolName((part.tool as string) ?? '')
       const callID = (part as { callID?: string }).callID
       let toolElement: ReactNode
-      if (toolName === 'Bash') {
+      const asked = toolName === 'AskUserQuestion' ? readAskedQuestions(part.state) : null
+      if (asked) {
+        toolElement = <AskedQuestionPart questions={asked} />
+      } else if (toolName === 'Bash') {
         toolElement = <BashToolPart part={part as Parameters<typeof BashToolPart>[0]['part']} />
       } else if (toolName === 'Edit' || toolName === 'Write' || toolName === 'MultiEdit') {
         toolElement = <EditToolPart part={part as Parameters<typeof EditToolPart>[0]['part']} />

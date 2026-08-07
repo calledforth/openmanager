@@ -4,7 +4,8 @@ import { providerBlocksComposer, useAppUi } from '../../providers/app-ui-provide
 import { useActiveSession } from '../../providers/active-session-provider'
 import { useQuestionStateOptional } from '../../providers/question-provider'
 import { usePlanStateOptional } from '../../providers/plan-provider'
-import { ComposerQuestionPrompt } from '../questions/ComposerQuestionPrompt'
+import { QuestionCard } from '../questions/ComposerQuestionPrompt'
+import { useQuestionFlow } from '../questions/useQuestionFlow'
 import { ComposerPlanPrompt } from '../plans/ComposerPlanPrompt'
 import { ComposerTodos, useSessionPlanEntries } from '../plans/ComposerTodos'
 import { MessageInputView } from './MessageInputView'
@@ -47,6 +48,9 @@ export function MessageInput() {
   const { sendMessage, abortSession, activeSession } = useActiveSession()
   const questionState = useQuestionStateOptional()
   const pendingQuestion = questionState?.pendingQuestion ?? null
+  // Slide state lives here because both the card above and the composer below
+  // it are views onto the same answer draft.
+  const questionFlow = useQuestionFlow(pendingQuestion, questionState?.resolveQuestion)
   const planState = usePlanStateOptional()
   const pendingPlan = planState?.pendingPlan ?? null
   const planEntries = useSessionPlanEntries()
@@ -231,20 +235,8 @@ export function MessageInput() {
   }, [currentModelId, currentProviderId])
 
   const uploadAndSend = async (text: string, drafts: DraftImageAttachment[]) => {
-    // A pending single question claims the composer: sent text answers it as
-    // the user's own free-text option instead of becoming a prompt.
-    if (
-      pendingQuestion?.questions.length === 1 &&
-      pendingQuestion.questions[0].allowFreeText &&
-      questionState &&
-      text.trim()
-    ) {
-      await questionState.resolveQuestion({
-        outcome: 'answered',
-        answers: [{ questionId: pendingQuestion.questions[0].questionId, text: text.trim() }],
-      })
-      return
-    }
+    // Questions never reach here: while one is pending the composer is replaced
+    // by the question prompt, which resolves it through its own submit.
     // A pending plan turns composer text into rejection feedback rather than a
     // prompt. Question interception above keeps priority when both are pending.
     if (pendingPlan && planState && text.trim()) {
@@ -327,9 +319,9 @@ export function MessageInput() {
 
   return (
     <div className="flex w-full flex-col">
-      <ComposerQuestionPrompt />
-      <ComposerPlanPrompt />
+      {questionFlow ? null : <ComposerPlanPrompt />}
       <div className="flex w-full flex-col">
+        {questionFlow ? <QuestionCard flow={questionFlow} /> : null}
         <ComposerTodos entries={planEntries} />
         <MessageInputView
           disabled={disabled}
@@ -356,7 +348,22 @@ export function MessageInput() {
           }
           isStreaming={isStreaming}
           isAwaitingPlanReview={!!pendingPlan}
-          attachedTop={planEntries.length > 0}
+          textOverride={
+            questionFlow
+              ? {
+                  value: questionFlow.text,
+                  onChange: questionFlow.setText,
+                  placeholder: questionFlow.onReview
+                    ? 'Press Enter to submit your answers'
+                    : 'Describe another answer…',
+                  onSubmit: questionFlow.advance,
+                  canSubmit: questionFlow.canAdvance,
+                  // Nothing on the review slide owns free text.
+                  readOnly: questionFlow.onReview,
+                }
+              : undefined
+          }
+          attachedTop={planEntries.length > 0 || !!questionFlow}
           draftKey={draftKey}
           imageUploadEnabled={
             providerSupportsImages && modelImageSupport !== false && modelImageSupport !== undefined

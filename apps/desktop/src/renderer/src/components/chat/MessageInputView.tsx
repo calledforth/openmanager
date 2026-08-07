@@ -59,6 +59,19 @@ import { ProviderModelPicker, type ProviderModelGroup } from './ProviderModelPic
 
 export type { ProviderModelGroup }
 
+/** Lets another surface borrow the composer as its text field. */
+export interface ComposerTextOverride {
+  value: string
+  onChange: (next: string) => void
+  placeholder: string
+  /** Runs on Enter and on the send button. */
+  onSubmit: () => void
+  /** Gates the send button the way non-empty text normally does. */
+  canSubmit: boolean
+  /** Typing is meaningless on a slide with no free-text field (the review). */
+  readOnly?: boolean
+}
+
 /** Matches the `prefers-reduced-motion` guard globals.css applies to chat animations. */
 function prefersReducedMotion() {
   return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
@@ -325,6 +338,7 @@ export function MessageInputView({
   showModelControl,
   isStreaming,
   isAwaitingPlanReview = false,
+  textOverride,
   attachedTop = false,
   draftKey,
   imageUploadEnabled,
@@ -360,6 +374,10 @@ export function MessageInputView({
   showModelControl: boolean
   isStreaming: boolean
   isAwaitingPlanReview?: boolean
+  /** Takes the composer over as some other feature's text field — today, the
+   * free-text answer of a pending question. The draft is owned by the caller,
+   * Enter runs `onSubmit` instead of sending, and nothing reaches `onSend`. */
+  textOverride?: ComposerTextOverride
   /** Flatten top radius/border so an attached strip (todos) can sit flush above. */
   attachedTop?: boolean
   draftKey: string
@@ -393,7 +411,9 @@ export function MessageInputView({
   const fileInputRef = useRef<HTMLInputElement>(null)
   const draftsRef = useRef(drafts)
   const draft = drafts[draftKey] ?? { text: '', attachments: [] }
-  const text = draft.text
+  // While borrowed, the visible text belongs to the caller — the session draft
+  // underneath is left untouched so it comes back intact afterwards.
+  const text = textOverride ? textOverride.value : draft.text
   const attachments = draft.attachments
 
   useEffect(() => {
@@ -409,8 +429,8 @@ export function MessageInputView({
     [],
   )
 
-  // Only text is durable. Attachments are deliberately skipped: they are `File`
-  // objects uploaded at send time, so an unsent one has nothing to restore from.
+  // A borrowed composer never writes to `drafts` — its text belongs to the
+  // caller — so nothing here can leak a question answer into a session draft.
   const persistDrafts = useCallback((current: Record<string, ComposerDraft>) => {
     const now = Date.now()
     const next: Record<string, PersistedDraft> = {}
@@ -471,7 +491,9 @@ export function MessageInputView({
     [slashCommands, slashQuery],
   )
 
-  const slashOpen = slashQuery !== null && !slashDismissed && slashMatches.length > 0 && !disabled
+  // A borrowed composer answers a question; `/commands` would go nowhere.
+  const slashOpen =
+    slashQuery !== null && !slashDismissed && slashMatches.length > 0 && !disabled && !textOverride
 
   useEffect(() => {
     setSlashActiveIndex(0)
@@ -588,6 +610,10 @@ export function MessageInputView({
   }
 
   const send = async () => {
+    if (textOverride) {
+      if (textOverride.canSubmit) textOverride.onSubmit()
+      return
+    }
     const trimmed = text.trim()
     if ((!trimmed && attachments.length === 0) || disabled || sending) return
     if (isAwaitingPlanReview && attachments.length > 0) {
@@ -673,26 +699,29 @@ export function MessageInputView({
     providerModelGroups.find((group) => group.providerId === currentProviderId)?.providerName ??
     currentProviderId
   const hasContent = text.trim().length > 0 || attachments.length > 0
-  const placeholder = !activeWorkspacePath
-    ? 'Select a workspace...'
-    : pendingDraftSessionStart
-      ? 'Starting session...'
-      : !activeSessionId && isSessionDraftOpen
-        ? 'Ask anything, @ to mention, / for workflows'
-        : !activeSessionId
-          ? 'Select a session...'
-          : !providerReady
-            ? `Connecting to ${currentProviderName}...`
-            : isAwaitingPlanReview
-              ? 'Describe what should change in the plan…'
-              : 'Ask anything, @ to mention, / for workflows'
+  const placeholder = textOverride
+    ? textOverride.placeholder
+    : !activeWorkspacePath
+      ? 'Select a workspace...'
+      : pendingDraftSessionStart
+        ? 'Starting session...'
+        : !activeSessionId && isSessionDraftOpen
+          ? 'Ask anything, @ to mention, / for workflows'
+          : !activeSessionId
+            ? 'Select a session...'
+            : !providerReady
+              ? `Connecting to ${currentProviderName}...`
+              : isAwaitingPlanReview
+                ? 'Describe what should change in the plan…'
+                : 'Ask anything, @ to mention, / for workflows'
 
   const isPlan = currentModeId === 'plan'
-  const sendActive =
-    (isAwaitingPlanReview ? text.trim().length > 0 && attachments.length === 0 : hasContent) &&
-    !disabled &&
-    !sending &&
-    (attachments.length === 0 || imageUploadEnabled)
+  const sendActive = textOverride
+    ? textOverride.canSubmit
+    : (isAwaitingPlanReview ? text.trim().length > 0 && attachments.length === 0 : hasContent) &&
+      !disabled &&
+      !sending &&
+      (attachments.length === 0 || imageUploadEnabled)
   const configSummary = sessionConfigSummary(configOptions)
 
   return (
@@ -764,11 +793,16 @@ export function MessageInputView({
         <textarea
           ref={textareaRef}
           value={text}
-          onChange={(e) => updateDraft((current) => ({ ...current, text: e.target.value }))}
+          onChange={(e) =>
+            textOverride
+              ? textOverride.onChange(e.target.value)
+              : updateDraft((current) => ({ ...current, text: e.target.value }))
+          }
           onKeyDown={onKeyDown}
           onPaste={onPaste}
           placeholder={placeholder}
           disabled={disabled}
+          readOnly={textOverride?.readOnly}
           rows={1}
           className={cn(chatComposerTextarea, 'max-h-[156px] overflow-y-auto')}
         />
