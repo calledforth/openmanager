@@ -18,6 +18,7 @@ import type { ProviderHealthReport } from '@openmanager/shared/contracts/provide
 import type { SidecarHandshake } from '@openmanager/shared/contracts/sidecar'
 import { ConvexProjector } from './convex-projector'
 import { toProviderHealthCache, type ProviderHealthCache } from './provider-health-cache'
+import type { SessionNotifier } from './session-notifications'
 
 /** How long to sit on health changes before writing the boot cache. Health
  * churns in bursts (a handshake fires initialized + authenticated + probe
@@ -41,6 +42,9 @@ export type AgentHostOptions = {
     providerId: ProviderId
     workspacePath: string
   }) => DesiredSessionConfig | undefined
+  /** Desktop notifications for the moments a session needs the user. Optional
+   * so a host can be constructed in tests without a display. */
+  notifier?: SessionNotifier
 }
 
 export class AgentHost {
@@ -62,8 +66,12 @@ export class AgentHost {
     this.runtime = new AgentRuntime({
       emitEvent: (event) => this.emitEvent(event),
       log: (entry) => this.log(entry),
-      onSessionTitle: ({ threadId, workspaceId, title }) =>
-        this.projector.updateSessionTitle(threadId, workspaceId, title),
+      onSessionTitle: ({ threadId, workspaceId, title }) => {
+        this.projector.updateSessionTitle(threadId, workspaceId, title)
+        // A provider that names its own sessions describes them better than the
+        // first line of a prompt does, so let notifications use that name too.
+        options.notifier?.noteSessionTitle(threadId, title)
+      },
       ...(options.desiredSessionConfig
         ? { desiredSessionConfig: options.desiredSessionConfig }
         : {}),
@@ -329,6 +337,7 @@ export class AgentHost {
       this.pendingPlans.delete(event.data.requestId)
     }
     this.projector.consume(event)
+    this.options.notifier?.handle(event)
     if (event.event === 'prompt_completed' && event.workspaceId) {
       void this.refreshSessionTitles(event.providerId, event.workspaceId)
     }

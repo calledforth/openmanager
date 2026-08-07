@@ -14,6 +14,7 @@ import type {
   WorkspaceComposerPreferences,
 } from '../shared/composer-profile'
 import type { AppUpdateEvent, ManualUpdateCheckResult } from '../shared/app-update'
+import type { SessionNotificationTarget } from '../shared/session-notification'
 
 const electronAPI = {
   platform: process.platform as NodeJS.Platform,
@@ -101,6 +102,12 @@ const electronAPI = {
     const handler = (_event: Electron.IpcRendererEvent, data: AgentEvent) => callback(data)
     ipcRenderer.on('acp:event', handler)
     return () => ipcRenderer.removeListener('acp:event', handler)
+  },
+  onNotificationActivate: (callback: (target: SessionNotificationTarget) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, target: SessionNotificationTarget) =>
+      callback(target)
+    ipcRenderer.on('notification:activate', handler)
+    return () => ipcRenderer.removeListener('notification:activate', handler)
   },
   onAppUpdate: (callback: (data: AppUpdateEvent) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: AppUpdateEvent) => callback(data)

@@ -14,6 +14,7 @@ import type {
   WorkspaceComposerPreferences,
 } from '../../shared/composer-profile'
 import type { AppUpdateEvent, ManualUpdateCheckResult } from '../../shared/app-update'
+import type { SessionNotificationTarget } from '../../shared/session-notification'
 
 interface ElectronAPI {
   platform: NodeJS.Platform
@@ -63,6 +64,7 @@ interface ElectronAPI {
   onStreamToken: (callback: (data: AgentEvent) => void) => () => void
   onTelemetryUpdate: (callback: (data: unknown) => void) => () => void
   onAcpEvent: (callback: (data: AgentEvent) => void) => () => void
+  onNotificationActivate: (callback: (target: SessionNotificationTarget) => void) => () => void
   onAppUpdate: (callback: (data: AppUpdateEvent) => void) => () => void
   checkForUpdates: () => Promise<ManualUpdateCheckResult>
   quitAndInstallUpdate: () => Promise<void>

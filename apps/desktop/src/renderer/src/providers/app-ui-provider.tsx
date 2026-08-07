@@ -1743,6 +1743,18 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
     return cleanup
   }, [applyProviderHealth])
 
+  // Clicking a desktop notification should land on the session that raised it,
+  // which is usually not the one on screen — that is why it was notified.
+  useEffect(() => {
+    if (typeof window.electronAPI.onNotificationActivate !== 'function') return
+    return window.electronAPI.onNotificationActivate(({ workspacePath, sessionId, providerId }) => {
+      // Without a workspace there is nothing to open the session against; the
+      // window has still been focused by the time this arrives.
+      if (!workspacePath) return
+      selectSession(workspacePath, sessionId, providerId)
+    })
+  }, [selectSession])
+
   useEffect(() => {
     const cleanup = window.electronAPI.onAcpEvent((event) => {
       if (CHROME_EVENT_TYPES.has(event.event)) {
