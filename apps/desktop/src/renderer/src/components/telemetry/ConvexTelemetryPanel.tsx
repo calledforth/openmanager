@@ -31,8 +31,8 @@ function injectStyles(): void {
     .ct-btn:hover { border-color: var(--basis-border) !important; color: var(--basis-text) !important; }
     .ct-btn:active { transform: translateY(0.5px); }
     .ct-softFocus:focus-visible { outline: 2px solid color-mix(in srgb, var(--basis-text-muted) 45%, transparent); outline-offset: 2px; }
-    ::-webkit-scrollbar { width: 4px; }
-    ::-webkit-scrollbar-track { background: var(--basis-canvas-bg); }
+    ::-webkit-scrollbar { width: 4px; background: transparent; }
+    ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--basis-scrollbar-thumb); border-radius: 2px; }
   `
   document.head.appendChild(el)
