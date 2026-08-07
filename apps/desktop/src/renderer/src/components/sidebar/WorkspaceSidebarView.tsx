@@ -320,11 +320,14 @@ function WorkspaceGroup({
                 <span
                   className={cn(
                     'relative flex h-4 shrink-0 items-center justify-center overflow-hidden transition-[width]',
-                    isBusy ? 'w-4' : 'w-0 group-hover:w-4',
+                    // The loader is a 3:1 strip, so a busy row needs 48px. On
+                    // hover it collapses back to the 16px delete-button slot,
+                    // which keeps that button in the same place on every row.
+                    isBusy ? 'w-12 group-hover:w-4' : 'w-0 group-hover:w-4',
                   )}
                 >
                   {isBusy && (
-                    <SessionBusyLoader className="h-4 w-4 shrink-0 transition-opacity group-hover:opacity-0" />
+                    <SessionBusyLoader className="h-4 w-12 shrink-0 transition-opacity group-hover:opacity-0" />
                   )}
                   <button
                     type="button"

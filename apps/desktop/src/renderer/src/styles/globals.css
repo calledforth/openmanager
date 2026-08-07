@@ -114,6 +114,9 @@
   --basis-action-fg: #111111;
   --basis-action-hover: #f4f4f4;
   --basis-accent-blue: #4f8ff7;
+  /* Arcade palette for the session busy loader — deliberately off-system. */
+  --basis-pac: #ffd83d;
+  --basis-pac-pellet: #ffb897;
   --basis-scrollbar-track: transparent;
   --basis-scrollbar-thumb: color-mix(in srgb, var(--basis-text-muted) 28%, transparent);
   --basis-scrollbar-thumb-hover: color-mix(in srgb, var(--basis-text-muted) 48%, transparent);
@@ -195,6 +198,9 @@ html[data-theme='light'] {
   --basis-action-fg: #f3f3f3;
   --basis-action-hover: #1f1f1f;
   --basis-accent-blue: #1f6feb;
+  /* Arcade yellow washes out on white, so both go darker in light mode. */
+  --basis-pac: #e8a900;
+  --basis-pac-pellet: #c98c6a;
   --basis-scrollbar-thumb: #d9d9d9;
   --basis-scrollbar-thumb-hover: #c4c4c4;
 }
@@ -938,24 +944,40 @@ textarea,
   }
 }
 
-.session-busy-dot {
-  fill: currentColor;
-  opacity: 0;
-  animation: session-busy-pulse 2400ms cubic-bezier(0.65, 0, 0.35, 1) infinite both;
+/* Pac-Man feed loader — see SessionBusyLoader.tsx for the geometry constants.
+ * The chomp is a `d` interpolation between a near-shut and a wide-open wedge;
+ * both keyframes share the same M/L/A/Z command structure, which is what makes
+ * them interpolable. The -240ms delay is half a chomp, so the mouth is at its
+ * widest exactly as each pellet reaches it. */
+.session-busy-pac {
+  fill: var(--basis-pac);
+  animation: session-busy-chomp 480ms ease-in-out infinite;
+  animation-delay: -240ms;
 }
 
-@keyframes session-busy-pulse {
-  0% {
-    opacity: 0.05;
-  }
-  20% {
-    opacity: 1;
-  }
-  55% {
-    opacity: 0.18;
-  }
+@keyframes session-busy-chomp {
+  0%,
   100% {
-    opacity: 0.05;
+    d: path('M 0 0 L 7.995 -0.279 A 8 8 0 1 0 7.995 0.279 Z');
+  }
+  50% {
+    d: path('M 0 0 L 6.304 -4.925 A 8 8 0 1 0 6.304 4.925 Z');
+  }
+}
+
+/* Four pellets, staggered a chomp apart, translating SPAWN_X → MOUTH_X. A pure
+ * translate needs no transform-origin, so this is safe at any SVG scale. */
+.session-busy-pellet {
+  fill: var(--basis-pac-pellet);
+  animation: session-busy-feed 1920ms linear infinite;
+}
+
+@keyframes session-busy-feed {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-62px);
   }
 }
 
@@ -966,9 +988,11 @@ textarea,
     animation: none;
   }
 
-  .session-busy-dot {
+  /* Falls back to the static open-mouthed wedge from the `d` attribute, with
+   * the pellets spread along the run by their inline transform. */
+  .session-busy-pac,
+  .session-busy-pellet {
     animation: none;
-    opacity: 0.45;
   }
 }
 
