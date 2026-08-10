@@ -592,6 +592,17 @@ export function shouldPreserveOptimisticMessages(
   )
 }
 
+export function shouldClearOptimisticMessages(
+  previousWorkspacePath: string | null,
+  nextWorkspacePath: string | null,
+  previousSessionId: string | null,
+  nextSessionId: string | null,
+  adoptedDraftSessionId: string | null,
+): boolean {
+  if (previousWorkspacePath !== nextWorkspacePath) return true
+  return !shouldPreserveOptimisticMessages(previousSessionId, nextSessionId, adoptedDraftSessionId)
+}
+
 export function useActiveSession() {
   const ctx = useContext(ActiveSessionContext)
   if (!ctx) throw new Error('useActiveSession must be used within ActiveSessionProvider')
@@ -638,6 +649,7 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
   // Destructure so callbacks/memos below depend on the stable pieces they use,
   // not on the whole context value (which changes on unrelated updates).
   const {
+    activeWorkspacePath,
     activeSessionId,
     adoptedDraftSessionId,
     currentClientId,
@@ -653,6 +665,7 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
   }, [])
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<UIMessage[]>([])
   const previousActiveSessionIdRef = useRef(activeSessionId)
+  const previousActiveWorkspacePathRef = useRef(activeWorkspacePath)
 
   const rawSession = useTrackedQuery(
     'sessions.getByExternalId.active',
@@ -716,15 +729,20 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const previousSessionId = previousActiveSessionIdRef.current
-    if (previousSessionId === activeSessionId) return
+    const previousWorkspacePath = previousActiveWorkspacePathRef.current
+    if (previousSessionId === activeSessionId && previousWorkspacePath === activeWorkspacePath)
+      return
     previousActiveSessionIdRef.current = activeSessionId
-    const preserveOptimisticMessages = shouldPreserveOptimisticMessages(
+    previousActiveWorkspacePathRef.current = activeWorkspacePath
+    const clearOptimisticMessages = shouldClearOptimisticMessages(
+      previousWorkspacePath,
+      activeWorkspacePath,
       previousSessionId,
       activeSessionId,
       adoptedDraftSessionId,
     )
 
-    if (!preserveOptimisticMessages) {
+    if (clearOptimisticMessages) {
       setOptimisticUserMessages((prev) => {
         for (const message of prev) {
           for (const attachment of message.optimisticAttachments ?? []) {
@@ -734,7 +752,7 @@ export function ActiveSessionProvider({ children }: { children: ReactNode }) {
         return []
       })
     }
-  }, [activeSessionId, adoptedDraftSessionId])
+  }, [activeSessionId, activeWorkspacePath, adoptedDraftSessionId])
 
   const acknowledgeOptimisticMessage = useCallback((externalId: string) => {
     setOptimisticUserMessages((prev) => {

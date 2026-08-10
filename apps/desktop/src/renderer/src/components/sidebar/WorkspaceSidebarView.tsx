@@ -46,7 +46,7 @@ export interface SidebarSessionRow {
 /** Sessions that should stay visible when their project is collapsed —
  * anything still in flight or waiting on the user. */
 export function isSidebarSessionActive(status: string): boolean {
-  return status === 'running' || status === 'busy' || status === 'waiting'
+  return status === 'starting' || status === 'running' || status === 'busy' || status === 'waiting'
 }
 
 /** Preserve recency order within each level while placing child transcripts
@@ -245,9 +245,7 @@ function WorkspaceGroup({
     [orderedSessions],
   )
   const hasMoreSessions = !isCollapsed && orderedSessions.length > visibleCount
-  const visibleSessions = isCollapsed
-    ? activeSessions
-    : orderedSessions.slice(0, visibleCount)
+  const visibleSessions = isCollapsed ? activeSessions : orderedSessions.slice(0, visibleCount)
 
   useEffect(() => {
     if (isCollapsed) setVisibleCount(SESSION_PREVIEW_LIMIT)
@@ -301,10 +299,13 @@ function WorkspaceGroup({
             const isActive = isActiveWorkspace && s.externalId === activeSessionId
             const providerId = s.providerId ?? 'opencode'
             const isBusy = isSidebarSessionActive(s.status)
+            const isPending = s.externalId.startsWith('pending:')
             return (
               <button
                 key={s.externalId}
-                onClick={() => onSelectSession(workspace.path, s.externalId, providerId)}
+                onClick={() => {
+                  if (!isPending) onSelectSession(workspace.path, s.externalId, providerId)
+                }}
                 className={cn(
                   'group flex w-full items-center gap-1.5 rounded px-2 py-0.5 text-left transition-default',
                   isActive
@@ -350,17 +351,19 @@ function WorkspaceGroup({
                       className="transition-opacity group-hover:opacity-0"
                     />
                   )}
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onDeleteSession(workspace.path, s.externalId, providerId)
-                    }}
-                    className="absolute inset-0 flex items-center justify-center rounded text-muted-foreground opacity-0 transition-default group-hover:opacity-100 hover:bg-red-400/10 hover:text-red-400"
-                    aria-label="Delete session"
-                  >
-                    <TrashIcon className="h-3 w-3" />
-                  </button>
+                  {!isPending && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onDeleteSession(workspace.path, s.externalId, providerId)
+                      }}
+                      className="absolute inset-0 flex items-center justify-center rounded text-muted-foreground opacity-0 transition-default group-hover:opacity-100 hover:bg-red-400/10 hover:text-red-400"
+                      aria-label="Delete session"
+                    >
+                      <TrashIcon className="h-3 w-3" />
+                    </button>
+                  )}
                 </span>
               </button>
             )

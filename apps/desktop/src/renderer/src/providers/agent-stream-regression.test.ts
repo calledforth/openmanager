@@ -4,6 +4,7 @@ import { foldAgentEvents } from '@agentpack/view'
 import { describe, expect, it, vi } from 'vitest'
 import {
   mergePersistedAndOptimisticMessages,
+  shouldClearOptimisticMessages,
   StreamingMessagesStore,
   type StreamHydrationSnapshot,
 } from './active-session-provider'
@@ -29,6 +30,16 @@ function event(
 }
 
 describe('agent streaming regressions', () => {
+  it('clears a creating session message when switching projects', () => {
+    expect(shouldClearOptimisticMessages('/one', '/two', null, null, null)).toBe(true)
+  })
+
+  it('keeps a creating session message when its real session is adopted', () => {
+    expect(shouldClearOptimisticMessages('/one', '/one', null, 'session-1', 'session-1')).toBe(
+      false,
+    )
+  })
+
   it('uses one host-owned message ID for token and tool-first turns', () => {
     const emitted: AgentEvent[] = []
     const runtime = new AgentRuntime({ emitEvent: (value) => emitted.push(value), log: () => {} })
@@ -507,12 +518,7 @@ describe('agent streaming regressions', () => {
     expect(snapshot.hasCompleteHistory).toBe(true)
     // The seq-12 event was already in the snapshot, so it is dropped rather
     // than replayed into a second, duplicate text part.
-    expect(snapshot.parts.map((part) => part.type)).toEqual([
-      'reasoning',
-      'tool',
-      'text',
-      'text',
-    ])
+    expect(snapshot.parts.map((part) => part.type)).toEqual(['reasoning', 'tool', 'text', 'text'])
     expect(snapshot.parts[1]).toMatchObject({
       tool: 'Read',
       state: { status: 'completed', input: { path: 'a.ts' } },
