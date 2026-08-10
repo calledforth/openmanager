@@ -33,6 +33,7 @@ import {
   initConvexTelemetry,
   recordConvexTelemetry,
 } from './convex-telemetry'
+import { resolveWorkspaceIconDataUrl } from './project-icon'
 
 declare const __CONVEX_URL__: string
 
@@ -314,6 +315,15 @@ ipcMain.handle('dialog:select-folder', async () => {
     title: 'Select Workspace Directory',
   })
   return result.filePaths[0] ?? null
+})
+
+ipcMain.handle('workspace:resolve-icon', async (_event, workspacePath: string) => {
+  if (typeof workspacePath !== 'string' || workspacePath.trim().length === 0) return null
+  try {
+    return await resolveWorkspaceIconDataUrl(workspacePath)
+  } catch {
+    return null
+  }
 })
 
 ipcMain.handle('window:minimize', () => {

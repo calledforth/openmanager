@@ -41,6 +41,7 @@ interface ElectronAPI {
     sessionId: string,
   ) => Promise<{ ok: boolean; reason?: string }>
   selectFolder: () => Promise<string | null>
+  resolveWorkspaceIcon: (workspacePath: string) => Promise<string | null>
   getCollapsedWorkspaces: () => Promise<string[]>
   setCollapsedWorkspaces: (paths: string[]) => Promise<void>
   getLastProviderId: () => Promise<ProviderId>

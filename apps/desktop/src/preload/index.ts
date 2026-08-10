@@ -50,6 +50,8 @@ const electronAPI = {
   loadAcpSession: (providerId: ProviderId, workspacePath: string, sessionId: string) =>
     ipcRenderer.invoke('acp:load-session', providerId, workspacePath, sessionId),
   selectFolder: () => ipcRenderer.invoke('dialog:select-folder'),
+  resolveWorkspaceIcon: (workspacePath: string) =>
+    ipcRenderer.invoke('workspace:resolve-icon', workspacePath) as Promise<string | null>,
   getCollapsedWorkspaces: () =>
     ipcRenderer.invoke('store:get-collapsed-workspaces') as Promise<string[]>,
   setCollapsedWorkspaces: (paths: string[]) =>

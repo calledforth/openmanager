@@ -14,6 +14,7 @@ import { useSidebarData } from '../../providers/sidebar-data-provider'
 import { cn } from '../../lib/utils'
 import { typographyBody } from '../../lib/typography'
 import { Tooltip } from '../ui/Tooltip'
+import { ProjectIcon } from '../sidebar/ProjectIcon'
 
 const isMac = window.electronAPI.platform === 'darwin'
 const showWindowControls = !isMac
@@ -113,9 +114,13 @@ export function AppChrome({
         )}
         title={fullTitle}
       >
-        {projectName ? (
+        {projectName && activeWorkspacePath ? (
           <>
-            <FolderSimpleIcon className="h-4 w-4 shrink-0 text-[var(--basis-text-faint)]" />
+            <ProjectIcon
+              workspacePath={activeWorkspacePath}
+              fallbackIcon={FolderSimpleIcon}
+              className="h-4 w-4 text-[var(--basis-text-faint)]"
+            />
             <span
               className={cn(
                 typographyBody,
