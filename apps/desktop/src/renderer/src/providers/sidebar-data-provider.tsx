@@ -64,6 +64,33 @@ export function resolveInitialWorkspacePath(
   return workspaces[0]?.path ?? null
 }
 
+export function mergePendingSidebarSessions(
+  persisted: Record<string, SidebarSessionEntry[]>,
+  pending: Array<{
+    externalId: string
+    workspacePath: string
+    title: string
+    status: string
+    providerId: ProviderId
+  }>,
+): Record<string, SidebarSessionEntry[]> {
+  if (pending.length === 0) return persisted
+  const grouped = { ...persisted }
+  for (const session of pending) {
+    grouped[session.workspacePath] = [
+      {
+        externalId: session.externalId,
+        title: session.title,
+        status: session.status,
+        providerId: session.providerId,
+        isDriven: true,
+      },
+      ...(grouped[session.workspacePath] ?? []),
+    ]
+  }
+  return grouped
+}
+
 export function useSidebarData() {
   const ctx = useContext(SidebarDataContext)
   if (!ctx) throw new Error('useSidebarData must be used within SidebarDataProvider')
@@ -77,7 +104,8 @@ export function SidebarDataProvider({ children }: { children: ReactNode }) {
   const didRestoreWorkspaceRef = useRef(false)
 
   const rawWorkspacesQuery = useTrackedQuery('workspaces.list', api.workspaces.list, {}) as
-    typeof EMPTY_WORKSPACES | undefined
+    | typeof EMPTY_WORKSPACES
+    | undefined
   const isWorkspacesLoading = rawWorkspacesQuery === undefined
   const rawWorkspaces = rawWorkspacesQuery ?? EMPTY_WORKSPACES
 
@@ -135,8 +163,8 @@ export function SidebarDataProvider({ children }: { children: ReactNode }) {
       })
       grouped[row.workspacePath] = current
     }
-    return grouped
-  }, [rawSidebarRows, ui.currentClientId])
+    return mergePendingSidebarSessions(grouped, ui.pendingSidebarSessions)
+  }, [rawSidebarRows, ui.currentClientId, ui.pendingSidebarSessions])
 
   const value = useMemo<SidebarDataValue>(
     () => ({

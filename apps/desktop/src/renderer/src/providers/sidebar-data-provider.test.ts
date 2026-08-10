@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveInitialWorkspacePath } from './sidebar-data-provider'
+import { mergePendingSidebarSessions, resolveInitialWorkspacePath } from './sidebar-data-provider'
 
 const workspaces = [{ path: '/repos/alpha' }, { path: '/repos/beta' }]
 
@@ -14,5 +14,26 @@ describe('resolveInitialWorkspacePath', () => {
 
   it('returns null when no workspace has been added', () => {
     expect(resolveInitialWorkspacePath([], '/repos/beta')).toBeNull()
+  })
+})
+
+describe('mergePendingSidebarSessions', () => {
+  it('shows a starting session immediately in its workspace', () => {
+    const result = mergePendingSidebarSessions({}, [
+      {
+        externalId: 'pending:1',
+        workspacePath: '/repos/beta',
+        title: 'Investigate missing output',
+        status: 'starting',
+        providerId: 'cursor',
+      },
+    ])
+    expect(result['/repos/beta']).toEqual([
+      expect.objectContaining({
+        externalId: 'pending:1',
+        title: 'Investigate missing output',
+        status: 'starting',
+      }),
+    ])
   })
 })

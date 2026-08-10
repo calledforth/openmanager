@@ -281,11 +281,20 @@ export function coordinateProviderConnection(
 
 export type LocalSessionStatus = 'starting' | 'running'
 
+export interface PendingSidebarSession {
+  externalId: string
+  workspacePath: string
+  title: string
+  status: LocalSessionStatus
+  providerId: ProviderId
+}
+
 interface AppUiValue {
   activeWorkspacePath: string | null
   activeSessionId: string | null
   isSessionDraftOpen: boolean
   pendingDraftSessionStart: boolean
+  pendingSidebarSessions: PendingSidebarSession[]
   localSessionStatus: LocalSessionStatus | null
   adoptedDraftSessionId: string | null
   currentClientId: string | null
@@ -401,6 +410,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [isSessionDraftOpen, setIsSessionDraftOpen] = useState(false)
   const [pendingDraftSessionStart, setPendingDraftSessionStart] = useState(false)
+  const [pendingSidebarSessions, setPendingSidebarSessions] = useState<PendingSidebarSession[]>([])
   const [localSessionStatus, setLocalSessionStatus] = useState<LocalSessionStatus | null>(null)
   const [adoptedDraftSessionId, setAdoptedDraftSessionId] = useState<string | null>(null)
   const [localSessionJobId, setLocalSessionJobId] = useState<Id<'pending_jobs'> | null>(null)
@@ -600,9 +610,12 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
     }
   }, [localSessionJob])
 
-  const applyProviderHealth = useCallback((providerId: ProviderId, report: ProviderHealthReport) => {
-    setProviderHealthByProvider((prev) => ({ ...prev, [providerId]: report }))
-  }, [])
+  const applyProviderHealth = useCallback(
+    (providerId: ProviderId, report: ProviderHealthReport) => {
+      setProviderHealthByProvider((prev) => ({ ...prev, [providerId]: report }))
+    },
+    [],
+  )
 
   const setProviderConnecting = useCallback((providerId: ProviderId, connecting: boolean) => {
     setConnectingProviders((prev) => ({ ...prev, [providerId]: connecting }))
@@ -992,6 +1005,17 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           workspaceComposerPreferencesRef.current[
             workspaceComposerPreferenceKey(activeWorkspacePath, draftProviderId)
           ]?.configValues
+        const pendingExternalId = `pending:${crypto.randomUUID()}`
+        setPendingSidebarSessions((current) => [
+          ...current.filter((session) => session.workspacePath !== activeWorkspacePath),
+          {
+            externalId: pendingExternalId,
+            workspacePath: activeWorkspacePath,
+            title: trimmed || 'New session',
+            status: 'starting',
+            providerId: draftProviderId,
+          },
+        ])
         setPendingDraftSessionStart(true)
         setLocalSessionStatus('starting')
         setAdoptedDraftSessionId(null)
@@ -1002,6 +1026,9 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           )
           setPendingDraftSessionStart(false)
           setLocalSessionStatus(null)
+          setPendingSidebarSessions((current) =>
+            current.filter((session) => session.externalId !== pendingExternalId),
+          )
           setError(error.message)
           throw error
         }
@@ -1012,6 +1039,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
             payload: JSON.stringify({
               workspacePath: activeWorkspacePath,
               content: trimmed,
+              title: trimmed.slice(0, 80) || 'New session',
               attachments,
               userMessageId,
               providerId: draftProviderId,
@@ -1027,6 +1055,9 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           setPendingDraftSessionStart(false)
           setLocalSessionStatus(null)
           setLocalSessionJobId(null)
+          setPendingSidebarSessions((current) =>
+            current.filter((session) => session.externalId !== pendingExternalId),
+          )
           setError((err as Error).message)
           throw err
         }
@@ -1807,6 +1838,11 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
             },
           }))
           if (eventWorkspacePath) {
+            if (event.event === 'session_created') {
+              setPendingSidebarSessions((current) =>
+                current.filter((session) => session.workspacePath !== eventWorkspacePath),
+              )
+            }
             mergeDraftRuntimeForWorkspace(eventWorkspacePath, {
               providerId: event.providerId,
               ...(models ? { models } : {}),
@@ -2068,9 +2104,8 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
         draftSelectionByWorkspace[activeWorkspacePath]?.providerId ??
         defaultProviderId)
     return (
-      workspaceComposerPreferences[
-        workspaceComposerPreferenceKey(activeWorkspacePath, providerId)
-      ]?.configValues ?? {}
+      workspaceComposerPreferences[workspaceComposerPreferenceKey(activeWorkspacePath, providerId)]
+        ?.configValues ?? {}
     )
   }, [
     acpSessionStateById,
@@ -2118,6 +2153,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       activeSessionId,
       isSessionDraftOpen,
       pendingDraftSessionStart,
+      pendingSidebarSessions,
       localSessionStatus,
       adoptedDraftSessionId,
       currentClientId,
@@ -2162,6 +2198,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       activeSessionId,
       isSessionDraftOpen,
       pendingDraftSessionStart,
+      pendingSidebarSessions,
       localSessionStatus,
       adoptedDraftSessionId,
       currentClientId,
