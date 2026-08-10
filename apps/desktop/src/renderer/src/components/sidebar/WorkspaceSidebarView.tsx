@@ -16,6 +16,7 @@ import { ProviderIcon } from '../providers/ProviderIcon'
 import { Tooltip } from '../ui/Tooltip'
 import { SidebarSettingsMenu } from './SidebarSettingsMenu'
 import { SessionBusyLoader, sessionBusyTone } from './SessionBusyLoader'
+import { ProjectIcon } from './ProjectIcon'
 
 const SESSION_PREVIEW_LIMIT = 5
 const SESSION_PAGE_SIZE = 10
@@ -277,7 +278,7 @@ function WorkspaceGroup({
           onClick={onToggleCollapse}
           className="flex min-w-0 flex-1 items-center gap-1.5"
         >
-          <FolderIcon className="h-3.5 w-3.5 shrink-0" weight="regular" />
+          <ProjectIcon workspacePath={workspace.path} fallbackIcon={FolderIcon} />
           <span className="flex-1 truncate text-left">{workspace.name}</span>
         </button>
         <Tooltip content="New agent in this project" side="bottom" align="end">
