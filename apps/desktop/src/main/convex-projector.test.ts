@@ -46,6 +46,103 @@ function setup() {
 }
 
 describe('ConvexProjector streaming contracts', () => {
+  it('uploads Cursor generated images and appends a durable assistant image part', async () => {
+    const mutations: Record<string, unknown>[] = []
+    const convex = {
+      mutation: async (_reference: unknown, args: Record<string, unknown>) => {
+        mutations.push(args)
+        if (Object.keys(args).length === 1 && args.clientId === 'client-1') {
+          return 'https://upload.example.test/generated'
+        }
+        if (args.storageId === 'storage-1') return 'attachment-1'
+        return 'record-id'
+      },
+    } as unknown as ConvexClient
+    const upload = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ storageId: 'storage-1' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    )
+    const projector = new ConvexProjector(convex, 'client-1', {
+      readGeneratedImage: async () => ({
+        bytes: Buffer.from('png bytes'),
+        name: 'generated.png',
+        mimeType: 'image/png',
+        size: 9,
+      }),
+      fetch: upload as typeof fetch,
+    })
+
+    projector.consume(
+      event(1, {
+        providerId: 'cursor',
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'Generate it', userMessageId: 'user-1' },
+      }),
+    )
+    projector.consume(
+      event(2, {
+        providerId: 'cursor',
+        category: 'tool',
+        event: 'tool_call',
+        data: {
+          toolCallId: 'image-tool-1',
+          title: 'Generate Image',
+          status: 'in_progress',
+        },
+      }),
+    )
+    projector.consume(
+      event(3, {
+        providerId: 'cursor',
+        category: 'extension',
+        event: 'extension_request',
+        data: {
+          requestId: 'request-1',
+          method: 'cursor/generate_image',
+          params: {
+            toolCallId: 'image-tool-1',
+            description: 'A generated test image',
+            filePath: 'C:/fake/generated.png',
+            referenceImagePaths: [],
+          },
+        },
+      }),
+    )
+    await projector.waitForThread(base.threadId)
+
+    expect(upload).toHaveBeenCalledWith(
+      'https://upload.example.test/generated',
+      expect.objectContaining({ method: 'POST' }),
+    )
+    expect(mutations).toContainEqual(
+      expect.objectContaining({
+        storageId: 'storage-1',
+      }),
+    )
+    expect(mutations).toContainEqual(
+      expect.objectContaining({
+        ids: ['attachment-1'],
+        messageExternalId: 'assistant-1',
+      }),
+    )
+    expect(mutations).toContainEqual(
+      expect.objectContaining({
+        partUpdate: {
+          kind: 'part.updated',
+          part: expect.objectContaining({
+            type: 'image',
+            attachmentId: 'attachment-1',
+            generated: true,
+          }),
+        },
+      }),
+    )
+  })
+
   it('syncs only titled provider sessions through the metadata mutation', async () => {
     const { projector, mutations } = setup()
 

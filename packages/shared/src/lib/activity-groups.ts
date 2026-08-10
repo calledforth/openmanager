@@ -58,7 +58,7 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit'])
 const SEARCH_TOOLS = new Set(['Grep', 'Glob', 'WebSearch', 'WebFetch'])
 
 /** Tools that carry standalone meaning and never fold into a count. */
-const BARRIER_TOOLS = new Set(['TodoWrite', 'Task', 'AskUserQuestion'])
+const BARRIER_TOOLS = new Set(['TodoWrite', 'Task', 'AskUserQuestion', 'GenerateImage'])
 
 /**
  * Providers put a human-readable title in `tool` ("Read File", "Searched

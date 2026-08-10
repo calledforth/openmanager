@@ -3,6 +3,34 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { MessageParts } from './MessageParts'
 
 describe('MessageParts', () => {
+  it('shows generated-image timing and the resulting image', () => {
+    const html = renderToStaticMarkup(
+      <MessageParts
+        parts={[
+          {
+            type: 'tool',
+            id: 'image-tool',
+            tool: 'Generate Image',
+            state: { status: 'completed' },
+            time: { start: 1_000, end: 8_400 },
+          },
+          {
+            type: 'image',
+            id: 'generated-image',
+            generated: true,
+            name: 'concept.png',
+            url: 'https://example.convex.cloud/api/storage/concept',
+          },
+        ]}
+      />,
+    )
+
+    expect(html).toContain('Generated image')
+    expect(html).toContain('in 7s')
+    expect(html).toContain('src="https://example.convex.cloud/api/storage/concept"')
+    expect(html).toContain('Preview concept.png')
+  })
+
   it('keeps reasoning and the final answer visible side by side', () => {
     const html = renderToStaticMarkup(
       <MessageParts
@@ -84,9 +112,7 @@ describe('MessageParts', () => {
   it('renders a textless thought from its token estimate and duration', () => {
     const html = renderToStaticMarkup(
       <MessageParts
-        parts={[
-          { type: 'reasoning', id: 'r1', tokens: 1500, time: { start: 0, end: 2800 } },
-        ]}
+        parts={[{ type: 'reasoning', id: 'r1', tokens: 1500, time: { start: 0, end: 2800 } }]}
         isStreaming={false}
       />,
     )
@@ -100,7 +126,9 @@ describe('MessageParts', () => {
   it('still renders reasoning parts persisted before tokens existed', () => {
     const html = renderToStaticMarkup(
       <MessageParts
-        parts={[{ type: 'reasoning', id: 'r1', text: 'considering', time: { start: 0, end: 2400 } }]}
+        parts={[
+          { type: 'reasoning', id: 'r1', text: 'considering', time: { start: 0, end: 2400 } },
+        ]}
         isStreaming={false}
       />,
     )

@@ -26,9 +26,16 @@ export function partitionSettledTurnParts(parts: readonly StreamMessagePart[]): 
     finalStart -= 1
   }
 
+  const beforeAnswer = parts.slice(0, finalStart)
+  // Generated artifacts are answer content even though Cursor emits their
+  // callback before it streams its closing text. Keep the tool trace folded,
+  // but never hide the result the user asked for inside "Worked".
+  const generatedImages = beforeAnswer.filter(
+    (part) => part.type === 'image' && part.generated === true,
+  )
   return {
-    workParts: parts.slice(0, finalStart),
-    finalParts: parts.slice(finalStart),
+    workParts: beforeAnswer.filter((part) => !generatedImages.includes(part)),
+    finalParts: [...generatedImages, ...parts.slice(finalStart)],
   }
 }
 

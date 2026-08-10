@@ -125,6 +125,20 @@ function parseCursorTask(params: unknown): SubtaskUpdate | undefined {
   }
 }
 
+/** Cursor has already generated and written the image when this request
+ * arrives. The response only acknowledges the interaction so the CLI can
+ * finish the turn; the host separately projects the file into durable chat
+ * state from the emitted extension_request event. */
+function acknowledgeGeneratedImage(params: unknown): unknown {
+  const p = (params ?? {}) as Record<string, unknown>
+  return {
+    outcome: {
+      outcome: 'approved',
+      ...(str(p.description) ? { description: str(p.description) } : {}),
+    },
+  }
+}
+
 export const cursor: AcpProviderConfig = {
   kind: 'acp',
   id: 'cursor',
@@ -172,6 +186,7 @@ export const cursor: AcpProviderConfig = {
       'cursor/ask_question': () => ({
         outcome: { outcome: 'skipped', reason: 'User skipped questions' },
       }),
+      'cursor/generate_image': acknowledgeGeneratedImage,
     },
     questions: {
       'cursor/ask_question': {

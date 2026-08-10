@@ -422,6 +422,19 @@ export class StreamingMessagesStore {
       this.statusRank(existingState.status) > this.statusRank(proposedStatus)
         ? existingState.status
         : proposedStatus
+    // Cursor can stamp the pending and completed updates with the same provider
+    // time even though they reached us seconds apart. Arrival time is the clock
+    // the user actually watched counting in this renderer.
+    const eventTime = Date.now()
+    const existingTime = existing?.time as { start?: number; end?: number } | undefined
+    const time = {
+      start: existingTime?.start ?? eventTime,
+      ...(status === 'completed' || status === 'error'
+        ? { end: existingTime?.end ?? eventTime }
+        : existingTime?.end !== undefined
+          ? { end: existingTime.end }
+          : {}),
+    }
     state.parts.set(tool.toolCallId, {
       ...(existing ?? {}),
       type: 'tool',
@@ -438,6 +451,7 @@ export class StreamingMessagesStore {
       ...(tool.locations ? { locations: tool.locations } : {}),
       ...(tool.metadata ? { metadata: tool.metadata } : {}),
       ...(tool.content ? { content: tool.content } : {}),
+      time,
     })
     return true
   }
@@ -512,6 +526,10 @@ export class StreamingMessagesStore {
       state.parts.set(id, {
         ...part,
         state: { ...toolState, status: failed ? 'error' : 'completed' },
+        time: {
+          ...((part.time as Record<string, number> | undefined) ?? { start: Date.now() }),
+          end: Date.now(),
+        },
       })
     }
   }

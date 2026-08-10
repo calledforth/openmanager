@@ -27,6 +27,10 @@ const TOOL_NAME_ALIASES: Record<string, string> = {
   askuserquestion: 'AskUserQuestion',
   'ask-user-question': 'AskUserQuestion',
   ask_user_question: 'AskUserQuestion',
+  generateimage: 'GenerateImage',
+  'generate-image': 'GenerateImage',
+  generate_image: 'GenerateImage',
+  'generate image': 'GenerateImage',
 }
 
 function normalizePath(input: unknown): string {
