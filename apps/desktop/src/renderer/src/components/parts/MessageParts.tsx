@@ -12,6 +12,8 @@ import { SubtaskCard } from './SubtaskCard'
 import { canonicalizeToolName } from './ToolRegistry'
 import { AskedQuestionPart } from '../questions/AskedQuestionPart'
 import { readAskedQuestions } from '../questions/askedQuestion'
+import { ImageGenerationToolPart } from './ImageGenerationToolPart'
+import { GeneratedImagePart } from './GeneratedImagePart'
 
 interface Part {
   type: string
@@ -60,7 +62,13 @@ function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode
       const callID = (part as { callID?: string }).callID
       let toolElement: ReactNode
       const asked = toolName === 'AskUserQuestion' ? readAskedQuestions(part.state) : null
-      if (asked) {
+      if (toolName === 'GenerateImage') {
+        toolElement = (
+          <ImageGenerationToolPart
+            part={part as Parameters<typeof ImageGenerationToolPart>[0]['part']}
+          />
+        )
+      } else if (asked) {
         toolElement = <AskedQuestionPart questions={asked} />
       } else if (toolName === 'Bash') {
         toolElement = <BashToolPart part={part as Parameters<typeof BashToolPart>[0]['part']} />
@@ -97,6 +105,13 @@ function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode
         />
       )
     }
+    case 'image':
+      return (
+        <GeneratedImagePart
+          key={key}
+          part={part as Parameters<typeof GeneratedImagePart>[0]['part']}
+        />
+      )
     case 'retry':
       return (
         <div key={key} className="py-0.5 text-ui-xs text-amber-500/90">

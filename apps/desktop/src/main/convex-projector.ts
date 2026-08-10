@@ -16,6 +16,9 @@ import type {
 import { isRecoverableError } from '@agentpack/contract'
 import { api } from '@openmanager/convex/_generated/api'
 import { ConvexClient } from 'convex/browser'
+import { lstat, readFile, realpath } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import {
   estimateConvexPayloadBytes,
   extractConvexTelemetryContext,
@@ -65,6 +68,66 @@ type ActiveTurn = {
 const FINALIZE_ATTEMPTS = 3
 const FINALIZE_RETRY_BASE_MS = 500
 const PART_UPDATE_CHUNK_INTERVAL = 8
+const MAX_GENERATED_IMAGE_BYTES = 10 * 1024 * 1024
+
+type GeneratedImageArtifact = {
+  bytes: Buffer
+  name: string
+  mimeType: 'image/png' | 'image/jpeg' | 'image/webp'
+  size: number
+}
+
+type ConvexProjectorOptions = {
+  readGeneratedImage?: (path: string, workspacePath?: string) => Promise<GeneratedImageArtifact>
+  fetch?: typeof globalThis.fetch
+}
+
+function isWithin(root: string, candidate: string): boolean {
+  const pathFromRoot = relative(resolve(root), resolve(candidate))
+  return pathFromRoot === '' || (!pathFromRoot.startsWith('..') && !isAbsolute(pathFromRoot))
+}
+
+function sniffImageMime(bytes: Buffer): GeneratedImageArtifact['mimeType'] | undefined {
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes.subarray(1, 4).toString('ascii') === 'PNG') {
+    return 'image/png'
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return 'image/jpeg'
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    bytes.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return 'image/webp'
+  }
+  return undefined
+}
+
+async function readGeneratedImage(
+  requestedPath: string,
+  workspacePath?: string,
+): Promise<GeneratedImageArtifact> {
+  if (!isAbsolute(requestedPath)) throw new Error('Generated image path must be absolute')
+  const canonicalPath = await realpath(requestedPath)
+  const allowedRoots = [workspacePath, join(homedir(), '.cursor', 'projects')].filter(
+    (root): root is string => Boolean(root),
+  )
+  if (!allowedRoots.some((root) => isWithin(root, canonicalPath))) {
+    throw new Error('Generated image path is outside an allowed project directory')
+  }
+  const stats = await lstat(canonicalPath)
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    throw new Error('Generated image path is not a regular file')
+  }
+  if (stats.size <= 0 || stats.size > MAX_GENERATED_IMAGE_BYTES) {
+    throw new Error('Generated image must be between 1 byte and 10 MB')
+  }
+  const bytes = await readFile(canonicalPath)
+  const mimeType = sniffImageMime(bytes)
+  if (!mimeType) throw new Error('Generated file is not a supported PNG, JPEG, or WebP image')
+  return { bytes, name: basename(canonicalPath), mimeType, size: bytes.length }
+}
 
 function timestampMs(timestamp: string): number {
   const parsed = Date.parse(timestamp)
@@ -141,11 +204,17 @@ export class ConvexProjector {
   private readonly providerByThread = new Map<string, AgentEvent['providerId']>()
   private readonly queues = new Map<string, Promise<void>>()
   private readonly sentProfileByProvider = new Map<string, string>()
+  private readonly readGeneratedImage: NonNullable<ConvexProjectorOptions['readGeneratedImage']>
+  private readonly fetch: typeof globalThis.fetch
 
   constructor(
     private readonly convex: ConvexClient,
     private readonly clientId: string,
-  ) {}
+    options: ConvexProjectorOptions = {},
+  ) {
+    this.readGeneratedImage = options.readGeneratedImage ?? readGeneratedImage
+    this.fetch = options.fetch ?? globalThis.fetch
+  }
 
   consume(event: AgentEvent): void {
     this.enqueue(event.threadId, () => this.project(event))
@@ -272,6 +341,11 @@ export class ConvexProjector {
         return
       case 'tool_call_content':
         await this.appendToolContent(event, event.data.toolCallId, event.data.item)
+        return
+      case 'extension_request':
+        if (event.data.method === 'cursor/generate_image') {
+          await this.persistGeneratedImage(event)
+        }
         return
       case 'permission_request':
         await this.upsertPermission(event.data)
@@ -589,6 +663,18 @@ export class ConvexProjector {
       toolStatusRank(existingState.status) > toolStatusRank(proposedStatus)
         ? existingState.status
         : proposedStatus
+    // Provider timestamps may collapse the entire image call to one instant.
+    // Projection observes the actual lifecycle, so preserve that wall time.
+    const eventTime = Date.now()
+    const existingTime = existing?.time as { start?: number; end?: number } | undefined
+    const time = {
+      start: existingTime?.start ?? eventTime,
+      ...(status === 'completed' || status === 'error'
+        ? { end: existingTime?.end ?? eventTime }
+        : existingTime?.end !== undefined
+          ? { end: existingTime.end }
+          : {}),
+    }
     const part: PartData = {
       ...(existing ?? {}),
       type: 'tool',
@@ -605,6 +691,86 @@ export class ConvexProjector {
       ...(tool.locations ? { locations: tool.locations } : {}),
       ...(tool.metadata ? { metadata: tool.metadata } : {}),
       ...(tool.content ? { content: tool.content } : {}),
+      time,
+    }
+    buffer.parts.set(part.id, part)
+    await this.appendChunk(turn.assistantMessageId, buffer, '', {
+      partUpdate: { kind: 'part.updated', part },
+      seq: event.seq,
+    })
+  }
+
+  private async persistGeneratedImage(
+    event: Extract<AgentEvent, { event: 'extension_request' }>,
+  ): Promise<void> {
+    // Cursor's session-scoped extension callback carries no messageId. The
+    // thread has exactly one active turn, which is the correct correlation.
+    const turn = this.turns.get(event.threadId)
+    if (!turn) return
+    const params =
+      event.data.params && typeof event.data.params === 'object'
+        ? (event.data.params as Record<string, unknown>)
+        : {}
+    const filePath = typeof params.filePath === 'string' ? params.filePath : undefined
+    const toolCallId = typeof params.toolCallId === 'string' ? params.toolCallId : undefined
+    if (!filePath || !toolCallId) return
+
+    const artifact = await this.readGeneratedImage(filePath, event.workspaceId)
+    const uploadUrl = await this.runMutation(
+      'attachments.generateUploadUrl',
+      (api as any).attachments.generateUploadUrl,
+      { clientId: this.clientId },
+    )
+    if (typeof uploadUrl !== 'string') throw new Error('Convex did not return an upload URL')
+    const upload = await this.fetch(uploadUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': artifact.mimeType },
+      body: new Blob([Uint8Array.from(artifact.bytes)], { type: artifact.mimeType }),
+    })
+    if (!upload.ok) throw new Error(`Generated image upload failed (${upload.status})`)
+    const uploaded = (await upload.json()) as { storageId?: string }
+    if (!uploaded.storageId) throw new Error('Generated image upload returned no storage ID')
+
+    const attachmentId = await this.runMutation(
+      'attachments.register',
+      (api as any).attachments.register,
+      {
+        storageId: uploaded.storageId,
+        clientId: this.clientId,
+        name: artifact.name,
+        mimeType: artifact.mimeType,
+        size: artifact.size,
+      },
+    )
+    if (typeof attachmentId !== 'string') throw new Error('Generated image registration failed')
+    await this.runMutation(
+      'attachments.assignToMessage',
+      (api as any).attachments.assignToMessage,
+      {
+        ids: [attachmentId],
+        clientId: this.clientId,
+        messageExternalId: turn.assistantMessageId,
+      },
+    )
+
+    const buffer = this.buffer(
+      turn.assistantMessageId,
+      event.sessionId,
+      'assistant',
+      event.providerId,
+      turn.startedAt,
+    )
+    await this.ensurePlaceholder(turn.assistantMessageId, buffer)
+    const part: PartData = {
+      type: 'image',
+      id: `${toolCallId}_image`,
+      attachmentId,
+      name: artifact.name,
+      mimeType: artifact.mimeType,
+      size: artifact.size,
+      generated: true,
+      toolCallId,
+      ...(typeof params.description === 'string' ? { description: params.description } : {}),
     }
     buffer.parts.set(part.id, part)
     await this.appendChunk(turn.assistantMessageId, buffer, '', {
@@ -925,7 +1091,7 @@ export class ConvexProjector {
         completedAt,
       }
       this.finishActiveParts(turn, buffer)
-      this.finishRunningTools(buffer, stopReason)
+      this.finishRunningTools(buffer, stopReason, completedAt)
       this.finishRunningSubtasks(buffer, stopReason)
       await this.finalize(turn.assistantMessageId, buffer)
     }
@@ -954,7 +1120,11 @@ export class ConvexProjector {
     return reasoningPartId ? [...closed, reasoningPartId] : closed
   }
 
-  private finishRunningTools(buffer: MessageBuffer, stopReason?: string): void {
+  private finishRunningTools(
+    buffer: MessageBuffer,
+    stopReason?: string,
+    completedAt = Date.now(),
+  ): void {
     const failed = !!stopReason && /error|fail|cancel|abort/i.test(stopReason)
     for (const [id, part] of buffer.parts) {
       if (part.type !== 'tool') continue
@@ -963,6 +1133,10 @@ export class ConvexProjector {
       buffer.parts.set(id, {
         ...part,
         state: { ...state, status: failed ? 'error' : 'completed' },
+        time: {
+          ...((part.time as Record<string, number> | undefined) ?? { start: completedAt }),
+          end: completedAt,
+        },
       })
     }
   }

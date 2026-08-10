@@ -34,6 +34,17 @@ describe('settled turn work grouping', () => {
     expect(partition.finalParts).toEqual([])
   })
 
+  it('keeps a generated image beside the final answer instead of inside work', () => {
+    const partition = partitionSettledTurnParts([
+      { type: 'tool', id: 'generate', tool: 'Generate Image', state: { status: 'completed' } },
+      { type: 'image', id: 'image', generated: true, url: 'https://example.test/image.png' },
+      { type: 'text', id: 'final', text: 'Here is the result.' },
+    ])
+
+    expect(partition.workParts.map((part) => part.id)).toEqual(['generate'])
+    expect(partition.finalParts.map((part) => part.id)).toEqual(['image', 'final'])
+  })
+
   it('formats successful duration and stopped outcomes', () => {
     expect(
       settledTurnLabel({
