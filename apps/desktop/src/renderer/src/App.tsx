@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AppUiProvider, useAppUi } from './providers/app-ui-provider'
 import { ThemeProvider } from './providers/theme-provider'
 import { SidebarDataProvider } from './providers/sidebar-data-provider'
@@ -43,6 +43,17 @@ function AppShell() {
   const { closeChildSession } = useAppUi()
   const { activeSession } = useActiveSession()
   const parentExternalId = activeSession?.parentExternalId
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return
+      if (event.key.toLowerCase() !== 'b') return
+      event.preventDefault()
+      setSidebarCollapsed((v) => !v)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   return (
     <div className="flex h-screen w-screen min-w-0 overflow-hidden bg-[var(--basis-canvas-bg)] text-[var(--basis-text)]">
