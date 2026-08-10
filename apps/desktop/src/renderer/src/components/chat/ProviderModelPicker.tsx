@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { CaretDownIcon, CheckIcon, MagnifyingGlassIcon, StarIcon } from '@phosphor-icons/react'
+import { CaretDownIcon, MagnifyingGlassIcon, StarIcon } from '@phosphor-icons/react'
 import type { ProviderId } from '@agentpack/contract'
 import { cn } from '../../lib/utils'
 import { ProviderIcon } from '../providers/ProviderIcon'
@@ -47,9 +47,9 @@ const PROVIDER_RAIL_ORDER: readonly ProviderId[] = ['claude', 'cursor', 'opencod
 const FAVORITES_PANE = '__favorites__' as const
 type PaneId = typeof FAVORITES_PANE | ProviderId
 
-const MENU_WIDTH = 340
-const MENU_MIN_HEIGHT = 280
-const MENU_MAX_HEIGHT = 300
+const MENU_WIDTH = 400
+const MENU_MIN_HEIGHT = 320
+const MENU_MAX_HEIGHT = 360
 
 type FlatModel = {
   key: FavoriteModelKey
@@ -315,11 +315,6 @@ export function ProviderModelPicker({
     }
   }
 
-  const paneTitle =
-    paneId === FAVORITES_PANE
-      ? 'Favorites'
-      : (visibleGroups.find((group) => group.providerId === paneId)?.providerName ?? 'Models')
-
   const menu =
     open &&
     menuCoords &&
@@ -339,8 +334,9 @@ export function ProviderModelPicker({
           aria-label="Select model"
           onKeyDown={onMenuKeyDown}
           className={cn(
-            'relative flex flex-col overflow-hidden border border-[var(--basis-border)] bg-[var(--basis-canvas-bg)] shadow-xl',
-            'rounded-[var(--basis-chat-shell-radius)]',
+            'relative flex flex-col overflow-hidden bg-[var(--basis-canvas-bg)]',
+            'rounded-[calc(var(--basis-chat-shell-radius)+4px)]',
+            'shadow-[0_16px_40px_rgba(0,0,0,0.22)]',
           )}
           style={{
             width: MENU_WIDTH,
@@ -348,8 +344,8 @@ export function ProviderModelPicker({
             maxHeight: MENU_MAX_HEIGHT,
           }}
         >
-          <div className="shrink-0 border-b border-[var(--basis-border-muted)] px-2 py-1.5">
-            <div className="flex items-center gap-1.5 text-[var(--basis-text-faint)]">
+          <div className="shrink-0 px-3 pb-1 pt-3">
+            <div className="flex items-center gap-2 rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)] bg-[var(--basis-surface)] px-2.5 py-2 text-[var(--basis-text-faint)]">
               <MagnifyingGlassIcon weight="light" className="h-3.5 w-3.5 shrink-0" />
               <input
                 ref={searchRef}
@@ -361,17 +357,17 @@ export function ProviderModelPicker({
                   setPreviewing(false)
                 }}
                 placeholder="Search models…"
-                className="min-w-0 flex-1 bg-transparent text-[11px] font-normal leading-[var(--lh-default)] tracking-[var(--tracking-normal)] text-[var(--basis-text)] outline-none [font-variation-settings:'wght'_450] placeholder:text-[var(--basis-text-muted)]"
+                className="min-w-0 flex-1 bg-transparent text-[12px] font-normal leading-[var(--lh-default)] tracking-[var(--tracking-normal)] text-[var(--basis-text)] outline-none [font-variation-settings:'wght'_450] placeholder:text-[var(--basis-text-muted)]"
               />
             </div>
           </div>
 
-          <div className="flex min-h-0 flex-1">
+          <div className={cn('flex min-h-0 flex-1', showRail ? 'gap-1.5 p-2 pt-1.5' : 'px-1.5 pb-2')}>
             {showRail && (
               <div
                 role="tablist"
                 aria-label="Agent providers"
-                className="flex w-10 shrink-0 flex-col overflow-y-auto border-r border-[var(--basis-border-muted)] py-0.5"
+                className="flex w-12 shrink-0 flex-col gap-0.5 overflow-y-auto rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)] bg-[var(--basis-surface)] py-1.5"
               >
                 <RailButton
                   selected={paneId === FAVORITES_PANE}
@@ -383,14 +379,14 @@ export function ProviderModelPicker({
                   }}
                 >
                   <StarIcon
-                    size={14}
+                    size={15}
                     weight={paneId === FAVORITES_PANE ? 'fill' : 'regular'}
                     className="text-current"
                   />
                 </RailButton>
 
                 {visibleGroups.length > 0 && (
-                  <div className="mx-2 my-0.5 h-px bg-[var(--basis-border-muted)]" />
+                  <div className="mx-2.5 my-1 h-px bg-[var(--basis-border-muted)]/70" />
                 )}
 
                 {visibleGroups.map((group) => (
@@ -404,24 +400,13 @@ export function ProviderModelPicker({
                       setPreviewing(false)
                     }}
                   >
-                    <ProviderIcon providerId={group.providerId} className="h-3.5 w-3.5" />
+                    <ProviderIcon providerId={group.providerId} className="h-4 w-4" />
                   </RailButton>
                 ))}
               </div>
             )}
 
             <div className="flex min-w-0 flex-1 flex-col">
-              {!searching && (
-                <div className="flex shrink-0 items-center gap-1.5 px-2 pb-0.5 pt-1.5 text-[10px] font-medium tracking-[var(--tracking-normal)] text-[var(--basis-text-faint)]">
-                  {paneId === FAVORITES_PANE ? (
-                    <StarIcon size={11} weight="fill" className="shrink-0" />
-                  ) : (
-                    <ProviderIcon providerId={paneId} className="h-3 w-3" />
-                  )}
-                  <span className="truncate">{paneTitle}</span>
-                </div>
-              )}
-
               <div
                 className="min-h-0 flex-1 overflow-y-auto py-0.5"
                 onMouseLeave={() => setPreviewing(false)}
@@ -438,25 +423,31 @@ export function ProviderModelPicker({
                         else rowRefs.current.delete(model.key)
                       }}
                       className={cn(
-                        'group relative flex w-full items-center gap-1 px-1.5',
+                        'group relative flex w-full items-center gap-1 rounded-md px-1.5',
                         selected
-                          ? 'bg-[var(--basis-surface-hover)]'
+                          ? 'bg-[var(--basis-surface)]'
                           : active
-                            ? 'bg-[var(--basis-surface)]'
-                            : 'hover:bg-[var(--basis-surface)]',
+                            ? 'bg-[var(--basis-surface)]/70'
+                            : 'hover:bg-[var(--basis-surface)]/70',
                       )}
                       onMouseEnter={() => {
                         setActiveIndex(index)
                         setPreviewing(true)
                       }}
                     >
+                      {selected && (
+                        <span
+                          aria-hidden
+                          className="absolute bottom-1.5 left-0 top-1.5 w-0.5 rounded-full bg-[var(--basis-text-strong)]"
+                        />
+                      )}
                       <button
                         type="button"
                         role="option"
                         aria-selected={selected}
                         onClick={() => selectModel(model)}
                         className={cn(
-                          'flex min-w-0 flex-1 items-center gap-1.5 px-1 py-1 text-left text-11-regular leading-none transition-colors',
+                          'flex min-w-0 flex-1 items-center gap-2 px-1.5 py-1.5 text-left text-11-regular leading-none transition-colors',
                           selected
                             ? 'text-[var(--basis-text-strong)]'
                             : active
@@ -466,9 +457,6 @@ export function ProviderModelPicker({
                       >
                         <ProviderIcon providerId={model.providerId} className="h-3.5 w-3.5" />
                         <span className="min-w-0 flex-1 truncate">{model.label}</span>
-                        {selected && (
-                          <CheckIcon className="h-3 w-3 shrink-0 text-[var(--basis-text)]" />
-                        )}
                       </button>
                       <Tooltip content={favorited ? 'Remove favorite' : 'Add favorite'} side="left">
                         <button
@@ -482,14 +470,14 @@ export function ProviderModelPicker({
                             onToggleFavorite(model.key)
                           }}
                           className={cn(
-                            'flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors',
+                            'flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors',
                             favorited
                               ? 'text-[var(--basis-text)]'
                               : 'text-[var(--basis-text-faint)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
                             'hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
                           )}
                         >
-                          <StarIcon size={11} weight={favorited ? 'fill' : 'regular'} />
+                          <StarIcon size={12} weight={favorited ? 'fill' : 'regular'} />
                         </button>
                       </Tooltip>
                     </div>
@@ -497,7 +485,7 @@ export function ProviderModelPicker({
                 })}
 
                 {paneModels.length === 0 && (
-                  <div className="px-2.5 py-2 text-11-regular text-[var(--basis-text-faint)]">
+                  <div className="px-3 py-3 text-11-regular text-[var(--basis-text-faint)]">
                     {searching
                       ? 'No models'
                       : paneId === FAVORITES_PANE
@@ -548,9 +536,9 @@ function ModelMetaCard({ rows, top }: { rows: MetaRow[]; top: number }) {
   return (
     <div
       className={cn(
-        'pointer-events-none absolute left-[calc(100%+8px)] z-[201] w-[220px]',
+        'pointer-events-none absolute left-[calc(100%+10px)] z-[201] w-[220px]',
         'rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)]',
-        'bg-[var(--basis-surface)] px-2.5 py-2 shadow-xl',
+        'bg-[var(--basis-surface)] px-3 py-2.5 shadow-[0_12px_32px_rgba(0,0,0,0.2)]',
       )}
       style={{ top }}
       role="tooltip"
@@ -592,15 +580,13 @@ function RailButton({
         aria-label={label}
         onClick={onSelect}
         className={cn(
-          'relative flex w-full items-center justify-center px-0 py-2 text-[var(--basis-text-muted)] transition-colors',
-          'hover:bg-[var(--basis-surface)] hover:text-[var(--basis-text)]',
-          selected && 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]',
+          'relative mx-1 flex h-9 w-[calc(100%-0.5rem)] items-center justify-center rounded-md text-[var(--basis-text-muted)] transition-colors',
+          'hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
+          selected &&
+            'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)] ring-1 ring-[var(--basis-border)]',
         )}
       >
-        {selected && (
-          <span className="absolute bottom-1.5 left-0 top-1.5 w-0.5 rounded-r-sm bg-[var(--basis-text-strong)]" />
-        )}
-        <span className={cn('opacity-75 transition-opacity', selected && 'opacity-100')}>
+        <span className={cn('opacity-70 transition-opacity', selected && 'opacity-100')}>
           {children}
         </span>
       </button>
