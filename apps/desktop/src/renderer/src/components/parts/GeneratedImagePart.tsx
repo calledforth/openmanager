@@ -36,19 +36,19 @@ export function GeneratedImagePart({ part }: { part: GeneratedImage }) {
 
   return (
     <>
-      <figure className="group relative my-2 w-fit max-w-full overflow-hidden rounded-xl border border-[var(--basis-border-muted)] bg-[var(--basis-surface)] shadow-sm">
+      <figure className="group my-2 flex w-fit max-w-full flex-col items-start">
         <button
           type="button"
           onClick={() => setOpen(true)}
           aria-label={`Preview ${name}`}
-          className="relative block max-w-full cursor-zoom-in overflow-hidden text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--basis-text-muted)]"
+          className="relative block max-w-full cursor-zoom-in overflow-hidden rounded-xl border border-[var(--basis-border-muted)] bg-[var(--basis-surface)] text-left shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--basis-text-muted)]"
         >
           <img src={part.url} alt={name} className="max-h-[440px] max-w-full object-contain" />
           <span className="pointer-events-none absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-md border border-white/15 bg-black/55 text-white/80 opacity-0 shadow-sm backdrop-blur-sm transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
             <ArrowsOutIcon className="h-3.5 w-3.5" />
           </span>
         </button>
-        <figcaption className="border-t border-[var(--basis-border-muted)] px-3 py-2 text-[11px] text-[var(--basis-text-faint)]">
+        <figcaption className="mt-1 max-w-full truncate bg-transparent font-sans text-ui-base font-normal leading-ui-relaxed tracking-ui text-[var(--basis-text-faint)]">
           {name}
         </figcaption>
       </figure>

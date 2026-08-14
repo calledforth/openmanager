@@ -91,10 +91,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   }, [font])
 
   const setTheme = useCallback((mode: ThemeMode) => setThemeState(mode), [])
-  const toggleTheme = useCallback(
-    () => setThemeState((t) => (t === 'dark' ? 'light' : 'dark')),
-    [],
-  )
+  const toggleTheme = useCallback(() => setThemeState((t) => (t === 'dark' ? 'light' : 'dark')), [])
   const setFont = useCallback((next: UiFontId) => setFontState(next), [])
 
   const value = useMemo(

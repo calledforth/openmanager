@@ -1010,3 +1010,78 @@ describe('ConvexProjector streaming contracts', () => {
     )
   })
 })
+
+describe('ConvexProjector provider profile catalogs', () => {
+  const sessionCreated = (seq: number, models: unknown) =>
+    event(seq, {
+      providerId: 'cursor',
+      category: 'lifecycle',
+      event: 'session_created',
+      data: { models },
+    } as never)
+
+  it('leaves a stored catalog alone when an event carries no list at all', async () => {
+    const { projector, mutations } = setup()
+
+    // `current_model_update` says which model is in force, not which exist.
+    projector.consume(
+      event(1, {
+        providerId: 'cursor',
+        category: 'session',
+        event: 'current_model_update',
+        data: { currentModelId: 'composer-2.5' },
+      } as never),
+    )
+    await projector.waitForThread(base.threadId)
+
+    // Nothing to say about the catalog, so nothing is written: the profile
+    // mutation is skipped entirely rather than sent with a field that would
+    // overwrite what is stored.
+    expect(mutations.some((args) => 'availableModels' in args)).toBe(false)
+  })
+
+  it('sends an empty catalog through, so a shrunk list can clear a stale one', async () => {
+    const { projector, mutations } = setup()
+
+    projector.consume(sessionCreated(1, { availableModels: [] }))
+    await projector.waitForThread(base.threadId)
+
+    // The distinction the old `?.length` guard threw away: this is the provider
+    // listing and reporting none, which has to be able to clear the profile.
+    expect(mutations).toContainEqual(
+      expect.objectContaining({ providerId: 'cursor', availableModels: [] }),
+    )
+  })
+
+  it('carries per-model capabilities so a restored profile can gate the effort pill', async () => {
+    const { projector, mutations } = setup()
+
+    projector.consume(
+      sessionCreated(1, {
+        availableModels: [
+          {
+            id: 'composer-2.5',
+            displayName: 'Composer 2.5',
+            effortLevels: ['low', 'high'],
+            supportsFastMode: true,
+          },
+        ],
+      }),
+    )
+    await projector.waitForThread(base.threadId)
+
+    expect(mutations).toContainEqual(
+      expect.objectContaining({
+        providerId: 'cursor',
+        availableModels: [
+          {
+            modelId: 'composer-2.5',
+            name: 'Composer 2.5',
+            effortLevels: ['low', 'high'],
+            supportsFastMode: true,
+          },
+        ],
+      }),
+    )
+  })
+})

@@ -41,20 +41,54 @@ function ChildSessionBanner({ onBack }: { onBack: () => void }) {
 function AppShell() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true)
   const [convexOpen, setConvexOpen] = useState(false)
-  const { closeChildSession } = useAppUi()
+  const {
+    closeChildSession,
+    activeWorkspacePath,
+    createSession,
+    openQuickLaunch,
+    closeQuickLaunch,
+    quickLaunchWorkspacePath,
+  } = useAppUi()
   const { activeSession } = useActiveSession()
   const parentExternalId = activeSession?.parentExternalId
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return
-      if (event.key.toLowerCase() !== 'b') return
+      // Escape closes quick launch from anywhere, but never steals the key from
+      // something that already handled it — the slash-command popup calls
+      // preventDefault on its own Escape and this listener sees it afterwards.
+      if (event.key === 'Escape') {
+        if (event.defaultPrevented || !quickLaunchWorkspacePath) return
+        event.preventDefault()
+        closeQuickLaunch()
+        return
+      }
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return
+      const key = event.key.toLowerCase()
+      if (key === 'b' && !event.shiftKey) {
+        event.preventDefault()
+        setSidebarCollapsed((v) => !v)
+        return
+      }
+      if (key !== 'n') return
       event.preventDefault()
-      setSidebarCollapsed((v) => !v)
+      // Ctrl+N aims the composer at another project without leaving this
+      // session; Ctrl+Shift+N is the plain new chat here.
+      if (event.shiftKey) {
+        if (activeWorkspacePath) void createSession(activeWorkspacePath)
+        return
+      }
+      openQuickLaunch()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+  }, [
+    activeWorkspacePath,
+    closeQuickLaunch,
+    createSession,
+    openQuickLaunch,
+    quickLaunchWorkspacePath,
+  ])
 
   return (
     <div className="flex h-screen w-screen min-w-0 overflow-hidden bg-[var(--basis-canvas-bg)] text-[var(--basis-text)]">
@@ -70,7 +104,9 @@ function AppShell() {
           onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
         />
         <ChatView />
-        {parentExternalId ? (
+        {/* A subagent transcript is read-only, but quick launch composes for a
+            different project entirely — so it still gets a composer here. */}
+        {parentExternalId && !quickLaunchWorkspacePath ? (
           <ChildSessionBanner onBack={() => closeChildSession(parentExternalId)} />
         ) : (
           <FloatingChatComposer>

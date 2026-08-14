@@ -41,12 +41,7 @@ export function ToolLine({
         <>
           <span className="text-[var(--basis-text-muted)]">{verb}</span>
           {detail || detailSlot ? (
-            <>
-              {' '}
-              {detailSlot ?? (
-                <span className="text-[var(--basis-text-faint)]">{detail}</span>
-              )}
-            </>
+            <> {detailSlot ?? <span className="text-[var(--basis-text-faint)]">{detail}</span>}</>
           ) : null}
         </>
       )}
@@ -55,9 +50,5 @@ export function ToolLine({
 }
 
 export function ToolExpandedBody({ children }: { children: ReactNode }) {
-  return (
-    <div className="mt-1 max-h-[300px] overflow-y-auto custom-scrollbar">
-      {children}
-    </div>
-  )
+  return <div className="mt-1 max-h-[300px] overflow-y-auto custom-scrollbar">{children}</div>
 }

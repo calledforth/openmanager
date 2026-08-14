@@ -44,11 +44,12 @@ export function usePermissionStateOptional() {
 
 export function PermissionStateProvider({ children }: { children: ReactNode }) {
   const ui = useAppUi()
-  const pendingPermission = (useTrackedQuery(
-    'permissions.getPendingForSession',
-    api.permissions.getPendingForSession,
-    ui.activeSessionId ? { sessionExternalId: ui.activeSessionId } : 'skip',
-  ) as PendingPermission | null | undefined) ?? null
+  const pendingPermission =
+    (useTrackedQuery(
+      'permissions.getPendingForSession',
+      api.permissions.getPendingForSession,
+      ui.activeSessionId ? { sessionExternalId: ui.activeSessionId } : 'skip',
+    ) as PendingPermission | null | undefined) ?? null
 
   const [claimedRequestId, setClaimedRequestId] = useState<string | null>(null)
 

@@ -2,10 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import {
-  PROJECT_ICON_MAX_BYTES,
-  resolveWorkspaceIconDataUrl,
-} from './project-icon'
+import { PROJECT_ICON_MAX_BYTES, resolveWorkspaceIconDataUrl } from './project-icon'
 
 const tempDirs: string[] = []
 
@@ -26,9 +23,7 @@ async function writeWorkspaceFile(
 }
 
 afterEach(async () => {
-  await Promise.all(
-    tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
-  )
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
 })
 
 describe('resolveWorkspaceIconDataUrl', () => {
@@ -95,11 +90,7 @@ describe('resolveWorkspaceIconDataUrl', () => {
 
   it('resolves favicons under a nested frontend package', async () => {
     const cwd = await makeTempWorkspace()
-    await writeWorkspaceFile(
-      cwd,
-      'frontend/src/app/favicon.ico',
-      Buffer.from([0, 0, 1, 0]),
-    )
+    await writeWorkspaceFile(cwd, 'frontend/src/app/favicon.ico', Buffer.from([0, 0, 1, 0]))
 
     const dataUrl = await resolveWorkspaceIconDataUrl(cwd)
 

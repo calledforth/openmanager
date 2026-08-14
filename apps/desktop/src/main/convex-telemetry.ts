@@ -6,7 +6,8 @@ import { randomUUID } from 'crypto'
 
 type TelemetrySource = 'main' | 'renderer'
 type TelemetryKind = 'query' | 'mutation' | 'subscription' | 'trace'
-type TelemetryPhase = 'start' | 'success' | 'error' | 'subscribe' | 'update' | 'unsubscribe' | 'mark'
+type TelemetryPhase =
+  'start' | 'success' | 'error' | 'subscribe' | 'update' | 'unsubscribe' | 'mark'
 
 export interface ConvexTelemetryEvent {
   id: string

@@ -507,12 +507,7 @@ describe('agent streaming regressions', () => {
     expect(snapshot.hasCompleteHistory).toBe(true)
     // The seq-12 event was already in the snapshot, so it is dropped rather
     // than replayed into a second, duplicate text part.
-    expect(snapshot.parts.map((part) => part.type)).toEqual([
-      'reasoning',
-      'tool',
-      'text',
-      'text',
-    ])
+    expect(snapshot.parts.map((part) => part.type)).toEqual(['reasoning', 'tool', 'text', 'text'])
     expect(snapshot.parts[1]).toMatchObject({
       tool: 'Read',
       state: { status: 'completed', input: { path: 'a.ts' } },

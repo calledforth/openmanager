@@ -1,13 +1,6 @@
 import { canonicalizeToolName, getToolLabels } from './tool-meta'
 
-export type ToolUiKind =
-  | 'search'
-  | 'expand'
-  | 'read'
-  | 'edit'
-  | 'terminal'
-  | 'web'
-  | 'generic'
+export type ToolUiKind = 'search' | 'expand' | 'read' | 'edit' | 'terminal' | 'web' | 'generic'
 
 export interface ToolPresenterModel {
   uiKind: ToolUiKind
@@ -129,11 +122,7 @@ export function presentToolPart(part: ToolPartData): ToolPresenterModel {
 
   if (canonical === 'Bash') {
     const command = extractCommand(state.input)
-    const verb = isRunning
-      ? stateType === 'input-streaming'
-        ? 'bash'
-        : 'bash'
-      : 'bash'
+    const verb = isRunning ? (stateType === 'input-streaming' ? 'bash' : 'bash') : 'bash'
     return {
       uiKind: 'terminal',
       verb,

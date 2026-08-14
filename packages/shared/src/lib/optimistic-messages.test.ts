@@ -90,7 +90,10 @@ describe('countUserMessages', () => {
 describe('end-to-end optimistic lifecycle', () => {
   it('adds an optimistic message then clears it once persisted', () => {
     // Start with a single persisted user + assistant pair.
-    let messages: PersistedMessageMeta[] = [persisted('u0', 'user', 0), persisted('a0', 'assistant', 1)]
+    let messages: PersistedMessageMeta[] = [
+      persisted('u0', 'user', 0),
+      persisted('a0', 'assistant', 1),
+    ]
     let userCount = countUserMessages(messages)
 
     // User sends a new message -> queue optimistic.

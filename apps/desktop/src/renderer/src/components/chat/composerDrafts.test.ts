@@ -101,7 +101,9 @@ describe('composerDrafts', () => {
   })
 
   it('truncates oversized drafts instead of dropping them', () => {
-    const pruned = pruneComposerDrafts({ 'session:a': draft('x'.repeat(MAX_DRAFT_TEXT_LENGTH + 50), 1) })
+    const pruned = pruneComposerDrafts({
+      'session:a': draft('x'.repeat(MAX_DRAFT_TEXT_LENGTH + 50), 1),
+    })
     expect(pruned['session:a']?.text).toHaveLength(MAX_DRAFT_TEXT_LENGTH)
   })
 

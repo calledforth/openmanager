@@ -39,9 +39,7 @@ export function ProjectIcon({
   className?: string
   fallbackIcon?: ComponentType<{ className?: string; weight?: 'regular' | 'bold' }>
 }) {
-  const [src, setSrc] = useState<string | null>(
-    () => workspaceIconCache.get(workspacePath) ?? null,
-  )
+  const [src, setSrc] = useState<string | null>(() => workspaceIconCache.get(workspacePath) ?? null)
   const [failed, setFailed] = useState(false)
 
   useEffect(() => {

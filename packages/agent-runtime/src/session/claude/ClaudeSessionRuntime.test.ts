@@ -1355,7 +1355,9 @@ describe('ClaudeSessionRuntime settings', () => {
     } as typeof built.sdk.initialize
     return built
   }
-  const optionIds = (runtime: { applied?: { options: Map<string, unknown> } }) =>
+  // `ReadonlyMap`, matching `AppliedSessionState.options`: this only reads keys,
+  // and asking for a mutable `Map` made the real state unassignable to it.
+  const optionIds = (runtime: { applied?: { options: ReadonlyMap<string, unknown> } }) =>
     [...(runtime.applied?.options.keys() ?? [])]
 
   it('writes effort through the flag-settings layer', async () => {

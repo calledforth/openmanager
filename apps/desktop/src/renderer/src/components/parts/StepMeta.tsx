@@ -22,7 +22,9 @@ export function StepMeta({ cost, tokens, model, duration }: StepMetaProps) {
   return (
     <div className="flex gap-3 py-1 text-[11px] text-muted-foreground border-t border-border mt-1">
       {parts.map((p, i) => (
-        <span key={i} className="tabular-nums">{p}</span>
+        <span key={i} className="tabular-nums">
+          {p}
+        </span>
       ))}
     </div>
   )

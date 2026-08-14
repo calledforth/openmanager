@@ -1,5 +1,10 @@
 export { AgentRuntime } from './core/AgentRuntime.js'
-export type { AgentRuntimeOptions, RuntimeRoute, RuntimeSessionArgs } from './core/AgentRuntime.js'
+export type {
+  AgentRuntimeOptions,
+  ProviderCatalogSnapshot,
+  RuntimeRoute,
+  RuntimeSessionArgs,
+} from './core/AgentRuntime.js'
 export { PermissionBroker, PERMISSION_TIMEOUT_MS } from './core/PermissionBroker.js'
 export { InteractionBroker, INTERACTION_TIMEOUT_MS } from './core/InteractionBroker.js'
 export type {

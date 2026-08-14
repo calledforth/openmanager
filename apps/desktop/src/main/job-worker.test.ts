@@ -76,9 +76,10 @@ describe('buildPlan', () => {
         }),
       },
     } as unknown as BuildPlanHost & { runtime: Record<string, ReturnType<typeof vi.fn>> }
-    const promptInput = vi.fn(
-      async (): Promise<PromptInput> => ({ text: 'Build the plan.', blocks: [] }),
-    )
+    const promptInput = vi.fn(async (): Promise<PromptInput> => ({
+      text: 'Build the plan.',
+      blocks: [],
+    }))
     return { host, calls, promptInput }
   }
 

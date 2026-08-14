@@ -99,9 +99,7 @@ function PermissionCard({
 export function ToolCallPermission({ callID }: { callID?: string }) {
   const ctx = usePermissionStateOptional()
   const pending = ctx?.pendingPermission ?? null
-  const matches = Boolean(
-    ctx && pending?.toolCallId && callID && pending.toolCallId === callID,
-  )
+  const matches = Boolean(ctx && pending?.toolCallId && callID && pending.toolCallId === callID)
   const requestId = pending?.requestId
 
   // Claim before paint so the bottom-of-chat fallback never flashes alongside this prompt.
@@ -122,10 +120,6 @@ export function PendingPermissionFallback() {
   const ctx = usePermissionStateOptional()
   if (!ctx?.pendingPermission || !ctx.activeSessionId || ctx.isPermissionClaimed) return null
   return (
-    <PermissionCard
-      pending={ctx.pendingPermission}
-      onResolve={ctx.resolvePermission}
-      showDetails
-    />
+    <PermissionCard pending={ctx.pendingPermission} onResolve={ctx.resolvePermission} showDetails />
   )
 }

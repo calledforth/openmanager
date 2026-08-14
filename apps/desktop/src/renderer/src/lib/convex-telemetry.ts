@@ -29,9 +29,11 @@ function extractContext(args: unknown) {
   if (!args || typeof args !== 'object') return {}
   const record = args as Record<string, unknown>
   const context: Partial<RendererTelemetryEvent> = {}
-  if (typeof record.sessionExternalId === 'string') context.sessionExternalId = record.sessionExternalId
+  if (typeof record.sessionExternalId === 'string')
+    context.sessionExternalId = record.sessionExternalId
   if (typeof record.workspacePath === 'string') context.workspacePath = record.workspacePath
-  if (typeof record.messageExternalId === 'string') context.messageExternalId = record.messageExternalId
+  if (typeof record.messageExternalId === 'string')
+    context.messageExternalId = record.messageExternalId
   else if (typeof record.externalId === 'string') context.messageExternalId = record.externalId
 
   if (typeof record.payload === 'string') {
@@ -57,12 +59,7 @@ export async function recordRendererTelemetry(event: RendererTelemetryEvent): Pr
   })
 }
 
-export function useTrackedQuery(
-  name: string,
-  queryRef: any,
-  args: any,
-  details?: string,
-) {
+export function useTrackedQuery(name: string, queryRef: any, args: any, details?: string) {
   const result = useConvexQuery(queryRef, args)
   const subscriptionId = useRef(crypto.randomUUID())
   const argsKey = useMemo(() => JSON.stringify(args ?? null), [args])
@@ -122,51 +119,54 @@ export function useTrackedMutation(
   const mutate = useConvexMutation(mutationRef)
 
   return useMemo(
-    () =>
-      async (args: any) => {
-        const startedAt = performance.now()
-        const context = {
-          ...extractContext(args),
-          ...(getContext ? getContext() : {}),
-        }
+    () => async (args: any) => {
+      const startedAt = performance.now()
+      const context = {
+        ...extractContext(args),
+        ...(getContext ? getContext() : {}),
+      }
+      await recordRendererTelemetry({
+        kind: 'mutation',
+        phase: 'start',
+        name,
+        requestBytes: estimateBytes(args),
+        ...context,
+      })
+
+      try {
+        const result = await mutate(args)
         await recordRendererTelemetry({
           kind: 'mutation',
-          phase: 'start',
+          phase: 'success',
           name,
+          durationMs: Math.round(performance.now() - startedAt),
           requestBytes: estimateBytes(args),
+          responseBytes: estimateBytes(result),
           ...context,
         })
-
-        try {
-          const result = await mutate(args)
-          await recordRendererTelemetry({
-            kind: 'mutation',
-            phase: 'success',
-            name,
-            durationMs: Math.round(performance.now() - startedAt),
-            requestBytes: estimateBytes(args),
-            responseBytes: estimateBytes(result),
-            ...context,
-          })
-          return result
-        } catch (error) {
-          await recordRendererTelemetry({
-            kind: 'mutation',
-            phase: 'error',
-            name,
-            durationMs: Math.round(performance.now() - startedAt),
-            requestBytes: estimateBytes(args),
-            details: error instanceof Error ? error.message : 'Mutation failed',
-            ...context,
-          })
-          throw error
-        }
-      },
+        return result
+      } catch (error) {
+        await recordRendererTelemetry({
+          kind: 'mutation',
+          phase: 'error',
+          name,
+          durationMs: Math.round(performance.now() - startedAt),
+          requestBytes: estimateBytes(args),
+          details: error instanceof Error ? error.message : 'Mutation failed',
+          ...context,
+        })
+        throw error
+      }
+    },
     [getContext, mutate, name],
   )
 }
 
-export async function trackedConvexQuery(name: string, queryRef: any, args: Record<string, unknown>) {
+export async function trackedConvexQuery(
+  name: string,
+  queryRef: any,
+  args: Record<string, unknown>,
+) {
   const convex = getConvexClient()
   if (!convex) return null
   const startedAt = performance.now()

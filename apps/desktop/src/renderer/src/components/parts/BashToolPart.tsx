@@ -1,10 +1,5 @@
 import { presentToolPart } from './toolPresenter'
-import {
-  activityRow,
-  activityDetailsSummary,
-  ToolLine,
-  ToolExpandedBody,
-} from './ToolLine'
+import { activityRow, activityDetailsSummary, ToolLine, ToolExpandedBody } from './ToolLine'
 import { typographyMonoCaption } from '../../lib/typography'
 
 interface BashToolPartProps {

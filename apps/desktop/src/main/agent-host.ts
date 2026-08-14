@@ -17,6 +17,7 @@ import type { BrowserWindow } from 'electron'
 import type { ProviderHealthReport } from '@openmanager/shared/contracts/provider-health'
 import type { SidecarHandshake } from '@openmanager/shared/contracts/sidecar'
 import { ConvexProjector } from './convex-projector'
+import type { ProviderCatalogCache } from './provider-catalog-cache'
 import { toProviderHealthCache, type ProviderHealthCache } from './provider-health-cache'
 import type { SessionNotifier } from './session-notifications'
 
@@ -31,6 +32,15 @@ export type AgentHostOptions = {
   healthCache?: {
     load: () => ProviderHealthCache
     save: (cache: ProviderHealthCache) => void
+  }
+  /** Model catalogs from last run, so the composer opens on a full picker
+   * instead of an empty one. Read once at construction and written on the same
+   * schedule as `healthCache` — a catalog only ever changes on a probe, and a
+   * probe always moves health, so there is nothing to write that the health
+   * timer does not already cover. */
+  catalogCache?: {
+    load: () => ProviderCatalogCache
+    save: (cache: ProviderCatalogCache) => void
   }
   /** Directory health probes spawn in for providers the user has not opened
    * this run — normally the last active workspace. */
@@ -81,6 +91,10 @@ export class AgentHost {
     // the runtime axis is rebuilt from the live registry, which is empty here.
     const cached = options.healthCache?.load()
     if (cached) this.runtime.health.hydrate(cached)
+    // Same trade for the composer that health hydration makes for the sidebar:
+    // last run's catalog now, this run's the moment a probe confirms it.
+    const catalogs = options.catalogCache?.load()
+    if (catalogs) this.runtime.hydrateProviderCatalogs(catalogs)
     this.runtime.setDefaultProbeCwd(options.probeCwd)
     this.runtime.health.onChange((providerId, report) => this.pushHealth(providerId, report))
   }
@@ -296,8 +310,9 @@ export class AgentHost {
       clearTimeout(this.healthCacheTimer)
       this.healthCacheTimer = undefined
     }
-    // Write the final snapshot before the monitor stops emitting.
+    // Write the final snapshots before the monitor stops emitting.
     this.writeHealthCache()
+    this.writeCatalogCache()
   }
 
   private emitEvent(event: AgentEvent): void {
@@ -371,10 +386,12 @@ export class AgentHost {
   }
 
   private scheduleHealthCacheWrite(): void {
-    if (!this.options.healthCache || this.healthCacheTimer) return
+    if (!this.options.healthCache && !this.options.catalogCache) return
+    if (this.healthCacheTimer) return
     this.healthCacheTimer = setTimeout(() => {
       this.healthCacheTimer = undefined
       this.writeHealthCache()
+      this.writeCatalogCache()
     }, HEALTH_CACHE_WRITE_DELAY_MS)
     this.healthCacheTimer.unref?.()
   }
@@ -389,6 +406,29 @@ export class AgentHost {
         scope: 'agent-runtime',
         level: 'warn',
         message: 'Could not persist the provider health cache',
+        data: { error: (error as Error).message },
+      })
+    }
+  }
+
+  /** Persist only what a probe confirmed this run.
+   *
+   * `providerCatalogSnapshots()` omits hydrated-but-unconfirmed entries, so a
+   * run where a provider was never probed leaves last run's entry on disk
+   * untouched rather than rewriting it with a fresh-looking timestamp — or,
+   * worse, clearing it. Saving is therefore a merge, not a replace. */
+  private writeCatalogCache(): void {
+    const cache = this.options.catalogCache
+    if (!cache) return
+    const discovered = this.runtime.providerCatalogSnapshots()
+    if (Object.keys(discovered).length === 0) return
+    try {
+      cache.save({ ...cache.load(), ...discovered })
+    } catch (error) {
+      this.log({
+        scope: 'agent-runtime',
+        level: 'warn',
+        message: 'Could not persist the provider catalog cache',
         data: { error: (error as Error).message },
       })
     }

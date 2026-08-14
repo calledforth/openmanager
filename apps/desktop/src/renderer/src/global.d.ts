@@ -34,6 +34,8 @@ interface ElectronAPI {
   getAgentStatuses: () => Promise<Partial<Record<ProviderId, ProviderHealthReport>>>
   getAgentPromptCapabilities: () => Promise<Partial<Record<ProviderId, PromptCapabilities>>>
   getAgentProviders: () => Promise<ProviderMetadata[]>
+  /** Last run's catalogs, synchronously, for seeding first paint. */
+  getCachedAgentProviders: () => ProviderMetadata[]
   getModelImageSupport: (providerId: ProviderId, modelId: string) => Promise<boolean | null>
   loadAcpSession: (
     providerId: ProviderId,

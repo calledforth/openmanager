@@ -45,6 +45,14 @@ const electronAPI = {
       Partial<Record<ProviderId, PromptCapabilities>>
     >,
   getAgentProviders: () => ipcRenderer.invoke('agent:providers') as Promise<ProviderMetadata[]>,
+  /** Last run's catalogs, available before the first render.
+   *
+   * Synchronous on purpose: the composer gates every settings control on having
+   * a provider list, so anything that resolves after mount makes those controls
+   * appear late and shift the row. This is the seed for `useState`, not a
+   * substitute for `getAgentProviders` — that still refreshes on health change. */
+  getCachedAgentProviders: () =>
+    ipcRenderer.sendSync('agent:providers-cached') as ProviderMetadata[],
   getModelImageSupport: (providerId: ProviderId, modelId: string) =>
     ipcRenderer.invoke('agent:model-image-support', providerId, modelId) as Promise<boolean | null>,
   loadAcpSession: (providerId: ProviderId, workspacePath: string, sessionId: string) =>

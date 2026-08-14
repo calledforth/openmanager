@@ -70,9 +70,17 @@ describe('reduceLatestChunk', () => {
 
   it('upserts a repeated part id in place rather than duplicating it', () => {
     let state = createStreamReconstructionState()
-    const a = reduceLatestChunk(state, { chunkIndex: 0, chunkText: 'He', partUpdate: textPart('p1', 'He') })
+    const a = reduceLatestChunk(state, {
+      chunkIndex: 0,
+      chunkText: 'He',
+      partUpdate: textPart('p1', 'He'),
+    })
     if (a.kind === 'applied') state = a.state
-    const b = reduceLatestChunk(state, { chunkIndex: 1, chunkText: 'llo', partUpdate: textPart('p1', 'Hello') })
+    const b = reduceLatestChunk(state, {
+      chunkIndex: 1,
+      chunkText: 'llo',
+      partUpdate: textPart('p1', 'Hello'),
+    })
     if (b.kind === 'applied') state = b.state
 
     expect(state.parts).toEqual([{ type: 'text', id: 'p1', text: 'Hello', __ordinal: 0 }])
@@ -81,9 +89,17 @@ describe('reduceLatestChunk', () => {
 
   it('preserves part ordinals by first-seen order', () => {
     let state = createStreamReconstructionState()
-    const a = reduceLatestChunk(state, { chunkIndex: 0, chunkText: '', partUpdate: textPart('p1', 'one') })
+    const a = reduceLatestChunk(state, {
+      chunkIndex: 0,
+      chunkText: '',
+      partUpdate: textPart('p1', 'one'),
+    })
     if (a.kind === 'applied') state = a.state
-    const b = reduceLatestChunk(state, { chunkIndex: 1, chunkText: '', partUpdate: textPart('p2', 'two') })
+    const b = reduceLatestChunk(state, {
+      chunkIndex: 1,
+      chunkText: '',
+      partUpdate: textPart('p2', 'two'),
+    })
     if (b.kind === 'applied') state = b.state
 
     expect(state.parts?.map((p) => p.id)).toEqual(['p1', 'p2'])

@@ -362,7 +362,9 @@ export function ProviderModelPicker({
             </div>
           </div>
 
-          <div className={cn('flex min-h-0 flex-1', showRail ? 'gap-1.5 p-2 pt-1.5' : 'px-1.5 pb-2')}>
+          <div
+            className={cn('flex min-h-0 flex-1', showRail ? 'gap-1.5 p-2 pt-1.5' : 'px-1.5 pb-2')}
+          >
             {showRail && (
               <div
                 role="tablist"

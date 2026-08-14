@@ -61,9 +61,7 @@ describe('favoriteModels', () => {
     const start = [favoriteModelKey('opencode', 'gpt')] as const
     const added = toggleFavoriteModel(start, favoriteModelKey('claude', 'opus'))
     expect(added).toEqual(['opencode:gpt', 'claude:opus'])
-    expect(toggleFavoriteModel(added, favoriteModelKey('opencode', 'gpt'))).toEqual([
-      'claude:opus',
-    ])
+    expect(toggleFavoriteModel(added, favoriteModelKey('opencode', 'gpt'))).toEqual(['claude:opus'])
     expect(start).toEqual(['opencode:gpt'])
   })
 

@@ -28,16 +28,17 @@ export function metadataModelOptions(
   providers: readonly ProviderMetadata[],
   providerId: ProviderId,
 ): ComposerModelChoice[] {
-  return (providers.find((provider) => provider.id === providerId)?.models?.availableModels ?? [])
-    .map((model) => ({
-      id: model.id,
-      name: model.displayName,
-      ...(model.description ? { description: model.description } : {}),
-      ...(model.resolvedModel ? { resolvedModel: model.resolvedModel } : {}),
-      ...(model.effortLevels?.length ? { effortLevels: model.effortLevels } : {}),
-      ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
-      ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
-    }))
+  return (
+    providers.find((provider) => provider.id === providerId)?.models?.availableModels ?? []
+  ).map((model) => ({
+    id: model.id,
+    name: model.displayName,
+    ...(model.description ? { description: model.description } : {}),
+    ...(model.resolvedModel ? { resolvedModel: model.resolvedModel } : {}),
+    ...(model.effortLevels?.length ? { effortLevels: model.effortLevels } : {}),
+    ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
+    ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
+  }))
 }
 
 /** The mode catalog a provider reported at handshake time, on exactly the same
@@ -50,13 +51,13 @@ export function metadataModeOptions(
   providers: readonly ProviderMetadata[],
   providerId: ProviderId,
 ): ComposerModelChoice[] {
-  return (providers.find((provider) => provider.id === providerId)?.modes?.availableModes ?? []).map(
-    (mode) => ({
-      id: mode.id,
-      name: mode.displayName,
-      ...(mode.description ? { description: mode.description } : {}),
-    }),
-  )
+  return (
+    providers.find((provider) => provider.id === providerId)?.modes?.availableModes ?? []
+  ).map((mode) => ({
+    id: mode.id,
+    name: mode.displayName,
+    ...(mode.description ? { description: mode.description } : {}),
+  }))
 }
 
 /** One group per provider for the composer's single provider→model control.
@@ -116,12 +117,8 @@ export function buildProviderModelGroups(args: {
               effortLevels: model.effortLevels?.length ? model.effortLevels : meta.effortLevels,
             }
           : {}),
-        ...((model.supportsFastMode ?? meta.supportsFastMode)
-          ? { supportsFastMode: true }
-          : {}),
-        ...((model.supportsAutoMode ?? meta.supportsAutoMode)
-          ? { supportsAutoMode: true }
-          : {}),
+        ...((model.supportsFastMode ?? meta.supportsFastMode) ? { supportsFastMode: true } : {}),
+        ...((model.supportsAutoMode ?? meta.supportsAutoMode) ? { supportsAutoMode: true } : {}),
       }
     })
     return { providerId: provider.id, providerName: provider.name, models }

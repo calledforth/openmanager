@@ -1,5 +1,6 @@
 import Store from 'electron-store'
 import { configureStableUserDataPath } from './app-paths'
+import type { ProviderCatalogCache } from './provider-catalog-cache'
 import type { ProviderHealthCache } from './provider-health-cache'
 import type {
   ProviderComposerProfiles,
@@ -22,6 +23,11 @@ interface StoreSchema {
    * launch instead of "unavailable" while the first probe runs. Aged out by
    * `isProviderHealthStale`; never a source of current truth. */
   providerHealth: ProviderHealthCache
+  /** Last model catalog each provider reported, so the composer opens on a
+   * full picker instead of an empty one while the first probe runs. Invalidated
+   * by the agent version that produced it rather than by age — see
+   * `provider-catalog-cache`. */
+  providerCatalogs: ProviderCatalogCache
 }
 
 const store = new Store<StoreSchema>({
@@ -35,6 +41,7 @@ const store = new Store<StoreSchema>({
     providerComposerProfiles: {},
     workspaceComposerPreferences: {},
     providerHealth: {},
+    providerCatalogs: {},
   },
 })
 

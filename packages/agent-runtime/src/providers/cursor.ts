@@ -178,6 +178,12 @@ export const cursor: AcpProviderConfig = {
     supportsExtensions: true,
     supportsQuestions: true,
   },
+  // Answers the full catalog — every model plus its per-model configOptions —
+  // off the bare handshake, with no session and no `session/new`. Verified
+  // against the same bridge that serves `cursor/ask_question`; a build that
+  // does not know the method returns a JSON-RPC error and `listModels` falls
+  // back to `session/new`, so this is safe to ask unconditionally.
+  catalog: { listModelsMethod: 'cursor/list_available_models' },
   extensions: {
     // Unlisted methods fall back to ExtensionRegistry defaults (requests →
     // cancelled outcome, notifications → no-op).

@@ -164,9 +164,7 @@ describe('withProviderCatalog', () => {
     )
 
     expect(profile?.availableModels).toHaveLength(1)
-    expect(profile?.availableModes).toEqual([
-      { id: 'plan', name: 'Plan', description: 'No tools' },
-    ])
+    expect(profile?.availableModes).toEqual([{ id: 'plan', name: 'Plan', description: 'No tools' }])
   })
 
   it('leaves an ACP provider untouched, catalog or not', () => {

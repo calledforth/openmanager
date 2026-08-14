@@ -26,6 +26,7 @@ import {
   initializeRequest,
   isAuthRequired,
   listSessionsPaged,
+  normalizeCatalogListing,
   object,
   routeEvent,
   sessionListAdvertised,
@@ -161,8 +162,42 @@ export class AcpProbeRuntimeImpl implements ProbeRuntime {
     }
   }
 
+  /** The catalog, preferring the cheap way.
+   *
+   * Two routes, and the order is the point. A provider that advertises an
+   * unattached catalog method answers off the bare handshake: no session, no
+   * `session/new`, and — uniquely — per-model `configOptions`, which is the
+   * only source for the effort levels of a model nobody has selected yet.
+   * `session/new` can only ever describe the one model it happened to open on.
+   *
+   * The fallback is not a fallback for *failure* so much as for *vintage*: a
+   * CLI older than the extension answers method-not-found, and a user on that
+   * build should still get a picker. So an ext failure is swallowed to the
+   * slow path rather than propagated — except for auth, which the slow path
+   * would only hit again with a worse error. */
   async listModels(cwd: string): Promise<ModelListing> {
     await this.probe()
+    const method = this.deps.config.catalog?.listModelsMethod
+    if (method) {
+      try {
+        const listing = normalizeCatalogListing(
+          await this.rpc(
+            method,
+            this.timeouts.controlRequestMs,
+            this.connection().extMethod(method, {}),
+          ),
+        )
+        if (listing.availableModels?.length) return listing
+      } catch (error) {
+        if (isAuthRequired(error)) throw this.authRequired(undefined, errorMessage(error))
+        this.deps.host.log({
+          scope: 'acp',
+          level: 'warn',
+          message: 'Unattached model catalog failed; falling back to session/new',
+          data: { providerId: this.providerId, method, error: errorMessage(error) },
+        })
+      }
+    }
     const response = object(
       await this.rpc(
         'session/new',

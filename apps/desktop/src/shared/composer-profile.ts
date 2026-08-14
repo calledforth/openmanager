@@ -107,8 +107,13 @@ export function composerProfilesFromDocs(
     if (!isProviderId(doc.providerId)) continue
     profiles[doc.providerId] = {
       ...(doc.agentInfo ? { agentInfo: doc.agentInfo } : {}),
-      ...(doc.availableModels?.length ? { availableModels: doc.availableModels } : {}),
-      ...(doc.availableModes?.length ? { availableModes: doc.availableModes } : {}),
+      // Carried through as-is, empty included. A stored `[]` is the provider
+      // having listed and reported none; dropping the key here would hand
+      // `mergeProviderComposerProfiles` an absent field, which reads as "no
+      // opinion" and lets a previously-merged catalog survive a deliberate
+      // clear. The projector's write side makes the same distinction.
+      ...(doc.availableModels !== undefined ? { availableModels: doc.availableModels } : {}),
+      ...(doc.availableModes !== undefined ? { availableModes: doc.availableModes } : {}),
       ...(doc.defaultModelId ? { defaultModelId: doc.defaultModelId } : {}),
       ...(doc.defaultModeId ? { defaultModeId: doc.defaultModeId } : {}),
       updatedAt: doc.updatedAt,
@@ -175,26 +180,22 @@ export function withProviderCatalog(
 ): ProviderComposerProfile | undefined {
   const models = profile?.availableModels?.length
     ? undefined
-    : metadata?.models?.availableModels?.map(
-        (model): ComposerModelOption => ({
-          modelId: model.id,
-          name: model.displayName,
-          ...(model.description ? { description: model.description } : {}),
-          ...(model.contextWindowTokens ? { contextWindowTokens: model.contextWindowTokens } : {}),
-          ...(model.effortLevels?.length ? { effortLevels: [...model.effortLevels] } : {}),
-          ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
-          ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
-        }),
-      )
+    : metadata?.models?.availableModels?.map((model): ComposerModelOption => ({
+        modelId: model.id,
+        name: model.displayName,
+        ...(model.description ? { description: model.description } : {}),
+        ...(model.contextWindowTokens ? { contextWindowTokens: model.contextWindowTokens } : {}),
+        ...(model.effortLevels?.length ? { effortLevels: [...model.effortLevels] } : {}),
+        ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
+        ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
+      }))
   const modes = profile?.availableModes?.length
     ? undefined
-    : metadata?.modes?.availableModes?.map(
-        (mode): ComposerModeOption => ({
-          id: mode.id,
-          name: mode.displayName,
-          ...(mode.description ? { description: mode.description } : {}),
-        }),
-      )
+    : metadata?.modes?.availableModes?.map((mode): ComposerModeOption => ({
+        id: mode.id,
+        name: mode.displayName,
+        ...(mode.description ? { description: mode.description } : {}),
+      }))
   if (!models?.length && !modes?.length) return profile
   return {
     ...(profile ?? { updatedAt: 0 }),

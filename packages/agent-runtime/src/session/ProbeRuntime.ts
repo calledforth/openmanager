@@ -31,8 +31,13 @@ export interface ProbeRuntime {
   /** Paginated `session/list`. Requires `probe()` to have reported
    * `sessionListAdvertised`. Cheap: ~55ms per page. */
   listSessions(cwd: string): Promise<ProviderSessionInfo[]>
-  /** Model catalog, where the provider exposes one. Costs a `session/new`
-   * (~3.5s on Cursor) in this throwaway process, never in a live one. */
+  /** Model catalog, where the provider exposes one, in this throwaway process
+   * and never in a live one.
+   *
+   * Cost depends on the route taken. A provider configured with
+   * `catalog.listModelsMethod` answers off the handshake for free and includes
+   * per-model capabilities; everything else pays a `session/new` (~3.5s on
+   * Cursor) and gets capabilities only for the model that session opened on. */
   listModels(cwd: string): Promise<ModelListing>
   /** Always call; the process leaks otherwise. */
   dispose(): Promise<void>
