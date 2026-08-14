@@ -983,3 +983,197 @@ describe('AgentRuntime recoverable errors', () => {
     expect(events.find((event) => event.event === 'agent_message_chunk')?.messageId).toBeUndefined()
   })
 })
+
+describe('AgentRuntime provider catalog', () => {
+  const CURSOR_HANDSHAKE = {
+    protocolVersion: 1,
+    agentInfo: { name: 'cursor-agent', version: '2026.07.23' },
+    agentCapabilities: { sessionCapabilities: { list: {} } },
+    authMethods: [{ id: 'cursor_login', name: 'Cursor' }],
+  }
+  const CATALOG = {
+    models: [
+      {
+        slug: 'composer-2.5',
+        name: 'Composer 2.5',
+        configOptions: [
+          {
+            type: 'select',
+            id: 'reasoning',
+            name: 'Reasoning effort',
+            category: 'effort',
+            currentValue: 'medium',
+            options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }],
+          },
+        ],
+      },
+    ],
+  }
+
+  it('learns the catalog on the bootstrap probe, before any session exists', async () => {
+    const newSession = vi.fn(async () => ({ sessionId: 'session-1' }))
+    const { runtime } = build({
+      initialize: async () => CURSOR_HANDSHAKE,
+      authenticate: async () => ({}),
+      listSessions: async () => ({ sessions: [] }),
+      extMethod: async () => CATALOG,
+      newSession,
+    })
+
+    await runtime.probeProvider({ ...ROUTE, threadId: 'desktop-bootstrap:cursor' })
+
+    // The whole point of the fix: a full picker, with effort levels, for a
+    // provider the user has never prompted.
+    expect(runtime.providerModels().cursor).toEqual({
+      availableModels: [
+        { id: 'composer-2.5', displayName: 'Composer 2.5', effortLevels: ['low', 'high'] },
+      ],
+    })
+    expect(newSession).not.toHaveBeenCalled()
+  })
+
+  it('asks once, not on every health tick', async () => {
+    const extMethod = vi.fn(async () => CATALOG)
+    const { runtime } = build({
+      initialize: async () => CURSOR_HANDSHAKE,
+      authenticate: async () => ({}),
+      listSessions: async () => ({ sessions: [] }),
+      extMethod,
+    })
+
+    await runtime.probeProvider({ ...ROUTE, threadId: 'desktop-bootstrap:cursor' })
+    await runtime.probeProvider({ ...ROUTE, threadId: 'desktop-bootstrap:cursor' })
+
+    expect(extMethod).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a probe healthy when the catalog call fails', async () => {
+    const { runtime } = build({
+      initialize: async () => CURSOR_HANDSHAKE,
+      authenticate: async () => ({}),
+      listSessions: async () => ({ sessions: [] }),
+      extMethod: async () => {
+        throw new Error('Method not found')
+      },
+      newSession: async () => ({ sessionId: 'throwaway' }),
+    })
+
+    await expect(
+      runtime.probeProvider({ ...ROUTE, threadId: 'desktop-bootstrap:cursor' }),
+    ).resolves.toMatchObject({ result: { authenticated: true } })
+    expect(runtime.providerModels().cursor).toBeUndefined()
+  })
+
+  it('never opens a session/new for a provider with no unattached catalog method', async () => {
+    const newSession = vi.fn(async () => ({ sessionId: 'session-1' }))
+    const { runtime } = build({
+      initialize: async () => ({ protocolVersion: 1, authMethods: [] }),
+      newSession,
+    })
+
+    await runtime.probeProvider({
+      ...ROUTE,
+      providerId: 'opencode',
+      threadId: 'desktop-bootstrap:opencode',
+    })
+
+    expect(newSession).not.toHaveBeenCalled()
+  })
+})
+
+describe('AgentRuntime catalog hydration', () => {
+  const HYDRATED = {
+    cursor: {
+      agentVersion: '2026.07.23',
+      models: { availableModels: [{ id: 'old-model', displayName: 'From disk' }] },
+    },
+  }
+  const handshake = (version: string) => ({
+    protocolVersion: 1,
+    agentInfo: { name: 'cursor-agent', version },
+    agentCapabilities: { sessionCapabilities: { list: {} } },
+    authMethods: [{ id: 'cursor_login', name: 'Cursor' }],
+  })
+  const CATALOG = {
+    models: [{ slug: 'composer-2.5', name: 'Composer 2.5', configOptions: [] }],
+  }
+
+  it('serves the previous run catalog before any probe answers', () => {
+    const { runtime } = build({})
+    runtime.hydrateProviderCatalogs(HYDRATED)
+    expect(runtime.providerModels().cursor).toEqual({
+      availableModels: [{ id: 'old-model', displayName: 'From disk' }],
+    })
+  })
+
+  it('keeps a hydrated catalog when the installed build is unchanged', async () => {
+    const extMethod = vi.fn(async () => CATALOG)
+    const { runtime } = build({
+      initialize: async () => handshake('2026.07.23'),
+      authenticate: async () => ({}),
+      listSessions: async () => ({ sessions: [] }),
+      extMethod,
+    })
+    runtime.hydrateProviderCatalogs(HYDRATED)
+
+    await runtime.probeProvider({ ...ROUTE, threadId: 'desktop-bootstrap:cursor' })
+
+    expect(extMethod).not.toHaveBeenCalled()
+    expect(runtime.providerModels().cursor?.availableModels?.[0]?.id).toBe('old-model')
+  })
+
+  it('rediscovers when the CLI has been upgraded under the cache', async () => {
+    const extMethod = vi.fn(async () => CATALOG)
+    const { runtime } = build({
+      initialize: async () => handshake('2026.08.01'),
+      authenticate: async () => ({}),
+      listSessions: async () => ({ sessions: [] }),
+      extMethod,
+    })
+    runtime.hydrateProviderCatalogs(HYDRATED)
+
+    await runtime.probeProvider({ ...ROUTE, threadId: 'desktop-bootstrap:cursor' })
+
+    expect(extMethod).toHaveBeenCalledTimes(1)
+    expect(runtime.providerModels().cursor?.availableModels?.[0]?.id).toBe('composer-2.5')
+  })
+
+  it('never lets a hydrated catalog overwrite one learned live', async () => {
+    const { runtime } = build({
+      initialize: async () => handshake('2026.08.01'),
+      authenticate: async () => ({}),
+      listSessions: async () => ({ sessions: [] }),
+      extMethod: async () => CATALOG,
+    })
+    await runtime.probeProvider({ ...ROUTE, threadId: 'desktop-bootstrap:cursor' })
+
+    runtime.hydrateProviderCatalogs(HYDRATED)
+
+    expect(runtime.providerModels().cursor?.availableModels?.[0]?.id).toBe('composer-2.5')
+  })
+
+  it('persists only what a probe confirmed, never a hydrated guess', async () => {
+    const { runtime } = build({})
+    runtime.hydrateProviderCatalogs(HYDRATED)
+    // Nothing was probed, so there is nothing to re-stamp as fresh: last run's
+    // entry stays on disk untouched rather than being rewritten.
+    expect(runtime.providerCatalogSnapshots()).toEqual({})
+  })
+
+  it('stamps a discovered catalog with the build that answered it', async () => {
+    const { runtime } = build({
+      initialize: async () => handshake('2026.08.01'),
+      authenticate: async () => ({}),
+      listSessions: async () => ({ sessions: [] }),
+      extMethod: async () => CATALOG,
+    })
+    await runtime.probeProvider({ ...ROUTE, threadId: 'desktop-bootstrap:cursor' })
+
+    expect(runtime.providerCatalogSnapshots()).toEqual({
+      cursor: {
+        agentVersion: '2026.08.01',
+        models: { availableModels: [{ id: 'composer-2.5', displayName: 'Composer 2.5' }] },
+      },
+    })
+  })
+})

@@ -140,6 +140,105 @@ export function normalizeModeListing(value: unknown): ModeListing {
   }
 }
 
+/** A model's own config controls, folded into the flags the composer gates on.
+ *
+ * Effort and fast mode reach us two different ways depending on the provider.
+ * Claude reports them as fields on the model row, which `claude-catalog` maps
+ * straight across. Cursor reports them as a *select* and a *boolean* in the
+ * model's `configOptions` — the same shape a live session publishes — so the
+ * catalog path has to derive the flags rather than read them.
+ *
+ * Matching is by `category` first and name only as a fallback, in that order
+ * for a reason: `category` is the agent stating what a control means, while
+ * the name is a human label that a rewording would silently break. The name
+ * patterns exist because Cursor's own bridge leaves `category` unset on some
+ * builds, which is exactly the case this whole path is trying to survive. */
+function modelCapabilitiesFromConfig(options: readonly SessionConfigOption[]): {
+  effortLevels?: string[]
+  supportsFastMode?: boolean
+} {
+  const effort = options.find(
+    (option) =>
+      option.type === 'select' &&
+      (option.category === 'effort' ||
+        option.category === 'thought_level' ||
+        (option.category === undefined && /\b(effort|reasoning|thinking)\b/i.test(option.name))),
+  )
+  const fast = options.find(
+    (option) =>
+      option.type === 'boolean' &&
+      (option.category === 'fast_mode' ||
+        (option.category === undefined && /\bfast\b/i.test(option.name))),
+  )
+  // An effort control with no values is not an effort control: offering the
+  // pill with an empty menu is worse than hiding it.
+  const levels =
+    effort?.type === 'select' ? effort.options.map((value) => value.value).filter(Boolean) : []
+  return {
+    ...(levels.length > 0 ? { effortLevels: levels } : {}),
+    ...(fast ? { supportsFastMode: true } : {}),
+  }
+}
+
+/** The response to a provider's unattached catalog method (Cursor's
+ * `cursor/list_available_models`).
+ *
+ * Deliberately separate from `normalizeModelListing`: that one reads the
+ * `models` block of a *session* response, where the catalog is flat and the
+ * capabilities live on the session's own `configOptions`. Here every model
+ * carries its own `configOptions`, which is the entire reason the method is
+ * worth calling — it is the only way to learn what effort levels a model the
+ * user has never selected accepts.
+ *
+ * Tolerant about naming because this is a vendor extension outside the ACP
+ * schema, so nothing validates it for us and a rename would otherwise empty
+ * the picker with no error to show. `slug` is what Cursor sends today; `id`
+ * and `modelId` are accepted so a rename does not become an outage. */
+export function normalizeCatalogListing(value: unknown): ModelListing {
+  const response = object(value)
+  const rows = Array.isArray(response.models)
+    ? response.models
+    : Array.isArray(response.availableModels)
+      ? response.availableModels
+      : []
+  let currentModelId: string | undefined
+  const availableModels = rows.flatMap((row) => {
+    const model = object(row)
+    const id = string(model.slug) ?? string(model.modelId) ?? string(model.id)
+    if (!id) return []
+    if (model.isDefault === true && currentModelId === undefined) currentModelId = id
+    const configOptions = Array.isArray(model.configOptions)
+      ? (model.configOptions as SessionConfigOption[])
+      : []
+    return [
+      {
+        id,
+        displayName: string(model.name) ?? string(model.displayName) ?? id,
+        ...(string(model.description) !== undefined
+          ? { description: string(model.description) }
+          : {}),
+        ...(number(model.contextWindowTokens) !== undefined
+          ? { contextWindowTokens: number(model.contextWindowTokens) }
+          : {}),
+        ...modelCapabilitiesFromConfig(configOptions),
+      },
+    ]
+  })
+  // No rows is not a catalog. Returning `{}` rather than `{availableModels: []}`
+  // is what lets every caller downstream tell "the method answered nothing"
+  // from "this agent genuinely has no models", which the retain-on-empty rules
+  // depend on.
+  if (availableModels.length === 0) return {}
+  return {
+    availableModels,
+    ...(currentModelId !== undefined
+      ? { currentModelId }
+      : string(response.currentModelId) !== undefined
+        ? { currentModelId: string(response.currentModelId) }
+        : {}),
+  }
+}
+
 export function modelListingFromConfig(
   options: readonly SessionConfigOption[],
 ): ModelListing | undefined {

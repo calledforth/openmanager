@@ -45,6 +45,21 @@ export type RuntimeRoute = {
   workspaceId?: string
   cwd: string
 }
+/** A provider's model catalog plus the agent build that produced it.
+ *
+ * The version travels *with* the catalog rather than beside it because it is
+ * the only thing that makes the catalog safe to persist — see
+ * `AgentRuntime.catalogVersions`. A host that stored the models and dropped
+ * the version would have a cache it could never safely invalidate. */
+export type ProviderCatalogSnapshot = {
+  models: ModelListing
+  /** Carried alongside the models because the composer renders one row: a
+   * restored model picker beside a mode picker that is still waiting on an IPC
+   * is the same layout shift, just narrower. */
+  modes?: ModeListing
+  agentVersion?: string
+}
+
 /** What a provider bootstrap learned, from one throwaway process. */
 export type ProviderBootstrap = {
   result: ProbeResult
@@ -173,6 +188,28 @@ export class AgentRuntime {
    * can offer a never-selected provider's models but not its modes renders a
    * model picker beside a missing mode picker. */
   private readonly modesByProvider = new Map<ProviderId, ModeListing>()
+  /** Agent version that produced each entry in `modelsByProvider`.
+   *
+   * The freshness key for the persisted catalog, and the reason that cache can
+   * be trusted at all. A catalog is a statement about one build of one CLI: it
+   * lists the models that build accepts, and after an upgrade it may name a
+   * model the new binary rejects or omit one it gained. Timestamps cannot see
+   * that — an upgrade makes a cache wrong instantly, and a week-old cache on an
+   * unchanged CLI is still perfectly right. So the version is what gates
+   * rediscovery, and a probe reporting a different one discards the entry.
+   *
+   * Undefined for an agent that reports no version, which is treated as "never
+   * matches": rediscovering costs one ext call, while trusting an unversioned
+   * catalog across an upgrade costs the user a model that errors on use. */
+  private readonly catalogVersions = new Map<ProviderId, string | undefined>()
+  /** Providers whose catalog was read from a live probe *in this process*.
+   *
+   * Separate from `catalogVersions` because they answer different questions.
+   * The version says whether a catalog restored from disk still describes the
+   * installed binary; this says whether we have already spent the round trip
+   * this run. Without it, an agent that reports no version at all would be
+   * re-asked on every health tick forever, since there is no version to match. */
+  private readonly catalogsDiscovered = new Set<ProviderId>()
   private readonly timeouts: Partial<RuntimeTimeouts> | undefined
   /** App-wide and keyed by requestId. Every pending record carries its own
    * provider/thread/workspace/session, so responding needs no lookup table and
@@ -238,8 +275,17 @@ export class AgentRuntime {
           providerId: probe.providerId,
           probe: async () => {
             const result = await probe.probe()
-            if (result.models) this.modelsByProvider.set(providerId, result.models)
+            // A handshake that carries catalogs (Claude) is as much a live
+            // confirmation as the ext call is, and has to mark the provider
+            // discovered for the same reason: otherwise its catalog is never
+            // persisted, and every launch starts the composer empty for it.
+            if (result.models) {
+              this.modelsByProvider.set(providerId, result.models)
+              this.catalogVersions.set(providerId, result.agentInfo?.version)
+              this.catalogsDiscovered.add(providerId)
+            }
             if (result.modes) this.modesByProvider.set(providerId, result.modes)
+            await this.adoptCatalog(providerId, cwd, probe, result)
             return result
           },
           listSessions: (dir) => probe.listSessions(dir),
@@ -450,6 +496,115 @@ export class AgentRuntime {
    * the same caller, as `providerModels()`. */
   providerModes(): Partial<Record<ProviderId, ModeListing>> {
     return Object.fromEntries(this.modesByProvider) as Partial<Record<ProviderId, ModeListing>>
+  }
+
+  /** Seed catalogs from the host's boot cache, so the composer has a full
+   * picker before the first probe answers.
+   *
+   * Fill-only, and that is the whole safety argument: a live catalog learned
+   * this run always wins, and hydration never overwrites one. The restored
+   * entry is a claim about the *last* run's binary, carried only until this
+   * run's probe either confirms the version or replaces it.
+   *
+   * This is emphatically not the mistake `AppliedConfigCache` exists to avoid.
+   * That cache holds what a live process was told — which model a turn will
+   * actually run on — and Cursor's copy of it is process-global and survives on
+   * disk, so a restored value can describe a process that has already exited.
+   * A catalog is the opposite kind of fact: the *set* of models a build offers,
+   * identical for every process of that build, and settable by nobody. */
+  hydrateProviderCatalogs(cache: Partial<Record<ProviderId, ProviderCatalogSnapshot>>): void {
+    for (const [id, snapshot] of Object.entries(cache)) {
+      const providerId = id as ProviderId
+      if (!snapshot?.models.availableModels?.length) continue
+      if (this.modelsByProvider.get(providerId)?.availableModels?.length) continue
+      this.modelsByProvider.set(providerId, snapshot.models)
+      this.catalogVersions.set(providerId, snapshot.agentVersion)
+      if (snapshot.modes?.availableModes?.length && !this.modesByProvider.has(providerId)) {
+        this.modesByProvider.set(providerId, snapshot.modes)
+      }
+    }
+  }
+
+  /** Catalogs worth writing to the host's boot cache, each stamped with the
+   * agent build that produced it. Only providers discovered live this run —
+   * re-persisting a hydrated entry would launder a stale catalog into looking
+   * freshly confirmed. */
+  providerCatalogSnapshots(): Partial<Record<ProviderId, ProviderCatalogSnapshot>> {
+    const snapshots: Partial<Record<ProviderId, ProviderCatalogSnapshot>> = {}
+    for (const providerId of this.catalogsDiscovered) {
+      const models = this.modelsByProvider.get(providerId)
+      if (!models?.availableModels?.length) continue
+      const agentVersion = this.catalogVersions.get(providerId)
+      const modes = this.modesByProvider.get(providerId)
+      snapshots[providerId] = {
+        models,
+        ...(modes?.availableModes?.length ? { modes } : {}),
+        ...(agentVersion ? { agentVersion } : {}),
+      }
+    }
+    return snapshots
+  }
+
+  /** Learn an ACP provider's catalog on the process that has just handshaken.
+   *
+   * The same trade `bootstrapSessions` makes, for the same reason: this probe
+   * has already paid for a spawn and a handshake, and the catalog method needs
+   * nothing else. Asking here costs one ext round trip; leaving it to the
+   * composer costs either a whole second CLI or — far worse — nothing at all
+   * until the user's first message, which is the empty-picker bug.
+   *
+   * Three guards, each load-bearing:
+   *
+   * - Only providers that advertise an *unattached* catalog method. Everything
+   *   else would fall back to `session/new` inside `listModels`, and a 3.5s
+   *   session opened on every health tick is not a health tick.
+   * - Only when nothing is known yet. This runs on the health monitor's
+   *   continuous loop, not just at boot, and re-asking every tick would spend a
+   *   round trip per provider per interval to relearn a static list. A catalog
+   *   that genuinely changed (a CLI upgrade) is picked up on the next launch,
+   *   which is the same freshness the persisted cache promises.
+   * - Failure is swallowed. A catalog nobody asked for must not turn a healthy
+   *   provider into a failed probe; `recorder.failed` is for the handshake.
+   *
+   * Deliberately awaited rather than fired and forgotten: the probe is disposed
+   * in `probeProvider`'s `finally`, so a detached call would race a terminated
+   * transport and log a spurious failure. */
+  private async adoptCatalog(
+    providerId: ProviderId,
+    cwd: string,
+    probe: ProbeRuntime,
+    result: ProbeResult,
+  ): Promise<void> {
+    const config = this.configs[providerId]
+    if (config.kind !== 'acp' || !config.catalog) return
+    // Already asked this run: the answer is from this binary, over this
+    // protocol, and nothing since could have changed it.
+    if (this.catalogsDiscovered.has(providerId)) return
+    // A hydrated catalog is trusted only while the build that produced it is
+    // still the one installed. Anything else — a version mismatch, or a disk
+    // entry that never recorded one — is a guess, and re-asking costs one ext
+    // call against serving a model the new binary may reject.
+    const version = result.agentInfo?.version
+    const known = this.modelsByProvider.get(providerId)?.availableModels?.length
+    if (known && version !== undefined && this.catalogVersions.get(providerId) === version) return
+    try {
+      const listing = await probe.listModels(cwd)
+      if (listing.availableModels?.length) {
+        this.modelsByProvider.set(providerId, listing)
+        this.catalogVersions.set(providerId, version)
+        this.catalogsDiscovered.add(providerId)
+      }
+    } catch (error) {
+      this.host.log({
+        scope: 'agent-runtime',
+        level: 'warn',
+        message: 'Could not read the model catalog on the probe',
+        data: {
+          providerId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      })
+    }
   }
 
   /** Provider-level bootstrap in a throwaway process: spawn, `initialize`,

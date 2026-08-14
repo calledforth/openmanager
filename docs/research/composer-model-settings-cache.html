@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Composer Model Settings Cache — OpenManager vs t3code</title>
+  <style>
+    :root {
+      --bg: #0f1210;
+      --panel: #171b18;
+      --panel-2: #1e2420;
+      --ink: #e8ece7;
+      --muted: #9aa69a;
+      --faint: #6d7a6d;
+      --line: #2a322c;
+      --accent: #c8f06c;
+      --accent-dim: #8fb84a;
+      --warn: #f0b86c;
+      --danger: #f07a6c;
+      --ok: #6cf0a8;
+      --code: #d7e0d4;
+      --mono: "IBM Plex Mono", "SF Mono", Consolas, monospace;
+      --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      background:
+        radial-gradient(1200px 600px at 10% -10%, #1d2a18 0%, transparent 55%),
+        radial-gradient(900px 500px at 100% 0%, #241a12 0%, transparent 50%),
+        var(--bg);
+      color: var(--ink);
+      line-height: 1.55;
+      font-size: 15px;
+    }
+
+    .wrap {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 48px 24px 96px;
+    }
+
+    header.hero {
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 28px;
+      margin-bottom: 36px;
+    }
+
+    .eyebrow {
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--accent-dim);
+      margin: 0 0 12px;
+    }
+
+    h1 {
+      font-size: clamp(28px, 4vw, 40px);
+      line-height: 1.15;
+      margin: 0 0 12px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    .lede {
+      max-width: 62ch;
+      color: var(--muted);
+      font-size: 16px;
+      margin: 0;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 18px;
+    }
+
+    .chip {
+      font-family: var(--mono);
+      font-size: 11px;
+      padding: 4px 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: var(--panel);
+    }
+
+    nav.toc {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 8px;
+      margin: 0 0 40px;
+    }
+
+    nav.toc a {
+      text-decoration: none;
+      color: var(--ink);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 12px 14px;
+      font-size: 13px;
+      transition: border-color 120ms ease, background 120ms ease;
+    }
+
+    nav.toc a:hover {
+      border-color: var(--accent-dim);
+      background: var(--panel-2);
+    }
+
+    nav.toc a span {
+      display: block;
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--faint);
+      margin-bottom: 4px;
+      letter-spacing: 0.08em;
+    }
+
+    h2 {
+      font-size: 22px;
+      margin: 48px 0 14px;
+      letter-spacing: -0.015em;
+      border-top: 1px solid var(--line);
+      padding-top: 28px;
+    }
+
+    h3 {
+      font-size: 16px;
+      margin: 28px 0 10px;
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    p { margin: 0 0 12px; color: var(--ink); }
+    .muted { color: var(--muted); }
+    strong { font-weight: 600; }
+
+    .callout {
+      border: 1px solid var(--line);
+      border-left: 3px solid var(--accent);
+      background: var(--panel);
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin: 16px 0 20px;
+    }
+
+    .callout.warn { border-left-color: var(--warn); }
+    .callout.danger { border-left-color: var(--danger); }
+    .callout.ok { border-left-color: var(--ok); }
+    .callout p:last-child { margin-bottom: 0; }
+    .callout .label {
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--faint);
+      margin-bottom: 6px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 14px 0 22px;
+      font-size: 13px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    th {
+      background: var(--panel-2);
+      color: var(--muted);
+      font-weight: 500;
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+    td code, p code, li code {
+      font-family: var(--mono);
+      font-size: 12px;
+      background: #121612;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 1px 5px;
+      color: var(--code);
+    }
+
+    pre {
+      background: #0b0e0b;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px 16px;
+      overflow-x: auto;
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--code);
+      margin: 12px 0 20px;
+    }
+
+    ul, ol { margin: 0 0 16px; padding-left: 1.2em; color: var(--ink); }
+    li { margin: 0 0 6px; }
+    li::marker { color: var(--faint); }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin: 16px 0;
+    }
+
+    @media (max-width: 760px) {
+      .grid-2 { grid-template-columns: 1fr; }
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 16px;
+    }
+
+    .card h4 {
+      margin: 0 0 8px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .card p { color: var(--muted); font-size: 13px; margin: 0; }
+
+    .flow {
+      font-family: var(--mono);
+      font-size: 12px;
+      white-space: pre;
+      line-height: 1.45;
+    }
+
+    footer {
+      margin-top: 56px;
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
+      color: var(--faint);
+      font-size: 12px;
+      font-family: var(--mono);
+    }
+
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="hero">
+      <p class="eyebrow">Research note · no code changes</p>
+      <h1>How composer model settings are cached</h1>
+      <p class="lede">
+        OpenManager vs <code>.tmp/t3code</code>: where model catalogs, effort
+        levels, and remembered selections live — and why Cursor is the hard case.
+      </p>
+      <div class="meta">
+        <span class="chip">research only</span>
+        <span class="chip">OpenManager desktop</span>
+        <span class="chip">t3code reference</span>
+        <span class="chip">Cursor ACP bug surface</span>
+      </div>
+    </header>
+
+    <nav class="toc">
+      <a href="#verdict"><span>01</span>Bottom line</a>
+      <a href="#om"><span>02</span>OpenManager today</a>
+      <a href="#t3"><span>03</span>t3code approach</a>
+      <a href="#compare"><span>04</span>Side-by-side</a>
+      <a href="#cursor-bug"><span>05</span>Cursor cache bug</a>
+      <a href="#takeaways"><span>06</span>What this implies</a>
+    </nav>
+
+    <section id="verdict">
+      <h2>Bottom line</h2>
+      <div class="callout">
+        <div class="label">Verdict</div>
+        <p>
+          OpenManager caches <strong>user selections</strong> well (model / mode / effort
+          per workspace+provider in electron-store + Convex), but does
+          <strong>not</strong> warm-boot a full provider model catalog for Cursor.
+          Claude gets models from probe handshake; Cursor only gets models after a
+          real session (or from a previously persisted profile).
+        </p>
+        <p class="muted" style="margin-top:10px">
+          t3code solves the boot problem with a disk snapshot of the full provider
+          status — including per-model capability descriptors (effort, etc.) —
+          then refreshes in the background. That is the pattern we are missing.
+        </p>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h4>Desired (user intent)</h4>
+          <p>What the composer shows / wants. Durable. Survives restarts.</p>
+        </div>
+        <div class="card">
+          <h4>Applied (agent truth)</h4>
+          <p>What this process reported over the wire. Ephemeral. Never trust Cursor’s on-disk leftovers.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="om">
+      <h2>OpenManager — how it works today</h2>
+
+      <h3>Two different caches (easy to confuse)</h3>
+      <ol>
+        <li>
+          <strong>Composer preference cache</strong> — selected model, mode, effort,
+          other config values. Persisted.
+        </li>
+        <li>
+          <strong>Applied config cache</strong> — live ACP <code>configOptions</code>
+          for one session/process (<code>AppliedConfigCache</code>). Intentionally
+          <em>not</em> persisted.
+        </li>
+        <li>
+          <strong>Provider profile / catalog</strong> — available models + capability
+          flags like <code>effortLevels</code>. Persisted after a live session
+          reports them; Claude can also fill this at probe time.
+        </li>
+      </ol>
+
+      <h3>Data flow</h3>
+      <pre class="flow">App boot
+  → electron-store restores profiles + workspace preferences
+  → Convex subs merge cross-device profiles/preferences
+  → AgentHost probes providers
+       Claude  → handshake exposes catalog immediately
+       Cursor  → probe exposes health/auth only (no model list)
+  → renderer refreshes agent:providers
+  → composer resolves models:
+       live session → chrome/event → provider metadata/profile
+
+User picks model / effort
+  → React state updates
+  → workspace preference → electron-store + Convex
+  → on next session start, desiredConfig is reapplied
+  → AppliedConfigCache seeds from session/new|load
+  → unchanged values cost 0 RPCs thereafter</pre>
+
+      <h3>Where things live</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Layer</th>
+            <th>What</th>
+            <th>Lifetime</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>React state</td>
+            <td>Draft / session chrome, profiles, preferences</td>
+            <td>Renderer process</td>
+          </tr>
+          <tr>
+            <td><code>AppliedConfigCache</code></td>
+            <td>Wire-returned <code>configOptions</code> + current values</td>
+            <td>One ACP child process; dies on respawn</td>
+          </tr>
+          <tr>
+            <td><code>AgentRuntime.modelsByProvider</code></td>
+            <td>Probe-derived catalog</td>
+            <td>Main-process memory</td>
+          </tr>
+          <tr>
+            <td>electron-store <code>openmanager-settings</code></td>
+            <td><code>providerComposerProfiles</code>, <code>workspaceComposerPreferences</code></td>
+            <td>Machine-local, survives restart</td>
+          </tr>
+          <tr>
+            <td>Convex <code>provider_profiles</code></td>
+            <td>Model/mode catalogs + capability flags</td>
+            <td>Cross-device durable</td>
+          </tr>
+          <tr>
+            <td>Convex <code>workspace_composer_preferences</code></td>
+            <td>Per workspace+provider model/mode/<code>configValues</code></td>
+            <td>Cross-device durable</td>
+          </tr>
+          <tr>
+            <td>browser localStorage</td>
+            <td>Composer text drafts + favorite models only</td>
+            <td><strong>Not</strong> model settings</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Composer preference schema</h3>
+      <pre>workspace_composer_preferences {
+  workspacePath
+  providerId
+  modelId?
+  modeId?
+  configValues?   // e.g. { effort: "high", fast_mode: true, ... }
+  updatedAt
+}
+// key conceptually: `${workspacePath}::${providerId}`
+
+provider_profiles {
+  providerId
+  availableModels?: [{
+    modelId, name, description?,
+    effortLevels?, supportsFastMode?, supportsAutoMode?, ...
+  }]
+  availableModes?
+  defaultModelId?, defaultModeId?
+  updatedAt
+}</pre>
+
+      <h3>How the composer resolves models / effort</h3>
+      <p class="muted">
+        From <code>MessageInput.tsx</code> — precedence and capability lookup are
+        deliberately split so the effort pill does not blink when sources swap.
+      </p>
+      <ol>
+        <li>Live/draft runtime <code>availableModels</code></li>
+        <li>Chrome / event projection</li>
+        <li>Provider metadata / persisted profile</li>
+      </ol>
+      <p>
+        Effort <em>levels</em> come from the selected model’s
+        <code>effortLevels</code>. Effort <em>value</em> comes from live
+        <code>configOptions</code> first, else remembered
+        <code>configValues.effort</code>.
+      </p>
+
+      <h3>Claude vs Cursor at boot</h3>
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th>Claude</th>
+            <th>Cursor (ACP)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Probe fills catalog?</td>
+            <td>Yes — handshake <code>init.models</code></td>
+            <td>No — probe is health/auth only</td>
+          </tr>
+          <tr>
+            <td><code>listModels()</code> exists?</td>
+            <td>Yes (same handshake)</td>
+            <td>Yes (temp <code>session/new</code>) but <strong>no production caller</strong></td>
+          </tr>
+          <tr>
+            <td>First-time picker</td>
+            <td>Works before any chat</td>
+            <td>Empty until a real session (or prior profile)</td>
+          </tr>
+          <tr>
+            <td>After first session</td>
+            <td>Profile + probe</td>
+            <td>Profile in electron-store / Convex can warm later boots</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout warn">
+        <div class="label">Important design note</div>
+        <p>
+          <code>AppliedConfigCache</code> must stay process-scoped. Cursor’s model
+          state is process-global <em>and</em> persisted on disk by Cursor itself.
+          A fresh spawn was measured reporting a model set by an already-exited
+          process. Only wire responses from <em>this</em> connection are trusted.
+          See <code>docs/session-runtime-design.md</code> §3–4.
+        </p>
+      </div>
+    </section>
+
+    <section id="t3">
+      <h2>t3code — how the reference does it</h2>
+
+      <h3>Core idea</h3>
+      <p>
+        Treat the <strong>provider status snapshot</strong> as the catalog cache
+        boundary. One JSON file per provider instance includes models
+        <em>and</em> normalized capability descriptors (effort / reasoning,
+        context, fast mode, thinking).
+      </p>
+
+      <h3>Data flow</h3>
+      <pre class="flow">Cursor ACP  cursor/list_available_models
+  → { slug, name, per-model configOptions }
+  → normalize into ModelCapabilities.optionDescriptors
+  → ServerProvider.models[] snapshot
+  → in-memory managed-provider Ref
+  → ProviderRegistry aggregate
+  → disk: &lt;baseDir&gt;/caches/&lt;instanceId&gt;.json
+  → server config / API → web model picker
+
+User changes effort / etc.
+  → ModelSelection.options: [{ id, value }]
+  → composer draft Zustand + localStorage
+  → dispatch selection to server
+  → ACP session: setModel(), then setConfigOption()</pre>
+
+      <h3>Disk cache</h3>
+      <p>
+        Path: <code>&lt;baseDir&gt;/caches/&lt;instanceId&gt;.json</code>
+        (e.g. <code>caches/cursor.json</code> for the default Cursor instance).
+      </p>
+      <pre>{
+  instanceId, driver, enabled, installed, version,
+  status, auth, checkedAt,
+  models: [{
+    slug, name, isCustom, isDefault?,
+    capabilities: {
+      optionDescriptors: [
+        { id: "reasoning", type: "select", options: [...], ... },
+        { id: "fastMode", type: "boolean", ... }
+      ]
+    } | null
+  }],
+  slashCommands, skills, ...
+}</pre>
+
+      <h3>Warm boot behavior</h3>
+      <ol>
+        <li>Registry starts with cheap fallback snapshots</li>
+        <li>Reads disk cache per instance</li>
+        <li>Hydrates models + capabilities immediately → UI has a full picker</li>
+        <li>Background forced health refresh re-discovers (Cursor calls
+            <code>cursor/list_available_models</code> again)</li>
+        <li>Merge logic keeps previous models/capabilities if refresh returns empty
+            or strips capabilities</li>
+      </ol>
+
+      <div class="callout ok">
+        <div class="label">What they optimize for</div>
+        <p>
+          Responsive boot (no blank picker), not “never rediscover.” Discovery still
+          runs in the background; the disk snapshot bridges the gap.
+        </p>
+      </div>
+
+      <h3>Selection vs catalog separation</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Concern</th>
+            <th>Where</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Catalog + capabilities</td>
+            <td>Server disk snapshot + memory</td>
+          </tr>
+          <tr>
+            <td>User selection (model + option values)</td>
+            <td>Composer draft store (<code>t3code:composer-drafts:v1</code>)</td>
+          </tr>
+          <tr>
+            <td>Live ACP option IDs</td>
+            <td>Resolved against the active session before <code>setConfigOption</code></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p class="muted">
+        Cursor raw ACP options are normalized at the boundary
+        (effort → <code>reasoning</code>, context → <code>contextWindow</code>, etc.).
+        The UI persists portable IDs; protocol-specific IDs are re-resolved live.
+      </p>
+    </section>
+
+    <section id="compare">
+      <h2>Side-by-side</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Question</th>
+            <th>OpenManager</th>
+            <th>t3code</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Full model catalog at cold boot (Cursor)?</td>
+            <td>Only if a prior profile was persisted</td>
+            <td>Yes, from <code>caches/&lt;instanceId&gt;.json</code></td>
+          </tr>
+          <tr>
+            <td>Effort / option descriptors at boot?</td>
+            <td>Only via prior <code>provider_profiles.effortLevels</code></td>
+            <td>Yes — embedded in snapshot capabilities</td>
+          </tr>
+          <tr>
+            <td>Probe discovers Cursor models?</td>
+            <td>No (and <code>listModels</code> unused)</td>
+            <td>Yes via <code>cursor/list_available_models</code></td>
+          </tr>
+          <tr>
+            <td>Background refresh after hydrate?</td>
+            <td>Health probe only (no catalog refresh for Cursor)</td>
+            <td>Forced refresh; merge preserves old catalog on failure</td>
+          </tr>
+          <tr>
+            <td>Remembered selection</td>
+            <td>workspace+provider prefs (store + Convex)</td>
+            <td>Composer draft localStorage (+ sticky defaults)</td>
+          </tr>
+          <tr>
+            <td>Applied session values</td>
+            <td><code>AppliedConfigCache</code> (ephemeral, correct)</td>
+            <td>ACP session Ref (also session-scoped)</td>
+          </tr>
+          <tr>
+            <td>Capability shape</td>
+            <td>Special fields: <code>effortLevels</code>, <code>supportsFastMode</code>, …</td>
+            <td>Generic <code>optionDescriptors[]</code></td>
+          </tr>
+          <tr>
+            <td>Stale catalog protection</td>
+            <td>Weak — empty updates do not clear old profile arrays</td>
+            <td>Explicit retain-on-empty / retain-capabilities merge</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="cursor-bug">
+      <h2>The Cursor model-settings cache bug surface</h2>
+
+      <div class="callout danger">
+        <div class="label">Bug / gap (research finding)</div>
+        <p>
+          Cursor model details (catalog + effort/options) are not reliably available
+          at provider boot. The app either waits for a live session, or leans on a
+          previously projected profile that may be incomplete/stale. That is why
+          “we can’t keep loading model details / effort when booting the provider”
+          is painful today — there is no dedicated warm catalog cache like t3code’s.
+        </p>
+      </div>
+
+      <h3>Concrete failure modes</h3>
+      <ol>
+        <li>
+          <strong>Cold Cursor first use</strong> —
+          <code>modelsByProvider</code> empty; picker has no rows until
+          <code>session/new</code> or <code>session/load</code> publishes models.
+        </li>
+        <li>
+          <strong><code>listModels</code> dead path</strong> —
+          <code>AcpProbeRuntimeImpl.listModels()</code> can spawn a temp session and
+          return models, but nothing in production calls it during boot.
+        </li>
+        <li>
+          <strong>Capability blink / missing effort pill</strong> —
+          chrome / older profiles may carry id+name without
+          <code>effortLevels</code>. MessageInput already tries to paper over this by
+          looking up capabilities separately from the display list — which is a
+          symptom that catalog sources disagree.
+        </li>
+        <li>
+          <strong>Stale profile retention</strong> —
+          projector only upserts <code>availableModels</code> when the new array is
+          non-empty. An intentionally empty/changed catalog after a CLI upgrade
+          will not clear the old Convex/electron profile.
+        </li>
+        <li>
+          <strong>Effort remembered per workspace+provider, not per model</strong> —
+          switching models can leave a remembered effort that the new model does
+          not advertise. Runtime skips unsupported values; UI can still show a
+          temporary mismatch until live options arrive.
+        </li>
+        <li>
+          <strong>Do not “fix” applied Cursor settings</strong> —
+          Cursor on-disk / process-global state lies across respawns. Persisting
+          <code>AppliedConfigCache</code> would reintroduce the measured stale-model
+          bug (respawn inheriting another process’s model). Desired prefs are fine;
+          applied wire state is not.
+        </li>
+      </ol>
+
+      <h3>Related measured Cursor costs (why cache matters)</h3>
+      <ul>
+        <li><code>session/set_model</code> ≈ 2.9s even when unchanged, returns <code>{}</code></li>
+        <li><code>session/set_config_option</code> ≈ 1.4–3.0s, but returns full options (cacheable)</li>
+        <li>Unknown option on wrong model ≈ 1.4s then error</li>
+        <li>Steady state with a seeded applied cache: <strong>0 RPCs per message</strong></li>
+      </ul>
+      <p class="muted">
+        Source: <code>docs/session-runtime-design.md</code>,
+        <code>AppliedConfigCache.ts</code> comments.
+      </p>
+    </section>
+
+    <section id="takeaways">
+      <h2>What this implies (still research — no changes)</h2>
+      <ol>
+        <li>
+          <strong>Keep desired vs applied split.</strong> OpenManager already got
+          this right for session writes. Do not persist applied Cursor wire state.
+        </li>
+        <li>
+          <strong>Add a warm provider-catalog cache for Cursor</strong> (t3code-style):
+          snapshot models + effort/option descriptors to disk (or strengthen
+          Convex/electron profile into a true boot hydrate), serve immediately,
+          refresh asynchronously.
+        </li>
+        <li>
+          <strong>Discover without opening a user session</strong> —
+          either wire <code>listModels</code> into boot, or prefer Cursor’s
+          <code>cursor/list_available_models</code> extension like t3code.
+        </li>
+        <li>
+          <strong>Preserve on empty refresh.</strong> Never clobber a known catalog
+          with <code>[]</code> from a failed/partial probe.
+        </li>
+        <li>
+          <strong>Normalize capabilities at the boundary</strong> if Cursor option
+          IDs keep shifting — store portable descriptors, re-resolve against the
+          live session before writes.
+        </li>
+      </ol>
+
+      <div class="callout">
+        <div class="label">Files worth re-reading</div>
+        <p>
+          OpenManager:
+          <code>AppliedConfigCache.ts</code>,
+          <code>AcpSessionRuntimeImpl.ts</code>,
+          <code>AcpProbeRuntimeImpl.ts</code>,
+          <code>MessageInput.tsx</code>,
+          <code>app-ui-provider.tsx</code>,
+          <code>convex-projector.ts</code>,
+          <code>docs/session-runtime-design.md</code>
+        </p>
+        <p style="margin-top:8px">
+          t3code:
+          <code>providerStatusCache.ts</code>,
+          <code>ProviderRegistry.ts</code>,
+          <code>CursorProvider.ts</code>,
+          <code>composerDraftStore.ts</code>,
+          <code>providerModels.ts</code>
+        </p>
+      </div>
+    </section>
+
+    <footer>
+      Generated as research-only deliverable · docs/research/composer-model-settings-cache.html
+    </footer>
+  </div>
+</body>
+</html>

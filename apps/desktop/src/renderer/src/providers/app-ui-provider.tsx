@@ -286,6 +286,9 @@ interface AppUiValue {
   activeSessionId: string | null
   isSessionDraftOpen: boolean
   pendingDraftSessionStart: boolean
+  /** Non-null while the composer is aimed at another project. Everything the
+   * composer reads and writes follows it; navigation deliberately does not. */
+  quickLaunchWorkspacePath: string | null
   localSessionStatus: LocalSessionStatus | null
   adoptedDraftSessionId: string | null
   currentClientId: string | null
@@ -315,6 +318,15 @@ interface AppUiValue {
   openChildSession: (childExternalId: string, parentExternalId: string) => Promise<void>
   closeChildSession: (parentExternalId: string) => void
   createSession: (workspacePath: string) => Promise<void>
+  openQuickLaunch: (workspacePath?: string) => void
+  closeQuickLaunch: () => void
+  /** Start a session in another project and stay put. Resolves to the job id. */
+  launchSession: (
+    workspacePath: string,
+    content: string,
+    attachments?: PromptAttachment[],
+    userMessageId?: string,
+  ) => Promise<string | null>
   deleteSession: (
     workspacePath: string,
     externalId: string,
@@ -401,6 +413,23 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [isSessionDraftOpen, setIsSessionDraftOpen] = useState(false)
   const [pendingDraftSessionStart, setPendingDraftSessionStart] = useState(false)
+  /** The project the composer is aimed at while quick launch is open; null when
+   * the composer belongs to whatever session or draft is on screen.
+   *
+   * Quick launch is deliberately *only* a retarget. Every per-project piece of
+   * composer state — draft selection, draft runtime, remembered preferences,
+   * the typed text itself — is already keyed by workspace path, so pointing the
+   * existing writers at a different key is the whole feature. What it must
+   * never touch is navigation state (`activeSessionId`,
+   * `pendingDraftSessionStart`): staying put is the point. */
+  const [quickLaunchWorkspacePath, setQuickLaunchWorkspacePath] = useState<string | null>(null)
+  /** Survives closing the overlay so Ctrl+N reopens on the project you last
+   * aimed at, next to the draft it left behind. */
+  const lastQuickLaunchWorkspacePathRef = useRef<string | null>(null)
+  /** Which project the composer's settings and draft belong to. Every draft
+   * writer below reads this rather than `activeWorkspacePath`, which is what
+   * lets the same controls edit another project's draft in place. */
+  const composerWorkspacePath = quickLaunchWorkspacePath ?? activeWorkspacePath
   const [localSessionStatus, setLocalSessionStatus] = useState<LocalSessionStatus | null>(null)
   const [adoptedDraftSessionId, setAdoptedDraftSessionId] = useState<string | null>(null)
   const [localSessionJobId, setLocalSessionJobId] = useState<Id<'pending_jobs'> | null>(null)
@@ -413,7 +442,20 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
     Partial<Record<ProviderId, PromptCapabilities>>
   >({})
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([])
-  const [providers, setProviders] = useState<ProviderMetadata[]>([])
+  // Seeded, not empty. Every composer settings control renders only when this
+  // list has the provider in it, so starting empty meant the model, mode and
+  // effort pills all mounted *after* first paint — each one appearing at its
+  // own moment and pushing the others sideways. The cached answer is available
+  // synchronously, so there is no reason to paint a frame without it.
+  const [providers, setProviders] = useState<ProviderMetadata[]>(() => {
+    try {
+      return window.electronAPI.getCachedAgentProviders() ?? []
+    } catch {
+      // A renderer opened without the preload bridge (tests, storybook) still
+      // has to mount; it just pays the pop-in this seed exists to avoid.
+      return []
+    }
+  })
   const [acpSessionStateById, setAcpSessionStateById] = useState<
     Record<string, AcpSessionRuntimeState>
   >({})
@@ -600,9 +642,12 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
     }
   }, [localSessionJob])
 
-  const applyProviderHealth = useCallback((providerId: ProviderId, report: ProviderHealthReport) => {
-    setProviderHealthByProvider((prev) => ({ ...prev, [providerId]: report }))
-  }, [])
+  const applyProviderHealth = useCallback(
+    (providerId: ProviderId, report: ProviderHealthReport) => {
+      setProviderHealthByProvider((prev) => ({ ...prev, [providerId]: report }))
+    },
+    [],
+  )
 
   const setProviderConnecting = useCallback((providerId: ProviderId, connecting: boolean) => {
     setConnectingProviders((prev) => ({ ...prev, [providerId]: connecting }))
@@ -814,20 +859,15 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
     [acpSessionStateById, activeWorkspacePath, defaultProviderId, selectSession],
   )
 
-  const createSession = useCallback(
-    async (workspacePath: string) => {
-      setError(null)
-      rememberActiveWorkspacePath(workspacePath)
-      setActiveSessionId(null)
-      setIsSessionDraftOpen(true)
-      setPendingDraftSessionStart(false)
-      setLocalSessionStatus(null)
-      setLocalSessionJobId(null)
-      setAdoptedDraftSessionId(null)
-      const fallbackSessionState =
-        activeWorkspacePath === workspacePath && activeSessionId
-          ? acpSessionStateById[activeSessionId]
-          : null
+  /** Seed a project's draft composer state — provider, model, mode, config —
+   * from what that project already remembers, and report the provider it
+   * settled on so the caller can connect it.
+   *
+   * Shared by the new-session page and quick launch precisely because the
+   * answer must not depend on which one you came through: the same project
+   * opened either way has to offer the same model and mode. */
+  const primeWorkspaceComposer = useCallback(
+    (workspacePath: string, fallbackSessionState?: AcpSessionRuntimeState | null): ProviderId => {
       const draftProviderId =
         fallbackSessionState?.providerId ??
         draftSelectionByWorkspace[workspacePath]?.providerId ??
@@ -873,6 +913,34 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
           ? { availableCommands: resolvedDraft.availableCommands }
           : {}),
       })
+      return draftProviderId
+    },
+    [
+      defaultProviderId,
+      draftSelectionByWorkspace,
+      draftSessionStateByWorkspace,
+      mergeDraftRuntimeForWorkspace,
+    ],
+  )
+
+  const createSession = useCallback(
+    async (workspacePath: string) => {
+      setError(null)
+      rememberActiveWorkspacePath(workspacePath)
+      setActiveSessionId(null)
+      setIsSessionDraftOpen(true)
+      setPendingDraftSessionStart(false)
+      setLocalSessionStatus(null)
+      setLocalSessionJobId(null)
+      setAdoptedDraftSessionId(null)
+      // Opening the full new-session page ends any quick launch: the composer
+      // it was borrowing is exactly what this page is now showing.
+      setQuickLaunchWorkspacePath(null)
+      const fallbackSessionState =
+        activeWorkspacePath === workspacePath && activeSessionId
+          ? acpSessionStateById[activeSessionId]
+          : null
+      const draftProviderId = primeWorkspaceComposer(workspacePath, fallbackSessionState)
       const providerReady = await ensureProvider(draftProviderId, workspacePath)
 
       const hasRuntime =
@@ -919,12 +987,112 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       acpSessionStateById,
       activeSessionId,
       activeWorkspacePath,
+      ensureProvider,
+      // Still used by the hydration branch below, after priming.
+      mergeDraftRuntimeForWorkspace,
+      primeWorkspaceComposer,
+      rememberActiveWorkspacePath,
+    ],
+  )
+
+  /** Point the composer at another project without leaving the session on
+   * screen. Idempotent: reopening lands on the project you last aimed at, next
+   * to the draft you left there. */
+  const openQuickLaunch = useCallback(
+    (workspacePath?: string) => {
+      const target =
+        workspacePath ??
+        quickLaunchWorkspacePath ??
+        lastQuickLaunchWorkspacePathRef.current ??
+        activeWorkspacePath
+      if (!target) return
+      setError(null)
+      setQuickLaunchWorkspacePath(target)
+      lastQuickLaunchWorkspacePathRef.current = target
+      const providerId = primeWorkspaceComposer(target)
+      void ensureProvider(providerId, target)
+    },
+    [activeWorkspacePath, ensureProvider, primeWorkspaceComposer, quickLaunchWorkspacePath],
+  )
+
+  const closeQuickLaunch = useCallback(() => {
+    setQuickLaunchWorkspacePath(null)
+  }, [])
+
+  /** Start a session in `workspacePath` and stay where we are.
+   *
+   * Same job as the draft path in `sendMessage`, minus every navigation side
+   * effect: no `pendingDraftSessionStart`, no `localSessionStatus`, no adopted
+   * id. The `session_created` handler's adoption is gated on
+   * `pendingDraftSessionStart`, so leaving it alone is what keeps the user in
+   * the session they were reading. */
+  const launchSession = useCallback(
+    async (
+      workspacePath: string,
+      content: string,
+      attachments: PromptAttachment[] = [],
+      userMessageId?: string,
+    ) => {
+      const trimmed = content.trim()
+      if (!workspacePath || (!trimmed && attachments.length === 0)) return null
+      if (!currentClientId) {
+        const error = new Error('Client identity unavailable')
+        setError(error.message)
+        throw error
+      }
+      setError(null)
+      const draftSelection = draftSelectionByWorkspace[workspacePath] ?? {}
+      const draftProviderId = draftSelection.providerId ?? defaultProviderId
+      const preferenceKey = workspaceComposerPreferenceKey(workspacePath, draftProviderId)
+      const resolvedDraft = resolveDraftComposerRuntime({
+        workspacePath,
+        providerId: draftProviderId,
+        runtime: draftSessionStateByWorkspace[workspacePath],
+        selection: draftSelection,
+        preference: workspaceComposerPreferencesRef.current[preferenceKey],
+        profile: composerProfileForRef(draftProviderId),
+      })
+      const preferredModelId = resolvedDraft.models?.currentModelId
+      const preferredModeId = resolvedDraft.modes?.currentModeId
+      const preferredConfigValues =
+        workspaceComposerPreferencesRef.current[preferenceKey]?.configValues
+      const ready = await ensureProvider(draftProviderId, workspacePath)
+      if (!ready) {
+        const error = new Error(
+          `${providerDisplayName(draftProviderId)} is unavailable. Retry connection from the sidebar.`,
+        )
+        setError(error.message)
+        throw error
+      }
+      try {
+        return (await submitJob({
+          workspacePath,
+          type: 'start_session_with_message',
+          payload: JSON.stringify({
+            workspacePath,
+            content: trimmed,
+            attachments,
+            userMessageId,
+            providerId: draftProviderId,
+            ...(preferredModelId ? { preferredModelId } : {}),
+            ...(preferredModeId ? { preferredModeId } : {}),
+            ...(preferredConfigValues ? { preferredConfigValues } : {}),
+          }),
+          clientId: currentClientId,
+        })) as Id<'pending_jobs'>
+      } catch (err) {
+        setError((err as Error).message)
+        throw err
+      }
+    },
+    [
+      currentClientId,
       defaultProviderId,
+      draftSelectionByWorkspace,
       draftSessionStateByWorkspace,
       ensureProvider,
-      draftSelectionByWorkspace,
-      mergeDraftRuntimeForWorkspace,
-      rememberActiveWorkspacePath,
+      providerDisplayName,
+      submitJob,
     ],
   )
 
@@ -1091,30 +1259,30 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
 
   const setDraftModel = useCallback(
     (modelId: string) => {
-      if (!activeWorkspacePath) return
-      const providerId =
-        draftSelectionByWorkspace[activeWorkspacePath]?.providerId ?? defaultProviderId
-      rememberWorkspaceComposerPreference(activeWorkspacePath, providerId, { modelId })
+      const workspacePath = composerWorkspacePath
+      if (!workspacePath) return
+      const providerId = draftSelectionByWorkspace[workspacePath]?.providerId ?? defaultProviderId
+      rememberWorkspaceComposerPreference(workspacePath, providerId, { modelId })
       setDraftSelectionByWorkspace((prev) => ({
         ...prev,
-        [activeWorkspacePath]: {
-          ...(prev[activeWorkspacePath] ?? {}),
+        [workspacePath]: {
+          ...(prev[workspacePath] ?? {}),
           modelId,
         },
       }))
       setDraftSessionStateByWorkspace((prev) => ({
         ...prev,
-        [activeWorkspacePath]: {
-          ...(prev[activeWorkspacePath] ?? {}),
+        [workspacePath]: {
+          ...(prev[workspacePath] ?? {}),
           models: {
-            ...(prev[activeWorkspacePath]?.models ?? {}),
+            ...(prev[workspacePath]?.models ?? {}),
             currentModelId: modelId,
           },
         },
       }))
     },
     [
-      activeWorkspacePath,
+      composerWorkspacePath,
       defaultProviderId,
       draftSelectionByWorkspace,
       rememberWorkspaceComposerPreference,
@@ -1123,30 +1291,30 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
 
   const setDraftMode = useCallback(
     (modeId: string) => {
-      if (!activeWorkspacePath) return
-      const providerId =
-        draftSelectionByWorkspace[activeWorkspacePath]?.providerId ?? defaultProviderId
-      rememberWorkspaceComposerPreference(activeWorkspacePath, providerId, { modeId })
+      const workspacePath = composerWorkspacePath
+      if (!workspacePath) return
+      const providerId = draftSelectionByWorkspace[workspacePath]?.providerId ?? defaultProviderId
+      rememberWorkspaceComposerPreference(workspacePath, providerId, { modeId })
       setDraftSelectionByWorkspace((prev) => ({
         ...prev,
-        [activeWorkspacePath]: {
-          ...(prev[activeWorkspacePath] ?? {}),
+        [workspacePath]: {
+          ...(prev[workspacePath] ?? {}),
           modeId,
         },
       }))
       setDraftSessionStateByWorkspace((prev) => ({
         ...prev,
-        [activeWorkspacePath]: {
-          ...(prev[activeWorkspacePath] ?? {}),
+        [workspacePath]: {
+          ...(prev[workspacePath] ?? {}),
           modes: {
-            ...(prev[activeWorkspacePath]?.modes ?? {}),
+            ...(prev[workspacePath]?.modes ?? {}),
             currentModeId: modeId,
           },
         },
       }))
     },
     [
-      activeWorkspacePath,
+      composerWorkspacePath,
       defaultProviderId,
       draftSelectionByWorkspace,
       rememberWorkspaceComposerPreference,
@@ -1155,15 +1323,15 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
 
   const setDraftConfigOption = useCallback(
     (configId: string, value: SessionConfigValue) => {
-      if (!activeWorkspacePath) return
-      const providerId =
-        draftSelectionByWorkspace[activeWorkspacePath]?.providerId ?? defaultProviderId
-      rememberWorkspaceConfigValue(activeWorkspacePath, providerId, configId, value)
+      const workspacePath = composerWorkspacePath
+      if (!workspacePath) return
+      const providerId = draftSelectionByWorkspace[workspacePath]?.providerId ?? defaultProviderId
+      rememberWorkspaceConfigValue(workspacePath, providerId, configId, value)
       setDraftSessionStateByWorkspace((prev) => {
-        const current = prev[activeWorkspacePath]
+        const current = prev[workspacePath]
         return {
           ...prev,
-          [activeWorkspacePath]: {
+          [workspacePath]: {
             ...(current ?? {}),
             configOptions: updateSessionConfigOptions(current?.configOptions, configId, value),
           },
@@ -1171,7 +1339,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       })
     },
     [
-      activeWorkspacePath,
+      composerWorkspacePath,
       defaultProviderId,
       draftSelectionByWorkspace,
       rememberWorkspaceConfigValue,
@@ -1180,6 +1348,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
 
   const setDraftProvider = useCallback(
     (providerId: ProviderId, modelId?: string) => {
+      const activeWorkspacePath = composerWorkspacePath
       if (!activeWorkspacePath) return
       setDefaultProviderId(providerId)
       // Preference persistence is best-effort.
@@ -1232,7 +1401,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       void ensureProvider(providerId, activeWorkspacePath)
     },
     [
-      activeWorkspacePath,
+      composerWorkspacePath,
       draftSessionStateByWorkspace,
       ensureProvider,
       rememberWorkspaceComposerPreference,
@@ -2061,40 +2230,46 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
    * pointed at — the live session's provider when there is one, the draft's
    * otherwise. */
   const composerConfigValues = useMemo(() => {
-    if (!activeWorkspacePath) return {}
-    const providerId = activeSessionId
-      ? (acpSessionStateById[activeSessionId]?.providerId ?? defaultProviderId)
-      : (draftSessionStateByWorkspace[activeWorkspacePath]?.providerId ??
-        draftSelectionByWorkspace[activeWorkspacePath]?.providerId ??
-        defaultProviderId)
+    if (!composerWorkspacePath) return {}
+    // While quick launch is open the composer belongs to the target project's
+    // draft, never to the session still on screen behind it.
+    const providerId =
+      activeSessionId && !quickLaunchWorkspacePath
+        ? (acpSessionStateById[activeSessionId]?.providerId ?? defaultProviderId)
+        : (draftSessionStateByWorkspace[composerWorkspacePath]?.providerId ??
+          draftSelectionByWorkspace[composerWorkspacePath]?.providerId ??
+          defaultProviderId)
     return (
       workspaceComposerPreferences[
-        workspaceComposerPreferenceKey(activeWorkspacePath, providerId)
+        workspaceComposerPreferenceKey(composerWorkspacePath, providerId)
       ]?.configValues ?? {}
     )
   }, [
     acpSessionStateById,
     activeSessionId,
-    activeWorkspacePath,
+    composerWorkspacePath,
     defaultProviderId,
     draftSelectionByWorkspace,
     draftSessionStateByWorkspace,
+    quickLaunchWorkspacePath,
     workspaceComposerPreferences,
   ])
 
   const draftSessionState = useMemo(() => {
-    if (!activeWorkspacePath || !isSessionDraftOpen) return null
-    const runtime = draftSessionStateByWorkspace[activeWorkspacePath]
-    const selection = draftSelectionByWorkspace[activeWorkspacePath]
+    // Quick launch opens a draft for another project without opening the
+    // new-session page, so it qualifies on its own.
+    if (!composerWorkspacePath || (!isSessionDraftOpen && !quickLaunchWorkspacePath)) return null
+    const runtime = draftSessionStateByWorkspace[composerWorkspacePath]
+    const selection = draftSelectionByWorkspace[composerWorkspacePath]
     const providerId = runtime?.providerId ?? selection?.providerId ?? defaultProviderId
     return resolveDraftComposerRuntime({
-      workspacePath: activeWorkspacePath,
+      workspacePath: composerWorkspacePath,
       providerId,
       runtime,
       selection,
       preference:
         workspaceComposerPreferences[
-          workspaceComposerPreferenceKey(activeWorkspacePath, providerId)
+          workspaceComposerPreferenceKey(composerWorkspacePath, providerId)
         ],
       profile: withProviderCatalog(
         providerComposerProfiles[providerId],
@@ -2102,13 +2277,14 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       ),
     })
   }, [
-    activeWorkspacePath,
+    composerWorkspacePath,
     defaultProviderId,
     draftSelectionByWorkspace,
     draftSessionStateByWorkspace,
     isSessionDraftOpen,
     providerComposerProfiles,
     providers,
+    quickLaunchWorkspacePath,
     workspaceComposerPreferences,
   ])
 
@@ -2118,6 +2294,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       activeSessionId,
       isSessionDraftOpen,
       pendingDraftSessionStart,
+      quickLaunchWorkspacePath,
       localSessionStatus,
       adoptedDraftSessionId,
       currentClientId,
@@ -2142,6 +2319,9 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       openChildSession,
       closeChildSession,
       createSession,
+      openQuickLaunch,
+      closeQuickLaunch,
+      launchSession,
       deleteSession,
       sendMessage,
       abortSession,
@@ -2162,6 +2342,7 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       activeSessionId,
       isSessionDraftOpen,
       pendingDraftSessionStart,
+      quickLaunchWorkspacePath,
       localSessionStatus,
       adoptedDraftSessionId,
       currentClientId,
@@ -2184,6 +2365,9 @@ export function AppUiProvider({ children }: { children: ReactNode }) {
       openChildSession,
       closeChildSession,
       createSession,
+      openQuickLaunch,
+      closeQuickLaunch,
+      launchSession,
       deleteSession,
       sendMessage,
       abortSession,

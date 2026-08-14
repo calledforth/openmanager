@@ -15,6 +15,7 @@ import {
 } from '@agentpack/contract'
 import { opencode as opencodeProvider, providers } from '@agentpack/runtime'
 import { loadOrCreateClientId } from './client-id'
+import { sanitizeProviderCatalogCache } from './provider-catalog-cache'
 import { sanitizeProviderHealthCache } from './provider-health-cache'
 import store from './store'
 import { normalizeConvexUrl, resolveRuntimeConfig } from './convex-config'
@@ -277,6 +278,34 @@ ipcMain.handle('agent:providers', (): ProviderMetadata[] => {
   }))
 })
 
+/** The same answer, off the persisted cache, synchronously.
+ *
+ * `agent:providers` is an `invoke`, so the renderer cannot have its result on
+ * the first frame — it mounts with an empty provider list and fills in a
+ * `useEffect`. Every composer control is gated on that list being non-empty, so
+ * the whole settings row popped in after paint and shoved itself sideways as
+ * each source resolved. Reserving space would only have made the gap prettier;
+ * the fix is to not have a gap.
+ *
+ * Deliberately reads the store rather than `agentHost`. Preload runs before the
+ * host is constructed, and the store is the thing that survived the last run —
+ * which is exactly the catalog the composer should open on. The async handler
+ * above still corrects it the moment a probe answers.
+ *
+ * `sendSync` blocks the renderer, which is normally worth avoiding. Here it is
+ * one synchronous read of an already-in-memory electron-store value, on a
+ * preload path that has nothing else to do, and it buys a stable first frame. */
+ipcMain.on('agent:providers-cached', (event) => {
+  const catalogs = sanitizeProviderCatalogCache(store.get('providerCatalogs', {}))
+  event.returnValue = Object.values(providers).map(({ id, displayName, capabilities }) => ({
+    id,
+    displayName,
+    capabilities,
+    ...(catalogs[id]?.models ? { models: catalogs[id]?.models } : {}),
+    ...(catalogs[id]?.modes ? { modes: catalogs[id]?.modes } : {}),
+  })) satisfies ProviderMetadata[]
+})
+
 ipcMain.handle(
   'agent:model-image-support',
   async (_event, providerId: unknown, modelId: string) => {
@@ -502,6 +531,10 @@ app.whenReady().then(() => {
       healthCache: {
         load: () => sanitizeProviderHealthCache(store.get('providerHealth', {})),
         save: (cache) => store.set('providerHealth', cache),
+      },
+      catalogCache: {
+        load: () => sanitizeProviderCatalogCache(store.get('providerCatalogs', {})),
+        save: (cache) => store.set('providerCatalogs', cache),
       },
       // Every provider's health probe needs a real directory, not just the one
       // the user last used: at launch only one provider is started, and the

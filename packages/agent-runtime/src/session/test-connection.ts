@@ -23,6 +23,9 @@ export type FakeWire = {
   setSessionMode?: (params: unknown) => Promise<unknown>
   setSessionConfigOption?: (params: unknown) => Promise<unknown>
   request?: (method: string, params: unknown) => Promise<unknown>
+  /** Client→agent ext calls (e.g. `cursor/list_available_models`). The inbound
+   * direction is `FakeAcpConnection.extMethod`; this is the other one. */
+  extMethod?: (method: string, params: unknown) => Promise<unknown>
 }
 
 const DEFAULT_WIRE: FakeWire = {

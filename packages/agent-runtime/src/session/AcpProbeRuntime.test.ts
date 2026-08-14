@@ -184,3 +184,115 @@ describe('AcpProbeRuntime session listing', () => {
     )
   })
 })
+
+describe('AcpProbeRuntime model catalog', () => {
+  const CATALOG = {
+    models: [
+      {
+        slug: 'composer-2.5',
+        name: 'Composer 2.5',
+        description: 'Fast in-house model',
+        isDefault: true,
+        configOptions: [
+          {
+            type: 'select',
+            id: 'reasoning',
+            name: 'Reasoning effort',
+            category: 'effort',
+            currentValue: 'medium',
+            options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }],
+          },
+          { type: 'boolean', id: 'fast', name: 'Fast mode', currentValue: false },
+        ],
+      },
+      // No effort control at all — a real state, not a gap.
+      { slug: 'grok-4.5', name: 'Grok 4.5', configOptions: [] },
+      { name: 'nameless row with no id' },
+    ],
+  }
+
+  it('reads the catalog off the handshake, with per-model capabilities and no session', async () => {
+    const newSession = vi.fn()
+    const extMethod = vi.fn(async () => CATALOG)
+    const { probe } = build({
+      initialize: async () => CURSOR_INITIALIZE,
+      authenticate: async () => ({}),
+      newSession,
+      extMethod,
+    })
+
+    await expect(probe.listModels('C:/workspace')).resolves.toEqual({
+      currentModelId: 'composer-2.5',
+      availableModels: [
+        {
+          id: 'composer-2.5',
+          displayName: 'Composer 2.5',
+          description: 'Fast in-house model',
+          effortLevels: ['low', 'high'],
+          supportsFastMode: true,
+        },
+        { id: 'grok-4.5', displayName: 'Grok 4.5' },
+      ],
+    })
+    expect(extMethod).toHaveBeenCalledWith('cursor/list_available_models', {})
+    // The whole point: no session was opened to answer this.
+    expect(newSession).not.toHaveBeenCalled()
+  })
+
+  it('falls back to session/new when the CLI is too old to know the method', async () => {
+    const extMethod = vi.fn(async () => {
+      throw new Error('Method not found')
+    })
+    const { probe } = build({
+      initialize: async () => CURSOR_INITIALIZE,
+      authenticate: async () => ({}),
+      extMethod,
+      newSession: async () => ({
+        sessionId: 'throwaway',
+        models: {
+          currentModelId: 'composer-2.5',
+          availableModels: [{ modelId: 'composer-2.5', name: 'Composer 2.5' }],
+        },
+      }),
+    })
+
+    await expect(probe.listModels('C:/workspace')).resolves.toEqual({
+      currentModelId: 'composer-2.5',
+      availableModels: [{ id: 'composer-2.5', displayName: 'Composer 2.5' }],
+    })
+    expect(extMethod).toHaveBeenCalled()
+  })
+
+  it('falls back rather than returning an empty catalog the method answered', async () => {
+    const newSession = vi.fn(async () => ({ sessionId: 'throwaway' }))
+    const { probe } = build({
+      initialize: async () => CURSOR_INITIALIZE,
+      authenticate: async () => ({}),
+      extMethod: async () => ({ models: [] }),
+      newSession,
+    })
+
+    await expect(probe.listModels('C:/workspace')).resolves.toEqual({})
+    expect(newSession).toHaveBeenCalled()
+  })
+
+  it('goes straight to session/new for a provider with no catalog method', async () => {
+    const extMethod = vi.fn()
+    const { probe } = build(
+      {
+        initialize: async () => ({ protocolVersion: 1, authMethods: [] }),
+        extMethod,
+        newSession: async () => ({
+          sessionId: 'throwaway',
+          models: { availableModels: [{ modelId: 'gpt-5.5', name: 'GPT-5.5' }] },
+        }),
+      },
+      opencode,
+    )
+
+    await expect(probe.listModels('C:/workspace')).resolves.toEqual({
+      availableModels: [{ id: 'gpt-5.5', displayName: 'GPT-5.5' }],
+    })
+    expect(extMethod).not.toHaveBeenCalled()
+  })
+})

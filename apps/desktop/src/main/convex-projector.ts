@@ -1256,11 +1256,20 @@ export class ConvexProjector {
       name: mode.displayName,
       ...(mode.description !== undefined ? { description: mode.description } : {}),
     }))
+    // Three states, not two. `undefined` means this event taught us nothing
+    // about the catalog — a `current_model_update` carries a current id and no
+    // list — and must leave the stored one alone. `[]` means the provider
+    // listed and has none, which is a fact and has to be able to clear a stale
+    // profile: collapsing it into "not provided", as this did, meant a catalog
+    // could never shrink, so a model dropped by a CLI upgrade stayed in the
+    // picker forever and failed only when selected. `upsertProfile` already
+    // distinguishes them (`if (value === undefined) continue`); this was the
+    // layer throwing the distinction away.
     const args = {
       providerId,
       ...(source.agentInfo ? { agentInfo: source.agentInfo } : {}),
-      ...(availableModels?.length ? { availableModels } : {}),
-      ...(availableModes?.length ? { availableModes } : {}),
+      ...(availableModels !== undefined ? { availableModels } : {}),
+      ...(availableModes !== undefined ? { availableModes } : {}),
       ...(source.includeDefaults && source.models?.currentModelId
         ? { defaultModelId: source.models.currentModelId }
         : {}),

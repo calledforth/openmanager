@@ -34,6 +34,21 @@ export type AcpProviderConfig = ProviderConfigBase & {
   }
   extensions: ExtensionHandlers
   subtasks?: SubtaskAdapter
+  /** How to learn this agent's model catalog without opening a session.
+   *
+   * Absent means the only way is `session/new`, which is what base ACP offers
+   * and what `listModels` falls back to. That fallback is correct but
+   * expensive — ~3.5s on Cursor — and it is the reason a cold provider shows
+   * an empty picker until the user sends their first message.
+   *
+   * `listModelsMethod` names a vendor `ext` method that answers the same
+   * question for free. It is deliberately a string rather than a boolean
+   * capability: the method name *is* the vendor coupling, and keeping it here
+   * means `ProviderCapabilities` — which the renderer gates UI on — does not
+   * grow a field about a wire detail no UI can act on. */
+  catalog?: {
+    listModelsMethod: string
+  }
 }
 
 /** A provider driven in-process through the Anthropic Agent SDK rather than
