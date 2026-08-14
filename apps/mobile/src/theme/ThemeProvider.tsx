@@ -74,10 +74,7 @@ export function ThemeProvider({ children }: PropsWithChildren) {
 
   return (
     <ThemeContext.Provider value={value}>
-      <View
-        className="flex-1"
-        style={[activeVars, { backgroundColor: activeTokens.canvasBg }]}
-      >
+      <View className="flex-1" style={[activeVars, { backgroundColor: activeTokens.canvasBg }]}>
         {children}
       </View>
     </ThemeContext.Provider>

@@ -45,11 +45,7 @@ export function SessionCard({
       </View>
 
       <View className="mt-1.5 flex-row items-center gap-2 pl-[15px]">
-        <AppText
-          variant="text-11-regular"
-          numberOfLines={1}
-          className="flex-1 text-textMuted"
-        >
+        <AppText variant="text-11-regular" numberOfLines={1} className="flex-1 text-textMuted">
           {workspaceName}
         </AppText>
         <AppText variant="text-11-regular" className="text-textFaint">
