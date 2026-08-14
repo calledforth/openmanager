@@ -91,6 +91,8 @@
    §2  BASE — line rhythm & rendering (Geist; no Inter-only features)
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 :root {
+  /* Tell Chromium form controls (caret, scrollbars, etc.) match dark UI. */
+  color-scheme: dark;
   /* Basis design tokens — dark default */
   --basis-canvas-bg: #141414;
   --basis-surface: #1c1c1c;
@@ -114,9 +116,10 @@
   --basis-action-fg: #111111;
   --basis-action-hover: #f4f4f4;
   --basis-accent-blue: #4f8ff7;
-  /* Session status cube — see SessionBusyLoader.tsx. */
+  /* Session status ring — see SessionBusyLoader.tsx. */
   --basis-session-cube: var(--basis-text-muted);
   --basis-session-cube-needs: #d4a017;
+  --basis-session-cube-ready: #6fbf73;
   --basis-scrollbar-track: transparent;
   --basis-scrollbar-thumb: color-mix(in srgb, var(--basis-text-muted) 28%, transparent);
   --basis-scrollbar-thumb-hover: color-mix(in srgb, var(--basis-text-muted) 48%, transparent);
@@ -181,6 +184,7 @@
 }
 
 html[data-theme='light'] {
+  color-scheme: light;
   --basis-canvas-bg: #f8f8f8;
   --basis-surface: #fcfcfc;
   --basis-surface-elevated: #f3f3f3;
@@ -198,9 +202,10 @@ html[data-theme='light'] {
   --basis-action-fg: #f3f3f3;
   --basis-action-hover: #1f1f1f;
   --basis-accent-blue: #1f6feb;
-  /* Session status cube — warmer amber reads clearer on light canvas. */
+  /* Session status ring — warmer amber / green read clearer on light canvas. */
   --basis-session-cube: var(--basis-text-muted);
   --basis-session-cube-needs: #b8860b;
+  --basis-session-cube-ready: #2f8f45;
   --basis-scrollbar-thumb: #d9d9d9;
   --basis-scrollbar-thumb-hover: #c4c4c4;
 }
@@ -307,6 +312,13 @@ textarea,
   font-feature-settings: inherit;
   font-variation-settings: inherit;
   letter-spacing: inherit;
+}
+
+/* Caret follows theme text (avoids white caret on light canvas). */
+input,
+textarea,
+[contenteditable='true'] {
+  caret-color: var(--basis-text);
 }
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -945,95 +957,74 @@ textarea,
   }
 }
 
-/* Session status cube — 3×3 face. Working = spiral light path; needs = cross
- * blink on the plus (edges) with the center held. See SessionBusyLoader.tsx. */
-.session-busy-cube {
+/* Session status ring — 2×2 outline dots. Working spins via motion;
+ * needs / ready stay static (gold / green). See SessionBusyLoader.tsx. */
+.session-busy-ring {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  grid-template-rows: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(2, 1fr);
   gap: 1.5px;
-  width: 16px;
-  height: 16px;
+  width: 8px;
+  height: 8px;
+  padding: 0;
   flex-shrink: 0;
+  place-items: stretch;
 }
 
-.session-busy-cell {
+.session-busy-dot {
   display: block;
-  min-width: 0;
-  min-height: 0;
-  border-radius: 1px;
-  background: var(--basis-session-cube);
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-width: 2px;
+  min-height: 2px;
+  border-radius: 9999px;
+  background: transparent;
+  border: 1px solid var(--basis-session-cube);
 }
 
-.session-busy-cube--working .session-busy-cell {
-  animation: session-cube-spiral 1.8s ease-in-out infinite;
+.session-busy-ring--needs .session-busy-dot {
+  border-color: var(--basis-session-cube-needs);
 }
 
-.session-busy-cube--working .session-busy-cell:nth-child(1) {
-  animation-delay: 0ms;
-}
-.session-busy-cube--working .session-busy-cell:nth-child(2) {
-  animation-delay: 100ms;
-}
-.session-busy-cube--working .session-busy-cell:nth-child(3) {
-  animation-delay: 200ms;
-}
-.session-busy-cube--working .session-busy-cell:nth-child(6) {
-  animation-delay: 300ms;
-}
-.session-busy-cube--working .session-busy-cell:nth-child(9) {
-  animation-delay: 400ms;
-}
-.session-busy-cube--working .session-busy-cell:nth-child(8) {
-  animation-delay: 500ms;
-}
-.session-busy-cube--working .session-busy-cell:nth-child(7) {
-  animation-delay: 600ms;
-}
-.session-busy-cube--working .session-busy-cell:nth-child(4) {
-  animation-delay: 700ms;
-}
-.session-busy-cube--working .session-busy-cell:nth-child(5) {
-  animation-delay: 800ms;
+.session-busy-ring--ready .session-busy-dot {
+  border-color: var(--basis-session-cube-ready);
 }
 
-@keyframes session-cube-spiral {
-  0%,
-  100% {
-    opacity: 0.22;
-  }
-  35%,
-  50% {
-    opacity: 1;
-  }
+/* Soft stipple wash on the trailing ~10% of a needs/ready session row. */
+.session-row-dither {
+  pointer-events: none;
+  position: absolute;
+  inset-block: 0;
+  right: 0;
+  width: 10%;
+  min-width: 18px;
+  max-width: 36px;
+  background-image:
+    linear-gradient(
+      to left,
+      color-mix(in srgb, var(--session-dither-color) 22%, transparent),
+      transparent
+    ),
+    radial-gradient(
+      circle at center,
+      color-mix(in srgb, var(--session-dither-color) 70%, transparent) 0.55px,
+      transparent 0.65px
+    );
+  background-size:
+    100% 100%,
+    2.5px 2.5px;
+  -webkit-mask-image: linear-gradient(to left, black 15%, transparent 100%);
+  mask-image: linear-gradient(to left, black 15%, transparent 100%);
+  opacity: 0.9;
 }
 
-.session-busy-cube--needs .session-busy-cell {
-  background: var(--basis-session-cube-needs);
-  opacity: 0.28;
+.session-row-dither--needs {
+  --session-dither-color: var(--basis-session-cube-needs);
 }
 
-.session-busy-cube--needs .session-busy-cell:nth-child(5) {
-  opacity: 1;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--basis-session-cube-needs) 45%, transparent);
-}
-
-/* Plus / cross: north, west, east, south */
-.session-busy-cube--needs .session-busy-cell:nth-child(2),
-.session-busy-cube--needs .session-busy-cell:nth-child(4),
-.session-busy-cube--needs .session-busy-cell:nth-child(6),
-.session-busy-cube--needs .session-busy-cell:nth-child(8) {
-  animation: session-cube-cross 1.2s ease-in-out infinite;
-}
-
-@keyframes session-cube-cross {
-  0%,
-  100% {
-    opacity: 0.35;
-  }
-  50% {
-    opacity: 1;
-  }
+.session-row-dither--ready {
+  --session-dither-color: var(--basis-session-cube-ready);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1041,23 +1032,6 @@ textarea,
   .chat-animate-fade-in,
   .chat-animate-slide-up {
     animation: none;
-  }
-
-  .session-busy-cube--working .session-busy-cell,
-  .session-busy-cube--needs .session-busy-cell {
-    animation: none;
-  }
-
-  .session-busy-cube--working .session-busy-cell {
-    opacity: 0.7;
-  }
-
-  .session-busy-cube--needs .session-busy-cell:nth-child(2),
-  .session-busy-cube--needs .session-busy-cell:nth-child(4),
-  .session-busy-cube--needs .session-busy-cell:nth-child(5),
-  .session-busy-cube--needs .session-busy-cell:nth-child(6),
-  .session-busy-cube--needs .session-busy-cell:nth-child(8) {
-    opacity: 1;
   }
 }
 
@@ -1113,12 +1087,38 @@ textarea,
   animation: rotation 2s linear infinite;
 }
 
+/* Compact arc spinner for in-progress composer todos */
+.todo-progress-loader {
+  width: 12px;
+  height: 12px;
+  display: inline-block;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-top-color: currentColor;
+  animation: todo-progress-spin 0.7s linear infinite;
+}
+
+@keyframes todo-progress-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @keyframes rotation {
   0% {
     transform: rotate(0deg);
   }
   100% {
     transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .todo-progress-loader {
+    animation: none;
+    border-color: color-mix(in srgb, currentColor 28%, transparent);
+    border-top-color: currentColor;
   }
 }
 

@@ -941,4 +941,72 @@ describe('ConvexProjector streaming contracts', () => {
       }),
     )
   })
+
+  it('marks the session waiting on permission/question and done when the turn ends', async () => {
+    const { projector, mutations } = setup()
+    projector.consume(
+      event(1, {
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'Do the thing', userMessageId: 'user-1' },
+      }),
+    )
+    projector.consume(
+      event(2, {
+        category: 'permission',
+        event: 'permission_request',
+        data: {
+          requestId: 'perm-1',
+          sessionId: base.sessionId,
+          toolCall: { toolCallId: 'tool-1', title: 'Write', kind: 'edit' },
+          options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+        },
+      }),
+    )
+    await projector.waitForThread(base.threadId)
+    expect(mutations).toContainEqual(
+      expect.objectContaining({ externalId: base.sessionId, status: 'waiting' }),
+    )
+
+    projector.consume(
+      event(3, {
+        category: 'permission',
+        event: 'permission_resolved',
+        data: { requestId: 'perm-1', outcome: { outcome: 'selected', optionId: 'allow' } },
+      }),
+    )
+    await projector.waitForThread(base.threadId)
+    expect(mutations).toContainEqual(
+      expect.objectContaining({ externalId: base.sessionId, status: 'running' }),
+    )
+
+    projector.consume(
+      event(4, {
+        category: 'session',
+        event: 'question_request',
+        data: {
+          requestId: 'q-1',
+          sessionId: base.sessionId,
+          title: 'Pick one',
+          questions: [],
+        },
+      }),
+    )
+    await projector.waitForThread(base.threadId)
+    expect(mutations).toContainEqual(
+      expect.objectContaining({ externalId: base.sessionId, status: 'waiting' }),
+    )
+
+    projector.consume(
+      event(5, {
+        category: 'lifecycle',
+        event: 'prompt_completed',
+        data: { stopReason: 'end_turn' },
+      }),
+    )
+    await projector.waitForThread(base.threadId)
+    expect(mutations).toContainEqual(
+      expect.objectContaining({ externalId: base.sessionId, status: 'done' }),
+    )
+  })
 })

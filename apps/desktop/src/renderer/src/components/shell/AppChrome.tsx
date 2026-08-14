@@ -109,7 +109,7 @@ export function AppChrome({
 
       <div
         className={cn(
-          'titlebar-drag flex min-w-0 flex-1 items-center gap-1.5 px-2',
+          'titlebar-drag flex min-w-0 flex-1 items-center justify-center gap-1.5 px-2',
           isMac && sidebarCollapsed && 'pl-[72px]',
         )}
         title={fullTitle}

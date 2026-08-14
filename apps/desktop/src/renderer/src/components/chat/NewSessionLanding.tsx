@@ -3,6 +3,7 @@ import { CaretDownIcon, FolderSimpleIcon, FolderPlusIcon } from '@phosphor-icons
 import { useAppUi } from '../../providers/app-ui-provider'
 import { useSidebarData, type WorkspaceEntry } from '../../providers/sidebar-data-provider'
 import { cn } from '../../lib/utils'
+import { ProjectIcon } from '../sidebar/ProjectIcon'
 import { SearchableMenu, type SearchableMenuSection } from '../ui/SearchableMenu'
 
 export function NewSessionLanding() {
@@ -39,13 +40,17 @@ export function NewSessionLandingView({
   const sections = useMemo<SearchableMenuSection[]>(
     () => [
       {
-        id: 'repositories',
-        label: 'Repositories',
+        id: 'projects',
         options: workspaces.map((workspace) => ({
           id: workspace.path,
           label: workspace.name,
-          description: workspace.path,
-          icon: <FolderSimpleIcon weight="light" className="h-3.5 w-3.5" />,
+          icon: (
+            <ProjectIcon
+              workspacePath={workspace.path}
+              fallbackIcon={FolderSimpleIcon}
+              className="h-3.5 w-3.5 text-[var(--basis-text-muted)]"
+            />
+          ),
           keywords: `${workspace.name} ${workspace.path}`,
         })),
       },
@@ -71,9 +76,7 @@ export function NewSessionLandingView({
           <div className="mx-auto mb-4 flex h-10 w-10 items-center justify-center rounded-xl border border-[var(--basis-border)] bg-[var(--basis-surface)] text-[var(--basis-text-muted)] shadow-sm">
             <FolderSimpleIcon className="h-4 w-4" />
           </div>
-          <div className="text-16-medium text-[var(--basis-text-strong)]">
-            Start with a repository
-          </div>
+          <div className="text-16-medium text-[var(--basis-text-strong)]">Start with a project</div>
           <div className="mt-1 text-12-regular text-[var(--basis-text-muted)]">
             Add a project to open a fresh session.
           </div>
@@ -83,7 +86,7 @@ export function NewSessionLandingView({
             className="mt-4 inline-flex items-center gap-1.5 rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)] bg-[var(--basis-surface)] px-3 py-1.5 text-12-medium text-[var(--basis-text)] shadow-sm transition-default hover:bg-[var(--basis-surface-hover)]"
           >
             <FolderPlusIcon className="h-3.5 w-3.5" />
-            Add repository
+            Add project
           </button>
         </div>
       </div>
@@ -105,13 +108,14 @@ export function NewSessionLandingView({
               if (optionId !== activeWorkspace.path) onSelectWorkspace(optionId)
             }}
             searchable
-            searchPlaceholder="Search repositories…"
-            emptyText="No repositories"
+            searchPlaceholder="Search projects…"
+            emptyText="No projects"
             placement="below"
             align="center"
-            minWidth={320}
+            minWidth={300}
             maxHeight={360}
-            aria-label="Choose a repository"
+            variant="island"
+            aria-label="Choose a project"
             footer={({ close }) => (
               <button
                 type="button"
@@ -119,10 +123,10 @@ export function NewSessionLandingView({
                   close()
                   onAddWorkspace()
                 }}
-                className="flex w-full items-center gap-2 px-2.5 py-1 text-left text-11-regular text-[var(--basis-text-muted)] transition-colors hover:bg-[var(--basis-surface)] hover:text-[var(--basis-text)]"
+                className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-[11px] text-[var(--basis-text-faint)] transition-colors hover:bg-[var(--basis-surface)]/70 hover:text-[var(--basis-text-muted)]"
               >
-                <FolderPlusIcon weight="light" className="h-3.5 w-3.5" />
-                Add repository
+                <FolderPlusIcon weight="light" className="h-3 w-3" />
+                Add project
               </button>
             )}
             trigger={({ ref, open, toggle }) => (
@@ -133,14 +137,15 @@ export function NewSessionLandingView({
                 aria-haspopup="listbox"
                 aria-expanded={open}
                 className={cn(
-                  'inline-flex min-w-0 max-w-full items-center gap-1 border-0 bg-transparent p-0 text-16-medium text-[var(--basis-text-strong)] transition-colors',
+                  'inline-flex min-w-0 max-w-full items-center gap-1.5 border-0 bg-transparent p-0 text-16-medium text-[var(--basis-text-strong)] transition-colors',
                   'hover:text-[var(--basis-text)]',
                   open && 'text-[var(--basis-text)]',
                 )}
               >
-                <FolderSimpleIcon
-                  weight="light"
-                  className="h-4 w-4 shrink-0 text-[var(--basis-text-muted)]"
+                <ProjectIcon
+                  workspacePath={activeWorkspace.path}
+                  fallbackIcon={FolderSimpleIcon}
+                  className="h-4 w-4 text-[var(--basis-text-muted)]"
                 />
                 <span className="truncate">{activeWorkspace.name}</span>
                 <CaretDownIcon

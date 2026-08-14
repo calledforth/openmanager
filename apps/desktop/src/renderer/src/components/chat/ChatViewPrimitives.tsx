@@ -10,6 +10,7 @@ import { TextPart } from '../parts/TextPart'
 import { cn } from '../../lib/utils'
 import type { StreamMessagePart } from '@openmanager/shared/lib/remote-stream-parts'
 import { chatStreamInner } from './chatComposerStyles'
+import { SessionBusyLoader } from '../sidebar/SessionBusyLoader'
 
 export { UserMessage } from './UserMessage'
 
@@ -32,40 +33,9 @@ export function ChatLoadingSkeleton() {
     <div
       role="status"
       aria-label="Loading conversation"
-      className="chat-animate-fade-in space-y-5 py-4"
+      className="chat-animate-fade-in flex min-h-[min(28rem,55vh)] items-center justify-center"
     >
-      <div aria-hidden="true" className="space-y-5">
-        <SkeletonMessageShape role="user" />
-        <SkeletonMessageShape role="assistant" />
-        <SkeletonMessageShape role="user" compact />
-        <SkeletonMessageShape role="assistant" compact />
-      </div>
-    </div>
-  )
-}
-
-function SkeletonMessageShape({ role, compact = false }: { role: string; compact?: boolean }) {
-  const isUser = role === 'user'
-  return (
-    <div className="w-full py-1">
-      <div className={cn('space-y-2', isUser ? 'ml-auto w-[68%] max-w-xl' : 'mr-auto w-[82%]')}>
-        <div
-          className={cn('chat-skeleton h-3 rounded-full', isUser ? 'ml-auto w-full' : 'w-[88%]')}
-        />
-        <div
-          className={cn(
-            'chat-skeleton h-3 rounded-full',
-            isUser
-              ? compact
-                ? 'ml-auto w-[42%]'
-                : 'ml-auto w-[72%]'
-              : compact
-                ? 'w-[48%]'
-                : 'w-[66%]',
-          )}
-        />
-        {!compact && !isUser && <div className="chat-skeleton h-3 w-[38%] rounded-full" />}
-      </div>
+      <SessionBusyLoader tone="working" style={{ width: 22, height: 22, gap: 3.5 }} />
     </div>
   )
 }

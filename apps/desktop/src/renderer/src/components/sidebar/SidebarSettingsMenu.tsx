@@ -117,49 +117,47 @@ export function SidebarSettingsMenu({
               }}
             >
               <div className="p-1">
-                <div className="flex items-center justify-between gap-2 px-1.5 py-1">
+                <div className="flex flex-col gap-1.5 px-1.5 py-1.5">
                   <span className="text-11-regular leading-tight text-[var(--basis-text-muted)]">
                     Theme
                   </span>
                   <div
-                    className="inline-flex items-center rounded-full border border-[var(--basis-border)] bg-[color-mix(in_srgb,var(--basis-canvas-bg)_72%,#000)] p-px"
+                    className="grid grid-cols-2 gap-0.5 rounded-lg border border-[var(--basis-border)] bg-[color-mix(in_srgb,var(--basis-canvas-bg)_72%,#000)] p-0.5"
                     role="group"
                     aria-label="Theme"
                   >
-                    <Tooltip content="Light theme" side="top">
-                      <button
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={theme === 'light'}
-                        aria-label="Light theme"
-                        onClick={() => setTheme('light')}
-                        className={cn(
-                          'flex h-5 w-5 items-center justify-center rounded-full transition-colors',
-                          theme === 'light'
-                            ? 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]'
-                            : 'text-[var(--basis-text-faint)] hover:text-[var(--basis-text)]',
-                        )}
-                      >
-                        <SunIcon className="h-3 w-3" />
-                      </button>
-                    </Tooltip>
-                    <Tooltip content="Dark theme" side="top">
-                      <button
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={theme === 'dark'}
-                        aria-label="Dark theme"
-                        onClick={() => setTheme('dark')}
-                        className={cn(
-                          'flex h-5 w-5 items-center justify-center rounded-full transition-colors',
-                          theme === 'dark'
-                            ? 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]'
-                            : 'text-[var(--basis-text-faint)] hover:text-[var(--basis-text)]',
-                        )}
-                      >
-                        <MoonIcon className="h-3 w-3" />
-                      </button>
-                    </Tooltip>
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={theme === 'light'}
+                      aria-label="Light theme"
+                      onClick={() => setTheme('light')}
+                      className={cn(
+                        'flex h-8 items-center justify-center gap-1.5 rounded-md px-2 text-11-regular transition-colors',
+                        theme === 'light'
+                          ? 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]'
+                          : 'text-[var(--basis-text-faint)] hover:text-[var(--basis-text)]',
+                      )}
+                    >
+                      <SunIcon className="h-3.5 w-3.5 shrink-0" weight="bold" />
+                      Light
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={theme === 'dark'}
+                      aria-label="Dark theme"
+                      onClick={() => setTheme('dark')}
+                      className={cn(
+                        'flex h-8 items-center justify-center gap-1.5 rounded-md px-2 text-11-regular transition-colors',
+                        theme === 'dark'
+                          ? 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]'
+                          : 'text-[var(--basis-text-faint)] hover:text-[var(--basis-text)]',
+                      )}
+                    >
+                      <MoonIcon className="h-3.5 w-3.5 shrink-0" weight="bold" />
+                      Dark
+                    </button>
                   </div>
                 </div>
 

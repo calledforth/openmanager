@@ -18,20 +18,23 @@ const session = (
 })
 
 describe('isSidebarSessionActive', () => {
-  it('keeps in-flight and waiting sessions visible under a collapsed project', () => {
+  it('keeps in-flight, waiting, and unread-done sessions visible under a collapsed project', () => {
     expect(isSidebarSessionActive('running')).toBe(true)
     expect(isSidebarSessionActive('busy')).toBe(true)
     expect(isSidebarSessionActive('waiting')).toBe(true)
+    expect(isSidebarSessionActive('done')).toBe(true)
     expect(isSidebarSessionActive('idle')).toBe(false)
     expect(isSidebarSessionActive('error')).toBe(false)
   })
 })
 
 describe('sessionBusyTone', () => {
-  it('maps waiting to the needs cross-blink and everything else active to working', () => {
+  it('maps waiting to needs, done to ready, and in-flight statuses to working', () => {
     expect(sessionBusyTone('waiting')).toBe('needs')
+    expect(sessionBusyTone('done')).toBe('ready')
     expect(sessionBusyTone('running')).toBe('working')
     expect(sessionBusyTone('busy')).toBe('working')
+    expect(sessionBusyTone('idle')).toBe(null)
   })
 })
 

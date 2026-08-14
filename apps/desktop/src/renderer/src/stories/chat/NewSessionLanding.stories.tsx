@@ -35,7 +35,7 @@ export const Starting: Story = {
   args: { isStarting: true },
 }
 
-export const NoRepositories: Story = {
+export const NoProjects: Story = {
   args: {
     workspaces: [],
     activeWorkspacePath: null,

@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { NewSessionLandingView } from './NewSessionLanding'
 
 describe('NewSessionLandingView', () => {
-  it('makes the active repository the project selector', () => {
+  it('makes the active project the project selector', () => {
     const html = renderToStaticMarkup(
       <NewSessionLandingView
         workspaces={[
@@ -24,7 +24,7 @@ describe('NewSessionLandingView', () => {
     expect(html).not.toContain('Select or create a session')
   })
 
-  it('shows a repository action when the workspace list is empty', () => {
+  it('shows an add-project action when the workspace list is empty', () => {
     const html = renderToStaticMarkup(
       <NewSessionLandingView
         workspaces={[]}
@@ -36,7 +36,7 @@ describe('NewSessionLandingView', () => {
       />,
     )
 
-    expect(html).toContain('Start with a repository')
-    expect(html).toContain('Add repository')
+    expect(html).toContain('Start with a project')
+    expect(html).toContain('Add project')
   })
 })

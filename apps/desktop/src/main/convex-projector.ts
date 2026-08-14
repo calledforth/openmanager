@@ -348,14 +348,25 @@ export class ConvexProjector {
         }
         return
       case 'permission_request':
+        if (workspacePath && event.sessionId) {
+          await this.upsertSession(workspacePath, event.sessionId, 'waiting', event.providerId)
+        }
         await this.upsertPermission(event.data)
         return
       case 'permission_resolved':
         await this.runMutation('permissions.resolve', api.permissions.resolve, {
           requestId: event.data.requestId,
         })
+        // Turn is still in flight after the user answers — restore the working
+        // glyph. A later permission/question request will flip back to waiting.
+        if (workspacePath && event.sessionId && this.turns.has(event.threadId)) {
+          await this.upsertSession(workspacePath, event.sessionId, 'running', event.providerId)
+        }
         return
       case 'question_request':
+        if (workspacePath && event.sessionId) {
+          await this.upsertSession(workspacePath, event.sessionId, 'waiting', event.providerId)
+        }
         await this.runMutation('questions.upsertPending', api.questions.upsertPending, {
           sessionExternalId: event.data.sessionId,
           requestId: event.data.requestId,
@@ -364,6 +375,9 @@ export class ConvexProjector {
         })
         return
       case 'plan_review_request':
+        if (workspacePath && event.sessionId) {
+          await this.upsertSession(workspacePath, event.sessionId, 'waiting', event.providerId)
+        }
         await this.runMutation('plans.upsertPending', api.plans.upsertPending, {
           sessionExternalId: event.data.sessionId,
           requestId: event.data.requestId,
@@ -389,6 +403,9 @@ export class ConvexProjector {
         await this.runMutation('questions.resolve', api.questions.resolve, {
           requestId: event.data.requestId,
         })
+        if (workspacePath && event.sessionId && this.turns.has(event.threadId)) {
+          await this.upsertSession(workspacePath, event.sessionId, 'running', event.providerId)
+        }
         return
       case 'plan_review_resolved': {
         // The event carries the review outcome itself, so the persisted status
@@ -399,6 +416,9 @@ export class ConvexProjector {
           status: resolution.status,
           resolutionReason: resolution.reason,
         })
+        if (workspacePath && event.sessionId && this.turns.has(event.threadId)) {
+          await this.upsertSession(workspacePath, event.sessionId, 'running', event.providerId)
+        }
         return
       }
       case 'current_model_update':
@@ -527,8 +547,11 @@ export class ConvexProjector {
       }
       await this.finalizeTurn(event.threadId, event.data.stopReason, timestampMs(event.timestamp))
     }
+    // `done` is the unread/ready glyph in the sidebar. Opening the session
+    // clears it back to idle; completing while already focused is cleared by
+    // the renderer the same way.
     if (workspacePath)
-      await this.upsertSession(workspacePath, event.sessionId, 'idle', event.providerId)
+      await this.upsertSession(workspacePath, event.sessionId, 'done', event.providerId)
   }
 
   private async appendAgentChunk(

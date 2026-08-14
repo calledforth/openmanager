@@ -18,7 +18,9 @@ import { ensureShiki } from './lib/shiki'
 
 // Warm the grammars at boot so the first code block arrives already
 // highlighted instead of rendering plain and then repainting.
-void ensureShiki()
+void ensureShiki().catch((error) => {
+  console.error('Failed to initialize syntax highlighting', error)
+})
 
 /** Subagent transcripts are read-only: the composer is replaced by a banner
  * linking back to the parent session. */

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   PlusIcon,
   CaretDoubleLeftIcon,
+  CaretDownIcon,
   FolderPlusIcon,
   FolderSimpleIcon,
   FolderOpenIcon,
@@ -11,7 +12,7 @@ import {
 } from '@phosphor-icons/react'
 import type { ProviderId } from '@agentpack/contract'
 import { cn } from '../../lib/utils'
-import { typographyBodySm, typographyCaptionTiny, typographyLabel } from '../../lib/typography'
+import { typographyBodySm, typographyLabel } from '../../lib/typography'
 import { ProviderIcon } from '../providers/ProviderIcon'
 import { Tooltip } from '../ui/Tooltip'
 import { SidebarSettingsMenu } from './SidebarSettingsMenu'
@@ -45,9 +46,9 @@ export interface SidebarSessionRow {
 }
 
 /** Sessions that should stay visible when their project is collapsed —
- * anything still in flight or waiting on the user. */
+ * anything still in flight, waiting on the user, or finished but unread. */
 export function isSidebarSessionActive(status: string): boolean {
-  return status === 'running' || status === 'busy' || status === 'waiting'
+  return status === 'running' || status === 'busy' || status === 'waiting' || status === 'done'
 }
 
 /** Preserve recency order within each level while placing child transcripts
@@ -246,9 +247,7 @@ function WorkspaceGroup({
     [orderedSessions],
   )
   const hasMoreSessions = !isCollapsed && orderedSessions.length > visibleCount
-  const visibleSessions = isCollapsed
-    ? activeSessions
-    : orderedSessions.slice(0, visibleCount)
+  const visibleSessions = isCollapsed ? activeSessions : orderedSessions.slice(0, visibleCount)
 
   useEffect(() => {
     if (isCollapsed) setVisibleCount(SESSION_PREVIEW_LIMIT)
@@ -301,19 +300,31 @@ function WorkspaceGroup({
           {visibleSessions.map(({ session: s, depth, isChild, isOrphan }) => {
             const isActive = isActiveWorkspace && s.externalId === activeSessionId
             const providerId = s.providerId ?? 'opencode'
-            const isBusy = isSidebarSessionActive(s.status)
+            // Ready/done only matters for sessions you haven't opened yet —
+            // the focused transcript already shows the finished turn.
+            const tone = s.status === 'done' && isActive ? null : sessionBusyTone(s.status)
+            const showStatus = tone !== null
             return (
               <button
                 key={s.externalId}
                 onClick={() => onSelectSession(workspace.path, s.externalId, providerId)}
                 className={cn(
-                  'group flex w-full items-center gap-1.5 rounded px-2 py-0.5 text-left transition-default',
+                  'group relative flex w-full items-center gap-1.5 overflow-hidden rounded px-2 py-0.5 text-left transition-default',
                   isActive
                     ? 'bg-surface-active text-[var(--basis-text)]'
                     : 'text-[var(--basis-text)] hover:bg-surface-hover',
                 )}
                 style={{ paddingLeft: `${8 + Math.min(depth, 4) * 12}px` }}
               >
+                {(tone === 'needs' || tone === 'ready') && (
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      'session-row-dither',
+                      tone === 'needs' ? 'session-row-dither--needs' : 'session-row-dither--ready',
+                    )}
+                  />
+                )}
                 {isChild ? (
                   <GitBranchIcon
                     className="h-3 w-3 shrink-0 text-[var(--basis-text-faint)]"
@@ -322,10 +333,10 @@ function WorkspaceGroup({
                 ) : (
                   <ProviderIcon providerId={providerId} className="h-3 w-3 opacity-70" />
                 )}
-                <span className={cn(typographyLabel, 'flex-1 truncate font-normal')}>
+                <span className={cn(typographyLabel, 'relative flex-1 truncate font-normal')}>
                   {s.title || 'New session'}
                 </span>
-                {isChild && !isBusy ? (
+                {isChild && !showStatus ? (
                   <Tooltip
                     content={
                       isOrphan ? 'Subagent transcript (parent unavailable)' : 'Subagent transcript'
@@ -339,15 +350,15 @@ function WorkspaceGroup({
                 ) : null}
                 <span
                   className={cn(
-                    'relative flex h-4 shrink-0 items-center justify-center overflow-hidden transition-[width]',
-                    // Cube is 16×16 — same width as the delete slot, so busy
-                    // rows don't grow and the trash icon stays anchored.
-                    isBusy ? 'w-4' : 'w-0 group-hover:w-4',
+                    'relative z-[1] flex h-4 shrink-0 items-center justify-center overflow-hidden transition-[width]',
+                    // Ring is 8×8 inside a 16px slot — same width as the delete
+                    // control, so busy rows don't grow and trash stays anchored.
+                    showStatus ? 'w-4' : 'w-0 group-hover:w-4',
                   )}
                 >
-                  {isBusy && (
+                  {tone && (
                     <SessionBusyLoader
-                      tone={sessionBusyTone(s.status)}
+                      tone={tone}
                       className="transition-opacity group-hover:opacity-0"
                     />
                   )}
@@ -374,13 +385,10 @@ function WorkspaceGroup({
                   Math.min(count + SESSION_PAGE_SIZE, orderedSessions.length),
                 )
               }
-              className={cn(
-                typographyCaptionTiny,
-                'flex w-full items-center gap-1.5 rounded px-2 py-0.5 text-left text-[var(--basis-text-faint)] transition-default hover:bg-surface-hover hover:text-[var(--basis-text-muted)]',
-              )}
+              className="flex w-full items-center gap-1.5 px-2 py-0.5 text-left text-[var(--basis-text-faint)] transition-colors hover:text-[var(--basis-text)]"
             >
-              <span className="h-3 w-3 shrink-0" aria-hidden />
-              Show more
+              <CaretDownIcon className="h-3 w-3 shrink-0" weight="bold" aria-hidden />
+              <span className={cn(typographyLabel, 'font-normal')}>Show more</span>
             </button>
           )}
         </div>

@@ -11,11 +11,12 @@ describe('chat loading skeletons', () => {
     expect(html).not.toContain('Send a message to start')
   })
 
-  it('keeps all placeholder shapes inside the single session-loading status', () => {
+  it('centers the session busy loader while hydrating', () => {
     const html = renderToStaticMarkup(<ChatLoadingSkeleton />)
 
-    expect(html.match(/role="status"/g)).toHaveLength(1)
-    expect(html).not.toContain('Loading message')
+    expect(html).toContain('aria-label="Session in progress"')
+    expect(html).toContain('session-busy-ring')
+    expect(html).not.toContain('chat-skeleton')
   })
 
   it('renders persisted images as in-app preview buttons', () => {
