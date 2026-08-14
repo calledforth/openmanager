@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { CaretDownIcon, ListChecksIcon } from '@phosphor-icons/react'
 import type { PlanEntry, PlanEntryStatus } from '@agentpack/contract'
 import { cn } from '../../lib/utils'
@@ -8,10 +9,10 @@ import { useActiveSession } from '../../providers/active-session-provider'
 function TodoStatusIcon({ status }: { status: PlanEntryStatus }) {
   if (status === 'completed') {
     return (
-      <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 text-[#22c55e]" aria-hidden="true">
-        <circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" strokeWidth="1.25" />
+      <svg viewBox="0 0 16 16" className="h-3 w-3 shrink-0 text-[#22c55e]" aria-hidden="true">
+        <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" strokeWidth="1.25" />
         <path
-          d="M4.5 8.2l2.2 2.2 4.8-4.8"
+          d="M5 8.1l2 2 4.2-4.2"
           fill="none"
           stroke="currentColor"
           strokeWidth="1.5"
@@ -23,23 +24,20 @@ function TodoStatusIcon({ status }: { status: PlanEntryStatus }) {
   }
   if (status === 'in_progress') {
     return (
-      <svg
-        viewBox="0 0 16 16"
-        className="h-3.5 w-3.5 shrink-0 text-[var(--basis-text)]"
-        aria-hidden="true"
-      >
-        <circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" strokeWidth="1.25" />
-        <circle cx="8" cy="8" r="3.25" fill="currentColor" />
-      </svg>
+      <span
+        className="todo-progress-loader shrink-0 text-[var(--basis-text)]"
+        role="img"
+        aria-label="In progress"
+      />
     )
   }
   return (
     <svg
       viewBox="0 0 16 16"
-      className="h-3.5 w-3.5 shrink-0 text-[var(--basis-text-faint)]"
+      className="h-3 w-3 shrink-0 text-[var(--basis-text-faint)]"
       aria-hidden="true"
     >
-      <circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" strokeWidth="1.25" />
+      <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" strokeWidth="1.25" />
     </svg>
   )
 }
@@ -105,6 +103,7 @@ export function ComposerTodos({
   defaultOpen?: boolean
 }) {
   const [open, setOpen] = useState(defaultOpen)
+  const reduceMotion = useReducedMotion()
 
   if (entries.length === 0) return null
 
@@ -115,7 +114,7 @@ export function ComposerTodos({
     <div
       className={cn(
         'overflow-hidden rounded-t-[var(--basis-chat-shell-radius)] border border-b-0 border-[var(--basis-border-muted)]',
-        'bg-[var(--basis-surface)]',
+        'bg-[var(--basis-canvas-bg)]',
       )}
     >
       <button
@@ -123,55 +122,78 @@ export function ComposerTodos({
         onClick={() => setOpen((current) => !current)}
         aria-expanded={open}
         className={cn(
-          'flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left transition-colors',
-          'hover:bg-[color-mix(in_srgb,var(--basis-surface)_55%,transparent)]',
-          open && 'border-b border-[var(--basis-border-muted)]',
+          'flex w-full items-center justify-between gap-1.5 px-2 py-1 text-left transition-colors',
+          'hover:bg-[color-mix(in_srgb,var(--basis-text)_4%,transparent)]',
         )}
       >
-        <span className="flex min-w-0 items-center gap-1.5 text-11-regular leading-tight text-[var(--basis-text-muted)]">
-          <ListChecksIcon className="h-3.5 w-3.5 shrink-0 text-[var(--basis-text-faint)]" />
-          <span>Todos</span>
-          <span className="text-[var(--basis-text-faint)]">
+        <span className="flex min-w-0 items-center gap-1 text-11-regular leading-none text-[var(--basis-text-muted)]">
+          <ListChecksIcon
+            className="h-3 w-3 shrink-0 text-[var(--basis-text-faint)]"
+            weight="bold"
+          />
+          <span className="tracking-wide">Todos</span>
+          <span className="tabular-nums text-[var(--basis-text-faint)]">
             {completed}/{total}
           </span>
         </span>
         <CaretDownIcon
           className={cn(
-            'h-3.5 w-3.5 shrink-0 text-[var(--basis-text-faint)] transition-transform duration-200',
+            'h-3 w-3 shrink-0 text-[var(--basis-text-faint)] transition-transform duration-200',
             !open && '-rotate-90',
           )}
         />
       </button>
 
-      {open && (
-        <ul className="custom-scrollbar flex max-h-[160px] flex-col gap-0.5 overflow-y-auto p-1.5">
-          {entries.map((entry, index) => {
-            const emphasized = entry.status === 'in_progress'
-            const done = entry.status === 'completed'
-            return (
-              <li
-                key={`${entry.content}:${index}`}
-                className="flex items-start gap-2 rounded px-1.5 py-1"
-              >
-                <span className="mt-0.5">
-                  <TodoStatusIcon status={entry.status} />
-                </span>
-                <span
-                  className={cn(
-                    typographyCaption,
-                    'min-w-0 flex-1 leading-snug',
-                    emphasized && 'text-[var(--basis-text)]',
-                    done && 'text-[var(--basis-text-faint)] line-through',
-                    !emphasized && !done && 'text-[var(--basis-text-muted)]',
-                  )}
-                >
-                  {entry.content}
-                </span>
-              </li>
-            )
-          })}
-        </ul>
-      )}
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            key="todos-panel"
+            initial={reduceMotion ? false : { height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={
+              reduceMotion
+                ? { duration: 0 }
+                : {
+                    height: { duration: 0.28, ease: [0.22, 1, 0.36, 1] },
+                    opacity: { duration: 0.2, ease: [0.22, 1, 0.36, 1] },
+                  }
+            }
+            className="overflow-hidden border-t border-[var(--basis-border-muted)]"
+          >
+            <ul className="custom-scrollbar flex max-h-[132px] flex-col overflow-y-auto px-1.5 py-1">
+              {entries.map((entry, index) => {
+                const emphasized = entry.status === 'in_progress'
+                const done = entry.status === 'completed'
+                return (
+                  <li
+                    key={`${entry.content}:${index}`}
+                    className={cn(
+                      'flex items-start gap-1.5 rounded-sm px-1 py-0.5',
+                      emphasized && 'bg-[color-mix(in_srgb,var(--basis-text)_4%,transparent)]',
+                    )}
+                  >
+                    <span className="mt-px flex h-3 w-3 shrink-0 items-center justify-center">
+                      <TodoStatusIcon status={entry.status} />
+                    </span>
+                    <span
+                      className={cn(
+                        typographyCaption,
+                        'min-w-0 flex-1 leading-tight',
+                        emphasized && 'text-[var(--basis-text)]',
+                        done && 'text-[var(--basis-text-faint)] line-through',
+                        !emphasized && !done && 'text-[var(--basis-text-muted)]',
+                      )}
+                    >
+                      {entry.content}
+                    </span>
+                  </li>
+                )
+              })}
+            </ul>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }

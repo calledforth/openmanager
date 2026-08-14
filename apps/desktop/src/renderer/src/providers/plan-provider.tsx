@@ -33,12 +33,13 @@ interface PlanStateValue {
   planHistory: PlanRow[]
   selectedPlan: PlanRow | null
   selectPlan: (requestId: string) => void
-  isPanelOpen: boolean
-  openPanel: () => void
-  closePanel: () => void
+  /** Composer plan chip expanded to show the full plan body. */
+  isExpanded: boolean
+  expandPlan: () => void
+  collapsePlan: () => void
   resolvePlan: (outcome: PlanReviewOutcome) => Promise<void>
-  /** Registered by MessageInput so the panel's Build button runs the same
-   * accept + mode-switch + build-prompt flow as the composer pill. */
+  /** Registered by MessageInput so Build runs the same accept + mode-switch
+   * + build-prompt flow from the composer chip. */
   setBuildHandler: (handler: (() => void | Promise<void>) | null) => void
   /** Build the pending plan through the registered handler (falls back to a
    * plain accept when nothing is registered). */
@@ -61,13 +62,13 @@ export function usePlanStateOptional() {
 
 export function PlanStateProvider({ children }: { children: ReactNode }) {
   const ui = useAppUi()
-  const [isPanelOpen, setIsPanelOpen] = useState(false)
+  const [isExpanded, setIsExpanded] = useState(false)
   const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null)
   const [isBuilding, setIsBuilding] = useState(false)
   const buildHandlerRef = useRef<(() => void | Promise<void>) | null>(null)
   const buildingRequestRef = useRef<string | null>(null)
   const buildUnlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const autoOpenedRequestRef = useRef<string | null>(null)
+  const autoExpandedRequestRef = useRef<string | null>(null)
 
   const queriedPlanHistory = useTrackedQuery(
     'plans.listForSession',
@@ -80,23 +81,23 @@ export function PlanStateProvider({ children }: { children: ReactNode }) {
   const selectedPlan =
     planHistory.find((plan) => plan.requestId === selectedRequestId) ?? pendingPlan ?? latestPlan
 
-  const openPanel = useCallback(() => setIsPanelOpen(true), [])
-  const closePanel = useCallback(() => setIsPanelOpen(false), [])
+  const expandPlan = useCallback(() => setIsExpanded(true), [])
+  const collapsePlan = useCallback(() => setIsExpanded(false), [])
 
   useEffect(() => {
     setSelectedRequestId(null)
-    setIsPanelOpen(false)
-    autoOpenedRequestRef.current = null
+    setIsExpanded(false)
+    autoExpandedRequestRef.current = null
   }, [ui.activeSessionId])
 
-  // A freshly ready plan opens the panel once so the user immediately sees it;
-  // closing it stays closed for that plan.
+  // A freshly ready plan expands the composer chip once so the user sees it;
+  // collapsing stays collapsed for that plan.
   const pendingRequestId = pendingPlan?.requestId ?? null
   useEffect(() => {
-    if (pendingRequestId && autoOpenedRequestRef.current !== pendingRequestId) {
-      autoOpenedRequestRef.current = pendingRequestId
+    if (pendingRequestId && autoExpandedRequestRef.current !== pendingRequestId) {
+      autoExpandedRequestRef.current = pendingRequestId
       setSelectedRequestId(pendingRequestId)
-      setIsPanelOpen(true)
+      setIsExpanded(true)
     }
   }, [pendingRequestId])
 
@@ -169,9 +170,9 @@ export function PlanStateProvider({ children }: { children: ReactNode }) {
       planHistory,
       selectedPlan,
       selectPlan,
-      isPanelOpen,
-      openPanel,
-      closePanel,
+      isExpanded,
+      expandPlan,
+      collapsePlan,
       resolvePlan,
       setBuildHandler,
       buildPendingPlan,
@@ -184,9 +185,9 @@ export function PlanStateProvider({ children }: { children: ReactNode }) {
       planHistory,
       selectedPlan,
       selectPlan,
-      isPanelOpen,
-      openPanel,
-      closePanel,
+      isExpanded,
+      expandPlan,
+      collapsePlan,
       resolvePlan,
       setBuildHandler,
       buildPendingPlan,
