@@ -11,7 +11,6 @@ import { ChatView } from './components/chat/ChatView'
 import { MessageInput } from './components/chat/MessageInput'
 import { FloatingChatComposer } from './components/chat/FloatingChatComposer'
 import { ConvexTelemetryPanel } from './components/telemetry/ConvexTelemetryPanel'
-import { PlanPanel } from './components/plans/PlanPanel'
 import { AppChrome } from './components/shell/AppChrome'
 import { UpdateNotification } from './components/updates/UpdateNotification'
 import { ensureShiki } from './lib/shiki'
@@ -77,7 +76,6 @@ function AppShell() {
           </FloatingChatComposer>
         )}
       </div>
-      <PlanPanel />
       <ConvexTelemetryPanel open={convexOpen} onOpenChange={setConvexOpen} />
       <UpdateNotification />
     </div>
