@@ -33,40 +33,31 @@ function ImagePreviewDialog({ image, onClose }: { image: PreviewImage; onClose: 
 
   return createPortal(
     <div
-      className="chat-animate-fade-in fixed inset-0 z-[500] flex items-center justify-center bg-black/80 p-5 backdrop-blur-md"
+      className="chat-animate-fade-in fixed inset-0 z-[500] flex items-center justify-center bg-black/70 p-6"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose()
       }}
     >
+      <button
+        ref={closeButtonRef}
+        type="button"
+        onClick={onClose}
+        aria-label="Close image preview"
+        className="absolute right-4 top-4 flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white/80 transition-colors hover:bg-white/20 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
+      >
+        <XIcon className="h-4 w-4" />
+      </button>
       <div
         role="dialog"
         aria-modal="true"
         aria-label={`Preview ${image.name}`}
-        className="relative flex h-full w-full max-w-[min(1100px,94vw)] flex-col overflow-hidden rounded-xl border border-white/15 bg-[#111]/95 shadow-[0_28px_100px_rgba(0,0,0,0.65)]"
+        className="flex max-h-full max-w-full items-center justify-center"
       >
-        <div className="flex h-11 shrink-0 items-center gap-3 border-b border-white/10 px-3.5 text-white/70">
-          <ArrowsOutIcon className="h-3.5 w-3.5 shrink-0 text-white/40" />
-          <span className="min-w-0 flex-1 truncate text-[12px] font-medium">{image.name}</span>
-          <span className="hidden text-[10px] uppercase tracking-[0.12em] text-white/35 sm:block">
-            Esc to close
-          </span>
-          <button
-            ref={closeButtonRef}
-            type="button"
-            onClick={onClose}
-            aria-label="Close image preview"
-            className="flex h-7 w-7 items-center justify-center rounded-md text-white/55 transition-colors hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/50"
-          >
-            <XIcon className="h-4 w-4" />
-          </button>
-        </div>
-        <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.055),transparent_62%)] p-4 sm:p-8">
-          <img
-            src={image.url}
-            alt={image.name}
-            className="max-h-full max-w-full rounded-md object-contain shadow-[0_12px_45px_rgba(0,0,0,0.4)]"
-          />
-        </div>
+        <img
+          src={image.url}
+          alt={image.name}
+          className="max-h-[min(88vh,900px)] max-w-[min(92vw,1100px)] rounded-lg object-contain"
+        />
       </div>
     </div>,
     document.body,

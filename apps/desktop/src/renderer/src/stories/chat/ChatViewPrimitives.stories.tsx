@@ -82,18 +82,10 @@ export const StaticConversation: Story = {
       <ChatViewPanel>
         <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0">
           <div className="mx-auto max-w-2xl px-4 py-6 space-y-1">
-            <UserMessage
-              content="Why does the font look generic even though we use Inter?"
-            />
-            <AssistantMessage
-              isFinal={true}
-              content={TYPOGRAPHY_REPLY}
-            />
+            <UserMessage content="Why does the font look generic even though we use Inter?" />
+            <AssistantMessage isFinal={true} content={TYPOGRAPHY_REPLY} />
             <UserMessage content="Can you show me the flicker fix for tool calls during streaming?" />
-            <AssistantMessage
-              isFinal={true}
-              content={STREAMING_REPLY}
-            />
+            <AssistantMessage isFinal={true} content={STREAMING_REPLY} />
           </div>
         </div>
       </ChatViewPanel>
@@ -107,9 +99,7 @@ export const StreamingInProgress: Story = {
       <ChatViewPanel>
         <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0">
           <div className="mx-auto max-w-2xl px-4 py-6 space-y-1">
-            <UserMessage
-              content="Apply the four font changes we identified: variable font, ss03, type scale, and line-height tokens."
-            />
+            <UserMessage content="Apply the four font changes we identified: variable font, ss03, type scale, and line-height tokens." />
             <AssistantMessage
               isFinal={false}
               content={`I've applied four typography changes to the renderer. Here's a summary of what changed and why each matters.

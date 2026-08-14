@@ -86,7 +86,9 @@ export function ensureShiki(): Promise<HighlighterCore> {
 
 function subscribe(listener: () => void) {
   listeners.add(listener)
-  void ensureShiki()
+  void ensureShiki().catch((error) => {
+    console.error('Failed to initialize syntax highlighting', error)
+  })
   return () => {
     listeners.delete(listener)
   }

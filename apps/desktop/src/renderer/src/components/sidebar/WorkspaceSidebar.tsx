@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
+import { api } from '@openmanager/convex/_generated/api'
+import { useTrackedMutation } from '../../lib/convex-telemetry'
 import { useSidebarData } from '../../providers/sidebar-data-provider'
 import { WorkspaceSidebarView } from './WorkspaceSidebarView'
 
@@ -24,6 +26,7 @@ export function WorkspaceSidebar({
     deleteSession,
   } = useSidebarData()
   const [collapsedSet, setCollapsedSet] = useState<Set<string>>(new Set())
+  const upsertSessionStatus = useTrackedMutation('sessions.upsertStatus', api.sessions.upsertStatus)
 
   useEffect(() => {
     window.electronAPI
@@ -33,6 +36,22 @@ export function WorkspaceSidebar({
       })
       .catch(() => {})
   }, [])
+
+  // Opening a finished session (or finishing while focused) clears the green
+  // ready glyph — it only means "done and waiting to be opened".
+  useEffect(() => {
+    if (!activeWorkspacePath || !activeSessionId) return
+    const session = sessionsByWorkspace[activeWorkspacePath]?.find(
+      (row) => row.externalId === activeSessionId,
+    )
+    if (!session || session.status !== 'done') return
+    void upsertSessionStatus({
+      workspacePath: activeWorkspacePath,
+      externalId: activeSessionId,
+      status: 'idle',
+      providerId: session.providerId,
+    })
+  }, [activeSessionId, activeWorkspacePath, sessionsByWorkspace, upsertSessionStatus])
 
   const toggleWorkspaceCollapse = useCallback((path: string) => {
     setCollapsedSet((prev) => {

@@ -12,22 +12,31 @@ const meta = {
 export default meta
 type Story = StoryObj<typeof SessionBusyLoader>
 
-/** Ships at 16×16, right-aligned in the session row. */
+/** Ships at ~8×8, right-aligned in the session row. Needs/ready also show a
+ * trailing dither wash (~10% from the right). */
 export const SidebarSize: Story = {
   render: () => (
     <ThemeProvider>
       <div className="flex w-72 flex-col gap-2 bg-[var(--basis-canvas-bg)] p-6">
-        <div className="flex items-center gap-2 rounded-md bg-[var(--basis-surface-hover)] px-2 py-1">
+        <div className="relative flex items-center gap-2 overflow-hidden rounded-md bg-[var(--basis-surface-hover)] px-2 py-1">
           <span className="flex-1 truncate text-[13px] text-[var(--basis-text)]">
             Refactor the session runtime
           </span>
           <SessionBusyLoader tone="working" />
         </div>
-        <div className="flex items-center gap-2 rounded-md bg-[var(--basis-surface-hover)] px-2 py-1">
-          <span className="flex-1 truncate text-[13px] text-[var(--basis-text)]">
+        <div className="relative flex items-center gap-2 overflow-hidden rounded-md bg-[var(--basis-surface-hover)] px-2 py-1">
+          <span aria-hidden="true" className="session-row-dither session-row-dither--needs" />
+          <span className="relative flex-1 truncate text-[13px] text-[var(--basis-text)]">
             Awaiting permission
           </span>
-          <SessionBusyLoader tone="needs" />
+          <SessionBusyLoader tone="needs" className="relative z-[1]" />
+        </div>
+        <div className="relative flex items-center gap-2 overflow-hidden rounded-md bg-[var(--basis-surface-hover)] px-2 py-1">
+          <span aria-hidden="true" className="session-row-dither session-row-dither--ready" />
+          <span className="relative flex-1 truncate text-[13px] text-[var(--basis-text)]">
+            Turn finished — open me
+          </span>
+          <SessionBusyLoader tone="ready" className="relative z-[1]" />
         </div>
       </div>
     </ThemeProvider>
@@ -38,13 +47,13 @@ export const Magnified: Story = {
   render: () => (
     <ThemeProvider>
       <div className="flex flex-col items-start gap-6 bg-[var(--basis-canvas-bg)] p-8">
-        {(['working', 'needs'] as const).map((tone) => (
+        {(['working', 'needs', 'ready'] as const).map((tone) => (
           <div key={tone} className="flex flex-col gap-3">
             <span className="text-[11px] uppercase tracking-wide text-[var(--basis-text-faint)]">
               {tone}
             </span>
             <div className="flex items-end gap-4">
-              {[16, 24, 40, 72].map((size) => (
+              {[12, 24, 40, 72].map((size) => (
                 <div key={size} className="flex flex-col items-start gap-2">
                   <SessionBusyLoader tone={tone} style={{ height: size, width: size }} />
                   <span className="text-[10px] text-[var(--basis-text-faint)]">{size}px</span>
