@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '@openmanager/convex/_generated/api'
 import { providerBlocksComposer, useAppUi } from '../../providers/app-ui-provider'
 import { useActiveSession } from '../../providers/active-session-provider'
+import { useSidebarData } from '../../providers/sidebar-data-provider'
+import { QuickLaunchBar } from './QuickLaunchBar'
+import { resolveComposerTarget } from './composerTarget'
 import { useQuestionStateOptional } from '../../providers/question-provider'
 import { usePlanStateOptional } from '../../providers/plan-provider'
 import { QuestionCard } from '../questions/ComposerQuestionPrompt'
@@ -17,13 +20,21 @@ import {
   metadataModelOptions,
   type ComposerModelChoice,
 } from './providerModelGroups'
-import type { DraftImageAttachment, UploadedImageAttachment } from '../../lib/attachments'
+import {
+  promptAttachment,
+  type DraftImageAttachment,
+  type UploadedImageAttachment,
+} from '../../lib/attachments'
 
 export function MessageInput() {
   const {
     activeSessionId,
     activeWorkspacePath,
     isSessionDraftOpen,
+    quickLaunchWorkspacePath,
+    openQuickLaunch,
+    closeQuickLaunch,
+    launchSession,
     pendingDraftSessionStart,
     localSessionStatus,
     acpSessionState,
@@ -67,14 +78,38 @@ export function MessageInput() {
     (api as any).attachments.removeMany,
   )
   const [modelImageSupport, setModelImageSupport] = useState<boolean | null | undefined>(undefined)
+  const { workspaces } = useSidebarData()
+  /** Name of the project a session was just launched into, shown briefly in the
+   * quick-launch strip. The launch is silent by design — nothing navigates —
+   * so this is the only acknowledgement the user gets. */
+  const [launchedInto, setLaunchedInto] = useState<string | null>(null)
+  const launchedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const disabled =
-    !activeWorkspacePath || pendingDraftSessionStart || (!activeSessionId && !isSessionDraftOpen)
-  const runtimeState = activeSessionId || !isSessionDraftOpen ? acpSessionState : draftSessionState
+  // Quick launch aims the composer at another project. Everything below reads
+  // the resolved target rather than the active session directly, so one flag
+  // flips the whole surface — settings, draft, send target — without needing a
+  // second composer.
+  const {
+    quickLaunch: quickLaunchOpen,
+    workspacePath: composerWorkspacePath,
+    sessionId: composerSessionId,
+    draftOpen: composerDraftOpen,
+    draftKey,
+  } = resolveComposerTarget({
+    activeSessionId,
+    activeWorkspacePath,
+    isSessionDraftOpen,
+    quickLaunchWorkspacePath,
+  })
+
+  const disabled = quickLaunchOpen
+    ? !composerWorkspacePath
+    : !activeWorkspacePath || pendingDraftSessionStart || (!activeSessionId && !isSessionDraftOpen)
+  const runtimeState = composerSessionId || !composerDraftOpen ? acpSessionState : draftSessionState
   const chrome = deriveSessionChrome(agentEvents, {
     providers,
     selectedProviderId: runtimeState?.providerId ?? defaultProviderId,
-    sessionId: activeSessionId ?? undefined,
+    sessionId: composerSessionId ?? undefined,
   })
   const providerOptions = chrome.providerPicker.options.map((provider) => ({
     id: provider.id,
@@ -208,9 +243,13 @@ export function MessageInput() {
   const slashCommands = runtimeState?.availableCommands?.length
     ? runtimeState.availableCommands
     : chrome.slashCommands
-  const canChangeSettings = !!activeSessionId || isSessionDraftOpen
+  const canChangeSettings = !!composerSessionId || composerDraftOpen
   const effectiveStatus = localSessionStatus ?? activeSession?.status
-  const isStreaming = effectiveStatus === 'running' || effectiveStatus === 'busy'
+  // The session behind the overlay may well be streaming, but the send button
+  // in front of it must stay a send button — stopping it is not what Enter or
+  // that control means while you are composing for somewhere else.
+  const isStreaming =
+    !quickLaunchOpen && (effectiveStatus === 'running' || effectiveStatus === 'busy')
   const providerImageSupport = acpPromptCapabilitiesByProvider[currentProviderId]?.image
   const providerSupportsImages = providerImageSupport === true
 
@@ -272,6 +311,17 @@ export function MessageInput() {
           previewUrl: draft.previewUrl,
         })
       }
+      if (quickLaunchOpen && composerWorkspacePath) {
+        // Deliberately not `useActiveSession().sendMessage`: that one pushes an
+        // optimistic user bubble into the transcript on screen, which belongs
+        // to a different session than the one being started here.
+        await launchSession(composerWorkspacePath, text, uploaded.map(promptAttachment))
+        setLaunchedInto(
+          workspaces.find((workspace) => workspace.path === composerWorkspacePath)?.name ??
+            composerWorkspacePath,
+        )
+        return
+      }
       await sendMessage(text, uploaded)
     } catch (error) {
       if (uploaded.length) {
@@ -284,11 +334,6 @@ export function MessageInput() {
     }
   }
 
-  const draftKey = activeSessionId
-    ? `session:${activeSessionId}`
-    : activeWorkspacePath
-      ? `draft:${activeWorkspacePath}`
-      : 'no-workspace'
   const imageSupportMessage =
     providerImageSupport === undefined
       ? 'Checking whether the provider accepts image prompts…'
@@ -317,18 +362,41 @@ export function MessageInput() {
     return () => planState.setBuildHandler(null)
   }, [buildPlan, planState])
 
+  // The acknowledgement is about one launch, so it must not outlive the
+  // overlay or survive a change of target.
+  useEffect(() => {
+    if (!launchedInto) return
+    launchedTimerRef.current = setTimeout(() => setLaunchedInto(null), 4000)
+    return () => {
+      if (launchedTimerRef.current) clearTimeout(launchedTimerRef.current)
+    }
+  }, [launchedInto])
+
+  useEffect(() => {
+    setLaunchedInto(null)
+  }, [quickLaunchWorkspacePath])
+
   return (
     <div className="flex w-full flex-col">
       {questionFlow ? null : <ComposerPlanPrompt />}
       <div className="flex w-full flex-col">
         {questionFlow ? <QuestionCard flow={questionFlow} /> : null}
         <ComposerTodos entries={planEntries} />
+        {quickLaunchOpen ? (
+          <QuickLaunchBar
+            workspaces={workspaces}
+            workspacePath={quickLaunchWorkspacePath}
+            onWorkspaceChange={(path) => openQuickLaunch(path)}
+            onCancel={closeQuickLaunch}
+            launchedInto={launchedInto}
+          />
+        ) : null}
         <MessageInputView
           disabled={disabled}
-          pendingDraftSessionStart={pendingDraftSessionStart}
-          activeWorkspacePath={activeWorkspacePath}
-          activeSessionId={activeSessionId}
-          isSessionDraftOpen={isSessionDraftOpen}
+          pendingDraftSessionStart={!quickLaunchOpen && pendingDraftSessionStart}
+          activeWorkspacePath={composerWorkspacePath}
+          activeSessionId={composerSessionId}
+          isSessionDraftOpen={composerDraftOpen}
           providerReady={providerReady}
           currentProviderId={currentProviderId}
           providerModelGroups={providerModelGroups}
@@ -339,7 +407,7 @@ export function MessageInput() {
           effortLevels={effortLevels}
           currentEffort={currentEffort}
           canChangeSettings={canChangeSettings}
-          canChangeProvider={isSessionDraftOpen && !activeSessionId}
+          canChangeProvider={composerDraftOpen && !composerSessionId}
           showModeControl={chrome.modePicker !== null || modeOptions.length > 0}
           showModelControl={
             chrome.modelPicker !== null ||
@@ -370,18 +438,20 @@ export function MessageInput() {
           }
           imageSupportMessage={imageSupportMessage}
           slashCommands={slashCommands}
-          usage={chrome.usage ?? null}
+          // The meter measures the session on screen; while the composer is
+          // aimed elsewhere it would be reporting on the wrong conversation.
+          usage={quickLaunchOpen ? null : (chrome.usage ?? null)}
           onModeChange={(id) => {
-            if (activeSessionId) {
-              void setSessionMode(activeSessionId, id)
+            if (composerSessionId) {
+              void setSessionMode(composerSessionId, id)
               return
             }
             setDraftMode(id)
           }}
           onProviderModelChange={(providerId, modelId) => {
-            if (activeSessionId) {
+            if (composerSessionId) {
               if (providerId === currentProviderId) {
-                void setSessionModel(activeSessionId, modelId)
+                void setSessionModel(composerSessionId, modelId)
               }
               return
             }
@@ -392,16 +462,16 @@ export function MessageInput() {
             setDraftModel(modelId)
           }}
           onConfigOptionChange={(configId, value) => {
-            if (activeSessionId) {
-              void setSessionConfigOption(activeSessionId, configId, value)
+            if (composerSessionId) {
+              void setSessionConfigOption(composerSessionId, configId, value)
               return
             }
             setDraftConfigOption(configId, value)
           }}
           onSend={uploadAndSend}
           onAbort={() => {
-            if (activeSessionId) {
-              void abortSession(activeSessionId)
+            if (composerSessionId) {
+              void abortSession(composerSessionId)
             }
           }}
         />
