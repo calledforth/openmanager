@@ -21,10 +21,7 @@ export function useRemoteStreamingMessage(
   onUpdate?: () => void,
 ): { content: string; parts: StreamMessagePart[] | undefined } {
   const convex = useConvex()
-  const latest = useQuery(
-    api.streamChunks.getLatestChunk,
-    enabled ? { messageExternalId } : 'skip',
-  )
+  const latest = useQuery(api.streamChunks.getLatestChunk, enabled ? { messageExternalId } : 'skip')
 
   const [content, setContent] = useState('')
   const [parts, setParts] = useState<StreamMessagePart[] | undefined>(undefined)

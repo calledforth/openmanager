@@ -1,10 +1,5 @@
 import { forwardRef } from 'react'
-import {
-  Text,
-  type TextProps,
-  type TextStyle,
-  StyleSheet,
-} from 'react-native'
+import { Text, type TextProps, type TextStyle, StyleSheet } from 'react-native'
 
 export type AppTextVariant =
   | 'text-10-medium'

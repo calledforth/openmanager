@@ -94,25 +94,13 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
-function ReadOnlyRow({
-  label,
-  value,
-  mono,
-}: {
-  label: string
-  value: string
-  mono?: boolean
-}) {
+function ReadOnlyRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
     <View className="gap-1 rounded border border-borderMuted bg-surface px-3.5 py-3">
       <AppText variant="text-11-regular" className="text-textMuted">
         {label}
       </AppText>
-      <AppText
-        variant={mono ? 'mono' : 'text-13-regular'}
-        className="text-textStrong"
-        selectable
-      >
+      <AppText variant={mono ? 'mono' : 'text-13-regular'} className="text-textStrong" selectable>
         {value}
       </AppText>
     </View>

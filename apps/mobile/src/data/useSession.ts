@@ -6,10 +6,7 @@ import { useQuery } from 'convex/react'
 // itself), so the UI must disable the composer/abort for it — see plan §3.
 
 export function useSession(externalId: string | null | undefined) {
-  const session = useQuery(
-    api.sessions.getByExternalId,
-    externalId ? { externalId } : 'skip',
-  )
+  const session = useQuery(api.sessions.getByExternalId, externalId ? { externalId } : 'skip')
 
   return {
     session: session ?? null,
