@@ -2,7 +2,7 @@ import { typographyBody } from '../../lib/typography'
 
 /** Composer shell only — sent user bubbles use `userMessageStyles`. */
 export const chatInputShell =
-  'flex w-full flex-col gap-0.5 rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)] bg-[var(--basis-surface)] p-1'
+  'flex w-full flex-col gap-0.5 rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-chat-composer-border)] bg-[var(--basis-surface)] p-1'
 
 export const chatStreamInner = `px-2 py-1 ${typographyBody} text-[var(--basis-text)]`
 

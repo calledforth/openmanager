@@ -9,7 +9,7 @@ import { ConvexConfigurationRequired } from './components/settings/ConvexSetting
 
 try {
   const stored = localStorage.getItem('openmanager-theme')
-  if (stored === 'light') document.documentElement.dataset.theme = 'light'
+  if (stored === 'light' || stored === 'black') document.documentElement.dataset.theme = stored
 } catch {
   /* ignore */
 }

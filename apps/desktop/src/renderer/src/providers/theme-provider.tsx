@@ -9,7 +9,7 @@ import {
 } from 'react'
 import { DEFAULT_UI_FONT, isUiFontId, type UiFontId } from '../lib/fonts'
 
-export type ThemeMode = 'dark' | 'light'
+export type ThemeMode = 'dark' | 'light' | 'black'
 
 const THEME_STORAGE_KEY = 'openmanager-theme'
 const FONT_STORAGE_KEY = 'openmanager-font'
@@ -27,7 +27,7 @@ const ThemeContext = createContext<ThemeValue | null>(null)
 function readStoredTheme(): ThemeMode {
   try {
     const stored = localStorage.getItem(THEME_STORAGE_KEY)
-    if (stored === 'light' || stored === 'dark') return stored
+    if (stored === 'light' || stored === 'dark' || stored === 'black') return stored
   } catch {
     /* ignore */
   }
@@ -49,10 +49,10 @@ function readStoredFont(): UiFontId {
 
 function applyTheme(mode: ThemeMode) {
   const root = document.documentElement
-  if (mode === 'light') {
-    root.dataset.theme = 'light'
-  } else {
+  if (mode === 'dark') {
     delete root.dataset.theme
+  } else {
+    root.dataset.theme = mode
   }
 }
 
@@ -92,7 +92,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const setTheme = useCallback((mode: ThemeMode) => setThemeState(mode), [])
   const toggleTheme = useCallback(
-    () => setThemeState((t) => (t === 'dark' ? 'light' : 'dark')),
+    () => setThemeState((t) => (t === 'dark' ? 'light' : t === 'light' ? 'black' : 'dark')),
     [],
   )
   const setFont = useCallback((next: UiFontId) => setFontState(next), [])
