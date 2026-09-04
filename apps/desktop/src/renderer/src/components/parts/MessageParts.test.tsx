@@ -171,6 +171,19 @@ describe('MessageParts', () => {
     expect(html).not.toContain('exitCode')
   })
 
+  it('keeps a visible label for a Bash call without command input', () => {
+    const html = renderToStaticMarkup(
+      <MessageParts
+        parts={[
+          { type: 'tool', id: 'tool-empty-bash', tool: 'Bash', state: { status: 'running' } },
+        ]}
+        isStreaming
+      />,
+    )
+
+    expect(html).toContain('bash')
+  })
+
   it('summarises a run of consecutive tool calls on one row', () => {
     const html = renderToStaticMarkup(
       <MessageParts

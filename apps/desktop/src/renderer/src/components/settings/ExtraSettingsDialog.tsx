@@ -200,6 +200,11 @@ export function ExtraSettingsDialog({
         label: 'Dark',
         icon: <MoonIcon className="h-3.5 w-3.5 text-[var(--basis-text-muted)]" />,
       },
+      {
+        id: 'black',
+        label: 'Black',
+        icon: <CircleIcon className="h-3.5 w-3.5 text-[var(--basis-text-muted)]" weight="fill" />,
+      },
     ],
     [],
   )
@@ -298,10 +303,15 @@ export function ExtraSettingsDialog({
                   'flex items-center gap-1.5 text-[var(--basis-text)]',
                 )}
               >
-                {theme === 'dark' ? (
-                  <MoonIcon className="h-3.5 w-3.5 text-[var(--basis-text-muted)]" />
-                ) : (
+                {theme === 'light' ? (
                   <SunIcon className="h-3.5 w-3.5 text-[var(--basis-text-muted)]" />
+                ) : theme === 'black' ? (
+                  <CircleIcon
+                    className="h-3.5 w-3.5 text-[var(--basis-text-muted)]"
+                    weight="fill"
+                  />
+                ) : (
+                  <MoonIcon className="h-3.5 w-3.5 text-[var(--basis-text-muted)]" />
                 )}
                 Theme
               </label>

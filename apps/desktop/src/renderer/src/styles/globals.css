@@ -132,6 +132,8 @@
   --basis-sidebar-width: 288px;
   --basis-selection-bg: color-mix(in srgb, var(--basis-text-strong) 18%, var(--basis-canvas-bg));
   --basis-selection-fg: var(--basis-text-strong);
+  --basis-chat-composer-border: var(--basis-border);
+  --basis-chat-user-border: var(--basis-border-muted);
 
   --lh-tight: 1.3;
   --lh-snug: 1.375;
@@ -181,6 +183,34 @@
   --radius-chat: var(--basis-chat-shell-radius);
   --radius-panel: var(--basis-chat-shell-radius);
   --radius-tool: var(--basis-chat-shell-radius);
+}
+
+html[data-theme='black'] {
+  color-scheme: dark;
+  --basis-canvas-bg: #090909;
+  --basis-surface: #111111;
+  --basis-surface-elevated: #161616;
+  --basis-surface-hover: #1c1c1c;
+  --basis-tab-active-bg: #141414;
+  --basis-border: #262626;
+  --basis-border-muted: #1f1f1f;
+  --basis-border-strong: #3a3a3a;
+  --basis-chat-text: #ffffff;
+  --basis-text: #ffffff;
+  --basis-text-strong: #ffffff;
+  --basis-text-muted: #a0a0a0;
+  --basis-text-faint: #858585;
+  --basis-chat-composer-border: transparent;
+  --basis-chat-user-border: transparent;
+  --basis-action-bg: #ffffff;
+  --basis-action-fg: #090909;
+  --basis-action-hover: #e8e8e8;
+  --basis-accent-blue: #3d73d4;
+  --basis-session-cube: var(--basis-text-muted);
+  --basis-session-cube-needs: #a07a12;
+  --basis-session-cube-ready: #4f9654;
+  --basis-scrollbar-thumb: color-mix(in srgb, var(--basis-text-muted) 28%, transparent);
+  --basis-scrollbar-thumb-hover: color-mix(in srgb, var(--basis-text-muted) 48%, transparent);
 }
 
 html[data-theme='light'] {
@@ -912,7 +942,6 @@ textarea,
 .chat-animate-slide-up {
   animation: chat-slide-up 200ms ease-out;
 }
-
 
 /* Composer question slides — direction comes from --question-slide-from, set
    inline so forward and backward navigation travel opposite ways. */

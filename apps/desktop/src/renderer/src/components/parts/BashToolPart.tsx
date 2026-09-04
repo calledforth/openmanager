@@ -1,11 +1,7 @@
 import { presentToolPart } from './toolPresenter'
-import {
-  activityRow,
-  activityDetailsSummary,
-  ToolLine,
-  ToolExpandedBody,
-} from './ToolLine'
-import { typographyMonoCaption } from '../../lib/typography'
+import { activityRow, activityDetailsSummary } from './ToolLine'
+import { CommandPill } from './CommandPill'
+import { TerminalPanel } from './TerminalPanel'
 
 interface BashToolPartProps {
   part: {
@@ -25,40 +21,29 @@ export function BashToolPart({ part }: BashToolPartProps) {
   const input = part.state?.input as Record<string, unknown> | undefined
   const command = String(input?.command ?? '')
   const output = model.expandedText ?? ''
-  const hasExpand = !!(output || command)
+  const pillCommand = command || model.detail || model.verb
 
-  const line = <ToolLine verb={model.verb} detail={model.detail} isRunning={model.isRunning} />
-
-  if (!hasExpand) {
-    return <div className={activityRow}>{line}</div>
+  if (!command && !output) {
+    return (
+      <div className={activityRow}>
+        <CommandPill command={pillCommand} isRunning={model.isRunning} isError={model.isError} />
+      </div>
+    )
   }
 
   return (
     <details className={`group ${activityRow}`}>
       <summary className={activityDetailsSummary}>
-        <span className="min-w-0 flex-1">{line}</span>
+        <CommandPill
+          command={pillCommand}
+          isRunning={model.isRunning}
+          isError={model.isError}
+          isInteractive
+        />
       </summary>
-      <ToolExpandedBody>
-        {command && (
-          <div className="mb-1.5 flex items-start gap-1.5">
-            <span className={`shrink-0 ${typographyMonoCaption} text-[var(--basis-text-muted)]`}>
-              $
-            </span>
-            <code
-              className={`break-all whitespace-pre-wrap ${typographyMonoCaption} text-[var(--basis-text)]`}
-            >
-              {command}
-            </code>
-          </div>
-        )}
-        {output && (
-          <pre
-            className={`m-0 whitespace-pre-wrap break-words ${typographyMonoCaption} text-[var(--basis-text-muted)]`}
-          >
-            {output}
-          </pre>
-        )}
-      </ToolExpandedBody>
+      <div className="mt-1">
+        <TerminalPanel command={command} output={output} isError={model.isError} />
+      </div>
     </details>
   )
 }
