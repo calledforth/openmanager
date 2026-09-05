@@ -29,6 +29,7 @@
     "@fontsource-variable/public-sans": "^5.2.7",
     "@fontsource/jetbrains-mono": "^5.2.5",
     "@openmanager/convex": "workspace:*",
+    "@openmanager/protocol": "workspace:*",
     "@openmanager/shared": "workspace:*",
     "@phosphor-icons/react": "^2.1.10",
     "@react-scan/vite-plugin-react-scan": "^0.2.3",

@@ -36,6 +36,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build, typecheck, lint, and test protocol
+        run: pnpm run ci:protocol
+
       - name: Typecheck, lint, and test desktop
         run: pnpm run ci:desktop
 
