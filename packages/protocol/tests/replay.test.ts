@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   CursorSchema,
   DurableEventSchema,
+  ProofEventSchemas,
   ReplayCommandSchema,
   ReplayResponseSchema,
   ScopeSnapshotSchema,
@@ -10,6 +11,7 @@ import {
   parseReplayResult,
   ReplayCursorError,
   type Cursor,
+  type SubscriptionScope,
 } from '@openmanager/protocol'
 import { environmentScope, sessionScope, threadScope, proofEvents } from './proof-fixtures.js'
 import {
@@ -155,6 +157,45 @@ describe('replay and snapshot wire validation', () => {
     ])
       expect(DurableEventSchema.safeParse(invalid).success).toBe(false)
   })
+  it('rejects durable events whose payload resources belong to another scope', () => {
+    const started = ProofEventSchemas['turn.started'].parse(
+      proofEvents.find((e) => e.name === 'turn.started'),
+    )
+    const created = ProofEventSchemas['thread.created'].parse(
+      proofEvents.find((e) => e.name === 'thread.created'),
+    )
+    const record = (event: unknown, scope: SubscriptionScope = threadScope) => ({
+      cursor: { ...replayCursor, scope },
+      event,
+    })
+    expect(DurableEventSchema.safeParse(record(started)).success).toBe(true)
+    expect(DurableEventSchema.safeParse(record(created, sessionScope)).success).toBe(true)
+    for (const invalid of [
+      record({
+        ...started,
+        payload: { ...started.payload, turn: { ...started.payload.turn, threadId: 'other' } },
+      }),
+      record({
+        ...started,
+        payload: {
+          ...started.payload,
+          userMessage: { ...started.payload.userMessage, threadId: 'other' },
+        },
+      }),
+      record({
+        ...started,
+        payload: {
+          ...started.payload,
+          userMessage: { ...started.payload.userMessage, turnId: 'other' },
+        },
+      }),
+      record(
+        { ...created, payload: { thread: { ...created.payload.thread, sessionId: 'other' } } },
+        sessionScope,
+      ),
+    ])
+      expect(DurableEventSchema.safeParse(invalid).success).toBe(false)
+  })
   it('rejects a response for another request, scope, or starting position', () => {
     expect(() =>
       parseReplayResult(replayCommand, { ...replayResponse, requestId: 'other' }),
@@ -233,6 +274,17 @@ describe('replay and snapshot wire validation', () => {
     ).toBe(false)
     expect(
       ScopeSnapshotSchema.safeParse({ ...thread, state: { ...thread.state, turns: [] } }).success,
+    ).toBe(false)
+  })
+  it('rejects snapshot sessions without their workspace and reasoning without its message', () => {
+    const env = scopeSnapshots[0]
+    expect(
+      ScopeSnapshotSchema.safeParse({ ...env, state: { ...env.state, workspaces: [] } }).success,
+    ).toBe(false)
+    const thread = scopeSnapshots[2]
+    expect(
+      ScopeSnapshotSchema.safeParse({ ...thread, state: { ...thread.state, messages: [] } })
+        .success,
     ).toBe(false)
   })
 })

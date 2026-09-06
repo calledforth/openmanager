@@ -21,7 +21,7 @@ import {
   InteractionSchema,
   type SubscriptionScope,
 } from './domains.js'
-import { ProofEventSchema, ProofEventSchemas } from './events.js'
+import { ProofEventSchema, ProofEventSchemas, type ProofEvent } from './events.js'
 
 export const SequenceSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
 export const CursorSchema = z.object({
@@ -40,6 +40,24 @@ export function sameScope(left: SubscriptionScope, right: SubscriptionScope): bo
   return left.type !== 'thread' || (right.type === 'thread' && left.threadId === right.threadId)
 }
 
+/** Payload resources that name their owner must agree with the event's scope. */
+function payloadMatchesScope(event: ProofEvent): boolean {
+  const scope = event.scope
+  switch (event.name) {
+    case 'thread.created':
+      return scope.type === 'session' && event.payload.thread.sessionId === scope.sessionId
+    case 'turn.started':
+      return (
+        scope.type === 'thread' &&
+        event.payload.turn.threadId === scope.threadId &&
+        event.payload.userMessage.threadId === scope.threadId &&
+        event.payload.userMessage.turnId === event.payload.turn.turnId
+      )
+    default:
+      return true
+  }
+}
+
 export const DurableEventSchema = z
   .object({
     cursor: CursorSchema.extend({ sequence: SequenceSchema.min(1) }),
@@ -51,6 +69,12 @@ export const DurableEventSchema = z
         code: 'custom',
         path: ['event', 'scope'],
         message: 'Event scope must match its cursor',
+      })
+    } else if (!payloadMatchesScope(record.event)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['event', 'payload'],
+        message: 'Event payload resources must belong to the event scope',
       })
     }
     if (record.event.name === 'turn.notice') {
@@ -86,6 +110,14 @@ const EnvironmentSnapshotSchema = z
         code: 'custom',
         path: ['state', 'environment'],
         message: 'Snapshot environment must match its scope',
+      })
+    }
+    const workspaceIds = new Set(snapshot.state.workspaces.map((w) => w.workspaceId))
+    if (snapshot.state.sessions.some((session) => !workspaceIds.has(session.workspaceId))) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['state', 'sessions'],
+        message: 'Snapshot session references a missing workspace',
       })
     }
   })
@@ -154,6 +186,14 @@ const ThreadSnapshotSchema = z
         code: 'custom',
         path: ['state'],
         message: 'Snapshot references a missing turn',
+      })
+    }
+    const messageIds = new Set(state.messages.map((message) => message.messageId))
+    if (state.reasoning.some((item) => !messageIds.has(item.messageId))) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['state', 'reasoning'],
+        message: 'Snapshot reasoning references a missing message',
       })
     }
   })
