@@ -26,23 +26,24 @@ emits standard ESM JavaScript and declarations to `dist/`; plain Node can import
 the emitted `dist/index.js`. No browser or Node ambient types are enabled in
 the library's TypeScript configuration.
 
-## Scaffold boundary
+## Wire contract
 
 The public API includes `CommandEnvelopeSchema`, `ResponseEnvelopeSchema`,
 `EventEnvelopeSchema`, `ErrorEnvelopeSchema`, and their discriminated union,
 `EnvelopeSchema`. Each exports a corresponding inferred type without the
 `Schema` suffix.
 
-These initial shapes validate envelope structure only. Commands have a string
-`requestId`, a string `name`, and a JSON `payload`; responses have a `requestId`
-and JSON `payload`; events have a `name` and JSON `payload`. Error envelopes have
-a `requestId` and an `error` containing string `code` and `message` fields.
-Use `null` for an empty payload. Like Zod objects by default, these schemas
-strip unknown envelope fields. They do not validate domain payloads or implement
-command execution.
+Use `ClientMessageSchema` at server ingress (commands only) and
+`ServerMessageSchema` at client ingress (responses, errors, events). The general
+`EnvelopeSchema` is useful for tooling but does not enforce direction.
 
-These are scaffolding shapes, not a finalized wire protocol. Detailed ID rules,
-error codes and retry semantics, domain commands, subscriptions, cursors,
+See [the envelope contract](./docs/envelopes.md) for ID rules, response correlation,
+error codes, recovery policies, malformed-message handling, and JSON examples.
+`RequestIdSchema`, `MessageNameSchema`, `ErrorCodeSchema`, `ProtocolErrorSchema`,
+and `ERROR_RETRY_POLICY` are public exports with corresponding inferred types.
+
+These schemas validate envelope structure and JSON payloads; they do not execute
+commands or validate domain payloads. Domain commands, subscriptions, cursors,
 negotiation, heartbeat, and behavioral contract tests belong to subsequent work.
 Keep the environment protocol separate from `@agentpack/contract`.
 
@@ -56,6 +57,7 @@ pnpm --filter @openmanager/protocol test
 ```
 
 Root `pnpm test` runs this suite before the desktop suite. Tests cover the public
-exports, JSON envelope validation, inferred types, and a browser bundle executed
-without Node globals. Desktop has a separate package-import smoke test. CI runs
+exports, directional validation, ID boundaries, errors, and shared JSON fixtures
+round-tripped in Node and a browser bundle without Node globals. Desktop has a
+separate package-import smoke test. CI runs
 the package build, typecheck, lint, and tests before desktop validation.
