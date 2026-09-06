@@ -380,6 +380,9 @@ importers:
       esbuild:
         specifier: 0.25.12
         version: 0.25.12
+      eslint:
+        specifier: ^9.39.4
+        version: 9.39.4(jiti@2.7.0)
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
