@@ -51,9 +51,15 @@ The [replay contract](./docs/replay.md) adds per-scope cursors, the
 `subscription.replay` command with replay/snapshot results, `subscription.event`
 live delivery, and the `decideReplay`/`parseReplayResult` helpers.
 
+The [negotiation contract](./docs/negotiation.md) adds the protocol version,
+HTTP bootstrap schema, open-ended capability names, client bootstrap states,
+and the application-level WebSocket handshake. Use `evaluateBootstrap` to gate
+a client from one bootstrap response and `negotiateProtocolHandshake` /
+`parseProtocolHandshakeResult` at the WebSocket boundary.
+
 These schemas validate structure and domain payloads; they do not execute
-commands. Negotiation, heartbeat, and behavioral contract tests belong to
-subsequent work.
+commands or provide HTTP/WebSocket transports. Heartbeat and duplicate-command
+behavioral tests belong to subsequent work.
 Keep the environment protocol separate from `@agentpack/contract`.
 
 ## Checks

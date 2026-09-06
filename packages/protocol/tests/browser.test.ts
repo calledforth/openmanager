@@ -21,6 +21,23 @@ it('bundles the public entry for a browser and validates without Node globals', 
         import { replayCommand, replayResponse, snapshotResponse, subscriptionEvent } from './tests/replay-fixtures.ts'
         globalThis.replayResults = [replayResponse, snapshotResponse].map(f => parseReplayResult(replayCommand, JSON.parse(JSON.stringify(f))))
         globalThis.subscriptionEvent = SubscriptionEventSchema.parse(JSON.parse(JSON.stringify(subscriptionEvent)))
+        import { PROTOCOL_VERSION, BootstrapResponseSchema, evaluateBootstrap, negotiateProtocolHandshake, parseProtocolHandshakeResult } from '@openmanager/protocol'
+        const bootstrap = BootstrapResponseSchema.parse({
+          protocolVersion: PROTOCOL_VERSION,
+          environmentId: 'env-browser',
+          capabilities: ['session.read'],
+        })
+        globalThis.bootstrapState = evaluateBootstrap(bootstrap, { requiredCapabilities: ['session.read'] })
+        const handshake = {
+          type: 'command',
+          requestId: 'browser-handshake',
+          name: 'protocol.handshake',
+          payload: { protocolVersion: PROTOCOL_VERSION + 1, requiredCapabilities: [] },
+        }
+        globalThis.handshakeResult = parseProtocolHandshakeResult(
+          handshake,
+          negotiateProtocolHandshake(handshake, bootstrap),
+        )
         globalThis.clientRoundTrips = clientFixtures.map(f => ClientMessageSchema.parse(JSON.parse(JSON.stringify(f))))
         globalThis.serverRoundTrips = serverFixtures.map(f => ServerMessageSchema.parse(JSON.parse(JSON.stringify(f))))
         globalThis.valid = EnvelopeSchema.safeParse({
@@ -50,4 +67,14 @@ it('bundles the public entry for a browser and validates without Node globals', 
   expect(browserGlobals.proofEvents).toEqual(proofEvents)
   expect(browserGlobals.replayResults).toEqual([replayResponse, snapshotResponse])
   expect(browserGlobals.subscriptionEvent).toEqual(subscriptionEvent)
+  expect(browserGlobals.bootstrapState).toEqual({ state: 'ready', bootstrap: {
+    protocolVersion: 1,
+    environmentId: 'env-browser',
+    capabilities: ['session.read'],
+  } })
+  expect(browserGlobals.handshakeResult).toMatchObject({
+    type: 'error',
+    requestId: 'browser-handshake',
+    error: { code: 'protocol_incompatible' },
+  })
 })
