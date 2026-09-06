@@ -62,6 +62,9 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for full design rationale.
 
 ## Releases
 
+The new headless environment server has its own [setup and checks](apps/server/README.md).
+It runs on Node 24 LTS; the current desktop workflow above remains available.
+
 CI, Windows packaging, public GitHub Releases, and application updates are documented in
 [`docs/RELEASING.md`](docs/RELEASING.md).
 
