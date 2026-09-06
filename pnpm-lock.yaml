@@ -153,6 +153,9 @@ importers:
       '@types/hast':
         specifier: ^3.0.5
         version: 3.0.5
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       '@types/react':
         specifier: ^19.2.14
         version: 19.2.17
