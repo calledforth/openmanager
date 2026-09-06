@@ -28,10 +28,12 @@ or digits, optionally separated by single `.`, `_`, or `-` characters. Examples:
 the naming convention, not domain schemas implemented in this change.
 
 Unknown object fields on envelopes and `error` objects are stripped, preserving
-the scaffold's additive-field compatibility policy. JSON payload fields are
-preserved for the domain validator. Unknown envelope types and error codes fail
-validation. A parser must never turn a failed parse into a successful response.
-Version/capability negotiation is a separate contract.
+the scaffold's additive-field compatibility policy. `error.details`, when
+present, is retained as JSON so a code-specific schema can validate it. JSON
+payload fields are preserved for the domain validator. Unknown envelope types
+and error codes fail validation. A parser must never turn a failed parse into a
+successful response. Version/capability negotiation has a
+[separate contract](./negotiation.md).
 
 ## Identity and responses
 
@@ -104,6 +106,7 @@ client handles the error. Replaying the failed ID still returns the same error.
 | `not_found`          | A referenced resource does not exist or is not visible; no effect occurred.                                             | `after_change`: refresh state or select another resource.                                                                        |
 | `conflict`           | State precondition failed or a request identity was reused for a different command; the rejected attempt had no effect. | `after_change`: reconcile state or fix ID generation. The original command may still run for an ID collision.                    |
 | `capability_missing` | This environment cannot perform the operation; no effect occurred.                                                      | `never`: disable it for this environment/capability set.                                                                         |
+| `protocol_incompatible` | Client and environment protocol versions differ; no command was dispatched.                                        | `after_upgrade`: show the incompatibility state and retry only after the client or environment changes version.                  |
 | `unavailable`        | Temporary capacity/dependency failure **before any effect**.                                                            | `after_backoff`: retry with bounded backoff and a new ID.                                                                        |
 | `internal`           | Unexpected execution failure; effects may already have occurred.                                                        | `reconcile`: show failure and recover/check the outcome before considering a new attempt. Never automatically repeat a mutation. |
 

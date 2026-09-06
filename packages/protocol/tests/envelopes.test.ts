@@ -147,6 +147,7 @@ describe('wire contract', () => {
     expect(ERROR_RETRY_POLICY.internal).toBe('reconcile')
     expect(ERROR_RETRY_POLICY.auth).toBe('after_auth')
     expect(ERROR_RETRY_POLICY.capability_missing).toBe('never')
+    expect(ERROR_RETRY_POLICY.protocol_incompatible).toBe('after_upgrade')
     for (const code of ErrorCodeSchema.options) {
       expect(
         ServerMessageSchema.parse({
