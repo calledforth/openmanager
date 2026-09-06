@@ -1,0 +1,23 @@
+{
+  "name": "@openmanager/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "dev": "node --watch src/main.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/main.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src tests vitest.config.ts",
+    "test": "pnpm build && vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "eslint": "^9.39.4",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}
