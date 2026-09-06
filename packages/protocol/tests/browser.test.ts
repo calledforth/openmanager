@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url'
 import { runInNewContext } from 'node:vm'
 import { expect, it } from 'vitest'
 import { clientFixtures, serverFixtures } from './fixtures.js'
+import { proofCommands, proofResponses, proofEvents } from './proof-fixtures.js'
 
 it('bundles the public entry for a browser and validates without Node globals', async () => {
   const result = await build({
@@ -10,6 +11,11 @@ it('bundles the public entry for a browser and validates without Node globals', 
       contents: `
         import { EnvelopeSchema, ClientMessageSchema, ServerMessageSchema } from '@openmanager/protocol'
         import { clientFixtures, serverFixtures } from './tests/fixtures.ts'
+        import { ProofCommandSchema, ProofEventSchema, parseProofResult } from '@openmanager/protocol'
+        import { proofCommands, proofResponses, proofEvents } from './tests/proof-fixtures.ts'
+        globalThis.proofCommands = proofCommands.map(f => ProofCommandSchema.parse(JSON.parse(JSON.stringify(f))))
+        globalThis.proofResponses = proofCommands.map(c => parseProofResult(c, JSON.parse(JSON.stringify(proofResponses[c.name]))))
+        globalThis.proofEvents = proofEvents.map(f => ProofEventSchema.parse(JSON.parse(JSON.stringify(f))))
         globalThis.clientRoundTrips = clientFixtures.map(f => ClientMessageSchema.parse(JSON.parse(JSON.stringify(f))))
         globalThis.serverRoundTrips = serverFixtures.map(f => ServerMessageSchema.parse(JSON.parse(JSON.stringify(f))))
         globalThis.valid = EnvelopeSchema.safeParse({
@@ -34,4 +40,7 @@ it('bundles the public entry for a browser and validates without Node globals', 
   expect(browserGlobals.invalid).toBe(false)
   expect(browserGlobals.clientRoundTrips).toEqual(clientFixtures)
   expect(browserGlobals.serverRoundTrips).toEqual(serverFixtures)
+  expect(browserGlobals.proofCommands).toEqual(proofCommands)
+  expect(browserGlobals.proofResponses).toEqual(proofCommands.map((c) => proofResponses[c.name]))
+  expect(browserGlobals.proofEvents).toEqual(proofEvents)
 })

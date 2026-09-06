@@ -1355,7 +1355,7 @@ describe('ClaudeSessionRuntime settings', () => {
     } as typeof built.sdk.initialize
     return built
   }
-  const optionIds = (runtime: { applied?: { options: Map<string, unknown> } }) =>
+  const optionIds = (runtime: { applied?: { options: ReadonlyMap<string, unknown> } }) =>
     [...(runtime.applied?.options.keys() ?? [])]
 
   it('writes effort through the flag-settings layer', async () => {
