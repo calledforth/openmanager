@@ -7,6 +7,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./protocol": {
+      "types": "./src/protocol/projectAgentEvent.ts",
+      "default": "./src/protocol/projectAgentEvent.ts"
     }
   },
   "scripts": {
@@ -20,6 +24,7 @@
     "@modelcontextprotocol/sdk": "1.30.0",
     "@opencode-ai/sdk": "1.18.3",
     "@openmanager/shared": "workspace:*",
+    "@openmanager/protocol": "workspace:*",
     "zod": "4.4.3"
   },
   "devDependencies": {
