@@ -4,6 +4,7 @@ import { runInNewContext } from 'node:vm'
 import { expect, it } from 'vitest'
 import { clientFixtures, serverFixtures } from './fixtures.js'
 import { proofCommands, proofResponses, proofEvents } from './proof-fixtures.js'
+import { replayResponse, snapshotResponse, subscriptionEvent } from './replay-fixtures.js'
 
 it('bundles the public entry for a browser and validates without Node globals', async () => {
   const result = await build({
@@ -16,6 +17,10 @@ it('bundles the public entry for a browser and validates without Node globals', 
         globalThis.proofCommands = proofCommands.map(f => ProofCommandSchema.parse(JSON.parse(JSON.stringify(f))))
         globalThis.proofResponses = proofCommands.map(c => parseProofResult(c, JSON.parse(JSON.stringify(proofResponses[c.name]))))
         globalThis.proofEvents = proofEvents.map(f => ProofEventSchema.parse(JSON.parse(JSON.stringify(f))))
+        import { parseReplayResult, SubscriptionEventSchema } from '@openmanager/protocol'
+        import { replayCommand, replayResponse, snapshotResponse, subscriptionEvent } from './tests/replay-fixtures.ts'
+        globalThis.replayResults = [replayResponse, snapshotResponse].map(f => parseReplayResult(replayCommand, JSON.parse(JSON.stringify(f))))
+        globalThis.subscriptionEvent = SubscriptionEventSchema.parse(JSON.parse(JSON.stringify(subscriptionEvent)))
         globalThis.clientRoundTrips = clientFixtures.map(f => ClientMessageSchema.parse(JSON.parse(JSON.stringify(f))))
         globalThis.serverRoundTrips = serverFixtures.map(f => ServerMessageSchema.parse(JSON.parse(JSON.stringify(f))))
         globalThis.valid = EnvelopeSchema.safeParse({
@@ -43,4 +48,6 @@ it('bundles the public entry for a browser and validates without Node globals', 
   expect(browserGlobals.proofCommands).toEqual(proofCommands)
   expect(browserGlobals.proofResponses).toEqual(proofCommands.map((c) => proofResponses[c.name]))
   expect(browserGlobals.proofEvents).toEqual(proofEvents)
+  expect(browserGlobals.replayResults).toEqual([replayResponse, snapshotResponse])
+  expect(browserGlobals.subscriptionEvent).toEqual(subscriptionEvent)
 })

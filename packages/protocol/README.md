@@ -47,9 +47,13 @@ The [proof slice](./docs/proof-slice.md) adds `ProofCommandSchema`, per-command
 environment/session/thread subscription scopes. Use the domain schemas directly
 on incoming JSON when dispatching this slice.
 
+The [replay contract](./docs/replay.md) adds per-scope cursors, the
+`subscription.replay` command with replay/snapshot results, `subscription.event`
+live delivery, and the `decideReplay`/`parseReplayResult` helpers.
+
 These schemas validate structure and domain payloads; they do not execute
-commands. Cursors, negotiation, heartbeat, and behavioral contract tests belong
-to subsequent work.
+commands. Negotiation, heartbeat, and behavioral contract tests belong to
+subsequent work.
 Keep the environment protocol separate from `@agentpack/contract`.
 
 ## Checks
