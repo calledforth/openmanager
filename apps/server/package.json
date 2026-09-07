@@ -16,10 +16,12 @@
   },
   "dependencies": {
     "@openmanager/protocol": "workspace:*",
+    "ws": "8.21.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "24.13.3",
+    "@types/ws": "8.18.1",
     "eslint": "^9.39.4",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"

@@ -9,6 +9,7 @@ describe('configuration', () => {
       port: 43120,
       dataDir: join(homedir(), '.openmanager'),
       logLevel: 'info',
+      allowedOrigins: [],
     })
   })
 
@@ -22,10 +23,40 @@ describe('configuration', () => {
       port: 5000,
       dataDir: resolve('env-data'),
       logLevel: 'warn',
+      allowedOrigins: [],
     })
     expect(
       loadConfig(['--port=0', '--data-dir', './flag data', '--log-level', 'debug'], env),
-    ).toEqual({ port: 0, dataDir: resolve('flag data'), logLevel: 'debug' })
+    ).toEqual({ port: 0, dataDir: resolve('flag data'), logLevel: 'debug', allowedOrigins: [] })
+  })
+
+  it('uses exact allowed origins with flag precedence and no implicit browser trust', () => {
+    const env = { OPENMANAGER_ALLOWED_ORIGINS: 'https://app.example,http://localhost:5173' }
+    expect(loadConfig([], env).allowedOrigins).toEqual([
+      'https://app.example',
+      'http://localhost:5173',
+    ])
+    expect(loadConfig(['--allowed-origin=https://chosen.example'], env).allowedOrigins).toEqual([
+      'https://chosen.example',
+    ])
+    expect(
+      loadConfig(
+        ['--allowed-origin=https://chosen.example', '--allowed-origin=https://chosen.example'],
+        {},
+      ).allowedOrigins,
+    ).toEqual(['https://chosen.example'])
+  })
+
+  it.each([
+    '*',
+    'null',
+    'file://',
+    'https://app.example/',
+    'https://user:secret@app.example',
+    'https://app.example/path',
+    'https://app.example?query=1',
+  ])('rejects unsafe origin %s', (origin) => {
+    expect(() => loadConfig([`--allowed-origin=${origin}`], {})).toThrow('Allowed origins')
   })
 
   it.each(['-1', '65536', '3.5', 'abc', '1e3', '', '9007199254740993'])(

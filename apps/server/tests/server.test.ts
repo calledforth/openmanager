@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { BootstrapResponseSchema, PROTOCOL_VERSION } from '@openmanager/protocol/node'
 import { startServer } from '../src/server.js'
 import { createLogger } from '../src/logger.js'
+import { SOCKET_CAPABILITIES } from '../src/websocket.js'
 
 const directories: string[] = []
 const servers: Awaited<ReturnType<typeof startServer>>[] = []
@@ -44,7 +45,7 @@ describe('headless listener', () => {
       environmentId: first.identity.environmentId,
       label: first.identity.label,
       protocolVersion: PROTOCOL_VERSION,
-      capabilities: [],
+      capabilities: SOCKET_CAPABILITIES,
     }
     try {
       const response = await fetch(`${first.url}/bootstrap`)
@@ -91,10 +92,12 @@ describe('headless listener', () => {
       environmentId: server.identity.environmentId,
       label: server.identity.label,
       protocolVersion: PROTOCOL_VERSION,
-      capabilities: [],
+      capabilities: SOCKET_CAPABILITIES,
       websocketUrl: `ws://127.0.0.1:${server.port}/ws`,
     })
-    expect(await (await fetch(`${server.url}/health?verbose=true`)).json()).toEqual({ status: 'ok' })
+    expect(await (await fetch(`${server.url}/health?verbose=true`)).json()).toEqual({
+      status: 'ok',
+    })
   })
 
   it.each([
