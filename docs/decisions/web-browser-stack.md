@@ -34,8 +34,13 @@ TanStack Router gives file-based routes, loaders, and type safety without a full
 - Shared product UI and the environment client must remain browser-safe.
 - Desktop-only capabilities sit behind explicit adapters; Electron globals must not leak into shared code.
 - Browser and desktop should share the same application core and environment model over time.
-- Hosting is an independently deployed static SPA (see the web hosting decision). The environment server does not own the canonical frontend.
+- Hosting is an independently deployed static SPA (see [web-hosting.md](./web-hosting.md)). The environment server does not own the canonical frontend.
 
 ## Validation in this repository
 
 The scaffold lives in `apps/web`. It boots in a normal browser without Electron or a Convex URL.
+
+## Related records
+
+- Hosting and origin: [web-hosting.md](./web-hosting.md)
+- Environment server runtime: [environment-server-runtime.md](./environment-server-runtime.md)

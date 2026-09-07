@@ -1,6 +1,18 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 
-export function ErrorFallback({ error, onRetry }: { error: Error; onRetry: () => void }) {
+export function reloadWebApp(target: Pick<Location, 'assign'> = window.location) {
+  target.assign('/')
+}
+
+export function ErrorFallback({
+  error,
+  onRetry,
+  onReload = reloadWebApp,
+}: {
+  error: Error
+  onRetry?: () => void
+  onReload?: () => void
+}) {
   return (
     <div className="flex min-h-full flex-1 items-center justify-center bg-[var(--basis-canvas-bg)] px-6 text-[var(--basis-text)]">
       <div className="max-w-md text-center">
@@ -8,13 +20,24 @@ export function ErrorFallback({ error, onRetry }: { error: Error; onRetry: () =>
           Something went wrong
         </h1>
         <p className="mt-2 text-ui-sm text-[var(--basis-text-muted)]">{error.message}</p>
-        <button
-          type="button"
-          className="mt-4 rounded-md border border-[var(--basis-border)] bg-[var(--basis-surface)] px-3 py-1.5 text-ui-sm text-[var(--basis-text)] hover:bg-[var(--basis-surface-hover)]"
-          onClick={onRetry}
-        >
-          Try again
-        </button>
+        <div className="mt-4 flex justify-center gap-2">
+          {onRetry ? (
+            <button
+              type="button"
+              className="rounded-md border border-[var(--basis-border)] bg-[var(--basis-surface)] px-3 py-1.5 text-ui-sm text-[var(--basis-text)] hover:bg-[var(--basis-surface-hover)]"
+              onClick={onRetry}
+            >
+              Try again
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="rounded-md border border-[var(--basis-border)] bg-[var(--basis-surface)] px-3 py-1.5 text-ui-sm text-[var(--basis-text)] hover:bg-[var(--basis-surface-hover)]"
+            onClick={onReload}
+          >
+            Reload
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -33,9 +56,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, { error: E
 
   render() {
     if (this.state.error) {
-      return (
-        <ErrorFallback error={this.state.error} onRetry={() => this.setState({ error: null })} />
-      )
+      return <ErrorFallback error={this.state.error} />
     }
     return this.props.children
   }

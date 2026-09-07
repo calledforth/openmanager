@@ -30,8 +30,13 @@ describe('web routes', () => {
 
     expect(await screen.findByRole('heading', { name: 'Settings' })).toBeInTheDocument()
     await user.click(screen.getByRole('radio', { name: 'Light' }))
+    expect(screen.getByRole('radio', { name: 'Light' })).toBeChecked()
     expect(document.documentElement.dataset.theme).toBe('light')
     expect(localStorage.getItem('openmanager-theme')).toBe('light')
+
+    await user.keyboard('{ArrowRight}')
+    expect(screen.getByRole('radio', { name: 'Dark' })).toBeChecked()
+    expect(document.documentElement.dataset.theme).toBeUndefined()
   })
 
   it('shows the not-found surface for unknown paths', async () => {
