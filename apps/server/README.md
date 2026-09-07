@@ -49,13 +49,24 @@ Log levels are `debug`, `info`, `warn`, `error`, and `silent`. JSON log records 
 or above the configured severity are printed; the startup record is `info`, so
 `warn`, `error`, and `silent` suppress it. Startup failures always go to stderr.
 
-The listener always binds to IPv4 loopback (`127.0.0.1`). `GET /bootstrap` returns
-the persisted `environmentId` and `label`, protocol version, and an empty
-capability list, with `Cache-Control: no-store`. It includes no paths, session
-data or credentials. There is no WebSocket URL until a socket is implemented.
-Other requests, including `/health`, return 404. Health and full capability
-discovery, authenticated WebSockets, database persistence, and provider services
-belong to subsequent work. This scaffold is not a remote-access endpoint.
+The listener always binds to IPv4 loopback (`127.0.0.1`). Two unauthenticated
+discovery endpoints return JSON with `Cache-Control: no-store`:
+
+- `GET /health` returns only `{ "status": "ok" }` for process liveness. It does
+  not check provider readiness or database availability.
+- `GET /bootstrap` returns the persisted `environmentId` and `label`,
+  `protocolVersion`, `capabilities`, and `websocketUrl`. The response validates
+  against the protocol bootstrap schema. Capabilities remain empty until
+  services are implemented. The socket URL is `ws://127.0.0.1:<bound-port>/ws`,
+  including the actual port when configured with port `0`.
+
+Neither response includes paths, session data or credentials. Other methods
+and paths return 404. Request Host and forwarding headers never determine
+advertised connection metadata. This is local connection discovery; remote
+routes and their origin policy require separate configuration in later work.
+The `/ws` address reserves the endpoint for the authenticated WebSocket
+lifecycle; advertising it does not imply it is implemented or authenticated.
+Database persistence and provider services also belong to subsequent work.
 SIGINT/SIGTERM close the current HTTP connections; durable turn recovery is not
 implemented yet.
 

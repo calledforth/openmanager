@@ -4,24 +4,29 @@ import { BootstrapResponseSchema, PROTOCOL_VERSION } from '@openmanager/protocol
 import type { ServerConfig } from './config.ts'
 import { loadEnvironmentIdentity } from './identity.ts'
 
-/** A loopback-only listener; product routes and authentication arrive separately. */
+/** A loopback-only listener exposing public liveness and connection discovery. */
 export async function startServer(config: ServerConfig) {
   const identity = await loadEnvironmentIdentity(config.dataDir)
-  const bootstrap = JSON.stringify(
-    BootstrapResponseSchema.parse({
-      environmentId: identity.environmentId,
-      label: identity.label,
-      protocolVersion: PROTOCOL_VERSION,
-      capabilities: [],
-    }),
-  )
+  // Set after listen so port 0 advertises the actual port selected by the OS.
+  let websocketUrl: string
+  const bootstrap = () =>
+    JSON.stringify(
+      BootstrapResponseSchema.parse({
+        environmentId: identity.environmentId,
+        label: identity.label,
+        protocolVersion: PROTOCOL_VERSION,
+        capabilities: [],
+        websocketUrl,
+      }),
+    )
   const server = createServer((request, response) => {
-    if (request.method === 'GET' && request.url?.split('?')[0] === '/bootstrap') {
+    const path = request.url?.split('?')[0]
+    if (request.method === 'GET' && (path === '/health' || path === '/bootstrap')) {
       response.writeHead(200, {
         'content-type': 'application/json; charset=utf-8',
         'cache-control': 'no-store',
       })
-      response.end(bootstrap)
+      response.end(path === '/health' ? JSON.stringify({ status: 'ok' }) : bootstrap())
       return
     }
     response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
@@ -35,6 +40,7 @@ export async function startServer(config: ServerConfig) {
     })
   })
   const address = server.address() as AddressInfo
+  websocketUrl = `ws://127.0.0.1:${address.port}/ws`
   return {
     identity,
     port: address.port,

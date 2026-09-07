@@ -22,7 +22,7 @@ afterEach(async () => {
 })
 
 describe('headless listener', () => {
-  it('creates the data directory, binds loopback, and leaves health to subsequent work', async () => {
+  it('creates the data directory, binds loopback, and serves public liveness', async () => {
     const directory = await dataDir()
     const server = await startServer({ port: 0, dataDir: directory, logLevel: 'info' })
     servers.push(server)
@@ -30,8 +30,10 @@ describe('headless listener', () => {
     expect(server.url).toBe(`http://127.0.0.1:${server.port}`)
     expect((await stat(directory)).isDirectory()).toBe(true)
     const response = await fetch(`${server.url}/health`)
-    expect(response.status).toBe(404)
-    expect(await response.text()).toBe('Not found\n')
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe('application/json; charset=utf-8')
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({ status: 'ok' })
   })
 
   it('returns the same persisted identity after restart, port and route changes', async () => {
@@ -47,20 +49,66 @@ describe('headless listener', () => {
     try {
       const response = await fetch(`${first.url}/bootstrap`)
       expect(response.headers.get('cache-control')).toBe('no-store')
-      expect(BootstrapResponseSchema.parse(await response.json())).toEqual(expected)
+      expect(response.status).toBe(200)
+      expect(response.headers.get('content-type')).toBe('application/json; charset=utf-8')
+      expect(BootstrapResponseSchema.parse(await response.json())).toEqual({
+        ...expected,
+        websocketUrl: `ws://127.0.0.1:${first.port}/ws`,
+      })
       const differentPort = await startServer(config)
       servers.push(differentPort)
       expect(differentPort.port).not.toBe(first.port)
       const routed = await fetch(`${differentPort.url}/bootstrap?route=changed`, {
-        headers: { 'x-forwarded-host': 'new-tunnel.example', 'x-forwarded-proto': 'https' },
+        headers: {
+          host: 'untrusted.example',
+          'x-forwarded-host': 'new-tunnel.example',
+          'x-forwarded-proto': 'https',
+        },
       })
-      expect(await routed.json()).toEqual(expected)
+      expect(await routed.json()).toEqual({
+        ...expected,
+        websocketUrl: `ws://127.0.0.1:${differentPort.port}/ws`,
+      })
     } finally {
       await first.close()
     }
     const restarted = await startServer(config)
     servers.push(restarted)
-    expect(await (await fetch(`${restarted.url}/bootstrap`)).json()).toEqual(expected)
+    expect(await (await fetch(`${restarted.url}/bootstrap`)).json()).toEqual({
+      ...expected,
+      websocketUrl: `ws://127.0.0.1:${restarted.port}/ws`,
+    })
+  })
+
+  it('keeps local files and credentials out of public discovery responses', async () => {
+    const directory = await dataDir()
+    const server = await startServer({ port: 0, dataDir: directory, logLevel: 'debug' })
+    servers.push(server)
+    await writeFile(join(directory, 'sessions.json'), '{"privateSession":"test-session"}')
+    await writeFile(join(directory, 'token'), 'test-credential')
+    const response = await fetch(`${server.url}/bootstrap?token=test-credential`)
+    expect(await response.json()).toEqual({
+      environmentId: server.identity.environmentId,
+      label: server.identity.label,
+      protocolVersion: PROTOCOL_VERSION,
+      capabilities: [],
+      websocketUrl: `ws://127.0.0.1:${server.port}/ws`,
+    })
+    expect(await (await fetch(`${server.url}/health?verbose=true`)).json()).toEqual({ status: 'ok' })
+  })
+
+  it.each([
+    ['POST', '/health'],
+    ['POST', '/bootstrap'],
+    ['GET', '/health/extra'],
+    ['GET', '/bootstrap/extra'],
+    ['GET', '/identity.json'],
+  ])('does not expose other methods or paths: %s %s', async (method, path) => {
+    const server = await startServer({ port: 0, dataDir: await dataDir(), logLevel: 'info' })
+    servers.push(server)
+    const response = await fetch(`${server.url}${path}`, { method })
+    expect(response.status).toBe(404)
+    expect(await response.text()).toBe('Not found\n')
   })
 
   it('fails startup on corrupt identity without replacing it or opening a listener', async () => {
