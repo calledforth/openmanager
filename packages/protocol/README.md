@@ -76,3 +76,10 @@ exports, directional validation, ID boundaries, errors, and shared JSON fixtures
 round-tripped in Node and a browser bundle without Node globals. Desktop has a
 separate package-import smoke test. CI runs
 the package build, typecheck, lint, and tests before desktop validation.
+
+## Node server consumers
+
+Headless Node applications can import `@openmanager/protocol/node` after running
+`pnpm --filter @openmanager/protocol build`. This subpath supplies emitted
+JavaScript and declarations, including for applications using Node's native
+TypeScript stripping. The root export remains source-based for bundler consumers.

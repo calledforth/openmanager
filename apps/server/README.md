@@ -42,17 +42,52 @@ Port `0` asks the OS for an available port; the startup log contains the actual
 port. Relative paths resolve from the process working directory (normally
 `apps/server` when launched through pnpm). The directory is created recursively;
 POSIX creation requests owner-only permissions. Existing directory permissions
-and Windows ACLs are not changed. No environment identity or database is created.
+and Windows ACLs are not changed. First boot creates `identity.json`; no database
+is created yet.
 
 Log levels are `debug`, `info`, `warn`, `error`, and `silent`. JSON log records at
 or above the configured severity are printed; the startup record is `info`, so
 `warn`, `error`, and `silent` suppress it. Startup failures always go to stderr.
 
-The listener always binds to IPv4 loopback (`127.0.0.1`). Every request currently
-returns 404, including `/health`. HTTP bootstrap, identity, authenticated
-WebSockets, persistence, and provider services belong to subsequent work. This
-scaffold is not a remote-access endpoint. SIGINT/SIGTERM close the current HTTP
-connections; durable turn recovery is not implemented yet.
+The listener always binds to IPv4 loopback (`127.0.0.1`). `GET /bootstrap` returns
+the persisted `environmentId` and `label`, protocol version, and an empty
+capability list, with `Cache-Control: no-store`. It includes no paths, session
+data or credentials. There is no WebSocket URL until a socket is implemented.
+Other requests, including `/health`, return 404. Health and full capability
+discovery, authenticated WebSockets, database persistence, and provider services
+belong to subsequent work. This scaffold is not a remote-access endpoint.
+SIGINT/SIGTERM close the current HTTP connections; durable turn recovery is not
+implemented yet.
+
+## Stable environment identity
+
+On first boot, the server saves a random UUID and the device hostname as its
+human-readable label in the configured data directory. The label is limited to
+128 characters with control characters removed; an empty hostname falls back to
+`OpenManager` plus the first eight UUID characters. Subsequent boots read that
+record unchanged, even if the device is renamed. Separate data directories on
+the same device have distinct IDs and can share a label. The label is returned
+by bootstrap, so clients can show a recognizable device name.
+Ports, proxy/tunnel URLs, and the location of a restored data
+directory do not define identity. Back up the whole data directory together: a
+restored copy represents the same environment, not a newly authorized machine.
+
+Identity publication uses a flushed temporary file and an atomic, non-replacing
+hard link. Concurrent first boots converge on the same complete record. The data
+directory must be on a filesystem supporting hard links (such as NTFS or ext4);
+unsupported filesystems fail startup rather than weakening identity guarantees.
+POSIX also flushes the containing directory. Windows uses file flushing and
+atomic publication, without a directory-fsync power-loss guarantee.
+An interrupted first boot can leave an unpublished `.identity-*.tmp` file; later
+boots ignore it. Such temporary files can be removed while the server is stopped.
+
+Invalid, unsupported-version or unreadable identity records stop startup; they
+are never silently replaced. Restore a damaged record from backup. Do not edit
+or delete `identity.json` independently of its environment data: losing this file
+loses the environment's identity. There is no identity-rotation command. The
+only supported way to deliberately create a new identity is to stop the server
+and delete the **entire configured data directory**, which discards its state
+and requires clients to treat the next boot as a new environment.
 
 ## Checks
 
@@ -65,6 +100,9 @@ pnpm --filter server build
 
 `test` builds first so the CLI smoke test exercises the production JavaScript
 entry point. Tests cover configuration precedence and rejection, occupied ports,
-data-directory failures, the listener, log filtering, and compiled startup.
+data-directory failures, concurrent identity initialization across processes,
+identity preservation and corruption, bootstrap, log filtering, and compiled
+and native-TypeScript startup. Build, typecheck and dev first compile the protocol
+package; Node consumes its built `@openmanager/protocol/node` export.
 The server CI workflow runs these checks on Node 24 on Windows and Linux.
 Combined server/web CI and a unified dev command are separate work.
