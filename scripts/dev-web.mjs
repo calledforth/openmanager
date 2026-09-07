@@ -19,6 +19,16 @@ export function isolatedSpawnOptions(extraEnv = {}) {
   }
 }
 
+const closedChildren = new WeakSet()
+
+export function markChildClosed(child) {
+  closedChildren.add(child)
+}
+
+export function isChildOpen(child) {
+  return !closedChildren.has(child) && child.exitCode === null && child.signalCode === null
+}
+
 export function stopProcessTree(child, signal = 'SIGTERM') {
   if (child.pid == null || child.exitCode !== null || child.signalCode !== null) {
     return
@@ -49,6 +59,7 @@ function isExecutedDirectly() {
 function start(label, args, extraEnv = {}) {
   const child = spawn(pnpmCommand(), args, isolatedSpawnOptions(extraEnv))
   child.on('exit', (code, signal) => {
+    markChildClosed(child)
     if (shuttingDown) {
       maybeFinish()
       return
@@ -62,6 +73,7 @@ function start(label, args, extraEnv = {}) {
     maybeFinish()
   })
   child.on('error', (error) => {
+    markChildClosed(child)
     if (!shuttingDown) {
       shuttingDown = true
       exitCode = 1
@@ -80,7 +92,7 @@ function stopAll(signal = 'SIGTERM') {
 }
 
 function maybeFinish() {
-  if (children.some((child) => child.exitCode === null && child.signalCode === null)) {
+  if (children.some(isChildOpen)) {
     return
   }
   process.exit(exitCode)

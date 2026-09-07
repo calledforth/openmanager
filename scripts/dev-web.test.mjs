@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import process from 'node:process'
 import { test } from 'node:test'
-import { isolatedSpawnOptions, pnpmCommand, stopProcessTree } from './dev-web.mjs'
+import { isolatedSpawnOptions, isChildOpen, markChildClosed, pnpmCommand, stopProcessTree } from './dev-web.mjs'
 
 function isAlive(pid) {
   try {
@@ -12,6 +12,18 @@ function isAlive(pid) {
     return false
   }
 }
+
+test('spawn failures are terminal so the launcher can exit nonzero', () => {
+  const failedSpawn = { pid: undefined, exitCode: null, signalCode: null }
+  const running = { pid: 1, exitCode: null, signalCode: null }
+  assert.equal(isChildOpen(failedSpawn), true)
+  markChildClosed(failedSpawn)
+  assert.equal(isChildOpen(failedSpawn), false)
+  assert.equal(isChildOpen(running), true)
+  assert.equal([failedSpawn, running].some(isChildOpen), true)
+  markChildClosed(running)
+  assert.equal([failedSpawn, running].some(isChildOpen), false)
+})
 
 test('Windows launches pnpm through a shell; POSIX uses a process group', () => {
   const options = isolatedSpawnOptions({ OPENMANAGER_ALLOWED_ORIGINS: 'http://127.0.0.1:5173' })
