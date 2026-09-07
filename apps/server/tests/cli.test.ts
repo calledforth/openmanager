@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, it } from 'vitest'
+import { SOCKET_CAPABILITIES } from '../src/websocket.js'
 
 const entry = fileURLToPath(new URL('../dist/main.js', import.meta.url))
 
@@ -20,6 +21,7 @@ it.each([
     delete env.OPENMANAGER_PORT
     delete env.OPENMANAGER_DATA_DIR
     delete env.OPENMANAGER_LOG_LEVEL
+    delete env.OPENMANAGER_ALLOWED_ORIGINS
     const child = spawn(process.execPath, [executable, '--port=0', '--data-dir', directory], {
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -46,7 +48,7 @@ it.each([
       expect(await bootstrap.json()).toMatchObject({
         environmentId: expect.any(String),
         label: expect.any(String),
-        capabilities: [],
+        capabilities: SOCKET_CAPABILITIES,
       })
       expect(errors).toBe('')
     } finally {

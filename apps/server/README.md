@@ -33,6 +33,7 @@ with a nonzero exit code and an error on stderr.
 | `--port`      | `OPENMANAGER_PORT`      | `43120`                                     |
 | `--data-dir`  | `OPENMANAGER_DATA_DIR`  | `.openmanager` in the user's home directory |
 | `--log-level` | `OPENMANAGER_LOG_LEVEL` | `info`                                      |
+| `--allowed-origin` (repeatable) | `OPENMANAGER_ALLOWED_ORIGINS` (comma-separated) | none |
 
 ```sh
 pnpm --filter server dev --port 0 --data-dir "./local data" --log-level debug
@@ -56,19 +57,94 @@ discovery endpoints return JSON with `Cache-Control: no-store`:
   not check provider readiness or database availability.
 - `GET /bootstrap` returns the persisted `environmentId` and `label`,
   `protocolVersion`, `capabilities`, and `websocketUrl`. The response validates
-  against the protocol bootstrap schema. Capabilities remain empty until
-  services are implemented. The socket URL is `ws://127.0.0.1:<bound-port>/ws`,
+  against the protocol bootstrap schema. Capabilities are `connection.heartbeat`,
+  `subscription.subscribe`, and `subscription.unsubscribe`. The socket URL is `ws://127.0.0.1:<bound-port>/ws`,
   including the actual port when configured with port `0`.
 
 Neither response includes paths, session data or credentials. Other methods
 and paths return 404. Request Host and forwarding headers never determine
 advertised connection metadata. This is local connection discovery; remote
 routes and their origin policy require separate configuration in later work.
-The `/ws` address reserves the endpoint for the authenticated WebSocket
-lifecycle; advertising it does not imply it is implemented or authenticated.
-Database persistence and provider services also belong to subsequent work.
-SIGINT/SIGTERM close the current HTTP connections; durable turn recovery is not
-implemented yet.
+The `/ws` endpoint requires a client credential before upgrading. SIGINT/SIGTERM
+close HTTP connections and WebSockets (code `1001`, reason `server_shutdown`).
+Database persistence, provider execution and durable turn recovery belong to
+subsequent work.
+
+## Authenticated connections
+
+First boot also creates `client-token` in the data directory: a random 256-bit,
+hex-encoded environment-wide development credential. It is persisted atomically
+and reused after restart; concurrent starts converge on the same token. POSIX
+creation requests owner-only file permissions. Windows uses the data directory's
+ACLs. The token is never logged or included in discovery responses. Read the file
+locally to configure a trusted client; anyone holding it has access to the entire
+environment. Pairing and per-client credentials will replace this initial issuance.
+An invalid credential file fails startup rather than silently replacing it.
+
+Native clients authenticate with `Authorization: Bearer <token>` on the upgrade.
+Browser clients use two WebSocket subprotocols because the browser API cannot set
+that header:
+
+```ts
+const socket = new WebSocket(bootstrap.websocketUrl, [
+  'openmanager.v1',
+  `openmanager.auth.${token}`,
+])
+```
+
+The server selects only `openmanager.v1`; it does not echo the token in its
+response. Tokens in query strings, cookies, or messages after upgrade are not
+accepted. Upgrade rejection returns an HTTP error with the protocol error
+envelope (`auth` for missing/invalid credentials). Browsers expose a generic
+WebSocket error for a failed upgrade, so UI must not rely on reading that HTTP body.
+
+Browser origins must be explicitly approved, independently of authentication:
+
+```sh
+pnpm --filter server dev --allowed-origin http://localhost:5173
+```
+
+Use exact HTTP(S) origins, without paths, wildcards, trailing slashes or
+credentials. The same allowlist applies to HTTP CORS and WebSocket upgrades.
+Unlisted origins, including opaque `null` origins, are rejected even with a valid
+token. Native requests without an Origin header are permitted, but sockets still
+require authentication. HTTP discovery is a simple GET without credentials;
+allowed origins receive an exact `Access-Control-Allow-Origin` and `Vary: Origin`.
+Remote TLS routes and hosted-browser local-network permission handling remain
+separate work; the listener and advertised socket URL are still loopback-only.
+
+After upgrade, the first command must be `protocol.handshake`, carrying
+`protocolVersion` and `requiredCapabilities`. Rejected handshakes receive their
+correlated protocol error and close. Connections that do not handshake within
+10 seconds close with `1008 / handshake_timeout`.
+
+Handshaken clients can subscribe/unsubscribe using the existing protocol schemas.
+Scopes are exact, non-recursive environment/session/thread streams; foreign
+environment IDs are rejected. Subscription IDs and command results belong to the
+connection. Duplicate command IDs replay identical results without a second
+effect; conflicting reuse produces an uncorrelated `conflict` and closes the
+connection. This cache lasts only for the connection: reconnect requires a fresh
+handshake and fresh subscriptions. Durable command recovery is not implemented.
+
+The embedding host calls `server.sockets.publish(record)` with an already
+persisted, protocol-valid `DurableEvent` to deliver `subscription.event` to matching
+subscriptions. The transport does not manufacture cursors, persist events, resolve
+resource existence or implement replay/snapshot commands. Those belong to the
+future domain/persistence services. The development credential authorizes all
+scopes in this environment; scoped subscriptions are routing, not per-resource ACLs.
+
+Heartbeat uses the protocol's monotonic-clock helpers: a fresh application ping
+every 15 seconds after handshake, with 10 seconds to return its matching pong.
+Other traffic and stale pongs do not extend that deadline. Timeout closes with
+`4000 / heartbeat_timeout` and immediately releases live subscriptions and command
+state. Graceful and abrupt socket closes also release all connection state.
+Close handshakes have a one-second termination fallback for unresponsive peers.
+
+Transport limits bound memory: 128 sockets, 128 subscriptions and 1,024 retained
+command results per connection, 64 KiB inbound messages and 1 MiB outbound buffers.
+Connection/subscription exhaustion returns `unavailable`; command-cache exhaustion
+returns `unavailable` and closes so callers establish a fresh connection. Slow
+consumers close with `1008 / slow_consumer`. WebSocket compression is disabled.
 
 ## Stable environment identity
 

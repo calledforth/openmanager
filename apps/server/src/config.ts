@@ -9,6 +9,27 @@ export interface ServerConfig {
   port: number
   dataDir: string
   logLevel: LogLevel
+  allowedOrigins?: readonly string[]
+}
+
+export function validateOrigins(origins: readonly string[]): string[] {
+  return [
+    ...new Set(
+      origins.map((origin) => {
+        try {
+          const url = new URL(origin)
+          if ((url.protocol === 'http:' || url.protocol === 'https:') && url.origin === origin) {
+            return origin
+          }
+        } catch {
+          /* Report the same configuration error for all invalid origins. */
+        }
+        throw new Error(
+          'Allowed origins must be exact http(s) origins without paths or credentials.',
+        )
+      }),
+    ),
+  ]
 }
 
 export function loadConfig(
@@ -21,6 +42,7 @@ export function loadConfig(
       port: { type: 'string' },
       'data-dir': { type: 'string' },
       'log-level': { type: 'string' },
+      'allowed-origin': { type: 'string', multiple: true },
     },
     strict: true,
     allowPositionals: false,
@@ -37,5 +59,17 @@ export function loadConfig(
   if (!LOG_LEVELS.includes(logLevel as LogLevel)) {
     throw new Error(`Log level must be one of: ${LOG_LEVELS.join(', ')}.`)
   }
-  return { port: Number(port), dataDir: resolve(dataDir), logLevel: logLevel as LogLevel }
+  const allowedOrigins = validateOrigins(
+    values['allowed-origin'] ??
+      env.OPENMANAGER_ALLOWED_ORIGINS?.split(',')
+        .map((origin) => origin.trim())
+        .filter(Boolean) ??
+      [],
+  )
+  return {
+    port: Number(port),
+    dataDir: resolve(dataDir),
+    logLevel: logLevel as LogLevel,
+    allowedOrigins,
+  }
 }
