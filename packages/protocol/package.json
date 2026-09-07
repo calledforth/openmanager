@@ -8,6 +8,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./contract-tests": {
+      "types": "./tests/contract-harness.ts",
+      "default": "./tests/contract-harness.ts"
     }
   },
   "scripts": {

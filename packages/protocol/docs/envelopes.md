@@ -64,8 +64,9 @@ connection. Do not overwrite or execute the original command. The uncorrelated
 error preserves the original command's one terminal result; the client must
 reconcile its pending commands after disconnect. Clients must never intentionally
 issue concurrent different commands with the same ID.
-Deduplication storage, retention, and behavioral conformance tests are
-separate work; schema validation alone cannot guarantee exactly-once execution.
+Deduplication storage and retention belong to the host. The reusable
+[behavioral conformance tests](./conformance.md) verify the observable guarantee;
+schema validation alone cannot guarantee exactly-once execution.
 
 A disconnect or local timeout is **not** a terminal server error. The command
 may already have run. Preserve its identity and reconcile through the host's
