@@ -51,6 +51,12 @@ The [replay contract](./docs/replay.md) adds per-scope cursors, the
 `subscription.replay` command with replay/snapshot results, `subscription.event`
 live delivery, and the `decideReplay`/`parseReplayResult` helpers.
 
+The [behavioral conformance tests](./docs/conformance.md) provide reusable,
+transport-independent adapters for duplicate command delivery, out-of-order
+events, and gap replay. They validate messages through the public schemas and
+check effects, ordering, and cursor observations at the implementation boundary.
+Test suites import them from `@openmanager/protocol/contract-tests`.
+
 The [negotiation contract](./docs/negotiation.md) adds the protocol version,
 HTTP bootstrap schema, open-ended capability names, client bootstrap states,
 and the application-level WebSocket handshake. Use `evaluateBootstrap` to gate
@@ -63,8 +69,7 @@ behavior. Its pure state helpers drive transport timers without depending on a
 browser or Node runtime.
 
 These schemas validate structure and domain payloads; they do not execute
-commands or provide HTTP/WebSocket transports. Duplicate-command behavioral
-tests belong to subsequent work.
+commands or provide HTTP/WebSocket transports.
 Keep the environment protocol separate from `@agentpack/contract`.
 
 ## Checks
