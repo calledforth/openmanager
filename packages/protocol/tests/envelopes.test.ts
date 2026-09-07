@@ -95,7 +95,7 @@ describe('wire contract', () => {
 
   it('preserves opaque IDs including case and the maximum length', () => {
     for (const requestId of ['a', 'A_b-12', 'a'.repeat(128)]) {
-      const command = ClientMessageSchema.parse({ ...clientFixtures[0], requestId })
+      const command = CommandEnvelopeSchema.parse({ ...clientFixtures[0], requestId })
       const response = ServerMessageSchema.parse({
         type: 'response',
         requestId: command.requestId,

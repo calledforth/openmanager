@@ -4,6 +4,7 @@ import type { ClientMessage, ServerMessage } from '@openmanager/protocol'
 export const clientFixtures = [
   { type: 'command', requestId: 'req-1', name: 'example.command', payload: { text: 'hello' } },
   { type: 'command', requestId: 'REQ_2', name: 'example.empty', payload: null },
+  { type: 'pong', heartbeatId: 'hb-1' },
 ] satisfies ClientMessage[]
 
 export const serverFixtures = [
@@ -13,4 +14,5 @@ export const serverFixtures = [
   { type: 'error', requestId: 'req-1', error: { code: 'validation', message: 'Invalid payload' } },
   { type: 'error', requestId: 'REQ_2', error: { code: 'unavailable', message: 'Try later' } },
   { type: 'error', requestId: null, error: { code: 'validation', message: 'Invalid request ID' } },
+  { type: 'ping', heartbeatId: 'hb-1' },
 ] satisfies ServerMessage[]

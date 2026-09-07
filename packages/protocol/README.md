@@ -57,9 +57,14 @@ and the application-level WebSocket handshake. Use `evaluateBootstrap` to gate
 a client from one bootstrap response and `negotiateProtocolHandshake` /
 `parseProtocolHandshakeResult` at the WebSocket boundary.
 
+The [heartbeat contract](./docs/heartbeat.md) defines portable server-initiated
+ping/pong messages, fixed timing, client reconnect behavior, and server cleanup
+behavior. Its pure state helpers drive transport timers without depending on a
+browser or Node runtime.
+
 These schemas validate structure and domain payloads; they do not execute
-commands or provide HTTP/WebSocket transports. Heartbeat and duplicate-command
-behavioral tests belong to subsequent work.
+commands or provide HTTP/WebSocket transports. Duplicate-command behavioral
+tests belong to subsequent work.
 Keep the environment protocol separate from `@agentpack/contract`.
 
 ## Checks
