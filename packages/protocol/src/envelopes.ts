@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { ProtocolErrorSchema } from './errors.js'
+import { HeartbeatPingSchema, HeartbeatPongSchema } from './heartbeat.js'
 import { MessageNameSchema, RequestIdSchema } from './primitives.js'
 
 // Domain payloads are validated by their message family after envelope parsing.
@@ -34,15 +35,21 @@ export const EnvelopeSchema = z.discriminatedUnion('type', [
   ResponseEnvelopeSchema,
   EventEnvelopeSchema,
   ErrorEnvelopeSchema,
+  HeartbeatPingSchema,
+  HeartbeatPongSchema,
 ])
 
-/** Use at the server ingress. Clients send commands only. */
-export const ClientMessageSchema = CommandEnvelopeSchema
+/** Use at server ingress. Pong is connection control and has no command result. */
+export const ClientMessageSchema = z.discriminatedUnion('type', [
+  CommandEnvelopeSchema,
+  HeartbeatPongSchema,
+])
 /** Use at the client ingress. Events do not settle pending commands. */
 export const ServerMessageSchema = z.discriminatedUnion('type', [
   ResponseEnvelopeSchema,
   EventEnvelopeSchema,
   ErrorEnvelopeSchema,
+  HeartbeatPingSchema,
 ])
 
 export type CommandEnvelope = z.infer<typeof CommandEnvelopeSchema>

@@ -14,9 +14,11 @@ by this package.
 | `response` | Server → client | `requestId`, `payload`                  |
 | `error`    | Server → client | `requestId`, `error: { code, message }` |
 | `event`    | Server → client | `name`, `payload`                       |
+| `ping`     | Server → client | `heartbeatId`                           |
+| `pong`     | Client → server | `heartbeatId`                           |
 
 Use `ClientMessageSchema` at server ingress and `ServerMessageSchema` at client
-ingress. `EnvelopeSchema` accepts all four types for tools that inspect both
+ingress. `EnvelopeSchema` accepts all six types for tools that inspect both
 directions. All payloads must be JSON values; use explicit `null` for no payload.
 Missing payloads and nested `undefined`, functions, and non-finite numbers are
 invalid. Domain schemas must additionally validate the command/event name and
@@ -34,6 +36,9 @@ payload fields are preserved for the domain validator. Unknown envelope types
 and error codes fail validation. A parser must never turn a failed parse into a
 successful response. Version/capability negotiation has a
 [separate contract](./negotiation.md).
+Ping and pong are connection-control messages governed by the
+[heartbeat contract](./heartbeat.md); they never settle commands or enter the
+durable event stream.
 
 ## Identity and responses
 
