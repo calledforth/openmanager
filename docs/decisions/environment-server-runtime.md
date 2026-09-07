@@ -49,7 +49,7 @@ No comparative performance benchmark was performed for this scaffold.
   one. Track Node security updates and reassess the supported LTS major before
   its support window ends.
 - This decision leaves the browser framework and web hosting/origin choices to
-  their own decision records.
+  [web-browser-stack.md](./web-browser-stack.md) and [web-hosting.md](./web-hosting.md).
 
 ## Sources
 

@@ -44,13 +44,18 @@ not a secret—never enter a deploy key or admin token in the app.
 | `pnpm storybook:build`                     | Build Storybook static site              |
 | `pnpm mobile`                              | Start the mobile Expo/Metro dev server   |
 | `pnpm mobile:android`                      | Build + launch the mobile app on Android |
-| `pnpm --filter @openmanager/desktop build` | Build only the desktop app               |
+| `pnpm --filter @openmanager/web dev`       | Start the browser SPA                         |
+| `pnpm --filter @openmanager/web typecheck` | Typecheck the web app                         |
+| `pnpm --filter @openmanager/web test`      | Vitest for the web app                        |
+| `pnpm --filter @openmanager/web build`     | Production web bundle                         |
+| `pnpm run ci:web`                          | Web typecheck + lint + test + build           |
 
 ## Architecture
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for full design rationale.
 
 - **Desktop app** — `apps/desktop`, including Electron main/preload and the current renderer
+- **Web app** — `apps/web`, a Vite SPA that boots in a normal browser without Electron or Convex
 - **Main process** — sidecar lifecycle management
 - **Preload** — typed IPC bridge (context-isolated)
 - **Renderer** — React UI with direct OpenCode HTTP/SSE + Convex sync
