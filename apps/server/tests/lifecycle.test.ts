@@ -47,13 +47,13 @@ async function launch(dataDir: string) {
   }
 }
 
-async function stop(process: Awaited<ReturnType<typeof launch>>) {
-  expect(process.child.kill('SIGTERM')).toBe(true)
-  const exit = await process.exited
+async function stop(serverProcess: Awaited<ReturnType<typeof launch>>) {
+  expect(serverProcess.child.kill('SIGTERM')).toBe(true)
+  const exit = await serverProcess.exited
   if (process.platform === 'win32') expect(exit).toEqual([null, 'SIGTERM'])
   else expect(exit).toEqual([0, null])
-  expect(process.errors()).toBe('')
-  children.splice(children.indexOf(process.child), 1)
+  expect(serverProcess.errors()).toBe('')
+  children.splice(children.indexOf(serverProcess.child), 1)
 }
 
 afterEach(async () => {
@@ -99,9 +99,9 @@ describe('process lifecycle', () => {
     async () => {
       const dataDir = await mkdtemp(join(tmpdir(), 'openmanager-lifecycle-test-'))
       directories.push(dataDir)
-      const process = await launch(dataDir)
+      const serverProcess = await launch(dataDir)
       const token = (await readFile(join(dataDir, 'client-token'), 'utf8')).trim()
-      const socket = new WebSocket(`${process.url.replace('http:', 'ws:')}/ws`, {
+      const socket = new WebSocket(`${serverProcess.url.replace('http:', 'ws:')}/ws`, {
         headers: { authorization: `Bearer ${token}` },
       })
       clients.push(socket)
@@ -125,13 +125,13 @@ describe('process lifecycle', () => {
       })
 
       const closed = once(socket, 'close')
-      expect(process.child.kill('SIGTERM')).toBe(true)
+      expect(serverProcess.child.kill('SIGTERM')).toBe(true)
       const [code, reason] = await closed
       expect(code).toBe(1001)
       expect(String(reason)).toBe('server_shutdown')
-      expect(await process.exited).toEqual([0, null])
-      expect(process.errors()).toBe('')
-      children.splice(children.indexOf(process.child), 1)
+      expect(await serverProcess.exited).toEqual([0, null])
+      expect(serverProcess.errors()).toBe('')
+      children.splice(children.indexOf(serverProcess.child), 1)
     },
   )
 })
