@@ -57,6 +57,7 @@ export default [
     ignores: [
       'apps/**/out/',
       'apps/**/dist/',
+      'apps/web/src/routeTree.gen.ts',
       '**/storybook-static/',
       'dist/',
       'node_modules/',
