@@ -146,6 +146,38 @@ Connection/subscription exhaustion returns `unavailable`; command-cache exhausti
 returns `unavailable` and closes so callers establish a fresh connection. Slow
 consumers close with `1008 / slow_consumer`. WebSocket compression is disabled.
 
+## Shutdown and turn recovery contract
+
+SIGINT and SIGTERM put the process into a one-way drain: new socket upgrades are
+rejected, existing sockets receive `1001 / server_shutdown`, HTTP keep-alive
+connections close, and the process exits only after those listeners finish
+closing. Restarting with the same data directory reuses the exact environment
+identity and client credential records. Windows does not deliver POSIX signals
+to Node child processes, so its programmatic close path provides the equivalent
+graceful behavior; service managers must use a Windows shutdown mechanism rather
+than relying on SIGTERM.
+
+The current server does not execute agent turns or own their durable event store.
+When those services are attached, they must follow this lifecycle contract:
+
+1. A turn and every accepted message, content delta, tool update, or interaction
+   is durably committed before it is published to sockets. Published data is
+   therefore never the only copy.
+2. Graceful shutdown stops accepting new turns, asks providers to cancel active
+   work, appends a durable `turn.interrupted` terminal event after all already
+   committed parts, and flushes those writes before sockets and providers close.
+3. Startup recovery runs before readiness. Any persisted `running` or `waiting`
+   turn without a terminal event is atomically marked `interrupted`. This covers
+   process crashes and forced termination where the shutdown hook could not run.
+4. Recovery retains every committed partial message and tool/interaction record
+   in its original order. It does not silently retry a provider call or invent a
+   completion; a later user retry is a new turn.
+
+These rules make interruption explicit while preserving useful partial output.
+The persistence integration must add recovery tests using its real store; the
+process-level tests here cover the currently durable identity and credential
+records.
+
 ## Stable environment identity
 
 On first boot, the server saves a random UUID and the device hostname as its
@@ -188,8 +220,10 @@ pnpm --filter server build
 `test` builds first so the CLI smoke test exercises the production JavaScript
 entry point. Tests cover configuration precedence and rejection, occupied ports,
 data-directory failures, concurrent identity initialization across processes,
-identity preservation and corruption, bootstrap, log filtering, and compiled
-and native-TypeScript startup. Build, typecheck and dev first compile the protocol
-package; Node consumes its built `@openmanager/protocol/node` export.
+identity preservation and corruption, bootstrap, log filtering, compiled and
+native-TypeScript startup, process restart durability, and the close code/reason
+delivered to an active socket during SIGTERM. Build, typecheck and dev first
+compile the protocol package; Node consumes its built
+`@openmanager/protocol/node` export.
 The server CI workflow runs these checks on Node 24 on Windows and Linux.
 Combined server/web CI and a unified dev command are separate work.
