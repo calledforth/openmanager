@@ -11,6 +11,14 @@ pnpm install
 pnpm --filter @openmanager/server dev
 ```
 
+To develop the browser shell against this process, use the combined command
+instead. It starts the server watcher and the Vite app together and allows the
+Vite origins:
+
+```sh
+pnpm dev:web
+```
+
 The development watcher restarts on source edits. The default startup message
 reports `http://127.0.0.1:43120`. The short filter `pnpm --filter server dev`
 also selects this package.
@@ -225,5 +233,5 @@ native-TypeScript startup, process restart durability, and the close code/reason
 delivered to an active socket during SIGTERM. Build, typecheck and dev first
 compile the protocol package; Node consumes its built
 `@openmanager/protocol/node` export.
-The server CI workflow runs these checks on Node 24 on Windows and Linux.
-Combined server/web CI and a unified dev command are separate work.
+The shared CI workflow runs typecheck, tests and build for this package on
+Node 24 on Windows and Linux, alongside the protocol package and the web app.

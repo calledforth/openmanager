@@ -7,7 +7,8 @@ updated manually.
 
 ## One-time GitHub setup
 
-1. Protect `main` with the **Validate desktop** check from `.github/workflows/ci.yml`.
+1. Protect `main` with the **Validate desktop**, **Server / ubuntu-latest / Node 24**,
+   **Server / windows-latest / Node 24**, and **Web** checks from `.github/workflows/ci.yml`.
 2. Add a tag ruleset for `v*` so only release maintainers can create or delete release tags.
 3. Create a GitHub Environment named `release`. Add a required reviewer and restrict it to protected
    branches and tags.
