@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "pnpm --filter @openmanager/desktop dev",
     "dev:web": "node scripts/dev-web.mjs",
+    "test:dev-web": "node --test scripts/dev-web.test.mjs",
     "build": "pnpm --filter @openmanager/protocol build && pnpm --filter @openmanager/desktop build",
     "dist:win": "pnpm --filter @openmanager/desktop dist:win",
     "preview": "pnpm --filter @openmanager/desktop preview",
