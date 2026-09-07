@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  ClientMessageSchema,
+  CommandEnvelopeSchema,
   DurableEventSchema,
   ReplayCommandSchema,
   SubscriptionEventSchema,
@@ -51,7 +51,7 @@ class ExampleCommandSubject implements CommandContractSubject {
   }
 
   dispatch(input: unknown): Promise<unknown> {
-    const command = ClientMessageSchema.parse(input)
+    const command = CommandEnvelopeSchema.parse(input)
     const existing = this.results.get(command.requestId)
     if (existing && this.fault === 'unstable-result') {
       return existing.then((result) => ({
@@ -165,7 +165,7 @@ class ExampleEventSubject implements EventContractSubject {
   }
 }
 
-const commandFixture: CommandEnvelope = ClientMessageSchema.parse(
+const commandFixture: CommandEnvelope = CommandEnvelopeSchema.parse(
   proofCommands.find((command) => command.name === 'session.create'),
 )
 

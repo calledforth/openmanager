@@ -7,12 +7,16 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "dev": "node --watch src/main.ts",
-    "build": "tsc -p tsconfig.build.json",
+    "dev": "pnpm --filter @openmanager/protocol build && node --watch src/main.ts",
+    "build": "pnpm --filter @openmanager/protocol build && tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck": "pnpm --filter @openmanager/protocol build && tsc --noEmit -p tsconfig.json",
     "lint": "eslint src tests vitest.config.ts",
     "test": "pnpm build && vitest run"
+  },
+  "dependencies": {
+    "@openmanager/protocol": "workspace:*",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "24.13.3",

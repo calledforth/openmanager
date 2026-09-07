@@ -41,6 +41,13 @@ it.each([
       const url = output.match(/http:\/\/127\.0\.0\.1:\d+/)![0]
       const response = await fetch(url)
       expect(response.status).toBe(404)
+      const bootstrap = await fetch(`${url}/bootstrap`)
+      expect(bootstrap.status).toBe(200)
+      expect(await bootstrap.json()).toMatchObject({
+        environmentId: expect.any(String),
+        label: expect.any(String),
+        capabilities: [],
+      })
       expect(errors).toBe('')
     } finally {
       clearTimeout(timeout)

@@ -1,5 +1,5 @@
 import {
-  ClientMessageSchema,
+  CommandEnvelopeSchema,
   CursorSchema,
   DurableEventSchema,
   ErrorEnvelopeSchema,
@@ -108,7 +108,7 @@ export async function verifyDuplicateCommandContract(
   createSubject: CommandContractSubjectFactory,
   fixture: unknown,
 ): Promise<void> {
-  const command = ClientMessageSchema.parse(cloneJson(fixture))
+  const command = CommandEnvelopeSchema.parse(cloneJson(fixture))
 
   const pending = await createSubject()
   const pendingBefore = await pending.effectCount()

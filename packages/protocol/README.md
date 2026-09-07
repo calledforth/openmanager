@@ -63,6 +63,11 @@ and the application-level WebSocket handshake. Use `evaluateBootstrap` to gate
 a client from one bootstrap response and `negotiateProtocolHandshake` /
 `parseProtocolHandshakeResult` at the WebSocket boundary.
 
+The [heartbeat contract](./docs/heartbeat.md) defines portable server-initiated
+ping/pong messages, fixed timing, client reconnect behavior, and server cleanup
+behavior. Its pure state helpers drive transport timers without depending on a
+browser or Node runtime.
+
 These schemas validate structure and domain payloads; they do not execute
 commands or provide HTTP/WebSocket transports.
 Keep the environment protocol separate from `@agentpack/contract`.
@@ -81,3 +86,10 @@ exports, directional validation, ID boundaries, errors, and shared JSON fixtures
 round-tripped in Node and a browser bundle without Node globals. Desktop has a
 separate package-import smoke test. CI runs
 the package build, typecheck, lint, and tests before desktop validation.
+
+## Node server consumers
+
+Headless Node applications can import `@openmanager/protocol/node` after running
+`pnpm --filter @openmanager/protocol build`. This subpath supplies emitted
+JavaScript and declarations, including for applications using Node's native
+TypeScript stripping. The root export remains source-based for bundler consumers.
