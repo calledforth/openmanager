@@ -1,14 +1,22 @@
-import { ChatCircleIcon, GearIcon } from '@phosphor-icons/react'
+import { ChatCircleIcon, GearIcon, PulseIcon } from '@phosphor-icons/react'
 import { Link, Outlet, useRouterState } from '@tanstack/react-router'
+import { useConnection } from '../providers/connection-provider'
 import { cn } from '../lib/utils'
+import { ConnectionBanner, ConnectionScreen, ConnectionStatusChip } from './connection-surfaces'
 
 const nav = [
   { to: '/', label: 'Sessions', icon: ChatCircleIcon },
   { to: '/settings', label: 'Settings', icon: GearIcon },
+  { to: '/playground/connection', label: 'States', icon: PulseIcon },
 ] as const
 
 export function AppShell() {
   const pathname = useRouterState({ select: (state) => state.location.pathname })
+  const { ui, connect, retry, changeEnvironment } = useConnection()
+  const ungated = pathname.startsWith('/playground/') || pathname === '/settings'
+  const handlers = { onConnect: connect, onRetry: retry, onChangeEnvironment: changeEnvironment }
+  const showScreen = !ungated && ui.surface === 'screen'
+  const showBanner = !ungated && ui.surface === 'banner'
 
   return (
     <div className="flex h-screen w-screen min-w-0 overflow-hidden bg-[var(--basis-canvas-bg)] text-[var(--basis-text)]">
@@ -16,6 +24,7 @@ export function AppShell() {
         <div className="px-4 py-4 text-ui-sm font-medium tracking-ui text-[var(--basis-text-strong)]">
           OpenManager
         </div>
+        <ConnectionStatusChip state={ui} />
         <nav className="flex flex-col gap-0.5 px-2" aria-label="Primary">
           {nav.map((item) => {
             const active =
@@ -41,7 +50,8 @@ export function AppShell() {
         </nav>
       </aside>
       <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <Outlet />
+        {showBanner ? <ConnectionBanner state={ui} handlers={handlers} /> : null}
+        {showScreen ? <ConnectionScreen state={ui} handlers={handlers} /> : <Outlet />}
       </main>
     </div>
   )

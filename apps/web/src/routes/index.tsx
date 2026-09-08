@@ -13,7 +13,8 @@ function HomePage() {
         </h1>
         <p className="mt-2 text-ui-sm leading-ui-normal text-[var(--basis-text-muted)]">
           The web shell matches the desktop app: sessions in the sidebar, a chat workspace, and
-          settings. Environment connection lands in a later change.
+          settings. Connection states live in the shell: banners for reconnect, screens for
+          first-run and terminal failures.
         </p>
         <Link
           to="/sessions/$sessionId"
