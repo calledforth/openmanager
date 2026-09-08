@@ -1,7 +1,8 @@
 # Environment server
 
-A standalone, headless Node 24 LTS application. It starts without Electron,
-Convex configuration, or running agent providers. See the
+A standalone, headless Node 24 LTS application. It starts without Electron or
+Convex configuration and owns the shared `@agentpack/runtime` lifecycle. Provider
+processes remain demand-driven, so mounting the runtime does not spawn one. See the
 [runtime decision](../../docs/decisions/environment-server-runtime.md).
 
 From the repository root, using Node 24 and the pinned pnpm version:
@@ -75,8 +76,11 @@ advertised connection metadata. This is local connection discovery; remote
 routes and their origin policy require separate configuration in later work.
 The `/ws` endpoint requires a client credential before upgrading. SIGINT/SIGTERM
 close HTTP connections and WebSockets (code `1001`, reason `server_shutdown`).
-Database persistence, provider execution and durable turn recovery belong to
-subsequent work.
+The server mounts the same OpenCode, Cursor, and Claude Code registrations used
+by the desktop. Provider executables and their CLI-owned credentials/config are
+resolved only in this trusted process and are not included in HTTP or WebSocket
+payloads. Protocol routing for provider execution, database persistence, and
+durable turn recovery belongs to subsequent work.
 
 ## Authenticated connections
 
@@ -158,12 +162,12 @@ consumers close with `1008 / slow_consumer`. WebSocket compression is disabled.
 
 SIGINT and SIGTERM put the process into a one-way drain: new socket upgrades are
 rejected, existing sockets receive `1001 / server_shutdown`, HTTP keep-alive
-connections close, and the process exits only after those listeners finish
-closing. Restarting with the same data directory reuses the exact environment
-identity and client credential records. Windows does not deliver POSIX signals
-to Node child processes, so its programmatic close path provides the equivalent
-graceful behavior; service managers must use a Windows shutdown mechanism rather
-than relying on SIGTERM.
+connections close, and the process exits only after those listeners and the
+agent runtime finish closing. Restarting with the same data directory reuses the
+exact environment identity and client credential records. Windows does not
+deliver POSIX signals to Node child processes, so its programmatic close path
+provides the equivalent graceful behavior; service managers must use a Windows
+shutdown mechanism rather than relying on SIGTERM.
 
 The current server does not execute agent turns or own their durable event store.
 When those services are attached, they must follow this lifecycle contract:
