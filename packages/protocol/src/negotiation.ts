@@ -1,27 +1,31 @@
 import { z } from 'zod'
 import { ErrorCodeSchema, ProtocolErrorSchema } from './errors.js'
-import {
-  CommandEnvelopeSchema,
-  ErrorEnvelopeSchema,
-  ResponseEnvelopeSchema,
-} from './envelopes.js'
+import { CommandEnvelopeSchema, ErrorEnvelopeSchema, ResponseEnvelopeSchema } from './envelopes.js'
 import { EntityIdSchema } from './domains.js'
 import { MessageNameSchema, RequestIdSchema } from './primitives.js'
+import {
+  PROVIDER_DISCOVERY_CAPABILITY,
+  PROVIDER_HEALTH_CAPABILITY,
+  ProviderBootstrapListSchema,
+} from './providers.js'
 
 /** Increment only when the wire contract changes incompatibly. */
 export const PROTOCOL_VERSION = 1 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema
-export const CapabilityListSchema = z.array(CapabilitySchema).max(256).superRefine((items, ctx) => {
-  const seen = new Set<string>()
-  for (const [index, item] of items.entries()) {
-    if (seen.has(item)) {
-      ctx.addIssue({ code: 'custom', path: [index], message: 'Capabilities must be unique' })
+export const CapabilityListSchema = z
+  .array(CapabilitySchema)
+  .max(256)
+  .superRefine((items, ctx) => {
+    const seen = new Set<string>()
+    for (const [index, item] of items.entries()) {
+      if (seen.has(item)) {
+        ctx.addIssue({ code: 'custom', path: [index], message: 'Capabilities must be unique' })
+      }
+      seen.add(item)
     }
-    seen.add(item)
-  }
-})
+  })
 
 /**
  * HTTP bootstrap fields owned by the protocol package. Unknown fields are
@@ -32,8 +36,20 @@ export const BootstrapResponseSchema = z
     protocolVersion: ProtocolVersionSchema,
     environmentId: EntityIdSchema,
     capabilities: CapabilityListSchema,
+    providers: ProviderBootstrapListSchema.optional(),
   })
   .catchall(z.json())
+  .superRefine((bootstrap, ctx) => {
+    const advertisesProviders = bootstrap.capabilities.includes(PROVIDER_DISCOVERY_CAPABILITY)
+    const advertisesHealth = bootstrap.capabilities.includes(PROVIDER_HEALTH_CAPABILITY)
+    if ((advertisesProviders || advertisesHealth) && bootstrap.providers === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['providers'],
+        message: 'Provider discovery and health capabilities require a provider bootstrap snapshot',
+      })
+    }
+  })
 
 export type ProtocolVersion = z.infer<typeof ProtocolVersionSchema>
 export type Capability = z.infer<typeof CapabilitySchema>
@@ -78,7 +94,9 @@ export function evaluateBootstrap(
 
   const requiredCapabilities = CapabilityListSchema.parse(requirements.requiredCapabilities ?? [])
   const available = new Set(bootstrap.capabilities)
-  const missingCapabilities = requiredCapabilities.filter((capability) => !available.has(capability))
+  const missingCapabilities = requiredCapabilities.filter(
+    (capability) => !available.has(capability),
+  )
   if (missingCapabilities.length > 0) {
     return { state: 'capability_missing', bootstrap, missingCapabilities }
   }
@@ -166,7 +184,8 @@ export function negotiateProtocolHandshake(
   })
 
   // The early version check makes this unreachable for a valid host bootstrap.
-  if (state.state === 'incompatible_protocol') throw new Error('Protocol version changed during handshake')
+  if (state.state === 'incompatible_protocol')
+    throw new Error('Protocol version changed during handshake')
   if (state.state === 'capability_missing') {
     return ProtocolHandshakeErrorSchema.parse({
       type: 'error',

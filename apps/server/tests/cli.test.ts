@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, it } from 'vitest'
-import { SOCKET_CAPABILITIES } from '../src/websocket.js'
+import { SERVER_CAPABILITIES } from '../src/server.js'
 
 const entry = fileURLToPath(new URL('../dist/main.js', import.meta.url))
 
@@ -48,7 +48,8 @@ it.each([
       expect(await bootstrap.json()).toMatchObject({
         environmentId: expect.any(String),
         label: expect.any(String),
-        capabilities: SOCKET_CAPABILITIES,
+        capabilities: SERVER_CAPABILITIES,
+        providers: expect.any(Array),
       })
       expect(errors).toBe('')
     } finally {

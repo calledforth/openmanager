@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { BootstrapResponseSchema, PROTOCOL_VERSION } from '@openmanager/protocol/node'
 import { startServer } from '../src/server.js'
 import { createLogger } from '../src/logger.js'
-import { SOCKET_CAPABILITIES } from '../src/websocket.js'
+import { SERVER_CAPABILITIES } from '../src/server.js'
 
 const directories: string[] = []
 const servers: Awaited<ReturnType<typeof startServer>>[] = []
@@ -45,17 +45,32 @@ describe('headless listener', () => {
       environmentId: first.identity.environmentId,
       label: first.identity.label,
       protocolVersion: PROTOCOL_VERSION,
-      capabilities: SOCKET_CAPABILITIES,
+      capabilities: SERVER_CAPABILITIES,
     }
     try {
       const response = await fetch(`${first.url}/bootstrap`)
       expect(response.headers.get('cache-control')).toBe('no-store')
       expect(response.status).toBe(200)
       expect(response.headers.get('content-type')).toBe('application/json; charset=utf-8')
-      expect(BootstrapResponseSchema.parse(await response.json())).toEqual({
+      const firstBootstrap = BootstrapResponseSchema.parse(await response.json())
+      expect(firstBootstrap).toMatchObject({
         ...expected,
         websocketUrl: `ws://127.0.0.1:${first.port}/ws`,
       })
+      expect(firstBootstrap.providers?.map((provider) => provider.id)).toEqual([
+        'cursor',
+        'opencode',
+        'claude',
+      ])
+      expect(firstBootstrap.providers).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: 'cursor',
+            displayName: 'Cursor',
+            health: expect.objectContaining({ summary: 'unknown', refreshing: false }),
+          }),
+        ]),
+      )
       const differentPort = await startServer(config)
       servers.push(differentPort)
       expect(differentPort.port).not.toBe(first.port)
@@ -68,6 +83,7 @@ describe('headless listener', () => {
       })
       expect(await routed.json()).toEqual({
         ...expected,
+        providers: firstBootstrap.providers,
         websocketUrl: `ws://127.0.0.1:${differentPort.port}/ws`,
       })
     } finally {
@@ -77,6 +93,7 @@ describe('headless listener', () => {
     servers.push(restarted)
     expect(await (await fetch(`${restarted.url}/bootstrap`)).json()).toEqual({
       ...expected,
+      providers: expect.any(Array),
       websocketUrl: `ws://127.0.0.1:${restarted.port}/ws`,
     })
   })
@@ -92,7 +109,8 @@ describe('headless listener', () => {
       environmentId: server.identity.environmentId,
       label: server.identity.label,
       protocolVersion: PROTOCOL_VERSION,
-      capabilities: SOCKET_CAPABILITIES,
+      capabilities: SERVER_CAPABILITIES,
+      providers: expect.any(Array),
       websocketUrl: `ws://127.0.0.1:${server.port}/ws`,
     })
     expect(await (await fetch(`${server.url}/health?verbose=true`)).json()).toEqual({

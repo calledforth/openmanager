@@ -65,9 +65,10 @@ discovery endpoints return JSON with `Cache-Control: no-store`:
 - `GET /health` returns only `{ "status": "ok" }` for process liveness. It does
   not check provider readiness or database availability.
 - `GET /bootstrap` returns the persisted `environmentId` and `label`,
-  `protocolVersion`, `capabilities`, and `websocketUrl`. The response validates
-  against the protocol bootstrap schema. Capabilities are `connection.heartbeat`,
-  `subscription.subscribe`, and `subscription.unsubscribe`. The socket URL is `ws://127.0.0.1:<bound-port>/ws`,
+  `protocolVersion`, `capabilities`, a privacy-safe provider catalog and health
+  snapshot, and `websocketUrl`. The response validates against the protocol
+  bootstrap schema. Provider health omits executable paths, account labels,
+  thread IDs and diagnostic messages. The socket URL is `ws://127.0.0.1:<bound-port>/ws`,
   including the actual port when configured with port `0`.
 
 Neither response includes paths, session data or credentials. Other methods
@@ -137,6 +138,13 @@ connection. Duplicate command IDs replay identical results without a second
 effect; conflicting reuse produces an uncorrelated `conflict` and closes the
 connection. This cache lasts only for the connection: reconnect requires a fresh
 handshake and fresh subscriptions. Durable command recovery is not implemented.
+
+The `provider.discovery`, `provider.health`, and `provider.probe` capabilities
+expose server-owned provider discovery. `provider.probe` accepts a provider ID
+and workspace path, runs the existing `desktop-bootstrap:<provider>` probe path,
+and never creates a session runtime. Authenticated, handshaken clients receive
+`provider_health_changed` events when the public health snapshot transitions;
+the handshake bootstrap supplies the latest snapshot across reconnect gaps.
 
 The embedding host calls `server.sockets.publish(record)` with an already
 persisted, protocol-valid `DurableEvent` to deliver `subscription.event` to matching

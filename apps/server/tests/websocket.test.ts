@@ -8,6 +8,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   HEARTBEAT_POLICY,
   PROTOCOL_VERSION,
+  ProviderHealthChangedEventSchema,
+  ProviderProbeResponseSchema,
   ProofResponseSchemas,
   ServerMessageSchema,
   type ServerMessage,
@@ -303,6 +305,57 @@ describe('handshake and scoped subscriptions', () => {
     })
     await closed
     expect(host.server.sockets.subscriptionCount).toBe(0)
+  })
+
+  it('routes provider probes through a pseudo-thread and broadcasts health transitions', async () => {
+    const host = await setup()
+    const client = await connect(host)
+    await handshake(client)
+
+    host.server.runtime.health.observeInitialized('cursor', '1.0.0')
+    expect(ProviderHealthChangedEventSchema.parse(await client.next())).toMatchObject({
+      type: 'event',
+      name: 'provider_health_changed',
+      payload: {
+        providerId: 'cursor',
+        health: { install: 'installed', summary: 'unknown' },
+      },
+    })
+
+    const probe = vi.spyOn(host.server.runtime, 'probeProvider').mockResolvedValue({} as never)
+    const requestId = client.command('provider.probe', {
+      providerId: 'cursor',
+      cwd: 'C:\\workspace',
+    })
+    expect(ProviderProbeResponseSchema.parse(await client.next())).toMatchObject({
+      type: 'response',
+      requestId,
+      payload: { provider: { id: 'cursor' } },
+    })
+    expect(probe).toHaveBeenCalledExactlyOnceWith({
+      providerId: 'cursor',
+      threadId: 'desktop-bootstrap:cursor',
+      workspaceId: 'C:\\workspace',
+      cwd: 'C:\\workspace',
+    })
+  })
+
+  it('rejects missing providers without probing the runtime', async () => {
+    const host = await setup()
+    const client = await connect(host)
+    await handshake(client)
+    const probe = vi.spyOn(host.server.runtime, 'probeProvider')
+
+    const requestId = client.command('provider.probe', {
+      providerId: 'missing',
+      cwd: 'C:\\workspace',
+    })
+    expect(await client.next()).toMatchObject({
+      type: 'error',
+      requestId,
+      error: { code: 'not_found' },
+    })
+    expect(probe).not.toHaveBeenCalled()
   })
 
   it.each(['graceful', 'abrupt'])(
