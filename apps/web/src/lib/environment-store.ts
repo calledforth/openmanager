@@ -27,11 +27,9 @@ export function parseEnvironmentEndpoint(raw: string): string | null {
   return url.origin + (url.pathname === '/' ? '' : url.pathname)
 }
 
-export function readStoredEnvironment(
-  storage: Pick<Storage, 'getItem'> = window.localStorage,
-): StoredEnvironment | null {
+export function readStoredEnvironment(storage?: Pick<Storage, 'getItem'>): StoredEnvironment | null {
   try {
-    const raw = storage.getItem(ENVIRONMENT_STORAGE_KEY)
+    const raw = (storage ?? window.localStorage).getItem(ENVIRONMENT_STORAGE_KEY)
     if (!raw) return null
     const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return null
@@ -51,11 +49,19 @@ export function readStoredEnvironment(
 
 export function writeStoredEnvironment(
   environment: StoredEnvironment,
-  storage: Pick<Storage, 'setItem'> = window.localStorage,
+  storage?: Pick<Storage, 'setItem'>,
 ) {
-  storage.setItem(ENVIRONMENT_STORAGE_KEY, JSON.stringify(environment))
+  try {
+    ;(storage ?? window.localStorage).setItem(ENVIRONMENT_STORAGE_KEY, JSON.stringify(environment))
+  } catch {
+    /* ignore quota / private-mode failures */
+  }
 }
 
-export function clearStoredEnvironment(storage: Pick<Storage, 'removeItem'> = window.localStorage) {
-  storage.removeItem(ENVIRONMENT_STORAGE_KEY)
+export function clearStoredEnvironment(storage?: Pick<Storage, 'removeItem'>) {
+  try {
+    ;(storage ?? window.localStorage).removeItem(ENVIRONMENT_STORAGE_KEY)
+  } catch {
+    /* ignore quota / private-mode failures */
+  }
 }

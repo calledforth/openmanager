@@ -6,7 +6,8 @@ import {
 import type { BootstrapOutcome } from './connection-state'
 
 export function bootstrapUrl(endpoint: string): string {
-  return new URL('/bootstrap', `${endpoint}/`).href
+  const base = endpoint.endsWith('/') ? endpoint : `${endpoint}/`
+  return new URL('bootstrap', base).href
 }
 
 function readErrorMessage(body: unknown): string | undefined {

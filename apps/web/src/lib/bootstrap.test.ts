@@ -3,8 +3,11 @@ import { describe, expect, it } from 'vitest'
 import { bootstrapUrl, interpretBootstrapResponse } from './bootstrap'
 
 describe('bootstrapUrl', () => {
-  it('joins /bootstrap onto the stored endpoint', () => {
+  it('joins bootstrap onto the stored endpoint, including a path prefix', () => {
     expect(bootstrapUrl('http://127.0.0.1:43120')).toBe('http://127.0.0.1:43120/bootstrap')
+    expect(bootstrapUrl('https://host.example/openmanager')).toBe(
+      'https://host.example/openmanager/bootstrap',
+    )
   })
 })
 

@@ -38,6 +38,21 @@ describe('readStoredEnvironment', () => {
     expect(readStoredEnvironment({ getItem: () => JSON.stringify({ endpoint: 'ftp://x' }) })).toBeNull()
   })
 
+  it('returns null when the default storage access throws', () => {
+    const original = window.localStorage
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('blocked', 'SecurityError')
+      },
+    })
+    try {
+      expect(readStoredEnvironment()).toBeNull()
+    } finally {
+      Object.defineProperty(window, 'localStorage', { configurable: true, value: original })
+    }
+  })
+
   it('round-trips through writeStoredEnvironment', () => {
     const data = new Map<string, string>()
     writeStoredEnvironment(

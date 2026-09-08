@@ -86,8 +86,12 @@ export function ConnectionProvider({
 
   const persist = useCallback((next: StoredEnvironment | null) => {
     setStored(next)
-    if (next) writeStoredEnvironment(next)
-    else clearStoredEnvironment()
+    try {
+      if (next) writeStoredEnvironment(next)
+      else clearStoredEnvironment()
+    } catch {
+      return
+    }
   }, [])
 
   const environment = preview?.environment ?? toSelection(stored)
