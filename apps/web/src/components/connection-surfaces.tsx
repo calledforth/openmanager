@@ -4,7 +4,11 @@ import {
   type ConnectionAction,
   type ConnectionUiState,
 } from '../lib/connection-state'
-import { parseEnvironmentEndpoint } from '../lib/environment-store'
+import {
+  parseEnvironmentCredential,
+  parseEnvironmentEndpoint,
+  type StoredEnvironment,
+} from '../lib/environment-store'
 import { cn } from '../lib/utils'
 
 const fieldClass =
@@ -15,9 +19,11 @@ const secondaryButtonClass =
   'rounded-md border border-[var(--basis-border)] bg-[var(--basis-surface)] px-3 py-1.5 text-ui-sm text-[var(--basis-text)] hover:bg-[var(--basis-surface-hover)]'
 
 export type ConnectionHandlers = {
-  onConnect?: (endpoint: string) => void
+  onConnect?: (endpoint: string, credential?: string) => void
   onRetry?: () => void
   onChangeEnvironment?: () => void
+  onSelectEnvironment?: (environmentId: string) => void
+  onRemoveEnvironment?: (environmentId: string) => void
 }
 
 function runAction(action: ConnectionAction, handlers: ConnectionHandlers, endpoint?: string) {
@@ -59,22 +65,30 @@ function ActionButtons({
 export function EnvironmentConnectForm({
   initialEndpoint = '',
   onConnect,
+  submitLabel = 'Connect',
 }: {
   initialEndpoint?: string
-  onConnect: (endpoint: string) => void
+  onConnect: (endpoint: string, credential: string) => void
+  submitLabel?: string
 }) {
-  const [value, setValue] = useState(initialEndpoint)
+  const [endpointValue, setEndpointValue] = useState(initialEndpoint)
+  const [credentialValue, setCredentialValue] = useState('')
   const [error, setError] = useState<string | null>(null)
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    const endpoint = parseEnvironmentEndpoint(value)
+    const endpoint = parseEnvironmentEndpoint(endpointValue)
     if (!endpoint) {
       setError('Enter an http(s) environment URL, for example http://127.0.0.1:43120.')
       return
     }
+    const credential = parseEnvironmentCredential(credentialValue)
+    if (credentialValue.trim() && !credential) {
+      setError('Enter a client token without spaces, or leave it blank.')
+      return
+    }
     setError(null)
-    onConnect(endpoint)
+    onConnect(endpoint, credential)
   }
 
   return (
@@ -82,23 +96,38 @@ export function EnvironmentConnectForm({
       <label className="block text-ui-sm text-[var(--basis-text)]" htmlFor="environment-endpoint">
         Environment endpoint
       </label>
-      <div className="mt-1.5 flex gap-2">
-        <input
-          id="environment-endpoint"
-          name="endpoint"
-          type="text"
-          inputMode="url"
-          autoComplete="url"
-          spellCheck={false}
-          placeholder="http://127.0.0.1:43120"
-          className={fieldClass}
-          value={value}
-          onChange={(event) => setValue(event.target.value)}
-        />
-        <button type="submit" className={primaryButtonClass}>
-          Connect
-        </button>
-      </div>
+      <input
+        id="environment-endpoint"
+        name="endpoint"
+        type="text"
+        inputMode="url"
+        autoComplete="url"
+        spellCheck={false}
+        placeholder="http://127.0.0.1:43120"
+        className={cn(fieldClass, 'mt-1.5')}
+        value={endpointValue}
+        onChange={(event) => setEndpointValue(event.target.value)}
+      />
+      <label className="mt-3 block text-ui-sm text-[var(--basis-text)]" htmlFor="environment-credential">
+        Client token
+      </label>
+      <p className="mt-0.5 text-ui-xs text-[var(--basis-text-muted)]">
+        Optional. Stored with the environment, not with a particular URL.
+      </p>
+      <input
+        id="environment-credential"
+        name="credential"
+        type="password"
+        autoComplete="off"
+        spellCheck={false}
+        placeholder="Paste client-token"
+        className={cn(fieldClass, 'mt-1.5')}
+        value={credentialValue}
+        onChange={(event) => setCredentialValue(event.target.value)}
+      />
+      <button type="submit" className={cn(primaryButtonClass, 'mt-3')}>
+        {submitLabel}
+      </button>
       {error ? (
         <p className="mt-2 text-ui-xs text-[var(--basis-text-muted)]" role="alert">
           {error}
@@ -108,22 +137,114 @@ export function EnvironmentConnectForm({
   )
 }
 
+export function EnvironmentList({
+  environments,
+  selectedId,
+  onSelect,
+  onRemove,
+}: {
+  environments: StoredEnvironment[]
+  selectedId: string | null
+  onSelect?: (environmentId: string) => void
+  onRemove?: (environmentId: string) => void
+}) {
+  if (environments.length === 0) return null
+
+  return (
+    <ul className="mt-4 w-full max-w-md space-y-2 text-left" aria-label="Saved environments">
+      {environments.map((environment) => {
+        const selected = environment.environmentId === selectedId
+        return (
+          <li
+            key={environment.environmentId}
+            className={cn(
+              'rounded-md border px-3 py-2.5',
+              selected
+                ? 'border-[var(--basis-border-strong)] bg-[var(--basis-surface-elevated)]'
+                : 'border-[var(--basis-border)] bg-[var(--basis-surface)]',
+            )}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-ui-sm font-medium text-[var(--basis-text-strong)]">
+                  {environment.label}
+                  {selected ? ' · Selected' : ''}
+                </p>
+                <p className="mt-0.5 font-mono text-ui-xs text-[var(--basis-text-faint)]">
+                  {environment.environmentId}
+                </p>
+                <p className="mt-1 font-mono text-ui-xs text-[var(--basis-text-muted)]">
+                  {environment.endpoints.join(' · ')}
+                </p>
+                <p className="mt-1 text-ui-xs text-[var(--basis-text-muted)]">
+                  {environment.credential ? 'Client token saved' : 'No client token'}
+                </p>
+              </div>
+              <div className="flex shrink-0 flex-col gap-1.5">
+                {onSelect && !selected ? (
+                  <button
+                    type="button"
+                    className={secondaryButtonClass}
+                    onClick={() => onSelect(environment.environmentId)}
+                  >
+                    Select
+                  </button>
+                ) : null}
+                {onRemove ? (
+                  <button
+                    type="button"
+                    className={secondaryButtonClass}
+                    onClick={() => onRemove(environment.environmentId)}
+                  >
+                    Remove
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
 export function ConnectionScreen({
   state,
   handlers = {},
+  environments = [],
+  selectedId = null,
 }: {
   state: ConnectionUiState
   handlers?: ConnectionHandlers
+  environments?: StoredEnvironment[]
+  selectedId?: string | null
 }) {
+  const choosingSaved = state.kind === 'no_environment' && environments.length > 0
+  const title = choosingSaved ? 'Select an environment' : state.title
+  const description = choosingSaved
+    ? 'Choose a saved environment or add another endpoint. A second URL for the same environment ID updates the existing record.'
+    : state.description
+
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6">
       <div className="flex w-full max-w-md flex-col items-center text-center">
-        <h1 className="text-ui-base font-medium text-[var(--basis-text-strong)]">{state.title}</h1>
+        <h1 className="text-ui-base font-medium text-[var(--basis-text-strong)]">{title}</h1>
         <p className="mt-2 text-ui-sm leading-ui-normal text-[var(--basis-text-muted)]">
-          {state.description}
+          {description}
         </p>
         {state.kind === 'no_environment' ? (
-          <EnvironmentConnectForm initialEndpoint={state.endpoint} onConnect={(endpoint) => handlers.onConnect?.(endpoint)} />
+          <>
+            <EnvironmentList
+              environments={environments}
+              selectedId={selectedId}
+              onSelect={handlers.onSelectEnvironment}
+              onRemove={handlers.onRemoveEnvironment}
+            />
+            <EnvironmentConnectForm
+              initialEndpoint={state.endpoint}
+              onConnect={(endpoint, credential) => handlers.onConnect?.(endpoint, credential)}
+            />
+          </>
         ) : (
           <ActionButtons state={state} handlers={handlers} />
         )}

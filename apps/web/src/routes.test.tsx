@@ -11,6 +11,64 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+function seedRegistry(
+  environments: Array<{
+    environmentId: string
+    label?: string
+    endpoints: string[]
+    credential?: string
+  }>,
+  selectedId: string | null = environments[0]?.environmentId ?? null,
+) {
+  localStorage.setItem(
+    ENVIRONMENT_STORAGE_KEY,
+    JSON.stringify({
+      version: 1,
+      selectedId,
+      environments: environments.map((item) => ({
+        label: 'Local environment',
+        credential: '',
+        ...item,
+      })),
+    }),
+  )
+}
+
+function mockBootstrap(byEndpoint: Record<string, { environmentId: string; label?: string }>) {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      const match = Object.entries(byEndpoint).find(([endpoint]) => url.startsWith(`${endpoint}/`))
+      const body = match?.[1] ?? {
+        environmentId: 'env-local',
+        label: 'Local environment',
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          protocolVersion: 1,
+          capabilities: ['connection.heartbeat'],
+          ...body,
+        }),
+      }
+    }),
+  )
+}
+
+function storedRegistry() {
+  return JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY) ?? '{}') as {
+    selectedId: string | null
+    environments: Array<{
+      environmentId: string
+      label: string
+      endpoints: string[]
+      credential: string
+    }>
+  }
+}
+
 describe('web routes', () => {
   it('renders the no-environment screen on first run', async () => {
     renderWebApp('/')
@@ -44,55 +102,119 @@ describe('web routes', () => {
 
   it('connects from the first-run screen using the bootstrap response', async () => {
     const user = userEvent.setup()
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({
-        ok: true,
-        status: 200,
-        json: async () => ({
-          protocolVersion: 1,
-          environmentId: 'env-local',
-          capabilities: ['connection.heartbeat'],
-          label: 'Local environment',
-        }),
-      })),
-    )
+    mockBootstrap({
+      'http://127.0.0.1:43120': { environmentId: 'env-local', label: 'Local environment' },
+    })
 
     renderWebApp('/')
     await user.type(await screen.findByLabelText('Environment endpoint'), 'http://127.0.0.1:43120')
+    await user.type(screen.getByLabelText('Client token'), 'client-token')
     await user.click(screen.getByRole('button', { name: 'Connect' }))
 
     expect(await screen.findByRole('heading', { name: 'Start a session' })).toBeInTheDocument()
     expect(screen.getByText(/Connected · Local environment/)).toBeInTheDocument()
-    expect(JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY) ?? '{}')).toMatchObject({
-      endpoint: 'http://127.0.0.1:43120',
-      environmentId: 'env-local',
-      label: 'Local environment',
+    expect(storedRegistry()).toMatchObject({
+      selectedId: 'env-local',
+      environments: [
+        {
+          environmentId: 'env-local',
+          label: 'Local environment',
+          endpoints: ['http://127.0.0.1:43120'],
+          credential: 'client-token',
+        },
+      ],
     })
   })
 
-  it('opens a session workspace after a stored environment is ready', async () => {
-    localStorage.setItem(
-      ENVIRONMENT_STORAGE_KEY,
-      JSON.stringify({
-        endpoint: 'http://127.0.0.1:43120',
+  it('merges a second URL for the same environment ID', async () => {
+    const user = userEvent.setup()
+    seedRegistry([
+      {
         environmentId: 'env-local',
-        label: 'Local environment',
-      }),
+        endpoints: ['http://127.0.0.1:43120'],
+        credential: 'client-token',
+      },
+    ])
+    mockBootstrap({
+      'http://127.0.0.1:43120': { environmentId: 'env-local', label: 'Local environment' },
+      'https://tunnel.example': { environmentId: 'env-local', label: 'Home lab' },
+    })
+
+    renderWebApp('/settings')
+    await user.type(await screen.findByLabelText('Environment endpoint'), 'https://tunnel.example')
+    await user.click(screen.getByRole('button', { name: 'Add environment' }))
+
+    expect(await screen.findByText('Home lab · Selected')).toBeInTheDocument()
+    expect(storedRegistry().environments).toEqual([
+      {
+        environmentId: 'env-local',
+        label: 'Home lab',
+        endpoints: ['https://tunnel.example', 'http://127.0.0.1:43120'],
+        credential: 'client-token',
+      },
+    ])
+  })
+
+  it('selects and removes saved environments without wiping the other records', async () => {
+    const user = userEvent.setup()
+    seedRegistry(
+      [
+        {
+          environmentId: 'env-a',
+          label: 'Home',
+          endpoints: ['http://127.0.0.1:43120'],
+        },
+        {
+          environmentId: 'env-b',
+          label: 'Lab',
+          endpoints: ['http://127.0.0.1:43121'],
+        },
+      ],
+      'env-a',
     )
+    mockBootstrap({
+      'http://127.0.0.1:43120': { environmentId: 'env-a', label: 'Home' },
+      'http://127.0.0.1:43121': { environmentId: 'env-b', label: 'Lab' },
+    })
+
+    renderWebApp('/settings')
+    expect(await screen.findByText('Home · Selected')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Select' }))
+    expect(await screen.findByText('Lab · Selected')).toBeInTheDocument()
+    expect(storedRegistry().selectedId).toBe('env-b')
+
+    await user.click(screen.getAllByRole('button', { name: 'Remove' })[0]!)
+    expect(screen.queryByText('Home · Selected')).not.toBeInTheDocument()
+    expect(screen.getByText('Lab · Selected')).toBeInTheDocument()
+    expect(storedRegistry().environments.map((item) => item.environmentId)).toEqual(['env-b'])
+  })
+
+  it('keeps saved environments when changing the selection', async () => {
+    const user = userEvent.setup()
+    seedRegistry([{ environmentId: 'env-local', endpoints: ['http://127.0.0.1:43120'] }])
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => ({
-        ok: true,
-        status: 200,
-        json: async () => ({
-          protocolVersion: 1,
-          environmentId: 'env-local',
-          capabilities: [],
-          label: 'Local environment',
-        }),
+        ok: false,
+        status: 403,
+        json: async () => ({ error: { code: 'auth', message: 'Origin is not allowed.' } }),
       })),
     )
+
+    renderWebApp('/')
+    expect(await screen.findByRole('heading', { name: 'Not authorized' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Change environment' }))
+    expect(await screen.findByRole('heading', { name: 'Select an environment' })).toBeInTheDocument()
+    expect(screen.getByText('Local environment')).toBeInTheDocument()
+    expect(storedRegistry().environments).toHaveLength(1)
+    expect(storedRegistry().selectedId).toBeNull()
+  })
+
+  it('opens a session workspace after a stored environment is ready', async () => {
+    seedRegistry([{ environmentId: 'env-local', endpoints: ['http://127.0.0.1:43120'] }])
+    mockBootstrap({
+      'http://127.0.0.1:43120': { environmentId: 'env-local', label: 'Local environment' },
+    })
 
     const user = userEvent.setup()
     renderWebApp('/')
@@ -103,10 +225,7 @@ describe('web routes', () => {
   })
 
   it('shows an in-shell unreachable banner instead of replacing the session', async () => {
-    localStorage.setItem(
-      ENVIRONMENT_STORAGE_KEY,
-      JSON.stringify({ endpoint: 'http://127.0.0.1:43120', environmentId: 'env-local' }),
-    )
+    seedRegistry([{ environmentId: 'env-local', endpoints: ['http://127.0.0.1:43120'] }])
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => {
@@ -120,25 +239,10 @@ describe('web routes', () => {
   })
 
   it('shows the not-found surface for unknown paths once connected', async () => {
-    localStorage.setItem(
-      ENVIRONMENT_STORAGE_KEY,
-      JSON.stringify({
-        endpoint: 'http://127.0.0.1:43120',
-        environmentId: 'env-local',
-      }),
-    )
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({
-        ok: true,
-        status: 200,
-        json: async () => ({
-          protocolVersion: 1,
-          environmentId: 'env-local',
-          capabilities: [],
-        }),
-      })),
-    )
+    seedRegistry([{ environmentId: 'env-local', endpoints: ['http://127.0.0.1:43120'] }])
+    mockBootstrap({
+      'http://127.0.0.1:43120': { environmentId: 'env-local' },
+    })
 
     renderWebApp('/missing')
     expect(await screen.findByRole('heading', { name: 'Page not found' })).toBeInTheDocument()

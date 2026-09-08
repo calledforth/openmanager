@@ -12,9 +12,16 @@ const nav = [
 
 export function AppShell() {
   const pathname = useRouterState({ select: (state) => state.location.pathname })
-  const { ui, connect, retry, changeEnvironment } = useConnection()
+  const { ui, connect, retry, changeEnvironment, selectEnvironment, removeEnvironment, environments, selectedId } =
+    useConnection()
   const ungated = pathname.startsWith('/playground/') || pathname === '/settings'
-  const handlers = { onConnect: connect, onRetry: retry, onChangeEnvironment: changeEnvironment }
+  const handlers = {
+    onConnect: connect,
+    onRetry: retry,
+    onChangeEnvironment: changeEnvironment,
+    onSelectEnvironment: selectEnvironment,
+    onRemoveEnvironment: removeEnvironment,
+  }
   const showScreen = !ungated && ui.surface === 'screen'
   const showBanner = !ungated && ui.surface === 'banner'
 
@@ -51,7 +58,16 @@ export function AppShell() {
       </aside>
       <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {showBanner ? <ConnectionBanner state={ui} handlers={handlers} /> : null}
-        {showScreen ? <ConnectionScreen state={ui} handlers={handlers} /> : <Outlet />}
+        {showScreen ? (
+          <ConnectionScreen
+            state={ui}
+            handlers={handlers}
+            environments={environments}
+            selectedId={selectedId}
+          />
+        ) : (
+          <Outlet />
+        )}
       </main>
     </div>
   )
