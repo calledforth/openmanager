@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  environmentBootstrapUrl,
   parseEnvironmentEndpoint,
   readStoredEnvironment,
   writeStoredEnvironment,
@@ -16,6 +17,12 @@ describe('parseEnvironmentEndpoint', () => {
     expect(parseEnvironmentEndpoint('not-a-url')).toBeNull()
     expect(parseEnvironmentEndpoint('ws://127.0.0.1:43120')).toBeNull()
     expect(parseEnvironmentEndpoint('http://user:pass@127.0.0.1:43120')).toBeNull()
+  })
+
+  it('joins bootstrap under a stored path prefix', () => {
+    const endpoint = parseEnvironmentEndpoint('https://host.example/openmanager/')
+    expect(endpoint).toBe('https://host.example/openmanager')
+    expect(environmentBootstrapUrl(endpoint!)).toBe('https://host.example/openmanager/bootstrap')
   })
 })
 

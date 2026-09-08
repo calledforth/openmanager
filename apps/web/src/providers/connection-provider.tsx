@@ -10,6 +10,7 @@ import {
 } from 'react'
 import { fetchBootstrap } from '../lib/bootstrap'
 import {
+  bootstrapOutcomeFromQuery,
   deriveConnectionUi,
   type BootstrapOutcome,
   type ConnectionUiState,
@@ -106,11 +107,10 @@ export function ConnectionProvider({
     },
   })
 
-  const liveBootstrap = useMemo<BootstrapOutcome>(() => {
-    if (!endpoint) return { status: 'idle' }
-    if (bootstrapQuery.isFetching || bootstrapQuery.data === undefined) return { status: 'loading' }
-    return bootstrapQuery.data
-  }, [bootstrapQuery.data, bootstrapQuery.isFetching, endpoint])
+  const liveBootstrap = useMemo(
+    () => bootstrapOutcomeFromQuery(endpoint !== null, bootstrapQuery.data),
+    [bootstrapQuery.data, endpoint],
+  )
 
   useEffect(() => {
     if (preview || liveBootstrap.status !== 'ready' || !stored) return

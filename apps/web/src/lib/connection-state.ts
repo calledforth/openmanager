@@ -72,6 +72,16 @@ export type DeriveConnectionInput = {
   transport: TransportStatus
 }
 
+/** Keep a cached bootstrap while a later fetch is in flight. */
+export function bootstrapOutcomeFromQuery(
+  hasEndpoint: boolean,
+  data: BootstrapOutcome | undefined,
+): BootstrapOutcome {
+  if (!hasEndpoint) return { status: 'idle' }
+  if (data === undefined) return { status: 'loading' }
+  return data
+}
+
 const ACTION_LABELS: Record<ConnectionAction, string> = {
   connect: 'Connect',
   retry: 'Retry',

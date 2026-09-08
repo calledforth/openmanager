@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { CONNECTION_STORIES, READY_CONNECTION_INPUT } from '../stories/connection-states'
-import { deriveConnectionUi } from './connection-state'
+import { bootstrapOutcomeFromQuery, deriveConnectionUi } from './connection-state'
 
 describe('deriveConnectionUi', () => {
   it('maps each story fixture to its named state and surface', () => {
@@ -63,6 +63,18 @@ describe('deriveConnectionUi', () => {
     })
     expect(ui).toMatchObject({ kind: 'reconnecting', surface: 'banner', action: 'retry' })
     expect(ui.description).toContain('session stays here')
+  })
+
+  it('keeps a cached bootstrap while a later fetch is in flight', () => {
+    const ready = {
+      status: 'ready' as const,
+      environmentId: 'env-local',
+      label: 'Local environment',
+      protocolVersion: 1,
+    }
+    expect(bootstrapOutcomeFromQuery(false, ready)).toEqual({ status: 'idle' })
+    expect(bootstrapOutcomeFromQuery(true, undefined)).toEqual({ status: 'loading' })
+    expect(bootstrapOutcomeFromQuery(true, ready)).toEqual(ready)
   })
 
   it('does not invent a failure from idle transport without an environment', () => {

@@ -4,10 +4,10 @@ import {
   type BootstrapResponse,
 } from '@openmanager/protocol'
 import type { BootstrapOutcome } from './connection-state'
+import { environmentBootstrapUrl } from './environment-store'
 
 export function bootstrapUrl(endpoint: string): string {
-  const base = endpoint.endsWith('/') ? endpoint : `${endpoint}/`
-  return new URL('bootstrap', base).href
+  return environmentBootstrapUrl(endpoint)
 }
 
 function readErrorMessage(body: unknown): string | undefined {

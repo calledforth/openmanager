@@ -27,6 +27,12 @@ export function parseEnvironmentEndpoint(raw: string): string | null {
   return url.origin + (url.pathname === '/' ? '' : url.pathname)
 }
 
+/** Join `/bootstrap` onto the stored endpoint, keeping any path prefix. */
+export function environmentBootstrapUrl(endpoint: string): string {
+  const base = endpoint.endsWith('/') ? endpoint : `${endpoint}/`
+  return new URL('bootstrap', base).href
+}
+
 export function readStoredEnvironment(storage?: Pick<Storage, 'getItem'>): StoredEnvironment | null {
   try {
     const raw = (storage ?? window.localStorage).getItem(ENVIRONMENT_STORAGE_KEY)
