@@ -1,4 +1,4 @@
-import { cleanup, screen } from '@testing-library/react'
+import { cleanup, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ENVIRONMENT_STORAGE_KEY } from './lib/environment-store'
@@ -208,6 +208,43 @@ describe('web routes', () => {
     expect(screen.getByText('Local environment')).toBeInTheDocument()
     expect(storedRegistry().environments).toHaveLength(1)
     expect(storedRegistry().selectedId).toBeNull()
+  })
+
+  it('does not restore a removed environment from an in-flight add', async () => {
+    const user = userEvent.setup()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    seedRegistry([{ environmentId: 'env-local', endpoints: ['http://127.0.0.1:43120'] }])
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('43121')) await gate
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            protocolVersion: 1,
+            environmentId: 'env-local',
+            capabilities: [],
+            label: 'Local environment',
+          }),
+        }
+      }),
+    )
+
+    renderWebApp('/settings')
+    expect(await screen.findByText('Local environment · Selected')).toBeInTheDocument()
+    await user.type(screen.getByLabelText('Environment endpoint'), 'http://127.0.0.1:43121')
+    await user.click(screen.getByRole('button', { name: 'Add environment' }))
+    await user.click(screen.getByRole('button', { name: 'Remove' }))
+    expect(storedRegistry().environments).toEqual([])
+    release()
+    await waitFor(() => {
+      expect(storedRegistry().environments).toEqual([])
+    })
   })
 
   it('opens a session workspace after a stored environment is ready', async () => {

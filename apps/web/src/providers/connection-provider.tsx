@@ -133,6 +133,9 @@ export function ConnectionProvider({
     enabled: !preview && endpoint !== null,
     queryFn: async () => {
       if (!endpoint) throw new Error('Missing environment endpoint')
+      // HTTP bootstrap is unauthenticated discovery. The stored credential is
+      // for the later WebSocket upgrade; sending Authorization here would
+      // preflight CORS and the environment server does not handle OPTIONS.
       return fetchBootstrap(endpoint)
     },
   })
@@ -153,6 +156,7 @@ export function ConnectionProvider({
       credential: pending?.credential,
     })
     if (!next) return
+    if (liveBootstrap.status === 'ready') setHasConnected(true)
     const unchanged = environmentRegistriesEqual(next, registry)
     if (unchanged && pending === null) return
     persist(next)
@@ -193,8 +197,8 @@ export function ConnectionProvider({
       const next = removeStoredEnvironment(registry, environmentId)
       if (selected?.environmentId === environmentId) {
         setHasConnected(false)
-        setPending(null)
       }
+      setPending(null)
       persist(next)
       setBootstrapNonce((value) => value + 1)
     },

@@ -75,6 +75,9 @@ function readOptionalLabel(bootstrap: BootstrapResponse): string | undefined {
 export async function fetchBootstrap(endpoint: string): Promise<BootstrapOutcome> {
   let response: Response
   try {
+    // Discovery is unauthenticated. Do not send the stored client token here:
+    // Authorization would force a CORS preflight, and GET /bootstrap does not
+    // require a credential (the token is for the later WebSocket upgrade).
     response = await fetch(bootstrapUrl(endpoint), {
       headers: { accept: 'application/json' },
     })
