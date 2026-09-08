@@ -307,6 +307,9 @@ importers:
 
   apps/server:
     dependencies:
+      '@agentpack/runtime':
+        specifier: workspace:*
+        version: link:../../packages/agent-runtime
       '@openmanager/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
