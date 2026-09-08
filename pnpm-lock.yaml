@@ -350,6 +350,9 @@ importers:
       '@fontsource/jetbrains-mono':
         specifier: ^5.2.5
         version: 5.2.8
+      '@openmanager/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
       '@phosphor-icons/react':
         specifier: ^2.1.10
         version: 2.1.10(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
