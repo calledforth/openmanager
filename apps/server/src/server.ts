@@ -1,10 +1,12 @@
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { BootstrapResponseSchema, PROTOCOL_VERSION } from '@openmanager/protocol/node'
+import { mountAgentRuntime } from './agent-runtime.ts'
 import type { ServerConfig } from './config.ts'
 import { validateOrigins } from './config.ts'
 import { loadClientToken } from './credential.ts'
 import { loadEnvironmentIdentity } from './identity.ts'
+import { createLogger } from './logger.ts'
 import { attachWebSocket, SOCKET_CAPABILITIES } from './websocket.ts'
 
 /** A loopback-only listener exposing public liveness and connection discovery. */
@@ -12,6 +14,7 @@ export async function startServer(config: ServerConfig) {
   const allowedOrigins = validateOrigins(config.allowedOrigins ?? [])
   const identity = await loadEnvironmentIdentity(config.dataDir)
   const token = await loadClientToken(config.dataDir)
+  const runtime = mountAgentRuntime(createLogger(config.logLevel))
   // Set after listen so port 0 advertises the actual port selected by the OS.
   let websocketUrl: string
   const bootstrap = () =>
@@ -64,6 +67,7 @@ export async function startServer(config: ServerConfig) {
     })
   } catch (error) {
     await sockets.close()
+    await runtime.shutdown()
     throw error
   }
   const address = server.address() as AddressInfo
@@ -71,6 +75,7 @@ export async function startServer(config: ServerConfig) {
   let closePromise: Promise<void> | undefined
   return {
     identity,
+    runtime,
     sockets,
     port: address.port,
     url: `http://127.0.0.1:${address.port}`,
@@ -81,7 +86,7 @@ export async function startServer(config: ServerConfig) {
           server.close((error) => (error ? reject(error) : resolve()))
           server.closeAllConnections()
         })
-        closePromise = Promise.all([socketClose, httpClose]).then(() => {})
+        closePromise = Promise.all([socketClose, httpClose, runtime.shutdown()]).then(() => {})
       }
       return closePromise
     },

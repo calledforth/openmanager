@@ -8,12 +8,17 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./node": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
     "./protocol": {
       "types": "./src/protocol/projectAgentEvent.ts",
       "default": "./src/protocol/projectAgentEvent.ts"
     }
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json && esbuild src/index.ts --bundle --platform=node --format=esm --packages=external --alias:@agentpack/contract=../agent-contract/src/index.ts --alias:@openmanager/protocol=../protocol/src/index.ts --alias:@openmanager/shared/contracts/provider-health=../shared/src/contracts/provider-health.ts --outfile=dist/index.js",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
@@ -23,12 +28,13 @@
     "@anthropic-ai/sdk": "0.115.0",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@opencode-ai/sdk": "1.18.3",
-    "@openmanager/shared": "workspace:*",
     "@openmanager/protocol": "workspace:*",
+    "@openmanager/shared": "workspace:*",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
+    "esbuild": "^0.28.2",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
   }

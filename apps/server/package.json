@@ -7,14 +7,15 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "dev": "pnpm --filter @openmanager/protocol build && node --watch src/main.ts",
-    "build": "pnpm --filter @openmanager/protocol build && tsc -p tsconfig.build.json",
+    "dev": "pnpm --filter @openmanager/protocol build && pnpm --filter @agentpack/runtime build && node --watch src/main.ts",
+    "build": "pnpm --filter @openmanager/protocol build && pnpm --filter @agentpack/runtime build && tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
-    "typecheck": "pnpm --filter @openmanager/protocol build && tsc --noEmit -p tsconfig.json",
+    "typecheck": "pnpm --filter @openmanager/protocol build && pnpm --filter @agentpack/runtime build && tsc --noEmit -p tsconfig.json",
     "lint": "eslint src tests vitest.config.ts",
     "test": "pnpm build && vitest run"
   },
   "dependencies": {
+    "@agentpack/runtime": "workspace:*",
     "@openmanager/protocol": "workspace:*",
     "ws": "8.21.0",
     "zod": "4.4.3"
