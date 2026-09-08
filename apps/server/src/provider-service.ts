@@ -26,6 +26,7 @@ export function createProviderService(
 ) {
   const listeners = new Set<(event: ReturnType<typeof healthEvent>) => void>()
   const previous = new Map<ProviderId, ProviderHealth>()
+  const inFlightProbes = new Map<ProviderId, Promise<unknown>>()
 
   for (const providerId of Object.keys(providerConfigs) as ProviderId[]) {
     previous.set(providerId, publicHealth(runtime.health.report(providerId)))
@@ -81,13 +82,19 @@ export function createProviderService(
       if (!hasProvider(providerConfigs, providerId)) {
         return Promise.resolve(errorResult(command.requestId, 'not_found', 'Provider not found.'))
       }
-      return runtime
-        .probeProvider({
-          providerId,
-          threadId: `desktop-bootstrap:${providerId}`,
-          workspaceId: cwd,
-          cwd,
-        })
+      let probe = inFlightProbes.get(providerId)
+      if (!probe) {
+        probe = runtime
+          .probeProvider({
+            providerId,
+            threadId: `desktop-bootstrap:${providerId}`,
+            workspaceId: cwd,
+            cwd,
+          })
+          .finally(() => inFlightProbes.delete(providerId))
+        inFlightProbes.set(providerId, probe)
+      }
+      return probe
         .then(() =>
           ProviderProbeResponseSchema.parse({
             type: 'response',

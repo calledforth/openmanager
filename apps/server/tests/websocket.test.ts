@@ -358,6 +358,38 @@ describe('handshake and scoped subscriptions', () => {
     expect(probe).not.toHaveBeenCalled()
   })
 
+  it('coalesces concurrent probes for the same provider', async () => {
+    const host = await setup()
+    const client = await connect(host)
+    await handshake(client)
+    let finishProbe!: () => void
+    const pendingProbe = new Promise<void>((resolve) => {
+      finishProbe = resolve
+    })
+    const probe = vi
+      .spyOn(host.server.runtime, 'probeProvider')
+      .mockReturnValue(pendingProbe as never)
+
+    const firstRequestId = client.command('provider.probe', {
+      providerId: 'cursor',
+      cwd: 'C:\\workspace',
+    })
+    const secondRequestId = client.command('provider.probe', {
+      providerId: 'cursor',
+      cwd: 'C:\\workspace',
+    })
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(1))
+    finishProbe()
+
+    const responses = [await client.next(), await client.next()]
+    expect(responses).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'response', requestId: firstRequestId }),
+        expect.objectContaining({ type: 'response', requestId: secondRequestId }),
+      ]),
+    )
+  })
+
   it.each(['graceful', 'abrupt'])(
     'releases all connection state on %s client close',
     async (mode) => {
