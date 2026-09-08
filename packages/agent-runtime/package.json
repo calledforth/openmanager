@@ -8,12 +8,17 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./node": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
     "./protocol": {
       "types": "./src/protocol/projectAgentEvent.ts",
       "default": "./src/protocol/projectAgentEvent.ts"
     }
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

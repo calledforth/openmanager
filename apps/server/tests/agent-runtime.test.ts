@@ -6,7 +6,7 @@ import {
   ProviderHealthMonitor,
   SessionReaper,
   providers,
-} from '@agentpack/runtime'
+} from '@agentpack/runtime/node'
 import { describe, expect, it, vi } from 'vitest'
 import { mountAgentRuntime } from '../src/agent-runtime.js'
 import { createLogger } from '../src/logger.js'

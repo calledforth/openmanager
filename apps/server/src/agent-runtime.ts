@@ -1,4 +1,4 @@
-import { AgentRuntime, providers, type HostLogEntry } from '@agentpack/runtime'
+import { AgentRuntime, providers, type HostLogEntry } from '@agentpack/runtime/node'
 import type { createLogger } from './logger.ts'
 
 export type ServerLogger = ReturnType<typeof createLogger>
