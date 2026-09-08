@@ -390,6 +390,29 @@ describe('handshake and scoped subscriptions', () => {
     )
   })
 
+  it('serializes probes for different workspaces without dropping either probe', async () => {
+    const host = await setup()
+    const client = await connect(host)
+    await handshake(client)
+    let finishFirstProbe!: () => void
+    const firstProbe = new Promise<void>((resolve) => {
+      finishFirstProbe = resolve
+    })
+    const probe = vi
+      .spyOn(host.server.runtime, 'probeProvider')
+      .mockReturnValueOnce(firstProbe as never)
+      .mockResolvedValueOnce({} as never)
+
+    client.command('provider.probe', { providerId: 'cursor', cwd: 'C:\\first' })
+    client.command('provider.probe', { providerId: 'cursor', cwd: 'C:\\second' })
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(1))
+    finishFirstProbe()
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2))
+
+    expect(probe.mock.calls.map(([route]) => route.cwd)).toEqual(['C:\\first', 'C:\\second'])
+    await Promise.all([client.next(), client.next()])
+  })
+
   it.each(['graceful', 'abrupt'])(
     'releases all connection state on %s client close',
     async (mode) => {

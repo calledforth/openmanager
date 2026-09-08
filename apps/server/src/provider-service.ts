@@ -12,6 +12,7 @@ import { providers, type AgentRuntime, type ProviderConfig } from '@agentpack/ru
 
 type ProviderId = keyof typeof providers
 type RuntimeHealthReport = ReturnType<AgentRuntime['health']['report']>
+const MAX_PENDING_PROBES_PER_PROVIDER = 8
 
 const errorResult = (requestId: string, code: ErrorCode, message: string) => ({
   type: 'error' as const,
@@ -26,7 +27,8 @@ export function createProviderService(
 ) {
   const listeners = new Set<(event: ReturnType<typeof healthEvent>) => void>()
   const previous = new Map<ProviderId, ProviderHealth>()
-  const inFlightProbes = new Map<ProviderId, Promise<unknown>>()
+  const pendingProbes = new Map<ProviderId, Map<string, Promise<unknown>>>()
+  const probeTails = new Map<ProviderId, Promise<void>>()
 
   for (const providerId of Object.keys(providerConfigs) as ProviderId[]) {
     previous.set(providerId, publicHealth(runtime.health.report(providerId)))
@@ -82,17 +84,36 @@ export function createProviderService(
       if (!hasProvider(providerConfigs, providerId)) {
         return Promise.resolve(errorResult(command.requestId, 'not_found', 'Provider not found.'))
       }
-      let probe = inFlightProbes.get(providerId)
+      const existingProviderProbes = pendingProbes.get(providerId)
+      const providerProbes = existingProviderProbes ?? new Map<string, Promise<unknown>>()
+      if (!existingProviderProbes) pendingProbes.set(providerId, providerProbes)
+      let probe = providerProbes.get(cwd)
       if (!probe) {
-        probe = runtime
-          .probeProvider({
+        if (providerProbes.size >= MAX_PENDING_PROBES_PER_PROVIDER) {
+          return Promise.resolve(
+            errorResult(command.requestId, 'unavailable', 'Provider probe queue is full.'),
+          )
+        }
+        const previousProbe = probeTails.get(providerId) ?? Promise.resolve()
+        probe = previousProbe.then(() =>
+          runtime.probeProvider({
             providerId,
             threadId: `desktop-bootstrap:${providerId}`,
             workspaceId: cwd,
             cwd,
-          })
-          .finally(() => inFlightProbes.delete(providerId))
-        inFlightProbes.set(providerId, probe)
+          }),
+        )
+        providerProbes.set(cwd, probe)
+        const tail = probe.then(
+          () => undefined,
+          () => undefined,
+        )
+        probeTails.set(providerId, tail)
+        void tail.then(() => {
+          if (providerProbes.get(cwd) === probe) providerProbes.delete(cwd)
+          if (providerProbes.size === 0) pendingProbes.delete(providerId)
+          if (probeTails.get(providerId) === tail) probeTails.delete(providerId)
+        })
       }
       return probe
         .then(() =>
