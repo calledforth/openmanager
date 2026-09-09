@@ -13,15 +13,15 @@ import {
   XIcon,
 } from '@phosphor-icons/react'
 import type { ProviderId } from '@agentpack/contract'
-import { cn } from '../../lib/utils'
-import { UI_FONTS, type UiFontId } from '../../lib/fonts'
+import { cn } from '@openmanager/app-core/lib/utils'
+import { UI_FONTS, type UiFontId } from '@openmanager/app-core/lib/fonts'
 import { describeProviderHealth, type ProviderHealthTone } from '../../lib/provider-health-view'
-import { typographyBodySm, typographyCaption, typographyLabel } from '../../lib/typography'
-import { useTheme, type ThemeMode } from '../../providers/theme-provider'
+import { typographyBodySm, typographyCaption, typographyLabel } from '@openmanager/app-core/lib/typography'
+import { useTheme, type ThemeMode } from '@openmanager/app-core/providers/theme-provider'
 import { useAppUi } from '../../providers/app-ui-provider'
-import { Tooltip } from '../ui/Tooltip'
-import { usePortaledMenu } from '../ui/usePortaledMenu'
-import { ProviderIcon } from '../providers/ProviderIcon'
+import { Tooltip } from '@openmanager/app-core/components/ui/Tooltip'
+import { usePortaledMenu } from '@openmanager/app-core/components/ui/usePortaledMenu'
+import { ProviderIcon } from '@openmanager/app-core/components/providers/ProviderIcon'
 
 const PROVIDER_TONE_CLASS: Record<ProviderHealthTone, string> = {
   ready: 'text-emerald-400',

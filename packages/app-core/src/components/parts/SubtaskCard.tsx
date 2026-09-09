@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { activityRow, activityDetailsSummary, ToolLine, ToolExpandedBody } from './ToolLine'
 import { typographyMonoCaption } from '../../lib/typography'
-import { useAppUi } from '../../providers/app-ui-provider'
+import { useViewActions } from '../../providers/view-actions'
 
 export interface SubtaskPartData {
   type: 'subtask'
@@ -48,12 +48,12 @@ export function subtaskVerb(status: string | undefined): string {
  * prompt/result, and — when the provider exposes the child as a loadable
  * session — navigation to its read-only transcript. */
 export function SubtaskCard({ part }: { part: SubtaskPartData }) {
-  const { activeSessionId, openChildSession } = useAppUi()
+  const { activeSessionId, openChildSession } = useViewActions()
   const [openError, setOpenError] = useState<string | null>(null)
   const isRunning = part.status === 'running' || part.status === 'pending'
   const verb = subtaskVerb(part.status)
   const detail = part.description ?? part.title ?? part.subagentType
-  const canOpen = Boolean(part.targetSessionId && activeSessionId)
+  const canOpen = Boolean(part.targetSessionId && activeSessionId && openChildSession)
 
   const chips = (
     <span className="ml-1.5 inline-flex items-center gap-1 align-middle">
@@ -84,7 +84,7 @@ export function SubtaskCard({ part }: { part: SubtaskPartData }) {
       className="mt-1 rounded border border-[var(--basis-border-muted)] px-1.5 py-0.5 text-ui-2xs text-[var(--basis-text-muted)] hover:text-[var(--basis-text)]"
       onClick={(event) => {
         event.preventDefault()
-        if (part.targetSessionId && activeSessionId) {
+        if (part.targetSessionId && activeSessionId && openChildSession) {
           setOpenError(null)
           void openChildSession(part.targetSessionId, activeSessionId).catch((error) => {
             setOpenError(error instanceof Error ? error.message : 'Unable to open transcript')

@@ -1,0 +1,1242 @@
+@import 'tailwindcss';
+@source '../';
+
+@theme {
+  /* ── Basis-aligned monochrome palette (Geist, 14px body) ── */
+
+  --color-background: var(--basis-canvas-bg);
+  --color-foreground: var(--basis-text);
+  --color-chat-emphasis: var(--basis-text-strong);
+  --color-canvas: var(--basis-canvas-bg);
+
+  --color-card: var(--basis-surface);
+  --color-card-foreground: var(--basis-text);
+
+  --color-popover: var(--basis-surface-elevated);
+  --color-popover-foreground: var(--basis-text);
+
+  --color-primary: var(--basis-text-strong);
+  --color-primary-foreground: var(--basis-canvas-bg);
+
+  --color-secondary: var(--basis-surface-elevated);
+  --color-secondary-foreground: var(--basis-text-muted);
+
+  --color-muted: var(--basis-surface-elevated);
+  --color-muted-foreground: var(--basis-text-muted);
+
+  --color-accent: var(--basis-surface-hover);
+  --color-accent-foreground: var(--basis-text);
+
+  --color-destructive: hsl(0 62% 50%);
+  --color-destructive-foreground: hsl(0 0% 95%);
+
+  --color-border: var(--basis-border);
+  --color-input: var(--basis-surface);
+  --color-ring: var(--basis-border);
+
+  --color-sidebar: var(--basis-canvas-bg);
+  --color-sidebar-foreground: var(--basis-text-muted);
+  --color-sidebar-primary: var(--basis-text-strong);
+  --color-sidebar-primary-foreground: var(--basis-canvas-bg);
+  --color-sidebar-accent: var(--basis-surface-elevated);
+  --color-sidebar-accent-foreground: var(--basis-text);
+  --color-sidebar-border: var(--basis-border-muted);
+
+  --color-surface-hover: var(--basis-surface-hover);
+  --color-surface-active: var(--basis-tab-active-bg);
+  --color-surface-raised: var(--basis-surface-elevated);
+  --color-text-tertiary: var(--basis-text-faint);
+  --color-badge-bg: var(--basis-surface-hover);
+
+  --color-input-bg: var(--basis-surface);
+  --color-input-bg-active: var(--basis-surface-elevated);
+  --color-input-border: var(--basis-border);
+  --color-input-border-focus: var(--basis-border);
+  --color-scrollbar: var(--basis-scrollbar-thumb);
+
+  --font-geist-sans: 'Geist Variable', 'Geist', ui-sans-serif, system-ui, sans-serif;
+  --font-inter-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-public-sans: 'Public Sans Variable', 'Public Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-system-sans:
+    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-sans: var(--font-geist-sans);
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --tracking-normal: 0.01em;
+  --tracking-ui: 0.01em;
+
+  --text-ui-2xs: 10px;
+  --text-ui-xs: 11px;
+  --text-ui-sm: 12px;
+  --text-ui-md: 13px;
+  --text-ui-base: 14px;
+
+  --leading-ui-normal: 1.6;
+  --leading-ui-relaxed: 1.75;
+
+  --radius: 0.375rem;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   §1  Self-hosted faces — Geist Variable + JetBrains Mono
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+@import '@fontsource-variable/geist';
+@import '@fontsource-variable/inter';
+@import '@fontsource-variable/public-sans';
+@import '@fontsource/jetbrains-mono/300.css';
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
+@import '@fontsource/jetbrains-mono/600.css';
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   §2  BASE — line rhythm & rendering (Geist; no Inter-only features)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+:root {
+  /* Tell Chromium form controls (caret, scrollbars, etc.) match dark UI. */
+  color-scheme: dark;
+  /* Basis design tokens — dark default */
+  --basis-canvas-bg: #141414;
+  --basis-surface: #1c1c1c;
+  --basis-surface-elevated: #212121;
+  --basis-surface-hover: #2a2a2a;
+  --basis-tab-active-bg: #242424;
+  --basis-border: #363636;
+  --basis-border-muted: #2e2e2e;
+  /* One step above --basis-border: the only outline strong enough to mark a
+     selected/focused control without adding a second visible line. */
+  --basis-border-strong: #4d4d4d;
+  --basis-font-size: 14px;
+  --basis-chat-font-size: 14px;
+  --basis-thought-font-size: 13px;
+  --basis-chat-text: #d0d0d0;
+  --basis-text: #d0d0d0;
+  --basis-text-strong: #e0e0e0;
+  --basis-text-muted: #8f8f8f;
+  --basis-text-faint: #6b6b6b;
+  --basis-action-bg: #e5e5e5;
+  --basis-action-fg: #111111;
+  --basis-action-hover: #f4f4f4;
+  --basis-accent-blue: #4f8ff7;
+  /* Session status ring — see SessionBusyLoader.tsx. */
+  --basis-session-cube: var(--basis-text-muted);
+  --basis-session-cube-needs: #d4a017;
+  --basis-session-cube-ready: #6fbf73;
+  --basis-scrollbar-track: transparent;
+  --basis-scrollbar-thumb: color-mix(in srgb, var(--basis-text-muted) 28%, transparent);
+  --basis-scrollbar-thumb-hover: color-mix(in srgb, var(--basis-text-muted) 48%, transparent);
+  --basis-scrollbar-size: 4px;
+  --basis-line-height: 1.75;
+  --basis-letter-spacing: 0.01em;
+  --basis-chat-shell-radius: 0.375rem;
+  --basis-titlebar-height: 32px;
+  --basis-sidebar-icons-width: 56px;
+  --basis-sidebar-width: 288px;
+  --basis-selection-bg: color-mix(in srgb, var(--basis-text-strong) 18%, var(--basis-canvas-bg));
+  --basis-selection-fg: var(--basis-text-strong);
+  --basis-chat-composer-border: var(--basis-border);
+  --basis-chat-user-border: var(--basis-border-muted);
+
+  --lh-tight: 1.3;
+  --lh-snug: 1.375;
+  --lh-default: 1.6;
+  --lh-readable: 1.625;
+  --lh-prose: 1.75;
+  --lh-loose: 1.9;
+  --chat-assistant-size: 14px;
+  --chat-user-size: 14px;
+
+  --bg-main: var(--basis-canvas-bg);
+  --bg-chat: var(--basis-canvas-bg);
+  --bg-gradient-start: color-mix(in srgb, var(--basis-canvas-bg) 95%, transparent);
+  --bg-gradient-mid: color-mix(in srgb, var(--basis-canvas-bg) 60%, transparent);
+  --accent-main: var(--basis-text-strong);
+  --accent-hover: var(--basis-text);
+  --accent-transparent: color-mix(in srgb, var(--basis-text) 10%, transparent);
+  --plan-toggle-bg: transparent;
+  --plan-toggle-border: 1px dashed var(--basis-border);
+  --plan-text: var(--basis-text-strong);
+  --build-toggle-bg: var(--basis-surface-hover);
+  --build-text: var(--basis-text-strong);
+  --send-plan-bg: transparent;
+  --send-plan-text: var(--basis-text-strong);
+  --send-plan-hover: var(--basis-surface-hover);
+  --send-plan-border: 1px dashed var(--basis-border);
+  --send-build-bg: var(--basis-action-bg);
+  --send-build-text: var(--basis-action-fg);
+  --send-build-hover: var(--basis-action-hover);
+  --panel-border-color: var(--basis-border);
+  --panel-border-style: solid;
+  --panel-border-width: 1px;
+  --tool-border-color: var(--basis-border-muted);
+  --tool-border-style: solid;
+  --tool-border-width: 1px;
+  --tool-bg: transparent;
+  --tool-bg-hover: transparent;
+  --tool-bg-active: transparent;
+  --tool-border-active: transparent;
+  --shimmer-anim: tool-shimmer-sweep 1.5s infinite;
+  --shimmer-bg: linear-gradient(
+    to right,
+    transparent,
+    color-mix(in srgb, var(--basis-text) 10%, transparent),
+    transparent
+  );
+  --radius-chat: var(--basis-chat-shell-radius);
+  --radius-panel: var(--basis-chat-shell-radius);
+  --radius-tool: var(--basis-chat-shell-radius);
+}
+
+html[data-theme='black'] {
+  color-scheme: dark;
+  --basis-canvas-bg: #090909;
+  --basis-surface: #111111;
+  --basis-surface-elevated: #161616;
+  --basis-surface-hover: #1c1c1c;
+  --basis-tab-active-bg: #141414;
+  --basis-border: #262626;
+  --basis-border-muted: #1f1f1f;
+  --basis-border-strong: #3a3a3a;
+  --basis-chat-text: #ffffff;
+  --basis-text: #ffffff;
+  --basis-text-strong: #ffffff;
+  --basis-text-muted: #a0a0a0;
+  --basis-text-faint: #858585;
+  --basis-chat-composer-border: transparent;
+  --basis-chat-user-border: transparent;
+  --basis-action-bg: #ffffff;
+  --basis-action-fg: #090909;
+  --basis-action-hover: #e8e8e8;
+  --basis-accent-blue: #3d73d4;
+  --basis-session-cube: var(--basis-text-muted);
+  --basis-session-cube-needs: #a07a12;
+  --basis-session-cube-ready: #4f9654;
+  --basis-scrollbar-thumb: color-mix(in srgb, var(--basis-text-muted) 28%, transparent);
+  --basis-scrollbar-thumb-hover: color-mix(in srgb, var(--basis-text-muted) 48%, transparent);
+}
+
+html[data-theme='light'] {
+  color-scheme: light;
+  --basis-canvas-bg: #f8f8f8;
+  --basis-surface: #fcfcfc;
+  --basis-surface-elevated: #f3f3f3;
+  --basis-surface-hover: #f3f3f3;
+  --basis-tab-active-bg: #e7e7e7;
+  --basis-border: #dedede;
+  --basis-border-muted: #e7e7e7;
+  --basis-border-strong: #b8b8b8;
+  --basis-chat-text: #2d2d2d;
+  --basis-text: #2d2d2d;
+  --basis-text-strong: #000000;
+  --basis-text-muted: #5f5f5f;
+  --basis-text-faint: #747474;
+  --basis-action-bg: #2a2a2a;
+  --basis-action-fg: #f3f3f3;
+  --basis-action-hover: #1f1f1f;
+  --basis-accent-blue: #1f6feb;
+  /* Session status ring — warmer amber / green read clearer on light canvas. */
+  --basis-session-cube: var(--basis-text-muted);
+  --basis-session-cube-needs: #b8860b;
+  --basis-session-cube-ready: #2f8f45;
+  --basis-scrollbar-thumb: #d9d9d9;
+  --basis-scrollbar-thumb-hover: #c4c4c4;
+}
+
+html[data-ui-font='geist'],
+html:not([data-ui-font]),
+html[data-ui-font='inter'] {
+  --basis-font-size: 14px;
+  --basis-chat-font-size: 14px;
+  --basis-line-height: 22.75px;
+  --basis-letter-spacing: normal;
+  --leading-ui-normal: 1.625;
+  --leading-ui-relaxed: 1.625;
+  --lh-default: 1.625;
+  --lh-readable: 1.625;
+  --lh-prose: 1.625;
+}
+
+html[data-ui-font='geist'],
+html:not([data-ui-font]) {
+  --font-sans: var(--font-geist-sans);
+}
+
+html[data-ui-font='inter'] {
+  --font-sans: var(--font-inter-sans);
+}
+
+html[data-ui-font='geist'],
+html:not([data-ui-font]),
+html[data-ui-font='inter'] body {
+  font-size: 14px;
+  line-height: 22.75px;
+  letter-spacing: normal;
+  font-weight: 450;
+  font-variation-settings: 'wght' 450;
+  font-feature-settings: normal;
+  font-style: normal;
+}
+
+html[data-ui-font='geist'],
+html:not([data-ui-font]),
+html[data-ui-font='inter'] .font-normal {
+  font-weight: 450;
+  font-variation-settings: 'wght' 450;
+}
+
+html[data-ui-font='public-sans'] {
+  --font-sans: var(--font-public-sans);
+}
+
+html[data-ui-font='system'] {
+  --font-sans: var(--font-system-sans);
+}
+
+html {
+  font-feature-settings: normal;
+  font-variation-settings: normal;
+  line-height: var(--lh-default);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background-color: var(--basis-selection-bg);
+  color: var(--basis-selection-fg);
+}
+
+::-moz-selection {
+  background-color: var(--basis-selection-bg);
+  color: var(--basis-selection-fg);
+}
+
+body {
+  background-color: var(--basis-canvas-bg);
+  color: var(--basis-text);
+  font-family: var(--font-sans);
+  font-size: var(--basis-font-size);
+  line-height: var(--basis-line-height);
+  letter-spacing: var(--basis-letter-spacing);
+  font-feature-settings: normal;
+  font-variation-settings: normal;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Keep defaults below component typography and per-instance utilities. */
+@layer base {
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-size: inherit;
+    font-weight: inherit;
+  }
+}
+
+/* Inherit font settings into form elements */
+button,
+input,
+select,
+textarea,
+::file-selector-button {
+  font: inherit;
+  font-feature-settings: inherit;
+  font-variation-settings: inherit;
+  letter-spacing: inherit;
+}
+
+/* Caret follows theme text (avoids white caret on light canvas). */
+input,
+textarea,
+[contenteditable='true'] {
+  caret-color: var(--basis-text);
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   §3  TYPE SCALE — aligned with agentic-chat-ui
+        Sizes: 10 / 11 / 12 / 13 / 14 / 15 px
+        Weights: 400 body & prose · 500 labels & nav · 600 only on 12px section bars (text-xs)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+
+/*
+ * Chat copy uses class names NOT starting with `text-` — in Tailwind v4, `text-*` is
+ * reserved for color utilities; `text-chat-body` can fail to apply or fight the cascade.
+ */
+.chat-assistant {
+  font-size: var(--chat-assistant-size);
+  font-weight: 400;
+  line-height: var(--lh-prose);
+  letter-spacing: var(--tracking-normal);
+  font-synthesis-weight: none;
+}
+
+/* Markdown block rhythm lives in §4 (.md) — do not add element rules here. */
+
+.chat-user :where(strong, b) {
+  font-weight: 400;
+  color: var(--color-chat-emphasis);
+}
+
+.chat-user {
+  font-size: var(--chat-user-size);
+  font-weight: 400;
+  line-height: var(--lh-readable);
+  letter-spacing: var(--tracking-normal);
+  font-synthesis-weight: none;
+}
+
+.leading-readable {
+  line-height: var(--lh-readable);
+}
+
+.leading-prose {
+  line-height: var(--lh-prose);
+}
+
+/* 10px — micro pills (model/workspace chips) */
+.text-10-medium {
+  font-size: 10px;
+  font-weight: 500;
+  line-height: var(--lh-default);
+  letter-spacing: var(--tracking-normal);
+}
+
+/* 11px — dropdown rows, Build/Plan, compact controls */
+.text-11-regular {
+  font-size: 11px;
+  font-weight: 400;
+  font-variation-settings: 'wght' 400;
+  line-height: var(--lh-default);
+  letter-spacing: var(--tracking-normal);
+}
+.text-11-medium {
+  font-size: 11px;
+  font-weight: 500;
+  line-height: var(--lh-default);
+  letter-spacing: var(--tracking-normal);
+}
+
+/* 12px — session titles, todo lines, secondary sidebar */
+.text-12-regular {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: var(--lh-tight);
+  letter-spacing: var(--tracking-normal);
+}
+.text-12-medium {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: var(--lh-default);
+  letter-spacing: var(--tracking-normal);
+}
+
+/* 13px — default UI density, composer input, logs, mono code blocks */
+.text-13-regular {
+  font-size: 13px;
+  font-weight: 400;
+  line-height: var(--lh-default);
+  letter-spacing: var(--tracking-normal);
+}
+.text-13-medium {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: var(--lh-default);
+  letter-spacing: var(--tracking-normal);
+}
+
+/* 14px — secondary content, tool rows */
+.text-14-regular {
+  font-size: 14px;
+  font-weight: 400;
+  line-height: var(--lh-default);
+  letter-spacing: var(--tracking-normal);
+}
+.text-14-medium {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: var(--lh-default);
+  letter-spacing: var(--tracking-normal);
+}
+
+/* 16px — section titles */
+.text-16-medium {
+  font-size: 16px;
+  font-weight: 500;
+  line-height: var(--lh-prose);
+  letter-spacing: var(--tracking-normal);
+}
+
+/* 20px — display */
+.text-20-medium {
+  font-size: 20px;
+  font-weight: 500;
+  line-height: var(--lh-loose);
+  letter-spacing: -0.02em;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    §4  MARKDOWN — the single styling layer for rendered markdown.
+    Scoped to `.md`, which components/markdown/Markdown.tsx applies. Every
+    surface that renders model output (chat, plan panel, …) goes through that
+    component, so this block is the ONLY place markdown typography is defined.
+    Lives in @layer components so per-instance Tailwind utilities still win.
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+@layer components {
+  .md {
+    font-family: var(--font-sans);
+    font-size: var(--chat-assistant-size);
+    font-weight: 400;
+    line-height: var(--lh-prose);
+    letter-spacing: var(--tracking-normal);
+    color: var(--basis-text);
+    font-synthesis-weight: none;
+    overflow-wrap: anywhere;
+  }
+
+  .md-dimmed {
+    color: var(--basis-text-muted);
+  }
+
+  /* Blocks never push past the message's own padding. */
+  .md > :first-child {
+    margin-top: 0;
+  }
+  .md > :last-child {
+    margin-bottom: 0;
+  }
+
+  /* ── Paragraphs ─────────────────────────────────────── */
+  .md p {
+    margin: 0 0 0.7em;
+  }
+
+  /* ── Headings — size + color carry the hierarchy ─────── */
+  .md h1,
+  .md h2,
+  .md h3,
+  .md h4,
+  .md h5,
+  .md h6 {
+    margin: 1.5em 0 0.5em;
+    font-weight: 500;
+    line-height: var(--lh-snug);
+    letter-spacing: var(--tracking-normal);
+    color: var(--basis-text-strong);
+  }
+  .md h1 {
+    font-size: 1.32em;
+  }
+  .md h2 {
+    font-size: 1.16em;
+  }
+  .md h3 {
+    font-size: 1.04em;
+  }
+  .md h4 {
+    font-size: 1em;
+    color: var(--basis-text);
+  }
+  .md h5,
+  .md h6 {
+    font-size: 0.9em;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--basis-text-muted);
+  }
+  /* Stacked headings shouldn't compound their top margins. */
+  .md :is(h1, h2, h3, h4, h5, h6) + :is(h1, h2, h3, h4, h5, h6) {
+    margin-top: 0.85em;
+  }
+
+  /* ── Lists — markers restored (preflight strips them) ── */
+  .md ul,
+  .md ol {
+    margin: 0.7em 0;
+    padding-left: 1.35em;
+  }
+  .md ul {
+    list-style: disc;
+  }
+  .md ul ul {
+    list-style: circle;
+  }
+  .md ul ul ul {
+    list-style: square;
+  }
+  .md ol {
+    list-style: decimal;
+  }
+  .md ol ol {
+    list-style: lower-alpha;
+  }
+  .md ol ol ol {
+    list-style: lower-roman;
+  }
+  .md li {
+    margin: 0.22em 0;
+    padding-left: 0.15em;
+  }
+  .md li::marker {
+    color: var(--basis-text-faint);
+    font-variant-numeric: tabular-nums;
+  }
+  /* Nested lists and list paragraphs tighten up rather than double-space. */
+  .md li > ul,
+  .md li > ol {
+    margin: 0.22em 0 0.1em;
+  }
+  .md li > p {
+    margin-bottom: 0.35em;
+  }
+  .md li > p:last-child {
+    margin-bottom: 0;
+  }
+
+  /* ── GFM task lists ─────────────────────────────────── */
+  .md .contains-task-list {
+    list-style: none;
+    padding-left: 0.15em;
+  }
+  .md .task-list-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5em;
+    padding-left: 0;
+  }
+  .md-check {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 13px;
+    height: 13px;
+    margin-top: 0.3em;
+    border: 1px solid var(--basis-border);
+    border-radius: 3px;
+    color: transparent;
+  }
+  .md-check-on {
+    background: var(--basis-text-strong);
+    border-color: var(--basis-text-strong);
+    color: var(--basis-canvas-bg);
+  }
+
+  /* ── Rules — a real divider, not a hairline ─────────── */
+  .md hr {
+    height: 1px;
+    margin: 1.6em 0;
+    border: 0;
+    background: linear-gradient(
+      90deg,
+      var(--basis-border),
+      color-mix(in srgb, var(--basis-border) 20%, transparent)
+    );
+  }
+
+  /* ── Quotes ─────────────────────────────────────────── */
+  .md blockquote {
+    margin: 0.9em 0;
+    padding: 0.1em 0 0.1em 0.9em;
+    border-left: 2px solid var(--basis-border);
+    color: var(--basis-text-muted);
+  }
+  .md blockquote > :last-child {
+    margin-bottom: 0;
+  }
+
+  /* ── Emphasis ───────────────────────────────────────── */
+  .md strong {
+    font-weight: 500;
+    color: var(--basis-text-strong);
+  }
+  .md em {
+    font-style: italic;
+  }
+  .md del {
+    text-decoration: line-through;
+    color: var(--basis-text-faint);
+  }
+
+  /* ── Links ──────────────────────────────────────────── */
+  .md a {
+    color: var(--basis-text-strong);
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--basis-text-strong) 35%, transparent);
+    text-underline-offset: 2px;
+  }
+  .md a:hover {
+    text-decoration-color: currentColor;
+  }
+
+  /* ── Inline code ────────────────────────────────────── */
+  .md :not(pre) > code {
+    font-family: var(--font-mono);
+    font-size: 0.875em;
+    padding: 0.1em 0.34em;
+    border: 1px solid var(--basis-border-muted);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--basis-text) 7%, transparent);
+    color: var(--basis-text-strong);
+  }
+
+  /* ── Code blocks ────────────────────────────────────── */
+  .md-code {
+    margin: 0.9em 0;
+    border: 1px solid var(--basis-border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--basis-surface);
+  }
+  .md-code-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5em;
+    min-height: 26px;
+    padding: 0.2em 0.35em 0.2em 0.75em;
+    border-bottom: 1px solid var(--basis-border-muted);
+    background: color-mix(in srgb, var(--basis-surface-elevated) 55%, transparent);
+  }
+  .md-code-lang {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--basis-text-faint);
+  }
+  .md-code pre {
+    margin: 0;
+    padding: 0.7em 0.85em;
+    overflow-x: auto;
+    font-size: 12.5px;
+    line-height: var(--lh-readable);
+    /* shiki writes a theme background inline; the shell owns it instead. */
+    background: transparent !important;
+  }
+  .md-code pre code {
+    display: block;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    font-family: var(--font-mono);
+    font-size: inherit;
+    color: inherit;
+  }
+
+  /* Dual-theme shiki: one render carries both palettes as custom properties. */
+  .md .shiki,
+  .md .shiki span {
+    color: var(--shiki-dark);
+  }
+  html[data-theme='light'] .md .shiki,
+  html[data-theme='light'] .md .shiki span {
+    color: var(--shiki-light);
+  }
+
+  /* ── Tables — scroll horizontally instead of overflowing ── */
+  .md table {
+    display: block;
+    width: max-content;
+    max-width: 100%;
+    overflow-x: auto;
+    margin: 1em 0;
+    font-size: 0.92em;
+    border: 1px solid var(--basis-border);
+    border-radius: 6px;
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+  .md th,
+  .md td {
+    padding: 0.4em 0.7em;
+    text-align: left;
+    border-bottom: 1px solid var(--basis-border-muted);
+  }
+  .md th {
+    font-weight: 500;
+    color: var(--basis-text-strong);
+    background: var(--basis-surface);
+  }
+  .md tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  /* ── Media ──────────────────────────────────────────── */
+  .md img {
+    max-width: 100%;
+    height: auto;
+    margin: 0.6em 0;
+    border: 1px solid var(--basis-border-muted);
+    border-radius: 6px;
+  }
+
+  /* ── Footnotes (GFM) ────────────────────────────────── */
+  .md .footnotes {
+    margin-top: 1.6em;
+    padding-top: 0.8em;
+    border-top: 1px solid var(--basis-border-muted);
+    font-size: 0.92em;
+    color: var(--basis-text-muted);
+  }
+}
+
+/* Composer fade scrim — Basis-style canvas gradient (no glass) */
+.chat-composer-fade {
+  background: linear-gradient(
+    to top,
+    var(--basis-canvas-bg) 0%,
+    color-mix(in srgb, var(--basis-canvas-bg) 88%, transparent) 28%,
+    color-mix(in srgb, var(--basis-canvas-bg) 45%, transparent) 58%,
+    transparent 100%
+  );
+}
+
+/* Subtle top edge fade under the titlebar */
+.chat-pane-top-fade {
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--basis-canvas-bg) 70%, transparent) 0%,
+    color-mix(in srgb, var(--basis-canvas-bg) 25%, transparent) 55%,
+    transparent 100%
+  );
+}
+
+@layer utilities {
+  .theme-btn-plan {
+    background-color: var(--send-plan-bg);
+    color: var(--send-plan-text);
+    border: var(--send-plan-border);
+  }
+  .theme-btn-plan:hover {
+    background-color: var(--send-plan-hover);
+  }
+  .theme-btn-build {
+    background-color: var(--send-build-bg);
+    color: var(--send-build-text);
+    border: 1px solid transparent;
+  }
+  .theme-btn-build:hover {
+    background-color: var(--send-build-hover);
+  }
+  .theme-toggle-plan {
+    background-color: var(--plan-toggle-bg);
+    border: var(--plan-toggle-border);
+  }
+  .theme-toggle-build {
+    background-color: var(--build-toggle-bg);
+    border: 1px solid transparent;
+  }
+  .theme-panel {
+    border-color: var(--panel-border-color);
+    border-style: var(--panel-border-style);
+    border-width: var(--panel-border-width, 1px);
+  }
+  .theme-tool {
+    border-color: var(--tool-border-color);
+    border-style: var(--tool-border-style);
+    border-width: var(--tool-border-width, 1px);
+    background-color: var(--tool-bg);
+  }
+  .theme-tool:hover {
+    background-color: var(--tool-bg-hover);
+  }
+  .theme-tool.active {
+    background-color: var(--tool-bg-active);
+    border-color: var(--tool-border-active);
+  }
+  .theme-rounded-tool {
+    border-radius: var(--radius-tool);
+  }
+  .shimmer-effect {
+    position: relative;
+    overflow: hidden;
+  }
+  .shimmer-effect::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: var(--shimmer-bg);
+    transform: skewX(-20deg) translateX(-150%);
+    pointer-events: none;
+  }
+  .shimmer-effect:hover::after,
+  .active-shimmer::after {
+    animation: var(--shimmer-anim);
+  }
+}
+
+@keyframes tool-shimmer-sweep {
+  0% {
+    transform: skewX(-20deg) translateX(-150%);
+  }
+  100% {
+    transform: skewX(-20deg) translateX(200%);
+  }
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   §5  ANIMATIONS & TRANSITIONS
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.transition-default {
+  transition: all 150ms ease-out;
+}
+
+.titlebar-drag {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.titlebar-no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+@keyframes chat-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes chat-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.chat-animate-fade-in {
+  animation: chat-fade-in 200ms ease-out;
+}
+
+@keyframes basis-tooltip-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Shared hover-tip bubble motion — see components/ui/Tooltip.tsx. */
+.basis-tooltip-in {
+  animation: basis-tooltip-in 110ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .basis-tooltip-in {
+    animation: chat-fade-in 110ms ease-out;
+  }
+}
+.chat-animate-slide-up {
+  animation: chat-slide-up 200ms ease-out;
+}
+
+/* Composer question slides — direction comes from --question-slide-from, set
+   inline so forward and backward navigation travel opposite ways. */
+@keyframes question-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--question-slide-from, 8px));
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.question-animate-slide {
+  animation: question-slide-in 150ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .question-animate-slide {
+    animation: chat-fade-in 150ms ease-out;
+  }
+}
+
+.chat-skeleton {
+  background: linear-gradient(
+    100deg,
+    color-mix(in srgb, var(--basis-surface-hover) 72%, transparent) 20%,
+    color-mix(in srgb, var(--basis-text-muted) 20%, var(--basis-surface-hover)) 42%,
+    color-mix(in srgb, var(--basis-surface-hover) 72%, transparent) 64%
+  );
+  background-size: 240% 100%;
+  animation: chat-skeleton-shimmer 1.8s ease-in-out infinite;
+}
+
+@keyframes chat-skeleton-shimmer {
+  0% {
+    background-position: 120% 0;
+  }
+  100% {
+    background-position: -120% 0;
+  }
+}
+
+/* Session status ring — 2×2 outline dots. Working spins via motion;
+ * needs / ready stay static (gold / green). See SessionBusyLoader.tsx. */
+.session-busy-ring {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(2, 1fr);
+  gap: 1.5px;
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  flex-shrink: 0;
+  place-items: stretch;
+}
+
+.session-busy-dot {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-width: 2px;
+  min-height: 2px;
+  border-radius: 9999px;
+  background: transparent;
+  border: 1px solid var(--basis-session-cube);
+}
+
+.session-busy-ring--needs .session-busy-dot {
+  border-color: var(--basis-session-cube-needs);
+}
+
+.session-busy-ring--ready .session-busy-dot {
+  border-color: var(--basis-session-cube-ready);
+}
+
+/* Soft stipple wash on the trailing ~10% of a needs/ready session row. */
+.session-row-dither {
+  pointer-events: none;
+  position: absolute;
+  inset-block: 0;
+  right: 0;
+  width: 10%;
+  min-width: 18px;
+  max-width: 36px;
+  background-image:
+    linear-gradient(
+      to left,
+      color-mix(in srgb, var(--session-dither-color) 22%, transparent),
+      transparent
+    ),
+    radial-gradient(
+      circle at center,
+      color-mix(in srgb, var(--session-dither-color) 70%, transparent) 0.55px,
+      transparent 0.65px
+    );
+  background-size:
+    100% 100%,
+    2.5px 2.5px;
+  -webkit-mask-image: linear-gradient(to left, black 15%, transparent 100%);
+  mask-image: linear-gradient(to left, black 15%, transparent 100%);
+  opacity: 0.9;
+}
+
+.session-row-dither--needs {
+  --session-dither-color: var(--basis-session-cube-needs);
+}
+
+.session-row-dither--ready {
+  --session-dither-color: var(--basis-session-cube-ready);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-skeleton,
+  .chat-animate-fade-in,
+  .chat-animate-slide-up {
+    animation: none;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.shimmer-text {
+  background: linear-gradient(90deg, hsl(0 0% 42%) 25%, hsl(0 0% 88%) 50%, hsl(0 0% 42%) 75%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 2s ease-in-out infinite;
+}
+
+.active-shimmer-text {
+  background: linear-gradient(
+    90deg,
+    var(--accent-hover) 0%,
+    var(--accent-main) 50%,
+    var(--accent-hover) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer-text-anim 2s linear infinite;
+}
+
+@keyframes shimmer-text-anim {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+.custom-loader {
+  width: 14px;
+  height: 14px;
+  border: 2px dotted currentColor;
+  border-radius: 50%;
+  display: inline-block;
+  position: relative;
+  box-sizing: border-box;
+  animation: rotation 2s linear infinite;
+}
+
+/* Compact arc spinner for in-progress composer todos */
+.todo-progress-loader {
+  width: 12px;
+  height: 12px;
+  display: inline-block;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-top-color: currentColor;
+  animation: todo-progress-spin 0.7s linear infinite;
+}
+
+@keyframes todo-progress-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes rotation {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .todo-progress-loader {
+    animation: none;
+    border-color: color-mix(in srgb, currentColor 28%, transparent);
+    border-top-color: currentColor;
+  }
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   §6  SCROLLBARS
+   Chrome 121+ / Electron: scrollbar-width/color OVERRIDE
+   ::-webkit-scrollbar-* and force the Windows fluent bar
+   (with up/down arrows). Keep standard props Firefox-only.
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+
+/* Firefox (no webkit scrollbar pseudos) */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--basis-scrollbar-thumb) var(--basis-scrollbar-track);
+  }
+}
+
+/* Chromium / Electron — custom classic scrollbar, no arrows */
+*::-webkit-scrollbar {
+  width: var(--basis-scrollbar-size);
+  height: var(--basis-scrollbar-size);
+  background: transparent;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-track-piece {
+  background: transparent;
+  border: none;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--basis-scrollbar-thumb);
+  border-radius: 999px;
+  border: none;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--basis-scrollbar-thumb-hover);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-button,
+*::-webkit-scrollbar-button:single-button,
+*::-webkit-scrollbar-button:double-button,
+*::-webkit-scrollbar-button:vertical:start:decrement,
+*::-webkit-scrollbar-button:vertical:end:increment,
+*::-webkit-scrollbar-button:horizontal:start:decrement,
+*::-webkit-scrollbar-button:horizontal:end:increment,
+*::-webkit-scrollbar-button:vertical:start:increment,
+*::-webkit-scrollbar-button:vertical:end:decrement,
+*::-webkit-scrollbar-button:horizontal:start:increment,
+*::-webkit-scrollbar-button:horizontal:end:decrement,
+*::-webkit-scrollbar-button:vertical:decrement,
+*::-webkit-scrollbar-button:vertical:increment,
+*::-webkit-scrollbar-button:horizontal:decrement,
+*::-webkit-scrollbar-button:horizontal:increment {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  border: none !important;
+  box-shadow: none !important;
+  -webkit-appearance: none !important;
+}
+
+.scrollbar-hide {
+  -ms-overflow-style: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+@supports not selector(::-webkit-scrollbar) {
+  .scrollbar-hide {
+    scrollbar-width: none;
+  }
+}
+
+/* .thin-scrollbar / .custom-scrollbar: call-site markers only; global webkit rules apply */

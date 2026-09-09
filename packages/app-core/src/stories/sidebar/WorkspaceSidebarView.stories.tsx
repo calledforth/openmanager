@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { ThemeProvider } from '../../providers/theme-provider'
-import { AppUiProvider } from '../../providers/app-ui-provider'
 import {
   WorkspaceSidebarView,
   type SidebarWorkspace,
@@ -86,7 +85,7 @@ function Demo({ collapsed }: { collapsed: boolean }) {
 
   return (
     <ThemeProvider>
-      <AppUiProvider>
+      <>
         <div className="h-screen w-screen bg-background">
           <WorkspaceSidebarView
             collapsed={isCollapsed}
@@ -103,11 +102,9 @@ function Demo({ collapsed }: { collapsed: boolean }) {
             onSelectSession={(_, id) => setActiveSessionId(id)}
             onDeleteSession={() => undefined}
             onAddWorkspace={() => undefined}
-            convexOpen={false}
-            onToggleConvex={() => undefined}
           />
         </div>
-      </AppUiProvider>
+      </>
     </ThemeProvider>
   )
 }

@@ -1,6 +1,6 @@
 import type { Preview } from '@storybook/react-vite'
 import React, { useEffect } from 'react'
-import '../src/renderer/src/styles/globals.css'
+import '../src/styles/globals.css'
 import './custom.css'
 
 const FontThemeDecorator = (Story, context) => {

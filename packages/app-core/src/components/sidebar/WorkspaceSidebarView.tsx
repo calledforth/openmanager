@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   PlusIcon,
   CaretDoubleLeftIcon,
@@ -15,14 +15,11 @@ import { cn } from '../../lib/utils'
 import { typographyBodySm, typographyLabel } from '../../lib/typography'
 import { ProviderIcon } from '../providers/ProviderIcon'
 import { Tooltip } from '../ui/Tooltip'
-import { SidebarSettingsMenu } from './SidebarSettingsMenu'
 import { SessionBusyLoader, sessionBusyTone } from './SessionBusyLoader'
 import { ProjectIcon } from './ProjectIcon'
 
 const SESSION_PREVIEW_LIMIT = 5
 const SESSION_PAGE_SIZE = 10
-const sidebarToggleShortcut =
-  typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin' ? '⌘B' : 'Ctrl+B'
 
 export interface SidebarSession {
   externalId: string
@@ -104,8 +101,8 @@ export function WorkspaceSidebarView({
   onSelectSession,
   onDeleteSession,
   onAddWorkspace,
-  convexOpen,
-  onToggleConvex,
+  settingsMenu,
+  sidebarToggleShortcut = 'Ctrl+B',
 }: {
   collapsed: boolean
   workspaces: SidebarWorkspace[]
@@ -118,8 +115,8 @@ export function WorkspaceSidebarView({
   onSelectSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
   onDeleteSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
   onAddWorkspace: () => void
-  convexOpen: boolean
-  onToggleConvex: () => void
+  settingsMenu?: ReactNode
+  sidebarToggleShortcut?: string
 }) {
   const collapsedSet = new Set(collapsedWorkspacePaths)
   const newThreadTarget = activeWorkspacePath ?? workspaces[0]?.path ?? null
@@ -209,9 +206,7 @@ export function WorkspaceSidebarView({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end px-2 py-1.5">
-          <SidebarSettingsMenu convexOpen={convexOpen} onToggleConvex={onToggleConvex} />
-        </div>
+        <div className="flex items-center justify-end px-2 py-1.5">{settingsMenu}</div>
       </div>
     </aside>
   )

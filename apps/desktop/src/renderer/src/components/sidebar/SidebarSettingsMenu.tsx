@@ -9,11 +9,11 @@ import {
   MoonIcon,
   SunIcon,
 } from '@phosphor-icons/react'
-import { cn } from '../../lib/utils'
-import { typographyCaption } from '../../lib/typography'
-import { useTheme } from '../../providers/theme-provider'
-import { Tooltip } from '../ui/Tooltip'
-import { usePortaledMenu } from '../ui/usePortaledMenu'
+import { cn } from '@openmanager/app-core/lib/utils'
+import { typographyCaption } from '@openmanager/app-core/lib/typography'
+import { useTheme } from '@openmanager/app-core/providers/theme-provider'
+import { Tooltip } from '@openmanager/app-core/components/ui/Tooltip'
+import { usePortaledMenu } from '@openmanager/app-core/components/ui/usePortaledMenu'
 import { ConvexSettingsDialog } from '../settings/ConvexSettingsDialog'
 import { ExtraSettingsDialog } from '../settings/ExtraSettingsDialog'
 import packageJson from '../../../../../package.json'

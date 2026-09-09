@@ -1,64 +1,15 @@
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from 'react'
-import type { PlanPhase, PlanReviewOutcome, PlanTodo } from '@agentpack/contract'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import type { PlanReviewOutcome } from '@agentpack/contract'
 import { api } from '@openmanager/convex/_generated/api'
 import { useTrackedQuery } from '../lib/convex-telemetry'
 import { useAppUi } from './app-ui-provider'
 
-export interface PlanRow {
-  requestId: string
-  name?: string
-  overview?: string
-  markdown: string
-  todos: PlanTodo[]
-  phases?: PlanPhase[]
-  status: string
-  resolutionReason?: string
-  createdAt: number
-  updatedAt: number
-}
-
-interface PlanStateValue {
-  activeSessionId: string | null
-  pendingPlan: PlanRow | null
-  latestPlan: PlanRow | null
-  planHistory: PlanRow[]
-  selectedPlan: PlanRow | null
-  selectPlan: (requestId: string) => void
-  /** Composer plan chip expanded to show the full plan body. */
-  isExpanded: boolean
-  expandPlan: () => void
-  collapsePlan: () => void
-  resolvePlan: (outcome: PlanReviewOutcome) => Promise<void>
-  /** Registered by MessageInput so Build runs the same accept + mode-switch
-   * + build-prompt flow from the composer chip. */
-  setBuildHandler: (handler: (() => void | Promise<void>) | null) => void
-  /** Build the pending plan through the registered handler (falls back to a
-   * plain accept when nothing is registered). */
-  buildPendingPlan: () => Promise<void>
-  isBuilding: boolean
-}
-
-const PlanStateContext = createContext<PlanStateValue | null>(null)
-
-export function usePlanState() {
-  const ctx = useContext(PlanStateContext)
-  if (!ctx) throw new Error('usePlanState must be used within PlanStateProvider')
-  return ctx
-}
-
-/** Safe variant for components also rendered outside the provider (e.g. Storybook). */
-export function usePlanStateOptional() {
-  return useContext(PlanStateContext)
-}
+import {
+  PlanStateContext,
+  type PlanRow,
+  type PlanStateValue,
+} from '@openmanager/app-core/providers/plan-provider'
+export * from '@openmanager/app-core/providers/plan-provider'
 
 export function PlanStateProvider({ children }: { children: ReactNode }) {
   const ui = useAppUi()
