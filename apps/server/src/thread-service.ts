@@ -123,6 +123,15 @@ export function createThreadService(
       environmentId = id
     },
 
+    resolveRuntimeSession(sessionId: string) {
+      const record = sessions.get(sessionId)
+      if (!record) return undefined
+      return record.runtimeSession.then((providerSessionId) => ({
+        ...route(record),
+        sessionId: providerSessionId,
+      }))
+    },
+
     dispatch(command: CommandEnvelope): unknown | undefined {
       if (command.name === 'session.create') {
         const parsed = ProofCommandSchemas['session.create'].safeParse(command)

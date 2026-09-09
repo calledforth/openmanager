@@ -19,6 +19,7 @@ export type ServerLogger = ReturnType<typeof createLogger>
 export function mountAgentRuntime(
   log: ServerLogger,
   emitEvent: HostDeps['emitEvent'] = () => undefined,
+  desiredSessionConfig?: HostDeps['desiredSessionConfig'],
 ): AgentRuntime {
   const runtime = new AgentRuntime(
     {
@@ -27,6 +28,7 @@ export function mountAgentRuntime(
       // the dedicated protocol projection boundary.
       emitEvent,
       log: (entry) => logRuntimeEntry(log, entry),
+      ...(desiredSessionConfig ? { desiredSessionConfig } : {}),
     },
     providers,
   )
