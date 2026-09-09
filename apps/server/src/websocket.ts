@@ -52,7 +52,7 @@ export function attachWebSocket(
     token: string
     allowedOrigins: readonly string[]
     bootstrap: () => BootstrapResponse
-    dispatchCommand?: (command: CommandEnvelope) => Promise<unknown> | undefined
+    dispatchCommand?: (command: CommandEnvelope) => unknown | Promise<unknown> | undefined
   },
 ) {
   const wss = new WebSocketServer({
