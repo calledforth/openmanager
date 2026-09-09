@@ -142,9 +142,11 @@ handshake and fresh subscriptions. Durable command recovery is not implemented.
 The `provider.discovery`, `provider.health`, and `provider.probe` capabilities
 expose server-owned provider discovery. `provider.probe` accepts a provider ID
 and workspace path, runs the existing `desktop-bootstrap:<provider>` probe path,
-and never creates a session runtime. Authenticated, handshaken clients receive
-`provider_health_changed` events when the public health snapshot transitions;
-the handshake bootstrap supplies the latest snapshot across reconnect gaps.
+and never creates a session runtime. Matching provider/workspace probes coalesce;
+distinct probes share one global tail so only one bootstrap CLI runs at a time.
+Authenticated, handshaken clients receive `provider_health_changed` events when
+the public health snapshot transitions; the handshake bootstrap supplies the
+latest snapshot across reconnect gaps.
 
 The embedding host calls `server.sockets.publish(record)` with an already
 persisted, protocol-valid `DurableEvent` to deliver `subscription.event` to matching

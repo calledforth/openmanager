@@ -413,6 +413,30 @@ describe('handshake and scoped subscriptions', () => {
     await Promise.all([client.next(), client.next()])
   })
 
+  it('serializes probes for different providers so only one CLI runs at a time', async () => {
+    const host = await setup()
+    const client = await connect(host)
+    await handshake(client)
+    let finishFirstProbe!: () => void
+    const firstProbe = new Promise<void>((resolve) => {
+      finishFirstProbe = resolve
+    })
+    const probe = vi
+      .spyOn(host.server.runtime, 'probeProvider')
+      .mockReturnValueOnce(firstProbe as never)
+      .mockResolvedValueOnce({} as never)
+
+    client.command('provider.probe', { providerId: 'cursor', cwd: 'C:\\workspace' })
+    client.command('provider.probe', { providerId: 'opencode', cwd: 'C:\\workspace' })
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(1))
+    expect(probe.mock.calls[0]?.[0].providerId).toBe('cursor')
+    finishFirstProbe()
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2))
+
+    expect(probe.mock.calls.map(([route]) => route.providerId)).toEqual(['cursor', 'opencode'])
+    await Promise.all([client.next(), client.next()])
+  })
+
   it.each(['graceful', 'abrupt'])(
     'releases all connection state on %s client close',
     async (mode) => {
