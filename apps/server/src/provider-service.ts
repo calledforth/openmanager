@@ -149,7 +149,7 @@ export function createProviderService(
         .then((result) => {
           // Test doubles and older embedders may only signal probe completion.
           // A real AgentRuntime returns the catalog-bearing bootstrap object.
-          if (result && typeof result === 'object') {
+          if (result && typeof result === 'object' && 'result' in result) {
             observeCatalog(providerId, result as Awaited<ReturnType<AgentRuntime['probeProvider']>>)
           }
           return ProviderProbeResponseSchema.parse({
