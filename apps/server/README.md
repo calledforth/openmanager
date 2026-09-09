@@ -160,16 +160,26 @@ Known missing, unauthenticated, or unhealthy providers are rejected without
 starting work. An accepted interrupt retains ownership if the prompt settles
 before cancellation is acknowledged and emits one protocol `turn.interrupted`
 event. If the cancellation request fails, the turn remains active to prevent
-concurrent provider work and permit another interrupt attempt; CAL-34 owns its
-eventual provider terminal event. Routing records are currently process-local
-and will move into the planned SQLite persistence service.
+concurrent provider work and permit another interrupt attempt; a later provider
+completion or failure emits the eventual terminal event. Routing records are
+currently process-local and will move into the planned SQLite persistence service.
 
-The embedding host calls `server.sockets.publish(record)` with an already
-persisted, protocol-valid `DurableEvent` to deliver `subscription.event` to matching
-subscriptions. The transport does not manufacture cursors, persist events, resolve
-resource existence or implement replay/snapshot commands. Those belong to the
-future domain/persistence services. The development credential authorizes all
-scopes in this environment; scoped subscriptions are routing, not per-resource ACLs.
+Raw runtime events pass through the provider-neutral projection boundary before
+delivery. The thread service resolves host turn/message/tool/interaction IDs and
+classifies terminal outcomes; provider IDs, native IDs, stop reasons, process
+details and diagnostic payloads do not cross that boundary. An unexpected
+process exit during an active turn emits `turn.failed` with a generic
+`provider_process_exited` or `provider_process_crashed` reason.
+
+The event service assigns a process epoch and contiguous sequence per exact scope,
+validates a `DurableEvent`, then invokes one append callback. The callback is the
+SQLite insertion seam and must commit before publishing. It currently publishes
+directly through `server.sockets.publish(record)` because the store is a later
+work item; consequently sequences reset after restart until that store owns the
+epoch and counters. The transport itself does not manufacture cursors, resolve
+resource existence or implement replay/snapshot commands. The development
+credential authorizes all scopes in this environment; scoped subscriptions are
+routing, not per-resource ACLs.
 
 Heartbeat uses the protocol's monotonic-clock helpers: a fresh application ping
 every 15 seconds after handshake, with 10 seconds to return its matching pong.

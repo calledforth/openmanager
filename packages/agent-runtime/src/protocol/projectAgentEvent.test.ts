@@ -168,6 +168,9 @@ describe('agent to environment protocol projection', () => {
       }
       const result = projectAgentEvent(source, context)
       expect(result?.name).toBe(recoverable ? 'turn.notice' : 'turn.failed')
+      if (!recoverable) {
+        expect(result?.payload).toMatchObject({ reason: 'provider_error' })
+      }
       expect(JSON.stringify(result)).not.toContain('secret')
       expect(projectAgentEvent(source, { ...context, turnId: undefined })).toBeNull()
     },
@@ -191,7 +194,7 @@ describe('agent to environment protocol projection', () => {
     )
     expect(() => projectAgentEvent(source, { ...context, turnId: undefined })).toThrow('turnId')
   })
-  it('keeps opaque extension requests and process details host-side', () => {
+  it('keeps opaque extension requests and idle process details host-side', () => {
     const extension: AgentEvent = {
       ...base,
       category: 'extension',
@@ -209,7 +212,39 @@ describe('agent to environment protocol projection', () => {
       data: { args: ['secret'] },
     }
     expect(projectAgentEvent(extension, context)).toBeNull()
-    expect(projectAgentEvent(process, context)).toBeNull()
+    expect(projectAgentEvent(process, { ...context, turnId: undefined })).toBeNull()
+    expect(projectAgentEvent(process, context)).toMatchObject({
+      name: 'turn.failed',
+      payload: {
+        turnId: 'host-turn',
+        reason: 'provider_process_exited',
+        message: 'The provider process exited before the turn completed.',
+      },
+    })
+    expect(JSON.stringify(projectAgentEvent(process, context))).not.toContain('secret')
+  })
+  it.each([
+    [
+      'auth_required',
+      { message: 'provider secret', loginHint: 'private account' },
+      'authentication_required',
+    ],
+    [
+      'capability_missing',
+      { capability: 'canCancelPrompt', operation: 'private operation', message: 'provider secret' },
+      'capability_missing',
+    ],
+  ] as const)('normalizes %s as a generic terminal failure', (event, data, reason) => {
+    const source = {
+      ...base,
+      category: 'error',
+      event,
+      data,
+    } as AgentEvent
+    const result = projectAgentEvent(source, context)
+    expect(result).toMatchObject({ name: 'turn.failed', payload: { reason } })
+    expect(JSON.stringify(result)).not.toContain('provider secret')
+    expect(JSON.stringify(result)).not.toContain('private')
   })
   it('preserves plan continuation so approval does not repeat a same-turn operation', () => {
     const source = fixtures.find((f) => f.event === 'plan_review_request')!
