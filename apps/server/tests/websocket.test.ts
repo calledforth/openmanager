@@ -473,6 +473,24 @@ describe('handshake and scoped subscriptions', () => {
     expect(ensure).not.toHaveBeenCalled()
   })
 
+  it('does not let a probe-only cwd failure disable session creation globally', async () => {
+    const host = await setup()
+    const spawnError = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })
+    host.server.runtime.health.beginProbe('opencode').failed(spawnError)
+    const client = await connect(host)
+    await handshake(client)
+    const ensure = vi.spyOn(host.server.runtime, 'ensureSession').mockResolvedValue({
+      sessionId: 'provider-session',
+      state: 'created',
+    })
+
+    const requestId = client.command('session.create', {
+      workspaceId: 'another-workspace',
+    })
+    expect(await client.next()).toMatchObject({ type: 'response', requestId })
+    await vi.waitFor(() => expect(ensure).toHaveBeenCalledTimes(1))
+  })
+
   it('coalesces concurrent probes for the same provider', async () => {
     const host = await setup()
     const client = await connect(host)

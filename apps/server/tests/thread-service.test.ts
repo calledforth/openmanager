@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentRuntime } from '@agentpack/runtime/node'
+import { ProofResponseSchemas, type EventEnvelope } from '@openmanager/protocol/node'
 import { createThreadService } from '../src/thread-service.js'
 
 describe('thread command provider routing', () => {
@@ -34,5 +35,213 @@ describe('thread command provider routing', () => {
       error: { code: 'not_found', message: 'Provider not found.' },
     })
     expect(runtime.ensureSession).not.toHaveBeenCalled()
+  })
+
+  it('rolls back host identities and publishes deletion when session startup fails', async () => {
+    const runtime = {
+      ensureSession: vi.fn().mockRejectedValue(new Error('spawn failed')),
+      prompt: vi.fn(),
+      cancel: vi.fn(),
+    } as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>
+    const events: EventEnvelope[] = []
+    const service = createThreadService(runtime, { rejection: () => undefined }, (event) =>
+      events.push(event),
+    )
+    service.setEnvironmentId('environment-1')
+
+    const created = ProofResponseSchemas['session.create'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'create-1',
+        name: 'session.create',
+        payload: { workspaceId: '/workspace/project' },
+      }),
+    )
+    await vi.waitFor(() =>
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          name: 'session.deleted',
+          payload: { sessionId: created.payload.session.sessionId },
+        }),
+      ),
+    )
+
+    expect(
+      service.dispatch({
+        type: 'command',
+        requestId: 'open-1',
+        name: 'session.open',
+        payload: { sessionId: created.payload.session.sessionId },
+      }),
+    ).toMatchObject({ type: 'error', error: { code: 'not_found' } })
+  })
+
+  it('publishes a terminal failure and releases the turn when cancellation fails', async () => {
+    const runtime = {
+      ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-session', state: 'created' }),
+      prompt: vi.fn(() => new Promise(() => undefined)),
+      cancel: vi.fn().mockRejectedValue(new Error('cancel failed')),
+    } as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>
+    const events: EventEnvelope[] = []
+    const service = createThreadService(runtime, { rejection: () => undefined }, (event) =>
+      events.push(event),
+    )
+    service.setEnvironmentId('environment-1')
+    const created = ProofResponseSchemas['session.create'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'create-1',
+        name: 'session.create',
+        payload: { workspaceId: '/workspace/project' },
+      }),
+    )
+    const sent = ProofResponseSchemas['turn.send'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'send-1',
+        name: 'turn.send',
+        payload: {
+          sessionId: created.payload.session.sessionId,
+          threadId: created.payload.thread.threadId,
+          text: 'Run',
+        },
+      }),
+    )
+
+    expect(
+      service.dispatch({
+        type: 'command',
+        requestId: 'interrupt-1',
+        name: 'turn.interrupt',
+        payload: {
+          sessionId: created.payload.session.sessionId,
+          threadId: created.payload.thread.threadId,
+          turnId: sent.payload.turn.turnId,
+        },
+      }),
+    ).toMatchObject({ type: 'response', requestId: 'interrupt-1' })
+    await vi.waitFor(() =>
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          name: 'turn.failed',
+          payload: {
+            turnId: sent.payload.turn.turnId,
+            message: 'The turn could not be interrupted.',
+          },
+        }),
+      ),
+    )
+
+    expect(
+      service.dispatch({
+        type: 'command',
+        requestId: 'send-2',
+        name: 'turn.send',
+        payload: {
+          sessionId: created.payload.session.sessionId,
+          threadId: created.payload.thread.threadId,
+          text: 'Retry',
+        },
+      }),
+    ).toMatchObject({ type: 'response', requestId: 'send-2' })
+  })
+
+  it('ignores delayed completion from an interrupted turn after a new turn starts', async () => {
+    const runtime = {
+      ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-session', state: 'created' }),
+      prompt: vi.fn(() => new Promise(() => undefined)),
+      cancel: vi.fn().mockResolvedValue(undefined),
+    } as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>
+    const events: EventEnvelope[] = []
+    const service = createThreadService(runtime, { rejection: () => undefined }, (event) =>
+      events.push(event),
+    )
+    service.setEnvironmentId('environment-1')
+    const created = ProofResponseSchemas['session.create'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'create-1',
+        name: 'session.create',
+        payload: { workspaceId: '/workspace/project' },
+      }),
+    )
+    const target = {
+      sessionId: created.payload.session.sessionId,
+      threadId: created.payload.thread.threadId,
+    }
+    const first = ProofResponseSchemas['turn.send'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'send-1',
+        name: 'turn.send',
+        payload: { ...target, text: 'First' },
+      }),
+    )
+    service.onRuntimeEvent({
+      id: 'event-1',
+      seq: 1,
+      timestamp: '2026-09-09T00:00:00Z',
+      providerId: 'opencode',
+      threadId: target.threadId,
+      workspaceId: '/workspace/project',
+      sessionId: 'provider-session',
+      messageId: 'assistant-1',
+      category: 'lifecycle',
+      event: 'prompt_started',
+      data: { prompt: 'First', userMessageId: first.payload.userMessage.messageId },
+    })
+    service.dispatch({
+      type: 'command',
+      requestId: 'interrupt-1',
+      name: 'turn.interrupt',
+      payload: { ...target, turnId: first.payload.turn.turnId },
+    })
+    await vi.waitFor(() =>
+      expect(events).toContainEqual(expect.objectContaining({ name: 'turn.interrupted' })),
+    )
+
+    const second = ProofResponseSchemas['turn.send'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'send-2',
+        name: 'turn.send',
+        payload: { ...target, text: 'Second' },
+      }),
+    )
+    service.onRuntimeEvent({
+      id: 'event-2',
+      seq: 2,
+      timestamp: '2026-09-09T00:00:01Z',
+      providerId: 'opencode',
+      threadId: target.threadId,
+      workspaceId: '/workspace/project',
+      sessionId: 'provider-session',
+      messageId: 'assistant-2',
+      category: 'lifecycle',
+      event: 'prompt_started',
+      data: { prompt: 'Second', userMessageId: second.payload.userMessage.messageId },
+    })
+    service.onRuntimeEvent({
+      id: 'event-3',
+      seq: 3,
+      timestamp: '2026-09-09T00:00:02Z',
+      providerId: 'opencode',
+      threadId: target.threadId,
+      workspaceId: '/workspace/project',
+      sessionId: 'provider-session',
+      messageId: 'assistant-1',
+      category: 'lifecycle',
+      event: 'prompt_completed',
+      data: { stopReason: 'cancelled' },
+    })
+
+    expect(
+      service.dispatch({
+        type: 'command',
+        requestId: 'send-3',
+        name: 'turn.send',
+        payload: { ...target, text: 'Must conflict' },
+      }),
+    ).toMatchObject({ type: 'error', error: { code: 'conflict' } })
   })
 })

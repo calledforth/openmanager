@@ -78,18 +78,23 @@ export function createProviderService(
         return { code: 'not_found', message: 'Provider not found.' }
       }
       const health = runtime.health.report(providerId).health
+      // A probe is launched in one workspace. ENOENT from spawn cannot tell a
+      // missing executable from a missing cwd, so a probe-only failure is not
+      // evidence that this provider is unavailable in every workspace. An
+      // actual session runtime failure is provider-wide and remains a gate.
+      const probeOnlyFailure =
+        health.runtime.state === 'never_started' &&
+        (health.lastProbe?.outcome === 'failed' || health.lastProbe?.outcome === 'timeout')
       if (health.auth.state === 'unauthenticated' || health.auth.state === 'error') {
         return { code: 'auth', message: 'Provider authentication is required.' }
       }
-      if (health.install.state === 'missing' || health.install.state === 'unusable') {
+      if (
+        !probeOnlyFailure &&
+        (health.install.state === 'missing' || health.install.state === 'unusable')
+      ) {
         return { code: 'unavailable', message: 'Provider executable is unavailable.' }
       }
-      if (
-        health.runtime.state === 'failed' ||
-        health.runtime.state === 'degraded' ||
-        health.lastProbe?.outcome === 'failed' ||
-        health.lastProbe?.outcome === 'timeout'
-      ) {
+      if (health.runtime.state === 'failed' || health.runtime.state === 'degraded') {
         return { code: 'unavailable', message: 'Provider is unhealthy.' }
       }
       return undefined

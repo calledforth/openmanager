@@ -29,6 +29,7 @@ type ActiveTurn = {
   turn: Turn
   userMessage: Message
   interruptRequested: boolean
+  runtimeMessageId?: string
 }
 type ThreadRecord = {
   session: Session
@@ -97,6 +98,40 @@ export function createThreadService(
     )
   }
 
+  const emitTurnFailed = (record: ThreadRecord, turnId: string) => {
+    publishEvent(
+      ProofEventSchemas['turn.failed'].parse({
+        type: 'event',
+        name: 'turn.failed',
+        eventId: randomUUID(),
+        timestamp: new Date().toISOString(),
+        scope: {
+          type: 'thread',
+          environmentId,
+          sessionId: record.session.sessionId,
+          threadId: record.thread.threadId,
+        },
+        payload: { turnId, message: 'The turn could not be interrupted.' },
+      }),
+    )
+  }
+
+  const rollbackSession = (record: ThreadRecord) => {
+    if (sessions.get(record.session.sessionId) !== record) return
+    sessions.delete(record.session.sessionId)
+    if (threads.get(record.thread.threadId) === record) threads.delete(record.thread.threadId)
+    publishEvent(
+      ProofEventSchemas['session.deleted'].parse({
+        type: 'event',
+        name: 'session.deleted',
+        eventId: randomUUID(),
+        timestamp: new Date().toISOString(),
+        scope: { type: 'environment', environmentId },
+        payload: { sessionId: record.session.sessionId },
+      }),
+    )
+  }
+
   // The environment identity is supplied after construction so the service
   // can be assembled before the WebSocket publisher exists.
   let environmentId = ''
@@ -138,7 +173,7 @@ export function createThreadService(
         }
         sessions.set(session.sessionId, record)
         threads.set(thread.threadId, record)
-        void record.runtimeSession.catch(() => undefined)
+        void record.runtimeSession.catch(() => rollbackSession(record))
         return ProofResponseSchemas['session.create'].parse({
           type: 'response',
           requestId: command.requestId,
@@ -280,6 +315,7 @@ export function createThreadService(
             if (record.activeTurn?.turn.turnId !== active.turn.turnId) return
             active.turn.state = 'failed'
             record.activeTurn = undefined
+            emitTurnFailed(record, active.turn.turnId)
           })
         return ProofResponseSchemas['turn.interrupt'].parse({
           type: 'response',
@@ -292,10 +328,23 @@ export function createThreadService(
     },
 
     onRuntimeEvent(event: RuntimeEvent) {
+      if (event.event === 'prompt_started') {
+        const active = threads.get(event.threadId)?.activeTurn
+        if (!active || event.data.userMessageId !== active.userMessage.messageId) return
+        active.runtimeMessageId = event.messageId
+        return
+      }
       if (event.event !== 'prompt_completed') return
       const record = threads.get(event.threadId)
       const active = record?.activeTurn
-      if (!record || !active) return
+      if (
+        !record ||
+        !active ||
+        !active.runtimeMessageId ||
+        event.messageId !== active.runtimeMessageId
+      ) {
+        return
+      }
       const interrupted =
         active.interruptRequested || /abort|cancel|interrupt/i.test(event.data.stopReason ?? '')
       active.turn.state = interrupted ? 'interrupted' : 'completed'
