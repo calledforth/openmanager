@@ -19,6 +19,7 @@ describe('thread command provider routing', () => {
             : undefined,
       },
       vi.fn(),
+      undefined,
       () => ({ providerId: 'missing', cwd: '/workspace/project' }),
     )
 
@@ -252,5 +253,78 @@ describe('thread command provider routing', () => {
         payload: { ...target, text: 'Must conflict' },
       }),
     ).toMatchObject({ type: 'error', error: { code: 'conflict' } })
+  })
+
+  it('turns a provider crash into one generic terminal failure', async () => {
+    const runtime = {
+      ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-session', state: 'created' }),
+      prompt: vi.fn(() => new Promise(() => undefined)),
+      cancel: vi.fn(),
+    } as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>
+    const events: EventEnvelope[] = []
+    const service = createThreadService(runtime, { rejection: () => undefined }, (event) =>
+      events.push(event),
+    )
+    service.setEnvironmentId('environment-1')
+    const created = ProofResponseSchemas['session.create'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'create-1',
+        name: 'session.create',
+        payload: { workspaceId: '/workspace/project' },
+      }),
+    )
+    const sent = ProofResponseSchemas['turn.send'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'send-1',
+        name: 'turn.send',
+        payload: {
+          sessionId: created.payload.session.sessionId,
+          threadId: created.payload.thread.threadId,
+          text: 'Run',
+        },
+      }),
+    )
+    const runtimeBase = {
+      providerId: 'opencode' as const,
+      threadId: created.payload.thread.threadId,
+      workspaceId: '/workspace/project',
+      sessionId: 'provider-session',
+      messageId: 'runtime-message',
+    }
+    service.onRuntimeEvent({
+      ...runtimeBase,
+      id: 'provider-start',
+      seq: 41,
+      timestamp: '2026-09-09T00:00:00Z',
+      category: 'lifecycle',
+      event: 'prompt_started',
+      data: { prompt: 'Run', userMessageId: sent.payload.userMessage.messageId },
+    })
+    service.onRuntimeEvent({
+      ...runtimeBase,
+      id: 'provider-exit',
+      seq: 42,
+      timestamp: '2026-09-09T00:00:01Z',
+      category: 'lifecycle',
+      event: 'process_exited',
+      data: { exitCode: null, signal: 'SECRET_PROVIDER_SIGNAL', expected: false },
+    })
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        name: 'turn.failed',
+        payload: {
+          turnId: sent.payload.turn.turnId,
+          reason: 'provider_process_crashed',
+          message: 'The provider process crashed before the turn completed.',
+        },
+      }),
+    )
+    const wire = JSON.stringify(events)
+    expect(wire).not.toContain('SECRET_PROVIDER_SIGNAL')
+    expect(wire).not.toContain('provider-exit')
+    expect(wire).not.toContain('"seq":42')
   })
 })

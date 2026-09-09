@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client'
 import { ConvexProvider } from 'convex/react'
 import App from './App'
 import { createConvexClient } from './lib/convex'
-import { ThemeProvider } from './providers/theme-provider'
+import { ThemeProvider } from '@openmanager/app-core/providers/theme-provider'
 import { ConvexConfigurationRequired } from './components/settings/ConvexSettingsDialog'
 
 try {

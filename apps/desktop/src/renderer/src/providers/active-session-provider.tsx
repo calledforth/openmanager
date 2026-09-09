@@ -18,8 +18,8 @@ import {
 } from '@openmanager/shared/lib/stream-reconstruction'
 import { trackedConvexQuery, useTrackedQuery } from '../lib/convex-telemetry'
 import { useAppUi } from './app-ui-provider'
-import type { UploadedImageAttachment } from '../lib/attachments'
-import { promptAttachment } from '../lib/attachments'
+import type { UploadedImageAttachment } from '@openmanager/app-core/lib/attachments'
+import { promptAttachment } from '@openmanager/app-core/lib/attachments'
 
 interface MessagePart {
   type: string

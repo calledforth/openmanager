@@ -9,8 +9,8 @@ import {
   XIcon,
 } from '@phosphor-icons/react'
 import type { RuntimeConfig } from '../../../../shared/runtime-config'
-import { cn } from '../../lib/utils'
-import { typographyBodySm, typographyCaption, typographyLabel } from '../../lib/typography'
+import { cn } from '@openmanager/app-core/lib/utils'
+import { typographyBodySm, typographyCaption, typographyLabel } from '@openmanager/app-core/lib/typography'
 
 type RequestState = 'idle' | 'testing' | 'success' | 'saving' | 'error'
 

@@ -12,6 +12,7 @@ import {
   PROVIDER_DISCOVERY_CAPABILITY,
   PROVIDER_HEALTH_CAPABILITY,
   PROVIDER_PROBE_CAPABILITY,
+  type DurableEvent,
   type EventEnvelope,
 } from '@openmanager/protocol/node'
 import { providers, type HostDeps, type ProviderBootstrap as RuntimeProviderBootstrap } from '@agentpack/runtime/node'
@@ -22,6 +23,7 @@ import type { ServerConfig } from './config.ts'
 import { validateOrigins } from './config.ts'
 import { loadClientToken } from './credential.ts'
 import { loadEnvironmentIdentity } from './identity.ts'
+import { createEventService } from './event-service.ts'
 import { createLogger } from './logger.ts'
 import { createProviderService } from './provider-service.ts'
 import { createThreadService } from './thread-service.ts'
@@ -62,9 +64,14 @@ export async function startServer(config: ServerConfig) {
   const providerService = createProviderService(runtime, providers, (providerId, result) =>
     observeProviderCatalog(providerId, result),
   )
+  let publishDurableEvent: (record: DurableEvent) => void = () => undefined
   let publishThreadEvent: (event: EventEnvelope) => void = () => undefined
-  const threadService = createThreadService(runtime, providerService, (event) =>
-    publishThreadEvent(event),
+  const eventService = createEventService((record) => publishDurableEvent(record))
+  const threadService = createThreadService(
+    runtime,
+    providerService,
+    (event) => eventService.append(event),
+    (event) => publishThreadEvent(event),
   )
   const composerService = createComposerService(
     runtime,
@@ -129,6 +136,7 @@ export async function startServer(config: ServerConfig) {
       providerService.dispatch(command) ??
       composerService.dispatch(command),
   })
+  publishDurableEvent = (record) => sockets.publish(record)
   publishThreadEvent = (event) => sockets.publishEvent(event)
   const stopHealthEvents = providerService.onHealthChanged((event) => sockets.publishEvent(event))
   try {

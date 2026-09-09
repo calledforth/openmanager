@@ -7,14 +7,18 @@ import {
   type ErrorCode,
   type EventEnvelope,
   type Message,
+  type ProofEvent,
   type Session,
   type Thread,
+  type TurnFailureReason,
   type Turn,
 } from '@openmanager/protocol/node'
 import {
+  projectAgentEvent,
   providers,
   type AgentRuntime,
   type HostDeps,
+  type ProtocolEventContext,
   type RuntimeSessionArgs,
 } from '@agentpack/runtime/node'
 
@@ -30,6 +34,8 @@ type ActiveTurn = {
   userMessage: Message
   interruptRequested: boolean
   runtimeMessageId?: string
+  toolIds: Map<string, string>
+  interactionIds: Map<string, string>
 }
 type ThreadRecord = {
   session: Session
@@ -58,7 +64,8 @@ const errorResult = (requestId: string, code: ErrorCode, message: string) => ({
 export function createThreadService(
   runtime: Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
   providerGate: ProviderGate,
-  publishEvent: (event: EventEnvelope) => void,
+  appendEvent: (event: ProofEvent) => void,
+  publishTransient: (event: EventEnvelope) => void = () => undefined,
   resolveWorkspace: WorkspaceRuntimeResolver = (workspaceId) => ({
     providerId: 'opencode',
     cwd: workspaceId,
@@ -66,6 +73,9 @@ export function createThreadService(
 ) {
   const sessions = new Map<string, ThreadRecord>()
   const threads = new Map<string, ThreadRecord>()
+  // Supplied after construction so the service can be assembled before the
+  // WebSocket publisher exists.
+  let environmentId = ''
 
   const route = (record: ThreadRecord, sessionId?: string): RuntimeSessionArgs => ({
     providerId: record.providerId,
@@ -74,6 +84,13 @@ export function createThreadService(
     cwd: record.cwd,
     ...(sessionId ? { sessionId } : {}),
   })
+  const threadScope = (record: ThreadRecord) =>
+    ({
+      type: 'thread',
+      environmentId,
+      sessionId: record.session.sessionId,
+      threadId: record.thread.threadId,
+    }) as const
 
   const rejectProvider = (requestId: string, providerId: string) => {
     const rejection = providerGate.rejection(providerId)
@@ -81,7 +98,7 @@ export function createThreadService(
   }
 
   const emitInterrupted = (record: ThreadRecord, turnId: string) => {
-    publishEvent(
+    appendEvent(
       ProofEventSchemas['turn.interrupted'].parse({
         type: 'event',
         name: 'turn.interrupted',
@@ -98,11 +115,50 @@ export function createThreadService(
     )
   }
 
+  const emitCompleted = (record: ThreadRecord, turnId: string) => {
+    appendEvent(
+      ProofEventSchemas['turn.completed'].parse({
+        type: 'event',
+        name: 'turn.completed',
+        eventId: randomUUID(),
+        timestamp: new Date().toISOString(),
+        scope: threadScope(record),
+        payload: { turnId },
+      }),
+    )
+  }
+
+  const emitFailed = (
+    record: ThreadRecord,
+    turnId: string,
+    reason: TurnFailureReason = 'provider_error',
+  ) => {
+    appendEvent(
+      ProofEventSchemas['turn.failed'].parse({
+        type: 'event',
+        name: 'turn.failed',
+        eventId: randomUUID(),
+        timestamp: new Date().toISOString(),
+        scope: threadScope(record),
+        payload: {
+          turnId,
+          reason,
+          message:
+            reason === 'provider_process_crashed'
+              ? 'The provider process crashed before the turn completed.'
+              : reason === 'provider_process_exited'
+                ? 'The provider process exited before the turn completed.'
+                : 'The provider failed to complete the turn.',
+        },
+      }),
+    )
+  }
+
   const rollbackSession = (record: ThreadRecord) => {
     if (sessions.get(record.session.sessionId) !== record) return
     sessions.delete(record.session.sessionId)
     if (threads.get(record.thread.threadId) === record) threads.delete(record.thread.threadId)
-    publishEvent(
+    appendEvent(
       ProofEventSchemas['session.deleted'].parse({
         type: 'event',
         name: 'session.deleted',
@@ -114,9 +170,64 @@ export function createThreadService(
     )
   }
 
-  // The environment identity is supplied after construction so the service
-  // can be assembled before the WebSocket publisher exists.
-  let environmentId = ''
+  const stableId = (ids: Map<string, string>, providerId: string | undefined) => {
+    if (!providerId) return undefined
+    let hostId = ids.get(providerId)
+    if (!hostId) {
+      hostId = randomUUID()
+      ids.set(providerId, hostId)
+    }
+    return hostId
+  }
+
+  const projectRuntimeEvent = (
+    record: ThreadRecord,
+    event: RuntimeEvent,
+    active: ActiveTurn | undefined,
+    completionState?: ProtocolEventContext['completionState'],
+    failureReason?: TurnFailureReason,
+  ) => {
+    const providerToolId =
+      event.event === 'tool_call' ||
+      event.event === 'tool_call_update' ||
+      event.event === 'tool_call_content'
+        ? event.data.toolCallId
+        : event.event === 'permission_request'
+          ? event.data.toolCall.toolCallId
+          : undefined
+    const providerInteractionId =
+      event.event === 'permission_request' ||
+      event.event === 'permission_resolved' ||
+      event.event === 'question_request' ||
+      event.event === 'question_resolved' ||
+      event.event === 'plan_review_request' ||
+      event.event === 'plan_review_resolved'
+        ? event.data.requestId
+        : undefined
+    const messageId =
+      event.event === 'prompt_started' || event.event === 'user_message_chunk'
+        ? active?.userMessage.messageId
+        : active?.runtimeMessageId
+    const projected = projectAgentEvent(event, {
+      eventId: randomUUID(),
+      environmentId,
+      workspaceId: record.session.workspaceId,
+      sessionId: record.session.sessionId,
+      threadId: record.thread.threadId,
+      sessionTitle: record.session.title,
+      turnId: active?.turn.turnId,
+      messageId,
+      interactionId: active
+        ? stableId(active.interactionIds, providerInteractionId)
+        : undefined,
+      toolCallId: active ? stableId(active.toolIds, providerToolId) : undefined,
+      completionState,
+      failureReason,
+    })
+    if (!projected) return
+    if (projected.name === 'turn.notice') publishTransient(projected)
+    else appendEvent(projected)
+  }
 
   return {
     setEnvironmentId(id: string) {
@@ -232,7 +343,14 @@ export function createThreadService(
         }
         record.turns.push(turn)
         record.messages.push(userMessage)
-        record.activeTurn = { turn, userMessage, interruptRequested: false }
+        const active: ActiveTurn = {
+          turn,
+          userMessage,
+          interruptRequested: false,
+          toolIds: new Map(),
+          interactionIds: new Map(),
+        }
+        record.activeTurn = active
         void record.runtimeSession
           .then((sessionId) =>
             runtime.prompt({
@@ -246,20 +364,22 @@ export function createThreadService(
           )
           .then(() => {
             if (
-              record.activeTurn?.turn.turnId === turn.turnId &&
-              !record.activeTurn.interruptRequested &&
+              record.activeTurn === active &&
+              !active.interruptRequested &&
               turn.state === 'running'
             ) {
+              emitCompleted(record, turn.turnId)
               turn.state = 'completed'
               record.activeTurn = undefined
             }
           })
           .catch(() => {
             if (
-              record.activeTurn?.turn.turnId === turn.turnId &&
-              !record.activeTurn.interruptRequested &&
+              record.activeTurn === active &&
+              !active.interruptRequested &&
               turn.state === 'running'
             ) {
+              emitFailed(record, turn.turnId)
               turn.state = 'failed'
               record.activeTurn = undefined
             }
@@ -321,28 +441,79 @@ export function createThreadService(
     },
 
     onRuntimeEvent(event: RuntimeEvent) {
+      const record = threads.get(event.threadId)
+      if (!record) return
+
       if (event.event === 'prompt_started') {
-        const active = threads.get(event.threadId)?.activeTurn
+        const active = record.activeTurn
         if (!active || event.data.userMessageId !== active.userMessage.messageId) return
         active.runtimeMessageId = event.messageId
+        projectRuntimeEvent(record, event, active)
         return
       }
-      if (event.event !== 'prompt_completed') return
-      const record = threads.get(event.threadId)
-      const active = record?.activeTurn
+
+      const active = record.activeTurn
+      const turnScoped =
+        event.event === 'prompt_completed' ||
+        event.category === 'stream' ||
+        event.category === 'tool' ||
+        event.category === 'permission' ||
+        event.event === 'question_request' ||
+        event.event === 'question_resolved' ||
+        event.event === 'plan_review_request' ||
+        event.event === 'plan_review_resolved' ||
+        event.event === 'plan_update' ||
+        event.event === 'subtask_update' ||
+        event.category === 'error' ||
+        event.event === 'process_exited'
       if (
-        !record ||
-        !active ||
-        !active.runtimeMessageId ||
-        event.messageId !== active.runtimeMessageId
+        turnScoped &&
+        (!active ||
+          !active.runtimeMessageId ||
+          (event.messageId !== undefined && event.messageId !== active.runtimeMessageId))
       ) {
         return
       }
-      const interrupted =
-        active.interruptRequested || /abort|cancel|interrupt/i.test(event.data.stopReason ?? '')
-      active.turn.state = interrupted ? 'interrupted' : 'completed'
-      record.activeTurn = undefined
-      if (interrupted) emitInterrupted(record, active.turn.turnId)
+
+      if (!active) {
+        projectRuntimeEvent(record, event, undefined)
+        return
+      }
+
+      if (event.event === 'prompt_completed') {
+        const interrupted =
+          active.interruptRequested || /abort|cancel|interrupt/i.test(event.data.stopReason ?? '')
+        projectRuntimeEvent(record, event, active, interrupted ? 'interrupted' : 'completed')
+        active.turn.state = interrupted ? 'interrupted' : 'completed'
+        record.activeTurn = undefined
+        return
+      }
+
+      if (event.event === 'process_exited') {
+        const interrupted = active.interruptRequested
+        const reason: TurnFailureReason =
+          event.data.signal || event.data.exitCode === null
+            ? 'provider_process_crashed'
+            : 'provider_process_exited'
+        projectRuntimeEvent(record, event, active, interrupted ? 'interrupted' : 'failed', reason)
+        active.turn.state = interrupted ? 'interrupted' : 'failed'
+        record.activeTurn = undefined
+        return
+      }
+
+      if (
+        event.event === 'auth_required' ||
+        event.event === 'capability_missing' ||
+        ((event.event === 'rpc_error' || event.event === 'runtime_error') &&
+          event.data.recoverable !== true)
+      ) {
+        projectRuntimeEvent(record, event, active, 'failed')
+        active.turn.state = 'failed'
+        record.activeTurn = undefined
+        return
+      }
+
+      projectRuntimeEvent(record, event, active)
     },
   }
 }

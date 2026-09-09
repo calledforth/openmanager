@@ -1,0 +1,393 @@
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import {
+  PlusIcon,
+  CaretDoubleLeftIcon,
+  CaretDownIcon,
+  FolderPlusIcon,
+  FolderSimpleIcon,
+  FolderOpenIcon,
+  TrashIcon,
+  NotePencilIcon,
+  GitBranchIcon,
+} from '@phosphor-icons/react'
+import type { ProviderId } from '@agentpack/contract'
+import { cn } from '../../lib/utils'
+import { typographyBodySm, typographyLabel } from '../../lib/typography'
+import { ProviderIcon } from '../providers/ProviderIcon'
+import { Tooltip } from '../ui/Tooltip'
+import { SessionBusyLoader, sessionBusyTone } from './SessionBusyLoader'
+import { ProjectIcon } from './ProjectIcon'
+
+const SESSION_PREVIEW_LIMIT = 5
+const SESSION_PAGE_SIZE = 10
+
+export interface SidebarSession {
+  externalId: string
+  title?: string
+  status: string
+  providerId?: ProviderId
+  parentExternalId?: string
+}
+
+export interface SidebarWorkspace {
+  path: string
+  name: string
+  sessions: SidebarSession[]
+}
+
+export interface SidebarSessionRow {
+  session: SidebarSession
+  depth: number
+  isChild: boolean
+  isOrphan: boolean
+}
+
+/** Sessions that should stay visible when their project is collapsed —
+ * anything still in flight, waiting on the user, or finished but unread. */
+export function isSidebarSessionActive(status: string): boolean {
+  return status === 'running' || status === 'busy' || status === 'waiting' || status === 'done'
+}
+
+/** Preserve recency order within each level while placing child transcripts
+ * directly beneath their parent. Missing parents and cycles remain visible. */
+export function flattenSidebarSessions(sessions: SidebarSession[]): SidebarSessionRow[] {
+  const byId = new Map(sessions.map((session) => [session.externalId, session]))
+  const children = new Map<string, SidebarSession[]>()
+  const roots: SidebarSession[] = []
+  for (const session of sessions) {
+    if (session.parentExternalId && byId.has(session.parentExternalId)) {
+      const siblings = children.get(session.parentExternalId) ?? []
+      siblings.push(session)
+      children.set(session.parentExternalId, siblings)
+    } else {
+      roots.push(session)
+    }
+  }
+
+  const rows: SidebarSessionRow[] = []
+  const visited = new Set<string>()
+  const visit = (session: SidebarSession, depth: number, isOrphan: boolean) => {
+    if (visited.has(session.externalId)) return
+    visited.add(session.externalId)
+    rows.push({
+      session,
+      depth,
+      isChild: !!session.parentExternalId,
+      isOrphan,
+    })
+    for (const child of children.get(session.externalId) ?? []) {
+      visit(child, depth + 1, false)
+    }
+  }
+
+  for (const root of roots) {
+    visit(root, 0, !!root.parentExternalId)
+  }
+  for (const session of sessions) {
+    if (!visited.has(session.externalId)) visit(session, 0, true)
+  }
+  return rows
+}
+
+export function WorkspaceSidebarView({
+  collapsed,
+  workspaces,
+  activeWorkspacePath,
+  activeSessionId,
+  collapsedWorkspacePaths,
+  onToggleWorkspaceCollapse,
+  onCollapse,
+  onCreateSession,
+  onSelectSession,
+  onDeleteSession,
+  onAddWorkspace,
+  settingsMenu,
+  sidebarToggleShortcut = 'Ctrl+B',
+}: {
+  collapsed: boolean
+  workspaces: SidebarWorkspace[]
+  activeWorkspacePath: string | null
+  activeSessionId: string | null
+  collapsedWorkspacePaths: string[]
+  onToggleWorkspaceCollapse: (path: string) => void
+  onCollapse?: () => void
+  onCreateSession: (workspacePath: string) => void
+  onSelectSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
+  onDeleteSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
+  onAddWorkspace: () => void
+  settingsMenu?: ReactNode
+  sidebarToggleShortcut?: string
+}) {
+  const collapsedSet = new Set(collapsedWorkspacePaths)
+  const newThreadTarget = activeWorkspacePath ?? workspaces[0]?.path ?? null
+
+  return (
+    <aside
+      className={cn(
+        'group/sidebar relative flex h-full shrink-0 flex-col overflow-hidden border-r border-[var(--basis-border-muted)] bg-[var(--basis-canvas-bg)] transition-[width] duration-300 ease-in-out',
+        collapsed ? 'w-0 border-r-0' : 'w-[var(--basis-sidebar-width)]',
+      )}
+      aria-hidden={collapsed}
+    >
+      <div className={cn('flex min-h-0 flex-1 flex-col', collapsed && 'invisible')}>
+        <div className="relative flex h-[var(--basis-titlebar-height)] shrink-0 items-center justify-end px-1.5">
+          {onCollapse && (
+            <Tooltip
+              content="Close sidebar"
+              shortcut={sidebarToggleShortcut}
+              side="bottom"
+              align="end"
+            >
+              <button
+                type="button"
+                onClick={onCollapse}
+                aria-label="Close sidebar"
+                className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--basis-text-strong)] opacity-0 transition-default hover:bg-[color-mix(in_srgb,var(--basis-text-strong)_14%,transparent)] group-hover/sidebar:opacity-100 focus-visible:opacity-100"
+              >
+                <CaretDoubleLeftIcon weight="light" className="h-[16px] w-[18px]" />
+              </button>
+            </Tooltip>
+          )}
+        </div>
+
+        <div className="px-1.5 pb-1">
+          <button
+            type="button"
+            disabled={!newThreadTarget}
+            onClick={() => {
+              if (newThreadTarget) onCreateSession(newThreadTarget)
+            }}
+            className={cn(
+              typographyBodySm,
+              'flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-[var(--basis-text)] transition-default hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-40',
+            )}
+          >
+            <NotePencilIcon className="h-3.5 w-3.5 shrink-0" weight="regular" />
+            <span>New Agent</span>
+          </button>
+        </div>
+
+        <div className="flex items-center gap-1 px-3 pb-1.5 pt-1">
+          <span className={cn(typographyBodySm, 'min-w-0 flex-1 text-[var(--basis-text-muted)]')}>
+            Projects
+          </span>
+          <Tooltip content="Add project" side="bottom" align="end">
+            <button
+              type="button"
+              onClick={onAddWorkspace}
+              aria-label="Add project"
+              className="flex h-6 w-6 items-center justify-center rounded text-[var(--basis-text-muted)] transition-default hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]"
+            >
+              <FolderPlusIcon className="h-5 w-5" weight="regular" />
+            </button>
+          </Tooltip>
+        </div>
+
+        {/* Project list */}
+        <div className="flex-1 overflow-y-auto px-1.5 pb-3">
+          {workspaces.length === 0 && (
+            <div className={cn(typographyBodySm, 'px-3 py-5 text-center text-muted-foreground')}>
+              No projects yet
+            </div>
+          )}
+          {workspaces.map((ws) => (
+            <WorkspaceGroup
+              key={ws.path}
+              workspace={ws}
+              isActiveWorkspace={ws.path === activeWorkspacePath}
+              activeSessionId={activeSessionId}
+              isCollapsed={collapsedSet.has(ws.path)}
+              onToggleCollapse={() => onToggleWorkspaceCollapse(ws.path)}
+              onSelectSession={onSelectSession}
+              onCreateSession={onCreateSession}
+              onDeleteSession={onDeleteSession}
+            />
+          ))}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-end px-2 py-1.5">{settingsMenu}</div>
+      </div>
+    </aside>
+  )
+}
+
+function WorkspaceGroup({
+  workspace,
+  isActiveWorkspace,
+  activeSessionId,
+  isCollapsed,
+  onToggleCollapse,
+  onSelectSession,
+  onCreateSession,
+  onDeleteSession,
+}: {
+  workspace: SidebarWorkspace
+  isActiveWorkspace: boolean
+  activeSessionId: string | null
+  isCollapsed: boolean
+  onToggleCollapse: () => void
+  onSelectSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
+  onCreateSession: (workspacePath: string) => void
+  onDeleteSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
+}) {
+  const [visibleCount, setVisibleCount] = useState(SESSION_PREVIEW_LIMIT)
+  const FolderIcon = isCollapsed ? FolderSimpleIcon : FolderOpenIcon
+  const orderedSessions = useMemo(
+    () => flattenSidebarSessions(workspace.sessions),
+    [workspace.sessions],
+  )
+  const activeSessions = useMemo(
+    () => orderedSessions.filter(({ session }) => isSidebarSessionActive(session.status)),
+    [orderedSessions],
+  )
+  const hasMoreSessions = !isCollapsed && orderedSessions.length > visibleCount
+  const visibleSessions = isCollapsed ? activeSessions : orderedSessions.slice(0, visibleCount)
+
+  useEffect(() => {
+    if (isCollapsed) setVisibleCount(SESSION_PREVIEW_LIMIT)
+  }, [isCollapsed])
+
+  useEffect(() => {
+    if (isCollapsed || !isActiveWorkspace || !activeSessionId) return
+    const activeIndex = orderedSessions.findIndex(
+      ({ session }) => session.externalId === activeSessionId,
+    )
+    if (activeIndex >= 0) {
+      setVisibleCount((count) => Math.max(count, activeIndex + 1))
+    }
+  }, [isCollapsed, isActiveWorkspace, activeSessionId, orderedSessions])
+
+  return (
+    <div className="mb-0">
+      {/* Project header row */}
+      <div
+        className={cn(
+          typographyBodySm,
+          'group flex w-full items-center gap-1 rounded-md px-2 py-0.5 font-medium text-[color-mix(in_srgb,var(--basis-text)_72%,var(--basis-text-muted))] transition-default hover:bg-surface-hover hover:text-[var(--basis-text)]',
+        )}
+      >
+        <button
+          type="button"
+          onClick={onToggleCollapse}
+          className="flex min-w-0 flex-1 items-center gap-1.5"
+        >
+          <ProjectIcon workspacePath={workspace.path} fallbackIcon={FolderIcon} />
+          <span className="flex-1 truncate text-left">{workspace.name}</span>
+        </button>
+        <Tooltip content="New agent in this project" side="bottom" align="end">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onCreateSession(workspace.path)
+            }}
+            aria-label="New Agent"
+            className="flex h-5 w-0 shrink-0 items-center justify-center overflow-hidden rounded text-[var(--basis-text-muted)] opacity-0 transition-[width,opacity] group-hover:w-5 group-hover:opacity-100 hover:bg-[var(--basis-surface)] hover:text-[var(--basis-text)]"
+          >
+            <PlusIcon className="h-3.5 w-3.5" weight="bold" />
+          </button>
+        </Tooltip>
+      </div>
+
+      {visibleSessions.length > 0 && (
+        <div className="mx-1 flex flex-col gap-0.5">
+          {visibleSessions.map(({ session: s, depth, isChild, isOrphan }) => {
+            const isActive = isActiveWorkspace && s.externalId === activeSessionId
+            const providerId = s.providerId ?? 'opencode'
+            // Ready/done only matters for sessions you haven't opened yet —
+            // the focused transcript already shows the finished turn.
+            const tone = s.status === 'done' && isActive ? null : sessionBusyTone(s.status)
+            const showStatus = tone !== null
+            return (
+              <button
+                key={s.externalId}
+                onClick={() => onSelectSession(workspace.path, s.externalId, providerId)}
+                className={cn(
+                  'group relative flex w-full items-center gap-1.5 overflow-hidden rounded px-2 py-0.5 text-left transition-default',
+                  isActive
+                    ? 'bg-surface-active text-[var(--basis-text)]'
+                    : 'text-[var(--basis-text)] hover:bg-surface-hover',
+                )}
+                style={{ paddingLeft: `${8 + Math.min(depth, 4) * 12}px` }}
+              >
+                {(tone === 'needs' || tone === 'ready') && (
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      'session-row-dither',
+                      tone === 'needs' ? 'session-row-dither--needs' : 'session-row-dither--ready',
+                    )}
+                  />
+                )}
+                {isChild ? (
+                  <GitBranchIcon
+                    className="h-3 w-3 shrink-0 text-[var(--basis-text-faint)]"
+                    weight="regular"
+                  />
+                ) : (
+                  <ProviderIcon providerId={providerId} className="h-3 w-3 opacity-70" />
+                )}
+                <span className={cn(typographyLabel, 'relative flex-1 truncate font-normal')}>
+                  {s.title || 'New session'}
+                </span>
+                {isChild && !showStatus ? (
+                  <Tooltip
+                    content={
+                      isOrphan ? 'Subagent transcript (parent unavailable)' : 'Subagent transcript'
+                    }
+                    side="right"
+                  >
+                    <span className="shrink-0 rounded-sm border border-[var(--basis-border-muted)] px-1 py-px text-[9px] leading-none tracking-wide text-[var(--basis-text-faint)]">
+                      {isOrphan ? 'ORPHAN' : 'SUBAGENT'}
+                    </span>
+                  </Tooltip>
+                ) : null}
+                <span
+                  className={cn(
+                    'relative z-[1] flex h-4 shrink-0 items-center justify-center overflow-hidden transition-[width]',
+                    // Ring is 8×8 inside a 16px slot — same width as the delete
+                    // control, so busy rows don't grow and trash stays anchored.
+                    showStatus ? 'w-4' : 'w-0 group-hover:w-4',
+                  )}
+                >
+                  {tone && (
+                    <SessionBusyLoader
+                      tone={tone}
+                      className="transition-opacity group-hover:opacity-0"
+                    />
+                  )}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onDeleteSession(workspace.path, s.externalId, providerId)
+                    }}
+                    className="absolute inset-0 flex items-center justify-center rounded text-muted-foreground opacity-0 transition-default group-hover:opacity-100 hover:bg-red-400/10 hover:text-red-400"
+                    aria-label="Delete session"
+                  >
+                    <TrashIcon className="h-3 w-3" />
+                  </button>
+                </span>
+              </button>
+            )
+          })}
+          {hasMoreSessions && (
+            <button
+              type="button"
+              onClick={() =>
+                setVisibleCount((count) =>
+                  Math.min(count + SESSION_PAGE_SIZE, orderedSessions.length),
+                )
+              }
+              className="flex w-full items-center gap-1.5 px-2 py-0.5 text-left text-[var(--basis-text-faint)] transition-colors hover:text-[var(--basis-text)]"
+            >
+              <CaretDownIcon className="h-3 w-3 shrink-0" weight="bold" aria-hidden />
+              <span className={cn(typographyLabel, 'font-normal')}>Show more</span>
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}

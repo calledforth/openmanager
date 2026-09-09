@@ -56,7 +56,7 @@ import {
   applySessionConfigValues,
   updateSessionConfigOptions,
   type SessionConfigValue,
-} from '../components/chat/modelConfig'
+} from '@openmanager/app-core/components/chat/modelConfig'
 
 export type { ProviderUiStatus }
 
@@ -77,7 +77,8 @@ export function providerBlocksComposer(status: ProviderUiStatus | undefined): bo
 
 /** How the user answered a permission request: an exact provider option, or a
  * plain approve/deny the main process maps to an option by kind. */
-export type PermissionSelection = { optionId: string } | { approved: boolean }
+import type { PermissionSelection } from '@openmanager/app-core/providers/permission-provider'
+export type { PermissionSelection } from '@openmanager/app-core/providers/permission-provider'
 
 export type AgentInfo = { name?: string; version?: string }
 

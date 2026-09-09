@@ -151,7 +151,7 @@ export const proofEvents = [
     ...base,
     name: 'turn.failed',
     scope: threadScope,
-    payload: { turnId: 'turn-1', message: 'Failed' },
+    payload: { turnId: 'turn-1', reason: 'provider_error', message: 'Failed' },
   },
   {
     ...base,

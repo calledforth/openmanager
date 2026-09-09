@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { ArrowClockwiseIcon, DownloadSimpleIcon, XIcon } from '@phosphor-icons/react'
 import { updateProgressPercent, type AppUpdateEvent } from '../../../../shared/app-update'
-import { cn } from '../../lib/utils'
-import { typographyBodySm, typographyCaption, typographyLabel } from '../../lib/typography'
+import { cn } from '@openmanager/app-core/lib/utils'
+import { typographyBodySm, typographyCaption, typographyLabel } from '@openmanager/app-core/lib/typography'
 
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'

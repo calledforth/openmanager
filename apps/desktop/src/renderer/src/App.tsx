@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
+import { DesktopViewActions } from './providers/desktop-view-actions'
 import { AppUiProvider, useAppUi } from './providers/app-ui-provider'
-import { ThemeProvider } from './providers/theme-provider'
+import { ThemeProvider } from '@openmanager/app-core/providers/theme-provider'
 import { SidebarDataProvider } from './providers/sidebar-data-provider'
 import { ActiveSessionProvider, useActiveSession } from './providers/active-session-provider'
 import { PermissionStateProvider } from './providers/permission-provider'
@@ -9,11 +10,11 @@ import { PlanStateProvider } from './providers/plan-provider'
 import { WorkspaceSidebar } from './components/sidebar/WorkspaceSidebar'
 import { ChatView } from './components/chat/ChatView'
 import { MessageInput } from './components/chat/MessageInput'
-import { FloatingChatComposer } from './components/chat/FloatingChatComposer'
+import { FloatingChatComposer } from '@openmanager/app-core/components/chat/FloatingChatComposer'
 import { ConvexTelemetryPanel } from './components/telemetry/ConvexTelemetryPanel'
 import { AppChrome } from './components/shell/AppChrome'
 import { UpdateNotification } from './components/updates/UpdateNotification'
-import { ensureShiki } from './lib/shiki'
+import { ensureShiki } from '@openmanager/app-core/lib/shiki'
 
 // Warm the grammars at boot so the first code block arrives already
 // highlighted instead of rendering plain and then repainting.
@@ -93,7 +94,9 @@ function App() {
             <PermissionStateProvider>
               <QuestionStateProvider>
                 <PlanStateProvider>
-                  <AppShell />
+                  <DesktopViewActions>
+                    <AppShell />
+                  </DesktopViewActions>
                 </PlanStateProvider>
               </QuestionStateProvider>
             </PermissionStateProvider>
