@@ -84,7 +84,7 @@ describe('composer SQLite store', () => {
     const first = openComposerStore(directory)
     first.close()
     const database = new DatabaseSync(join(directory, 'openmanager.sqlite'))
-    database.exec('PRAGMA user_version = 0')
+    database.exec('UPDATE schema_version SET version = 0; PRAGMA user_version = 0')
     database.close()
 
     const migrated = openComposerStore(directory)

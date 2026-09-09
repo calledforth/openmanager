@@ -1,7 +1,9 @@
 import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { DATABASE_FILENAME } from '../src/db/database.js'
 import {
   BootstrapResponseSchema,
   COMPOSER_PREFERENCES_GET_CAPABILITY,
@@ -179,6 +181,20 @@ describe('headless listener', () => {
       'identity is invalid',
     )
     // A healthy environment can immediately bind the failed startup's requested port.
+    servers.push(await startServer({ port, dataDir: await dataDir(), logLevel: 'info' }))
+  })
+
+  it('fails startup on an unknown newer schema without opening a listener', async () => {
+    const directory = await dataDir()
+    const first = await startServer({ port: 0, dataDir: directory, logLevel: 'info' })
+    const port = first.port
+    await first.close()
+    const database = new DatabaseSync(join(directory, DATABASE_FILENAME))
+    database.exec('UPDATE schema_version SET version = 99; PRAGMA user_version = 99')
+    database.close()
+    await expect(startServer({ port, dataDir: directory, logLevel: 'info' })).rejects.toThrow(
+      'newer than this server supports',
+    )
     servers.push(await startServer({ port, dataDir: await dataDir(), logLevel: 'info' }))
   })
 

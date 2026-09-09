@@ -53,8 +53,12 @@ port. Relative paths resolve from the process working directory (normally
 `apps/server` when launched through pnpm). The directory is created recursively;
 POSIX creation requests owner-only permissions. Existing directory permissions
 and Windows ACLs are not changed. First boot creates `identity.json` and
-`openmanager.sqlite`. SQLite stores provider composer profiles and
-workspace/provider preferences in the environment data directory.
+`openmanager.sqlite`. Startup opens that database with WAL, `synchronous=NORMAL`,
+foreign keys, and a 5s busy timeout, then applies numbered migrations from
+[`src/db/migrations.ts`](src/db/migrations.ts) inside one transaction. SQLite
+stores provider composer profiles and workspace/provider preferences in the
+environment data directory. A database whose `schema_version` is newer than this
+server knows causes startup to fail without binding a port.
 
 Log levels are `debug`, `info`, `warn`, `error`, and `silent`. JSON log records at
 or above the configured severity are printed; the startup record is `info`, so
@@ -270,6 +274,33 @@ only supported way to deliberately create a new identity is to stop the server
 and delete the **entire configured data directory**, which discards its state
 and requires clients to treat the next boot as a new environment.
 
+## SQLite migrations
+
+The environment database is `openmanager.sqlite` in the configured data
+directory. `openEnvironmentDatabase` applies connection pragmas, then
+`runMigrations` applies every numbered step after the recorded version inside
+one `BEGIN IMMEDIATE` transaction. The current integer lives in the
+`schema_version` table (a single row) and is mirrored to SQLite's
+`user_version` so databases created by the earlier composer store keep opening.
+There are no down migrations. If `schema_version` is newer than the catalog
+shipped with this process, startup throws and does not listen.
+
+### Adding a migration
+
+1. Append an object to `MIGRATIONS` in [`src/db/migrations.ts`](src/db/migrations.ts)
+   with the next contiguous integer `version` and a short `name`. Do not edit or
+   reorder a migration that has already shipped.
+2. Put only forward schema changes in `up`. Prefer `IF NOT EXISTS` for objects
+   that a remigration of that same version must tolerate.
+3. Add tests in `tests/migrate.test.ts`: a fresh database ends at the new
+   version, a database left at the previous version upgrades without data loss,
+   and a database stamped with an unknown newer version still refuses to open.
+4. Keep the new migration in this package so `pnpm --filter @openmanager/server test`
+   (and `ci:server`) exercises it.
+
+Domain tables beyond composer profiles belong in later numbered migrations,
+not in edits to version 1.
+
 ## Checks
 
 ```sh
@@ -283,9 +314,10 @@ pnpm --filter server build
 entry point. Tests cover configuration precedence and rejection, occupied ports,
 data-directory failures, concurrent identity initialization across processes,
 identity preservation and corruption, bootstrap, log filtering, compiled and
-native-TypeScript startup, process restart durability, and the close code/reason
-delivered to an active socket during SIGTERM. Build, typecheck and dev first
-compile the protocol package; Node consumes its built
+native-TypeScript startup, process restart durability, the close code/reason
+delivered to an active socket during SIGTERM, and SQLite migrations (fresh
+database, sequential upgrade, and unknown newer schema). Build, typecheck and
+dev first compile the protocol package; Node consumes its built
 `@openmanager/protocol/node` export.
 The shared CI workflow runs typecheck, tests and build for this package on
 Node 24 on Windows and Linux, alongside the protocol package and the web app.

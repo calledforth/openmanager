@@ -1,11 +1,10 @@
-import { join } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
 import {
   ProviderComposerProfileSchema,
   WorkspaceComposerPreferenceSchema,
   type ProviderComposerProfile,
   type WorkspaceComposerPreference,
 } from '@openmanager/protocol/node'
+import { openEnvironmentDatabase } from './db/database.ts'
 
 type ProfilePatch = Partial<
   Omit<ProviderComposerProfile, 'providerId' | 'updatedAt'>
@@ -30,9 +29,7 @@ type PreferenceRow = {
 
 /** SQLite-owned durable composer state. All operations are small synchronous point reads/writes. */
 export function openComposerStore(dataDir: string) {
-  const database = new DatabaseSync(join(dataDir, 'openmanager.sqlite'))
-  database.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
-  migrate(database)
+  const database = openEnvironmentDatabase(dataDir)
 
   const readProfile = database.prepare(`
     SELECT provider_id, agent_info_json, available_models_json, available_modes_json,
@@ -145,37 +142,6 @@ export function openComposerStore(dataDir: string) {
 }
 
 export type ComposerStore = ReturnType<typeof openComposerStore>
-
-function migrate(database: DatabaseSync): void {
-  const version = (
-    database.prepare('PRAGMA user_version').get() as { user_version: number }
-  ).user_version
-  if (version > 1) throw new Error(`Composer database version ${version} is newer than supported`)
-  if (version === 1) return
-  database.exec(`
-    BEGIN IMMEDIATE;
-    CREATE TABLE IF NOT EXISTS provider_profiles (
-      provider_id TEXT PRIMARY KEY NOT NULL,
-      agent_info_json TEXT,
-      available_models_json TEXT,
-      available_modes_json TEXT,
-      default_model_id TEXT,
-      default_mode_id TEXT,
-      updated_at INTEGER NOT NULL
-    ) STRICT;
-    CREATE TABLE IF NOT EXISTS workspace_composer_preferences (
-      workspace_id TEXT NOT NULL,
-      provider_id TEXT NOT NULL,
-      model_id TEXT,
-      mode_id TEXT,
-      config_values_json TEXT,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (workspace_id, provider_id)
-    ) STRICT;
-    PRAGMA user_version = 1;
-    COMMIT;
-  `)
-}
 
 function profileFromRow(row: ProfileRow): ProviderComposerProfile {
   return ProviderComposerProfileSchema.parse({
