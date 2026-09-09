@@ -19,29 +19,59 @@ import {
   type TransportStatus,
 } from '../lib/connection-state'
 import {
-  clearStoredEnvironment,
-  readStoredEnvironment,
-  writeStoredEnvironment,
+  EMPTY_REGISTRY,
+  environmentRegistriesEqual,
+  parseEnvironmentCredential,
+  parseEnvironmentEndpoint,
+  readEnvironmentRegistry,
+  removeStoredEnvironment,
+  selectedStoredEnvironment,
+  selectStoredEnvironment,
+  upsertStoredEnvironment,
+  writeEnvironmentRegistry,
+  type EnvironmentRegistry,
   type StoredEnvironment,
 } from '../lib/environment-store'
+
+type PendingConnect = {
+  endpoint: string
+  credential: string
+}
 
 type ConnectionValue = {
   ui: ConnectionUiState
   environment: EnvironmentSelection
-  connect: (endpoint: string) => void
+  environments: StoredEnvironment[]
+  selectedId: string | null
+  connect: (endpoint: string, credential?: string) => void
+  selectEnvironment: (environmentId: string) => void
+  removeEnvironment: (environmentId: string) => void
   retry: () => void
   changeEnvironment: () => void
 }
 
 const ConnectionContext = createContext<ConnectionValue | null>(null)
 
-function toSelection(stored: StoredEnvironment | null): EnvironmentSelection {
-  if (!stored) return { status: 'none' }
+function toSelection(
+  registry: EnvironmentRegistry,
+  pending: PendingConnect | null,
+): EnvironmentSelection {
+  if (pending) {
+    const known = registry.environments.find((item) => item.endpoints.includes(pending.endpoint))
+    return {
+      status: 'selected',
+      endpoint: pending.endpoint,
+      environmentId: known?.environmentId,
+      label: known?.label,
+    }
+  }
+  const selected = selectedStoredEnvironment(registry)
+  if (!selected) return { status: 'none' }
   return {
     status: 'selected',
-    endpoint: stored.endpoint,
-    environmentId: stored.environmentId,
-    label: stored.label,
+    endpoint: selected.endpoints[0]!,
+    environmentId: selected.environmentId,
+    label: selected.label,
   }
 }
 
@@ -79,23 +109,23 @@ export function ConnectionProvider({
   children: ReactNode
   preview?: DeriveConnectionInput
 }) {
-  const [stored, setStored] = useState<StoredEnvironment | null>(() =>
-    preview ? null : readStoredEnvironment(),
+  const [registry, setRegistry] = useState<EnvironmentRegistry>(() =>
+    preview ? EMPTY_REGISTRY : readEnvironmentRegistry(),
   )
+  const [pending, setPending] = useState<PendingConnect | null>(null)
   const [hasConnected, setHasConnected] = useState(false)
   const [bootstrapNonce, setBootstrapNonce] = useState(0)
 
-  const persist = useCallback((next: StoredEnvironment | null) => {
-    setStored(next)
+  const persist = useCallback((next: EnvironmentRegistry) => {
+    setRegistry(next)
     try {
-      if (next) writeStoredEnvironment(next)
-      else clearStoredEnvironment()
+      writeEnvironmentRegistry(next)
     } catch {
       return
     }
   }, [])
 
-  const environment = preview?.environment ?? toSelection(stored)
+  const environment = preview?.environment ?? toSelection(registry, pending)
   const endpoint = environment.status === 'selected' ? environment.endpoint : null
 
   const bootstrapQuery = useQuery({
@@ -103,6 +133,9 @@ export function ConnectionProvider({
     enabled: !preview && endpoint !== null,
     queryFn: async () => {
       if (!endpoint) throw new Error('Missing environment endpoint')
+      // HTTP bootstrap is unauthenticated discovery. The stored credential is
+      // for the later WebSocket upgrade; sending Authorization here would
+      // preflight CORS and the environment server does not handle OPTIONS.
       return fetchBootstrap(endpoint)
     },
   })
@@ -113,17 +146,22 @@ export function ConnectionProvider({
   )
 
   useEffect(() => {
-    if (preview || liveBootstrap.status !== 'ready' || !stored) return
-    setHasConnected(true)
-    if (stored.environmentId === liveBootstrap.environmentId && stored.label === liveBootstrap.label) {
-      return
-    }
-    persist({
-      endpoint: stored.endpoint,
+    if (preview) return
+    if (liveBootstrap.status !== 'ready' && liveBootstrap.status !== 'incompatible_protocol') return
+    if (!liveBootstrap.environmentId || !endpoint) return
+    const next = upsertStoredEnvironment(registry, {
       environmentId: liveBootstrap.environmentId,
+      endpoint,
       label: liveBootstrap.label,
+      credential: pending?.credential,
     })
-  }, [preview, liveBootstrap, persist, stored])
+    if (!next) return
+    if (liveBootstrap.status === 'ready') setHasConnected(true)
+    const unchanged = environmentRegistriesEqual(next, registry)
+    if (unchanged && pending === null) return
+    persist(next)
+    if (pending) setPending(null)
+  }, [preview, liveBootstrap, endpoint, persist, registry, pending])
 
   const input: DeriveConnectionInput = preview ?? {
     environment,
@@ -133,13 +171,38 @@ export function ConnectionProvider({
 
   const ui = deriveConnectionUi(input)
 
-  const connect = useCallback(
-    (nextEndpoint: string) => {
+  const connect = useCallback((nextEndpoint: string, credential = '') => {
+    const endpoint = parseEnvironmentEndpoint(nextEndpoint)
+    if (!endpoint) return
+    setHasConnected(false)
+    setPending({ endpoint, credential: parseEnvironmentCredential(credential) })
+    setBootstrapNonce((value) => value + 1)
+  }, [])
+
+  const selectEnvironment = useCallback(
+    (environmentId: string) => {
+      const next = selectStoredEnvironment(registry, environmentId)
+      if (next.selectedId !== environmentId) return
       setHasConnected(false)
-      persist({ endpoint: nextEndpoint })
+      setPending(null)
+      persist(next)
       setBootstrapNonce((value) => value + 1)
     },
-    [persist],
+    [persist, registry],
+  )
+
+  const removeEnvironment = useCallback(
+    (environmentId: string) => {
+      const selected = selectedStoredEnvironment(registry)
+      const next = removeStoredEnvironment(registry, environmentId)
+      if (selected?.environmentId === environmentId) {
+        setHasConnected(false)
+      }
+      setPending(null)
+      persist(next)
+      setBootstrapNonce((value) => value + 1)
+    },
+    [persist, registry],
   )
 
   const retry = useCallback(() => {
@@ -148,13 +211,34 @@ export function ConnectionProvider({
 
   const changeEnvironment = useCallback(() => {
     setHasConnected(false)
-    persist(null)
+    setPending(null)
+    persist({ ...registry, selectedId: null })
     setBootstrapNonce((value) => value + 1)
-  }, [persist])
+  }, [persist, registry])
 
   const value = useMemo(
-    () => ({ ui, environment, connect, retry, changeEnvironment }),
-    [ui, environment, connect, retry, changeEnvironment],
+    () => ({
+      ui,
+      environment,
+      environments: registry.environments,
+      selectedId: registry.selectedId,
+      connect,
+      selectEnvironment,
+      removeEnvironment,
+      retry,
+      changeEnvironment,
+    }),
+    [
+      ui,
+      environment,
+      registry.environments,
+      registry.selectedId,
+      connect,
+      selectEnvironment,
+      removeEnvironment,
+      retry,
+      changeEnvironment,
+    ],
   )
 
   return <ConnectionContext.Provider value={value}>{children}</ConnectionContext.Provider>

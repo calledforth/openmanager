@@ -3,7 +3,12 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { deriveConnectionUi } from '../lib/connection-state'
 import { CONNECTION_STORIES } from '../stories/connection-states'
-import { ConnectionBanner, ConnectionScreen, EnvironmentConnectForm } from './connection-surfaces'
+import {
+  ConnectionBanner,
+  ConnectionScreen,
+  EnvironmentConnectForm,
+  EnvironmentList,
+} from './connection-surfaces'
 
 afterEach(() => {
   cleanup()
@@ -40,7 +45,7 @@ describe('connection surfaces', () => {
     expect(screen.getByText('Session workspace stays mounted')).toBeInTheDocument()
   })
 
-  it('submits a valid endpoint and rejects a bad one', async () => {
+  it('submits a valid endpoint and optional token, and rejects a bad one', async () => {
     const user = userEvent.setup()
     const onConnect = vi.fn()
     render(<EnvironmentConnectForm onConnect={onConnect} />)
@@ -52,7 +57,43 @@ describe('connection surfaces', () => {
 
     await user.clear(screen.getByLabelText('Environment endpoint'))
     await user.type(screen.getByLabelText('Environment endpoint'), 'http://127.0.0.1:43120/')
+    await user.type(screen.getByLabelText('Client token'), 'dev-token')
     await user.click(screen.getByRole('button', { name: 'Connect' }))
-    expect(onConnect).toHaveBeenCalledWith('http://127.0.0.1:43120')
+    expect(onConnect).toHaveBeenCalledWith('http://127.0.0.1:43120', 'dev-token')
+  })
+
+  it('lists saved environments for select and remove', async () => {
+    const user = userEvent.setup()
+    const onSelect = vi.fn()
+    const onRemove = vi.fn()
+    render(
+      <EnvironmentList
+        selectedId="env-a"
+        onSelect={onSelect}
+        onRemove={onRemove}
+        environments={[
+          {
+            environmentId: 'env-a',
+            label: 'Home',
+            endpoints: ['http://127.0.0.1:43120'],
+            credential: 'token',
+          },
+          {
+            environmentId: 'env-b',
+            label: 'Lab',
+            endpoints: ['https://tunnel.example'],
+            credential: '',
+          },
+        ]}
+      />,
+    )
+
+    expect(screen.getByText('Home · Selected')).toBeInTheDocument()
+    expect(screen.getByText('Client token saved')).toBeInTheDocument()
+    expect(screen.getByText('No client token')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Select' }))
+    expect(onSelect).toHaveBeenCalledWith('env-b')
+    await user.click(screen.getAllByRole('button', { name: 'Remove' })[1]!)
+    expect(onRemove).toHaveBeenCalledWith('env-b')
   })
 })

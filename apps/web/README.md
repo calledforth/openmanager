@@ -34,4 +34,6 @@ The information architecture matches the desktop app and the mobile screens, exp
 | `/settings`              | Settings (theme, font, environment)  |
 | `/playground/connection` | Storybook-equivalent connection states |
 
-First-run and terminal failures (no environment, protocol mismatch, unauthorized) replace the main pane. Connecting, reconnecting, and unreachable stay in-shell as a banner so the session UI is not swapped away. States come from the stored environment, `GET /bootstrap` + `evaluateBootstrap`, and connection status — not from a timeout. Adding or selecting multiple environments is a later issue; this shell stores one endpoint keyed by the bootstrap `environmentId` once the server answers.
+First-run and terminal failures (no environment, protocol mismatch, unauthorized) replace the main pane. Connecting, reconnecting, and unreachable stay in-shell as a banner so the session UI is not swapped away. States come from the stored environment, `GET /bootstrap` + `evaluateBootstrap`, and connection status — not from a timeout.
+
+Environments are stored by bootstrap `environmentId` as `{ environmentId, label, endpoints, credential }`. Adding a second URL for the same ID updates that record instead of creating a duplicate. Select and remove live on the first-run screen and in Settings.
