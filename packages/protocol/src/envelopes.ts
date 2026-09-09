@@ -21,7 +21,7 @@ export const EventEnvelopeSchema = z.object({
   type: z.literal('event'),
   name: MessageNameSchema,
   payload: z.json(),
-})
+}).passthrough()
 
 export const ErrorEnvelopeSchema = z.object({
   type: z.literal('error'),

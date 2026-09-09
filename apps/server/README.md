@@ -80,8 +80,8 @@ close HTTP connections and WebSockets (code `1001`, reason `server_shutdown`).
 The server mounts the same OpenCode, Cursor, and Claude Code registrations used
 by the desktop. Provider executables and their CLI-owned credentials/config are
 resolved only in this trusted process and are not included in HTTP or WebSocket
-payloads. Protocol routing for provider execution, database persistence, and
-durable turn recovery belongs to subsequent work.
+payloads. Protocol routing now invokes the runtime directly; database persistence
+and durable turn recovery belong to subsequent work.
 
 ## Authenticated connections
 
@@ -147,6 +147,22 @@ distinct probes share one global tail so only one bootstrap CLI runs at a time.
 Authenticated, handshaken clients receive `provider_health_changed` events when
 the public health snapshot transitions; the handshake bootstrap supplies the
 latest snapshot across reconnect gaps.
+
+`session.create`, `session.open`, `turn.send`, and `turn.interrupt` route directly
+to the mounted runtime. Session creation preserves the proof-slice payload and
+resolves its provider route server-side; until workspace/provider preferences
+land, the bridge uses the desktop-compatible OpenCode fallback and workspace ID
+as its local runtime path. Later commands resolve that route from server-owned
+host IDs.
+The server accepts or rejects each command synchronously before queueing provider
+work, so even a provider that emits during startup cannot overtake its response.
+Known missing, unauthenticated, or unhealthy providers are rejected without
+starting work. An accepted interrupt retains ownership if the prompt settles
+before cancellation is acknowledged and emits one protocol `turn.interrupted`
+event. If the cancellation request fails, the turn remains active to prevent
+concurrent provider work and permit another interrupt attempt; CAL-34 owns its
+eventual provider terminal event. Routing records are currently process-local
+and will move into the planned SQLite persistence service.
 
 The embedding host calls `server.sockets.publish(record)` with an already
 persisted, protocol-valid `DurableEvent` to deliver `subscription.event` to matching

@@ -26,7 +26,7 @@ export const ProofCommandSchemas = {
   'session.list': command('session.list', z.object({ workspaceId: EntityIdSchema })),
   'session.create': command(
     'session.create',
-    z.object({ workspaceId: EntityIdSchema, title: z.string().optional() }),
+    z.object({ workspaceId: EntityIdSchema, title: z.string().max(512).optional() }),
   ),
   'session.open': command('session.open', SessionTargetSchema),
   'turn.send': command('turn.send', ThreadTargetSchema.extend({ text: z.string().min(1) })),

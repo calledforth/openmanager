@@ -1,4 +1,9 @@
-import { AgentRuntime, providers, type HostLogEntry } from '@agentpack/runtime/node'
+import {
+  AgentRuntime,
+  providers,
+  type HostDeps,
+  type HostLogEntry,
+} from '@agentpack/runtime/node'
 import type { createLogger } from './logger.ts'
 
 export type ServerLogger = ReturnType<typeof createLogger>
@@ -11,13 +16,16 @@ export type ServerLogger = ReturnType<typeof createLogger>
  * resolved by the environment process when a provider is used; none of that
  * state is added to bootstrap or socket payloads here.
  */
-export function mountAgentRuntime(log: ServerLogger): AgentRuntime {
+export function mountAgentRuntime(
+  log: ServerLogger,
+  emitEvent: HostDeps['emitEvent'] = () => undefined,
+): AgentRuntime {
   const runtime = new AgentRuntime(
     {
-      // Protocol projection is added by the runtime bridge. Keeping the sink
-      // server-local ensures raw provider events cannot reach clients before
-      // that projection and persistence boundary exists.
-      emitEvent: () => undefined,
+      // Only the thread bridge receives raw events. It projects the narrow
+      // interruption event here; the complete privacy-safe mapping remains at
+      // the dedicated protocol projection boundary.
+      emitEvent,
       log: (entry) => logRuntimeEntry(log, entry),
     },
     providers,
