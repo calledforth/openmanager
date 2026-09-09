@@ -778,6 +778,11 @@ export class AgentRuntime {
       if (this.promptQueues.get(key) === queued) this.promptQueues.delete(key)
     })
     this.promptQueues.set(key, queued)
+    // `await run` is the caller's failure path. `queued` is a second branch
+    // (the finally wrapper) that would otherwise reject unhandled when a
+    // provider turn fails — vitest reports that as an error after the test
+    // has already caught `prompt()`.
+    void queued.catch(() => undefined)
     await run
     return session
   }
