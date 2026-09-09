@@ -235,7 +235,7 @@ export function createComposerService(
 }
 
 function modelPatch(models: {
-  availableModels: Array<{
+  availableModels?: Array<{
     id: string
     displayName: string
     description?: string
@@ -245,9 +245,10 @@ function modelPatch(models: {
     supportsAutoMode?: boolean
   }>
 } | undefined) {
-  if (!models?.availableModels.length) return {}
+  const availableModels = models?.availableModels
+  if (!availableModels?.length) return {}
   return {
-    availableModels: models.availableModels.map((model) => ({
+    availableModels: availableModels.map((model) => ({
       modelId: model.id,
       name: model.displayName,
       ...(model.description !== undefined ? { description: model.description } : {}),
@@ -262,11 +263,12 @@ function modelPatch(models: {
 }
 
 function modePatch(modes: {
-  availableModes: Array<{ id: string; displayName: string; description?: string }>
+  availableModes?: Array<{ id: string; displayName: string; description?: string }>
 } | undefined) {
-  if (!modes?.availableModes.length) return {}
+  const availableModes = modes?.availableModes
+  if (!availableModes?.length) return {}
   return {
-    availableModes: modes.availableModes.map((mode) => ({
+    availableModes: availableModes.map((mode) => ({
       id: mode.id,
       name: mode.displayName,
       ...(mode.description !== undefined ? { description: mode.description } : {}),
