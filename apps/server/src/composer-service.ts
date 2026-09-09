@@ -10,9 +10,11 @@ import {
   type CommandEnvelope,
   type ErrorCode,
   type ProviderBootstrap,
+  type WorkspaceComposerPreference,
 } from '@openmanager/protocol/node'
 import type {
   AgentRuntime,
+  DesiredSessionConfig,
   HostDeps,
   ProviderBootstrap as RuntimeProviderBootstrap,
   RuntimeRoute,
@@ -31,8 +33,6 @@ type RuntimeControl = Pick<
   | 'setMode'
   | 'setConfigOption'
   | 'applyDesiredConfig'
-  | 'providerModels'
-  | 'providerModes'
 >
 
 const errorResult = (requestId: string, code: ErrorCode, message: string) => ({
@@ -71,8 +71,8 @@ export function createComposerService(
     const current = store.getProfile(providerId)
     writeProfile(providerId, {
       ...(catalog.agentInfo ? { agentInfo: catalog.agentInfo } : {}),
-      ...(!current?.availableModels?.length ? modelPatch(catalog.models) : {}),
-      ...(!current?.availableModes?.length ? modePatch(catalog.modes) : {}),
+      ...(current?.availableModels === undefined ? modelPatch(catalog.models) : {}),
+      ...(current?.availableModes === undefined ? modePatch(catalog.modes) : {}),
     })
   }
 
@@ -95,56 +95,83 @@ export function createComposerService(
     return rejection ? errorResult(requestId, rejection.code, rejection.message) : resolved
   }
 
-  const catalog = () => {
-    for (const [providerId, models] of Object.entries(runtime.providerModels())) {
-      if (models) fillProfileFromCatalog(providerId, { models })
-    }
-    for (const [providerId, modes] of Object.entries(runtime.providerModes())) {
-      if (modes) fillProfileFromCatalog(providerId, { modes })
-    }
-    return providers.snapshot().map((provider) => ({
+  const catalog = () =>
+    providers.snapshot().map((provider) => ({
       ...provider,
       ...(store.getProfile(provider.id) ? { profile: store.getProfile(provider.id) } : {}),
     }))
-  }
 
   return {
-    desiredSessionConfig: ({ providerId, workspacePath }: Parameters<
-      NonNullable<HostDeps['desiredSessionConfig']>
-    >[0]) => store.getPreference(workspacePath, providerId),
-
     observeProbe(providerId: string, probe: RuntimeProviderBootstrap) {
-      fillProfileFromCatalog(providerId, {
-        agentInfo: probe.result.agentInfo,
-        models: probe.models,
-        modes: probe.modes,
-      })
+      try {
+        fillProfileFromCatalog(providerId, {
+          agentInfo: probe.result.agentInfo,
+          models: probe.models,
+          modes: probe.modes,
+        })
+      } catch {
+        // A successful provider probe remains successful if its optional
+        // composer metadata is malformed or cannot be persisted.
+      }
     },
 
     onRuntimeEvent(event: Parameters<HostDeps['emitEvent']>[0]) {
-      if (event.event === 'initialized' && event.data.agentInfo) {
-        writeProfile(event.providerId, { agentInfo: event.data.agentInfo })
-        return
-      }
-      if (event.event === 'session_created' || event.event === 'session_loaded') {
-        writeProfile(event.providerId, {
-          ...modelPatch(event.data.models),
-          ...modePatch(event.data.modes),
-          ...(event.event === 'session_created' && event.data.models?.currentModelId
-            ? { defaultModelId: event.data.models.currentModelId }
-            : {}),
-          ...(event.event === 'session_created' && event.data.modes?.currentModeId
-            ? { defaultModeId: event.data.modes.currentModeId }
-            : {}),
-        })
-        return
-      }
-      if (event.event === 'current_model_update') {
-        writeProfile(event.providerId, modelPatch(event.data))
-        return
-      }
-      if (event.event === 'current_mode_update') {
-        writeProfile(event.providerId, modePatch(event.data))
+      try {
+        if (event.event === 'initialized' && event.data.agentInfo) {
+          writeProfile(event.providerId, { agentInfo: event.data.agentInfo })
+          return
+        }
+        if (event.event === 'session_created' || event.event === 'session_loaded') {
+          writeProfile(event.providerId, {
+            ...modelPatch(event.data.models),
+            ...modePatch(event.data.modes),
+            ...(event.event === 'session_created' && event.data.models?.currentModelId
+              ? { defaultModelId: event.data.models.currentModelId }
+              : {}),
+            ...(event.event === 'session_created' && event.data.modes?.currentModeId
+              ? { defaultModeId: event.data.modes.currentModeId }
+              : {}),
+          })
+          return
+        }
+        if (event.event === 'current_model_update') {
+          const selected = event.workspaceId
+            ? store.getPreference(event.workspaceId, event.providerId).modelId
+            : undefined
+          if (
+            event.workspaceId &&
+            selected &&
+            event.data.currentModelId &&
+            event.data.availableModels &&
+            !event.data.availableModels.some((model) => model.id === selected)
+          ) {
+            store.setPreference(event.workspaceId, event.providerId, {
+              modelId: event.data.currentModelId,
+            })
+          }
+          writeProfile(event.providerId, modelPatch(event.data))
+          return
+        }
+        if (event.event === 'current_mode_update') {
+          const selected = event.workspaceId
+            ? store.getPreference(event.workspaceId, event.providerId).modeId
+            : undefined
+          if (
+            event.workspaceId &&
+            selected &&
+            event.data.currentModeId &&
+            event.data.availableModes &&
+            !event.data.availableModes.some((mode) => mode.id === selected)
+          ) {
+            store.setPreference(event.workspaceId, event.providerId, {
+              modeId: event.data.currentModeId,
+            })
+          }
+          writeProfile(event.providerId, modePatch(event.data))
+        }
+      } catch {
+        // Provider metadata is advisory. Invalid or unpersistable catalog data
+        // must not escape into AgentRuntime's event delivery path.
       }
     },
 
@@ -259,6 +286,17 @@ export function createComposerService(
   }
 }
 
+export function desiredSessionConfig(
+  preference: WorkspaceComposerPreference,
+): DesiredSessionConfig | undefined {
+  const desired = {
+    ...(preference.modelId ? { modelId: preference.modelId } : {}),
+    ...(preference.modeId ? { modeId: preference.modeId } : {}),
+    ...(preference.configValues ? { values: preference.configValues } : {}),
+  }
+  return Object.keys(desired).length > 0 ? desired : undefined
+}
+
 function modelPatch(models: {
   availableModels?: Array<{
     id: string
@@ -271,7 +309,7 @@ function modelPatch(models: {
   }>
 } | undefined) {
   const availableModels = models?.availableModels
-  if (!availableModels?.length) return {}
+  if (availableModels === undefined) return {}
   return {
     availableModels: availableModels.map((model) => ({
       modelId: model.id,
@@ -291,7 +329,7 @@ function modePatch(modes: {
   availableModes?: Array<{ id: string; displayName: string; description?: string }>
 } | undefined) {
   const availableModes = modes?.availableModes
-  if (!availableModes?.length) return {}
+  if (availableModes === undefined) return {}
   return {
     availableModes: availableModes.map((mode) => ({
       id: mode.id,

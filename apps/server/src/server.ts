@@ -16,7 +16,7 @@ import {
 } from '@openmanager/protocol/node'
 import { providers, type HostDeps, type ProviderBootstrap as RuntimeProviderBootstrap } from '@agentpack/runtime/node'
 import { mountAgentRuntime } from './agent-runtime.ts'
-import { createComposerService } from './composer-service.ts'
+import { createComposerService, desiredSessionConfig } from './composer-service.ts'
 import { openComposerStore } from './composer-store.ts'
 import type { ServerConfig } from './config.ts'
 import { validateOrigins } from './config.ts'
@@ -54,7 +54,8 @@ export async function startServer(config: ServerConfig) {
   const runtime = mountAgentRuntime(
     createLogger(config.logLevel),
     (event) => onRuntimeEvent(event),
-    ({ providerId, workspacePath }) => composerStore.getPreference(workspacePath, providerId),
+    ({ providerId, workspacePath }) =>
+      desiredSessionConfig(composerStore.getPreference(workspacePath, providerId)),
   )
   let observeProviderCatalog: (providerId: string, result: RuntimeProviderBootstrap) => void =
     () => undefined

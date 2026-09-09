@@ -154,7 +154,7 @@ function migrate(database: DatabaseSync): void {
   if (version === 1) return
   database.exec(`
     BEGIN IMMEDIATE;
-    CREATE TABLE provider_profiles (
+    CREATE TABLE IF NOT EXISTS provider_profiles (
       provider_id TEXT PRIMARY KEY NOT NULL,
       agent_info_json TEXT,
       available_models_json TEXT,
@@ -163,7 +163,7 @@ function migrate(database: DatabaseSync): void {
       default_mode_id TEXT,
       updated_at INTEGER NOT NULL
     ) STRICT;
-    CREATE TABLE workspace_composer_preferences (
+    CREATE TABLE IF NOT EXISTS workspace_composer_preferences (
       workspace_id TEXT NOT NULL,
       provider_id TEXT NOT NULL,
       model_id TEXT,

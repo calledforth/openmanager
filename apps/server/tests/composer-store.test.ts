@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { openComposerStore } from '../src/composer-store.js'
 
@@ -76,5 +77,18 @@ describe('composer SQLite store', () => {
     expect(unchanged.updatedAt).toBe(first.updatedAt)
     expect(store.listProfiles()).toEqual([first])
     store.close()
+  })
+
+  it('makes a concurrent version-zero migration idempotent', async () => {
+    const directory = await dataDir()
+    const first = openComposerStore(directory)
+    first.close()
+    const database = new DatabaseSync(join(directory, 'openmanager.sqlite'))
+    database.exec('PRAGMA user_version = 0')
+    database.close()
+
+    const migrated = openComposerStore(directory)
+    expect(migrated.getPreference('workspace-1', 'cursor')).toEqual({})
+    migrated.close()
   })
 })

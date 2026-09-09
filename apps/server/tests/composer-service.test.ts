@@ -11,7 +11,7 @@ import {
   type ProviderBootstrap,
 } from '@openmanager/protocol/node'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createComposerService } from '../src/composer-service.js'
+import { createComposerService, desiredSessionConfig } from '../src/composer-service.js'
 import { openComposerStore, type ComposerStore } from '../src/composer-store.js'
 
 const directories: string[] = []
@@ -168,7 +168,7 @@ describe('composer service commands', () => {
   })
 
   it('persists provider catalogs learned from runtime events', async () => {
-    const { runtime, service } = await harness()
+    const { service } = await harness()
     service.onRuntimeEvent({
       id: 'event-1',
       seq: 1,
@@ -190,8 +190,17 @@ describe('composer service commands', () => {
         },
       },
     })
-    vi.mocked(runtime.providerModels).mockReturnValue({
-      cursor: { availableModels: [{ id: 'stale', displayName: 'Stale Probe Model' }] },
+    service.observeProbe('cursor', {
+      result: {
+        authMethods: [],
+        authenticated: true,
+        sessionListAdvertised: false,
+        loadSessionAdvertised: false,
+      },
+      sessions: undefined,
+      commands: undefined,
+      models: { availableModels: [{ id: 'stale', displayName: 'Stale Probe Model' }] },
+      modes: undefined,
     })
 
     expect(
@@ -217,5 +226,82 @@ describe('composer service commands', () => {
         ],
       },
     })
+  })
+
+  it('persists a provider-corrected mode when the selected mode becomes unavailable', async () => {
+    const { service, store } = await harness()
+    store.setPreference('workspace-1', 'cursor', { modelId: 'opus', modeId: 'auto' })
+
+    service.onRuntimeEvent({
+      id: 'event-1',
+      seq: 1,
+      timestamp: '2026-09-09T00:00:00.000Z',
+      providerId: 'cursor',
+      threadId: 'thread-1',
+      workspaceId: 'workspace-1',
+      sessionId: 'provider-session-1',
+      category: 'session',
+      event: 'current_mode_update',
+      data: {
+        currentModeId: 'default',
+        availableModes: [{ id: 'default', displayName: 'Default' }],
+      },
+    })
+
+    expect(store.getPreference('workspace-1', 'cursor')).toEqual({
+      modelId: 'opus',
+      modeId: 'default',
+    })
+  })
+
+  it('stores an explicitly empty live catalog and ignores invalid oversized metadata', async () => {
+    const { service, store } = await harness()
+    store.upsertProfile('cursor', {
+      availableModels: [{ modelId: 'old', name: 'Old' }],
+    })
+    const event = {
+      id: 'event-1',
+      seq: 1,
+      timestamp: '2026-09-09T00:00:00.000Z',
+      providerId: 'cursor' as const,
+      threadId: 'thread-1',
+      workspaceId: 'workspace-1',
+      sessionId: 'provider-session-1',
+      category: 'session' as const,
+      event: 'current_model_update' as const,
+    }
+
+    service.onRuntimeEvent({ ...event, data: { availableModels: [] } })
+    expect(store.getProfile('cursor')?.availableModels).toEqual([])
+
+    expect(() =>
+      service.onRuntimeEvent({
+        ...event,
+        data: {
+          availableModels: Array.from({ length: 2_049 }, (_, index) => ({
+            id: `model-${index}`,
+            displayName: `Model ${index}`,
+          })),
+        },
+      }),
+    ).not.toThrow()
+    expect(store.getProfile('cursor')?.availableModels).toEqual([])
+  })
+})
+
+describe('durable runtime config mapping', () => {
+  it('maps persisted configValues to the runtime values field', () => {
+    expect(
+      desiredSessionConfig({
+        modelId: 'opus',
+        modeId: 'plan',
+        configValues: { effort: 'high', fast: true },
+      }),
+    ).toEqual({
+      modelId: 'opus',
+      modeId: 'plan',
+      values: { effort: 'high', fast: true },
+    })
+    expect(desiredSessionConfig({})).toBeUndefined()
   })
 })
