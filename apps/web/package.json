@@ -6,12 +6,13 @@
   "description": "Browser SPA for OpenManager",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && node scripts/check-browser-bundle.mjs",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "lint": "eslint src vite.config.ts vitest.config.ts",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "vitest run && node --test scripts/check-browser-bundle.test.mjs",
+    "test:watch": "vitest",
+    "check:bundle": "node scripts/check-browser-bundle.mjs"
   },
   "dependencies": {
     "@openmanager/protocol": "workspace:*",

@@ -19,9 +19,15 @@ the server, with the Vite origins already allowed. The short filter
 | `dev`       | Vite development server     |
 | `typecheck` | TypeScript (`tsc --noEmit`) |
 | `test`      | Vitest                      |
-| `build`     | Production SPA bundle       |
+| `build`     | Production SPA bundle + browser-import check |
 | `preview`   | Serve the production bundle |
 | `lint`      | ESLint                      |
+
+## Production hosting
+
+This package is the independently hosted static SPA from [web-hosting.md](../../docs/decisions/web-hosting.md). Publish `dist/` to Cloudflare Pages, Vercel, or any static host. Client routes fall back to `index.html` via `public/_redirects` (copied into `dist/`) and `vercel.json`. The environment server is not the frontend host.
+
+ESLint `no-restricted-imports` and the post-build bundle scan keep Node/Electron modules out of this entry so desktop can later load the same `index.html` → `src/main.tsx` bundle. See [Electron reuse](../../docs/decisions/web-hosting.md#electron-reuse-of-the-same-entry).
 
 ## Routes
 
