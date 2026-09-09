@@ -322,15 +322,17 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Reset heading sizes — differentiate by weight/color, not size */
-h1,
-h2,
-h3,
-h4,
-h5,
-h6 {
-  font-size: inherit;
-  font-weight: inherit;
+/* Keep defaults below component typography and per-instance utilities. */
+@layer base {
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-size: inherit;
+    font-weight: inherit;
+  }
 }
 
 /* Inherit font settings into form elements */
