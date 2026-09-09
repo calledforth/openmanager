@@ -4,6 +4,7 @@ import {
   ProofEventSchema,
   ProofEventSchemas,
   ProofCommandSchemas,
+  ServerMessageSchema,
   SubscriptionScopeSchema,
   InteractionResponseSchema,
   parseProofResult,
@@ -38,6 +39,10 @@ describe('proof slice wire families', () => {
   })
   it.each(proofEvents)('validates the $name event through JSON', (event) => {
     expect(ProofEventSchema.parse(JSON.parse(JSON.stringify(event)))).toEqual(event)
+  })
+  it('preserves event-family identity and scope at generic server ingress', () => {
+    const event = proofEvents.find((candidate) => candidate.name === 'turn.interrupted')!
+    expect(ServerMessageSchema.parse(event)).toEqual(event)
   })
   it('selects response payload validation from the pending command', () => {
     expect(() =>
