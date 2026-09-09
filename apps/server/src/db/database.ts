@@ -13,7 +13,7 @@ export function configureConnection(database: DatabaseSync): void {
   database.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`)
 }
 
-/** Open the environment database, apply CAL-25 pragmas, then run pending migrations. */
+/** Open the environment database, apply connection pragmas, then run pending migrations. */
 export function openEnvironmentDatabase(
   dataDir: string,
   migrations: readonly Migration[] = MIGRATIONS,
