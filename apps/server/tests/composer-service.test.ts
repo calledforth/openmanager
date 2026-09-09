@@ -290,7 +290,7 @@ describe('composer service commands', () => {
 })
 
 describe('durable runtime config mapping', () => {
-  it('maps persisted configValues to the runtime values field', () => {
+  it('maps configValues to runtime values without auto-enforcing the display mode', () => {
     expect(
       desiredSessionConfig({
         modelId: 'opus',
@@ -299,7 +299,6 @@ describe('durable runtime config mapping', () => {
       }),
     ).toEqual({
       modelId: 'opus',
-      modeId: 'plan',
       values: { effort: 'high', fast: true },
     })
     expect(desiredSessionConfig({})).toBeUndefined()

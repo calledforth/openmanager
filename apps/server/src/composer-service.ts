@@ -289,9 +289,10 @@ export function createComposerService(
 export function desiredSessionConfig(
   preference: WorkspaceComposerPreference,
 ): DesiredSessionConfig | undefined {
+  // Mode is persisted for composer display but deliberately not enforced on
+  // respawn: doing so can fight the provider's plan/execute mode transitions.
   const desired = {
     ...(preference.modelId ? { modelId: preference.modelId } : {}),
-    ...(preference.modeId ? { modeId: preference.modeId } : {}),
     ...(preference.configValues ? { values: preference.configValues } : {}),
   }
   return Object.keys(desired).length > 0 ? desired : undefined

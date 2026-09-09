@@ -156,9 +156,11 @@ selection for one workspace/provider pair. `composer.model.set`,
 `composer.mode.set`, and `composer.config_option.set` apply a selection to the
 addressed live session before persisting it. A model change also reconciles the
 remembered config values against the provider's refreshed option list, matching
-the desktop runtime behavior. New and respawned provider processes pull the same
-durable preference from SQLite, and restarting with the same data directory
-retains it.
+the desktop runtime behavior. New and respawned provider processes automatically
+pull the durable model and config values from SQLite. Mode remains a persisted
+composer choice but is only applied by explicit commands, so a respawn does not
+fight provider plan/execute transitions. Restarting with the same data directory
+retains every preference field.
 
 `session.create`, `session.open`, `turn.send`, and `turn.interrupt` route directly
 to the mounted runtime. Session creation preserves the proof-slice payload and
