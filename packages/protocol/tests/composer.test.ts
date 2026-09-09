@@ -53,8 +53,7 @@ describe('composer command wire contract', () => {
   })
 
   it('validates provider profiles returned by the catalog', () => {
-    expect(
-      ComposerResponseSchemas[PROVIDER_CATALOG_CAPABILITY].parse({
+    const profile = ComposerResponseSchemas[PROVIDER_CATALOG_CAPABILITY].parse({
         type: 'response',
         requestId: 'catalog-1',
         payload: {
@@ -97,7 +96,8 @@ describe('composer command wire contract', () => {
             },
           ],
         },
-      }).payload.providers[0]?.profile,
-    ).toMatchObject({ providerId: 'cursor', defaultModelId: undefined })
+      }).payload.providers[0]?.profile
+    expect(profile).toMatchObject({ providerId: 'cursor' })
+    expect(profile).not.toHaveProperty('defaultModelId')
   })
 })
