@@ -38,10 +38,10 @@ export function createEventService(
 function scopeKey(scope: SubscriptionScope): string {
   switch (scope.type) {
     case 'environment':
-      return `environment:${scope.environmentId}`
+      return JSON.stringify([scope.type, scope.environmentId])
     case 'session':
-      return `session:${scope.environmentId}:${scope.sessionId}`
+      return JSON.stringify([scope.type, scope.environmentId, scope.sessionId])
     case 'thread':
-      return `thread:${scope.environmentId}:${scope.sessionId}:${scope.threadId}`
+      return JSON.stringify([scope.type, scope.environmentId, scope.sessionId, scope.threadId])
   }
 }

@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from 'vitest'
 import { ProofEventSchemas, type DurableEvent } from '@openmanager/protocol/node'
 import { createEventService } from '../src/event-service.js'
 
-const event = (threadId: string, eventId: string) =>
+const event = (
+  threadId: string,
+  eventId: string,
+  environmentId = 'environment-1',
+  sessionId = 'session-1',
+) =>
   ProofEventSchemas['turn.completed'].parse({
     type: 'event',
     name: 'turn.completed',
@@ -10,8 +15,8 @@ const event = (threadId: string, eventId: string) =>
     timestamp: '2026-09-09T00:00:00Z',
     scope: {
       type: 'thread',
-      environmentId: 'environment-1',
-      sessionId: 'session-1',
+      environmentId,
+      sessionId,
       threadId,
     },
     payload: { turnId: `turn-${threadId}` },
@@ -49,5 +54,15 @@ describe('protocol event sequencing', () => {
     service.append(event('a', 'event-2'))
 
     expect(records[0]?.cursor.sequence).toBe(1)
+  })
+
+  it('keeps delimiter-containing scope identities distinct', () => {
+    const records: DurableEvent[] = []
+    const service = createEventService((record) => records.push(record), 'epoch-1')
+
+    service.append(event('thread', 'event-1', 'env', 'a:b'))
+    service.append(event('thread', 'event-2', 'env:a', 'b'))
+
+    expect(records.map((record) => record.cursor.sequence)).toEqual([1, 1])
   })
 })
