@@ -73,6 +73,28 @@ export function createProviderService(
       return () => listeners.delete(listener)
     },
 
+    rejection(providerId: string): { code: ErrorCode; message: string } | undefined {
+      if (!hasProvider(providerConfigs, providerId)) {
+        return { code: 'not_found', message: 'Provider not found.' }
+      }
+      const health = runtime.health.report(providerId).health
+      if (health.auth.state === 'unauthenticated' || health.auth.state === 'error') {
+        return { code: 'auth', message: 'Provider authentication is required.' }
+      }
+      if (health.install.state === 'missing' || health.install.state === 'unusable') {
+        return { code: 'unavailable', message: 'Provider executable is unavailable.' }
+      }
+      if (
+        health.runtime.state === 'failed' ||
+        health.runtime.state === 'degraded' ||
+        health.lastProbe?.outcome === 'failed' ||
+        health.lastProbe?.outcome === 'timeout'
+      ) {
+        return { code: 'unavailable', message: 'Provider is unhealthy.' }
+      }
+      return undefined
+    },
+
     dispatch(command: CommandEnvelope): Promise<unknown> | undefined {
       if (command.name !== 'provider.probe') return undefined
       const parsed = ProviderProbeCommandSchema.safeParse(command)

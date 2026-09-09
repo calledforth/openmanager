@@ -19,6 +19,10 @@ const response = <P extends z.ZodType>(payload: P) => ResponseEnvelopeSchema.ext
 const EmptyPayloadSchema = z.null()
 const SessionTargetSchema = z.object({ sessionId: EntityIdSchema })
 const ThreadTargetSchema = z.object({ sessionId: EntityIdSchema, threadId: EntityIdSchema })
+const RuntimeTargetSchema = z.object({
+  providerId: EntityIdSchema,
+  cwd: z.string().min(1).max(32_768),
+})
 
 export const ProofCommandSchemas = {
   'environment.get': command('environment.get', EmptyPayloadSchema),
@@ -26,7 +30,10 @@ export const ProofCommandSchemas = {
   'session.list': command('session.list', z.object({ workspaceId: EntityIdSchema })),
   'session.create': command(
     'session.create',
-    z.object({ workspaceId: EntityIdSchema, title: z.string().optional() }),
+    RuntimeTargetSchema.extend({
+      workspaceId: EntityIdSchema,
+      title: z.string().max(512).optional(),
+    }),
   ),
   'session.open': command('session.open', SessionTargetSchema),
   'turn.send': command('turn.send', ThreadTargetSchema.extend({ text: z.string().min(1) })),

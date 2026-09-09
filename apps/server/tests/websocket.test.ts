@@ -204,7 +204,7 @@ describe('handshake and scoped subscriptions', () => {
     await earlyClosed
     for (const payload of [
       { protocolVersion: 2, futureVersionField: true },
-      { protocolVersion: PROTOCOL_VERSION, requiredCapabilities: ['turn.send'] },
+      { protocolVersion: PROTOCOL_VERSION, requiredCapabilities: ['terminal.open'] },
     ]) {
       const client = await connect(host)
       const closed = once(client.ws, 'close')
@@ -356,6 +356,128 @@ describe('handshake and scoped subscriptions', () => {
       error: { code: 'not_found' },
     })
     expect(probe).not.toHaveBeenCalled()
+  })
+
+  it('routes create, resume, prompt and interrupt after their protocol responses', async () => {
+    const host = await setup()
+    const client = await connect(host)
+    await handshake(client)
+    const ensure = vi.spyOn(host.server.runtime, 'ensureSession').mockResolvedValue({
+      sessionId: 'provider-session',
+      state: 'created',
+    })
+    let finishPrompt!: () => void
+    const pendingPrompt = new Promise<void>((resolve) => {
+      finishPrompt = resolve
+    })
+    const prompt = vi.spyOn(host.server.runtime, 'prompt').mockReturnValue(pendingPrompt as never)
+    const cancel = vi.spyOn(host.server.runtime, 'cancel').mockResolvedValue()
+
+    const createId = client.command('session.create', {
+      workspaceId: 'workspace-1',
+      providerId: 'cursor',
+      cwd: 'C:\\workspace',
+      title: 'Runtime bridge',
+    })
+    const created = ProofResponseSchemas['session.create'].parse(await client.next())
+    expect(created.requestId).toBe(createId)
+    await vi.waitFor(() => expect(ensure).toHaveBeenCalledTimes(1))
+    expect(ensure.mock.calls[0]?.[0]).toMatchObject({
+      providerId: 'cursor',
+      workspaceId: 'workspace-1',
+      cwd: 'C:\\workspace',
+      threadId: created.payload.thread.threadId,
+    })
+
+    const openId = client.command('session.open', {
+      sessionId: created.payload.session.sessionId,
+    })
+    expect(await client.next()).toMatchObject({ type: 'response', requestId: openId })
+    await vi.waitFor(() => expect(ensure).toHaveBeenCalledTimes(2))
+    expect(ensure.mock.calls[1]?.[0]).toMatchObject({ sessionId: 'provider-session' })
+
+    const sendId = client.command('turn.send', {
+      sessionId: created.payload.session.sessionId,
+      threadId: created.payload.thread.threadId,
+      text: 'Hello runtime',
+    })
+    const sent = ProofResponseSchemas['turn.send'].parse(await client.next())
+    expect(sent.requestId).toBe(sendId)
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1))
+    expect(prompt.mock.calls[0]?.[0]).toMatchObject({
+      sessionId: 'provider-session',
+      prompt: {
+        text: 'Hello runtime',
+        blocks: [{ type: 'text', text: 'Hello runtime' }],
+      },
+      userMessageId: sent.payload.userMessage.messageId,
+    })
+
+    const interruptId = client.command('turn.interrupt', {
+      sessionId: created.payload.session.sessionId,
+      threadId: created.payload.thread.threadId,
+      turnId: sent.payload.turn.turnId,
+    })
+    expect(await client.next()).toMatchObject({
+      type: 'response',
+      requestId: interruptId,
+      payload: { turnId: sent.payload.turn.turnId },
+    })
+    expect(await client.next()).toMatchObject({
+      type: 'event',
+      name: 'turn.interrupted',
+      scope: {
+        type: 'thread',
+        environmentId: host.server.identity.environmentId,
+        sessionId: created.payload.session.sessionId,
+        threadId: created.payload.thread.threadId,
+      },
+      payload: { turnId: sent.payload.turn.turnId },
+    })
+    expect(cancel).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        providerId: 'cursor',
+        sessionId: 'provider-session',
+        threadId: created.payload.thread.threadId,
+      }),
+    )
+    finishPrompt()
+  })
+
+  it('rejects thread creation for missing and unhealthy providers before runtime work', async () => {
+    const host = await setup()
+    const client = await connect(host)
+    await handshake(client)
+    const ensure = vi.spyOn(host.server.runtime, 'ensureSession')
+
+    const missingId = client.command('session.create', {
+      workspaceId: 'workspace-1',
+      providerId: 'missing',
+      cwd: 'C:\\workspace',
+    })
+    expect(await client.next()).toMatchObject({
+      type: 'error',
+      requestId: missingId,
+      error: { code: 'not_found' },
+    })
+
+    host.server.runtime.health.observeRuntimeStartFailed('cursor', 'provider crashed')
+    expect(await client.next()).toMatchObject({
+      type: 'event',
+      name: 'provider_health_changed',
+      payload: { providerId: 'cursor', health: { summary: 'error' } },
+    })
+    const unhealthyId = client.command('session.create', {
+      workspaceId: 'workspace-1',
+      providerId: 'cursor',
+      cwd: 'C:\\workspace',
+    })
+    expect(await client.next()).toMatchObject({
+      type: 'error',
+      requestId: unhealthyId,
+      error: { code: 'unavailable' },
+    })
+    expect(ensure).not.toHaveBeenCalled()
   })
 
   it('coalesces concurrent probes for the same provider', async () => {

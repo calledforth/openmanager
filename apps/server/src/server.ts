@@ -6,7 +6,9 @@ import {
   PROVIDER_DISCOVERY_CAPABILITY,
   PROVIDER_HEALTH_CAPABILITY,
   PROVIDER_PROBE_CAPABILITY,
+  type EventEnvelope,
 } from '@openmanager/protocol/node'
+import type { HostDeps } from '@agentpack/runtime/node'
 import { mountAgentRuntime } from './agent-runtime.ts'
 import type { ServerConfig } from './config.ts'
 import { validateOrigins } from './config.ts'
@@ -14,6 +16,7 @@ import { loadClientToken } from './credential.ts'
 import { loadEnvironmentIdentity } from './identity.ts'
 import { createLogger } from './logger.ts'
 import { createProviderService } from './provider-service.ts'
+import { createThreadService } from './thread-service.ts'
 import { attachWebSocket, SOCKET_CAPABILITIES } from './websocket.ts'
 
 export const SERVER_CAPABILITIES = [
@@ -21,6 +24,10 @@ export const SERVER_CAPABILITIES = [
   PROVIDER_DISCOVERY_CAPABILITY,
   PROVIDER_HEALTH_CAPABILITY,
   PROVIDER_PROBE_CAPABILITY,
+  'session.create',
+  'session.open',
+  'turn.send',
+  'turn.interrupt',
 ]
 
 /** A loopback-only listener exposing public liveness and connection discovery. */
@@ -28,8 +35,15 @@ export async function startServer(config: ServerConfig) {
   const allowedOrigins = validateOrigins(config.allowedOrigins ?? [])
   const identity = await loadEnvironmentIdentity(config.dataDir)
   const token = await loadClientToken(config.dataDir)
-  const runtime = mountAgentRuntime(createLogger(config.logLevel))
+  let onRuntimeEvent: HostDeps['emitEvent'] = () => undefined
+  const runtime = mountAgentRuntime(createLogger(config.logLevel), (event) => onRuntimeEvent(event))
   const providerService = createProviderService(runtime)
+  let publishThreadEvent: (event: EventEnvelope) => void = () => undefined
+  const threadService = createThreadService(runtime, providerService, (event) =>
+    publishThreadEvent(event),
+  )
+  threadService.setEnvironmentId(identity.environmentId)
+  onRuntimeEvent = (event) => threadService.onRuntimeEvent(event)
   // Set after listen so port 0 advertises the actual port selected by the OS.
   let websocketUrl: string
   const bootstrap = () =>
@@ -76,8 +90,10 @@ export async function startServer(config: ServerConfig) {
     token,
     allowedOrigins,
     bootstrap,
-    dispatchCommand: (command) => providerService.dispatch(command),
+    dispatchCommand: (command) =>
+      threadService.dispatch(command) ?? providerService.dispatch(command),
   })
+  publishThreadEvent = (event) => sockets.publishEvent(event)
   const stopHealthEvents = providerService.onHealthChanged((event) => sockets.publishEvent(event))
   try {
     await new Promise<void>((resolve, reject) => {
@@ -101,6 +117,7 @@ export async function startServer(config: ServerConfig) {
   return {
     identity,
     runtime,
+    threadService,
     sockets,
     port: address.port,
     url: `http://127.0.0.1:${address.port}`,
