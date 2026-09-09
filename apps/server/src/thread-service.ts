@@ -26,6 +26,7 @@ type ProviderGate = {
 type ActiveTurn = {
   turn: Turn
   userMessage: Message
+  interruptRequested: boolean
 }
 type ThreadRecord = {
   session: Session
@@ -197,7 +198,7 @@ export function createThreadService(
         }
         record.turns.push(turn)
         record.messages.push(userMessage)
-        record.activeTurn = { turn, userMessage }
+        record.activeTurn = { turn, userMessage, interruptRequested: false }
         void record.runtimeSession
           .then((sessionId) =>
             runtime.prompt({
@@ -210,13 +211,21 @@ export function createThreadService(
             }),
           )
           .then(() => {
-            if (record.activeTurn?.turn.turnId === turn.turnId && turn.state === 'running') {
+            if (
+              record.activeTurn?.turn.turnId === turn.turnId &&
+              !record.activeTurn.interruptRequested &&
+              turn.state === 'running'
+            ) {
               turn.state = 'completed'
               record.activeTurn = undefined
             }
           })
           .catch(() => {
-            if (record.activeTurn?.turn.turnId === turn.turnId && turn.state === 'running') {
+            if (
+              record.activeTurn?.turn.turnId === turn.turnId &&
+              !record.activeTurn.interruptRequested &&
+              turn.state === 'running'
+            ) {
               turn.state = 'failed'
               record.activeTurn = undefined
             }
@@ -250,6 +259,7 @@ export function createThreadService(
         if (!active || active.turn.turnId !== parsed.data.payload.turnId) {
           return errorResult(command.requestId, 'conflict', 'Turn is not in progress.')
         }
+        active.interruptRequested = true
         void record.runtimeSession
           .then((sessionId) => runtime.cancel({ ...route(record), sessionId }))
           .then(() => {
@@ -258,7 +268,11 @@ export function createThreadService(
             record.activeTurn = undefined
             emitInterrupted(record, active.turn.turnId)
           })
-          .catch(() => undefined)
+          .catch(() => {
+            if (record.activeTurn?.turn.turnId !== active.turn.turnId) return
+            active.turn.state = 'failed'
+            record.activeTurn = undefined
+          })
         return ProofResponseSchemas['turn.interrupt'].parse({
           type: 'response',
           requestId: command.requestId,
@@ -274,7 +288,8 @@ export function createThreadService(
       const record = threads.get(event.threadId)
       const active = record?.activeTurn
       if (!record || !active) return
-      const interrupted = /abort|cancel|interrupt/i.test(event.data.stopReason ?? '')
+      const interrupted =
+        active.interruptRequested || /abort|cancel|interrupt/i.test(event.data.stopReason ?? '')
       active.turn.state = interrupted ? 'interrupted' : 'completed'
       record.activeTurn = undefined
       if (interrupted) emitInterrupted(record, active.turn.turnId)

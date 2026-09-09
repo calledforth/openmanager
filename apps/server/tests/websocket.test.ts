@@ -371,7 +371,11 @@ describe('handshake and scoped subscriptions', () => {
       finishPrompt = resolve
     })
     const prompt = vi.spyOn(host.server.runtime, 'prompt').mockReturnValue(pendingPrompt as never)
-    const cancel = vi.spyOn(host.server.runtime, 'cancel').mockResolvedValue()
+    let finishCancel!: () => void
+    const pendingCancel = new Promise<void>((resolve) => {
+      finishCancel = resolve
+    })
+    const cancel = vi.spyOn(host.server.runtime, 'cancel').mockReturnValue(pendingCancel)
 
     const createId = client.command('session.create', {
       workspaceId: 'workspace-1',
@@ -423,6 +427,11 @@ describe('handshake and scoped subscriptions', () => {
       requestId: interruptId,
       payload: { turnId: sent.payload.turn.turnId },
     })
+    // The prompt may settle before the provider acknowledges cancellation. The
+    // accepted interrupt must retain ownership and still emit its terminal event.
+    finishPrompt()
+    await immediate()
+    finishCancel()
     expect(await client.next()).toMatchObject({
       type: 'event',
       name: 'turn.interrupted',
@@ -441,7 +450,6 @@ describe('handshake and scoped subscriptions', () => {
         threadId: created.payload.thread.threadId,
       }),
     )
-    finishPrompt()
   })
 
   it('rejects thread creation for missing and unhealthy providers before runtime work', async () => {
