@@ -2,7 +2,12 @@ import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { BootstrapResponseSchema, PROTOCOL_VERSION } from '@openmanager/protocol/node'
+import {
+  BootstrapResponseSchema,
+  COMPOSER_PREFERENCES_GET_CAPABILITY,
+  COMPOSER_PREFERENCES_SET_CAPABILITY,
+  PROTOCOL_VERSION,
+} from '@openmanager/protocol/node'
 import { startServer } from '../src/server.js'
 import { createLogger } from '../src/logger.js'
 import { SERVER_CAPABILITIES } from '../src/server.js'
@@ -95,6 +100,38 @@ describe('headless listener', () => {
       ...expected,
       providers: expect.any(Array),
       websocketUrl: `ws://127.0.0.1:${restarted.port}/ws`,
+    })
+  })
+
+  it('returns composer preferences after a full server restart', async () => {
+    const directory = await dataDir()
+    const config = { port: 0, dataDir: directory, logLevel: 'silent' as const }
+    const first = await startServer(config)
+    expect(
+      first.composerService.dispatch({
+        type: 'command',
+        requestId: 'set-1',
+        name: COMPOSER_PREFERENCES_SET_CAPABILITY,
+        payload: {
+          workspaceId: 'workspace-1',
+          providerId: 'cursor',
+          preference: { modelId: 'opus', configValues: { effort: 'high' } },
+        },
+      }),
+    ).toMatchObject({ type: 'response' })
+    await first.close()
+
+    const restarted = await startServer(config)
+    servers.push(restarted)
+    expect(
+      restarted.composerService.dispatch({
+        type: 'command',
+        requestId: 'get-1',
+        name: COMPOSER_PREFERENCES_GET_CAPABILITY,
+        payload: { workspaceId: 'workspace-1', providerId: 'cursor' },
+      }),
+    ).toMatchObject({
+      payload: { preference: { modelId: 'opus', configValues: { effort: 'high' } } },
     })
   })
 

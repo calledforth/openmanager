@@ -24,6 +24,8 @@ const errorResult = (requestId: string, code: ErrorCode, message: string) => ({
 export function createProviderService(
   runtime: AgentRuntime,
   providerConfigs: Readonly<Record<ProviderId, ProviderConfig>> = providers,
+  observeCatalog: (providerId: ProviderId, result: Awaited<ReturnType<AgentRuntime['probeProvider']>>) => void =
+    () => undefined,
 ) {
   const listeners = new Set<(event: ReturnType<typeof healthEvent>) => void>()
   const previous = new Map<ProviderId, ProviderHealth>()
@@ -144,13 +146,18 @@ export function createProviderService(
         })
       }
       return probe
-        .then(() =>
-          ProviderProbeResponseSchema.parse({
+        .then((result) => {
+          // Test doubles and older embedders may only signal probe completion.
+          // A real AgentRuntime returns the catalog-bearing bootstrap object.
+          if (result && typeof result === 'object' && 'result' in result) {
+            observeCatalog(providerId, result as Awaited<ReturnType<AgentRuntime['probeProvider']>>)
+          }
+          return ProviderProbeResponseSchema.parse({
             type: 'response',
             requestId: command.requestId,
             payload: { provider: provider(providerId) },
-          }),
-        )
+          })
+        })
         .catch(() =>
           errorResult(command.requestId, 'unavailable', 'Provider probe did not complete.'),
         )

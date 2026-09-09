@@ -52,8 +52,9 @@ Port `0` asks the OS for an available port; the startup log contains the actual
 port. Relative paths resolve from the process working directory (normally
 `apps/server` when launched through pnpm). The directory is created recursively;
 POSIX creation requests owner-only permissions. Existing directory permissions
-and Windows ACLs are not changed. First boot creates `identity.json`; no database
-is created yet.
+and Windows ACLs are not changed. First boot creates `identity.json` and
+`openmanager.sqlite`. SQLite stores provider composer profiles and
+workspace/provider preferences in the environment data directory.
 
 Log levels are `debug`, `info`, `warn`, `error`, and `silent`. JSON log records at
 or above the configured severity are printed; the startup record is `info`, so
@@ -147,6 +148,19 @@ distinct probes share one global tail so only one bootstrap CLI runs at a time.
 Authenticated, handshaken clients receive `provider_health_changed` events when
 the public health snapshot transitions; the handshake bootstrap supplies the
 latest snapshot across reconnect gaps.
+
+`provider.catalog.get` returns the discovery rows enriched with the latest
+persisted model/mode profile learned from probes and live sessions.
+`composer.preferences.get` and `composer.preferences.set` read and patch the
+selection for one workspace/provider pair. `composer.model.set`,
+`composer.mode.set`, and `composer.config_option.set` apply a selection to the
+addressed live session before persisting it. A model change also reconciles the
+remembered config values against the provider's refreshed option list, matching
+the desktop runtime behavior. New and respawned provider processes automatically
+pull the durable model and config values from SQLite. Mode remains a persisted
+composer choice but is only applied by explicit commands, so a respawn does not
+fight provider plan/execute transitions. Restarting with the same data directory
+retains every preference field.
 
 `session.create`, `session.open`, `turn.send`, and `turn.interrupt` route directly
 to the mounted runtime. Session creation preserves the proof-slice payload and

@@ -2,15 +2,23 @@ import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import {
   BootstrapResponseSchema,
+  COMPOSER_CONFIG_OPTION_SET_CAPABILITY,
+  COMPOSER_MODEL_SET_CAPABILITY,
+  COMPOSER_MODE_SET_CAPABILITY,
+  COMPOSER_PREFERENCES_GET_CAPABILITY,
+  COMPOSER_PREFERENCES_SET_CAPABILITY,
   PROTOCOL_VERSION,
+  PROVIDER_CATALOG_CAPABILITY,
   PROVIDER_DISCOVERY_CAPABILITY,
   PROVIDER_HEALTH_CAPABILITY,
   PROVIDER_PROBE_CAPABILITY,
   type DurableEvent,
   type EventEnvelope,
 } from '@openmanager/protocol/node'
-import type { HostDeps } from '@agentpack/runtime/node'
+import { providers, type HostDeps, type ProviderBootstrap as RuntimeProviderBootstrap } from '@agentpack/runtime/node'
 import { mountAgentRuntime } from './agent-runtime.ts'
+import { createComposerService, desiredSessionConfig } from './composer-service.ts'
+import { openComposerStore } from './composer-store.ts'
 import type { ServerConfig } from './config.ts'
 import { validateOrigins } from './config.ts'
 import { loadClientToken } from './credential.ts'
@@ -26,6 +34,12 @@ export const SERVER_CAPABILITIES = [
   PROVIDER_DISCOVERY_CAPABILITY,
   PROVIDER_HEALTH_CAPABILITY,
   PROVIDER_PROBE_CAPABILITY,
+  PROVIDER_CATALOG_CAPABILITY,
+  COMPOSER_PREFERENCES_GET_CAPABILITY,
+  COMPOSER_PREFERENCES_SET_CAPABILITY,
+  COMPOSER_MODEL_SET_CAPABILITY,
+  COMPOSER_MODE_SET_CAPABILITY,
+  COMPOSER_CONFIG_OPTION_SET_CAPABILITY,
   'session.create',
   'session.open',
   'turn.send',
@@ -37,9 +51,19 @@ export async function startServer(config: ServerConfig) {
   const allowedOrigins = validateOrigins(config.allowedOrigins ?? [])
   const identity = await loadEnvironmentIdentity(config.dataDir)
   const token = await loadClientToken(config.dataDir)
+  const composerStore = openComposerStore(config.dataDir)
   let onRuntimeEvent: HostDeps['emitEvent'] = () => undefined
-  const runtime = mountAgentRuntime(createLogger(config.logLevel), (event) => onRuntimeEvent(event))
-  const providerService = createProviderService(runtime)
+  const runtime = mountAgentRuntime(
+    createLogger(config.logLevel),
+    (event) => onRuntimeEvent(event),
+    ({ providerId, workspacePath }) =>
+      desiredSessionConfig(composerStore.getPreference(workspacePath, providerId)),
+  )
+  let observeProviderCatalog: (providerId: string, result: RuntimeProviderBootstrap) => void =
+    () => undefined
+  const providerService = createProviderService(runtime, providers, (providerId, result) =>
+    observeProviderCatalog(providerId, result),
+  )
   let publishDurableEvent: (record: DurableEvent) => void = () => undefined
   let publishThreadEvent: (event: EventEnvelope) => void = () => undefined
   const eventService = createEventService((record) => publishDurableEvent(record))
@@ -49,8 +73,18 @@ export async function startServer(config: ServerConfig) {
     (event) => eventService.append(event),
     (event) => publishThreadEvent(event),
   )
+  const composerService = createComposerService(
+    runtime,
+    providerService,
+    composerStore,
+    (sessionId) => threadService.resolveRuntimeSession(sessionId),
+  )
+  observeProviderCatalog = (providerId, result) => composerService.observeProbe(providerId, result)
   threadService.setEnvironmentId(identity.environmentId)
-  onRuntimeEvent = (event) => threadService.onRuntimeEvent(event)
+  onRuntimeEvent = (event) => {
+    composerService.onRuntimeEvent(event)
+    threadService.onRuntimeEvent(event)
+  }
   // Set after listen so port 0 advertises the actual port selected by the OS.
   let websocketUrl: string
   const bootstrap = () =>
@@ -98,7 +132,9 @@ export async function startServer(config: ServerConfig) {
     allowedOrigins,
     bootstrap,
     dispatchCommand: (command) =>
-      threadService.dispatch(command) ?? providerService.dispatch(command),
+      threadService.dispatch(command) ??
+      providerService.dispatch(command) ??
+      composerService.dispatch(command),
   })
   publishDurableEvent = (record) => sockets.publish(record)
   publishThreadEvent = (event) => sockets.publishEvent(event)
@@ -116,6 +152,7 @@ export async function startServer(config: ServerConfig) {
     stopHealthEvents()
     providerService.stop()
     await runtime.shutdown()
+    composerStore.close()
     throw error
   }
   const address = server.address() as AddressInfo
@@ -126,6 +163,8 @@ export async function startServer(config: ServerConfig) {
     identity,
     runtime,
     threadService,
+    composerService,
+    composerStore,
     sockets,
     port: address.port,
     url: `http://127.0.0.1:${address.port}`,
@@ -136,7 +175,9 @@ export async function startServer(config: ServerConfig) {
           server.close((error) => (error ? reject(error) : resolve()))
           server.closeAllConnections()
         })
-        closePromise = Promise.all([socketClose, httpClose, runtime.shutdown()]).then(() => {})
+        closePromise = Promise.all([socketClose, httpClose, runtime.shutdown()]).then(() => {
+          composerStore.close()
+        })
         stopHealthEvents()
         providerService.stop()
       }
