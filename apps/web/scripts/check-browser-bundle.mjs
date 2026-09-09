@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const FORBIDDEN_IMPORT = new RegExp(
   String.raw`(?:from|import\()\s*['"](?:electron(?:/[^'"]*)?|electron-store|electron-updater|node:[^'"]+|fs|path|os|child_process|net|tls|http|https|worker_threads)['"]` +
     '|' +
-    String.raw`require\(\s*['"](?:electron(?:/[^'"]*)?|electron-store|electron-updater|node:[^'"]+|fs|path|os|child_process)['"]`,
+    String.raw`require\(\s*['"](?:electron(?:/[^'"]*)?|electron-store|electron-updater|node:[^'"]+|fs|path|os|child_process)['"]\s*\)`,
 )
 
 export function findForbiddenBrowserImport(source) {
