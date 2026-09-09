@@ -1,13 +1,27 @@
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { BootstrapResponseSchema, PROTOCOL_VERSION } from '@openmanager/protocol/node'
+import {
+  BootstrapResponseSchema,
+  PROTOCOL_VERSION,
+  PROVIDER_DISCOVERY_CAPABILITY,
+  PROVIDER_HEALTH_CAPABILITY,
+  PROVIDER_PROBE_CAPABILITY,
+} from '@openmanager/protocol/node'
 import { mountAgentRuntime } from './agent-runtime.ts'
 import type { ServerConfig } from './config.ts'
 import { validateOrigins } from './config.ts'
 import { loadClientToken } from './credential.ts'
 import { loadEnvironmentIdentity } from './identity.ts'
 import { createLogger } from './logger.ts'
+import { createProviderService } from './provider-service.ts'
 import { attachWebSocket, SOCKET_CAPABILITIES } from './websocket.ts'
+
+export const SERVER_CAPABILITIES = [
+  ...SOCKET_CAPABILITIES,
+  PROVIDER_DISCOVERY_CAPABILITY,
+  PROVIDER_HEALTH_CAPABILITY,
+  PROVIDER_PROBE_CAPABILITY,
+]
 
 /** A loopback-only listener exposing public liveness and connection discovery. */
 export async function startServer(config: ServerConfig) {
@@ -15,6 +29,7 @@ export async function startServer(config: ServerConfig) {
   const identity = await loadEnvironmentIdentity(config.dataDir)
   const token = await loadClientToken(config.dataDir)
   const runtime = mountAgentRuntime(createLogger(config.logLevel))
+  const providerService = createProviderService(runtime)
   // Set after listen so port 0 advertises the actual port selected by the OS.
   let websocketUrl: string
   const bootstrap = () =>
@@ -22,7 +37,8 @@ export async function startServer(config: ServerConfig) {
       environmentId: identity.environmentId,
       label: identity.label,
       protocolVersion: PROTOCOL_VERSION,
-      capabilities: SOCKET_CAPABILITIES,
+      capabilities: SERVER_CAPABILITIES,
+      providers: providerService.snapshot(),
       websocketUrl,
     })
   const server = createServer((request, response) => {
@@ -56,7 +72,13 @@ export async function startServer(config: ServerConfig) {
     response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
     response.end('Not found\n')
   })
-  const sockets = attachWebSocket(server, { token, allowedOrigins, bootstrap })
+  const sockets = attachWebSocket(server, {
+    token,
+    allowedOrigins,
+    bootstrap,
+    dispatchCommand: (command) => providerService.dispatch(command),
+  })
+  const stopHealthEvents = providerService.onHealthChanged((event) => sockets.publishEvent(event))
   try {
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject)
@@ -67,11 +89,14 @@ export async function startServer(config: ServerConfig) {
     })
   } catch (error) {
     await sockets.close()
+    stopHealthEvents()
+    providerService.stop()
     await runtime.shutdown()
     throw error
   }
   const address = server.address() as AddressInfo
   websocketUrl = `ws://127.0.0.1:${address.port}/ws`
+  providerService.start()
   let closePromise: Promise<void> | undefined
   return {
     identity,
@@ -87,6 +112,8 @@ export async function startServer(config: ServerConfig) {
           server.closeAllConnections()
         })
         closePromise = Promise.all([socketClose, httpClose, runtime.shutdown()]).then(() => {})
+        stopHealthEvents()
+        providerService.stop()
       }
       return closePromise
     },

@@ -17,6 +17,7 @@ import {
   type BootstrapResponse,
   type CommandEnvelope,
   type ErrorCode,
+  type EventEnvelope,
   type ServerHeartbeatState,
   type SubscriptionScope,
 } from '@openmanager/protocol/node'
@@ -47,7 +48,12 @@ const now = () => Math.floor(performance.now())
 /** Transport owns only live connection state. Durable event records come from the host. */
 export function attachWebSocket(
   server: Server,
-  options: { token: string; allowedOrigins: readonly string[]; bootstrap: () => BootstrapResponse },
+  options: {
+    token: string
+    allowedOrigins: readonly string[]
+    bootstrap: () => BootstrapResponse
+    dispatchCommand?: (command: CommandEnvelope) => Promise<unknown> | undefined
+  },
 ) {
   const wss = new WebSocketServer({
     noServer: true,
@@ -57,6 +63,7 @@ export function attachWebSocket(
   })
   type Connection = {
     subscriptions: Map<string, SubscriptionScope>
+    ready: boolean
     send: (message: unknown) => void
     close: (code: number, reason: string) => void
   }
@@ -107,7 +114,7 @@ export function attachWebSocket(
       let timer: ReturnType<typeof setTimeout>
       let termination: ReturnType<typeof setTimeout> | undefined
       const subscriptions = new Map<string, SubscriptionScope>()
-      const results = new Map<string, { command: CommandEnvelope; result: unknown }>()
+      const results = new Map<string, { command: CommandEnvelope; result: Promise<unknown> }>()
       const cleanup = () => {
         active = false
         clearTimeout(timer)
@@ -152,7 +159,8 @@ export function attachWebSocket(
         }
       }
       timer = setTimeout(() => close(1008, 'handshake_timeout'), SOCKET_LIMITS.handshakeTimeoutMs)
-      connections.set(ws, { subscriptions, send, close })
+      const connection: Connection = { subscriptions, ready: false, send, close }
+      connections.set(ws, connection)
       ws.on('close', () => {
         cleanup()
         clearTimeout(termination)
@@ -206,7 +214,7 @@ export function attachWebSocket(
         }
         const previous = results.get(message.requestId)
         if (previous) {
-          if (isDeepStrictEqual(previous.command, message)) send(previous.result)
+          if (isDeepStrictEqual(previous.command, message)) void previous.result.then(send)
           else {
             send(errorResult(null, 'conflict', 'Request identity was reused for another command.'))
             close(1008, 'request_conflict')
@@ -218,9 +226,21 @@ export function attachWebSocket(
           close(1008, 'command_limit')
           return
         }
-        const reply = (result: unknown) => {
-          results.set(message.requestId, { command: message, result })
-          send(result)
+        const reply = (result: unknown | Promise<unknown>) => {
+          const asynchronous =
+            typeof result === 'object' &&
+            result !== null &&
+            'then' in result &&
+            typeof result.then === 'function'
+          const settled = Promise.resolve(result).catch(() =>
+            errorResult(message.requestId, 'internal', 'Command failed.'),
+          )
+          results.set(message.requestId, { command: message, result: settled })
+          if (asynchronous) {
+            void settled.then(send)
+          } else {
+            send(result)
+          }
         }
         if (!ready) {
           if (message.name !== 'protocol.handshake') {
@@ -241,6 +261,7 @@ export function attachWebSocket(
             return
           }
           ready = true
+          connection.ready = true
           clearTimeout(timer)
           heartbeat = createServerHeartbeatState(now())
           tick()
@@ -289,7 +310,8 @@ export function attachWebSocket(
           reply({ type: 'response', requestId: message.requestId, payload: null })
           return
         }
-        reply(errorResult(message.requestId, 'validation', 'Unsupported command.'))
+        const dispatched = options.dispatchCommand?.(message)
+        reply(dispatched ?? errorResult(message.requestId, 'validation', 'Unsupported command.'))
       })
     })
   })
@@ -320,6 +342,11 @@ export function attachWebSocket(
             )
           }
         }
+      }
+    },
+    publishEvent(event: EventEnvelope) {
+      for (const connection of connections.values()) {
+        if (connection.ready) connection.send(event)
       }
     },
     close() {

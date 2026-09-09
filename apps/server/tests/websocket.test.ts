@@ -8,6 +8,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   HEARTBEAT_POLICY,
   PROTOCOL_VERSION,
+  ProviderHealthChangedEventSchema,
+  ProviderProbeResponseSchema,
   ProofResponseSchemas,
   ServerMessageSchema,
   type ServerMessage,
@@ -303,6 +305,136 @@ describe('handshake and scoped subscriptions', () => {
     })
     await closed
     expect(host.server.sockets.subscriptionCount).toBe(0)
+  })
+
+  it('routes provider probes through a pseudo-thread and broadcasts health transitions', async () => {
+    const host = await setup()
+    const client = await connect(host)
+    await handshake(client)
+
+    host.server.runtime.health.observeInitialized('cursor', '1.0.0')
+    expect(ProviderHealthChangedEventSchema.parse(await client.next())).toMatchObject({
+      type: 'event',
+      name: 'provider_health_changed',
+      payload: {
+        providerId: 'cursor',
+        health: { install: 'installed', summary: 'unknown' },
+      },
+    })
+
+    const probe = vi.spyOn(host.server.runtime, 'probeProvider').mockResolvedValue({} as never)
+    const requestId = client.command('provider.probe', {
+      providerId: 'cursor',
+      cwd: 'C:\\workspace',
+    })
+    expect(ProviderProbeResponseSchema.parse(await client.next())).toMatchObject({
+      type: 'response',
+      requestId,
+      payload: { provider: { id: 'cursor' } },
+    })
+    expect(probe).toHaveBeenCalledExactlyOnceWith({
+      providerId: 'cursor',
+      threadId: 'desktop-bootstrap:cursor',
+      workspaceId: 'C:\\workspace',
+      cwd: 'C:\\workspace',
+    })
+  })
+
+  it('rejects missing providers without probing the runtime', async () => {
+    const host = await setup()
+    const client = await connect(host)
+    await handshake(client)
+    const probe = vi.spyOn(host.server.runtime, 'probeProvider')
+
+    const requestId = client.command('provider.probe', {
+      providerId: 'missing',
+      cwd: 'C:\\workspace',
+    })
+    expect(await client.next()).toMatchObject({
+      type: 'error',
+      requestId,
+      error: { code: 'not_found' },
+    })
+    expect(probe).not.toHaveBeenCalled()
+  })
+
+  it('coalesces concurrent probes for the same provider', async () => {
+    const host = await setup()
+    const client = await connect(host)
+    await handshake(client)
+    let finishProbe!: () => void
+    const pendingProbe = new Promise<void>((resolve) => {
+      finishProbe = resolve
+    })
+    const probe = vi
+      .spyOn(host.server.runtime, 'probeProvider')
+      .mockReturnValue(pendingProbe as never)
+
+    const firstRequestId = client.command('provider.probe', {
+      providerId: 'cursor',
+      cwd: 'C:\\workspace',
+    })
+    const secondRequestId = client.command('provider.probe', {
+      providerId: 'cursor',
+      cwd: 'C:\\workspace',
+    })
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(1))
+    finishProbe()
+
+    const responses = [await client.next(), await client.next()]
+    expect(responses).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'response', requestId: firstRequestId }),
+        expect.objectContaining({ type: 'response', requestId: secondRequestId }),
+      ]),
+    )
+  })
+
+  it('serializes probes for different workspaces without dropping either probe', async () => {
+    const host = await setup()
+    const client = await connect(host)
+    await handshake(client)
+    let finishFirstProbe!: () => void
+    const firstProbe = new Promise<void>((resolve) => {
+      finishFirstProbe = resolve
+    })
+    const probe = vi
+      .spyOn(host.server.runtime, 'probeProvider')
+      .mockReturnValueOnce(firstProbe as never)
+      .mockResolvedValueOnce({} as never)
+
+    client.command('provider.probe', { providerId: 'cursor', cwd: 'C:\\first' })
+    client.command('provider.probe', { providerId: 'cursor', cwd: 'C:\\second' })
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(1))
+    finishFirstProbe()
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2))
+
+    expect(probe.mock.calls.map(([route]) => route.cwd)).toEqual(['C:\\first', 'C:\\second'])
+    await Promise.all([client.next(), client.next()])
+  })
+
+  it('serializes probes for different providers so only one CLI runs at a time', async () => {
+    const host = await setup()
+    const client = await connect(host)
+    await handshake(client)
+    let finishFirstProbe!: () => void
+    const firstProbe = new Promise<void>((resolve) => {
+      finishFirstProbe = resolve
+    })
+    const probe = vi
+      .spyOn(host.server.runtime, 'probeProvider')
+      .mockReturnValueOnce(firstProbe as never)
+      .mockResolvedValueOnce({} as never)
+
+    client.command('provider.probe', { providerId: 'cursor', cwd: 'C:\\workspace' })
+    client.command('provider.probe', { providerId: 'opencode', cwd: 'C:\\workspace' })
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(1))
+    expect(probe.mock.calls[0]?.[0].providerId).toBe('cursor')
+    finishFirstProbe()
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2))
+
+    expect(probe.mock.calls.map(([route]) => route.providerId)).toEqual(['cursor', 'opencode'])
+    await Promise.all([client.next(), client.next()])
   })
 
   it.each(['graceful', 'abrupt'])(
