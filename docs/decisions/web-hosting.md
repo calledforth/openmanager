@@ -50,15 +50,29 @@ The static host serves the built frontend assets only. Runtime API/WebSocket tra
 
 The Electron application is another OpenManager client, not another environment server. It should package the same shared React/Vite application and add desktop-only adapters such as windows, notifications, and updates. It does not need to run its own localhost web server merely to host the UI.
 
+## Electron reuse of the same entry
+
+The browser entry is `apps/web/index.html` → `src/main.tsx`. `pnpm --filter @openmanager/web build` writes a static `apps/web/dist/` tree (`index.html`, hashed `/assets/*`, and the Cloudflare/Netlify SPA fallback `_redirects`).
+
+Later Electron should load **that same bundle**, not a forked renderer:
+
+1. **Packaged desktop:** register a custom protocol (for example `openmanager://`) that serves `dist/` at `/`, then `BrowserWindow.loadURL('openmanager://-/')`. Keep `nodeIntegration: false` and expose desktop APIs only from preload adapters. A raw `file://` `loadFile` will not resolve `/assets/...` or history routes such as `/settings`.
+2. **Dev / hosted:** `loadURL` of Vite (`http://127.0.0.1:5173`) or the canonical static host. Same entry, same router.
+3. **Adapters only:** windows, notifications, updates, and filesystem stay outside `apps/web`. ESLint `no-restricted-imports` and the post-build `check-browser-bundle` script reject Node/Electron imports in this package.
+
+`base` stays `/` so the independently hosted SPA keeps stable asset URLs on nested routes.
+
 ## Local fallback UI
 
 An environment-served local or recovery UI may be added later for setup, offline recovery, or debugging. That is a convenience, not the canonical product architecture.
 
 ## Build and deploy
 
-- Web build: static Vite output suitable for Cloudflare Pages, Vercel, or equivalent static hosting.
+- Web build: `pnpm --filter @openmanager/web build` emits static Vite output in `apps/web/dist`, then scans that tree for Node/Electron-only imports.
+- Static host: publish `apps/web/dist`. Cloudflare Pages / Netlify use `_redirects` (`/* → /index.html 200`). Vercel uses `apps/web/vercel.json` rewrites. Existing files are served first; unknown paths fall back to the SPA.
 - Environment server: API/WebSocket/bootstrap/pairing endpoints only for the canonical architecture.
 - Multi-environment client state remains owned by the client and keyed by stable environment identity, not frontend URL.
+- CI already runs this path in `.github/workflows/ci.yml` (`pnpm run ci:web`).
 
 ## Related records
 

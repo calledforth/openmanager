@@ -46,6 +46,60 @@ export default [
     },
   },
   {
+    files: ['apps/web/src/**/*.{ts,tsx}'],
+    ignores: [
+      'apps/web/src/**/*.{test,spec}.{ts,tsx}',
+      'apps/web/src/test-setup.ts',
+      'apps/web/src/test-utils.tsx',
+      'apps/web/src/routeTree.gen.ts',
+    ],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: 'electron',
+              message:
+                'The web shell must stay browser-safe so Electron can load the same bundle later.',
+            },
+            {
+              name: 'electron-store',
+              message: 'Desktop persistence stays outside the web bundle.',
+            },
+            {
+              name: 'electron-updater',
+              message: 'Desktop updates stay outside the web bundle.',
+            },
+            {
+              name: 'fs',
+              message: 'Node builtins cannot ship in the browser SPA.',
+            },
+            {
+              name: 'path',
+              message: 'Node builtins cannot ship in the browser SPA.',
+            },
+            {
+              name: 'os',
+              message: 'Node builtins cannot ship in the browser SPA.',
+            },
+            {
+              name: 'child_process',
+              message: 'Node builtins cannot ship in the browser SPA.',
+            },
+          ],
+          patterns: [
+            {
+              group: ['electron/*', 'node:*'],
+              message:
+                'The web shell must stay browser-safe so Electron can load the same bundle later.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     files: ['apps/desktop/postcss.config.js'],
     languageOptions: {
       globals: {
