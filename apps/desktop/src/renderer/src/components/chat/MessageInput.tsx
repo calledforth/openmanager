@@ -4,11 +4,11 @@ import { providerBlocksComposer, useAppUi } from '../../providers/app-ui-provide
 import { useActiveSession } from '../../providers/active-session-provider'
 import { useQuestionStateOptional } from '../../providers/question-provider'
 import { usePlanStateOptional } from '../../providers/plan-provider'
-import { QuestionCard } from '../questions/ComposerQuestionPrompt'
-import { useQuestionFlow } from '../questions/useQuestionFlow'
-import { ComposerPlanPrompt } from '../plans/ComposerPlanPrompt'
+import { QuestionCard } from '@openmanager/app-core/components/questions/ComposerQuestionPrompt'
+import { useQuestionFlow } from '@openmanager/app-core/components/questions/useQuestionFlow'
+import { ComposerPlanPrompt } from '@openmanager/app-core/components/plans/ComposerPlanPrompt'
 import { ComposerTodos, useSessionPlanEntries } from '../plans/ComposerTodos'
-import { MessageInputView } from './MessageInputView'
+import { MessageInputView } from '@openmanager/app-core/components/chat/MessageInputView'
 import { deriveSessionChrome } from '@agentpack/view'
 import { useTrackedMutation } from '../../lib/convex-telemetry'
 import {
@@ -17,7 +17,7 @@ import {
   metadataModelOptions,
   type ComposerModelChoice,
 } from './providerModelGroups'
-import type { DraftImageAttachment, UploadedImageAttachment } from '../../lib/attachments'
+import type { DraftImageAttachment, UploadedImageAttachment } from '@openmanager/app-core/lib/attachments'
 
 export function MessageInput() {
   const {

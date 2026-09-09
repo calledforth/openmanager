@@ -7,7 +7,7 @@ import {
   ChatLoadingSkeleton,
   ChatViewPanel,
   UserMessage,
-} from './ChatViewPrimitives'
+} from '@openmanager/app-core/components/chat/ChatViewPrimitives'
 import { trackedConvexQuery, useTrackedQuery } from '../../lib/convex-telemetry'
 import {
   applyPartUpdate,
@@ -15,11 +15,11 @@ import {
   type StreamMessagePart,
 } from '@openmanager/shared/lib/remote-stream-parts'
 import { shouldHydrateLocalStream, shouldUseRemoteStreaming } from '../../lib/stream-continuity'
-import { cn } from '../../lib/utils'
-import type { UploadedImageAttachment } from '../../lib/attachments'
-import { PendingPermissionFallback } from '../permissions/InlinePermissionPrompt'
+import { cn } from '@openmanager/app-core/lib/utils'
+import type { UploadedImageAttachment } from '@openmanager/app-core/lib/attachments'
+import { PendingPermissionFallback } from '@openmanager/app-core/components/permissions/InlinePermissionPrompt'
 import { NewSessionLanding } from './NewSessionLanding'
-import type { TurnRuntimeMetadata } from '../parts/turn-work-group'
+import type { TurnRuntimeMetadata } from '@openmanager/app-core/components/parts/turn-work-group'
 
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96
 const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 8

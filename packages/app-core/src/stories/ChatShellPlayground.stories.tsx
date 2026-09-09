@@ -5,7 +5,6 @@ import { ChatViewPanel, UserMessage, AssistantMessage } from '../components/chat
 import { MessageInputView } from '../components/chat/MessageInputView'
 import { FloatingChatComposer } from '../components/chat/FloatingChatComposer'
 import { ThemeProvider } from '../providers/theme-provider'
-import { AppUiProvider } from '../providers/app-ui-provider'
 import type { StreamMessagePart } from '@openmanager/shared/lib/remote-stream-parts'
 
 const meta = {
@@ -682,7 +681,7 @@ function Demo() {
 
   return (
     <ThemeProvider>
-      <AppUiProvider>
+      <>
         <div className="flex h-screen w-screen min-w-0 overflow-hidden bg-background text-foreground selection:bg-accent/25 selection:text-foreground">
           <WorkspaceSidebarView
             collapsed={collapsed}
@@ -695,8 +694,6 @@ function Demo() {
             onSelectSession={() => undefined}
             onDeleteSession={() => undefined}
             onAddWorkspace={() => undefined}
-            convexOpen={false}
-            onToggleConvex={() => undefined}
           />
 
           <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden pt-2 pr-2 pb-0 pl-0 transition-all duration-300 ease-in-out">
@@ -867,7 +864,7 @@ function Demo() {
             </div>
           </div>
         </div>
-      </AppUiProvider>
+      </>
     </ThemeProvider>
   )
 }

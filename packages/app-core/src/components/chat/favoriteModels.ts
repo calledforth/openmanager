@@ -8,7 +8,9 @@ export function favoriteModelKey(providerId: ProviderId, modelId: string): Favor
   return `${providerId}:${modelId}`
 }
 
-export function parseFavoriteModelKey(key: string): { providerId: ProviderId; modelId: string } | null {
+export function parseFavoriteModelKey(
+  key: string,
+): { providerId: ProviderId; modelId: string } | null {
   const sep = key.indexOf(':')
   if (sep <= 0 || sep === key.length - 1) return null
   const providerId = key.slice(0, sep)

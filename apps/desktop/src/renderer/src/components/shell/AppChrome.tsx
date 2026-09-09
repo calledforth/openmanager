@@ -11,10 +11,10 @@ import {
 import { useActiveSession } from '../../providers/active-session-provider'
 import { useAppUi } from '../../providers/app-ui-provider'
 import { useSidebarData } from '../../providers/sidebar-data-provider'
-import { cn } from '../../lib/utils'
-import { typographyBody } from '../../lib/typography'
-import { Tooltip } from '../ui/Tooltip'
-import { ProjectIcon } from '../sidebar/ProjectIcon'
+import { cn } from '@openmanager/app-core/lib/utils'
+import { typographyBody } from '@openmanager/app-core/lib/typography'
+import { Tooltip } from '@openmanager/app-core/components/ui/Tooltip'
+import { ProjectIcon } from '@openmanager/app-core/components/sidebar/ProjectIcon'
 
 const isMac = window.electronAPI.platform === 'darwin'
 const showWindowControls = !isMac

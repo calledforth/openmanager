@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { api } from '@openmanager/convex/_generated/api'
 import { useTrackedMutation } from '../../lib/convex-telemetry'
 import { useSidebarData } from '../../providers/sidebar-data-provider'
-import { WorkspaceSidebarView } from './WorkspaceSidebarView'
+import { SidebarSettingsMenu } from './SidebarSettingsMenu'
+import { WorkspaceSidebarView } from '@openmanager/app-core/components/sidebar/WorkspaceSidebarView'
 
 export function WorkspaceSidebar({
   collapsed,
@@ -85,8 +86,8 @@ export function WorkspaceSidebar({
         void deleteSession(workspacePath, externalId, providerId)
       }
       onAddWorkspace={() => void addWorkspace()}
-      convexOpen={convexOpen}
-      onToggleConvex={onToggleConvex}
+      settingsMenu={<SidebarSettingsMenu convexOpen={convexOpen} onToggleConvex={onToggleConvex} />}
+      sidebarToggleShortcut={window.electronAPI.platform === 'darwin' ? '⌘B' : 'Ctrl+B'}
     />
   )
 }

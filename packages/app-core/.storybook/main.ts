@@ -11,21 +11,20 @@ const config: StorybookConfig = {
     name: '@storybook/react-vite',
     options: {},
   },
-  stories: ['../src/renderer/src/**/*.stories.@(ts|tsx)'],
+  stories: ['../src/**/*.stories.@(ts|tsx)'],
   addons: ['@storybook/addon-links', '@storybook/addon-docs', '@storybook/addon-a11y'],
   docs: {
     autodocs: 'tag',
   },
   async viteFinal(config) {
     const alias = {
-      '@renderer': resolve(here, '../src/renderer/src'),
-      '@openmanager/shared': resolve(here, '../../../packages/shared/src'),
-      '@openmanager/convex': resolve(here, '../../../packages/convex/convex'),
+      '@renderer': resolve(here, '../src'),
+      '@openmanager/shared': resolve(here, '../../shared/src'),
     }
     return {
       ...config,
       envDir: workspaceRoot,
-      envPrefix: ['VITE_', 'CONVEX_'],
+      envPrefix: ['VITE_'],
       plugins: [...(config.plugins ?? []), tailwindcss()],
       resolve: {
         ...(config.resolve ?? {}),

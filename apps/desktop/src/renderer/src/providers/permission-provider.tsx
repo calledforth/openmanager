@@ -1,54 +1,23 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
-import type { PermissionOption } from '@agentpack/contract'
+import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import { api } from '@openmanager/convex/_generated/api'
 import { useTrackedQuery } from '../lib/convex-telemetry'
 import { useAppUi, type PermissionSelection } from './app-ui-provider'
 
-export interface PendingPermission {
-  requestId: string
-  toolCallId?: string
-  permission?: string
-  toolName: string
-  description: string
-  input?: unknown
-  patterns?: unknown
-  alwaysPatterns?: unknown
-  options?: PermissionOption[]
-  expiresAt?: number
-  createdAt: number
-  updatedAt: number
-}
-
-interface PermissionStateValue {
-  activeSessionId: string | null
-  pendingPermission: PendingPermission | null
-  /** True when an inline prompt attached to a tool call is showing the pending request. */
-  isPermissionClaimed: boolean
-  /** Called by the inline tool-call prompt to suppress the fallback card. Returns a release fn. */
-  claimPermission: (requestId: string) => () => void
-  resolvePermission: (selection: PermissionSelection) => Promise<void>
-}
-
-const PermissionStateContext = createContext<PermissionStateValue | null>(null)
-
-export function usePermissionState() {
-  const ctx = useContext(PermissionStateContext)
-  if (!ctx) throw new Error('usePermissionState must be used within PermissionStateProvider')
-  return ctx
-}
-
-/** Safe variant for components also rendered outside the provider (e.g. Storybook). */
-export function usePermissionStateOptional() {
-  return useContext(PermissionStateContext)
-}
+import {
+  PermissionStateContext,
+  type PendingPermission,
+  type PermissionStateValue,
+} from '@openmanager/app-core/providers/permission-provider'
+export * from '@openmanager/app-core/providers/permission-provider'
 
 export function PermissionStateProvider({ children }: { children: ReactNode }) {
   const ui = useAppUi()
-  const pendingPermission = (useTrackedQuery(
-    'permissions.getPendingForSession',
-    api.permissions.getPendingForSession,
-    ui.activeSessionId ? { sessionExternalId: ui.activeSessionId } : 'skip',
-  ) as PendingPermission | null | undefined) ?? null
+  const pendingPermission =
+    (useTrackedQuery(
+      'permissions.getPendingForSession',
+      api.permissions.getPendingForSession,
+      ui.activeSessionId ? { sessionExternalId: ui.activeSessionId } : 'skip',
+    ) as PendingPermission | null | undefined) ?? null
 
   const [claimedRequestId, setClaimedRequestId] = useState<string | null>(null)
 

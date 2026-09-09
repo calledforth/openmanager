@@ -11,15 +11,15 @@
     "build": "pnpm --filter @openmanager/protocol build && pnpm --filter @openmanager/desktop build",
     "dist:win": "pnpm --filter @openmanager/desktop dist:win",
     "preview": "pnpm --filter @openmanager/desktop preview",
-    "storybook": "pnpm --filter @openmanager/desktop storybook",
-    "storybook:build": "pnpm --filter @openmanager/desktop storybook:build",
+    "storybook": "pnpm --filter @openmanager/app-core storybook",
+    "storybook:build": "pnpm --filter @openmanager/app-core storybook:build",
     "mobile": "pnpm --filter @openmanager/mobile start",
     "mobile:android": "pnpm --filter @openmanager/mobile exec expo run:android",
-    "typecheck": "pnpm --filter @openmanager/protocol typecheck && pnpm --filter @agentpack/contract typecheck && pnpm --filter @agentpack/runtime typecheck && pnpm --filter @agentpack/view typecheck && pnpm --filter @openmanager/shared typecheck && pnpm --filter @openmanager/desktop typecheck && pnpm --filter @openmanager/convex typecheck && pnpm --filter @openmanager/mobile typecheck && pnpm --filter @openmanager/server typecheck && pnpm --filter @openmanager/web typecheck",
-    "lint": "pnpm --filter @openmanager/protocol lint && pnpm --filter @openmanager/desktop lint && pnpm --filter @openmanager/server lint && pnpm --filter @openmanager/web lint",
-    "format": "pnpm --filter @openmanager/desktop format && pnpm --filter @openmanager/convex format",
-    "format:check": "pnpm --filter @openmanager/desktop format:check && pnpm --filter @openmanager/convex format:check",
-    "test": "pnpm --filter @openmanager/protocol test && pnpm --filter @openmanager/desktop test && pnpm --filter @openmanager/server test && pnpm --filter @openmanager/web test",
+    "typecheck": "pnpm --filter @openmanager/app-core typecheck && pnpm --filter @openmanager/protocol typecheck && pnpm --filter @agentpack/contract typecheck && pnpm --filter @agentpack/runtime typecheck && pnpm --filter @agentpack/view typecheck && pnpm --filter @openmanager/shared typecheck && pnpm --filter @openmanager/desktop typecheck && pnpm --filter @openmanager/convex typecheck && pnpm --filter @openmanager/mobile typecheck && pnpm --filter @openmanager/server typecheck && pnpm --filter @openmanager/web typecheck",
+    "lint": "pnpm --filter @openmanager/app-core lint && pnpm --filter @openmanager/protocol lint && pnpm --filter @openmanager/desktop lint && pnpm --filter @openmanager/server lint && pnpm --filter @openmanager/web lint",
+    "format": "pnpm --filter @openmanager/app-core format && pnpm --filter @openmanager/desktop format && pnpm --filter @openmanager/convex format",
+    "format:check": "pnpm --filter @openmanager/app-core format:check && pnpm --filter @openmanager/desktop format:check && pnpm --filter @openmanager/convex format:check",
+    "test": "pnpm --filter @openmanager/app-core test && pnpm --filter @openmanager/protocol test && pnpm --filter @openmanager/desktop test && pnpm --filter @openmanager/server test && pnpm --filter @openmanager/web test",
     "test:watch": "pnpm --filter @openmanager/desktop test:watch",
     "convex:dev": "pnpm --filter @openmanager/convex dev",
     "ci": "pnpm typecheck && pnpm lint && pnpm test",
@@ -27,7 +27,8 @@
     "ci:desktop": "pnpm --filter @openmanager/desktop typecheck && pnpm --filter @openmanager/desktop lint && pnpm --filter @openmanager/desktop test",
     "ci:server": "pnpm --filter @openmanager/server typecheck && pnpm --filter @openmanager/server lint && pnpm --filter @openmanager/server test && pnpm --filter @openmanager/server build",
     "ci:web": "pnpm --filter @openmanager/web typecheck && pnpm --filter @openmanager/web lint && pnpm --filter @openmanager/web test && pnpm --filter @openmanager/web build",
-    "release:prepare": "node scripts/prepare-release.mjs"
+    "release:prepare": "node scripts/prepare-release.mjs",
+    "ci:app-core": "pnpm --filter @openmanager/app-core typecheck && pnpm --filter @openmanager/app-core lint && pnpm --filter @openmanager/app-core test && pnpm --filter @openmanager/app-core build && pnpm --filter @openmanager/app-core storybook:build"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
