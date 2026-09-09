@@ -51,6 +51,31 @@ export function createComposerService(
   const providerExists = (providerId: string) =>
     providers.snapshot().some((provider) => provider.id === providerId)
 
+  const writeProfile = (
+    providerId: string,
+    patch: Parameters<ComposerStore['upsertProfile']>[1],
+  ) => {
+    if (Object.keys(patch).length > 0) store.upsertProfile(providerId, patch)
+  }
+
+  // Probe catalogs are fallback metadata. Once a live session has reported a
+  // catalog, keep that exact process view instead of replacing it with a probe.
+  const fillProfileFromCatalog = (
+    providerId: string,
+    catalog: {
+      agentInfo?: Parameters<ComposerStore['upsertProfile']>[1]['agentInfo']
+      models?: Parameters<typeof modelPatch>[0]
+      modes?: Parameters<typeof modePatch>[0]
+    },
+  ) => {
+    const current = store.getProfile(providerId)
+    writeProfile(providerId, {
+      ...(catalog.agentInfo ? { agentInfo: catalog.agentInfo } : {}),
+      ...(!current?.availableModels?.length ? modelPatch(catalog.models) : {}),
+      ...(!current?.availableModes?.length ? modePatch(catalog.modes) : {}),
+    })
+  }
+
   const response = (
     capability:
       | typeof COMPOSER_PREFERENCES_GET_CAPABILITY
@@ -72,10 +97,10 @@ export function createComposerService(
 
   const catalog = () => {
     for (const [providerId, models] of Object.entries(runtime.providerModels())) {
-      if (models) store.upsertProfile(providerId, modelPatch(models))
+      if (models) fillProfileFromCatalog(providerId, { models })
     }
     for (const [providerId, modes] of Object.entries(runtime.providerModes())) {
-      if (modes) store.upsertProfile(providerId, modePatch(modes))
+      if (modes) fillProfileFromCatalog(providerId, { modes })
     }
     return providers.snapshot().map((provider) => ({
       ...provider,
@@ -89,20 +114,20 @@ export function createComposerService(
     >[0]) => store.getPreference(workspacePath, providerId),
 
     observeProbe(providerId: string, probe: RuntimeProviderBootstrap) {
-      store.upsertProfile(providerId, {
-        ...(probe.result.agentInfo ? { agentInfo: probe.result.agentInfo } : {}),
-        ...modelPatch(probe.models),
-        ...modePatch(probe.modes),
+      fillProfileFromCatalog(providerId, {
+        agentInfo: probe.result.agentInfo,
+        models: probe.models,
+        modes: probe.modes,
       })
     },
 
     onRuntimeEvent(event: Parameters<HostDeps['emitEvent']>[0]) {
       if (event.event === 'initialized' && event.data.agentInfo) {
-        store.upsertProfile(event.providerId, { agentInfo: event.data.agentInfo })
+        writeProfile(event.providerId, { agentInfo: event.data.agentInfo })
         return
       }
       if (event.event === 'session_created' || event.event === 'session_loaded') {
-        store.upsertProfile(event.providerId, {
+        writeProfile(event.providerId, {
           ...modelPatch(event.data.models),
           ...modePatch(event.data.modes),
           ...(event.event === 'session_created' && event.data.models?.currentModelId
@@ -115,11 +140,11 @@ export function createComposerService(
         return
       }
       if (event.event === 'current_model_update') {
-        store.upsertProfile(event.providerId, modelPatch(event.data))
+        writeProfile(event.providerId, modelPatch(event.data))
         return
       }
       if (event.event === 'current_mode_update') {
-        store.upsertProfile(event.providerId, modePatch(event.data))
+        writeProfile(event.providerId, modePatch(event.data))
       }
     },
 

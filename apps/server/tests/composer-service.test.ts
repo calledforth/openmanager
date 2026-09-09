@@ -168,7 +168,7 @@ describe('composer service commands', () => {
   })
 
   it('persists provider catalogs learned from runtime events', async () => {
-    const { service } = await harness()
+    const { runtime, service } = await harness()
     service.onRuntimeEvent({
       id: 'event-1',
       seq: 1,
@@ -189,6 +189,9 @@ describe('composer service commands', () => {
           currentModeId: 'plan',
         },
       },
+    })
+    vi.mocked(runtime.providerModels).mockReturnValue({
+      cursor: { availableModels: [{ id: 'stale', displayName: 'Stale Probe Model' }] },
     })
 
     expect(
