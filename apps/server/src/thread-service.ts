@@ -98,24 +98,6 @@ export function createThreadService(
     )
   }
 
-  const emitTurnFailed = (record: ThreadRecord, turnId: string) => {
-    publishEvent(
-      ProofEventSchemas['turn.failed'].parse({
-        type: 'event',
-        name: 'turn.failed',
-        eventId: randomUUID(),
-        timestamp: new Date().toISOString(),
-        scope: {
-          type: 'thread',
-          environmentId,
-          sessionId: record.session.sessionId,
-          threadId: record.thread.threadId,
-        },
-        payload: { turnId, message: 'The turn could not be interrupted.' },
-      }),
-    )
-  }
-
   const rollbackSession = (record: ThreadRecord) => {
     if (sessions.get(record.session.sessionId) !== record) return
     sessions.delete(record.session.sessionId)
@@ -313,9 +295,11 @@ export function createThreadService(
           })
           .catch(() => {
             if (record.activeTurn?.turn.turnId !== active.turn.turnId) return
-            active.turn.state = 'failed'
-            record.activeTurn = undefined
-            emitTurnFailed(record, active.turn.turnId)
+            // Cancellation failure says nothing about the prompt's terminal
+            // state. Keep it active to prevent concurrent provider work and
+            // allow the client to retry interrupting the same turn. CAL-34
+            // owns projection of the eventual provider failure/completion.
+            active.interruptRequested = false
           })
         return ProofResponseSchemas['turn.interrupt'].parse({
           type: 'response',

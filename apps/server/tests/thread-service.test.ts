@@ -76,11 +76,14 @@ describe('thread command provider routing', () => {
     ).toMatchObject({ type: 'error', error: { code: 'not_found' } })
   })
 
-  it('publishes a terminal failure and releases the turn when cancellation fails', async () => {
+  it('keeps the turn active and allows interrupt retry when cancellation fails', async () => {
     const runtime = {
       ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-session', state: 'created' }),
       prompt: vi.fn(() => new Promise(() => undefined)),
-      cancel: vi.fn().mockRejectedValue(new Error('cancel failed')),
+      cancel: vi
+        .fn()
+        .mockRejectedValueOnce(new Error('cancel failed'))
+        .mockResolvedValueOnce(undefined),
     } as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>
     const events: EventEnvelope[] = []
     const service = createThreadService(runtime, { rejection: () => undefined }, (event) =>
@@ -107,43 +110,49 @@ describe('thread command provider routing', () => {
         },
       }),
     )
+    const target = {
+      sessionId: created.payload.session.sessionId,
+      threadId: created.payload.thread.threadId,
+    }
 
     expect(
       service.dispatch({
         type: 'command',
         requestId: 'interrupt-1',
         name: 'turn.interrupt',
-        payload: {
-          sessionId: created.payload.session.sessionId,
-          threadId: created.payload.thread.threadId,
-          turnId: sent.payload.turn.turnId,
-        },
+        payload: { ...target, turnId: sent.payload.turn.turnId },
       }),
     ).toMatchObject({ type: 'response', requestId: 'interrupt-1' })
-    await vi.waitFor(() =>
-      expect(events).toContainEqual(
-        expect.objectContaining({
-          name: 'turn.failed',
-          payload: {
-            turnId: sent.payload.turn.turnId,
-            message: 'The turn could not be interrupted.',
-          },
-        }),
-      ),
-    )
+    await vi.waitFor(() => expect(runtime.cancel).toHaveBeenCalledTimes(1))
+    await Promise.resolve()
+    expect(events).not.toContainEqual(expect.objectContaining({ name: 'turn.failed' }))
 
     expect(
       service.dispatch({
         type: 'command',
         requestId: 'send-2',
         name: 'turn.send',
-        payload: {
-          sessionId: created.payload.session.sessionId,
-          threadId: created.payload.thread.threadId,
-          text: 'Retry',
-        },
+        payload: { ...target, text: 'Must wait' },
       }),
-    ).toMatchObject({ type: 'response', requestId: 'send-2' })
+    ).toMatchObject({ type: 'error', error: { code: 'conflict' } })
+
+    expect(
+      service.dispatch({
+        type: 'command',
+        requestId: 'interrupt-2',
+        name: 'turn.interrupt',
+        payload: { ...target, turnId: sent.payload.turn.turnId },
+      }),
+    ).toMatchObject({ type: 'response', requestId: 'interrupt-2' })
+    await vi.waitFor(() =>
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          name: 'turn.interrupted',
+          payload: { turnId: sent.payload.turn.turnId },
+        }),
+      ),
+    )
+    expect(runtime.cancel).toHaveBeenCalledTimes(2)
   })
 
   it('ignores delayed completion from an interrupted turn after a new turn starts', async () => {

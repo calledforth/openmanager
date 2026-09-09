@@ -159,8 +159,10 @@ work, so even a provider that emits during startup cannot overtake its response.
 Known missing, unauthenticated, or unhealthy providers are rejected without
 starting work. An accepted interrupt retains ownership if the prompt settles
 before cancellation is acknowledged and emits one protocol `turn.interrupted`
-event. Routing records are currently process-local and will move into the planned
-SQLite persistence service.
+event. If the cancellation request fails, the turn remains active to prevent
+concurrent provider work and permit another interrupt attempt; CAL-34 owns its
+eventual provider terminal event. Routing records are currently process-local
+and will move into the planned SQLite persistence service.
 
 The embedding host calls `server.sockets.publish(record)` with an already
 persisted, protocol-valid `DurableEvent` to deliver `subscription.event` to matching
