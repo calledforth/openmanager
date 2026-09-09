@@ -205,15 +205,22 @@ describe('agent to environment protocol projection', () => {
         params: { secret: 'hidden' },
       },
     }
-    const process: AgentEvent = {
+    const processSpawned: AgentEvent = {
       ...base,
       category: 'lifecycle',
       event: 'process_spawned',
       data: { args: ['secret'] },
     }
+    const processExited: AgentEvent = {
+      ...base,
+      category: 'lifecycle',
+      event: 'process_exited',
+      data: { exitCode: 7, signal: 'secret-signal', expected: false },
+    }
     expect(projectAgentEvent(extension, context)).toBeNull()
-    expect(projectAgentEvent(process, { ...context, turnId: undefined })).toBeNull()
-    expect(projectAgentEvent(process, context)).toMatchObject({
+    expect(projectAgentEvent(processSpawned, context)).toBeNull()
+    expect(projectAgentEvent(processExited, { ...context, turnId: undefined })).toBeNull()
+    expect(projectAgentEvent(processExited, context)).toMatchObject({
       name: 'turn.failed',
       payload: {
         turnId: 'host-turn',
@@ -221,7 +228,7 @@ describe('agent to environment protocol projection', () => {
         message: 'The provider process exited before the turn completed.',
       },
     })
-    expect(JSON.stringify(projectAgentEvent(process, context))).not.toContain('secret')
+    expect(JSON.stringify(projectAgentEvent(processExited, context))).not.toContain('secret')
   })
   it.each([
     [
