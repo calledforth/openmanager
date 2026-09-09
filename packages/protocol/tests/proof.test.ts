@@ -89,12 +89,6 @@ describe('proof slice wire families', () => {
       {
         type: 'command',
         requestId: 'r',
-        name: 'session.create',
-        payload: { workspaceId: 'workspace-1' },
-      },
-      {
-        type: 'command',
-        requestId: 'r',
         name: 'turn.interrupt',
         payload: { threadId: 'thread-1' },
       },

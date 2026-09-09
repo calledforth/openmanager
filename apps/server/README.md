@@ -149,8 +149,11 @@ the public health snapshot transitions; the handshake bootstrap supplies the
 latest snapshot across reconnect gaps.
 
 `session.create`, `session.open`, `turn.send`, and `turn.interrupt` route directly
-to the mounted runtime. Session creation supplies the provider ID and trusted
-workspace path; later commands resolve that route from server-owned host IDs.
+to the mounted runtime. Session creation preserves the proof-slice payload and
+resolves its provider route server-side; until workspace/provider preferences
+land, the bridge uses the desktop-compatible OpenCode fallback and workspace ID
+as its local runtime path. Later commands resolve that route from server-owned
+host IDs.
 The server accepts or rejects each command synchronously before queueing provider
 work, so even a provider that emits during startup cannot overtake its response.
 Known missing, unauthenticated, or unhealthy providers are rejected without

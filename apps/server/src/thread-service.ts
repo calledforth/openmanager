@@ -23,6 +23,8 @@ type RuntimeEvent = Parameters<HostDeps['emitEvent']>[0]
 type ProviderGate = {
   rejection(providerId: string): { code: ErrorCode; message: string } | undefined
 }
+export type WorkspaceRuntimeRoute = { providerId: string; cwd: string }
+export type WorkspaceRuntimeResolver = (workspaceId: string) => WorkspaceRuntimeRoute | undefined
 type ActiveTurn = {
   turn: Turn
   userMessage: Message
@@ -56,6 +58,10 @@ export function createThreadService(
   runtime: Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
   providerGate: ProviderGate,
   publishEvent: (event: EventEnvelope) => void,
+  resolveWorkspace: WorkspaceRuntimeResolver = (workspaceId) => ({
+    providerId: 'opencode',
+    cwd: workspaceId,
+  }),
 ) {
   const sessions = new Map<string, ThreadRecord>()
   const threads = new Map<string, ThreadRecord>()
@@ -106,9 +112,11 @@ export function createThreadService(
         if (!parsed.success) {
           return errorResult(command.requestId, 'validation', 'Invalid session create request.')
         }
-        const providerRejection = rejectProvider(command.requestId, parsed.data.payload.providerId)
+        const target = resolveWorkspace(parsed.data.payload.workspaceId)
+        if (!target) return errorResult(command.requestId, 'not_found', 'Workspace not found.')
+        const providerRejection = rejectProvider(command.requestId, target.providerId)
         if (providerRejection) return providerRejection
-        const providerId = parsed.data.payload.providerId as ProviderId
+        const providerId = target.providerId as ProviderId
         const session: Session = {
           sessionId: randomUUID(),
           workspaceId: parsed.data.payload.workspaceId,
@@ -123,7 +131,7 @@ export function createThreadService(
           session,
           thread,
           providerId,
-          cwd: parsed.data.payload.cwd,
+          cwd: target.cwd,
           runtimeSession,
           turns: [],
           messages: [],

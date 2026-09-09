@@ -41,12 +41,7 @@ export const proofCommands = [
     type: 'command',
     requestId: 'r-4',
     name: 'session.create',
-    payload: {
-      workspaceId: 'workspace-1',
-      providerId: 'cursor',
-      cwd: '/workspace/project',
-      title: 'Example',
-    },
+    payload: { workspaceId: 'workspace-1', title: 'Example' },
   },
   { type: 'command', requestId: 'r-5', name: 'session.open', payload: { sessionId: 'session-1' } },
   {

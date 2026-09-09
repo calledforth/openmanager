@@ -379,17 +379,15 @@ describe('handshake and scoped subscriptions', () => {
 
     const createId = client.command('session.create', {
       workspaceId: 'workspace-1',
-      providerId: 'cursor',
-      cwd: 'C:\\workspace',
       title: 'Runtime bridge',
     })
     const created = ProofResponseSchemas['session.create'].parse(await client.next())
     expect(created.requestId).toBe(createId)
     await vi.waitFor(() => expect(ensure).toHaveBeenCalledTimes(1))
     expect(ensure.mock.calls[0]?.[0]).toMatchObject({
-      providerId: 'cursor',
+      providerId: 'opencode',
       workspaceId: 'workspace-1',
-      cwd: 'C:\\workspace',
+      cwd: 'workspace-1',
       threadId: created.payload.thread.threadId,
     })
 
@@ -445,40 +443,27 @@ describe('handshake and scoped subscriptions', () => {
     })
     expect(cancel).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
-        providerId: 'cursor',
+        providerId: 'opencode',
         sessionId: 'provider-session',
         threadId: created.payload.thread.threadId,
       }),
     )
   })
 
-  it('rejects thread creation for missing and unhealthy providers before runtime work', async () => {
+  it('rejects thread creation for an unhealthy provider before runtime work', async () => {
     const host = await setup()
     const client = await connect(host)
     await handshake(client)
     const ensure = vi.spyOn(host.server.runtime, 'ensureSession')
 
-    const missingId = client.command('session.create', {
-      workspaceId: 'workspace-1',
-      providerId: 'missing',
-      cwd: 'C:\\workspace',
-    })
-    expect(await client.next()).toMatchObject({
-      type: 'error',
-      requestId: missingId,
-      error: { code: 'not_found' },
-    })
-
-    host.server.runtime.health.observeRuntimeStartFailed('cursor', 'provider crashed')
+    host.server.runtime.health.observeRuntimeStartFailed('opencode', 'provider crashed')
     expect(await client.next()).toMatchObject({
       type: 'event',
       name: 'provider_health_changed',
-      payload: { providerId: 'cursor', health: { summary: 'error' } },
+      payload: { providerId: 'opencode', health: { summary: 'error' } },
     })
     const unhealthyId = client.command('session.create', {
       workspaceId: 'workspace-1',
-      providerId: 'cursor',
-      cwd: 'C:\\workspace',
     })
     expect(await client.next()).toMatchObject({
       type: 'error',
