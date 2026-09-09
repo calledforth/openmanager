@@ -28,7 +28,8 @@ export function createProviderService(
   const listeners = new Set<(event: ReturnType<typeof healthEvent>) => void>()
   const previous = new Map<ProviderId, ProviderHealth>()
   const pendingProbes = new Map<ProviderId, Map<string, Promise<unknown>>>()
-  const probeTails = new Map<ProviderId, Promise<void>>()
+  // One global tail so two providers never hold CLI processes at the same time.
+  let probeTail: Promise<void> = Promise.resolve()
 
   for (const providerId of Object.keys(providerConfigs) as ProviderId[]) {
     previous.set(providerId, publicHealth(runtime.health.report(providerId)))
@@ -94,7 +95,7 @@ export function createProviderService(
             errorResult(command.requestId, 'unavailable', 'Provider probe queue is full.'),
           )
         }
-        const previousProbe = probeTails.get(providerId) ?? Promise.resolve()
+        const previousProbe = probeTail
         probe = previousProbe.then(() =>
           runtime.probeProvider({
             providerId,
@@ -108,11 +109,11 @@ export function createProviderService(
           () => undefined,
           () => undefined,
         )
-        probeTails.set(providerId, tail)
+        probeTail = tail
         void tail.then(() => {
           if (providerProbes.get(cwd) === probe) providerProbes.delete(cwd)
           if (providerProbes.size === 0) pendingProbes.delete(providerId)
-          if (probeTails.get(providerId) === tail) probeTails.delete(providerId)
+          if (probeTail === tail) probeTail = Promise.resolve()
         })
       }
       return probe
