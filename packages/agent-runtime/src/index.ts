@@ -105,3 +105,5 @@ export type {
   ProviderConfigBase,
 } from './providers/index.js'
 export type { HostDeps, HostLogEntry } from './host.js'
+export { projectAgentEvent } from './protocol/projectAgentEvent.js'
+export type { ProtocolEventContext } from './protocol/projectAgentEvent.js'

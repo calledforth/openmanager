@@ -124,30 +124,59 @@ types through the generic JSON payload or widen the meaning of existing scopes.
 
 ## Mapping agent events
 
-The runtime exports `projectAgentEvent` from `@agentpack/runtime/protocol`.
-`@openmanager/protocol` retains Zod as its only runtime dependency and does not
-import `@agentpack/contract`.
+The runtime exports `projectAgentEvent` from `@agentpack/runtime`. The mapper
+takes an `AgentEvent` plus host context. The host supplies every public identity
+and classifies completion/failure; provider IDs, request IDs, stop reasons,
+process details and diagnostics are never used as protocol identities or copied
+to payloads. Missing required context throws instead of falling back to a
+provider value. Every non-null result is validated by `ProofEventSchema`.
 
-The mapper takes an `AgentEvent` plus host context. The host resolves provider
-identities and supplies event/environment/workspace/session/thread IDs, and the
-turn/message/interaction/tool IDs required for the particular event. Missing
-required context throws instead of falling back to a provider ID. The host also
-supplies `completionState`; provider stop-reason strings are not a portable enum.
+| `AgentEventName` | Protocol event | Disposition |
+| --- | --- | --- |
+| `process_spawned` | — | Host health only |
+| `process_exited` | `turn.failed` / `turn.interrupted` | Active turns only; host classifies crash/exit/interrupt |
+| `initialized` | — | Host health/catalog only |
+| `authenticated` | — | Host health only |
+| `session_created` | `session.created` | Host session/workspace IDs |
+| `session_loaded` | `session.updated` | Host session ID |
+| `session_deleted` | `session.deleted` | Host session ID |
+| `prompt_started` | `turn.started` | Host turn and user-message IDs |
+| `prompt_completed` | `turn.completed` / `turn.interrupted` / `turn.failed` | Host completion classification |
+| `user_message_chunk` | `message.delta` | Host user-message ID |
+| `agent_message_chunk` | `message.delta` | Host assistant-message ID |
+| `agent_thought_chunk` | `message.reasoning` | Host assistant-message ID |
+| `tool_call` | `tool.updated` | Host tool-call ID; raw input/output omitted |
+| `tool_call_update` | `tool.updated` | Host tool-call ID; raw input/output omitted |
+| `tool_call_content` | — | Deferred protocol family |
+| `plan_update` | — | Deferred protocol family |
+| `subtask_update` | — | Deferred protocol family |
+| `permission_request` | `interaction.requested` | Host interaction/tool IDs |
+| `permission_resolved` | `interaction.resolved` | Host interaction ID |
+| `question_request` | `interaction.requested` | Host interaction ID |
+| `question_resolved` | `interaction.resolved` | Host interaction ID |
+| `plan_review_request` | `interaction.requested` | Host interaction ID |
+| `plan_review_resolved` | `interaction.resolved` | Host interaction ID |
+| `current_model_update` | — | Provider profile service |
+| `current_mode_update` | — | Provider profile service |
+| `config_option_update` | — | Provider profile service |
+| `session_info_update` | `session.updated` | Only portable title data |
+| `usage_update` | — | Deferred protocol family |
+| `available_commands_update` | — | Provider profile service |
+| `extension_request` | — | Opaque provider extension stays host-side |
+| `extension_resolved` | — | Opaque provider extension stays host-side |
+| `extension_notification` | — | Opaque provider extension stays host-side |
+| `rpc_error` | `turn.notice` / `turn.failed` | Active turns only; generic message |
+| `runtime_error` | `turn.notice` / `turn.failed` | Active turns only; generic message |
+| `auth_required` | `turn.failed` | Active turns only; `authentication_required` |
+| `capability_missing` | `turn.failed` | Active turns only; `capability_missing` |
 
-Mapped families: session created/loaded/deleted/info updates, prompt start/end,
-user and agent message chunks, reasoning chunks, tool call/update summaries,
-permission/question/plan requests and resolutions, and turn-scoped runtime/RPC
-errors. Recoverable errors become `turn.notice`; terminal errors become
-`turn.failed`. Error messages are generic; detailed provider diagnostics stay
-host-side. Projection validates the final event through `ProofEventSchema`.
-
-The mapping is intentionally lossy: process/auth/config/usage/extension events,
-tool content, plan progress and subtask updates have no family in this proof
-slice and return `null`. Errors outside a known turn also remain host-side.
-Raw tool input/output, metadata, provider IDs, provider sequence numbers and
-opaque extension payloads are never spread into protocol events. Content blocks
-and interaction fields are individually schema-validated; unknown fields are
-stripped. This mapper is opt-in and is not wired into production transport yet.
+`turn.failed.reason` is a provider-neutral enum:
+`provider_process_exited`, `provider_process_crashed`, `provider_error`,
+`authentication_required`, or `capability_missing`. Provider exit codes, signals,
+error text and opaque detail objects remain available only to host diagnostics.
+Recoverable notices are transient. Durable mapped events receive a host epoch and
+a contiguous sequence in their exact scope before entering the append callback;
+that callback is the SQLite insertion seam.
 
 Node and isolated-browser tests validate every command/response/event fixture.
 Runtime tests verify projection, host identities, omission of provider fields,

@@ -398,6 +398,12 @@ describe('handshake and scoped subscriptions', () => {
     await vi.waitFor(() => expect(ensure).toHaveBeenCalledTimes(2))
     expect(ensure.mock.calls[1]?.[0]).toMatchObject({ sessionId: 'provider-session' })
 
+    const subscriptionId = await subscribe(client, {
+      type: 'thread',
+      environmentId: host.server.identity.environmentId,
+      sessionId: created.payload.session.sessionId,
+      threadId: created.payload.thread.threadId,
+    })
     const sendId = client.command('turn.send', {
       sessionId: created.payload.session.sessionId,
       threadId: created.payload.thread.threadId,
@@ -432,14 +438,23 @@ describe('handshake and scoped subscriptions', () => {
     finishCancel()
     expect(await client.next()).toMatchObject({
       type: 'event',
-      name: 'turn.interrupted',
-      scope: {
-        type: 'thread',
-        environmentId: host.server.identity.environmentId,
-        sessionId: created.payload.session.sessionId,
-        threadId: created.payload.thread.threadId,
+      name: 'subscription.event',
+      payload: {
+        subscriptionId,
+        record: {
+          cursor: { sequence: 1 },
+          event: {
+            name: 'turn.interrupted',
+            scope: {
+              type: 'thread',
+              environmentId: host.server.identity.environmentId,
+              sessionId: created.payload.session.sessionId,
+              threadId: created.payload.thread.threadId,
+            },
+            payload: { turnId: sent.payload.turn.turnId },
+          },
+        },
       },
-      payload: { turnId: sent.payload.turn.turnId },
     })
     expect(cancel).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({

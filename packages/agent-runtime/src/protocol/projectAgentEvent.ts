@@ -1,5 +1,10 @@
 import type { AgentEvent } from '@agentpack/contract'
-import { ProofEventSchema, type ProofEvent, type SubscriptionScope } from '@openmanager/protocol'
+import {
+  ProofEventSchema,
+  type ProofEvent,
+  type SubscriptionScope,
+  type TurnFailureReason,
+} from '@openmanager/protocol'
 
 /** Host identities: never copy provider session/thread/request IDs onto the wire. */
 export interface ProtocolEventContext {
@@ -15,9 +20,11 @@ export interface ProtocolEventContext {
   sessionTitle?: string | null
   /** Host interpretation of completion; provider stopReason strings are not portable. */
   completionState?: 'completed' | 'interrupted' | 'failed'
+  /** Host classification of a terminal failure; provider diagnostics never cross this boundary. */
+  failureReason?: TurnFailureReason
 }
 
-/** Map the proof slice only. null explicitly means a host-only/future-family event. */
+/** Map provider events into the provider-neutral proof protocol. */
 export function projectAgentEvent(
   source: AgentEvent,
   context: ProtocolEventContext,
@@ -55,8 +62,24 @@ export function projectAgentEvent(
       turnId: required('turnId'),
       response: { kind, interactionId: required('interactionId'), outcome },
     })
+  const failed = (reason: TurnFailureReason = context.failureReason ?? 'provider_error') =>
+    emit('turn.failed', threadScope, {
+      turnId: required('turnId'),
+      reason,
+      message: failureMessage(reason),
+    })
 
   switch (source.event) {
+    case 'process_spawned':
+    case 'initialized':
+    case 'authenticated':
+      return null
+    case 'process_exited':
+      if (!context.turnId) return null
+      if (context.completionState === 'interrupted') {
+        return emit('turn.interrupted', threadScope, { turnId: required('turnId') })
+      }
+      return failed(context.failureReason ?? 'provider_process_exited')
     case 'session_created':
       return emit('session.created', environmentScope, {
         session: {
@@ -98,7 +121,12 @@ export function projectAgentEvent(
         threadScope,
         {
           turnId: required('turnId'),
-          ...(state === 'failed' ? { message: 'The turn failed.' } : {}),
+          ...(state === 'failed'
+            ? {
+                reason: context.failureReason ?? 'provider_error',
+                message: failureMessage(context.failureReason ?? 'provider_error'),
+              }
+            : {}),
         },
       )
     }
@@ -158,13 +186,44 @@ export function projectAgentEvent(
     case 'runtime_error':
       // Provider diagnostics stay host-side. A recoverable error must not end a turn.
       if (!context.turnId) return null
-      return emit(source.data.recoverable ? 'turn.notice' : 'turn.failed', threadScope, {
-        turnId: required('turnId'),
-        message: source.data.recoverable
-          ? 'The turn is recovering from a temporary error.'
-          : 'The turn failed.',
-      })
-    default:
+      return source.data.recoverable
+        ? emit('turn.notice', threadScope, {
+            turnId: required('turnId'),
+            message: 'The turn is recovering from a temporary error.',
+          })
+        : failed()
+    case 'auth_required':
+      if (!context.turnId) return null
+      return failed('authentication_required')
+    case 'capability_missing':
+      if (!context.turnId) return null
+      return failed('capability_missing')
+    case 'tool_call_content':
+    case 'plan_update':
+    case 'subtask_update':
+    case 'current_model_update':
+    case 'current_mode_update':
+    case 'config_option_update':
+    case 'usage_update':
+    case 'available_commands_update':
+    case 'extension_request':
+    case 'extension_resolved':
+    case 'extension_notification':
       return null
+  }
+}
+
+function failureMessage(reason: TurnFailureReason): string {
+  switch (reason) {
+    case 'provider_process_exited':
+      return 'The provider process exited before the turn completed.'
+    case 'provider_process_crashed':
+      return 'The provider process crashed before the turn completed.'
+    case 'authentication_required':
+      return 'The provider requires authentication.'
+    case 'capability_missing':
+      return 'The provider does not support this operation.'
+    case 'provider_error':
+      return 'The provider failed to complete the turn.'
   }
 }

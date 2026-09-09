@@ -29,6 +29,15 @@ const event = <N extends string, S extends z.ZodType, P extends z.ZodType>(
     payload,
   })
 
+export const TurnFailureReasonSchema = z.enum([
+  'provider_process_exited',
+  'provider_process_crashed',
+  'provider_error',
+  'authentication_required',
+  'capability_missing',
+])
+export type TurnFailureReason = z.infer<typeof TurnFailureReasonSchema>
+
 export const ProofEventSchemas = {
   'workspace.updated': event(
     'workspace.updated',
@@ -69,7 +78,11 @@ export const ProofEventSchemas = {
   'turn.failed': event(
     'turn.failed',
     ThreadScopeSchema,
-    z.object({ turnId: EntityIdSchema, message: z.string() }),
+    z.object({
+      turnId: EntityIdSchema,
+      reason: TurnFailureReasonSchema,
+      message: z.string(),
+    }),
   ),
   'turn.notice': event(
     'turn.notice',
