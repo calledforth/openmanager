@@ -109,11 +109,11 @@ const interactionRequested = () =>
     },
   })
 
-const interactionResolved = () =>
+const interactionResolved = (eventId = 'interaction-resolved') =>
   ProofEventSchemas['interaction.resolved'].parse({
     type: 'event',
     name: 'interaction.resolved',
-    eventId: 'interaction-resolved',
+    eventId,
     timestamp: completed().timestamp,
     scope,
     payload: {
@@ -408,7 +408,9 @@ describe('event repository transactions', () => {
     const request = interactionRequested()
     request.scope = otherScope
     const before = projectionSnapshot(database)
-    expect(() => repository.appendEvents(otherScope, [request])).toThrow('missing turn')
+    expect(() => repository.appendEvents(otherScope, [request])).toThrow(
+      'missing or finished turn',
+    )
     expect(projectionSnapshot(database)).toEqual(before)
   })
 
@@ -456,6 +458,40 @@ describe('event repository transactions', () => {
     expect(database.prepare('SELECT head_sequence FROM event_streams').get()).toEqual({
       head_sequence: 3,
     })
+  })
+
+  it.each(['terminal', 'interaction.requested', 'interaction.resolved'] as const)(
+    'rolls back a late %s event for a finished turn',
+    async (kind) => {
+      const { database } = await createDatabase()
+      const repository = createEventRepository(database)
+      repository.appendEvents(scope, [started(), interactionRequested()])
+      repository.finalizeTurn(scope, [completed()])
+      const late =
+        kind === 'terminal'
+          ? ProofEventSchemas['turn.failed'].parse({
+              ...completed('late'),
+              name: 'turn.failed',
+              payload: { turnId: 'turn-1', reason: 'provider_error', message: 'late' },
+            })
+          : kind === 'interaction.requested'
+            ? { ...interactionRequested(), eventId: 'late' }
+            : interactionResolved('late')
+      const before = projectionSnapshot(database)
+      expect(() => repository.appendEvents(scope, [late])).toThrow()
+      expect(projectionSnapshot(database)).toEqual(before)
+    },
+  )
+
+  it('rolls back a second resolution of a settled interaction', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    repository.appendEvents(scope, [started(), interactionRequested(), interactionResolved()])
+    const before = projectionSnapshot(database)
+    expect(() => repository.appendEvents(scope, [interactionResolved('again')])).toThrow(
+      'settled interaction',
+    )
+    expect(projectionSnapshot(database)).toEqual(before)
   })
 
   it('recovers with the old cursor and projection when the process dies before commit', async () => {

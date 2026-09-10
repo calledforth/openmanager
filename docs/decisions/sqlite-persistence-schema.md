@@ -29,7 +29,10 @@ without reapplying its projection or advancing the cursor. Reusing an ID for
 a different event is rejected. Mixed batches allocate cursors only for new IDs.
 Session creation requires a host `sessionProviderId` resolver because the public
 session summary does not contain provider identity; missing identity rolls back
-the event and cursor instead of inventing a provider.
+the event and cursor instead of inventing a provider. Lifecycle projections are
+state-guarded: a terminal, `interaction.requested`, or `interaction.resolved`
+event for a turn that already finished, or a resolution for an interaction that
+is no longer pending, rolls back rather than rewriting settled rows.
 
 Token-sized `message.delta` and `message.reasoning` inputs are buffered in
 memory and coalesced before persistence. A batch flushes when its serialized

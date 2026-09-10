@@ -17,6 +17,8 @@ type TerminalEvent = Extract<
   ProofEvent,
   { name: 'turn.completed' | 'turn.interrupted' | 'turn.failed' }
 >
+/** Events that receive durable cursors. `turn.notice` is transient and is never persisted. */
+export type DurableProofEvent = Exclude<ProofEvent, { name: 'turn.notice' }>
 
 export interface EventRepositoryOptions {
   /** Host-owned provider identity, absent from the public session summary. */
@@ -30,8 +32,8 @@ export interface EventRepositoryOptions {
 }
 
 export interface EventRepository {
-  appendEvents(scope: SubscriptionScope, events: readonly ProofEvent[]): DurableEvent[]
-  finalizeTurn(scope: ThreadScope, events: readonly ProofEvent[]): DurableEvent[]
+  appendEvents(scope: SubscriptionScope, events: readonly DurableProofEvent[]): DurableEvent[]
+  finalizeTurn(scope: ThreadScope, events: readonly DurableProofEvent[]): DurableEvent[]
 }
 
 /**
@@ -45,7 +47,10 @@ export function createEventRepository(
   const newEpoch = options.epoch ?? randomUUID()
   const now = options.now ?? Date.now
 
-  const write = (scope: SubscriptionScope, events: readonly ProofEvent[]): DurableEvent[] => {
+  const write = (
+    scope: SubscriptionScope,
+    events: readonly DurableProofEvent[],
+  ): DurableEvent[] => {
     if (events.length === 0) return []
     for (const event of events) {
       if (!sameScope(scope, event.scope)) {
@@ -114,7 +119,7 @@ export function createEventRepository(
             JSON.stringify(record.event),
             timestampMs(event.timestamp),
           )
-        projectEvent(database, record.event, options)
+        projectEvent(database, event, options)
         head = record.cursor.sequence
         records.push(record)
       }
@@ -183,7 +188,7 @@ function isTerminal(event: ProofEvent): event is TerminalEvent {
   )
 }
 
-function eventTurnId(event: ProofEvent): string | undefined {
+function eventTurnId(event: DurableProofEvent): string | undefined {
   switch (event.name) {
     case 'turn.started':
       return event.payload.turn.turnId
@@ -195,7 +200,6 @@ function eventTurnId(event: ProofEvent): string | undefined {
     case 'tool.updated':
     case 'interaction.requested':
     case 'interaction.resolved':
-    case 'turn.notice':
       return event.payload.turnId
     default:
       return undefined
@@ -208,7 +212,7 @@ function timestampMs(timestamp: string): number {
 
 function projectEvent(
   database: DatabaseSync,
-  event: ProofEvent,
+  event: DurableProofEvent,
   options: EventRepositoryOptions,
 ): void {
   const updatedAt = timestampMs(event.timestamp)
@@ -299,11 +303,12 @@ function projectEvent(
         )
       const turnUpdate = database
         .prepare(
-          "UPDATE turns SET state = 'waiting', updated_at = ? WHERE turn_id = ? AND thread_id = ?",
+          `UPDATE turns SET state = 'waiting', updated_at = ?
+           WHERE turn_id = ? AND thread_id = ? AND state IN ('running', 'waiting')`,
         )
         .run(updatedAt, event.payload.turnId, event.scope.threadId)
       if (turnUpdate.changes !== 1) {
-        throw new Error(`Cannot mark missing turn ${event.payload.turnId} as waiting`)
+        throw new Error(`Cannot mark missing or finished turn ${event.payload.turnId} as waiting`)
       }
       database
         .prepare("UPDATE sessions SET status = 'waiting', updated_at = ? WHERE session_id = ?")
@@ -315,7 +320,7 @@ function projectEvent(
         .prepare(
           `UPDATE interactions
            SET state = 'resolved', response_json = ?, resolved_at = ?, updated_at = ?
-           WHERE interaction_id = ? AND turn_id = ? AND kind = ?`,
+           WHERE interaction_id = ? AND turn_id = ? AND kind = ? AND state = 'pending'`,
         )
         .run(
           JSON.stringify(event.payload.response),
@@ -327,16 +332,17 @@ function projectEvent(
         )
       if (interactionUpdate.changes !== 1) {
         throw new Error(
-          `Cannot resolve missing or mismatched interaction ${event.payload.response.interactionId}`,
+          `Cannot resolve missing, mismatched, or settled interaction ${event.payload.response.interactionId}`,
         )
       }
       const turnUpdate = database
         .prepare(
-          "UPDATE turns SET state = 'running', updated_at = ? WHERE turn_id = ? AND thread_id = ?",
+          `UPDATE turns SET state = 'running', updated_at = ?
+           WHERE turn_id = ? AND thread_id = ? AND state IN ('running', 'waiting')`,
         )
         .run(updatedAt, event.payload.turnId, event.scope.threadId)
       if (turnUpdate.changes !== 1) {
-        throw new Error(`Cannot resume missing turn ${event.payload.turnId}`)
+        throw new Error(`Cannot resume missing or finished turn ${event.payload.turnId}`)
       }
       database
         .prepare("UPDATE sessions SET status = 'running', updated_at = ? WHERE session_id = ?")
@@ -356,7 +362,7 @@ function projectEvent(
         .prepare(
           `UPDATE turns
            SET state = ?, failure_reason = ?, finished_at = ?, updated_at = ?
-           WHERE turn_id = ? AND thread_id = ?`,
+           WHERE turn_id = ? AND thread_id = ? AND state IN ('running', 'waiting')`,
         )
         .run(
           state,
@@ -367,7 +373,7 @@ function projectEvent(
           event.scope.threadId,
         )
       if (turnUpdate.changes !== 1) {
-        throw new Error(`Cannot finalize missing turn ${event.payload.turnId}`)
+        throw new Error(`Cannot finalize missing or finished turn ${event.payload.turnId}`)
       }
       database
         .prepare('UPDATE messages SET is_final = 1, updated_at = ? WHERE turn_id = ?')
@@ -382,7 +388,6 @@ function projectEvent(
     }
     case 'message.reasoning':
     case 'tool.updated':
-    case 'turn.notice':
       return
   }
 }
@@ -545,7 +550,7 @@ export function createRepositoryEventBatcher(
   publish: (records: readonly DurableEvent[]) => void = () => undefined,
   options: StreamingEventBatcherOptions = {},
 ) {
-  return createStreamingEventBatcher((scope, events) => {
+  return createStreamingEventBatcher<DurableProofEvent>((scope, events) => {
     const last = events.at(-1)
     const records =
       scope.type === 'thread' && last && isTerminal(last)
@@ -559,14 +564,14 @@ export function createRepositoryEventBatcher(
  * Coalesce token-sized text deltas and flush on either the byte or time limit.
  * Non-stream events are ordering barriers and flush buffered deltas first.
  */
-export function createStreamingEventBatcher(
-  flush: (scope: SubscriptionScope, events: readonly ProofEvent[]) => void,
+export function createStreamingEventBatcher<E extends ProofEvent = ProofEvent>(
+  flush: (scope: SubscriptionScope, events: readonly E[]) => void,
   options: StreamingEventBatcherOptions = {},
 ) {
   const maxBytes = options.maxBytes ?? STREAM_BATCH_MAX_BYTES
   const maxWaitMs = options.maxWaitMs ?? STREAM_BATCH_MAX_WAIT_MS
-  let buffered: ProofEvent[] = []
-  let pending: ProofEvent[] | undefined
+  let buffered: E[] = []
+  let pending: E[] | undefined
   let bytes = 0
   let timer: ReturnType<typeof setTimeout> | undefined
 
@@ -583,7 +588,7 @@ export function createStreamingEventBatcher(
   }
 
   return {
-    append(event: ProofEvent) {
+    append(event: E) {
       // Finish a failed batch before accepting more input or changing its event IDs.
       if (pending) flushBuffered()
       const streamEvent = event.name === 'message.delta' || event.name === 'message.reasoning'
@@ -616,8 +621,8 @@ export function createStreamingEventBatcher(
   }
 }
 
-function coalesceDeltas(events: readonly ProofEvent[]): ProofEvent[] {
-  const result: ProofEvent[] = []
+function coalesceDeltas<E extends ProofEvent>(events: readonly E[]): E[] {
+  const result: E[] = []
   for (const event of events) {
     const previous = result.at(-1)
     if (
@@ -639,7 +644,7 @@ function coalesceDeltas(events: readonly ProofEvent[]): ProofEvent[] {
             text: previous.payload.content.text + event.payload.content.text,
           },
         },
-      }
+      } as E
     } else if (
       previous?.name === 'message.reasoning' &&
       event.name === 'message.reasoning' &&
@@ -661,7 +666,7 @@ function coalesceDeltas(events: readonly ProofEvent[]): ProofEvent[] {
           },
           ...(event.payload.tokens === undefined ? {} : { tokens: event.payload.tokens }),
         },
-      }
+      } as E
     } else {
       result.push(event)
     }
