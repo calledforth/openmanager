@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '@openmanager/convex/_generated/api'
-import { providerBlocksComposer, useAppUi } from '../../providers/app-ui-provider'
-import { useActiveSession } from '../../providers/active-session-provider'
+import {
+  providerBlocksComposer,
+  usePlatformCapabilities,
+} from '@openmanager/app-core/providers/platform-provider'
+import { useSessionState } from '@openmanager/app-core/providers/session-provider'
+import { useComposerState } from '@openmanager/app-core/providers/composer-provider'
+import { useActiveThreadState } from '@openmanager/app-core/providers/active-thread-provider'
 import { useQuestionStateOptional } from '../../providers/question-provider'
 import { usePlanStateOptional } from '../../providers/plan-provider'
 import { QuestionCard } from '@openmanager/app-core/components/questions/ComposerQuestionPrompt'
@@ -17,7 +22,10 @@ import {
   metadataModelOptions,
   type ComposerModelChoice,
 } from './providerModelGroups'
-import type { DraftImageAttachment, UploadedImageAttachment } from '@openmanager/app-core/lib/attachments'
+import type {
+  DraftImageAttachment,
+  UploadedImageAttachment,
+} from '@openmanager/app-core/lib/attachments'
 
 export function MessageInput() {
   const {
@@ -26,6 +34,9 @@ export function MessageInput() {
     isSessionDraftOpen,
     pendingDraftSessionStart,
     localSessionStatus,
+    defaultProviderId,
+  } = useSessionState()
+  const {
     acpSessionState,
     draftSessionState,
     setDraftModel,
@@ -35,17 +46,18 @@ export function MessageInput() {
     setSessionModel,
     setSessionMode,
     setSessionConfigOption,
-    buildPlan: submitBuildPlan,
-    agentUiStatusByProvider,
-    defaultProviderId,
     agentEvents,
-    providers,
     providerComposerProfiles,
-    currentClientId,
-    acpPromptCapabilitiesByProvider,
     composerConfigValues,
-  } = useAppUi()
-  const { sendMessage, abortSession, activeSession } = useActiveSession()
+  } = useComposerState()
+  const { agentUiStatusByProvider, providers, currentClientId, acpPromptCapabilitiesByProvider } =
+    usePlatformCapabilities()
+  const {
+    sendMessage,
+    abortSession,
+    activeThread,
+    buildPlan: submitBuildPlan,
+  } = useActiveThreadState()
   const questionState = useQuestionStateOptional()
   const pendingQuestion = questionState?.pendingQuestion ?? null
   // Slide state lives here because both the card above and the composer below
@@ -209,7 +221,7 @@ export function MessageInput() {
     ? runtimeState.availableCommands
     : chrome.slashCommands
   const canChangeSettings = !!activeSessionId || isSessionDraftOpen
-  const effectiveStatus = localSessionStatus ?? activeSession?.status
+  const effectiveStatus = localSessionStatus ?? activeThread?.status
   const isStreaming = effectiveStatus === 'running' || effectiveStatus === 'busy'
   const providerImageSupport = acpPromptCapabilitiesByProvider[currentProviderId]?.image
   const providerSupportsImages = providerImageSupport === true

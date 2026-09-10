@@ -6,7 +6,7 @@ import {
   mergePersistedAndOptimisticMessages,
   StreamingMessagesStore,
   type StreamHydrationSnapshot,
-} from './active-session-provider'
+} from './active-thread-provider'
 import { shouldHydrateLocalStream, shouldUseRemoteStreaming } from '../lib/stream-continuity'
 
 const base = {

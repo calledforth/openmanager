@@ -4,7 +4,7 @@ import type { ProviderHealthCache } from './provider-health-cache'
 import type {
   ProviderComposerProfiles,
   WorkspaceComposerPreferences,
-} from '../shared/composer-profile'
+} from '@openmanager/shared/contracts/composer-profile'
 
 // Electron derives userData from package.name. Keep the original path so the
 // desktop retains its existing client identity and local preferences.

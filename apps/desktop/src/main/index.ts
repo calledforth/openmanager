@@ -24,7 +24,7 @@ import {
   type ProviderComposerProfile,
   type WorkspaceComposerPreference,
   type WorkspaceComposerPreferences,
-} from '../shared/composer-profile'
+} from '@openmanager/shared/contracts/composer-profile'
 import { startUpdateService } from './update-service'
 import { SessionNotifier } from './session-notifications'
 import {

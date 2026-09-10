@@ -20,6 +20,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
+  "dependencies": {
+    "@agentpack/contract": "workspace:*"
+  },
   "devDependencies": {
     "@types/node": "^26.1.0",
     "typescript": "^5.9.3",

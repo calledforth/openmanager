@@ -12,7 +12,7 @@ import type {
   ProviderComposerProfiles,
   WorkspaceComposerPreference,
   WorkspaceComposerPreferences,
-} from '../shared/composer-profile'
+} from '@openmanager/shared/contracts/composer-profile'
 import type { AppUpdateEvent, ManualUpdateCheckResult } from '../shared/app-update'
 import type { SessionNotificationTarget } from '../shared/session-notification'
 

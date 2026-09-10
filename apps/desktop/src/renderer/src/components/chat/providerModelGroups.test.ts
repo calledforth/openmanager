@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderCapabilities, ProviderMetadata } from '@agentpack/contract'
-import type { ProviderComposerProfiles } from '../../../../shared/composer-profile'
+import type { ProviderComposerProfiles } from '@openmanager/shared/contracts/composer-profile'
 import {
   buildProviderModelGroups,
   metadataModeOptions,

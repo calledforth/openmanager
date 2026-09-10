@@ -1,9 +1,13 @@
 import { useEffect, useState } from 'react'
 import { DesktopViewActions } from './providers/desktop-view-actions'
-import { AppUiProvider, useAppUi } from './providers/app-ui-provider'
 import { ThemeProvider } from '@openmanager/app-core/providers/theme-provider'
+import { useSessionState } from '@openmanager/app-core/providers/session-provider'
+import { useActiveThreadState } from '@openmanager/app-core/providers/active-thread-provider'
+import { PlatformCapabilitiesProvider } from './providers/platform-capabilities-provider'
+import { SessionStateProvider } from './providers/session-state-provider'
+import { ComposerStateProvider } from './providers/composer-state-provider'
 import { SidebarDataProvider } from './providers/sidebar-data-provider'
-import { ActiveSessionProvider, useActiveSession } from './providers/active-session-provider'
+import { ActiveThreadStateProvider } from './providers/active-thread-provider'
 import { PermissionStateProvider } from './providers/permission-provider'
 import { QuestionStateProvider } from './providers/question-provider'
 import { PlanStateProvider } from './providers/plan-provider'
@@ -42,9 +46,9 @@ function ChildSessionBanner({ onBack }: { onBack: () => void }) {
 function AppShell() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true)
   const [convexOpen, setConvexOpen] = useState(false)
-  const { closeChildSession } = useAppUi()
-  const { activeSession } = useActiveSession()
-  const parentExternalId = activeSession?.parentExternalId
+  const { closeChildSession } = useSessionState()
+  const { activeThread } = useActiveThreadState()
+  const parentExternalId = activeThread?.parentExternalId
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -85,24 +89,32 @@ function AppShell() {
   )
 }
 
+// Providers are ordered by dependency: platform capabilities know nothing of
+// sessions; session navigation needs provider startup; the composer needs
+// both plus the open draft; the active thread submits turns through all three.
+// See docs/application-providers.md.
 function App() {
   return (
     <ThemeProvider>
-      <AppUiProvider>
-        <SidebarDataProvider>
-          <ActiveSessionProvider>
-            <PermissionStateProvider>
-              <QuestionStateProvider>
-                <PlanStateProvider>
-                  <DesktopViewActions>
-                    <AppShell />
-                  </DesktopViewActions>
-                </PlanStateProvider>
-              </QuestionStateProvider>
-            </PermissionStateProvider>
-          </ActiveSessionProvider>
-        </SidebarDataProvider>
-      </AppUiProvider>
+      <PlatformCapabilitiesProvider>
+        <SessionStateProvider>
+          <ComposerStateProvider>
+            <SidebarDataProvider>
+              <ActiveThreadStateProvider>
+                <PermissionStateProvider>
+                  <QuestionStateProvider>
+                    <PlanStateProvider>
+                      <DesktopViewActions>
+                        <AppShell />
+                      </DesktopViewActions>
+                    </PlanStateProvider>
+                  </QuestionStateProvider>
+                </PermissionStateProvider>
+              </ActiveThreadStateProvider>
+            </SidebarDataProvider>
+          </ComposerStateProvider>
+        </SessionStateProvider>
+      </PlatformCapabilitiesProvider>
     </ThemeProvider>
   )
 }

@@ -3,7 +3,7 @@ import {
   mergePersistedAndOptimisticMessages,
   shouldPreserveOptimisticMessages,
   type UIMessage,
-} from './active-session-provider'
+} from '../src/providers/active-thread-provider'
 
 describe('optimistic session handoff', () => {
   it('keeps optimistic content attached while the persisted message body is loading', () => {

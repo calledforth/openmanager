@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type { PlanReviewOutcome } from '@agentpack/contract'
 import { api } from '@openmanager/convex/_generated/api'
 import { useTrackedQuery } from '../lib/convex-telemetry'
-import { useAppUi } from './app-ui-provider'
+import { useSessionState } from '@openmanager/app-core/providers/session-provider'
+import { useActiveThreadState } from '@openmanager/app-core/providers/active-thread-provider'
 
 import {
   PlanStateContext,
@@ -12,7 +13,8 @@ import {
 export * from '@openmanager/app-core/providers/plan-provider'
 
 export function PlanStateProvider({ children }: { children: ReactNode }) {
-  const ui = useAppUi()
+  const { activeSessionId } = useSessionState()
+  const { resolvePlan: resolveSessionPlan } = useActiveThreadState()
   const [isExpanded, setIsExpanded] = useState(false)
   const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null)
   const [isBuilding, setIsBuilding] = useState(false)
@@ -24,7 +26,7 @@ export function PlanStateProvider({ children }: { children: ReactNode }) {
   const queriedPlanHistory = useTrackedQuery(
     'plans.listForSession',
     api.plans.listForSession,
-    ui.activeSessionId ? { sessionExternalId: ui.activeSessionId } : 'skip',
+    activeSessionId ? { sessionExternalId: activeSessionId } : 'skip',
   ) as PlanRow[] | undefined
   const planHistory = useMemo(() => queriedPlanHistory ?? [], [queriedPlanHistory])
   const pendingPlan = planHistory.find((plan) => plan.status === 'pending') ?? null
@@ -39,7 +41,7 @@ export function PlanStateProvider({ children }: { children: ReactNode }) {
     setSelectedRequestId(null)
     setIsExpanded(false)
     autoExpandedRequestRef.current = null
-  }, [ui.activeSessionId])
+  }, [activeSessionId])
 
   // A freshly ready plan expands the composer chip once so the user sees it;
   // collapsing stays collapsed for that plan.
@@ -74,10 +76,10 @@ export function PlanStateProvider({ children }: { children: ReactNode }) {
 
   const resolvePlan = useCallback(
     async (outcome: PlanReviewOutcome) => {
-      if (!ui.activeSessionId || !pendingPlan) return
-      await ui.resolvePlan(ui.activeSessionId, pendingPlan.requestId, outcome)
+      if (!activeSessionId || !pendingPlan) return
+      await resolveSessionPlan(activeSessionId, pendingPlan.requestId, outcome)
     },
-    [ui, pendingPlan],
+    [activeSessionId, pendingPlan, resolveSessionPlan],
   )
 
   const setBuildHandler = useCallback((handler: (() => void | Promise<void>) | null) => {
@@ -115,7 +117,7 @@ export function PlanStateProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<PlanStateValue>(
     () => ({
-      activeSessionId: ui.activeSessionId,
+      activeSessionId,
       pendingPlan,
       latestPlan,
       planHistory,
@@ -130,7 +132,7 @@ export function PlanStateProvider({ children }: { children: ReactNode }) {
       isBuilding,
     }),
     [
-      ui.activeSessionId,
+      activeSessionId,
       pendingPlan,
       latestPlan,
       planHistory,

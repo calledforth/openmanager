@@ -1,10 +1,10 @@
-import { useAppUi } from '../../providers/app-ui-provider'
+import { useSessionState } from '@openmanager/app-core/providers/session-provider'
 import { useSidebarData } from '../../providers/sidebar-data-provider'
 import { NewSessionLandingView } from '@openmanager/app-core/components/chat/NewSessionLanding'
 export { NewSessionLandingView } from '@openmanager/app-core/components/chat/NewSessionLanding'
 
 export function NewSessionLanding() {
-  const { activeWorkspacePath, pendingDraftSessionStart } = useAppUi()
+  const { activeWorkspacePath, pendingDraftSessionStart } = useSessionState()
   const { workspaces, isWorkspacesLoading, createSession, addWorkspace } = useSidebarData()
 
   return (

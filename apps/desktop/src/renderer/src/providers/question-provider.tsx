@@ -2,7 +2,8 @@ import { useCallback, useMemo, type ReactNode } from 'react'
 import type { QuestionOutcome } from '@agentpack/contract'
 import { api } from '@openmanager/convex/_generated/api'
 import { useTrackedQuery } from '../lib/convex-telemetry'
-import { useAppUi } from './app-ui-provider'
+import { useSessionState } from '@openmanager/app-core/providers/session-provider'
+import { useActiveThreadState } from '@openmanager/app-core/providers/active-thread-provider'
 
 import {
   QuestionStateContext,
@@ -12,29 +13,30 @@ import {
 export * from '@openmanager/app-core/providers/question-provider'
 
 export function QuestionStateProvider({ children }: { children: ReactNode }) {
-  const ui = useAppUi()
+  const { activeSessionId } = useSessionState()
+  const { resolveQuestion: resolveSessionQuestion } = useActiveThreadState()
   const pendingQuestion =
     (useTrackedQuery(
       'questions.getPendingForSession',
       api.questions.getPendingForSession,
-      ui.activeSessionId ? { sessionExternalId: ui.activeSessionId } : 'skip',
+      activeSessionId ? { sessionExternalId: activeSessionId } : 'skip',
     ) as PendingQuestion | null | undefined) ?? null
 
   const resolveQuestion = useCallback(
     async (outcome: QuestionOutcome) => {
-      if (!ui.activeSessionId || !pendingQuestion) return
-      await ui.resolveQuestion(ui.activeSessionId, pendingQuestion.requestId, outcome)
+      if (!activeSessionId || !pendingQuestion) return
+      await resolveSessionQuestion(activeSessionId, pendingQuestion.requestId, outcome)
     },
-    [ui, pendingQuestion],
+    [activeSessionId, pendingQuestion, resolveSessionQuestion],
   )
 
   const value = useMemo<QuestionStateValue>(
     () => ({
-      activeSessionId: ui.activeSessionId,
+      activeSessionId,
       pendingQuestion,
       resolveQuestion,
     }),
-    [ui.activeSessionId, pendingQuestion, resolveQuestion],
+    [activeSessionId, pendingQuestion, resolveQuestion],
   )
 
   return <QuestionStateContext.Provider value={value}>{children}</QuestionStateContext.Provider>

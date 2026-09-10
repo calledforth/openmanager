@@ -8,8 +8,8 @@ import {
   SquareIcon,
   XIcon,
 } from '@phosphor-icons/react'
-import { useActiveSession } from '../../providers/active-session-provider'
-import { useAppUi } from '../../providers/app-ui-provider'
+import { useActiveThreadState } from '@openmanager/app-core/providers/active-thread-provider'
+import { useSessionState } from '@openmanager/app-core/providers/session-provider'
 import { useSidebarData } from '../../providers/sidebar-data-provider'
 import { cn } from '@openmanager/app-core/lib/utils'
 import { typographyBody } from '@openmanager/app-core/lib/typography'
@@ -27,8 +27,8 @@ const windowControlBtnClass =
   'flex w-10 items-center justify-center text-[var(--basis-text-strong)] transition-default hover:bg-[var(--basis-surface-hover)]'
 
 function useTitlebarTrail() {
-  const { activeSessionId, activeSession } = useActiveSession()
-  const { activeWorkspacePath } = useAppUi()
+  const { activeSessionId, activeThread } = useActiveThreadState()
+  const { activeWorkspacePath } = useSessionState()
   const { workspaces } = useSidebarData()
 
   const projectName =
@@ -38,8 +38,8 @@ function useTitlebarTrail() {
       : null)
 
   let chatTitle = 'New session'
-  if (activeSessionId && activeSession?.title) {
-    chatTitle = activeSession.title
+  if (activeSessionId && activeThread?.title) {
+    chatTitle = activeThread.title
   }
 
   return { projectName, chatTitle }
@@ -53,7 +53,7 @@ export function AppChrome({
   onToggleSidebar: () => void
 }) {
   const [maximized, setMaximized] = useState(false)
-  const { activeWorkspacePath } = useAppUi()
+  const { activeWorkspacePath } = useSessionState()
   const { createSession } = useSidebarData()
   const { projectName, chatTitle } = useTitlebarTrail()
 
