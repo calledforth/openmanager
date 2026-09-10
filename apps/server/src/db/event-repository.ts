@@ -297,34 +297,52 @@ function projectEvent(
           updatedAt,
           updatedAt,
         )
-      database
-        .prepare("UPDATE turns SET state = 'waiting', updated_at = ? WHERE turn_id = ?")
-        .run(updatedAt, event.payload.turnId)
+      const turnUpdate = database
+        .prepare(
+          "UPDATE turns SET state = 'waiting', updated_at = ? WHERE turn_id = ? AND thread_id = ?",
+        )
+        .run(updatedAt, event.payload.turnId, event.scope.threadId)
+      if (turnUpdate.changes !== 1) {
+        throw new Error(`Cannot mark missing turn ${event.payload.turnId} as waiting`)
+      }
       database
         .prepare("UPDATE sessions SET status = 'waiting', updated_at = ? WHERE session_id = ?")
         .run(updatedAt, event.scope.sessionId)
       return
     }
-    case 'interaction.resolved':
-      database
+    case 'interaction.resolved': {
+      const interactionUpdate = database
         .prepare(
           `UPDATE interactions
            SET state = 'resolved', response_json = ?, resolved_at = ?, updated_at = ?
-           WHERE interaction_id = ?`,
+           WHERE interaction_id = ? AND turn_id = ? AND kind = ?`,
         )
         .run(
           JSON.stringify(event.payload.response),
           updatedAt,
           updatedAt,
           event.payload.response.interactionId,
+          event.payload.turnId,
+          event.payload.response.kind,
         )
-      database
-        .prepare("UPDATE turns SET state = 'running', updated_at = ? WHERE turn_id = ?")
-        .run(updatedAt, event.payload.turnId)
+      if (interactionUpdate.changes !== 1) {
+        throw new Error(
+          `Cannot resolve missing or mismatched interaction ${event.payload.response.interactionId}`,
+        )
+      }
+      const turnUpdate = database
+        .prepare(
+          "UPDATE turns SET state = 'running', updated_at = ? WHERE turn_id = ? AND thread_id = ?",
+        )
+        .run(updatedAt, event.payload.turnId, event.scope.threadId)
+      if (turnUpdate.changes !== 1) {
+        throw new Error(`Cannot resume missing turn ${event.payload.turnId}`)
+      }
       database
         .prepare("UPDATE sessions SET status = 'running', updated_at = ? WHERE session_id = ?")
         .run(updatedAt, event.scope.sessionId)
       return
+    }
     case 'turn.completed':
     case 'turn.interrupted':
     case 'turn.failed': {
@@ -407,10 +425,20 @@ function projectMessageDelta(
     .prepare('SELECT workspace_id FROM turns WHERE turn_id = ? AND thread_id = ?')
     .get(event.payload.turnId, event.scope.threadId) as { workspace_id: string } | undefined
   if (!turn) throw new Error(`Cannot project message for missing turn ${event.payload.turnId}`)
-  const exists = database
-    .prepare('SELECT 1 AS present FROM messages WHERE message_id = ?')
-    .get(event.payload.messageId)
-  if (!exists) {
+  const existing = database
+    .prepare('SELECT turn_id, thread_id, role, is_final FROM messages WHERE message_id = ?')
+    .get(event.payload.messageId) as
+    { turn_id: string; thread_id: string; role: string; is_final: number } | undefined
+  if (
+    existing &&
+    (existing.turn_id !== event.payload.turnId ||
+      existing.thread_id !== event.scope.threadId ||
+      existing.role !== event.payload.role ||
+      existing.is_final !== 0)
+  ) {
+    throw new Error(`Cannot append to mismatched or finalized message ${event.payload.messageId}`)
+  }
+  if (!existing) {
     insertMessage(
       database,
       {

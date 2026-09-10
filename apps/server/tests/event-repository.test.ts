@@ -90,6 +90,66 @@ const completed = (eventId = 'event-completed') =>
     payload: { turnId: 'turn-1' },
   })
 
+const interactionRequested = () =>
+  ProofEventSchemas['interaction.requested'].parse({
+    type: 'event',
+    name: 'interaction.requested',
+    eventId: 'interaction-requested',
+    timestamp: started().timestamp,
+    scope,
+    payload: {
+      turnId: 'turn-1',
+      interaction: {
+        kind: 'plan',
+        interactionId: 'interaction-1',
+        markdown: 'Plan',
+        todos: [],
+        continuation: 'same_turn',
+      },
+    },
+  })
+
+const interactionResolved = () =>
+  ProofEventSchemas['interaction.resolved'].parse({
+    type: 'event',
+    name: 'interaction.resolved',
+    eventId: 'interaction-resolved',
+    timestamp: completed().timestamp,
+    scope,
+    payload: {
+      turnId: 'turn-1',
+      response: {
+        kind: 'plan',
+        interactionId: 'interaction-1',
+        outcome: { outcome: 'accepted' },
+      },
+    },
+  })
+
+function createOtherThread(database: DatabaseSync) {
+  database.exec(`
+    INSERT INTO sessions (session_id, workspace_id, provider_id, status, created_at, updated_at)
+    VALUES ('session-2', 'workspace-1', 'cursor', 'idle', 1, 1);
+    INSERT INTO threads (thread_id, session_id, workspace_id, created_at, updated_at)
+    VALUES ('thread-2', 'session-2', 'workspace-1', 1, 1);
+  `)
+  return { ...scope, sessionId: 'session-2', threadId: 'thread-2' }
+}
+
+function projectionSnapshot(database: DatabaseSync) {
+  return Object.fromEntries(
+    [
+      'event_streams',
+      'event_log',
+      'sessions',
+      'turns',
+      'messages',
+      'message_parts',
+      'interactions',
+    ].map((table) => [table, database.prepare(`SELECT * FROM ${table}`).all()]),
+  )
+}
+
 afterEach(async () => {
   vi.useRealTimers()
   for (const database of databases.splice(0)) {
@@ -302,6 +362,99 @@ describe('event repository transactions', () => {
     expect(() => repository.finalizeTurn(scope, [other, terminal])).toThrow('terminal turn')
     expect(database.prepare('SELECT head_sequence FROM event_streams').get()).toEqual({
       head_sequence: 1,
+    })
+  })
+
+  it.each(['turn', 'thread', 'role', 'finalized'] as const)(
+    'rolls back deltas that reuse a message with a different %s',
+    async (mismatch) => {
+      const { database } = await createDatabase()
+      const repository = createEventRepository(database)
+      repository.appendEvents(scope, [started(), delta('Original', 'original')])
+      const incoming = delta('Corrupt', 'incoming')
+      if (mismatch === 'turn' || mismatch === 'thread') {
+        const other = started('other-start')
+        other.payload.turn.turnId = 'turn-2'
+        other.payload.userMessage.turnId = 'turn-2'
+        other.payload.userMessage.messageId = 'user-2'
+        if (mismatch === 'thread') {
+          database.exec(`INSERT INTO threads (thread_id, session_id, workspace_id, created_at, updated_at)
+            VALUES ('thread-2', 'session-1', 'workspace-1', 1, 1)`)
+          other.scope.threadId = 'thread-2'
+          other.payload.turn.threadId = 'thread-2'
+          other.payload.userMessage.threadId = 'thread-2'
+          incoming.scope.threadId = 'thread-2'
+        }
+        repository.appendEvents(other.scope, [other])
+        incoming.payload.turnId = 'turn-2'
+      } else if (mismatch === 'role') {
+        incoming.payload.role = 'user'
+      } else {
+        repository.finalizeTurn(scope, [completed()])
+      }
+      const before = projectionSnapshot(database)
+      expect(() => repository.appendEvents(incoming.scope, [incoming])).toThrow(
+        'mismatched or finalized message',
+      )
+      expect(projectionSnapshot(database)).toEqual(before)
+    },
+  )
+
+  it('rolls back interaction requests for a turn in another session/thread', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    repository.appendEvents(scope, [started()])
+    const otherScope = createOtherThread(database)
+    const request = interactionRequested()
+    request.scope = otherScope
+    const before = projectionSnapshot(database)
+    expect(() => repository.appendEvents(otherScope, [request])).toThrow('missing turn')
+    expect(projectionSnapshot(database)).toEqual(before)
+  })
+
+  it.each(['thread', 'turn', 'missing', 'kind'] as const)(
+    'rolls back interaction resolution with a mismatched %s',
+    async (mismatch) => {
+      const { database } = await createDatabase()
+      const repository = createEventRepository(database)
+      repository.appendEvents(scope, [started(), interactionRequested()])
+      const resolution = interactionResolved()
+      if (mismatch === 'thread') {
+        resolution.scope = createOtherThread(database)
+      } else if (mismatch === 'turn') {
+        const other = started('other-start')
+        other.payload.turn.turnId = 'turn-2'
+        other.payload.userMessage.turnId = 'turn-2'
+        other.payload.userMessage.messageId = 'user-2'
+        repository.appendEvents(scope, [other])
+        resolution.payload.turnId = 'turn-2'
+      } else if (mismatch === 'missing') {
+        resolution.payload.response.interactionId = 'missing'
+      } else {
+        resolution.payload.response = {
+          kind: 'question',
+          interactionId: 'interaction-1',
+          outcome: { outcome: 'answered', answers: [] },
+        }
+      }
+      const before = projectionSnapshot(database)
+      expect(() => repository.appendEvents(resolution.scope, [resolution])).toThrow()
+      expect(projectionSnapshot(database)).toEqual(before)
+    },
+  )
+
+  it('projects a matching interaction request and resolution', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    repository.appendEvents(scope, [started(), interactionRequested()])
+    expect(database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'waiting' })
+    expect(database.prepare('SELECT status FROM sessions').get()).toEqual({ status: 'waiting' })
+    repository.appendEvents(scope, [interactionResolved()])
+    expect(database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'running' })
+    expect(database.prepare('SELECT status FROM sessions').get()).toEqual({ status: 'running' })
+    expect(database.prepare('SELECT state FROM interactions').get()).toEqual({ state: 'resolved' })
+    expect(database.prepare('SELECT head_sequence FROM event_streams').get()).toEqual({
+      head_sequence: 3,
     })
   })
 
