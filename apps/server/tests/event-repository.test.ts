@@ -170,6 +170,141 @@ describe('event repository transactions', () => {
     expect(database.prepare('SELECT count(*) AS count FROM event_log').get()).toEqual({ count: 0 })
   })
 
+  it('returns original cursors across restarts and mixed duplicate/new batches', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database, { epoch: 'epoch-1' })
+    const first = repository.appendEvents(scope, [started()])
+    const restarted = createEventRepository(database, { epoch: 'epoch-2' })
+    expect(restarted.appendEvents(scope, [started()])).toEqual(first)
+    const event = delta('Hello', 'event-delta')
+    expect(
+      restarted
+        .appendEvents(scope, [started(), event, event, started()])
+        .map((record) => record.cursor.sequence),
+    ).toEqual([1, 2, 2, 1])
+    expect(database.prepare('SELECT head_sequence FROM event_streams').get()).toEqual({
+      head_sequence: 2,
+    })
+    expect(
+      database
+        .prepare('SELECT content_json FROM message_parts WHERE message_id = ?')
+        .get('message-assistant'),
+    ).toEqual({ content_json: '{"type":"text","text":"Hello"}' })
+    expect(() => restarted.appendEvents(scope, [delta('changed', 'event-delta')])).toThrow(
+      'different event',
+    )
+    expect(database.prepare('SELECT head_sequence FROM event_streams').get()).toEqual({
+      head_sequence: 2,
+    })
+  })
+
+  it('creates a session and then its thread using host provider identity', async () => {
+    const { database } = await createDatabase()
+    const environmentScope = { type: 'environment', environmentId: scope.environmentId } as const
+    const sessionEvent = ProofEventSchemas['session.created'].parse({
+      type: 'event',
+      name: 'session.created',
+      eventId: 'session-created',
+      timestamp: started().timestamp,
+      scope: environmentScope,
+      payload: { session: { sessionId: 'session-2', workspaceId: 'workspace-1', title: 'New' } },
+    })
+    expect(() =>
+      createEventRepository(database).appendEvents(environmentScope, [sessionEvent]),
+    ).toThrow('sessionProviderId')
+    expect(database.prepare('SELECT count(*) AS count FROM event_log').get()).toEqual({ count: 0 })
+    const repository = createEventRepository(database, { sessionProviderId: () => 'cursor' })
+    repository.appendEvents(environmentScope, [sessionEvent])
+    const sessionScope = {
+      type: 'session',
+      environmentId: scope.environmentId,
+      sessionId: 'session-2',
+    } as const
+    repository.appendEvents(sessionScope, [
+      ProofEventSchemas['thread.created'].parse({
+        type: 'event',
+        name: 'thread.created',
+        eventId: 'thread-created',
+        timestamp: started().timestamp,
+        scope: sessionScope,
+        payload: { thread: { threadId: 'thread-2', sessionId: 'session-2' } },
+      }),
+    ])
+    expect(
+      database
+        .prepare('SELECT provider_id, title, status FROM sessions WHERE session_id = ?')
+        .get('session-2'),
+    ).toEqual({ provider_id: 'cursor', title: 'New', status: 'idle' })
+    expect(
+      database.prepare('SELECT session_id FROM threads WHERE thread_id = ?').get('thread-2'),
+    ).toEqual({ session_id: 'session-2' })
+  })
+
+  it('retries rolled-back finalization with the complete buffered output', async () => {
+    const { database } = await createDatabase()
+    let fail = false
+    const repository = createEventRepository(database, {
+      beforeCommit: () => {
+        if (fail) throw new Error('commit failed')
+      },
+    })
+    repository.appendEvents(scope, [started()])
+    const batcher = createRepositoryEventBatcher(repository)
+    batcher.append(delta('Done', 'event-delta'))
+    fail = true
+    expect(() => batcher.append(completed())).toThrow('commit failed')
+    expect(database.prepare('SELECT head_sequence FROM event_streams').get()).toEqual({
+      head_sequence: 1,
+    })
+    fail = false
+    batcher.flush()
+    expect(database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'completed' })
+    expect(database.prepare('SELECT head_sequence FROM event_streams').get()).toEqual({
+      head_sequence: 3,
+    })
+    expect(
+      database
+        .prepare('SELECT content_json FROM message_parts WHERE message_id = ?')
+        .get('message-assistant'),
+    ).toEqual({ content_json: '{"type":"text","text":"Done"}' })
+  })
+
+  it('retries publication after commit without projecting the output twice', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    repository.appendEvents(scope, [started()])
+    const publish = vi.fn().mockImplementationOnce(() => {
+      throw new Error('publish failed')
+    })
+    const batcher = createRepositoryEventBatcher(repository, publish)
+    batcher.append(delta('Done', 'event-delta'))
+    expect(() => batcher.append(completed())).toThrow('publish failed')
+    batcher.flush()
+    expect(publish.mock.calls[1]).toEqual(publish.mock.calls[0])
+    expect(database.prepare('SELECT head_sequence FROM event_streams').get()).toEqual({
+      head_sequence: 3,
+    })
+    expect(
+      database
+        .prepare('SELECT content_json FROM message_parts WHERE message_id = ?')
+        .get('message-assistant'),
+    ).toEqual({ content_json: '{"type":"text","text":"Done"}' })
+  })
+
+  it('rejects repeated terminal references and mixed-turn finalization', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    repository.appendEvents(scope, [started()])
+    const terminal = completed()
+    expect(() => repository.finalizeTurn(scope, [terminal, terminal])).toThrow('exactly one')
+    const other = delta('Wrong turn', 'other')
+    other.payload.turnId = 'turn-2'
+    expect(() => repository.finalizeTurn(scope, [other, terminal])).toThrow('terminal turn')
+    expect(database.prepare('SELECT head_sequence FROM event_streams').get()).toEqual({
+      head_sequence: 1,
+    })
+  })
+
   it('recovers with the old cursor and projection when the process dies before commit', async () => {
     const { database, directory } = await createDatabase()
     createEventRepository(database, { epoch: 'epoch-1' }).appendEvents(scope, [started()])
@@ -274,6 +409,33 @@ describe('streaming event batching', () => {
       'message.delta',
       'turn.completed',
     ])
+  })
+
+  it('reports timer failures and retries the frozen batch before accepting new deltas', () => {
+    vi.useFakeTimers()
+    const flush = vi.fn().mockImplementationOnce(() => {
+      throw new Error('busy')
+    })
+    const onError = vi.fn()
+    const batcher = createStreamingEventBatcher(flush, { onError })
+    batcher.append(delta('Hello', 'first'))
+    vi.advanceTimersByTime(100)
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'busy' }))
+    batcher.append(delta(' world', 'second'))
+    expect(flush.mock.calls[1]).toEqual(flush.mock.calls[0])
+    batcher.close()
+    expect(flush.mock.calls[2]?.[1]).toEqual([delta(' world', 'second')])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('retains a terminal event even when no deltas were buffered', () => {
+    const flush = vi.fn().mockImplementationOnce(() => {
+      throw new Error('busy')
+    })
+    const batcher = createStreamingEventBatcher(flush)
+    expect(() => batcher.append(completed())).toThrow('busy')
+    batcher.close()
+    expect(flush.mock.calls[1]).toEqual([scope, [completed()]])
   })
 
   it('flushes as soon as the byte threshold is reached', () => {

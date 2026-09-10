@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import type { DatabaseSync } from 'node:sqlite'
 import {
   DurableEventSchema,
@@ -18,6 +19,10 @@ type TerminalEvent = Extract<
 >
 
 export interface EventRepositoryOptions {
+  /** Host-owned provider identity, absent from the public session summary. */
+  sessionProviderId?: (
+    session: Extract<ProofEvent, { name: 'session.created' }>['payload']['session'],
+  ) => string
   epoch?: string
   now?: () => number
   /** Test seam used to stop a child process after writes but before COMMIT. */
@@ -71,14 +76,30 @@ export function createEventRepository(
       const stream = database
         .prepare('SELECT epoch, head_sequence FROM event_streams WHERE scope_key = ?')
         .get(key) as { epoch: string; head_sequence: number }
-      const records = events.map((event, index) =>
-        DurableEventSchema.parse({
-          cursor: { scope, epoch: stream.epoch, sequence: stream.head_sequence + index + 1 },
+      const records: DurableEvent[] = []
+      let head = stream.head_sequence
+      for (const event of events) {
+        const record = DurableEventSchema.parse({
+          cursor: { scope, epoch: stream.epoch, sequence: head + 1 },
           event,
-        }),
-      )
-
-      for (const record of records) {
+        })
+        const existing = database
+          .prepare('SELECT scope_key, sequence, event_json FROM event_log WHERE event_id = ?')
+          .get(event.eventId) as
+          { scope_key: string; sequence: number; event_json: string } | undefined
+        if (existing) {
+          const storedEvent: unknown = JSON.parse(existing.event_json)
+          if (existing.scope_key !== key || !isDeepStrictEqual(storedEvent, record.event)) {
+            throw new Error(`Event ID ${event.eventId} already belongs to a different event`)
+          }
+          records.push(
+            DurableEventSchema.parse({
+              cursor: { scope, epoch: stream.epoch, sequence: existing.sequence },
+              event: storedEvent,
+            }),
+          )
+          continue
+        }
         database
           .prepare(
             `INSERT INTO event_log (
@@ -88,22 +109,25 @@ export function createEventRepository(
           .run(
             key,
             record.cursor.sequence,
-            record.event.eventId,
-            record.event.name,
+            event.eventId,
+            event.name,
             JSON.stringify(record.event),
-            timestampMs(record.event.timestamp),
+            timestampMs(event.timestamp),
           )
-        projectEvent(database, record.event)
+        projectEvent(database, record.event, options)
+        head = record.cursor.sequence
+        records.push(record)
       }
 
-      const head = records.at(-1)!.cursor.sequence
-      database
-        .prepare(
-          `UPDATE event_streams
-           SET head_sequence = ?, oldest_sequence = COALESCE(oldest_sequence, ?), updated_at = ?
-           WHERE scope_key = ?`,
-        )
-        .run(head, records[0]!.cursor.sequence, writtenAt, key)
+      if (head !== stream.head_sequence) {
+        database
+          .prepare(
+            `UPDATE event_streams
+             SET head_sequence = ?, oldest_sequence = COALESCE(oldest_sequence, ?), updated_at = ?
+             WHERE scope_key = ?`,
+          )
+          .run(head, stream.head_sequence + 1, writtenAt, key)
+      }
       options.beforeCommit?.()
       database.exec('COMMIT')
       return records
@@ -124,7 +148,7 @@ export function createEventRepository(
       if (!terminal || !isTerminal(terminal)) {
         throw new Error('finalizeTurn requires a terminal turn event as the final event')
       }
-      if (events.some((event) => event !== terminal && isTerminal(event))) {
+      if (events.slice(0, -1).some(isTerminal)) {
         throw new Error('finalizeTurn accepts exactly one terminal turn event')
       }
       const terminalTurnId = terminal.payload.turnId
@@ -182,9 +206,35 @@ function timestampMs(timestamp: string): number {
   return Date.parse(timestamp)
 }
 
-function projectEvent(database: DatabaseSync, event: ProofEvent): void {
+function projectEvent(
+  database: DatabaseSync,
+  event: ProofEvent,
+  options: EventRepositoryOptions,
+): void {
   const updatedAt = timestampMs(event.timestamp)
   switch (event.name) {
+    case 'session.created': {
+      const session = event.payload.session
+      const providerId = options.sessionProviderId?.(session)
+      if (!providerId?.trim()) {
+        throw new Error('session.created requires a host sessionProviderId resolver')
+      }
+      database
+        .prepare(
+          `INSERT INTO sessions (
+             session_id, workspace_id, provider_id, title, status, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, 'idle', ?, ?)`,
+        )
+        .run(
+          session.sessionId,
+          session.workspaceId,
+          providerId,
+          session.title,
+          updatedAt,
+          updatedAt,
+        )
+      return
+    }
     case 'workspace.updated':
       database
         .prepare('UPDATE workspaces SET name = ?, updated_at = ? WHERE workspace_id = ?')
@@ -312,7 +362,6 @@ function projectEvent(database: DatabaseSync, event: ProofEvent): void {
       }
       return
     }
-    case 'session.created':
     case 'message.reasoning':
     case 'tool.updated':
     case 'turn.notice':
@@ -458,6 +507,8 @@ function appendContent(
 export interface StreamingEventBatcherOptions {
   maxBytes?: number
   maxWaitMs?: number
+  /** Timer failures retain the batch for the next flush, close, or append. */
+  onError?: (error: unknown) => void
 }
 
 /** Route streaming batches through the matching atomic repository operation. */
@@ -487,6 +538,7 @@ export function createStreamingEventBatcher(
   const maxBytes = options.maxBytes ?? STREAM_BATCH_MAX_BYTES
   const maxWaitMs = options.maxWaitMs ?? STREAM_BATCH_MAX_WAIT_MS
   let buffered: ProofEvent[] = []
+  let pending: ProofEvent[] | undefined
   let bytes = 0
   let timer: ReturnType<typeof setTimeout> | undefined
 
@@ -494,41 +546,42 @@ export function createStreamingEventBatcher(
     if (timer) clearTimeout(timer)
     timer = undefined
     if (buffered.length === 0) return
-    const events = coalesceDeltas(buffered)
-    const scope = events[0]!.scope
+    // Freeze the coalesced batch across retries, including publish-after-commit failures.
+    pending ??= coalesceDeltas(buffered)
+    flush(pending[0]!.scope, pending)
+    pending = undefined
     buffered = []
     bytes = 0
-    flush(scope, events)
   }
 
   return {
     append(event: ProofEvent) {
+      // Finish a failed batch before accepting more input or changing its event IDs.
+      if (pending) flushBuffered()
       const streamEvent = event.name === 'message.delta' || event.name === 'message.reasoning'
       if (isTerminal(event)) {
-        if (buffered.length > 0 && sameScope(buffered[0]!.scope, event.scope)) {
-          if (timer) clearTimeout(timer)
-          timer = undefined
-          const events = [...coalesceDeltas(buffered), event]
-          buffered = []
-          bytes = 0
-          flush(event.scope, events)
-        } else {
+        if (buffered.length > 0 && !sameScope(buffered[0]!.scope, event.scope)) {
           flushBuffered()
-          flush(event.scope, [event])
         }
+        buffered.push(event)
+        flushBuffered()
         return
       }
       if (!streamEvent || (buffered.length > 0 && !sameScope(buffered[0]!.scope, event.scope))) {
         flushBuffered()
       }
-      if (!streamEvent) {
-        flush(event.scope, [event])
-        return
-      }
       buffered.push(event)
       bytes += Buffer.byteLength(JSON.stringify(event.payload), 'utf8')
-      if (bytes >= maxBytes) flushBuffered()
-      else if (!timer) timer = setTimeout(flushBuffered, maxWaitMs)
+      if (!streamEvent || bytes >= maxBytes) flushBuffered()
+      else if (!timer) {
+        timer = setTimeout(() => {
+          try {
+            flushBuffered()
+          } catch (error) {
+            options.onError?.(error)
+          }
+        }, maxWaitMs)
+      }
     },
     flush: flushBuffered,
     close: flushBuffered,

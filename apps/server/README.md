@@ -191,7 +191,7 @@ details and diagnostic payloads do not cross that boundary. An unexpected
 process exit during an active turn emits `turn.failed` with a generic
 `provider_process_exited` or `provider_process_crashed` reason.
 
-The SQLite event repository exposes `appendEvents(scope, events)` and
+The SQLite event repository (not yet wired into the running server) exposes `appendEvents(scope, events)` and
 `finalizeTurn(scope, events)`. It allocates contiguous sequence numbers from the
 durable scope head, inserts event rows, updates message/session/turn projections,
 and advances the cursor in one transaction. Streaming token deltas are
@@ -200,6 +200,10 @@ batch so content and final state commit together. Callers publish only records
 returned after commit; the transport does not manufacture cursors. The
 development credential authorizes all scopes in this environment; scoped
 subscriptions are routing, not per-resource ACLs.
+
+The running server still uses the in-memory event service and publishes directly
+to sockets; its epoch and sequences reset on restart. Integrating the repository
+with live session/provider services is separate work.
 
 Heartbeat uses the protocol's monotonic-clock helpers: a fresh application ping
 every 15 seconds after handshake, with 10 seconds to return its matching pong.

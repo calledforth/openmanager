@@ -21,7 +21,15 @@ The event repository allocates scope-local sequence numbers from
 rows, and advances the stream head inside one `BEGIN IMMEDIATE` transaction.
 `finalizeTurn` uses that same boundary for the final buffered message content,
 the terminal turn event, the message `is_final` flags, and session/turn status.
-Events are published to clients only after the repository call returns.
+Repository callers publish to clients only after the repository call returns.
+The live server is not yet wired to this repository.
+
+Retries of an identical retained event ID return the original durable record
+without reapplying its projection or advancing the cursor. Reusing an ID for
+a different event is rejected. Mixed batches allocate cursors only for new IDs.
+Session creation requires a host `sessionProviderId` resolver because the public
+session summary does not contain provider identity; missing identity rolls back
+the event and cursor instead of inventing a provider.
 
 Token-sized `message.delta` and `message.reasoning` inputs are buffered in
 memory and coalesced before persistence. A batch flushes when its serialized
@@ -30,7 +38,12 @@ non-stream ordering barrier. A terminal turn event flushes the remaining
 stream content and terminal event together through `finalizeTurn`, so the last
 content cannot commit without the terminal state. A crash may lose only the
 uncommitted in-memory tail; it cannot leave a durable cursor ahead of its event
-or projection. Non-stream events are never delayed behind the timer.
+or projection. Non-stream events are never delayed behind the timer. Failed batches remain
+frozen for retry through `flush()`, `close()`, or the next `append()`; new input
+is accepted only after that retry succeeds. Timer failures are reported through
+`onError` when supplied and retain the batch without starting an unbounded retry
+loop. Publication may repeat after a post-commit failure; consumers deduplicate
+using the original durable cursor.
 
 ## Ownership
 
