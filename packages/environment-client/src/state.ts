@@ -177,6 +177,33 @@ function mergeContent(existing: readonly ContentBlock[], delta: ContentBlock): C
   return [...existing, delta]
 }
 
+/**
+ * Drop a pending interaction and, when it was the last one blocking its turn,
+ * return that turn to `running`. `turnId` may be null when the caller only
+ * knows the interaction ID (the optimistic path); it is then looked up.
+ */
+function resolveInteraction(
+  current: ThreadState,
+  interactionId: string,
+  turnId: string | null,
+): ThreadState {
+  const pending = current.interactions.find(
+    (item) => item.interaction.interactionId === interactionId,
+  )
+  if (!pending) return current
+  const resolvedTurnId = turnId ?? pending.turnId
+  const interactions = current.interactions.filter(
+    (item) => item.interaction.interactionId !== interactionId,
+  )
+  const stillWaiting = interactions.some((item) => item.turnId === resolvedTurnId)
+  const turn = current.turns.find((item) => item.turnId === resolvedTurnId)
+  const updated =
+    turn?.state === 'waiting' && !stillWaiting
+      ? setTurnState(current, resolvedTurnId, 'running')
+      : current
+  return { ...updated, interactions }
+}
+
 function removeSession(state: EnvironmentState, sessionId: string): EnvironmentState {
   const session = state.sessions[sessionId]
   if (!session) return state
@@ -196,8 +223,11 @@ function removeSession(state: EnvironmentState, sessionId: string): EnvironmentS
 }
 
 /**
- * Fold one live event into the state. Every branch is idempotent by resource
- * ID so a replayed or duplicated event cannot double-apply.
+ * Fold one live event into the state. Branches keyed by resource ID
+ * (sessions, turns, tools, interactions) are idempotent, so a replayed event
+ * cannot double-apply. Delta events (`message.delta`, `message.reasoning`,
+ * `turn.notice`) append and are not; the transport de-duplicates those by
+ * cursor, and event-ID tracking for replay lands with CAL-71.
  */
 export function applyEvent(state: EnvironmentState, event: ProofEvent): EnvironmentState {
   switch (event.name) {
@@ -338,20 +368,9 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
         }
       })
     case 'interaction.resolved':
-      return patchThread(state, thread, (current) => {
-        const interactionId = event.payload.response.interactionId
-        const interactions = current.interactions.filter(
-          (item) => item.interaction.interactionId !== interactionId,
-        )
-        if (interactions.length === current.interactions.length) return current
-        const stillWaiting = interactions.some((item) => item.turnId === event.payload.turnId)
-        const turn = current.turns.find((item) => item.turnId === event.payload.turnId)
-        const updated =
-          turn?.state === 'waiting' && !stillWaiting
-            ? setTurnState(current, event.payload.turnId, 'running')
-            : current
-        return { ...updated, interactions }
-      })
+      return patchThread(state, thread, (current) =>
+        resolveInteraction(current, event.payload.response.interactionId, event.payload.turnId),
+      )
     default:
       return state
   }
@@ -452,19 +471,19 @@ export function applyTurnStarted(
   }))
 }
 
+/**
+ * Optimistic removal after `interaction.respond`. Mirrors the
+ * `interaction.resolved` event path so the turn returns to `running` here; the
+ * later event is then a no-op instead of the only place that flips the turn.
+ */
 export function applyInteractionResolved(
   state: EnvironmentState,
   thread: Thread,
   interactionId: string,
 ): EnvironmentState {
-  return patchThread(state, thread, (current) => {
-    const interactions = current.interactions.filter(
-      (item) => item.interaction.interactionId !== interactionId,
-    )
-    return interactions.length === current.interactions.length
-      ? current
-      : { ...current, interactions }
-  })
+  return patchThread(state, thread, (current) =>
+    resolveInteraction(current, interactionId, null),
+  )
 }
 
 export function applySessionCreated(

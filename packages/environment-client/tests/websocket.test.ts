@@ -261,6 +261,43 @@ describe('websocket environment client', () => {
     expect(selectActiveThread(client.getState())?.interactions).toHaveLength(0)
   })
 
+  it('releases a subscription that was dropped before its acknowledgement arrived', async () => {
+    const { client, socket } = await connected()
+    const opened = client.commands.openSession(SESSION.sessionId)
+    socket.respond('session.open', {
+      session: SESSION,
+      threads: [THREAD],
+      messages: [],
+      turns: [],
+      interactions: [],
+    })
+    await opened
+    const subscribeRequest = socket.last('subscription.subscribe')
+    expect(subscribeRequest.payload).toMatchObject({ scope: { type: 'thread' } })
+
+    // Leave the session before the server acknowledges the thread subscription.
+    const second = { sessionId: 'session-2', workspaceId: WORKSPACE.workspaceId, title: null }
+    const switched = client.commands.openSession(second.sessionId)
+    socket.respond('session.open', {
+      session: second,
+      threads: [],
+      messages: [],
+      turns: [],
+      interactions: [],
+    })
+    await switched
+    expect(socket.sent.some((message) => message.name === 'subscription.unsubscribe')).toBe(false)
+
+    socket.receive({
+      type: 'response',
+      requestId: subscribeRequest.requestId,
+      payload: { subscriptionId: 'sub-thread-1', scope: (subscribeRequest.payload as { scope: unknown }).scope },
+    })
+    expect(socket.last('subscription.unsubscribe').payload).toEqual({
+      subscriptionId: 'sub-thread-1',
+    })
+  })
+
   it('answers heartbeat pings', async () => {
     const { socket } = await connected()
     socket.receive({ type: 'ping', heartbeatId: 'hb-1' })
@@ -359,5 +396,38 @@ describe('websocket environment client', () => {
     expect(timers.pending()).toBe(0)
     client.dispose()
     await expect(client.commands.listWorkspaces()).rejects.toMatchObject({ code: 'unavailable' })
+  })
+
+  it('reconnects when connect() is called while a manual disconnect is still closing', async () => {
+    FakeSocket.instances = []
+    const timers = createTimers()
+    let requests = 0
+    const client = createWebSocketEnvironmentClient({
+      url: 'ws://127.0.0.1:1/ws',
+      WebSocket: FakeSocket,
+      timers,
+      now: timers.now,
+      requestId: () => `req-${++requests}`,
+      reconnect: { initialDelayMs: 100, maxDelayMs: 1000, multiplier: 2 },
+    })
+    client.connect()
+    const first = FakeSocket.instances[0]!
+    first.open()
+    first.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+
+    // A socket whose close event has not fired yet (browser sockets close asynchronously).
+    const closeHandlers: Array<() => void> = []
+    const original = first.close.bind(first)
+    first.close = () => {
+      closeHandlers.push(() => original(1000, 'client_disconnect'))
+    }
+    client.disconnect()
+    client.connect()
+    for (const handler of closeHandlers) handler()
+
+    expect(client.getState().connection.phase).toBe('reconnecting')
+    timers.advance(100)
+    expect(FakeSocket.instances).toHaveLength(2)
   })
 })

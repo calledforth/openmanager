@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { ProofEventSchema, type ScopeSnapshot } from '@openmanager/protocol'
 import {
   applyEvent,
+  applyInteractionResolved,
   applySessionOpen,
   applySnapshot,
   createInitialState,
@@ -119,6 +120,39 @@ describe('applyEvent', () => {
     )
     expect(selectPendingInteractions(state)).toHaveLength(0)
     expect(selectSessionList(state)[0]?.status).toBe('running')
+  })
+
+  it('optimistic resolve returns the turn to running and makes the later event a no-op', () => {
+    let state = applyEvent(seeded(), turnStarted())
+    state = applyEvent(
+      state,
+      event({
+        name: 'interaction.requested',
+        scope: threadScope,
+        payload: { turnId: 'turn-1', interaction: permission },
+      }),
+    )
+    state = applyInteractionResolved(state, THREAD, permission.interactionId)
+    expect(selectPendingInteractions(state)).toHaveLength(0)
+    expect(selectActiveTurn(state)?.state).toBe('running')
+    expect(selectSessionList(state)[0]?.status).toBe('running')
+
+    const replayed = applyEvent(
+      state,
+      event({
+        name: 'interaction.resolved',
+        scope: threadScope,
+        payload: {
+          turnId: 'turn-1',
+          response: {
+            kind: 'permission',
+            interactionId: permission.interactionId,
+            outcome: { outcome: 'selected', optionId: 'allow' },
+          },
+        },
+      }),
+    )
+    expect(replayed).toBe(state)
   })
 
   it('records failures and marks the session as errored', () => {

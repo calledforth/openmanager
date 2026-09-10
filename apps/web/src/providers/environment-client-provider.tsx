@@ -1,4 +1,4 @@
-import { useEffect, useMemo, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import {
   createWebSocketEnvironmentClient,
   type EnvironmentClient,
@@ -29,16 +29,23 @@ export function WebEnvironmentClientProvider({
     environment.status === 'selected' ? (environment.environmentId ?? stored?.environmentId) : undefined
   const ready = ui.kind === 'ready'
 
-  const client = useMemo<EnvironmentClient | null>(() => {
-    if (!endpoint || !ready) return null
-    return createClient({ url: environmentSocketUrl(endpoint), credential, environmentId })
-  }, [createClient, credential, endpoint, environmentId, ready])
-
+  // The client is created inside the effect rather than memoized so that
+  // StrictMode's setup → cleanup → setup replay (and any real remount) gets a
+  // fresh instance; a disposed client ignores connect() for good.
+  const [client, setClient] = useState<EnvironmentClient | null>(null)
   useEffect(() => {
-    if (!client) return
-    client.connect()
-    return () => client.dispose()
-  }, [client])
+    if (!endpoint || !ready) {
+      setClient(null)
+      return
+    }
+    const next = createClient({ url: environmentSocketUrl(endpoint), credential, environmentId })
+    setClient(next)
+    next.connect()
+    return () => {
+      next.dispose()
+      setClient((current) => (current === next ? null : current))
+    }
+  }, [createClient, credential, endpoint, environmentId, ready])
 
   return <EnvironmentClientProvider client={client}>{children}</EnvironmentClientProvider>
 }

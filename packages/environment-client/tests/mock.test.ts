@@ -84,6 +84,55 @@ describe('mock environment client', () => {
     expect(state.messages.filter((message) => message.role === 'assistant')).toHaveLength(0)
   })
 
+  it('settles after a manual interrupt cancels the last scripted chunk', async () => {
+    const client = createMockEnvironmentClient({ seed, chunkDelayMs: 50 })
+    const { turn } = await client.commands.sendTurn({ ...THREAD, text: 'long' })
+    client.interruptTurn({ ...THREAD, turnId: turn.turnId })
+    await client.settle()
+    expect(client.getState().threads[THREAD.threadId]?.turns[0]?.state).toBe('interrupted')
+  })
+
+  it('stops the scripted reply when a turn is completed by hand', async () => {
+    const client = createMockEnvironmentClient({ seed, chunkDelayMs: 50 })
+    const { turn } = await client.commands.sendTurn({ ...THREAD, text: 'long' })
+    client.completeTurn({ ...THREAD, turnId: turn.turnId })
+    await client.settle()
+    const thread = client.getState().threads[THREAD.threadId]!
+    expect(thread.turns[0]?.state).toBe('completed')
+    expect(thread.messages.filter((message) => message.role === 'assistant')).toHaveLength(0)
+  })
+
+  it('removing a workspace cancels scripted replies for its sessions', async () => {
+    const client = createMockEnvironmentClient({ seed, chunkDelayMs: 50 })
+    await client.commands.sendTurn({ ...THREAD, text: 'long' })
+    await client.commands.removeWorkspace(WORKSPACE.workspaceId)
+    await client.settle()
+    expect(client.getState().threads[THREAD.threadId]).toBeUndefined()
+  })
+
+  it('rejects delayed commands when disposed instead of leaving them pending', async () => {
+    const client = createMockEnvironmentClient({ seed, latencyMs: 1000 })
+    const pending = client.commands.listWorkspaces()
+    client.dispose()
+    await expect(pending).rejects.toMatchObject({ code: 'unavailable' })
+  })
+
+  it('seeds a session whose last turn failed as errored', () => {
+    const client = createMockEnvironmentClient({
+      seed: {
+        ...seed,
+        sessions: [
+          {
+            session: SESSION,
+            threads: [THREAD],
+            turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'failed' }],
+          },
+        ],
+      },
+    })
+    expect(selectSessionList(client.getState())[0]?.status).toBe('error')
+  })
+
   it('rejects a second turn while one is running', async () => {
     const client = createMockEnvironmentClient({ seed, respond: () => null })
     await client.commands.sendTurn({ ...THREAD, text: 'one' })

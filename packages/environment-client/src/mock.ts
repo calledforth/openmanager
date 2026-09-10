@@ -24,6 +24,7 @@ import {
   applyWorkspaceRemoved,
   createInitialState,
   createThreadState,
+  deriveSessionStatus,
   selectSessionList,
 } from './state'
 import { createEnvironmentStore } from './store'
@@ -67,7 +68,7 @@ export interface MockEnvironmentClientOptions {
   respond?: ((turn: MockTurnContext) => readonly string[] | null) | null
   /** Delay between streamed chunks. Zero still yields to the event loop. */
   chunkDelayMs?: number
-  /** Latency added to every command. Zero resolves in a microtask. */
+  /** Latency added to every command. Zero still yields to the event loop. */
   latencyMs?: number
   now?: () => string
   nextId?: () => string
@@ -129,15 +130,22 @@ export function createMockEnvironmentClient(
   const calls: MockCommandCall[] = []
   const timers = new Set<ReturnType<typeof setTimeout>>()
   const drains = new Set<() => void>()
+  const pendingCommands = new Set<(error: EnvironmentClientError) => void>()
   let disposed = false
+
+  const drainIfIdle = () => {
+    if (timers.size !== 0) return
+    for (const resolve of [...drains]) resolve()
+    drains.clear()
+  }
 
   const schedule = (fn: () => void, delayMs: number) => {
     const timer = setTimeout(() => {
       timers.delete(timer)
-      fn()
-      if (timers.size === 0) {
-        for (const resolve of [...drains]) resolve()
-        drains.clear()
+      try {
+        fn()
+      } finally {
+        drainIfIdle()
       }
     }, delayMs)
     timers.add(timer)
@@ -190,7 +198,9 @@ export function createMockEnvironmentClient(
         reject(error)
         return
       }
+      pendingCommands.add(reject)
       schedule(() => {
+        pendingCommands.delete(reject)
         try {
           resolve(work())
         } catch (error) {
@@ -215,16 +225,6 @@ export function createMockEnvironmentClient(
     return messageId
   }
 
-  const completeTurn = (target: MockTurnTarget) => {
-    requireThread(target)
-    emit({
-      ...base(),
-      name: 'turn.completed',
-      scope: threadScope(target),
-      payload: { turnId: target.turnId },
-    })
-  }
-
   const scriptedReplies = new Map<string, ReturnType<typeof setTimeout>[]>()
   const cancelScript = (turnId: string) => {
     for (const timer of scriptedReplies.get(turnId) ?? []) {
@@ -232,6 +232,26 @@ export function createMockEnvironmentClient(
       timers.delete(timer)
     }
     scriptedReplies.delete(turnId)
+    drainIfIdle()
+  }
+
+  /** Cancel every scripted reply for turns that belong to the given threads. */
+  const cancelScriptsForThreads = (threadIds: readonly string[]) => {
+    const state = store.getState()
+    for (const threadId of threadIds) {
+      for (const turn of state.threads[threadId]?.turns ?? []) cancelScript(turn.turnId)
+    }
+  }
+
+  const completeTurn = (target: MockTurnTarget) => {
+    requireThread(target)
+    cancelScript(target.turnId)
+    emit({
+      ...base(),
+      name: 'turn.completed',
+      scope: threadScope(target),
+      payload: { turnId: target.turnId },
+    })
   }
 
   const scriptReply = (turn: MockTurnContext, chunks: readonly string[]) => {
@@ -282,6 +302,11 @@ export function createMockEnvironmentClient(
         if (!store.getState().workspaces[workspaceId]) {
           throw new EnvironmentClientError('not_found', 'Workspace not found.')
         }
+        cancelScriptsForThreads(
+          selectSessionList(store.getState(), workspaceId).flatMap(
+            (session) => session.threadIds,
+          ),
+        )
         store.update((state) => applyWorkspaceRemoved(state, workspaceId))
       }),
     listSessions: (workspaceId) =>
@@ -339,11 +364,7 @@ export function createMockEnvironmentClient(
       run('deleteSession', sessionId, () => {
         const session = store.getState().sessions[sessionId]
         if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
-        for (const threadId of session.threadIds) {
-          for (const turn of store.getState().threads[threadId]?.turns ?? []) {
-            cancelScript(turn.turnId)
-          }
-        }
+        cancelScriptsForThreads(session.threadIds)
         emit({ ...base(), name: 'session.deleted', scope: envScope(), payload: { sessionId } })
       }),
     sendTurn: (input) =>
@@ -428,6 +449,10 @@ export function createMockEnvironmentClient(
       disposed = true
       for (const timer of timers) clearTimeout(timer)
       timers.clear()
+      scriptedReplies.clear()
+      const error = new EnvironmentClientError('unavailable', 'Client is disposed.')
+      for (const reject of [...pendingCommands]) reject(error)
+      pendingCommands.clear()
       for (const resolve of drains) resolve()
       drains.clear()
       store.update((state) => applyConnection(state, { phase: 'closed' }))
@@ -511,9 +536,7 @@ function seedState(
   }
   for (const session of Object.values(state.sessions)) {
     const threads = session.threadIds.map((id) => state.threads[id]!)
-    const running = threads.some((thread) => thread.turns.some((turn) => turn.state === 'running'))
-    const waiting = threads.some((thread) => thread.turns.some((turn) => turn.state === 'waiting'))
-    const status = waiting ? 'waiting' : running ? 'running' : 'idle'
+    const status = deriveSessionStatus(threads)
     if (status !== session.status) {
       state = { ...state, sessions: { ...state.sessions, [session.sessionId]: { ...session, status } } }
     }

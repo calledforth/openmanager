@@ -480,10 +480,24 @@ export function createWebSocketEnvironmentClient(
       else attempt()
     })
 
+  const sendUnsubscribe = (subscriptionId: string) => {
+    if (!capabilities.has(UNSUBSCRIBE_NAME)) return
+    const requestId = nextRequestId()
+    pending.set(requestId, { name: UNSUBSCRIBE_NAME, resolve: () => undefined, reject: () => undefined })
+    rawSend({
+      type: 'command',
+      requestId,
+      name: UNSUBSCRIBE_NAME,
+      payload: { subscriptionId },
+    })
+  }
+
   /**
    * Fire-and-forget: the acknowledgement only supplies the subscription ID used
-   * for cursor de-duplication. Events for an unacknowledged subscription are
-   * still applied because every reducer is idempotent by resource ID.
+   * to unsubscribe later. Cursor de-duplication is keyed by scope, so events
+   * that arrive before the acknowledgement are still de-duplicated and applied.
+   * If the scope was dropped before the acknowledgement arrived, the server
+   * subscription is released as soon as its ID is known.
    */
   const subscribe = (scope: SubscriptionScope) => {
     const key = scopeKey(scope)
@@ -497,9 +511,10 @@ export function createWebSocketEnvironmentClient(
       name: SUBSCRIBE_NAME,
       resolve: (raw) => {
         const parsed = SubscribeResponseSchema.safeParse(raw)
-        if (parsed.success && subscriptions.get(key) === subscription) {
-          subscription.subscriptionId = parsed.data.payload.subscriptionId
-        }
+        if (!parsed.success) return
+        const subscriptionId = parsed.data.payload.subscriptionId
+        if (subscriptions.get(key) === subscription) subscription.subscriptionId = subscriptionId
+        else sendUnsubscribe(subscriptionId)
       },
       reject: () => undefined,
     })
@@ -513,15 +528,7 @@ export function createWebSocketEnvironmentClient(
     const subscription = subscriptions.get(key)
     if (!subscription) return
     subscriptions.delete(key)
-    if (!subscription.subscriptionId || !capabilities.has(UNSUBSCRIBE_NAME)) return
-    const requestId = nextRequestId()
-    pending.set(requestId, { name: UNSUBSCRIBE_NAME, resolve: () => undefined, reject: () => undefined })
-    rawSend({
-      type: 'command',
-      requestId,
-      name: UNSUBSCRIBE_NAME,
-      payload: { subscriptionId: subscription.subscriptionId },
-    })
+    if (subscription.subscriptionId) sendUnsubscribe(subscription.subscriptionId)
   }
 
   const sessionScopes = (sessionId: string): SubscriptionScope[] => {
@@ -568,6 +575,9 @@ export function createWebSocketEnvironmentClient(
     },
     async removeWorkspace(workspaceId) {
       await request('workspace.remove', { workspaceId })
+      for (const session of selectSessionList(store.getState(), workspaceId)) {
+        for (const scope of sessionScopes(session.sessionId)) unsubscribe(scope)
+      }
       store.update((state) => applyWorkspaceRemoved(state, workspaceId))
     },
     async listSessions(workspaceId) {
@@ -650,6 +660,9 @@ export function createWebSocketEnvironmentClient(
       if (current.failure && TERMINAL_CODES.has(current.failure.code)) {
         patchConnection({ failure: null })
       }
+      // A socket that disconnect() is still closing keeps open() from creating
+      // a new one; clearing the flag lets its close event schedule a reconnect.
+      manualClose = false
       open()
     },
     disconnect() {
