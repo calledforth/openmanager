@@ -12,11 +12,10 @@ import {
 } from '@openmanager/protocol/node'
 import { openEnvironmentDatabase } from '../src/db/database.js'
 import {
-  createEventRepository,
   createRepositoryEventBatcher,
   createStreamingEventBatcher,
-  type EventRepository,
-} from '../src/db/event-repository.js'
+} from '../src/db/event-batcher.js'
+import { createEventRepository, type EventRepository } from '../src/db/event-repository.js'
 
 const directories: string[] = []
 const databases: DatabaseSync[] = []
@@ -499,8 +498,9 @@ describe('event repository transactions', () => {
     createEventRepository(database, { epoch: 'epoch-1' }).appendEvents(scope, [started()])
     database.close()
 
-    const modulePath = resolve('dist/db/event-repository.js').replaceAll('\\', '/')
-    const databaseModulePath = resolve('dist/db/database.js').replaceAll('\\', '/')
+    // Node runs the TypeScript sources directly, the same way `pnpm dev` does.
+    const modulePath = resolve('src/db/event-repository.ts').replaceAll('\\', '/')
+    const databaseModulePath = resolve('src/db/database.ts').replaceAll('\\', '/')
     const script = `
       import { openEnvironmentDatabase } from ${JSON.stringify(`file:///${databaseModulePath}`)};
       import { createEventRepository } from ${JSON.stringify(`file:///${modulePath}`)};

@@ -37,12 +37,12 @@ Flags override environment variables, which override defaults. Invalid values,
 unknown flags, occupied ports, and data-directory creation failures stop startup
 with a nonzero exit code and an error on stderr.
 
-| Flag                            | Environment variable                            | Default                                     |
-| ------------------------------- | ----------------------------------------------- | ------------------------------------------- |
-| `--port`                        | `OPENMANAGER_PORT`                              | `43120`                                     |
-| `--data-dir`                    | `OPENMANAGER_DATA_DIR`                          | `.openmanager` in the user's home directory |
-| `--log-level`                   | `OPENMANAGER_LOG_LEVEL`                         | `info`                                      |
-| `--allowed-origin` (repeatable) | `OPENMANAGER_ALLOWED_ORIGINS` (comma-separated) | none                                        |
+| Flag          | Environment variable    | Default                                     |
+| ------------- | ----------------------- | ------------------------------------------- |
+| `--port`      | `OPENMANAGER_PORT`      | `43120`                                     |
+| `--data-dir`  | `OPENMANAGER_DATA_DIR`  | `.openmanager` in the user's home directory |
+| `--log-level` | `OPENMANAGER_LOG_LEVEL` | `info`                                      |
+| `--allowed-origin` (repeatable) | `OPENMANAGER_ALLOWED_ORIGINS` (comma-separated) | none |
 
 ```sh
 pnpm --filter server dev --port 0 --data-dir "./local data" --log-level debug
