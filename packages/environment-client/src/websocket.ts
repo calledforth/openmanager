@@ -110,6 +110,8 @@ type Pending = {
 type Subscription = {
   scope: SubscriptionScope
   subscriptionId: string | null
+  /** A `subscription.subscribe` is on the wire and unacknowledged. */
+  inflight: boolean
   cursor: Cursor | null
 }
 
@@ -158,6 +160,8 @@ export function createWebSocketEnvironmentClient(
   let heartbeat: ClientHeartbeatState | null = null
   let environmentId = options.environmentId ?? null
   let capabilities = new Set<string>()
+  /** Bumped on every handshake and close so a stale resync stops after its awaits. */
+  let connectionGeneration = 0
   const pending = new Map<string, Pending>()
   const queued: Array<() => void> = []
   const subscriptions = new Map<string, Subscription>()
@@ -238,7 +242,11 @@ export function createWebSocketEnvironmentClient(
     socket = null
     ready = false
     stopHeartbeat()
-    for (const subscription of subscriptions.values()) subscription.subscriptionId = null
+    connectionGeneration += 1
+    for (const subscription of subscriptions.values()) {
+      subscription.subscriptionId = null
+      subscription.inflight = false
+    }
     rejectAllPending(
       new EnvironmentClientError('unavailable', reason || 'Connection closed.', { code }),
     )
@@ -305,6 +313,7 @@ export function createWebSocketEnvironmentClient(
     capabilities = new Set(bootstrap.capabilities)
     ready = true
     attempts = 0
+    connectionGeneration += 1
     heartbeat = createClientHeartbeatState(now())
     scheduleHeartbeat()
     patchConnection({
@@ -502,23 +511,36 @@ export function createWebSocketEnvironmentClient(
   const subscribe = (scope: SubscriptionScope) => {
     const key = scopeKey(scope)
     const existing = subscriptions.get(key)
-    if (existing?.subscriptionId) return
-    const subscription: Subscription = existing ?? { scope, subscriptionId: null, cursor: null }
+    if (existing?.subscriptionId || existing?.inflight) return
+    const subscription: Subscription = existing ?? {
+      scope,
+      subscriptionId: null,
+      inflight: false,
+      cursor: null,
+    }
     subscriptions.set(key, subscription)
     if (!capabilities.has(SUBSCRIBE_NAME)) return
     const requestId = nextRequestId()
     pending.set(requestId, {
       name: SUBSCRIBE_NAME,
       resolve: (raw) => {
+        subscription.inflight = false
         const parsed = SubscribeResponseSchema.safeParse(raw)
         if (!parsed.success) return
         const subscriptionId = parsed.data.payload.subscriptionId
-        if (subscriptions.get(key) === subscription) subscription.subscriptionId = subscriptionId
-        else sendUnsubscribe(subscriptionId)
+        if (subscriptions.get(key) === subscription && !subscription.subscriptionId) {
+          subscription.subscriptionId = subscriptionId
+        } else {
+          sendUnsubscribe(subscriptionId)
+        }
       },
-      reject: () => undefined,
+      reject: () => {
+        subscription.inflight = false
+      },
     })
-    if (!rawSend({ type: 'command', requestId, name: SUBSCRIBE_NAME, payload: { scope } })) {
+    if (rawSend({ type: 'command', requestId, name: SUBSCRIBE_NAME, payload: { scope } })) {
+      subscription.inflight = true
+    } else {
       pending.delete(requestId)
     }
   }
@@ -541,14 +563,21 @@ export function createWebSocketEnvironmentClient(
     return scopes
   }
 
-  /** After every handshake: environment scope, catalog reads, and the active session. */
+  /**
+   * After every handshake: environment scope, catalog reads, and the active
+   * session. If the connection drops or re-handshakes while the catalog reads
+   * are in flight, this run stops so it cannot queue a second `session.open`
+   * behind the resync the new handshake starts.
+   */
   const resync = async () => {
     if (!environmentId) return
+    const generation = connectionGeneration
     subscribe({ type: 'environment', environmentId })
     const reads: Promise<unknown>[] = []
     if (supports('getEnvironment')) reads.push(commands.getEnvironment().catch(() => undefined))
     if (supports('listWorkspaces')) reads.push(commands.listWorkspaces().catch(() => undefined))
     await Promise.all(reads)
+    if (generation !== connectionGeneration || !ready) return
     const activeSessionId = store.getState().activeSessionId
     if (activeSessionId && supports('openSession')) {
       await commands.openSession(activeSessionId).catch(() => undefined)

@@ -163,6 +163,24 @@ export function selectedStoredEnvironment(
   return registry.environments.find((item) => item.environmentId === registry.selectedId) ?? null
 }
 
+/**
+ * The stored record for a live selection. An endpoint can be remembered under
+ * several environments (a reused localhost port, a tunnel that moved), so the
+ * environment ID wins whenever the selection has one; the endpoint match is
+ * only the fallback for a pending connect whose bootstrap has not answered.
+ */
+export function findStoredEnvironment(
+  environments: readonly StoredEnvironment[],
+  endpoint: string,
+  environmentId?: string | null,
+): StoredEnvironment | undefined {
+  if (environmentId) {
+    const byId = environments.find((item) => item.environmentId === environmentId)
+    if (byId) return byId
+  }
+  return environments.find((item) => item.endpoints.includes(endpoint))
+}
+
 export function environmentRegistriesEqual(
   left: EnvironmentRegistry,
   right: EnvironmentRegistry,

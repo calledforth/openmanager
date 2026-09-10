@@ -298,6 +298,46 @@ describe('websocket environment client', () => {
     })
   })
 
+  it('sends one subscribe per scope while an earlier subscribe is unacknowledged', async () => {
+    const { client, socket } = await connected()
+    const hydrated = { session: SESSION, threads: [THREAD], messages: [], turns: [], interactions: [] }
+    const first = client.commands.openSession(SESSION.sessionId)
+    socket.respond('session.open', hydrated)
+    await first
+    const again = client.commands.openSession(SESSION.sessionId)
+    socket.respond('session.open', hydrated)
+    await again
+    const threadSubscribes = socket.sent.filter(
+      (message) =>
+        message.name === 'subscription.subscribe' &&
+        (message.payload as { scope: { type: string } }).scope.type === 'thread',
+    )
+    expect(threadSubscribes).toHaveLength(1)
+  })
+
+  it('does not let a resync interrupted by a drop queue a second session.open', async () => {
+    // connected() leaves the initial catalog reads unanswered, so the first
+    // resync is still awaiting them when the socket drops.
+    const { client, socket, timers } = await connected()
+    const opened = client.commands.openSession(SESSION.sessionId)
+    socket.respond('session.open', { session: SESSION, threads: [THREAD], messages: [], turns: [], interactions: [] })
+    await opened
+
+    socket.drop(1006)
+    await flush()
+    await flush()
+    timers.advance(100)
+    const next = FakeSocket.instances[1]!
+    next.open()
+    next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    next.respond('environment.get', { environment: { environmentId: ENV, name: 'Local' } })
+    next.respond('workspace.list', { workspaces: [] })
+    await flush()
+    await flush()
+    expect(next.sent.filter((message) => message.name === 'session.open')).toHaveLength(1)
+  })
+
   it('answers heartbeat pings', async () => {
     const { socket } = await connected()
     socket.receive({ type: 'ping', heartbeatId: 'hb-1' })

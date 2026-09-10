@@ -5,6 +5,7 @@ import {
 } from '@openmanager/environment-client'
 import { EnvironmentClientProvider } from '@openmanager/app-core/providers/environment-client'
 import { environmentSocketUrl } from '../lib/environment-socket'
+import { findStoredEnvironment } from '../lib/environment-store'
 import { useConnection } from './connection-provider'
 
 /**
@@ -21,12 +22,10 @@ export function WebEnvironmentClientProvider({
 }) {
   const { ui, environment, environments } = useConnection()
   const endpoint = environment.status === 'selected' ? environment.endpoint : null
-  const stored = endpoint
-    ? environments.find((item) => item.endpoints.includes(endpoint))
-    : undefined
+  const selectedId = environment.status === 'selected' ? environment.environmentId : undefined
+  const stored = endpoint ? findStoredEnvironment(environments, endpoint, selectedId) : undefined
   const credential = stored?.credential || undefined
-  const environmentId =
-    environment.status === 'selected' ? (environment.environmentId ?? stored?.environmentId) : undefined
+  const environmentId = selectedId ?? stored?.environmentId
   const ready = ui.kind === 'ready'
 
   // The client is created inside the effect rather than memoized so that

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  findStoredEnvironment,
   DEFAULT_ENVIRONMENT_LABEL,
   EMPTY_REGISTRY,
   ENVIRONMENT_STORAGE_KEY,
@@ -247,5 +248,24 @@ describe('parseStoredEnvironment', () => {
         label: '   ',
       }),
     ).toMatchObject({ label: DEFAULT_ENVIRONMENT_LABEL })
+  })
+})
+
+describe('findStoredEnvironment', () => {
+  const shared = 'http://127.0.0.1:4321'
+  const a = { environmentId: 'env-a', label: 'A', endpoints: [shared], credential: 'a'.repeat(64) }
+  const b = { environmentId: 'env-b', label: 'B', endpoints: [shared], credential: 'b'.repeat(64) }
+
+  it('prefers the selected environment ID when several records share an endpoint', () => {
+    expect(findStoredEnvironment([a, b], shared, 'env-b')).toBe(b)
+  })
+
+  it('falls back to the endpoint match when no ID is known yet', () => {
+    expect(findStoredEnvironment([a, b], shared)).toBe(a)
+    expect(findStoredEnvironment([a, b], shared, null)).toBe(a)
+  })
+
+  it('falls back to the endpoint match when the ID is not stored', () => {
+    expect(findStoredEnvironment([a], shared, 'env-unknown')).toBe(a)
   })
 })
