@@ -37,12 +37,12 @@ Flags override environment variables, which override defaults. Invalid values,
 unknown flags, occupied ports, and data-directory creation failures stop startup
 with a nonzero exit code and an error on stderr.
 
-| Flag          | Environment variable    | Default                                     |
-| ------------- | ----------------------- | ------------------------------------------- |
-| `--port`      | `OPENMANAGER_PORT`      | `43120`                                     |
-| `--data-dir`  | `OPENMANAGER_DATA_DIR`  | `.openmanager` in the user's home directory |
-| `--log-level` | `OPENMANAGER_LOG_LEVEL` | `info`                                      |
-| `--allowed-origin` (repeatable) | `OPENMANAGER_ALLOWED_ORIGINS` (comma-separated) | none |
+| Flag                            | Environment variable                            | Default                                     |
+| ------------------------------- | ----------------------------------------------- | ------------------------------------------- |
+| `--port`                        | `OPENMANAGER_PORT`                              | `43120`                                     |
+| `--data-dir`                    | `OPENMANAGER_DATA_DIR`                          | `.openmanager` in the user's home directory |
+| `--log-level`                   | `OPENMANAGER_LOG_LEVEL`                         | `info`                                      |
+| `--allowed-origin` (repeatable) | `OPENMANAGER_ALLOWED_ORIGINS` (comma-separated) | none                                        |
 
 ```sh
 pnpm --filter server dev --port 0 --data-dir "./local data" --log-level debug
@@ -191,15 +191,15 @@ details and diagnostic payloads do not cross that boundary. An unexpected
 process exit during an active turn emits `turn.failed` with a generic
 `provider_process_exited` or `provider_process_crashed` reason.
 
-The event service assigns a process epoch and contiguous sequence per exact scope,
-validates a `DurableEvent`, then invokes one append callback. The callback is the
-SQLite insertion seam and must commit before publishing. It currently publishes
-directly through `server.sockets.publish(record)` because the store is a later
-work item; consequently sequences reset after restart until that store owns the
-epoch and counters. The transport itself does not manufacture cursors, resolve
-resource existence or implement replay/snapshot commands. The development
-credential authorizes all scopes in this environment; scoped subscriptions are
-routing, not per-resource ACLs.
+The SQLite event repository exposes `appendEvents(scope, events)` and
+`finalizeTurn(scope, events)`. It allocates contiguous sequence numbers from the
+durable scope head, inserts event rows, updates message/session/turn projections,
+and advances the cursor in one transaction. Streaming token deltas are
+coalesced and flushed at 16 KiB or 100 ms; the terminal event shares the final
+batch so content and final state commit together. Callers publish only records
+returned after commit; the transport does not manufacture cursors. The
+development credential authorizes all scopes in this environment; scoped
+subscriptions are routing, not per-resource ACLs.
 
 Heartbeat uses the protocol's monotonic-clock helpers: a fresh application ping
 every 15 seconds after handshake, with 10 seconds to return its matching pong.

@@ -11,9 +11,26 @@ composer drafts, stash items, authorized clients, and replay events. The schema
 is additive to the composer tables introduced by migration 1.
 
 This migration defines storage and deletion semantics only. Repository methods,
-transactional event projection, stream batching, recovery, query-plan checks,
-and event retention are separate work. In particular, there is intentionally no
-replacement for Convex `pending_jobs` or `stream_chunks`.
+query-plan checks, and event retention are separate work. In particular, there
+is intentionally no replacement for Convex `pending_jobs` or `stream_chunks`.
+
+## Transaction and streaming policy
+
+The event repository allocates scope-local sequence numbers from
+`event_streams`, inserts every `event_log` row, updates the projected domain
+rows, and advances the stream head inside one `BEGIN IMMEDIATE` transaction.
+`finalizeTurn` uses that same boundary for the final buffered message content,
+the terminal turn event, the message `is_final` flags, and session/turn status.
+Events are published to clients only after the repository call returns.
+
+Token-sized `message.delta` and `message.reasoning` inputs are buffered in
+memory and coalesced before persistence. A batch flushes when its serialized
+payload reaches **16 KiB**, after **100 ms**, when its scope changes, or at a
+non-stream ordering barrier. A terminal turn event flushes the remaining
+stream content and terminal event together through `finalizeTurn`, so the last
+content cannot commit without the terminal state. A crash may lose only the
+uncommitted in-memory tail; it cannot leave a durable cursor ahead of its event
+or projection. Non-stream events are never delayed behind the timer.
 
 ## Ownership
 
