@@ -1,5 +1,5 @@
 import type { ProviderId, ProviderMetadata } from '@agentpack/contract'
-import type { ProviderComposerProfiles } from '../../../../shared/composer-profile'
+import type { ProviderComposerProfiles } from '@openmanager/shared/contracts/composer-profile'
 import type { ProviderModelGroup } from '@openmanager/app-core/components/chat/ProviderModelPicker'
 
 /** `description` is load-bearing for Claude Code, not decoration: the CLI puts

@@ -1,6 +1,6 @@
 import { useMemo, type ReactNode } from 'react'
 import { ViewActionsContext } from '@openmanager/app-core/providers/view-actions'
-import { useAppUi } from './app-ui-provider'
+import { useSessionState } from '@openmanager/app-core/providers/session-provider'
 
 const iconRequests = new Map<string, Promise<string | null>>()
 function resolveWorkspaceIcon(path: string) {
@@ -13,7 +13,7 @@ function resolveWorkspaceIcon(path: string) {
 }
 
 export function DesktopViewActions({ children }: { children: ReactNode }) {
-  const { activeSessionId, openChildSession } = useAppUi()
+  const { activeSessionId, openChildSession } = useSessionState()
   const value = useMemo(
     () => ({ activeSessionId, openChildSession, resolveWorkspaceIcon }),
     [activeSessionId, openChildSession],

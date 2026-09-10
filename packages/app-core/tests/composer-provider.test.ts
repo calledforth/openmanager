@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  coordinateProviderConnection,
-  providerBlocksComposer,
   resolveDraftComposerRuntime,
   resolveSessionComposerRuntime,
-} from './app-ui-provider'
-import type { ProviderComposerProfile } from '../../../shared/composer-profile'
+} from '../src/providers/composer-provider'
+import {
+  coordinateProviderConnection,
+  providerBlocksComposer,
+} from '../src/providers/platform-provider'
+import type { ProviderComposerProfile } from '@openmanager/shared/contracts/composer-profile'
 
 const profile: ProviderComposerProfile = {
   availableModels: [

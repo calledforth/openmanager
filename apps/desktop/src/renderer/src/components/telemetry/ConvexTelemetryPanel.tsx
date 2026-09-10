@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { useAppUi } from '../../providers/app-ui-provider'
+import { useSessionState } from '@openmanager/app-core/providers/session-provider'
 
 /** App-wide stacks from globals.css (self-hosted; CSP-safe). */
 const fontMono =
@@ -532,7 +532,7 @@ export function ConvexTelemetryPanel({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
-  const { activeSessionId } = useAppUi()
+  const { activeSessionId } = useSessionState()
   const [events, setEvents] = useState<TelemetryEvent[]>([])
   const [filePath, setFilePath] = useState('')
   const [showAllSessions, setShowAllSessions] = useState(false)

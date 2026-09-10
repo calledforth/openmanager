@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { PlanEntry } from '@agentpack/contract'
-import { useActiveSession } from '../../providers/active-session-provider'
+import { useActiveThreadState } from '@openmanager/app-core/providers/active-thread-provider'
 export { ComposerTodos } from '@openmanager/app-core/components/plans/ComposerTodos'
 
 function readPlanEntries(parts: Array<{ type: string; [key: string]: unknown }> | undefined) {
@@ -11,7 +11,7 @@ function readPlanEntries(parts: Array<{ type: string; [key: string]: unknown }> 
 
 /** Latest ACP plan checklist for the active session (live + hydrated turns). */
 export function useSessionPlanEntries(): PlanEntry[] {
-  const { activeSessionId, messages, streamingStore } = useActiveSession()
+  const { activeSessionId, messages, streamingStore } = useActiveThreadState()
   const [entries, setEntries] = useState<PlanEntry[]>([])
 
   useEffect(() => {

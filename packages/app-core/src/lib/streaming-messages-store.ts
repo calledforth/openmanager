@@ -1,49 +1,21 @@
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-  type ReactNode,
-} from 'react'
-import { api } from '@openmanager/convex/_generated/api'
 import type { AgentEvent, ContentBlock, ToolCallStatus } from '@agentpack/contract'
 import { isRecoverableError } from '@agentpack/contract'
-import {
-  reconstructSnapshot,
-  type StreamChunk,
-} from '@openmanager/shared/lib/stream-reconstruction'
-import { trackedConvexQuery, useTrackedQuery } from '../lib/convex-telemetry'
-import { useAppUi } from './app-ui-provider'
-import type { UploadedImageAttachment } from '@openmanager/app-core/lib/attachments'
-import { promptAttachment } from '@openmanager/app-core/lib/attachments'
 
-interface MessagePart {
+/** One rendered part of a streaming assistant turn: text, reasoning, tool,
+ * subtask or plan. Shaped like the persisted message parts so a hydrated
+ * snapshot and the live tail can be merged by id. */
+export interface MessagePart {
   type: string
   id: string
   __ordinal?: number
   [key: string]: unknown
 }
 
-export interface UIMessage {
-  externalId: string
-  role: string
-  isFinal?: boolean
-  sequenceNum: number
-  optimisticContent?: string
-  optimisticAttachments?: UploadedImageAttachment[]
-  optimisticJobId?: string
-  isOptimistic?: boolean
-}
-
 export interface LocalStreamingMessage {
   content: string
   parts: MessagePart[]
   /** True when this snapshot covers the turn from its start: either the
-   * renderer watched it from `prompt_started`, or the Convex snapshot of
+   * renderer watched it from `prompt_started`, or the persisted snapshot of
    * everything before it has been folded in. Note that AgentEvent sequence
    * numbers cannot be used to infer this — the renderer is sent a filtered
    * subset of the stream, so ordinary turns skip sequences. */
@@ -70,16 +42,9 @@ type LiveThreadState = {
   activeReasoningPartId?: string
 }
 
-interface ActiveSessionDetails {
-  externalId: string
-  title?: string
-  status: string
-  clientId?: string
-  providerId?: AgentEvent['providerId']
-  parentExternalId?: string
-  isDriven: boolean
-}
-
+/** Folds live agent events into per-message part snapshots outside React
+ * state, so a streaming token never invalidates a context. Views subscribe
+ * per message through `useSyncExternalStore`. */
 export class StreamingMessagesStore {
   private messages = new Map<string, LocalStreamingMessage>()
   private listeners = new Map<string, Set<() => void>>()
@@ -134,8 +99,8 @@ export class StreamingMessagesStore {
     if (!state) {
       // A turn that does not open with prompt_started is one this renderer
       // joined in flight — after a reload, a crash, or from a second window.
-      // Everything before this event exists only in Convex, so fetch that
-      // snapshot first and replay the live tail onto it.
+      // Everything before this event exists only in the persisted snapshot, so
+      // fetch that first and replay the live tail onto it.
       if (event.event !== 'prompt_started' && this.beginHydration(messageId, event)) return
       state = {
         messageId,
@@ -553,298 +518,4 @@ export class StreamingMessagesStore {
       })
     }
   }
-}
-
-interface ActiveSessionValue {
-  activeSessionId: string | null
-  activeSession: ActiveSessionDetails | null
-  activeSessionDriven: boolean
-  isMessagesLoading: boolean
-  messages: UIMessage[]
-  acknowledgeOptimisticMessage: (externalId: string) => void
-  abortSession: (externalId: string) => Promise<void>
-  sendMessage: (content: string, attachments?: UploadedImageAttachment[]) => Promise<void>
-  streamingStore: StreamingMessagesStore
-}
-
-const ActiveSessionContext = createContext<ActiveSessionValue | null>(null)
-
-const EMPTY_MESSAGES: Array<{
-  externalId: string
-  role: string
-  isFinal?: boolean
-  sequenceNum: number
-}> = []
-
-export function mergePersistedAndOptimisticMessages(
-  persisted: UIMessage[],
-  optimistic: UIMessage[],
-): UIMessage[] {
-  if (optimistic.length === 0) return persisted
-  const optimisticById = new Map(optimistic.map((message) => [message.externalId, message]))
-  const acknowledged = persisted.map((message) => {
-    const optimisticMessage = optimisticById.get(message.externalId)
-    if (!optimisticMessage) return message
-    return {
-      ...message,
-      optimisticContent: optimisticMessage.optimisticContent,
-      optimisticAttachments: optimisticMessage.optimisticAttachments,
-      optimisticJobId: optimisticMessage.optimisticJobId,
-      isOptimistic: false,
-    }
-  })
-  const persistedIds = new Set(acknowledged.map((message) => message.externalId))
-  const unacknowledged = optimistic.filter((message) => !persistedIds.has(message.externalId))
-  return [...acknowledged, ...unacknowledged].sort(
-    (left, right) => left.sequenceNum - right.sequenceNum,
-  )
-}
-
-export function shouldPreserveOptimisticMessages(
-  previousSessionId: string | null,
-  nextSessionId: string | null,
-  adoptedDraftSessionId: string | null,
-): boolean {
-  return (
-    previousSessionId === null && nextSessionId !== null && nextSessionId === adoptedDraftSessionId
-  )
-}
-
-export function useActiveSession() {
-  const ctx = useContext(ActiveSessionContext)
-  if (!ctx) throw new Error('useActiveSession must be used within ActiveSessionProvider')
-  return ctx
-}
-
-/** `hydrate` asks the store to backfill this message from Convex when the local
- * snapshot cannot cover the whole turn. Callers pass it for driven, unfinished
- * assistant messages — including turns that stopped emitting events entirely,
- * which no live event would ever trigger hydration for. */
-export function useStreamingMessage(messageExternalId: string, hydrate = false) {
-  const { streamingStore } = useActiveSession()
-  useEffect(() => {
-    if (!hydrate) return
-    streamingStore.ensureHydrated(messageExternalId)
-  }, [hydrate, messageExternalId, streamingStore])
-  return useSyncExternalStore(
-    (listener) => streamingStore.subscribe(messageExternalId, listener),
-    () => streamingStore.get(messageExternalId),
-    () => streamingStore.get(messageExternalId),
-  )
-}
-
-// Rebuild a turn from its persisted chunks. The desktop reads these only to
-// recover history it missed; subsequent tokens keep arriving over IPC, which is
-// both faster and the only source once the chunks are swept.
-async function hydrateStreamSnapshot(
-  messageExternalId: string,
-): Promise<StreamHydrationSnapshot | null> {
-  const chunks = (await trackedConvexQuery(
-    'streamChunks.getChunksSince.hydrate',
-    api.streamChunks.getChunksSince,
-    { messageExternalId, afterIndex: -1 },
-  )) as StreamChunk[] | null
-  if (!chunks?.length) return null
-  const snapshot = reconstructSnapshot(chunks)
-  return {
-    parts: snapshot.parts as MessagePart[] | undefined,
-    ...(snapshot.throughSeq !== undefined ? { throughSeq: snapshot.throughSeq } : {}),
-  }
-}
-
-export function ActiveSessionProvider({ children }: { children: ReactNode }) {
-  // Destructure so callbacks/memos below depend on the stable pieces they use,
-  // not on the whole context value (which changes on unrelated updates).
-  const {
-    activeSessionId,
-    adoptedDraftSessionId,
-    currentClientId,
-    sendMessage: uiSendMessage,
-    abortSession: uiAbortSession,
-  } = useAppUi()
-  // The source is attached at construction so it is in place before the IPC
-  // listener below can deliver the first event of an in-flight turn.
-  const streamingStore = useMemo(() => {
-    const store = new StreamingMessagesStore()
-    store.setSnapshotSource(hydrateStreamSnapshot)
-    return store
-  }, [])
-  const [optimisticUserMessages, setOptimisticUserMessages] = useState<UIMessage[]>([])
-  const previousActiveSessionIdRef = useRef(activeSessionId)
-
-  const rawSession = useTrackedQuery(
-    'sessions.getByExternalId.active',
-    api.sessions.getByExternalId,
-    activeSessionId ? { externalId: activeSessionId } : 'skip',
-  ) as
-    | {
-        externalId: string
-        title?: string
-        status: string
-        clientId?: string
-        providerId?: AgentEvent['providerId']
-        parentExternalId?: string
-      }
-    | null
-    | undefined
-
-  const rawMessages = useTrackedQuery(
-    'messages.listMetadata',
-    api.messages.listMetadata,
-    activeSessionId ? { sessionExternalId: activeSessionId } : 'skip',
-  ) as typeof EMPTY_MESSAGES | undefined
-
-  const messageList = rawMessages ?? EMPTY_MESSAGES
-  const isMessagesLoading = !!activeSessionId && rawMessages === undefined
-  const activeSessionDriven =
-    (!!rawSession && !!currentClientId && rawSession.clientId === currentClientId) ||
-    (!!activeSessionId && activeSessionId === adoptedDraftSessionId)
-  const activeSession = useMemo<ActiveSessionDetails | null>(
-    () =>
-      rawSession
-        ? {
-            externalId: rawSession.externalId,
-            title: rawSession.title,
-            status: rawSession.status,
-            clientId: rawSession.clientId,
-            providerId: rawSession.providerId,
-            parentExternalId: rawSession.parentExternalId,
-            isDriven: activeSessionDriven,
-          }
-        : null,
-    [activeSessionDriven, rawSession],
-  )
-
-  useEffect(() => {
-    const cleanup = window.electronAPI.onStreamToken((event) => {
-      streamingStore.update(event)
-    })
-    return cleanup
-  }, [streamingStore])
-
-  useEffect(() => {
-    const finalIds = new Set(
-      messageList.filter((message) => message.isFinal).map((message) => message.externalId),
-    )
-    if (finalIds.size === 0) return
-    for (const messageId of finalIds) {
-      streamingStore.remove(messageId)
-    }
-  }, [messageList, streamingStore])
-
-  useEffect(() => {
-    const previousSessionId = previousActiveSessionIdRef.current
-    if (previousSessionId === activeSessionId) return
-    previousActiveSessionIdRef.current = activeSessionId
-    const preserveOptimisticMessages = shouldPreserveOptimisticMessages(
-      previousSessionId,
-      activeSessionId,
-      adoptedDraftSessionId,
-    )
-
-    if (!preserveOptimisticMessages) {
-      setOptimisticUserMessages((prev) => {
-        for (const message of prev) {
-          for (const attachment of message.optimisticAttachments ?? []) {
-            URL.revokeObjectURL(attachment.previewUrl)
-          }
-        }
-        return []
-      })
-    }
-  }, [activeSessionId, adoptedDraftSessionId])
-
-  const acknowledgeOptimisticMessage = useCallback((externalId: string) => {
-    setOptimisticUserMessages((prev) => {
-      const acknowledged = prev.find((message) => message.externalId === externalId)
-      if (!acknowledged) return prev
-      for (const attachment of acknowledged.optimisticAttachments ?? []) {
-        URL.revokeObjectURL(attachment.previewUrl)
-      }
-      return prev.filter((message) => message.externalId !== externalId)
-    })
-  }, [])
-
-  const sendMessage = useCallback(
-    async (content: string, attachments: UploadedImageAttachment[] = []) => {
-      const trimmed = content.trim()
-      if (!trimmed && attachments.length === 0) return
-      const maxSequenceNum = messageList.reduce(
-        (max, message) => Math.max(max, message.sequenceNum),
-        -1,
-      )
-      const localExternalId = `agent_usr_${crypto.randomUUID()}`
-      const optimisticMessage: UIMessage = {
-        externalId: localExternalId,
-        role: 'user',
-        isFinal: true,
-        sequenceNum: maxSequenceNum + optimisticUserMessages.length + 1,
-        optimisticContent: trimmed,
-        optimisticAttachments: attachments,
-        isOptimistic: true,
-      }
-
-      setOptimisticUserMessages((prev) => [...prev, optimisticMessage])
-      try {
-        const jobId = await uiSendMessage(
-          trimmed,
-          localExternalId,
-          attachments.map(promptAttachment),
-        )
-        if (jobId) {
-          setOptimisticUserMessages((prev) =>
-            prev.map((message) =>
-              message.externalId === localExternalId
-                ? { ...message, optimisticJobId: jobId }
-                : message,
-            ),
-          )
-        }
-      } catch (error) {
-        setOptimisticUserMessages((prev) =>
-          prev.filter((message) => message.externalId !== localExternalId),
-        )
-        throw error
-      }
-    },
-    [messageList, optimisticUserMessages.length, uiSendMessage],
-  )
-
-  const messages: UIMessage[] = useMemo(() => {
-    const persisted = messageList.map((message) => ({
-      externalId: message.externalId,
-      role: message.role,
-      isFinal: message.isFinal,
-      sequenceNum: message.sequenceNum,
-    }))
-
-    return mergePersistedAndOptimisticMessages(persisted, optimisticUserMessages)
-  }, [messageList, optimisticUserMessages])
-
-  const value = useMemo<ActiveSessionValue>(
-    () => ({
-      activeSessionId,
-      activeSession,
-      activeSessionDriven,
-      isMessagesLoading,
-      messages,
-      acknowledgeOptimisticMessage,
-      abortSession: uiAbortSession,
-      sendMessage,
-      streamingStore,
-    }),
-    [
-      activeSessionId,
-      activeSession,
-      activeSessionDriven,
-      isMessagesLoading,
-      messages,
-      acknowledgeOptimisticMessage,
-      uiAbortSession,
-      sendMessage,
-      streamingStore,
-    ],
-  )
-
-  return <ActiveSessionContext.Provider value={value}>{children}</ActiveSessionContext.Provider>
 }

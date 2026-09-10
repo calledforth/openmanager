@@ -2,7 +2,8 @@ import { createContext, useContext, useEffect, useMemo, useRef, type ReactNode }
 import type { ProviderId } from '@agentpack/contract'
 import { api } from '@openmanager/convex/_generated/api'
 import { useTrackedQuery } from '../lib/convex-telemetry'
-import { useAppUi } from './app-ui-provider'
+import { useSessionState } from '@openmanager/app-core/providers/session-provider'
+import { usePlatformCapabilities } from '@openmanager/app-core/providers/platform-provider'
 import { resolveSessionProviderId } from './session-provider'
 
 export interface WorkspaceEntry {
@@ -71,7 +72,8 @@ export function useSidebarData() {
 }
 
 export function SidebarDataProvider({ children }: { children: ReactNode }) {
-  const ui = useAppUi()
+  const ui = useSessionState()
+  const { currentClientId } = usePlatformCapabilities()
   const activeWorkspacePath = ui.activeWorkspacePath
   const createSession = ui.createSession
   const didRestoreWorkspaceRef = useRef(false)
@@ -131,12 +133,12 @@ export function SidebarDataProvider({ children }: { children: ReactNode }) {
         providerId: resolveSessionProviderId(row.providerId),
         clientId: row.clientId,
         parentExternalId: row.parentExternalId,
-        isDriven: !!ui.currentClientId && row.clientId === ui.currentClientId,
+        isDriven: !!currentClientId && row.clientId === currentClientId,
       })
       grouped[row.workspacePath] = current
     }
     return grouped
-  }, [rawSidebarRows, ui.currentClientId])
+  }, [rawSidebarRows, currentClientId])
 
   const value = useMemo<SidebarDataValue>(
     () => ({

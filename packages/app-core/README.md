@@ -26,8 +26,12 @@ check on the modules reached through shared helpers.
 
 Desktop still owns the connected ChatView/MessageInput/WorkspaceSidebar wrappers,
 live plan subscriptions, settings, window chrome, telemetry and updates.
-Permission/question/plan contexts live here, but their existing data-fetching
-providers stay in desktop. This keeps one context identity without moving any
+Application state is split into four domain providers whose contracts live
+here (`providers/platform-provider`, `providers/session-provider`,
+`providers/composer-provider`, `providers/active-thread-provider`) while the
+Convex/Electron-backed implementations stay in desktop; see
+`docs/application-providers.md`. Permission/question/plan contexts follow the
+same pattern. This keeps one context identity without moving any
 Convex hooks across the boundary. `ViewActionsContext` supplies only child-session
 navigation and workspace icons; it is a small extraction seam, not a replacement
 environment client. The sidebar receives host settings as a React slot.
@@ -43,7 +47,7 @@ Storybook, and a temporary Convex/Electron adapter in desktop during migration.
 `tests/environment-client.test.tsx` shows the mock driving the sidebar, chat and
 composer without a server.
 
-The next steps are provider decomposition, temporary compatibility adapters, and
+The next steps are temporary compatibility adapters and
 shared application wiring. They are separate from this extraction. Keep compatibility implementations outside this package so
 retiring Convex does not require moving the shared application again. Protocol
 definitions, server persistence, agent execution and native mobile UI retain their

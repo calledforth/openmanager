@@ -16,9 +16,14 @@ import type { ProviderId } from '@agentpack/contract'
 import { cn } from '@openmanager/app-core/lib/utils'
 import { UI_FONTS, type UiFontId } from '@openmanager/app-core/lib/fonts'
 import { describeProviderHealth, type ProviderHealthTone } from '../../lib/provider-health-view'
-import { typographyBodySm, typographyCaption, typographyLabel } from '@openmanager/app-core/lib/typography'
+import {
+  typographyBodySm,
+  typographyCaption,
+  typographyLabel,
+} from '@openmanager/app-core/lib/typography'
 import { useTheme, type ThemeMode } from '@openmanager/app-core/providers/theme-provider'
-import { useAppUi } from '../../providers/app-ui-provider'
+import { usePlatformCapabilities } from '@openmanager/app-core/providers/platform-provider'
+import { useSessionState } from '@openmanager/app-core/providers/session-provider'
 import { Tooltip } from '@openmanager/app-core/components/ui/Tooltip'
 import { usePortaledMenu } from '@openmanager/app-core/components/ui/usePortaledMenu'
 import { ProviderIcon } from '@openmanager/app-core/components/providers/ProviderIcon'
@@ -154,7 +159,8 @@ export function ExtraSettingsDialog({
     acpAgentInfoByProvider,
     providers: registeredProviders,
     retryProvider,
-  } = useAppUi()
+  } = usePlatformCapabilities()
+  const { activeWorkspacePath } = useSessionState()
 
   const providers = useMemo(() => {
     const now = Date.now()
@@ -371,7 +377,7 @@ export function ExtraSettingsDialog({
                 <button
                   key={`retry:${provider.id}`}
                   type="button"
-                  onClick={() => void retryProvider(provider.id)}
+                  onClick={() => void retryProvider(provider.id, activeWorkspacePath ?? '')}
                   className="flex w-full items-center gap-2 border-t border-[var(--basis-border-muted)] px-3 py-1.5 text-left text-11-regular leading-tight text-[var(--basis-text-muted)] transition-colors hover:bg-[var(--basis-surface)] hover:text-[var(--basis-text)]"
                 >
                   <ArrowClockwiseIcon className="h-3 w-3 shrink-0" />

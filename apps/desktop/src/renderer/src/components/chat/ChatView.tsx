@@ -1,7 +1,10 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer, type VirtualItem } from '@tanstack/react-virtual'
 import { api } from '@openmanager/convex/_generated/api'
-import { useActiveSession, useStreamingMessage } from '../../providers/active-session-provider'
+import {
+  useActiveThreadState,
+  useStreamingMessage,
+} from '@openmanager/app-core/providers/active-thread-provider'
 import {
   AssistantMessage,
   ChatLoadingSkeleton,
@@ -28,10 +31,10 @@ export function ChatView() {
   const {
     activeSessionId,
     messages,
-    activeSessionDriven,
+    activeThreadDriven,
     isMessagesLoading,
     acknowledgeOptimisticMessage,
-  } = useActiveSession()
+  } = useActiveThreadState()
   const scrollRef = useRef<HTMLDivElement>(null)
   const shouldAutoScrollRef = useRef(true)
   const lastKnownScrollTopRef = useRef(0)
@@ -98,7 +101,7 @@ export function ChatView() {
             messages={chatMessages}
             isMessagesLoading={isMessagesLoading}
             scrollElement={scrollRef.current}
-            isDriven={activeSessionDriven}
+            isDriven={activeThreadDriven}
             onStreamUpdate={scheduleStickToBottom}
             onPersistedContentReady={acknowledgeOptimisticMessage}
           />
