@@ -58,6 +58,7 @@ export async function startServer(config: ServerConfig) {
     (event) => onRuntimeEvent(event),
     ({ providerId, workspacePath }) =>
       desiredSessionConfig(composerStore.getPreference(workspacePath, providerId)),
+    config.runtimeOptions,
   )
   let observeProviderCatalog: (providerId: string, result: RuntimeProviderBootstrap) => void =
     () => undefined
@@ -72,6 +73,7 @@ export async function startServer(config: ServerConfig) {
     providerService,
     (event) => eventService.append(event),
     (event) => publishThreadEvent(event),
+    config.resolveWorkspace,
   )
   const composerService = createComposerService(
     runtime,
