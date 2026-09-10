@@ -56,9 +56,11 @@ and Windows ACLs are not changed. First boot creates `identity.json` and
 `openmanager.sqlite`. Startup opens that database with WAL, `synchronous=NORMAL`,
 foreign keys, and a 5s busy timeout, then applies numbered migrations from
 [`src/db/migrations.ts`](src/db/migrations.ts) inside one transaction. SQLite
-stores provider composer profiles and workspace/provider preferences in the
-environment data directory. A database whose `schema_version` is newer than this
-server knows causes startup to fail without binding a port.
+stores the environment-owned domain model and composer state in the environment
+data directory. The schema and its authority/cascade rules are documented in
+[`docs/decisions/sqlite-persistence-schema.md`](../../docs/decisions/sqlite-persistence-schema.md).
+A database whose `schema_version` is newer than this server knows causes startup
+to fail without binding a port.
 
 Log levels are `debug`, `info`, `warn`, `error`, and `silent`. JSON log records at
 or above the configured severity are printed; the startup record is `info`, so
@@ -298,8 +300,8 @@ shipped with this process, startup throws and does not listen.
 4. Keep the new migration in this package so `pnpm --filter @openmanager/server test`
    (and `ci:server`) exercises it.
 
-Domain tables beyond composer profiles belong in later numbered migrations,
-not in edits to version 1.
+The domain model begins in migration 2. Keep later changes in new numbered
+migrations rather than editing either shipped migration.
 
 ## Checks
 
