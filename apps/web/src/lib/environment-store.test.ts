@@ -52,6 +52,14 @@ describe('parseEnvironmentCredential', () => {
     expect(parseEnvironmentCredential('')).toBe('')
     expect(parseEnvironmentCredential('ab cd')).toBe('')
   })
+
+  it('rejects characters the WebSocket subprotocol grammar forbids', () => {
+    expect(parseEnvironmentCredential('abc=')).toBe('')
+    expect(parseEnvironmentCredential('a,b')).toBe('')
+    expect(parseEnvironmentCredential('"abc"')).toBe('')
+    expect(parseEnvironmentCredential('a'.repeat(64))).toBe('a'.repeat(64))
+    expect(parseEnvironmentCredential('client-token_1.x~')).toBe('client-token_1.x~')
+  })
 })
 
 describe('upsertStoredEnvironment', () => {
@@ -256,16 +264,14 @@ describe('findStoredEnvironment', () => {
   const a = { environmentId: 'env-a', label: 'A', endpoints: [shared], credential: 'a'.repeat(64) }
   const b = { environmentId: 'env-b', label: 'B', endpoints: [shared], credential: 'b'.repeat(64) }
 
-  it('prefers the selected environment ID when several records share an endpoint', () => {
-    expect(findStoredEnvironment([a, b], shared, 'env-b')).toBe(b)
+  it('matches by environment ID even when several records share an endpoint', () => {
+    expect(findStoredEnvironment([a, b], 'env-b')).toBe(b)
   })
 
-  it('falls back to the endpoint match when no ID is known yet', () => {
-    expect(findStoredEnvironment([a, b], shared)).toBe(a)
-    expect(findStoredEnvironment([a, b], shared, null)).toBe(a)
-  })
-
-  it('falls back to the endpoint match when the ID is not stored', () => {
-    expect(findStoredEnvironment([a], shared, 'env-unknown')).toBe(a)
+  it('returns nothing without an ID or for an unknown ID; the endpoint is never consulted', () => {
+    expect(findStoredEnvironment([a, b], undefined)).toBeUndefined()
+    expect(findStoredEnvironment([a, b], null)).toBeUndefined()
+    expect(findStoredEnvironment([a, b], 'env-unknown')).toBeUndefined()
+    expect(shared).toBe(a.endpoints[0])
   })
 })

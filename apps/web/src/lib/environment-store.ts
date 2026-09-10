@@ -50,10 +50,19 @@ export function environmentBootstrapUrl(endpoint: string): string {
   return new URL('bootstrap', base).href
 }
 
+/**
+ * RFC 6455 subprotocol token characters. The credential travels to the
+ * environment inside a `Sec-WebSocket-Protocol` entry, and the browser throws
+ * from the WebSocket constructor for anything outside this grammar (`=`, `,`,
+ * quotes, spaces), so such values are rejected here instead of looping as
+ * "unavailable" later.
+ */
+const SUBPROTOCOL_TOKEN_PATTERN = /^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$/
+
 export function parseEnvironmentCredential(raw: string): string {
   const trimmed = raw.trim()
   if (!trimmed || trimmed.length > MAX_CREDENTIAL_LENGTH) return ''
-  if (/\s/.test(trimmed)) return ''
+  if (!SUBPROTOCOL_TOKEN_PATTERN.test(trimmed)) return ''
   return trimmed
 }
 
@@ -164,21 +173,16 @@ export function selectedStoredEnvironment(
 }
 
 /**
- * The stored record for a live selection. An endpoint can be remembered under
- * several environments (a reused localhost port, a tunnel that moved), so the
- * environment ID wins whenever the selection has one; the endpoint match is
- * only the fallback for a pending connect whose bootstrap has not answered.
+ * The stored record for a live selection, by environment ID only. An endpoint
+ * is not an identity: a reused localhost port or a moved tunnel can point at a
+ * different server with a different token, so there is no endpoint fallback.
  */
 export function findStoredEnvironment(
   environments: readonly StoredEnvironment[],
-  endpoint: string,
-  environmentId?: string | null,
+  environmentId: string | null | undefined,
 ): StoredEnvironment | undefined {
-  if (environmentId) {
-    const byId = environments.find((item) => item.environmentId === environmentId)
-    if (byId) return byId
-  }
-  return environments.find((item) => item.endpoints.includes(endpoint))
+  if (!environmentId) return undefined
+  return environments.find((item) => item.environmentId === environmentId)
 }
 
 export function environmentRegistriesEqual(
