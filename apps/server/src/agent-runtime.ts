@@ -1,6 +1,7 @@
 import {
   AgentRuntime,
   providers,
+  type AgentRuntimeOptions,
   type HostDeps,
   type HostLogEntry,
 } from '@agentpack/runtime/node'
@@ -20,6 +21,7 @@ export function mountAgentRuntime(
   log: ServerLogger,
   emitEvent: HostDeps['emitEvent'] = () => undefined,
   desiredSessionConfig?: HostDeps['desiredSessionConfig'],
+  runtimeOptions?: AgentRuntimeOptions,
 ): AgentRuntime {
   const runtime = new AgentRuntime(
     {
@@ -31,6 +33,7 @@ export function mountAgentRuntime(
       ...(desiredSessionConfig ? { desiredSessionConfig } : {}),
     },
     providers,
+    runtimeOptions,
   )
   return runtime
 }

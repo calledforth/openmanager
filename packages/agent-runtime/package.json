@@ -15,6 +15,10 @@
     "./protocol": {
       "types": "./src/protocol/projectAgentEvent.ts",
       "default": "./src/protocol/projectAgentEvent.ts"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
     }
   },
   "scripts": {

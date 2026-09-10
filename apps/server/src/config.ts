@@ -1,6 +1,8 @@
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
+import type { AgentRuntimeOptions } from '@agentpack/runtime/node'
+import type { WorkspaceRuntimeResolver } from './thread-service.ts'
 
 export const LOG_LEVELS = ['debug', 'info', 'warn', 'error', 'silent'] as const
 export type LogLevel = (typeof LOG_LEVELS)[number]
@@ -10,6 +12,10 @@ export interface ServerConfig {
   dataDir: string
   logLevel: LogLevel
   allowedOrigins?: readonly string[]
+  /** Test-only runtime seams (fake ACP transport, fake Claude SDK, timers). */
+  runtimeOptions?: AgentRuntimeOptions
+  /** Test-only workspace → provider routing. Production always uses OpenCode. */
+  resolveWorkspace?: WorkspaceRuntimeResolver
 }
 
 export function validateOrigins(origins: readonly string[]): string[] {
