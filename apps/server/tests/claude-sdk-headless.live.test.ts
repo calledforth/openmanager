@@ -1,10 +1,12 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { AgentEvent } from '@agentpack/contract'
+import type { HostDeps } from '@agentpack/runtime/node'
 import { describe, expect, it } from 'vitest'
 import { mountAgentRuntime } from '../src/agent-runtime.js'
 import { createLogger } from '../src/logger.js'
+
+type RuntimeEvent = Parameters<HostDeps['emitEvent']>[0]
 
 const live = process.env.OPENMANAGER_LIVE_CLAUDE === '1'
 const promptText = 'Do not use tools. Reply with only the single word: pong'
@@ -16,7 +18,7 @@ describe.skipIf(!live)('Claude SDK headless stream', () => {
     { timeout: 120_000 },
     async () => {
       const cwd = await mkdtemp(join(tmpdir(), 'openmanager-claude-live-'))
-      const events: AgentEvent[] = []
+      const events: RuntimeEvent[] = []
       const runtime = mountAgentRuntime(createLogger('warn'), (event) => events.push(event))
       const route = {
         providerId: 'claude' as const,
