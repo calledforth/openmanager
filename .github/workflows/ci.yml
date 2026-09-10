@@ -39,6 +39,9 @@ jobs:
       - name: Build, typecheck, lint, and test protocol
         run: pnpm run ci:protocol
 
+      - name: Typecheck, lint, and test the environment client
+        run: pnpm run ci:environment-client
+
       - name: Verify shared application core and Storybook
         run: pnpm run ci:app-core
 

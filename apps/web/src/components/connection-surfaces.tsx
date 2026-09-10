@@ -84,7 +84,7 @@ export function EnvironmentConnectForm({
     }
     const credential = parseEnvironmentCredential(credentialValue)
     if (credentialValue.trim() && !credential) {
-      setError('Enter a client token without spaces, or leave it blank.')
+      setError('Enter the client token exactly as issued (letters, digits, and - _ . ~ only), or leave it blank.')
       return
     }
     setError(null)

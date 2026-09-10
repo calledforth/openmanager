@@ -1,0 +1,62 @@
+export type {
+  AddWorkspaceInput,
+  ConnectionFailure,
+  ConnectionPhase,
+  ConnectionState,
+  CreateSessionInput,
+  EnvironmentClient,
+  EnvironmentCommandName,
+  EnvironmentCommands,
+  EnvironmentState,
+  HydrationState,
+  InterruptTurnInput,
+  PendingInteraction,
+  ReasoningEntry,
+  RespondToInteractionInput,
+  SendTurnInput,
+  SessionStatus,
+  SessionSummary,
+  ThreadState,
+  ThreadTarget,
+  ToolState,
+  TurnFailure,
+  TurnNotice,
+  Unsubscribe,
+} from './types'
+export { EnvironmentClientError, isEnvironmentClientError } from './errors'
+export {
+  applyEvent,
+  applySnapshot,
+  applySessionOpen,
+  createInitialState,
+  createThreadState,
+  deriveSessionStatus,
+  selectActiveSession,
+  selectActiveThread,
+  selectActiveTurn,
+  selectConnection,
+  selectPendingInteractions,
+  selectSessionList,
+  selectWorkspaces,
+  shallowEqualArray,
+} from './state'
+export { createEnvironmentStore, type EnvironmentStore } from './store'
+export { WIRE_COMMANDS, type WireCommandName } from './wire'
+export {
+  createMockEnvironmentClient,
+  type MockCommandCall,
+  type MockEnvironmentClient,
+  type MockEnvironmentClientOptions,
+  type MockSeed,
+  type MockSeedSession,
+  type MockTurnContext,
+  type MockTurnTarget,
+} from './mock'
+export {
+  createWebSocketEnvironmentClient,
+  DEFAULT_RECONNECT,
+  type ReconnectPolicy,
+  type WebSocketConstructor,
+  type WebSocketEnvironmentClientOptions,
+  type WebSocketLike,
+} from './websocket'

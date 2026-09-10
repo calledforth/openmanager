@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  findStoredEnvironment,
   DEFAULT_ENVIRONMENT_LABEL,
   EMPTY_REGISTRY,
   ENVIRONMENT_STORAGE_KEY,
@@ -50,6 +51,14 @@ describe('parseEnvironmentCredential', () => {
     expect(parseEnvironmentCredential('  abcdef  ')).toBe('abcdef')
     expect(parseEnvironmentCredential('')).toBe('')
     expect(parseEnvironmentCredential('ab cd')).toBe('')
+  })
+
+  it('rejects characters the WebSocket subprotocol grammar forbids', () => {
+    expect(parseEnvironmentCredential('abc=')).toBe('')
+    expect(parseEnvironmentCredential('a,b')).toBe('')
+    expect(parseEnvironmentCredential('"abc"')).toBe('')
+    expect(parseEnvironmentCredential('a'.repeat(64))).toBe('a'.repeat(64))
+    expect(parseEnvironmentCredential('client-token_1.x~')).toBe('client-token_1.x~')
   })
 })
 
@@ -247,5 +256,22 @@ describe('parseStoredEnvironment', () => {
         label: '   ',
       }),
     ).toMatchObject({ label: DEFAULT_ENVIRONMENT_LABEL })
+  })
+})
+
+describe('findStoredEnvironment', () => {
+  const shared = 'http://127.0.0.1:4321'
+  const a = { environmentId: 'env-a', label: 'A', endpoints: [shared], credential: 'a'.repeat(64) }
+  const b = { environmentId: 'env-b', label: 'B', endpoints: [shared], credential: 'b'.repeat(64) }
+
+  it('matches by environment ID even when several records share an endpoint', () => {
+    expect(findStoredEnvironment([a, b], 'env-b')).toBe(b)
+  })
+
+  it('returns nothing without an ID or for an unknown ID; the endpoint is never consulted', () => {
+    expect(findStoredEnvironment([a, b], undefined)).toBeUndefined()
+    expect(findStoredEnvironment([a, b], null)).toBeUndefined()
+    expect(findStoredEnvironment([a, b], 'env-unknown')).toBeUndefined()
+    expect(shared).toBe(a.endpoints[0])
   })
 })

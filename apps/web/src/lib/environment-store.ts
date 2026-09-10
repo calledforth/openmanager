@@ -50,10 +50,19 @@ export function environmentBootstrapUrl(endpoint: string): string {
   return new URL('bootstrap', base).href
 }
 
+/**
+ * RFC 6455 subprotocol token characters. The credential travels to the
+ * environment inside a `Sec-WebSocket-Protocol` entry, and the browser throws
+ * from the WebSocket constructor for anything outside this grammar (`=`, `,`,
+ * quotes, spaces), so such values are rejected here instead of looping as
+ * "unavailable" later.
+ */
+const SUBPROTOCOL_TOKEN_PATTERN = /^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$/
+
 export function parseEnvironmentCredential(raw: string): string {
   const trimmed = raw.trim()
   if (!trimmed || trimmed.length > MAX_CREDENTIAL_LENGTH) return ''
-  if (/\s/.test(trimmed)) return ''
+  if (!SUBPROTOCOL_TOKEN_PATTERN.test(trimmed)) return ''
   return trimmed
 }
 
@@ -161,6 +170,19 @@ export function selectedStoredEnvironment(
 ): StoredEnvironment | null {
   if (!registry.selectedId) return null
   return registry.environments.find((item) => item.environmentId === registry.selectedId) ?? null
+}
+
+/**
+ * The stored record for a live selection, by environment ID only. An endpoint
+ * is not an identity: a reused localhost port or a moved tunnel can point at a
+ * different server with a different token, so there is no endpoint fallback.
+ */
+export function findStoredEnvironment(
+  environments: readonly StoredEnvironment[],
+  environmentId: string | null | undefined,
+): StoredEnvironment | undefined {
+  if (!environmentId) return undefined
+  return environments.find((item) => item.environmentId === environmentId)
 }
 
 export function environmentRegistriesEqual(

@@ -4,3 +4,18 @@ export { MessageInputView } from './components/chat/MessageInputView'
 export { NewSessionLandingView } from './components/chat/NewSessionLanding'
 export { MessageParts } from './components/parts/MessageParts'
 export { ThemeProvider } from './providers/theme-provider'
+export {
+  EnvironmentClientProvider,
+  useActiveSession,
+  useActiveThread,
+  useActiveTurn,
+  useConnectionState,
+  useEnvironmentClient,
+  useEnvironmentClientOptional,
+  useEnvironmentCommands,
+  useEnvironmentState,
+  usePendingInteractions,
+  useSessionList,
+  useSessionsByWorkspace,
+  useWorkspaces,
+} from './providers/environment-client'

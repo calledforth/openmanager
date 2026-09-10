@@ -14,6 +14,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@openmanager/app-core": "workspace:*",
+    "@openmanager/environment-client": "workspace:*",
     "@openmanager/protocol": "workspace:*",
     "@fontsource-variable/geist": "^5.2.8",
     "@fontsource-variable/inter": "^5.2.8",

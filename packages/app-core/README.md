@@ -32,9 +32,19 @@ Convex hooks across the boundary. `ViewActionsContext` supplies only child-sessi
 navigation and workspace icons; it is a small extraction seam, not a replacement
 environment client. The sidebar receives host settings as a React slot.
 
-The next steps are the environment-client contract, provider decomposition,
-temporary compatibility adapters, and shared application wiring. They are separate
-from this extraction. Keep compatibility implementations outside this package so
+## Environment client
+
+`providers/environment-client` binds `@openmanager/environment-client` to React:
+`EnvironmentClientProvider` supplies a client, and hooks such as `useSessionList`,
+`useActiveThread`, `usePendingInteractions` and `useEnvironmentCommands` are the
+only way views read environment data or send commands. Hosts choose the
+implementation: the WebSocket client for web and desktop, the mock for tests and
+Storybook, and a temporary Convex/Electron adapter in desktop during migration.
+`tests/environment-client.test.tsx` shows the mock driving the sidebar, chat and
+composer without a server.
+
+The next steps are provider decomposition, temporary compatibility adapters, and
+shared application wiring. They are separate from this extraction. Keep compatibility implementations outside this package so
 retiring Convex does not require moving the shared application again. Protocol
 definitions, server persistence, agent execution and native mobile UI retain their
 own packages/apps.
