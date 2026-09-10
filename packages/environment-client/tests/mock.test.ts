@@ -1,0 +1,125 @@
+import { describe, expect, it } from 'vitest'
+import { createMockEnvironmentClient } from '../src/mock'
+import { EnvironmentClientError } from '../src/errors'
+import { selectActiveThread, selectPendingInteractions, selectSessionList } from '../src/state'
+import { SESSION, THREAD, WORKSPACE, permission } from './fixtures'
+
+const seed = { workspaces: [WORKSPACE], sessions: [{ session: SESSION, threads: [THREAD] }] }
+
+describe('mock environment client', () => {
+  it('lists seeded workspaces and sessions without a server', async () => {
+    const client = createMockEnvironmentClient({ seed })
+    expect(await client.commands.listWorkspaces()).toEqual([WORKSPACE])
+    expect(await client.commands.listSessions(WORKSPACE.workspaceId)).toHaveLength(1)
+    expect(client.getState().connection.phase).toBe('connected')
+  })
+
+  it('creates, opens, renames and deletes sessions through events', async () => {
+    const client = createMockEnvironmentClient({ seed })
+    const created = await client.commands.createSession({
+      workspaceId: WORKSPACE.workspaceId,
+      title: 'New',
+    })
+    expect(selectSessionList(client.getState())).toHaveLength(2)
+
+    await client.commands.openSession(created.session.sessionId)
+    expect(client.getState().activeThreadId).toBe(created.thread.threadId)
+    expect(selectActiveThread(client.getState())?.hydration).toBe('ready')
+
+    await client.commands.renameSession(created.session.sessionId, 'Renamed')
+    expect(client.getState().sessions[created.session.sessionId]?.title).toBe('Renamed')
+
+    await client.commands.deleteSession(created.session.sessionId)
+    expect(selectSessionList(client.getState())).toHaveLength(1)
+    expect(client.getState().activeSessionId).toBeNull()
+  })
+
+  it('echoes a streamed reply for sendTurn and completes the turn', async () => {
+    const client = createMockEnvironmentClient({ seed })
+    await client.commands.openSession(SESSION.sessionId)
+    const updates: string[] = []
+    client.subscribe(() => updates.push(client.getState().sessions[SESSION.sessionId]!.status))
+
+    const { turn } = await client.commands.sendTurn({ ...THREAD, text: 'ping' })
+    expect(client.getState().sessions[SESSION.sessionId]?.status).toBe('running')
+    await client.settle()
+
+    const thread = selectActiveThread(client.getState())!
+    const assistant = thread.messages.find((message) => message.role === 'assistant')
+    expect(assistant?.content).toEqual([{ type: 'text', text: 'You said: ping' }])
+    expect(thread.turns.find((item) => item.turnId === turn.turnId)?.state).toBe('completed')
+    expect(updates.at(-1)).toBe('idle')
+  })
+
+  it('leaves the turn running when respond returns null so tests can script it', async () => {
+    const client = createMockEnvironmentClient({ seed, respond: () => null })
+    const { turn } = await client.commands.sendTurn({ ...THREAD, text: 'wait' })
+    const target = { ...THREAD, turnId: turn.turnId }
+    client.requestInteraction(target, permission)
+    expect(selectPendingInteractions(client.getState(), THREAD.threadId)).toHaveLength(1)
+    expect(client.getState().sessions[SESSION.sessionId]?.status).toBe('waiting')
+
+    await client.commands.respondToInteraction({
+      ...THREAD,
+      response: {
+        kind: 'permission',
+        interactionId: permission.interactionId,
+        outcome: { outcome: 'selected', optionId: 'allow' },
+      },
+    })
+    expect(selectPendingInteractions(client.getState(), THREAD.threadId)).toHaveLength(0)
+
+    client.streamAssistantText(target, 'ok')
+    client.completeTurn(target)
+    expect(client.getState().sessions[SESSION.sessionId]?.status).toBe('idle')
+  })
+
+  it('interrupts a scripted reply before it completes', async () => {
+    const client = createMockEnvironmentClient({ seed, chunkDelayMs: 50 })
+    const { turn } = await client.commands.sendTurn({ ...THREAD, text: 'long' })
+    await client.commands.interruptTurn({ ...THREAD, turnId: turn.turnId })
+    await client.settle()
+    const state = client.getState().threads[THREAD.threadId]!
+    expect(state.turns[0]?.state).toBe('interrupted')
+    expect(state.messages.filter((message) => message.role === 'assistant')).toHaveLength(0)
+  })
+
+  it('rejects a second turn while one is running', async () => {
+    const client = createMockEnvironmentClient({ seed, respond: () => null })
+    await client.commands.sendTurn({ ...THREAD, text: 'one' })
+    await expect(client.commands.sendTurn({ ...THREAD, text: 'two' })).rejects.toMatchObject({
+      code: 'conflict',
+    })
+  })
+
+  it('rejects commands the environment does not advertise', async () => {
+    const client = createMockEnvironmentClient({
+      seed,
+      capabilities: ['listWorkspaces', 'createSession'],
+    })
+    expect(client.supports('deleteSession')).toBe(false)
+    const error = await client.commands.deleteSession(SESSION.sessionId).catch((e) => e)
+    expect(error).toBeInstanceOf(EnvironmentClientError)
+    expect(error.code).toBe('capability_missing')
+  })
+
+  it('records every command for assertions', async () => {
+    const client = createMockEnvironmentClient({ seed })
+    await client.commands.listWorkspaces()
+    expect(client.calls).toEqual([{ command: 'listWorkspaces', input: null }])
+  })
+
+  it('rejects malformed events instead of corrupting state', () => {
+    const client = createMockEnvironmentClient({ seed })
+    expect(() =>
+      client.emit({
+        type: 'event',
+        eventId: '',
+        timestamp: 'nope',
+        name: 'turn.completed',
+        scope: { type: 'thread', environmentId: 'x', sessionId: 'y', threadId: 'z' },
+        payload: { turnId: 't' },
+      }),
+    ).toThrow()
+  })
+})

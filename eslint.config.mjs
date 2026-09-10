@@ -47,7 +47,7 @@ export default [
     },
   },
   {
-    files: ['packages/app-core/src/**/*.{ts,tsx}'],
+    files: ['packages/app-core/src/**/*.{ts,tsx}', 'packages/environment-client/src/**/*.ts'],
     rules: {
       'no-restricted-imports': [
         'error',
