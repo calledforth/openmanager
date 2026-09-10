@@ -81,8 +81,8 @@ export type ClaudeSdk = {
  *
  * Dynamic because the bundle is ~1.2 MB and nothing loads it unless somebody
  * actually starts a Claude session or probes the provider; a static import
- * would put it on the desktop main process's startup path for every user,
- * including the ones who only use the ACP providers. */
+ * would put it on every host process's startup path, including the headless
+ * environment server and users who only use the ACP providers. */
 export async function loadClaudeSdk(): Promise<ClaudeSdk> {
   const sdk = await import('@anthropic-ai/claude-agent-sdk')
   return {

@@ -70,8 +70,7 @@ export type SessionRuntimeExit = ProcessExit & {
 
 /** Config the user *wants* applied, as opposed to what the agent reports.
  * Durable: it survives process death and is restored on respawn. Today it
- * comes from the workspace's remembered prefs in electron-store plus per-job
- * overrides. */
+ * comes from the host's durable workspace prefs plus per-job overrides. */
 export type DesiredSessionConfig = {
   modelId?: string
   modeId?: string
