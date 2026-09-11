@@ -10,7 +10,11 @@ import {
 } from '@phosphor-icons/react'
 import type { RuntimeConfig } from '../../../../shared/runtime-config'
 import { cn } from '@openmanager/app-core/lib/utils'
-import { typographyBodySm, typographyCaption, typographyLabel } from '@openmanager/app-core/lib/typography'
+import {
+  typographyBodySm,
+  typographyCaption,
+  typographyLabel,
+} from '@openmanager/app-core/lib/typography'
 
 type RequestState = 'idle' | 'testing' | 'success' | 'saving' | 'error'
 
@@ -51,7 +55,12 @@ export function ConvexSettingsDialog({
       })
       .catch(() => {
         if (cancelled) return
-        setConfig({ convexUrl: '', convexSource: 'unset', environmentUrlAvailable: false })
+        setConfig({
+          convexUrl: '',
+          convexSource: 'unset',
+          environmentUrlAvailable: false,
+          environmentClient: { backend: 'convex', serverUrl: '', credential: '' },
+        })
         setRequestState('error')
         setMessage('OpenManager could not read local settings.')
       })
@@ -199,9 +208,7 @@ export function ConvexSettingsDialog({
               Deployment URL
             </label>
             <div className="flex items-center rounded-lg border border-[var(--basis-border)] bg-[var(--basis-canvas-bg)] px-3 focus-within:border-emerald-400/60 focus-within:ring-1 focus-within:ring-emerald-400/15">
-              <HardDrivesIcon
-                className="mr-2.5 h-3.5 w-3.5 shrink-0 text-[var(--basis-text-faint)]"
-              />
+              <HardDrivesIcon className="mr-2.5 h-3.5 w-3.5 shrink-0 text-[var(--basis-text-faint)]" />
               <input
                 ref={inputRef}
                 id="convex-deployment-url"
@@ -240,9 +247,7 @@ export function ConvexSettingsDialog({
             aria-live="polite"
           >
             {requestState === 'testing' || requestState === 'saving' ? (
-              <CircleNotchIcon
-                className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin"
-              />
+              <CircleNotchIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
             ) : requestState === 'success' ? (
               <CheckCircleIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             ) : requestState === 'error' ? (

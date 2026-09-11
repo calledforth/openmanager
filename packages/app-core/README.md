@@ -47,8 +47,10 @@ Storybook, and a temporary Convex/Electron adapter in desktop during migration.
 `tests/environment-client.test.tsx` shows the mock driving the sidebar, chat and
 composer without a server.
 
-The next steps are temporary compatibility adapters and
-shared application wiring. They are separate from this extraction. Keep compatibility implementations outside this package so
-retiring Convex does not require moving the shared application again. Protocol
+The desktop's temporary Convex/Electron adapter lives in
+`apps/desktop/src/renderer/src/environment` and is mounted behind a backend flag;
+`docs/compatibility-adapters.md` describes it and how to delete it. Keep
+compatibility implementations outside this package so retiring Convex does not
+require moving the shared application again. Protocol
 definitions, server persistence, agent execution and native mobile UI retain their
 own packages/apps.

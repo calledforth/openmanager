@@ -1,4 +1,4 @@
-import type { RuntimeConfig } from '../shared/runtime-config'
+import type { ConvexRuntimeConfig } from '../shared/runtime-config'
 
 function isLocalHostname(hostname: string): boolean {
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]'
@@ -42,7 +42,7 @@ export function resolveRuntimeConfig(
   settingsUrl: string,
   environmentUrl: string,
   allowHttpLocalhost: boolean,
-): RuntimeConfig {
+): ConvexRuntimeConfig {
   const normalizedSettingsUrl = tryNormalize(settingsUrl, allowHttpLocalhost)
   const normalizedEnvironmentUrl = tryNormalize(environmentUrl, allowHttpLocalhost)
 

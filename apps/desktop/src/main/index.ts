@@ -18,6 +18,7 @@ import { loadOrCreateClientId } from './client-id'
 import { sanitizeProviderHealthCache } from './provider-health-cache'
 import store from './store'
 import { normalizeConvexUrl, resolveRuntimeConfig } from './convex-config'
+import { resolveEnvironmentClientConfig } from './environment-client-config'
 import type { ConvexConnectionResult, RuntimeConfig } from '../shared/runtime-config'
 import {
   workspaceComposerPreferenceKey,
@@ -160,7 +161,10 @@ async function modelSupportsImages(
 }
 
 function getRuntimeConfig(): RuntimeConfig {
-  return resolveRuntimeConfig(store.get('convexUrl', ''), __CONVEX_URL__, !app.isPackaged)
+  return {
+    ...resolveRuntimeConfig(store.get('convexUrl', ''), __CONVEX_URL__, !app.isPackaged),
+    environmentClient: resolveEnvironmentClientConfig(process.env),
+  }
 }
 
 function initConvex(): ConvexClient | null {

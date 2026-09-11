@@ -21,11 +21,11 @@ Selectors (`selectSessionList`, `selectActiveThread`, `selectPendingInteractions
 
 ## Implementations
 
-| Implementation                      | Use                                                               |
-| ----------------------------------- | ----------------------------------------------------------------- |
-| `createWebSocketEnvironmentClient`  | Browser and desktop against the environment server               |
-| `createMockEnvironmentClient`       | Tests and Storybook; scripted streaming with no server            |
-| Convex/Electron compatibility       | Desktop during migration; lives outside this package (CAL-41)    |
+| Implementation                     | Use                                                                                                                              |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `createWebSocketEnvironmentClient` | Browser and desktop against the environment server                                                                               |
+| `createMockEnvironmentClient`      | Tests and Storybook; scripted streaming with no server                                                                           |
+| `createConvexEnvironmentClient`    | Desktop during migration; temporary, lives in `apps/desktop/src/renderer/src/environment` (see `docs/compatibility-adapters.md`) |
 
 All implementations feed the same reducers (`applyEvent`, `applySnapshot`,
 `applySessionOpen`), so behaviour verified against the mock holds on the wire.
