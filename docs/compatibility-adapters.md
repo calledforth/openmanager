@@ -76,8 +76,9 @@ These are accepted for the migration window and disappear with the adapter:
 
 - **Sessions driven by another host** get no live events; only the catalog
   updates. The legacy remote-streaming path (`streamChunks`) is not mirrored.
-- **Session status in the sidebar** is derived from turns this renderer has
-  seen; a session running elsewhere reads as idle until it is opened.
+- **Session status in the sidebar** comes from the Convex row (`running`,
+  `waiting`, `error`) until this renderer sees a turn of its own for the
+  session; a turn watched locally then takes precedence over the row.
 - **Attachments** are not sent by `sendTurn` (text only); hydrated image parts
   appear as `resource_link` blocks.
 - **Plan feedback messages** written by the legacy `resolvePlan` are not

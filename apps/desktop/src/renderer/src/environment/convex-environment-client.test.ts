@@ -184,6 +184,56 @@ describe('createConvexEnvironmentClient', () => {
     )
   })
 
+  it('seeds session status from the catalog until a local turn knows better', () => {
+    const { client, convex, bridge } = setup()
+    client.connect()
+    convex.pushWith('sessions:listForSidebar', [
+      { ...SESSION_ROW, status: 'running' },
+      { ...SESSION_ROW, externalId: 'errored', status: 'error' },
+      { ...SESSION_ROW, externalId: 'finished', status: 'done' },
+      { ...SESSION_ROW, externalId: 'pending', status: 'waiting' },
+    ])
+    const statuses = () =>
+      Object.fromEntries(
+        Object.values(client.getState().sessions).map((session) => [
+          session.sessionId,
+          session.status,
+        ]),
+      )
+    expect(statuses()).toEqual({
+      'session-1': 'running',
+      errored: 'error',
+      finished: 'idle',
+      pending: 'waiting',
+    })
+
+    // A turn this window watched finish outranks a stale catalog row.
+    bridge.emit(
+      agentEvent({
+        category: 'lifecycle',
+        event: 'prompt_started',
+        messageId: 'asst-1',
+        data: { prompt: 'q', userMessageId: 'usr-1' },
+      }),
+    )
+    bridge.emit(agentEvent({ category: 'lifecycle', event: 'prompt_completed', data: {} }))
+    expect(statuses()['session-1']).toBe('idle')
+    convex.pushWith('sessions:listForSidebar', [{ ...SESSION_ROW, status: 'running' }])
+    expect(statuses()['session-1']).toBe('running')
+
+    // A turn still open locally keeps its derived status over the row.
+    bridge.emit(
+      agentEvent({
+        category: 'lifecycle',
+        event: 'prompt_started',
+        messageId: 'asst-2',
+        data: { prompt: 'q', userMessageId: 'usr-2' },
+      }),
+    )
+    convex.pushWith('sessions:listForSidebar', [{ ...SESSION_ROW, status: 'idle' }])
+    expect(statuses()['session-1']).toBe('running')
+  })
+
   it('drops sessions and workspaces the catalog no longer lists, hiding child sessions', () => {
     const { client, convex } = setup()
     client.connect()

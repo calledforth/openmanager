@@ -307,7 +307,10 @@ export function createConvexEnvironmentClient(
         state,
         visible.map((row) => toSession(row, row.workspacePath)),
       )
-      for (const row of visible) next = knownThread(next, row.externalId)
+      for (const row of visible) {
+        next = knownThread(next, row.externalId)
+        next = seedCatalogStatus(next, row.externalId, row.status)
+      }
       for (const sessionId of convexSessions) {
         if (!ids.has(sessionId)) next = applySessionRemoved(next, sessionId)
       }
@@ -315,6 +318,35 @@ export function createConvexEnvironmentClient(
     })
     convexSessions.clear()
     for (const id of ids) convexSessions.add(id)
+  }
+
+  /**
+   * The store derives a session's status from the turns it has seen, which
+   * for a session driven elsewhere (or before this window existed) is none.
+   * The catalog row knows better then: the projector writes `running`,
+   * `waiting`, `error`, `done` and `idle`. A turn this renderer is watching
+   * is fresher than the row, so it keeps precedence.
+   */
+  const seedCatalogStatus = (
+    state: EnvironmentState,
+    sessionId: string,
+    catalogStatus: string,
+  ): EnvironmentState => {
+    const session = state.sessions[sessionId]
+    if (!session) return state
+    const threads = session.threadIds
+      .map((id) => state.threads[id])
+      .filter((thread): thread is ThreadState => !!thread)
+    const localOpen = threads.some((thread) =>
+      thread.turns.some((turn) => turn.state === 'running' || turn.state === 'waiting'),
+    )
+    const status = localOpen
+      ? deriveSessionStatus(threads)
+      : catalogStatus === 'running' || catalogStatus === 'waiting' || catalogStatus === 'error'
+        ? catalogStatus
+        : 'idle'
+    if (session.status === status) return state
+    return { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, status } } }
   }
 
   // -------------------------------------------------------------------------
