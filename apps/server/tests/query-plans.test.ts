@@ -7,6 +7,7 @@ import { openEnvironmentDatabase } from '../src/db/database.js'
 import {
   EVENTS_AFTER_CURSOR_SQL,
   EXPIRED_EVENTS_BY_SCOPE_SQL,
+  FIRST_UNEXPIRED_SEQUENCE_SQL,
   MESSAGE_HISTORY_PAGE_SQL,
   MESSAGE_PARTS_SQL,
   SESSION_LIST_FOR_ENVIRONMENT_SQL,
@@ -87,6 +88,9 @@ describe('bounded query plans', () => {
     expect(steps).toEqual([
       'SEARCH event_log USING COVERING INDEX event_log_created_at_idx (created_at<?)',
       'USE TEMP B-TREE FOR GROUP BY',
+    ])
+    expect(plan(database, FIRST_UNEXPIRED_SEQUENCE_SQL)).toEqual([
+      'SEARCH event_log USING PRIMARY KEY (scope_key=?)',
     ])
   })
 

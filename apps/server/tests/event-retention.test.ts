@@ -153,6 +153,38 @@ describe('event retention', () => {
     })
   })
 
+  it('never prunes an in-window event that sorts below an expired one', async () => {
+    const database = await createDatabase()
+    const repository = createEventRepository(database, { epoch: 'epoch-1', now: () => T0 })
+    // Sequence 1 is young, 2 is old, 3 is young, 4 is old, 5 is young.
+    const stamps = [T0 + 10 * DAY, T0, T0 + 10 * DAY, T0, T0 + 10 * DAY]
+    stamps.forEach((at, index) => {
+      repository.appendEvents(sessionScope, [durable(sessionScope, index + 1, at)])
+    })
+    const retention = createEventRetention(database, {
+      windowMs: 2 * DAY,
+      now: () => T0 + 10 * DAY + HOUR,
+    })
+
+    // Sequence 1 is still inside the window, so nothing below it can go.
+    expect(retention.prune()).toEqual({ at: T0 + 10 * DAY + HOUR, deleted: 0, streams: [] })
+    expect(sequences(database, sessionScope)).toEqual([1, 2, 3, 4, 5])
+
+    // Once sequence 1 is gone, the boundary stops at the next in-window row (3).
+    database.prepare('DELETE FROM event_log WHERE scope_key = ? AND sequence = 1').run(
+      scopeKey(sessionScope),
+    )
+    database
+      .prepare('UPDATE event_streams SET oldest_sequence = 2 WHERE scope_key = ?')
+      .run(scopeKey(sessionScope))
+    expect(retention.prune()).toEqual({
+      at: T0 + 10 * DAY + HOUR,
+      deleted: 1,
+      streams: [{ scopeKey: scopeKey(sessionScope), oldestSequence: 3 }],
+    })
+    expect(sequences(database, sessionScope)).toEqual([3, 4, 5])
+  })
+
   it('caps each scope at the newest N events regardless of age', async () => {
     const database = await createDatabase()
     seed(database, sessionScope, 10, T0, 1)

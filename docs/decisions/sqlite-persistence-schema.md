@@ -156,12 +156,17 @@ retention; only the replay tail shrinks. The policy, implemented in
   keeps at most its newest 10,000 events regardless of age.
 
 A pruning pass runs inside one `BEGIN IMMEDIATE` transaction. For every stream
-it computes the first retained sequence as the larger of "one past the newest
-expired row" and `head_sequence - cap + 1`, deletes `event_log` rows below it
-through the primary key, and rewrites `event_streams.oldest_sequence` to the new
-minimum retained sequence, or `NULL` when nothing remains. The retained range
-is always contiguous: cutting at the newest expired sequence also removes any
-younger row that sorted below it, because a replay cannot skip a hole. `head_sequence` and
+it computes the first retained sequence as the larger of the window boundary
+and `head_sequence - cap + 1`, deletes `event_log` rows below it through the
+primary key, and rewrites `event_streams.oldest_sequence` to the new minimum
+retained sequence, or `NULL` when nothing remains. The window boundary is one
+past the newest expired row when the expired rows form a contiguous prefix of
+the stream, which is the normal case. If timestamps ever run out of order and a
+row still inside the window sorts below an expired one, the boundary drops back
+to the oldest in-window row: the retained range must stay contiguous because
+replay cannot skip a hole, and an event inside the window is never pruned, so
+an out-of-order expired row simply survives until the rows below it expire
+too. `head_sequence` and
 `epoch` never change: cursor allocation keeps counting from the head, so a
 pruned stream is not a stream reset. Because `decideReplay` reads
 `oldest_sequence` and `head_sequence` together, a reconnecting client whose

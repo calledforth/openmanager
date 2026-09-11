@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
-import { EXPIRED_EVENTS_BY_SCOPE_SQL } from './queries.ts'
+import { EXPIRED_EVENTS_BY_SCOPE_SQL, FIRST_UNEXPIRED_SEQUENCE_SQL } from './queries.ts'
 
 /** Replayable events older than this are pruned; a client further behind must snapshot. */
 export const DEFAULT_EVENT_RETENTION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
@@ -36,9 +36,20 @@ export interface EventRetention {
   schedule(options?: { intervalMs?: number; onError?: (error: unknown) => void }): () => void
 }
 
-interface PruneCandidate {
+interface StreamRow {
   scope_key: string
-  keep_from: number
+  head_sequence: number
+  oldest_sequence: number
+}
+
+interface ExpiredRow {
+  scope_key: string
+  expired_count: number
+  expired_max: number
+}
+
+interface FirstRetainedRow {
+  first_retained: number | null
 }
 
 interface StreamSequenceRow {
@@ -70,32 +81,19 @@ export function createEventRetention(
   const now = options.now ?? Date.now
 
   const statements = {
+    /** Streams that retain at least one row, in a stable order for reporting. */
+    selectStreams: database.prepare(
+      `SELECT scope_key, head_sequence, oldest_sequence
+       FROM event_streams
+       WHERE oldest_sequence IS NOT NULL
+       ORDER BY scope_key`,
+    ),
     /**
-     * For every scope, the first sequence that survives this pass:
-     * one past the newest expired row, or `head - cap + 1`, whichever is larger.
-     * Only scopes that still hold something older than that are returned.
-     * Cutting at the newest expired sequence keeps the retained range contiguous:
-     * if timestamps ever run out of order, a younger row below that sequence is
-     * pruned too, because replay cannot skip a hole.
      * `INDEXED BY` pins the covering range scan: without statistics the planner
      * otherwise walks the whole primary key to satisfy GROUP BY in order.
      */
-    selectCandidates: database.prepare(
-      `WITH expired AS (${EXPIRED_EVENTS_BY_SCOPE_SQL}),
-       capped AS (
-         SELECT scope_key, head_sequence - ? + 1 AS keep_from
-         FROM event_streams
-         WHERE oldest_sequence IS NOT NULL
-       )
-       SELECT s.scope_key AS scope_key,
-              MAX(COALESCE(expired.keep_from, 1), COALESCE(capped.keep_from, 1)) AS keep_from
-       FROM event_streams AS s
-       LEFT JOIN expired ON expired.scope_key = s.scope_key
-       LEFT JOIN capped ON capped.scope_key = s.scope_key
-       WHERE s.oldest_sequence IS NOT NULL
-         AND s.oldest_sequence < MAX(COALESCE(expired.keep_from, 1), COALESCE(capped.keep_from, 1))
-       ORDER BY s.scope_key`,
-    ),
+    selectExpired: database.prepare(EXPIRED_EVENTS_BY_SCOPE_SQL),
+    selectFirstRetained: database.prepare(FIRST_UNEXPIRED_SEQUENCE_SQL),
     deleteBefore: database.prepare('DELETE FROM event_log WHERE scope_key = ? AND sequence < ?'),
     selectOldest: database.prepare(
       'SELECT MIN(sequence) AS oldest FROM event_log WHERE scope_key = ?',
@@ -111,21 +109,46 @@ export function createEventRetention(
     const streams: Array<{ scopeKey: string; oldestSequence: number | null }> = []
     let deleted = 0
 
+    /**
+     * The first sequence of `stream` that survives the window. Expired rows are
+     * normally a contiguous prefix of the stream, so the boundary is one past the
+     * newest of them. If timestamps ran out of order and a younger row sits below
+     * that, the boundary drops back to the oldest row still inside the window:
+     * the retained range must stay contiguous, and it may never lose an event
+     * that is still inside the window.
+     */
+    const windowBoundary = (stream: StreamRow, expired: ExpiredRow | undefined): number => {
+      if (!expired) return stream.oldest_sequence
+      const prefixLength = expired.expired_max - stream.oldest_sequence + 1
+      if (prefixLength === expired.expired_count) return expired.expired_max + 1
+      const { first_retained } = statements.selectFirstRetained.get(
+        stream.scope_key,
+        cutoff,
+      ) as unknown as FirstRetainedRow
+      return first_retained ?? stream.head_sequence + 1
+    }
+
     database.exec('BEGIN IMMEDIATE')
     try {
-      const candidates = statements.selectCandidates.all(
-        cutoff,
-        policy.maxEventsPerScope,
-      ) as unknown as PruneCandidate[]
-      for (const candidate of candidates) {
-        deleted += Number(
-          statements.deleteBefore.run(candidate.scope_key, candidate.keep_from).changes,
+      const expiredByScope = new Map(
+        (statements.selectExpired.all(cutoff) as unknown as ExpiredRow[]).map((row) => [
+          row.scope_key,
+          row,
+        ]),
+      )
+      for (const stream of statements.selectStreams.all() as unknown as StreamRow[]) {
+        const capBoundary = stream.head_sequence - policy.maxEventsPerScope + 1
+        const keepFrom = Math.max(
+          windowBoundary(stream, expiredByScope.get(stream.scope_key)),
+          capBoundary,
         )
+        if (keepFrom <= stream.oldest_sequence) continue
+        deleted += Number(statements.deleteBefore.run(stream.scope_key, keepFrom).changes)
         const { oldest } = statements.selectOldest.get(
-          candidate.scope_key,
+          stream.scope_key,
         ) as unknown as StreamSequenceRow
-        statements.setOldest.run(oldest, at, candidate.scope_key)
-        streams.push({ scopeKey: candidate.scope_key, oldestSequence: oldest })
+        statements.setOldest.run(oldest, at, stream.scope_key)
+        streams.push({ scopeKey: stream.scope_key, oldestSequence: oldest })
       }
       database.exec('COMMIT')
     } catch (error) {

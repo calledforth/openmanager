@@ -66,12 +66,25 @@ export const EVENTS_AFTER_CURSOR_SQL = `
   ORDER BY sequence
   LIMIT ?`
 
-/** Retention: newest expired sequence per scope, from the covering created_at index. */
+/**
+ * Retention: how many rows per scope have expired and the newest of them, from
+ * the covering created_at index. The pass only touches scopes returned here.
+ */
 export const EXPIRED_EVENTS_BY_SCOPE_SQL = `
-  SELECT scope_key, MAX(sequence) + 1 AS keep_from
+  SELECT scope_key, COUNT(*) AS expired_count, MAX(sequence) AS expired_max
   FROM event_log INDEXED BY event_log_created_at_idx
   WHERE created_at < ?
   GROUP BY scope_key`
+
+/**
+ * Retention: the oldest sequence in one scope that is still inside the window.
+ * Used only when a scope's expired rows are not a contiguous prefix; it walks
+ * that scope's primary key, which the per-scope cap bounds.
+ */
+export const FIRST_UNEXPIRED_SEQUENCE_SQL = `
+  SELECT MIN(sequence) AS first_retained
+  FROM event_log
+  WHERE scope_key = ? AND created_at >= ?`
 
 /** Replay decision input: head and retention boundary for a scope, read atomically. */
 export const STREAM_BOUNDS_SQL = `
