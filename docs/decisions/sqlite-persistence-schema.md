@@ -192,6 +192,15 @@ one. Tombstones are about 100 bytes each and are bounded by their own window,
 not shrink when the per-scope cap prunes a busy stream early. Deleting a
 session cascades through its streams to their tombstones.
 
+That horizon is a deliberate bound, not an oversight. Event IDs are unique
+per event, so a retry of an event older than 30 days plus its retention window
+would be appended as new. Retries in this system come from the in-process
+batcher and are measured in seconds; a producer that resubmits a month-old
+event ID is a bug on the producer side. Keeping every ID forever would make
+`event_id_tombstones` the one unbounded table in a schema whose purpose is to
+stay bounded, so the guarantee is stated as "idempotent within 30 days of
+pruning" rather than "idempotent forever".
+
 The default job interval is 15 minutes with an unreferenced timer so it never
 holds the process open; failures are reported through `onError` and the next
 tick retries. Pruning is idempotent: a pass that finds nothing below the
