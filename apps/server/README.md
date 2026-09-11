@@ -304,8 +304,24 @@ shipped with this process, startup throws and does not listen.
 4. Keep the new migration in this package so `pnpm --filter @openmanager/server test`
    (and `ci:server`) exercises it.
 
-The domain model begins in migration 2. Keep later changes in new numbered
-migrations rather than editing either shipped migration.
+The domain model begins in migration 2. Migration 3 adds the composite indexes
+behind the session list, session history, and replay queries in
+[`src/db/queries.ts`](src/db/queries.ts); `tests/query-plans.test.ts` pins each
+plan with `EXPLAIN QUERY PLAN`, so a query or index change that introduces a
+scan or a temporary sort fails the suite. Keep later changes in new numbered
+migrations rather than editing a shipped migration.
+
+### Event retention
+
+[`src/db/event-retention.ts`](src/db/event-retention.ts) bounds the replay
+`event_log` to a 7-day window and 10,000 events per scope. `prune()` runs one
+pass in a single transaction and moves `event_streams.oldest_sequence`, which
+is what forces a stale reconnecting client onto a snapshot; `schedule()` runs
+it every 15 minutes on an unreferenced timer. Projected history rows are never
+pruned. Each pruned event leaves an `event_id_tombstones` row (cursor plus
+payload hash, kept for 30 days) so a late retry still deduplicates instead of
+being appended and projected again. The policy and its rationale are in the
+[schema decision](../../docs/decisions/sqlite-persistence-schema.md#event-retention).
 
 ## Checks
 

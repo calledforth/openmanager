@@ -258,4 +258,50 @@ export const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    version: 3,
+    name: 'bounded_indexes_and_retention',
+    up(database) {
+      database.exec(`
+        -- Session list for the whole environment, most recent activity first.
+        -- Both keyset columns descend so a row-value cursor is one index range.
+        CREATE INDEX IF NOT EXISTS sessions_updated_at_idx
+          ON sessions(updated_at DESC, session_id DESC);
+
+        -- Session list for one workspace; the composite replaces the plain workspace index.
+        DROP INDEX IF EXISTS sessions_workspace_id_idx;
+        CREATE INDEX IF NOT EXISTS sessions_workspace_updated_at_idx
+          ON sessions(workspace_id, updated_at DESC, session_id DESC);
+
+        -- Threads of a session in creation order, for paginated session history.
+        DROP INDEX IF EXISTS threads_session_id_idx;
+        CREATE INDEX IF NOT EXISTS threads_session_created_at_idx
+          ON threads(session_id, created_at, thread_id);
+
+        -- Turns of a thread in start order; history pages join turn state per message.
+        DROP INDEX IF EXISTS turns_thread_id_idx;
+        CREATE INDEX IF NOT EXISTS turns_thread_started_at_idx
+          ON turns(thread_id, started_at, turn_id);
+
+        -- Age-based retention finds expired rows across every stream without a table scan.
+        CREATE INDEX IF NOT EXISTS event_log_created_at_idx
+          ON event_log(created_at, scope_key, sequence);
+
+        -- Pruned event IDs keep their cursor and a payload hash so a late retry of a
+        -- pruned event still deduplicates instead of being appended and projected again.
+        CREATE TABLE IF NOT EXISTS event_id_tombstones (
+          event_id TEXT PRIMARY KEY NOT NULL,
+          scope_key TEXT NOT NULL REFERENCES event_streams(scope_key) ON DELETE CASCADE,
+          sequence INTEGER NOT NULL CHECK (sequence >= 1),
+          event_hash BLOB NOT NULL,
+          pruned_at INTEGER NOT NULL
+        ) WITHOUT ROWID, STRICT;
+
+        CREATE INDEX IF NOT EXISTS event_id_tombstones_scope_key_idx
+          ON event_id_tombstones(scope_key);
+        CREATE INDEX IF NOT EXISTS event_id_tombstones_pruned_at_idx
+          ON event_id_tombstones(pruned_at);
+      `)
+    },
+  },
 ]

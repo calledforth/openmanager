@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import type { DatabaseSync } from 'node:sqlite'
 import {
@@ -9,6 +9,7 @@ import {
   type SubscriptionScope,
 } from '@openmanager/protocol/node'
 import { createEventProjector, type EventProjectionOptions } from './event-projection.ts'
+import { EVENT_TOMBSTONE_SQL } from './queries.ts'
 
 type ThreadScope = Extract<SubscriptionScope, { type: 'thread' }>
 export type TerminalEvent = Extract<
@@ -41,6 +42,17 @@ interface ExistingEventRow {
   event_json: string
 }
 
+interface TombstoneRow {
+  scope_key: string
+  sequence: number
+  event_hash: Uint8Array
+}
+
+/** Stable digest of a serialized event, shared with retention's tombstone writer. */
+export function hashEvent(eventJson: string): Buffer {
+  return createHash('sha256').update(eventJson).digest()
+}
+
 /**
  * Persist replay events and their relational projection in the same SQLite transaction.
  * Cursor allocation is read from the database, so it remains contiguous across restarts.
@@ -66,6 +78,7 @@ export function createEventRepository(
     selectByEventId: database.prepare(
       'SELECT scope_key, sequence, event_json FROM event_log WHERE event_id = ?',
     ),
+    selectTombstone: database.prepare(EVENT_TOMBSTONE_SQL),
     insertEvent: database.prepare(
       `INSERT INTO event_log (
          scope_key, sequence, event_id, event_name, event_json, created_at
@@ -123,6 +136,27 @@ export function createEventRepository(
             DurableEventSchema.parse({
               cursor: { scope, epoch: stream.epoch, sequence: existing.sequence },
               event: storedEvent,
+            }),
+          )
+          continue
+        }
+        // The event may have been pruned by retention; its tombstone still carries
+        // the original cursor and a payload hash, so a late retry deduplicates.
+        const tombstone = statements.selectTombstone.get(event.eventId) as
+          | TombstoneRow
+          | undefined
+        if (tombstone) {
+          const serialized = JSON.stringify(record.event)
+          if (
+            tombstone.scope_key !== key ||
+            !hashEvent(serialized).equals(Buffer.from(tombstone.event_hash))
+          ) {
+            throw new Error(`Event ID ${event.eventId} already belongs to a different event`)
+          }
+          records.push(
+            DurableEventSchema.parse({
+              cursor: { scope, epoch: stream.epoch, sequence: tombstone.sequence },
+              event: record.event,
             }),
           )
           continue
