@@ -49,6 +49,13 @@ is accepted only after that retry succeeds. Timer failures are reported through
 loop. Publication may repeat after a post-commit failure; consumers deduplicate
 using the original durable cursor.
 
+After migrations, opening the environment database runs one recovery
+transaction for work owned by the previous server process. Durable `running`
+or `waiting` turns become `interrupted`, their partial messages become final,
+pending interactions become cancelled, and the owning thread/session returns
+to an idle state. This makes session-list and history snapshots internally
+consistent before the database is handed to server services.
+
 ## Ownership
 
 | Record                           | Authority                                                                                                               | Notes                                                                                                                                                     |
