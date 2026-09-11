@@ -493,18 +493,18 @@ describe('event repository transactions', () => {
     expect(projectionSnapshot(database)).toEqual(before)
   })
 
-  it('recovers with the old cursor and projection when the process dies before commit', async () => {
+  it('rolls back the uncommitted batch and interrupts its open turn after a crash', async () => {
     const { database, directory } = await createDatabase()
     createEventRepository(database, { epoch: 'epoch-1' }).appendEvents(scope, [started()])
     database.close()
 
     // Node runs the TypeScript sources directly, the same way `pnpm dev` does.
     const modulePath = resolve('src/db/event-repository.ts').replaceAll('\\', '/')
-    const databaseModulePath = resolve('src/db/database.ts').replaceAll('\\', '/')
     const script = `
-      import { openEnvironmentDatabase } from ${JSON.stringify(`file:///${databaseModulePath}`)};
+      import { DatabaseSync } from 'node:sqlite';
       import { createEventRepository } from ${JSON.stringify(`file:///${modulePath}`)};
-      const database = openEnvironmentDatabase(process.argv[1]);
+      const database = new DatabaseSync(${JSON.stringify(join(directory, 'openmanager.sqlite'))});
+      database.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON');
       const scope = ${JSON.stringify(scope)};
       const events = ${JSON.stringify([delta('uncommitted', 'event-child-delta'), completed('event-child-completed')])};
       createEventRepository(database, {
@@ -515,7 +515,7 @@ describe('event repository transactions', () => {
         },
       }).finalizeTurn(scope, events);
     `
-    const child = spawn(process.execPath, ['--input-type=module', '--eval', script, directory], {
+    const child = spawn(process.execPath, ['--input-type=module', '--eval', script], {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let output = ''
@@ -547,14 +547,16 @@ describe('event repository transactions', () => {
       { sequence: 1 },
     ])
     expect(recovered.prepare('SELECT state FROM turns WHERE turn_id = ?').get('turn-1')).toEqual({
-      state: 'running',
+      state: 'interrupted',
     })
     expect(
       recovered.prepare('SELECT status FROM sessions WHERE session_id = ?').get('session-1'),
     ).toEqual({
-      status: 'running',
+      status: 'idle',
     })
-    expect(recovered.prepare('SELECT count(*) AS count FROM messages').get()).toEqual({ count: 1 })
+    expect(recovered.prepare('SELECT role, is_final FROM messages').all()).toEqual([
+      { role: 'user', is_final: 1 },
+    ])
   })
 })
 
