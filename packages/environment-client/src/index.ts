@@ -25,9 +25,22 @@ export type {
 } from './types'
 export { EnvironmentClientError, isEnvironmentClientError } from './errors'
 export {
+  applyActiveSession,
+  applyActiveThread,
+  applyConnection,
+  applyEnvironment,
   applyEvent,
-  applySnapshot,
+  applyInteractionResolved,
+  applySessionCreated,
+  applySessionList,
   applySessionOpen,
+  applySessionRemoved,
+  applySessionTitle,
+  applySnapshot,
+  applyThreadHydration,
+  applyTurnStarted,
+  applyWorkspaceList,
+  applyWorkspaceRemoved,
   createInitialState,
   createThreadState,
   deriveSessionStatus,

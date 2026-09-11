@@ -9,15 +9,23 @@ Convex and the Electron bridge. Views only ever import the app-core hooks.
 ## Tree
 
 ```
-ThemeProvider
-└─ PlatformCapabilitiesProvider     usePlatformCapabilities
-   └─ SessionStateProvider          useSessionState
-      └─ ComposerStateProvider      useComposerState
-         └─ SidebarDataProvider     (desktop only)
-            └─ ActiveThreadStateProvider   useActiveThreadState, useStreamingMessage
-               └─ Permission / Question / Plan state providers
-                  └─ DesktopViewActions
+ConvexProvider
+└─ DesktopEnvironmentClientProvider   useEnvironmentClient and the hooks built on it
+   (Convex adapter or WebSocket client, per flag; docs/compatibility-adapters.md)
+   └─ ThemeProvider
+      └─ PlatformCapabilitiesProvider     usePlatformCapabilities
+         └─ SessionStateProvider          useSessionState
+            └─ ComposerStateProvider      useComposerState
+               └─ SidebarDataProvider     (desktop only)
+                  └─ ActiveThreadStateProvider   useActiveThreadState, useStreamingMessage
+                     └─ Permission / Question / Plan state providers
+                        └─ DesktopViewActions
 ```
+
+The environment client sits above the domain providers but is independent of
+them: the domain providers still bind to Convex directly, and views migrate to
+the environment-client hooks one at a time. Once they all have, the domain
+providers and the Convex adapter are deleted together.
 
 Each provider may read the ones above it and nothing below it.
 

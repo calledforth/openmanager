@@ -25,6 +25,7 @@
     "@agentpack/runtime": "workspace:*",
     "@agentpack/view": "workspace:*",
     "@openmanager/convex": "workspace:*",
+    "@openmanager/environment-client": "workspace:*",
     "@openmanager/protocol": "workspace:*",
     "@openmanager/shared": "workspace:*",
     "@phosphor-icons/react": "^2.1.10",
