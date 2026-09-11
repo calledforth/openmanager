@@ -25,7 +25,8 @@ Repository callers publish to clients only after the repository call returns.
 The live server is not yet wired to this repository.
 
 Retries of an identical retained event ID return the original durable record
-without reapplying its projection or advancing the cursor. Reusing an ID for
+without reapplying its projection or advancing the cursor; retries of a pruned
+event ID are answered from its tombstone the same way. Reusing an ID for
 a different event is rejected. Mixed batches allocate cursors only for new IDs.
 Session creation requires a host `sessionProviderId` resolver because the public
 session summary does not contain provider identity; missing identity rolls back
@@ -128,6 +129,9 @@ statement must search a named index and must not contain a `SCAN` step or a
 | Session history: parts of a message   | `message_id = ?` ordered by `ordinal`                                  | migration 2 `UNIQUE (message_id, ordinal)` autoindex                                   |
 | Events after a cursor for a scope     | `scope_key = ? AND sequence > ?` ordered by `sequence`, limited        | migration 2 `PRIMARY KEY (scope_key, sequence)` on the `WITHOUT ROWID` table           |
 | Retention: expired rows               | `created_at < ?` grouped by `scope_key`, `INDEXED BY` pinned           | `event_log_created_at_idx (created_at, scope_key, sequence)`, covering                 |
+| Retention: rows to prune / boundary   | `scope_key = ? AND sequence < ?`                                       | migration 2 `PRIMARY KEY (scope_key, sequence)`                                        |
+| Idempotency: pruned event ID          | `event_id = ?`                                                         | `event_id_tombstones` primary key                                                      |
+| Retention: expired tombstones         | `pruned_at < ?`                                                        | `event_id_tombstones_pruned_at_idx`                                                    |
 
 The composite session, thread, and turn indexes are left-prefixed by the
 foreign key column, so migration 3 drops the single-column
@@ -174,6 +178,19 @@ cursor is below `oldest_sequence - 1` receives a `gap_expired` snapshot instead
 of a replay, and a client at or after the boundary replays exactly the retained
 range. A stream with `oldest_sequence = NULL` and a non-zero head forces a
 snapshot for every cursor except the head itself.
+
+Pruning must not weaken idempotency. The repository deduplicates retried
+events by looking up `event_id` in `event_log`, so deleting a row would let a
+late retry of that event, or a reuse of its ID, be appended and projected
+again. Before a pass deletes a row it writes an `event_id_tombstones` record
+inside the same transaction: the event ID, its scope and sequence, a SHA-256 of
+its serialized payload, and `pruned_at`. A retry that misses `event_log` and
+hits a tombstone returns the original cursor without projecting anything; a
+different payload under a pruned ID is rejected exactly as it is for a retained
+one. Tombstones are about 100 bytes each and are bounded by their own window,
+**30 days after pruning**, so the idempotency horizon is time-based and does
+not shrink when the per-scope cap prunes a busy stream early. Deleting a
+session cascades through its streams to their tombstones.
 
 The default job interval is 15 minutes with an unreferenced timer so it never
 holds the process open; failures are reported through `onError` and the next

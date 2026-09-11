@@ -9,6 +9,7 @@ import { createEventRepository } from '../src/db/event-repository.js'
 import {
   DEFAULT_EVENT_RETENTION_WINDOW_MS,
   DEFAULT_MAX_EVENTS_PER_SCOPE,
+  DEFAULT_TOMBSTONE_WINDOW_MS,
   createEventRetention,
 } from '../src/db/event-retention.js'
 import { EVENTS_AFTER_CURSOR_SQL, STREAM_BOUNDS_SQL } from '../src/db/queries.js'
@@ -101,6 +102,12 @@ function sequences(database: DatabaseSync, scope: SubscriptionScope, after = 0):
     .map((row) => (row as { sequence: number }).sequence)
 }
 
+function tombstones(database: DatabaseSync) {
+  return database
+    .prepare('SELECT event_id, sequence FROM event_id_tombstones ORDER BY scope_key, sequence')
+    .all() as Array<{ event_id: string; sequence: number }>
+}
+
 function scopeKey(scope: SubscriptionScope): string {
   switch (scope.type) {
     case 'environment':
@@ -119,14 +126,84 @@ afterEach(async () => {
 })
 
 describe('event retention', () => {
-  it('defaults to a seven-day window and a ten-thousand event cap per scope', async () => {
+  it('defaults to a seven-day window, a ten-thousand event cap, and thirty-day tombstones', async () => {
     const retention = createEventRetention(await createDatabase())
     expect(retention.policy).toEqual({
       windowMs: DEFAULT_EVENT_RETENTION_WINDOW_MS,
       maxEventsPerScope: DEFAULT_MAX_EVENTS_PER_SCOPE,
+      tombstoneWindowMs: DEFAULT_TOMBSTONE_WINDOW_MS,
     })
     expect(DEFAULT_EVENT_RETENTION_WINDOW_MS).toBe(7 * DAY)
     expect(DEFAULT_MAX_EVENTS_PER_SCOPE).toBe(10_000)
+    expect(DEFAULT_TOMBSTONE_WINDOW_MS).toBe(30 * DAY)
+  })
+
+  it('keeps a pruned event ID idempotent through its tombstone', async () => {
+    const database = await createDatabase()
+    const repository = seed(database, sessionScope, 3, T0, 1)
+    const clock = { now: T0 + 30 * DAY }
+    const retention = createEventRetention(database, { windowMs: 7 * DAY, now: () => clock.now })
+    const report = retention.prune()
+    expect(report.deleted).toBe(3)
+    expect(tombstones(database)).toEqual([
+      { event_id: 'session-event-1', sequence: 1 },
+      { event_id: 'session-event-2', sequence: 2 },
+      { event_id: 'session-event-3', sequence: 3 },
+    ])
+
+    // A late retry of a pruned event returns its original cursor and projects nothing.
+    const [retried] = repository.appendEvents(sessionScope, [durable(sessionScope, 2, T0 + 1)])
+    expect(retried?.cursor).toEqual({ scope: sessionScope, epoch: 'epoch-1', sequence: 2 })
+    expect(bounds(database, sessionScope)).toEqual({
+      epoch: 'epoch-1',
+      head_sequence: 3,
+      oldest_sequence: null,
+    })
+    expect(database.prepare('SELECT count(*) AS count FROM threads').get()).toEqual({ count: 3 })
+
+    // Reusing a pruned ID for a different payload is still rejected.
+    const reused = { ...durable(sessionScope, 9, clock.now), eventId: 'session-event-2' }
+    expect(() => repository.appendEvents(sessionScope, [reused])).toThrow(
+      'Event ID session-event-2 already belongs to a different event',
+    )
+
+    // Mixed batches still allocate cursors only for genuinely new events.
+    const records = repository.appendEvents(sessionScope, [
+      durable(sessionScope, 3, T0 + 2),
+      durable(sessionScope, 4, clock.now),
+    ])
+    expect(records.map((record) => record.cursor.sequence)).toEqual([3, 4])
+    expect(sequences(database, sessionScope)).toEqual([4])
+  })
+
+  it('drops tombstones once their own window has passed', async () => {
+    const database = await createDatabase()
+    seed(database, sessionScope, 2, T0, 1)
+    const clock = { now: T0 + 10 * DAY }
+    const retention = createEventRetention(database, {
+      windowMs: 7 * DAY,
+      tombstoneWindowMs: 30 * DAY,
+      now: () => clock.now,
+    })
+    expect(retention.prune().deleted).toBe(2)
+    expect(tombstones(database)).toHaveLength(2)
+
+    clock.now = T0 + 10 * DAY + 29 * DAY
+    expect(retention.prune().tombstonesDropped).toBe(0)
+    clock.now = T0 + 10 * DAY + 30 * DAY + HOUR
+    expect(retention.prune().tombstonesDropped).toBe(2)
+    expect(tombstones(database)).toEqual([])
+  })
+
+  it('removes tombstones with the session that owned their stream', async () => {
+    const database = await createDatabase()
+    seed(database, sessionScope, 2, T0, 1)
+    createEventRetention(database, { windowMs: 0, now: () => T0 + DAY }).prune()
+    expect(tombstones(database)).toHaveLength(2)
+
+    database.prepare('DELETE FROM sessions WHERE session_id = ?').run('session-1')
+    expect(tombstones(database)).toEqual([])
+    expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
   })
 
   it('prunes events older than the window and moves the retention boundary', async () => {
@@ -143,6 +220,7 @@ describe('event retention', () => {
     expect(report).toEqual({
       at: T0 + 5 * DAY + HOUR,
       deleted: 4,
+      tombstonesDropped: 0,
       streams: [{ scopeKey: scopeKey(sessionScope), oldestSequence: 5 }],
     })
     expect(sequences(database, sessionScope)).toEqual([5, 6])
@@ -167,7 +245,12 @@ describe('event retention', () => {
     })
 
     // Sequence 1 is still inside the window, so nothing below it can go.
-    expect(retention.prune()).toEqual({ at: T0 + 10 * DAY + HOUR, deleted: 0, streams: [] })
+    expect(retention.prune()).toEqual({
+      at: T0 + 10 * DAY + HOUR,
+      deleted: 0,
+      tombstonesDropped: 0,
+      streams: [],
+    })
     expect(sequences(database, sessionScope)).toEqual([1, 2, 3, 4, 5])
 
     // Once sequence 1 is gone, the boundary stops at the next in-window row (3).
@@ -180,6 +263,7 @@ describe('event retention', () => {
     expect(retention.prune()).toEqual({
       at: T0 + 10 * DAY + HOUR,
       deleted: 1,
+      tombstonesDropped: 0,
       streams: [{ scopeKey: scopeKey(sessionScope), oldestSequence: 3 }],
     })
     expect(sequences(database, sessionScope)).toEqual([3, 4, 5])
@@ -213,6 +297,7 @@ describe('event retention', () => {
     expect(retention.prune()).toEqual({
       at: clock.now,
       deleted: 3,
+      tombstonesDropped: 0,
       streams: [{ scopeKey: scopeKey(sessionScope), oldestSequence: null }],
     })
     expect(bounds(database, sessionScope)).toEqual({
@@ -331,6 +416,9 @@ describe('event retention', () => {
     expect(() => createEventRetention(database, { windowMs: -1 })).toThrow(/retention window/)
     expect(() => createEventRetention(database, { maxEventsPerScope: 1.5 })).toThrow(
       /retention cap/,
+    )
+    expect(() => createEventRetention(database, { tombstoneWindowMs: NaN })).toThrow(
+      /tombstone window/,
     )
     expect(() => createEventRetention(database).schedule({ intervalMs: 0 })).toThrow(
       /prune interval/,

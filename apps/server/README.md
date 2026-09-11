@@ -318,7 +318,9 @@ migrations rather than editing a shipped migration.
 pass in a single transaction and moves `event_streams.oldest_sequence`, which
 is what forces a stale reconnecting client onto a snapshot; `schedule()` runs
 it every 15 minutes on an unreferenced timer. Projected history rows are never
-pruned. The policy and its rationale are in the
+pruned. Each pruned event leaves an `event_id_tombstones` row (cursor plus
+payload hash, kept for 30 days) so a late retry still deduplicates instead of
+being appended and projected again. The policy and its rationale are in the
 [schema decision](../../docs/decisions/sqlite-persistence-schema.md#event-retention).
 
 ## Checks

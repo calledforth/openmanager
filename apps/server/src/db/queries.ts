@@ -86,6 +86,19 @@ export const FIRST_UNEXPIRED_SEQUENCE_SQL = `
   FROM event_log
   WHERE scope_key = ? AND created_at >= ?`
 
+/** Retention: the rows a pass is about to delete, so their IDs can be tombstoned first. */
+export const EVENTS_TO_PRUNE_SQL = `
+  SELECT event_id, sequence, event_json
+  FROM event_log
+  WHERE scope_key = ? AND sequence < ?
+  ORDER BY sequence`
+
+/** Idempotency: the cursor and payload hash of a pruned event ID. */
+export const EVENT_TOMBSTONE_SQL = `
+  SELECT scope_key, sequence, event_hash
+  FROM event_id_tombstones
+  WHERE event_id = ?`
+
 /** Replay decision input: head and retention boundary for a scope, read atomically. */
 export const STREAM_BOUNDS_SQL = `
   SELECT epoch, head_sequence, oldest_sequence

@@ -5,7 +5,9 @@ import type { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { openEnvironmentDatabase } from '../src/db/database.js'
 import {
+  EVENT_TOMBSTONE_SQL,
   EVENTS_AFTER_CURSOR_SQL,
+  EVENTS_TO_PRUNE_SQL,
   EXPIRED_EVENTS_BY_SCOPE_SQL,
   FIRST_UNEXPIRED_SEQUENCE_SQL,
   MESSAGE_HISTORY_PAGE_SQL,
@@ -91,6 +93,15 @@ describe('bounded query plans', () => {
     ])
     expect(plan(database, FIRST_UNEXPIRED_SEQUENCE_SQL)).toEqual([
       'SEARCH event_log USING PRIMARY KEY (scope_key=?)',
+    ])
+    expect(plan(database, EVENTS_TO_PRUNE_SQL)).toEqual([
+      'SEARCH event_log USING PRIMARY KEY (scope_key=? AND sequence<?)',
+    ])
+    expect(plan(database, EVENT_TOMBSTONE_SQL)).toEqual([
+      'SEARCH event_id_tombstones USING PRIMARY KEY (event_id=?)',
+    ])
+    expect(plan(database, 'DELETE FROM event_id_tombstones WHERE pruned_at < ?')).toEqual([
+      'SEARCH event_id_tombstones USING INDEX event_id_tombstones_pruned_at_idx (pruned_at<?)',
     ])
   })
 

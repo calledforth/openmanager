@@ -286,6 +286,21 @@ export const MIGRATIONS: readonly Migration[] = [
         -- Age-based retention finds expired rows across every stream without a table scan.
         CREATE INDEX IF NOT EXISTS event_log_created_at_idx
           ON event_log(created_at, scope_key, sequence);
+
+        -- Pruned event IDs keep their cursor and a payload hash so a late retry of a
+        -- pruned event still deduplicates instead of being appended and projected again.
+        CREATE TABLE IF NOT EXISTS event_id_tombstones (
+          event_id TEXT PRIMARY KEY NOT NULL,
+          scope_key TEXT NOT NULL REFERENCES event_streams(scope_key) ON DELETE CASCADE,
+          sequence INTEGER NOT NULL CHECK (sequence >= 1),
+          event_hash BLOB NOT NULL,
+          pruned_at INTEGER NOT NULL
+        ) WITHOUT ROWID, STRICT;
+
+        CREATE INDEX IF NOT EXISTS event_id_tombstones_scope_key_idx
+          ON event_id_tombstones(scope_key);
+        CREATE INDEX IF NOT EXISTS event_id_tombstones_pruned_at_idx
+          ON event_id_tombstones(pruned_at);
       `)
     },
   },

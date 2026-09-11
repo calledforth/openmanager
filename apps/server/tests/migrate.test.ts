@@ -95,6 +95,7 @@ describe('schema migrations', () => {
       'authorized_clients',
       'drafts',
       'environment_metadata',
+      'event_id_tombstones',
       'event_log',
       'event_streams',
       'interactions',
