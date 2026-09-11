@@ -258,4 +258,35 @@ export const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    version: 3,
+    name: 'bounded_indexes_and_retention',
+    up(database) {
+      database.exec(`
+        -- Session list for the whole environment, most recent activity first.
+        -- Both keyset columns descend so a row-value cursor is one index range.
+        CREATE INDEX IF NOT EXISTS sessions_updated_at_idx
+          ON sessions(updated_at DESC, session_id DESC);
+
+        -- Session list for one workspace; the composite replaces the plain workspace index.
+        DROP INDEX IF EXISTS sessions_workspace_id_idx;
+        CREATE INDEX IF NOT EXISTS sessions_workspace_updated_at_idx
+          ON sessions(workspace_id, updated_at DESC, session_id DESC);
+
+        -- Threads of a session in creation order, for paginated session history.
+        DROP INDEX IF EXISTS threads_session_id_idx;
+        CREATE INDEX IF NOT EXISTS threads_session_created_at_idx
+          ON threads(session_id, created_at, thread_id);
+
+        -- Turns of a thread in start order; history pages join turn state per message.
+        DROP INDEX IF EXISTS turns_thread_id_idx;
+        CREATE INDEX IF NOT EXISTS turns_thread_started_at_idx
+          ON turns(thread_id, started_at, turn_id);
+
+        -- Age-based retention finds expired rows across every stream without a table scan.
+        CREATE INDEX IF NOT EXISTS event_log_created_at_idx
+          ON event_log(created_at, scope_key, sequence);
+      `)
+    },
+  },
 ]
