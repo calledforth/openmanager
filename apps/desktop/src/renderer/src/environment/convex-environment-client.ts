@@ -7,7 +7,6 @@ import {
   applyConnection,
   applyEnvironment,
   applyEvent,
-  applyInteractionResolved,
   applySessionCreated,
   applySessionList,
   applySessionOpen,
@@ -17,12 +16,14 @@ import {
   applyWorkspaceList,
   applyWorkspaceRemoved,
   createEnvironmentStore,
+  deriveSessionStatus,
   EnvironmentClientError,
   selectSessionList,
   WIRE_COMMANDS,
   type EnvironmentClient,
   type EnvironmentCommands,
   type EnvironmentState,
+  type ThreadState,
 } from '@openmanager/environment-client'
 import type {
   ContentBlock,
@@ -175,7 +176,8 @@ export function createConvexEnvironmentClient(
   const convexSessions = new Set<string>()
   const providerBySession = new Map<string, ProviderId>()
   const seenEvents = new Set<string>()
-  const sessionWaiters = new Map<string, Waiter<string>[]>()
+  /** At most one per workspace; see `serializeCreation`. */
+  const sessionWaiters = new Map<string, Waiter<string>>()
   const turnWaiters = new Map<string, Waiter<{ turn: Turn; userMessage: Message }>>()
 
   const update = (reducer: (state: EnvironmentState) => EnvironmentState) => store.update(reducer)
@@ -219,10 +221,9 @@ export function createConvexEnvironmentClient(
 
   const settleWaiters = (event: AgentEvent, events: ProofEvent[]) => {
     if (event.event === 'session_created' && event.workspaceId) {
-      const waiters = sessionWaiters.get(event.workspaceId)
-      const waiter = waiters?.shift()
+      const waiter = sessionWaiters.get(event.workspaceId)
       if (waiter) {
-        if (waiters && waiters.length === 0) sessionWaiters.delete(event.workspaceId)
+        sessionWaiters.delete(event.workspaceId)
         waiter.resolve(event.sessionId)
       }
     }
@@ -344,20 +345,44 @@ export function createConvexEnvironmentClient(
     })
 
   /**
-   * A job's terminal status, so a command can reject with the worker's error
-   * instead of waiting for a lifecycle event that will never come.
+   * A job's terminal status. `done` settles with the worker's outcome so a
+   * command can report a failure instead of waiting for a lifecycle event
+   * that will never come; `failed` only ever rejects, for racing against a
+   * lifecycle event that arrives long before the job itself finishes.
    */
   const watchJob = (jobId: string) => {
     let stop: (() => void) | null = null
-    const failed = new Promise<never>((_, reject) => {
+    const done = new Promise<void>((resolve, reject) => {
       stop = convex.subscribe<JobStatusRow>(api.jobs.getStatus, { jobId }, (job) => {
+        if (job?.status === 'done') resolve()
         if (job?.status === 'failed') {
           reject(new EnvironmentClientError('internal', job.lastError ?? 'The job failed.'))
         }
       })
     })
+    const failed = new Promise<never>((_, reject) => done.catch(reject))
     failed.catch(() => undefined)
-    return { failed, stop: () => stop?.() }
+    return { done, failed, stop: () => stop?.() }
+  }
+
+  /**
+   * One session creation at a time per workspace. `session_created` carries
+   * no job identity, only the workspace, so two creations in flight for the
+   * same workspace could otherwise adopt each other's IDs.
+   */
+  const creationChains = new Map<string, Promise<unknown>>()
+  const serializeCreation = <T>(workspacePath: string, work: () => Promise<T>): Promise<T> => {
+    const previous = creationChains.get(workspacePath) ?? Promise.resolve()
+    const run = previous.then(work, work)
+    const chain = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    creationChains.set(workspacePath, chain)
+    void chain.then(() => {
+      if (creationChains.get(workspacePath) === chain) creationChains.delete(workspacePath)
+    })
+    return run
   }
 
   const withTimeout = <T>(promise: Promise<T>, what: string) => {
@@ -374,19 +399,10 @@ export function createConvexEnvironmentClient(
   }
 
   const awaitSessionCreated = (workspacePath: string) => {
-    let entry: Waiter<string> | null = null
     const promise = new Promise<string>((resolve, reject) => {
-      entry = { resolve, reject }
-      sessionWaiters.set(workspacePath, [...(sessionWaiters.get(workspacePath) ?? []), entry])
+      sessionWaiters.set(workspacePath, { resolve, reject })
     })
-    return {
-      promise,
-      cancel: () => {
-        const remaining = (sessionWaiters.get(workspacePath) ?? []).filter((w) => w !== entry)
-        if (remaining.length) sessionWaiters.set(workspacePath, remaining)
-        else sessionWaiters.delete(workspacePath)
-      },
-    }
+    return { promise, cancel: () => sessionWaiters.delete(workspacePath) }
   }
 
   const awaitTurnStarted = (userMessageId: string) => {
@@ -397,7 +413,7 @@ export function createConvexEnvironmentClient(
   }
 
   const rejectWaiters = (error: Error) => {
-    for (const waiters of sessionWaiters.values()) for (const w of waiters) w.reject(error)
+    for (const waiter of sessionWaiters.values()) waiter.reject(error)
     sessionWaiters.clear()
     for (const waiter of turnWaiters.values()) waiter.reject(error)
     turnWaiters.clear()
@@ -559,7 +575,10 @@ export function createConvexEnvironmentClient(
       ),
     )
     const rows = contents.filter((item): item is MessageContentRow => item !== null)
-    const { messages, turns } = buildThread(sessionId, rows, row.status === 'running')
+    // The projector writes `waiting` while a permission/question/plan is
+    // pending; the turn is just as open then as when it is `running`.
+    const active = row.status === 'running' || row.status === 'waiting'
+    const { messages, turns } = buildThread(sessionId, rows, active)
     const interactions = pendingInteractions(permission, question, plan)
     // A pending interaction is what makes a turn `waiting` on the wire; the
     // Convex rows only imply it.
@@ -571,6 +590,70 @@ export function createConvexEnvironmentClient(
       messages,
       turns,
       interactions: interactions.map((interaction) => ({ threadId: sessionId, interaction })),
+    }
+  }
+
+  /**
+   * `applySessionOpen` replaces the thread wholesale. If a turn was streaming
+   * into this thread while the snapshot was being fetched, the snapshot cannot
+   * contain its chunks (Convex holds them outside the message row until the
+   * turn finalizes) and the delta events that built them will not come again.
+   * The live turn, and everything the store accumulated for it, therefore
+   * wins over whatever the snapshot says about that turn.
+   */
+  const preserveLiveTurn = (
+    state: EnvironmentState,
+    sessionId: string,
+    live: ThreadState,
+  ): EnvironmentState => {
+    const liveTurn = live.turns.find((turn) => turn.state === 'running' || turn.state === 'waiting')
+    const hydrated = state.threads[sessionId]
+    if (!liveTurn || !hydrated) return state
+    const isLive = (turnId: string) => turnId === liveTurn.turnId
+    const notOpen = (turn: Turn) => turn.state !== 'running' && turn.state !== 'waiting'
+    const liveMessages = live.messages.filter((message) => isLive(message.turnId))
+    const liveMessageIds = new Set(liveMessages.map((message) => message.messageId))
+    const merged: ThreadState = {
+      ...hydrated,
+      // The snapshot's own view of the open turn (possibly under a different,
+      // user-message-derived ID) is superseded by the one the stream reported.
+      turns: [...hydrated.turns.filter((turn) => notOpen(turn) && !isLive(turn.turnId)), liveTurn],
+      messages: [
+        ...hydrated.messages.filter(
+          (message) => !isLive(message.turnId) && !liveMessageIds.has(message.messageId),
+        ),
+        ...liveMessages,
+      ],
+      reasoning: [
+        ...hydrated.reasoning.filter((entry) => !isLive(entry.turnId)),
+        ...live.reasoning.filter((entry) => isLive(entry.turnId)),
+      ],
+      tools: [
+        ...hydrated.tools.filter((tool) => !isLive(tool.turnId)),
+        ...live.tools.filter((tool) => isLive(tool.turnId)),
+      ],
+      interactions: [
+        ...hydrated.interactions.filter(
+          (item) =>
+            !live.interactions.some(
+              (pending) => pending.interaction.interactionId === item.interaction.interactionId,
+            ),
+        ),
+        ...live.interactions,
+      ],
+    }
+    const session = state.sessions[sessionId]
+    const threads = { ...state.threads, [sessionId]: merged }
+    if (!session) return { ...state, threads }
+    const status = deriveSessionStatus(
+      session.threadIds
+        .map((id) => threads[id])
+        .filter((thread): thread is ThreadState => !!thread),
+    )
+    return {
+      ...state,
+      threads,
+      sessions: { ...state.sessions, [sessionId]: { ...session, status } },
     }
   }
 
@@ -633,45 +716,48 @@ export function createConvexEnvironmentClient(
       })
       return selectSessionList(store.getState(), workspaceId)
     },
-    async createSession(input) {
+    createSession(input) {
       gate()
       if (!store.getState().workspaces[input.workspaceId]) {
-        throw new EnvironmentClientError('not_found', 'Workspace not found.')
+        return Promise.reject(new EnvironmentClientError('not_found', 'Workspace not found.'))
       }
-      const providerId = await bridge.getLastProviderId().catch((): ProviderId => 'opencode')
-      const created = awaitSessionCreated(input.workspaceId)
-      let job: ReturnType<typeof watchJob> | null = null
-      try {
-        const jobId = await submitJob(input.workspaceId, 'create_session', {
-          providerId,
-          ...(input.title ? { title: input.title } : {}),
-        })
-        job = watchJob(jobId)
-        const sessionId = await withTimeout(
-          Promise.race([created.promise, job.failed]),
-          'the session to be created',
-        )
-        providerBySession.set(sessionId, providerId)
-        const session: Session = {
-          sessionId,
-          workspaceId: input.workspaceId,
-          title: input.title ?? null,
+      return serializeCreation(input.workspaceId, async () => {
+        gate()
+        const providerId = await bridge.getLastProviderId().catch((): ProviderId => 'opencode')
+        const created = awaitSessionCreated(input.workspaceId)
+        let job: ReturnType<typeof watchJob> | null = null
+        try {
+          const jobId = await submitJob(input.workspaceId, 'create_session', {
+            providerId,
+            ...(input.title ? { title: input.title } : {}),
+          })
+          job = watchJob(jobId)
+          const sessionId = await withTimeout(
+            Promise.race([created.promise, job.failed]),
+            'the session to be created',
+          )
+          providerBySession.set(sessionId, providerId)
+          const session: Session = {
+            sessionId,
+            workspaceId: input.workspaceId,
+            title: input.title ?? null,
+          }
+          const thread = threadOf(sessionId)
+          // The IPC announcement may have created the thread already (as
+          // `idle`); a brand-new session has no history to fetch, so it is ready.
+          update((state) =>
+            applyThreadHydration(
+              applySessionCreated(state, { session, thread }),
+              thread.threadId,
+              'ready',
+            ),
+          )
+          return { session, thread }
+        } finally {
+          created.cancel()
+          job?.stop()
         }
-        const thread = threadOf(sessionId)
-        // The IPC announcement may have created the thread already (as
-        // `idle`); a brand-new session has no history to fetch, so it is ready.
-        update((state) =>
-          applyThreadHydration(
-            applySessionCreated(state, { session, thread }),
-            thread.threadId,
-            'ready',
-          ),
-        )
-        return { session, thread }
-      } finally {
-        created.cancel()
-        job?.stop()
-      }
+      })
     },
     async openSession(sessionId) {
       gate()
@@ -684,11 +770,18 @@ export function createConvexEnvironmentClient(
         update((state) => applyThreadHydration(state, sessionId, 'failed'))
         throw error
       }
-      const open = payload.turns.find(
-        (turn) => turn.state === 'running' || turn.state === 'waiting',
-      )
+      update((state) => {
+        const live = state.threads[sessionId]
+        let next = applySessionOpen(state, payload)
+        if (live) next = preserveLiveTurn(next, sessionId, live)
+        return applyActiveSession(next, sessionId)
+      })
+      const open = store
+        .getState()
+        .threads[sessionId]?.turns.find(
+          (turn) => turn.state === 'running' || turn.state === 'waiting',
+        )
       if (open) translator.adoptTurn(sessionId, open.turnId)
-      update((state) => applyActiveSession(applySessionOpen(state, payload), sessionId))
     },
     async renameSession(sessionId, title) {
       gate()
@@ -764,41 +857,39 @@ export function createConvexEnvironmentClient(
       const session = requireSession(input.sessionId)
       const { response } = input
       const base = { sessionExternalId: input.sessionId, providerId: providerFor(input.sessionId) }
-      switch (response.kind) {
-        case 'permission':
-          await submitJob(
-            session.workspaceId,
-            'resolve_permission',
-            {
-              ...base,
-              permissionId: response.interactionId,
-              ...(response.outcome.outcome === 'selected'
-                ? { optionId: response.outcome.optionId }
-                : { approved: false }),
-            },
-            input.sessionId,
-          )
-          break
-        case 'question':
-          await submitJob(
-            session.workspaceId,
-            'resolve_question',
-            { ...base, requestId: response.interactionId, outcome: response.outcome },
-            input.sessionId,
-          )
-          break
-        case 'plan':
-          await submitJob(
-            session.workspaceId,
-            'resolve_plan',
-            { ...base, requestId: response.interactionId, outcome: response.outcome },
-            input.sessionId,
-          )
-          break
+      const [type, payload] =
+        response.kind === 'permission'
+          ? [
+              'resolve_permission',
+              {
+                ...base,
+                permissionId: response.interactionId,
+                ...(response.outcome.outcome === 'selected'
+                  ? { optionId: response.outcome.optionId }
+                  : { approved: false }),
+              },
+            ]
+          : response.kind === 'question'
+            ? [
+                'resolve_question',
+                { ...base, requestId: response.interactionId, outcome: response.outcome },
+              ]
+            : [
+                'resolve_plan',
+                { ...base, requestId: response.interactionId, outcome: response.outcome },
+              ]
+      const jobId = await submitJob(session.workspaceId, type, payload, input.sessionId)
+      // The interaction stays pending until the provider's own settlement
+      // event (`permission_resolved` and friends) clears it: a failed job
+      // leaves the request open, and removing it here would hide the only
+      // control the user has left. The job's terminal status is what this
+      // command reports.
+      const job = watchJob(jobId)
+      try {
+        await withTimeout(job.done, 'the answer to be delivered')
+      } finally {
+        job.stop()
       }
-      update((state) =>
-        applyInteractionResolved(state, threadOf(input.sessionId), response.interactionId),
-      )
     },
   }
 

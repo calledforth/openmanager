@@ -21,7 +21,28 @@ export function resolveEnvironmentClientConfig(
   const backend: EnvironmentClientBackend = BACKENDS.has(requested)
     ? (requested as EnvironmentClientBackend)
     : 'convex'
-  const serverUrl = env.OPENMANAGER_ENVIRONMENT_URL?.trim() || DEFAULT_ENVIRONMENT_SERVER_URL
+  const serverUrl =
+    validServerUrl(env.OPENMANAGER_ENVIRONMENT_URL) ?? DEFAULT_ENVIRONMENT_SERVER_URL
   const credential = env.OPENMANAGER_CLIENT_TOKEN?.trim() ?? ''
   return { backend, serverUrl, credential }
+}
+
+/**
+ * Only an HTTP(S) origin can be turned into the WebSocket URL later; anything
+ * else (a bare `host:port`, a `ws://` URL, a typo) would throw inside the
+ * renderer while mounting the client, so it is dropped here with a warning.
+ */
+function validServerUrl(raw: string | undefined): string | null {
+  const value = raw?.trim()
+  if (!value) return null
+  try {
+    const url = new URL(value)
+    if (url.protocol === 'http:' || url.protocol === 'https:') return value
+  } catch {
+    // Reported below.
+  }
+  console.warn(
+    `[environment-client] Ignoring OPENMANAGER_ENVIRONMENT_URL=${JSON.stringify(value)}: expected an http(s) origin.`,
+  )
+  return null
 }

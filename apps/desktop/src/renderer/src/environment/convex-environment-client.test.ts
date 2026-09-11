@@ -481,6 +481,7 @@ describe('createConvexEnvironmentClient', () => {
 
   it('routes interruptions, deletions and interaction answers to the matching jobs', async () => {
     const { client, convex } = setup()
+    convex.on('jobs:getStatus', () => ({ status: 'done' }))
     client.connect()
     await client.commands.interruptTurn({
       sessionId: 'session-1',
@@ -551,9 +552,7 @@ describe('createConvexEnvironmentClient', () => {
     expect(client.getState().sessions['session-1']).toBeUndefined()
   })
 
-  it('optimistically clears a pending interaction and returns the turn to running', async () => {
-    const { client, bridge } = setup()
-    client.connect()
+  const pendingPermission = (bridge: FakeBridge) => {
     bridge.emit(
       agentEvent({
         category: 'lifecycle',
@@ -574,8 +573,9 @@ describe('createConvexEnvironmentClient', () => {
         },
       }),
     )
-    expect(client.getState().threads['session-1']?.turns[0]?.state).toBe('waiting')
-    await client.commands.respondToInteraction({
+  }
+  const answerPermission = (client: ReturnType<typeof setup>['client']) =>
+    client.commands.respondToInteraction({
       sessionId: 'session-1',
       threadId: 'session-1',
       response: {
@@ -584,9 +584,159 @@ describe('createConvexEnvironmentClient', () => {
         outcome: { outcome: 'selected', optionId: 'allow' },
       },
     })
+
+  it('keeps a pending interaction until the provider settles it', async () => {
+    const { client, convex, bridge } = setup()
+    client.connect()
+    pendingPermission(bridge)
+    expect(client.getState().threads['session-1']?.turns[0]?.state).toBe('waiting')
+
+    const answering = answerPermission(client)
+    await flush()
+    convex.pushWith('jobs:getStatus', { status: 'done' })
+    await answering
+    // The job succeeded but the provider has not said so yet.
+    expect(client.getState().threads['session-1']?.interactions).toHaveLength(1)
+    expect(client.getState().threads['session-1']?.turns[0]?.state).toBe('waiting')
+
+    bridge.emit(
+      agentEvent({
+        category: 'permission',
+        event: 'permission_resolved',
+        data: { requestId: 'perm-1', outcome: { outcome: 'selected', optionId: 'allow' } },
+      }),
+    )
     const thread = client.getState().threads['session-1']!
     expect(thread.interactions).toEqual([])
     expect(thread.turns[0]?.state).toBe('running')
+  })
+
+  it('reports a failed answer job and leaves the interaction answerable', async () => {
+    const { client, convex, bridge } = setup()
+    client.connect()
+    pendingPermission(bridge)
+    const answering = answerPermission(client)
+    await flush()
+    convex.pushWith('jobs:getStatus', { status: 'failed', lastError: 'request gone' })
+    await expect(answering).rejects.toMatchObject({ code: 'internal', message: 'request gone' })
+    expect(client.getState().threads['session-1']?.interactions).toHaveLength(1)
+    expect(convex.watcherCount('jobs:getStatus')).toBe(0)
+  })
+
+  it('serializes session creation per workspace so announcements cannot cross', async () => {
+    const { client, convex, bridge } = setup()
+    client.connect()
+    const first = client.commands.createSession({ workspaceId: 'C:/repo', title: 'A' })
+    const second = client.commands.createSession({ workspaceId: 'C:/repo', title: 'B' })
+    await flush()
+    expect(convex.calls.filter((call) => call.name === 'jobs:submit')).toHaveLength(1)
+
+    bridge.emit(
+      agentEvent({ category: 'lifecycle', event: 'session_created', sessionId: 'a', data: {} }),
+    )
+    expect((await first).session).toMatchObject({ sessionId: 'a', title: 'A' })
+    await flush()
+    expect(convex.calls.filter((call) => call.name === 'jobs:submit')).toHaveLength(2)
+    expect(payloadOf(convex).payload).toMatchObject({ title: 'B' })
+
+    bridge.emit(
+      agentEvent({ category: 'lifecycle', event: 'session_created', sessionId: 'b', data: {} }),
+    )
+    expect((await second).session).toMatchObject({ sessionId: 'b', title: 'B' })
+  })
+
+  it('keeps a turn that is streaming while the session hydrates', async () => {
+    const { client, convex, bridge } = setup()
+    convex
+      .on('sessions:getByExternalId', () => ({ ...SESSION_ROW, status: 'running' }))
+      .on('messages:listMetadata', () => [
+        { externalId: 'old-usr', role: 'user', sequenceNum: 0, isFinal: true },
+        { externalId: 'old-asst', role: 'assistant', sequenceNum: 1, isFinal: true },
+        { externalId: 'usr-1', role: 'user', sequenceNum: 2, isFinal: true },
+      ])
+      .on('messages:getContent', ({ externalId }) => ({
+        externalId,
+        role: externalId === 'old-asst' ? 'assistant' : 'user',
+        content: String(externalId),
+        isFinal: true,
+      }))
+      .on('permissions:getPendingForSession', () => null)
+      .on('questions:getPendingForSession', () => null)
+      .on('plans:getPendingForSession', () => null)
+    client.connect()
+    bridge.emit(
+      agentEvent({
+        category: 'lifecycle',
+        event: 'prompt_started',
+        messageId: 'asst-1',
+        data: { prompt: 'usr-1', userMessageId: 'usr-1' },
+      }),
+    )
+    bridge.emit(
+      agentEvent({
+        category: 'stream',
+        event: 'agent_message_chunk',
+        messageId: 'asst-1',
+        data: { content: { type: 'text', text: 'Hel' } },
+      }),
+    )
+    await client.commands.openSession('session-1')
+
+    const thread = selectActiveThread(client.getState())!
+    expect(thread.hydration).toBe('ready')
+    expect(thread.turns).toEqual([
+      { turnId: 'old-asst', threadId: 'session-1', state: 'completed' },
+      { turnId: 'asst-1', threadId: 'session-1', state: 'running' },
+    ])
+    expect(thread.messages.map((m) => [m.messageId, m.turnId])).toEqual([
+      ['old-usr', 'old-asst'],
+      ['old-asst', 'old-asst'],
+      ['usr-1', 'asst-1'],
+      ['asst-1', 'asst-1'],
+    ])
+    expect(client.getState().sessions['session-1']?.status).toBe('running')
+
+    bridge.emit(
+      agentEvent({
+        category: 'stream',
+        event: 'agent_message_chunk',
+        messageId: 'asst-1',
+        data: { content: { type: 'text', text: 'lo' } },
+      }),
+    )
+    expect(
+      selectActiveThread(client.getState())!.messages.find((m) => m.messageId === 'asst-1')
+        ?.content,
+    ).toEqual([{ type: 'text', text: 'Hello' }])
+  })
+
+  it('hydrates a persisted waiting session with its turn waiting', async () => {
+    const { client, convex } = setup()
+    convex
+      .on('sessions:getByExternalId', () => ({ ...SESSION_ROW, status: 'waiting' }))
+      .on('messages:listMetadata', () => [
+        { externalId: 'asst-1', role: 'assistant', sequenceNum: 0, isFinal: false },
+      ])
+      .on('messages:getContent', () => ({ externalId: 'asst-1', role: 'assistant', content: '' }))
+      .on('permissions:getPendingForSession', () => ({
+        requestId: 'perm-1',
+        toolName: 'bash',
+        description: 'run',
+      }))
+      .on('questions:getPendingForSession', () => null)
+      .on('plans:getPendingForSession', () => null)
+    client.connect()
+    await client.commands.openSession('session-1')
+    const thread = selectActiveThread(client.getState())!
+    expect(thread.turns).toEqual([{ turnId: 'asst-1', threadId: 'session-1', state: 'waiting' }])
+    expect(thread.interactions[0]).toMatchObject({
+      turnId: 'asst-1',
+      interaction: {
+        kind: 'permission',
+        options: [{ kind: 'allow_once' }, { kind: 'reject_once' }],
+      },
+    })
+    expect(client.getState().sessions['session-1']?.status).toBe('waiting')
   })
 
   it('renames through upsertTitle and refuses to clear a title', async () => {

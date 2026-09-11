@@ -41,9 +41,19 @@ export function DesktopEnvironmentClientProvider({
       next.connect()
     }
     if (config.backend === 'websocket') {
+      // The main process validates the origin, but a local-storage override
+      // can select this backend with whatever URL it was given; a bad one
+      // must not take the whole renderer down with it.
+      let url: string
+      try {
+        url = environmentSocketUrl(config.serverUrl)
+      } catch (error) {
+        console.error('[environment-client] Invalid environment server URL', error)
+        return
+      }
       mount(
         createWebSocketEnvironmentClient({
-          url: environmentSocketUrl(config.serverUrl),
+          url,
           ...(config.credential ? { credential: config.credential } : {}),
         }),
       )
