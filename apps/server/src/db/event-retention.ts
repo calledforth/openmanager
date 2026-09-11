@@ -74,6 +74,9 @@ export function createEventRetention(
      * For every scope, the first sequence that survives this pass:
      * one past the newest expired row, or `head - cap + 1`, whichever is larger.
      * Only scopes that still hold something older than that are returned.
+     * Cutting at the newest expired sequence keeps the retained range contiguous:
+     * if timestamps ever run out of order, a younger row below that sequence is
+     * pruned too, because replay cannot skip a hole.
      * `INDEXED BY` pins the covering range scan: without statistics the planner
      * otherwise walks the whole primary key to satisfy GROUP BY in order.
      */

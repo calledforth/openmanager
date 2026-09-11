@@ -159,7 +159,9 @@ A pruning pass runs inside one `BEGIN IMMEDIATE` transaction. For every stream
 it computes the first retained sequence as the larger of "one past the newest
 expired row" and `head_sequence - cap + 1`, deletes `event_log` rows below it
 through the primary key, and rewrites `event_streams.oldest_sequence` to the new
-minimum retained sequence, or `NULL` when nothing remains. `head_sequence` and
+minimum retained sequence, or `NULL` when nothing remains. The retained range
+is always contiguous: cutting at the newest expired sequence also removes any
+younger row that sorted below it, because a replay cannot skip a hole. `head_sequence` and
 `epoch` never change: cursor allocation keeps counting from the head, so a
 pruned stream is not a stream reset. Because `decideReplay` reads
 `oldest_sequence` and `head_sequence` together, a reconnecting client whose
