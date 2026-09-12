@@ -60,7 +60,8 @@ export function contentText(blocks: readonly ContentBlock[]): string {
   return blocks
     .map((block) => {
       if (block.type === 'text') return block.text
-      if (block.type === 'resource') return block.text ?? ''
+      if (block.type === 'resource_link') return block.uri
+      if (block.type === 'resource') return block.text ?? block.uri ?? ''
       return ''
     })
     .join('')

@@ -14,9 +14,11 @@ function readPlanEntries(parts: Array<{ type: string; [key: string]: unknown }> 
 
 /** Latest ACP plan checklist for the active session, read from the streaming
  * store's `plan` part across the most recent assistant turns (live and
- * hydrated alike). */
+ * hydrated alike). A session another client drives has its unfinished turn
+ * in the remote store, so that one is watched as well. */
 export function useSessionPlanEntries(): PlanEntry[] {
-  const { activeSessionId, messages, streamingStore } = useActiveThreadState()
+  const { activeSessionId, activeThreadDriven, messages, streamingStore, remoteStreamingStore } =
+    useActiveThreadState()
   const [entries, setEntries] = useState<PlanEntry[]>([])
 
   useEffect(() => {
@@ -25,29 +27,33 @@ export function useSessionPlanEntries(): PlanEntry[] {
 
   useEffect(() => {
     if (!activeSessionId) return
-    const assistantIds = messages
-      .filter((message) => message.role === 'assistant')
-      .map((message) => message.externalId)
-      .slice(-8)
+    const assistants = messages.filter((message) => message.role === 'assistant').slice(-8)
+    const remote = !activeThreadDriven && remoteStreamingStore ? remoteStreamingStore : null
+    const sourcesFor = (message: (typeof assistants)[number]) =>
+      remote && message.isFinal !== true ? [streamingStore, remote] : [streamingStore]
 
     const pullLatest = () => {
-      for (let index = assistantIds.length - 1; index >= 0; index -= 1) {
-        const snapshot = streamingStore.get(assistantIds[index]!)
-        const next = readPlanEntries(snapshot?.parts)
-        if (next && next.length > 0) {
-          setEntries(next)
-          return
+      for (let index = assistants.length - 1; index >= 0; index -= 1) {
+        const message = assistants[index]!
+        for (const source of sourcesFor(message)) {
+          const next = readPlanEntries(source.get(message.externalId)?.parts)
+          if (next && next.length > 0) {
+            setEntries(next)
+            return
+          }
         }
       }
     }
 
-    const unsubs = assistantIds.map((id) => {
-      streamingStore.ensureHydrated(id)
-      return streamingStore.subscribe(id, pullLatest)
-    })
+    const unsubs = assistants.flatMap((message) =>
+      sourcesFor(message).map((source) => {
+        source.ensureHydrated(message.externalId)
+        return source.subscribe(message.externalId, pullLatest)
+      }),
+    )
     pullLatest()
     return () => unsubs.forEach((unsubscribe) => unsubscribe())
-  }, [activeSessionId, messages, streamingStore])
+  }, [activeSessionId, activeThreadDriven, messages, remoteStreamingStore, streamingStore])
 
   return entries
 }

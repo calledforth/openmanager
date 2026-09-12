@@ -97,6 +97,9 @@ export function createRemoteStreamingStore(): StreamingMessageSource {
         cursor.content += appended
         publish(cursor)
         emit(messageId)
+        // A chunk that landed while this fetch was in flight was ignored
+        // because the cursor was pending; pick it up now.
+        absorb(messageId)
       })
       .catch(() => {
         cursor.pending = false

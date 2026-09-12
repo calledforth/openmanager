@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useSyncExternalStore } from 'react'
+import { createContext, useCallback, useContext, useEffect, useSyncExternalStore } from 'react'
 import type { PlanReviewOutcome, ProviderId, QuestionOutcome } from '@agentpack/contract'
 import type { UploadedImageAttachment } from '../lib/attachments'
 import type { LocalStreamingMessage, MessagePart } from '../lib/streaming-messages-store'
@@ -156,35 +156,42 @@ export function useStreamingMessage(messageExternalId: string, hydrate = false) 
     if (!hydrate) return
     streamingStore.ensureHydrated(messageExternalId)
   }, [hydrate, messageExternalId, streamingStore])
-  return useSyncExternalStore(
-    (listener) => streamingStore.subscribe(messageExternalId, listener),
-    () => streamingStore.get(messageExternalId),
-    () => streamingStore.get(messageExternalId),
-  )
+  return useStoreSnapshot(streamingStore, messageExternalId, true)
 }
-
-const noop = () => undefined
 
 /** The live snapshot of an assistant turn another host is driving. Reads
  * `remoteStreamingStore` when the host provides one, the local store
  * otherwise; `enabled` keeps the subscription off for settled messages. */
 export function useRemoteStreamingMessage(messageExternalId: string, enabled: boolean) {
   const { streamingStore, remoteStreamingStore } = useActiveThreadState()
-  const source = remoteStreamingStore ?? streamingStore
-  return useSyncExternalStore(
-    (listener) => (enabled ? source.subscribe(messageExternalId, listener) : noop),
-    () => (enabled ? source.get(messageExternalId) : undefined),
-    () => (enabled ? source.get(messageExternalId) : undefined),
-  )
+  return useStoreSnapshot(remoteStreamingStore ?? streamingStore, messageExternalId, enabled)
 }
 
 /** The persisted body of a message. `undefined` while loading (or while
  * `enabled` is false), `null` when the host has none. */
 export function useMessageContent(messageExternalId: string, enabled: boolean) {
   const { messageContentStore } = useActiveThreadState()
-  return useSyncExternalStore(
-    (listener) => (enabled ? messageContentStore.subscribe(messageExternalId, listener) : noop),
-    () => (enabled ? messageContentStore.get(messageExternalId) : undefined),
-    () => (enabled ? messageContentStore.get(messageExternalId) : undefined),
+  return useStoreSnapshot(messageContentStore, messageExternalId, enabled)
+}
+
+const noop = () => undefined
+
+/** Subscribes with callbacks that only change when their inputs do. A fresh
+ * subscribe function on every render would make `useSyncExternalStore` drop
+ * and re-add the watcher each time, and a store that tears down on its last
+ * unsubscribe would then rebuild its entry on every render of the row. */
+function useStoreSnapshot<T>(
+  store: { subscribe: (id: string, listener: () => void) => () => void; get: (id: string) => T },
+  messageExternalId: string,
+  enabled: boolean,
+): T | undefined {
+  const subscribe = useCallback(
+    (listener: () => void) => (enabled ? store.subscribe(messageExternalId, listener) : noop),
+    [enabled, messageExternalId, store],
   )
+  const getSnapshot = useCallback(
+    () => (enabled ? store.get(messageExternalId) : undefined),
+    [enabled, messageExternalId, store],
+  )
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }

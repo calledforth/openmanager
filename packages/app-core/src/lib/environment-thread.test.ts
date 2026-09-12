@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createMockEnvironmentClient, createThreadState } from '@openmanager/environment-client'
-import { createEnvironmentThreadStores, projectThread } from './environment-thread'
+import { contentText, createEnvironmentThreadStores, projectThread } from './environment-thread'
 
 const THREAD = { threadId: 'thread-1', sessionId: 'session-1' }
 
@@ -91,6 +91,17 @@ describe('projectThread', () => {
     expect(row.message.isFinal).toBe(true)
     expect(row.content.content).toBe('')
     expect(row.content.parts?.[0]).toMatchObject({ type: 'text', text: 'Turn failed: boom' })
+  })
+
+  it('keeps URI-only resource blocks in the projected text', () => {
+    expect(
+      contentText([
+        { type: 'text', text: 'see ' },
+        { type: 'resource_link', uri: 'file:///a.ts' },
+        { type: 'resource', uri: 'file:///b.ts' },
+        { type: 'resource', uri: 'file:///c.ts', text: ' inline' },
+      ]),
+    ).toBe('see file:///a.tsfile:///b.ts inline')
   })
 })
 

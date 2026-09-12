@@ -213,6 +213,10 @@ function EnvironmentSessionStateProvider({
     const { session, thread } = await commands.createSession({ workspaceId: draftWorkspaceId })
     await commands.openSession(session.sessionId)
     setAdoptedDraftSessionId(session.sessionId)
+    // The session exists now; the turn that follows reads as pending until the
+    // environment reports it, then the turn itself is the truth.
+    setPendingDraftSessionStart(false)
+    setTurnPending(true)
     setDraftWorkspaceId(null)
     return { sessionId: session.sessionId, threadId: thread.threadId }
   }, [commands, draftWorkspaceId])

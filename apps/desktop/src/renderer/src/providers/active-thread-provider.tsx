@@ -245,14 +245,19 @@ export function ActiveThreadStateProvider({ children }: { children: ReactNode })
   useEffect(() => {
     const jobIds = optimisticJobKey ? optimisticJobKey.split('\n') : []
     if (jobIds.length === 0) return
-    const stops = jobIds.map((jobId) =>
-      optimisticJobStatus.subscribe(jobId, () => {
+    const stops = jobIds.map((jobId) => {
+      const check = () => {
         const status = optimisticJobStatus.get(jobId)
         if (status?.status !== 'failed') return
         const message = status.lastError ?? 'Failed to send'
         setJobErrors((prev) => (prev[jobId] === message ? prev : { ...prev, [jobId]: message }))
-      }),
-    )
+      }
+      const stop = optimisticJobStatus.subscribe(jobId, check)
+      // The watch publishes a cached result before the listener is registered,
+      // so a job that already failed has to be read back explicitly.
+      check()
+      return stop
+    })
     return () => stops.forEach((stop) => stop())
   }, [optimisticJobKey])
 

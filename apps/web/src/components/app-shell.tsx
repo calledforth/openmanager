@@ -57,9 +57,11 @@ function NavLinks({ pathname, compact = false }: { pathname: string; compact?: b
 
 /**
  * Keeps the URL and the environment's active session in step. A session
- * chosen in the sidebar lands on its route; opening a draft (no active
- * session) lands on the sessions root. Only *changes* navigate: the value on
- * mount is whatever the route is about to open itself.
+ * chosen in the sidebar lands on its route from anywhere; opening a draft (no
+ * active session) lands on the sessions root, but only from a session route so
+ * a page like settings is not pulled away when the session merely clears.
+ * Only *changes* navigate: the value on mount is whatever the route is about
+ * to open itself.
  */
 function SessionRouteSync({ pathname }: { pathname: string }) {
   const active = useActiveSession()
@@ -69,10 +71,9 @@ function SessionRouteSync({ pathname }: { pathname: string }) {
   useEffect(() => {
     if (previousRef.current === activeSessionId) return
     previousRef.current = activeSessionId
-    if (!isSessionPath(pathname)) return
     if (activeSessionId) {
       void navigate({ to: '/sessions/$sessionId', params: { sessionId: activeSessionId } })
-    } else if (pathname !== '/') {
+    } else if (isSessionPath(pathname) && pathname !== '/') {
       void navigate({ to: '/' })
     }
   }, [activeSessionId, navigate, pathname])

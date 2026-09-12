@@ -1,0 +1,17 @@
+fix: address review findings on the shared chat surface
+
+- Clear the pending draft-start flag once the draft session is adopted so
+  the composer does not stay on "Starting session..." after the first turn.
+- Read an optimistic job's status right after subscribing; the Convex watch
+  publishes its cached result before the listener is registered.
+- Keep URI-only resource and resource_link blocks in the projected text.
+- Memoize the subscribe/getSnapshot callbacks of the streaming and content
+  hooks so useSyncExternalStore does not resubscribe on every row render.
+- Watch the remote streaming store for plan entries of sessions another
+  client drives.
+- Let a session selected from the sidebar navigate from any route; only the
+  cleared-session case stays scoped to session routes.
+- Re-run absorb after a remote gap fill so a chunk that arrived while the
+  fetch was pending is not lost.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
