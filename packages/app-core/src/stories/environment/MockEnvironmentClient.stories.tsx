@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import {
   createMockEnvironmentClient,
   type MockEnvironmentClient,
-  type MockEnvironmentClientOptions,
   type MockSeed,
 } from '@openmanager/environment-client'
 import { MockEnvironmentApp } from '../../testing/mock-environment-app'
@@ -63,10 +62,11 @@ const meta = {
 export default meta
 type Story = StoryObj<typeof meta>
 
-function useStoryClient(options: MockEnvironmentClientOptions) {
-  const client = useMemo(() => createMockEnvironmentClient(options), [])
-  useEffect(() => () => client.dispose(), [client])
-  return client
+function useStoryClient(create: () => MockEnvironmentClient): MockEnvironmentClient {
+  const ref = useRef<MockEnvironmentClient | null>(null)
+  if (ref.current === null) ref.current = create()
+  useEffect(() => () => ref.current?.dispose(), [])
+  return ref.current
 }
 
 function StoryShell({
@@ -103,28 +103,21 @@ function ReconnectChip({ client }: { client: MockEnvironmentClient }) {
   )
 }
 
-export const SessionList: Story = {
-  name: 'Session list',
-  render: () => {
-    const client = useStoryClient({ seed: CANNED_HISTORY })
-    return <StoryShell client={client} />
-  },
+function SessionListStory() {
+  const client = useStoryClient(() => createMockEnvironmentClient({ seed: CANNED_HISTORY }))
+  return <StoryShell client={client} />
 }
 
-export const OpenSession: Story = {
-  name: 'Open session',
-  render: () => {
-    const client = useStoryClient({
-      seed: { ...CANNED_HISTORY, activeSessionId: SESSION.sessionId },
-    })
-    return <StoryShell client={client} />
-  },
+function OpenSessionStory() {
+  const client = useStoryClient(() =>
+    createMockEnvironmentClient({ seed: { ...CANNED_HISTORY, activeSessionId: SESSION.sessionId } }),
+  )
+  return <StoryShell client={client} />
 }
 
-export const StreamingTurn: Story = {
-  name: 'Streaming turn',
-  render: () => {
-    const client = useStoryClient({
+function StreamingTurnStory() {
+  const client = useStoryClient(() =>
+    createMockEnvironmentClient({
       seed: { ...CANNED_HISTORY, activeSessionId: SESSION.sessionId },
       chunkDelayMs: 80,
       respond: () => [
@@ -135,25 +128,44 @@ export const StreamingTurn: Story = {
         'at a time, ',
         'then the turn completes.',
       ],
-    })
-    useEffect(() => {
-      void client.commands.sendTurn({ ...THREAD, text: 'Stream a short reply.' })
-    }, [client])
-    return <StoryShell client={client} />
-  },
+    }),
+  )
+  useEffect(() => {
+    void client.commands.sendTurn({ ...THREAD, text: 'Stream a short reply.' })
+  }, [client])
+  return <StoryShell client={client} />
+}
+
+function InteractiveStory() {
+  const client = useStoryClient(() =>
+    createMockEnvironmentClient({
+      seed: { ...CANNED_HISTORY, activeSessionId: SESSION.sessionId },
+      chunkDelayMs: 50,
+    }),
+  )
+  return (
+    <StoryShell client={client}>
+      <ReconnectChip client={client} />
+    </StoryShell>
+  )
+}
+
+export const SessionList: Story = {
+  name: 'Session list',
+  render: () => <SessionListStory />,
+}
+
+export const OpenSession: Story = {
+  name: 'Open session',
+  render: () => <OpenSessionStory />,
+}
+
+export const StreamingTurn: Story = {
+  name: 'Streaming turn',
+  render: () => <StreamingTurnStory />,
 }
 
 export const Interactive: Story = {
   name: 'Interactive',
-  render: () => {
-    const client = useStoryClient({
-      seed: { ...CANNED_HISTORY, activeSessionId: SESSION.sessionId },
-      chunkDelayMs: 50,
-    })
-    return (
-      <StoryShell client={client}>
-        <ReconnectChip client={client} />
-      </StoryShell>
-    )
-  },
+  render: () => <InteractiveStory />,
 }
