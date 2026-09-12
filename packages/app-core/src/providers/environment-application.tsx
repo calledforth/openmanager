@@ -138,6 +138,9 @@ interface DraftInternals {
   /** Create the draft's session, open it and adopt it; returns its first
    * thread, or `null` when the draft was closed or replaced meanwhile. */
   startDraftSession: () => Promise<ThreadTarget | null>
+  /** The child session opened from a parent, while it is being viewed. The
+   * wire has no parent link, so the relationship is remembered here. */
+  childLink: { child: string; parent: string } | null
 }
 
 const DraftInternalsContext = createContext<DraftInternals | null>(null)
@@ -159,6 +162,7 @@ function EnvironmentSessionStateProvider({
   const [adoptedDraftSessionId, setAdoptedDraftSessionId] = useState<string | null>(null)
   const [defaultProviderId, setDefaultProviderIdState] = useState<ProviderId>(DEFAULT_PROVIDER_ID)
   const [draftRequest, setDraftRequest] = useState<DraftRequest | null>(null)
+  const [childLink, setChildLink] = useState<DraftInternals['childLink']>(null)
   const [error, setError] = useState<string | null>(null)
 
   // Bumped whenever the draft is opened, closed or replaced, so a session
@@ -203,6 +207,7 @@ function EnvironmentSessionStateProvider({
         activeSession?.workspaceId === workspacePath ? activeSession.sessionId : null
       draftGenerationRef.current += 1
       selectionRef.current = null
+      setChildLink(null)
       setError(null)
       setDraftWorkspaceId(workspacePath)
       setPendingDraftSessionStart(false)
@@ -221,6 +226,7 @@ function EnvironmentSessionStateProvider({
   const selectSession = useCallback(
     (_workspacePath: string, externalId: string) => {
       draftGenerationRef.current += 1
+      setChildLink(null)
       setError(null)
       setDraftWorkspaceId(null)
       setTurnPending(false)
@@ -276,11 +282,13 @@ function EnvironmentSessionStateProvider({
         await commands.removeWorkspace(path).catch(fail)
       },
       selectSession,
-      openChildSession: async (childExternalId) => {
+      openChildSession: async (childExternalId, parentExternalId) => {
         setError(null)
+        setChildLink({ child: childExternalId, parent: parentExternalId })
         await openSessionLatest(childExternalId)
       },
       closeChildSession: (parentExternalId) => {
+        setChildLink(null)
         void openSessionLatest(parentExternalId).catch(fail)
       },
       createSession: async (workspacePath) => openDraft(workspacePath),
@@ -321,7 +329,10 @@ function EnvironmentSessionStateProvider({
       selectSession,
     ],
   )
-  const internals = useMemo<DraftInternals>(() => ({ startDraftSession }), [startDraftSession])
+  const internals = useMemo<DraftInternals>(
+    () => ({ startDraftSession, childLink }),
+    [childLink, startDraftSession],
+  )
 
   return (
     <SessionStateContext.Provider value={value}>
@@ -503,7 +514,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
   const client = useEnvironmentClient()
   const { commands } = client
   const session = useContext(SessionStateContext)!
-  const { startDraftSession } = useContext(DraftInternalsContext)!
+  const { startDraftSession, childLink } = useContext(DraftInternalsContext)!
   const activeSession = useActiveSession()
   const thread = useActiveThread()
   const activeTurn = useActiveTurn()
@@ -519,10 +530,13 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
             externalId: activeSession.sessionId,
             title: activeSession.title ?? undefined,
             status: activeSession.status,
+            ...(childLink?.child === activeSession.sessionId
+              ? { parentExternalId: childLink.parent }
+              : {}),
             isDriven: true,
           }
         : null,
-    [activeSession],
+    [activeSession, childLink],
   )
 
   const target = thread?.thread ?? null
