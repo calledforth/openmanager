@@ -279,7 +279,20 @@ function EnvironmentSessionStateProvider({
       },
       removeWorkspace: async (path) => {
         setError(null)
-        await commands.removeWorkspace(path).catch(fail)
+        try {
+          await commands.removeWorkspace(path)
+        } catch (err) {
+          fail(err)
+          return
+        }
+        // A draft for the removed workspace has nowhere to start a session.
+        if (draftWorkspaceId === path) {
+          draftGenerationRef.current += 1
+          setDraftWorkspaceId(null)
+          setPendingDraftSessionStart(false)
+          setTurnPending(false)
+          setDraftRequest(null)
+        }
       },
       selectSession,
       openChildSession: async (childExternalId, parentExternalId) => {
@@ -319,6 +332,7 @@ function EnvironmentSessionStateProvider({
       commands,
       defaultProviderId,
       draftRequest,
+      draftWorkspaceId,
       error,
       fail,
       isSessionDraftOpen,
