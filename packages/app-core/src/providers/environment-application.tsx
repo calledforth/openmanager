@@ -16,6 +16,7 @@ import type {
 } from '@agentpack/contract'
 import type { InteractionResponse } from '@openmanager/protocol'
 import type { PendingInteraction, ThreadTarget } from '@openmanager/environment-client'
+import type { UploadedImageAttachment } from '../lib/attachments'
 import {
   useActiveSession,
   useActiveThread,
@@ -163,6 +164,10 @@ function EnvironmentSessionStateProvider({
   // Bumped whenever the draft is opened, closed or replaced, so a session
   // creation still in flight can tell that its draft no longer stands.
   const draftGenerationRef = useRef(0)
+  // The session the user most recently asked for (null once a draft is
+  // opened). Session opens resolve in any order; a slow one for an earlier
+  // choice must not leave its session active after a later choice landed.
+  const selectionRef = useRef<string | null>(null)
 
   const activeSessionId = activeSession?.sessionId ?? null
   const isSessionDraftOpen = activeSessionId === null && draftWorkspaceId !== null
@@ -183,11 +188,21 @@ function EnvironmentSessionStateProvider({
     setError(err instanceof Error ? err.message : String(err))
   }, [])
 
+  const openSessionLatest = useCallback(
+    async (sessionId: string) => {
+      selectionRef.current = sessionId
+      await commands.openSession(sessionId)
+      if (selectionRef.current !== sessionId) client.setActiveSession(selectionRef.current)
+    },
+    [client, commands],
+  )
+
   const openDraft = useCallback(
     (workspacePath: string) => {
       const previousSessionId =
         activeSession?.workspaceId === workspacePath ? activeSession.sessionId : null
       draftGenerationRef.current += 1
+      selectionRef.current = null
       setError(null)
       setDraftWorkspaceId(workspacePath)
       setPendingDraftSessionStart(false)
@@ -210,9 +225,9 @@ function EnvironmentSessionStateProvider({
       setDraftWorkspaceId(null)
       setTurnPending(false)
       setAdoptedDraftSessionId(null)
-      void commands.openSession(externalId).catch(fail)
+      void openSessionLatest(externalId).catch(fail)
     },
-    [commands, fail],
+    [fail, openSessionLatest],
   )
 
   const startDraftSession = useCallback(async (): Promise<ThreadTarget | null> => {
@@ -225,7 +240,7 @@ function EnvironmentSessionStateProvider({
       void commands.deleteSession(session.sessionId).catch(() => undefined)
       return null
     }
-    await commands.openSession(session.sessionId)
+    await openSessionLatest(session.sessionId)
     setAdoptedDraftSessionId(session.sessionId)
     // The session exists now; the turn that follows reads as pending until the
     // environment reports it, then the turn itself is the truth.
@@ -233,7 +248,7 @@ function EnvironmentSessionStateProvider({
     setTurnPending(true)
     setDraftWorkspaceId(null)
     return { sessionId: session.sessionId, threadId: thread.threadId }
-  }, [commands, draftWorkspaceId])
+  }, [commands, draftWorkspaceId, openSessionLatest])
 
   const value = useMemo<SessionStateValue>(
     () => ({
@@ -263,10 +278,10 @@ function EnvironmentSessionStateProvider({
       selectSession,
       openChildSession: async (childExternalId) => {
         setError(null)
-        await commands.openSession(childExternalId)
+        await openSessionLatest(childExternalId)
       },
       closeChildSession: (parentExternalId) => {
-        void commands.openSession(parentExternalId).catch(fail)
+        void openSessionLatest(parentExternalId).catch(fail)
       },
       createSession: async (workspacePath) => openDraft(workspacePath),
       deleteSession: async (_workspacePath, externalId) => {
@@ -301,6 +316,7 @@ function EnvironmentSessionStateProvider({
       isSessionDraftOpen,
       localSessionStatus,
       openDraft,
+      openSessionLatest,
       pendingDraftSessionStart,
       selectSession,
     ],
@@ -516,11 +532,16 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
   const { beginDraftTurn, beginSessionTurn, failTurn, isSessionDraftOpen } = session
 
   const sendMessage = useCallback(
-    async (content: string) => {
+    async (content: string, attachments?: UploadedImageAttachment[]) => {
       const text = content.trim()
       if (!text) return
       setError(null)
       try {
+        // `turn.send` carries text only for now; refusing beats silently
+        // dropping an upload the composer just confirmed.
+        if (attachments?.length) {
+          throw new Error('This environment cannot send image attachments yet.')
+        }
         if (!targetRef.current && isSessionDraftOpen) {
           beginDraftTurn()
           const created = await startDraftSession()
