@@ -1,9 +1,64 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { CaretDownIcon, ListChecksIcon } from '@phosphor-icons/react'
 import type { PlanEntry, PlanEntryStatus } from '@agentpack/contract'
 import { cn } from '../../lib/utils'
 import { typographyCaption } from '../../lib/typography'
+import { useActiveThreadState } from '../../providers/active-thread-provider'
+
+function readPlanEntries(parts: Array<{ type: string; [key: string]: unknown }> | undefined) {
+  const plan = parts?.find((part) => part.type === 'plan')
+  if (!plan || !Array.isArray(plan.entries)) return null
+  return plan.entries as PlanEntry[]
+}
+
+/** Latest ACP plan checklist for the active session, read from the streaming
+ * store's `plan` part across the most recent assistant turns (live and
+ * hydrated alike). A session another client drives has its unfinished turn
+ * in the remote store, so that one is watched as well. */
+export function useSessionPlanEntries(): PlanEntry[] {
+  const { activeSessionId, activeThreadDriven, messages, streamingStore, remoteStreamingStore } =
+    useActiveThreadState()
+  const [entries, setEntries] = useState<PlanEntry[]>([])
+
+  useEffect(() => {
+    setEntries([])
+  }, [activeSessionId])
+
+  useEffect(() => {
+    if (!activeSessionId) return
+    const assistants = messages.filter((message) => message.role === 'assistant').slice(-8)
+    const remote = !activeThreadDriven && remoteStreamingStore ? remoteStreamingStore : null
+    const sourcesFor = (message: (typeof assistants)[number]) =>
+      remote && message.isFinal !== true ? [streamingStore, remote] : [streamingStore]
+
+    const pullLatest = () => {
+      for (let index = assistants.length - 1; index >= 0; index -= 1) {
+        const message = assistants[index]!
+        for (const source of sourcesFor(message)) {
+          // The newest plan part wins, an empty one included: the agent
+          // clearing its checklist must not leave the previous list on screen.
+          const next = readPlanEntries(source.get(message.externalId)?.parts)
+          if (next) {
+            setEntries(next)
+            return
+          }
+        }
+      }
+    }
+
+    const unsubs = assistants.flatMap((message) =>
+      sourcesFor(message).map((source) => {
+        source.ensureHydrated(message.externalId)
+        return source.subscribe(message.externalId, pullLatest)
+      }),
+    )
+    pullLatest()
+    return () => unsubs.forEach((unsubscribe) => unsubscribe())
+  }, [activeSessionId, activeThreadDriven, messages, remoteStreamingStore, streamingStore])
+
+  return entries
+}
 
 function TodoStatusIcon({ status }: { status: PlanEntryStatus }) {
   if (status === 'completed') {

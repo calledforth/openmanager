@@ -1,18 +1,20 @@
-import { useCallback, useMemo, type ReactNode } from 'react'
+import { useCallback, type ReactNode } from 'react'
 import type { QuestionOutcome } from '@agentpack/contract'
 import { api } from '@openmanager/convex/_generated/api'
 import { useTrackedQuery } from '../lib/convex-telemetry'
 import { useSessionState } from '@openmanager/app-core/providers/session-provider'
 import { useActiveThreadState } from '@openmanager/app-core/providers/active-thread-provider'
-
 import {
-  QuestionStateContext,
+  QuestionStateProvider,
   type PendingQuestion,
-  type QuestionStateValue,
 } from '@openmanager/app-core/providers/question-provider'
-export * from '@openmanager/app-core/providers/question-provider'
+export {
+  useQuestionState,
+  useQuestionStateOptional,
+} from '@openmanager/app-core/providers/question-provider'
 
-export function QuestionStateProvider({ children }: { children: ReactNode }) {
+/** The pending question row from Convex, answered through the active thread. */
+export function DesktopQuestionStateProvider({ children }: { children: ReactNode }) {
   const { activeSessionId } = useSessionState()
   const { resolveQuestion: resolveSessionQuestion } = useActiveThreadState()
   const pendingQuestion =
@@ -30,14 +32,13 @@ export function QuestionStateProvider({ children }: { children: ReactNode }) {
     [activeSessionId, pendingQuestion, resolveSessionQuestion],
   )
 
-  const value = useMemo<QuestionStateValue>(
-    () => ({
-      activeSessionId,
-      pendingQuestion,
-      resolveQuestion,
-    }),
-    [activeSessionId, pendingQuestion, resolveQuestion],
+  return (
+    <QuestionStateProvider
+      activeSessionId={activeSessionId}
+      pendingQuestion={pendingQuestion}
+      resolveQuestion={resolveQuestion}
+    >
+      {children}
+    </QuestionStateProvider>
   )
-
-  return <QuestionStateContext.Provider value={value}>{children}</QuestionStateContext.Provider>
 }

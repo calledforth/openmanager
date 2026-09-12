@@ -1,20 +1,17 @@
 import { useEffect, useState } from 'react'
 import { DesktopViewActions } from './providers/desktop-view-actions'
 import { ThemeProvider } from '@openmanager/app-core/providers/theme-provider'
-import { useSessionState } from '@openmanager/app-core/providers/session-provider'
-import { useActiveThreadState } from '@openmanager/app-core/providers/active-thread-provider'
 import { PlatformCapabilitiesProvider } from './providers/platform-capabilities-provider'
 import { SessionStateProvider } from './providers/session-state-provider'
 import { ComposerStateProvider } from './providers/composer-state-provider'
 import { SidebarDataProvider } from './providers/sidebar-data-provider'
 import { ActiveThreadStateProvider } from './providers/active-thread-provider'
-import { PermissionStateProvider } from './providers/permission-provider'
-import { QuestionStateProvider } from './providers/question-provider'
-import { PlanStateProvider } from './providers/plan-provider'
-import { WorkspaceSidebar } from './components/sidebar/WorkspaceSidebar'
-import { ChatView } from './components/chat/ChatView'
-import { MessageInput } from './components/chat/MessageInput'
-import { FloatingChatComposer } from '@openmanager/app-core/components/chat/FloatingChatComposer'
+import { DesktopPermissionStateProvider } from './providers/permission-provider'
+import { DesktopQuestionStateProvider } from './providers/question-provider'
+import { DesktopPlanStateProvider } from './providers/plan-provider'
+import { WorkspaceSidebar } from '@openmanager/app-core/components/sidebar/WorkspaceSidebar'
+import { ChatWorkspace } from '@openmanager/app-core/components/chat/ChatWorkspace'
+import { SidebarSettingsMenu } from './components/sidebar/SidebarSettingsMenu'
 import { ConvexTelemetryPanel } from './components/telemetry/ConvexTelemetryPanel'
 import { AppChrome } from './components/shell/AppChrome'
 import { UpdateNotification } from './components/updates/UpdateNotification'
@@ -26,29 +23,11 @@ void ensureShiki().catch((error) => {
   console.error('Failed to initialize syntax highlighting', error)
 })
 
-/** Subagent transcripts are read-only: the composer is replaced by a banner
- * linking back to the parent session. */
-function ChildSessionBanner({ onBack }: { onBack: () => void }) {
-  return (
-    <div className="pointer-events-auto mx-auto mb-4 flex w-fit items-center gap-2 rounded-full border border-[var(--basis-border-muted)] bg-[var(--basis-surface)] px-3 py-1.5 text-ui-xs text-[var(--basis-text-muted)] shadow-sm">
-      <span>Subagent transcript · read-only</span>
-      <button
-        type="button"
-        className="rounded-full border border-[var(--basis-border-muted)] px-2 py-0.5 text-[var(--basis-text)] hover:bg-[var(--basis-canvas-bg)]"
-        onClick={onBack}
-      >
-        Back to session
-      </button>
-    </div>
-  )
-}
+const sidebarToggleShortcut = window.electronAPI.platform === 'darwin' ? '⌘B' : 'Ctrl+B'
 
 function AppShell() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true)
   const [convexOpen, setConvexOpen] = useState(false)
-  const { closeChildSession } = useSessionState()
-  const { activeThread } = useActiveThreadState()
-  const parentExternalId = activeThread?.parentExternalId
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -66,22 +45,17 @@ function AppShell() {
       <WorkspaceSidebar
         collapsed={sidebarCollapsed}
         onCollapse={() => setSidebarCollapsed(true)}
-        convexOpen={convexOpen}
-        onToggleConvex={() => setConvexOpen((v) => !v)}
+        settingsMenu={
+          <SidebarSettingsMenu convexOpen={convexOpen} onToggleConvex={() => setConvexOpen((v) => !v)} />
+        }
+        sidebarToggleShortcut={sidebarToggleShortcut}
       />
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--basis-canvas-bg)]">
         <AppChrome
           sidebarCollapsed={sidebarCollapsed}
           onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
         />
-        <ChatView />
-        {parentExternalId ? (
-          <ChildSessionBanner onBack={() => closeChildSession(parentExternalId)} />
-        ) : (
-          <FloatingChatComposer>
-            <MessageInput />
-          </FloatingChatComposer>
-        )}
+        <ChatWorkspace />
       </div>
       <ConvexTelemetryPanel open={convexOpen} onOpenChange={setConvexOpen} />
       <UpdateNotification />
@@ -101,15 +75,15 @@ function App() {
           <ComposerStateProvider>
             <SidebarDataProvider>
               <ActiveThreadStateProvider>
-                <PermissionStateProvider>
-                  <QuestionStateProvider>
-                    <PlanStateProvider>
+                <DesktopPermissionStateProvider>
+                  <DesktopQuestionStateProvider>
+                    <DesktopPlanStateProvider>
                       <DesktopViewActions>
                         <AppShell />
                       </DesktopViewActions>
-                    </PlanStateProvider>
-                  </QuestionStateProvider>
-                </PermissionStateProvider>
+                    </DesktopPlanStateProvider>
+                  </DesktopQuestionStateProvider>
+                </DesktopPermissionStateProvider>
               </ActiveThreadStateProvider>
             </SidebarDataProvider>
           </ComposerStateProvider>

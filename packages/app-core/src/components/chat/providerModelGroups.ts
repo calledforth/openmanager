@@ -1,6 +1,6 @@
 import type { ProviderId, ProviderMetadata } from '@agentpack/contract'
 import type { ProviderComposerProfiles } from '@openmanager/shared/contracts/composer-profile'
-import type { ProviderModelGroup } from '@openmanager/app-core/components/chat/ProviderModelPicker'
+import type { ProviderModelGroup } from './ProviderModelPicker'
 
 /** `description` is load-bearing for Claude Code, not decoration: the CLI puts
  * the marketing name there rather than in `displayName`, so a row reads

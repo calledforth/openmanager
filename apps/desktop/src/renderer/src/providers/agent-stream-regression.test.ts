@@ -7,7 +7,7 @@ import {
   StreamingMessagesStore,
   type StreamHydrationSnapshot,
 } from './active-thread-provider'
-import { shouldHydrateLocalStream, shouldUseRemoteStreaming } from '../lib/stream-continuity'
+import { shouldHydrateLocalStream, shouldUseRemoteStreaming } from '@openmanager/app-core/lib/stream-continuity'
 
 const base = {
   threadId: 'thread-1',

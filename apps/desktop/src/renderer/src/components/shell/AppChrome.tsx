@@ -10,7 +10,7 @@ import {
 } from '@phosphor-icons/react'
 import { useActiveThreadState } from '@openmanager/app-core/providers/active-thread-provider'
 import { useSessionState } from '@openmanager/app-core/providers/session-provider'
-import { useSidebarData } from '../../providers/sidebar-data-provider'
+import { useSidebarData } from '@openmanager/app-core/providers/sidebar-provider'
 import { cn } from '@openmanager/app-core/lib/utils'
 import { typographyBody } from '@openmanager/app-core/lib/typography'
 import { Tooltip } from '@openmanager/app-core/components/ui/Tooltip'
