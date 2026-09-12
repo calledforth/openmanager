@@ -1,44 +1,23 @@
-import { createContext, useContext, useEffect, useMemo, useRef, type ReactNode } from 'react'
-import type { ProviderId } from '@agentpack/contract'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { api } from '@openmanager/convex/_generated/api'
-import { useTrackedQuery } from '../lib/convex-telemetry'
+import { useTrackedMutation, useTrackedQuery } from '../lib/convex-telemetry'
 import { useSessionState } from '@openmanager/app-core/providers/session-provider'
 import { usePlatformCapabilities } from '@openmanager/app-core/providers/platform-provider'
+import {
+  SidebarDataContext,
+  resolveInitialWorkspacePath,
+  toggleCollapsedWorkspace,
+  type SidebarDataValue,
+  type SidebarSessionEntry,
+  type WorkspaceEntry,
+} from '@openmanager/app-core/providers/sidebar-provider'
 import { resolveSessionProviderId } from './session-provider'
-
-export interface WorkspaceEntry {
-  path: string
-  name: string
-}
-
-export interface SidebarSessionEntry {
-  externalId: string
-  title?: string
-  status: string
-  providerId: ProviderId
-  clientId?: string
-  parentExternalId?: string
-  isDriven: boolean
-}
-
-interface SidebarDataValue {
-  workspaces: WorkspaceEntry[]
-  isWorkspacesLoading: boolean
-  sessionsByWorkspace: Record<string, SidebarSessionEntry[]>
-  activeWorkspacePath: string | null
-  activeSessionId: string | null
-  addWorkspace: () => Promise<void>
-  removeWorkspace: (path: string) => Promise<void>
-  selectSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
-  createSession: (workspacePath: string) => Promise<void>
-  deleteSession: (
-    workspacePath: string,
-    externalId: string,
-    providerId: ProviderId,
-  ) => Promise<void>
-}
-
-const SidebarDataContext = createContext<SidebarDataValue | null>(null)
+export {
+  resolveInitialWorkspacePath,
+  useSidebarData,
+  type SidebarSessionEntry,
+  type WorkspaceEntry,
+} from '@openmanager/app-core/providers/sidebar-provider'
 
 const EMPTY_WORKSPACES: Array<{ path: string; name: string }> = []
 const EMPTY_SIDEBAR_ROWS: Array<{
@@ -51,32 +30,17 @@ const EMPTY_SIDEBAR_ROWS: Array<{
   parentExternalId?: string
 }> = []
 
-export function resolveInitialWorkspacePath(
-  workspaces: Array<{ path: string }>,
-  lastActiveWorkspacePath: string,
-): string | null {
-  if (workspaces.length === 0) return null
-  if (
-    lastActiveWorkspacePath &&
-    workspaces.some((workspace) => workspace.path === lastActiveWorkspacePath)
-  ) {
-    return lastActiveWorkspacePath
-  }
-  return workspaces[0]?.path ?? null
-}
-
-export function useSidebarData() {
-  const ctx = useContext(SidebarDataContext)
-  if (!ctx) throw new Error('useSidebarData must be used within SidebarDataProvider')
-  return ctx
-}
-
+/** Host-backed sidebar data: the Convex workspace and session catalog, the
+ * folded rows persisted through Electron, and the last-active workspace
+ * restored on launch. */
 export function SidebarDataProvider({ children }: { children: ReactNode }) {
   const ui = useSessionState()
   const { currentClientId } = usePlatformCapabilities()
   const activeWorkspacePath = ui.activeWorkspacePath
   const createSession = ui.createSession
   const didRestoreWorkspaceRef = useRef(false)
+  const [collapsedWorkspacePaths, setCollapsedWorkspacePaths] = useState<string[]>([])
+  const upsertSessionStatus = useTrackedMutation('sessions.upsertStatus', api.sessions.upsertStatus)
 
   const rawWorkspacesQuery = useTrackedQuery('workspaces.list', api.workspaces.list, {}) as
     typeof EMPTY_WORKSPACES | undefined
@@ -93,6 +57,28 @@ export function SidebarDataProvider({ children }: { children: ReactNode }) {
     path: workspace.path,
     name: workspace.name,
   }))
+
+  useEffect(() => {
+    window.electronAPI
+      .getCollapsedWorkspaces()
+      .then((paths) => setCollapsedWorkspacePaths(paths))
+      .catch(() => {})
+  }, [])
+
+  const toggleWorkspaceCollapsed = useCallback((path: string) => {
+    setCollapsedWorkspacePaths((prev) => {
+      const next = toggleCollapsedWorkspace(prev, path)
+      window.electronAPI.setCollapsedWorkspaces(next).catch(() => {})
+      return next
+    })
+  }, [])
+
+  const acknowledgeSessionDone = useCallback<NonNullable<SidebarDataValue['acknowledgeSessionDone']>>(
+    async (workspacePath, externalId, providerId) => {
+      await upsertSessionStatus({ workspacePath, externalId, status: 'idle', providerId })
+    },
+    [upsertSessionStatus],
+  )
 
   useEffect(() => {
     if (didRestoreWorkspaceRef.current || isWorkspacesLoading) return
@@ -147,11 +133,14 @@ export function SidebarDataProvider({ children }: { children: ReactNode }) {
       sessionsByWorkspace,
       activeWorkspacePath: ui.activeWorkspacePath,
       activeSessionId: ui.activeSessionId,
+      collapsedWorkspacePaths,
+      toggleWorkspaceCollapsed,
       addWorkspace: ui.addWorkspace,
       removeWorkspace: ui.removeWorkspace,
       selectSession: ui.selectSession,
       createSession: ui.createSession,
       deleteSession: ui.deleteSession,
+      acknowledgeSessionDone,
     }),
     [
       workspaces,
@@ -159,11 +148,14 @@ export function SidebarDataProvider({ children }: { children: ReactNode }) {
       sessionsByWorkspace,
       ui.activeWorkspacePath,
       ui.activeSessionId,
+      collapsedWorkspacePaths,
+      toggleWorkspaceCollapsed,
       ui.addWorkspace,
       ui.removeWorkspace,
       ui.selectSession,
       ui.createSession,
       ui.deleteSession,
+      acknowledgeSessionDone,
     ],
   )
 

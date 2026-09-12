@@ -7,7 +7,9 @@ export default defineConfig({
   plugins: [
     tanstackRouter({
       target: 'react',
-      autoCodeSplitting: true,
+      // Split chunks are transformed on first navigation, which under vitest
+      // takes seconds for the shared chat surface and trips findBy timeouts.
+      autoCodeSplitting: process.env.VITEST !== 'true',
     }),
     react(),
     tailwindcss(),

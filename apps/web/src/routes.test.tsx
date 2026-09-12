@@ -111,8 +111,8 @@ describe('web routes', () => {
     await user.type(screen.getByLabelText('Client token'), 'client-token')
     await user.click(screen.getByRole('button', { name: 'Connect' }))
 
-    expect(await screen.findByRole('heading', { name: 'Start a session' })).toBeInTheDocument()
-    expect(screen.getByText(/Connected · Local environment/)).toBeInTheDocument()
+    expect(await screen.findByText(/Connected · Local environment/)).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'New Agent' })).toBeInTheDocument()
     expect(storedRegistry()).toMatchObject({
       selectedId: 'env-local',
       environments: [
@@ -141,7 +141,9 @@ describe('web routes', () => {
     })
 
     renderWebApp('/settings')
-    await user.type(await screen.findByLabelText('Environment endpoint'), 'https://tunnel.example')
+    // The shell swaps to the shared sidebar once the client exists; type after that.
+    await screen.findByText(/Connected · Local environment/)
+    await user.type(screen.getByLabelText('Environment endpoint'), 'https://tunnel.example')
     await user.click(screen.getByRole('button', { name: 'Add environment' }))
 
     expect(await screen.findByText('Home lab · Selected')).toBeInTheDocument()
@@ -179,10 +181,14 @@ describe('web routes', () => {
 
     renderWebApp('/settings')
     expect(await screen.findByText('Home · Selected')).toBeInTheDocument()
+    await screen.findByText(/Connected · Home/)
     await user.click(screen.getByRole('button', { name: 'Select' }))
-    expect(await screen.findByText('Lab · Selected')).toBeInTheDocument()
+    // The shell remounts its content while the client is swapped, so re-query.
+    await screen.findByText(/Connected · Lab/)
+    await waitFor(() => expect(screen.getByText('Lab · Selected')).toBeInTheDocument())
     expect(storedRegistry().selectedId).toBe('env-b')
 
+    await screen.findByText(/Connected · Lab/)
     await user.click(screen.getAllByRole('button', { name: 'Remove' })[0]!)
     expect(screen.queryByText('Home · Selected')).not.toBeInTheDocument()
     expect(screen.getByText('Lab · Selected')).toBeInTheDocument()
@@ -236,7 +242,10 @@ describe('web routes', () => {
     )
 
     renderWebApp('/settings')
-    expect(await screen.findByText('Local environment · Selected')).toBeInTheDocument()
+    await screen.findByText(/Connected · Local environment/)
+    await waitFor(() =>
+      expect(screen.getByText('Local environment · Selected')).toBeInTheDocument(),
+    )
     await user.type(screen.getByLabelText('Environment endpoint'), 'http://127.0.0.1:43121')
     await user.click(screen.getByRole('button', { name: 'Add environment' }))
     await user.click(screen.getByRole('button', { name: 'Remove' }))
@@ -247,18 +256,17 @@ describe('web routes', () => {
     })
   })
 
-  it('opens a session workspace after a stored environment is ready', async () => {
+  it('renders the shared sidebar after a stored environment is ready', async () => {
     seedRegistry([{ environmentId: 'env-local', endpoints: ['http://127.0.0.1:43120'] }])
     mockBootstrap({
       'http://127.0.0.1:43120': { environmentId: 'env-local', label: 'Local environment' },
     })
 
-    const user = userEvent.setup()
     renderWebApp('/')
 
-    await user.click(await screen.findByRole('link', { name: 'Open example session' }))
-    expect(await screen.findByRole('heading', { name: 'Session' })).toBeInTheDocument()
-    expect(screen.getByText('example')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'New Agent' })).toBeInTheDocument()
+    expect(screen.getByText('No projects yet')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument()
   })
 
   it('shows an in-shell unreachable banner instead of replacing the session', async () => {
@@ -272,7 +280,9 @@ describe('web routes', () => {
 
     renderWebApp('/')
     expect(await screen.findByRole('alert')).toHaveTextContent('Environment unreachable')
-    expect(screen.getByRole('heading', { name: 'Start a session' })).toBeInTheDocument()
+    expect(
+      screen.getByText('Connect to an environment to see your sessions here.'),
+    ).toBeInTheDocument()
   })
 
   it('shows the not-found surface for unknown paths once connected', async () => {
@@ -282,6 +292,9 @@ describe('web routes', () => {
     })
 
     renderWebApp('/missing')
-    expect(await screen.findByRole('heading', { name: 'Page not found' })).toBeInTheDocument()
+    await screen.findByText(/Connected · Local environment/)
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Page not found' })).toBeInTheDocument(),
+    )
   })
 })

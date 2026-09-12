@@ -1,17 +1,30 @@
 import { createMemoryHistory } from '@tanstack/react-router'
 import { render, type RenderOptions } from '@testing-library/react'
-import type { ReactElement, ReactNode } from 'react'
+import type { ComponentProps, ReactElement, ReactNode } from 'react'
 import { WebApp } from './app'
 import { ErrorBoundary } from './components/error-boundary'
 import { ThemeProvider } from './providers/theme-provider'
 import { createQueryClient } from './query-client'
 import { createWebRouter } from './router'
 
-export function renderWebApp(path = '/', options?: RenderOptions) {
+export function renderWebApp(
+  path = '/',
+  options?: RenderOptions & {
+    createEnvironmentClient?: ComponentProps<typeof WebApp>['createEnvironmentClient']
+  },
+) {
+  const { createEnvironmentClient, ...renderOptions } = options ?? {}
   const queryClient = createQueryClient()
   const history = createMemoryHistory({ initialEntries: [path] })
   const router = createWebRouter({ history, queryClient })
-  const result = render(<WebApp router={router} queryClient={queryClient} />, options)
+  const result = render(
+    <WebApp
+      router={router}
+      queryClient={queryClient}
+      createEnvironmentClient={createEnvironmentClient}
+    />,
+    renderOptions,
+  )
   return { ...result, router, queryClient }
 }
 

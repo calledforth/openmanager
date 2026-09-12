@@ -1,9 +1,56 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { CaretDownIcon, ListChecksIcon } from '@phosphor-icons/react'
 import type { PlanEntry, PlanEntryStatus } from '@agentpack/contract'
 import { cn } from '../../lib/utils'
 import { typographyCaption } from '../../lib/typography'
+import { useActiveThreadState } from '../../providers/active-thread-provider'
+
+function readPlanEntries(parts: Array<{ type: string; [key: string]: unknown }> | undefined) {
+  const plan = parts?.find((part) => part.type === 'plan')
+  if (!plan || !Array.isArray(plan.entries)) return null
+  return plan.entries as PlanEntry[]
+}
+
+/** Latest ACP plan checklist for the active session, read from the streaming
+ * store's `plan` part across the most recent assistant turns (live and
+ * hydrated alike). */
+export function useSessionPlanEntries(): PlanEntry[] {
+  const { activeSessionId, messages, streamingStore } = useActiveThreadState()
+  const [entries, setEntries] = useState<PlanEntry[]>([])
+
+  useEffect(() => {
+    setEntries([])
+  }, [activeSessionId])
+
+  useEffect(() => {
+    if (!activeSessionId) return
+    const assistantIds = messages
+      .filter((message) => message.role === 'assistant')
+      .map((message) => message.externalId)
+      .slice(-8)
+
+    const pullLatest = () => {
+      for (let index = assistantIds.length - 1; index >= 0; index -= 1) {
+        const snapshot = streamingStore.get(assistantIds[index]!)
+        const next = readPlanEntries(snapshot?.parts)
+        if (next && next.length > 0) {
+          setEntries(next)
+          return
+        }
+      }
+    }
+
+    const unsubs = assistantIds.map((id) => {
+      streamingStore.ensureHydrated(id)
+      return streamingStore.subscribe(id, pullLatest)
+    })
+    pullLatest()
+    return () => unsubs.forEach((unsubscribe) => unsubscribe())
+  }, [activeSessionId, messages, streamingStore])
+
+  return entries
+}
 
 function TodoStatusIcon({ status }: { status: PlanEntryStatus }) {
   if (status === 'completed') {

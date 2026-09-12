@@ -1,4 +1,6 @@
 import { useMemo } from 'react'
+import { useSessionState } from '../../providers/session-provider'
+import { useSidebarData } from '../../providers/sidebar-provider'
 import { CaretDownIcon, FolderSimpleIcon, FolderPlusIcon } from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
 import { ProjectIcon } from '../sidebar/ProjectIcon'
@@ -147,5 +149,22 @@ export function NewSessionLandingView({
         </div>
       </div>
     </div>
+  )
+}
+
+/** The landing bound to session state and the sidebar contract. */
+export function NewSessionLanding() {
+  const { activeWorkspacePath, pendingDraftSessionStart } = useSessionState()
+  const { workspaces, isWorkspacesLoading, createSession, addWorkspace } = useSidebarData()
+
+  return (
+    <NewSessionLandingView
+      workspaces={workspaces}
+      activeWorkspacePath={activeWorkspacePath}
+      isWorkspacesLoading={isWorkspacesLoading}
+      isStarting={pendingDraftSessionStart}
+      onSelectWorkspace={(workspacePath) => void createSession(workspacePath)}
+      onAddWorkspace={() => void addWorkspace()}
+    />
   )
 }

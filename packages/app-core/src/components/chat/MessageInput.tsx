@@ -1,32 +1,32 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api } from '@openmanager/convex/_generated/api'
-import {
-  providerBlocksComposer,
-  usePlatformCapabilities,
-} from '@openmanager/app-core/providers/platform-provider'
-import { useSessionState } from '@openmanager/app-core/providers/session-provider'
-import { useComposerState } from '@openmanager/app-core/providers/composer-provider'
-import { useActiveThreadState } from '@openmanager/app-core/providers/active-thread-provider'
+import { deriveSessionChrome } from '@agentpack/view'
+import { providerBlocksComposer, usePlatformCapabilities } from '../../providers/platform-provider'
+import { useSessionState } from '../../providers/session-provider'
+import { useComposerState } from '../../providers/composer-provider'
+import { useActiveThreadState } from '../../providers/active-thread-provider'
 import { useQuestionStateOptional } from '../../providers/question-provider'
 import { usePlanStateOptional } from '../../providers/plan-provider'
-import { QuestionCard } from '@openmanager/app-core/components/questions/ComposerQuestionPrompt'
-import { useQuestionFlow } from '@openmanager/app-core/components/questions/useQuestionFlow'
-import { ComposerPlanPrompt } from '@openmanager/app-core/components/plans/ComposerPlanPrompt'
+import { useViewActions } from '../../providers/view-actions'
+import { QuestionCard } from '../questions/ComposerQuestionPrompt'
+import { useQuestionFlow } from '../questions/useQuestionFlow'
+import { ComposerPlanPrompt } from '../plans/ComposerPlanPrompt'
 import { ComposerTodos, useSessionPlanEntries } from '../plans/ComposerTodos'
-import { MessageInputView } from '@openmanager/app-core/components/chat/MessageInputView'
-import { deriveSessionChrome } from '@agentpack/view'
-import { useTrackedMutation } from '../../lib/convex-telemetry'
+import { MessageInputView } from './MessageInputView'
 import {
   buildProviderModelGroups,
   metadataModeOptions,
   metadataModelOptions,
   type ComposerModelChoice,
 } from './providerModelGroups'
-import type {
-  DraftImageAttachment,
-  UploadedImageAttachment,
-} from '@openmanager/app-core/lib/attachments'
+import type { DraftImageAttachment, UploadedImageAttachment } from '../../lib/attachments'
 
+/**
+ * The composer bound to the application providers: session navigation for
+ * what is on screen, composer state for the model/mode/config selection,
+ * platform capabilities for provider readiness, the active thread for
+ * sending, and the question/plan panels when one is pending. Image uploads
+ * and model vision checks come from the host through `ViewActions`.
+ */
 export function MessageInput() {
   const {
     activeSessionId,
@@ -50,7 +50,7 @@ export function MessageInput() {
     providerComposerProfiles,
     composerConfigValues,
   } = useComposerState()
-  const { agentUiStatusByProvider, providers, currentClientId, acpPromptCapabilitiesByProvider } =
+  const { agentUiStatusByProvider, providers, acpPromptCapabilitiesByProvider } =
     usePlatformCapabilities()
   const {
     sendMessage,
@@ -58,6 +58,7 @@ export function MessageInput() {
     activeThread,
     buildPlan: submitBuildPlan,
   } = useActiveThreadState()
+  const { uploadAttachments, discardAttachments, getModelImageSupport } = useViewActions()
   const questionState = useQuestionStateOptional()
   const pendingQuestion = questionState?.pendingQuestion ?? null
   // Slide state lives here because both the card above and the composer below
@@ -66,18 +67,6 @@ export function MessageInput() {
   const planState = usePlanStateOptional()
   const pendingPlan = planState?.pendingPlan ?? null
   const planEntries = useSessionPlanEntries()
-  const generateUploadUrl = useTrackedMutation(
-    'attachments.generateUploadUrl',
-    (api as any).attachments.generateUploadUrl,
-  )
-  const registerAttachment = useTrackedMutation(
-    'attachments.register',
-    (api as any).attachments.register,
-  )
-  const removeAttachments = useTrackedMutation(
-    'attachments.removeMany',
-    (api as any).attachments.removeMany,
-  )
   const [modelImageSupport, setModelImageSupport] = useState<boolean | null | undefined>(undefined)
 
   const disabled =
@@ -225,16 +214,17 @@ export function MessageInput() {
   const isStreaming = effectiveStatus === 'running' || effectiveStatus === 'busy'
   const providerImageSupport = acpPromptCapabilitiesByProvider[currentProviderId]?.image
   const providerSupportsImages = providerImageSupport === true
+  // Without an uploader there is nowhere for an image to go, whatever the model says.
+  const canUploadImages = !!uploadAttachments
 
   useEffect(() => {
     let cancelled = false
     setModelImageSupport(undefined)
-    if (!currentModelId) {
+    if (!currentModelId || !getModelImageSupport) {
       setModelImageSupport(null)
       return
     }
-    window.electronAPI
-      .getModelImageSupport(currentProviderId, currentModelId)
+    getModelImageSupport(currentProviderId, currentModelId)
       .then((supported) => {
         if (!cancelled) setModelImageSupport(supported)
       })
@@ -244,7 +234,7 @@ export function MessageInput() {
     return () => {
       cancelled = true
     }
-  }, [currentModelId, currentProviderId])
+  }, [currentModelId, currentProviderId, getModelImageSupport])
 
   const uploadAndSend = async (text: string, drafts: DraftImageAttachment[]) => {
     // Questions never reach here: while one is pending the composer is replaced
@@ -255,42 +245,16 @@ export function MessageInput() {
       await planState.resolvePlan({ outcome: 'rejected', reason: text.trim() })
       return
     }
-    if (!currentClientId) throw new Error('Client identity unavailable')
-    const uploaded: UploadedImageAttachment[] = []
+    let uploaded: UploadedImageAttachment[] = []
+    if (drafts.length > 0) {
+      if (!uploadAttachments) throw new Error('This host cannot upload images')
+      uploaded = await uploadAttachments(drafts)
+    }
     try {
-      for (const draft of drafts) {
-        const uploadUrl = (await generateUploadUrl({ clientId: currentClientId })) as string
-        const response = await fetch(uploadUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': draft.file.type },
-          body: draft.file,
-        })
-        if (!response.ok) throw new Error(`Failed to upload ${draft.file.name}`)
-        const result = (await response.json()) as { storageId?: string }
-        if (!result.storageId)
-          throw new Error(`Upload did not return storage for ${draft.file.name}`)
-        const attachmentId = (await registerAttachment({
-          storageId: result.storageId,
-          clientId: currentClientId,
-          name: draft.file.name,
-          mimeType: draft.file.type,
-          size: draft.file.size,
-        })) as string
-        uploaded.push({
-          id: attachmentId,
-          name: draft.file.name,
-          mimeType: draft.file.type,
-          size: draft.file.size,
-          previewUrl: draft.previewUrl,
-        })
-      }
       await sendMessage(text, uploaded)
     } catch (error) {
-      if (uploaded.length) {
-        await removeAttachments({
-          ids: uploaded.map((attachment) => attachment.id),
-          clientId: currentClientId,
-        }).catch(() => undefined)
+      if (uploaded.length && discardAttachments) {
+        await discardAttachments(uploaded).catch(() => undefined)
       }
       throw error
     }
@@ -301,8 +265,9 @@ export function MessageInput() {
     : activeWorkspacePath
       ? `draft:${activeWorkspacePath}`
       : 'no-workspace'
-  const imageSupportMessage =
-    providerImageSupport === undefined
+  const imageSupportMessage = !canUploadImages
+    ? 'Image prompts are not available on this host.'
+    : providerImageSupport === undefined
       ? 'Checking whether the provider accepts image prompts…'
       : !providerSupportsImages
         ? `${currentProviderName} does not advertise image prompt support.`
@@ -378,7 +343,10 @@ export function MessageInput() {
           attachedTop={planEntries.length > 0 || !!questionFlow}
           draftKey={draftKey}
           imageUploadEnabled={
-            providerSupportsImages && modelImageSupport !== false && modelImageSupport !== undefined
+            canUploadImages &&
+            providerSupportsImages &&
+            modelImageSupport !== false &&
+            modelImageSupport !== undefined
           }
           imageSupportMessage={imageSupportMessage}
           slashCommands={slashCommands}

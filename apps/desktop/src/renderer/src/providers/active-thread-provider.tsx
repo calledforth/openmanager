@@ -25,8 +25,13 @@ import {
   shouldPreserveOptimisticMessages,
   type ActiveThreadDetails,
   type ActiveThreadStateValue,
+  type MessageContentSnapshot,
+  type MessageContentStore,
   type UIMessage,
 } from '@openmanager/app-core/providers/active-thread-provider'
+import type { TurnRuntimeMetadata } from '@openmanager/app-core/components/parts/turn-work-group'
+import { createConvexWatchStore } from '../lib/convex-watch-store'
+import { createRemoteStreamingStore } from '../lib/remote-stream-store'
 import { usePlatformCapabilities } from '@openmanager/app-core/providers/platform-provider'
 import { useSessionState } from '@openmanager/app-core/providers/session-provider'
 import { useComposerState } from '@openmanager/app-core/providers/composer-provider'
@@ -39,6 +44,42 @@ import {
 export * from '@openmanager/app-core/providers/active-thread-provider'
 export { StreamingMessagesStore } from '@openmanager/app-core/lib/streaming-messages-store'
 export type { StreamHydrationSnapshot } from '@openmanager/app-core/lib/streaming-messages-store'
+
+type ContentDoc = {
+  content: string
+  metadata?: { parts?: MessagePart[]; runtime?: TurnRuntimeMetadata }
+} | null
+
+/** Persisted message bodies as an external store over `messages.getContent`.
+ * The Convex row is mapped once per result so subscribers get a stable snapshot. */
+function createMessageContentStore(): MessageContentStore {
+  return createConvexWatchStore<{ externalId: string }, MessageContentSnapshot | null>({
+    name: 'messages.getContent',
+    query: api.messages.getContent,
+    argsFor: (externalId) => ({ externalId }),
+    select: (raw) => {
+      const doc = raw as unknown as ContentDoc
+      if (!doc) return null
+      return {
+        content: doc.content,
+        ...(doc.metadata?.parts ? { parts: doc.metadata.parts } : {}),
+        ...(doc.metadata?.runtime ? { runtime: doc.metadata.runtime } : {}),
+      }
+    },
+  })
+}
+
+/** Status of the job carrying an optimistic message, so a failed send can be
+ * shown on the bubble. Watched here rather than per row so the rows stay
+ * free of Convex. */
+const optimisticJobStatus = createConvexWatchStore<
+  { jobId: string },
+  { status: string; lastError?: string } | null
+>({
+  name: 'jobs.getStatus.optimistic',
+  query: api.jobs.getStatus,
+  argsFor: (jobId) => ({ jobId }),
+})
 
 const EMPTY_MESSAGES: Array<{
   externalId: string
@@ -93,6 +134,9 @@ export function ActiveThreadStateProvider({ children }: { children: ReactNode })
     store.setSnapshotSource(hydrateStreamSnapshot)
     return store
   }, [])
+  const remoteStreamingStore = useMemo(() => createRemoteStreamingStore(), [])
+  const messageContentStore = useMemo(() => createMessageContentStore(), [])
+  const [jobErrors, setJobErrors] = useState<Record<string, string>>({})
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<UIMessage[]>([])
   const previousActiveSessionIdRef = useRef(activeSessionId)
 
@@ -193,6 +237,24 @@ export function ActiveThreadStateProvider({ children }: { children: ReactNode })
       })
     }
   }, [activeSessionId, adoptedDraftSessionId])
+
+  const optimisticJobKey = optimisticUserMessages
+    .map((message) => message.optimisticJobId)
+    .filter((jobId): jobId is string => !!jobId)
+    .join('\n')
+  useEffect(() => {
+    const jobIds = optimisticJobKey ? optimisticJobKey.split('\n') : []
+    if (jobIds.length === 0) return
+    const stops = jobIds.map((jobId) =>
+      optimisticJobStatus.subscribe(jobId, () => {
+        const status = optimisticJobStatus.get(jobId)
+        if (status?.status !== 'failed') return
+        const message = status.lastError ?? 'Failed to send'
+        setJobErrors((prev) => (prev[jobId] === message ? prev : { ...prev, [jobId]: message }))
+      }),
+    )
+    return () => stops.forEach((stop) => stop())
+  }, [optimisticJobKey])
 
   const acknowledgeOptimisticMessage = useCallback((externalId: string) => {
     setOptimisticUserMessages((prev) => {
@@ -509,8 +571,12 @@ export function ActiveThreadStateProvider({ children }: { children: ReactNode })
       isFinal: message.isFinal,
       sequenceNum: message.sequenceNum,
     }))
-    return mergePersistedAndOptimisticMessages(persisted, optimisticUserMessages)
-  }, [messageList, optimisticUserMessages])
+    const merged = mergePersistedAndOptimisticMessages(persisted, optimisticUserMessages)
+    return merged.map((message) => {
+      const sendError = message.optimisticJobId ? jobErrors[message.optimisticJobId] : undefined
+      return sendError ? { ...message, sendError } : message
+    })
+  }, [jobErrors, messageList, optimisticUserMessages])
 
   const value = useMemo<ActiveThreadStateValue>(
     () => ({
@@ -520,6 +586,8 @@ export function ActiveThreadStateProvider({ children }: { children: ReactNode })
       isMessagesLoading,
       messages,
       streamingStore,
+      remoteStreamingStore,
+      messageContentStore,
       error,
       acknowledgeOptimisticMessage,
       sendMessage,
@@ -536,6 +604,8 @@ export function ActiveThreadStateProvider({ children }: { children: ReactNode })
       isMessagesLoading,
       messages,
       streamingStore,
+      remoteStreamingStore,
+      messageContentStore,
       error,
       acknowledgeOptimisticMessage,
       sendMessage,

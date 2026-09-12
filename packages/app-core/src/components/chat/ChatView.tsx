@@ -1,32 +1,39 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer, type VirtualItem } from '@tanstack/react-virtual'
-import { api } from '@openmanager/convex/_generated/api'
 import {
   useActiveThreadState,
+  useMessageContent,
+  useRemoteStreamingMessage,
   useStreamingMessage,
-} from '@openmanager/app-core/providers/active-thread-provider'
-import {
-  AssistantMessage,
-  ChatLoadingSkeleton,
-  ChatViewPanel,
-  UserMessage,
-} from '@openmanager/app-core/components/chat/ChatViewPrimitives'
-import { trackedConvexQuery, useTrackedQuery } from '../../lib/convex-telemetry'
-import {
-  applyPartUpdate,
-  createPartOrdinalState,
-  type StreamMessagePart,
-} from '@openmanager/shared/lib/remote-stream-parts'
+  type UIMessage,
+} from '../../providers/active-thread-provider'
+import { AssistantMessage, ChatLoadingSkeleton, ChatViewPanel, UserMessage } from './ChatViewPrimitives'
 import { shouldHydrateLocalStream, shouldUseRemoteStreaming } from '../../lib/stream-continuity'
-import { cn } from '@openmanager/app-core/lib/utils'
-import type { UploadedImageAttachment } from '@openmanager/app-core/lib/attachments'
-import { PendingPermissionFallback } from '@openmanager/app-core/components/permissions/InlinePermissionPrompt'
+import type { MessagePart } from '../../lib/streaming-messages-store'
+import { cn } from '../../lib/utils'
+import { PendingPermissionFallback } from '../permissions/InlinePermissionPrompt'
 import { NewSessionLanding } from './NewSessionLanding'
-import type { TurnRuntimeMetadata } from '@openmanager/app-core/components/parts/turn-work-group'
 
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96
 const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 8
 
+type TimelineMessage = Pick<
+  UIMessage,
+  | 'externalId'
+  | 'role'
+  | 'isFinal'
+  | 'optimisticContent'
+  | 'optimisticAttachments'
+  | 'optimisticJobId'
+  | 'isOptimistic'
+  | 'sendError'
+>
+
+/**
+ * The conversation on screen, bound to the active thread contract. Message
+ * bodies come from `messageContentStore`, in-flight turns from the streaming
+ * stores; nothing here knows which host supplied them.
+ */
 export function ChatView() {
   const {
     activeSessionId,
@@ -122,15 +129,7 @@ function ConversationTimeline({
   onPersistedContentReady,
 }: {
   sessionId: string | null
-  messages: Array<{
-    externalId: string
-    role: string
-    isFinal?: boolean
-    optimisticContent?: string
-    optimisticAttachments?: UploadedImageAttachment[]
-    optimisticJobId?: string
-    isOptimistic?: boolean
-  }>
+  messages: TimelineMessage[]
   isMessagesLoading: boolean
   scrollElement: HTMLDivElement | null
   isDriven: boolean
@@ -192,15 +191,7 @@ function MessageTimeline({
   onHydrated,
   onPersistedContentReady,
 }: {
-  messages: Array<{
-    externalId: string
-    role: string
-    isFinal?: boolean
-    optimisticContent?: string
-    optimisticAttachments?: UploadedImageAttachment[]
-    optimisticJobId?: string
-    isOptimistic?: boolean
-  }>
+  messages: TimelineMessage[]
   scrollElement: HTMLDivElement | null
   isDriven: boolean
   onStreamUpdate: () => void
@@ -315,15 +306,7 @@ function MessageRow({
   onPersistedContentReady,
   animate,
 }: {
-  message: {
-    externalId: string
-    role: string
-    isFinal?: boolean
-    optimisticContent?: string
-    optimisticAttachments?: UploadedImageAttachment[]
-    optimisticJobId?: string
-    isOptimistic?: boolean
-  }
+  message: TimelineMessage
   isDriven: boolean
   onStreamUpdate: () => void
   onReady: (messageId: string) => void
@@ -338,8 +321,8 @@ function MessageRow({
         isFinal={message.isFinal}
         optimisticContent={message.optimisticContent}
         optimisticAttachments={message.optimisticAttachments}
-        optimisticJobId={message.optimisticJobId}
         isOptimistic={message.isOptimistic}
+        sendError={message.sendError}
         isDriven={isDriven}
         onStreamUpdate={onStreamUpdate}
         onReady={onReady}
@@ -349,154 +332,50 @@ function MessageRow({
   )
 }
 
-type MessagePart = StreamMessagePart
-
-function useRemoteStreamingMessage(
-  messageExternalId: string,
-  enabled: boolean,
-  onUpdate?: () => void,
-) {
-  const latest = useTrackedQuery(
-    'streamChunks.getLatestChunk',
-    api.streamChunks.getLatestChunk,
-    enabled ? { messageExternalId } : 'skip',
-  )
-  const [content, setContent] = useState('')
-  const [parts, setParts] = useState<MessagePart[] | undefined>(undefined)
-  const lastChunkIndex = useRef<number | null>(null)
-  const partOrdinalStateRef = useRef(createPartOrdinalState())
-
-  useEffect(() => {
-    if (!enabled) return
-    setContent('')
-    setParts(undefined)
-    lastChunkIndex.current = null
-    partOrdinalStateRef.current = createPartOrdinalState()
-  }, [enabled, messageExternalId])
-
-  useEffect(() => {
-    if (!enabled || !latest) return
-
-    if (lastChunkIndex.current !== null && latest.chunkIndex <= lastChunkIndex.current) return
-
-    const applyChunkPart = (partUpdate: unknown) => {
-      const part = (partUpdate as { part?: MessagePart } | undefined)?.part
-      if (!part?.id) return
-      setParts(
-        (prev) =>
-          applyPartUpdate(
-            prev as StreamMessagePart[] | undefined,
-            part as StreamMessagePart,
-            partOrdinalStateRef.current,
-          ) as MessagePart[],
-      )
-    }
-
-    const expectedChunkIndex = latest.chunkIndex
-    const previousIndex = lastChunkIndex.current
-    // Sequential delivery: append the single newest chunk without any extra read.
-    const isSequential =
-      previousIndex === null ? expectedChunkIndex === 0 : expectedChunkIndex === previousIndex + 1
-
-    if (isSequential) {
-      lastChunkIndex.current = expectedChunkIndex
-      setContent((prev) => prev + latest.chunkText)
-      applyChunkPart(latest.partUpdate)
-      onUpdate?.()
-      return
-    }
-
-    // Gap (coalesced updates) or late join: fetch only the missed tail and append it.
-    let cancelled = false
-    const afterIndex = previousIndex ?? -1
-
-    trackedConvexQuery('streamChunks.getChunksSince', api.streamChunks.getChunksSince, {
-      messageExternalId,
-      afterIndex,
-    })
-      .then((chunks) => {
-        if (cancelled || !chunks || chunks.length === 0) return
-        if (lastChunkIndex.current !== previousIndex) return
-        const ordered = [...chunks].sort((a, b) => a.chunkIndex - b.chunkIndex)
-        let appended = ''
-        let maxIndex = previousIndex ?? -1
-        for (const chunk of ordered) {
-          if (chunk.chunkIndex <= maxIndex) continue
-          appended += chunk.chunkText
-          applyChunkPart(chunk.partUpdate)
-          maxIndex = chunk.chunkIndex
-        }
-        if (maxIndex <= (previousIndex ?? -1)) return
-        lastChunkIndex.current = maxIndex
-        setContent((prev) => prev + appended)
-        onUpdate?.()
-      })
-      .catch(() => undefined)
-
-    return () => {
-      cancelled = true
-    }
-  }, [latest, enabled, messageExternalId, onUpdate])
-
-  return { content, parts }
-}
-
 const ResolvedMessage = memo(function ResolvedMessage(props: {
   externalId: string
   role: string
   isFinal?: boolean
   optimisticContent?: string
-  optimisticAttachments?: UploadedImageAttachment[]
-  optimisticJobId?: string
+  optimisticAttachments?: TimelineMessage['optimisticAttachments']
   isOptimistic?: boolean
+  sendError?: string
   isDriven: boolean
   onStreamUpdate: () => void
   onReady?: (messageId: string) => void
   onPersistedContentReady?: (messageId: string) => void
 }) {
   const useRemoteStreaming = shouldUseRemoteStreaming(props.role, props.isFinal, props.isDriven)
-  // A driven session takes its tokens from IPC, but the renderer's copy starts
-  // empty on every reload. Hydrating from Convex restores the turn so far;
-  // everything after keeps arriving over IPC.
+  // A driven session takes its tokens from the host at zero latency, but that
+  // copy starts empty on every reload. Hydrating restores the turn so far;
+  // everything after keeps arriving live.
   const localStreamingMessage = useStreamingMessage(
     props.externalId,
     shouldHydrateLocalStream(props.role, props.isFinal, props.isDriven),
   )
-  const contentDoc = useTrackedQuery(
-    'messages.getContent',
-    api.messages.getContent,
-    !props.isOptimistic && (props.isFinal || props.role === 'user')
-      ? { externalId: props.externalId }
-      : 'skip',
-  )
-  const optimisticJob = useTrackedQuery(
-    'jobs.getStatus.optimistic',
-    api.jobs.getStatus,
-    props.isOptimistic && props.optimisticJobId
-      ? ({ jobId: props.optimisticJobId } as any)
-      : 'skip',
-  ) as { status: string; lastError?: string } | null | undefined
-  const remoteStreaming = useRemoteStreamingMessage(
+  const contentDoc = useMessageContent(
     props.externalId,
-    useRemoteStreaming,
-    props.onStreamUpdate,
+    !props.isOptimistic && (props.isFinal === true || props.role === 'user'),
   )
+  const remoteStreaming = useRemoteStreamingMessage(props.externalId, useRemoteStreaming)
+  const onStreamUpdate = props.onStreamUpdate
+  useEffect(() => {
+    if (useRemoteStreaming && remoteStreaming) onStreamUpdate()
+  }, [onStreamUpdate, remoteStreaming, useRemoteStreaming])
 
-  const finalizedMetadata = contentDoc?.metadata as
-    { parts?: MessagePart[]; runtime?: TurnRuntimeMetadata } | undefined
-  const finalizedParts = finalizedMetadata?.parts
-  // Cache last-known streaming parts so the isFinal transition doesn't flash empty
-  // (getContent query needs a round-trip to resolve after listMetadata flips isFinal)
+  const finalizedParts = contentDoc?.parts
+  // Cache last-known streaming parts so the isFinal transition doesn't flash
+  // empty while the persisted body is still on its way.
   const lastStreamingPartsRef = useRef<MessagePart[] | undefined>(undefined)
   const lastStreamingContentRef = useRef<string>('')
-  const streamingParts = props.isDriven ? localStreamingMessage?.parts : remoteStreaming.parts
+  const streamingParts = props.isDriven ? localStreamingMessage?.parts : remoteStreaming?.parts
   if (streamingParts && streamingParts.length > 0) {
     lastStreamingPartsRef.current = streamingParts
   }
 
   const streamingContent = props.isDriven
     ? (localStreamingMessage?.content ?? '')
-    : remoteStreaming.content
+    : (remoteStreaming?.content ?? '')
   if (streamingContent.length > 0) {
     lastStreamingContentRef.current = streamingContent
   }
@@ -542,7 +421,7 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
         content={content}
         parts={parts}
         optimisticAttachments={props.optimisticAttachments}
-        sendError={optimisticJob?.status === 'failed' ? optimisticJob.lastError : undefined}
+        sendError={props.sendError}
       />
     )
   }
@@ -552,7 +431,7 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
       content={content}
       isFinal={props.isFinal}
       parts={parts}
-      runtime={finalizedMetadata?.runtime}
+      runtime={contentDoc?.runtime}
     />
   )
 })

@@ -464,6 +464,9 @@ importers:
       '@openmanager/environment-client':
         specifier: workspace:*
         version: link:../environment-client
+      '@openmanager/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@openmanager/shared':
         specifier: workspace:*
         version: link:../shared
