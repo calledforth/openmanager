@@ -36,8 +36,10 @@ export function useSessionPlanEntries(): PlanEntry[] {
       for (let index = assistants.length - 1; index >= 0; index -= 1) {
         const message = assistants[index]!
         for (const source of sourcesFor(message)) {
+          // The newest plan part wins, an empty one included: the agent
+          // clearing its checklist must not leave the previous list on screen.
           const next = readPlanEntries(source.get(message.externalId)?.parts)
-          if (next && next.length > 0) {
+          if (next) {
             setEntries(next)
             return
           }

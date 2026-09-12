@@ -145,11 +145,10 @@ function projectTurn(
   const parts: MessagePart[] = [
     ...reasoning.map(reasoningPart),
     ...tools.map(toolPart),
-    ...assistantMessages.map((message) => ({
-      type: 'text',
-      id: message.messageId,
-      text: contentText(message.content),
-    })),
+    ...assistantMessages.flatMap((message) => [
+      { type: 'text', id: message.messageId, text: contentText(message.content) },
+      ...imageParts(message),
+    ]),
     ...(failure
       ? [{ type: 'text', id: `failure:${turn.turnId}`, text: `Turn failed: ${failure.message}` }]
       : []),

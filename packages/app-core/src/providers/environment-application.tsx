@@ -134,8 +134,9 @@ function EnvironmentPlatformCapabilitiesProvider({ children }: { children: React
 // ---------------------------------------------------------------------------
 
 interface DraftInternals {
-  /** Create the draft's session, open it and adopt it; returns its first thread. */
-  startDraftSession: () => Promise<ThreadTarget>
+  /** Create the draft's session, open it and adopt it; returns its first
+   * thread, or `null` when the draft was closed or replaced meanwhile. */
+  startDraftSession: () => Promise<ThreadTarget | null>
 }
 
 const DraftInternalsContext = createContext<DraftInternals | null>(null)
@@ -158,6 +159,10 @@ function EnvironmentSessionStateProvider({
   const [defaultProviderId, setDefaultProviderIdState] = useState<ProviderId>(DEFAULT_PROVIDER_ID)
   const [draftRequest, setDraftRequest] = useState<DraftRequest | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  // Bumped whenever the draft is opened, closed or replaced, so a session
+  // creation still in flight can tell that its draft no longer stands.
+  const draftGenerationRef = useRef(0)
 
   const activeSessionId = activeSession?.sessionId ?? null
   const isSessionDraftOpen = activeSessionId === null && draftWorkspaceId !== null
@@ -182,6 +187,7 @@ function EnvironmentSessionStateProvider({
     (workspacePath: string) => {
       const previousSessionId =
         activeSession?.workspaceId === workspacePath ? activeSession.sessionId : null
+      draftGenerationRef.current += 1
       setError(null)
       setDraftWorkspaceId(workspacePath)
       setPendingDraftSessionStart(false)
@@ -199,6 +205,7 @@ function EnvironmentSessionStateProvider({
 
   const selectSession = useCallback(
     (_workspacePath: string, externalId: string) => {
+      draftGenerationRef.current += 1
       setError(null)
       setDraftWorkspaceId(null)
       setTurnPending(false)
@@ -208,9 +215,16 @@ function EnvironmentSessionStateProvider({
     [commands, fail],
   )
 
-  const startDraftSession = useCallback(async (): Promise<ThreadTarget> => {
+  const startDraftSession = useCallback(async (): Promise<ThreadTarget | null> => {
     if (!draftWorkspaceId) throw new Error('No draft is open')
+    const generation = draftGenerationRef.current
     const { session, thread } = await commands.createSession({ workspaceId: draftWorkspaceId })
+    if (draftGenerationRef.current !== generation) {
+      // The user moved on while the session was being created: do not pull
+      // the view back to it or send the prompt. The empty session goes too.
+      void commands.deleteSession(session.sessionId).catch(() => undefined)
+      return null
+    }
     await commands.openSession(session.sessionId)
     setAdoptedDraftSessionId(session.sessionId)
     // The session exists now; the turn that follows reads as pending until the
@@ -510,6 +524,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
         if (!targetRef.current && isSessionDraftOpen) {
           beginDraftTurn()
           const created = await startDraftSession()
+          if (!created) return
           beginSessionTurn()
           await commands.sendTurn({ ...created, text })
           return
@@ -672,9 +687,15 @@ function toPlanRow(pending: PendingInteraction, at: number): PlanRow | null {
   }
 }
 
-/** First pending interaction of each kind, converted once per interaction object. */
+/** First pending interaction of each kind on the active thread, converted once
+ * per interaction object. With no active thread (a draft is open) there is
+ * nothing to answer: the unscoped selector would otherwise surface another
+ * session's request over the draft composer. */
 function useInteractionsByKind() {
-  const interactions = usePendingInteractions()
+  const thread = useActiveThread()
+  const threadId = thread?.thread.threadId ?? null
+  const scoped = usePendingInteractions(threadId)
+  const interactions = threadId ? scoped : EMPTY_LIST
   const cache = useRef(new WeakMap<PendingInteraction, { at: number }>())
   return useMemo(() => {
     const stamp = (pending: PendingInteraction) => {
