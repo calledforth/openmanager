@@ -7,11 +7,7 @@ import {
   type MockEnvironmentClient,
   type MockSeed,
 } from '@openmanager/environment-client'
-import { EnvironmentClientProvider } from '../src/providers/environment-client'
-import { EnvironmentApplicationProviders } from '../src/providers/environment-application'
-import { WorkspaceSidebar } from '../src/components/sidebar/WorkspaceSidebar'
-import { ChatWorkspace } from '../src/components/chat/ChatWorkspace'
-import { ThemeProvider } from '../src/providers/theme-provider'
+import { MockEnvironmentApp } from '../src/testing/mock-environment-app'
 
 const WORKSPACE = { workspaceId: 'C:/repo', name: 'repo' }
 const SESSION = { sessionId: 'session-1', workspaceId: WORKSPACE.workspaceId, title: 'First' }
@@ -78,17 +74,10 @@ const settle = async (client: MockEnvironmentClient) => {
 }
 
 function App({ client, addWorkspace }: { client: MockEnvironmentClient; addWorkspace?: () => Promise<void> }) {
-  return (
-    <ThemeProvider>
-      <EnvironmentClientProvider client={client}>
-        <EnvironmentApplicationProviders addWorkspace={addWorkspace} collapsedWorkspaceStorage={null}>
-          <WorkspaceSidebar collapsed={false} />
-          <ChatWorkspace />
-        </EnvironmentApplicationProviders>
-      </EnvironmentClientProvider>
-    </ThemeProvider>
-  )
+  return <MockEnvironmentApp client={client} addWorkspace={addWorkspace} />
 }
+
+const occurrences = (text: string) => (container.textContent?.split(text).length ?? 1) - 1
 
 const button = (label: string) =>
   container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)
@@ -244,6 +233,90 @@ describe('the shared application over the environment client', () => {
     expect(accepted?.input).toMatchObject({
       response: { kind: 'plan', interactionId: 'plan-1', outcome: { outcome: 'accepted' } },
     })
+  })
+
+  it('echoes the sent prompt before any assistant tokens arrive', async () => {
+    const client = createMockEnvironmentClient({
+      seed: { ...SEEDED_HISTORY, activeSessionId: SESSION.sessionId },
+      respond: () => null,
+    })
+    await render(<App client={client} />)
+    await type('echo me')
+    await act(() => button('Send')!.click())
+    await settle(client)
+    expect(container.textContent).toContain('echo me')
+    expect(occurrences('echo me')).toBe(1)
+    expect(container.textContent).not.toContain('You said:')
+    expect(client.getState().threads[THREAD.threadId]?.messages).toHaveLength(3)
+  })
+
+  it('appends streamed tokens onto one assistant message', async () => {
+    const client = createMockEnvironmentClient({
+      seed: { ...SEEDED_HISTORY, activeSessionId: SESSION.sessionId },
+      respond: () => null,
+    })
+    await render(<App client={client} />)
+    const { turn } = await act(() => client.commands.sendTurn({ ...THREAD, text: 'stream me' }))
+    await settle(client)
+    expect(container.textContent).toContain('stream me')
+    expect(container.textContent).not.toContain('Tokens')
+
+    const target = { ...THREAD, turnId: turn.turnId }
+    await act(() => {
+      client.streamAssistantText(target, 'Tok', 'assistant-stream')
+    })
+    expect(container.textContent).toContain('Tok')
+    expect(container.textContent).not.toContain('Tokens')
+
+    await act(() => {
+      client.streamAssistantText(target, 'ens', 'assistant-stream')
+    })
+    expect(container.textContent).toContain('Tokens')
+    expect(occurrences('Tokens')).toBe(1)
+    expect(client.getState().threads[THREAD.threadId]?.messages.filter((message) => message.role === 'assistant')).toHaveLength(2)
+  })
+
+  it('reconnects without duplicating the open session transcript', async () => {
+    const client = createMockEnvironmentClient({
+      seed: { ...SEEDED_HISTORY, activeSessionId: SESSION.sessionId },
+    })
+    await render(<App client={client} />)
+    expect(occurrences('What changed?')).toBe(1)
+    expect(occurrences('Two files were edited.')).toBe(1)
+
+    await act(() => client.reconnect())
+    expect(client.getState().connection.phase).toBe('connected')
+    expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
+    expect(occurrences('What changed?')).toBe(1)
+    expect(occurrences('Two files were edited.')).toBe(1)
+    expect(container.querySelectorAll('[data-chat-view]').length).toBe(1)
+
+    await act(() =>
+      client.emit({
+        type: 'event',
+        eventId: 'replay-started',
+        timestamp: '2026-09-12T00:00:00.000Z',
+        name: 'turn.started',
+        scope: {
+          type: 'thread',
+          environmentId: 'mock-environment',
+          sessionId: SESSION.sessionId,
+          threadId: THREAD.threadId,
+        },
+        payload: {
+          turn: { turnId: 'turn-1', threadId: THREAD.threadId, state: 'completed' },
+          userMessage: {
+            messageId: 'user-1',
+            threadId: THREAD.threadId,
+            turnId: 'turn-1',
+            role: 'user',
+            content: [{ type: 'text', text: 'What changed?' }],
+          },
+        },
+      }),
+    )
+    expect(occurrences('What changed?')).toBe(1)
+    expect(client.getState().threads[THREAD.threadId]?.messages).toHaveLength(2)
   })
 
   it('routes Add project through the host callback', async () => {
