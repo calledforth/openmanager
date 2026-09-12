@@ -44,8 +44,10 @@ environment client. The sidebar receives host settings as a React slot.
 only way views read environment data or send commands. Hosts choose the
 implementation: the WebSocket client for web and desktop, the mock for tests and
 Storybook, and a temporary Convex/Electron adapter in desktop during migration.
-`tests/environment-client.test.tsx` shows the mock driving the sidebar, chat and
-composer without a server.
+`tests/environment-application.test.tsx` and the `App/MockEnvironmentClient`
+Storybook stories drive the shared sidebar, chat and composer through the mock
+(session list, open, optimistic send, streamed tokens, interrupt, reconnect)
+with no server.
 
 The desktop's temporary Convex/Electron adapter lives in
 `apps/desktop/src/renderer/src/environment` and is mounted behind a backend flag;

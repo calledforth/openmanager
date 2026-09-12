@@ -24,7 +24,7 @@ Selectors (`selectSessionList`, `selectActiveThread`, `selectPendingInteractions
 | Implementation                     | Use                                                                                                                              |
 | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `createWebSocketEnvironmentClient` | Browser and desktop against the environment server                                                                               |
-| `createMockEnvironmentClient`      | Tests and Storybook; scripted streaming with no server                                                                           |
+| `createMockEnvironmentClient`      | Tests and Storybook; canned sessions, scripted streaming, and `reconnect()` that rehydrates without duplicates                   |
 | `createConvexEnvironmentClient`    | Desktop during migration; temporary, lives in `apps/desktop/src/renderer/src/environment` (see `docs/compatibility-adapters.md`) |
 
 All implementations feed the same reducers (`applyEvent`, `applySnapshot`,

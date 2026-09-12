@@ -171,4 +171,52 @@ describe('mock environment client', () => {
       }),
     ).toThrow()
   })
+
+  it('echoes the user message immediately and ignores a replayed turn.started', async () => {
+    const client = createMockEnvironmentClient({ seed, respond: () => null })
+    const { turn, userMessage } = await client.commands.sendTurn({ ...THREAD, text: 'echo' })
+    const afterSend = client.getState().threads[THREAD.threadId]!
+    expect(afterSend.messages).toEqual([userMessage])
+    expect(afterSend.turns).toHaveLength(1)
+
+    client.emit({
+      type: 'event',
+      eventId: 'replay-started',
+      timestamp: '2026-09-12T00:00:00.000Z',
+      name: 'turn.started',
+      scope: {
+        type: 'thread',
+        environmentId: 'mock-environment',
+        sessionId: SESSION.sessionId,
+        threadId: THREAD.threadId,
+      },
+      payload: { turn, userMessage },
+    })
+    expect(client.getState().threads[THREAD.threadId]?.messages).toEqual([userMessage])
+  })
+
+  it('reconnects by rehydrating the open session without duplicating messages', async () => {
+    const client = createMockEnvironmentClient({ seed, respond: () => null })
+    await client.commands.openSession(SESSION.sessionId)
+    const { turn, userMessage } = await client.commands.sendTurn({ ...THREAD, text: 'stay' })
+    const assistantId = client.streamAssistantText({ ...THREAD, turnId: turn.turnId }, 'ok')
+    client.completeTurn({ ...THREAD, turnId: turn.turnId })
+
+    client.reconnect()
+    expect(client.getState().connection.phase).toBe('connected')
+    expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
+    expect(client.getState().threads[THREAD.threadId]?.messages).toEqual([
+      userMessage,
+      {
+        messageId: assistantId,
+        threadId: THREAD.threadId,
+        turnId: turn.turnId,
+        role: 'assistant',
+        content: [{ type: 'text', text: 'ok' }],
+      },
+    ])
+
+    client.reconnect()
+    expect(client.getState().threads[THREAD.threadId]?.messages).toHaveLength(2)
+  })
 })
