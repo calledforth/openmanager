@@ -19,7 +19,9 @@ import {
   applyEnvironment,
   applyEvent,
   applySessionCreated,
+  applySessionOpen,
   applyThreadHydration,
+  applyTurnStarted,
   applyWorkspaceList,
   applyWorkspaceRemoved,
   createInitialState,
@@ -99,6 +101,11 @@ export interface MockEnvironmentClient extends EnvironmentClient {
   requestInteraction(target: MockTurnTarget, interaction: Interaction): void
   notice(target: MockTurnTarget, message: string): void
   setConnection(patch: Partial<ConnectionState>): void
+  /**
+   * Drop, rehydrate the active session from a `session.open` snapshot, and
+   * mark the client connected again. Replayed resource IDs do not duplicate.
+   */
+  reconnect(): void
   /** Resolves once all scheduled streaming has drained. */
   settle(): Promise<void>
 }
@@ -381,6 +388,10 @@ export function createMockEnvironmentClient(
           role: 'user',
           content: [{ type: 'text', text: input.text }],
         }
+        // Fold the user echo in before the event, the way the WebSocket client
+        // applies `turn.send` before `turn.started` arrives. The event is then
+        // a no-op instead of a second bubble.
+        store.update((state) => applyTurnStarted(state, input, { turn, userMessage }))
         emit({
           ...base(),
           name: 'turn.started',
@@ -499,6 +510,49 @@ export function createMockEnvironmentClient(
       })
     },
     setConnection: (patch) => store.update((state) => applyConnection(state, patch)),
+    reconnect: () => {
+      if (disposed) return
+      store.update((state) =>
+        applyConnection(state, { phase: 'reconnecting', hasConnected: true, failure: null }),
+      )
+      const state = store.getState()
+      const sessionId = state.activeSessionId
+      const summary = sessionId ? state.sessions[sessionId] : undefined
+      if (summary) {
+        const threadStates = summary.threadIds
+          .map((id) => state.threads[id])
+          .filter((thread): thread is NonNullable<typeof thread> => thread !== undefined)
+        store.update((current) =>
+          applyActiveSession(
+            applySessionOpen(current, {
+              session: {
+                sessionId: summary.sessionId,
+                workspaceId: summary.workspaceId,
+                title: summary.title,
+              },
+              threads: threadStates.map((item) => item.thread),
+              turns: threadStates.flatMap((item) => item.turns),
+              messages: threadStates.flatMap((item) => item.messages),
+              interactions: threadStates.flatMap((item) =>
+                item.interactions.map((pending) => ({
+                  threadId: pending.threadId,
+                  interaction: pending.interaction,
+                })),
+              ),
+            }),
+            sessionId,
+          ),
+        )
+      }
+      store.update((current) =>
+        applyConnection(current, {
+          phase: 'connected',
+          hasConnected: true,
+          failure: null,
+          capabilities: [...capabilities].map((command) => WIRE_COMMANDS[command]),
+        }),
+      )
+    },
     settle,
   }
 }
