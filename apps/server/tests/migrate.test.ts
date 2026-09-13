@@ -74,9 +74,9 @@ describe('schema migrations', () => {
   it('initializes a fresh database to the latest numbered version', async () => {
     const database = openEnvironmentDatabase(await dataDir())
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(3)
+    expect(readSchemaVersion(database)).toBe(4)
     expect(database.prepare('PRAGMA user_version').get() as { user_version: number }).toEqual({
-      user_version: 3,
+      user_version: 4,
     })
     expect(database.prepare('PRAGMA journal_mode').get() as { journal_mode: string }).toEqual({
       journal_mode: 'wal',
@@ -110,7 +110,7 @@ describe('schema migrations', () => {
       'workspace_composer_preferences',
       'workspaces',
     ])
-    expect(runMigrations(database, MIGRATIONS)).toBe(3)
+    expect(runMigrations(database, MIGRATIONS)).toBe(4)
   })
 
   it('upgrades sequentially across restarts and leaves already-applied versions untouched', async () => {
@@ -197,7 +197,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(3)
+    expect(readSchemaVersion(database)).toBe(4)
     expect(database.prepare('SELECT provider_id FROM provider_profiles').all()).toEqual([
       { provider_id: 'cursor' },
     ])
@@ -301,6 +301,44 @@ describe('schema migrations', () => {
       `),
     ).toThrow(/FOREIGN KEY constraint failed/)
     expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+  })
+
+  it('gives pre-existing client rows a kind and an idle expiry, and fails closed on new ones', async () => {
+    const directory = await dataDir()
+    const previous = openEnvironmentDatabase(directory, MIGRATIONS.slice(0, 3))
+    previous.exec(`
+      INSERT INTO authorized_clients (
+        client_id, label, credential_hash, scopes_json, created_at, last_seen_at
+      ) VALUES
+        ('seen', 'Seen', X'01', '["read"]', 1000, 5000),
+        ('never', 'Never seen', X'02', '["read"]', 2000, NULL)
+    `)
+    previous.close()
+
+    const database = openEnvironmentDatabase(directory)
+    databases.push(database)
+    expect(readSchemaVersion(database)).toBe(4)
+    expect(
+      database
+        .prepare('SELECT client_id, kind, expires_at FROM authorized_clients ORDER BY client_id')
+        .all(),
+    ).toEqual([
+      { client_id: 'never', kind: 'paired', expires_at: 2000 + 30 * 24 * 60 * 60 * 1000 },
+      { client_id: 'seen', kind: 'paired', expires_at: 5000 + 30 * 24 * 60 * 60 * 1000 },
+    ])
+    database.exec(`
+      INSERT INTO authorized_clients (client_id, label, credential_hash, scopes_json, created_at)
+      VALUES ('implicit', 'Implicit', X'03', '["read"]', 3000)
+    `)
+    expect(
+      database.prepare('SELECT kind, expires_at FROM authorized_clients WHERE client_id = ?').get('implicit'),
+    ).toEqual({ kind: 'paired', expires_at: 0 })
+    expect(() =>
+      database.exec(`
+        INSERT INTO authorized_clients (client_id, label, kind, credential_hash, scopes_json, created_at)
+        VALUES ('bad-kind', 'Bad', 'root', X'04', '["read"]', 4000)
+      `),
+    ).toThrow(/CHECK constraint failed/)
   })
 
   it('keeps client credentials unique without making attribution an owner', async () => {

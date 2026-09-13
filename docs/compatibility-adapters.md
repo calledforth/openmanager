@@ -31,7 +31,7 @@ boundary rejects any attempt to import it from the shared package.
 | ----------------------------------------------------------- | ----------------------------------------------------------------- | ------------------------ |
 | `OPENMANAGER_ENVIRONMENT_CLIENT` (main process env)         | `convex`, `websocket`                                             | `convex`                 |
 | `OPENMANAGER_ENVIRONMENT_URL`                               | HTTP origin of the environment server                             | `http://127.0.0.1:43120` |
-| `OPENMANAGER_CLIENT_TOKEN`                                  | the server's development client token (`<data-dir>/client-token`) | empty                    |
+| `OPENMANAGER_CLIENT_TOKEN`                                  | a client credential for that server (for example `<data-dir>/owner-credential`) | empty                    |
 | `localStorage['openmanager.environment-client']` (renderer) | `convex`, `websocket`                                             | unset                    |
 
 The local-storage override wins over the environment variable so the backend

@@ -92,31 +92,71 @@ and durable turn recovery belong to subsequent work.
 
 ## Authenticated connections
 
-First boot also creates `client-token` in the data directory: a random 256-bit,
-hex-encoded environment-wide development credential. It is persisted atomically
-and reused after restart; concurrent starts converge on the same token. POSIX
-creation requests owner-only file permissions. Windows uses the data directory's
-ACLs. The token is never logged or included in discovery responses. Read the file
-locally to configure a trusted client; anyone holding it has access to the entire
-environment. Pairing and per-client credentials will replace this initial issuance.
-An invalid credential file fails startup rather than silently replacing it.
+Every WebSocket carries a per-client credential, loopback included; network
+position grants nothing (threat model D2). Credentials and their grants follow
+[capability scopes and client credentials](../../docs/decisions/capability-scopes-and-credentials.md):
 
-Native clients authenticate with `Authorization: Bearer <token>` on the upgrade.
-Browser clients use two WebSocket subprotocols because the browser API cannot set
-that header:
+- A credential is opaque: `omc1.` followed by 32 CSPRNG bytes in unpadded
+  base64url (48 characters in total). The server stores only its SHA-256 in
+  `authorized_clients`, together with the client's label, kind (`owner`,
+  `paired` or `cloud`), capability grant, last-seen time and idle expiry.
+- A credential stops working 30 days after its last accepted connection; every
+  accepted upgrade moves that window forward. There is no absolute expiry.
+- Revoking a row (`server.revokeClient`) closes that client's live sockets with
+  close code `4401` and reason `revoked`, and its next upgrade is rejected. The
+  owner row cannot be revoked this way.
+
+**Local first run needs no pairing UI.** On startup the process makes sure a
+live `owner` row exists and that its credential is published in
+`owner-credential` in the data directory (owner-only permissions on POSIX; the
+data directory's ACLs on Windows). Restarts reuse it. If the file is missing,
+corrupt, or names a credential the database never issued, or if the owner row
+has expired, the process mints a new owner credential and revokes the previous
+owner row in the same transaction, so deleting the file rotates the owner.
+Read the file locally to configure a trusted client; it carries every
+capability. The raw credential is never logged, never in discovery responses,
+and never stored by the server outside that file. Pairing (`paired` rows) and
+cloud enrollment (`cloud` rows) are issued through `clients.issue` and are
+separate work.
+
+Native clients authenticate with `Authorization: Bearer <credential>` on the
+upgrade. Browser clients use two WebSocket subprotocols because the browser API
+cannot set that header:
 
 ```ts
 const socket = new WebSocket(bootstrap.websocketUrl, [
   'openmanager.v1',
-  `openmanager.auth.${token}`,
+  `openmanager.auth.${credential}`,
 ])
 ```
 
-The server selects only `openmanager.v1`; it does not echo the token in its
-response. Tokens in query strings, cookies, or messages after upgrade are not
-accepted. Upgrade rejection returns an HTTP error with the protocol error
-envelope (`auth` for missing/invalid credentials). Browsers expose a generic
-WebSocket error for a failed upgrade, so UI must not rely on reading that HTTP body.
+The server selects only `openmanager.v1`; it does not echo the credential in
+its response. Credentials in query strings, cookies, or messages after upgrade
+are not accepted. Upgrade rejection returns an HTTP error with the protocol
+error envelope (`auth` for missing, malformed, unknown, revoked and expired
+credentials alike). Browsers expose a generic WebSocket error for a failed
+upgrade, so UI must not rely on reading that HTTP body.
+
+### Per-operation authorization
+
+Authenticated is not enough. Every command name is mapped to exactly one access
+capability (`read`, `operate`, `agent`, `terminal`, `admin`) in
+`COMMAND_ACCESS` in the protocol package, checked with `satisfies` so an
+unmapped command does not compile. After the handshake, the socket looks up the
+command's capability before any service sees it:
+
+- A name the protocol does not know is a `validation` error for every grant.
+- A known command outside the caller's grant fails with `capability_missing`
+  and `details.requiredCapability`; the client retry policy for that code is
+  `never`. The command's service is not invoked.
+- `protocol.handshake` and heartbeat messages need no capability beyond a
+  valid credential.
+
+The mapping for today's commands: `read` covers subscriptions, `session.open`,
+provider catalog, discovery, health and probe, and `composer.preferences.get`;
+`operate` covers `session.create` and `composer.preferences.set`; `agent`
+covers `turn.send`, `turn.interrupt`, `interaction.respond` and the composer
+model, mode and config-option setters. The owner grant holds all five.
 
 Browser origins must be explicitly approved, independently of authentication:
 
@@ -197,8 +237,8 @@ durable scope head, inserts event rows, updates message/session/turn projections
 and advances the cursor in one transaction. Streaming token deltas are
 coalesced and flushed at 16 KiB or 100 ms; the terminal event shares the final
 batch so content and final state commit together. Callers publish only records
-returned after commit; the transport does not manufacture cursors. The
-development credential authorizes all scopes in this environment; scoped
+returned after commit; the transport does not manufacture cursors. Any client
+with `read` may subscribe to any scope in this environment; scoped
 subscriptions are routing, not per-resource ACLs.
 
 The running server still uses the in-memory event service and publishes directly
@@ -224,7 +264,7 @@ SIGINT and SIGTERM put the process into a one-way drain: new socket upgrades are
 rejected, existing sockets receive `1001 / server_shutdown`, HTTP keep-alive
 connections close, and the process exits only after those listeners and the
 agent runtime finish closing. Restarting with the same data directory reuses the
-exact environment identity and client credential records. Windows does not
+exact environment identity, client credential rows and owner credential. Windows does not
 deliver POSIX signals to Node child processes, so its programmatic close path
 provides the equivalent graceful behavior; service managers must use a Windows
 shutdown mechanism rather than relying on SIGTERM.
@@ -308,8 +348,11 @@ The domain model begins in migration 2. Migration 3 adds the composite indexes
 behind the session list, session history, and replay queries in
 [`src/db/queries.ts`](src/db/queries.ts); `tests/query-plans.test.ts` pins each
 plan with `EXPLAIN QUERY PLAN`, so a query or index change that introduces a
-scan or a temporary sort fails the suite. Keep later changes in new numbered
-migrations rather than editing a shipped migration.
+scan or a temporary sort fails the suite. Migration 4 adds `kind` and
+`expires_at` to `authorized_clients` (existing rows become `paired` with a
+30-day window from their last activity; a row inserted without an explicit
+expiry is already expired) and the index behind the owner lookup. Keep later
+changes in new numbered migrations rather than editing a shipped migration.
 
 ### Event retention
 

@@ -77,7 +77,7 @@ describe('process lifecycle', () => {
       await (await fetch(`${first.url}/bootstrap`)).json(),
     )
     const identityRecord = await readFile(join(dataDir, 'identity.json'), 'utf8')
-    const credentialRecord = await readFile(join(dataDir, 'client-token'), 'utf8')
+    const credentialRecord = await readFile(join(dataDir, 'owner-credential'), 'utf8')
 
     await stop(first)
 
@@ -90,7 +90,7 @@ describe('process lifecycle', () => {
       label: firstBootstrap.label,
     })
     expect(await readFile(join(dataDir, 'identity.json'), 'utf8')).toBe(identityRecord)
-    expect(await readFile(join(dataDir, 'client-token'), 'utf8')).toBe(credentialRecord)
+    expect(await readFile(join(dataDir, 'owner-credential'), 'utf8')).toBe(credentialRecord)
     await stop(restarted)
   })
 
@@ -100,7 +100,7 @@ describe('process lifecycle', () => {
       const dataDir = await mkdtemp(join(tmpdir(), 'openmanager-lifecycle-test-'))
       directories.push(dataDir)
       const serverProcess = await launch(dataDir)
-      const token = (await readFile(join(dataDir, 'client-token'), 'utf8')).trim()
+      const token = (await readFile(join(dataDir, 'owner-credential'), 'utf8')).trim()
       const socket = new WebSocket(`${serverProcess.url.replace('http:', 'ws:')}/ws`, {
         headers: { authorization: `Bearer ${token}` },
       })

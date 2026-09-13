@@ -36,7 +36,7 @@ export async function startProtocolHost(overrides: Partial<ServerConfig> = {}) {
     ...overrides,
   })
   servers.push(server)
-  const token = (await readFile(join(dataDir, 'client-token'), 'utf8')).trim()
+  const token = (await readFile(join(dataDir, 'owner-credential'), 'utf8')).trim()
   return { server, token, url: `${server.url.replace('http:', 'ws:')}/ws`, dataDir }
 }
 

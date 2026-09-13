@@ -304,4 +304,43 @@ export const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    version: 4,
+    name: 'client_credential_kind_and_expiry',
+    up(database) {
+      // ALTER TABLE has no IF NOT EXISTS, and a remigration of this version
+      // (schema_version reset while the objects exist) must be tolerated.
+      const columns = new Set(
+        (database.prepare('PRAGMA table_info(authorized_clients)').all() as { name: string }[]).map(
+          (column) => column.name,
+        ),
+      )
+      if (!columns.has('kind')) {
+        // Who may revoke the row and whether it may carry admin: owner, paired or cloud.
+        database.exec(`
+          ALTER TABLE authorized_clients
+            ADD COLUMN kind TEXT NOT NULL DEFAULT 'paired'
+              CHECK (kind IN ('owner', 'paired', 'cloud'))
+        `)
+      }
+      if (!columns.has('expires_at')) {
+        // Idle expiry, recomputed on every accepted connection. The default of 0
+        // is "already expired": a row inserted without an explicit expiry never
+        // authenticates. Rows that predate this column get the 30-day window
+        // measured from their last activity.
+        database.exec(`
+          ALTER TABLE authorized_clients
+            ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0;
+          UPDATE authorized_clients
+          SET expires_at = COALESCE(last_seen_at, created_at) + 2592000000
+          WHERE expires_at = 0;
+        `)
+      }
+      // The live owner lookup at startup, newest first, and per-kind listing.
+      database.exec(`
+        CREATE INDEX IF NOT EXISTS authorized_clients_kind_idx
+          ON authorized_clients(kind, revoked_at, created_at);
+      `)
+    },
+  },
 ]
