@@ -37,8 +37,9 @@ environment-wide `<data-dir>/client-token` is a Wave 1 development credential
 and is removed once per-client credentials exist.
 
 **D4. Capabilities are deliberate grants.** Access is split into capabilities,
-and the owner chooses which ones a client gets. Draft set (CAL-45 fixes the
-names and maps them to protocol commands):
+and the owner chooses which ones a client gets. The set is fixed and mapped to
+every protocol command in
+[capability scopes and client credentials](./decisions/capability-scopes-and-credentials.md):
 
 | Capability | Allows                                                                    |
 | ---------- | ------------------------------------------------------------------------- |
