@@ -124,4 +124,13 @@ describe('configuration', () => {
     expect(loadConfig(['--remint-owner'], {}).remintOwner).toBe(true)
     expect(loadConfig([], { OPENMANAGER_REMINT_OWNER: '1' }).remintOwner).toBe(false)
   })
+
+  it('accepts the local owner claim key only from the environment', () => {
+    const key = 'K'.repeat(43)
+    expect(loadConfig([], { OPENMANAGER_LOCAL_OWNER_CLAIM_KEY: key }).localOwnerClaimKey).toBe(key)
+    expect(() =>
+      loadConfig([], { OPENMANAGER_LOCAL_OWNER_CLAIM_KEY: 'too-short' }),
+    ).toThrow('32 bytes')
+    expect(() => loadConfig(['--local-owner-claim-key=secret'], {})).toThrow()
+  })
 })

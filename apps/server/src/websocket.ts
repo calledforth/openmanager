@@ -119,6 +119,7 @@ export function attachWebSocket(
       options.audit.record({
         type: 'rate_limited',
         remoteAddress,
+        command: 'ws.upgrade',
         details: { policy: 'auth_failure', retryAfterMs: lockout.retryAfterMs },
       })
       return reject(
@@ -151,6 +152,7 @@ export function attachWebSocket(
       options.audit.record({
         type: 'auth.failed',
         remoteAddress,
+        command: 'ws.upgrade',
         details: { presented: candidate !== undefined, origin: auditValue(request.headers.origin) },
       })
       return reject(401, 'auth', 'A valid client credential is required.')
@@ -326,6 +328,12 @@ export function attachWebSocket(
           return
         }
         if (required !== null && !client.capabilities.includes(required)) {
+          options.audit.record({
+            type: 'capability.denied',
+            clientId: client.clientId,
+            command: message.name,
+            details: { requiredCapability: required },
+          })
           reply(accessDenied(message.requestId, required))
           return
         }

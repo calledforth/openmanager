@@ -153,6 +153,44 @@ describe('web routes', () => {
     expect(requested).not.toContain('tunnel.example')
   })
 
+  it('surfaces a local owner identity mismatch without storing or connecting it', async () => {
+    const user = userEvent.setup()
+    const ownerCredential = `omc1.${'C'.repeat(43)}`
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        return {
+          ok: true,
+          status: 200,
+          json: async () =>
+            url.endsWith('/local-owner')
+              ? {
+                  environmentId: 'env-claimed',
+                  kind: 'owner',
+                  credential: ownerCredential,
+                  grant: ['read', 'admin'],
+                }
+              : {
+                  protocolVersion: 1,
+                  environmentId: 'env-bootstrap',
+                  label: 'Unexpected environment',
+                  capabilities: ['connection.heartbeat'],
+                },
+        }
+      }),
+    )
+
+    renderWebApp('/')
+    await user.type(await screen.findByLabelText('Environment endpoint'), 'http://127.0.0.1:43120')
+    await user.click(screen.getByRole('button', { name: 'Connect' }))
+
+    expect(await screen.findByRole('heading', { name: 'Not authorized' })).toBeInTheDocument()
+    expect(screen.getByText(/belongs to a different environment/i)).toBeInTheDocument()
+    expect(localStorage.getItem(ENVIRONMENT_STORAGE_KEY)).toBeNull()
+    expect(screen.queryByText(/Connected ·/)).not.toBeInTheDocument()
+  })
+
   it('connects from the first-run screen using the bootstrap response', async () => {
     const user = userEvent.setup()
     mockBootstrap({

@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { environmentLocalOwnerUrl, isLoopbackEnvironmentEndpoint } from './environment-store'
-import { fetchLocalOwner, parseLocalOwnerClaim } from './local-owner'
+import { fetchLocalOwner, LOCAL_OWNER_CLAIM_HEADER, parseLocalOwnerClaim } from './local-owner'
 
 const OWNER_CREDENTIAL = `omc1.${'A'.repeat(43)}`
+const CLAIM_KEY = 'K'.repeat(43)
 
 describe('loopback environment endpoints', () => {
   it('recognizes loopback HTTP endpoints and joins /local-owner under a path prefix', () => {
@@ -47,7 +48,15 @@ describe('fetchLocalOwner', () => {
   it('does not contact remote endpoints', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
-    expect(await fetchLocalOwner('https://tunnel.example')).toBeUndefined()
+    expect(await fetchLocalOwner('https://tunnel.example', CLAIM_KEY)).toBeUndefined()
+    expect(fetchMock).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+
+  it('does not contact loopback without the process-scoped claim key', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await fetchLocalOwner('http://127.0.0.1:43120', '')).toBeUndefined()
     expect(fetchMock).not.toHaveBeenCalled()
     vi.unstubAllGlobals()
   })
@@ -65,12 +74,18 @@ describe('fetchLocalOwner', () => {
         }),
       })),
     )
-    expect(await fetchLocalOwner('http://127.0.0.1:43120')).toEqual({
+    expect(await fetchLocalOwner('http://127.0.0.1:43120', CLAIM_KEY)).toEqual({
       environmentId: 'env-local',
       kind: 'owner',
       credential: OWNER_CREDENTIAL,
       grant: ['read'],
     })
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      'http://127.0.0.1:43120/local-owner',
+      expect.objectContaining({
+        headers: expect.objectContaining({ [LOCAL_OWNER_CLAIM_HEADER]: CLAIM_KEY }),
+      }),
+    )
     vi.unstubAllGlobals()
   })
 })

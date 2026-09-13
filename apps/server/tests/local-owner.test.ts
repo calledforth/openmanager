@@ -9,6 +9,7 @@ import type { AuditEvent } from '../src/audit.js'
 import { OWNER_GRANT } from '../src/authorized-clients.js'
 import {
   evaluateLocalOwnerAccess,
+  LOCAL_OWNER_CLAIM_HEADER,
   isFirstPartyLoopbackOrigin,
   isLoopbackHostHeader,
   isLoopbackRemoteAddress,
@@ -16,6 +17,8 @@ import {
 } from '../src/local-owner.js'
 import { RATE_LIMITS } from '../src/rate-limit.js'
 import { startServer } from '../src/server.js'
+
+const LOCAL_OWNER_CLAIM_KEY = 'L'.repeat(43)
 
 /** fetch strips a caller-supplied Host header, so host policy tests go through node:http. */
 async function get(port: number, path: string, headers: Record<string, string>) {
@@ -68,17 +71,26 @@ describe('local owner access helpers', () => {
   it('hides the route from tunnel hosts and refuses missing or hosted origins', () => {
     const loopback = {
       socket: { remoteAddress: '127.0.0.1' },
-      headers: { host: '127.0.0.1:43120', origin: 'http://localhost:5173' },
+      headers: {
+        host: '127.0.0.1:43120',
+        origin: 'http://localhost:5173',
+        [LOCAL_OWNER_CLAIM_HEADER]: LOCAL_OWNER_CLAIM_KEY,
+      },
     }
-    expect(evaluateLocalOwnerAccess(loopback as never, 43120)).toBe('ok')
+    expect(evaluateLocalOwnerAccess(loopback as never, 43120, LOCAL_OWNER_CLAIM_KEY)).toBe('ok')
     expect(
       evaluateLocalOwnerAccess(
         { ...loopback, headers: { host: 'tunnel.example', origin: 'http://localhost:5173' } } as never,
         43120,
+        LOCAL_OWNER_CLAIM_KEY,
       ),
     ).toBe('not_found')
     expect(
-      evaluateLocalOwnerAccess({ ...loopback, headers: { host: '127.0.0.1:43120' } } as never, 43120),
+      evaluateLocalOwnerAccess(
+        { ...loopback, headers: { host: '127.0.0.1:43120' } } as never,
+        43120,
+        LOCAL_OWNER_CLAIM_KEY,
+      ),
     ).toBe('forbidden')
     expect(
       evaluateLocalOwnerAccess(
@@ -87,6 +99,7 @@ describe('local owner access helpers', () => {
           headers: { host: '127.0.0.1:43120', origin: 'https://app.example' },
         } as never,
         43120,
+        LOCAL_OWNER_CLAIM_KEY,
       ),
     ).toBe('forbidden')
     expect(
@@ -100,6 +113,17 @@ describe('local owner access helpers', () => {
           },
         } as never,
         43120,
+        LOCAL_OWNER_CLAIM_KEY,
+      ),
+    ).toBe('not_found')
+    expect(
+      evaluateLocalOwnerAccess(
+        {
+          ...loopback,
+          headers: { host: '127.0.0.1:43120', origin: 'http://localhost:5173' },
+        } as never,
+        43120,
+        LOCAL_OWNER_CLAIM_KEY,
       ),
     ).toBe('not_found')
   })
@@ -113,14 +137,29 @@ describe('GET /local-owner', () => {
       dataDir: directory,
       logLevel: 'silent',
       allowedOrigins: ['http://localhost:5173'],
+      localOwnerClaimKey: LOCAL_OWNER_CLAIM_KEY,
     })
     servers.push(server)
     const audits: AuditEvent[] = []
     server.audit.subscribe((event) => audits.push(event))
     const published = (await readFile(join(directory, 'owner-credential'), 'utf8')).trim()
 
+    const preflight = await fetch(`${server.url}${LOCAL_OWNER_PATH}`, {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'http://localhost:5173',
+        'access-control-request-method': 'GET',
+        'access-control-request-headers': LOCAL_OWNER_CLAIM_HEADER,
+      },
+    })
+    expect(preflight.status).toBe(204)
+    expect(preflight.headers.get('access-control-allow-headers')).toBe(LOCAL_OWNER_CLAIM_HEADER)
+
     const claimed = await fetch(`${server.url}${LOCAL_OWNER_PATH}`, {
-      headers: { origin: 'http://localhost:5173' },
+      headers: {
+        origin: 'http://localhost:5173',
+        [LOCAL_OWNER_CLAIM_HEADER]: LOCAL_OWNER_CLAIM_KEY,
+      },
     })
     expect(claimed.status).toBe(200)
     expect(claimed.headers.get('cache-control')).toBe('no-store')
@@ -154,6 +193,7 @@ describe('GET /local-owner', () => {
       logLevel: 'silent',
       allowedOrigins: ['http://localhost:5173', 'https://app.example'],
       allowedHosts: ['tunnel.example'],
+      localOwnerClaimKey: LOCAL_OWNER_CLAIM_KEY,
     })
     servers.push(server)
     const published = (await readFile(join(directory, 'owner-credential'), 'utf8')).trim()
@@ -163,13 +203,17 @@ describe('GET /local-owner', () => {
       origin: 'http://localhost:5173',
       'x-forwarded-host': `127.0.0.1:${server.port}`,
       'x-forwarded-for': '127.0.0.1',
+      [LOCAL_OWNER_CLAIM_HEADER]: LOCAL_OWNER_CLAIM_KEY,
     })
     expect(tunnel.status).toBe(404)
     expect(tunnel.body).toBe('Not found\n')
     expect(tunnel.body).not.toContain(published)
 
     const hosted = await fetch(`${server.url}${LOCAL_OWNER_PATH}`, {
-      headers: { origin: 'https://app.example' },
+      headers: {
+        origin: 'https://app.example',
+        [LOCAL_OWNER_CLAIM_HEADER]: LOCAL_OWNER_CLAIM_KEY,
+      },
     })
     expect(hosted.status).toBe(403)
     const hostedBody = await hosted.json()
@@ -185,10 +229,18 @@ describe('GET /local-owner', () => {
       origin: 'http://localhost:5173',
       'x-forwarded-for': '203.0.113.7',
       'cf-connecting-ip': '203.0.113.7',
+      [LOCAL_OWNER_CLAIM_HEADER]: LOCAL_OWNER_CLAIM_KEY,
     })
     expect(rewritten.status).toBe(404)
     expect(rewritten.body).toBe('Not found\n')
     expect(rewritten.body).not.toContain(published)
+
+    const unmarkedTunnel = await get(server.port, LOCAL_OWNER_PATH, {
+      host: `127.0.0.1:${server.port}`,
+      origin: 'http://localhost:5173',
+    })
+    expect(unmarkedTunnel.status).toBe(404)
+    expect(unmarkedTunnel.body).not.toContain(published)
   })
 
   it('rate-limits issuance attempts without serving the credential', async () => {
@@ -198,18 +250,25 @@ describe('GET /local-owner', () => {
       dataDir: directory,
       logLevel: 'silent',
       allowedOrigins: ['http://localhost:5173'],
+      localOwnerClaimKey: LOCAL_OWNER_CLAIM_KEY,
     })
     servers.push(server)
     const published = (await readFile(join(directory, 'owner-credential'), 'utf8')).trim()
     const { limit } = RATE_LIMITS.local_owner
     for (let attempt = 0; attempt < limit; attempt += 1) {
       const response = await fetch(`${server.url}${LOCAL_OWNER_PATH}`, {
-        headers: { origin: 'http://localhost:5173' },
+        headers: {
+          origin: 'http://localhost:5173',
+          [LOCAL_OWNER_CLAIM_HEADER]: LOCAL_OWNER_CLAIM_KEY,
+        },
       })
       expect(response.status).toBe(200)
     }
     const blocked = await fetch(`${server.url}${LOCAL_OWNER_PATH}`, {
-      headers: { origin: 'http://localhost:5173' },
+      headers: {
+        origin: 'http://localhost:5173',
+        [LOCAL_OWNER_CLAIM_HEADER]: LOCAL_OWNER_CLAIM_KEY,
+      },
     })
     expect(blocked.status).toBe(429)
     expect(blocked.headers.get('retry-after')).toBeTruthy()

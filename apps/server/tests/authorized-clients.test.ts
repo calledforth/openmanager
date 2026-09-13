@@ -280,6 +280,39 @@ describe('local owner credential', () => {
     expect(store.ensureOwner()).toEqual(minted.client)
   })
 
+  it('restores the published credential when the database commit fails', async () => {
+    const dataDir = await directory()
+    const store = open(dataDir)
+    const original = store.ensureOwner()
+    const originalCredential = store.publishedOwner()
+    expect(originalCredential).toMatch(CREDENTIAL_PATTERN)
+
+    const database = new DatabaseSync(join(dataDir, DATABASE_FILENAME))
+    try {
+      database.exec(`
+        PRAGMA foreign_keys = ON;
+        CREATE TABLE owner_commit_parent (client_id TEXT PRIMARY KEY);
+        CREATE TABLE owner_commit_failure (
+          client_id TEXT NOT NULL,
+          FOREIGN KEY (client_id) REFERENCES owner_commit_parent(client_id)
+            DEFERRABLE INITIALLY DEFERRED
+        );
+        CREATE TRIGGER fail_owner_commit
+        AFTER INSERT ON authorized_clients
+        WHEN NEW.kind = 'owner'
+        BEGIN
+          INSERT INTO owner_commit_failure (client_id) VALUES (NEW.client_id);
+        END;
+      `)
+    } finally {
+      database.close()
+    }
+
+    expect(() => store.remintOwner()).toThrow()
+    expect(store.publishedOwner()).toBe(originalCredential)
+    expect(store.authenticate(originalCredential)).toEqual(original)
+  })
+
   it('re-mints an owner whose idle window has lapsed', async () => {
     let now = 5_000
     const dataDir = await directory()

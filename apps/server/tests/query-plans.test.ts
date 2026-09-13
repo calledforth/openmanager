@@ -6,6 +6,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { openEnvironmentDatabase } from '../src/db/database.js'
 import {
   ACTIVE_OWNER_CLIENT_SQL,
+  AUDIT_EVENTS_FOR_CLIENT_SQL,
+  AUDIT_EVENTS_FOR_TYPE_SQL,
+  AUDIT_EVENTS_RECENT_SQL,
   AUTHORIZED_CLIENT_BY_HASH_SQL,
   EVENT_TOMBSTONE_SQL,
   EVENTS_AFTER_CURSOR_SQL,
@@ -115,6 +118,19 @@ describe('bounded query plans', () => {
     expectIndexed(plan(database, ACTIVE_OWNER_CLIENT_SQL), 'authorized_clients_kind_idx')
   })
 
+  it('lists audit events from the (at, event_id) indexes, not a table scan', async () => {
+    const database = await createDatabase()
+    expect(plan(database, AUDIT_EVENTS_RECENT_SQL)).toEqual([
+      'SEARCH audit_events USING INDEX audit_events_at_idx ((at,event_id)<(?,?))',
+    ])
+    expect(plan(database, AUDIT_EVENTS_FOR_CLIENT_SQL)).toEqual([
+      'SEARCH audit_events USING INDEX audit_events_client_at_idx (client_id=? AND (at,event_id)<(?,?))',
+    ])
+    expect(plan(database, AUDIT_EVENTS_FOR_TYPE_SQL)).toEqual([
+      'SEARCH audit_events USING INDEX audit_events_type_at_idx (type=? AND (at,event_id)<(?,?))',
+    ])
+  })
+
   it('drops the single-column indexes the composites supersede', async () => {
     const database = await createDatabase()
     const indexes = database
@@ -131,6 +147,9 @@ describe('bounded query plans', () => {
         'threads_session_created_at_idx',
         'turns_thread_started_at_idx',
         'event_log_created_at_idx',
+        'audit_events_at_idx',
+        'audit_events_client_at_idx',
+        'audit_events_type_at_idx',
       ]),
     )
   })

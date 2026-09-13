@@ -2,6 +2,7 @@ import { homedir } from 'node:os'
 import { delimiter, join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import type { AgentRuntimeOptions } from '@agentpack/runtime/node'
+import { LOCAL_OWNER_CLAIM_KEY_PATTERN } from './local-owner.ts'
 import type { WorkspaceRuntimeResolver } from './thread-service.ts'
 
 export const LOG_LEVELS = ['debug', 'info', 'warn', 'error', 'silent'] as const
@@ -24,6 +25,11 @@ export interface ServerConfig {
   runtimeOptions?: AgentRuntimeOptions
   /** Test-only workspace → provider routing. Production resolves through the workspace registry. */
   resolveWorkspace?: WorkspaceRuntimeResolver
+  /**
+   * Process-scoped proof shared with the first-party localhost web process.
+   * It is intentionally environment-only so it cannot leak through arguments.
+   */
+  localOwnerClaimKey?: string
   /**
    * When true, startup always remints the owner credential instead of reusing
    * the published file. Explicit only: there is no environment variable for this.
@@ -141,6 +147,10 @@ export function loadConfig(
   const workspaces = validateWorkspaceRoots(
     values.workspace ?? splitList(env.OPENMANAGER_WORKSPACES, delimiter) ?? [],
   )
+  const localOwnerClaimKey = env.OPENMANAGER_LOCAL_OWNER_CLAIM_KEY?.trim()
+  if (localOwnerClaimKey && !LOCAL_OWNER_CLAIM_KEY_PATTERN.test(localOwnerClaimKey)) {
+    throw new Error('Local owner claim key must be 32 bytes of unpadded base64url.')
+  }
   return {
     port: Number(port),
     dataDir: resolve(dataDir),
@@ -149,5 +159,6 @@ export function loadConfig(
     allowedHosts,
     workspaces,
     remintOwner: values['remint-owner'] === true,
+    ...(localOwnerClaimKey ? { localOwnerClaimKey } : {}),
   }
 }

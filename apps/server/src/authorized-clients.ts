@@ -6,11 +6,13 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  rmSync,
   unlinkSync,
   writeSync,
 } from 'node:fs'
 import { join } from 'node:path'
 import { AccessGrantSchema, type AccessCapability } from '@openmanager/protocol/node'
+import type { AuditLog } from './audit.ts'
 import { openEnvironmentDatabase } from './db/database.ts'
 import { ACTIVE_OWNER_CLIENT_SQL, AUTHORIZED_CLIENT_BY_HASH_SQL } from './db/queries.ts'
 
@@ -120,10 +122,22 @@ function writeOwnerFile(path: string, credential: string): void {
   }
 }
 
+function restoreOwnerFile(path: string, credential: string | undefined): void {
+  if (credential === undefined) {
+    rmSync(path, { force: true })
+    return
+  }
+  writeOwnerFile(path, credential)
+}
+
 export type AuthorizedClients = ReturnType<typeof openAuthorizedClients>
 
 /** Open the credential store on the environment database. All operations are synchronous point reads and writes. */
-export function openAuthorizedClients(dataDir: string, clock: () => number = Date.now) {
+export function openAuthorizedClients(
+  dataDir: string,
+  clock: () => number = Date.now,
+  audit?: Pick<AuditLog, 'record'>,
+) {
   const database = openEnvironmentDatabase(dataDir)
   const ownerPath = join(dataDir, OWNER_CREDENTIAL_FILENAME)
   const byHash = database.prepare(AUTHORIZED_CLIENT_BY_HASH_SQL)
@@ -156,7 +170,7 @@ export function openAuthorizedClients(dataDir: string, clock: () => number = Dat
     }) satisfies AuthenticatedClient
   }
 
-  const issue = (request: ClientGrantRequest, now: number) => {
+  const issue = (request: ClientGrantRequest, now: number, recordAudit = true) => {
     const capabilities = AccessGrantSchema.parse([...request.capabilities])
     if (request.kind === 'cloud' && capabilities.includes('admin')) {
       throw new Error('Cloud-enrolled clients cannot hold the admin capability.')
@@ -181,17 +195,50 @@ export function openAuthorizedClients(dataDir: string, clock: () => number = Dat
       now,
       now + IDLE_EXPIRY_MS,
     )
+    if (recordAudit) {
+      audit?.record({
+        type: 'token.issued',
+        clientId: client.clientId,
+        command: 'client.issue',
+        details: { kind: client.kind, label: client.label },
+      })
+    }
     return { client, credential }
   }
 
   const rotateOwner = (now: number) => {
+    const previous = activeOwner.get() as Pick<ClientRow, 'client_id'> | undefined
     revokeOwners.run(now)
-    const minted = issue({ label: OWNER_LABEL, kind: 'owner', capabilities: OWNER_GRANT }, now)
+    const minted = issue(
+      { label: OWNER_LABEL, kind: 'owner', capabilities: OWNER_GRANT },
+      now,
+      false,
+    )
     writeOwnerFile(ownerPath, minted.credential)
-    return minted
+    return { ...minted, previousId: previous?.client_id }
+  }
+
+  const recordOwnerRotation = (
+    rotated: ReturnType<typeof rotateOwner>,
+  ) => {
+    if (rotated.previousId) {
+      audit?.record({
+        type: 'token.revoked',
+        clientId: rotated.previousId,
+        command: 'owner.rotate',
+        details: {},
+      })
+    }
+    audit?.record({
+      type: 'token.issued',
+      clientId: rotated.client.clientId,
+      command: 'client.issue',
+      details: { kind: rotated.client.kind, label: rotated.client.label },
+    })
   }
 
   const withOwnerWrite = <T>(body: () => T): T => {
+    const previousPublished = readOwnerFile(ownerPath)
     database.exec('BEGIN IMMEDIATE')
     try {
       const result = body()
@@ -202,6 +249,14 @@ export function openAuthorizedClients(dataDir: string, clock: () => number = Dat
         database.exec('ROLLBACK')
       } catch {
         /* The failed statement may already have aborted the transaction. */
+      }
+      try {
+        restoreOwnerFile(ownerPath, previousPublished)
+      } catch (restoreError) {
+        throw new AggregateError(
+          [error, restoreError],
+          'Owner rotation failed and the previous credential file could not be restored.',
+        )
       }
       throw error
     }
@@ -237,7 +292,16 @@ export function openAuthorizedClients(dataDir: string, clock: () => number = Dat
 
     /** Mark a client revoked. Returns false when it was unknown or already revoked. */
     revoke(clientId: string): boolean {
-      return revokeOne.run(clock(), clientId).changes > 0
+      const revoked = revokeOne.run(clock(), clientId).changes > 0
+      if (revoked) {
+        audit?.record({
+          type: 'token.revoked',
+          clientId,
+          command: 'client.revoke',
+          details: {},
+        })
+      }
+      return revoked
     },
 
     /** The published owner credential, or `undefined` if the file is missing or corrupt. */
@@ -254,7 +318,7 @@ export function openAuthorizedClients(dataDir: string, clock: () => number = Dat
      * revoked in the same transaction, so deleting the file rotates the owner.
      */
     ensureOwner(): AuthenticatedClient {
-      return withOwnerWrite(() => {
+      const result = withOwnerWrite(() => {
         const now = clock()
         const existing = activeOwner.get() as
           | Pick<ClientRow, 'client_id' | 'label' | 'credential_hash' | 'scopes_json' | 'expires_at'>
@@ -266,11 +330,14 @@ export function openAuthorizedClients(dataDir: string, clock: () => number = Dat
             // A restored backup or manual chmod may have widened the file;
             // a reused credential is only ever reused owner-only.
             chmodSync(ownerPath, 0o600)
-            return client
+            return { client }
           }
         }
-        return rotateOwner(now).client
+        const rotated = rotateOwner(now)
+        return { client: rotated.client, rotated }
       })
+      if (result.rotated) recordOwnerRotation(result.rotated)
+      return result.client
     },
 
     /**
@@ -279,7 +346,9 @@ export function openAuthorizedClients(dataDir: string, clock: () => number = Dat
      * `server.remintOwner()` does.
      */
     remintOwner(): { client: AuthenticatedClient; credential: string } {
-      return withOwnerWrite(() => rotateOwner(clock()))
+      const rotated = withOwnerWrite(() => rotateOwner(clock()))
+      recordOwnerRotation(rotated)
+      return { client: rotated.client, credential: rotated.credential }
     },
 
     close(): void {

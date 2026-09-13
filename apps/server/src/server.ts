@@ -26,6 +26,8 @@ import { openAuthorizedClients } from './authorized-clients.ts'
 import { loadEnvironmentIdentity } from './identity.ts'
 import {
   evaluateLocalOwnerAccess,
+  evaluateLocalOwnerRouteAccess,
+  LOCAL_OWNER_CLAIM_HEADER,
   LOCAL_OWNER_PATH,
 } from './local-owner.ts'
 import { createEventService } from './event-service.ts'
@@ -61,11 +63,11 @@ export async function startServer(config: ServerConfig) {
   const allowedHosts = validateHosts(config.allowedHosts ?? [])
   const workspaceRoots = validateWorkspaceRoots(config.workspaces ?? [])
   const log = createLogger(config.logLevel)
-  const audit = createAuditLog(log)
   const rateLimiter = createRateLimiter()
   const identity = await loadEnvironmentIdentity(config.dataDir)
+  const audit = createAuditLog(log, { dataDir: config.dataDir })
   const composerStore = openComposerStore(config.dataDir)
-  const clients = openAuthorizedClients(config.dataDir)
+  const clients = openAuthorizedClients(config.dataDir, Date.now, audit)
   // Local first run needs no pairing UI: the process mints the owner credential.
   // Reminting is explicit (`--remint-owner` or `remintOwner()`), not a restart side effect.
   let owner = clients.ensureOwner()
@@ -84,6 +86,7 @@ export async function startServer(config: ServerConfig) {
   } catch (error) {
     composerStore.close()
     clients.close()
+    audit.close()
     throw error
   }
   // Production routes every workspace through the registry: an ID resolves to
@@ -170,6 +173,29 @@ export async function startServer(config: ServerConfig) {
       response.setHeader('Access-Control-Allow-Origin', request.headers.origin)
     }
     const path = request.url?.split('?')[0]
+    if (request.method === 'OPTIONS' && path === LOCAL_OWNER_PATH) {
+      const access = config.localOwnerClaimKey
+        ? evaluateLocalOwnerRouteAccess(
+            request,
+            (server.address() as AddressInfo | null)?.port ?? config.port,
+          )
+        : 'not_found'
+      if (access !== 'ok') {
+        response.writeHead(access === 'forbidden' ? 403 : 404, {
+          'cache-control': 'no-store',
+        })
+        response.end()
+        return
+      }
+      response.writeHead(204, {
+        'access-control-allow-methods': 'GET',
+        'access-control-allow-headers': LOCAL_OWNER_CLAIM_HEADER,
+        'access-control-max-age': '600',
+        'cache-control': 'no-store',
+      })
+      response.end()
+      return
+    }
     if (request.method === 'GET' && (path === '/health' || path === '/bootstrap')) {
       response.writeHead(200, {
         'content-type': 'application/json; charset=utf-8',
@@ -183,12 +209,13 @@ export async function startServer(config: ServerConfig) {
       const access = evaluateLocalOwnerAccess(
         request,
         (server.address() as AddressInfo | null)?.port ?? config.port,
+        config.localOwnerClaimKey,
       )
       if (access === 'not_found') {
         audit.record({
           type: 'owner.claim_denied',
           remoteAddress,
-          details: { reason: 'not_local_route', host: auditValue(request.headers.host) },
+          details: { reason: 'not_local_claim', host: auditValue(request.headers.host) },
         })
         response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
         response.end('Not found\n')
@@ -308,6 +335,7 @@ export async function startServer(config: ServerConfig) {
     composerStore.close()
     clients.close()
     workspaces.close()
+    audit.close()
     throw error
   }
   const address = server.address() as AddressInfo
@@ -367,6 +395,7 @@ export async function startServer(config: ServerConfig) {
           composerStore.close()
           clients.close()
           workspaces.close()
+          audit.close()
         })
         stopHealthEvents()
         providerService.stop()

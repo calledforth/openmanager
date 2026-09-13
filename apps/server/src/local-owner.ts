@@ -1,13 +1,16 @@
+import { timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage } from 'node:http'
 
 export const LOCAL_OWNER_PATH = '/local-owner'
+export const LOCAL_OWNER_CLAIM_HEADER = 'x-openmanager-local-owner'
+export const LOCAL_OWNER_CLAIM_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/
 
 /**
  * Issuance of the already-minted owner credential, not authorization.
  * Threat model D2: network position grants nothing on remote routes. This
  * surface exists so the first-party localhost web shell can collect the
- * credential without QR pairing. It is not served for tunnel hosts, missing
- * origins, or any non-loopback origin — even when that origin is allowlisted.
+ * credential without QR pairing. A process-scoped claim key supplies the
+ * proof that browser-controlled headers and socket metadata cannot.
  */
 export type LocalOwnerAccess = 'ok' | 'not_found' | 'forbidden'
 
@@ -60,12 +63,10 @@ export function isFirstPartyLoopbackOrigin(origin: string | undefined): boolean 
 }
 
 /**
- * Decide whether this request may receive the published owner credential.
- * Host/Origin allowlists still run first in the request guard. A tunnel Host
- * answers 404 so the route does not exist on remote names. Forwarded headers
- * are ignored here, as they are everywhere else.
+ * Decide whether the request reached the local-only route boundary. The claim
+ * key is checked separately after Host/Origin allowlists run in the guard.
  */
-export function evaluateLocalOwnerAccess(
+export function evaluateLocalOwnerRouteAccess(
   request: IncomingMessage,
   port: number,
 ): LocalOwnerAccess {
@@ -79,4 +80,35 @@ export function evaluateLocalOwnerAccess(
   }
   if (!isFirstPartyLoopbackOrigin(request.headers.origin)) return 'forbidden'
   return 'ok'
+}
+
+function claimKeysMatch(presented: string | string[] | undefined, expected: string | undefined) {
+  if (
+    typeof presented !== 'string' ||
+    expected === undefined ||
+    !LOCAL_OWNER_CLAIM_KEY_PATTERN.test(presented) ||
+    !LOCAL_OWNER_CLAIM_KEY_PATTERN.test(expected)
+  ) {
+    return false
+  }
+  const candidate = Buffer.from(presented, 'utf8')
+  const configured = Buffer.from(expected, 'utf8')
+  return candidate.byteLength === configured.byteLength && timingSafeEqual(candidate, configured)
+}
+
+/**
+ * The process-scoped claim key is supplied to the local web process out of
+ * band. Host, Origin and socket address restrict the surface, but none of them
+ * is proof of locality because an unmarked TCP tunnel can spoof all three.
+ */
+export function evaluateLocalOwnerAccess(
+  request: IncomingMessage,
+  port: number,
+  claimKey: string | undefined,
+): LocalOwnerAccess {
+  const routeAccess = evaluateLocalOwnerRouteAccess(request, port)
+  if (routeAccess !== 'ok') return routeAccess
+  return claimKeysMatch(request.headers[LOCAL_OWNER_CLAIM_HEADER], claimKey)
+    ? 'ok'
+    : 'not_found'
 }

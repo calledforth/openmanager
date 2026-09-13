@@ -1,6 +1,8 @@
 import { environmentLocalOwnerUrl, isLoopbackEnvironmentEndpoint, parseEnvironmentCredential } from './environment-store'
 
 const OWNER_CREDENTIAL_PATTERN = /^omc1\.[A-Za-z0-9_-]{43}$/
+const LOCAL_OWNER_CLAIM_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/
+export const LOCAL_OWNER_CLAIM_HEADER = 'x-openmanager-local-owner'
 
 export type LocalOwnerClaim = {
   environmentId: string
@@ -37,12 +39,24 @@ function parseLocalOwnerClaim(body: unknown): LocalOwnerClaim | undefined {
  * endpoints are not contacted: pairing is how those clients enroll. A failed
  * or ineligible claim is silent so the user can still paste a token.
  */
-export async function fetchLocalOwner(endpoint: string): Promise<LocalOwnerClaim | undefined> {
-  if (!isLoopbackEnvironmentEndpoint(endpoint)) return undefined
+export async function fetchLocalOwner(
+  endpoint: string,
+  claimKey = import.meta.env.VITE_OPENMANAGER_LOCAL_OWNER_CLAIM_KEY,
+): Promise<LocalOwnerClaim | undefined> {
+  const validatedClaimKey = claimKey ?? ''
+  if (
+    !isLoopbackEnvironmentEndpoint(endpoint) ||
+    !LOCAL_OWNER_CLAIM_KEY_PATTERN.test(validatedClaimKey)
+  ) {
+    return undefined
+  }
   let response: Response
   try {
     response = await fetch(environmentLocalOwnerUrl(endpoint), {
-      headers: { accept: 'application/json' },
+      headers: {
+        accept: 'application/json',
+        [LOCAL_OWNER_CLAIM_HEADER]: validatedClaimKey,
+      },
     })
   } catch {
     return undefined

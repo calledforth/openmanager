@@ -74,9 +74,9 @@ describe('schema migrations', () => {
   it('initializes a fresh database to the latest numbered version', async () => {
     const database = openEnvironmentDatabase(await dataDir())
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(4)
+    expect(readSchemaVersion(database)).toBe(5)
     expect(database.prepare('PRAGMA user_version').get() as { user_version: number }).toEqual({
-      user_version: 4,
+      user_version: 5,
     })
     expect(database.prepare('PRAGMA journal_mode').get() as { journal_mode: string }).toEqual({
       journal_mode: 'wal',
@@ -92,6 +92,7 @@ describe('schema migrations', () => {
     })
     expect(tableNames(database)).toEqual([
       'attachments',
+      'audit_events',
       'authorized_clients',
       'drafts',
       'environment_metadata',
@@ -110,7 +111,7 @@ describe('schema migrations', () => {
       'workspace_composer_preferences',
       'workspaces',
     ])
-    expect(runMigrations(database, MIGRATIONS)).toBe(4)
+    expect(runMigrations(database, MIGRATIONS)).toBe(5)
   })
 
   it('upgrades sequentially across restarts and leaves already-applied versions untouched', async () => {
@@ -197,7 +198,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(4)
+    expect(readSchemaVersion(database)).toBe(5)
     expect(database.prepare('SELECT provider_id FROM provider_profiles').all()).toEqual([
       { provider_id: 'cursor' },
     ])
@@ -317,7 +318,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(4)
+    expect(readSchemaVersion(database)).toBe(5)
     expect(
       database
         .prepare('SELECT client_id, kind, expires_at FROM authorized_clients ORDER BY client_id')
@@ -337,6 +338,43 @@ describe('schema migrations', () => {
       database.exec(`
         INSERT INTO authorized_clients (client_id, label, kind, credential_hash, scopes_json, created_at)
         VALUES ('bad-kind', 'Bad', 'root', X'04', '["read"]', 4000)
+      `),
+    ).toThrow(/CHECK constraint failed/)
+  })
+
+  it('adds a queryable audit_events table when upgrading from v4', async () => {
+    const directory = await dataDir()
+    const previous = openEnvironmentDatabase(directory, MIGRATIONS.slice(0, 4))
+    previous.exec(`
+      INSERT INTO authorized_clients (
+        client_id, label, kind, credential_hash, scopes_json, created_at, expires_at
+      ) VALUES ('client-1', 'Phone', 'paired', X'01', '["read"]', 1, 1)
+    `)
+    expect(tableNames(previous)).not.toContain('audit_events')
+    previous.close()
+
+    const database = openEnvironmentDatabase(directory)
+    databases.push(database)
+    expect(readSchemaVersion(database)).toBe(5)
+    expect(tableNames(database)).toContain('audit_events')
+    expect(
+      database.prepare('SELECT client_id FROM authorized_clients').all(),
+    ).toEqual([{ client_id: 'client-1' }])
+    database.exec(`
+      INSERT INTO audit_events (
+        event_id, type, outcome, at, client_id, command, remote_address, details_json
+      ) VALUES (
+        'event-1', 'token.issued', 'issued', 1, 'client-1', 'client.issue', NULL, '{}'
+      )
+    `)
+    expect(
+      database.prepare('SELECT type, outcome, command FROM audit_events').all(),
+    ).toEqual([{ type: 'token.issued', outcome: 'issued', command: 'client.issue' }])
+    expect(() =>
+      database.exec(`
+        INSERT INTO audit_events (
+          event_id, type, outcome, at, details_json
+        ) VALUES ('bad-outcome', 'token.issued', 'ok', 1, '{}')
       `),
     ).toThrow(/CHECK constraint failed/)
   })
