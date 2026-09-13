@@ -13,8 +13,9 @@ pnpm --filter @openmanager/server dev
 ```
 
 To develop the browser shell against this process, use the combined command
-instead. It starts the server watcher and the Vite app together and allows the
-Vite origins:
+instead. It starts the server watcher and the Vite app together, allows the
+Vite origins, and registers the repository as the only workspace unless
+`OPENMANAGER_WORKSPACES` is set:
 
 ```sh
 pnpm dev:web
@@ -43,6 +44,8 @@ with a nonzero exit code and an error on stderr.
 | `--data-dir`  | `OPENMANAGER_DATA_DIR`  | `.openmanager` in the user's home directory |
 | `--log-level` | `OPENMANAGER_LOG_LEVEL` | `info`                                      |
 | `--allowed-origin` (repeatable) | `OPENMANAGER_ALLOWED_ORIGINS` (comma-separated) | none |
+| `--allowed-host` (repeatable) | `OPENMANAGER_ALLOWED_HOSTS` (comma-separated) | none |
+| `--workspace` (repeatable) | `OPENMANAGER_WORKSPACES` (separated by the platform PATH delimiter) | none |
 
 ```sh
 pnpm --filter server dev --port 0 --data-dir "./local data" --log-level debug
@@ -158,7 +161,30 @@ provider catalog, discovery, health and probe, and `composer.preferences.get`;
 covers `turn.send`, `turn.interrupt`, `interaction.respond` and the composer
 model, mode and config-option setters. The owner grant holds all five.
 
-Browser origins must be explicitly approved, independently of authentication:
+## Host and origin policy
+
+Every HTTP request and WebSocket upgrade passes the same two checks, in this
+order, before anything else is read. Both fail closed.
+
+**Host.** The `Host` header must be `127.0.0.1:<port>` or `localhost:<port>`
+for the bound port, or one of the configured allowed hosts. Anything else,
+including a missing header, an unexpected port or a hostname that merely
+resolves to loopback, is refused with `403` and the `auth` error code. This
+is what defeats DNS rebinding: a page on `attacker.example` that points at
+`127.0.0.1` reaches the socket but never a route. A tunnel or reverse proxy
+hostname is added explicitly:
+
+```sh
+pnpm --filter server dev --allowed-host tunnel.example --allowed-host proxy.example:8443
+```
+
+Entries are exact `host` or `host:port` values, compared case-insensitively.
+Forwarded headers (`X-Forwarded-Host`, `X-Forwarded-Proto`, `Forwarded`) are
+never consulted, for the host check or for the advertised socket URL; a proxy
+cannot vouch for a hostname it was not configured for.
+
+**Origin.** Browser origins must be explicitly approved, independently of
+authentication:
 
 ```sh
 pnpm --filter server dev --allowed-origin http://localhost:5173
@@ -167,11 +193,89 @@ pnpm --filter server dev --allowed-origin http://localhost:5173
 Use exact HTTP(S) origins, without paths, wildcards, trailing slashes or
 credentials. The same allowlist applies to HTTP CORS and WebSocket upgrades.
 Unlisted origins, including opaque `null` origins, are rejected even with a valid
-token. Native requests without an Origin header are permitted, but sockets still
+credential. Native requests without an Origin header are permitted, but sockets still
 require authentication. HTTP discovery is a simple GET without credentials;
 allowed origins receive an exact `Access-Control-Allow-Origin` and `Vary: Origin`.
 Remote TLS routes and hosted-browser local-network permission handling remain
 separate work; the listener and advertised socket URL are still loopback-only.
+
+Every refusal is recorded as an audit event (see below).
+
+## Rate limits
+
+Fixed windows, defined in [`src/rate-limit.ts`](src/rate-limit.ts) as
+`RATE_LIMITS` and pinned by `tests/rate-limit.test.ts`:
+
+| Policy         | Key            | Limit          | Applies to                                                             |
+| -------------- | -------------- | -------------- | ---------------------------------------------------------------------- |
+| `auth_failure` | remote address | 10 per minute  | Failed credential checks on WebSocket upgrade.                         |
+| `pairing`      | remote address | 5 per minute   | Pairing-link exchange attempts; reserved for the pairing endpoint (CAL-102). |
+| `prompt`       | client         | 30 per minute  | `turn.send`.                                                           |
+| `mutation`     | client         | 120 per minute | Every other `operate`, `agent`, `terminal` or `admin` command.         |
+
+An address over its `auth_failure` budget receives `429` with a `Retry-After`
+header and the `unavailable` error code, and no credential it presents is
+checked until the window ends. Behind the tunnel every request arrives from
+`127.0.0.1`, so that lockout is shared by everyone on the tunnel for the rest
+of the minute; that is the accepted cost of not trusting a forwarded address.
+A client over a per-client budget receives an `unavailable` error with
+`details.policy` and `details.retryAfterMs` for that command; the protocol's
+retry policy for `unavailable` is `after_backoff`. Replays of an
+already-answered request ID return the cached result and are not counted.
+`read` commands are not budgeted. At most 4,096 keys are tracked per policy;
+beyond that the window closest to expiry is forgotten first.
+
+## Workspaces and path boundaries
+
+Clients name a workspace by ID, never by path. The roots this environment
+exposes are configured at startup:
+
+```sh
+pnpm --filter server dev --workspace ~/code/app --workspace ~/code/lib
+```
+
+Each root is canonicalized with `realpath` (following symlinks, Windows
+junctions and 8.3 short names) and registered in the `workspaces` table, which
+assigns the ID a client sees. The ID is stable across restarts; the path is
+not returned by any command. A root that does not exist fails startup. A root
+configured inside another configured root is folded into the outer one. Only
+the roots configured for the running process are resolvable, even if the table
+still holds earlier rows.
+
+`workspace.list` (`read`) returns `{ workspaceId, name }` for each registered
+root. `session.create` and `provider.probe` take a `workspaceId` and run in
+that root; an unknown ID, including a root path sent in place of an ID, fails
+with `not_found` and a `workspace.rejected` audit event before any runtime
+work. File, git, upload and terminal commands added later obtain their absolute
+path from the registry's `resolvePath(workspaceId, relativePath)`, which:
+
+- refuses absolute paths on either platform, drive-relative paths (`C:file`)
+  and UNC paths (`\\server`, `//server`, `\\wsl$`);
+- treats both `/` and `\` as separators, refuses NUL, and on Windows refuses
+  reserved device names and alternate data streams;
+- resolves the deepest existing ancestor with `realpath`, so a symlink or
+  junction that leaves the root is refused even when the target does not exist
+  yet, and compares final on-disk locations (case-insensitively on Windows and
+  macOS);
+- records a `path.rejected` audit event naming the client, workspace, path and
+  reason.
+
+The boundary covers OpenManager's own APIs. It does not constrain what a
+provider CLI reads once it is running in the root; that is governed by the
+provider's own permission mode.
+
+## Audit events
+
+Security refusals are recorded through [`src/audit.ts`](src/audit.ts): each
+event has a `type` (`host.rejected`, `origin.rejected`, `auth.failed`,
+`rate_limited`, `workspace.rejected`, `path.rejected`), a timestamp, the
+authenticated `clientId` when the request had one, the remote address for
+pre-authentication refusals, and bounded `details`. Events are written to the
+structured log at `warn` as `{"level":"warn","message":"audit","audit":{...}}`
+and delivered to in-process subscribers (`server.audit.subscribe`). They never
+contain credentials, file contents or provider secrets; client-supplied strings
+are truncated to 256 characters. Durable storage and a client-facing audit
+query are CAL-48.
 
 After upgrade, the first command must be `protocol.handshake`, carrying
 `protocolVersion` and `requiredCapabilities`. Rejected handshakes receive their
@@ -209,11 +313,9 @@ fight provider plan/execute transitions. Restarting with the same data directory
 retains every preference field.
 
 `session.create`, `session.open`, `turn.send`, and `turn.interrupt` route directly
-to the mounted runtime. Session creation preserves the proof-slice payload and
-resolves its provider route server-side; until workspace/provider preferences
-land, the bridge uses the desktop-compatible OpenCode fallback and workspace ID
-as its local runtime path. Later commands resolve that route from server-owned
-host IDs.
+to the mounted runtime. Session creation resolves its workspace ID through the
+registry to a canonical root and, until workspace/provider preferences land,
+uses the desktop-compatible OpenCode fallback as the provider for every root.
 The server accepts or rejects each command synchronously before queueing provider
 work, so even a provider that emits during startup cannot overtake its response.
 Known missing, unauthenticated, or unhealthy providers are rejected without
@@ -257,6 +359,7 @@ command results per connection, 64 KiB inbound messages and 1 MiB outbound buffe
 Connection/subscription exhaustion returns `unavailable`; command-cache exhaustion
 returns `unavailable` and closes so callers establish a fresh connection. Slow
 consumers close with `1008 / slow_consumer`. WebSocket compression is disabled.
+Per-client command budgets are listed under [Rate limits](#rate-limits).
 
 ## Shutdown and turn recovery contract
 

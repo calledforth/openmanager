@@ -1,5 +1,5 @@
 import { once } from 'node:events'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setImmediate as immediate } from 'node:timers/promises'
@@ -16,7 +16,10 @@ import {
   type ServerMessage,
   type SubscriptionScope,
 } from '@openmanager/protocol/node'
+import type { AuditEvent } from '../src/audit.js'
 import { mintCredential } from '../src/authorized-clients.js'
+import type { ServerConfig } from '../src/config.js'
+import { RATE_LIMITS } from '../src/rate-limit.js'
 import { startServer } from '../src/server.js'
 import { REVOKED_CLOSE_CODE, REVOKED_CLOSE_REASON, SOCKET_LIMITS } from '../src/websocket.js'
 
@@ -30,18 +33,34 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })))
 })
 
-async function setup() {
+async function setup(overrides: Partial<ServerConfig> = {}) {
   const dataDir = await mkdtemp(join(tmpdir(), 'openmanager-socket-test-'))
   directories.push(dataDir)
+  const roots = [join(dataDir, 'workspace-a'), join(dataDir, 'workspace-b')]
+  for (const root of roots) await mkdir(root)
   const server = await startServer({
     port: 0,
     dataDir,
     logLevel: 'silent',
     allowedOrigins: ['http://localhost:5173'],
+    workspaces: roots,
+    ...overrides,
   })
   servers.push(server)
   const token = (await readFile(join(dataDir, 'owner-credential'), 'utf8')).trim()
-  return { server, token, url: `${server.url.replace('http:', 'ws:')}/ws` }
+  const audits: AuditEvent[] = []
+  server.audit.subscribe((event) => audits.push(event))
+  const [first, second] = server.workspaces.list()
+  return {
+    server,
+    token,
+    audits,
+    url: `${server.url.replace('http:', 'ws:')}/ws`,
+    workspaceId: first!.workspaceId,
+    root: server.workspaces.get(first!.workspaceId)!.root,
+    otherWorkspaceId: second!.workspaceId,
+    otherRoot: server.workspaces.get(second!.workspaceId)!.root,
+  }
 }
 type Host = Awaited<ReturnType<typeof setup>>
 
@@ -232,6 +251,177 @@ describe('authenticated upgrade', () => {
   })
 })
 
+describe('host policy and rate limits', () => {
+  it('refuses upgrades whose Host is neither the bound loopback address nor an allowed host', async () => {
+    const host = await setup({ allowedHosts: ['tunnel.example'] })
+    for (const header of [
+      'attacker.example',
+      `attacker.example:${host.server.port}`,
+      `127.0.0.1:${host.server.port + 1}`,
+    ]) {
+      expect(
+        await rejection(host.url, {
+          headers: { authorization: `Bearer ${host.token}`, host: header },
+        }),
+      ).toMatchObject({
+        status: 403,
+        body: { error: { code: 'auth', message: 'Host is not allowed.' } },
+      })
+    }
+    expect(host.audits.filter((event) => event.type === 'host.rejected')).toHaveLength(3)
+    // DNS rebinding: an attacker hostname that resolves to loopback carries no
+    // Origin header, so the Host check is what refuses it.
+    expect(host.server.sockets.connectionCount).toBe(0)
+
+    const tunnel = new WebSocket(host.url, {
+      headers: { authorization: `Bearer ${host.token}`, host: 'Tunnel.example' },
+    })
+    clients.push(tunnel)
+    await once(tunnel, 'open')
+    const local = new WebSocket(host.url, {
+      headers: { authorization: `Bearer ${host.token}`, host: `localhost:${host.server.port}` },
+    })
+    clients.push(local)
+    await once(local, 'open')
+    expect(host.server.sockets.connectionCount).toBe(2)
+  })
+
+  it('locks an address out after repeated failed credentials and audits each refusal', async () => {
+    const host = await setup()
+    const guess = { headers: { authorization: `Bearer ${mintCredential()}` } }
+    for (let attempt = 0; attempt < RATE_LIMITS.auth_failure.limit; attempt += 1) {
+      expect(await rejection(host.url, guess)).toMatchObject({ status: 401 })
+    }
+    // Over budget, even the right credential is not checked until the window passes.
+    for (const headers of [guess.headers, { authorization: `Bearer ${host.token}` }]) {
+      expect(await rejection(host.url, { headers })).toMatchObject({
+        status: 429,
+        body: { error: { code: 'unavailable' } },
+      })
+    }
+    expect(host.audits.map((event) => event.type)).toEqual([
+      ...Array<string>(RATE_LIMITS.auth_failure.limit).fill('auth.failed'),
+      'rate_limited',
+      'rate_limited',
+    ])
+    expect(host.audits[0]).toMatchObject({
+      remoteAddress: '127.0.0.1',
+      details: { presented: true, origin: null },
+    })
+    expect(JSON.stringify(host.audits)).not.toContain(host.token)
+    expect(host.server.sockets.connectionCount).toBe(0)
+  })
+
+  it('budgets prompts and other mutating commands per client, leaving reads untouched', async () => {
+    const host = await setup()
+    const client = await connect(host)
+    await handshake(client)
+    const target = { sessionId: 'missing', threadId: 'missing', text: 'hi' }
+    for (let attempt = 0; attempt < RATE_LIMITS.prompt.limit; attempt += 1) {
+      client.command('turn.send', target)
+      expect(await client.next()).toMatchObject({ type: 'error', error: { code: 'not_found' } })
+    }
+    const overId = client.command('turn.send', target)
+    const over = await client.next()
+    expect(over).toMatchObject({
+      type: 'error',
+      requestId: overId,
+      error: { code: 'unavailable', details: { policy: 'prompt' } },
+    })
+    // A replayed request ID returns the cached result without a second count.
+    client.command('turn.send', target, overId)
+    expect(await client.next()).toEqual(over)
+    expect(host.audits.at(-1)).toMatchObject({
+      type: 'rate_limited',
+      clientId: host.server.owner.clientId,
+      details: { policy: 'prompt', command: 'turn.send' },
+    })
+
+    const preference = {
+      workspaceId: host.workspaceId,
+      providerId: 'cursor',
+      preference: { modelId: 'opus' },
+    }
+    for (let attempt = 0; attempt < RATE_LIMITS.mutation.limit; attempt += 1) {
+      client.command('composer.preferences.set', preference)
+      expect(await client.next()).toMatchObject({ type: 'response' })
+    }
+    client.command('composer.preferences.set', preference)
+    expect(await client.next()).toMatchObject({
+      type: 'error',
+      error: { code: 'unavailable', details: { policy: 'mutation' } },
+    })
+    client.command('provider.catalog.get', null)
+    expect(await client.next()).toMatchObject({ type: 'response' })
+    client.command('workspace.list', null)
+    expect(await client.next()).toMatchObject({ type: 'response' })
+
+    // Budgets are per client: another credential is unaffected.
+    const phone = host.server.clients.issue({
+      label: 'Phone',
+      kind: 'paired',
+      capabilities: ['read', 'operate', 'agent'],
+    })
+    const other = await connect(host, false, phone.credential)
+    await handshake(other)
+    other.command('turn.send', target)
+    expect(await other.next()).toMatchObject({ type: 'error', error: { code: 'not_found' } })
+    expect(host.server.sockets.connectionCount).toBe(2)
+  })
+})
+
+describe('workspace boundary', () => {
+  it('lists workspaces by ID and name and never reveals a root path', async () => {
+    const host = await setup()
+    const client = await connect(host)
+    await handshake(client)
+    const requestId = client.command('workspace.list', null)
+    const listed = ProofResponseSchemas['workspace.list'].parse(await client.next())
+    expect(listed.requestId).toBe(requestId)
+    expect(listed.payload.workspaces).toEqual([
+      { workspaceId: host.workspaceId, name: 'workspace-a' },
+      { workspaceId: host.otherWorkspaceId, name: 'workspace-b' },
+    ])
+    expect(JSON.stringify(listed).toLowerCase()).not.toContain(host.root.toLowerCase())
+  })
+
+  it('rejects workspace substitution with an audit event and no runtime work', async () => {
+    const host = await setup()
+    const client = await connect(host)
+    await handshake(client)
+    const ensure = vi.spyOn(host.server.runtime, 'ensureSession')
+    const probe = vi.spyOn(host.server.runtime, 'probeProvider')
+    // A root path sent in place of the ID, a sibling directory, and a made-up ID.
+    for (const workspaceId of [host.root, join(host.root, '..', 'workspace-c'), 'workspace-1']) {
+      const createId = client.command('session.create', { workspaceId })
+      expect(await client.next()).toMatchObject({
+        type: 'error',
+        requestId: createId,
+        error: { code: 'not_found', message: 'Workspace not found.' },
+      })
+      const probeId = client.command('provider.probe', { providerId: 'cursor', workspaceId })
+      expect(await client.next()).toMatchObject({
+        type: 'error',
+        requestId: probeId,
+        error: { code: 'not_found', message: 'Workspace not found.' },
+      })
+    }
+    expect(ensure).not.toHaveBeenCalled()
+    expect(probe).not.toHaveBeenCalled()
+    expect(host.audits).toHaveLength(6)
+    expect(host.audits[0]).toMatchObject({
+      type: 'workspace.rejected',
+      clientId: host.server.owner.clientId,
+      details: { workspaceId: host.root, command: 'session.create' },
+    })
+    expect(host.audits[1]).toMatchObject({
+      type: 'workspace.rejected',
+      details: { command: 'provider.probe' },
+    })
+    expect(host.audits.every((event) => event.type === 'workspace.rejected')).toBe(true)
+  })
+})
+
 describe('per-operation authorization', () => {
   it('rejects commands outside the grant with capability_missing and serves the rest', async () => {
     const host = await setup()
@@ -277,7 +467,10 @@ describe('per-operation authorization', () => {
     expect(prompt).not.toHaveBeenCalled()
 
     // Read commands still reach their service: the probe fails on the payload, not the grant.
-    const probeId = client.command('provider.probe', { providerId: 'missing', cwd: 'C:\\w' })
+    const probeId = client.command('provider.probe', {
+      providerId: 'missing',
+      workspaceId: host.workspaceId,
+    })
     expect(await client.next()).toMatchObject({
       type: 'error',
       requestId: probeId,
@@ -306,7 +499,7 @@ describe('per-operation authorization', () => {
     const client = await connect(host, true, standard.credential)
     await handshake(client)
 
-    const createId = client.command('session.create', { workspaceId: 'workspace-1' })
+    const createId = client.command('session.create', { workspaceId: host.workspaceId })
     const created = ProofResponseSchemas['session.create'].parse(await client.next())
     expect(created.requestId).toBe(createId)
     await vi.waitFor(() => expect(ensure).toHaveBeenCalledTimes(1))
@@ -457,7 +650,7 @@ describe('handshake and scoped subscriptions', () => {
     const probe = vi.spyOn(host.server.runtime, 'probeProvider').mockResolvedValue({} as never)
     const requestId = client.command('provider.probe', {
       providerId: 'cursor',
-      cwd: 'C:\\workspace',
+      workspaceId: host.workspaceId,
     })
     expect(ProviderProbeResponseSchema.parse(await client.next())).toMatchObject({
       type: 'response',
@@ -467,8 +660,8 @@ describe('handshake and scoped subscriptions', () => {
     expect(probe).toHaveBeenCalledExactlyOnceWith({
       providerId: 'cursor',
       threadId: 'desktop-bootstrap:cursor',
-      workspaceId: 'C:\\workspace',
-      cwd: 'C:\\workspace',
+      workspaceId: host.workspaceId,
+      cwd: host.root,
     })
   })
 
@@ -480,7 +673,7 @@ describe('handshake and scoped subscriptions', () => {
 
     const requestId = client.command('provider.probe', {
       providerId: 'missing',
-      cwd: 'C:\\workspace',
+      workspaceId: host.workspaceId,
     })
     expect(await client.next()).toMatchObject({
       type: 'error',
@@ -510,7 +703,7 @@ describe('handshake and scoped subscriptions', () => {
     const cancel = vi.spyOn(host.server.runtime, 'cancel').mockReturnValue(pendingCancel)
 
     const createId = client.command('session.create', {
-      workspaceId: 'workspace-1',
+      workspaceId: host.workspaceId,
       title: 'Runtime bridge',
     })
     const created = ProofResponseSchemas['session.create'].parse(await client.next())
@@ -518,8 +711,8 @@ describe('handshake and scoped subscriptions', () => {
     await vi.waitFor(() => expect(ensure).toHaveBeenCalledTimes(1))
     expect(ensure.mock.calls[0]?.[0]).toMatchObject({
       providerId: 'opencode',
-      workspaceId: 'workspace-1',
-      cwd: 'workspace-1',
+      workspaceId: host.workspaceId,
+      cwd: host.root,
       threadId: created.payload.thread.threadId,
     })
 
@@ -610,7 +803,7 @@ describe('handshake and scoped subscriptions', () => {
       payload: { providerId: 'opencode', health: { summary: 'error' } },
     })
     const unhealthyId = client.command('session.create', {
-      workspaceId: 'workspace-1',
+      workspaceId: host.workspaceId,
     })
     expect(await client.next()).toMatchObject({
       type: 'error',
@@ -632,7 +825,7 @@ describe('handshake and scoped subscriptions', () => {
     })
 
     const requestId = client.command('session.create', {
-      workspaceId: 'another-workspace',
+      workspaceId: host.otherWorkspaceId,
     })
     expect(await client.next()).toMatchObject({ type: 'response', requestId })
     await vi.waitFor(() => expect(ensure).toHaveBeenCalledTimes(1))
@@ -652,11 +845,11 @@ describe('handshake and scoped subscriptions', () => {
 
     const firstRequestId = client.command('provider.probe', {
       providerId: 'cursor',
-      cwd: 'C:\\workspace',
+      workspaceId: host.workspaceId,
     })
     const secondRequestId = client.command('provider.probe', {
       providerId: 'cursor',
-      cwd: 'C:\\workspace',
+      workspaceId: host.workspaceId,
     })
     await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(1))
     finishProbe()
@@ -683,13 +876,16 @@ describe('handshake and scoped subscriptions', () => {
       .mockReturnValueOnce(firstProbe as never)
       .mockResolvedValueOnce({} as never)
 
-    client.command('provider.probe', { providerId: 'cursor', cwd: 'C:\\first' })
-    client.command('provider.probe', { providerId: 'cursor', cwd: 'C:\\second' })
+    client.command('provider.probe', { providerId: 'cursor', workspaceId: host.workspaceId })
+    client.command('provider.probe', {
+      providerId: 'cursor',
+      workspaceId: host.otherWorkspaceId,
+    })
     await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(1))
     finishFirstProbe()
     await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2))
 
-    expect(probe.mock.calls.map(([route]) => route.cwd)).toEqual(['C:\\first', 'C:\\second'])
+    expect(probe.mock.calls.map(([route]) => route.cwd)).toEqual([host.root, host.otherRoot])
     await Promise.all([client.next(), client.next()])
   })
 
@@ -706,8 +902,8 @@ describe('handshake and scoped subscriptions', () => {
       .mockReturnValueOnce(firstProbe as never)
       .mockResolvedValueOnce({} as never)
 
-    client.command('provider.probe', { providerId: 'cursor', cwd: 'C:\\workspace' })
-    client.command('provider.probe', { providerId: 'opencode', cwd: 'C:\\workspace' })
+    client.command('provider.probe', { providerId: 'cursor', workspaceId: host.workspaceId })
+    client.command('provider.probe', { providerId: 'opencode', workspaceId: host.workspaceId })
     await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(1))
     expect(probe.mock.calls[0]?.[0].providerId).toBe('cursor')
     finishFirstProbe()

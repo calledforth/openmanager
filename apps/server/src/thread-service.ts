@@ -21,6 +21,7 @@ import {
   type ProtocolEventContext,
   type RuntimeSessionArgs,
 } from '@agentpack/runtime/node'
+import type { CommandContext } from './command-context.ts'
 
 type ProviderId = keyof typeof providers
 type RuntimeEvent = Parameters<HostDeps['emitEvent']>[0]
@@ -28,7 +29,10 @@ type ProviderGate = {
   rejection(providerId: string): { code: ErrorCode; message: string } | undefined
 }
 export type WorkspaceRuntimeRoute = { providerId: string; cwd: string }
-export type WorkspaceRuntimeResolver = (workspaceId: string) => WorkspaceRuntimeRoute | undefined
+export type WorkspaceRuntimeResolver = (
+  workspaceId: string,
+  context?: CommandContext,
+) => WorkspaceRuntimeRoute | undefined
 type ActiveTurn = {
   turn: Turn
   userMessage: Message
@@ -66,10 +70,9 @@ export function createThreadService(
   providerGate: ProviderGate,
   appendEvent: (event: ProofEvent) => void,
   publishTransient: (event: EventEnvelope) => void = () => undefined,
-  resolveWorkspace: WorkspaceRuntimeResolver = (workspaceId) => ({
-    providerId: 'opencode',
-    cwd: workspaceId,
-  }),
+  // Routing is by registered workspace ID only (D9): there is no default that
+  // treats the ID as a path, so an unregistered workspace can never run.
+  resolveWorkspace: WorkspaceRuntimeResolver = () => undefined,
 ) {
   const sessions = new Map<string, ThreadRecord>()
   const threads = new Map<string, ThreadRecord>()
@@ -243,13 +246,13 @@ export function createThreadService(
       }))
     },
 
-    dispatch(command: CommandEnvelope): unknown | undefined {
+    dispatch(command: CommandEnvelope, context?: CommandContext): unknown | undefined {
       if (command.name === 'session.create') {
         const parsed = ProofCommandSchemas['session.create'].safeParse(command)
         if (!parsed.success) {
           return errorResult(command.requestId, 'validation', 'Invalid session create request.')
         }
-        const target = resolveWorkspace(parsed.data.payload.workspaceId)
+        const target = resolveWorkspace(parsed.data.payload.workspaceId, context)
         if (!target) return errorResult(command.requestId, 'not_found', 'Workspace not found.')
         const providerRejection = rejectProvider(command.requestId, target.providerId)
         if (providerRejection) return providerRejection

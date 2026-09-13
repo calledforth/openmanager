@@ -1,9 +1,43 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentRuntime } from '@agentpack/runtime/node'
 import { ProofResponseSchemas, type EventEnvelope } from '@openmanager/protocol/node'
-import { createThreadService } from '../src/thread-service.js'
+import { createThreadService, type WorkspaceRuntimeResolver } from '../src/thread-service.js'
+
+/** The registry seam: every ID the tests use maps to one canonical root. */
+const registered: WorkspaceRuntimeResolver = (workspaceId) =>
+  workspaceId === '/workspace/project'
+    ? { providerId: 'opencode', cwd: '/workspace/project' }
+    : undefined
 
 describe('thread command provider routing', () => {
+  it('rejects an unregistered workspace before runtime work', () => {
+    const runtime = {
+      ensureSession: vi.fn(),
+      prompt: vi.fn(),
+      cancel: vi.fn(),
+    } as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>
+    const service = createThreadService(
+      runtime,
+      { rejection: () => undefined },
+      vi.fn(),
+      undefined,
+      registered,
+    )
+    expect(
+      service.dispatch({
+        type: 'command',
+        requestId: 'create-1',
+        name: 'session.create',
+        payload: { workspaceId: '/workspace/other' },
+      }),
+    ).toEqual({
+      type: 'error',
+      requestId: 'create-1',
+      error: { code: 'not_found', message: 'Workspace not found.' },
+    })
+    expect(runtime.ensureSession).not.toHaveBeenCalled()
+  })
+
   it('rejects a workspace mapped to a missing provider before runtime work', () => {
     const runtime = {
       ensureSession: vi.fn(),
@@ -45,8 +79,12 @@ describe('thread command provider routing', () => {
       cancel: vi.fn(),
     } as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>
     const events: EventEnvelope[] = []
-    const service = createThreadService(runtime, { rejection: () => undefined }, (event) =>
-      events.push(event),
+    const service = createThreadService(
+      runtime,
+      { rejection: () => undefined },
+      (event) => events.push(event),
+      undefined,
+      registered,
     )
     service.setEnvironmentId('environment-1')
 
@@ -87,8 +125,12 @@ describe('thread command provider routing', () => {
         .mockResolvedValueOnce(undefined),
     } as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>
     const events: EventEnvelope[] = []
-    const service = createThreadService(runtime, { rejection: () => undefined }, (event) =>
-      events.push(event),
+    const service = createThreadService(
+      runtime,
+      { rejection: () => undefined },
+      (event) => events.push(event),
+      undefined,
+      registered,
     )
     service.setEnvironmentId('environment-1')
     const created = ProofResponseSchemas['session.create'].parse(
@@ -163,8 +205,12 @@ describe('thread command provider routing', () => {
       cancel: vi.fn().mockResolvedValue(undefined),
     } as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>
     const events: EventEnvelope[] = []
-    const service = createThreadService(runtime, { rejection: () => undefined }, (event) =>
-      events.push(event),
+    const service = createThreadService(
+      runtime,
+      { rejection: () => undefined },
+      (event) => events.push(event),
+      undefined,
+      registered,
     )
     service.setEnvironmentId('environment-1')
     const created = ProofResponseSchemas['session.create'].parse(
@@ -262,8 +308,12 @@ describe('thread command provider routing', () => {
       cancel: vi.fn(),
     } as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>
     const events: EventEnvelope[] = []
-    const service = createThreadService(runtime, { rejection: () => undefined }, (event) =>
-      events.push(event),
+    const service = createThreadService(
+      runtime,
+      { rejection: () => undefined },
+      (event) => events.push(event),
+      undefined,
+      registered,
     )
     service.setEnvironmentId('environment-1')
     const created = ProofResponseSchemas['session.create'].parse(
