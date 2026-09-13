@@ -11,6 +11,7 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import { AccessGrantSchema, type AccessCapability } from '@openmanager/protocol/node'
+import type { AuditLog } from './audit.ts'
 import { openEnvironmentDatabase } from './db/database.ts'
 import { ACTIVE_OWNER_CLIENT_SQL, AUTHORIZED_CLIENT_BY_HASH_SQL } from './db/queries.ts'
 
@@ -123,7 +124,11 @@ function writeOwnerFile(path: string, credential: string): void {
 export type AuthorizedClients = ReturnType<typeof openAuthorizedClients>
 
 /** Open the credential store on the environment database. All operations are synchronous point reads and writes. */
-export function openAuthorizedClients(dataDir: string, clock: () => number = Date.now) {
+export function openAuthorizedClients(
+  dataDir: string,
+  clock: () => number = Date.now,
+  audit?: Pick<AuditLog, 'record'>,
+) {
   const database = openEnvironmentDatabase(dataDir)
   const ownerPath = join(dataDir, OWNER_CREDENTIAL_FILENAME)
   const byHash = database.prepare(AUTHORIZED_CLIENT_BY_HASH_SQL)
@@ -156,7 +161,7 @@ export function openAuthorizedClients(dataDir: string, clock: () => number = Dat
     }) satisfies AuthenticatedClient
   }
 
-  const issue = (request: ClientGrantRequest, now: number) => {
+  const issue = (request: ClientGrantRequest, now: number, recordAudit = true) => {
     const capabilities = AccessGrantSchema.parse([...request.capabilities])
     if (request.kind === 'cloud' && capabilities.includes('admin')) {
       throw new Error('Cloud-enrolled clients cannot hold the admin capability.')
@@ -181,6 +186,14 @@ export function openAuthorizedClients(dataDir: string, clock: () => number = Dat
       now,
       now + IDLE_EXPIRY_MS,
     )
+    if (recordAudit) {
+      audit?.record({
+        type: 'token.issued',
+        clientId: client.clientId,
+        command: 'client.issue',
+        details: { kind: client.kind, label: client.label },
+      })
+    }
     return { client, credential }
   }
 
@@ -214,7 +227,16 @@ export function openAuthorizedClients(dataDir: string, clock: () => number = Dat
 
     /** Mark a client revoked. Returns false when it was unknown or already revoked. */
     revoke(clientId: string): boolean {
-      return revokeOne.run(clock(), clientId).changes > 0
+      const revoked = revokeOne.run(clock(), clientId).changes > 0
+      if (revoked) {
+        audit?.record({
+          type: 'token.revoked',
+          clientId,
+          command: 'client.revoke',
+          details: {},
+        })
+      }
+      return revoked
     },
 
     /**
@@ -243,10 +265,29 @@ export function openAuthorizedClients(dataDir: string, clock: () => number = Dat
             return client
           }
         }
+        const previousId = existing?.client_id
         revokeOwners.run(now)
-        const minted = issue({ label: OWNER_LABEL, kind: 'owner', capabilities: OWNER_GRANT }, now)
+        const minted = issue(
+          { label: OWNER_LABEL, kind: 'owner', capabilities: OWNER_GRANT },
+          now,
+          false,
+        )
         writeOwnerFile(ownerPath, minted.credential)
         database.exec('COMMIT')
+        if (previousId) {
+          audit?.record({
+            type: 'token.revoked',
+            clientId: previousId,
+            command: 'owner.rotate',
+            details: {},
+          })
+        }
+        audit?.record({
+          type: 'token.issued',
+          clientId: minted.client.clientId,
+          command: 'client.issue',
+          details: { kind: minted.client.kind, label: minted.client.label },
+        })
         return minted.client
       } catch (error) {
         try {
