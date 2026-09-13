@@ -120,7 +120,7 @@ export function EnvironmentConnectForm({
         type="password"
         autoComplete="off"
         spellCheck={false}
-        placeholder="Paste client-token"
+        placeholder="Paste owner-credential (omc1.…)"
         className={cn(fieldClass, 'mt-1.5')}
         value={credentialValue}
         onChange={(event) => setCredentialValue(event.target.value)}

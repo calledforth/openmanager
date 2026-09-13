@@ -12,7 +12,8 @@ const BACKENDS: ReadonlySet<string> = new Set<EnvironmentClientBackend>(['convex
  *
  * - `OPENMANAGER_ENVIRONMENT_CLIENT`: `convex` (default) or `websocket`
  * - `OPENMANAGER_ENVIRONMENT_URL`: HTTP origin of the environment server
- * - `OPENMANAGER_CLIENT_TOKEN`: the server's development client token
+ * - `OPENMANAGER_CLIENT_TOKEN`: a client credential for that server (for example the
+ *   local owner credential from `<data-dir>/owner-credential`)
  */
 export function resolveEnvironmentClientConfig(
   env: Record<string, string | undefined>,

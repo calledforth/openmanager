@@ -5,6 +5,8 @@ import type { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { openEnvironmentDatabase } from '../src/db/database.js'
 import {
+  ACTIVE_OWNER_CLIENT_SQL,
+  AUTHORIZED_CLIENT_BY_HASH_SQL,
   EVENT_TOMBSTONE_SQL,
   EVENTS_AFTER_CURSOR_SQL,
   EVENTS_TO_PRUNE_SQL,
@@ -103,6 +105,14 @@ describe('bounded query plans', () => {
     expect(plan(database, 'DELETE FROM event_id_tombstones WHERE pruned_at < ?')).toEqual([
       'SEARCH event_id_tombstones USING INDEX event_id_tombstones_pruned_at_idx (pruned_at<?)',
     ])
+  })
+
+  it('authenticates by credential hash and finds the owner row through indexes', async () => {
+    const database = await createDatabase()
+    expect(plan(database, AUTHORIZED_CLIENT_BY_HASH_SQL)).toEqual([
+      'SEARCH authorized_clients USING INDEX sqlite_autoindex_authorized_clients_2 (credential_hash=?)',
+    ])
+    expectIndexed(plan(database, ACTIVE_OWNER_CLIENT_SQL), 'authorized_clients_kind_idx')
   })
 
   it('drops the single-column indexes the composites supersede', async () => {

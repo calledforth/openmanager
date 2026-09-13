@@ -21,7 +21,7 @@ import { createComposerService, desiredSessionConfig } from './composer-service.
 import { openComposerStore } from './composer-store.ts'
 import type { ServerConfig } from './config.ts'
 import { validateOrigins } from './config.ts'
-import { loadClientToken } from './credential.ts'
+import { openAuthorizedClients } from './authorized-clients.ts'
 import { loadEnvironmentIdentity } from './identity.ts'
 import { createEventService } from './event-service.ts'
 import { createLogger } from './logger.ts'
@@ -50,8 +50,10 @@ export const SERVER_CAPABILITIES = [
 export async function startServer(config: ServerConfig) {
   const allowedOrigins = validateOrigins(config.allowedOrigins ?? [])
   const identity = await loadEnvironmentIdentity(config.dataDir)
-  const token = await loadClientToken(config.dataDir)
   const composerStore = openComposerStore(config.dataDir)
+  const clients = openAuthorizedClients(config.dataDir)
+  // Local first run needs no pairing UI: the process mints the owner credential.
+  const owner = clients.ensureOwner()
   let onRuntimeEvent: HostDeps['emitEvent'] = () => undefined
   const runtime = mountAgentRuntime(
     createLogger(config.logLevel),
@@ -130,7 +132,7 @@ export async function startServer(config: ServerConfig) {
     response.end('Not found\n')
   })
   const sockets = attachWebSocket(server, {
-    token,
+    authenticate: (credential) => clients.authenticate(credential),
     allowedOrigins,
     bootstrap,
     dispatchCommand: (command) =>
@@ -155,6 +157,7 @@ export async function startServer(config: ServerConfig) {
     providerService.stop()
     await runtime.shutdown()
     composerStore.close()
+    clients.close()
     throw error
   }
   const address = server.address() as AddressInfo
@@ -163,6 +166,8 @@ export async function startServer(config: ServerConfig) {
   let closePromise: Promise<void> | undefined
   return {
     identity,
+    owner,
+    clients,
     runtime,
     threadService,
     composerService,
@@ -170,6 +175,13 @@ export async function startServer(config: ServerConfig) {
     sockets,
     port: address.port,
     url: `http://127.0.0.1:${address.port}`,
+    /** Revoke a client's credential and cut its live sockets in one step. */
+    revokeClient(clientId: string): boolean {
+      if (clientId === owner.clientId) return false
+      const revoked = clients.revoke(clientId)
+      if (revoked) sockets.disconnectClient(clientId)
+      return revoked
+    },
     close: () => {
       if (!closePromise) {
         const socketClose = sockets.close()
@@ -179,6 +191,7 @@ export async function startServer(config: ServerConfig) {
         })
         closePromise = Promise.all([socketClose, httpClose, runtime.shutdown()]).then(() => {
           composerStore.close()
+          clients.close()
         })
         stopHealthEvents()
         providerService.stop()

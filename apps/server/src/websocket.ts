@@ -12,6 +12,8 @@ import {
   negotiateProtocolHandshake,
   ProofCommandSchemas,
   RequestIdSchema,
+  accessDenied,
+  requiredAccess,
   sameScope,
   SubscriptionEventSchema,
   type BootstrapResponse,
@@ -21,7 +23,7 @@ import {
   type ServerHeartbeatState,
   type SubscriptionScope,
 } from '@openmanager/protocol/node'
-import { matchesClientToken } from './credential.ts'
+import type { AuthenticatedClient } from './authorized-clients.ts'
 
 export const SOCKET_CAPABILITIES = [
   HEARTBEAT_CAPABILITY,
@@ -45,11 +47,15 @@ const errorResult = (requestId: string | null, code: ErrorCode, message: string)
 })
 const now = () => Math.floor(performance.now())
 
+export const REVOKED_CLOSE_CODE = 4401 as const
+export const REVOKED_CLOSE_REASON = 'revoked' as const
+
 /** Transport owns only live connection state. Durable event records come from the host. */
 export function attachWebSocket(
   server: Server,
   options: {
-    token: string
+    /** Resolve a presented credential to its live client, or `undefined` to reject the upgrade. */
+    authenticate: (credential: string | undefined) => AuthenticatedClient | undefined
     allowedOrigins: readonly string[]
     bootstrap: () => BootstrapResponse
     dispatchCommand?: (command: CommandEnvelope) => unknown | Promise<unknown> | undefined
@@ -62,6 +68,7 @@ export function attachWebSocket(
     handleProtocols: (protocols) => (protocols.has('openmanager.v1') ? 'openmanager.v1' : false),
   })
   type Connection = {
+    client: AuthenticatedClient
     subscriptions: Map<string, SubscriptionScope>
     ready: boolean
     send: (message: unknown) => void
@@ -92,7 +99,7 @@ export function attachWebSocket(
     const authorization = request.headers.authorization
     let candidate: string | undefined
     if (authorization !== undefined && protocols.length === 0) {
-      candidate = /^Bearer ([a-f0-9]{64})$/.exec(authorization)?.[1]
+      candidate = /^Bearer (\S+)$/.exec(authorization)?.[1]
     } else if (
       authorization === undefined &&
       protocols.length === 2 &&
@@ -101,9 +108,10 @@ export function attachWebSocket(
     ) {
       candidate = authProtocols[0].slice('openmanager.auth.'.length)
     }
-    if (!matchesClientToken(candidate, options.token)) {
-      return reject(401, 'auth', 'A valid client credential is required.')
-    }
+    // Every socket carries a per-client credential, loopback included: network
+    // position grants nothing. The store answers with the client's grant.
+    const client = options.authenticate(candidate)
+    if (!client) return reject(401, 'auth', 'A valid client credential is required.')
     if (wss.clients.size >= SOCKET_LIMITS.maxConnections) {
       return reject(503, 'unavailable', 'Connection limit reached.')
     }
@@ -159,7 +167,7 @@ export function attachWebSocket(
         }
       }
       timer = setTimeout(() => close(1008, 'handshake_timeout'), SOCKET_LIMITS.handshakeTimeoutMs)
-      const connection: Connection = { subscriptions, ready: false, send, close }
+      const connection: Connection = { client, subscriptions, ready: false, send, close }
       connections.set(ws, connection)
       ws.on('close', () => {
         cleanup()
@@ -267,6 +275,17 @@ export function attachWebSocket(
           tick()
           return
         }
+        // Authorization is per operation: authenticated is not enough. Unknown
+        // names are rejected before any service sees them.
+        const required = requiredAccess(message.name)
+        if (required === undefined) {
+          reply(errorResult(message.requestId, 'validation', 'Unsupported command.'))
+          return
+        }
+        if (required !== null && !client.capabilities.includes(required)) {
+          reply(accessDenied(message.requestId, required))
+          return
+        }
         if (message.name === 'subscription.subscribe') {
           const command = ProofCommandSchemas['subscription.subscribe'].safeParse(raw)
           if (!command.success) {
@@ -348,6 +367,20 @@ export function attachWebSocket(
       for (const connection of connections.values()) {
         if (connection.ready) connection.send(event)
       }
+    },
+    /** Cut every socket authenticated by one client, e.g. after its credential is revoked. */
+    disconnectClient(
+      clientId: string,
+      code: number = REVOKED_CLOSE_CODE,
+      reason: string = REVOKED_CLOSE_REASON,
+    ): number {
+      let count = 0
+      for (const connection of [...connections.values()]) {
+        if (connection.client.clientId !== clientId) continue
+        connection.close(code, reason)
+        count += 1
+      }
+      return count
     },
     close() {
       if (!closePromise) {

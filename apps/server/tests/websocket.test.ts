@@ -6,6 +6,7 @@ import { setImmediate as immediate } from 'node:timers/promises'
 import { WebSocket, type ClientOptions } from 'ws'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  AccessDeniedErrorSchema,
   HEARTBEAT_POLICY,
   PROTOCOL_VERSION,
   ProviderHealthChangedEventSchema,
@@ -15,8 +16,9 @@ import {
   type ServerMessage,
   type SubscriptionScope,
 } from '@openmanager/protocol/node'
+import { mintCredential } from '../src/authorized-clients.js'
 import { startServer } from '../src/server.js'
-import { SOCKET_LIMITS } from '../src/websocket.js'
+import { REVOKED_CLOSE_CODE, REVOKED_CLOSE_REASON, SOCKET_LIMITS } from '../src/websocket.js'
 
 const directories: string[] = []
 const servers: Awaited<ReturnType<typeof startServer>>[] = []
@@ -38,17 +40,17 @@ async function setup() {
     allowedOrigins: ['http://localhost:5173'],
   })
   servers.push(server)
-  const token = (await readFile(join(dataDir, 'client-token'), 'utf8')).trim()
+  const token = (await readFile(join(dataDir, 'owner-credential'), 'utf8')).trim()
   return { server, token, url: `${server.url.replace('http:', 'ws:')}/ws` }
 }
 type Host = Awaited<ReturnType<typeof setup>>
 
-async function connect(host: Host, browser = false) {
+async function connect(host: Host, browser = false, credential = host.token) {
   const ws = browser
-    ? new WebSocket(host.url, ['openmanager.v1', `openmanager.auth.${host.token}`], {
+    ? new WebSocket(host.url, ['openmanager.v1', `openmanager.auth.${credential}`], {
         origin: 'http://localhost:5173',
       })
-    : new WebSocket(host.url, { headers: { authorization: `Bearer ${host.token}` } })
+    : new WebSocket(host.url, { headers: { authorization: `Bearer ${credential}` } })
   clients.push(ws)
   const queue: ServerMessage[] = []
   let waiter: ((message: ServerMessage) => void) | undefined
@@ -134,6 +136,9 @@ describe('authenticated upgrade', () => {
       {},
       { authorization: 'Bearer invalid' },
       { authorization: `Bearer ${'0'.repeat(64)}` },
+      { authorization: `Bearer ${mintCredential()}` },
+      { authorization: `Bearer ${host.token.slice(0, -1)}` },
+      { authorization: `Basic ${host.token}` },
     ]
     for (const headers of headerCases) {
       expect(await rejection(host.url, { headers })).toMatchObject({
@@ -146,6 +151,8 @@ describe('authenticated upgrade', () => {
 
   it('accepts native bearer and browser subprotocol credentials without echoing the token', async () => {
     const host = await setup()
+    expect(host.token).toMatch(/^omc1\.[A-Za-z0-9_-]{43}$/)
+    expect(host.server.owner).toMatchObject({ kind: 'owner', label: 'Local owner' })
     const native = await connect(host)
     const browser = await connect(host, true)
     expect(native.ws.protocol).toBe('')
@@ -153,6 +160,39 @@ describe('authenticated upgrade', () => {
     await handshake(native)
     await handshake(browser)
     expect(host.server.sockets.connectionCount).toBe(2)
+  })
+
+  it('accepts per-client credentials and cuts their live sockets on revocation', async () => {
+    const host = await setup()
+    const phone = host.server.clients.issue({
+      label: 'Phone',
+      kind: 'paired',
+      capabilities: ['read'],
+    })
+    const native = await connect(host, false, phone.credential)
+    const browser = await connect(host, true, phone.credential)
+    await handshake(native)
+    await handshake(browser)
+    const owner = await connect(host)
+    await handshake(owner)
+    expect(host.server.sockets.connectionCount).toBe(3)
+
+    const closes = Promise.all([once(native.ws, 'close'), once(browser.ws, 'close')])
+    expect(host.server.revokeClient(phone.client.clientId)).toBe(true)
+    for (const [code, reason] of await closes) {
+      expect(code).toBe(REVOKED_CLOSE_CODE)
+      expect(String(reason)).toBe(REVOKED_CLOSE_REASON)
+    }
+    expect(host.server.revokeClient(phone.client.clientId)).toBe(false)
+    expect(host.server.sockets.connectionCount).toBe(1)
+    expect(
+      await rejection(host.url, { headers: { authorization: `Bearer ${phone.credential}` } }),
+    ).toMatchObject({ status: 401, body: { error: { code: 'auth' } } })
+
+    // The owner row is replaced only by the local process, never revoked remotely.
+    expect(host.server.revokeClient(host.server.owner.clientId)).toBe(false)
+    owner.command('unknown.command', null)
+    expect(await owner.next()).toMatchObject({ type: 'error', error: { code: 'validation' } })
   })
 
   it('rejects untrusted and opaque origins even with a valid credential', async () => {
@@ -189,6 +229,98 @@ describe('authenticated upgrade', () => {
       expect(denied.headers.has('access-control-allow-origin')).toBe(false)
       expect(await denied.json()).toMatchObject({ error: { code: 'auth' } })
     }
+  })
+})
+
+describe('per-operation authorization', () => {
+  it('rejects commands outside the grant with capability_missing and serves the rest', async () => {
+    const host = await setup()
+    const ensure = vi.spyOn(host.server.runtime, 'ensureSession')
+    const prompt = vi.spyOn(host.server.runtime, 'prompt')
+    const reader = host.server.clients.issue({
+      label: 'Watcher',
+      kind: 'paired',
+      capabilities: ['read'],
+    })
+    const client = await connect(host, false, reader.credential)
+    await handshake(client)
+    await subscribe(client, {
+      type: 'environment',
+      environmentId: host.server.identity.environmentId,
+    })
+
+    const denied: [string, unknown, string][] = [
+      ['session.create', { workspaceId: 'workspace-1' }, 'operate'],
+      [
+        'composer.preferences.set',
+        { workspaceId: 'workspace-1', providerId: 'cursor', preference: { modelId: 'opus' } },
+        'operate',
+      ],
+      ['turn.send', { sessionId: 's', threadId: 't', text: 'hi' }, 'agent'],
+      ['turn.interrupt', { sessionId: 's', threadId: 't', turnId: 'u' }, 'agent'],
+      [
+        'interaction.respond',
+        { sessionId: 's', threadId: 't', response: { kind: 'permission' } },
+        'agent',
+      ],
+      ['composer.model.set', { sessionId: 's', modelId: 'opus' }, 'agent'],
+    ]
+    for (const [name, payload, requiredCapability] of denied) {
+      const requestId = client.command(name, payload)
+      const result = AccessDeniedErrorSchema.parse(await client.next())
+      expect(result).toMatchObject({
+        requestId,
+        error: { code: 'capability_missing', details: { requiredCapability } },
+      })
+    }
+    expect(ensure).not.toHaveBeenCalled()
+    expect(prompt).not.toHaveBeenCalled()
+
+    // Read commands still reach their service: the probe fails on the payload, not the grant.
+    const probeId = client.command('provider.probe', { providerId: 'missing', cwd: 'C:\\w' })
+    expect(await client.next()).toMatchObject({
+      type: 'error',
+      requestId: probeId,
+      error: { code: 'not_found' },
+    })
+    const catalogId = client.command('provider.catalog.get', null)
+    expect(await client.next()).toMatchObject({ type: 'response', requestId: catalogId })
+    // Unknown names are validation errors for every grant, never a capability leak.
+    client.command('terminal.open', null)
+    expect(await client.next()).toMatchObject({ type: 'error', error: { code: 'validation' } })
+    expect(host.server.sockets.connectionCount).toBe(1)
+  })
+
+  it('lets a standard grant operate the workspace but not drive the agent', async () => {
+    const host = await setup()
+    const ensure = vi.spyOn(host.server.runtime, 'ensureSession').mockResolvedValue({
+      sessionId: 'provider-session',
+      state: 'created',
+    })
+    const prompt = vi.spyOn(host.server.runtime, 'prompt')
+    const standard = host.server.clients.issue({
+      label: 'Laptop',
+      kind: 'paired',
+      capabilities: ['read', 'operate'],
+    })
+    const client = await connect(host, true, standard.credential)
+    await handshake(client)
+
+    const createId = client.command('session.create', { workspaceId: 'workspace-1' })
+    const created = ProofResponseSchemas['session.create'].parse(await client.next())
+    expect(created.requestId).toBe(createId)
+    await vi.waitFor(() => expect(ensure).toHaveBeenCalledTimes(1))
+
+    const sendId = client.command('turn.send', {
+      sessionId: created.payload.session.sessionId,
+      threadId: created.payload.thread.threadId,
+      text: 'Hello runtime',
+    })
+    expect(AccessDeniedErrorSchema.parse(await client.next())).toMatchObject({
+      requestId: sendId,
+      error: { details: { requiredCapability: 'agent' } },
+    })
+    expect(prompt).not.toHaveBeenCalled()
   })
 })
 

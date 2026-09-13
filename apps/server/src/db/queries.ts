@@ -104,3 +104,17 @@ export const STREAM_BOUNDS_SQL = `
   SELECT epoch, head_sequence, oldest_sequence
   FROM event_streams
   WHERE scope_key = ?`
+
+/** Authentication: the client row for one credential hash, served by the UNIQUE index. */
+export const AUTHORIZED_CLIENT_BY_HASH_SQL = `
+  SELECT client_id, label, kind, credential_hash, scopes_json, expires_at, revoked_at
+  FROM authorized_clients
+  WHERE credential_hash = ?`
+
+/** Startup: the live owner row, if one exists, from the kind index. */
+export const ACTIVE_OWNER_CLIENT_SQL = `
+  SELECT client_id, label, credential_hash, scopes_json, expires_at
+  FROM authorized_clients
+  WHERE kind = 'owner' AND revoked_at IS NULL
+  ORDER BY created_at DESC
+  LIMIT 1`

@@ -199,11 +199,12 @@ fix. Issues in other projects own the parts that land with their feature.
 This is the Wave 1 starting point the issues above replace:
 
 - The server listens on `127.0.0.1` only (`apps/server/src/server.ts`).
-- One environment-wide token is created at `<data-dir>/client-token` and
-  accepted as a Bearer header or an `openmanager.auth.<token>` WebSocket
-  subprotocol (`apps/server/src/credential.ts`, `apps/server/src/websocket.ts`).
-  There is no client identity, capability check or per-client revocation. That
-  is T4, T5 and T13.
+- Per-client credentials live in `authorized_clients` and are checked on every
+  WebSocket upgrade; every command is mapped to one capability and checked
+  before dispatch (`apps/server/src/authorized-clients.ts`,
+  `apps/server/src/websocket.ts`, `packages/protocol/src/access.ts`). The local
+  owner credential is minted by the process into `<data-dir>/owner-credential`
+  (CAL-46). Issuing `paired` and `cloud` rows is still open (T4, T5).
 - HTTP and WebSocket requests are checked against an exact origin allowlist,
   but only when an `Origin` header is present (`websocket.ts:86`,
   `server.ts:103`). There is no `Host` check, so the DNS-rebinding case (T9) is
