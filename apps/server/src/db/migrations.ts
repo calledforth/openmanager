@@ -343,4 +343,41 @@ export const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    version: 5,
+    name: 'audit_events',
+    up(database) {
+      database.exec(`
+        -- Durable security audit (CAL-48). Pre-auth refusals have a null
+        -- client_id; the identifier is kept after revoke so T16 can still
+        -- name the device. Raw credentials and provider secrets are never
+        -- stored here; application code redacts before insert.
+        CREATE TABLE IF NOT EXISTS audit_events (
+          event_id TEXT PRIMARY KEY NOT NULL,
+          type TEXT NOT NULL,
+          outcome TEXT NOT NULL
+            CHECK (outcome IN (
+              'rejected', 'denied', 'failed', 'issued', 'revoked', 'exchanged'
+            )),
+          at INTEGER NOT NULL,
+          client_id TEXT,
+          command TEXT,
+          remote_address TEXT,
+          details_json TEXT NOT NULL CHECK (json_valid(details_json))
+        ) STRICT;
+
+        -- Newest events across the environment, keyset-paginated by (at, event_id).
+        CREATE INDEX IF NOT EXISTS audit_events_at_idx
+          ON audit_events(at DESC, event_id DESC);
+
+        -- Per-client trail, same keyset.
+        CREATE INDEX IF NOT EXISTS audit_events_client_at_idx
+          ON audit_events(client_id, at DESC, event_id DESC);
+
+        -- One event type (path.rejected, token.revoked, …), same keyset.
+        CREATE INDEX IF NOT EXISTS audit_events_type_at_idx
+          ON audit_events(type, at DESC, event_id DESC);
+      `)
+    },
+  },
 ]

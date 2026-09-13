@@ -82,18 +82,22 @@ describe('workspace registry', () => {
         type: 'workspace.rejected',
         at: '2026-09-13T12:00:00.000Z',
         clientId: 'client-1',
+        command: 'session.create',
+        outcome: 'rejected',
         details: { workspaceId: roots.a, command: 'session.create' },
       },
       {
         type: 'workspace.rejected',
         at: '2026-09-13T12:00:00.000Z',
         clientId: 'client-1',
+        command: 'session.create',
+        outcome: 'rejected',
         details: { workspaceId: roots.b, command: 'session.create' },
       },
       {
         type: 'workspace.rejected',
         at: '2026-09-13T12:00:00.000Z',
-        clientId: undefined,
+        outcome: 'rejected',
         details: { workspaceId: `${'x'.repeat(256)}...`, command: null },
       },
     ])

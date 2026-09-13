@@ -266,16 +266,39 @@ provider's own permission mode.
 
 ## Audit events
 
-Security refusals are recorded through [`src/audit.ts`](src/audit.ts): each
-event has a `type` (`host.rejected`, `origin.rejected`, `auth.failed`,
-`rate_limited`, `workspace.rejected`, `path.rejected`), a timestamp, the
-authenticated `clientId` when the request had one, the remote address for
-pre-authentication refusals, and bounded `details`. Events are written to the
-structured log at `warn` as `{"level":"warn","message":"audit","audit":{...}}`
-and delivered to in-process subscribers (`server.audit.subscribe`). They never
-contain credentials, file contents or provider secrets; client-supplied strings
-are truncated to 256 characters. Durable storage and a client-facing audit
-query are CAL-48.
+Security events are recorded through [`src/audit.ts`](src/audit.ts) and stored
+in the `audit_events` SQLite table. Each row has a `type`, an `outcome`
+(`rejected`, `denied`, `failed`, `issued`, `revoked`, `exchanged`), a
+timestamp, the `clientId` when the request had one, the `command` or HTTP
+surface, the remote address for pre-authentication refusals, and bounded
+`details`. Query locally with `server.audit.query({ clientId, type, outcome })`.
+
+Types written today:
+
+| Type                  | When                                                                 |
+| --------------------- | -------------------------------------------------------------------- |
+| `host.rejected`       | `Host` is missing or not allowlisted.                                |
+| `origin.rejected`     | Browser `Origin` is not allowlisted.                                 |
+| `auth.failed`         | Missing, malformed, unknown, expired or revoked credential.          |
+| `rate_limited`        | Auth-failure lockout or a per-client command budget.                 |
+| `workspace.rejected`  | Unknown workspace ID or a root path sent in place of an ID.          |
+| `path.rejected`       | A relative path that escapes a registered workspace.                 |
+| `capability.denied`   | Authenticated command whose grant lacks the required capability.     |
+| `token.issued`        | A credential is minted (owner, paired or cloud).                     |
+| `token.revoked`       | A credential is revoked, including owner rotation.                   |
+| `pairing.issued`      | A pairing link is minted (CAL-102).                                  |
+| `pairing.exchanged`   | A pairing link is exchanged for a credential (CAL-102).              |
+| `pairing.rejected`    | A pairing exchange is refused (CAL-102).                             |
+| `upload.rejected`     | An attachment exceeds `MAX_ATTACHMENT_BYTES` (CAL-87).               |
+
+Refusals are also written to the structured log at `warn`; issue and revoke
+events are `info`, so a first-run mint does not look like a startup failure.
+The record shape is `{"level":"...","message":"audit","audit":{...}}`. Events
+are delivered to in-process subscribers (`server.audit.subscribe`). Structured
+logs and audit rows never
+contain credentials, file contents or provider secrets: secret-named fields
+and `omc1.` / `Bearer` / `sk-` values are replaced with `[redacted]`, and
+client-supplied strings are truncated to 256 characters.
 
 After upgrade, the first command must be `protocol.handshake`, carrying
 `protocolVersion` and `requiredCapabilities`. Rejected handshakes receive their
@@ -454,7 +477,8 @@ plan with `EXPLAIN QUERY PLAN`, so a query or index change that introduces a
 scan or a temporary sort fails the suite. Migration 4 adds `kind` and
 `expires_at` to `authorized_clients` (existing rows become `paired` with a
 30-day window from their last activity; a row inserted without an explicit
-expiry is already expired) and the index behind the owner lookup. Keep later
+expiry is already expired) and the index behind the owner lookup. Migration 5
+adds `audit_events` and the indexes behind `server.audit.query`. Keep later
 changes in new numbered migrations rather than editing a shipped migration.
 
 ### Event retention
@@ -479,7 +503,9 @@ pnpm --filter server build
 ```
 
 `test` builds first so the CLI smoke test exercises the production JavaScript
-entry point. Tests cover configuration precedence and rejection, occupied ports,
+entry point. Negative security tests in `tests/security-negative.test.ts` assert
+the specific refusal (status and error code) so a crash or missing route cannot
+satisfy them. Tests cover configuration precedence and rejection, occupied ports,
 data-directory failures, concurrent identity initialization across processes,
 identity preservation and corruption, bootstrap, log filtering, compiled and
 native-TypeScript startup, process restart durability, the close code/reason

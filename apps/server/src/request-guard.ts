@@ -32,6 +32,8 @@ export function createRequestGuard(options: {
     /** `undefined` when the request may proceed. */
     check(request: IncomingMessage): RequestRejection | undefined {
       const remoteAddress = request.socket.remoteAddress
+      const path = request.url?.split('?')[0]
+      const command = auditValue(`${request.method ?? 'GET'} ${path ?? '/'}`)
       const host = request.headers.host?.trim().toLowerCase()
       if (
         host === undefined ||
@@ -40,6 +42,7 @@ export function createRequestGuard(options: {
         options.audit.record({
           type: 'host.rejected',
           remoteAddress,
+          command: typeof command === 'string' ? command : undefined,
           details: { host: auditValue(host), url: auditValue(request.url) },
         })
         return { status: 403, code: 'auth', message: 'Host is not allowed.' }
@@ -49,6 +52,7 @@ export function createRequestGuard(options: {
         options.audit.record({
           type: 'origin.rejected',
           remoteAddress,
+          command: typeof command === 'string' ? command : undefined,
           details: { origin: auditValue(origin), url: auditValue(request.url) },
         })
         return { status: 403, code: 'auth', message: 'Origin is not allowed.' }

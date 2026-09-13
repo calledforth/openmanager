@@ -118,3 +118,30 @@ export const ACTIVE_OWNER_CLIENT_SQL = `
   WHERE kind = 'owner' AND revoked_at IS NULL
   ORDER BY created_at DESC
   LIMIT 1`
+
+/**
+ * Newest audit events, keyset-paginated by `(at, event_id)`. The first page
+ * passes a cursor above every real row, such as `(MAX_SAFE_INTEGER, '')`.
+ */
+export const AUDIT_EVENTS_RECENT_SQL = `
+  SELECT event_id, type, outcome, at, client_id, command, remote_address, details_json
+  FROM audit_events
+  WHERE (at, event_id) < (?, ?)
+  ORDER BY at DESC, event_id DESC
+  LIMIT ?`
+
+/** Newest audit events for one client, same keyset. */
+export const AUDIT_EVENTS_FOR_CLIENT_SQL = `
+  SELECT event_id, type, outcome, at, client_id, command, remote_address, details_json
+  FROM audit_events
+  WHERE client_id = ? AND (at, event_id) < (?, ?)
+  ORDER BY at DESC, event_id DESC
+  LIMIT ?`
+
+/** Newest audit events of one type, same keyset. */
+export const AUDIT_EVENTS_FOR_TYPE_SQL = `
+  SELECT event_id, type, outcome, at, client_id, command, remote_address, details_json
+  FROM audit_events
+  WHERE type = ? AND (at, event_id) < (?, ?)
+  ORDER BY at DESC, event_id DESC
+  LIMIT ?`

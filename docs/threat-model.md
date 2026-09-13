@@ -213,8 +213,10 @@ This is the Wave 1 starting point the issues above replace:
   (`apps/server/src/rate-limit.ts`). Workspaces are registered roots named by
   ID; every client path resolves under one through `realpath` and escapes are
   refused (`apps/server/src/workspaces.ts`, `apps/server/src/workspace-paths.ts`).
-  Refusals are recorded as audit events in the structured log
-  (`apps/server/src/audit.ts`); durable audit storage is CAL-48 (CAL-47).
+  Refusals, capability denials and token issue/revoke are recorded as audit
+  events in SQLite (`audit_events`) and the structured log
+  (`apps/server/src/audit.ts`). Rows carry client id, command and outcome;
+  credentials and provider keys are redacted (CAL-48).
 - `/bootstrap` is unauthenticated and includes the provider snapshot, which D11
   moves behind authentication.
 

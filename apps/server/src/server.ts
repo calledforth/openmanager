@@ -57,11 +57,11 @@ export async function startServer(config: ServerConfig) {
   const allowedHosts = validateHosts(config.allowedHosts ?? [])
   const workspaceRoots = validateWorkspaceRoots(config.workspaces ?? [])
   const log = createLogger(config.logLevel)
-  const audit = createAuditLog(log)
   const rateLimiter = createRateLimiter()
   const identity = await loadEnvironmentIdentity(config.dataDir)
+  const audit = createAuditLog(log, { dataDir: config.dataDir })
   const composerStore = openComposerStore(config.dataDir)
-  const clients = openAuthorizedClients(config.dataDir)
+  const clients = openAuthorizedClients(config.dataDir, Date.now, audit)
   // Local first run needs no pairing UI: the process mints the owner credential.
   const owner = clients.ensureOwner()
   let workspaces
@@ -70,6 +70,7 @@ export async function startServer(config: ServerConfig) {
   } catch (error) {
     composerStore.close()
     clients.close()
+    audit.close()
     throw error
   }
   // Production routes every workspace through the registry: an ID resolves to
@@ -198,6 +199,7 @@ export async function startServer(config: ServerConfig) {
     composerStore.close()
     clients.close()
     workspaces.close()
+    audit.close()
     throw error
   }
   const address = server.address() as AddressInfo
@@ -236,6 +238,7 @@ export async function startServer(config: ServerConfig) {
           composerStore.close()
           clients.close()
           workspaces.close()
+          audit.close()
         })
         stopHealthEvents()
         providerService.stop()
