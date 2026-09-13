@@ -77,6 +77,13 @@ describe('in-process audit log', () => {
     })
     expect(JSON.stringify(event)).not.toContain(credential)
     expect(logger).toHaveBeenCalledWith('warn', 'audit', { audit: event })
+    const issued = audit.record({
+      type: 'token.issued',
+      clientId: 'client-1',
+      command: 'client.issue',
+      details: { kind: 'paired', label: 'Phone' },
+    })
+    expect(logger).toHaveBeenCalledWith('info', 'audit', { audit: issued })
     expect(audit.query({ type: 'pairing.rejected' })).toMatchObject([
       { command: 'pairing.exchange', outcome: 'rejected' },
     ])

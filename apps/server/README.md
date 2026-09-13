@@ -291,9 +291,11 @@ Types written today:
 | `pairing.rejected`    | A pairing exchange is refused (CAL-102).                             |
 | `upload.rejected`     | An attachment exceeds `MAX_ATTACHMENT_BYTES` (CAL-87).               |
 
-Events are also written to the structured log at `warn` as
-`{"level":"warn","message":"audit","audit":{...}}` and delivered to in-process
-subscribers (`server.audit.subscribe`). Structured logs and audit rows never
+Refusals are also written to the structured log at `warn`; issue and revoke
+events are `info`, so a first-run mint does not look like a startup failure.
+The record shape is `{"level":"...","message":"audit","audit":{...}}`. Events
+are delivered to in-process subscribers (`server.audit.subscribe`). Structured
+logs and audit rows never
 contain credentials, file contents or provider secrets: secret-named fields
 and `omc1.` / `Bearer` / `sk-` values are replaced with `[redacted]`, and
 client-supplied strings are truncated to 256 characters.

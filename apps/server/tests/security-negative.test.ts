@@ -10,7 +10,6 @@ import {
   ServerMessageSchema,
   type ServerMessage,
 } from '@openmanager/protocol/node'
-import { mintCredential } from '../src/authorized-clients.js'
 import { containsSecret } from '../src/redact.js'
 import { startServer } from '../src/server.js'
 import { isOversizedUpload, MAX_ATTACHMENT_BYTES } from '../src/upload-limits.js'
@@ -309,20 +308,24 @@ describe('negative security tests', () => {
     expect(isOversizedUpload(MAX_ATTACHMENT_BYTES)).toBe(false)
     expect(isOversizedUpload(MAX_ATTACHMENT_BYTES + 1)).toBe(true)
 
-    const body = Buffer.alloc(Math.min(MAX_ATTACHMENT_BYTES + 1, 64 * 1024), 0x61)
+    const headers = {
+      authorization: `Bearer ${host.token}`,
+      'content-type': 'application/octet-stream',
+    }
     let sawRoute = false
     for (const path of ['/attachments', '/upload', '/v1/attachments']) {
+      const probe = await fetch(`${host.server.url}${path}`, {
+        method: 'POST',
+        headers,
+        body: Buffer.from('probe'),
+      })
+      if (probe.status === 404) continue
+      sawRoute = true
       const response = await fetch(`${host.server.url}${path}`, {
         method: 'POST',
-        headers: {
-          authorization: `Bearer ${host.token}`,
-          'content-type': 'application/octet-stream',
-          'content-length': String(MAX_ATTACHMENT_BYTES + 1),
-        },
-        body,
+        headers,
+        body: Buffer.alloc(MAX_ATTACHMENT_BYTES + 1, 0x61),
       })
-      if (response.status === 404) continue
-      sawRoute = true
       expectClosedFor(`oversized POST ${path}`, {
         status: response.status,
         code: ((await response.json()) as { error?: { code?: string } }).error?.code,

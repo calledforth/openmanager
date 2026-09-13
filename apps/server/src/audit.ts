@@ -205,7 +205,11 @@ export function createAuditLog(
         ...(event.remoteAddress ? { remoteAddress: event.remoteAddress } : {}),
         details: event.details,
       })
-      log('warn', 'audit', { audit: published })
+      const severity =
+        event.outcome === 'rejected' || event.outcome === 'denied' || event.outcome === 'failed'
+          ? 'warn'
+          : 'info'
+      log(severity, 'audit', { audit: published })
       memory.push(event)
       try {
         insert?.run(
