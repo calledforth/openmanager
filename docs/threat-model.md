@@ -231,9 +231,13 @@ Proposed, not yet filed:
 - **CAL-45 scope addition (D5):** state that `agent` and `terminal` carry the
   same risk, and record per-client agent approval policy as a later
   enforcement step.
-- **CAL-47 scope addition (T9, T2), done:** a `Host` header allowlist. There
-  are no local-only endpoints (D2), so forwarded host and protocol headers are
-  ignored everywhere rather than rejected on a subset.
+- **CAL-47 scope addition (T9, T2), done:** a `Host` header allowlist.
+  Forwarded host and protocol headers are ignored for identity everywhere.
+- **CAL-49 issuance (T2):** `GET /local-owner` is a local-only issuance
+  route, not an authorization shortcut. It answers 404 when `Host` is a
+  tunnel name or when proxy fingerprints (`Forwarded`, `X-Forwarded-*`,
+  `Cf-*`) are present, even if `Host` was rewritten to loopback. `/ws` and
+  commands still require the credential.
 - **CAL-46 scope addition (D11):** trim `/bootstrap` to the pre-auth fields.
 - **CAL-147 wording:** replace "signed-in user without pairing cannot read
   sessions/files" with "a signed-in user cannot reach an environment that is

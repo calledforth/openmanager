@@ -89,6 +89,19 @@ describe('local owner access helpers', () => {
         43120,
       ),
     ).toBe('forbidden')
+    expect(
+      evaluateLocalOwnerAccess(
+        {
+          ...loopback,
+          headers: {
+            host: '127.0.0.1:43120',
+            origin: 'http://localhost:5173',
+            'x-forwarded-for': '203.0.113.7',
+          },
+        } as never,
+        43120,
+      ),
+    ).toBe('not_found')
   })
 })
 
@@ -166,6 +179,16 @@ describe('GET /local-owner', () => {
     const native = await fetch(`${server.url}${LOCAL_OWNER_PATH}`)
     expect(native.status).toBe(403)
     expect(await native.json()).toMatchObject({ error: { code: 'auth' } })
+
+    const rewritten = await get(server.port, LOCAL_OWNER_PATH, {
+      host: `127.0.0.1:${server.port}`,
+      origin: 'http://localhost:5173',
+      'x-forwarded-for': '203.0.113.7',
+      'cf-connecting-ip': '203.0.113.7',
+    })
+    expect(rewritten.status).toBe(404)
+    expect(rewritten.body).toBe('Not found\n')
+    expect(rewritten.body).not.toContain(published)
   })
 
   it('rate-limits issuance attempts without serving the credential', async () => {

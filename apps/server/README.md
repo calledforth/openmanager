@@ -83,12 +83,13 @@ discovery endpoints return JSON with `Cache-Control: no-store`:
   including the actual port when configured with port `0`.
 - `GET /local-owner` is issuance, not authorization. It returns the published
   owner credential only when the request is from a loopback remote address, the
-  `Host` is the bound loopback name (not a tunnel host), and `Origin` is a
-  first-party loopback origin that is also allowlisted. Tunnel hosts answer
-  404 so the route does not exist remotely. Native clients without `Origin`
-  read `owner-credential` from the data directory instead. `/ws` and every
-  command still require that credential; loopback grants nothing on those
-  routes (threat model D2).
+  `Host` is the bound loopback name (not a tunnel host), `Origin` is a
+  first-party loopback origin that is also allowlisted, and the request carries
+  no proxy fingerprints (`Forwarded`, `X-Forwarded-*`, `Cf-*`). Tunnel hosts
+  and rewritten-Host tunnel traffic answer 404 so the route does not exist
+  remotely. Native clients without `Origin` read `owner-credential` from the
+  data directory instead. `/ws` and every command still require that
+  credential; loopback grants nothing on those routes (threat model D2).
 
 Neither `/health` nor `/bootstrap` includes paths, session data or credentials. Other methods
 and paths return 404. Request Host and forwarding headers never determine

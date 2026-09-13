@@ -5,6 +5,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
@@ -38,6 +39,7 @@ import { fetchLocalOwner } from '../lib/local-owner'
 type PendingConnect = {
   endpoint: string
   credential: string
+  claimedEnvironmentId?: string
 }
 
 type ConnectionValue = {
@@ -117,6 +119,7 @@ export function ConnectionProvider({
   const [pending, setPending] = useState<PendingConnect | null>(null)
   const [hasConnected, setHasConnected] = useState(false)
   const [bootstrapNonce, setBootstrapNonce] = useState(0)
+  const claimGeneration = useRef(0)
 
   const persist = useCallback((next: EnvironmentRegistry) => {
     setRegistry(next)
@@ -151,6 +154,12 @@ export function ConnectionProvider({
     if (preview) return
     if (liveBootstrap.status !== 'ready' && liveBootstrap.status !== 'incompatible_protocol') return
     if (!liveBootstrap.environmentId || !endpoint) return
+    if (
+      pending?.claimedEnvironmentId &&
+      pending.claimedEnvironmentId !== liveBootstrap.environmentId
+    ) {
+      return
+    }
     const next = upsertStoredEnvironment(registry, {
       environmentId: liveBootstrap.environmentId,
       endpoint,
@@ -178,8 +187,8 @@ export function ConnectionProvider({
     if (!endpoint) return
     const parsed = parseEnvironmentCredential(credential)
     setHasConnected(false)
-    const begin = (nextCredential: string) => {
-      setPending({ endpoint, credential: nextCredential })
+    const begin = (nextCredential: string, claimedEnvironmentId?: string) => {
+      setPending({ endpoint, credential: nextCredential, claimedEnvironmentId })
       setBootstrapNonce((value) => value + 1)
     }
     // A pasted token always wins. Remote endpoints are never asked for an
@@ -187,10 +196,15 @@ export function ConnectionProvider({
     // blank token claims the process-minted owner credential before persist
     // so the registry is keyed to the environment ID with that token.
     if (parsed || !isLoopbackEnvironmentEndpoint(endpoint)) {
+      claimGeneration.current += 1
       begin(parsed)
       return
     }
-    void fetchLocalOwner(endpoint).then((claim) => begin(claim?.credential ?? ''))
+    const requestId = ++claimGeneration.current
+    void fetchLocalOwner(endpoint).then((claim) => {
+      if (requestId !== claimGeneration.current) return
+      begin(claim?.credential ?? '', claim?.environmentId)
+    })
   }, [])
 
   const selectEnvironment = useCallback(
@@ -199,6 +213,7 @@ export function ConnectionProvider({
       if (next.selectedId !== environmentId) return
       setHasConnected(false)
       setPending(null)
+      claimGeneration.current += 1
       persist(next)
       setBootstrapNonce((value) => value + 1)
     },
@@ -213,6 +228,7 @@ export function ConnectionProvider({
         setHasConnected(false)
       }
       setPending(null)
+      claimGeneration.current += 1
       persist(next)
       setBootstrapNonce((value) => value + 1)
     },
@@ -226,6 +242,7 @@ export function ConnectionProvider({
   const changeEnvironment = useCallback(() => {
     setHasConnected(false)
     setPending(null)
+    claimGeneration.current += 1
     persist({ ...registry, selectedId: null })
     setBootstrapNonce((value) => value + 1)
   }, [persist, registry])

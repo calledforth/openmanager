@@ -346,6 +346,9 @@ export async function startServer(config: ServerConfig) {
       const minted = clients.remintOwner()
       owner = minted.client
       sockets.disconnectClient(previousId)
+      // A socket that authenticated just before remint may not be in the map
+      // yet; a second pass after the upgrade handler yields closes it too.
+      setImmediate(() => sockets.disconnectClient(previousId))
       audit.record({
         type: 'owner.reminted',
         clientId: minted.client.clientId,

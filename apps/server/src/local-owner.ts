@@ -13,6 +13,26 @@ export type LocalOwnerAccess = 'ok' | 'not_found' | 'forbidden'
 
 const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '[::1]', '::1'])
 
+/**
+ * Headers a tunnel or reverse proxy typically adds. Presence means this is
+ * not a same-machine browser talking to the bound loopback listener, even
+ * when `Host` was rewritten to `127.0.0.1` (threat model T2). They are never
+ * used as identity — only as a reason to hide this issuance route.
+ */
+export const PROXY_FINGERPRINT_HEADERS = [
+  'forwarded',
+  'x-forwarded-for',
+  'x-forwarded-host',
+  'x-forwarded-proto',
+  'cf-connecting-ip',
+  'cf-ray',
+  'cf-visitor',
+] as const
+
+export function hasProxyFingerprint(headers: IncomingMessage['headers']): boolean {
+  return PROXY_FINGERPRINT_HEADERS.some((name) => headers[name] !== undefined)
+}
+
 export function isLoopbackRemoteAddress(address: string | undefined): boolean {
   return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
 }
@@ -50,7 +70,11 @@ export function evaluateLocalOwnerAccess(
   port: number,
 ): LocalOwnerAccess {
   const host = request.headers.host
-  if (!isLoopbackHostHeader(host, port) || !isLoopbackRemoteAddress(request.socket.remoteAddress)) {
+  if (
+    !isLoopbackHostHeader(host, port) ||
+    !isLoopbackRemoteAddress(request.socket.remoteAddress) ||
+    hasProxyFingerprint(request.headers)
+  ) {
     return 'not_found'
   }
   if (!isFirstPartyLoopbackOrigin(request.headers.origin)) return 'forbidden'
