@@ -1,5 +1,9 @@
 # OpenManager — Security Baseline
 
+This is the Electron/Convex baseline. The environment server's threat model,
+including remote access, pairing and account sign-in, is in
+[threat-model.md](./threat-model.md).
+
 ## Localhost-Only Assumption
 
 - OpenCode server binds exclusively to `127.0.0.1`
