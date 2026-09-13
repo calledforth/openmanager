@@ -1,5 +1,14 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { closeSync, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from 'node:fs'
+import {
+  chmodSync,
+  closeSync,
+  fsyncSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeSync,
+} from 'node:fs'
 import { join } from 'node:path'
 import { AccessGrantSchema, type AccessCapability } from '@openmanager/protocol/node'
 import { openEnvironmentDatabase } from './db/database.ts'
@@ -85,13 +94,24 @@ function readOwnerFile(path: string): string | undefined {
 /** Publish the owner credential owner-readable, replacing any previous file atomically. */
 function writeOwnerFile(path: string, credential: string): void {
   const temporaryPath = `${path}.${randomUUID()}.tmp`
+  const content = Buffer.from(`${credential}\n`, 'utf8')
   const file = openSync(temporaryPath, 'wx', 0o600)
   try {
-    writeSync(file, `${credential}\n`)
+    // writeSync may return short. A truncated file would strand the owner
+    // behind a hash the database already committed, so write until complete.
+    let written = 0
+    while (written < content.byteLength) {
+      const count = writeSync(file, content, written)
+      if (count <= 0) throw new Error('Failed to write the complete owner credential.')
+      written += count
+    }
     fsyncSync(file)
-  } finally {
+  } catch (error) {
     closeSync(file)
+    unlinkSync(temporaryPath)
+    throw error
   }
+  closeSync(file)
   try {
     renameSync(temporaryPath, path)
   } catch (error) {
@@ -214,6 +234,9 @@ export function openAuthorizedClients(dataDir: string, clock: () => number = Dat
         if (existing && existing.expires_at > now && published !== undefined) {
           const client = toClient({ ...existing, kind: 'owner' })
           if (client && hashesMatch(existing.credential_hash, hashCredential(published))) {
+            // A restored backup or manual chmod may have widened the file;
+            // a reused credential is only ever reused owner-only.
+            chmodSync(ownerPath, 0o600)
             database.exec('COMMIT')
             return client
           }

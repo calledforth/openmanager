@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, stat, unlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, readdir, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -218,6 +218,19 @@ describe('local owner credential', () => {
     } finally {
       database.close()
     }
+  })
+
+  it('restores owner-only permissions on a reused credential file', async () => {
+    if (process.platform === 'win32') return
+    const dataDir = await directory()
+    const store = open(dataDir)
+    const owner = store.ensureOwner()
+    const path = join(dataDir, OWNER_CREDENTIAL_FILENAME)
+    const credential = (await readFile(path, 'utf8')).trim()
+    await chmod(path, 0o644)
+    expect(store.ensureOwner()).toEqual(owner)
+    expect((await stat(path)).mode & 0o777).toBe(0o600)
+    expect((await readFile(path, 'utf8')).trim()).toBe(credential)
   })
 
   it('re-mints an owner whose idle window has lapsed', async () => {
