@@ -44,10 +44,31 @@ export function parseEnvironmentEndpoint(raw: string): string | null {
   return url.origin + (url.pathname === '/' ? '' : url.pathname)
 }
 
+function endpointBase(endpoint: string): string {
+  return endpoint.endsWith('/') ? endpoint : `${endpoint}/`
+}
+
 /** Join `/bootstrap` onto the stored endpoint, keeping any path prefix. */
 export function environmentBootstrapUrl(endpoint: string): string {
-  const base = endpoint.endsWith('/') ? endpoint : `${endpoint}/`
-  return new URL('bootstrap', base).href
+  return new URL('bootstrap', endpointBase(endpoint)).href
+}
+
+/** Join `/local-owner` onto the stored endpoint, keeping any path prefix. */
+export function environmentLocalOwnerUrl(endpoint: string): string {
+  return new URL('local-owner', endpointBase(endpoint)).href
+}
+
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]'])
+
+/** True when the stored HTTP endpoint names a loopback host. */
+export function isLoopbackEnvironmentEndpoint(endpoint: string): boolean {
+  const parsed = parseEnvironmentEndpoint(endpoint)
+  if (!parsed) return false
+  try {
+    return LOOPBACK_HOSTS.has(new URL(parsed).hostname.toLowerCase())
+  } catch {
+    return false
+  }
 }
 
 /**

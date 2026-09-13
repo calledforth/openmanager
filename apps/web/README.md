@@ -36,4 +36,4 @@ The information architecture matches the desktop app and the mobile screens, exp
 
 First-run and terminal failures (no environment, protocol mismatch, unauthorized) replace the main pane. Connecting, reconnecting, and unreachable stay in-shell as a banner so the session UI is not swapped away. States come from the stored environment, `GET /bootstrap` + `evaluateBootstrap`, and connection status — not from a timeout.
 
-Environments are stored by bootstrap `environmentId` as `{ environmentId, label, endpoints, credential }`. Adding a second URL for the same ID updates that record instead of creating a duplicate. Select and remove live on the first-run screen and in Settings.
+Environments are stored by bootstrap `environmentId` as `{ environmentId, label, endpoints, credential }`. Adding a second URL for the same ID updates that record instead of creating a duplicate. Select and remove live on the first-run screen and in Settings. Connecting to a loopback endpoint with a blank token claims `GET /local-owner` and stores that owner credential on the environment record. Remote endpoints are never asked for an owner token.

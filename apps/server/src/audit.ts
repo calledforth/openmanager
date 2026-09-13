@@ -12,6 +12,9 @@ export type AuditEventType =
   | 'rate_limited'
   | 'workspace.rejected'
   | 'path.rejected'
+  | 'owner.claimed'
+  | 'owner.claim_denied'
+  | 'owner.reminted'
 
 export type AuditValue = string | number | boolean | null
 

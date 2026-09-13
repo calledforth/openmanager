@@ -8,6 +8,8 @@ export const RATE_LIMITS = Object.freeze({
   auth_failure: { limit: 10, windowMs: 60_000 },
   /** Pairing-link exchange attempts per remote address; the pairing endpoint (CAL-102) consumes it. */
   pairing: { limit: 5, windowMs: 60_000 },
+  /** Local-owner issuance attempts per remote address (`GET /local-owner`). */
+  local_owner: { limit: 10, windowMs: 60_000 },
   /** `turn.send` per client. */
   prompt: { limit: 30, windowMs: 60_000 },
   /** Every other mutating command (`operate`, `agent`, `terminal`, `admin`) per client. */

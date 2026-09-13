@@ -21,6 +21,7 @@ import {
 import {
   EMPTY_REGISTRY,
   environmentRegistriesEqual,
+  isLoopbackEnvironmentEndpoint,
   parseEnvironmentCredential,
   parseEnvironmentEndpoint,
   readEnvironmentRegistry,
@@ -32,6 +33,7 @@ import {
   type EnvironmentRegistry,
   type StoredEnvironment,
 } from '../lib/environment-store'
+import { fetchLocalOwner } from '../lib/local-owner'
 
 type PendingConnect = {
   endpoint: string
@@ -174,9 +176,21 @@ export function ConnectionProvider({
   const connect = useCallback((nextEndpoint: string, credential = '') => {
     const endpoint = parseEnvironmentEndpoint(nextEndpoint)
     if (!endpoint) return
+    const parsed = parseEnvironmentCredential(credential)
     setHasConnected(false)
-    setPending({ endpoint, credential: parseEnvironmentCredential(credential) })
-    setBootstrapNonce((value) => value + 1)
+    const begin = (nextCredential: string) => {
+      setPending({ endpoint, credential: nextCredential })
+      setBootstrapNonce((value) => value + 1)
+    }
+    // A pasted token always wins. Remote endpoints are never asked for an
+    // owner credential (pairing is how those clients enroll). On loopback a
+    // blank token claims the process-minted owner credential before persist
+    // so the registry is keyed to the environment ID with that token.
+    if (parsed || !isLoopbackEnvironmentEndpoint(endpoint)) {
+      begin(parsed)
+      return
+    }
+    void fetchLocalOwner(endpoint).then((claim) => begin(claim?.credential ?? ''))
   }, [])
 
   const selectEnvironment = useCallback(

@@ -204,7 +204,10 @@ This is the Wave 1 starting point the issues above replace:
   before dispatch (`apps/server/src/authorized-clients.ts`,
   `apps/server/src/websocket.ts`, `packages/protocol/src/access.ts`). The local
   owner credential is minted by the process into `<data-dir>/owner-credential`
-  (CAL-46). Issuing `paired` and `cloud` rows is still open (T4, T5).
+  (CAL-46). The localhost web shell may collect that credential from
+  `GET /local-owner` when the request is loopback plus a first-party loopback
+  origin; reminting is explicit and disconnects the previous owner (CAL-49).
+  Issuing `paired` and `cloud` rows is still open (T4, T5).
 - Every HTTP request and WebSocket upgrade passes a `Host` allowlist (the
   bound loopback address or a configured tunnel host) and then an exact
   `Origin` allowlist; forwarded headers are ignored

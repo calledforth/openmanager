@@ -256,6 +256,30 @@ describe('local owner credential', () => {
     expect((await readFile(path, 'utf8')).trim()).toBe(credential)
   })
 
+  it('remints only when asked, revoking the previous owner row', async () => {
+    const dataDir = await directory()
+    const store = open(dataDir)
+    const original = store.ensureOwner()
+    const originalCredential = store.publishedOwner()
+    expect(originalCredential).toMatch(CREDENTIAL_PATTERN)
+    expect(store.ensureOwner()).toEqual(original)
+
+    const minted = store.remintOwner()
+    expect(minted.client.clientId).not.toBe(original.clientId)
+    expect(minted.client).toEqual({
+      clientId: expect.any(String),
+      label: 'Local owner',
+      kind: 'owner',
+      capabilities: OWNER_GRANT,
+    })
+    expect(minted.credential).toMatch(CREDENTIAL_PATTERN)
+    expect(minted.credential).not.toBe(originalCredential)
+    expect(store.publishedOwner()).toBe(minted.credential)
+    expect(store.authenticate(originalCredential)).toBeUndefined()
+    expect(store.authenticate(minted.credential)).toEqual(minted.client)
+    expect(store.ensureOwner()).toEqual(minted.client)
+  })
+
   it('re-mints an owner whose idle window has lapsed', async () => {
     let now = 5_000
     const dataDir = await directory()

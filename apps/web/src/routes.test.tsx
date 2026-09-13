@@ -100,6 +100,59 @@ describe('web routes', () => {
     }
   })
 
+  it('claims the local owner credential on localhost and stores it by environment ID', async () => {
+    const user = userEvent.setup()
+    const ownerCredential = `omc1.${'B'.repeat(43)}`
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.endsWith('/local-owner')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              environmentId: 'env-local',
+              kind: 'owner',
+              credential: ownerCredential,
+              grant: ['read', 'admin'],
+            }),
+          }
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            protocolVersion: 1,
+            environmentId: 'env-local',
+            label: 'Local environment',
+            capabilities: ['connection.heartbeat'],
+          }),
+        }
+      }),
+    )
+
+    renderWebApp('/')
+    await user.type(await screen.findByLabelText('Environment endpoint'), 'http://127.0.0.1:43120')
+    await user.click(screen.getByRole('button', { name: 'Connect' }))
+
+    expect(await screen.findByText(/Connected · Local environment/)).toBeInTheDocument()
+    expect(storedRegistry()).toMatchObject({
+      selectedId: 'env-local',
+      environments: [
+        {
+          environmentId: 'env-local',
+          label: 'Local environment',
+          endpoints: ['http://127.0.0.1:43120'],
+          credential: ownerCredential,
+        },
+      ],
+    })
+    const requested = JSON.stringify(vi.mocked(fetch).mock.calls)
+    expect(requested).toContain('/local-owner')
+    expect(requested).not.toContain('tunnel.example')
+  })
+
   it('connects from the first-run screen using the bootstrap response', async () => {
     const user = userEvent.setup()
     mockBootstrap({
@@ -124,6 +177,35 @@ describe('web routes', () => {
         },
       ],
     })
+  })
+
+  it('does not claim an owner credential from a remote endpoint', async () => {
+    const user = userEvent.setup()
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        protocolVersion: 1,
+        environmentId: 'env-remote',
+        label: 'Remote lab',
+        capabilities: ['connection.heartbeat'],
+      }),
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderWebApp('/')
+    await user.type(await screen.findByLabelText('Environment endpoint'), 'https://tunnel.example')
+    await user.click(screen.getByRole('button', { name: 'Connect' }))
+
+    expect(await screen.findByText(/Connected · Remote lab/)).toBeInTheDocument()
+    expect(storedRegistry().environments).toEqual([
+      expect.objectContaining({
+        environmentId: 'env-remote',
+        endpoints: ['https://tunnel.example'],
+        credential: '',
+      }),
+    ])
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain('local-owner')
   })
 
   it('merges a second URL for the same environment ID', async () => {

@@ -12,6 +12,7 @@ describe('configuration', () => {
       allowedOrigins: [],
       allowedHosts: [],
       workspaces: [],
+      remintOwner: false,
     })
   })
 
@@ -28,6 +29,7 @@ describe('configuration', () => {
       allowedOrigins: [],
       allowedHosts: [],
       workspaces: [],
+      remintOwner: false,
     })
     expect(
       loadConfig(['--port=0', '--data-dir', './flag data', '--log-level', 'debug'], env),
@@ -38,6 +40,7 @@ describe('configuration', () => {
       allowedOrigins: [],
       allowedHosts: [],
       workspaces: [],
+      remintOwner: false,
     })
   })
 
@@ -115,5 +118,10 @@ describe('configuration', () => {
     expect(() => loadConfig(['--log-level=trace'], {})).toThrow('Log level')
     expect(() => loadConfig(['--prot=5000'], {})).toThrow()
     expect(() => loadConfig(['extra'], {})).toThrow()
+  })
+
+  it('treats remint as an explicit flag with no environment-variable fallback', () => {
+    expect(loadConfig(['--remint-owner'], {}).remintOwner).toBe(true)
+    expect(loadConfig([], { OPENMANAGER_REMINT_OWNER: '1' }).remintOwner).toBe(false)
   })
 })

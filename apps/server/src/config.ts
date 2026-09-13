@@ -24,6 +24,11 @@ export interface ServerConfig {
   runtimeOptions?: AgentRuntimeOptions
   /** Test-only workspace → provider routing. Production resolves through the workspace registry. */
   resolveWorkspace?: WorkspaceRuntimeResolver
+  /**
+   * When true, startup always remints the owner credential instead of reusing
+   * the published file. Explicit only: there is no environment variable for this.
+   */
+  remintOwner?: boolean
 }
 
 export function validateOrigins(origins: readonly string[]): string[] {
@@ -109,6 +114,7 @@ export function loadConfig(
       'allowed-origin': { type: 'string', multiple: true },
       'allowed-host': { type: 'string', multiple: true },
       workspace: { type: 'string', multiple: true },
+      'remint-owner': { type: 'boolean' },
     },
     strict: true,
     allowPositionals: false,
@@ -142,5 +148,6 @@ export function loadConfig(
     allowedOrigins,
     allowedHosts,
     workspaces,
+    remintOwner: values['remint-owner'] === true,
   }
 }

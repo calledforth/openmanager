@@ -184,6 +184,29 @@ export function openAuthorizedClients(dataDir: string, clock: () => number = Dat
     return { client, credential }
   }
 
+  const rotateOwner = (now: number) => {
+    revokeOwners.run(now)
+    const minted = issue({ label: OWNER_LABEL, kind: 'owner', capabilities: OWNER_GRANT }, now)
+    writeOwnerFile(ownerPath, minted.credential)
+    return minted
+  }
+
+  const withOwnerWrite = <T>(body: () => T): T => {
+    database.exec('BEGIN IMMEDIATE')
+    try {
+      const result = body()
+      database.exec('COMMIT')
+      return result
+    } catch (error) {
+      try {
+        database.exec('ROLLBACK')
+      } catch {
+        /* The failed statement may already have aborted the transaction. */
+      }
+      throw error
+    }
+  }
+
   return {
     /** Mint a credential for a new client. The raw credential is returned once and never stored. */
     issue(request: ClientGrantRequest) {
@@ -217,6 +240,11 @@ export function openAuthorizedClients(dataDir: string, clock: () => number = Dat
       return revokeOne.run(clock(), clientId).changes > 0
     },
 
+    /** The published owner credential, or `undefined` if the file is missing or corrupt. */
+    publishedOwner(): string | undefined {
+      return readOwnerFile(ownerPath)
+    },
+
     /**
      * Make sure the local owner can connect without a pairing UI. The owner
      * credential is minted by this process and handed to local clients through
@@ -226,8 +254,7 @@ export function openAuthorizedClients(dataDir: string, clock: () => number = Dat
      * revoked in the same transaction, so deleting the file rotates the owner.
      */
     ensureOwner(): AuthenticatedClient {
-      database.exec('BEGIN IMMEDIATE')
-      try {
+      return withOwnerWrite(() => {
         const now = clock()
         const existing = activeOwner.get() as
           | Pick<ClientRow, 'client_id' | 'label' | 'credential_hash' | 'scopes_json' | 'expires_at'>
@@ -239,23 +266,20 @@ export function openAuthorizedClients(dataDir: string, clock: () => number = Dat
             // A restored backup or manual chmod may have widened the file;
             // a reused credential is only ever reused owner-only.
             chmodSync(ownerPath, 0o600)
-            database.exec('COMMIT')
             return client
           }
         }
-        revokeOwners.run(now)
-        const minted = issue({ label: OWNER_LABEL, kind: 'owner', capabilities: OWNER_GRANT }, now)
-        writeOwnerFile(ownerPath, minted.credential)
-        database.exec('COMMIT')
-        return minted.client
-      } catch (error) {
-        try {
-          database.exec('ROLLBACK')
-        } catch {
-          /* The failed statement may already have aborted the transaction. */
-        }
-        throw error
-      }
+        return rotateOwner(now).client
+      })
+    },
+
+    /**
+     * Explicit remint: always revoke the live owner row and publish a new
+     * credential. Restarts do not do this; the `--remint-owner` flag or
+     * `server.remintOwner()` does.
+     */
+    remintOwner(): { client: AuthenticatedClient; credential: string } {
+      return withOwnerWrite(() => rotateOwner(clock()))
     },
 
     close(): void {
