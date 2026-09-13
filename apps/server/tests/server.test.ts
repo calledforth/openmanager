@@ -1,4 +1,7 @@
+import { once } from 'node:events'
 import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
+import { request as httpRequest } from 'node:http'
+import { createConnection } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -10,9 +13,30 @@ import {
   COMPOSER_PREFERENCES_SET_CAPABILITY,
   PROTOCOL_VERSION,
 } from '@openmanager/protocol/node'
+import type { AuditEvent } from '../src/audit.js'
 import { startServer } from '../src/server.js'
 import { createLogger } from '../src/logger.js'
 import { SERVER_CAPABILITIES } from '../src/server.js'
+
+/** fetch strips a caller-supplied Host header, so host policy tests go through node:http. */
+async function get(port: number, path: string, headers: Record<string, string>) {
+  const response = await new Promise<import('node:http').IncomingMessage>((resolve, reject) => {
+    httpRequest({ host: '127.0.0.1', port, path, headers }, resolve).on('error', reject).end()
+  })
+  let body = ''
+  for await (const chunk of response) body += String(chunk)
+  return { status: response.statusCode, headers: response.headers, body }
+}
+
+/** One raw HTTP/1.0 request, which can omit the Host header entirely. */
+async function rawRequest(port: number, head: string) {
+  const socket = createConnection({ host: '127.0.0.1', port })
+  await once(socket, 'connect')
+  socket.end(head)
+  let response = ''
+  for await (const chunk of socket) response += String(chunk)
+  return response
+}
 
 const directories: string[] = []
 const servers: Awaited<ReturnType<typeof startServer>>[] = []
@@ -81,14 +105,15 @@ describe('headless listener', () => {
       const differentPort = await startServer(config)
       servers.push(differentPort)
       expect(differentPort.port).not.toBe(first.port)
-      const routed = await fetch(`${differentPort.url}/bootstrap?route=changed`, {
-        headers: {
-          host: 'untrusted.example',
-          'x-forwarded-host': 'new-tunnel.example',
-          'x-forwarded-proto': 'https',
-        },
+      // Forwarded headers never change the advertised route or vouch for a host.
+      const routed = await get(differentPort.port, '/bootstrap?route=changed', {
+        host: `localhost:${differentPort.port}`,
+        'x-forwarded-host': 'new-tunnel.example',
+        'x-forwarded-proto': 'https',
+        forwarded: 'host=new-tunnel.example;proto=https',
       })
-      expect(await routed.json()).toEqual({
+      expect(routed.status).toBe(200)
+      expect(JSON.parse(routed.body)).toEqual({
         ...expected,
         providers: firstBootstrap.providers,
         websocketUrl: `ws://127.0.0.1:${differentPort.port}/ws`,
@@ -155,6 +180,80 @@ describe('headless listener', () => {
     expect(await (await fetch(`${server.url}/health?verbose=true`)).json()).toEqual({
       status: 'ok',
     })
+  })
+
+  it('refuses any Host other than the bound loopback address or an allowed host', async () => {
+    const directory = await dataDir()
+    const server = await startServer({
+      port: 0,
+      dataDir: directory,
+      logLevel: 'silent',
+      allowedHosts: ['tunnel.example', 'proxy.example:8443'],
+    })
+    servers.push(server)
+    const audits: AuditEvent[] = []
+    server.audit.subscribe((event) => audits.push(event))
+    for (const host of [
+      'attacker.example',
+      `attacker.example:${server.port}`,
+      `127.0.0.1:${server.port + 1}`,
+      'localhost',
+      'tunnel.example:8443',
+      'proxy.example',
+    ]) {
+      const response = await get(server.port, '/health', { host })
+      expect(response.status, host).toBe(403)
+      expect(response.headers['cache-control']).toBe('no-store')
+      expect(JSON.parse(response.body)).toEqual({
+        type: 'error',
+        requestId: null,
+        error: { code: 'auth', message: 'Host is not allowed.' },
+      })
+    }
+    // HTTP/1.0 lets a client omit Host altogether; that is refused too.
+    expect(await rawRequest(server.port, 'GET /health HTTP/1.0\r\n\r\n')).toMatch(
+      /^HTTP\/1\.1 403 [\s\S]*Host is not allowed/,
+    )
+    expect(audits).toHaveLength(7)
+    expect(audits[0]).toMatchObject({
+      type: 'host.rejected',
+      remoteAddress: '127.0.0.1',
+      details: { host: 'attacker.example', url: '/health' },
+    })
+    expect(audits[6]).toMatchObject({ type: 'host.rejected', details: { host: null } })
+    for (const host of [
+      `127.0.0.1:${server.port}`,
+      `localhost:${server.port}`,
+      `LOCALHOST:${server.port}`,
+      'tunnel.example',
+      'Tunnel.Example',
+      'proxy.example:8443',
+    ]) {
+      const response = await get(server.port, '/health', { host })
+      expect(response.status, host).toBe(200)
+    }
+    // The Host check runs before the Origin check, so a rebinding page that
+    // also carries an allowed Origin still fails on its hostname.
+    const rebinding = await get(server.port, '/bootstrap', {
+      host: 'attacker.example',
+      origin: 'http://localhost:5173',
+    })
+    expect(rebinding.status).toBe(403)
+    expect(audits.at(-1)).toMatchObject({ type: 'host.rejected' })
+  })
+
+  it('fails startup when a configured workspace root does not exist', async () => {
+    const directory = await dataDir()
+    await expect(
+      startServer({
+        port: 0,
+        dataDir: directory,
+        logLevel: 'silent',
+        workspaces: [join(directory, 'missing-root')],
+      }),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+    // The failed start released the database: a second start on the same directory works.
+    servers.push(await startServer({ port: 0, dataDir: directory, logLevel: 'silent' }))
   })
 
   it.each([
@@ -224,5 +323,9 @@ it('filters structured logs by severity and supports silent logging', () => {
   expect(stdout).not.toHaveBeenCalled()
   expect(stderr).toHaveBeenCalledExactlyOnceWith(
     JSON.stringify({ level: 'warn', message: 'visible' }),
+  )
+  log('error', 'audit', { audit: { type: 'host.rejected' } })
+  expect(stderr).toHaveBeenLastCalledWith(
+    JSON.stringify({ level: 'error', message: 'audit', audit: { type: 'host.rejected' } }),
   )
 })

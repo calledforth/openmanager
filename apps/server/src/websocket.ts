@@ -23,7 +23,11 @@ import {
   type ServerHeartbeatState,
   type SubscriptionScope,
 } from '@openmanager/protocol/node'
+import { auditValue, type AuditLog } from './audit.ts'
 import type { AuthenticatedClient } from './authorized-clients.ts'
+import type { CommandContext } from './command-context.ts'
+import type { RateLimiter, RateLimitPolicy } from './rate-limit.ts'
+import type { RequestGuard } from './request-guard.ts'
 
 export const SOCKET_CAPABILITIES = [
   HEARTBEAT_CAPABILITY,
@@ -46,6 +50,16 @@ const errorResult = (requestId: string | null, code: ErrorCode, message: string)
   error: { code, message },
 })
 const now = () => Math.floor(performance.now())
+/** `unavailable` carries the `after_backoff` retry policy, which is what a budget overrun wants. */
+const rateLimited = (requestId: string, policy: RateLimitPolicy, retryAfterMs: number) => ({
+  type: 'error' as const,
+  requestId,
+  error: {
+    code: 'unavailable' as const,
+    message: `Rate limit exceeded; retry after ${retryAfterMs} ms.`,
+    details: { policy, retryAfterMs },
+  },
+})
 
 export const REVOKED_CLOSE_CODE = 4401 as const
 export const REVOKED_CLOSE_REASON = 'revoked' as const
@@ -56,9 +70,15 @@ export function attachWebSocket(
   options: {
     /** Resolve a presented credential to its live client, or `undefined` to reject the upgrade. */
     authenticate: (credential: string | undefined) => AuthenticatedClient | undefined
-    allowedOrigins: readonly string[]
+    /** Host and Origin policy, shared with the HTTP listener. */
+    guard: RequestGuard
+    rateLimiter: RateLimiter
+    audit: AuditLog
     bootstrap: () => BootstrapResponse
-    dispatchCommand?: (command: CommandEnvelope) => unknown | Promise<unknown> | undefined
+    dispatchCommand?: (
+      command: CommandEnvelope,
+      context: CommandContext,
+    ) => unknown | Promise<unknown> | undefined
   },
 ) {
   const wss = new WebSocketServer({
@@ -80,18 +100,33 @@ export function attachWebSocket(
 
   server.on('upgrade', (request, socket, head) => {
     socket.on('error', () => socket.destroy())
-    const reject = (status: number, code: ErrorCode, message: string) => {
+    const reject = (status: number, code: ErrorCode, message: string, headers = '') => {
       const body = JSON.stringify(errorResult(null, code, message))
       socket.end(
-        `HTTP/1.1 ${status} Rejected\r\nConnection: close\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
+        `HTTP/1.1 ${status} Rejected\r\nConnection: close\r\nContent-Type: application/json\r\nCache-Control: no-store\r\n${headers}Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
         () => socket.destroy(),
       )
     }
     if (closing) return reject(503, 'unavailable', 'Server is shutting down.')
+    const rejection = options.guard.check(request)
+    if (rejection) return reject(rejection.status, rejection.code, rejection.message)
     if (request.url !== '/ws') return reject(404, 'not_found', 'Unknown socket endpoint.')
-    const origin = request.headers.origin
-    if (origin !== undefined && !options.allowedOrigins.includes(origin)) {
-      return reject(403, 'auth', 'Origin is not allowed.')
+    const remoteAddress = request.socket.remoteAddress ?? 'unknown'
+    // An address over its failed-credential budget gets no further guesses
+    // checked at all; the lockout answers before the store is consulted.
+    const lockout = options.rateLimiter.blocked('auth_failure', remoteAddress)
+    if (!lockout.allowed) {
+      options.audit.record({
+        type: 'rate_limited',
+        remoteAddress,
+        details: { policy: 'auth_failure', retryAfterMs: lockout.retryAfterMs },
+      })
+      return reject(
+        429,
+        'unavailable',
+        'Too many failed credential attempts.',
+        `Retry-After: ${Math.ceil(lockout.retryAfterMs / 1000)}\r\n`,
+      )
     }
     const protocols =
       request.headers['sec-websocket-protocol']?.split(',').map((p) => p.trim()) ?? []
@@ -111,7 +146,15 @@ export function attachWebSocket(
     // Every socket carries a per-client credential, loopback included: network
     // position grants nothing. The store answers with the client's grant.
     const client = options.authenticate(candidate)
-    if (!client) return reject(401, 'auth', 'A valid client credential is required.')
+    if (!client) {
+      options.rateLimiter.consume('auth_failure', remoteAddress)
+      options.audit.record({
+        type: 'auth.failed',
+        remoteAddress,
+        details: { presented: candidate !== undefined, origin: auditValue(request.headers.origin) },
+      })
+      return reject(401, 'auth', 'A valid client credential is required.')
+    }
     if (wss.clients.size >= SOCKET_LIMITS.maxConnections) {
       return reject(503, 'unavailable', 'Connection limit reached.')
     }
@@ -286,6 +329,26 @@ export function attachWebSocket(
           reply(accessDenied(message.requestId, required))
           return
         }
+        // Mutating commands are budgeted per client (T14). Replays of an
+        // already-answered request ID were served above and never count.
+        const policy: RateLimitPolicy | undefined =
+          message.name === 'turn.send'
+            ? 'prompt'
+            : required !== null && required !== 'read'
+              ? 'mutation'
+              : undefined
+        if (policy) {
+          const decision = options.rateLimiter.consume(policy, client.clientId)
+          if (!decision.allowed) {
+            options.audit.record({
+              type: 'rate_limited',
+              clientId: client.clientId,
+              details: { policy, command: message.name, retryAfterMs: decision.retryAfterMs },
+            })
+            reply(rateLimited(message.requestId, policy, decision.retryAfterMs))
+            return
+          }
+        }
         if (message.name === 'subscription.subscribe') {
           const command = ProofCommandSchemas['subscription.subscribe'].safeParse(raw)
           if (!command.success) {
@@ -329,7 +392,10 @@ export function attachWebSocket(
           reply({ type: 'response', requestId: message.requestId, payload: null })
           return
         }
-        const dispatched = options.dispatchCommand?.(message)
+        const dispatched = options.dispatchCommand?.(message, {
+          clientId: client.clientId,
+          command: message.name,
+        })
         reply(dispatched ?? errorResult(message.requestId, 'validation', 'Unsupported command.'))
       })
     })

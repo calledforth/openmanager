@@ -72,9 +72,18 @@ describe('provider service wire contract', () => {
         type: 'command',
         requestId: 'probe-1',
         name: 'provider.probe',
-        payload: { providerId: 'cursor', cwd: 'C:\\workspace' },
+        payload: { providerId: 'cursor', workspaceId: 'workspace-1' },
       }),
     ).toMatchObject({ name: 'provider.probe' })
+    // Clients name a workspace by ID; a directory path is not accepted (D9).
+    expect(
+      ProviderProbeCommandSchema.safeParse({
+        type: 'command',
+        requestId: 'probe-2',
+        name: 'provider.probe',
+        payload: { providerId: 'cursor', cwd: 'C:\\workspace' },
+      }).success,
+    ).toBe(false)
     expect(
       ProviderHealthChangedEventSchema.parse({
         type: 'event',

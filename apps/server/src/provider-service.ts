@@ -9,6 +9,8 @@ import {
   type ProviderHealth,
 } from '@openmanager/protocol/node'
 import { providers, type AgentRuntime, type ProviderConfig } from '@agentpack/runtime/node'
+import type { CommandContext } from './command-context.ts'
+import type { WorkspaceRuntimeResolver } from './thread-service.ts'
 
 type ProviderId = keyof typeof providers
 type RuntimeHealthReport = ReturnType<AgentRuntime['health']['report']>
@@ -26,6 +28,8 @@ export function createProviderService(
   providerConfigs: Readonly<Record<ProviderId, ProviderConfig>> = providers,
   observeCatalog: (providerId: ProviderId, result: Awaited<ReturnType<AgentRuntime['probeProvider']>>) => void =
     () => undefined,
+  /** Probes run in a registered workspace root; clients never name a path (D9). */
+  resolveWorkspace: WorkspaceRuntimeResolver = () => undefined,
 ) {
   const listeners = new Set<(event: ReturnType<typeof healthEvent>) => void>()
   const previous = new Map<ProviderId, ProviderHealth>()
@@ -102,7 +106,7 @@ export function createProviderService(
       return undefined
     },
 
-    dispatch(command: CommandEnvelope): Promise<unknown> | undefined {
+    dispatch(command: CommandEnvelope, context?: CommandContext): Promise<unknown> | undefined {
       if (command.name !== 'provider.probe') return undefined
       const parsed = ProviderProbeCommandSchema.safeParse(command)
       if (!parsed.success) {
@@ -110,10 +114,15 @@ export function createProviderService(
           errorResult(command.requestId, 'validation', 'Invalid provider probe request.'),
         )
       }
-      const { providerId, cwd } = parsed.data.payload
+      const { providerId, workspaceId } = parsed.data.payload
       if (!hasProvider(providerConfigs, providerId)) {
         return Promise.resolve(errorResult(command.requestId, 'not_found', 'Provider not found.'))
       }
+      const workspace = resolveWorkspace(workspaceId, context)
+      if (!workspace) {
+        return Promise.resolve(errorResult(command.requestId, 'not_found', 'Workspace not found.'))
+      }
+      const cwd = workspace.cwd
       const existingProviderProbes = pendingProbes.get(providerId)
       const providerProbes = existingProviderProbes ?? new Map<string, Promise<unknown>>()
       if (!existingProviderProbes) pendingProbes.set(providerId, providerProbes)
@@ -129,7 +138,7 @@ export function createProviderService(
           runtime.probeProvider({
             providerId,
             threadId: `desktop-bootstrap:${providerId}`,
-            workspaceId: cwd,
+            workspaceId,
             cwd,
           }),
         )

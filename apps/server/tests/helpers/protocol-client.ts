@@ -1,5 +1,5 @@
 import { once } from 'node:events'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WebSocket } from 'ws'
@@ -29,15 +29,25 @@ export async function cleanupProtocolHosts(): Promise<void> {
 export async function startProtocolHost(overrides: Partial<ServerConfig> = {}) {
   const dataDir = await mkdtemp(join(tmpdir(), 'openmanager-stream-test-'))
   directories.push(dataDir)
+  const workspaceRoot = join(dataDir, 'workspace')
+  await mkdir(workspaceRoot)
   const server = await startServer({
     port: 0,
     dataDir,
     logLevel: 'silent',
+    workspaces: [workspaceRoot],
     ...overrides,
   })
   servers.push(server)
   const token = (await readFile(join(dataDir, 'owner-credential'), 'utf8')).trim()
-  return { server, token, url: `${server.url.replace('http:', 'ws:')}/ws`, dataDir }
+  const workspaceId = server.workspaces.list()[0]!.workspaceId
+  return {
+    server,
+    token,
+    url: `${server.url.replace('http:', 'ws:')}/ws`,
+    dataDir,
+    workspaceId,
+  }
 }
 
 export type ProtocolHost = Awaited<ReturnType<typeof startProtocolHost>>

@@ -4,6 +4,8 @@ import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 
 export const WEB_ORIGINS = 'http://localhost:5173,http://127.0.0.1:5173'
+/** The repository itself is the default workspace, so the dev loop has one to list. */
+export const DEFAULT_WORKSPACE = resolve(fileURLToPath(import.meta.url), '..', '..')
 
 export function pnpmCommand() {
   return process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
@@ -120,7 +122,10 @@ export function main() {
   start(
     'server',
     ['--filter', '@openmanager/server', 'dev'],
-    { OPENMANAGER_ALLOWED_ORIGINS: WEB_ORIGINS },
+    {
+      OPENMANAGER_ALLOWED_ORIGINS: WEB_ORIGINS,
+      OPENMANAGER_WORKSPACES: process.env.OPENMANAGER_WORKSPACES ?? DEFAULT_WORKSPACE,
+    },
   )
   start('web', ['--filter', '@openmanager/web', 'dev'])
 }

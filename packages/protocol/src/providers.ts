@@ -73,7 +73,8 @@ export const ProviderProbeCommandSchema = CommandEnvelopeSchema.extend({
   name: z.literal(PROVIDER_PROBE_CAPABILITY),
   payload: z.strictObject({
     providerId: EntityIdSchema,
-    cwd: z.string().min(1).max(32_768),
+    /** A server-assigned workspace ID; the server resolves the directory (D9). */
+    workspaceId: EntityIdSchema,
   }),
 })
 

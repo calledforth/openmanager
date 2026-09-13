@@ -205,10 +205,16 @@ This is the Wave 1 starting point the issues above replace:
   `apps/server/src/websocket.ts`, `packages/protocol/src/access.ts`). The local
   owner credential is minted by the process into `<data-dir>/owner-credential`
   (CAL-46). Issuing `paired` and `cloud` rows is still open (T4, T5).
-- HTTP and WebSocket requests are checked against an exact origin allowlist,
-  but only when an `Origin` header is present (`websocket.ts:86`,
-  `server.ts:103`). There is no `Host` check, so the DNS-rebinding case (T9) is
-  open.
+- Every HTTP request and WebSocket upgrade passes a `Host` allowlist (the
+  bound loopback address or a configured tunnel host) and then an exact
+  `Origin` allowlist; forwarded headers are ignored
+  (`apps/server/src/request-guard.ts`). Failed credential checks are budgeted
+  per remote address, and prompts and other mutating commands per client
+  (`apps/server/src/rate-limit.ts`). Workspaces are registered roots named by
+  ID; every client path resolves under one through `realpath` and escapes are
+  refused (`apps/server/src/workspaces.ts`, `apps/server/src/workspace-paths.ts`).
+  Refusals are recorded as audit events in the structured log
+  (`apps/server/src/audit.ts`); durable audit storage is CAL-48 (CAL-47).
 - `/bootstrap` is unauthenticated and includes the provider snapshot, which D11
   moves behind authentication.
 
@@ -222,8 +228,9 @@ Proposed, not yet filed:
 - **CAL-45 scope addition (D5):** state that `agent` and `terminal` carry the
   same risk, and record per-client agent approval policy as a later
   enforcement step.
-- **CAL-47 scope addition (T9, T2):** a `Host` header allowlist, and rejection
-  of forwarded host and protocol headers on local-only endpoints.
+- **CAL-47 scope addition (T9, T2), done:** a `Host` header allowlist. There
+  are no local-only endpoints (D2), so forwarded host and protocol headers are
+  ignored everywhere rather than rejected on a subset.
 - **CAL-46 scope addition (D11):** trim `/bootstrap` to the pre-auth fields.
 - **CAL-147 wording:** replace "signed-in user without pairing cannot read
   sessions/files" with "a signed-in user cannot reach an environment that is

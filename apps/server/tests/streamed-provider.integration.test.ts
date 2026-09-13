@@ -71,7 +71,7 @@ describe('streamed provider through the server', () => {
       const client = await connectProtocol(host)
       await handshake(client)
 
-      const createId = client.command('session.create', { workspaceId: host.dataDir })
+      const createId = client.command('session.create', { workspaceId: host.workspaceId })
       const created = ProofResponseSchemas['session.create'].parse(await nextResponse(client, createId))
       expect(created).toMatchObject({ type: 'response', requestId: createId })
       const { session, thread } = created.payload

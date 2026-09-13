@@ -19,15 +19,19 @@ import { providers, type HostDeps, type ProviderBootstrap as RuntimeProviderBoot
 import { mountAgentRuntime } from './agent-runtime.ts'
 import { createComposerService, desiredSessionConfig } from './composer-service.ts'
 import { openComposerStore } from './composer-store.ts'
+import { createAuditLog } from './audit.ts'
 import type { ServerConfig } from './config.ts'
-import { validateOrigins } from './config.ts'
+import { validateHosts, validateOrigins, validateWorkspaceRoots } from './config.ts'
 import { openAuthorizedClients } from './authorized-clients.ts'
 import { loadEnvironmentIdentity } from './identity.ts'
 import { createEventService } from './event-service.ts'
 import { createLogger } from './logger.ts'
 import { createProviderService } from './provider-service.ts'
-import { createThreadService } from './thread-service.ts'
+import { createRateLimiter } from './rate-limit.ts'
+import { createRequestGuard } from './request-guard.ts'
+import { createThreadService, type WorkspaceRuntimeResolver } from './thread-service.ts'
 import { attachWebSocket, SOCKET_CAPABILITIES } from './websocket.ts'
+import { openWorkspaceRegistry } from './workspaces.ts'
 
 export const SERVER_CAPABILITIES = [
   ...SOCKET_CAPABILITIES,
@@ -44,19 +48,41 @@ export const SERVER_CAPABILITIES = [
   'session.open',
   'turn.send',
   'turn.interrupt',
+  'workspace.list',
 ]
 
 /** A loopback-only listener exposing public liveness and connection discovery. */
 export async function startServer(config: ServerConfig) {
   const allowedOrigins = validateOrigins(config.allowedOrigins ?? [])
+  const allowedHosts = validateHosts(config.allowedHosts ?? [])
+  const workspaceRoots = validateWorkspaceRoots(config.workspaces ?? [])
+  const log = createLogger(config.logLevel)
+  const audit = createAuditLog(log)
+  const rateLimiter = createRateLimiter()
   const identity = await loadEnvironmentIdentity(config.dataDir)
   const composerStore = openComposerStore(config.dataDir)
   const clients = openAuthorizedClients(config.dataDir)
   // Local first run needs no pairing UI: the process mints the owner credential.
   const owner = clients.ensureOwner()
+  let workspaces
+  try {
+    workspaces = openWorkspaceRegistry(config.dataDir, workspaceRoots, audit)
+  } catch (error) {
+    composerStore.close()
+    clients.close()
+    throw error
+  }
+  // Production routes every workspace through the registry: an ID resolves to
+  // its canonical root or to nothing. The test seam may substitute a provider.
+  const resolveWorkspace: WorkspaceRuntimeResolver =
+    config.resolveWorkspace ??
+    ((workspaceId, context) => {
+      const workspace = workspaces.resolve(workspaceId, context)
+      return workspace ? { providerId: 'opencode', cwd: workspace.root } : undefined
+    })
   let onRuntimeEvent: HostDeps['emitEvent'] = () => undefined
   const runtime = mountAgentRuntime(
-    createLogger(config.logLevel),
+    log,
     (event) => onRuntimeEvent(event),
     ({ providerId, workspacePath }) =>
       desiredSessionConfig(composerStore.getPreference(workspacePath, providerId)),
@@ -64,8 +90,11 @@ export async function startServer(config: ServerConfig) {
   )
   let observeProviderCatalog: (providerId: string, result: RuntimeProviderBootstrap) => void =
     () => undefined
-  const providerService = createProviderService(runtime, providers, (providerId, result) =>
-    observeProviderCatalog(providerId, result),
+  const providerService = createProviderService(
+    runtime,
+    providers,
+    (providerId, result) => observeProviderCatalog(providerId, result),
+    resolveWorkspace,
   )
   let publishDurableEvent: (record: DurableEvent) => void = () => undefined
   let publishThreadEvent: (event: EventEnvelope) => void = () => undefined
@@ -75,7 +104,7 @@ export async function startServer(config: ServerConfig) {
     providerService,
     (event) => eventService.append(event),
     (event) => publishThreadEvent(event),
-    config.resolveWorkspace,
+    resolveWorkspace,
   )
   const composerService = createComposerService(
     runtime,
@@ -100,23 +129,30 @@ export async function startServer(config: ServerConfig) {
       providers: providerService.snapshot(),
       websocketUrl,
     })
+  const guard = createRequestGuard({
+    allowedOrigins,
+    allowedHosts,
+    port: () => (server.address() as AddressInfo | null)?.port ?? config.port,
+    audit,
+  })
   const server = createServer((request, response) => {
     response.setHeader('Vary', 'Origin')
+    const rejection = guard.check(request)
+    if (rejection) {
+      response.writeHead(rejection.status, {
+        'content-type': 'application/json; charset=utf-8',
+        'cache-control': 'no-store',
+      })
+      response.end(
+        JSON.stringify({
+          type: 'error',
+          requestId: null,
+          error: { code: rejection.code, message: rejection.message },
+        }),
+      )
+      return
+    }
     if (request.headers.origin !== undefined) {
-      if (!allowedOrigins.includes(request.headers.origin)) {
-        response.writeHead(403, {
-          'content-type': 'application/json; charset=utf-8',
-          'cache-control': 'no-store',
-        })
-        response.end(
-          JSON.stringify({
-            type: 'error',
-            requestId: null,
-            error: { code: 'auth', message: 'Origin is not allowed.' },
-          }),
-        )
-        return
-      }
       response.setHeader('Access-Control-Allow-Origin', request.headers.origin)
     }
     const path = request.url?.split('?')[0]
@@ -133,11 +169,14 @@ export async function startServer(config: ServerConfig) {
   })
   const sockets = attachWebSocket(server, {
     authenticate: (credential) => clients.authenticate(credential),
-    allowedOrigins,
+    guard,
+    rateLimiter,
+    audit,
     bootstrap,
-    dispatchCommand: (command) =>
-      threadService.dispatch(command) ??
-      providerService.dispatch(command) ??
+    dispatchCommand: (command, context) =>
+      workspaces.dispatch(command) ??
+      threadService.dispatch(command, context) ??
+      providerService.dispatch(command, context) ??
       composerService.dispatch(command),
   })
   publishDurableEvent = (record) => sockets.publish(record)
@@ -158,6 +197,7 @@ export async function startServer(config: ServerConfig) {
     await runtime.shutdown()
     composerStore.close()
     clients.close()
+    workspaces.close()
     throw error
   }
   const address = server.address() as AddressInfo
@@ -168,6 +208,9 @@ export async function startServer(config: ServerConfig) {
     identity,
     owner,
     clients,
+    workspaces,
+    audit,
+    rateLimiter,
     runtime,
     threadService,
     composerService,
@@ -192,6 +235,7 @@ export async function startServer(config: ServerConfig) {
         closePromise = Promise.all([socketClose, httpClose, runtime.shutdown()]).then(() => {
           composerStore.close()
           clients.close()
+          workspaces.close()
         })
         stopHealthEvents()
         providerService.stop()
