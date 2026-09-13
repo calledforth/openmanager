@@ -116,6 +116,29 @@ describe('issue and authenticate', () => {
     expect(store.authenticate(credential)).toBeUndefined()
   })
 
+  it('rejects a credential revoked by another process after the row was read', async () => {
+    const dataDir = await directory()
+    let revokeFrom: AuthorizedClients | undefined
+    let clientId: string | undefined
+    // authenticate() consults the clock between its point read and its
+    // conditional update, so a revoke issued from the clock lands in between.
+    const store = open(dataDir, () => {
+      if (revokeFrom && clientId) {
+        expect(revokeFrom.revoke(clientId)).toBe(true)
+        revokeFrom = undefined
+      }
+      return Date.now()
+    })
+    const other = open(dataDir)
+    const { client, credential } = store.issue({ label: 'Racer', kind: 'paired', capabilities: ['read'] })
+    expect(store.authenticate(credential)).toEqual(client)
+    revokeFrom = other
+    clientId = client.clientId
+    expect(store.authenticate(credential)).toBeUndefined()
+    expect(revokeFrom).toBeUndefined()
+    expect(store.authenticate(credential)).toBeUndefined()
+  })
+
   it('refuses grants without read, admin on cloud clients and empty labels', async () => {
     const store = open(await directory())
     expect(() =>

@@ -206,7 +206,9 @@ export function openAuthorizedClients(dataDir: string, clock: () => number = Dat
       if (row.expires_at <= now) return undefined
       const client = toClient(row)
       if (!client) return undefined
-      touch.run(now, now + IDLE_EXPIRY_MS, row.client_id)
+      // The update is conditional on `revoked_at IS NULL`; zero rows means
+      // another process revoked the client after the read above.
+      if (touch.run(now, now + IDLE_EXPIRY_MS, row.client_id).changes === 0) return undefined
       return client
     },
 
