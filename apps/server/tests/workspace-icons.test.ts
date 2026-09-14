@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -34,7 +34,11 @@ describe('resolveWorkspaceIconDataUrl', () => {
     const root = await makeWorkspace()
     await writeWorkspaceFile(root, 'favicon.svg', '<svg id="favicon"></svg>')
     await writeWorkspaceFile(root, 'brand/mark.svg', '<svg id="mark"></svg>')
-    await writeWorkspaceFile(root, 'openmanager.json', JSON.stringify({ iconPath: 'brand/mark.svg' }))
+    await writeWorkspaceFile(
+      root,
+      'openmanager.json',
+      JSON.stringify({ iconPath: 'brand/mark.svg' }),
+    )
 
     const dataUrl = await resolveWorkspaceIconDataUrl(root)
 
@@ -44,7 +48,11 @@ describe('resolveWorkspaceIconDataUrl', () => {
 
   it('falls back to well-known files when iconPath is missing or malformed', async () => {
     const root = await makeWorkspace()
-    await writeWorkspaceFile(root, 'openmanager.json', JSON.stringify({ iconPath: 'brand/missing.svg' }))
+    await writeWorkspaceFile(
+      root,
+      'openmanager.json',
+      JSON.stringify({ iconPath: 'brand/missing.svg' }),
+    )
     await writeWorkspaceFile(root, 'public/favicon.png', Buffer.from([137, 80, 78, 71]))
     expect(await resolveWorkspaceIconDataUrl(root)).toMatch(/^data:image\/png;base64,/)
 
@@ -76,7 +84,11 @@ describe('resolveWorkspaceIconDataUrl', () => {
 
     const monorepo = await makeWorkspace()
     await writeWorkspaceFile(monorepo, 'favicon.svg', '<svg id="root-favicon"></svg>')
-    await writeWorkspaceFile(monorepo, 'apps/desktop/build/icon.png', Buffer.from([137, 80, 78, 71]))
+    await writeWorkspaceFile(
+      monorepo,
+      'apps/desktop/build/icon.png',
+      Buffer.from([137, 80, 78, 71]),
+    )
     // Root favicon still wins when present.
     expect(decoded(await resolveWorkspaceIconDataUrl(monorepo))).toContain('id="root-favicon"')
   })
@@ -96,6 +108,37 @@ describe('resolveWorkspaceIconDataUrl', () => {
 
     await writeWorkspaceFile(root, 'openmanager.json', JSON.stringify({ iconPath: outsideFile }))
     expect(await resolveWorkspaceIconDataUrl(root)).toBeNull()
+  })
+
+  it('does not follow links inside the workspace that point outside it', async () => {
+    const root = await makeWorkspace()
+    const outside = await makeWorkspace()
+    await writeWorkspaceFile(outside, 'icon.svg', '<svg id="secret"></svg>')
+    await writeWorkspaceFile(outside, 'favicon.svg', '<svg id="secret"></svg>')
+
+    // A well-known candidate directory that is a link out of the workspace.
+    await symlink(outside, join(root, 'assets'), process.platform === 'win32' ? 'junction' : 'dir')
+    expect(await resolveWorkspaceIconDataUrl(root)).toBeNull()
+
+    // A configured iconPath that is a link out of the workspace.
+    await writeWorkspaceFile(
+      root,
+      'openmanager.json',
+      JSON.stringify({ iconPath: 'assets/icon.svg' }),
+    )
+    expect(await resolveWorkspaceIconDataUrl(root)).toBeNull()
+
+    // A nested package root that is a link out of the workspace.
+    await symlink(
+      outside,
+      join(root, 'frontend'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    )
+    expect(await resolveWorkspaceIconDataUrl(root)).toBeNull()
+
+    // A real file beside the links still resolves.
+    await writeWorkspaceFile(root, 'favicon.png', Buffer.from([137, 80, 78, 71]))
+    expect(await resolveWorkspaceIconDataUrl(root)).toMatch(/^data:image\/png;base64,/)
   })
 
   it('answers null for a folder without an icon, a missing folder, and an oversized icon', async () => {

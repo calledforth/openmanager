@@ -1,6 +1,6 @@
-import { access, readFile, stat } from 'node:fs/promises'
-import { constants as fsConstants } from 'node:fs'
-import { extname, isAbsolute, join, relative, resolve } from 'node:path'
+import { open } from 'node:fs/promises'
+import { extname, join } from 'node:path'
+import { canonicalizeRoot, PathBoundaryError, resolveWorkspacePath } from './workspace-paths.ts'
 
 /**
  * Resolves a representative icon for a workspace from the folder itself, so
@@ -8,14 +8,19 @@ import { extname, isAbsolute, join, relative, resolve } from 'node:path'
  * server port of `apps/desktop/src/main/project-icon.ts`; keep the candidate
  * lists in step.
  *
- * Every read stays inside the workspace root: `openmanager.json` may name an
- * icon path, but a path that escapes the root or is absolute is ignored rather
- * than followed. A missing icon is the ordinary outcome and answers `null`;
+ * Every candidate goes through `resolveWorkspacePath`, so the file actually
+ * read is the canonical target and must sit inside the canonical root: a
+ * symlink or junction inside the workspace that points elsewhere is skipped,
+ * not followed. The bytes are read through one open handle whose own size is
+ * checked, so a file swapped or grown between check and read cannot exceed
+ * the cap. A missing icon is the ordinary outcome and answers `null`;
  * nothing here throws.
  */
 
 export const WORKSPACE_ICON_CONFIG_FILE = 'openmanager.json'
 export const WORKSPACE_ICON_MAX_BYTES = 256 * 1024
+/** Upper bound on an `openmanager.json` we are willing to parse for `iconPath`. */
+const WORKSPACE_ICON_CONFIG_MAX_BYTES = 64 * 1024
 
 /**
  * Common nested package roots for monorepos / split frontend-backend trees.
@@ -85,48 +90,54 @@ function mimeForPath(filePath: string): string | null {
   return MIME_BY_EXT[extname(filePath).toLowerCase()] ?? null
 }
 
-function isPathInsideRoot(root: string, candidate: string): boolean {
-  const rel = relative(resolve(root), resolve(candidate))
-  return rel.length > 0 && !rel.startsWith('..') && !isAbsolute(rel)
-}
-
-async function fileExists(filePath: string): Promise<boolean> {
-  try {
-    await access(filePath, fsConstants.R_OK)
-    const info = await stat(filePath)
-    return info.isFile()
-  } catch {
-    return false
-  }
-}
-
-async function directoryExists(dirPath: string): Promise<boolean> {
-  try {
-    const info = await stat(dirPath)
-    return info.isDirectory()
-  } catch {
-    return false
-  }
-}
-
-async function resolveRelativeWithinRoot(
-  workspaceRoot: string,
-  relativePath: string,
-): Promise<string | null> {
+/**
+ * The canonical on-disk path for a relative candidate, or null when it is
+ * absolute, escapes the root (lexically or through a link), or is otherwise
+ * invalid. Existence is checked by the read that follows.
+ */
+function containedPath(root: string, relativePath: string): string | null {
   const trimmed = relativePath.trim()
-  if (!trimmed || isAbsolute(trimmed)) return null
-  const absolutePath = resolve(workspaceRoot, trimmed)
-  if (!isPathInsideRoot(workspaceRoot, absolutePath)) return null
-  if (!(await fileExists(absolutePath))) return null
-  return absolutePath
+  if (!trimmed) return null
+  try {
+    return resolveWorkspacePath(root, trimmed)
+  } catch (error) {
+    if (error instanceof PathBoundaryError) return null
+    return null
+  }
 }
 
-async function readIconPathFromConfig(workspaceRoot: string): Promise<string | null> {
-  const configPath = join(workspaceRoot, WORKSPACE_ICON_CONFIG_FILE)
-  if (!(await fileExists(configPath))) return null
+/**
+ * Read a regular file of at most `maxBytes` through a single handle. The
+ * size comes from the opened descriptor and the read is bounded to it, so a
+ * concurrent replace or append cannot hand back more than the cap.
+ */
+async function readBounded(filePath: string, maxBytes: number): Promise<Buffer | null> {
+  let handle
   try {
-    const raw = await readFile(configPath, 'utf8')
-    const parsed: unknown = JSON.parse(raw)
+    handle = await open(filePath, 'r')
+  } catch {
+    return null
+  }
+  try {
+    const info = await handle.stat()
+    if (!info.isFile() || info.size <= 0 || info.size > maxBytes) return null
+    const buffer = Buffer.alloc(info.size)
+    const { bytesRead } = await handle.read(buffer, 0, info.size, 0)
+    return bytesRead === info.size ? buffer : null
+  } catch {
+    return null
+  } finally {
+    await handle.close().catch(() => undefined)
+  }
+}
+
+async function readIconPathFromConfig(root: string): Promise<string | null> {
+  const configPath = containedPath(root, WORKSPACE_ICON_CONFIG_FILE)
+  if (!configPath) return null
+  const raw = await readBounded(configPath, WORKSPACE_ICON_CONFIG_MAX_BYTES)
+  if (!raw) return null
+  try {
+    const parsed: unknown = JSON.parse(raw.toString('utf8'))
     if (typeof parsed !== 'object' || parsed === null) return null
     const iconPath = (parsed as { iconPath?: unknown }).iconPath
     if (typeof iconPath !== 'string') return null
@@ -137,28 +148,21 @@ async function readIconPathFromConfig(workspaceRoot: string): Promise<string | n
   }
 }
 
-async function toDataUrl(filePath: string): Promise<string | null> {
+async function toDataUrl(root: string, relativePath: string): Promise<string | null> {
+  const filePath = containedPath(root, relativePath)
+  if (!filePath) return null
   const mime = mimeForPath(filePath)
   if (!mime) return null
-  try {
-    const info = await stat(filePath)
-    if (!info.isFile() || info.size <= 0 || info.size > WORKSPACE_ICON_MAX_BYTES) return null
-    const bytes = await readFile(filePath)
-    return `data:${mime};base64,${bytes.toString('base64')}`
-  } catch {
-    return null
-  }
+  const bytes = await readBounded(filePath, WORKSPACE_ICON_MAX_BYTES)
+  return bytes ? `data:${mime};base64,${bytes.toString('base64')}` : null
 }
 
 async function resolveFromCandidates(
-  workspaceRoot: string,
+  root: string,
   baseRelative: string | null,
 ): Promise<string | null> {
   for (const candidate of WORKSPACE_ICON_CANDIDATES) {
-    const relativePath = baseRelative ? join(baseRelative, candidate) : candidate
-    const absolutePath = await resolveRelativeWithinRoot(workspaceRoot, relativePath)
-    if (!absolutePath) continue
-    const dataUrl = await toDataUrl(absolutePath)
+    const dataUrl = await toDataUrl(root, baseRelative ? join(baseRelative, candidate) : candidate)
     if (dataUrl) return dataUrl
   }
   return null
@@ -166,25 +170,26 @@ async function resolveFromCandidates(
 
 /** Resolve a representative workspace icon as a data URL, or null when none is found. */
 export async function resolveWorkspaceIconDataUrl(workspaceRoot: string): Promise<string | null> {
-  const root = resolve(workspaceRoot)
-  if (!(await directoryExists(root))) return null
+  let root: string
+  try {
+    root = canonicalizeRoot(workspaceRoot)
+  } catch {
+    return null
+  }
 
   const configuredIconPath = await readIconPathFromConfig(root)
   if (configuredIconPath) {
-    const configuredAbsolute = await resolveRelativeWithinRoot(root, configuredIconPath)
-    if (configuredAbsolute) {
-      const dataUrl = await toDataUrl(configuredAbsolute)
-      if (dataUrl) return dataUrl
-    }
+    const dataUrl = await toDataUrl(root, configuredIconPath)
+    if (dataUrl) return dataUrl
   }
 
   const fromRoot = await resolveFromCandidates(root, null)
   if (fromRoot) return fromRoot
 
   for (const nestedRoot of WORKSPACE_ICON_NESTED_ROOTS) {
-    const nestedAbsolute = resolve(root, nestedRoot)
-    if (!isPathInsideRoot(root, nestedAbsolute)) continue
-    if (!(await directoryExists(nestedAbsolute))) continue
+    // A nested root that is itself a link out of the workspace is skipped;
+    // candidates under a real one are checked the same way at read time.
+    if (!containedPath(root, nestedRoot)) continue
     const fromNested = await resolveFromCandidates(root, nestedRoot)
     if (fromNested) return fromNested
   }
