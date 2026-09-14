@@ -110,8 +110,18 @@ export async function startServer(config: ServerConfig) {
       return {
         providerId: 'opencode',
         cwd: workspace.root,
-        // "Last used" means a session actually started here, not merely was asked for.
-        onSessionStarted: () => workspaces.markUsed(workspace.workspaceId),
+        // "Last used" means a session actually started here, not merely was
+        // asked for. The stamp is bookkeeping: a failure is logged, never fatal.
+        onSessionStarted: () => {
+          try {
+            workspaces.markUsed(workspace.workspaceId)
+          } catch (error) {
+            log('warn', 'workspace last-used stamp failed', {
+              workspaceId: workspace.workspaceId,
+              reason: error instanceof Error ? error.message : 'unknown',
+            })
+          }
+        },
       }
     })
   let onRuntimeEvent: HostDeps['emitEvent'] = () => undefined

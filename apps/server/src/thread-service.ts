@@ -31,7 +31,11 @@ type ProviderGate = {
 export type WorkspaceRuntimeRoute = {
   providerId: string
   cwd: string
-  /** Called once the provider has actually opened a session in the workspace. */
+  /**
+   * Called once the provider has actually opened a session in the workspace.
+   * Bookkeeping only: the host owns reporting a failure, and a throw here
+   * never affects the session the client already holds.
+   */
   onSessionStarted?: () => void
 }
 export type WorkspaceRuntimeResolver = (
@@ -293,12 +297,12 @@ export function createThreadService(
         const runtimeSession = Promise.resolve()
           .then(() => runtime.ensureSession(route(record)))
           .then((result) => {
-            // Bookkeeping only: the client already holds the session, so a
-            // failure here must not turn a successful start into a rollback.
+            // The client already holds the session: a failing stamp must not
+            // turn a successful start into a rollback. The host logs it.
             try {
               target.onSessionStarted?.()
             } catch {
-              /* recorded nowhere; the session is what matters */
+              /* reported by the host's callback; see WorkspaceRuntimeRoute */
             }
             return result.sessionId
           })
