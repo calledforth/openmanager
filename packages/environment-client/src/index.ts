@@ -10,6 +10,10 @@ export type {
   EnvironmentState,
   HydrationState,
   InterruptTurnInput,
+  ListSessionsInput,
+  LoadSessionHistoryInput,
+  SessionHistoryPage,
+  SessionListPage,
   PendingInteraction,
   ReasoningEntry,
   RespondToInteractionInput,
@@ -32,6 +36,7 @@ export {
   applyEvent,
   applyInteractionResolved,
   applySessionCreated,
+  applySessionHistory,
   applySessionList,
   applySessionOpen,
   applySessionRemoved,
@@ -54,6 +59,12 @@ export {
   shallowEqualArray,
 } from './state'
 export { createEnvironmentStore, type EnvironmentStore } from './store'
+export {
+  pageSessionSummaries,
+  pageThreadMessages,
+  resolvePageLimit,
+  sessionListCursorOf,
+} from './pagination'
 export { WIRE_COMMANDS, type WireCommandName } from './wire'
 export {
   createMockEnvironmentClient,

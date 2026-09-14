@@ -44,9 +44,10 @@ IDs refer to host-owned identities, not a provider's session or thread IDs.
 | -------------------------- | ----------------------------------- | ------------------------------------------------------ |
 | `environment.get`          | `null`                              | `{ environment }` with environment ID and display name |
 | `workspace.list`           | `null`                              | `{ workspaces }`                                       |
-| `session.list`             | `{ workspaceId }`                   | `{ sessions }`                                         |
+| `session.list`             | `{ workspaceId?, cursor?, limit? }` | `{ sessions, nextCursor }` of summaries                |
 | `session.create`           | `{ workspaceId, title? }`           | `{ session, thread }` with the initial thread          |
-| `session.open`             | `{ sessionId }`                     | `{ session, threads, messages, turns, interactions }`  |
+| `session.open`             | `{ sessionId }`                     | `{ session, threads }` — no transcript                 |
+| `session.history`          | `{ sessionId, threadId, cursor?, limit? }` | `{ messages, turns, interactions, nextCursor }` |
 | `turn.send`                | `{ sessionId, threadId, text }`     | `{ turn, userMessage }`                                |
 | `turn.interrupt`           | `{ sessionId, threadId, turnId }`   | `{ turnId }` acknowledging the interrupt request       |
 | `interaction.respond`      | `{ sessionId, threadId, response }` | `null`                                                 |
@@ -56,9 +57,19 @@ IDs refer to host-owned identities, not a provider's session or thread IDs.
 `environment.get` provides domain discovery over the command channel. It does
 not replace the future HTTP bootstrap or promise version negotiation.
 
-`session.open` loads current state; it does not start a turn or implicitly
-subscribe. Collections are complete for this initial proof slice; pagination
-is not implied. Consistent snapshot/live handoff is specified with replay work.
+`session.list` returns lightweight summaries (`sessionId`, `title`, `status`,
+`workspaceId`, `providerId`, `updatedAt`) with newest-first cursor pagination.
+A sidebar must not open sessions or request history to render the catalog.
+`workspaceId` is optional so one environment-wide page can feed a multi-workspace
+sidebar. Omit `cursor` for the first page; `nextCursor` is the last row of the
+returned page, or `null` when that page is the last. `limit` defaults to 50 and
+is capped at 100.
+
+`session.open` loads the session summary and its thread identities so a client
+can subscribe. It does not start a turn, implicitly subscribe, or carry
+messages. `session.history` pages one thread's transcript backwards by message
+ordinal; the first page is the newest slice. Consistent snapshot/live handoff
+is specified with replay work.
 Each open interaction includes its thread ID. The host must enforce resource
 ownership, session/thread/turn membership, and consistent references in results.
 Shape validation alone cannot establish those database relationships.

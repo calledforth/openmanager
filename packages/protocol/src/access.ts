@@ -60,6 +60,7 @@ export const COMMAND_ACCESS = Object.freeze({
   'workspace.list': 'read',
   'session.list': 'read',
   'session.open': 'read',
+  'session.history': 'read',
   'subscription.subscribe': 'read',
   'subscription.unsubscribe': 'read',
   'provider.catalog.get': 'read',

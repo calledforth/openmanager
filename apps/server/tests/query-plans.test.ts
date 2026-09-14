@@ -15,6 +15,7 @@ import {
   EVENTS_TO_PRUNE_SQL,
   EXPIRED_EVENTS_BY_SCOPE_SQL,
   FIRST_UNEXPIRED_SEQUENCE_SQL,
+  INTERACTIONS_FOR_TURN_SQL,
   MESSAGE_HISTORY_PAGE_SQL,
   MESSAGE_PARTS_SQL,
   SESSION_LIST_FOR_ENVIRONMENT_SQL,
@@ -75,6 +76,7 @@ describe('bounded query plans', () => {
     expectIndexed(plan(database, TURNS_FOR_THREAD_SQL), 'turns_thread_started_at_idx')
     expectIndexed(plan(database, MESSAGE_HISTORY_PAGE_SQL), 'sqlite_autoindex_messages_')
     expectIndexed(plan(database, MESSAGE_PARTS_SQL), 'sqlite_autoindex_message_parts_')
+    expectIndexed(plan(database, INTERACTIONS_FOR_TURN_SQL), 'interactions_turn_id_idx')
   })
 
   it('reads events after a cursor straight from the (scope_key, sequence) primary key', async () => {

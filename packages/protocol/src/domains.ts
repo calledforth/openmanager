@@ -46,7 +46,38 @@ export const SessionSchema = z.object({
   workspaceId: EntityIdSchema,
   title: z.string().nullable(),
 })
+/** Rolled-up lifecycle for the sidebar. Distinct from a turn's own state. */
+export const SessionStatusSchema = z.enum(['idle', 'running', 'waiting', 'error'])
+/**
+ * Sidebar row. Deliberately excludes threads and messages so a list or
+ * environment snapshot cannot pull a transcript across the wire.
+ */
+export const SessionSummarySchema = SessionSchema.extend({
+  status: SessionStatusSchema,
+  providerId: EntityIdSchema,
+  updatedAt: TimestampSchema,
+})
 export const ThreadSchema = z.object({ threadId: EntityIdSchema, sessionId: EntityIdSchema })
+
+/** Default and ceiling for `session.list` / `session.history` pages. */
+export const PAGE_LIMIT_DEFAULT = 50
+export const PAGE_LIMIT_MAX = 100
+export const PageLimitSchema = z.number().int().min(1).max(PAGE_LIMIT_MAX)
+/**
+ * Keyset for newest-first session lists. The next page starts strictly after
+ * this `(updatedAt, sessionId)` pair; omit it for the first page.
+ */
+export const SessionListCursorSchema = z.object({
+  updatedAt: TimestampSchema,
+  sessionId: EntityIdSchema,
+})
+/**
+ * Exclusive upper bound on a thread's message ordinal. Omit for the newest
+ * page; walk backwards by sending the oldest ordinal from the previous page.
+ */
+export const HistoryCursorSchema = z.object({
+  ordinal: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+})
 export const TurnSchema = z.object({
   turnId: EntityIdSchema,
   threadId: EntityIdSchema,
@@ -192,6 +223,10 @@ export type SubscriptionScope = z.infer<typeof SubscriptionScopeSchema>
 export type Environment = z.infer<typeof EnvironmentSchema>
 export type Workspace = z.infer<typeof WorkspaceSchema>
 export type Session = z.infer<typeof SessionSchema>
+export type SessionStatus = z.infer<typeof SessionStatusSchema>
+export type SessionSummary = z.infer<typeof SessionSummarySchema>
+export type SessionListCursor = z.infer<typeof SessionListCursorSchema>
+export type HistoryCursor = z.infer<typeof HistoryCursorSchema>
 export type Thread = z.infer<typeof ThreadSchema>
 export type Turn = z.infer<typeof TurnSchema>
 export type Message = z.infer<typeof MessageSchema>

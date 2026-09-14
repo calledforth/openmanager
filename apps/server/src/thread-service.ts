@@ -3,12 +3,16 @@ import {
   ProofCommandSchemas,
   ProofEventSchemas,
   ProofResponseSchemas,
+  pageSessionSummaries,
+  pageThreadMessages,
   type CommandEnvelope,
   type ErrorCode,
   type EventEnvelope,
   type Message,
   type ProofEvent,
   type Session,
+  type SessionStatus,
+  type SessionSummary,
   type Thread,
   type TurnFailureReason,
   type Turn,
@@ -58,6 +62,8 @@ type ThreadRecord = {
   runtimeSession: Promise<string>
   turns: Turn[]
   messages: Message[]
+  status: SessionStatus
+  updatedAt: number
   activeTurn?: ActiveTurn
 }
 
@@ -241,6 +247,20 @@ export function createThreadService(
     else appendEvent(projected)
   }
 
+  const touch = (record: ThreadRecord, status?: SessionStatus) => {
+    record.updatedAt = Date.now()
+    if (status) record.status = status
+  }
+
+  const summaryOf = (record: ThreadRecord): SessionSummary => ({
+    sessionId: record.session.sessionId,
+    workspaceId: record.session.workspaceId,
+    title: record.session.title,
+    status: record.status,
+    providerId: record.providerId,
+    updatedAt: new Date(record.updatedAt).toISOString(),
+  })
+
   return {
     setEnvironmentId(id: string) {
       environmentId = id
@@ -277,6 +297,21 @@ export function createThreadService(
     },
 
     dispatch(command: CommandEnvelope, context?: CommandContext): unknown | undefined {
+      if (command.name === 'session.list') {
+        const parsed = ProofCommandSchemas['session.list'].safeParse(command)
+        if (!parsed.success) {
+          return errorResult(command.requestId, 'validation', 'Invalid session list request.')
+        }
+        return ProofResponseSchemas['session.list'].parse({
+          type: 'response',
+          requestId: command.requestId,
+          payload: pageSessionSummaries(
+            [...sessions.values()].map(summaryOf),
+            parsed.data.payload,
+          ),
+        })
+      }
+
       if (command.name === 'session.create') {
         const parsed = ProofCommandSchemas['session.create'].safeParse(command)
         if (!parsed.success) {
@@ -314,6 +349,8 @@ export function createThreadService(
           runtimeSession,
           turns: [],
           messages: [],
+          status: 'idle',
+          updatedAt: Date.now(),
         }
         sessions.set(session.sessionId, record)
         threads.set(thread.threadId, record)
@@ -348,11 +385,30 @@ export function createThreadService(
           type: 'response',
           requestId: command.requestId,
           payload: {
-            session: record.session,
+            session: summaryOf(record),
             threads: [record.thread],
-            messages: record.messages,
+          },
+        })
+      }
+
+      if (command.name === 'session.history') {
+        const parsed = ProofCommandSchemas['session.history'].safeParse(command)
+        if (!parsed.success) {
+          return errorResult(command.requestId, 'validation', 'Invalid session history request.')
+        }
+        const record = threads.get(parsed.data.payload.threadId)
+        if (!record || record.session.sessionId !== parsed.data.payload.sessionId) {
+          return errorResult(command.requestId, 'not_found', 'Thread not found.')
+        }
+        const page = pageThreadMessages(record.messages, parsed.data.payload)
+        return ProofResponseSchemas['session.history'].parse({
+          type: 'response',
+          requestId: command.requestId,
+          payload: {
+            messages: page.messages,
             turns: record.turns,
             interactions: [],
+            nextCursor: page.nextCursor,
           },
         })
       }
@@ -385,6 +441,7 @@ export function createThreadService(
         }
         record.turns.push(turn)
         record.messages.push(userMessage)
+        touch(record, 'running')
         const active: ActiveTurn = {
           turn,
           userMessage,
@@ -413,6 +470,7 @@ export function createThreadService(
               emitCompleted(record, turn.turnId)
               turn.state = 'completed'
               record.activeTurn = undefined
+              touch(record, 'idle')
             }
           })
           .catch(() => {
@@ -424,6 +482,7 @@ export function createThreadService(
               emitFailed(record, turn.turnId)
               turn.state = 'failed'
               record.activeTurn = undefined
+              touch(record, 'error')
             }
           })
         return ProofResponseSchemas['turn.send'].parse({
@@ -462,6 +521,7 @@ export function createThreadService(
             if (record.activeTurn?.turn.turnId !== active.turn.turnId) return
             active.turn.state = 'interrupted'
             record.activeTurn = undefined
+            touch(record, 'idle')
             emitInterrupted(record, active.turn.turnId)
           })
           .catch(() => {
@@ -528,6 +588,7 @@ export function createThreadService(
         projectRuntimeEvent(record, event, active, interrupted ? 'interrupted' : 'completed')
         active.turn.state = interrupted ? 'interrupted' : 'completed'
         record.activeTurn = undefined
+        touch(record, 'idle')
         return
       }
 
@@ -540,6 +601,7 @@ export function createThreadService(
         projectRuntimeEvent(record, event, active, interrupted ? 'interrupted' : 'failed', reason)
         active.turn.state = interrupted ? 'interrupted' : 'failed'
         record.activeTurn = undefined
+        touch(record, interrupted ? 'idle' : 'error')
         return
       }
 
@@ -552,6 +614,7 @@ export function createThreadService(
         projectRuntimeEvent(record, event, active, 'failed')
         active.turn.state = 'failed'
         record.activeTurn = undefined
+        touch(record, 'error')
         return
       }
 

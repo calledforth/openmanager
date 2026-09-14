@@ -10,8 +10,69 @@ describe('mock environment client', () => {
   it('lists seeded workspaces and sessions without a server', async () => {
     const client = createMockEnvironmentClient({ seed })
     expect(await client.commands.listWorkspaces()).toEqual([WORKSPACE])
-    expect(await client.commands.listSessions(WORKSPACE.workspaceId)).toHaveLength(1)
+    expect((await client.commands.listSessions(WORKSPACE.workspaceId)).sessions).toHaveLength(1)
     expect(client.getState().connection.phase).toBe('connected')
+  })
+
+  it('pages session summaries without transcripts for empty, one-page and multi-page lists', async () => {
+    const empty = createMockEnvironmentClient({ seed: { workspaces: [WORKSPACE] } })
+    expect(await empty.commands.listSessions({ workspaceId: WORKSPACE.workspaceId })).toEqual({
+      sessions: [],
+      nextCursor: null,
+    })
+
+    const one = createMockEnvironmentClient({
+      seed: {
+        workspaces: [WORKSPACE],
+        sessions: [
+          {
+            session: SESSION,
+            threads: [THREAD],
+            updatedAt: '2026-09-14T04:00:00.000Z',
+            providerId: 'opencode',
+          },
+        ],
+      },
+    })
+    const single = await one.commands.listSessions({ limit: 10 })
+    expect(single.sessions).toHaveLength(1)
+    expect(single.sessions[0]).toMatchObject({
+      sessionId: SESSION.sessionId,
+      status: 'idle',
+      providerId: 'opencode',
+      updatedAt: '2026-09-14T04:00:00.000Z',
+    })
+    expect(single.sessions[0]).not.toHaveProperty('messages')
+    expect(single.nextCursor).toBeNull()
+
+    const many = createMockEnvironmentClient({
+      seed: {
+        workspaces: [WORKSPACE],
+        sessions: [
+          {
+            session: { sessionId: 'session-a', workspaceId: WORKSPACE.workspaceId, title: 'A' },
+            updatedAt: '2026-09-14T04:03:00.000Z',
+          },
+          {
+            session: { sessionId: 'session-b', workspaceId: WORKSPACE.workspaceId, title: 'B' },
+            updatedAt: '2026-09-14T04:02:00.000Z',
+          },
+          {
+            session: { sessionId: 'session-c', workspaceId: WORKSPACE.workspaceId, title: 'C' },
+            updatedAt: '2026-09-14T04:01:00.000Z',
+          },
+        ],
+      },
+    })
+    const first = await many.commands.listSessions({ limit: 2 })
+    expect(first.sessions.map((session) => session.sessionId)).toEqual(['session-a', 'session-b'])
+    expect(first.nextCursor).toEqual({
+      updatedAt: '2026-09-14T04:02:00.000Z',
+      sessionId: 'session-b',
+    })
+    const rest = await many.commands.listSessions({ cursor: first.nextCursor!, limit: 2 })
+    expect(rest.sessions.map((session) => session.sessionId)).toEqual(['session-c'])
+    expect(rest.nextCursor).toBeNull()
   })
 
   it('creates, opens, renames and deletes sessions through events', async () => {

@@ -5,6 +5,10 @@ import {
   EnvironmentSchema,
   WorkspaceSchema,
   SessionSchema,
+  SessionSummarySchema,
+  SessionListCursorSchema,
+  HistoryCursorSchema,
+  PageLimitSchema,
   ThreadSchema,
   TurnSchema,
   MessageSchema,
@@ -33,12 +37,26 @@ export const ProofCommandSchemas = {
     }),
   ),
   'workspace.remove': command('workspace.remove', z.object({ workspaceId: EntityIdSchema })),
-  'session.list': command('session.list', z.object({ workspaceId: EntityIdSchema })),
+  'session.list': command(
+    'session.list',
+    z.object({
+      workspaceId: EntityIdSchema.optional(),
+      cursor: SessionListCursorSchema.optional(),
+      limit: PageLimitSchema.optional(),
+    }),
+  ),
   'session.create': command(
     'session.create',
     z.object({ workspaceId: EntityIdSchema, title: z.string().max(512).optional() }),
   ),
   'session.open': command('session.open', SessionTargetSchema),
+  'session.history': command(
+    'session.history',
+    ThreadTargetSchema.extend({
+      cursor: HistoryCursorSchema.optional(),
+      limit: PageLimitSchema.optional(),
+    }),
+  ),
   'turn.send': command('turn.send', ThreadTargetSchema.extend({ text: z.string().min(1) })),
   'turn.interrupt': command(
     'turn.interrupt',
@@ -66,6 +84,7 @@ export const ProofCommandSchema = z.discriminatedUnion('name', [
   ProofCommandSchemas['session.list'],
   ProofCommandSchemas['session.create'],
   ProofCommandSchemas['session.open'],
+  ProofCommandSchemas['session.history'],
   ProofCommandSchemas['turn.send'],
   ProofCommandSchemas['turn.interrupt'],
   ProofCommandSchemas['interaction.respond'],
@@ -81,15 +100,25 @@ export const ProofResponseSchemas = {
   'workspace.list': response(z.object({ workspaces: z.array(WorkspaceSchema) })),
   'workspace.add': response(z.object({ workspace: WorkspaceSchema })),
   'workspace.remove': response(z.null()),
-  'session.list': response(z.object({ sessions: z.array(SessionSchema) })),
+  'session.list': response(
+    z.object({
+      sessions: z.array(SessionSummarySchema),
+      nextCursor: SessionListCursorSchema.nullable(),
+    }),
+  ),
   'session.create': response(z.object({ session: SessionSchema, thread: ThreadSchema })),
   'session.open': response(
     z.object({
-      session: SessionSchema,
+      session: SessionSummarySchema,
       threads: z.array(ThreadSchema),
+    }),
+  ),
+  'session.history': response(
+    z.object({
       messages: z.array(MessageSchema),
       turns: z.array(TurnSchema),
       interactions: z.array(z.object({ threadId: EntityIdSchema, interaction: InteractionSchema })),
+      nextCursor: HistoryCursorSchema.nullable(),
     }),
   ),
   'turn.send': response(z.object({ turn: TurnSchema, userMessage: MessageSchema })),

@@ -14,6 +14,7 @@ import {
   EnvironmentSchema,
   WorkspaceSchema,
   SessionSchema,
+  SessionSummarySchema,
   ThreadSchema,
   TurnSchema,
   MessageSchema,
@@ -101,7 +102,7 @@ const EnvironmentSnapshotSchema = z
     state: z.object({
       environment: EnvironmentSchema,
       workspaces: z.array(WorkspaceSchema),
-      sessions: z.array(SessionSchema),
+      sessions: z.array(SessionSummarySchema),
     }),
   })
   .superRefine((snapshot, ctx) => {
