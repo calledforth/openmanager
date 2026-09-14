@@ -1,3 +1,4 @@
+import * as fs from 'node:fs'
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -11,9 +12,15 @@ import {
   type WorkspaceRegistry,
 } from '../src/workspaces.js'
 
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  return { ...actual, accessSync: vi.fn(actual.accessSync) }
+})
+
 const directories: string[] = []
 const registries: WorkspaceRegistry[] = []
 afterEach(async () => {
+  vi.mocked(fs.accessSync).mockReset()
   for (const registry of registries.splice(0)) registry.close()
   await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })))
 })
@@ -33,6 +40,7 @@ async function fixture() {
   let now = Date.parse('2026-09-13T12:00:00Z')
   const open = (configured: string[], options: WorkspaceRegistryOptions = {}) => {
     const registry = openWorkspaceRegistry(dataDir, configured, audit, {
+      allowedRoots: [base],
       clock: () => now,
       events: { environmentId: 'env-1', emit: (event) => events.push(event) },
       ...options,
@@ -203,6 +211,110 @@ describe('workspace registry', () => {
     first.close()
     expect(open([roots.a]).list()[0]!.lastUsedAt).toBe('2026-09-13T12:01:00.000Z')
   })
+
+  it('defaults to configured roots, rejects outside paths and traversal without persisting or emitting', async () => {
+    const { roots, open, events, audits } = await fixture()
+    const registry = open([roots.a], { allowedRoots: undefined })
+    for (const path of ['../other', `${roots.a}/src/../src`, `${roots.a}\\src\\..\\src`, roots.b]) {
+      expect(registry.register({ path })).toMatchObject({ ok: false, code: 'validation' })
+    }
+    expect(registry.list()).toHaveLength(1)
+    expect(events).toEqual([])
+    expect(audits).toHaveLength(4)
+    expect(registry.register({ path: join(roots.a, 'src') }).ok).toBe(true)
+    registry.close()
+    expect(open([], { allowedRoots: [] }).register({ path: roots.a })).toMatchObject({ ok: false })
+  })
+
+  it('checks symlink targets and canonicalizes aliases to a single registration', async () => {
+    const { roots, open } = await fixture()
+    const registry = open([roots.a], { allowedRoots: undefined })
+    const type = process.platform === 'win32' ? 'junction' : 'dir'
+    await symlink(roots.b, join(roots.a, 'escape'), type)
+    expect(registry.register({ path: join(roots.a, 'escape') })).toMatchObject({
+      ok: false,
+      code: 'validation',
+    })
+    await symlink(join(roots.a, 'src'), join(roots.a, 'alias'), type)
+    const added = registry.register({ path: join(roots.a, 'alias') })
+    expect(added).toMatchObject({
+      ok: true,
+      workspace: { path: canonicalizeRoot(join(roots.a, 'src')) },
+    })
+    expect(registry.register({ path: join(roots.a, 'src') })).toEqual(added)
+  })
+
+  it('marks restored paths outside a narrowed allowlist unavailable', async () => {
+    const { roots, open } = await fixture()
+    const first = open([roots.a, roots.b])
+    const beta = first.list()[1]!
+    first.close()
+    const second = open([roots.a], { allowedRoots: undefined })
+    expect(second.list().find((workspace) => workspace.workspaceId === beta.workspaceId)).toEqual({
+      ...beta,
+      exists: false,
+    })
+    expect(second.resolve(beta.workspaceId)).toBeUndefined()
+    expect(second.get(beta.workspaceId)).toBeUndefined()
+    expect(second.resolvePath(beta.workspaceId, 'src')).toEqual({
+      ok: false,
+      reason: 'unknown_workspace',
+    })
+  })
+
+  it('refuses a stored directory replaced by a symlink before and after restart', async () => {
+    const { roots, open } = await fixture()
+    const first = open([roots.a], { allowedRoots: undefined })
+    const added = first.register({ path: join(roots.a, 'src') })
+    if (!added.ok) throw new Error('registration failed')
+    await rm(join(roots.a, 'src'), { recursive: true })
+    await symlink(roots.b, join(roots.a, 'src'), process.platform === 'win32' ? 'junction' : 'dir')
+    const verify = (registry: WorkspaceRegistry) => {
+      expect(
+        registry.list().find((workspace) => workspace.workspaceId === added.workspace.workspaceId)
+          ?.exists,
+      ).toBe(false)
+      expect(registry.resolve(added.workspace.workspaceId)).toBeUndefined()
+      expect(registry.resolvePath(added.workspace.workspaceId, 'new.txt').ok).toBe(false)
+    }
+    verify(first)
+    first.close()
+    verify(open([roots.a], { allowedRoots: undefined }))
+  })
+
+  it('refuses unreadable directories and marks existing registrations unavailable', async () => {
+    const { roots, open } = await fixture()
+    const registry = open([roots.a])
+    const alpha = registry.list()[0]!
+    vi.mocked(fs.accessSync).mockImplementation(() => {
+      throw Object.assign(new Error('Access denied'), { code: 'EACCES' })
+    })
+    expect(registry.register({ path: join(roots.a, 'src') })).toMatchObject({
+      ok: false,
+      code: 'not_found',
+    })
+    expect(registry.list()).toEqual([{ ...alpha, exists: false }])
+    expect(registry.resolve(alpha.workspaceId)).toBeUndefined()
+  })
+
+  it.skipIf(process.platform === 'win32')(
+    'keeps canonical POSIX names distinct from client input syntax',
+    async () => {
+      const { roots, open } = await fixture()
+      const unusual = join(roots.a, 'literal\\name')
+      await mkdir(unusual)
+      const first = open([unusual], { allowedRoots: [roots.a] })
+      const workspace = first.list()[0]!
+      expect(workspace.exists).toBe(true)
+      expect(first.get(workspace.workspaceId)?.root).toBe(canonicalizeRoot(unusual))
+      expect(first.resolve(workspace.workspaceId)?.root).toBe(canonicalizeRoot(unusual))
+      expect(first.resolvePath(workspace.workspaceId, 'new.txt').ok).toBe(true)
+      first.close()
+      const second = open([], { allowedRoots: [roots.a] })
+      expect(second.list()).toEqual([workspace])
+      expect(second.resolve(workspace.workspaceId)?.root).toBe(canonicalizeRoot(unusual))
+    },
+  )
 
   it('fails startup for a root that does not exist', async () => {
     const { roots, open } = await fixture()

@@ -1,4 +1,4 @@
-import { realpathSync, statSync } from 'node:fs'
+import { accessSync, constants, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, join, posix, resolve, sep, win32 } from 'node:path'
 
 /**
@@ -20,8 +20,8 @@ export class PathBoundaryError extends Error {
   }
 }
 
-const CASE_INSENSITIVE = process.platform === 'win32' || process.platform === 'darwin'
-const fold = (path: string) => (CASE_INSENSITIVE ? path.toLowerCase() : path)
+// Canonical realpath spellings are compared exactly: even Windows and macOS
+// can host case-sensitive directories/volumes.
 const WINDOWS_DEVICE_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i
 
 function hasCode(error: unknown, ...codes: string[]): boolean {
@@ -34,13 +34,47 @@ export function canonicalizeRoot(root: string): string {
   if (!statSync(real).isDirectory()) {
     throw new Error(`Workspace root is not a directory: ${root}`)
   }
+  accessSync(real, constants.R_OK | constants.X_OK)
   return real
 }
 
 /** Whether `candidate` is `root` or below it, comparing whole path segments. */
 export function isWithinRoot(root: string, candidate: string): boolean {
   const prefix = root.endsWith(sep) ? root : `${root}${sep}`
-  return fold(candidate) === fold(root) || fold(candidate).startsWith(fold(prefix))
+  return candidate === root || candidate.startsWith(prefix)
+}
+
+/** Validate registration syntax before normalizing away any traversal. */
+export function validateRegistrationPath(path: string, platform = process.platform): void {
+  if (!path || path.includes('\0')) {
+    throw new PathBoundaryError('invalid', 'Enter the path of a folder on this environment.')
+  }
+  if (path.split(/[\\/]/).includes('..')) {
+    throw new PathBoundaryError('escape', 'Parent path segments are not allowed.')
+  }
+  if (platform === 'win32') {
+    // Require a drive-qualified path or ordinary UNC share, never device namespaces.
+    if (!/^(?:[a-z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+)/i.test(path)) {
+      throw new PathBoundaryError('absolute', 'The path must be absolute.')
+    }
+    if (
+      /^[\\/]{2}[?.][\\/]/.test(path) ||
+      path
+        .replace(/^[a-z]:/i, '')
+        .split(/[\\/]/)
+        .some(
+          (part) =>
+            /[<>:"|?*]/.test(part) ||
+            [...part].some((char) => char.charCodeAt(0) < 32) ||
+            (part !== '.' && /[. ]$/.test(part)) ||
+            WINDOWS_DEVICE_NAME.test(part),
+        )
+    ) {
+      throw new PathBoundaryError('invalid', 'Path contains a reserved name or stream.')
+    }
+  } else if (!posix.isAbsolute(path) || path.includes('\\') || path.startsWith('//')) {
+    throw new PathBoundaryError('absolute', 'The path must be absolute.')
+  }
 }
 
 /** Absolute on either platform, drive-relative (`C:file`) or UNC (`\\server`, `//server`, `\\wsl$`). */

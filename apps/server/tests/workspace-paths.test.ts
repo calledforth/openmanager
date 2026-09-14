@@ -7,6 +7,7 @@ import {
   isWithinRoot,
   PathBoundaryError,
   resolveWorkspacePath,
+  validateRegistrationPath,
 } from '../src/workspace-paths.js'
 
 const directories: string[] = []
@@ -110,5 +111,47 @@ describe('workspace path boundary', () => {
     expect(canonicalizeRoot(join(base, 'root-link'))).toBe(root)
     expect(() => canonicalizeRoot(join(base, 'missing'))).toThrow()
     expect(() => canonicalizeRoot(join(root, 'src', 'index.ts'))).toThrow('not a directory')
+  })
+})
+
+describe('registration path syntax on the host platform', () => {
+  it.each(['/home/me/project', '/home/me/./project', '/'])('accepts POSIX %s', (path) => {
+    expect(() => validateRegistrationPath(path, 'linux')).not.toThrow()
+  })
+  it.each(['C:/code/project', 'C:\\code\\project', '//server/share/project', 'C:/code/./project'])(
+    'accepts Windows %s',
+    (path) => {
+      expect(() => validateRegistrationPath(path, 'win32')).not.toThrow()
+    },
+  )
+  it.each(['../other', '/home/../other', 'C:/code/../other', 'C:\\code\\..\\other'])(
+    'rejects traversal %s on both platforms',
+    (path) => {
+      for (const platform of ['linux', 'win32'] as const) {
+        expect(() => validateRegistrationPath(path, platform)).toThrow('Parent path segments')
+      }
+    },
+  )
+  it.each([
+    'C:relative',
+    '/rooted',
+    '\\rooted',
+    'C:/NUL',
+    'C:/file:stream',
+    '//?/C:/code',
+    '//./C:/code',
+    'C:/folder.',
+    'C:/folder ',
+  ])('rejects ambiguous Windows %s', (path) => {
+    expect(() => validateRegistrationPath(path, 'win32')).toThrow(PathBoundaryError)
+  })
+  it.each(['C:/code', 'C:\\code', '//server/share', '/home/me\\project'])(
+    'rejects foreign or ambiguous POSIX %s',
+    (path) => {
+      expect(() => validateRegistrationPath(path, 'linux')).toThrow(PathBoundaryError)
+    },
+  )
+  it('does not fold case for canonical boundaries on case-sensitive volumes', () => {
+    expect(isWithinRoot('/projects/App', '/projects/app/secret')).toBe(false)
   })
 })

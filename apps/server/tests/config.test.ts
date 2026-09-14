@@ -105,6 +105,15 @@ describe('configuration', () => {
     expect(() => loadConfig([], { OPENMANAGER_WORKSPACES: 'a\0b' })).toThrow('Workspace roots')
   })
 
+  it('loads an explicit registration allowlist with flag precedence', () => {
+    const env = { OPENMANAGER_ALLOWED_WORKSPACE_ROOTS: ['./one', './two'].join(delimiter) }
+    expect(loadConfig([], env).allowedWorkspaceRoots).toEqual([resolve('one'), resolve('two')])
+    expect(loadConfig(['--allowed-workspace-root', './three'], env).allowedWorkspaceRoots).toEqual([
+      resolve('three'),
+    ])
+    expect(() => loadConfig(['--allowed-workspace-root', ' '], {})).toThrow('Workspace roots')
+  })
+
   it.each(['-1', '65536', '3.5', 'abc', '1e3', '', '9007199254740993'])(
     'rejects invalid port %j before binding',
     (port) => {
@@ -128,9 +137,9 @@ describe('configuration', () => {
   it('accepts the local owner claim key only from the environment', () => {
     const key = 'K'.repeat(43)
     expect(loadConfig([], { OPENMANAGER_LOCAL_OWNER_CLAIM_KEY: key }).localOwnerClaimKey).toBe(key)
-    expect(() =>
-      loadConfig([], { OPENMANAGER_LOCAL_OWNER_CLAIM_KEY: 'too-short' }),
-    ).toThrow('32 bytes')
+    expect(() => loadConfig([], { OPENMANAGER_LOCAL_OWNER_CLAIM_KEY: 'too-short' })).toThrow(
+      '32 bytes',
+    )
     expect(() => loadConfig(['--local-owner-claim-key=secret'], {})).toThrow()
   })
 })

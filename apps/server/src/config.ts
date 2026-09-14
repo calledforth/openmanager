@@ -21,6 +21,8 @@ export interface ServerConfig {
   allowedHosts?: readonly string[]
   /** Workspace roots this environment may expose. Every client path resolves under one of them. */
   workspaces?: readonly string[]
+  /** Registration allowlist; defaults to workspaces. Empty denies registration. */
+  allowedWorkspaceRoots?: readonly string[]
   /** Test-only runtime seams (fake ACP transport, fake Claude SDK, timers). */
   runtimeOptions?: AgentRuntimeOptions
   /** Test-only workspace → provider routing. Production resolves through the workspace registry. */
@@ -120,6 +122,7 @@ export function loadConfig(
       'allowed-origin': { type: 'string', multiple: true },
       'allowed-host': { type: 'string', multiple: true },
       workspace: { type: 'string', multiple: true },
+      'allowed-workspace-root': { type: 'string', multiple: true },
       'remint-owner': { type: 'boolean' },
     },
     strict: true,
@@ -147,6 +150,9 @@ export function loadConfig(
   const workspaces = validateWorkspaceRoots(
     values.workspace ?? splitList(env.OPENMANAGER_WORKSPACES, delimiter) ?? [],
   )
+  const allowedRoots =
+    values['allowed-workspace-root'] ??
+    splitList(env.OPENMANAGER_ALLOWED_WORKSPACE_ROOTS, delimiter)
   const localOwnerClaimKey = env.OPENMANAGER_LOCAL_OWNER_CLAIM_KEY?.trim()
   if (localOwnerClaimKey && !LOCAL_OWNER_CLAIM_KEY_PATTERN.test(localOwnerClaimKey)) {
     throw new Error('Local owner claim key must be 32 bytes of unpadded base64url.')
@@ -158,6 +164,7 @@ export function loadConfig(
     allowedOrigins,
     allowedHosts,
     workspaces,
+    ...(allowedRoots ? { allowedWorkspaceRoots: validateWorkspaceRoots(allowedRoots) } : {}),
     remintOwner: values['remint-owner'] === true,
     ...(localOwnerClaimKey ? { localOwnerClaimKey } : {}),
   }

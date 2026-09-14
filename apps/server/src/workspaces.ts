@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { statSync } from 'node:fs'
-import { basename, isAbsolute } from 'node:path'
+import { basename } from 'node:path'
 import {
   ProofCommandSchemas,
   ProofEventSchemas,
@@ -13,7 +12,13 @@ import {
 import { auditValue, type AuditLog } from './audit.ts'
 import type { CommandContext } from './command-context.ts'
 import { openEnvironmentDatabase } from './db/database.ts'
-import { canonicalizeRoot, PathBoundaryError, resolveWorkspacePath } from './workspace-paths.ts'
+import {
+  canonicalizeRoot,
+  isWithinRoot,
+  PathBoundaryError,
+  resolveWorkspacePath,
+  validateRegistrationPath,
+} from './workspace-paths.ts'
 
 export interface RegisteredWorkspace {
   readonly workspaceId: string
@@ -33,6 +38,8 @@ export type WorkspaceRegistration =
   | { ok: false; code: Extract<ErrorCode, 'validation' | 'not_found'>; message: string }
 
 export interface WorkspaceRegistryOptions {
+  /** Server-controlled registration boundary; defaults to configured roots. Empty denies all. */
+  allowedRoots?: readonly string[]
   clock?: () => number
   /** Where registration changes are announced so every connected client sees them. */
   events?: { environmentId: string; emit: (event: ProofEvent) => void }
@@ -51,14 +58,6 @@ function hasCode(error: unknown, ...codes: string[]): boolean {
   return error instanceof Error && 'code' in error && codes.includes(String(error.code))
 }
 
-function directoryExists(path: string): boolean {
-  try {
-    return statSync(path).isDirectory()
-  } catch {
-    return false
-  }
-}
-
 /**
  * The set of roots this environment exposes (threat model D9). Clients name a
  * workspace by the ID the server assigned and never send a root path in its
@@ -74,6 +73,15 @@ export function openWorkspaceRegistry(
   audit: AuditLog,
   options: WorkspaceRegistryOptions = {},
 ) {
+  const allowedRoots = (options.allowedRoots ?? roots).map(canonicalizeRoot)
+  const isAllowed = (root: string) => allowedRoots.some((allowed) => isWithinRoot(allowed, root))
+  const isAvailable = (root: string): boolean => {
+    try {
+      return isAllowed(root) && canonicalizeRoot(root) === root
+    } catch {
+      return false
+    }
+  }
   const clock = options.clock ?? Date.now
   const database = openEnvironmentDatabase(dataDir)
   const byId = new Map<string, RegisteredWorkspace>()
@@ -141,7 +149,11 @@ export function openWorkspaceRegistry(
     }
     // A configured root that does not exist is a startup error: the operator
     // named it explicitly and would otherwise silently get nothing.
-    for (const configured of roots) upsert(canonicalizeRoot(configured), undefined)
+    for (const configured of roots) {
+      const root = canonicalizeRoot(configured)
+      if (!isAllowed(root)) throw new Error('Configured workspace is outside allowed roots.')
+      upsert(root, undefined)
+    }
   } catch (error) {
     database.close()
     throw error
@@ -152,7 +164,7 @@ export function openWorkspaceRegistry(
     name: workspace.name,
     path: workspace.root,
     lastUsedAt: workspace.lastUsedAt === null ? null : new Date(workspace.lastUsedAt).toISOString(),
-    exists: directoryExists(workspace.root),
+    exists: isAvailable(workspace.root),
   })
 
   const emit = (
@@ -222,11 +234,15 @@ export function openWorkspaceRegistry(
       return { ok: false, code, message }
     }
     const path = typeof input.path === 'string' ? input.path.trim() : ''
-    if (path.length === 0 || path.includes('\0')) {
-      return reject('validation', 'invalid', 'Enter the path of a folder on this environment.')
-    }
-    if (!isAbsolute(path)) {
-      return reject('validation', 'relative', 'The path must be absolute.')
+    try {
+      validateRegistrationPath(path)
+    } catch (error) {
+      if (!(error instanceof PathBoundaryError)) throw error
+      return reject(
+        'validation',
+        error.reason === 'absolute' ? 'relative' : error.reason,
+        error.message,
+      )
     }
     let root: string
     try {
@@ -245,7 +261,14 @@ export function openWorkspaceRegistry(
       if (error instanceof Error && error.message.startsWith('Workspace root is not a directory')) {
         return reject('validation', 'not_directory', 'That path is a file, not a folder.')
       }
-      throw error
+      return reject(
+        'validation',
+        'invalid',
+        'That folder path cannot be resolved on this environment.',
+      )
+    }
+    if (!isAllowed(root)) {
+      return reject('validation', 'escape', 'That folder is outside the allowed workspace roots.')
     }
     const workspace = toPublic(upsert(root, input.name?.trim() || undefined))
     emit('workspace.updated', { workspace })
@@ -272,7 +295,8 @@ export function openWorkspaceRegistry(
 
     /** Look a workspace up without auditing; for callers that will report a miss themselves. */
     get(workspaceId: string): RegisteredWorkspace | undefined {
-      return byId.get(workspaceId)
+      const workspace = byId.get(workspaceId)
+      return workspace && isAvailable(workspace.root) ? workspace : undefined
     },
 
     /**
@@ -286,7 +310,7 @@ export function openWorkspaceRegistry(
         rejectWorkspace(workspaceId, 'unknown', context)
         return undefined
       }
-      if (!directoryExists(workspace.root)) {
+      if (!isAvailable(workspace.root)) {
         rejectWorkspace(workspaceId, 'missing', context)
         return undefined
       }
@@ -306,6 +330,10 @@ export function openWorkspaceRegistry(
       const workspace = byId.get(workspaceId)
       if (!workspace) {
         rejectWorkspace(workspaceId, 'unknown', context)
+        return { ok: false, reason: 'unknown_workspace' }
+      }
+      if (!isAvailable(workspace.root)) {
+        rejectWorkspace(workspaceId, 'missing', context)
         return { ok: false, reason: 'unknown_workspace' }
       }
       try {
