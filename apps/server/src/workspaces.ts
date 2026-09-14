@@ -15,6 +15,7 @@ import type { CommandContext } from './command-context.ts'
 import { openEnvironmentDatabase } from './db/database.ts'
 import {
   canonicalizeRoot,
+  canonicalizeUnavailableRoot,
   isWithinRoot,
   PathBoundaryError,
   resolveWorkspacePath,
@@ -29,6 +30,7 @@ export interface RegisteredWorkspace {
   readonly root: string
   /** Epoch milliseconds of the last session started here; null until one is. */
   readonly lastUsedAt: number | null
+  readonly availability: 'available' | 'missing' | 'inaccessible'
 }
 
 export type WorkspacePathResult =
@@ -60,6 +62,7 @@ type WorkspaceRow = {
   name: string
   path: string
   last_used_at: number | null
+  availability: RegisteredWorkspace['availability']
 }
 
 function hasCode(error: unknown, ...codes: string[]): boolean {
@@ -81,19 +84,36 @@ export function openWorkspaceRegistry(
   audit: AuditLog,
   options: WorkspaceRegistryOptions = {},
 ) {
-  const allowedRoots = (options.allowedRoots ?? roots).map(canonicalizeRoot)
-  const isAllowed = (root: string) => allowedRoots.some((allowed) => isWithinRoot(allowed, root))
-  const isAvailable = (root: string): boolean => {
+  // An offline registered root must not prevent the environment from starting.
+  // Retain its configured boundary; every use still requires an exact realpath.
+  const allowedRoots = (options.allowedRoots ?? roots).map((root) => {
     try {
-      return isAllowed(root) && canonicalizeRoot(root) === root
-    } catch {
-      return false
+      return canonicalizeRoot(root)
+    } catch (error) {
+      if (hasCode(error, 'ENOENT', 'ENOTDIR', 'EACCES', 'EPERM')) {
+        return canonicalizeUnavailableRoot(root)
+      }
+      throw error
+    }
+  })
+  const isAllowed = (root: string) => allowedRoots.some((allowed) => isWithinRoot(allowed, root))
+  const availabilityOf = (root: string): RegisteredWorkspace['availability'] => {
+    try {
+      return isAllowed(root) && canonicalizeRoot(root) === root ? 'available' : 'inaccessible'
+    } catch (error) {
+      return hasCode(error, 'ENOENT', 'ENOTDIR') ||
+        (error instanceof Error && error.message.startsWith('Workspace root is not a directory'))
+        ? 'missing'
+        : 'inaccessible'
     }
   }
   const clock = options.clock ?? Date.now
   const database = openEnvironmentDatabase(dataDir)
   const byId = new Map<string, RegisteredWorkspace>()
   const statements = {
+    availability: database.prepare(
+      'UPDATE workspaces SET availability = ?, updated_at = ? WHERE workspace_id = ?',
+    ),
     byPath: database.prepare(
       'SELECT workspace_id, name, path, last_used_at FROM workspaces WHERE path = ?',
     ),
@@ -136,6 +156,7 @@ export function openWorkspaceRegistry(
       name: name ?? basename(root) ?? root,
       root,
       lastUsedAt: null,
+      availability: 'available' as const,
     })
     statements.insert.run(workspaceId, workspace.name, root, now, now)
     byId.set(workspaceId, workspace)
@@ -145,7 +166,7 @@ export function openWorkspaceRegistry(
   try {
     const rows = database
       .prepare(
-        'SELECT workspace_id, name, path, last_used_at FROM workspaces ORDER BY created_at, rowid',
+        'SELECT workspace_id, name, path, last_used_at, availability FROM workspaces ORDER BY created_at, rowid',
       )
       .all() as WorkspaceRow[]
     for (const row of rows) {
@@ -156,13 +177,20 @@ export function openWorkspaceRegistry(
           name: row.name,
           root: row.path,
           lastUsedAt: row.last_used_at,
+          availability: row.availability,
         }),
       )
     }
-    // A configured root that does not exist is a startup error: the operator
-    // named it explicitly and would otherwise silently get nothing.
+    // New invalid roots are startup errors; known unavailable roots retain
+    // their registration and sessions so the user can recover them.
     for (const configured of roots) {
-      const root = canonicalizeRoot(configured)
+      let root: string
+      try {
+        root = canonicalizeRoot(configured)
+      } catch (error) {
+        if (findByRoot(canonicalizeUnavailableRoot(configured))) continue
+        throw error
+      }
       if (!isAllowed(root)) throw new Error('Configured workspace is outside allowed roots.')
       upsert(root, undefined)
     }
@@ -192,7 +220,7 @@ export function openWorkspaceRegistry(
     sessionActivity: Map<string, number> = readSessionActivity(),
     providers: readonly string[] = options.availableProviders?.() ?? [],
   ): Workspace => {
-    const exists = isAvailable(workspace.root)
+    const exists = workspace.availability === 'available'
     const sessionLast = sessionActivity.get(workspace.workspaceId) ?? null
     const lastActivityAt =
       sessionLast === null
@@ -205,6 +233,7 @@ export function openWorkspaceRegistry(
       lastUsedAt: toIso(workspace.lastUsedAt),
       lastActivityAt: toIso(lastActivityAt),
       exists,
+      availability: workspace.availability,
       capabilities: {
         // A single stat of `<root>/.git`; never a tree walk (D9 cost budget).
         git: exists && existsSync(join(workspace.root, '.git')),
@@ -231,9 +260,24 @@ export function openWorkspaceRegistry(
     )
   }
 
+  /** Filesystem truth is persisted and published on list and every open. */
+  const refresh = (
+    workspace: RegisteredWorkspace,
+    sessionActivity?: Map<string, number>,
+    providers?: readonly string[],
+  ): RegisteredWorkspace => {
+    const availability = availabilityOf(workspace.root)
+    if (workspace.availability === availability) return workspace
+    statements.availability.run(availability, clock(), workspace.workspaceId)
+    const updated = Object.freeze({ ...workspace, availability })
+    byId.set(workspace.workspaceId, updated)
+    emit('workspace.updated', { workspace: toPublic(updated, sessionActivity, providers) })
+    return updated
+  }
+
   const rejectWorkspace = (
     workspaceId: string,
-    reason: 'unknown' | 'missing',
+    reason: 'unknown' | 'missing' | 'inaccessible',
     context: CommandContext | undefined,
   ) => {
     audit.record({
@@ -316,7 +360,7 @@ export function openWorkspaceRegistry(
     if (!isAllowed(root)) {
       return reject('validation', 'escape', 'That folder is outside the allowed workspace roots.')
     }
-    const workspace = toPublic(upsert(root, input.name?.trim() || undefined))
+    const workspace = toPublic(refresh(upsert(root, input.name?.trim() || undefined)))
     emit('workspace.updated', { workspace })
     return { ok: true, workspace }
   }
@@ -335,7 +379,9 @@ export function openWorkspaceRegistry(
   const list = (): Workspace[] => {
     const sessionActivity = readSessionActivity()
     const providers = options.availableProviders?.() ?? []
-    return [...byId.values()].map((workspace) => toPublic(workspace, sessionActivity, providers))
+    return [...byId.values()].map((workspace) =>
+      toPublic(refresh(workspace, sessionActivity, providers), sessionActivity, providers),
+    )
   }
 
   return {
@@ -346,7 +392,8 @@ export function openWorkspaceRegistry(
     /** Look a workspace up without auditing; for callers that will report a miss themselves. */
     get(workspaceId: string): RegisteredWorkspace | undefined {
       const workspace = byId.get(workspaceId)
-      return workspace && isAvailable(workspace.root) ? workspace : undefined
+      const current = workspace && refresh(workspace)
+      return current?.availability === 'available' ? current : undefined
     },
 
     /**
@@ -360,11 +407,12 @@ export function openWorkspaceRegistry(
         rejectWorkspace(workspaceId, 'unknown', context)
         return undefined
       }
-      if (!isAvailable(workspace.root)) {
-        rejectWorkspace(workspaceId, 'missing', context)
+      const current = refresh(workspace)
+      if (current.availability !== 'available') {
+        rejectWorkspace(workspaceId, current.availability, context)
         return undefined
       }
-      return workspace
+      return current
     },
 
     /**
@@ -382,8 +430,9 @@ export function openWorkspaceRegistry(
         rejectWorkspace(workspaceId, 'unknown', context)
         return { ok: false, reason: 'unknown_workspace' }
       }
-      if (!isAvailable(workspace.root)) {
-        rejectWorkspace(workspaceId, 'missing', context)
+      const current = refresh(workspace)
+      if (current.availability !== 'available') {
+        rejectWorkspace(workspaceId, current.availability, context)
         return { ok: false, reason: 'unknown_workspace' }
       }
       try {
@@ -414,7 +463,7 @@ export function openWorkspaceRegistry(
       byId.set(workspaceId, used)
       // Connected clients order recents from their cached workspaces, so a
       // start must reach them now rather than on their next handshake.
-      emit('workspace.updated', { workspace: toPublic(used) })
+      emit('workspace.updated', { workspace: toPublic(refresh(used)) })
     },
 
     /**

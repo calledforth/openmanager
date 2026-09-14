@@ -14,7 +14,11 @@ const WORKSPACE = {
   exists: true,
   capabilities: { git: false, providers: [] },
 }
-const SESSION = { sessionId: 'session-1', workspaceId: WORKSPACE.workspaceId, title: 'Sidebar move' }
+const SESSION = {
+  sessionId: 'session-1',
+  workspaceId: WORKSPACE.workspaceId,
+  title: 'Sidebar move',
+}
 const THREAD = { threadId: 'thread-1', sessionId: SESSION.sessionId }
 
 const SEED: MockSeed = {
@@ -90,6 +94,34 @@ function renderConnected(path: string, seed: MockSeed = SEED) {
 }
 
 describe('session workspace', () => {
+  it.each(['missing', 'inaccessible'] as const)(
+    'keeps %s sessions visible and recovers on retry',
+    async (availability) => {
+      const user = userEvent.setup()
+      const { client } = renderConnected('/sessions/session-1', {
+        ...SEED,
+        workspaces: [{ ...WORKSPACE, exists: false, availability }],
+      })
+      expect(await screen.findByRole('alert')).toHaveTextContent('Could not open session')
+      expect(screen.getByText('Sidebar move')).toBeInTheDocument()
+      expect(screen.getByText(availability.toUpperCase())).toBeInTheDocument()
+      expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+      // The filesystem becomes usable again and the environment publishes it.
+      client.emit({
+        type: 'event',
+        name: 'workspace.updated',
+        eventId: 'restored',
+        timestamp: new Date().toISOString(),
+        scope: { type: 'environment', environmentId: 'env-local' },
+        payload: { workspace: { ...WORKSPACE, availability: 'available' } },
+      })
+      await user.click(screen.getByRole('button', { name: 'Try again' }))
+      expect(await screen.findByText('In the shared application package.')).toBeInTheDocument()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(screen.getByRole('textbox')).toBeEnabled()
+    },
+  )
+
   it('renders the shared sidebar, empty chat and composer once connected', async () => {
     renderConnected('/')
     expect(await screen.findByText('Sidebar move')).toBeInTheDocument()

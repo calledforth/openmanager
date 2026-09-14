@@ -338,9 +338,7 @@ export function createMockEnvironmentClient(
           throw new EnvironmentClientError('not_found', 'Workspace not found.')
         }
         cancelScriptsForThreads(
-          selectSessionList(store.getState(), workspaceId).flatMap(
-            (session) => session.threadIds,
-          ),
+          selectSessionList(store.getState(), workspaceId).flatMap((session) => session.threadIds),
         )
         store.update((state) => applyWorkspaceRemoved(state, workspaceId))
       }),
@@ -394,6 +392,16 @@ export function createMockEnvironmentClient(
       run('openSession', sessionId, () => {
         const session = store.getState().sessions[sessionId]
         if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
+        const workspace = store.getState().workspaces[session.workspaceId]
+        if (workspace && !workspace.exists) {
+          const message =
+            'The session folder is missing, moved, or inaccessible on this environment. Restore the original folder path or its permissions, then try again. Your session is still listed.'
+          store.update((state) => ({
+            ...applyActiveSession(state, sessionId),
+            sessionOpenFailure: { sessionId, message },
+          }))
+          throw new EnvironmentClientError('not_found', message)
+        }
         store.update((state) => {
           let next = applySessionOpen(state, {
             session: {
@@ -659,8 +667,9 @@ function seedState(
   })
   state = applyWorkspaceList(state, seed?.workspaces ?? [])
   for (const [index, entry] of (seed?.sessions ?? []).entries()) {
-    const threads =
-      entry.threads ?? [{ threadId: `${entry.session.sessionId}-thread`, sessionId: entry.session.sessionId }]
+    const threads = entry.threads ?? [
+      { threadId: `${entry.session.sessionId}-thread`, sessionId: entry.session.sessionId },
+    ]
     for (const thread of threads) {
       state = applySessionCreated(state, { session: entry.session, thread })
       state = {
@@ -700,7 +709,10 @@ function seedState(
     const threads = session.threadIds.map((id) => state.threads[id]!)
     const status = deriveSessionStatus(threads)
     if (status !== session.status) {
-      state = { ...state, sessions: { ...state.sessions, [session.sessionId]: { ...session, status } } }
+      state = {
+        ...state,
+        sessions: { ...state.sessions, [session.sessionId]: { ...session, status } },
+      }
     }
   }
   if (seed?.activeSessionId) state = applyActiveSession(state, seed.activeSessionId)

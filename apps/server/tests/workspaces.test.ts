@@ -59,11 +59,71 @@ const listed = (name: string, path: string, extra: Record<string, unknown> = {})
   lastUsedAt: null,
   lastActivityAt: null,
   exists: true,
+  availability: 'available',
   capabilities: { git: false, providers: [] },
   ...extra,
 })
 
 describe('workspace registry', () => {
+  it('persists and announces status on open, restores access, and retains moved registrations', async () => {
+    const { roots, open, dataDir, events } = await fixture()
+    const registry = open([roots.a])
+    const [alpha] = registry.list()
+    const database = openEnvironmentDatabase(dataDir)
+    try {
+      const status = () =>
+        database
+          .prepare('SELECT availability FROM workspaces WHERE workspace_id = ?')
+          .get(alpha!.workspaceId)
+      vi.mocked(fs.accessSync).mockImplementation(() => {
+        throw Object.assign(new Error('denied'), { code: 'EACCES' })
+      })
+      expect(registry.resolve(alpha!.workspaceId)).toBeUndefined()
+      expect(status()).toEqual({ availability: 'inaccessible' })
+      expect(events.at(-1)).toMatchObject({
+        name: 'workspace.updated',
+        payload: { workspace: { availability: 'inaccessible', exists: false } },
+      })
+      vi.mocked(fs.accessSync).mockReset()
+      expect(registry.get(alpha!.workspaceId)).toMatchObject({ availability: 'available' })
+      expect(status()).toEqual({ availability: 'available' })
+      await rm(roots.a, { recursive: true })
+      expect(registry.list()[0]).toMatchObject({ availability: 'missing' })
+      expect(status()).toEqual({ availability: 'missing' })
+      registry.close()
+      const restarted = open([roots.a], { allowedRoots: [roots.a, roots.b] })
+      expect(restarted.list()[0]).toMatchObject({
+        workspaceId: alpha!.workspaceId,
+        availability: 'missing',
+      })
+      const moved = restarted.register({ path: roots.b, name: alpha!.name })
+      expect(moved).toMatchObject({ ok: true })
+      if (moved.ok) expect(moved.workspace.workspaceId).not.toBe(alpha!.workspaceId)
+      await mkdir(roots.a)
+      expect(restarted.register({ path: roots.a })).toMatchObject({
+        ok: true,
+        workspace: { workspaceId: alpha!.workspaceId, availability: 'available' },
+      })
+    } finally {
+      database.close()
+    }
+  })
+
+  it('keeps a workspace configured only through a link when its target goes missing', async () => {
+    const { roots, open, base } = await fixture()
+    const link = join(base, 'alpha-link')
+    await symlink(roots.a, link, process.platform === 'win32' ? 'junction' : 'dir')
+    const registry = open([link])
+    const [alpha] = registry.list()
+    expect(alpha).toMatchObject({ path: canonicalizeRoot(roots.a), availability: 'available' })
+    registry.close()
+    await rm(roots.a, { recursive: true })
+    const restarted = open([link])
+    expect(restarted.list()).toEqual([
+      expect.objectContaining({ workspaceId: alpha!.workspaceId, availability: 'missing' }),
+    ])
+  })
+
   it('assigns stable IDs to canonical roots and lists them with their path', async () => {
     const { roots, open, base } = await fixture()
     await symlink(
@@ -186,7 +246,7 @@ describe('workspace registry', () => {
     const registry = open([roots.a, roots.b])
     const [alpha, beta] = registry.list()
     await rm(roots.b, { recursive: true })
-    expect(registry.list()).toEqual([alpha, { ...beta, exists: false }])
+    expect(registry.list()).toEqual([alpha, { ...beta, exists: false, availability: 'missing' }])
     const context = { clientId: 'client-1', command: 'session.create' }
     expect(registry.resolve(beta!.workspaceId, context)).toBeUndefined()
     expect(audits).toEqual([
@@ -330,6 +390,7 @@ describe('workspace registry', () => {
     expect(second.list().find((workspace) => workspace.workspaceId === beta.workspaceId)).toEqual({
       ...beta,
       exists: false,
+      availability: 'inaccessible',
     })
     expect(second.resolve(beta.workspaceId)).toBeUndefined()
     expect(second.get(beta.workspaceId)).toBeUndefined()
@@ -370,7 +431,7 @@ describe('workspace registry', () => {
       ok: false,
       code: 'not_found',
     })
-    expect(registry.list()).toEqual([{ ...alpha, exists: false }])
+    expect(registry.list()).toEqual([{ ...alpha, exists: false, availability: 'inaccessible' }])
     expect(registry.resolve(alpha.workspaceId)).toBeUndefined()
   })
 
@@ -588,7 +649,12 @@ describe('workspace registry', () => {
     // A root path in place of an ID is workspace substitution: refused and audited.
     expect(
       registry.dispatch(
-        { type: 'command', requestId: 'icon-3', name: 'workspace.icon', payload: { workspaceId: roots.a } },
+        {
+          type: 'command',
+          requestId: 'icon-3',
+          name: 'workspace.icon',
+          payload: { workspaceId: roots.a },
+        },
         context,
       ),
     ).toMatchObject({ type: 'error', requestId: 'icon-3', error: { code: 'not_found' } })
@@ -612,7 +678,12 @@ describe('workspace registry', () => {
     expect(audits.at(-1)).toMatchObject({ details: { reason: 'missing' } })
 
     expect(
-      registry.dispatch({ type: 'command', requestId: 'icon-5', name: 'workspace.icon', payload: {} }),
+      registry.dispatch({
+        type: 'command',
+        requestId: 'icon-5',
+        name: 'workspace.icon',
+        payload: {},
+      }),
     ).toMatchObject({ type: 'error', error: { code: 'validation' } })
   })
 })

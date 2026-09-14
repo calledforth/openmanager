@@ -2,7 +2,16 @@ import { describe, expect, it } from 'vitest'
 import { PROTOCOL_VERSION } from '@openmanager/protocol'
 import { createWebSocketEnvironmentClient, type WebSocketLike } from '../src/websocket'
 import { selectActiveThread, selectSessionList } from '../src/state'
-import { ENV, SESSION, SESSION_SUMMARY, THREAD, WORKSPACE, delta, permission, turnStarted } from './fixtures'
+import {
+  ENV,
+  SESSION,
+  SESSION_SUMMARY,
+  THREAD,
+  WORKSPACE,
+  delta,
+  permission,
+  turnStarted,
+} from './fixtures'
 
 type Listener = (event: never) => void
 
@@ -155,12 +164,55 @@ async function connected(capabilities = FULL_CAPABILITIES) {
 }
 
 describe('websocket environment client', () => {
+  it('does not show a stale open failure after navigating away', async () => {
+    const { client, socket } = await connected()
+    const opened = client.commands.openSession(SESSION.sessionId)
+    const rejected = expect(opened).rejects.toThrow('Folder unavailable')
+    client.setActiveSession(null)
+    socket.receive({
+      type: 'error',
+      requestId: socket.last('session.open').requestId,
+      error: { code: 'not_found', message: 'Folder unavailable' },
+    })
+    await rejected
+    expect(client.getState().sessionOpenFailure).toBeFalsy()
+    expect(client.getState().activeSessionId).toBeNull()
+  })
+
+  it('retains an open failure before threads load and clears it after a successful retry', async () => {
+    const { client, socket } = await connected()
+    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
+    await flush()
+    const opened = client.commands.openSession(SESSION.sessionId)
+    const rejected = expect(opened).rejects.toThrow('Folder unavailable')
+    socket.receive({
+      type: 'error',
+      requestId: socket.last('session.open').requestId,
+      error: { code: 'not_found', message: 'Folder unavailable' },
+    })
+    await rejected
+    expect(client.getState().sessionOpenFailure).toEqual({
+      sessionId: SESSION.sessionId,
+      message: 'Folder unavailable',
+    })
+    expect(selectSessionList(client.getState())).toHaveLength(1)
+    expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
+    const retry = client.commands.openSession(SESSION.sessionId)
+    await answerOpen(socket)
+    await retry
+    expect(client.getState().sessionOpenFailure).toBeNull()
+    expect(selectActiveThread(client.getState())?.hydration).toBe('ready')
+  })
+
   it('authenticates through subprotocols and negotiates the handshake', async () => {
     const { client, socket } = await connected()
     expect(socket.protocols).toEqual(['openmanager.v1', `openmanager.auth.${'a'.repeat(64)}`])
     const handshake = socket.sent[0]!
     expect(handshake.name).toBe('protocol.handshake')
-    expect(handshake.payload).toEqual({ protocolVersion: PROTOCOL_VERSION, requiredCapabilities: [] })
+    expect(handshake.payload).toEqual({
+      protocolVersion: PROTOCOL_VERSION,
+      requiredCapabilities: [],
+    })
     expect(client.getState().connection).toMatchObject({ phase: 'connected', hasConnected: true })
     expect(client.supports('sendTurn')).toBe(true)
     expect(client.supports('deleteSession')).toBe(false)
@@ -219,7 +271,14 @@ describe('websocket environment client', () => {
       name: 'subscription.event',
       payload: {
         subscriptionId: 'sub-thread',
-        record: { cursor: { scope: { ...THREAD, type: 'thread', environmentId: ENV }, epoch: 'e', sequence }, event },
+        record: {
+          cursor: {
+            scope: { ...THREAD, type: 'thread', environmentId: ENV },
+            epoch: 'e',
+            sequence,
+          },
+          event,
+        },
       },
     })
     socket.receive(record(1, turnStarted()))
@@ -262,9 +321,11 @@ describe('websocket environment client', () => {
     const second = await rest
     expect(second.sessions.map((session) => session.sessionId)).toEqual(['session-0'])
     expect(second.nextCursor).toBeNull()
-    expect(selectSessionList(client.getState()).map((session) => session.sessionId).sort()).toEqual(
-      [SESSION.sessionId, 'session-0'].sort(),
-    )
+    expect(
+      selectSessionList(client.getState())
+        .map((session) => session.sessionId)
+        .sort(),
+    ).toEqual([SESSION.sessionId, 'session-0'].sort())
 
     const opened = client.commands.openSession(SESSION.sessionId)
     await answerOpen(socket, SESSION_SUMMARY, [THREAD], {
@@ -322,7 +383,10 @@ describe('websocket environment client', () => {
       requestId: socket.last('session.create').requestId,
       error: { code: 'not_found', message: 'Workspace not found.' },
     })
-    await expect(pending).rejects.toMatchObject({ code: 'not_found', message: 'Workspace not found.' })
+    await expect(pending).rejects.toMatchObject({
+      code: 'not_found',
+      message: 'Workspace not found.',
+    })
   })
 
   it('removes a pending interaction optimistically after responding', async () => {
@@ -375,7 +439,10 @@ describe('websocket environment client', () => {
     socket.receive({
       type: 'response',
       requestId: subscribeRequest.requestId,
-      payload: { subscriptionId: 'sub-thread-1', scope: (subscribeRequest.payload as { scope: unknown }).scope },
+      payload: {
+        subscriptionId: 'sub-thread-1',
+        scope: (subscribeRequest.payload as { scope: unknown }).scope,
+      },
     })
     expect(socket.last('subscription.unsubscribe').payload).toEqual({
       subscriptionId: 'sub-thread-1',
@@ -435,7 +502,10 @@ describe('websocket environment client', () => {
     await opened.catch(() => undefined)
 
     socket.drop(1006)
-    expect(client.getState().connection).toMatchObject({ phase: 'reconnecting', hasConnected: true })
+    expect(client.getState().connection).toMatchObject({
+      phase: 'reconnecting',
+      hasConnected: true,
+    })
     expect(FakeSocket.instances).toHaveLength(1)
     timers.advance(100)
     expect(FakeSocket.instances).toHaveLength(2)
@@ -506,7 +576,10 @@ describe('websocket environment client', () => {
     socket.open()
     socket.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
     await flush()
-    expect(client.getState().connection).toMatchObject({ phase: 'closed', failure: { code: 'auth' } })
+    expect(client.getState().connection).toMatchObject({
+      phase: 'closed',
+      failure: { code: 'auth' },
+    })
   })
 
   it('disconnect and dispose close cleanly without scheduling reconnects', async () => {

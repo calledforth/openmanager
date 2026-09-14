@@ -125,6 +125,8 @@ export interface EnvironmentState {
   threads: Record<string, ThreadState>
   activeSessionId: string | null
   activeThreadId: string | null
+  /** Last failed open, including sessions whose threads have not loaded yet. */
+  sessionOpenFailure?: { sessionId: string; message: string } | null
   connection: ConnectionState
 }
 
