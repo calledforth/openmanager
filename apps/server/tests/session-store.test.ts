@@ -9,8 +9,6 @@ import {
   listSessionHistory,
   listSessionSummaries,
   listThreadsForSession,
-  pageSessionSummaries,
-  pageThreadMessages,
 } from '../src/db/session-store.js'
 
 const directories: string[] = []
@@ -203,42 +201,5 @@ describe('session history pages', () => {
     })
     expect(older?.messages.map((message) => message.messageId)).toEqual(['message-0'])
     expect(older?.nextCursor).toBeNull()
-  })
-})
-
-describe('in-memory pagination helpers', () => {
-  const summaries = [1, 2, 3].map((index) => ({
-    sessionId: `session-${index}`,
-    workspaceId: 'workspace-1',
-    title: `S${index}`,
-    status: 'idle' as const,
-    providerId: 'opencode',
-    updatedAt: new Date(index * 1_000).toISOString(),
-  }))
-
-  it('covers empty, one-page and multi-page in-memory lists', () => {
-    expect(pageSessionSummaries([], { limit: 2 })).toEqual({ sessions: [], nextCursor: null })
-    expect(pageSessionSummaries(summaries, { limit: 10 }).nextCursor).toBeNull()
-    const first = pageSessionSummaries(summaries, { limit: 2 })
-    expect(first.sessions.map((session) => session.sessionId)).toEqual(['session-3', 'session-2'])
-    const rest = pageSessionSummaries(summaries, { cursor: first.nextCursor!, limit: 2 })
-    expect(rest.sessions.map((session) => session.sessionId)).toEqual(['session-1'])
-    expect(rest.nextCursor).toBeNull()
-  })
-
-  it('pages an in-memory transcript backwards', () => {
-    const messages = [0, 1, 2, 3].map((ordinal) => ({
-      messageId: `m-${ordinal}`,
-      threadId: 'thread-1',
-      turnId: 'turn-1',
-      role: 'user' as const,
-      content: [{ type: 'text' as const, text: String(ordinal) }],
-    }))
-    const newest = pageThreadMessages(messages, { limit: 2 })
-    expect(newest.messages.map((message) => message.messageId)).toEqual(['m-2', 'm-3'])
-    expect(newest.nextCursor).toEqual({ ordinal: 2 })
-    const older = pageThreadMessages(messages, { cursor: newest.nextCursor!, limit: 2 })
-    expect(older.messages.map((message) => message.messageId)).toEqual(['m-0', 'm-1'])
-    expect(older.nextCursor).toBeNull()
   })
 })

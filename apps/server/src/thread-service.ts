@@ -3,6 +3,8 @@ import {
   ProofCommandSchemas,
   ProofEventSchemas,
   ProofResponseSchemas,
+  pageSessionSummaries,
+  pageThreadMessages,
   type CommandEnvelope,
   type ErrorCode,
   type EventEnvelope,
@@ -24,7 +26,6 @@ import {
   type RuntimeSessionArgs,
 } from '@agentpack/runtime/node'
 import type { CommandContext } from './command-context.ts'
-import { pageSessionSummaries, pageThreadMessages } from './db/session-store.ts'
 
 type ProviderId = keyof typeof providers
 type RuntimeEvent = Parameters<HostDeps['emitEvent']>[0]

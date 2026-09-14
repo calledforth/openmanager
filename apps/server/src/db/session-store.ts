@@ -3,10 +3,10 @@ import {
   ContentBlockSchema,
   HistoryCursorSchema,
   InteractionSchema,
-  PAGE_LIMIT_DEFAULT,
   SessionListCursorSchema,
   SessionSummarySchema,
   TurnSchema,
+  resolvePageLimit,
   type HistoryCursor,
   type Interaction,
   type Message,
@@ -77,10 +77,6 @@ const FIRST_LIST_CURSOR = {
   sessionId: '\uffff',
 } as const
 const FIRST_HISTORY_ORDINAL = Number.MAX_SAFE_INTEGER
-
-export function resolvePageLimit(limit: number | undefined): number {
-  return limit ?? PAGE_LIMIT_DEFAULT
-}
 
 export function sessionRowToSummary(row: SessionRow): SessionSummary {
   return SessionSummarySchema.parse({
@@ -193,55 +189,6 @@ export function listSessionHistory(
     interactions,
     nextCursor:
       rows.length > limit && oldest !== undefined ? { ordinal: oldest.ordinal } : null,
-  }
-}
-
-/** Same keyset as the SQL list, for the in-memory proof-slice catalog. */
-export function pageSessionSummaries(
-  sessions: readonly SessionSummary[],
-  query: SessionListQuery = {},
-): SessionListPage {
-  const limit = resolvePageLimit(query.limit)
-  const scoped = sessions.filter(
-    (session) => !query.workspaceId || session.workspaceId === query.workspaceId,
-  )
-  const ranked = [...scoped].sort((left, right) => {
-    const time = Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
-    if (time !== 0) return time
-    return right.sessionId < left.sessionId ? -1 : right.sessionId > left.sessionId ? 1 : 0
-  })
-  const after = query.cursor
-    ? ranked.filter((session) => {
-        const time = Date.parse(session.updatedAt)
-        const cursorTime = Date.parse(query.cursor!.updatedAt)
-        return (
-          time < cursorTime ||
-          (time === cursorTime && session.sessionId < query.cursor!.sessionId)
-        )
-      })
-    : ranked
-  const page = after.slice(0, limit)
-  const last = page.at(-1)
-  return {
-    sessions: page,
-    nextCursor:
-      after.length > limit && last
-        ? { updatedAt: last.updatedAt, sessionId: last.sessionId }
-        : null,
-  }
-}
-
-/** Newest slice of an in-memory transcript, walking backwards by array index. */
-export function pageThreadMessages(
-  messages: readonly Message[],
-  query: { cursor?: HistoryCursor; limit?: number } = {},
-): { messages: Message[]; nextCursor: HistoryCursor | null } {
-  const limit = resolvePageLimit(query.limit)
-  const end = query.cursor ? HistoryCursorSchema.parse(query.cursor).ordinal : messages.length
-  const start = Math.max(0, Math.min(end, messages.length) - limit)
-  return {
-    messages: messages.slice(start, Math.min(end, messages.length)),
-    nextCursor: start > 0 ? { ordinal: start } : null,
   }
 }
 
