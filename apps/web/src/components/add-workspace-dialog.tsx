@@ -36,13 +36,16 @@ function AddWorkspaceForm({ client, onClose }: { client: EnvironmentClient; onCl
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
+  // While the environment is answering, the dialog stays so the outcome has
+  // somewhere to land; the request itself cannot be cancelled.
   useEffect(() => {
+    if (busy) return
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onClose])
+  }, [busy, onClose])
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()

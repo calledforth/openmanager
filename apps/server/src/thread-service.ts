@@ -28,7 +28,12 @@ type RuntimeEvent = Parameters<HostDeps['emitEvent']>[0]
 type ProviderGate = {
   rejection(providerId: string): { code: ErrorCode; message: string } | undefined
 }
-export type WorkspaceRuntimeRoute = { providerId: string; cwd: string }
+export type WorkspaceRuntimeRoute = {
+  providerId: string
+  cwd: string
+  /** Called once the provider has actually opened a session in the workspace. */
+  onSessionStarted?: () => void
+}
 export type WorkspaceRuntimeResolver = (
   workspaceId: string,
   context?: CommandContext,
@@ -237,6 +242,27 @@ export function createThreadService(
       environmentId = id
     },
 
+    /**
+     * Forget every session of a workspace that is being unregistered. An
+     * active turn is asked to stop, best effort; whatever the provider still
+     * emits afterwards finds no thread and is dropped. Returns the count.
+     */
+    closeWorkspaceSessions(workspaceId: string): number {
+      let closed = 0
+      for (const record of [...sessions.values()]) {
+        if (record.session.workspaceId !== workspaceId) continue
+        sessions.delete(record.session.sessionId)
+        if (threads.get(record.thread.threadId) === record) threads.delete(record.thread.threadId)
+        if (record.activeTurn) {
+          void record.runtimeSession
+            .then((sessionId) => runtime.cancel({ ...route(record), sessionId }))
+            .catch(() => undefined)
+        }
+        closed += 1
+      }
+      return closed
+    },
+
     resolveRuntimeSession(sessionId: string) {
       const record = sessions.get(sessionId)
       if (!record) return undefined
@@ -266,7 +292,10 @@ export function createThreadService(
         let record!: ThreadRecord
         const runtimeSession = Promise.resolve()
           .then(() => runtime.ensureSession(route(record)))
-          .then((result) => result.sessionId)
+          .then((result) => {
+            target.onSessionStarted?.()
+            return result.sessionId
+          })
         record = {
           session,
           thread,

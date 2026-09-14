@@ -151,9 +151,13 @@ describe('workspace registry', () => {
 
   it('unregisters a workspace, announces it, and forgets it across restarts', async () => {
     const { roots, open, events } = await fixture()
-    const first = open([roots.a, roots.b])
+    const closed: string[] = []
+    const first = open([roots.a, roots.b], { onUnregister: (id) => closed.push(id) })
     const [alpha, beta] = first.list()
     expect(first.unregister(beta!.workspaceId)).toBe(true)
+    // Live work in the folder is stopped before anyone hears the workspace is gone.
+    expect(closed).toEqual([beta!.workspaceId])
+    expect(events.at(-1)!.name).toBe('workspace.removed')
     expect(first.unregister(beta!.workspaceId)).toBe(false)
     expect(first.list()).toEqual([alpha])
     expect(first.get(beta!.workspaceId)).toBeUndefined()

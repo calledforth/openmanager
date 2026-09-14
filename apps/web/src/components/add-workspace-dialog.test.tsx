@@ -70,6 +70,23 @@ describe('add workspace dialog', () => {
     expect(client.calls).toEqual([])
   })
 
+  it('ignores Escape while the environment is still answering', async () => {
+    const user = userEvent.setup()
+    const onClose = vi.fn()
+    const client = createMockEnvironmentClient()
+    const pending: EnvironmentClient = {
+      ...client,
+      commands: { ...client.commands, addWorkspace: () => new Promise(() => undefined) },
+    }
+    render(<AddWorkspaceDialog client={pending} open onClose={onClose} />)
+    await user.type(screen.getByLabelText('Folder path'), '/home/me/project')
+    await user.click(screen.getByRole('button', { name: 'Add project' }))
+    expect(await screen.findByRole('button', { name: 'Adding…' })).toBeDisabled()
+    await user.keyboard('{Escape}')
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
   it('renders nothing while closed', () => {
     render(
       <AddWorkspaceDialog

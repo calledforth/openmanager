@@ -36,6 +36,8 @@ export interface WorkspaceRegistryOptions {
   clock?: () => number
   /** Where registration changes are announced so every connected client sees them. */
   events?: { environmentId: string; emit: (event: ProofEvent) => void }
+  /** Runs before a removal is announced, so live work in the folder can be stopped. */
+  onUnregister?: (workspaceId: string) => void
 }
 
 type WorkspaceRow = {
@@ -253,6 +255,7 @@ export function openWorkspaceRegistry(
   /** Forget a workspace. Sessions recorded under it go with it (FK cascade). */
   const unregister = (workspaceId: string): boolean => {
     if (!byId.has(workspaceId)) return false
+    options.onUnregister?.(workspaceId)
     statements.remove.run(workspaceId)
     byId.delete(workspaceId)
     emit('workspace.removed', { workspaceId })

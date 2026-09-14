@@ -9,6 +9,113 @@ const registered: WorkspaceRuntimeResolver = (workspaceId) =>
     ? { providerId: 'opencode', cwd: '/workspace/project' }
     : undefined
 
+describe('workspace lifecycle', () => {
+  it('reports a session as started only once the provider opened it', async () => {
+    let gate!: (value: { sessionId: string; state: 'created' }) => void
+    let fail!: (error: Error) => void
+    const runtime = {
+      ensureSession: vi
+        .fn()
+        .mockImplementationOnce(() => new Promise((resolve) => (gate = resolve)))
+        .mockImplementationOnce(() => new Promise((_, reject) => (fail = reject))),
+      prompt: vi.fn(),
+      cancel: vi.fn(),
+    } as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>
+    const started = vi.fn()
+    const service = createThreadService(
+      runtime,
+      { rejection: () => undefined },
+      vi.fn(),
+      undefined,
+      () => ({ providerId: 'opencode', cwd: '/workspace/project', onSessionStarted: started }),
+    )
+    service.setEnvironmentId('environment-1')
+    const create = (requestId: string) =>
+      ProofResponseSchemas['session.create'].parse(
+        service.dispatch({
+          type: 'command',
+          requestId,
+          name: 'session.create',
+          payload: { workspaceId: '/workspace/project' },
+        }),
+      ).payload.session.sessionId
+    create('create-1')
+    await vi.waitFor(() => expect(runtime.ensureSession).toHaveBeenCalledTimes(1))
+    expect(started).not.toHaveBeenCalled()
+    gate({ sessionId: 'provider-1', state: 'created' })
+    await vi.waitFor(() => expect(started).toHaveBeenCalledTimes(1))
+
+    // A start the provider refuses is not a use.
+    const refused = create('create-2')
+    await vi.waitFor(() => expect(runtime.ensureSession).toHaveBeenCalledTimes(2))
+    fail(new Error('provider refused'))
+    await vi.waitFor(() => expect(service.resolveRuntimeSession(refused)).toBeUndefined())
+    expect(started).toHaveBeenCalledTimes(1)
+  })
+
+  it('closes the sessions of an unregistered workspace and stops their active turns', async () => {
+    const runtime = {
+      ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-session', state: 'created' }),
+      prompt: vi.fn(() => new Promise(() => undefined)),
+      cancel: vi.fn().mockResolvedValue(undefined),
+    } as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>
+    const events: EventEnvelope[] = []
+    const service = createThreadService(
+      runtime,
+      { rejection: () => undefined },
+      (event) => events.push(event),
+      undefined,
+      (workspaceId) => ({ providerId: 'opencode', cwd: workspaceId }),
+    )
+    service.setEnvironmentId('environment-1')
+    const create = (requestId: string, workspaceId: string) =>
+      ProofResponseSchemas['session.create'].parse(
+        service.dispatch({
+          type: 'command',
+          requestId,
+          name: 'session.create',
+          payload: { workspaceId },
+        }),
+      ).payload
+    const doomed = create('create-1', '/workspace/doomed')
+    const kept = create('create-2', '/workspace/kept')
+    expect(
+      service.dispatch({
+        type: 'command',
+        requestId: 'send-1',
+        name: 'turn.send',
+        payload: {
+          sessionId: doomed.session.sessionId,
+          threadId: doomed.thread.threadId,
+          text: 'keep going',
+        },
+      }),
+    ).toMatchObject({ type: 'response' })
+    await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(1))
+
+    expect(service.closeWorkspaceSessions('/workspace/doomed')).toBe(1)
+    expect(service.closeWorkspaceSessions('/workspace/doomed')).toBe(0)
+    await vi.waitFor(() => expect(runtime.cancel).toHaveBeenCalledTimes(1))
+    expect(
+      service.dispatch({
+        type: 'command',
+        requestId: 'open-1',
+        name: 'session.open',
+        payload: { sessionId: doomed.session.sessionId },
+      }),
+    ).toMatchObject({ type: 'error', error: { code: 'not_found' } })
+    expect(service.resolveRuntimeSession(kept.session.sessionId)).toBeDefined()
+    // A late provider event for the closed thread is dropped, not projected.
+    const before = events.length
+    service.onRuntimeEvent({
+      event: 'prompt_completed',
+      threadId: doomed.thread.threadId,
+      providerId: 'opencode',
+    } as never)
+    expect(events).toHaveLength(before)
+  })
+})
+
 describe('thread command provider routing', () => {
   it('rejects an unregistered workspace before runtime work', () => {
     const runtime = {

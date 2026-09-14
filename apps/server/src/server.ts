@@ -84,6 +84,7 @@ export async function startServer(config: ServerConfig) {
     })
   }
   let emitWorkspaceEvent: (event: ProofEvent) => void = () => undefined
+  let closeWorkspaceSessions: (workspaceId: string) => void = () => undefined
   let workspaces
   try {
     workspaces = openWorkspaceRegistry(config.dataDir, workspaceRoots, audit, {
@@ -91,6 +92,7 @@ export async function startServer(config: ServerConfig) {
         environmentId: identity.environmentId,
         emit: (event) => emitWorkspaceEvent(event),
       },
+      onUnregister: (workspaceId) => closeWorkspaceSessions(workspaceId),
     })
   } catch (error) {
     composerStore.close()
@@ -105,9 +107,12 @@ export async function startServer(config: ServerConfig) {
     ((workspaceId, context) => {
       const workspace = workspaces.resolve(workspaceId, context)
       if (!workspace) return undefined
-      // Starting a session is what "last used" means for the workspace list.
-      if (context?.command === 'session.create') workspaces.markUsed(workspace.workspaceId)
-      return { providerId: 'opencode', cwd: workspace.root }
+      return {
+        providerId: 'opencode',
+        cwd: workspace.root,
+        // "Last used" means a session actually started here, not merely was asked for.
+        onSessionStarted: () => workspaces.markUsed(workspace.workspaceId),
+      }
     })
   let onRuntimeEvent: HostDeps['emitEvent'] = () => undefined
   const runtime = mountAgentRuntime(
@@ -136,6 +141,7 @@ export async function startServer(config: ServerConfig) {
     (event) => publishThreadEvent(event),
     resolveWorkspace,
   )
+  closeWorkspaceSessions = (workspaceId) => threadService.closeWorkspaceSessions(workspaceId)
   const composerService = createComposerService(
     runtime,
     providerService,
