@@ -77,6 +77,8 @@ export interface DesktopEventBridge {
   onAcpEvent(callback: (event: AgentEvent) => void): () => void
   onStreamToken(callback: (event: AgentEvent) => void): () => void
   getLastProviderId(): Promise<ProviderId>
+  /** Workspace icon as a data URL from the main process; desktop IDs are paths. */
+  resolveWorkspaceIcon(workspacePath: string): Promise<string | null>
 }
 
 export interface ConvexEnvironmentClientOptions {
@@ -752,6 +754,10 @@ export function createConvexEnvironmentClient(
           }
       update((state) => applyWorkspaceList(state, [workspace]))
       return workspace
+    },
+    async resolveWorkspaceIcon(workspaceId) {
+      gate()
+      return bridge.resolveWorkspaceIcon(workspaceId).catch(() => null)
     },
     async removeWorkspace(workspaceId) {
       gate()

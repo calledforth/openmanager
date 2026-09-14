@@ -835,9 +835,24 @@ function EnvironmentViewActions({
   children: ReactNode
 }) {
   const { activeSessionId, openChildSession } = useContext(SessionStateContext)!
+  const client = useEnvironmentClient()
+  // Sidebar rows carry the workspace ID as their `path`, so the icon lookup
+  // is the environment's own `workspace.icon` read. The function's identity
+  // doubles as the icon cache key downstream, so it changes only when the
+  // client or its advertised capabilities do; a failed lookup is a plain
+  // fallback, never an error the view has to handle.
+  const iconsSupported = useConnectionState().capabilities.includes('workspace.icon')
+  const resolveWorkspaceIcon = useMemo(
+    () =>
+      iconsSupported && client.supports('resolveWorkspaceIcon')
+        ? (workspaceId: string) =>
+            client.commands.resolveWorkspaceIcon(workspaceId).catch(() => null)
+        : undefined,
+    [client, iconsSupported],
+  )
   const value = useMemo<ViewActions>(
-    () => ({ openChildSession, ...actions, activeSessionId }),
-    [actions, activeSessionId, openChildSession],
+    () => ({ openChildSession, resolveWorkspaceIcon, ...actions, activeSessionId }),
+    [actions, activeSessionId, openChildSession, resolveWorkspaceIcon],
   )
   return <ViewActionsContext.Provider value={value}>{children}</ViewActionsContext.Provider>
 }

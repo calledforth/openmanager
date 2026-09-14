@@ -60,6 +60,7 @@ export const SERVER_CAPABILITIES = [
   'workspace.list',
   'workspace.add',
   'workspace.remove',
+  'workspace.icon',
 ]
 
 /** A loopback-only listener exposing public liveness and connection discovery. */

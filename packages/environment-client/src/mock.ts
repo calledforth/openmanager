@@ -55,6 +55,8 @@ export interface MockSeedSession {
 export interface MockSeed {
   environment?: Environment
   workspaces?: Workspace[]
+  /** Icon data URLs by workspace ID; workspaces without an entry answer null. */
+  workspaceIcons?: Record<string, string>
   sessions?: MockSeedSession[]
   activeSessionId?: string | null
 }
@@ -320,6 +322,13 @@ export function createMockEnvironmentClient(
           payload: { workspace },
         })
         return workspace
+      }),
+    resolveWorkspaceIcon: (workspaceId) =>
+      run('resolveWorkspaceIcon', workspaceId, () => {
+        if (!store.getState().workspaces[workspaceId]) {
+          throw new EnvironmentClientError('not_found', 'Workspace not found.')
+        }
+        return options.seed?.workspaceIcons?.[workspaceId] ?? null
       }),
     removeWorkspace: (workspaceId) =>
       run('removeWorkspace', workspaceId, () => {

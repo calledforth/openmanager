@@ -166,6 +166,8 @@ export interface EnvironmentCommands {
   listWorkspaces(): Promise<Workspace[]>
   addWorkspace(input: AddWorkspaceInput): Promise<Workspace>
   removeWorkspace(workspaceId: string): Promise<void>
+  /** The workspace's icon as a data URL, or null when the folder has none. Not stored. */
+  resolveWorkspaceIcon(workspaceId: string): Promise<string | null>
   listSessions(input?: ListSessionsInput | string): Promise<SessionListPage>
   createSession(input: CreateSessionInput): Promise<{ session: Session; thread: Thread }>
   /** Loads thread identities, then the newest history page for each thread. */

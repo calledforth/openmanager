@@ -64,6 +64,7 @@ const FULL_CAPABILITIES = [
   'subscription.unsubscribe',
   'environment.get',
   'workspace.list',
+  'workspace.icon',
   'session.list',
   'session.create',
   'session.open',
@@ -298,6 +299,19 @@ describe('websocket environment client', () => {
     const result = await sending
     expect(result.turn.turnId).toBe('turn-9')
     expect(selectActiveThread(client.getState())?.turns[0]?.state).toBe('running')
+  })
+
+  it('resolves a workspace icon by ID without touching the store', async () => {
+    const { client, socket } = await connected()
+    const before = client.getState()
+    const pending = client.commands.resolveWorkspaceIcon(WORKSPACE.workspaceId)
+    expect(socket.last('workspace.icon').payload).toEqual({ workspaceId: WORKSPACE.workspaceId })
+    socket.respond('workspace.icon', { iconDataUrl: 'data:image/png;base64,iVBORw0KGgo=' })
+    await expect(pending).resolves.toBe('data:image/png;base64,iVBORw0KGgo=')
+    const none = client.commands.resolveWorkspaceIcon(WORKSPACE.workspaceId)
+    socket.respond('workspace.icon', { iconDataUrl: null })
+    await expect(none).resolves.toBeNull()
+    expect(client.getState()).toBe(before)
   })
 
   it('maps protocol errors to typed client errors', async () => {

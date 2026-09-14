@@ -4,6 +4,7 @@ import {
   EntityIdSchema,
   EnvironmentSchema,
   WorkspaceSchema,
+  WorkspaceIconDataUrlSchema,
   SessionSchema,
   SessionSummarySchema,
   SessionListCursorSchema,
@@ -37,6 +38,10 @@ export const ProofCommandSchemas = {
     }),
   ),
   'workspace.remove': command('workspace.remove', z.object({ workspaceId: EntityIdSchema })),
+  // A representative icon for the sidebar, resolved on the environment from
+  // the folder itself (openmanager.json, then well-known icon files). Named by
+  // ID like every workspace read (D9); a folder without one answers null.
+  'workspace.icon': command('workspace.icon', z.object({ workspaceId: EntityIdSchema })),
   'session.list': command(
     'session.list',
     z.object({
@@ -81,6 +86,7 @@ export const ProofCommandSchema = z.discriminatedUnion('name', [
   ProofCommandSchemas['workspace.list'],
   ProofCommandSchemas['workspace.add'],
   ProofCommandSchemas['workspace.remove'],
+  ProofCommandSchemas['workspace.icon'],
   ProofCommandSchemas['session.list'],
   ProofCommandSchemas['session.create'],
   ProofCommandSchemas['session.open'],
@@ -100,6 +106,7 @@ export const ProofResponseSchemas = {
   'workspace.list': response(z.object({ workspaces: z.array(WorkspaceSchema) })),
   'workspace.add': response(z.object({ workspace: WorkspaceSchema })),
   'workspace.remove': response(z.null()),
+  'workspace.icon': response(z.object({ iconDataUrl: WorkspaceIconDataUrlSchema.nullable() })),
   'session.list': response(
     z.object({
       sessions: z.array(SessionSummarySchema),

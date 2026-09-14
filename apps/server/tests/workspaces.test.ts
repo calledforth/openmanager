@@ -471,4 +471,71 @@ describe('workspace registry', () => {
       registry.dispatch({ type: 'command', requestId: 'x', name: 'session.list', payload: null }),
     ).toBeUndefined()
   })
+
+  it('answers workspace icon commands from the folder and falls back to null silently', async () => {
+    const { roots, open, audits } = await fixture()
+    await writeFile(join(roots.a, 'favicon.svg'), '<svg id="alpha"></svg>')
+    const registry = open([roots.a, roots.b])
+    const [alpha, beta] = registry.list()
+    const context = { clientId: 'client-1', command: 'workspace.icon' }
+
+    const withIcon = (await registry.dispatch(
+      {
+        type: 'command',
+        requestId: 'icon-1',
+        name: 'workspace.icon',
+        payload: { workspaceId: alpha!.workspaceId },
+      },
+      context,
+    )) as { payload: { iconDataUrl: string } }
+    expect(withIcon).toMatchObject({ type: 'response', requestId: 'icon-1' })
+    expect(withIcon.payload.iconDataUrl).toMatch(/^data:image\/svg\+xml;base64,/)
+    expect(
+      Buffer.from(withIcon.payload.iconDataUrl.split(',')[1]!, 'base64').toString('utf8'),
+    ).toContain('id="alpha"')
+
+    // A folder with no icon is the ordinary case: a null answer, no error.
+    await expect(
+      registry.dispatch(
+        {
+          type: 'command',
+          requestId: 'icon-2',
+          name: 'workspace.icon',
+          payload: { workspaceId: beta!.workspaceId },
+        },
+        context,
+      ),
+    ).resolves.toEqual({ type: 'response', requestId: 'icon-2', payload: { iconDataUrl: null } })
+    expect(audits).toEqual([])
+
+    // A root path in place of an ID is workspace substitution: refused and audited.
+    expect(
+      registry.dispatch(
+        { type: 'command', requestId: 'icon-3', name: 'workspace.icon', payload: { workspaceId: roots.a } },
+        context,
+      ),
+    ).toMatchObject({ type: 'error', requestId: 'icon-3', error: { code: 'not_found' } })
+    expect(audits).toMatchObject([
+      { type: 'workspace.rejected', details: { reason: 'unknown', command: 'workspace.icon' } },
+    ])
+
+    // A registered folder that is gone answers null rather than reading elsewhere.
+    await rm(roots.b, { recursive: true, force: true })
+    await expect(
+      registry.dispatch(
+        {
+          type: 'command',
+          requestId: 'icon-4',
+          name: 'workspace.icon',
+          payload: { workspaceId: beta!.workspaceId },
+        },
+        context,
+      ),
+    ).resolves.toEqual({ type: 'response', requestId: 'icon-4', payload: { iconDataUrl: null } })
+    expect(audits.at(-1)).toMatchObject({ details: { reason: 'missing' } })
+
+    expect(
+      registry.dispatch({ type: 'command', requestId: 'icon-5', name: 'workspace.icon', payload: {} }),
+    ).toMatchObject({ type: 'error', error: { code: 'validation' } })
+  })
 })

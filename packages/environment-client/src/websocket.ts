@@ -611,6 +611,10 @@ export function createWebSocketEnvironmentClient(
       }
       store.update((state) => applyWorkspaceRemoved(state, workspaceId))
     },
+    async resolveWorkspaceIcon(workspaceId) {
+      const payload = await request('workspace.icon', { workspaceId })
+      return payload.iconDataUrl
+    },
     async listSessions(input = {}) {
       const query = typeof input === 'string' ? { workspaceId: input } : input
       const payload = await request('session.list', query)
