@@ -8,6 +8,7 @@ import {
   applyEnvironment,
   applyEvent,
   applySessionCreated,
+  applySessionHistory,
   applySessionList,
   applySessionOpen,
   applySessionRemoved,
@@ -151,6 +152,7 @@ type PendingPlanRow = {
 type JobStatusRow = { status: string; lastError?: string } | null
 
 type SessionOpenPayload = ProofResponse<'session.open'>['payload']
+type SessionHistoryPayload = ProofResponse<'session.history'>['payload']
 
 type Waiter<T> = { resolve: (value: T) => void; reject: (error: Error) => void }
 
@@ -583,10 +585,20 @@ export function createConvexEnvironmentClient(
     return interactions
   }
 
+  const toSummary = (row: SessionRow, workspaceId: string): SessionOpenPayload['session'] => ({
+    ...toSession(row, workspaceId),
+    status:
+      row.status === 'running' || row.status === 'waiting' || row.status === 'error'
+        ? row.status
+        : 'idle',
+    providerId: row.providerId ?? 'opencode',
+    updatedAt: new Date(0).toISOString(),
+  })
+
   const loadSession = async (
     sessionId: string,
     workspaceId: string,
-  ): Promise<SessionOpenPayload> => {
+  ): Promise<{ open: SessionOpenPayload; history: SessionHistoryPayload }> => {
     const [row, metadata, permission, question, plan] = await Promise.all([
       convex.query<SessionRow | null>(api.sessions.getByExternalId, { externalId: sessionId }),
       convex.query<MessageMetadataRow[]>(api.messages.listMetadata, {
@@ -625,11 +637,16 @@ export function createConvexEnvironmentClient(
     const open = interactions.length ? turns.find((turn) => turn.state === 'running') : undefined
     if (open) open.state = 'waiting'
     return {
-      session: toSession(row, workspaceId),
-      threads: [threadOf(sessionId)],
-      messages,
-      turns,
-      interactions: interactions.map((interaction) => ({ threadId: sessionId, interaction })),
+      open: {
+        session: toSummary(row, workspaceId),
+        threads: [threadOf(sessionId)],
+      },
+      history: {
+        messages,
+        turns,
+        interactions: interactions.map((interaction) => ({ threadId: sessionId, interaction })),
+        nextCursor: null,
+      },
     }
   }
 
@@ -744,8 +761,13 @@ export function createConvexEnvironmentClient(
       if (row) await convex.mutation(api.workspaces.remove, { id: row._id })
       update((state) => applyWorkspaceRemoved(state, workspaceId))
     },
-    async listSessions(workspaceId) {
+    async listSessions(input = {}) {
       gate()
+      const query = typeof input === 'string' ? { workspaceId: input } : input
+      const workspaceId = query.workspaceId
+      if (!workspaceId) {
+        return { sessions: selectSessionList(store.getState()), nextCursor: null }
+      }
       const rows = await convex.query<SessionRow[]>(api.sessions.listByWorkspace, {
         workspacePath: workspaceId,
       })
@@ -760,7 +782,7 @@ export function createConvexEnvironmentClient(
         for (const row of rows) next = knownThread(next, row.externalId)
         return next
       })
-      return selectSessionList(store.getState(), workspaceId)
+      return { sessions: selectSessionList(store.getState(), workspaceId), nextCursor: null }
     },
     createSession(input) {
       gate()
@@ -809,16 +831,20 @@ export function createConvexEnvironmentClient(
       gate()
       const session = requireSession(sessionId)
       update((state) => applyThreadHydration(state, sessionId, 'loading'))
-      let payload: SessionOpenPayload
+      let loaded: { open: SessionOpenPayload; history: SessionHistoryPayload }
       try {
-        payload = await loadSession(sessionId, session.workspaceId)
+        loaded = await loadSession(sessionId, session.workspaceId)
       } catch (error) {
         update((state) => applyThreadHydration(state, sessionId, 'failed'))
         throw error
       }
       update((state) => {
         const live = state.threads[sessionId]
-        let next = applySessionOpen(state, payload)
+        let next = applySessionHistory(
+          applySessionOpen(state, loaded.open),
+          threadOf(sessionId),
+          loaded.history,
+        )
         if (live) next = preserveLiveTurn(next, sessionId, live)
         return applyActiveSession(next, sessionId)
       })
@@ -828,6 +854,13 @@ export function createConvexEnvironmentClient(
           (turn) => turn.state === 'running' || turn.state === 'waiting',
         )
       if (open) translator.adoptTurn(sessionId, open.turnId)
+    },
+    async loadSessionHistory(input) {
+      gate()
+      const session = requireSession(input.sessionId)
+      const loaded = await loadSession(input.sessionId, session.workspaceId)
+      update((state) => applySessionHistory(state, threadOf(input.sessionId), loaded.history))
+      return loaded.history
     },
     async renameSession(sessionId, title) {
       gate()

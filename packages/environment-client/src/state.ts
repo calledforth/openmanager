@@ -5,6 +5,7 @@ import type {
   ProofResponse,
   ScopeSnapshot,
   Session,
+  SessionSummary as ProtocolSessionSummary,
   Thread,
   Turn,
   Workspace,
@@ -94,13 +95,18 @@ function refreshSessionStatus(state: EnvironmentState, sessionId: string): Envir
 
 function upsertSession(
   state: EnvironmentState,
-  session: Session,
+  session: Session | ProtocolSessionSummary,
   threadIds?: readonly string[],
 ): EnvironmentState {
   const existing = state.sessions[session.sessionId]
+  const listed = session as Partial<ProtocolSessionSummary>
   const summary: SessionSummary = {
-    ...session,
-    status: existing?.status ?? 'idle',
+    sessionId: session.sessionId,
+    workspaceId: session.workspaceId,
+    title: session.title,
+    status: listed.status ?? existing?.status ?? 'idle',
+    providerId: listed.providerId ?? existing?.providerId,
+    updatedAt: listed.updatedAt ?? existing?.updatedAt,
     threadIds: threadIds
       ? Array.from(new Set([...(existing?.threadIds ?? []), ...threadIds]))
       : (existing?.threadIds ?? []),
@@ -422,7 +428,7 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
   )
 }
 
-/** `session.open` is the proof-slice hydration path until replay lands (CAL-71). */
+/** `session.open` loads identities only; `session.history` hydrates the transcript. */
 export function applySessionOpen(
   state: EnvironmentState,
   payload: ProofResponse<'session.open'>['payload'],
@@ -433,31 +439,50 @@ export function applySessionOpen(
     payload.threads.map((thread) => thread.threadId),
   )
   for (const thread of payload.threads) {
-    const turns = payload.turns.filter((turn) => turn.threadId === thread.threadId)
-    const messages = payload.messages.filter((message) => message.threadId === thread.threadId)
-    const openTurn = turns.find((turn) => turn.state === 'waiting' || turn.state === 'running')
+    const current = next.threads[thread.threadId]
+    next = {
+      ...next,
+      threads: {
+        ...next.threads,
+        [thread.threadId]: current
+          ? { ...current, thread, hydration: current.hydration === 'ready' ? 'ready' : 'loading' }
+          : createThreadState(thread, 'loading'),
+      },
+    }
+  }
+  return refreshSessionStatus(next, payload.session.sessionId)
+}
+
+/** Fold one history page into a thread. Newer pages replace; older pages prepend. */
+export function applySessionHistory(
+  state: EnvironmentState,
+  thread: Thread,
+  payload: ProofResponse<'session.history'>['payload'],
+): EnvironmentState {
+  return patchThread(state, thread, (current) => {
+    const existingIds = new Set(current.messages.map((message) => message.messageId))
+    const incoming = payload.messages.filter((message) => !existingIds.has(message.messageId))
+    const messages =
+      current.hydration !== 'ready' ? payload.messages : [...incoming, ...current.messages]
+    const openTurn = payload.turns.find((turn) => turn.state === 'waiting' || turn.state === 'running')
     const interactions: PendingInteraction[] = payload.interactions
       .filter((item) => item.threadId === thread.threadId)
       .map((item) => ({
         sessionId: thread.sessionId,
         threadId: thread.threadId,
-        turnId: openTurn?.turnId ?? turns.at(-1)?.turnId ?? '',
+        turnId: openTurn?.turnId ?? payload.turns.at(-1)?.turnId ?? '',
         interaction: item.interaction,
       }))
-    next = {
-      ...next,
-      threads: {
-        ...next.threads,
-        [thread.threadId]: {
-          ...createThreadState(thread, 'ready'),
-          turns,
-          messages,
-          interactions,
-        },
-      },
+    return {
+      ...current,
+      turns: payload.turns.length > 0 ? payload.turns : current.turns,
+      messages,
+      interactions: interactions.length > 0 || current.hydration !== 'ready'
+        ? interactions
+        : current.interactions,
+      hydration: 'ready',
     }
-  }
-  return refreshSessionStatus(next, payload.session.sessionId)
+  })
 }
 
 /** Same shape as `turn.started`; used to fold a `turn.send` response in before the event arrives. */
@@ -505,7 +530,7 @@ export function applySessionCreated(
 
 export function applySessionList(
   state: EnvironmentState,
-  sessions: readonly Session[],
+  sessions: readonly (Session | ProtocolSessionSummary)[],
 ): EnvironmentState {
   let next = state
   for (const session of sessions) next = upsertSession(next, session)

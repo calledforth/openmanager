@@ -25,6 +25,12 @@ const workspace = {
   exists: true,
 }
 const session = { sessionId: 'session-1', workspaceId: 'workspace-1', title: 'Example' }
+const sessionSummary = {
+  ...session,
+  status: 'idle' as const,
+  providerId: 'opencode',
+  updatedAt: '2026-09-06T05:00:00Z',
+}
 const thread = { threadId: 'thread-1', sessionId: 'session-1' }
 const turn = { turnId: 'turn-1', threadId: 'thread-1', state: 'running' } as const
 const userMessage = {
@@ -54,7 +60,7 @@ export const proofCommands = [
     type: 'command',
     requestId: 'r-3',
     name: 'session.list',
-    payload: { workspaceId: 'workspace-1' },
+    payload: { workspaceId: 'workspace-1', limit: 50 },
   },
   {
     type: 'command',
@@ -63,6 +69,12 @@ export const proofCommands = [
     payload: { workspaceId: 'workspace-1', title: 'Example' },
   },
   { type: 'command', requestId: 'r-5', name: 'session.open', payload: { sessionId: 'session-1' } },
+  {
+    type: 'command',
+    requestId: 'r-13',
+    name: 'session.history',
+    payload: { sessionId: 'session-1', threadId: 'thread-1', limit: 50 },
+  },
   {
     type: 'command',
     requestId: 'r-6',
@@ -126,12 +138,21 @@ export const proofResponses = {
   },
   'workspace.add': { type: 'response', requestId: 'r-11', payload: { workspace } },
   'workspace.remove': { type: 'response', requestId: 'r-12', payload: null },
-  'session.list': { type: 'response', requestId: 'r-3', payload: { sessions: [session] } },
+  'session.list': {
+    type: 'response',
+    requestId: 'r-3',
+    payload: { sessions: [sessionSummary], nextCursor: null },
+  },
   'session.create': { type: 'response', requestId: 'r-4', payload: { session, thread } },
   'session.open': {
     type: 'response',
     requestId: 'r-5',
-    payload: { session, threads: [thread], messages: [], turns: [turn], interactions: [] },
+    payload: { session: sessionSummary, threads: [thread] },
+  },
+  'session.history': {
+    type: 'response',
+    requestId: 'r-13',
+    payload: { messages: [], turns: [turn], interactions: [], nextCursor: null },
   },
   'turn.send': {
     type: 'response',

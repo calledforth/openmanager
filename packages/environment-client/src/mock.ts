@@ -19,8 +19,8 @@ import {
   applyEnvironment,
   applyEvent,
   applySessionCreated,
+  applySessionHistory,
   applySessionOpen,
-  applyThreadHydration,
   applyTurnStarted,
   applyWorkspaceList,
   applyWorkspaceRemoved,
@@ -328,8 +328,12 @@ export function createMockEnvironmentClient(
         )
         store.update((state) => applyWorkspaceRemoved(state, workspaceId))
       }),
-    listSessions: (workspaceId) =>
-      run('listSessions', workspaceId, () => selectSessionList(store.getState(), workspaceId)),
+    listSessions: (input = {}) =>
+      run('listSessions', input, () => {
+        const query = typeof input === 'string' ? { workspaceId: input } : input
+        const sessions = selectSessionList(store.getState(), query.workspaceId)
+        return { sessions, nextCursor: null }
+      }),
     createSession: (input) =>
       run('createSession', input, () => {
         if (!store.getState().workspaces[input.workspaceId]) {
@@ -360,12 +364,58 @@ export function createMockEnvironmentClient(
         const session = store.getState().sessions[sessionId]
         if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
         store.update((state) => {
-          let next = state
+          let next = applySessionOpen(state, {
+            session: {
+              sessionId: session.sessionId,
+              workspaceId: session.workspaceId,
+              title: session.title,
+              status: session.status,
+              providerId: session.providerId ?? 'opencode',
+              updatedAt: session.updatedAt ?? now(),
+            },
+            threads: session.threadIds
+              .map((threadId) => state.threads[threadId]?.thread)
+              .filter((thread): thread is Thread => thread !== undefined),
+          })
           for (const threadId of session.threadIds) {
-            next = applyThreadHydration(next, threadId, 'ready')
+            const thread = next.threads[threadId]
+            if (!thread) continue
+            next = applySessionHistory(next, thread.thread, {
+              messages: thread.messages,
+              turns: thread.turns,
+              interactions: thread.interactions.map((item) => ({
+                threadId: item.threadId,
+                interaction: item.interaction,
+              })),
+              nextCursor: null,
+            })
           }
           return applyActiveSession(next, sessionId)
         })
+      }),
+    loadSessionHistory: (input) =>
+      run('loadSessionHistory', input, () => {
+        const thread = requireThread(input)
+        store.update((state) =>
+          applySessionHistory(state, thread.thread, {
+            messages: thread.messages,
+            turns: thread.turns,
+            interactions: thread.interactions.map((item) => ({
+              threadId: item.threadId,
+              interaction: item.interaction,
+            })),
+            nextCursor: null,
+          }),
+        )
+        return {
+          messages: thread.messages,
+          turns: thread.turns,
+          interactions: thread.interactions.map((item) => ({
+            threadId: item.threadId,
+            interaction: item.interaction,
+          })),
+          nextCursor: null,
+        }
       }),
     renameSession: (sessionId, title) =>
       run('renameSession', { sessionId, title }, () => {
@@ -534,27 +584,31 @@ export function createMockEnvironmentClient(
         const threadStates = summary.threadIds
           .map((id) => state.threads[id])
           .filter((thread): thread is NonNullable<typeof thread> => thread !== undefined)
-        store.update((current) =>
-          applyActiveSession(
-            applySessionOpen(current, {
-              session: {
-                sessionId: summary.sessionId,
-                workspaceId: summary.workspaceId,
-                title: summary.title,
-              },
-              threads: threadStates.map((item) => item.thread),
-              turns: threadStates.flatMap((item) => item.turns),
-              messages: threadStates.flatMap((item) => item.messages),
-              interactions: threadStates.flatMap((item) =>
-                item.interactions.map((pending) => ({
-                  threadId: pending.threadId,
-                  interaction: pending.interaction,
-                })),
-              ),
-            }),
-            sessionId,
-          ),
-        )
+        store.update((current) => {
+          let next = applySessionOpen(current, {
+            session: {
+              sessionId: summary.sessionId,
+              workspaceId: summary.workspaceId,
+              title: summary.title,
+              status: summary.status,
+              providerId: summary.providerId ?? 'opencode',
+              updatedAt: summary.updatedAt ?? now(),
+            },
+            threads: threadStates.map((item) => item.thread),
+          })
+          for (const item of threadStates) {
+            next = applySessionHistory(next, item.thread, {
+              messages: item.messages,
+              turns: item.turns,
+              interactions: item.interactions.map((pending) => ({
+                threadId: pending.threadId,
+                interaction: pending.interaction,
+              })),
+              nextCursor: null,
+            })
+          }
+          return applyActiveSession(next, sessionId)
+        })
       }
       store.update((current) =>
         applyConnection(current, {

@@ -85,8 +85,9 @@ test that the map's key set equals the schema's key set.
 | `connection.heartbeat`        | none       | Same.                                                      |
 | `environment.get`             | `read`     |                                                            |
 | `workspace.list`              | `read`     |                                                            |
-| `session.list`                | `read`     |                                                            |
-| `session.open`                | `read`     | Replays history; no mutation.                              |
+| `session.list`                | `read`     | Paginated summaries; no threads or messages.               |
+| `session.open`                | `read`     | Session + thread identities; no mutation.                  |
+| `session.history`             | `read`     | One page of one thread's persisted transcript.             |
 | `subscription.subscribe`      | `read`     | Event visibility is `read`; events never carry secrets.    |
 | `subscription.unsubscribe`    | `read`     |                                                            |
 | `provider.catalog.get`        | `read`     |                                                            |

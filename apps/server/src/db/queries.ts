@@ -58,6 +58,12 @@ export const TURNS_FOR_THREAD_SQL = `
   WHERE thread_id = ?
   ORDER BY started_at, turn_id`
 
+/** Pending and settled interactions of one turn; sorted by callers. */
+export const INTERACTIONS_FOR_TURN_SQL = `
+  SELECT interaction_id, turn_id, kind, state, request_json, response_json, expires_at
+  FROM interactions
+  WHERE turn_id = ?`
+
 /** Replay: durable events for a scope strictly after a cursor sequence, bounded. */
 export const EVENTS_AFTER_CURSOR_SQL = `
   SELECT sequence, event_id, event_name, event_json, created_at

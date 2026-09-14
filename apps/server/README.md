@@ -173,8 +173,9 @@ command's capability before any service sees it:
 - `protocol.handshake` and heartbeat messages need no capability beyond a
   valid credential.
 
-The mapping for today's commands: `read` covers subscriptions, `session.open`,
-provider catalog, discovery, health and probe, and `composer.preferences.get`;
+The mapping for today's commands: `read` covers subscriptions, `session.list`,
+`session.open`, `session.history`, provider catalog, discovery, health and
+probe, and `composer.preferences.get`;
 `operate` covers `session.create` and `composer.preferences.set`; `agent`
 covers `turn.send`, `turn.interrupt`, `interaction.respond` and the composer
 model, mode and config-option setters. The owner grant holds all five.
@@ -354,7 +355,10 @@ composer choice but is only applied by explicit commands, so a respawn does not
 fight provider plan/execute transitions. Restarting with the same data directory
 retains every preference field.
 
-`session.create`, `session.open`, `turn.send`, and `turn.interrupt` route directly
+`session.list` returns lightweight summaries with cursor pagination.
+`session.open` returns the summary and thread identities only;
+`session.history` pages one thread's transcript. `session.create`,
+`session.open`, `turn.send`, and `turn.interrupt` route directly
 to the mounted runtime. Session creation resolves its workspace ID through the
 registry to a canonical root and, until workspace/provider preferences land,
 uses the desktop-compatible OpenCode fallback as the provider for every root.

@@ -50,7 +50,16 @@ export const scopeSnapshots: ScopeSnapshot[] = [
           exists: true,
         },
       ],
-      sessions: [{ sessionId: 'session-1', workspaceId: 'workspace-1', title: 'Example' }],
+      sessions: [
+        {
+          sessionId: 'session-1',
+          workspaceId: 'workspace-1',
+          title: 'Example',
+          status: 'idle',
+          providerId: 'opencode',
+          updatedAt: '2026-09-06T05:00:00Z',
+        },
+      ],
     },
   },
   {

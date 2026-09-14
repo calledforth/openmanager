@@ -26,6 +26,7 @@ import {
   applyEvent,
   applyInteractionResolved,
   applySessionCreated,
+  applySessionHistory,
   applySessionList,
   applySessionOpen,
   applySessionRemoved,
@@ -576,6 +577,7 @@ export function createWebSocketEnvironmentClient(
     const reads: Promise<unknown>[] = []
     if (supports('getEnvironment')) reads.push(commands.getEnvironment().catch(() => undefined))
     if (supports('listWorkspaces')) reads.push(commands.listWorkspaces().catch(() => undefined))
+    if (supports('listSessions')) reads.push(commands.listSessions().catch(() => undefined))
     await Promise.all(reads)
     if (generation !== connectionGeneration || !ready) return
     const activeSessionId = store.getState().activeSessionId
@@ -609,10 +611,14 @@ export function createWebSocketEnvironmentClient(
       }
       store.update((state) => applyWorkspaceRemoved(state, workspaceId))
     },
-    async listSessions(workspaceId) {
-      const payload = await request('session.list', { workspaceId })
+    async listSessions(input = {}) {
+      const query = typeof input === 'string' ? { workspaceId: input } : input
+      const payload = await request('session.list', query)
       store.update((state) => applySessionList(state, payload.sessions))
-      return selectSessionList(store.getState(), workspaceId)
+      return {
+        sessions: selectSessionList(store.getState(), query.workspaceId),
+        nextCursor: payload.nextCursor,
+      }
     },
     async createSession(input) {
       const payload = await request('session.create', input)
@@ -642,10 +648,38 @@ export function createWebSocketEnvironmentClient(
         throw error
       }
       store.update((state) => applyActiveSession(applySessionOpen(state, payload), sessionId))
+      if (supports('loadSessionHistory')) {
+        await Promise.all(
+          payload.threads.map((thread) =>
+            commands.loadSessionHistory({ sessionId, threadId: thread.threadId }).catch(() => {
+              store.update((state) => applyThreadHydration(state, thread.threadId, 'failed'))
+            }),
+          ),
+        )
+      } else {
+        store.update((state) => {
+          let next = state
+          for (const thread of payload.threads) {
+            next = applyThreadHydration(next, thread.threadId, 'ready')
+          }
+          return next
+        })
+      }
       if (previous && previous !== sessionId) {
         for (const scope of sessionScopes(previous)) unsubscribe(scope)
       }
       for (const scope of sessionScopes(sessionId)) subscribe(scope)
+    },
+    async loadSessionHistory(input) {
+      const payload = await request('session.history', input)
+      store.update((state) =>
+        applySessionHistory(
+          state,
+          { threadId: input.threadId, sessionId: input.sessionId },
+          payload,
+        ),
+      )
+      return payload
     },
     async renameSession(sessionId, title) {
       const payload = await request('session.rename', { sessionId, title })

@@ -9,6 +9,12 @@ export const WORKSPACE = {
   exists: true,
 }
 export const SESSION = { sessionId: 'session-1', workspaceId: WORKSPACE.workspaceId, title: null }
+export const SESSION_SUMMARY = {
+  ...SESSION,
+  status: 'idle' as const,
+  providerId: 'opencode',
+  updatedAt: '2026-09-10T00:00:00.000Z',
+}
 export const THREAD = { threadId: 'thread-1', sessionId: SESSION.sessionId }
 
 export const environmentScope = { type: 'environment', environmentId: ENV } as const

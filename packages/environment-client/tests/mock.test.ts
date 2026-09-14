@@ -10,7 +10,7 @@ describe('mock environment client', () => {
   it('lists seeded workspaces and sessions without a server', async () => {
     const client = createMockEnvironmentClient({ seed })
     expect(await client.commands.listWorkspaces()).toEqual([WORKSPACE])
-    expect(await client.commands.listSessions(WORKSPACE.workspaceId)).toHaveLength(1)
+    expect((await client.commands.listSessions(WORKSPACE.workspaceId)).sessions).toHaveLength(1)
     expect(client.getState().connection.phase).toBe('connected')
   })
 

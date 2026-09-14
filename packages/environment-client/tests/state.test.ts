@@ -3,6 +3,7 @@ import { ProofEventSchema, type ScopeSnapshot } from '@openmanager/protocol'
 import {
   applyEvent,
   applyInteractionResolved,
+  applySessionHistory,
   applySessionOpen,
   applySnapshot,
   createInitialState,
@@ -245,23 +246,40 @@ describe('snapshots', () => {
       state: {
         environment: { environmentId: ENV, name: 'Local' },
         workspaces: [WORKSPACE],
-        sessions: [SESSION],
+        sessions: [
+          {
+            ...SESSION,
+            status: 'idle',
+            providerId: 'opencode',
+            updatedAt: '2026-09-10T00:00:00.000Z',
+          },
+        ],
       },
     })
     expect(state.environment?.name).toBe('Local')
     expect(selectSessionList(state)).toHaveLength(1)
   })
 
-  it('hydrates from a session.open response', () => {
-    const state = applySessionOpen(createInitialState(), {
-      session: SESSION,
+  it('hydrates identities from session.open and the transcript from session.history', () => {
+    const opened = applySessionOpen(createInitialState(), {
+      session: {
+        ...SESSION,
+        status: 'idle',
+        providerId: 'opencode',
+        updatedAt: '2026-09-10T00:00:00.000Z',
+      },
       threads: [THREAD],
+    })
+    expect(opened.sessions[SESSION.sessionId]?.threadIds).toEqual([THREAD.threadId])
+    expect(opened.threads[THREAD.threadId]?.hydration).toBe('loading')
+    const state = applySessionHistory(opened, THREAD, {
       turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'waiting' }],
       messages: [],
       interactions: [{ threadId: THREAD.threadId, interaction: permission }],
+      nextCursor: null,
     })
-    expect(state.sessions[SESSION.sessionId]?.threadIds).toEqual([THREAD.threadId])
     expect(state.sessions[SESSION.sessionId]?.status).toBe('waiting')
     expect(selectPendingInteractions(state, THREAD.threadId)[0]?.turnId).toBe('turn-1')
+    expect(state.threads[THREAD.threadId]?.hydration).toBe('ready')
   })
 })

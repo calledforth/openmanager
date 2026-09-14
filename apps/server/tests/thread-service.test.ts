@@ -500,3 +500,183 @@ describe('thread command provider routing', () => {
     expect(wire).not.toContain('"seq":42')
   })
 })
+
+describe('session summaries and paginated history', () => {
+  const runtime = {
+    ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-session', state: 'created' }),
+    prompt: vi.fn(),
+    cancel: vi.fn(),
+  } as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>
+
+  it('lists empty, one-page and multi-page summaries without transcripts', () => {
+    const service = createThreadService(
+      runtime,
+      { rejection: () => undefined },
+      vi.fn(),
+      undefined,
+      registered,
+    )
+    expect(
+      ProofResponseSchemas['session.list'].parse(
+        service.dispatch({
+          type: 'command',
+          requestId: 'list-empty',
+          name: 'session.list',
+          payload: {},
+        }),
+      ).payload,
+    ).toEqual({ sessions: [], nextCursor: null })
+
+    const created = ['a', 'b', 'c'].map((requestId) =>
+      ProofResponseSchemas['session.create'].parse(
+        service.dispatch({
+          type: 'command',
+          requestId,
+          name: 'session.create',
+          payload: { workspaceId: '/workspace/project', title: requestId },
+        }),
+      ).payload,
+    )
+    const first = ProofResponseSchemas['session.list'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'list-1',
+        name: 'session.list',
+        payload: { limit: 2 },
+      }),
+    ).payload
+    expect(first.sessions).toHaveLength(2)
+    expect(first.sessions[0]).toMatchObject({
+      title: expect.any(String),
+      status: 'idle',
+      workspaceId: '/workspace/project',
+      providerId: 'opencode',
+    })
+    expect(first.sessions[0]).not.toHaveProperty('messages')
+    expect(first.nextCursor).not.toBeNull()
+
+    const rest = ProofResponseSchemas['session.list'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'list-2',
+        name: 'session.list',
+        payload: { cursor: first.nextCursor!, limit: 2 },
+      }),
+    ).payload
+    expect(rest.sessions).toHaveLength(1)
+    expect(rest.nextCursor).toBeNull()
+    expect(
+      [...first.sessions, ...rest.sessions].map((session) => session.sessionId).sort(),
+    ).toEqual(created.map((item) => item.session.sessionId).sort())
+  })
+
+  it('opens a session as identities and fetches history separately', async () => {
+    const completing = {
+      ...runtime,
+      prompt: vi.fn().mockResolvedValue(undefined),
+    }
+    const service = createThreadService(
+      completing,
+      { rejection: () => undefined },
+      vi.fn(),
+      undefined,
+      registered,
+    )
+    service.setEnvironmentId('environment-1')
+    const created = ProofResponseSchemas['session.create'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'create-1',
+        name: 'session.create',
+        payload: { workspaceId: '/workspace/project', title: 'Chat' },
+      }),
+    ).payload
+    for (const text of ['one', 'two', 'three']) {
+      expect(
+        service.dispatch({
+          type: 'command',
+          requestId: `send-${text}`,
+          name: 'turn.send',
+          payload: {
+            sessionId: created.session.sessionId,
+            threadId: created.thread.threadId,
+            text,
+          },
+        }),
+      ).toMatchObject({ type: 'response' })
+      await vi.waitFor(() => {
+        const page = ProofResponseSchemas['session.history'].parse(
+          service.dispatch({
+            type: 'command',
+            requestId: `wait-${text}`,
+            name: 'session.history',
+            payload: {
+              sessionId: created.session.sessionId,
+              threadId: created.thread.threadId,
+            },
+          }),
+        ).payload
+        expect(page.turns.every((turn) => turn.state !== 'running')).toBe(true)
+        expect(
+          page.messages.some(
+            (message) => message.content[0]?.type === 'text' && message.content[0].text === text,
+          ),
+        ).toBe(true)
+      })
+    }
+
+    const opened = ProofResponseSchemas['session.open'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'open-1',
+        name: 'session.open',
+        payload: { sessionId: created.session.sessionId },
+      }),
+    ).payload
+    expect(opened.session).toMatchObject({
+      sessionId: created.session.sessionId,
+      title: 'Chat',
+      status: 'idle',
+      providerId: 'opencode',
+    })
+    expect(opened.threads).toEqual([created.thread])
+    expect(opened).not.toHaveProperty('messages')
+
+    const newest = ProofResponseSchemas['session.history'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'history-1',
+        name: 'session.history',
+        payload: {
+          sessionId: created.session.sessionId,
+          threadId: created.thread.threadId,
+          limit: 2,
+        },
+      }),
+    ).payload
+    expect(newest.messages.map((message) => message.content[0])).toEqual([
+      { type: 'text', text: 'two' },
+      { type: 'text', text: 'three' },
+    ])
+    expect(newest.nextCursor).toEqual({ ordinal: 1 })
+
+    const older = ProofResponseSchemas['session.history'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'history-2',
+        name: 'session.history',
+        payload: {
+          sessionId: created.session.sessionId,
+          threadId: created.thread.threadId,
+          cursor: newest.nextCursor!,
+          limit: 2,
+        },
+      }),
+    ).payload
+    expect(older.messages.map((message) => message.content[0])).toEqual([
+      { type: 'text', text: 'one' },
+    ])
+    expect(older.nextCursor).toBeNull()
+  })
+})
+

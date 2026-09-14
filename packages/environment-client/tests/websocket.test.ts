@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { PROTOCOL_VERSION } from '@openmanager/protocol'
 import { createWebSocketEnvironmentClient, type WebSocketLike } from '../src/websocket'
 import { selectActiveThread, selectSessionList } from '../src/state'
-import { ENV, SESSION, THREAD, WORKSPACE, delta, permission, turnStarted } from './fixtures'
+import { ENV, SESSION, SESSION_SUMMARY, THREAD, WORKSPACE, delta, permission, turnStarted } from './fixtures'
 
 type Listener = (event: never) => void
 
@@ -67,6 +67,7 @@ const FULL_CAPABILITIES = [
   'session.list',
   'session.create',
   'session.open',
+  'session.history',
   'turn.send',
   'turn.interrupt',
   'interaction.respond',
@@ -103,6 +104,33 @@ function createTimers() {
 }
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+const EMPTY_HISTORY: {
+  messages: unknown[]
+  turns: unknown[]
+  interactions: unknown[]
+  nextCursor: { ordinal: number } | null
+} = { messages: [], turns: [], interactions: [], nextCursor: null }
+
+async function answerOpen(
+  socket: FakeSocket,
+  session = SESSION_SUMMARY,
+  threads = [THREAD],
+  history: typeof EMPTY_HISTORY = EMPTY_HISTORY,
+) {
+  socket.respond('session.open', { session, threads })
+  await flush()
+  if (threads.length > 0) socket.respond('session.history', history)
+}
+
+async function answerCatalog(
+  socket: FakeSocket,
+  environment = { environmentId: ENV, name: 'Local' },
+) {
+  socket.respond('environment.get', { environment })
+  socket.respond('workspace.list', { workspaces: [WORKSPACE] })
+  socket.respond('session.list', { sessions: [], nextCursor: null })
+}
 
 async function connected(capabilities = FULL_CAPABILITIES) {
   FakeSocket.instances = []
@@ -147,8 +175,7 @@ describe('websocket environment client', () => {
       scope: { type: 'environment', environmentId: ENV },
     })
     await flush()
-    socket.respond('environment.get', { environment: { environmentId: ENV, name: 'Local' } })
-    socket.respond('workspace.list', { workspaces: [WORKSPACE] })
+    await answerCatalog(socket)
     await flush()
     expect(client.getState().environment?.name).toBe('Local')
     expect(client.getState().workspaces[WORKSPACE.workspaceId]).toEqual(WORKSPACE)
@@ -167,13 +194,7 @@ describe('websocket environment client', () => {
     const { client, socket } = await connected()
     const open = client.commands.openSession(SESSION.sessionId)
     expect(socket.last('session.open').payload).toEqual({ sessionId: SESSION.sessionId })
-    socket.respond('session.open', {
-      session: SESSION,
-      threads: [THREAD],
-      messages: [],
-      turns: [],
-      interactions: [],
-    })
+    await answerOpen(socket)
     await flush()
     const scopes = socket.sent
       .filter((message) => message.name === 'subscription.subscribe')
@@ -209,10 +230,48 @@ describe('websocket environment client', () => {
     expect(selectSessionList(client.getState())[0]?.status).toBe('running')
   })
 
+  it('lists session summaries with a cursor and hydrates history after open', async () => {
+    const { client, socket } = await connected()
+    const listing = client.commands.listSessions({ limit: 1 })
+    expect(socket.last('session.list').payload).toEqual({ limit: 1 })
+    socket.respond('session.list', {
+      sessions: [SESSION_SUMMARY],
+      nextCursor: { updatedAt: SESSION_SUMMARY.updatedAt, sessionId: SESSION.sessionId },
+    })
+    const page = await listing
+    expect(page.sessions).toHaveLength(1)
+    expect(page.sessions[0]).toMatchObject({
+      sessionId: SESSION.sessionId,
+      status: 'idle',
+      providerId: 'opencode',
+    })
+    expect(page.nextCursor?.sessionId).toBe(SESSION.sessionId)
+    expect(client.getState().sessions[SESSION.sessionId]?.threadIds).toEqual([])
+
+    const opened = client.commands.openSession(SESSION.sessionId)
+    await answerOpen(socket, SESSION_SUMMARY, [THREAD], {
+      messages: [
+        {
+          messageId: 'message-1',
+          threadId: THREAD.threadId,
+          turnId: 'turn-1',
+          role: 'user',
+          content: [{ type: 'text', text: 'Hello' }],
+        },
+      ],
+      turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'completed' }],
+      interactions: [],
+      nextCursor: null,
+    })
+    await opened
+    expect(selectActiveThread(client.getState())?.messages).toHaveLength(1)
+    expect(selectActiveThread(client.getState())?.hydration).toBe('ready')
+  })
+
   it('sends a turn and folds the response in before the event arrives', async () => {
     const { client, socket } = await connected()
     const opened = client.commands.openSession(SESSION.sessionId)
-    socket.respond('session.open', { session: SESSION, threads: [THREAD], messages: [], turns: [], interactions: [] })
+    await answerOpen(socket)
     await flush()
     await flush()
     await opened.catch(() => undefined)
@@ -238,12 +297,11 @@ describe('websocket environment client', () => {
   it('removes a pending interaction optimistically after responding', async () => {
     const { client, socket } = await connected()
     const opened = client.commands.openSession(SESSION.sessionId)
-    socket.respond('session.open', {
-      session: SESSION,
-      threads: [THREAD],
+    await answerOpen(socket, SESSION_SUMMARY, [THREAD], {
       messages: [],
       turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'waiting' }],
       interactions: [{ threadId: THREAD.threadId, interaction: permission }],
+      nextCursor: null,
     })
     await flush()
     await flush()
@@ -264,27 +322,22 @@ describe('websocket environment client', () => {
   it('releases a subscription that was dropped before its acknowledgement arrived', async () => {
     const { client, socket } = await connected()
     const opened = client.commands.openSession(SESSION.sessionId)
-    socket.respond('session.open', {
-      session: SESSION,
-      threads: [THREAD],
-      messages: [],
-      turns: [],
-      interactions: [],
-    })
+    await answerOpen(socket)
     await opened
     const subscribeRequest = socket.last('subscription.subscribe')
     expect(subscribeRequest.payload).toMatchObject({ scope: { type: 'thread' } })
 
     // Leave the session before the server acknowledges the thread subscription.
-    const second = { sessionId: 'session-2', workspaceId: WORKSPACE.workspaceId, title: null }
+    const second = {
+      sessionId: 'session-2',
+      workspaceId: WORKSPACE.workspaceId,
+      title: null,
+      status: 'idle' as const,
+      providerId: 'opencode',
+      updatedAt: '2026-09-10T00:00:00.000Z',
+    }
     const switched = client.commands.openSession(second.sessionId)
-    socket.respond('session.open', {
-      session: second,
-      threads: [],
-      messages: [],
-      turns: [],
-      interactions: [],
-    })
+    await answerOpen(socket, second, [])
     await switched
     expect(socket.sent.some((message) => message.name === 'subscription.unsubscribe')).toBe(false)
 
@@ -300,12 +353,11 @@ describe('websocket environment client', () => {
 
   it('sends one subscribe per scope while an earlier subscribe is unacknowledged', async () => {
     const { client, socket } = await connected()
-    const hydrated = { session: SESSION, threads: [THREAD], messages: [], turns: [], interactions: [] }
     const first = client.commands.openSession(SESSION.sessionId)
-    socket.respond('session.open', hydrated)
+    await answerOpen(socket)
     await first
     const again = client.commands.openSession(SESSION.sessionId)
-    socket.respond('session.open', hydrated)
+    await answerOpen(socket)
     await again
     const threadSubscribes = socket.sent.filter(
       (message) =>
@@ -320,7 +372,7 @@ describe('websocket environment client', () => {
     // resync is still awaiting them when the socket drops.
     const { client, socket, timers } = await connected()
     const opened = client.commands.openSession(SESSION.sessionId)
-    socket.respond('session.open', { session: SESSION, threads: [THREAD], messages: [], turns: [], interactions: [] })
+    await answerOpen(socket)
     await opened
 
     socket.drop(1006)
@@ -331,8 +383,7 @@ describe('websocket environment client', () => {
     next.open()
     next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
     await flush()
-    next.respond('environment.get', { environment: { environmentId: ENV, name: 'Local' } })
-    next.respond('workspace.list', { workspaces: [] })
+    await answerCatalog(next, { environmentId: ENV, name: 'Local' })
     await flush()
     await flush()
     expect(next.sent.filter((message) => message.name === 'session.open')).toHaveLength(1)
@@ -347,7 +398,7 @@ describe('websocket environment client', () => {
   it('reconnects with backoff, re-handshakes and re-opens the active session', async () => {
     const { client, socket, timers } = await connected()
     const opened = client.commands.openSession(SESSION.sessionId)
-    socket.respond('session.open', { session: SESSION, threads: [THREAD], messages: [], turns: [], interactions: [] })
+    await answerOpen(socket)
     await flush()
     await flush()
     await opened.catch(() => undefined)
@@ -367,8 +418,7 @@ describe('websocket environment client', () => {
       scope: { type: 'environment', environmentId: ENV },
     })
     await flush()
-    next.respond('environment.get', { environment: { environmentId: ENV, name: 'Local' } })
-    next.respond('workspace.list', { workspaces: [] })
+    await answerCatalog(next, { environmentId: ENV, name: 'Local' })
     await flush()
     await flush()
     expect(next.last('session.open').payload).toEqual({ sessionId: SESSION.sessionId })

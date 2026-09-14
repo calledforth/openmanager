@@ -28,7 +28,7 @@ Selectors (`selectSessionList`, `selectActiveThread`, `selectPendingInteractions
 | `createConvexEnvironmentClient`    | Desktop during migration; temporary, lives in `apps/desktop/src/renderer/src/environment` (see `docs/compatibility-adapters.md`) |
 
 All implementations feed the same reducers (`applyEvent`, `applySnapshot`,
-`applySessionOpen`), so behaviour verified against the mock holds on the wire.
+`applySessionOpen`, `applySessionHistory`), so behaviour verified against the mock holds on the wire.
 Every reducer is idempotent by resource ID: replayed or duplicated events
 cannot double-apply.
 
@@ -40,7 +40,7 @@ rejects a command with `capability_missing` before sending anything when the
 handshake did not advertise it. Provisional names (`workspace.add`,
 `workspace.remove`, `session.rename`, `session.delete`) become real when the
 protocol adds them (CAL-50, CAL-58); replay-based hydration replaces
-`session.open` when CAL-71 lands. The mock advertises everything by default and
+`session.open` + `session.history` when CAL-71 lands. The mock advertises everything by default and
 can be narrowed with `capabilities` to exercise the gated paths.
 
 ## Browser safety

@@ -16,6 +16,7 @@ const commands: EnvironmentCommands = {
   listSessions: reject('listSessions'),
   createSession: reject('createSession'),
   openSession: reject('openSession'),
+  loadSessionHistory: reject('loadSessionHistory'),
   renameSession: reject('renameSession'),
   deleteSession: reject('deleteSession'),
   sendTurn: reject('sendTurn'),

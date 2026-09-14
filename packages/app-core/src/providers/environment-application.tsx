@@ -459,7 +459,7 @@ function EnvironmentSidebarDataProvider({
         externalId: summary.sessionId,
         title: summary.title ?? undefined,
         status: summary.status,
-        providerId: session.defaultProviderId,
+        providerId: (summary.providerId as ProviderId | undefined) ?? session.defaultProviderId,
         isDriven: true,
       }
       ;(grouped[summary.workspaceId] ??= []).push(entry)

@@ -2,11 +2,14 @@ import type {
   ContentBlock,
   Environment,
   ErrorCode,
+  HistoryCursor,
   Interaction,
   InteractionResponse,
   Message,
   ProofEventSchemas,
   Session,
+  SessionListCursor,
+  SessionStatus,
   Thread,
   Turn,
   TurnFailureReason,
@@ -14,12 +17,39 @@ import type {
 } from '@openmanager/protocol'
 import type { z } from 'zod'
 
-/** Rolled up from a session's turns so the sidebar never inspects threads. */
-export type SessionStatus = 'idle' | 'running' | 'waiting' | 'error'
+export type { SessionStatus }
 
+/** Protocol summary plus the thread IDs this client has already learned. */
 export interface SessionSummary extends Session {
   status: SessionStatus
+  providerId?: string
+  updatedAt?: string
   threadIds: string[]
+}
+
+export interface SessionListPage {
+  sessions: SessionSummary[]
+  nextCursor: SessionListCursor | null
+}
+
+export interface SessionHistoryPage {
+  messages: Message[]
+  turns: Turn[]
+  interactions: Array<{ threadId: string; interaction: Interaction }>
+  nextCursor: HistoryCursor | null
+}
+
+export interface ListSessionsInput {
+  workspaceId?: string
+  cursor?: SessionListCursor
+  limit?: number
+}
+
+export interface LoadSessionHistoryInput {
+  sessionId: string
+  threadId: string
+  cursor?: HistoryCursor
+  limit?: number
 }
 
 export interface ReasoningEntry {
@@ -52,8 +82,8 @@ export interface TurnNotice {
 
 /**
  * `idle` means we only know the thread exists (its scope produced an event
- * before anybody opened it). `ready` means a snapshot or session.open has
- * replaced the thread state wholesale, so message history is trustworthy.
+ * before anybody opened it). `ready` means a snapshot or session.history page
+ * has replaced the thread state wholesale, so message history is trustworthy.
  */
 export type HydrationState = 'idle' | 'loading' | 'ready' | 'failed'
 
@@ -136,10 +166,11 @@ export interface EnvironmentCommands {
   listWorkspaces(): Promise<Workspace[]>
   addWorkspace(input: AddWorkspaceInput): Promise<Workspace>
   removeWorkspace(workspaceId: string): Promise<void>
-  listSessions(workspaceId: string): Promise<SessionSummary[]>
+  listSessions(input?: ListSessionsInput | string): Promise<SessionListPage>
   createSession(input: CreateSessionInput): Promise<{ session: Session; thread: Thread }>
-  /** Hydrates the session's threads and makes it (and its first thread) active. */
+  /** Loads thread identities, then the newest history page for each thread. */
   openSession(sessionId: string): Promise<void>
+  loadSessionHistory(input: LoadSessionHistoryInput): Promise<SessionHistoryPage>
   renameSession(sessionId: string, title: string | null): Promise<void>
   deleteSession(sessionId: string): Promise<void>
   sendTurn(input: SendTurnInput): Promise<{ turn: Turn; userMessage: Message }>
