@@ -59,6 +59,12 @@ export {
   shallowEqualArray,
 } from './state'
 export { createEnvironmentStore, type EnvironmentStore } from './store'
+export {
+  pageSessionSummaries,
+  pageThreadMessages,
+  resolvePageLimit,
+  sessionListCursorOf,
+} from './pagination'
 export { WIRE_COMMANDS, type WireCommandName } from './wire'
 export {
   createMockEnvironmentClient,
