@@ -10,7 +10,9 @@ const WORKSPACE = {
   name: 'repo',
   path: 'C:/repo',
   lastUsedAt: null,
+  lastActivityAt: null,
   exists: true,
+  capabilities: { git: false, providers: [] },
 }
 const SESSION = { sessionId: 'session-1', workspaceId: WORKSPACE.workspaceId, title: 'Sidebar move' }
 const THREAD = { threadId: 'thread-1', sessionId: SESSION.sessionId }
@@ -135,7 +137,7 @@ describe('session workspace', () => {
       ...SEED,
       workspaces: [
         WORKSPACE,
-        { workspaceId: 'C:/gone', name: 'gone', path: 'C:/gone', lastUsedAt: null, exists: false },
+        { ...WORKSPACE, workspaceId: 'C:/gone', name: 'gone', path: 'C:/gone', exists: false },
       ],
     })
     expect(await screen.findByText('gone')).toBeInTheDocument()

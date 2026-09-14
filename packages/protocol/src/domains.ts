@@ -34,12 +34,29 @@ export const EnvironmentSchema = z.object({ environmentId: EntityIdSchema, name:
  * the workspace by ID (D9). `exists` is checked when the workspace is listed,
  * so a folder moved or deleted since registration reads as missing.
  */
+/**
+ * A cheap summary of what a workspace offers, computed when it is listed and
+ * never by walking the tree: whether the root is a git checkout (one `.git`
+ * stat) and which providers the environment can start right now.
+ */
+export const WorkspaceCapabilitiesSchema = z.object({
+  git: z.boolean(),
+  providers: z.array(EntityIdSchema),
+})
 export const WorkspaceSchema = z.object({
   workspaceId: EntityIdSchema,
   name: z.string(),
   path: z.string(),
+  /** When a session last started here; null until one has. */
   lastUsedAt: TimestampSchema.nullable(),
+  /**
+   * Latest session activity here (a start or a later turn); orders recents.
+   * Defaulted so an environment that predates it still lists (no version bump).
+   */
+  lastActivityAt: TimestampSchema.nullable().default(null),
   exists: z.boolean(),
+  /** Defaulted for the same reason: an older environment reads as offering nothing. */
+  capabilities: WorkspaceCapabilitiesSchema.default({ git: false, providers: [] }),
 })
 /**
  * A workspace icon travels inline as a `data:image/...;base64,` URL so a
@@ -233,6 +250,7 @@ export type EntityId = z.infer<typeof EntityIdSchema>
 export type SubscriptionScope = z.infer<typeof SubscriptionScopeSchema>
 export type Environment = z.infer<typeof EnvironmentSchema>
 export type Workspace = z.infer<typeof WorkspaceSchema>
+export type WorkspaceCapabilities = z.infer<typeof WorkspaceCapabilitiesSchema>
 export type Session = z.infer<typeof SessionSchema>
 export type SessionStatus = z.infer<typeof SessionStatusSchema>
 export type SessionSummary = z.infer<typeof SessionSummarySchema>

@@ -88,6 +88,7 @@ export async function startServer(config: ServerConfig) {
   }
   let emitWorkspaceEvent: (event: ProofEvent) => void = () => undefined
   let closeWorkspaceSessions: (workspaceId: string) => void = () => undefined
+  let availableProviders: () => readonly string[] = () => []
   let workspaces
   try {
     workspaces = openWorkspaceRegistry(config.dataDir, workspaceRoots, audit, {
@@ -97,6 +98,7 @@ export async function startServer(config: ServerConfig) {
         emit: (event) => emitWorkspaceEvent(event),
       },
       onUnregister: (workspaceId) => closeWorkspaceSessions(workspaceId),
+      availableProviders: () => availableProviders(),
     })
   } catch (error) {
     composerStore.close()
@@ -144,6 +146,13 @@ export async function startServer(config: ServerConfig) {
     (providerId, result) => observeProviderCatalog(providerId, result),
     resolveWorkspace,
   )
+  // Cheap capability input for workspace listings: a provider counts as
+  // available when a session could start with it now (D9, no probing).
+  availableProviders = () =>
+    providerService
+      .snapshot()
+      .filter(({ health }) => health.summary === 'ready' || health.summary === 'warning')
+      .map(({ id }) => id)
   let publishDurableEvent: (record: DurableEvent) => void = () => undefined
   let publishThreadEvent: (event: EventEnvelope) => void = () => undefined
   const eventService = createEventService((record) => publishDurableEvent(record))

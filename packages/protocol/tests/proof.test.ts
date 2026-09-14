@@ -7,6 +7,7 @@ import {
   ServerMessageSchema,
   SubscriptionScopeSchema,
   InteractionResponseSchema,
+  WorkspaceSchema,
   parseProofResult,
   type ProofResponse,
 } from '@openmanager/protocol'
@@ -114,5 +115,20 @@ describe('proof slice wire families', () => {
         outcome: { outcome: 'accepted' },
       }),
     ).toMatchObject({ kind: 'plan' })
+  })
+
+  it('accepts a workspace from an environment that predates activity and capabilities', () => {
+    const legacy = {
+      workspaceId: 'ws-1',
+      name: 'repo',
+      path: '/repo',
+      lastUsedAt: null,
+      exists: true,
+    }
+    expect(WorkspaceSchema.parse(legacy)).toEqual({
+      ...legacy,
+      lastActivityAt: null,
+      capabilities: { git: false, providers: [] },
+    })
   })
 })

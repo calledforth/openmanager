@@ -1,11 +1,22 @@
 import { createContext, useContext } from 'react'
 import type { ProviderId } from '@agentpack/contract'
 
+/** Cheap facts about a workspace the host already knows; nothing is probed here. */
+export interface WorkspaceCapabilitySummary {
+  /** The root is a git checkout. */
+  git: boolean
+  /** Provider IDs a session could start with right now. */
+  providers: string[]
+}
+
 export interface WorkspaceEntry {
   path: string
   name: string
   /** The folder is registered but not on disk right now (moved or deleted). */
   missing?: boolean
+  /** ISO timestamp of the latest session activity; orders the recents list. */
+  lastActivityAt?: string | null
+  capabilities?: WorkspaceCapabilitySummary
 }
 
 export interface SidebarSessionEntry {
@@ -25,6 +36,11 @@ export interface SidebarSessionEntry {
  */
 export interface SidebarDataValue {
   workspaces: WorkspaceEntry[]
+  /**
+   * Workspaces with session activity, most recent first, for the new-chat
+   * surface. Hosts without activity data leave it out and get no recents row.
+   */
+  recentWorkspaces?: WorkspaceEntry[]
   isWorkspacesLoading: boolean
   sessionsByWorkspace: Record<string, SidebarSessionEntry[]>
   activeWorkspacePath: string | null

@@ -10,7 +10,9 @@ import {
   selectActiveThread,
   selectActiveTurn,
   selectPendingInteractions,
+  selectRecentWorkspaces,
   selectSessionList,
+  selectWorkspaces,
 } from '../src/state'
 import type { EnvironmentState } from '../src/types'
 import {
@@ -258,6 +260,70 @@ describe('snapshots', () => {
     })
     expect(state.environment?.name).toBe('Local')
     expect(selectSessionList(state)).toHaveLength(1)
+  })
+
+  it('moves workspace activity forward on session starts and turns without a relisting', () => {
+    let state = createInitialState()
+    state = applyEvent(
+      state,
+      event({ name: 'workspace.updated', scope: environmentScope, payload: { workspace: WORKSPACE } }),
+    )
+    expect(selectRecentWorkspaces(state)).toEqual([])
+
+    state = applyEvent(
+      state,
+      event({ name: 'session.created', scope: environmentScope, payload: { session: SESSION } }),
+    )
+    expect(state.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe('2026-09-10T00:00:00.000Z')
+    expect(selectRecentWorkspaces(state).map((w) => w.workspaceId)).toEqual([WORKSPACE.workspaceId])
+
+    state = applyEvent(
+      state,
+      event({ name: 'thread.created', scope: sessionScope, payload: { thread: THREAD } }),
+    )
+    const later = { ...turnStarted(), timestamp: '2026-09-11T00:00:00.000Z' }
+    state = applyEvent(state, later)
+    expect(state.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe('2026-09-11T00:00:00.000Z')
+
+    // A stale event (older timestamp) never moves activity backwards.
+    const stale = { ...completed(), timestamp: '2026-09-09T00:00:00.000Z' }
+    state = applyEvent(state, stale)
+    expect(state.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe('2026-09-11T00:00:00.000Z')
+  })
+
+  it('orders recent workspaces by last activity and skips unused or missing ones', () => {
+    const at = (name: string, lastActivityAt: string | null, exists = true) => ({
+      ...WORKSPACE,
+      workspaceId: name,
+      path: name,
+      name,
+      lastActivityAt,
+      exists,
+    })
+    const state = applySnapshot(createInitialState(), {
+      cursor: { scope: environmentScope, epoch: 'epoch', sequence: 1 },
+      state: {
+        environment: { environmentId: ENV, name: 'Local' },
+        workspaces: [
+          at('stale', '2026-09-01T00:00:00.000Z'),
+          at('never', null),
+          at('fresh', '2026-09-12T00:00:00.000Z'),
+          at('gone', '2026-09-13T00:00:00.000Z', false),
+          at('middle', '2026-09-10T00:00:00.000Z'),
+        ],
+        sessions: [],
+      },
+    })
+    // Listing order is preserved for the sidebar; recents are a separate view.
+    expect(selectWorkspaces(state).map((w) => w.name)).toEqual([
+      'stale',
+      'never',
+      'fresh',
+      'gone',
+      'middle',
+    ])
+    expect(selectRecentWorkspaces(state).map((w) => w.name)).toEqual(['fresh', 'middle', 'stale'])
+    expect(selectRecentWorkspaces(state, 2).map((w) => w.name)).toEqual(['fresh', 'middle'])
   })
 
   it('hydrates identities from session.open and the transcript from session.history', () => {

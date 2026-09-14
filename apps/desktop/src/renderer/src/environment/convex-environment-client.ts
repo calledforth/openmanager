@@ -252,6 +252,8 @@ export function createConvexEnvironmentClient(
     name: row.name,
     path: row.path,
     lastUsedAt: null,
+    lastActivityAt: null,
+    capabilities: { git: false, providers: [] },
     exists: true,
   })
   const toSession = (
@@ -750,6 +752,8 @@ export function createConvexEnvironmentClient(
             name: input.name ?? input.path,
             path: input.path,
             lastUsedAt: null,
+            lastActivityAt: null,
+            capabilities: { git: false, providers: [] },
             exists: true,
           }
       update((state) => applyWorkspaceList(state, [workspace]))

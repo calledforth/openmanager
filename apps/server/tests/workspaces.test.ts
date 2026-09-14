@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ProofEvent } from '@openmanager/protocol/node'
 import { createAuditLog, type AuditEvent } from '../src/audit.js'
+import { openEnvironmentDatabase } from '../src/db/database.js'
 import { canonicalizeRoot } from '../src/workspace-paths.js'
 import {
   openWorkspaceRegistry,
@@ -56,7 +57,9 @@ const listed = (name: string, path: string, extra: Record<string, unknown> = {})
   name,
   path,
   lastUsedAt: null,
+  lastActivityAt: null,
   exists: true,
+  capabilities: { git: false, providers: [] },
   ...extra,
 })
 
@@ -200,16 +203,90 @@ describe('workspace registry', () => {
   })
 
   it('records when a workspace was last used and keeps it across restarts', async () => {
-    const { roots, open, tick } = await fixture()
+    const { roots, open, tick, events } = await fixture()
     const first = open([roots.a])
     const [alpha] = first.list()
     expect(alpha!.lastUsedAt).toBeNull()
     tick(60_000)
+    events.length = 0
     first.markUsed(alpha!.workspaceId)
     first.markUsed('unknown')
     expect(first.list()[0]!.lastUsedAt).toBe('2026-09-13T12:01:00.000Z')
+    // Clients keep recents from cached workspaces, so the stamp is announced.
+    expect(events).toEqual([
+      expect.objectContaining({
+        name: 'workspace.updated',
+        payload: {
+          workspace: expect.objectContaining({
+            workspaceId: alpha!.workspaceId,
+            lastUsedAt: '2026-09-13T12:01:00.000Z',
+            lastActivityAt: '2026-09-13T12:01:00.000Z',
+          }),
+        },
+      }),
+    ])
     first.close()
     expect(open([roots.a]).list()[0]!.lastUsedAt).toBe('2026-09-13T12:01:00.000Z')
+  })
+
+  it('reports the latest session activity per workspace for ordering recents', async () => {
+    const { dataDir, roots, open, tick } = await fixture()
+    const registry = open([roots.a, roots.b])
+    const [alpha, beta] = registry.list()
+    expect(alpha!.lastActivityAt).toBeNull()
+
+    // A start stamps both fields; a later turn only moves activity forward.
+    tick(60_000)
+    registry.markUsed(alpha!.workspaceId)
+    expect(registry.list()[0]!.lastActivityAt).toBe('2026-09-13T12:01:00.000Z')
+    const database = openEnvironmentDatabase(dataDir)
+    try {
+      database
+        .prepare(
+          `INSERT INTO sessions (session_id, workspace_id, provider_id, status, created_at, updated_at)
+           VALUES (?, ?, 'cursor', 'idle', ?, ?)`,
+        )
+        .run('s-old', alpha!.workspaceId, 1, Date.parse('2026-09-13T11:00:00Z'))
+      database
+        .prepare(
+          `INSERT INTO sessions (session_id, workspace_id, provider_id, status, created_at, updated_at)
+           VALUES (?, ?, 'cursor', 'idle', ?, ?)`,
+        )
+        .run('s-new', alpha!.workspaceId, 1, Date.parse('2026-09-13T12:30:00Z'))
+      database
+        .prepare(
+          `INSERT INTO sessions (session_id, workspace_id, provider_id, status, created_at, updated_at)
+           VALUES (?, ?, 'cursor', 'idle', ?, ?)`,
+        )
+        .run('s-beta', beta!.workspaceId, 1, Date.parse('2026-09-13T12:10:00Z'))
+    } finally {
+      database.close()
+    }
+    const [alphaNow, betaNow] = registry.list()
+    expect(alphaNow!.lastUsedAt).toBe('2026-09-13T12:01:00.000Z')
+    expect(alphaNow!.lastActivityAt).toBe('2026-09-13T12:30:00.000Z')
+    // Beta never had a session start recorded on it but has activity anyway.
+    expect(betaNow!.lastUsedAt).toBeNull()
+    expect(betaNow!.lastActivityAt).toBe('2026-09-13T12:10:00.000Z')
+    // Listing order is unchanged; clients sort recents by lastActivityAt.
+    expect(registry.list().map((workspace) => workspace.name)).toEqual(['alpha', 'beta'])
+  })
+
+  it('summarizes capabilities cheaply: a .git stat and the providers available now', async () => {
+    const { roots, open } = await fixture()
+    await mkdir(join(roots.a, '.git'))
+    let available: string[] = []
+    const registry = open([roots.a, roots.b], { availableProviders: () => available })
+    expect(registry.list().map((workspace) => workspace.capabilities)).toEqual([
+      { git: true, providers: [] },
+      { git: false, providers: [] },
+    ])
+    // Provider availability is read on each listing, not captured at open.
+    available = ['cursor', 'codex']
+    expect(registry.list()[1]!.capabilities).toEqual({ git: false, providers: ['cursor', 'codex'] })
+    // A missing folder cannot claim git even if the registry remembers it.
+    await rm(roots.a, { recursive: true, force: true })
+    expect(registry.list()[0]).toMatchObject({ exists: false, capabilities: { git: false } })
   })
 
   it('defaults to configured roots, rejects outside paths and traversal without persisting or emitting', async () => {

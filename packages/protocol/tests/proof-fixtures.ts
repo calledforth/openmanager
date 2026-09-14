@@ -22,6 +22,8 @@ const workspace = {
   name: 'Project',
   path: '/home/user/project',
   lastUsedAt: '2026-09-06T04:00:00Z',
+  lastActivityAt: '2026-09-06T04:00:00Z',
+  capabilities: { git: false, providers: [] },
   exists: true,
 }
 const session = { sessionId: 'session-1', workspaceId: 'workspace-1', title: 'Example' }
@@ -137,6 +139,8 @@ export const proofResponses = {
           name: 'Project',
           path: 'workspace-1',
           lastUsedAt: null,
+          lastActivityAt: null,
+          capabilities: { git: false, providers: [] },
           exists: true,
         },
       ],
@@ -192,6 +196,8 @@ export const proofEvents = [
         name: 'Project',
         path: 'workspace-1',
         lastUsedAt: null,
+        lastActivityAt: null,
+        capabilities: { git: false, providers: [] },
         exists: true,
       },
     },
