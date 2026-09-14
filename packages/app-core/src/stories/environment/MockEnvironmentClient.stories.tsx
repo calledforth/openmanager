@@ -311,7 +311,7 @@ function PaginatedCatalogStory() {
               className="max-h-44 overflow-auto rounded bg-background p-2 text-11-regular text-muted-foreground"
               style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' }}
             >
-              {opened}
+              {opened
                 ? `session.open ${JSON.stringify({ session: opened.sessionId, threads: opened.threads, messages: undefined })}\n\nsession.history\n${JSON.stringify(
                     historyPage && {
                       messages: historyPage.messages.map((message) => ({
