@@ -14,7 +14,7 @@ import type {
   QuestionOutcome,
   PermissionOption,
 } from '@agentpack/contract'
-import type { InteractionResponse } from '@openmanager/protocol'
+import type { InteractionResponse, Workspace } from '@openmanager/protocol'
 import type { PendingInteraction, ThreadTarget } from '@openmanager/environment-client'
 import type { UploadedImageAttachment } from '../lib/attachments'
 import {
@@ -26,6 +26,7 @@ import {
   useEnvironmentState,
   usePendingInteractions,
   useSessionList,
+  useRecentWorkspaces,
   useWorkspaces,
 } from './environment-client'
 import { PlatformCapabilitiesContext, type PlatformCapabilitiesValue } from './platform-provider'
@@ -41,6 +42,7 @@ import {
   toggleCollapsedWorkspace,
   type SidebarDataValue,
   type SidebarSessionEntry,
+  type WorkspaceEntry,
 } from './sidebar-provider'
 import {
   ActiveThreadStateContext,
@@ -414,6 +416,16 @@ function defaultStorage(): Pick<Storage, 'getItem' | 'setItem'> | null {
   }
 }
 
+function toWorkspaceEntry(workspace: Workspace): WorkspaceEntry {
+  return {
+    path: workspace.workspaceId,
+    name: workspace.name,
+    missing: !workspace.exists,
+    lastActivityAt: workspace.lastActivityAt,
+    capabilities: workspace.capabilities,
+  }
+}
+
 function EnvironmentSidebarDataProvider({
   storage: storageOption,
   children,
@@ -423,6 +435,7 @@ function EnvironmentSidebarDataProvider({
 }) {
   const session = useContext(SessionStateContext)!
   const workspaces = useWorkspaces()
+  const recentWorkspaces = useRecentWorkspaces()
   const sessions = useSessionList()
   const connection = useConnectionState()
   const storage = storageOption === undefined ? defaultStorage() : storageOption
@@ -443,15 +456,8 @@ function EnvironmentSidebarDataProvider({
     [storage],
   )
 
-  const workspaceEntries = useMemo(
-    () =>
-      workspaces.map((workspace) => ({
-        path: workspace.workspaceId,
-        name: workspace.name,
-        missing: !workspace.exists,
-      })),
-    [workspaces],
-  )
+  const workspaceEntries = useMemo(() => workspaces.map(toWorkspaceEntry), [workspaces])
+  const recentEntries = useMemo(() => recentWorkspaces.map(toWorkspaceEntry), [recentWorkspaces])
   const sessionsByWorkspace = useMemo(() => {
     const grouped: Record<string, SidebarSessionEntry[]> = {}
     for (const summary of sessions) {
@@ -475,6 +481,7 @@ function EnvironmentSidebarDataProvider({
   const value = useMemo<SidebarDataValue>(
     () => ({
       workspaces: workspaceEntries,
+      recentWorkspaces: recentEntries,
       isWorkspacesLoading,
       sessionsByWorkspace,
       activeWorkspacePath: session.activeWorkspacePath,
@@ -490,6 +497,7 @@ function EnvironmentSidebarDataProvider({
     [
       collapsedWorkspacePaths,
       isWorkspacesLoading,
+      recentEntries,
       session.activeSessionId,
       session.activeWorkspacePath,
       session.addWorkspace,

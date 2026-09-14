@@ -128,6 +128,8 @@ function record(scope: SubscriptionScope) {
                 name: 'Project',
                 path: 'workspace-1',
                 lastUsedAt: null,
+                lastActivityAt: null,
+                capabilities: { git: false, providers: [] },
                 exists: true,
               },
             },
@@ -392,6 +394,8 @@ describe('workspace boundary', () => {
         name: 'workspace-a',
         path: host.root,
         lastUsedAt: null,
+        lastActivityAt: null,
+        capabilities: { git: false, providers: [] },
         exists: true,
       },
       {
@@ -399,6 +403,8 @@ describe('workspace boundary', () => {
         name: 'workspace-b',
         path: host.otherRoot,
         lastUsedAt: null,
+        lastActivityAt: null,
+        capabilities: { git: false, providers: [] },
         exists: true,
       },
     ])
@@ -423,6 +429,8 @@ describe('workspace boundary', () => {
       name: 'workspace-c',
       path: host.server.workspaces.get(added.payload.workspace.workspaceId)!.root,
       lastUsedAt: null,
+      lastActivityAt: null,
+      capabilities: { git: false, providers: [] },
       exists: true,
     })
     expect(announced).toMatchObject({

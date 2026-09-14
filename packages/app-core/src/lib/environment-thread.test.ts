@@ -109,7 +109,17 @@ describe('createEnvironmentThreadStores', () => {
   it('serves the active thread and notifies subscribers on updates', async () => {
     const client = createMockEnvironmentClient({
       seed: {
-        workspaces: [{ workspaceId: 'ws', name: 'ws', path: 'ws', lastUsedAt: null, exists: true }],
+        workspaces: [
+          {
+            workspaceId: 'ws',
+            name: 'ws',
+            path: 'ws',
+            lastUsedAt: null,
+            lastActivityAt: null,
+            exists: true,
+            capabilities: { git: false, providers: [] },
+          },
+        ],
         sessions: [
           {
             session: { sessionId: THREAD.sessionId, workspaceId: 'ws', title: null },

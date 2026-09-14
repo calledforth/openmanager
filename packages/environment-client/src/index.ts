@@ -55,6 +55,7 @@ export {
   selectConnection,
   selectPendingInteractions,
   selectSessionList,
+  selectRecentWorkspaces,
   selectWorkspaces,
   shallowEqualArray,
 } from './state'

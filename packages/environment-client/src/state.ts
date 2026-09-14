@@ -637,6 +637,18 @@ export function selectWorkspaces(state: EnvironmentState): Workspace[] {
     .filter((workspace): workspace is Workspace => workspace !== undefined)
 }
 
+/**
+ * Workspaces with recorded session activity, most recent first, for the
+ * new-chat surface. Missing folders and never-used workspaces are left out:
+ * a recent is a place you can go back to. Ties keep listing order.
+ */
+export function selectRecentWorkspaces(state: EnvironmentState, limit = 5): Workspace[] {
+  return selectWorkspaces(state)
+    .filter((workspace) => workspace.exists && workspace.lastActivityAt !== null)
+    .sort((a, b) => Date.parse(b.lastActivityAt!) - Date.parse(a.lastActivityAt!))
+    .slice(0, Math.max(0, limit))
+}
+
 export function selectSessionList(state: EnvironmentState, workspaceId?: string): SessionSummary[] {
   const sessions = state.sessionOrder
     .map((id) => state.sessions[id])

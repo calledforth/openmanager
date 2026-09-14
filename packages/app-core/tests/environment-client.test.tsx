@@ -27,6 +27,8 @@ const WORKSPACE = {
   name: 'repo',
   path: 'C:/repo',
   lastUsedAt: null,
+  lastActivityAt: null,
+  capabilities: { git: false, providers: [] },
   exists: true,
 }
 const SESSION = { sessionId: 'session-1', workspaceId: WORKSPACE.workspaceId, title: 'First' }

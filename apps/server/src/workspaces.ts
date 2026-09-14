@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { basename } from 'node:path'
+import { existsSync } from 'node:fs'
+import { basename, join } from 'node:path'
 import {
   ProofCommandSchemas,
   ProofEventSchemas,
@@ -45,6 +46,12 @@ export interface WorkspaceRegistryOptions {
   events?: { environmentId: string; emit: (event: ProofEvent) => void }
   /** Runs before a removal is announced, so live work in the folder can be stopped. */
   onUnregister?: (workspaceId: string) => void
+  /**
+   * Provider IDs the environment can start a session with right now. Read
+   * each time workspaces are listed, so health changes show up without a
+   * restart. Defaults to none.
+   */
+  availableProviders?: () => readonly string[]
 }
 
 type WorkspaceRow = {
@@ -99,6 +106,10 @@ export function openWorkspaceRegistry(
     remove: database.prepare('DELETE FROM workspaces WHERE workspace_id = ?'),
     markUsed: database.prepare(
       'UPDATE workspaces SET last_used_at = ?, updated_at = ? WHERE workspace_id = ?',
+    ),
+    // One grouped read over the (workspace_id, updated_at) index; no per-row query.
+    lastActivity: database.prepare(
+      'SELECT workspace_id, MAX(updated_at) AS last_activity_at FROM sessions GROUP BY workspace_id',
     ),
   }
 
@@ -159,13 +170,47 @@ export function openWorkspaceRegistry(
     throw error
   }
 
-  const toPublic = (workspace: RegisteredWorkspace): Workspace => ({
-    workspaceId: workspace.workspaceId,
-    name: workspace.name,
-    path: workspace.root,
-    lastUsedAt: workspace.lastUsedAt === null ? null : new Date(workspace.lastUsedAt).toISOString(),
-    exists: isAvailable(workspace.root),
-  })
+  const toIso = (epochMs: number | null): string | null =>
+    epochMs === null ? null : new Date(epochMs).toISOString()
+
+  /** Latest session `updated_at` per workspace, read once per listing. */
+  const readSessionActivity = (): Map<string, number> => {
+    const rows = statements.lastActivity.all() as {
+      workspace_id: string
+      last_activity_at: number | null
+    }[]
+    const activity = new Map<string, number>()
+    for (const row of rows) {
+      if (row.last_activity_at !== null) activity.set(row.workspace_id, row.last_activity_at)
+    }
+    return activity
+  }
+
+  const toPublic = (
+    workspace: RegisteredWorkspace,
+    sessionActivity: Map<string, number> = readSessionActivity(),
+    providers: readonly string[] = options.availableProviders?.() ?? [],
+  ): Workspace => {
+    const exists = isAvailable(workspace.root)
+    const sessionLast = sessionActivity.get(workspace.workspaceId) ?? null
+    const lastActivityAt =
+      sessionLast === null
+        ? workspace.lastUsedAt
+        : Math.max(sessionLast, workspace.lastUsedAt ?? sessionLast)
+    return {
+      workspaceId: workspace.workspaceId,
+      name: workspace.name,
+      path: workspace.root,
+      lastUsedAt: toIso(workspace.lastUsedAt),
+      lastActivityAt: toIso(lastActivityAt),
+      exists,
+      capabilities: {
+        // A single stat of `<root>/.git`; never a tree walk (D9 cost budget).
+        git: exists && existsSync(join(workspace.root, '.git')),
+        providers: [...providers],
+      },
+    }
+  }
 
   const emit = (
     name: 'workspace.updated' | 'workspace.removed',
@@ -286,7 +331,11 @@ export function openWorkspaceRegistry(
   }
 
   let closed = false
-  const list = (): Workspace[] => [...byId.values()].map(toPublic)
+  const list = (): Workspace[] => {
+    const sessionActivity = readSessionActivity()
+    const providers = options.availableProviders?.() ?? []
+    return [...byId.values()].map((workspace) => toPublic(workspace, sessionActivity, providers))
+  }
 
   return {
     list,

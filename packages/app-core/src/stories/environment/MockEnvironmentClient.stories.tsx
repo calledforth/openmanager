@@ -14,6 +14,8 @@ const WORKSPACE = {
   name: 'openmanager',
   path: '/workspace/openmanager',
   lastUsedAt: null,
+  lastActivityAt: null,
+  capabilities: { git: false, providers: [] },
   exists: true,
 }
 const SECOND = {
@@ -21,6 +23,8 @@ const SECOND = {
   name: 'opencode.ref',
   path: '/workspace/opencode.ref',
   lastUsedAt: null,
+  lastActivityAt: null,
+  capabilities: { git: false, providers: [] },
   exists: true,
 }
 const SESSION = { sessionId: 'session-1', workspaceId: WORKSPACE.workspaceId, title: 'Typography system' }

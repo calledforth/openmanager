@@ -14,6 +14,7 @@ import {
   selectConnection,
   selectPendingInteractions,
   selectSessionList,
+  selectRecentWorkspaces,
   selectWorkspaces,
   shallowEqualArray,
   type EnvironmentClient,
@@ -93,6 +94,11 @@ export function useEnvironmentState<T>(
 
 export function useWorkspaces() {
   return useEnvironmentState(selectWorkspaces, shallowEqualArray)
+}
+
+/** Workspaces with session activity, most recent first; see `selectRecentWorkspaces`. */
+export function useRecentWorkspaces() {
+  return useEnvironmentState(selectRecentWorkspaces, shallowEqualArray)
 }
 
 export function useSessionList(workspaceId?: string) {

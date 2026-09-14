@@ -311,6 +311,8 @@ export function createMockEnvironmentClient(
           name: input.name ?? workspaceNameFromPath(input.path),
           path: input.path,
           lastUsedAt: null,
+          lastActivityAt: null,
+          capabilities: { git: false, providers: [] },
           exists: true,
         }
         emit({
