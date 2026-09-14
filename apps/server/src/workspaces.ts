@@ -77,7 +77,6 @@ export function openWorkspaceRegistry(
   const isAllowed = (root: string) => allowedRoots.some((allowed) => isWithinRoot(allowed, root))
   const isAvailable = (root: string): boolean => {
     try {
-      validateRegistrationPath(root)
       return isAllowed(root) && canonicalizeRoot(root) === root
     } catch {
       return false

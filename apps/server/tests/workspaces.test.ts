@@ -297,6 +297,25 @@ describe('workspace registry', () => {
     expect(registry.resolve(alpha.workspaceId)).toBeUndefined()
   })
 
+  it.skipIf(process.platform === 'win32')(
+    'keeps canonical POSIX names distinct from client input syntax',
+    async () => {
+      const { roots, open } = await fixture()
+      const unusual = join(roots.a, 'literal\\name')
+      await mkdir(unusual)
+      const first = open([unusual], { allowedRoots: [roots.a] })
+      const workspace = first.list()[0]!
+      expect(workspace.exists).toBe(true)
+      expect(first.get(workspace.workspaceId)?.root).toBe(canonicalizeRoot(unusual))
+      expect(first.resolve(workspace.workspaceId)?.root).toBe(canonicalizeRoot(unusual))
+      expect(first.resolvePath(workspace.workspaceId, 'new.txt').ok).toBe(true)
+      first.close()
+      const second = open([], { allowedRoots: [roots.a] })
+      expect(second.list()).toEqual([workspace])
+      expect(second.resolve(workspace.workspaceId)?.root).toBe(canonicalizeRoot(unusual))
+    },
+  )
+
   it('fails startup for a root that does not exist', async () => {
     const { roots, open } = await fixture()
     expect(() => open([join(roots.a, 'missing')])).toThrow()
