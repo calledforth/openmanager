@@ -49,7 +49,16 @@ describe('workspace lifecycle', () => {
     const refused = create('create-2')
     await vi.waitFor(() => expect(runtime.ensureSession).toHaveBeenCalledTimes(2))
     fail(new Error('provider refused'))
-    await vi.waitFor(() => expect(service.resolveRuntimeSession(refused)).toBeUndefined())
+    await vi.waitFor(() =>
+      expect(
+        service.dispatch({
+          type: 'command',
+          requestId: 'open-refused',
+          name: 'session.open',
+          payload: { sessionId: refused },
+        }),
+      ).toMatchObject({ type: 'error', error: { code: 'not_found' } }),
+    )
     expect(started).toHaveBeenCalledTimes(1)
   })
 
