@@ -90,6 +90,15 @@ function StoryShell({
   client: MockEnvironmentClient
   children?: ReactNode
 }) {
+  useEffect(() => {
+    const root = document.documentElement
+    const previous = root.dataset.uiFont
+    root.dataset.uiFont = 'system'
+    return () => {
+      if (previous === undefined) delete root.dataset.uiFont
+      else root.dataset.uiFont = previous
+    }
+  }, [])
   return (
     <div
       className="relative h-screen w-screen"
