@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import type { DatabaseSync } from 'node:sqlite'
 import {
   ProofCommandSchemas,
   ProofEventSchemas,
@@ -25,6 +26,12 @@ import {
   type ProtocolEventContext,
   type RuntimeSessionArgs,
 } from '@agentpack/runtime/node'
+import {
+  getSessionSummary,
+  listSessionHistory,
+  listSessionSummaries,
+  listThreadsForSession,
+} from './db/session-store.ts'
 import type { CommandContext } from './command-context.ts'
 
 type ProviderId = keyof typeof providers
@@ -88,6 +95,7 @@ export function createThreadService(
   // Routing is by registered workspace ID only (D9): there is no default that
   // treats the ID as a path, so an unregistered workspace can never run.
   resolveWorkspace: WorkspaceRuntimeResolver = () => undefined,
+  options: { database?: DatabaseSync; flush?: () => void } = {},
 ) {
   const sessions = new Map<string, ThreadRecord>()
   const threads = new Map<string, ThreadRecord>()
@@ -172,6 +180,31 @@ export function createThreadService(
     )
   }
 
+  const persistCreatedThread = (record: ThreadRecord) => {
+    const { session, thread } = record
+    const timestamp = new Date().toISOString()
+    appendEvent(
+      ProofEventSchemas['session.created'].parse({
+        type: 'event',
+        name: 'session.created',
+        eventId: randomUUID(),
+        timestamp,
+        scope: { type: 'environment', environmentId },
+        payload: { session },
+      }),
+    )
+    appendEvent(
+      ProofEventSchemas['thread.created'].parse({
+        type: 'event',
+        name: 'thread.created',
+        eventId: randomUUID(),
+        timestamp,
+        scope: { type: 'session', environmentId, sessionId: session.sessionId },
+        payload: { thread },
+      }),
+    )
+  }
+
   const rollbackSession = (record: ThreadRecord) => {
     if (sessions.get(record.session.sessionId) !== record) return
     sessions.delete(record.session.sessionId)
@@ -241,6 +274,12 @@ export function createThreadService(
       failureReason,
     })
     if (!projected) return
+    // Host identities and user input are already durable before provider work begins.
+    if (
+      options.database &&
+      (projected.name === 'session.created' || projected.name === 'turn.started')
+    )
+      return
     if (projected.name === 'turn.notice') publishTransient(projected)
     else appendEvent(projected)
   }
@@ -303,7 +342,9 @@ export function createThreadService(
         return ProofResponseSchemas['session.list'].parse({
           type: 'response',
           requestId: command.requestId,
-          payload: pageSessionSummaries([...sessions.values()].map(summaryOf), parsed.data.payload),
+          payload: options.database
+            ? listSessionSummaries(options.database, parsed.data.payload)
+            : pageSessionSummaries([...sessions.values()].map(summaryOf), parsed.data.payload),
         })
       }
 
@@ -349,6 +390,7 @@ export function createThreadService(
         }
         sessions.set(session.sessionId, record)
         threads.set(thread.threadId, record)
+        if (options.database) persistCreatedThread(record)
         void record.runtimeSession.catch(() => rollbackSession(record))
         return ProofResponseSchemas['session.create'].parse({
           type: 'response',
@@ -361,6 +403,19 @@ export function createThreadService(
         const parsed = ProofCommandSchemas['session.open'].safeParse(command)
         if (!parsed.success) {
           return errorResult(command.requestId, 'validation', 'Invalid session open request.')
+        }
+        if (options.database && !sessions.has(parsed.data.payload.sessionId)) {
+          options.flush?.()
+          const session = getSessionSummary(options.database, parsed.data.payload.sessionId)
+          if (!session) return errorResult(command.requestId, 'not_found', 'Session not found.')
+          return ProofResponseSchemas['session.open'].parse({
+            type: 'response',
+            requestId: command.requestId,
+            payload: {
+              session,
+              threads: listThreadsForSession(options.database, session.sessionId),
+            },
+          })
         }
         const record = sessions.get(parsed.data.payload.sessionId)
         if (!record) return errorResult(command.requestId, 'not_found', 'Session not found.')
@@ -387,8 +442,12 @@ export function createThreadService(
           type: 'response',
           requestId: command.requestId,
           payload: {
-            session: summaryOf(record),
-            threads: [record.thread],
+            session: options.database
+              ? getSessionSummary(options.database, record.session.sessionId)
+              : summaryOf(record),
+            threads: options.database
+              ? listThreadsForSession(options.database, record.session.sessionId)
+              : [record.thread],
           },
         })
       }
@@ -397,6 +456,16 @@ export function createThreadService(
         const parsed = ProofCommandSchemas['session.history'].safeParse(command)
         if (!parsed.success) {
           return errorResult(command.requestId, 'validation', 'Invalid session history request.')
+        }
+        if (options.database) {
+          options.flush?.()
+          const page = listSessionHistory(options.database, parsed.data.payload)
+          if (!page) return errorResult(command.requestId, 'not_found', 'Thread not found.')
+          return ProofResponseSchemas['session.history'].parse({
+            type: 'response',
+            requestId: command.requestId,
+            payload: page,
+          })
         }
         const record = threads.get(parsed.data.payload.threadId)
         if (!record || record.session.sessionId !== parsed.data.payload.sessionId) {
@@ -447,6 +516,18 @@ export function createThreadService(
           turnId: turn.turnId,
           role: 'user',
           content: [{ type: 'text', text: parsed.data.payload.text }],
+        }
+        if (options.database) {
+          appendEvent(
+            ProofEventSchemas['turn.started'].parse({
+              type: 'event',
+              name: 'turn.started',
+              eventId: randomUUID(),
+              timestamp: new Date().toISOString(),
+              scope: threadScope(record),
+              payload: { turn, userMessage },
+            }),
+          )
         }
         record.turns.push(turn)
         record.messages.push(userMessage)

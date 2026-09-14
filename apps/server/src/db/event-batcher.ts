@@ -6,10 +6,12 @@ import {
 } from '@openmanager/protocol/node'
 import { isTerminal, type DurableProofEvent, type EventRepository } from './event-repository.ts'
 
+export const STREAM_BATCH_MAX_EVENTS = 128
 export const STREAM_BATCH_MAX_BYTES = 16 * 1024
 export const STREAM_BATCH_MAX_WAIT_MS = 100
 
 export interface StreamingEventBatcherOptions {
+  maxEvents?: number
   maxBytes?: number
   maxWaitMs?: number
   /** Timer failures retain the batch for the next flush, close, or append. */
@@ -40,6 +42,7 @@ export function createStreamingEventBatcher<E extends ProofEvent = ProofEvent>(
   flush: (scope: SubscriptionScope, events: readonly E[]) => void,
   options: StreamingEventBatcherOptions = {},
 ) {
+  const maxEvents = options.maxEvents ?? STREAM_BATCH_MAX_EVENTS
   const maxBytes = options.maxBytes ?? STREAM_BATCH_MAX_BYTES
   const maxWaitMs = options.maxWaitMs ?? STREAM_BATCH_MAX_WAIT_MS
   let buffered: E[] = []
@@ -77,7 +80,7 @@ export function createStreamingEventBatcher<E extends ProofEvent = ProofEvent>(
       }
       buffered.push(event)
       bytes += Buffer.byteLength(JSON.stringify(event.payload), 'utf8')
-      if (!streamEvent || bytes >= maxBytes) flushBuffered()
+      if (!streamEvent || bytes >= maxBytes || buffered.length >= maxEvents) flushBuffered()
       else if (!timer) {
         timer = setTimeout(() => {
           try {

@@ -16,7 +16,11 @@ import {
   type EventEnvelope,
   type ProofEvent,
 } from '@openmanager/protocol/node'
-import { providers, type HostDeps, type ProviderBootstrap as RuntimeProviderBootstrap } from '@agentpack/runtime/node'
+import {
+  providers,
+  type HostDeps,
+  type ProviderBootstrap as RuntimeProviderBootstrap,
+} from '@agentpack/runtime/node'
 import { mountAgentRuntime } from './agent-runtime.ts'
 import { createComposerService, desiredSessionConfig } from './composer-service.ts'
 import { openComposerStore } from './composer-store.ts'
@@ -31,7 +35,9 @@ import {
   LOCAL_OWNER_CLAIM_HEADER,
   LOCAL_OWNER_PATH,
 } from './local-owner.ts'
-import { createEventService } from './event-service.ts'
+import { createPersistentEventService } from './event-service.ts'
+import { openEnvironmentDatabase } from './db/database.ts'
+import { createEventRetention } from './db/event-retention.ts'
 import { createLogger } from './logger.ts'
 import { createProviderService } from './provider-service.ts'
 import { createRateLimiter } from './rate-limit.ts'
@@ -155,7 +161,26 @@ export async function startServer(config: ServerConfig) {
       .map(({ id }) => id)
   let publishDurableEvent: (record: DurableEvent) => void = () => undefined
   let publishThreadEvent: (event: EventEnvelope) => void = () => undefined
-  const eventService = createEventService((record) => publishDurableEvent(record))
+  const eventDatabase = openEnvironmentDatabase(config.dataDir)
+  const eventService = createPersistentEventService(
+    eventDatabase,
+    (record) => {
+      // Thread dispatch persists synchronously; its response must precede events on the socket.
+      if (record.event.name.startsWith('workspace.')) publishDurableEvent(record)
+      else queueMicrotask(() => publishDurableEvent(record))
+    },
+    {
+      sessionProviderId: (session) => {
+        const target = resolveWorkspace(session.workspaceId)
+        if (!target) throw new Error('Cannot persist session without a workspace provider')
+        return target.providerId
+      },
+      onError: (error) => log('error', 'event persistence failed', { reason: String(error) }),
+    },
+  )
+  const stopRetention = createEventRetention(eventDatabase).schedule({
+    onError: (error) => log('error', 'event retention failed', { reason: String(error) }),
+  })
   emitWorkspaceEvent = (event) => eventService.append(event)
   const threadService = createThreadService(
     runtime,
@@ -163,8 +188,13 @@ export async function startServer(config: ServerConfig) {
     (event) => eventService.append(event),
     (event) => publishThreadEvent(event),
     resolveWorkspace,
+    { database: eventDatabase, flush: eventService.flush },
   )
-  closeWorkspaceSessions = (workspaceId) => threadService.closeWorkspaceSessions(workspaceId)
+  closeWorkspaceSessions = (workspaceId) => {
+    // Flush before the registry cascades deletion of the projected thread rows.
+    eventService.flush()
+    threadService.closeWorkspaceSessions(workspaceId)
+  }
   const composerService = createComposerService(
     runtime,
     providerService,
@@ -374,6 +404,9 @@ export async function startServer(config: ServerConfig) {
     stopHealthEvents()
     providerService.stop()
     await runtime.shutdown()
+    stopRetention()
+    eventService.close()
+    eventDatabase.close()
     composerStore.close()
     clients.close()
     workspaces.close()
@@ -434,6 +467,9 @@ export async function startServer(config: ServerConfig) {
           server.closeAllConnections()
         })
         closePromise = Promise.all([socketClose, httpClose, runtime.shutdown()]).then(() => {
+          stopRetention()
+          eventService.close()
+          eventDatabase.close()
           composerStore.close()
           clients.close()
           workspaces.close()

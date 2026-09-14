@@ -1,10 +1,16 @@
 import { randomUUID } from 'node:crypto'
+import type { DatabaseSync } from 'node:sqlite'
 import {
   DurableEventSchema,
   type DurableEvent,
   type ProofEvent,
   type SubscriptionScope,
 } from '@openmanager/protocol/node'
+import { createEventRepository, type EventRepositoryOptions } from './db/event-repository.ts'
+import {
+  createRepositoryEventBatcher,
+  type StreamingEventBatcherOptions,
+} from './db/event-batcher.ts'
 
 export type AppendProtocolEvent = (record: DurableEvent) => void
 
@@ -14,10 +20,7 @@ export type AppendProtocolEvent = (record: DurableEvent) => void
  * The callback is the SQLite insertion seam: it receives a fully validated
  * record and must append it before publishing it to subscribers.
  */
-export function createEventService(
-  append: AppendProtocolEvent,
-  epoch: string = randomUUID(),
-) {
+export function createEventService(append: AppendProtocolEvent, epoch: string = randomUUID()) {
   const sequences = new Map<string, number>()
 
   return {
@@ -43,5 +46,26 @@ function scopeKey(scope: SubscriptionScope): string {
       return JSON.stringify([scope.type, scope.environmentId, scope.sessionId])
     case 'thread':
       return JSON.stringify([scope.type, scope.environmentId, scope.sessionId, scope.threadId])
+  }
+}
+
+/** Production boundary: coalesce first, allocate persisted cursors, commit, then publish. */
+export function createPersistentEventService(
+  database: DatabaseSync,
+  publish: AppendProtocolEvent,
+  options: EventRepositoryOptions & StreamingEventBatcherOptions = {},
+) {
+  const batcher = createRepositoryEventBatcher(
+    createEventRepository(database, options),
+    (records) => records.forEach(publish),
+    options,
+  )
+  return {
+    append(event: ProofEvent) {
+      if (event.name === 'turn.notice') throw new Error('turn.notice is transient')
+      batcher.append(event)
+    },
+    flush: batcher.flush,
+    close: batcher.close,
   }
 }
