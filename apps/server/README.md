@@ -45,6 +45,7 @@ with a nonzero exit code and an error on stderr.
 | `--log-level` | `OPENMANAGER_LOG_LEVEL` | `info`                                      |
 | `--allowed-origin` (repeatable) | `OPENMANAGER_ALLOWED_ORIGINS` (comma-separated) | none |
 | `--allowed-host` (repeatable) | `OPENMANAGER_ALLOWED_HOSTS` (comma-separated) | none |
+| `--allowed-workspace-root` (repeatable) | `OPENMANAGER_ALLOWED_WORKSPACE_ROOTS` (platform PATH delimiter) | workspace roots |
 | `--workspace` (repeatable) | `OPENMANAGER_WORKSPACES` (separated by the platform PATH delimiter) | none |
 | `--remint-owner` | none (flag only) | off. Revokes the live owner row and publishes a new credential before listen. |
 | none | `OPENMANAGER_LOCAL_OWNER_CLAIM_KEY` | none. A 32-byte base64url key generated and shared by `pnpm dev:web`; without it `/local-owner` is hidden. |
@@ -253,31 +254,51 @@ exposes are configured at startup:
 pnpm --filter server dev --workspace ~/code/app --workspace ~/code/lib
 ```
 
-Each root is canonicalized with `realpath` (following symlinks, Windows
-junctions and 8.3 short names) and registered in the `workspaces` table, which
-assigns the ID a client sees. The ID is stable across restarts; the path is
-not returned by any command. A root that does not exist fails startup. A root
-configured inside another configured root is folded into the outer one. Only
-the roots configured for the running process are resolvable, even if the table
-still holds earlier rows.
+Each configured root must be an existing readable/searchable directory. The
+server resolves it with `realpath.native` (including symlinks, Windows junctions
+and 8.3 names) and registers its canonical path with a stable SQLite ID. Nested
+roots remain separate projects.
 
-`workspace.list` (`read`) returns `{ workspaceId, name }` for each registered
-root. `session.create` and `provider.probe` take a `workspaceId` and run in
-that root; an unknown ID, including a root path sent in place of an ID, fails
-with `not_found` and a `workspace.rejected` audit event before any runtime
-work. File, git, upload and terminal commands added later obtain their absolute
-path from the registry's `resolvePath(workspaceId, relativePath)`, which:
+`--workspace` roots are also the default registration allowlist. To allow adding
+other projects, configure a broader boundary with repeatable
+`--allowed-workspace-root ~/code` or `OPENMANAGER_ALLOWED_WORKSPACE_ROOTS`
+(platform PATH delimiter). An explicit allowlist replaces the default; configured
+workspaces must be within it. With no allowed roots, additions are denied.
+Removing a project does not change the operator's allowlist.
 
-- refuses absolute paths on either platform, drive-relative paths (`C:file`)
-  and UNC paths (`\\server`, `//server`, `\\wsl$`);
-- treats both `/` and `\` as separators, refuses NUL, and on Windows refuses
-  reserved device names and alternate data streams;
-- resolves the deepest existing ancestor with `realpath`, so a symlink or
-  junction that leaves the root is refused even when the target does not exist
-  yet, and compares final on-disk locations (case-insensitively on Windows and
-  macOS);
-- records a `path.rejected` audit event naming the client, workspace, path and
-  reason.
+`workspace.add` accepts only an absolute path in the **server host's** syntax,
+without `..` segments (either separator), NUL, or ambiguous Windows device/stream
+names. POSIX hosts reject Windows spellings; Windows requires a drive-qualified
+path or ordinary UNC share, not drive-relative, rooted-only, or device namespace
+paths. The server checks directory existence and read/search permission and
+requires the final canonical target to be at or below an allowed root. The
+client only submits input and displays the server result. Rejections are audited
+and do not persist or emit a successful update.
+
+Symlinks/junctions are accepted only when their final target is allowed. Aliases
+to one directory share a registration, whose stored path is the canonical target,
+not the alias. Retargeting that original alias does not move the project. If the
+stored canonical directory itself is replaced by a link, it becomes unavailable;
+re-register the new target explicitly. Canonical paths are compared by whole
+segments with exact case, including on case-sensitive Windows/macOS volumes.
+
+`workspace.list` returns `{ workspaceId, name, path, lastUsedAt, exists }`. Stored
+projects survive restarts. Missing, inaccessible, redirected, or newly disallowed
+paths remain listed with `exists: false` and cannot be used by `get`, `resolve`,
+or `resolvePath`. They become usable again when the same canonical directory is
+accessible and allowed. Explicit missing startup roots fail startup.
+
+`session.create` and `provider.probe` resolve IDs through the server registry
+before starting runtime work. File, git, upload and terminal commands obtain
+paths from `resolvePath(workspaceId, relativePath)`, which also rejects absolute,
+drive-relative and UNC input, checks lexical containment, resolves existing
+ancestors with `realpath`, and rejects symlinks escaping the workspace even for
+not-yet-created children. Relative file operations may normalize internal `..`
+segments that stay inside the workspace; registration never accepts them.
+
+These are checks at registration/use time, not an atomic filesystem sandbox.
+A process able to mutate directories concurrently can race a later filesystem
+operation; providers also apply their own permission policies.
 
 The boundary covers OpenManager's own APIs. It does not constrain what a
 provider CLI reads once it is running in the root; that is governed by the

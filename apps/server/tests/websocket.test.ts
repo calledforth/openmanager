@@ -412,7 +412,7 @@ describe('workspace boundary', () => {
       type: 'environment',
       environmentId: host.server.identity.environmentId,
     })
-    const root = join(host.server.workspaces.get(host.workspaceId)!.root, '..', 'workspace-c')
+    const root = join(host.server.workspaces.get(host.workspaceId)!.root, 'workspace-c')
     await mkdir(root)
     const addId = client.command('workspace.add', { path: root })
     const announced = await client.next()
@@ -446,6 +446,15 @@ describe('workspace boundary', () => {
       clientId: host.server.owner.clientId,
       details: { reason: 'missing', command: 'workspace.add' },
     })
+    // An authenticated owner still cannot expand the operator's filesystem boundary.
+    for (const path of ['../other', `${host.root}/../workspace-a`, join(host.root, '..')]) {
+      const rejectedId = client.command('workspace.add', { path })
+      expect(await client.next()).toMatchObject({
+        type: 'error',
+        requestId: rejectedId,
+        error: { code: 'validation' },
+      })
+    }
     const removeId = client.command('workspace.remove', {
       workspaceId: added.payload.workspace.workspaceId,
     })
