@@ -1,11 +1,17 @@
-import { cleanup, screen, waitFor } from '@testing-library/react'
+import { cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createMockEnvironmentClient, type MockSeed } from '@openmanager/environment-client'
 import { ENVIRONMENT_STORAGE_KEY } from '../lib/environment-store'
 import { renderWebApp } from '../test-utils'
 
-const WORKSPACE = { workspaceId: 'C:/repo', name: 'repo' }
+const WORKSPACE = {
+  workspaceId: 'C:/repo',
+  name: 'repo',
+  path: 'C:/repo',
+  lastUsedAt: null,
+  exists: true,
+}
 const SESSION = { sessionId: 'session-1', workspaceId: WORKSPACE.workspaceId, title: 'Sidebar move' }
 const THREAD = { threadId: 'thread-1', sessionId: SESSION.sessionId }
 
@@ -107,6 +113,34 @@ describe('session workspace', () => {
     const { client } = renderConnected('/sessions/session-1')
     expect(await screen.findByText('In the shared application package.')).toBeInTheDocument()
     expect(client.getState().activeSessionId).toBe('session-1')
+  })
+
+  it('adds a project by typing a path the environment accepts', async () => {
+    const user = userEvent.setup()
+    const { client } = renderConnected('/')
+    await user.click(await screen.findByRole('button', { name: 'Add project' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Add a project' })
+    expect(dialog).toBeInTheDocument()
+    await user.type(screen.getByLabelText('Folder path'), 'C:/other')
+    await user.click(within(dialog).getByRole('button', { name: 'Add project' }))
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Add a project' })).not.toBeInTheDocument()
+    })
+    expect(client.calls).toContainEqual({ command: 'addWorkspace', input: { path: 'C:/other' } })
+    expect(await screen.findByText('other')).toBeInTheDocument()
+  })
+
+  it('marks a registered project whose folder is gone and offers no new agent there', async () => {
+    renderConnected('/', {
+      ...SEED,
+      workspaces: [
+        WORKSPACE,
+        { workspaceId: 'C:/gone', name: 'gone', path: 'C:/gone', lastUsedAt: null, exists: false },
+      ],
+    })
+    expect(await screen.findByText('gone')).toBeInTheDocument()
+    expect(screen.getByText('MISSING')).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'New Agent' })).toHaveLength(2)
   })
 
   it('sends a prompt through the composer and renders the streamed reply', async () => {

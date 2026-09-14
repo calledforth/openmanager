@@ -1,4 +1,4 @@
-import { ProofResponseSchemas, SessionSchema, WorkspaceSchema } from '@openmanager/protocol'
+import { ProofResponseSchemas, SessionSchema } from '@openmanager/protocol'
 import { z } from 'zod'
 import type { EnvironmentCommandName } from './types'
 
@@ -6,8 +6,7 @@ import type { EnvironmentCommandName } from './types'
  * Command name on the wire for each client command. Names the protocol has
  * not defined yet are provisional; an environment that does not advertise them
  * in its handshake capabilities rejects with `capability_missing` before any
- * bytes are sent. Server-side work is tracked in CAL-50 (workspaces) and
- * CAL-58 (session rename/delete).
+ * bytes are sent. Server-side work is tracked in CAL-58 (session rename/delete).
  */
 export const WIRE_COMMANDS = {
   getEnvironment: 'environment.get',
@@ -32,8 +31,8 @@ const payload = <P extends z.ZodType>(schema: P) => z.object({ payload: schema }
 export const WIRE_RESPONSES = {
   'environment.get': payload(ProofResponseSchemas['environment.get'].shape.payload),
   'workspace.list': payload(ProofResponseSchemas['workspace.list'].shape.payload),
-  'workspace.add': payload(z.object({ workspace: WorkspaceSchema })),
-  'workspace.remove': payload(z.null()),
+  'workspace.add': payload(ProofResponseSchemas['workspace.add'].shape.payload),
+  'workspace.remove': payload(ProofResponseSchemas['workspace.remove'].shape.payload),
   'session.list': payload(ProofResponseSchemas['session.list'].shape.payload),
   'session.create': payload(ProofResponseSchemas['session.create'].shape.payload),
   'session.open': payload(ProofResponseSchemas['session.open'].shape.payload),

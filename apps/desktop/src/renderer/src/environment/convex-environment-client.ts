@@ -241,7 +241,15 @@ export function createConvexEnvironmentClient(
   // Convex catalog subscriptions
   // -------------------------------------------------------------------------
 
-  const toWorkspace = (row: WorkspaceRow): Workspace => ({ workspaceId: row.path, name: row.name })
+  // Convex rows carry no last-used or existence data; the desktop adapter is
+  // temporary (CAL-41) and reports every workspace as present.
+  const toWorkspace = (row: WorkspaceRow): Workspace => ({
+    workspaceId: row.path,
+    name: row.name,
+    path: row.path,
+    lastUsedAt: null,
+    exists: true,
+  })
   const toSession = (
     row: { externalId: string; title?: string },
     workspaceId: string,
@@ -718,7 +726,13 @@ export function createConvexEnvironmentClient(
       })
       const workspace: Workspace = row
         ? toWorkspace(row)
-        : { workspaceId: input.path, name: input.name }
+        : {
+            workspaceId: input.path,
+            name: input.name ?? input.path,
+            path: input.path,
+            lastUsedAt: null,
+            exists: true,
+          }
       update((state) => applyWorkspaceList(state, [workspace]))
       return workspace
     },

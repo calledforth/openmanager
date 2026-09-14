@@ -14,6 +14,7 @@ import {
   PROVIDER_PROBE_CAPABILITY,
   type DurableEvent,
   type EventEnvelope,
+  type ProofEvent,
 } from '@openmanager/protocol/node'
 import { providers, type HostDeps, type ProviderBootstrap as RuntimeProviderBootstrap } from '@agentpack/runtime/node'
 import { mountAgentRuntime } from './agent-runtime.ts'
@@ -55,6 +56,8 @@ export const SERVER_CAPABILITIES = [
   'turn.send',
   'turn.interrupt',
   'workspace.list',
+  'workspace.add',
+  'workspace.remove',
 ]
 
 /** A loopback-only listener exposing public liveness and connection discovery. */
@@ -80,9 +83,17 @@ export async function startServer(config: ServerConfig) {
       details: { previousClientId: previousId },
     })
   }
+  let emitWorkspaceEvent: (event: ProofEvent) => void = () => undefined
+  let closeWorkspaceSessions: (workspaceId: string) => void = () => undefined
   let workspaces
   try {
-    workspaces = openWorkspaceRegistry(config.dataDir, workspaceRoots, audit)
+    workspaces = openWorkspaceRegistry(config.dataDir, workspaceRoots, audit, {
+      events: {
+        environmentId: identity.environmentId,
+        emit: (event) => emitWorkspaceEvent(event),
+      },
+      onUnregister: (workspaceId) => closeWorkspaceSessions(workspaceId),
+    })
   } catch (error) {
     composerStore.close()
     clients.close()
@@ -95,7 +106,23 @@ export async function startServer(config: ServerConfig) {
     config.resolveWorkspace ??
     ((workspaceId, context) => {
       const workspace = workspaces.resolve(workspaceId, context)
-      return workspace ? { providerId: 'opencode', cwd: workspace.root } : undefined
+      if (!workspace) return undefined
+      return {
+        providerId: 'opencode',
+        cwd: workspace.root,
+        // "Last used" means a session actually started here, not merely was
+        // asked for. The stamp is bookkeeping: a failure is logged, never fatal.
+        onSessionStarted: () => {
+          try {
+            workspaces.markUsed(workspace.workspaceId)
+          } catch (error) {
+            log('warn', 'workspace last-used stamp failed', {
+              workspaceId: workspace.workspaceId,
+              reason: error instanceof Error ? error.message : 'unknown',
+            })
+          }
+        },
+      }
     })
   let onRuntimeEvent: HostDeps['emitEvent'] = () => undefined
   const runtime = mountAgentRuntime(
@@ -116,6 +143,7 @@ export async function startServer(config: ServerConfig) {
   let publishDurableEvent: (record: DurableEvent) => void = () => undefined
   let publishThreadEvent: (event: EventEnvelope) => void = () => undefined
   const eventService = createEventService((record) => publishDurableEvent(record))
+  emitWorkspaceEvent = (event) => eventService.append(event)
   const threadService = createThreadService(
     runtime,
     providerService,
@@ -123,6 +151,7 @@ export async function startServer(config: ServerConfig) {
     (event) => publishThreadEvent(event),
     resolveWorkspace,
   )
+  closeWorkspaceSessions = (workspaceId) => threadService.closeWorkspaceSessions(workspaceId)
   const composerService = createComposerService(
     runtime,
     providerService,
@@ -311,7 +340,7 @@ export async function startServer(config: ServerConfig) {
     audit,
     bootstrap,
     dispatchCommand: (command, context) =>
-      workspaces.dispatch(command) ??
+      workspaces.dispatch(command, context) ??
       threadService.dispatch(command, context) ??
       providerService.dispatch(command, context) ??
       composerService.dispatch(command),

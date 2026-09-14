@@ -28,7 +28,19 @@ export const SubscriptionScopeSchema = z.discriminatedUnion('type', [
 ])
 
 export const EnvironmentSchema = z.object({ environmentId: EntityIdSchema, name: z.string() })
-export const WorkspaceSchema = z.object({ workspaceId: EntityIdSchema, name: z.string() })
+/**
+ * A folder registered on the environment. `path` is the canonical on-disk
+ * root as the environment resolved it; clients display it but still address
+ * the workspace by ID (D9). `exists` is checked when the workspace is listed,
+ * so a folder moved or deleted since registration reads as missing.
+ */
+export const WorkspaceSchema = z.object({
+  workspaceId: EntityIdSchema,
+  name: z.string(),
+  path: z.string(),
+  lastUsedAt: TimestampSchema.nullable(),
+  exists: z.boolean(),
+})
 export const SessionSchema = z.object({
   sessionId: EntityIdSchema,
   workspaceId: EntityIdSchema,

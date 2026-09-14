@@ -44,6 +44,11 @@ export const ProofEventSchemas = {
     EnvironmentScopeSchema,
     z.object({ workspace: WorkspaceSchema }),
   ),
+  'workspace.removed': event(
+    'workspace.removed',
+    EnvironmentScopeSchema,
+    z.object({ workspaceId: EntityIdSchema }),
+  ),
   'session.created': event(
     'session.created',
     EnvironmentScopeSchema,
@@ -148,6 +153,7 @@ export const ProofEventSchemas = {
 
 export const ProofEventSchema = z.discriminatedUnion('name', [
   ProofEventSchemas['workspace.updated'],
+  ProofEventSchemas['workspace.removed'],
   ProofEventSchemas['session.created'],
   ProofEventSchemas['session.updated'],
   ProofEventSchemas['session.deleted'],

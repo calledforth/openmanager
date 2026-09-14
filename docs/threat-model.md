@@ -113,8 +113,11 @@ access is limited to the owner. Binding browser credentials to a
 non-extractable WebCrypto key (as in D6) is the later hardening step.
 
 **D9. Clients refer to workspaces by ID, never by root path.** The server
-registers workspace roots and gives them IDs. Clients send a workspace ID plus
-a path relative to it. The server resolves the real path (following symlinks
+registers workspace roots and gives them IDs. A client may ask the server to
+register a folder by typing its path (`workspace.add`, `operate`); the server
+validates and canonicalizes it, and the ID it assigns is what every later
+command names. The canonical path is listed back for display. Clients send a
+workspace ID plus a path relative to it. The server resolves the real path (following symlinks
 and Windows junctions, and handling case-insensitivity, UNC, 8.3 short names
 and `\\wsl$`) and rejects anything that lands outside the registered root.
 Absolute paths from clients are rejected. This boundary covers OpenManager's

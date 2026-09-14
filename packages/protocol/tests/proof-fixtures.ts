@@ -17,6 +17,13 @@ export const threadScope = {
   sessionId: 'session-1',
   threadId: 'thread-1',
 } as const
+const workspace = {
+  workspaceId: 'workspace-1',
+  name: 'Project',
+  path: '/home/user/project',
+  lastUsedAt: '2026-09-06T04:00:00Z',
+  exists: true,
+}
 const session = { sessionId: 'session-1', workspaceId: 'workspace-1', title: 'Example' }
 const thread = { threadId: 'thread-1', sessionId: 'session-1' }
 const turn = { turnId: 'turn-1', threadId: 'thread-1', state: 'running' } as const
@@ -31,6 +38,18 @@ const userMessage = {
 export const proofCommands = [
   { type: 'command', requestId: 'r-1', name: 'environment.get', payload: null },
   { type: 'command', requestId: 'r-2', name: 'workspace.list', payload: null },
+  {
+    type: 'command',
+    requestId: 'r-11',
+    name: 'workspace.add',
+    payload: { path: '/home/user/project', name: 'Project' },
+  },
+  {
+    type: 'command',
+    requestId: 'r-12',
+    name: 'workspace.remove',
+    payload: { workspaceId: 'workspace-1' },
+  },
   {
     type: 'command',
     requestId: 'r-3',
@@ -93,8 +112,20 @@ export const proofResponses = {
   'workspace.list': {
     type: 'response',
     requestId: 'r-2',
-    payload: { workspaces: [{ workspaceId: 'workspace-1', name: 'Project' }] },
+    payload: {
+      workspaces: [
+        {
+          workspaceId: 'workspace-1',
+          name: 'Project',
+          path: 'workspace-1',
+          lastUsedAt: null,
+          exists: true,
+        },
+      ],
+    },
   },
+  'workspace.add': { type: 'response', requestId: 'r-11', payload: { workspace } },
+  'workspace.remove': { type: 'response', requestId: 'r-12', payload: null },
   'session.list': { type: 'response', requestId: 'r-3', payload: { sessions: [session] } },
   'session.create': { type: 'response', requestId: 'r-4', payload: { session, thread } },
   'session.open': {
@@ -123,7 +154,21 @@ export const proofEvents = [
     ...base,
     name: 'workspace.updated',
     scope: environmentScope,
-    payload: { workspace: { workspaceId: 'workspace-1', name: 'Project' } },
+    payload: {
+      workspace: {
+        workspaceId: 'workspace-1',
+        name: 'Project',
+        path: 'workspace-1',
+        lastUsedAt: null,
+        exists: true,
+      },
+    },
+  },
+  {
+    ...base,
+    name: 'workspace.removed',
+    scope: environmentScope,
+    payload: { workspaceId: 'workspace-1' },
   },
   { ...base, name: 'session.created', scope: environmentScope, payload: { session } },
   {

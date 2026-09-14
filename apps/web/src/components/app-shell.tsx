@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChatCircleIcon, GearIcon, PulseIcon } from '@phosphor-icons/react'
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import {
@@ -10,7 +10,7 @@ import { WorkspaceSidebar } from '@openmanager/app-core/components/sidebar/Works
 import type { EnvironmentClient } from '@openmanager/environment-client'
 import { useConnection } from '../providers/connection-provider'
 import { cn } from '../lib/utils'
-import { promptForWorkspace } from '../lib/workspace-prompt'
+import { AddWorkspaceDialog } from './add-workspace-dialog'
 import { ConnectionBanner, ConnectionScreen, ConnectionStatusChip } from './connection-surfaces'
 
 const nav = [
@@ -90,7 +90,15 @@ function ConnectedShell({
   children: React.ReactNode
 }) {
   const { ui } = useConnection()
-  const addWorkspace = useCallback(() => promptForWorkspace(client), [client])
+  const [addingWorkspace, setAddingWorkspace] = useState(false)
+  const closeAddWorkspace = useCallback(() => setAddingWorkspace(false), [])
+  // The dialog owns the round trip; the sidebar only needs to know it opened.
+  const addWorkspace = useCallback(async () => {
+    if (!client.supports('addWorkspace')) {
+      throw new Error('This environment does not support adding workspaces yet.')
+    }
+    setAddingWorkspace(true)
+  }, [client])
   const settingsMenu = useMemo(
     () => (
       <div className="flex w-full items-center justify-between gap-2">
@@ -105,6 +113,7 @@ function ConnectedShell({
       <SessionRouteSync pathname={pathname} />
       <WorkspaceSidebar collapsed={false} settingsMenu={settingsMenu} />
       {children}
+      <AddWorkspaceDialog client={client} open={addingWorkspace} onClose={closeAddWorkspace} />
     </EnvironmentApplicationProviders>
   )
 }

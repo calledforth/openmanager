@@ -171,6 +171,31 @@ describe('applyEvent', () => {
     expect(selectSessionList(state)[0]?.status).toBe('error')
   })
 
+  it('removes a workspace and its sessions when the environment announces the removal', () => {
+    const state = seeded()
+    const next = applyEvent(
+      state,
+      event({
+        name: 'workspace.removed',
+        scope: environmentScope,
+        payload: { workspaceId: WORKSPACE.workspaceId },
+      }),
+    )
+    expect(next.workspaceOrder).toEqual([])
+    expect(next.sessionOrder).toEqual([])
+    expect(next.activeSessionId).toBeNull()
+    expect(
+      applyEvent(
+        next,
+        event({
+          name: 'workspace.removed',
+          scope: environmentScope,
+          payload: { workspaceId: 'other' },
+        }),
+      ),
+    ).toBe(next)
+  })
+
   it('drops the active selection when the session is deleted', () => {
     const state = applyEvent(
       seeded(),
