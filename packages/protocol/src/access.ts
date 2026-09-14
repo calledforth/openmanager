@@ -58,6 +58,7 @@ export const COMMAND_ACCESS = Object.freeze({
   [HEARTBEAT_CAPABILITY]: null,
   'environment.get': 'read',
   'workspace.list': 'read',
+  'workspace.icon': 'read',
   'session.list': 'read',
   'session.open': 'read',
   'session.history': 'read',

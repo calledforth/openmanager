@@ -77,6 +77,10 @@ class FakeBridge implements DesktopEventBridge {
   private acp = new Set<(event: AgentEvent) => void>()
   private stream = new Set<(event: AgentEvent) => void>()
   lastProviderId: ProviderId = 'cursor'
+  icons: Record<string, string> = {}
+  resolveWorkspaceIcon(workspacePath: string) {
+    return Promise.resolve(this.icons[workspacePath] ?? null)
+  }
   onAcpEvent(callback: (event: AgentEvent) => void) {
     this.acp.add(callback)
     return () => this.acp.delete(callback)
@@ -811,7 +815,7 @@ describe('createConvexEnvironmentClient', () => {
   })
 
   it('adds and removes workspaces through the Convex mutations', async () => {
-    const { client, convex } = setup()
+    const { client, convex, bridge } = setup()
     convex
       .mutate('workspaces:ensureByPath', ({ path }) => ({ _id: 'ws2', path, name: 'other' }))
       .on('workspaces:getByPath', ({ path }) => (path === 'C:/repo' ? WORKSPACE : null))
@@ -825,6 +829,11 @@ describe('createConvexEnvironmentClient', () => {
       exists: true,
     })
     expect(client.getState().workspaceOrder).toEqual(['C:/repo', 'C:/other'])
+    bridge.icons['C:/other'] = 'data:image/png;base64,iVBORw0KGgo='
+    expect(await client.commands.resolveWorkspaceIcon('C:/other')).toBe(
+      'data:image/png;base64,iVBORw0KGgo=',
+    )
+    expect(await client.commands.resolveWorkspaceIcon('C:/repo')).toBeNull()
     await client.commands.removeWorkspace('C:/repo')
     expect(convex.calls.at(-1)).toMatchObject({ name: 'workspaces:remove', args: { id: 'ws1' } })
     expect(client.getState().workspaceOrder).toEqual(['C:/other'])

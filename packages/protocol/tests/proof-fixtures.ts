@@ -58,6 +58,12 @@ export const proofCommands = [
   },
   {
     type: 'command',
+    requestId: 'r-14',
+    name: 'workspace.icon',
+    payload: { workspaceId: 'workspace-1' },
+  },
+  {
+    type: 'command',
     requestId: 'r-3',
     name: 'session.list',
     payload: { workspaceId: 'workspace-1', limit: 50 },
@@ -138,6 +144,11 @@ export const proofResponses = {
   },
   'workspace.add': { type: 'response', requestId: 'r-11', payload: { workspace } },
   'workspace.remove': { type: 'response', requestId: 'r-12', payload: null },
+  'workspace.icon': {
+    type: 'response',
+    requestId: 'r-14',
+    payload: { iconDataUrl: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=' },
+  },
   'session.list': {
     type: 'response',
     requestId: 'r-3',

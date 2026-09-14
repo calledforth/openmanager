@@ -13,6 +13,7 @@ const commands: EnvironmentCommands = {
   listWorkspaces: reject('listWorkspaces'),
   addWorkspace: reject('addWorkspace'),
   removeWorkspace: reject('removeWorkspace'),
+  resolveWorkspaceIcon: reject('resolveWorkspaceIcon'),
   listSessions: reject('listSessions'),
   createSession: reject('createSession'),
   openSession: reject('openSession'),

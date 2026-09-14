@@ -111,6 +111,37 @@ describe('the shared application over the environment client', () => {
     expect(container.querySelector('textarea')?.disabled).toBe(true)
   })
 
+  it('shows the workspace icon the environment resolves and falls back when it has none', async () => {
+    const other = { ...WORKSPACE, workspaceId: 'C:/other', path: 'C:/other', name: 'other' }
+    const icon = 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4='
+    const client = createMockEnvironmentClient({
+      seed: { workspaces: [WORKSPACE, other], workspaceIcons: { [WORKSPACE.workspaceId]: icon } },
+    })
+    await render(<App client={client} />)
+    await settle(client)
+    // The sidebar row and the landing's workspace pick both show it; the
+    // workspace without one keeps its folder glyph instead of a broken image.
+    const images = [...container.querySelectorAll('img')].map((img) => img.getAttribute('src'))
+    expect(images.length).toBeGreaterThan(0)
+    expect(new Set(images)).toEqual(new Set([icon]))
+    const asked = client.calls
+      .filter((call) => call.command === 'resolveWorkspaceIcon')
+      .map((call) => call.input)
+    expect(new Set(asked)).toEqual(new Set([WORKSPACE.workspaceId, other.workspaceId]))
+  })
+
+  it('renders folder icons when the environment cannot resolve workspace icons', async () => {
+    const client = createMockEnvironmentClient({
+      seed: SEEDED_HISTORY,
+      capabilities: ['listWorkspaces', 'listSessions', 'createSession', 'openSession'],
+    })
+    await render(<App client={client} />)
+    await settle(client)
+    expect(container.textContent).toContain('repo')
+    expect(container.querySelector('img')).toBeNull()
+    expect(client.calls.some((call) => call.command === 'resolveWorkspaceIcon')).toBe(false)
+  })
+
   it('opens a session from the sidebar and shows its mocked message list', async () => {
     const client = createMockEnvironmentClient({ seed: SEEDED_HISTORY })
     await render(<App client={client} />)

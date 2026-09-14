@@ -19,6 +19,7 @@ import {
   resolveWorkspacePath,
   validateRegistrationPath,
 } from './workspace-paths.ts'
+import { resolveWorkspaceIconDataUrl } from './workspace-icons.ts'
 
 export interface RegisteredWorkspace {
   readonly workspaceId: string
@@ -363,7 +364,25 @@ export function openWorkspaceRegistry(
       byId.set(workspaceId, Object.freeze({ ...workspace, lastUsedAt: now }))
     },
 
-    dispatch(command: CommandEnvelope, context?: CommandContext): unknown | undefined {
+    /**
+     * The icon a sidebar shows for a workspace, read from the folder on this
+     * environment. Unknown and missing workspaces are audited like any other
+     * lookup; a folder that simply has no icon answers null.
+     */
+    async resolveIcon(workspaceId: string, context?: CommandContext): Promise<string | null> {
+      const workspace = this.resolve(workspaceId, context)
+      if (!workspace) return null
+      try {
+        return await resolveWorkspaceIconDataUrl(workspace.root)
+      } catch {
+        return null
+      }
+    },
+
+    dispatch(
+      command: CommandEnvelope,
+      context?: CommandContext,
+    ): unknown | Promise<unknown> | undefined {
       switch (command.name) {
         case 'workspace.list': {
           const parsed = ProofCommandSchemas['workspace.list'].safeParse(command)
@@ -402,6 +421,24 @@ export function openWorkspaceRegistry(
             requestId: command.requestId,
             payload: null,
           })
+        }
+        case 'workspace.icon': {
+          const parsed = ProofCommandSchemas['workspace.icon'].safeParse(command)
+          if (!parsed.success) {
+            return errorResult(command.requestId, 'validation', 'Invalid workspace icon request.')
+          }
+          const { workspaceId } = parsed.data.payload
+          if (!byId.has(workspaceId)) {
+            rejectWorkspace(workspaceId, 'unknown', context)
+            return errorResult(command.requestId, 'not_found', 'Workspace not found.')
+          }
+          return this.resolveIcon(workspaceId, context).then((iconDataUrl) =>
+            ProofResponseSchemas['workspace.icon'].parse({
+              type: 'response',
+              requestId: command.requestId,
+              payload: { iconDataUrl },
+            }),
+          )
         }
         default:
           return undefined

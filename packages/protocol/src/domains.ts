@@ -41,6 +41,17 @@ export const WorkspaceSchema = z.object({
   lastUsedAt: TimestampSchema.nullable(),
   exists: z.boolean(),
 })
+/**
+ * A workspace icon travels inline as a `data:image/...;base64,` URL so a
+ * browser can render it without a second authenticated fetch. The size cap
+ * matches what the environment will read from disk.
+ */
+export const WORKSPACE_ICON_MAX_DATA_URL_LENGTH = 400_000
+export const WorkspaceIconDataUrlSchema = z
+  .string()
+  .max(WORKSPACE_ICON_MAX_DATA_URL_LENGTH)
+  .regex(/^data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/]+=*$/)
+
 export const SessionSchema = z.object({
   sessionId: EntityIdSchema,
   workspaceId: EntityIdSchema,
