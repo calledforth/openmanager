@@ -21,7 +21,10 @@ describe('workspace lifecycle', () => {
       prompt: vi.fn(),
       cancel: vi.fn(),
     } as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>
-    const started = vi.fn()
+    // A throwing stamp is bookkeeping trouble, not a failed start.
+    const started = vi.fn(() => {
+      throw new Error('database locked')
+    })
     const service = createThreadService(
       runtime,
       { rejection: () => undefined },
@@ -39,11 +42,14 @@ describe('workspace lifecycle', () => {
           payload: { workspaceId: '/workspace/project' },
         }),
       ).payload.session.sessionId
-    create('create-1')
+    const first = create('create-1')
     await vi.waitFor(() => expect(runtime.ensureSession).toHaveBeenCalledTimes(1))
     expect(started).not.toHaveBeenCalled()
     gate({ sessionId: 'provider-1', state: 'created' })
     await vi.waitFor(() => expect(started).toHaveBeenCalledTimes(1))
+    await expect(service.resolveRuntimeSession(first)).resolves.toMatchObject({
+      sessionId: 'provider-1',
+    })
 
     // A start the provider refuses is not a use.
     const refused = create('create-2')

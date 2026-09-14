@@ -293,7 +293,13 @@ export function createThreadService(
         const runtimeSession = Promise.resolve()
           .then(() => runtime.ensureSession(route(record)))
           .then((result) => {
-            target.onSessionStarted?.()
+            // Bookkeeping only: the client already holds the session, so a
+            // failure here must not turn a successful start into a rollback.
+            try {
+              target.onSessionStarted?.()
+            } catch {
+              /* recorded nowhere; the session is what matters */
+            }
             return result.sessionId
           })
         record = {
