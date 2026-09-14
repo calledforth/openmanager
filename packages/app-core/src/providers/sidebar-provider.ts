@@ -14,6 +14,7 @@ export interface WorkspaceEntry {
   name: string
   /** The folder is registered but not on disk right now (moved or deleted). */
   missing?: boolean
+  availability?: 'available' | 'missing' | 'inaccessible'
   /** ISO timestamp of the latest session activity; orders the recents list. */
   lastActivityAt?: string | null
   capabilities?: WorkspaceCapabilitySummary

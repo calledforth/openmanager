@@ -402,7 +402,9 @@ function readCollapsed(storage: EnvironmentApplicationOptions['collapsedWorkspac
   try {
     const raw = storage?.getItem(COLLAPSED_WORKSPACES_KEY)
     const parsed: unknown = raw ? JSON.parse(raw) : []
-    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === 'string')
+      : []
   } catch {
     return []
   }
@@ -421,6 +423,7 @@ function toWorkspaceEntry(workspace: Workspace): WorkspaceEntry {
     path: workspace.workspaceId,
     name: workspace.name,
     missing: !workspace.exists,
+    availability: workspace.availability,
     lastActivityAt: workspace.lastActivityAt,
     capabilities: workspace.capabilities,
   }

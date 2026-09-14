@@ -10,6 +10,68 @@ const registered: WorkspaceRuntimeResolver = (workspaceId) =>
     : undefined
 
 describe('workspace lifecycle', () => {
+  it('keeps sessions listed while unavailable, refuses runtime work, and opens after recovery', async () => {
+    let available = true
+    const runtime = {
+      ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-1', state: 'created' }),
+      prompt: vi.fn(),
+      cancel: vi.fn(),
+    }
+    const service = createThreadService(
+      runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
+      { rejection: () => undefined },
+      vi.fn(),
+      undefined,
+      (id) => (available ? registered(id) : undefined),
+    )
+    const created = ProofResponseSchemas['session.create'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'create',
+        name: 'session.create',
+        payload: { workspaceId: '/workspace/project' },
+      }),
+    ).payload
+    await service.resolveRuntimeSession(created.session.sessionId)
+    runtime.ensureSession.mockClear()
+    available = false
+    const open = () =>
+      service.dispatch({
+        type: 'command',
+        requestId: 'open',
+        name: 'session.open',
+        payload: { sessionId: created.session.sessionId },
+      })
+    expect(open()).toMatchObject({
+      type: 'error',
+      error: { code: 'not_found', message: expect.stringContaining('try again') },
+    })
+    expect(
+      service.dispatch({
+        type: 'command',
+        requestId: 'send',
+        name: 'turn.send',
+        payload: {
+          sessionId: created.session.sessionId,
+          threadId: created.thread.threadId,
+          text: 'hello',
+        },
+      }),
+    ).toMatchObject({ type: 'error', error: { code: 'not_found' } })
+    expect(
+      service.dispatch({ type: 'command', requestId: 'list', name: 'session.list', payload: {} }),
+    ).toMatchObject({
+      payload: { sessions: [expect.objectContaining({ sessionId: created.session.sessionId })] },
+    })
+    expect(runtime.ensureSession).not.toHaveBeenCalled()
+    expect(runtime.prompt).not.toHaveBeenCalled()
+    available = true
+    expect(open()).toMatchObject({
+      type: 'response',
+      payload: { session: { sessionId: created.session.sessionId } },
+    })
+  })
+
   it('reports a session as started only once the provider opened it', async () => {
     let gate!: (value: { sessionId: string; state: 'created' }) => void
     let fail!: (error: Error) => void
@@ -527,15 +589,16 @@ describe('session summaries and paginated history', () => {
       ).payload,
     ).toEqual({ sessions: [], nextCursor: null })
 
-    const created = ['a', 'b', 'c'].map((requestId) =>
-      ProofResponseSchemas['session.create'].parse(
-        service.dispatch({
-          type: 'command',
-          requestId,
-          name: 'session.create',
-          payload: { workspaceId: '/workspace/project', title: requestId },
-        }),
-      ).payload,
+    const created = ['a', 'b', 'c'].map(
+      (requestId) =>
+        ProofResponseSchemas['session.create'].parse(
+          service.dispatch({
+            type: 'command',
+            requestId,
+            name: 'session.create',
+            payload: { workspaceId: '/workspace/project', title: requestId },
+          }),
+        ).payload,
     )
     const first = ProofResponseSchemas['session.list'].parse(
       service.dispatch({
@@ -679,4 +742,3 @@ describe('session summaries and paginated history', () => {
     expect(older.nextCursor).toBeNull()
   })
 })
-

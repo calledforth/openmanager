@@ -245,6 +245,8 @@ function removeSession(state: EnvironmentState, sessionId: string): EnvironmentS
     threads,
     activeSessionId: clearActive ? null : state.activeSessionId,
     activeThreadId: clearActive ? null : state.activeThreadId,
+    sessionOpenFailure:
+      state.sessionOpenFailure?.sessionId === sessionId ? null : state.sessionOpenFailure,
   }
 }
 
@@ -501,7 +503,9 @@ export function applySessionHistory(
     const incoming = payload.messages.filter((message) => !existingIds.has(message.messageId))
     const messages =
       current.hydration !== 'ready' ? payload.messages : [...incoming, ...current.messages]
-    const openTurn = payload.turns.find((turn) => turn.state === 'waiting' || turn.state === 'running')
+    const openTurn = payload.turns.find(
+      (turn) => turn.state === 'waiting' || turn.state === 'running',
+    )
     const interactions: PendingInteraction[] = payload.interactions
       .filter((item) => item.threadId === thread.threadId)
       .map((item) => ({
@@ -514,9 +518,10 @@ export function applySessionHistory(
       ...current,
       turns: payload.turns.length > 0 ? payload.turns : current.turns,
       messages,
-      interactions: interactions.length > 0 || current.hydration !== 'ready'
-        ? interactions
-        : current.interactions,
+      interactions:
+        interactions.length > 0 || current.hydration !== 'ready'
+          ? interactions
+          : current.interactions,
       hydration: 'ready',
     }
   })
@@ -545,9 +550,7 @@ export function applyInteractionResolved(
   thread: Thread,
   interactionId: string,
 ): EnvironmentState {
-  return patchThread(state, thread, (current) =>
-    resolveInteraction(current, interactionId, null),
-  )
+  return patchThread(state, thread, (current) => resolveInteraction(current, interactionId, null))
 }
 
 export function applySessionCreated(
@@ -632,10 +635,19 @@ export function applyActiveSession(
   const session = sessionId ? state.sessions[sessionId] : undefined
   const nextSessionId = session ? sessionId : null
   const nextThreadId = session?.threadIds[0] ?? null
-  if (state.activeSessionId === nextSessionId && state.activeThreadId === nextThreadId) {
+  if (
+    state.activeSessionId === nextSessionId &&
+    state.activeThreadId === nextThreadId &&
+    !state.sessionOpenFailure
+  ) {
     return state
   }
-  return { ...state, activeSessionId: nextSessionId, activeThreadId: nextThreadId }
+  return {
+    ...state,
+    activeSessionId: nextSessionId,
+    activeThreadId: nextThreadId,
+    sessionOpenFailure: null,
+  }
 }
 
 export function applyActiveThread(

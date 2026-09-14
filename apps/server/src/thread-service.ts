@@ -235,9 +235,7 @@ export function createThreadService(
       sessionTitle: record.session.title,
       turnId: active?.turn.turnId,
       messageId,
-      interactionId: active
-        ? stableId(active.interactionIds, providerInteractionId)
-        : undefined,
+      interactionId: active ? stableId(active.interactionIds, providerInteractionId) : undefined,
       toolCallId: active ? stableId(active.toolIds, providerToolId) : undefined,
       completionState,
       failureReason,
@@ -305,10 +303,7 @@ export function createThreadService(
         return ProofResponseSchemas['session.list'].parse({
           type: 'response',
           requestId: command.requestId,
-          payload: pageSessionSummaries(
-            [...sessions.values()].map(summaryOf),
-            parsed.data.payload,
-          ),
+          payload: pageSessionSummaries([...sessions.values()].map(summaryOf), parsed.data.payload),
         })
       }
 
@@ -369,6 +364,13 @@ export function createThreadService(
         }
         const record = sessions.get(parsed.data.payload.sessionId)
         if (!record) return errorResult(command.requestId, 'not_found', 'Session not found.')
+        if (!resolveWorkspace(record.session.workspaceId, context)) {
+          return errorResult(
+            command.requestId,
+            'not_found',
+            'The session folder is missing, moved, or inaccessible on this environment. Restore the original folder path or its permissions, then try again. Your session is still listed.',
+          )
+        }
         const providerRejection = rejectProvider(command.requestId, record.providerId)
         if (providerRejection) return providerRejection
         if (!providers[record.providerId].capabilities.canLoadSession) {
@@ -421,6 +423,13 @@ export function createThreadService(
         const record = threads.get(parsed.data.payload.threadId)
         if (!record || record.session.sessionId !== parsed.data.payload.sessionId) {
           return errorResult(command.requestId, 'not_found', 'Thread not found.')
+        }
+        if (!resolveWorkspace(record.session.workspaceId, context)) {
+          return errorResult(
+            command.requestId,
+            'not_found',
+            'The session folder is unavailable. Restore the original folder path or its permissions, then reopen the session.',
+          )
         }
         const providerRejection = rejectProvider(command.requestId, record.providerId)
         if (providerRejection) return providerRejection

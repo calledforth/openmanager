@@ -55,6 +55,8 @@ export const WorkspaceSchema = z.object({
    */
   lastActivityAt: TimestampSchema.nullable().default(null),
   exists: z.boolean(),
+  /** Omitted by older environments; fall back to `exists` in that case. */
+  availability: z.enum(['available', 'missing', 'inaccessible']).optional(),
   /** Defaulted for the same reason: an older environment reads as offering nothing. */
   capabilities: WorkspaceCapabilitiesSchema.default({ git: false, providers: [] }),
 })

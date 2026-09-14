@@ -44,7 +44,12 @@ import type {
   EnvironmentCommandName,
   EnvironmentCommands,
 } from './types'
-import { WIRE_COMMANDS, WIRE_RESPONSES, type WireCommandName, type WireResponsePayload } from './wire'
+import {
+  WIRE_COMMANDS,
+  WIRE_RESPONSES,
+  type WireCommandName,
+  type WireResponsePayload,
+} from './wire'
 
 /** The subset of the WHATWG WebSocket surface the client relies on. */
 export interface WebSocketLike {
@@ -53,10 +58,7 @@ export interface WebSocketLike {
   close(code?: number, reason?: string): void
   addEventListener(type: 'open', listener: () => void): void
   addEventListener(type: 'message', listener: (event: { data: unknown }) => void): void
-  addEventListener(
-    type: 'close',
-    listener: (event: { code: number; reason: string }) => void,
-  ): void
+  addEventListener(type: 'close', listener: (event: { code: number; reason: string }) => void): void
   addEventListener(type: 'error', listener: () => void): void
 }
 
@@ -218,10 +220,7 @@ export function createWebSocketEnvironmentClient(
 
   const scheduleReconnect = (failure: ConnectionFailure) => {
     clearReconnect()
-    if (
-      reconnectPolicy.maxAttempts !== undefined &&
-      attempts >= reconnectPolicy.maxAttempts
-    ) {
+    if (reconnectPolicy.maxAttempts !== undefined && attempts >= reconnectPolicy.maxAttempts) {
       patchConnection({ phase: 'closed', failure })
       return
     }
@@ -461,9 +460,7 @@ export function createWebSocketEnvironmentClient(
         pending.set(requestId, {
           name,
           resolve: (raw) => {
-            const parsed = z
-              .union([WIRE_RESPONSES[name], ErrorEnvelopeSchema])
-              .safeParse(raw)
+            const parsed = z.union([WIRE_RESPONSES[name], ErrorEnvelopeSchema]).safeParse(raw)
             if (!parsed.success) {
               reject(
                 new EnvironmentClientError('validation', `Invalid ${name} response.`, {
@@ -493,7 +490,11 @@ export function createWebSocketEnvironmentClient(
   const sendUnsubscribe = (subscriptionId: string) => {
     if (!capabilities.has(UNSUBSCRIBE_NAME)) return
     const requestId = nextRequestId()
-    pending.set(requestId, { name: UNSUBSCRIBE_NAME, resolve: () => undefined, reject: () => undefined })
+    pending.set(requestId, {
+      name: UNSUBSCRIBE_NAME,
+      resolve: () => undefined,
+      reject: () => undefined,
+    })
     rawSend({
       type: 'command',
       requestId,
@@ -588,6 +589,7 @@ export function createWebSocketEnvironmentClient(
     }
   }
 
+  let openGeneration = 0
   const commands: EnvironmentCommands = {
     async getEnvironment() {
       const payload = await request('environment.get', null)
@@ -623,7 +625,9 @@ export function createWebSocketEnvironmentClient(
       return {
         sessions: payload.sessions
           .map((session) => listed[session.sessionId])
-          .filter((session): session is NonNullable<(typeof listed)[string]> => session !== undefined),
+          .filter(
+            (session): session is NonNullable<(typeof listed)[string]> => session !== undefined,
+          ),
         nextCursor: payload.nextCursor,
       }
     },
@@ -633,27 +637,40 @@ export function createWebSocketEnvironmentClient(
       return payload
     },
     async openSession(sessionId) {
+      const generation = ++openGeneration
       const previous = store.getState().activeSessionId
       store.update((state) => {
         let next = state
         for (const threadId of state.sessions[sessionId]?.threadIds ?? []) {
           next = applyThreadHydration(next, threadId, 'loading')
         }
-        return next
+        return {
+          ...next,
+          sessionOpenFailure:
+            state.sessionOpenFailure?.sessionId === sessionId ? state.sessionOpenFailure : null,
+        }
       })
       let payload: WireResponsePayload<'session.open'>
       try {
         payload = await request('session.open', { sessionId })
       } catch (error) {
+        if (generation !== openGeneration) throw error
         store.update((state) => {
           let next = state
           for (const threadId of state.sessions[sessionId]?.threadIds ?? []) {
             next = applyThreadHydration(next, threadId, 'failed')
           }
-          return next
+          return {
+            ...applyActiveSession(next, sessionId),
+            sessionOpenFailure: {
+              sessionId,
+              message: error instanceof Error ? error.message : 'Could not open this session.',
+            },
+          }
         })
         throw error
       }
+      if (generation !== openGeneration) return
       store.update((state) => applyActiveSession(applySessionOpen(state, payload), sessionId))
       if (supports('loadSessionHistory')) {
         await Promise.all(
@@ -709,9 +726,7 @@ export function createWebSocketEnvironmentClient(
     async respondToInteraction(input) {
       await request('interaction.respond', input)
       const thread: Thread = { threadId: input.threadId, sessionId: input.sessionId }
-      store.update((state) =>
-        applyInteractionResolved(state, thread, input.response.interactionId),
-      )
+      store.update((state) => applyInteractionResolved(state, thread, input.response.interactionId))
     },
   }
 
@@ -720,7 +735,10 @@ export function createWebSocketEnvironmentClient(
     getState: store.getState,
     subscribe: store.subscribe,
     supports,
-    setActiveSession: (sessionId) => store.update((state) => applyActiveSession(state, sessionId)),
+    setActiveSession: (sessionId) => {
+      openGeneration += 1
+      store.update((state) => applyActiveSession(state, sessionId))
+    },
     setActiveThread: (threadId) => store.update((state) => applyActiveThread(state, threadId)),
     connect() {
       if (disposed) return

@@ -35,6 +35,7 @@ export interface SidebarWorkspace {
   name: string
   /** Registered but not on disk right now; no session can start here. */
   missing?: boolean
+  availability?: 'available' | 'missing' | 'inaccessible'
   sessions: SidebarSession[]
 }
 
@@ -295,12 +296,24 @@ function WorkspaceGroup({
           </span>
         </button>
         {workspace.missing ? (
-          <Tooltip content="Folder not found on this environment" side="bottom" align="end">
+          <Tooltip
+            content={
+              workspace.availability === 'inaccessible'
+                ? 'Folder cannot be accessed on this environment'
+                : 'Folder missing or moved on this environment'
+            }
+            side="bottom"
+            align="end"
+          >
             <span
               className="shrink-0 rounded-sm border border-[var(--basis-border-muted)] px-1 py-px text-[9px] leading-none tracking-wide text-[var(--basis-text-faint)]"
-              aria-label="Folder not found on this environment"
+              aria-label={
+                workspace.availability === 'inaccessible'
+                  ? 'Folder cannot be accessed on this environment'
+                  : 'Folder missing or moved on this environment'
+              }
             >
-              MISSING
+              {workspace.availability === 'inaccessible' ? 'INACCESSIBLE' : 'MISSING'}
             </span>
           </Tooltip>
         ) : (

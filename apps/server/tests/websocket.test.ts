@@ -131,6 +131,7 @@ function record(scope: SubscriptionScope) {
                 lastActivityAt: null,
                 capabilities: { git: false, providers: [] },
                 exists: true,
+                availability: 'available',
               },
             },
           }
@@ -397,6 +398,7 @@ describe('workspace boundary', () => {
         lastActivityAt: null,
         capabilities: { git: false, providers: [] },
         exists: true,
+        availability: 'available',
       },
       {
         workspaceId: host.otherWorkspaceId,
@@ -406,6 +408,7 @@ describe('workspace boundary', () => {
         lastActivityAt: null,
         capabilities: { git: false, providers: [] },
         exists: true,
+        availability: 'available',
       },
     ])
   })
@@ -432,6 +435,7 @@ describe('workspace boundary', () => {
       lastActivityAt: null,
       capabilities: { git: false, providers: [] },
       exists: true,
+      availability: 'available',
     })
     expect(announced).toMatchObject({
       name: 'subscription.event',

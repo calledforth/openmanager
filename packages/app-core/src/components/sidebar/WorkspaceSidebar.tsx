@@ -50,6 +50,7 @@ export function WorkspaceSidebar({
         path: workspace.path,
         name: workspace.name,
         missing: workspace.missing,
+        availability: workspace.availability,
         sessions: sessionsByWorkspace[workspace.path] ?? [],
       }))}
       activeWorkspacePath={activeWorkspacePath}
