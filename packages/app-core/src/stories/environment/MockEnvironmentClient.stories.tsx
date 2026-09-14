@@ -91,7 +91,10 @@ function StoryShell({
   children?: ReactNode
 }) {
   return (
-    <div className="relative h-screen w-screen">
+    <div
+      className="relative h-screen w-screen"
+      style={{ fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}
+    >
       <MockEnvironmentApp client={client} />
       {children}
     </div>
@@ -259,7 +262,10 @@ function PaginatedCatalogStory() {
   return (
     <StoryShell client={client}>
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 p-3">
-        <div className="pointer-events-auto mx-auto max-w-5xl rounded-lg border border-border bg-card/95 p-3 shadow-lg backdrop-blur">
+        <div
+          className="pointer-events-auto mx-auto max-w-5xl rounded-lg border border-border bg-card/95 p-3 shadow-lg backdrop-blur"
+          style={{ fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}
+        >
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <p className="text-12-medium text-foreground">CAL-56 catalog</p>
             <button
@@ -286,7 +292,10 @@ function PaginatedCatalogStory() {
             </button>
           </div>
           <div className="grid gap-3 md:grid-cols-2">
-            <pre className="max-h-44 overflow-auto rounded bg-background p-2 text-11-regular text-muted-foreground">
+            <pre
+              className="max-h-44 overflow-auto rounded bg-background p-2 text-11-regular text-muted-foreground"
+              style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' }}
+            >
               {listPage
                 ? `session.list\n${JSON.stringify(
                     {
@@ -298,8 +307,11 @@ function PaginatedCatalogStory() {
                   )}`
                 : 'session.list — sidebar rows are summaries only. Fetch a page to inspect the payload.'}
             </pre>
-            <pre className="max-h-44 overflow-auto rounded bg-background p-2 text-11-regular text-muted-foreground">
-              {opened
+            <pre
+              className="max-h-44 overflow-auto rounded bg-background p-2 text-11-regular text-muted-foreground"
+              style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' }}
+            >
+              {opened}
                 ? `session.open ${JSON.stringify({ session: opened.sessionId, threads: opened.threads, messages: undefined })}\n\nsession.history\n${JSON.stringify(
                     historyPage && {
                       messages: historyPage.messages.map((message) => ({
