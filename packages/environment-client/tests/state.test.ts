@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { ProofEventSchema, type ScopeSnapshot } from '@openmanager/protocol'
 import {
+  applyEnvironment,
   applyEvent,
   applyInteractionResolved,
   applySessionHistory,
@@ -46,6 +47,17 @@ const seeded = (): EnvironmentState => {
   )
   return { ...state, activeSessionId: SESSION.sessionId, activeThreadId: THREAD.threadId }
 }
+
+describe('applyEnvironment', () => {
+  it('keeps the state when the same environment is announced again', () => {
+    const named = applyEnvironment(createInitialState(), { environmentId: ENV, name: 'devbox' })
+    expect(applyEnvironment(named, { environmentId: ENV, name: 'devbox' })).toBe(named)
+    expect(applyEnvironment(named, { environmentId: ENV, name: 'laptop' }).environment).toEqual({
+      environmentId: ENV,
+      name: 'laptop',
+    })
+  })
+})
 
 describe('applyEvent', () => {
   it('fixtures are protocol-valid events', () => {

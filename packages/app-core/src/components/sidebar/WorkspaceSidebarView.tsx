@@ -17,6 +17,7 @@ import { typographyBodySm, typographyLabel } from '../../lib/typography'
 import { ProviderIcon } from '../providers/ProviderIcon'
 import { Tooltip } from '../ui/Tooltip'
 import { SessionBusyLoader, sessionBusyTone } from './SessionBusyLoader'
+import { EnvironmentLabel } from './EnvironmentLabel'
 import { ProjectIcon } from './ProjectIcon'
 
 const SESSION_PREVIEW_LIMIT = 5
@@ -94,6 +95,7 @@ export function flattenSidebarSessions(sessions: SidebarSession[]): SidebarSessi
 
 export function WorkspaceSidebarView({
   collapsed,
+  environmentLabel,
   workspaces,
   activeWorkspacePath,
   activeSessionId,
@@ -108,6 +110,8 @@ export function WorkspaceSidebarView({
   sidebarToggleShortcut = 'Ctrl+B',
 }: {
   collapsed: boolean
+  /** The environment the projects below live on; omitted, no environment copy shows. */
+  environmentLabel?: string
   workspaces: SidebarWorkspace[]
   activeWorkspacePath: string | null
   activeSessionId: string | null
@@ -175,9 +179,14 @@ export function WorkspaceSidebarView({
         </div>
 
         <div className="flex items-center gap-1 px-3 pb-1.5 pt-1">
-          <span className={cn(typographyBodySm, 'min-w-0 flex-1 text-[var(--basis-text-muted)]')}>
-            Projects
-          </span>
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <span className={cn(typographyBodySm, 'shrink-0 text-[var(--basis-text-muted)]')}>
+              Projects
+            </span>
+            {environmentLabel && (
+              <EnvironmentLabel label={environmentLabel} className="text-[11px]" />
+            )}
+          </div>
           <Tooltip content="Add project" side="bottom" align="end">
             <button
               type="button"
@@ -201,6 +210,7 @@ export function WorkspaceSidebarView({
             <WorkspaceGroup
               key={ws.path}
               workspace={ws}
+              environmentLabel={environmentLabel}
               isActiveWorkspace={ws.path === activeWorkspacePath}
               activeSessionId={activeSessionId}
               isCollapsed={collapsedSet.has(ws.path)}
@@ -221,6 +231,7 @@ export function WorkspaceSidebarView({
 
 function WorkspaceGroup({
   workspace,
+  environmentLabel,
   isActiveWorkspace,
   activeSessionId,
   isCollapsed,
@@ -230,6 +241,7 @@ function WorkspaceGroup({
   onDeleteSession,
 }: {
   workspace: SidebarWorkspace
+  environmentLabel?: string
   isActiveWorkspace: boolean
   activeSessionId: string | null
   isCollapsed: boolean
@@ -360,6 +372,9 @@ function WorkspaceGroup({
                 )}
                 <span className={cn(typographyLabel, 'relative flex-1 truncate font-normal')}>
                   {s.title || 'New session'}
+                  {/* The heading above names the environment for sighted users;
+                      the row still says it so a row read alone is unambiguous. */}
+                  {environmentLabel && <span className="sr-only"> on {environmentLabel}</span>}
                 </span>
                 {isChild && !showStatus ? (
                   <Tooltip

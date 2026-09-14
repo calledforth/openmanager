@@ -19,6 +19,7 @@ export function WorkspaceSidebar({
   sidebarToggleShortcut?: string
 }) {
   const {
+    environment,
     workspaces,
     sessionsByWorkspace,
     activeWorkspacePath,
@@ -46,6 +47,7 @@ export function WorkspaceSidebar({
   return (
     <WorkspaceSidebarView
       collapsed={collapsed}
+      environmentLabel={environment?.label}
       workspaces={workspaces.map((workspace) => ({
         path: workspace.path,
         name: workspace.name,

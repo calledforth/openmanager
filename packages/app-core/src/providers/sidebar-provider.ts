@@ -19,6 +19,13 @@ export interface WorkspaceEntry {
   capabilities?: WorkspaceCapabilitySummary
 }
 
+/** Where the listed projects live and their sessions run. */
+export interface SidebarEnvironment {
+  environmentId: string
+  /** The name the environment reports for itself (its host name by default). */
+  label: string
+}
+
 export interface SidebarSessionEntry {
   externalId: string
   title?: string
@@ -35,6 +42,12 @@ export interface SidebarSessionEntry {
  * navigation commands (re-exposed from session state so views need one hook).
  */
 export interface SidebarDataValue {
+  /**
+   * The environment every listed project and session belongs to. Hosts that
+   * do not know one (or have not heard its name yet) leave it out and views
+   * show no environment copy.
+   */
+  environment?: SidebarEnvironment
   workspaces: WorkspaceEntry[]
   /**
    * Workspaces with session activity, most recent first, for the new-chat

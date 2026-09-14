@@ -312,6 +312,13 @@ export function createWebSocketEnvironmentClient(
     }
     environmentId = bootstrap.environmentId
     capabilities = new Set(bootstrap.capabilities)
+    // The handshake already names the environment, so views can label it
+    // without an `environment.get` round trip (or a server that lacks one).
+    const label = typeof bootstrap.label === 'string' ? bootstrap.label.trim() : ''
+    if (label) {
+      const environment = { environmentId: bootstrap.environmentId, name: label }
+      store.update((state) => applyEnvironment(state, environment))
+    }
     ready = true
     attempts = 0
     connectionGeneration += 1

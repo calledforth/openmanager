@@ -41,6 +41,7 @@ import {
   SidebarDataContext,
   toggleCollapsedWorkspace,
   type SidebarDataValue,
+  type SidebarEnvironment,
   type SidebarSessionEntry,
   type WorkspaceEntry,
 } from './sidebar-provider'
@@ -434,6 +435,7 @@ function EnvironmentSidebarDataProvider({
   children: ReactNode
 }) {
   const session = useContext(SessionStateContext)!
+  const environmentState = useEnvironmentState((state) => state.environment)
   const workspaces = useWorkspaces()
   const recentWorkspaces = useRecentWorkspaces()
   const sessions = useSessionList()
@@ -456,6 +458,12 @@ function EnvironmentSidebarDataProvider({
     [storage],
   )
 
+  const environment = useMemo<SidebarEnvironment | undefined>(() => {
+    const label = environmentState?.name.trim()
+    return environmentState && label
+      ? { environmentId: environmentState.environmentId, label }
+      : undefined
+  }, [environmentState])
   const workspaceEntries = useMemo(() => workspaces.map(toWorkspaceEntry), [workspaces])
   const recentEntries = useMemo(() => recentWorkspaces.map(toWorkspaceEntry), [recentWorkspaces])
   const sessionsByWorkspace = useMemo(() => {
@@ -480,6 +488,7 @@ function EnvironmentSidebarDataProvider({
 
   const value = useMemo<SidebarDataValue>(
     () => ({
+      environment,
       workspaces: workspaceEntries,
       recentWorkspaces: recentEntries,
       isWorkspacesLoading,
@@ -496,6 +505,7 @@ function EnvironmentSidebarDataProvider({
     }),
     [
       collapsedWorkspacePaths,
+      environment,
       isWorkspacesLoading,
       recentEntries,
       session.activeSessionId,

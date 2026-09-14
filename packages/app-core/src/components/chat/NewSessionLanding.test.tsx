@@ -24,6 +24,38 @@ describe('NewSessionLandingView', () => {
     expect(html).not.toContain('Select or create a session')
   })
 
+  it('names the environment the new session will run on', () => {
+    const html = renderToStaticMarkup(
+      <NewSessionLandingView
+        environmentLabel="devbox"
+        workspaces={[{ path: '/repos/openmanager', name: 'openmanager' }]}
+        activeWorkspacePath="/repos/openmanager"
+        isWorkspacesLoading={false}
+        isStarting={false}
+        onSelectWorkspace={() => undefined}
+        onAddWorkspace={() => undefined}
+      />,
+    )
+
+    expect(html).toContain('Environment: </span><span class="truncate">devbox</span>')
+    expect(html).toContain('Start with a message below')
+  })
+
+  it('shows no environment copy when the host does not know one', () => {
+    const html = renderToStaticMarkup(
+      <NewSessionLandingView
+        workspaces={[{ path: '/repos/openmanager', name: 'openmanager' }]}
+        activeWorkspacePath="/repos/openmanager"
+        isWorkspacesLoading={false}
+        isStarting={false}
+        onSelectWorkspace={() => undefined}
+        onAddWorkspace={() => undefined}
+      />,
+    )
+
+    expect(html).not.toContain('Environment:')
+  })
+
   it('offers recent projects as chips with their capability hints, skipping the active one', () => {
     const html = renderToStaticMarkup(
       <NewSessionLandingView
@@ -99,5 +131,21 @@ describe('NewSessionLandingView', () => {
 
     expect(html).toContain('Start with a project')
     expect(html).toContain('Add project')
+  })
+
+  it('says which environment an added folder must live on', () => {
+    const html = renderToStaticMarkup(
+      <NewSessionLandingView
+        environmentLabel="devbox"
+        workspaces={[]}
+        activeWorkspacePath={null}
+        isWorkspacesLoading={false}
+        isStarting={false}
+        onSelectWorkspace={() => undefined}
+        onAddWorkspace={() => undefined}
+      />,
+    )
+
+    expect(html).toContain('Add a folder on devbox to open a fresh session.')
   })
 })
