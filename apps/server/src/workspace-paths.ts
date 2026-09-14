@@ -1,4 +1,4 @@
-import { accessSync, constants, realpathSync, statSync } from 'node:fs'
+import { accessSync, constants, lstatSync, readlinkSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, join, posix, resolve, sep, win32 } from 'node:path'
 
 /**
@@ -36,6 +36,40 @@ export function canonicalizeRoot(root: string): string {
   }
   accessSync(real, constants.R_OK | constants.X_OK)
   return real
+}
+
+/**
+ * The canonical spelling a root that can no longer be opened would have, so
+ * a restart finds the registration `canonicalizeRoot` stored for it. The
+ * deepest resolvable ancestor is realpath'd (8.3 short names, casing) and a
+ * dangling symlink or junction is followed to its target.
+ */
+export function canonicalizeUnavailableRoot(root: string): string {
+  let path = resolve(root)
+  const missing: string[] = []
+  for (let links = 0; ; ) {
+    try {
+      const real = realpathSync.native(path)
+      return missing.length ? join(real, ...missing) : real
+    } catch {
+      let target: string | undefined
+      try {
+        if (lstatSync(path).isSymbolicLink() && links++ < 40) {
+          target = resolve(dirname(path), readlinkSync(path))
+        }
+      } catch {
+        // Not there at all: fall through to its parent.
+      }
+      if (target !== undefined) {
+        path = target
+        continue
+      }
+      const parent = dirname(path)
+      if (parent === path) return join(path, ...missing)
+      missing.unshift(basename(path))
+      path = parent
+    }
+  }
 }
 
 /** Whether `candidate` is `root` or below it, comparing whole path segments. */

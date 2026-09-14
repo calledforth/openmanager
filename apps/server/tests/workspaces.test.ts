@@ -109,6 +109,21 @@ describe('workspace registry', () => {
     }
   })
 
+  it('keeps a workspace configured only through a link when its target goes missing', async () => {
+    const { roots, open, base } = await fixture()
+    const link = join(base, 'alpha-link')
+    await symlink(roots.a, link, process.platform === 'win32' ? 'junction' : 'dir')
+    const registry = open([link])
+    const [alpha] = registry.list()
+    expect(alpha).toMatchObject({ path: canonicalizeRoot(roots.a), availability: 'available' })
+    registry.close()
+    await rm(roots.a, { recursive: true })
+    const restarted = open([link])
+    expect(restarted.list()).toEqual([
+      expect.objectContaining({ workspaceId: alpha!.workspaceId, availability: 'missing' }),
+    ])
+  })
+
   it('assigns stable IDs to canonical roots and lists them with their path', async () => {
     const { roots, open, base } = await fixture()
     await symlink(

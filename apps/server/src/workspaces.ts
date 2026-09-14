@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { basename, join, resolve } from 'node:path'
+import { basename, join } from 'node:path'
 import {
   ProofCommandSchemas,
   ProofEventSchemas,
@@ -15,6 +15,7 @@ import type { CommandContext } from './command-context.ts'
 import { openEnvironmentDatabase } from './db/database.ts'
 import {
   canonicalizeRoot,
+  canonicalizeUnavailableRoot,
   isWithinRoot,
   PathBoundaryError,
   resolveWorkspacePath,
@@ -89,7 +90,9 @@ export function openWorkspaceRegistry(
     try {
       return canonicalizeRoot(root)
     } catch (error) {
-      if (hasCode(error, 'ENOENT', 'ENOTDIR', 'EACCES', 'EPERM')) return resolve(root)
+      if (hasCode(error, 'ENOENT', 'ENOTDIR', 'EACCES', 'EPERM')) {
+        return canonicalizeUnavailableRoot(root)
+      }
       throw error
     }
   })
@@ -185,7 +188,7 @@ export function openWorkspaceRegistry(
       try {
         root = canonicalizeRoot(configured)
       } catch (error) {
-        if (findByRoot(resolve(configured))) continue
+        if (findByRoot(canonicalizeUnavailableRoot(configured))) continue
         throw error
       }
       if (!isAllowed(root)) throw new Error('Configured workspace is outside allowed roots.')
