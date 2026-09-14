@@ -6,6 +6,8 @@ import {
   ENVIRONMENT_STORAGE_KEY,
   LEGACY_ENVIRONMENT_STORAGE_KEY,
   environmentBootstrapUrl,
+  environmentLocalOwnerUrl,
+  isLoopbackEnvironmentEndpoint,
   parseEnvironmentCredential,
   parseEnvironmentEndpoint,
   parseStoredEnvironment,
@@ -32,6 +34,12 @@ describe('parseEnvironmentEndpoint', () => {
     expect(parseEnvironmentEndpoint(' https://env.example/path/ ')).toBe('https://env.example/path')
   })
 
+  it('treats only loopback HTTP endpoints as local-owner eligible', () => {
+    expect(isLoopbackEnvironmentEndpoint('http://127.0.0.1:43120')).toBe(true)
+    expect(isLoopbackEnvironmentEndpoint('http://localhost:43120')).toBe(true)
+    expect(isLoopbackEnvironmentEndpoint('https://tunnel.example')).toBe(false)
+  })
+
   it('rejects credentials, non-http schemes, and invalid URLs', () => {
     expect(parseEnvironmentEndpoint('')).toBeNull()
     expect(parseEnvironmentEndpoint('not-a-url')).toBeNull()
@@ -43,6 +51,7 @@ describe('parseEnvironmentEndpoint', () => {
     const endpoint = parseEnvironmentEndpoint('https://host.example/openmanager/')
     expect(endpoint).toBe('https://host.example/openmanager')
     expect(environmentBootstrapUrl(endpoint!)).toBe('https://host.example/openmanager/bootstrap')
+    expect(environmentLocalOwnerUrl(endpoint!)).toBe('https://host.example/openmanager/local-owner')
   })
 })
 

@@ -19,11 +19,17 @@ import { providers, type HostDeps, type ProviderBootstrap as RuntimeProviderBoot
 import { mountAgentRuntime } from './agent-runtime.ts'
 import { createComposerService, desiredSessionConfig } from './composer-service.ts'
 import { openComposerStore } from './composer-store.ts'
-import { createAuditLog } from './audit.ts'
+import { auditValue, createAuditLog } from './audit.ts'
 import type { ServerConfig } from './config.ts'
 import { validateHosts, validateOrigins, validateWorkspaceRoots } from './config.ts'
 import { openAuthorizedClients } from './authorized-clients.ts'
 import { loadEnvironmentIdentity } from './identity.ts'
+import {
+  evaluateLocalOwnerAccess,
+  evaluateLocalOwnerRouteAccess,
+  LOCAL_OWNER_CLAIM_HEADER,
+  LOCAL_OWNER_PATH,
+} from './local-owner.ts'
 import { createEventService } from './event-service.ts'
 import { createLogger } from './logger.ts'
 import { createProviderService } from './provider-service.ts'
@@ -63,7 +69,17 @@ export async function startServer(config: ServerConfig) {
   const composerStore = openComposerStore(config.dataDir)
   const clients = openAuthorizedClients(config.dataDir, Date.now, audit)
   // Local first run needs no pairing UI: the process mints the owner credential.
-  const owner = clients.ensureOwner()
+  // Reminting is explicit (`--remint-owner` or `remintOwner()`), not a restart side effect.
+  let owner = clients.ensureOwner()
+  if (config.remintOwner) {
+    const previousId = owner.clientId
+    owner = clients.remintOwner().client
+    audit.record({
+      type: 'owner.reminted',
+      clientId: owner.clientId,
+      details: { previousClientId: previousId },
+    })
+  }
   let workspaces
   try {
     workspaces = openWorkspaceRegistry(config.dataDir, workspaceRoots, audit)
@@ -157,12 +173,132 @@ export async function startServer(config: ServerConfig) {
       response.setHeader('Access-Control-Allow-Origin', request.headers.origin)
     }
     const path = request.url?.split('?')[0]
+    if (request.method === 'OPTIONS' && path === LOCAL_OWNER_PATH) {
+      const access = config.localOwnerClaimKey
+        ? evaluateLocalOwnerRouteAccess(
+            request,
+            (server.address() as AddressInfo | null)?.port ?? config.port,
+          )
+        : 'not_found'
+      if (access !== 'ok') {
+        response.writeHead(access === 'forbidden' ? 403 : 404, {
+          'cache-control': 'no-store',
+        })
+        response.end()
+        return
+      }
+      response.writeHead(204, {
+        'access-control-allow-methods': 'GET',
+        'access-control-allow-headers': LOCAL_OWNER_CLAIM_HEADER,
+        'access-control-max-age': '600',
+        'cache-control': 'no-store',
+      })
+      response.end()
+      return
+    }
     if (request.method === 'GET' && (path === '/health' || path === '/bootstrap')) {
       response.writeHead(200, {
         'content-type': 'application/json; charset=utf-8',
         'cache-control': 'no-store',
       })
       response.end(JSON.stringify(path === '/health' ? { status: 'ok' } : bootstrap()))
+      return
+    }
+    if (request.method === 'GET' && path === LOCAL_OWNER_PATH) {
+      const remoteAddress = request.socket.remoteAddress ?? 'unknown'
+      const access = evaluateLocalOwnerAccess(
+        request,
+        (server.address() as AddressInfo | null)?.port ?? config.port,
+        config.localOwnerClaimKey,
+      )
+      if (access === 'not_found') {
+        audit.record({
+          type: 'owner.claim_denied',
+          remoteAddress,
+          details: { reason: 'not_local_claim', host: auditValue(request.headers.host) },
+        })
+        response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+        response.end('Not found\n')
+        return
+      }
+      const lockout = rateLimiter.blocked('local_owner', remoteAddress)
+      if (!lockout.allowed) {
+        audit.record({
+          type: 'rate_limited',
+          remoteAddress,
+          details: { policy: 'local_owner', retryAfterMs: lockout.retryAfterMs },
+        })
+        response.writeHead(429, {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': 'no-store',
+          'retry-after': String(Math.ceil(lockout.retryAfterMs / 1000)),
+        })
+        response.end(
+          JSON.stringify({
+            type: 'error',
+            requestId: null,
+            error: { code: 'unavailable', message: 'Too many local owner requests.' },
+          }),
+        )
+        return
+      }
+      rateLimiter.consume('local_owner', remoteAddress)
+      if (access === 'forbidden') {
+        audit.record({
+          type: 'owner.claim_denied',
+          remoteAddress,
+          details: { reason: 'origin', origin: auditValue(request.headers.origin) },
+        })
+        response.writeHead(403, {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': 'no-store',
+        })
+        response.end(
+          JSON.stringify({
+            type: 'error',
+            requestId: null,
+            error: {
+              code: 'auth',
+              message: 'Local owner issuance requires a first-party loopback origin.',
+            },
+          }),
+        )
+        return
+      }
+      const credential = clients.publishedOwner()
+      if (credential === undefined) {
+        response.writeHead(503, {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': 'no-store',
+        })
+        response.end(
+          JSON.stringify({
+            type: 'error',
+            requestId: null,
+            error: { code: 'unavailable', message: 'Owner credential is not published.' },
+          }),
+        )
+        return
+      }
+      audit.record({
+        type: 'owner.claimed',
+        clientId: owner.clientId,
+        remoteAddress,
+        details: { origin: auditValue(request.headers.origin) },
+      })
+      response.writeHead(200, {
+        'content-type': 'application/json; charset=utf-8',
+        'cache-control': 'no-store',
+      })
+      response.end(
+        JSON.stringify({
+          environmentId: identity.environmentId,
+          label: identity.label,
+          kind: 'owner',
+          grant: owner.capabilities,
+          credential,
+        }),
+      )
       return
     }
     response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
@@ -208,7 +344,9 @@ export async function startServer(config: ServerConfig) {
   let closePromise: Promise<void> | undefined
   return {
     identity,
-    owner,
+    get owner() {
+      return owner
+    },
     clients,
     workspaces,
     audit,
@@ -226,6 +364,25 @@ export async function startServer(config: ServerConfig) {
       const revoked = clients.revoke(clientId)
       if (revoked) sockets.disconnectClient(clientId)
       return revoked
+    },
+    /**
+     * Replace the owner credential. The previous owner row is revoked and its
+     * live sockets close; the new credential is published in the data directory.
+     */
+    remintOwner() {
+      const previousId = owner.clientId
+      const minted = clients.remintOwner()
+      owner = minted.client
+      sockets.disconnectClient(previousId)
+      // A socket that authenticated just before remint may not be in the map
+      // yet; a second pass after the upgrade handler yields closes it too.
+      setImmediate(() => sockets.disconnectClient(previousId))
+      audit.record({
+        type: 'owner.reminted',
+        clientId: minted.client.clientId,
+        details: { previousClientId: previousId },
+      })
+      return minted
     },
     close: () => {
       if (!closePromise) {

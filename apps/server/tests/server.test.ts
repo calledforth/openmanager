@@ -259,6 +259,7 @@ describe('headless listener', () => {
   it.each([
     ['POST', '/health'],
     ['POST', '/bootstrap'],
+    ['POST', '/local-owner'],
     ['GET', '/health/extra'],
     ['GET', '/bootstrap/extra'],
     ['GET', '/identity.json'],

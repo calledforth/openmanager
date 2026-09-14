@@ -6,6 +6,7 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  rmSync,
   unlinkSync,
   writeSync,
 } from 'node:fs'
@@ -121,6 +122,14 @@ function writeOwnerFile(path: string, credential: string): void {
   }
 }
 
+function restoreOwnerFile(path: string, credential: string | undefined): void {
+  if (credential === undefined) {
+    rmSync(path, { force: true })
+    return
+  }
+  writeOwnerFile(path, credential)
+}
+
 export type AuthorizedClients = ReturnType<typeof openAuthorizedClients>
 
 /** Open the credential store on the environment database. All operations are synchronous point reads and writes. */
@@ -197,6 +206,62 @@ export function openAuthorizedClients(
     return { client, credential }
   }
 
+  const rotateOwner = (now: number) => {
+    const previous = activeOwner.get() as Pick<ClientRow, 'client_id'> | undefined
+    revokeOwners.run(now)
+    const minted = issue(
+      { label: OWNER_LABEL, kind: 'owner', capabilities: OWNER_GRANT },
+      now,
+      false,
+    )
+    writeOwnerFile(ownerPath, minted.credential)
+    return { ...minted, previousId: previous?.client_id }
+  }
+
+  const recordOwnerRotation = (
+    rotated: ReturnType<typeof rotateOwner>,
+  ) => {
+    if (rotated.previousId) {
+      audit?.record({
+        type: 'token.revoked',
+        clientId: rotated.previousId,
+        command: 'owner.rotate',
+        details: {},
+      })
+    }
+    audit?.record({
+      type: 'token.issued',
+      clientId: rotated.client.clientId,
+      command: 'client.issue',
+      details: { kind: rotated.client.kind, label: rotated.client.label },
+    })
+  }
+
+  const withOwnerWrite = <T>(body: () => T): T => {
+    const previousPublished = readOwnerFile(ownerPath)
+    database.exec('BEGIN IMMEDIATE')
+    try {
+      const result = body()
+      database.exec('COMMIT')
+      return result
+    } catch (error) {
+      try {
+        database.exec('ROLLBACK')
+      } catch {
+        /* The failed statement may already have aborted the transaction. */
+      }
+      try {
+        restoreOwnerFile(ownerPath, previousPublished)
+      } catch (restoreError) {
+        throw new AggregateError(
+          [error, restoreError],
+          'Owner rotation failed and the previous credential file could not be restored.',
+        )
+      }
+      throw error
+    }
+  }
+
   return {
     /** Mint a credential for a new client. The raw credential is returned once and never stored. */
     issue(request: ClientGrantRequest) {
@@ -239,6 +304,11 @@ export function openAuthorizedClients(
       return revoked
     },
 
+    /** The published owner credential, or `undefined` if the file is missing or corrupt. */
+    publishedOwner(): string | undefined {
+      return readOwnerFile(ownerPath)
+    },
+
     /**
      * Make sure the local owner can connect without a pairing UI. The owner
      * credential is minted by this process and handed to local clients through
@@ -248,8 +318,7 @@ export function openAuthorizedClients(
      * revoked in the same transaction, so deleting the file rotates the owner.
      */
     ensureOwner(): AuthenticatedClient {
-      database.exec('BEGIN IMMEDIATE')
-      try {
+      const result = withOwnerWrite(() => {
         const now = clock()
         const existing = activeOwner.get() as
           | Pick<ClientRow, 'client_id' | 'label' | 'credential_hash' | 'scopes_json' | 'expires_at'>
@@ -261,42 +330,25 @@ export function openAuthorizedClients(
             // A restored backup or manual chmod may have widened the file;
             // a reused credential is only ever reused owner-only.
             chmodSync(ownerPath, 0o600)
-            database.exec('COMMIT')
-            return client
+            return { client }
           }
         }
-        const previousId = existing?.client_id
-        revokeOwners.run(now)
-        const minted = issue(
-          { label: OWNER_LABEL, kind: 'owner', capabilities: OWNER_GRANT },
-          now,
-          false,
-        )
-        writeOwnerFile(ownerPath, minted.credential)
-        database.exec('COMMIT')
-        if (previousId) {
-          audit?.record({
-            type: 'token.revoked',
-            clientId: previousId,
-            command: 'owner.rotate',
-            details: {},
-          })
-        }
-        audit?.record({
-          type: 'token.issued',
-          clientId: minted.client.clientId,
-          command: 'client.issue',
-          details: { kind: minted.client.kind, label: minted.client.label },
-        })
-        return minted.client
-      } catch (error) {
-        try {
-          database.exec('ROLLBACK')
-        } catch {
-          /* The failed statement may already have aborted the transaction. */
-        }
-        throw error
-      }
+        const rotated = rotateOwner(now)
+        return { client: rotated.client, rotated }
+      })
+      if (result.rotated) recordOwnerRotation(result.rotated)
+      return result.client
+    },
+
+    /**
+     * Explicit remint: always revoke the live owner row and publish a new
+     * credential. Restarts do not do this; the `--remint-owner` flag or
+     * `server.remintOwner()` does.
+     */
+    remintOwner(): { client: AuthenticatedClient; credential: string } {
+      const rotated = withOwnerWrite(() => rotateOwner(clock()))
+      recordOwnerRotation(rotated)
+      return { client: rotated.client, credential: rotated.credential }
     },
 
     close(): void {

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { resolve } from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
@@ -6,6 +7,10 @@ import { fileURLToPath } from 'node:url'
 export const WEB_ORIGINS = 'http://localhost:5173,http://127.0.0.1:5173'
 /** The repository itself is the default workspace, so the dev loop has one to list. */
 export const DEFAULT_WORKSPACE = resolve(fileURLToPath(import.meta.url), '..', '..')
+
+export function createLocalOwnerClaimKey() {
+  return randomBytes(32).toString('base64url')
+}
 
 export function pnpmCommand() {
   return process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
@@ -119,15 +124,20 @@ export function main() {
 
   console.log('[dev:web] starting environment server (http://127.0.0.1:43120) and web (http://127.0.0.1:5173)')
 
+  const localOwnerClaimKey = createLocalOwnerClaimKey()
+
   start(
     'server',
     ['--filter', '@openmanager/server', 'dev'],
     {
       OPENMANAGER_ALLOWED_ORIGINS: WEB_ORIGINS,
+      OPENMANAGER_LOCAL_OWNER_CLAIM_KEY: localOwnerClaimKey,
       OPENMANAGER_WORKSPACES: process.env.OPENMANAGER_WORKSPACES ?? DEFAULT_WORKSPACE,
     },
   )
-  start('web', ['--filter', '@openmanager/web', 'dev'])
+  start('web', ['--filter', '@openmanager/web', 'dev'], {
+    VITE_OPENMANAGER_LOCAL_OWNER_CLAIM_KEY: localOwnerClaimKey,
+  })
 }
 
 if (isExecutedDirectly()) {

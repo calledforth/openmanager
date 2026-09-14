@@ -25,8 +25,10 @@ checks and the tunnel are never a substitute for that check.
 traffic are treated the same. When the Cloudflare tunnel runs, `cloudflared`
 connects to the server from `127.0.0.1`, so every internet request looks local.
 A rule like "loopback is the owner" would therefore make the internet the owner.
-The local owner gets a credential minted by the local process, not trust from
-the socket address.
+The local owner gets a credential minted by the local process. Browser claiming
+also proves possession of a process-scoped key shared out of band by the local
+launcher; socket address, Host, Origin, and proxy fingerprints only narrow the
+surface and are not treated as proof of locality.
 
 **D3. Every client has its own revocable credential.** A credential identifies
 one client (label, device type, created and last-seen time), carries that
@@ -204,7 +206,10 @@ This is the Wave 1 starting point the issues above replace:
   before dispatch (`apps/server/src/authorized-clients.ts`,
   `apps/server/src/websocket.ts`, `packages/protocol/src/access.ts`). The local
   owner credential is minted by the process into `<data-dir>/owner-credential`
-  (CAL-46). Issuing `paired` and `cloud` rows is still open (T4, T5).
+  (CAL-46). The localhost web shell may collect that credential from
+  `GET /local-owner` when the request is loopback plus a first-party loopback
+  origin; reminting is explicit and disconnects the previous owner (CAL-49).
+  Issuing `paired` and `cloud` rows is still open (T4, T5).
 - Every HTTP request and WebSocket upgrade passes a `Host` allowlist (the
   bound loopback address or a configured tunnel host) and then an exact
   `Origin` allowlist; forwarded headers are ignored
@@ -230,9 +235,13 @@ Proposed, not yet filed:
 - **CAL-45 scope addition (D5):** state that `agent` and `terminal` carry the
   same risk, and record per-client agent approval policy as a later
   enforcement step.
-- **CAL-47 scope addition (T9, T2), done:** a `Host` header allowlist. There
-  are no local-only endpoints (D2), so forwarded host and protocol headers are
-  ignored everywhere rather than rejected on a subset.
+- **CAL-47 scope addition (T9, T2), done:** a `Host` header allowlist.
+  Forwarded host and protocol headers are ignored for identity everywhere.
+- **CAL-49 issuance (T2):** `GET /local-owner` is a local-only issuance
+  route, not an authorization shortcut. It answers 404 when `Host` is a
+  tunnel name or when proxy fingerprints (`Forwarded`, `X-Forwarded-*`,
+  `Cf-*`) are present, even if `Host` was rewritten to loopback. `/ws` and
+  commands still require the credential.
 - **CAL-46 scope addition (D11):** trim `/bootstrap` to the pre-auth fields.
 - **CAL-147 wording:** replace "signed-in user without pairing cannot read
   sessions/files" with "a signed-in user cannot reach an environment that is

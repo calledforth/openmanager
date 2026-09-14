@@ -28,6 +28,9 @@ export const AUDIT_EVENT_TYPES = [
   'pairing.exchanged',
   'pairing.rejected',
   'upload.rejected',
+  'owner.claimed',
+  'owner.claim_denied',
+  'owner.reminted',
 ] as const
 export type AuditEventType = (typeof AUDIT_EVENT_TYPES)[number]
 
@@ -55,6 +58,9 @@ export const DEFAULT_AUDIT_OUTCOME = Object.freeze({
   'pairing.exchanged': 'exchanged',
   'pairing.rejected': 'rejected',
   'upload.rejected': 'rejected',
+  'owner.claimed': 'issued',
+  'owner.claim_denied': 'denied',
+  'owner.reminted': 'issued',
 } as const satisfies Record<AuditEventType, AuditOutcome>)
 
 export const AUDIT_QUERY_DEFAULT_LIMIT = 100

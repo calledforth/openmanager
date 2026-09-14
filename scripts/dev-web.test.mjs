@@ -2,7 +2,14 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import process from 'node:process'
 import { test } from 'node:test'
-import { isolatedSpawnOptions, isChildOpen, markChildClosed, pnpmCommand, stopProcessTree } from './dev-web.mjs'
+import {
+  createLocalOwnerClaimKey,
+  isolatedSpawnOptions,
+  isChildOpen,
+  markChildClosed,
+  pnpmCommand,
+  stopProcessTree,
+} from './dev-web.mjs'
 
 function isAlive(pid) {
   try {
@@ -30,6 +37,14 @@ test('Windows launches pnpm through a shell; POSIX uses a process group', () => 
   assert.equal(options.shell, process.platform === 'win32')
   assert.equal(options.detached, process.platform !== 'win32')
   assert.equal(pnpmCommand(), process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm')
+})
+
+test('local owner claim keys carry 256 bits as unpadded base64url', () => {
+  const first = createLocalOwnerClaimKey()
+  const second = createLocalOwnerClaimKey()
+  assert.match(first, /^[A-Za-z0-9_-]{43}$/)
+  assert.notEqual(first, second)
+  assert.equal(Buffer.from(first, 'base64url').byteLength, 32)
 })
 
 test('stopProcessTree terminates nested child processes', async () => {

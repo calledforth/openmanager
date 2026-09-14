@@ -7,6 +7,7 @@ describe('rate limiter', () => {
     expect(RATE_LIMITS).toEqual({
       auth_failure: { limit: 10, windowMs: 60_000 },
       pairing: { limit: 5, windowMs: 60_000 },
+      local_owner: { limit: 10, windowMs: 60_000 },
       prompt: { limit: 30, windowMs: 60_000 },
       mutation: { limit: 120, windowMs: 60_000 },
     })

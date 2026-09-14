@@ -112,7 +112,8 @@ export function EnvironmentConnectForm({
         Client token
       </label>
       <p className="mt-0.5 text-ui-xs text-[var(--basis-text-muted)]">
-        Optional. Stored with the environment, not with a particular URL.
+        Optional. Leave blank on localhost to request the local owner token. Stored with
+        the environment, not with a particular URL.
       </p>
       <input
         id="environment-credential"
