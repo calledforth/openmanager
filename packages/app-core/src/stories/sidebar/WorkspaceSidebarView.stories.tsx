@@ -89,6 +89,7 @@ function Demo({ collapsed }: { collapsed: boolean }) {
         <div className="h-screen w-screen bg-background">
           <WorkspaceSidebarView
             collapsed={isCollapsed}
+            environmentLabel="studio-workstation"
             workspaces={data}
             activeWorkspacePath="/workspace/openmanager"
             activeSessionId={activeSessionId}

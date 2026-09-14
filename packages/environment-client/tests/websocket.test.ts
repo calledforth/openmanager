@@ -142,7 +142,7 @@ async function answerCatalog(
   socket.respond('session.list', { sessions: [], nextCursor: null })
 }
 
-async function connected(capabilities = FULL_CAPABILITIES) {
+async function connected(capabilities = FULL_CAPABILITIES, extraBootstrap: object = {}) {
   FakeSocket.instances = []
   const timers = createTimers()
   let requests = 0
@@ -158,7 +158,7 @@ async function connected(capabilities = FULL_CAPABILITIES) {
   client.connect()
   const socket = FakeSocket.instances[0]!
   socket.open()
-  socket.respond('protocol.handshake', bootstrap(capabilities))
+  socket.respond('protocol.handshake', { ...bootstrap(capabilities), ...extraBootstrap })
   await flush()
   return { client, socket, timers }
 }
@@ -232,6 +232,15 @@ describe('websocket environment client', () => {
     await flush()
     expect(client.getState().environment?.name).toBe('Local')
     expect(client.getState().workspaces[WORKSPACE.workspaceId]).toEqual(WORKSPACE)
+  })
+
+  it('names the environment from the handshake label when it cannot answer environment.get', async () => {
+    const { client, socket } = await connected(
+      FULL_CAPABILITIES.filter((name) => name !== 'environment.get'),
+      { label: '  devbox  ' },
+    )
+    expect(client.getState().environment).toEqual({ environmentId: ENV, name: 'devbox' })
+    expect(socket.sent.some((message) => message.name === 'environment.get')).toBe(false)
   })
 
   it('refuses commands the environment does not advertise before sending anything', async () => {

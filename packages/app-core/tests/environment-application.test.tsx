@@ -113,6 +113,26 @@ describe('the shared application over the environment client', () => {
     expect(container.querySelector('textarea')?.disabled).toBe(true)
   })
 
+  it('names the environment on the sidebar, its session rows, the landing and the project picker', async () => {
+    const client = createMockEnvironmentClient({
+      seed: { ...SEEDED_HISTORY, environment: { environmentId: 'env-1', name: 'devbox' } },
+    })
+    await render(<App client={client} />)
+    const labels = () =>
+      [...container.querySelectorAll('span.sr-only')].filter(
+        (node) => node.textContent === 'Sessions run on ',
+      )
+    // Beside the Projects heading and under the landing headline.
+    expect(labels()).toHaveLength(2)
+    expect(labels()[0]!.nextElementSibling?.textContent).toBe('devbox')
+    expect(buttonWithText('First')!.textContent).toContain('First on devbox')
+
+    await act(() => container.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]')!.click())
+    // The picker menu portals to the body; its footer names the environment too.
+    const menu = document.body.querySelector('[role="listbox"][aria-label="Choose a project"]')
+    expect(menu?.textContent).toContain('Sessions run on devbox')
+  })
+
   it('shows the workspace icon the environment resolves and falls back when it has none', async () => {
     const other = { ...WORKSPACE, workspaceId: 'C:/other', path: 'C:/other', name: 'other' }
     const icon = 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4='

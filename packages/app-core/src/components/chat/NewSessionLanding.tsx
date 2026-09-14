@@ -9,6 +9,7 @@ import {
   GitBranchIcon,
 } from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
+import { EnvironmentLabel } from '../sidebar/EnvironmentLabel'
 import { ProjectIcon } from '../sidebar/ProjectIcon'
 import { SearchableMenu, type SearchableMenuSection } from '../ui/SearchableMenu'
 
@@ -28,6 +29,7 @@ function describeCapabilities(entry: WorkspaceEntry): string | null {
 }
 
 export function NewSessionLandingView({
+  environmentLabel,
   workspaces,
   recentWorkspaces = [],
   activeWorkspacePath,
@@ -36,6 +38,8 @@ export function NewSessionLandingView({
   onSelectWorkspace,
   onAddWorkspace,
 }: {
+  /** Where the session will run; omitted, no environment copy shows. */
+  environmentLabel?: string
   workspaces: WorkspaceEntry[]
   /** Most recently active first; the host may omit it. */
   recentWorkspaces?: WorkspaceEntry[]
@@ -101,7 +105,9 @@ export function NewSessionLandingView({
           </div>
           <div className="text-16-medium text-[var(--basis-text-strong)]">Start with a project</div>
           <div className="mt-1 text-12-regular text-[var(--basis-text-muted)]">
-            Add a project to open a fresh session.
+            {environmentLabel
+              ? `Add a folder on ${environmentLabel} to open a fresh session.`
+              : 'Add a project to open a fresh session.'}
           </div>
           <button
             type="button"
@@ -144,17 +150,25 @@ export function NewSessionLandingView({
             variant="island"
             aria-label="Choose a project"
             footer={({ close }) => (
-              <button
-                type="button"
-                onClick={() => {
-                  close()
-                  onAddWorkspace()
-                }}
-                className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-[11px] text-[var(--basis-text-faint)] transition-colors hover:bg-[var(--basis-surface)]/70 hover:text-[var(--basis-text-muted)]"
-              >
-                <FolderPlusIcon weight="light" className="h-3 w-3" />
-                Add project
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    close()
+                    onAddWorkspace()
+                  }}
+                  className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1 text-left text-[11px] text-[var(--basis-text-faint)] transition-colors hover:bg-[var(--basis-surface)]/70 hover:text-[var(--basis-text-muted)]"
+                >
+                  <FolderPlusIcon weight="light" className="h-3 w-3" />
+                  Add project
+                </button>
+                {environmentLabel && (
+                  <EnvironmentLabel
+                    label={environmentLabel}
+                    className="max-w-[50%] shrink-0 pr-2 text-[10px]"
+                  />
+                )}
+              </div>
             )}
             trigger={({ ref, open, toggle }) => (
               <button
@@ -187,8 +201,14 @@ export function NewSessionLandingView({
           />
         </div>
 
-        <div className="mt-3 text-12-regular text-[var(--basis-text-faint)]">
-          {isStarting ? 'Starting session…' : 'Start with a message below'}
+        <div className="mt-3 flex items-center justify-center gap-1.5 text-12-regular text-[var(--basis-text-faint)]">
+          {environmentLabel && (
+            <>
+              <EnvironmentLabel label={environmentLabel} className="max-w-[240px]" />
+              <span aria-hidden>·</span>
+            </>
+          )}
+          <span>{isStarting ? 'Starting session…' : 'Start with a message below'}</span>
         </div>
 
         {recentChips.length > 0 && (
@@ -234,11 +254,18 @@ export function NewSessionLandingView({
 /** The landing bound to session state and the sidebar contract. */
 export function NewSessionLanding() {
   const { activeWorkspacePath, pendingDraftSessionStart } = useSessionState()
-  const { workspaces, recentWorkspaces, isWorkspacesLoading, createSession, addWorkspace } =
-    useSidebarData()
+  const {
+    environment,
+    workspaces,
+    recentWorkspaces,
+    isWorkspacesLoading,
+    createSession,
+    addWorkspace,
+  } = useSidebarData()
 
   return (
     <NewSessionLandingView
+      environmentLabel={environment?.label}
       workspaces={workspaces}
       recentWorkspaces={recentWorkspaces}
       activeWorkspacePath={activeWorkspacePath}

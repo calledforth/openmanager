@@ -672,7 +672,18 @@ export function applyEnvironment(
   state: EnvironmentState,
   environment: EnvironmentState['environment'],
 ): EnvironmentState {
-  if (state.environment === environment) return state
+  const current = state.environment
+  // Every reconnect re-announces the same environment; keep the state
+  // identity so subscribers do not re-render for it.
+  if (
+    current === environment ||
+    (current &&
+      environment &&
+      current.environmentId === environment.environmentId &&
+      current.name === environment.name)
+  ) {
+    return state
+  }
   return { ...state, environment }
 }
 

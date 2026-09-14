@@ -6,6 +6,7 @@ const meta = {
   component: NewSessionLandingView,
   parameters: { layout: 'fullscreen' },
   args: {
+    environmentLabel: 'studio-workstation',
     workspaces: [
       { path: 'C:\\repos\\openmanager', name: 'openmanager' },
       { path: 'C:\\repos\\agentpack', name: 'agentpack' },
@@ -58,6 +59,11 @@ export const WithRecents: Story = {
 
 export const Starting: Story = {
   args: { isStarting: true },
+}
+
+/** A host that has not learned the environment's name shows no environment copy. */
+export const UnnamedEnvironment: Story = {
+  args: { environmentLabel: undefined },
 }
 
 export const NoProjects: Story = {
