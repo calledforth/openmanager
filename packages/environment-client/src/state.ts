@@ -24,6 +24,8 @@ export const INITIAL_CONNECTION: ConnectionState = {
   hasConnected: false,
   failure: null,
   capabilities: [],
+  attempt: 0,
+  retriesExhausted: false,
 }
 
 export function createInitialState(): EnvironmentState {

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { PROTOCOL_VERSION } from '@openmanager/protocol'
-import { createWebSocketEnvironmentClient, type WebSocketLike } from '../src/websocket'
+import {
+  DEFAULT_RECONNECT,
+  createWebSocketEnvironmentClient,
+  reconnectDelayMs,
+  type WebSocketLike,
+} from '../src/websocket'
 import { selectActiveThread, selectSessionList } from '../src/state'
 import {
   ENV,
@@ -567,6 +572,7 @@ describe('websocket environment client', () => {
     expect(client.getState().connection).toMatchObject({
       phase: 'closed',
       failure: { code: 'protocol_incompatible' },
+      retriesExhausted: true,
     })
     timers.advance(60_000)
     expect(FakeSocket.instances).toHaveLength(1)
@@ -632,5 +638,178 @@ describe('websocket environment client', () => {
     expect(client.getState().connection.phase).toBe('reconnecting')
     timers.advance(100)
     expect(FakeSocket.instances).toHaveLength(2)
+  })
+
+  it('spreads reconnect attempts with jittered exponential backoff', async () => {
+    FakeSocket.instances = []
+    const timers = createTimers()
+    const rolls = [0.5, 0.25, 1]
+    let roll = 0
+    const client = createWebSocketEnvironmentClient({
+      url: 'ws://127.0.0.1:1/ws',
+      WebSocket: FakeSocket,
+      timers,
+      now: timers.now,
+      random: () => rolls[roll++]!,
+      reconnect: { initialDelayMs: 100, maxDelayMs: 400, multiplier: 2 },
+    })
+    client.connect()
+    const first = FakeSocket.instances[0]!
+    first.open()
+    first.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+
+    // window 100 x 0.5
+    first.drop(1006)
+    expect(client.getState().connection).toMatchObject({
+      phase: 'reconnecting',
+      attempt: 1,
+      retriesExhausted: false,
+    })
+    timers.advance(49)
+    expect(FakeSocket.instances).toHaveLength(1)
+    timers.advance(1)
+    expect(FakeSocket.instances).toHaveLength(2)
+
+    // window 200 x 0.25
+    FakeSocket.instances[1]!.drop(1006)
+    expect(client.getState().connection.attempt).toBe(2)
+    timers.advance(49)
+    expect(FakeSocket.instances).toHaveLength(2)
+    timers.advance(1)
+    expect(FakeSocket.instances).toHaveLength(3)
+
+    // window capped at 400 x 1
+    FakeSocket.instances[2]!.drop(1006)
+    expect(client.getState().connection.attempt).toBe(3)
+    timers.advance(399)
+    expect(FakeSocket.instances).toHaveLength(3)
+    timers.advance(1)
+    expect(FakeSocket.instances).toHaveLength(4)
+
+    // A handshake clears the schedule, so the next drop starts at the first window.
+    const fourth = FakeSocket.instances[3]!
+    fourth.open()
+    fourth.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    expect(client.getState().connection).toMatchObject({ attempt: 0, retriesExhausted: false })
+  })
+
+  it('stops retrying once maxAttempts is exhausted, and connect() starts over', async () => {
+    FakeSocket.instances = []
+    const timers = createTimers()
+    const client = createWebSocketEnvironmentClient({
+      url: 'ws://127.0.0.1:1/ws',
+      WebSocket: FakeSocket,
+      timers,
+      now: timers.now,
+      random: () => 0.5,
+      reconnect: { initialDelayMs: 100, maxDelayMs: 100, multiplier: 1, maxAttempts: 1 },
+    })
+    client.connect()
+    const first = FakeSocket.instances[0]!
+    first.open()
+    first.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+
+    first.drop(1006, 'gone')
+    timers.advance(100)
+    expect(FakeSocket.instances).toHaveLength(2)
+    FakeSocket.instances[1]!.drop(1006, 'gone')
+    expect(client.getState().connection).toMatchObject({
+      phase: 'closed',
+      hasConnected: true,
+      retriesExhausted: true,
+      failure: { code: 'unavailable' },
+    })
+    timers.advance(60_000)
+    expect(FakeSocket.instances).toHaveLength(2)
+
+    client.connect()
+    expect(FakeSocket.instances).toHaveLength(3)
+    expect(client.getState().connection).toMatchObject({ attempt: 0, retriesExhausted: false })
+  })
+
+  it('resumes every subscription after a drop and keeps events flowing', async () => {
+    const { client, socket, timers } = await connected()
+    const opened = client.commands.openSession(SESSION.sessionId)
+    await answerOpen(socket)
+    await flush()
+    await opened.catch(() => undefined)
+
+    const scopes = (target: FakeSocket) =>
+      target.sent
+        .filter((message) => message.name === 'subscription.subscribe')
+        .map((message) => (message.payload as { scope: { type: string } }).scope.type)
+    expect(scopes(socket)).toEqual(['environment', 'session', 'thread'])
+
+    const record = (sequence: number, event: unknown) => ({
+      type: 'event',
+      name: 'subscription.event',
+      payload: {
+        subscriptionId: 'sub-thread',
+        record: {
+          cursor: {
+            scope: { ...THREAD, type: 'thread', environmentId: ENV },
+            epoch: 'e',
+            sequence,
+          },
+          event,
+        },
+      },
+    })
+    socket.receive(record(2, turnStarted()))
+    socket.receive(record(3, delta('turn-1', 'assistant-1', 'Hi')))
+
+    socket.drop(1006)
+    await flush()
+    timers.advance(100)
+    const next = FakeSocket.instances[1]!
+    next.open()
+    next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+
+    // Re-subscribed from the handshake alone: no catalog read, no session.open
+    // and no user action have happened yet.
+    expect(scopes(next)).toEqual(['environment', 'session', 'thread'])
+
+    // The cursor survived the drop, so a replayed record is still ignored and a
+    // newer one still lands in the store.
+    next.receive(record(3, delta('turn-1', 'assistant-1', 'Hi')))
+    next.receive(record(4, delta('turn-1', 'assistant-1', '!')))
+    expect(selectActiveThread(client.getState())?.messages[1]?.content).toEqual([
+      { type: 'text', text: 'Hi!' },
+    ])
+  })
+})
+
+describe('reconnectDelayMs', () => {
+  const policy = { initialDelayMs: 500, maxDelayMs: 15_000, multiplier: 2, jitter: 1 }
+
+  it('keeps full jitter inside a doubling window that stops at the cap', () => {
+    expect(reconnectDelayMs(policy, 0, () => 0)).toBe(0)
+    expect(reconnectDelayMs(policy, 0, () => 0.5)).toBe(250)
+    expect(reconnectDelayMs(policy, 3, () => 0.5)).toBe(2000)
+    expect(reconnectDelayMs(policy, 20, () => 1)).toBe(policy.maxDelayMs)
+  })
+
+  it('honours a partial or disabled jitter fraction', () => {
+    expect(reconnectDelayMs({ ...policy, jitter: 0.5 }, 0, () => 0)).toBe(250)
+    expect(reconnectDelayMs({ ...policy, jitter: 0.5 }, 0, () => 1)).toBe(500)
+    expect(reconnectDelayMs({ ...policy, jitter: 0 }, 2, () => 0)).toBe(2000)
+    expect(reconnectDelayMs({ ...policy, jitter: undefined }, 2, () => 0)).toBe(2000)
+  })
+
+  it('defaults to full jitter that never overshoots the window', () => {
+    expect(DEFAULT_RECONNECT.jitter).toBe(1)
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const window = Math.min(
+        DEFAULT_RECONNECT.initialDelayMs * DEFAULT_RECONNECT.multiplier ** attempt,
+        DEFAULT_RECONNECT.maxDelayMs,
+      )
+      const delay = reconnectDelayMs(DEFAULT_RECONNECT, attempt, Math.random)
+      expect(delay).toBeGreaterThanOrEqual(0)
+      expect(delay).toBeLessThanOrEqual(window)
+    }
   })
 })

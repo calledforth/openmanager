@@ -7,9 +7,11 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from 'react'
 import { fetchBootstrap } from '../lib/bootstrap'
+import { isBrowserOnline, subscribeToNetworkStatus } from '../lib/browser-runtime'
 import {
   bootstrapOutcomeFromQuery,
   deriveConnectionUi,
@@ -57,9 +59,17 @@ type ConnectionValue = {
   removeEnvironment: (environmentId: string) => void
   retry: () => void
   changeEnvironment: () => void
+  /**
+   * Increments on every explicit retry and on every return from offline. The
+   * socket provider dials immediately instead of waiting out its backoff.
+   */
+  retryNonce: number
 }
 
 const ConnectionContext = createContext<ConnectionValue | null>(null)
+
+/** Server rendering has no network events; assume a network until told otherwise. */
+const onlineOnServer = () => true
 
 function toSelection(
   registry: EnvironmentRegistry,
@@ -127,6 +137,8 @@ export function ConnectionProvider({
   const [localOwnerClaimFailure, setLocalOwnerClaimFailure] =
     useState<LocalOwnerClaimFailure | null>(null)
   const claimGeneration = useRef(0)
+  const online = useSyncExternalStore(subscribeToNetworkStatus, isBrowserOnline, onlineOnServer)
+  const wasOffline = useRef(false)
 
   const persist = useCallback((next: EnvironmentRegistry) => {
     setRegistry(next)
@@ -201,7 +213,21 @@ export function ConnectionProvider({
       effectiveBootstrap,
       hasConnected || effectiveBootstrap.status === 'ready',
     ),
+    network: { online },
   }
+
+  // Returning from offline is the one event worth acting on: the bootstrap
+  // query and the socket both get to try again straight away.
+  useEffect(() => {
+    if (preview) return
+    if (!online) {
+      wasOffline.current = true
+      return
+    }
+    if (!wasOffline.current) return
+    wasOffline.current = false
+    setBootstrapNonce((value) => value + 1)
+  }, [online, preview])
 
   const ui = deriveConnectionUi(input)
 
@@ -285,6 +311,7 @@ export function ConnectionProvider({
       removeEnvironment,
       retry,
       changeEnvironment,
+      retryNonce: bootstrapNonce,
     }),
     [
       ui,
@@ -296,6 +323,7 @@ export function ConnectionProvider({
       removeEnvironment,
       retry,
       changeEnvironment,
+      bootstrapNonce,
     ],
   )
 

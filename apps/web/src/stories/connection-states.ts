@@ -46,6 +46,17 @@ export const CONNECTION_STORIES: ConnectionStory[] = [
     },
   },
   {
+    id: 'offline',
+    name: 'Offline',
+    summary: 'The device reports no network. Nothing to retry until it returns.',
+    input: {
+      environment: selected,
+      bootstrap: { status: 'loading' },
+      transport: { phase: 'reconnecting', hasConnected: true, failure: null },
+      network: { online: false },
+    },
+  },
+  {
     id: 'unreachable',
     name: 'Server unreachable',
     summary: 'Bootstrap or transport failed without a protocol or auth error.',

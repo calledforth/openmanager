@@ -261,12 +261,16 @@ export function ConnectionBanner({
   state: ConnectionUiState
   handlers?: ConnectionHandlers
 }) {
-  const live = state.kind === 'connecting' || state.kind === 'reconnecting'
+  // An offline banner with no action recovers on its own once the network is
+  // back, so it stays a polite status like connecting and reconnecting. A
+  // banner that offers an action is waiting on a person, so it is assertive.
+  const needsAction = state.kind === 'unreachable' || (state.kind === 'offline' && !!state.action)
+  const live = !needsAction
   return (
     <div
       className={cn(
         'flex shrink-0 items-center justify-between gap-3 border-b px-5 py-2.5',
-        state.kind === 'unreachable'
+        needsAction
           ? 'border-[var(--basis-border)] bg-[var(--basis-surface)]'
           : 'border-[var(--basis-border-muted)] bg-[var(--basis-surface-elevated)]',
       )}
@@ -306,10 +310,14 @@ export function ConnectionStatusChip({ state }: { state: ConnectionUiState }) {
     )
   }
 
+  const needsAttention =
+    state.kind === 'unauthorized' ||
+    state.kind === 'incompatible_protocol' ||
+    (state.kind === 'offline' && !!state.action)
   const tone =
     state.kind === 'ready'
       ? 'text-[var(--basis-session-cube-ready)]'
-      : state.kind === 'unauthorized' || state.kind === 'incompatible_protocol'
+      : needsAttention
         ? 'text-[var(--basis-session-cube-needs)]'
         : 'text-[var(--basis-text-muted)]'
 
