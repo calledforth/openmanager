@@ -248,6 +248,23 @@ describe('websocket environment client', () => {
     expect(page.nextCursor?.sessionId).toBe(SESSION.sessionId)
     expect(client.getState().sessions[SESSION.sessionId]?.threadIds).toEqual([])
 
+    const older = {
+      sessionId: 'session-0',
+      workspaceId: SESSION.workspaceId,
+      title: 'Older',
+      status: 'idle' as const,
+      providerId: 'opencode',
+      updatedAt: '2026-09-09T00:00:00.000Z',
+    }
+    const rest = client.commands.listSessions({ cursor: page.nextCursor!, limit: 1 })
+    socket.respond('session.list', { sessions: [older], nextCursor: null })
+    const second = await rest
+    expect(second.sessions.map((session) => session.sessionId)).toEqual(['session-0'])
+    expect(second.nextCursor).toBeNull()
+    expect(selectSessionList(client.getState()).map((session) => session.sessionId).sort()).toEqual(
+      [SESSION.sessionId, 'session-0'].sort(),
+    )
+
     const opened = client.commands.openSession(SESSION.sessionId)
     await answerOpen(socket, SESSION_SUMMARY, [THREAD], {
       messages: [

@@ -615,8 +615,11 @@ export function createWebSocketEnvironmentClient(
       const query = typeof input === 'string' ? { workspaceId: input } : input
       const payload = await request('session.list', query)
       store.update((state) => applySessionList(state, payload.sessions))
+      const listed = store.getState().sessions
       return {
-        sessions: selectSessionList(store.getState(), query.workspaceId),
+        sessions: payload.sessions
+          .map((session) => listed[session.sessionId])
+          .filter((session): session is NonNullable<(typeof listed)[string]> => session !== undefined),
         nextCursor: payload.nextCursor,
       }
     },
