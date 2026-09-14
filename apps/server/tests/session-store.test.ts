@@ -149,6 +149,26 @@ describe('session history pages', () => {
       insertMessage.run(`message-${ordinal}`, ordinal, ordinal + 1, ordinal + 1)
       insertPart.run(`part-${ordinal}`, `message-${ordinal}`, JSON.stringify({ type: 'text', text: `m${ordinal}` }))
     }
+    const insertInteraction = database.prepare(
+      `INSERT INTO interactions (
+         interaction_id, turn_id, kind, state, request_json, created_at, updated_at
+       ) VALUES (?, 'turn-1', 'permission', ?, ?, 1, 1)`,
+    )
+    for (const [interactionId, state] of [
+      ['interaction-pending', 'pending'],
+      ['interaction-resolved', 'resolved'],
+    ]) {
+      insertInteraction.run(
+        interactionId,
+        state,
+        JSON.stringify({
+          kind: 'permission',
+          interactionId,
+          toolCall: { toolCallId: 'tool-1', title: 'Run tests', kind: 'execute' },
+          options: [{ optionId: 'allow', name: 'Allow once', kind: 'allow_once' }],
+        }),
+      )
+    }
 
     expect(getSessionSummary(database, 'session-1')).toMatchObject({
       sessionId: 'session-1',
@@ -168,6 +188,12 @@ describe('session history pages', () => {
       'message-2',
     ])
     expect(newest?.nextCursor).toEqual({ ordinal: 1 })
+    expect(newest?.interactions).toEqual([
+      {
+        threadId: 'thread-1',
+        interaction: expect.objectContaining({ interactionId: 'interaction-pending' }),
+      },
+    ])
 
     const older = listSessionHistory(database, {
       sessionId: 'session-1',
