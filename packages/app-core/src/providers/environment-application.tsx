@@ -140,7 +140,7 @@ function EnvironmentPlatformCapabilitiesProvider({ children }: { children: React
 interface DraftInternals {
   /** Create the draft's session, open it and adopt it; returns its first
    * thread, or `null` when the draft was closed or replaced meanwhile. */
-  startDraftSession: () => Promise<ThreadTarget | null>
+  startDraftSession: (text: string) => Promise<ThreadTarget | null>
   /** The child session opened from a parent, while it is being viewed. The
    * wire has no parent link, so the relationship is remembered here. */
   childLink: { child: string; parent: string } | null
@@ -239,25 +239,33 @@ function EnvironmentSessionStateProvider({
     [fail, openSessionLatest],
   )
 
-  const startDraftSession = useCallback(async (): Promise<ThreadTarget | null> => {
-    if (!draftWorkspaceId) throw new Error('No draft is open')
-    const generation = draftGenerationRef.current
-    const { session, thread } = await commands.createSession({ workspaceId: draftWorkspaceId })
-    if (draftGenerationRef.current !== generation) {
-      // The user moved on while the session was being created: do not pull
-      // the view back to it or send the prompt. The empty session goes too.
-      void commands.deleteSession(session.sessionId).catch(() => undefined)
-      return null
-    }
-    await openSessionLatest(session.sessionId)
-    setAdoptedDraftSessionId(session.sessionId)
-    // The session exists now; the turn that follows reads as pending until the
-    // environment reports it, then the turn itself is the truth.
-    setPendingDraftSessionStart(false)
-    setTurnPending(true)
-    setDraftWorkspaceId(null)
-    return { sessionId: session.sessionId, threadId: thread.threadId }
-  }, [commands, draftWorkspaceId, openSessionLatest])
+  const startDraftSession = useCallback(
+    async (text: string): Promise<ThreadTarget | null> => {
+      if (!draftWorkspaceId) throw new Error('No draft is open')
+      const generation = draftGenerationRef.current
+      const environmentId = client.getState().environment?.environmentId
+      if (!environmentId) throw new Error('No environment is connected')
+      const { session, thread } = await commands.createSession({
+        environmentId,
+        workspaceId: draftWorkspaceId,
+        providerId: defaultProviderId,
+        firstMessage: text,
+      })
+      if (draftGenerationRef.current !== generation) {
+        // The user moved on while the session was being created: do not pull
+        // the view back to it. Its accepted first turn continues in the sidebar.
+        return null
+      }
+      await openSessionLatest(session.sessionId)
+      setAdoptedDraftSessionId(session.sessionId)
+      // Creation already returned the first turn; its state now drives the composer.
+      setPendingDraftSessionStart(false)
+      setTurnPending(false)
+      setDraftWorkspaceId(null)
+      return { sessionId: session.sessionId, threadId: thread.threadId }
+    },
+    [client, commands, defaultProviderId, draftWorkspaceId, openSessionLatest],
+  )
 
   const value = useMemo<SessionStateValue>(
     () => ({
@@ -270,7 +278,10 @@ function EnvironmentSessionStateProvider({
       defaultProviderId,
       draftRequest,
       error,
-      providerIdForSession: (_sessionId, fallback) => fallback ?? defaultProviderId,
+      providerIdForSession: (sessionId, fallback) =>
+        (client.getState().sessions[sessionId]?.providerId as ProviderId | undefined) ??
+        fallback ??
+        defaultProviderId,
       setDefaultProviderId: setDefaultProviderIdState,
       addWorkspace: async () => {
         setError(null)
@@ -332,6 +343,7 @@ function EnvironmentSessionStateProvider({
       activeWorkspacePath,
       addWorkspace,
       adoptedDraftSessionId,
+      client,
       commands,
       defaultProviderId,
       draftRequest,
@@ -598,10 +610,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
         }
         if (!targetRef.current && isSessionDraftOpen) {
           beginDraftTurn()
-          const created = await startDraftSession()
-          if (!created) return
-          beginSessionTurn()
-          await commands.sendTurn({ ...created, text })
+          await startDraftSession(text)
           return
         }
         const current = targetRef.current

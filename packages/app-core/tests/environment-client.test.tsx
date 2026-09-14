@@ -19,7 +19,11 @@ import {
 } from '../src/providers/environment-client'
 import { WorkspaceSidebarView } from '../src/components/sidebar/WorkspaceSidebarView'
 import { MessageInputView } from '../src/components/chat/MessageInputView'
-import { AssistantMessage, ChatViewPanel, UserMessage } from '../src/components/chat/ChatViewPrimitives'
+import {
+  AssistantMessage,
+  ChatViewPanel,
+  UserMessage,
+} from '../src/components/chat/ChatViewPrimitives'
 import { ThemeProvider } from '../src/providers/theme-provider'
 
 const WORKSPACE = {
@@ -28,7 +32,7 @@ const WORKSPACE = {
   path: 'C:/repo',
   lastUsedAt: null,
   lastActivityAt: null,
-  capabilities: { git: false, providers: [] },
+  capabilities: { git: false, providers: ['opencode'] },
   exists: true,
 }
 const SESSION = { sessionId: 'session-1', workspaceId: WORKSPACE.workspaceId, title: 'First' }
@@ -82,7 +86,13 @@ function Sidebar() {
       activeSessionId={active?.sessionId ?? null}
       collapsedWorkspacePaths={[]}
       onToggleWorkspaceCollapse={() => undefined}
-      onCreateSession={(workspaceId) => void commands.createSession({ workspaceId })}
+      onCreateSession={(workspaceId) =>
+        void commands.createSession({
+          environmentId: 'mock-environment',
+          providerId: 'opencode',
+          workspaceId,
+        })
+      }
       onSelectSession={(_workspace, sessionId) => void commands.openSession(sessionId)}
       onDeleteSession={(_workspace, sessionId) => void commands.deleteSession(sessionId)}
       onAddWorkspace={() => undefined}
@@ -172,8 +182,8 @@ function App({ client }: { client: MockEnvironmentClient }) {
 const button = (label: string) =>
   container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)
 const sessionButtons = () =>
-  [...container.querySelectorAll<HTMLButtonElement>('button')].filter((node) =>
-    node.textContent?.includes('session') || node.textContent?.includes('First'),
+  [...container.querySelectorAll<HTMLButtonElement>('button')].filter(
+    (node) => node.textContent?.includes('session') || node.textContent?.includes('First'),
   )
 const type = async (text: string) => {
   const textarea = container.querySelector('textarea')!

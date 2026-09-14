@@ -21,6 +21,9 @@ import {
 const command = <N extends string, P extends z.ZodType>(name: N, payload: P) =>
   CommandEnvelopeSchema.extend({ name: z.literal(name), payload })
 const response = <P extends z.ZodType>(payload: P) => ResponseEnvelopeSchema.extend({ payload })
+// Advertised separately so older environments cannot silently ignore explicit routing.
+export const SESSION_CREATE_EXPLICIT_CAPABILITY = 'session.create.explicit' as const
+const TurnTextSchema = z.string().min(1)
 const EmptyPayloadSchema = z.null()
 const SessionTargetSchema = z.object({ sessionId: EntityIdSchema })
 const ThreadTargetSchema = z.object({ sessionId: EntityIdSchema, threadId: EntityIdSchema })
@@ -52,7 +55,13 @@ export const ProofCommandSchemas = {
   ),
   'session.create': command(
     'session.create',
-    z.object({ workspaceId: EntityIdSchema, title: z.string().max(512).optional() }),
+    z.object({
+      environmentId: EntityIdSchema,
+      workspaceId: EntityIdSchema,
+      providerId: EntityIdSchema,
+      title: z.string().max(512).optional(),
+      firstMessage: TurnTextSchema.optional(),
+    }),
   ),
   'session.open': command('session.open', SessionTargetSchema),
   'session.history': command(
@@ -62,7 +71,7 @@ export const ProofCommandSchemas = {
       limit: PageLimitSchema.optional(),
     }),
   ),
-  'turn.send': command('turn.send', ThreadTargetSchema.extend({ text: z.string().min(1) })),
+  'turn.send': command('turn.send', ThreadTargetSchema.extend({ text: TurnTextSchema })),
   'turn.interrupt': command(
     'turn.interrupt',
     ThreadTargetSchema.extend({ turnId: EntityIdSchema }),
@@ -113,7 +122,14 @@ export const ProofResponseSchemas = {
       nextCursor: SessionListCursorSchema.nullable(),
     }),
   ),
-  'session.create': response(z.object({ session: SessionSchema, thread: ThreadSchema })),
+  'session.create': response(
+    z.object({
+      session: SessionSchema,
+      thread: ThreadSchema,
+      // Absent on older environments and when no first message was requested.
+      firstTurn: z.object({ turn: TurnSchema, userMessage: MessageSchema }).optional(),
+    }),
+  ),
   'session.open': response(
     z.object({
       session: SessionSummarySchema,

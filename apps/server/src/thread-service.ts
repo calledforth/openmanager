@@ -35,12 +35,17 @@ import {
 import type { CommandContext } from './command-context.ts'
 
 type ProviderId = keyof typeof providers
+
+const WORKSPACE_UNAVAILABLE =
+  'The workspace folder is unavailable. Restore its path or permissions, then try again.'
 type RuntimeEvent = Parameters<HostDeps['emitEvent']>[0]
 type ProviderGate = {
   rejection(providerId: string): { code: ErrorCode; message: string } | undefined
 }
 export type WorkspaceRuntimeRoute = {
   providerId: string
+  /** Providers offered by this workspace; legacy resolver seams offer their single route. */
+  providers?: readonly string[]
   cwd: string
   /**
    * Called once the provider has actually opened a session in the workspace.
@@ -296,12 +301,11 @@ export function createThreadService(
       failureReason,
     })
     if (!projected) return
-    // Host identities and user input are already durable before provider work begins.
-    if (
-      options.database &&
-      (projected.name === 'session.created' || projected.name === 'turn.started')
-    )
-      return
+    // The create command already announced the session, and with a database
+    // the user's turn is durable before provider work begins; the provider's
+    // own signals would only repeat them.
+    if (projected.name === 'session.created') return
+    if (options.database && projected.name === 'turn.started') return
     if (projected.name === 'turn.notice') publishTransient(projected)
     else appendRuntimeEvent(projected)
   }
@@ -320,7 +324,7 @@ export function createThreadService(
     updatedAt: new Date(record.updatedAt).toISOString(),
   })
 
-  return {
+  const service = {
     setEnvironmentId(id: string) {
       environmentId = id
     },
@@ -375,34 +379,68 @@ export function createThreadService(
         if (!parsed.success) {
           return errorResult(command.requestId, 'validation', 'Invalid session create request.')
         }
-        const target = resolveWorkspace(parsed.data.payload.workspaceId, context)
+        const input = parsed.data.payload
+        if (input.environmentId !== environmentId) {
+          return errorResult(
+            command.requestId,
+            'validation',
+            'The requested environment does not match this server.',
+          )
+        }
+        let target: WorkspaceRuntimeRoute | undefined
+        try {
+          target = resolveWorkspace(input.workspaceId, context)
+        } catch {
+          return errorResult(
+            command.requestId,
+            'not_found',
+            WORKSPACE_UNAVAILABLE,
+          )
+        }
         if (!target) return errorResult(command.requestId, 'not_found', 'Workspace not found.')
-        const providerRejection = rejectProvider(command.requestId, target.providerId)
+        const providerRejection = rejectProvider(command.requestId, input.providerId)
         if (providerRejection) return providerRejection
-        const providerId = target.providerId as ProviderId
+        if (!(target.providers ?? [target.providerId]).includes(input.providerId)) {
+          return errorResult(
+            command.requestId,
+            'validation',
+            'The workspace does not offer the requested provider. Choose an available provider.',
+          )
+        }
+        if (!Object.hasOwn(providers, input.providerId)) {
+          return errorResult(
+            command.requestId,
+            'capability_missing',
+            'This server cannot run the requested provider.',
+          )
+        }
+        const providerId = input.providerId as ProviderId
         const session: Session = {
           sessionId: randomUUID(),
           workspaceId: parsed.data.payload.workspaceId,
           title: parsed.data.payload.title ?? null,
         }
         const thread: Thread = { threadId: randomUUID(), sessionId: session.sessionId }
-        // Durable before it is exposed or started: a failed write means no
-        // client learns of a session the host could not serve after a restart.
-        if (options.database) {
-          try {
-            persistCreatedThread(session, thread)
-          } catch (error) {
-            options.onPersistenceError?.(error, 'session.created')
-            return errorResult(
-              command.requestId,
-              'unavailable',
-              'The session could not be saved. Try again.',
-            )
-          }
+        // Announced and durable before it is exposed or started: a failed write
+        // means no client learns of a session the host could not serve after a
+        // restart, and every connected client sees the session at once.
+        try {
+          persistCreatedThread(session, thread)
+        } catch (error) {
+          options.onPersistenceError?.(error, 'session.created')
+          return errorResult(
+            command.requestId,
+            'unavailable',
+            'The session could not be saved. Try again.',
+          )
         }
         let record!: ThreadRecord
         const runtimeSession = Promise.resolve()
-          .then(() => runtime.ensureSession(route(record)))
+          .then(() => {
+            if (sessions.get(session.sessionId) !== record)
+              throw new Error('Session creation was cancelled.')
+            return runtime.ensureSession(route(record))
+          })
           .then((result) => {
             // The client already holds the session: a failing stamp must not
             // turn a successful start into a rollback. The host logs it.
@@ -427,10 +465,43 @@ export function createThreadService(
         sessions.set(session.sessionId, record)
         threads.set(thread.threadId, record)
         void record.runtimeSession.catch(() => rollbackSession(record))
+        // Re-enter the existing turn command so validation, runtime scheduling and
+        // history ownership remain in one place. No asynchronous gap is exposed.
+        let firstTurn
+        if (input.firstMessage !== undefined) {
+          let result: unknown
+          try {
+            result = service.dispatch(
+              {
+                ...command,
+                name: 'turn.send',
+                payload: {
+                  sessionId: session.sessionId,
+                  threadId: thread.threadId,
+                  text: input.firstMessage,
+                },
+              },
+              context,
+            )
+          } catch {
+            result = errorResult(
+              command.requestId,
+              'not_found',
+              WORKSPACE_UNAVAILABLE,
+            )
+          }
+          const started = ProofResponseSchemas['turn.send'].safeParse(result)
+          if (!started.success) {
+            // The session was already announced, so its removal must be too.
+            rollbackSession(record)
+            return result
+          }
+          firstTurn = started.data.payload
+        }
         return ProofResponseSchemas['session.create'].parse({
           type: 'response',
           requestId: command.requestId,
-          payload: { session, thread },
+          payload: { session, thread, ...(firstTurn ? { firstTurn } : {}) },
         })
       }
 
@@ -755,4 +826,5 @@ export function createThreadService(
       projectRuntimeEvent(record, event, active)
     },
   }
+  return service
 }

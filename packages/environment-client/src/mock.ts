@@ -1,5 +1,6 @@
 import {
   ProofEventSchemas,
+  ProofCommandSchemas,
   type Environment,
   type Interaction,
   type InteractionResponse,
@@ -296,6 +297,35 @@ export function createMockEnvironmentClient(
     scriptedReplies.set(turn.turnId, pending)
   }
 
+  const startTurn = (input: import('./types').SendTurnInput) => {
+    const thread = requireThread(input)
+    if (thread.turns.some((turn) => turn.state === 'running' || turn.state === 'waiting')) {
+      throw new EnvironmentClientError('conflict', 'A turn is already in progress.')
+    }
+    const turn: Turn = { turnId: nextId(), threadId: input.threadId, state: 'running' }
+    const userMessage: Message = {
+      messageId: nextId(),
+      threadId: input.threadId,
+      turnId: turn.turnId,
+      role: 'user',
+      content: [{ type: 'text', text: input.text }],
+    }
+    // Fold the user echo in before the event, the way the WebSocket client
+    // applies `turn.send` before `turn.started` arrives. The event is then
+    // a no-op instead of a second bubble.
+    store.update((state) => applyTurnStarted(state, input, { turn, userMessage }))
+    emit({
+      ...base(),
+      name: 'turn.started',
+      scope: threadScope(input),
+      payload: { turn, userMessage },
+    })
+    const context: MockTurnContext = { ...input, turnId: turn.turnId }
+    const chunks = respond ? respond(context) : null
+    if (chunks) scriptReply(context, chunks)
+    return { turn, userMessage }
+  }
+
   const commands: EnvironmentCommands = {
     getEnvironment: () =>
       run('getEnvironment', null, () => {
@@ -349,8 +379,26 @@ export function createMockEnvironmentClient(
       }),
     createSession: (input) =>
       run('createSession', input, () => {
-        if (!store.getState().workspaces[input.workspaceId]) {
+        if (
+          !ProofCommandSchemas['session.create'].safeParse({
+            type: 'command',
+            requestId: 'mock-create',
+            name: 'session.create',
+            payload: input,
+          }).success ||
+          input.environmentId !== environment.environmentId
+        ) {
+          throw new EnvironmentClientError('validation', 'Invalid session create request.')
+        }
+        const workspace = store.getState().workspaces[input.workspaceId]
+        if (!workspace || !workspace.exists) {
           throw new EnvironmentClientError('not_found', 'Workspace not found.')
+        }
+        if (!workspace.capabilities.providers.includes(input.providerId)) {
+          throw new EnvironmentClientError(
+            'validation',
+            'The workspace does not offer the requested provider.',
+          )
         }
         const session: Session = {
           sessionId: nextId(),
@@ -380,13 +428,21 @@ export function createMockEnvironmentClient(
               [session.sessionId]: {
                 ...current,
                 status: 'idle',
-                providerId: current.providerId ?? 'opencode',
+                providerId: input.providerId,
                 updatedAt: current.updatedAt ?? now(),
               },
             },
           }
         })
-        return { session, thread }
+        const firstTurn =
+          input.firstMessage === undefined
+            ? undefined
+            : startTurn({
+                sessionId: session.sessionId,
+                threadId: thread.threadId,
+                text: input.firstMessage,
+              })
+        return { session, thread, ...(firstTurn ? { firstTurn } : {}) }
       }),
     openSession: (sessionId) =>
       run('openSession', sessionId, () => {
@@ -467,35 +523,7 @@ export function createMockEnvironmentClient(
         cancelScriptsForThreads(session.threadIds)
         emit({ ...base(), name: 'session.deleted', scope: envScope(), payload: { sessionId } })
       }),
-    sendTurn: (input) =>
-      run('sendTurn', input, () => {
-        const thread = requireThread(input)
-        if (thread.turns.some((turn) => turn.state === 'running' || turn.state === 'waiting')) {
-          throw new EnvironmentClientError('conflict', 'A turn is already in progress.')
-        }
-        const turn: Turn = { turnId: nextId(), threadId: input.threadId, state: 'running' }
-        const userMessage: Message = {
-          messageId: nextId(),
-          threadId: input.threadId,
-          turnId: turn.turnId,
-          role: 'user',
-          content: [{ type: 'text', text: input.text }],
-        }
-        // Fold the user echo in before the event, the way the WebSocket client
-        // applies `turn.send` before `turn.started` arrives. The event is then
-        // a no-op instead of a second bubble.
-        store.update((state) => applyTurnStarted(state, input, { turn, userMessage }))
-        emit({
-          ...base(),
-          name: 'turn.started',
-          scope: threadScope(input),
-          payload: { turn, userMessage },
-        })
-        const context: MockTurnContext = { ...input, turnId: turn.turnId }
-        const chunks = respond ? respond(context) : null
-        if (chunks) scriptReply(context, chunks)
-        return { turn, userMessage }
-      }),
+    sendTurn: (input) => run('sendTurn', input, () => startTurn(input)),
     interruptTurn: (input) =>
       run('interruptTurn', input, () => {
         const thread = requireThread(input)

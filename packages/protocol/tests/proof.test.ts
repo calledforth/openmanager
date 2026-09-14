@@ -132,3 +132,32 @@ describe('proof slice wire families', () => {
     })
   })
 })
+
+it('requires explicit session routing and accepts an optional nonempty first message', () => {
+  const command = {
+    type: 'command',
+    requestId: 'create',
+    name: 'session.create',
+    payload: {
+      environmentId: 'env',
+      workspaceId: 'workspace',
+      providerId: 'opencode',
+      firstMessage: 'hello',
+    },
+  }
+  expect(ProofCommandSchemas['session.create'].safeParse(command).success).toBe(true)
+  for (const key of ['environmentId', 'workspaceId', 'providerId']) {
+    expect(
+      ProofCommandSchemas['session.create'].safeParse({
+        ...command,
+        payload: { ...command.payload, [key]: undefined },
+      }).success,
+    ).toBe(false)
+  }
+  expect(
+    ProofCommandSchemas['session.create'].safeParse({
+      ...command,
+      payload: { ...command.payload, firstMessage: '' },
+    }).success,
+  ).toBe(false)
+})

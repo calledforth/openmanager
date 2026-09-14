@@ -74,7 +74,12 @@ export const proofCommands = [
     type: 'command',
     requestId: 'r-4',
     name: 'session.create',
-    payload: { workspaceId: 'workspace-1', title: 'Example' },
+    payload: {
+      environmentId: 'environment-1',
+      workspaceId: 'workspace-1',
+      providerId: 'opencode',
+      title: 'Example',
+    },
   },
   { type: 'command', requestId: 'r-5', name: 'session.open', payload: { sessionId: 'session-1' } },
   {

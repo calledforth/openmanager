@@ -327,20 +327,28 @@ export function attachWebSocket(
           reply(errorResult(message.requestId, 'validation', 'Unsupported command.'))
           return
         }
-        if (required !== null && !client.capabilities.includes(required)) {
+        const createsFirstTurn =
+          message.name === 'session.create' &&
+          message.payload !== null &&
+          typeof message.payload === 'object' &&
+          'firstMessage' in message.payload
+        const denied = [required, ...(createsFirstTurn ? ['agent' as const] : [])].find(
+          (capability) => capability !== null && !client.capabilities.includes(capability),
+        )
+        if (denied) {
           options.audit.record({
             type: 'capability.denied',
             clientId: client.clientId,
             command: message.name,
-            details: { requiredCapability: required },
+            details: { requiredCapability: denied },
           })
-          reply(accessDenied(message.requestId, required))
+          reply(accessDenied(message.requestId, denied))
           return
         }
         // Mutating commands are budgeted per client (T14). Replays of an
         // already-answered request ID were served above and never count.
         const policy: RateLimitPolicy | undefined =
-          message.name === 'turn.send'
+          message.name === 'turn.send' || createsFirstTurn
             ? 'prompt'
             : required !== null && required !== 'read'
               ? 'mutation'

@@ -72,7 +72,11 @@ describe('streamed provider through the server', () => {
       const client = await connectProtocol(host)
       await handshake(client)
 
-      const createId = client.command('session.create', { workspaceId: host.workspaceId })
+      const createId = client.command('session.create', {
+        environmentId: host.server.identity.environmentId,
+        providerId: 'opencode',
+        workspaceId: host.workspaceId,
+      })
       const created = ProofResponseSchemas['session.create'].parse(
         await nextResponse(client, createId),
       )

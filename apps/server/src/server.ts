@@ -8,6 +8,7 @@ import {
   COMPOSER_PREFERENCES_GET_CAPABILITY,
   COMPOSER_PREFERENCES_SET_CAPABILITY,
   PROTOCOL_VERSION,
+  SESSION_CREATE_EXPLICIT_CAPABILITY,
   PROVIDER_CATALOG_CAPABILITY,
   PROVIDER_DISCOVERY_CAPABILITY,
   PROVIDER_HEALTH_CAPABILITY,
@@ -59,6 +60,7 @@ export const SERVER_CAPABILITIES = [
   COMPOSER_CONFIG_OPTION_SET_CAPABILITY,
   'session.list',
   'session.create',
+  SESSION_CREATE_EXPLICIT_CAPABILITY,
   'session.open',
   'session.history',
   'turn.send',
@@ -95,6 +97,7 @@ export async function startServer(config: ServerConfig) {
   let emitWorkspaceEvent: (event: ProofEvent) => void = () => undefined
   let closeWorkspaceSessions: (workspaceId: string) => void = () => undefined
   let availableProviders: () => readonly string[] = () => []
+  let runnableProviders: () => readonly string[] = () => []
   let workspaces
   try {
     workspaces = openWorkspaceRegistry(config.dataDir, workspaceRoots, audit, {
@@ -121,6 +124,7 @@ export async function startServer(config: ServerConfig) {
       if (!workspace) return undefined
       return {
         providerId: 'opencode',
+        providers: runnableProviders(),
         cwd: workspace.root,
         // "Last used" means a session actually started here, not merely was
         // asked for. The stamp is bookkeeping: a failure is logged, never fatal.
@@ -144,8 +148,8 @@ export async function startServer(config: ServerConfig) {
       desiredSessionConfig(composerStore.getPreference(workspacePath, providerId)),
     config.runtimeOptions,
   )
-  let observeProviderCatalog: (providerId: string, result: RuntimeProviderBootstrap) => void =
-    () => undefined
+  let observeProviderCatalog: (providerId: string, result: RuntimeProviderBootstrap) => void = () =>
+    undefined
   const providerService = createProviderService(
     runtime,
     providers,
@@ -158,6 +162,13 @@ export async function startServer(config: ServerConfig) {
     providerService
       .snapshot()
       .filter(({ health }) => health.summary === 'ready' || health.summary === 'warning')
+      .map(({ id }) => id)
+  // Broader than the listing: an unprobed provider is still runnable, so an
+  // explicit create only fails for a provider the server would reject anyway.
+  runnableProviders = () =>
+    providerService
+      .snapshot()
+      .filter(({ id }) => providerService.rejection(id) === undefined)
       .map(({ id }) => id)
   let publishDurableEvent: (record: DurableEvent) => void = () => undefined
   let publishThreadEvent: (event: EventEnvelope) => void = () => undefined

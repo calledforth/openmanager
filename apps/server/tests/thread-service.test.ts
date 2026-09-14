@@ -24,12 +24,17 @@ describe('workspace lifecycle', () => {
       undefined,
       (id) => (available ? registered(id) : undefined),
     )
+    service.setEnvironmentId('environment-1')
     const created = ProofResponseSchemas['session.create'].parse(
       service.dispatch({
         type: 'command',
         requestId: 'create',
         name: 'session.create',
-        payload: { workspaceId: '/workspace/project' },
+        payload: {
+          environmentId: 'environment-1',
+          providerId: 'opencode',
+          workspaceId: '/workspace/project',
+        },
       }),
     ).payload
     await service.resolveRuntimeSession(created.session.sessionId)
@@ -101,7 +106,11 @@ describe('workspace lifecycle', () => {
           type: 'command',
           requestId,
           name: 'session.create',
-          payload: { workspaceId: '/workspace/project' },
+          payload: {
+            environmentId: 'environment-1',
+            providerId: 'opencode',
+            workspaceId: '/workspace/project',
+          },
         }),
       ).payload.session.sessionId
     const first = create('create-1')
@@ -151,7 +160,7 @@ describe('workspace lifecycle', () => {
           type: 'command',
           requestId,
           name: 'session.create',
-          payload: { workspaceId },
+          payload: { environmentId: 'environment-1', providerId: 'opencode', workspaceId },
         }),
       ).payload
     const doomed = create('create-1', '/workspace/doomed')
@@ -207,17 +216,26 @@ describe('thread command provider routing', () => {
       undefined,
       registered,
     )
+    service.setEnvironmentId('environment-1')
     expect(
       service.dispatch({
         type: 'command',
         requestId: 'create-1',
         name: 'session.create',
-        payload: { workspaceId: '/workspace/other' },
+        payload: {
+          environmentId: 'environment-1',
+          providerId: 'opencode',
+          workspaceId: '/workspace/other',
+        },
       }),
     ).toEqual({
       type: 'error',
       requestId: 'create-1',
-      error: { code: 'not_found', message: 'Workspace not found.' },
+      error: {
+        code: 'not_found',
+        message:
+          'Workspace not found.',
+      },
     })
     expect(runtime.ensureSession).not.toHaveBeenCalled()
   })
@@ -240,13 +258,18 @@ describe('thread command provider routing', () => {
       undefined,
       () => ({ providerId: 'missing', cwd: '/workspace/project' }),
     )
+    service.setEnvironmentId('environment-1')
 
     expect(
       service.dispatch({
         type: 'command',
         requestId: 'create-1',
         name: 'session.create',
-        payload: { workspaceId: 'workspace-1' },
+        payload: {
+          environmentId: 'environment-1',
+          providerId: 'missing',
+          workspaceId: 'workspace-1',
+        },
       }),
     ).toEqual({
       type: 'error',
@@ -277,7 +300,11 @@ describe('thread command provider routing', () => {
         type: 'command',
         requestId: 'create-1',
         name: 'session.create',
-        payload: { workspaceId: '/workspace/project' },
+        payload: {
+          environmentId: 'environment-1',
+          providerId: 'opencode',
+          workspaceId: '/workspace/project',
+        },
       }),
     )
     await vi.waitFor(() =>
@@ -322,7 +349,11 @@ describe('thread command provider routing', () => {
         type: 'command',
         requestId: 'create-1',
         name: 'session.create',
-        payload: { workspaceId: '/workspace/project' },
+        payload: {
+          environmentId: 'environment-1',
+          providerId: 'opencode',
+          workspaceId: '/workspace/project',
+        },
       }),
     )
     const sent = ProofResponseSchemas['turn.send'].parse(
@@ -402,7 +433,11 @@ describe('thread command provider routing', () => {
         type: 'command',
         requestId: 'create-1',
         name: 'session.create',
-        payload: { workspaceId: '/workspace/project' },
+        payload: {
+          environmentId: 'environment-1',
+          providerId: 'opencode',
+          workspaceId: '/workspace/project',
+        },
       }),
     )
     const target = {
@@ -505,7 +540,11 @@ describe('thread command provider routing', () => {
         type: 'command',
         requestId: 'create-1',
         name: 'session.create',
-        payload: { workspaceId: '/workspace/project' },
+        payload: {
+          environmentId: 'environment-1',
+          providerId: 'opencode',
+          workspaceId: '/workspace/project',
+        },
       }),
     )
     const sent = ProofResponseSchemas['turn.send'].parse(
@@ -578,6 +617,7 @@ describe('session summaries and paginated history', () => {
       undefined,
       registered,
     )
+    service.setEnvironmentId('environment-1')
     expect(
       ProofResponseSchemas['session.list'].parse(
         service.dispatch({
@@ -596,7 +636,12 @@ describe('session summaries and paginated history', () => {
             type: 'command',
             requestId,
             name: 'session.create',
-            payload: { workspaceId: '/workspace/project', title: requestId },
+            payload: {
+              environmentId: 'environment-1',
+              providerId: 'opencode',
+              workspaceId: '/workspace/project',
+              title: requestId,
+            },
           }),
         ).payload,
     )
@@ -651,7 +696,12 @@ describe('session summaries and paginated history', () => {
         type: 'command',
         requestId: 'create-1',
         name: 'session.create',
-        payload: { workspaceId: '/workspace/project', title: 'Chat' },
+        payload: {
+          environmentId: 'environment-1',
+          providerId: 'opencode',
+          workspaceId: '/workspace/project',
+          title: 'Chat',
+        },
       }),
     ).payload
     for (const text of ['one', 'two', 'three']) {
@@ -767,7 +817,11 @@ describe('persistence failures on the provider path', () => {
         type: 'command',
         requestId: 'create',
         name: 'session.create',
-        payload: { workspaceId: '/workspace/project' },
+        payload: {
+          environmentId: 'environment-1',
+          workspaceId: '/workspace/project',
+          providerId: 'opencode',
+        },
       }),
     ).payload
     const target = { sessionId: created.session.sessionId, threadId: created.thread.threadId }
@@ -793,5 +847,111 @@ describe('persistence failures on the provider path', () => {
     ).toMatchObject({
       payload: { sessions: [{ sessionId: created.session.sessionId, status: 'idle' }] },
     })
+  })
+})
+
+describe('explicit session creation', () => {
+  const input = {
+    environmentId: 'environment-1',
+    workspaceId: '/workspace/project',
+    providerId: 'opencode',
+  }
+  function setup(resolve: WorkspaceRuntimeResolver = registered) {
+    const runtime = {
+      ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-1', state: 'created' }),
+      prompt: vi.fn().mockReturnValue(new Promise(() => undefined)),
+      cancel: vi.fn(),
+    }
+    const events: EventEnvelope[] = []
+    const service = createThreadService(
+      runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
+      { rejection: () => undefined },
+      (event) => events.push(event),
+      undefined,
+      resolve,
+    )
+    service.setEnvironmentId(input.environmentId)
+    const create = (payload: import('@openmanager/protocol/node').CommandEnvelope['payload']) =>
+      service.dispatch({ type: 'command', name: 'session.create', requestId: 'create', payload })
+    return { service, runtime, events, create }
+  }
+
+  it.each([
+    [{ ...input, environmentId: 'other' }, 'validation'],
+    [{ ...input, workspaceId: 'unknown' }, 'not_found'],
+    [{ ...input, providerId: 'claude' }, 'validation'],
+    [{ ...input, firstMessage: '' }, 'validation'],
+    [{ workspaceId: input.workspaceId }, 'validation'],
+  ])('rejects invalid creation without leaving a session: %j', async (payload, code) => {
+    const { service, runtime, events, create } = setup()
+    expect(create(payload)).toMatchObject({ type: 'error', error: { code } })
+    expect(
+      service.dispatch({ type: 'command', name: 'session.list', requestId: 'list', payload: {} }),
+    ).toMatchObject({ payload: { sessions: [] } })
+    await Promise.resolve()
+    expect(runtime.ensureSession).not.toHaveBeenCalled()
+    expect(events).toEqual([])
+  })
+
+  it('recovers from a throwing workspace resolver without runtime work', async () => {
+    const { create, runtime } = setup(() => {
+      throw new Error('folder disappeared')
+    })
+    expect(create(input)).toMatchObject({ type: 'error', error: { code: 'not_found' } })
+    await Promise.resolve()
+    expect(runtime.ensureSession).not.toHaveBeenCalled()
+  })
+
+  it('uses the requested offered provider and starts the first turn in the create response', async () => {
+    const { create, runtime, service, events } = setup(() => ({
+      providerId: 'unused-default',
+      providers: ['opencode'],
+      cwd: '/workspace/project',
+    }))
+    const created = ProofResponseSchemas['session.create'].parse(
+      create({ ...input, firstMessage: 'Hello' }),
+    ).payload
+    expect(created.firstTurn).toMatchObject({
+      turn: { threadId: created.thread.threadId, state: 'running' },
+      userMessage: { content: [{ type: 'text', text: 'Hello' }] },
+    })
+    await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(1))
+    expect(runtime.ensureSession).toHaveBeenCalledWith(
+      expect.objectContaining({ providerId: 'opencode' }),
+    )
+    expect(runtime.prompt).toHaveBeenCalledWith(
+      expect.objectContaining({ userMessageId: created.firstTurn!.userMessage.messageId }),
+    )
+    expect(
+      service.dispatch({
+        type: 'command',
+        name: 'session.history',
+        requestId: 'history',
+        payload: { sessionId: created.session.sessionId, threadId: created.thread.threadId },
+      }),
+    ).toMatchObject({
+      payload: { turns: [created.firstTurn!.turn], messages: [created.firstTurn!.userMessage] },
+    })
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        name: 'session.created',
+        scope: { type: 'environment', environmentId: input.environmentId },
+      }),
+    )
+  })
+
+  it('does not start an orphan runtime when the workspace disappears before the first turn', async () => {
+    let resolutions = 0
+    const { create, runtime, events } = setup((id) =>
+      ++resolutions === 1 ? registered(id) : undefined,
+    )
+    expect(create({ ...input, firstMessage: 'Hello' })).toMatchObject({
+      type: 'error',
+      error: { code: 'not_found' },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(runtime.ensureSession).not.toHaveBeenCalled()
+    expect(runtime.prompt).not.toHaveBeenCalled()
+    expect(events).toEqual([])
   })
 })
