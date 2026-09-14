@@ -37,7 +37,7 @@ describe('NewSessionLandingView', () => {
       />,
     )
 
-    expect(html).toContain('Environment: </span><span class="truncate">devbox</span>')
+    expect(html).toContain('Sessions run on </span><span class="truncate">devbox</span>')
     expect(html).toContain('Start with a message below')
   })
 
@@ -53,7 +53,7 @@ describe('NewSessionLandingView', () => {
       />,
     )
 
-    expect(html).not.toContain('Environment:')
+    expect(html).not.toContain('Sessions run on')
   })
 
   it('offers recent projects as chips with their capability hints, skipping the active one', () => {

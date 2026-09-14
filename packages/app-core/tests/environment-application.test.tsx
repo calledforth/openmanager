@@ -120,7 +120,7 @@ describe('the shared application over the environment client', () => {
     await render(<App client={client} />)
     const labels = () =>
       [...container.querySelectorAll('span.sr-only')].filter(
-        (node) => node.textContent === 'Environment: ',
+        (node) => node.textContent === 'Sessions run on ',
       )
     // Beside the Projects heading and under the landing headline.
     expect(labels()).toHaveLength(2)
@@ -130,7 +130,7 @@ describe('the shared application over the environment client', () => {
     await act(() => container.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]')!.click())
     // The picker menu portals to the body; its footer names the environment too.
     const menu = document.body.querySelector('[role="listbox"][aria-label="Choose a project"]')
-    expect(menu?.textContent).toContain('Environment: devbox')
+    expect(menu?.textContent).toContain('Sessions run on devbox')
   })
 
   it('shows the workspace icon the environment resolves and falls back when it has none', async () => {
