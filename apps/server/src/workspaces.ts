@@ -409,7 +409,11 @@ export function openWorkspaceRegistry(
       if (!workspace) return
       const now = clock()
       statements.markUsed.run(now, now, workspaceId)
-      byId.set(workspaceId, Object.freeze({ ...workspace, lastUsedAt: now }))
+      const used = Object.freeze({ ...workspace, lastUsedAt: now })
+      byId.set(workspaceId, used)
+      // Connected clients order recents from their cached workspaces, so a
+      // start must reach them now rather than on their next handshake.
+      emit('workspace.updated', { workspace: toPublic(used) })
     },
 
     dispatch(command: CommandEnvelope, context?: CommandContext): unknown | undefined {

@@ -262,6 +262,35 @@ describe('snapshots', () => {
     expect(selectSessionList(state)).toHaveLength(1)
   })
 
+  it('moves workspace activity forward on session starts and turns without a relisting', () => {
+    let state = createInitialState()
+    state = applyEvent(
+      state,
+      event({ name: 'workspace.updated', scope: environmentScope, payload: { workspace: WORKSPACE } }),
+    )
+    expect(selectRecentWorkspaces(state)).toEqual([])
+
+    state = applyEvent(
+      state,
+      event({ name: 'session.created', scope: environmentScope, payload: { session: SESSION } }),
+    )
+    expect(state.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe('2026-09-10T00:00:00.000Z')
+    expect(selectRecentWorkspaces(state).map((w) => w.workspaceId)).toEqual([WORKSPACE.workspaceId])
+
+    state = applyEvent(
+      state,
+      event({ name: 'thread.created', scope: sessionScope, payload: { thread: THREAD } }),
+    )
+    const later = { ...turnStarted(), timestamp: '2026-09-11T00:00:00.000Z' }
+    state = applyEvent(state, later)
+    expect(state.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe('2026-09-11T00:00:00.000Z')
+
+    // A stale event (older timestamp) never moves activity backwards.
+    const stale = { ...completed(), timestamp: '2026-09-09T00:00:00.000Z' }
+    state = applyEvent(state, stale)
+    expect(state.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe('2026-09-11T00:00:00.000Z')
+  })
+
   it('orders recent workspaces by last activity and skips unused or missing ones', () => {
     const at = (name: string, lastActivityAt: string | null, exists = true) => ({
       ...WORKSPACE,

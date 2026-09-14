@@ -118,6 +118,26 @@ function upsertSession(
   }
 }
 
+/** Move a session's workspace `lastActivityAt` forward to `at`, never back. */
+function touchWorkspaceActivity(
+  state: EnvironmentState,
+  sessionId: string,
+  at: string,
+): EnvironmentState {
+  const workspaceId = state.sessions[sessionId]?.workspaceId
+  const workspace = workspaceId ? state.workspaces[workspaceId] : undefined
+  if (!workspace) return state
+  const current = workspace.lastActivityAt ? Date.parse(workspace.lastActivityAt) : -Infinity
+  if (!(Date.parse(at) > current)) return state
+  return {
+    ...state,
+    workspaces: {
+      ...state.workspaces,
+      [workspace.workspaceId]: { ...workspace, lastActivityAt: at },
+    },
+  }
+}
+
 function upsertWorkspace(state: EnvironmentState, workspace: Workspace): EnvironmentState {
   return {
     ...state,
@@ -242,7 +262,11 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
     case 'workspace.removed':
       return applyWorkspaceRemoved(state, event.payload.workspaceId)
     case 'session.created':
-      return upsertSession(state, event.payload.session)
+      return touchWorkspaceActivity(
+        upsertSession(state, event.payload.session),
+        event.payload.session.sessionId,
+        event.timestamp,
+      )
     case 'session.updated': {
       const session = state.sessions[event.payload.sessionId]
       if (!session || event.payload.title === undefined) return state
@@ -265,6 +289,19 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
   const scope = event.scope
   if (scope.type !== 'thread') return state
   const thread: Thread = { threadId: scope.threadId, sessionId: scope.sessionId }
+
+  switch (event.name) {
+    case 'turn.started':
+    case 'turn.completed':
+    case 'turn.interrupted':
+    case 'turn.failed':
+      // A turn is session activity; keep the workspace's recency current
+      // between listings instead of waiting for the next handshake.
+      state = touchWorkspaceActivity(state, thread.sessionId, event.timestamp)
+      break
+    default:
+      break
+  }
 
   switch (event.name) {
     case 'turn.started':

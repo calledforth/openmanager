@@ -203,14 +203,28 @@ describe('workspace registry', () => {
   })
 
   it('records when a workspace was last used and keeps it across restarts', async () => {
-    const { roots, open, tick } = await fixture()
+    const { roots, open, tick, events } = await fixture()
     const first = open([roots.a])
     const [alpha] = first.list()
     expect(alpha!.lastUsedAt).toBeNull()
     tick(60_000)
+    events.length = 0
     first.markUsed(alpha!.workspaceId)
     first.markUsed('unknown')
     expect(first.list()[0]!.lastUsedAt).toBe('2026-09-13T12:01:00.000Z')
+    // Clients keep recents from cached workspaces, so the stamp is announced.
+    expect(events).toEqual([
+      expect.objectContaining({
+        name: 'workspace.updated',
+        payload: {
+          workspace: expect.objectContaining({
+            workspaceId: alpha!.workspaceId,
+            lastUsedAt: '2026-09-13T12:01:00.000Z',
+            lastActivityAt: '2026-09-13T12:01:00.000Z',
+          }),
+        },
+      }),
+    ])
     first.close()
     expect(open([roots.a]).list()[0]!.lastUsedAt).toBe('2026-09-13T12:01:00.000Z')
   })

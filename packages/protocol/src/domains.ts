@@ -49,10 +49,14 @@ export const WorkspaceSchema = z.object({
   path: z.string(),
   /** When a session last started here; null until one has. */
   lastUsedAt: TimestampSchema.nullable(),
-  /** Latest session activity here (a start or a later turn); orders recents. */
-  lastActivityAt: TimestampSchema.nullable(),
+  /**
+   * Latest session activity here (a start or a later turn); orders recents.
+   * Defaulted so an environment that predates it still lists (no version bump).
+   */
+  lastActivityAt: TimestampSchema.nullable().default(null),
   exists: z.boolean(),
-  capabilities: WorkspaceCapabilitiesSchema,
+  /** Defaulted for the same reason: an older environment reads as offering nothing. */
+  capabilities: WorkspaceCapabilitiesSchema.default({ git: false, providers: [] }),
 })
 export const SessionSchema = z.object({
   sessionId: EntityIdSchema,
