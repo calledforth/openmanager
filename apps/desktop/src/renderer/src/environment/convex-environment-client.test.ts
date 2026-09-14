@@ -172,7 +172,13 @@ describe('createConvexEnvironmentClient', () => {
     client.connect()
     const state = client.getState()
     expect(state.workspaceOrder).toEqual(['C:/repo'])
-    expect(state.workspaces['C:/repo']).toEqual({ workspaceId: 'C:/repo', name: 'repo' })
+    expect(state.workspaces['C:/repo']).toEqual({
+      workspaceId: 'C:/repo',
+      name: 'repo',
+      path: 'C:/repo',
+      lastUsedAt: null,
+      exists: true,
+    })
     expect(selectSessionList(state, 'C:/repo')).toMatchObject([
       { sessionId: 'session-1', title: 'First', threadIds: ['session-1'] },
     ])
@@ -814,6 +820,9 @@ describe('createConvexEnvironmentClient', () => {
     expect(await client.commands.addWorkspace({ name: 'x', path: 'C:/other' })).toEqual({
       workspaceId: 'C:/other',
       name: 'other',
+      path: 'C:/other',
+      lastUsedAt: null,
+      exists: true,
     })
     expect(client.getState().workspaceOrder).toEqual(['C:/repo', 'C:/other'])
     await client.commands.removeWorkspace('C:/repo')

@@ -41,7 +41,15 @@ export const scopeSnapshots: ScopeSnapshot[] = [
     cursor: { scope: environmentScope, epoch: 'epoch-env', sequence: 1 },
     state: {
       environment: { environmentId: 'env-1', name: 'Example' },
-      workspaces: [{ workspaceId: 'workspace-1', name: 'Example' }],
+      workspaces: [
+        {
+          workspaceId: 'workspace-1',
+          name: 'Example',
+          path: 'workspace-1',
+          lastUsedAt: null,
+          exists: true,
+        },
+      ],
       sessions: [{ sessionId: 'session-1', workspaceId: 'workspace-1', title: 'Example' }],
     },
   },

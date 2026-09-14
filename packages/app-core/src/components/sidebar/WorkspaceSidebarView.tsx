@@ -6,6 +6,7 @@ import {
   FolderPlusIcon,
   FolderSimpleIcon,
   FolderOpenIcon,
+  FolderDashedIcon,
   TrashIcon,
   NotePencilIcon,
   GitBranchIcon,
@@ -32,6 +33,8 @@ export interface SidebarSession {
 export interface SidebarWorkspace {
   path: string
   name: string
+  /** Registered but not on disk right now; no session can start here. */
+  missing?: boolean
   sessions: SidebarSession[]
 }
 
@@ -119,7 +122,11 @@ export function WorkspaceSidebarView({
   sidebarToggleShortcut?: string
 }) {
   const collapsedSet = new Set(collapsedWorkspacePaths)
-  const newThreadTarget = activeWorkspacePath ?? workspaces[0]?.path ?? null
+  const present = (path: string | null) =>
+    path !== null && workspaces.some((workspace) => workspace.path === path && !workspace.missing)
+  const newThreadTarget = present(activeWorkspacePath)
+    ? activeWorkspacePath
+    : (workspaces.find((workspace) => !workspace.missing)?.path ?? null)
 
   return (
     <aside
@@ -232,7 +239,11 @@ function WorkspaceGroup({
   onDeleteSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
 }) {
   const [visibleCount, setVisibleCount] = useState(SESSION_PREVIEW_LIMIT)
-  const FolderIcon = isCollapsed ? FolderSimpleIcon : FolderOpenIcon
+  const FolderIcon = workspace.missing
+    ? FolderDashedIcon
+    : isCollapsed
+      ? FolderSimpleIcon
+      : FolderOpenIcon
   const orderedSessions = useMemo(
     () => flattenSidebarSessions(workspace.sessions),
     [workspace.sessions],
@@ -273,21 +284,40 @@ function WorkspaceGroup({
           className="flex min-w-0 flex-1 items-center gap-1.5"
         >
           <ProjectIcon workspacePath={workspace.path} fallbackIcon={FolderIcon} />
-          <span className="flex-1 truncate text-left">{workspace.name}</span>
-        </button>
-        <Tooltip content="New agent in this project" side="bottom" align="end">
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation()
-              onCreateSession(workspace.path)
-            }}
-            aria-label="New Agent"
-            className="flex h-5 w-0 shrink-0 items-center justify-center overflow-hidden rounded text-[var(--basis-text-muted)] opacity-0 transition-[width,opacity] group-hover:w-5 group-hover:opacity-100 hover:bg-[var(--basis-surface)] hover:text-[var(--basis-text)]"
+          <span
+            className={cn(
+              'flex-1 truncate text-left',
+              workspace.missing &&
+                'text-[var(--basis-text-muted)] line-through decoration-[var(--basis-text-faint)]',
+            )}
           >
-            <PlusIcon className="h-3.5 w-3.5" weight="bold" />
-          </button>
-        </Tooltip>
+            {workspace.name}
+          </span>
+        </button>
+        {workspace.missing ? (
+          <Tooltip content="Folder not found on this environment" side="bottom" align="end">
+            <span
+              className="shrink-0 rounded-sm border border-[var(--basis-border-muted)] px-1 py-px text-[9px] leading-none tracking-wide text-[var(--basis-text-faint)]"
+              aria-label="Folder not found on this environment"
+            >
+              MISSING
+            </span>
+          </Tooltip>
+        ) : (
+          <Tooltip content="New agent in this project" side="bottom" align="end">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                onCreateSession(workspace.path)
+              }}
+              aria-label="New Agent"
+              className="flex h-5 w-0 shrink-0 items-center justify-center overflow-hidden rounded text-[var(--basis-text-muted)] opacity-0 transition-[width,opacity] group-hover:w-5 group-hover:opacity-100 hover:bg-[var(--basis-surface)] hover:text-[var(--basis-text)]"
+            >
+              <PlusIcon className="h-3.5 w-3.5" weight="bold" />
+            </button>
+          </Tooltip>
+        )}
       </div>
 
       {visibleSessions.length > 0 && (

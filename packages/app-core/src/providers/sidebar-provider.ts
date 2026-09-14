@@ -4,6 +4,8 @@ import type { ProviderId } from '@agentpack/contract'
 export interface WorkspaceEntry {
   path: string
   name: string
+  /** The folder is registered but not on disk right now (moved or deleted). */
+  missing?: boolean
 }
 
 export interface SidebarSessionEntry {

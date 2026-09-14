@@ -46,6 +46,8 @@ describe('command access mapping', () => {
       'provider.probe': 'read',
       'composer.preferences.get': 'read',
       'session.create': 'operate',
+      'workspace.add': 'operate',
+      'workspace.remove': 'operate',
       'composer.preferences.set': 'operate',
       'turn.send': 'agent',
       'turn.interrupt': 'agent',

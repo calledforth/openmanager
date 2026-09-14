@@ -9,7 +9,13 @@ import {
 } from '@openmanager/environment-client'
 import { MockEnvironmentApp } from '../src/testing/mock-environment-app'
 
-const WORKSPACE = { workspaceId: 'C:/repo', name: 'repo' }
+const WORKSPACE = {
+  workspaceId: 'C:/repo',
+  name: 'repo',
+  path: 'C:/repo',
+  lastUsedAt: null,
+  exists: true,
+}
 const SESSION = { sessionId: 'session-1', workspaceId: WORKSPACE.workspaceId, title: 'First' }
 const THREAD = { threadId: 'thread-1', sessionId: SESSION.sessionId }
 

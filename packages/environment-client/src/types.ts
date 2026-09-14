@@ -104,9 +104,10 @@ export interface CreateSessionInput {
 }
 
 export interface AddWorkspaceInput {
-  name: string
-  /** Environment-local path. Validation is the environment's job (CAL-51). */
+  /** Environment-local absolute path; the environment validates and canonicalizes it. */
   path: string
+  /** Display name; the environment derives one from the folder when omitted. */
+  name?: string
 }
 
 export interface ThreadTarget {

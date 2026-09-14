@@ -112,6 +112,12 @@ export interface MockEnvironmentClient extends EnvironmentClient {
 
 const ALL_COMMANDS = Object.keys(WIRE_COMMANDS) as EnvironmentCommandName[]
 
+/** Last path segment, for either separator; the whole path when there is none. */
+const workspaceNameFromPath = (path: string) => {
+  const trimmed = path.replace(/[\\/]+$/, '')
+  return trimmed.split(/[\\/]/).filter(Boolean).pop() ?? trimmed
+}
+
 const defaultIds = () => {
   let counter = 0
   return () => `mock-${++counter}`
@@ -295,7 +301,13 @@ export function createMockEnvironmentClient(
       ),
     addWorkspace: (input) =>
       run('addWorkspace', input, () => {
-        const workspace: Workspace = { workspaceId: input.path, name: input.name }
+        const workspace: Workspace = {
+          workspaceId: input.path,
+          name: input.name ?? workspaceNameFromPath(input.path),
+          path: input.path,
+          lastUsedAt: null,
+          exists: true,
+        }
         emit({
           ...base(),
           name: 'workspace.updated',

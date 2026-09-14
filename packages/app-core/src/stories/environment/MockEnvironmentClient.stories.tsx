@@ -7,8 +7,20 @@ import {
 } from '@openmanager/environment-client'
 import { MockEnvironmentApp } from '../../testing/mock-environment-app'
 
-const WORKSPACE = { workspaceId: '/workspace/openmanager', name: 'openmanager' }
-const SECOND = { workspaceId: '/workspace/opencode.ref', name: 'opencode.ref' }
+const WORKSPACE = {
+  workspaceId: '/workspace/openmanager',
+  name: 'openmanager',
+  path: '/workspace/openmanager',
+  lastUsedAt: null,
+  exists: true,
+}
+const SECOND = {
+  workspaceId: '/workspace/opencode.ref',
+  name: 'opencode.ref',
+  path: '/workspace/opencode.ref',
+  lastUsedAt: null,
+  exists: true,
+}
 const SESSION = { sessionId: 'session-1', workspaceId: WORKSPACE.workspaceId, title: 'Typography system' }
 const THREAD = { threadId: 'thread-1', sessionId: SESSION.sessionId }
 const OTHER = { sessionId: 'session-2', workspaceId: WORKSPACE.workspaceId, title: 'Storybook view setup' }

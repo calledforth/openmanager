@@ -233,6 +233,8 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
   switch (event.name) {
     case 'workspace.updated':
       return upsertWorkspace(state, event.payload.workspace)
+    case 'workspace.removed':
+      return applyWorkspaceRemoved(state, event.payload.workspaceId)
     case 'session.created':
       return upsertSession(state, event.payload.session)
     case 'session.updated': {

@@ -49,6 +49,7 @@ export function WorkspaceSidebar({
       workspaces={workspaces.map((workspace) => ({
         path: workspace.path,
         name: workspace.name,
+        missing: workspace.missing,
         sessions: sessionsByWorkspace[workspace.path] ?? [],
       }))}
       activeWorkspacePath={activeWorkspacePath}

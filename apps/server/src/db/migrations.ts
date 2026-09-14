@@ -380,4 +380,19 @@ export const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    version: 6,
+    name: 'workspace_last_used',
+    up(database) {
+      const columns = new Set(
+        (database.prepare('PRAGMA table_info(workspaces)').all() as { name: string }[]).map(
+          (column) => column.name,
+        ),
+      )
+      if (!columns.has('last_used_at')) {
+        // When a session last started in the workspace (CAL-50); null until one has.
+        database.exec('ALTER TABLE workspaces ADD COLUMN last_used_at INTEGER')
+      }
+    },
+  },
 ]

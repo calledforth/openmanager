@@ -444,7 +444,12 @@ function EnvironmentSidebarDataProvider({
   )
 
   const workspaceEntries = useMemo(
-    () => workspaces.map((workspace) => ({ path: workspace.workspaceId, name: workspace.name })),
+    () =>
+      workspaces.map((workspace) => ({
+        path: workspace.workspaceId,
+        name: workspace.name,
+        missing: !workspace.exists,
+      })),
     [workspaces],
   )
   const sessionsByWorkspace = useMemo(() => {

@@ -122,7 +122,15 @@ function record(scope: SubscriptionScope) {
       ...(scope.type === 'environment'
         ? {
             name: 'workspace.updated',
-            payload: { workspace: { workspaceId: 'workspace-1', name: 'Project' } },
+            payload: {
+              workspace: {
+                workspaceId: 'workspace-1',
+                name: 'Project',
+                path: 'workspace-1',
+                lastUsedAt: null,
+                exists: true,
+              },
+            },
           }
         : scope.type === 'session'
           ? {
@@ -371,7 +379,7 @@ describe('host policy and rate limits', () => {
 })
 
 describe('workspace boundary', () => {
-  it('lists workspaces by ID and name and never reveals a root path', async () => {
+  it('lists workspaces with ID, name, canonical path, last use and existence', async () => {
     const host = await setup()
     const client = await connect(host)
     await handshake(client)
@@ -379,10 +387,109 @@ describe('workspace boundary', () => {
     const listed = ProofResponseSchemas['workspace.list'].parse(await client.next())
     expect(listed.requestId).toBe(requestId)
     expect(listed.payload.workspaces).toEqual([
-      { workspaceId: host.workspaceId, name: 'workspace-a' },
-      { workspaceId: host.otherWorkspaceId, name: 'workspace-b' },
+      {
+        workspaceId: host.workspaceId,
+        name: 'workspace-a',
+        path: host.root,
+        lastUsedAt: null,
+        exists: true,
+      },
+      {
+        workspaceId: host.otherWorkspaceId,
+        name: 'workspace-b',
+        path: host.otherRoot,
+        lastUsedAt: null,
+        exists: true,
+      },
     ])
-    expect(JSON.stringify(listed).toLowerCase()).not.toContain(host.root.toLowerCase())
+  })
+
+  it('registers and unregisters a typed path and announces both to subscribers', async () => {
+    const host = await setup()
+    const client = await connect(host)
+    await handshake(client)
+    const subscriptionId = await subscribe(client, {
+      type: 'environment',
+      environmentId: host.server.identity.environmentId,
+    })
+    const root = join(host.server.workspaces.get(host.workspaceId)!.root, '..', 'workspace-c')
+    await mkdir(root)
+    const addId = client.command('workspace.add', { path: root })
+    const announced = await client.next()
+    const added = ProofResponseSchemas['workspace.add'].parse(await client.next())
+    expect(added.requestId).toBe(addId)
+    expect(added.payload.workspace).toEqual({
+      workspaceId: expect.any(String),
+      name: 'workspace-c',
+      path: host.server.workspaces.get(added.payload.workspace.workspaceId)!.root,
+      lastUsedAt: null,
+      exists: true,
+    })
+    expect(announced).toMatchObject({
+      name: 'subscription.event',
+      payload: {
+        subscriptionId,
+        record: {
+          event: { name: 'workspace.updated', payload: { workspace: added.payload.workspace } },
+        },
+      },
+    })
+    // A path that is not a folder on this machine is refused and audited.
+    const missingId = client.command('workspace.add', { path: join(root, 'missing') })
+    expect(await client.next()).toMatchObject({
+      type: 'error',
+      requestId: missingId,
+      error: { code: 'not_found' },
+    })
+    expect(host.audits.at(-1)).toMatchObject({
+      type: 'workspace.rejected',
+      clientId: host.server.owner.clientId,
+      details: { reason: 'missing', command: 'workspace.add' },
+    })
+    const removeId = client.command('workspace.remove', {
+      workspaceId: added.payload.workspace.workspaceId,
+    })
+    expect(await client.next()).toMatchObject({
+      name: 'subscription.event',
+      payload: {
+        record: {
+          event: {
+            name: 'workspace.removed',
+            payload: { workspaceId: added.payload.workspace.workspaceId },
+          },
+        },
+      },
+    })
+    expect(await client.next()).toMatchObject({
+      type: 'response',
+      requestId: removeId,
+      payload: null,
+    })
+    expect(host.server.workspaces.list().map((workspace) => workspace.name)).toEqual([
+      'workspace-a',
+      'workspace-b',
+    ])
+  })
+
+  it('requires operate to add or remove a workspace', async () => {
+    const host = await setup()
+    const reader = host.server.clients.issue({
+      label: 'Watcher',
+      kind: 'paired',
+      capabilities: ['read'],
+    })
+    const client = await connect(host, false, reader.credential)
+    await handshake(client)
+    for (const [name, payload] of [
+      ['workspace.add', { path: host.root }],
+      ['workspace.remove', { workspaceId: host.workspaceId }],
+    ] as const) {
+      const requestId = client.command(name, payload)
+      const denied = AccessDeniedErrorSchema.parse(await client.next())
+      expect(denied.requestId).toBe(requestId)
+      expect(denied.error.details.requiredCapability).toBe('operate')
+    }
+    expect(host.server.workspaces.list()).toHaveLength(2)
   })
 
   it('rejects workspace substitution with an audit event and no runtime work', async () => {
@@ -412,7 +519,7 @@ describe('workspace boundary', () => {
     expect(host.audits[0]).toMatchObject({
       type: 'workspace.rejected',
       clientId: host.server.owner.clientId,
-      details: { workspaceId: host.root, command: 'session.create' },
+      details: { workspaceId: host.root, reason: 'unknown', command: 'session.create' },
     })
     expect(host.audits[1]).toMatchObject({
       type: 'workspace.rejected',

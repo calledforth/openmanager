@@ -66,6 +66,8 @@ export const COMMAND_ACCESS = Object.freeze({
   [PROVIDER_PROBE_CAPABILITY]: 'read',
   'composer.preferences.get': 'read',
   'session.create': 'operate',
+  'workspace.add': 'operate',
+  'workspace.remove': 'operate',
   'composer.preferences.set': 'operate',
   'turn.send': 'agent',
   'turn.interrupt': 'agent',

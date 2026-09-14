@@ -1,7 +1,13 @@
 import type { Interaction, ProofEvent } from '@openmanager/protocol'
 
 export const ENV = 'env-1'
-export const WORKSPACE = { workspaceId: 'C:/repo', name: 'repo' }
+export const WORKSPACE = {
+  workspaceId: 'C:/repo',
+  name: 'repo',
+  path: 'C:/repo',
+  lastUsedAt: null,
+  exists: true,
+}
 export const SESSION = { sessionId: 'session-1', workspaceId: WORKSPACE.workspaceId, title: null }
 export const THREAD = { threadId: 'thread-1', sessionId: SESSION.sessionId }
 

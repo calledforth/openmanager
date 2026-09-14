@@ -23,6 +23,16 @@ const ThreadTargetSchema = z.object({ sessionId: EntityIdSchema, threadId: Entit
 export const ProofCommandSchemas = {
   'environment.get': command('environment.get', EmptyPayloadSchema),
   'workspace.list': command('workspace.list', EmptyPayloadSchema),
+  // The path is environment-local text the environment validates and
+  // canonicalizes; a browser has no picker for a folder on another machine.
+  'workspace.add': command(
+    'workspace.add',
+    z.object({
+      path: z.string().min(1).max(4096),
+      name: z.string().trim().min(1).max(256).optional(),
+    }),
+  ),
+  'workspace.remove': command('workspace.remove', z.object({ workspaceId: EntityIdSchema })),
   'session.list': command('session.list', z.object({ workspaceId: EntityIdSchema })),
   'session.create': command(
     'session.create',
@@ -51,6 +61,8 @@ export const ProofCommandSchemas = {
 export const ProofCommandSchema = z.discriminatedUnion('name', [
   ProofCommandSchemas['environment.get'],
   ProofCommandSchemas['workspace.list'],
+  ProofCommandSchemas['workspace.add'],
+  ProofCommandSchemas['workspace.remove'],
   ProofCommandSchemas['session.list'],
   ProofCommandSchemas['session.create'],
   ProofCommandSchemas['session.open'],
@@ -67,6 +79,8 @@ export type ProofCommandName = ProofCommand['name']
 export const ProofResponseSchemas = {
   'environment.get': response(z.object({ environment: EnvironmentSchema })),
   'workspace.list': response(z.object({ workspaces: z.array(WorkspaceSchema) })),
+  'workspace.add': response(z.object({ workspace: WorkspaceSchema })),
+  'workspace.remove': response(z.null()),
   'session.list': response(z.object({ sessions: z.array(SessionSchema) })),
   'session.create': response(z.object({ session: SessionSchema, thread: ThreadSchema })),
   'session.open': response(

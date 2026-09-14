@@ -227,6 +227,9 @@ export function createEventProjector(
           event.payload.workspace.workspaceId,
         )
         return
+      case 'workspace.removed':
+        // The registry deletes the row itself; sessions cascade with it.
+        return
       case 'session.updated':
         if (event.payload.title !== undefined) {
           s.updateSessionTitle.run(event.payload.title, at, event.payload.sessionId)
