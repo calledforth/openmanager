@@ -47,8 +47,10 @@ import {
 } from './sidebar-provider'
 import {
   ActiveThreadStateContext,
+  ActiveThreadStoresContext,
   type ActiveThreadDetails,
   type ActiveThreadStateValue,
+  type ActiveThreadStores,
 } from './active-thread-provider'
 import {
   PermissionStateProvider,
@@ -64,6 +66,8 @@ const DEFAULT_PROVIDER_ID: ProviderId = 'opencode'
 const COLLAPSED_WORKSPACES_KEY = 'openmanager.sidebar.collapsed-workspaces'
 
 const EMPTY_RECORD = {}
+/** Stable identity: an inline callback here re-renders every message row. */
+const noop = () => undefined
 const EMPTY_LIST: never[] = []
 
 export interface EnvironmentApplicationOptions {
@@ -616,7 +620,9 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
         const current = targetRef.current
         if (!current) return
         beginSessionTurn()
-        await commands.sendTurn({ ...current, text })
+        // A rejected send keeps its own row on screen with the reason and a
+        // retry, so it is neither an error banner nor a composer rollback.
+        await commands.sendTurn({ ...current, text }).catch(() => failTurn())
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         failTurn(message)
@@ -625,6 +631,25 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       }
     },
     [beginDraftTurn, beginSessionTurn, commands, failTurn, isSessionDraftOpen, startDraftSession],
+  )
+
+  const retrySend = useCallback(
+    async (commandId: string) => {
+      const current = targetRef.current
+      if (!current) return
+      const pending = client
+        .getState()
+        .threads[current.threadId]?.outbox.find((entry) => entry.commandId === commandId)
+      if (!pending) return
+      setError(null)
+      beginSessionTurn()
+      // The same id: the environment either starts the turn or answers with
+      // the one this send already started.
+      await commands
+        .sendTurn({ ...current, text: pending.text, commandId })
+        .catch(() => failTurn())
+    },
+    [beginSessionTurn, client, commands, failTurn],
   )
 
   const respond = useCallback(
@@ -668,8 +693,9 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       streamingStore: stores.streamingStore,
       messageContentStore: stores.messageContentStore,
       error,
-      acknowledgeOptimisticMessage: () => undefined,
+      acknowledgeOptimisticMessage: noop,
       sendMessage,
+      retrySend,
       abortSession: async () => {
         const current = targetRef.current
         if (!current || !activeTurn) return
@@ -711,6 +737,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       findInteraction,
       projection.messages,
       respond,
+      retrySend,
       sendMessage,
       session.activeSessionId,
       stores,
@@ -718,8 +745,18 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
     ],
   )
 
+  const threadStores = useMemo<ActiveThreadStores>(
+    () => ({
+      streamingStore: stores.streamingStore,
+      messageContentStore: stores.messageContentStore,
+    }),
+    [stores],
+  )
+
   return (
-    <ActiveThreadStateContext.Provider value={value}>{children}</ActiveThreadStateContext.Provider>
+    <ActiveThreadStoresContext.Provider value={threadStores}>
+      <ActiveThreadStateContext.Provider value={value}>{children}</ActiveThreadStateContext.Provider>
+    </ActiveThreadStoresContext.Provider>
   )
 }
 

@@ -75,6 +75,19 @@ export interface TurnFailure {
   message: string
 }
 
+/**
+ * A user message echoed locally the moment it was sent, before the
+ * environment confirmed it. Keyed by the command id the send carries, so the
+ * response, the `turn.started` event and a retry all resolve the same row.
+ */
+export interface OutboxEntry {
+  commandId: string
+  text: string
+  status: 'pending' | 'failed'
+  /** Why the send failed. Set only while `status` is `failed`. */
+  error?: string
+}
+
 export interface TurnNotice {
   turnId: string
   message: string
@@ -96,6 +109,8 @@ export interface ThreadState {
   interactions: PendingInteraction[]
   failures: TurnFailure[]
   notices: TurnNotice[]
+  /** Sends still waiting on the environment, oldest first, newest last. */
+  outbox: OutboxEntry[]
   hydration: HydrationState
 }
 
@@ -160,6 +175,12 @@ export interface ThreadTarget {
 
 export interface SendTurnInput extends ThreadTarget {
   text: string
+  /**
+   * Identity of this send, stable across retries. Retrying with the same id
+   * reuses the optimistic row and never produces a second message. Generated
+   * by the client when omitted.
+   */
+  commandId?: string
 }
 
 export interface InterruptTurnInput extends ThreadTarget {

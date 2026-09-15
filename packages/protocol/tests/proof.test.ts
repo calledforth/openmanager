@@ -4,6 +4,7 @@ import {
   ProofEventSchema,
   ProofEventSchemas,
   ProofCommandSchemas,
+  ProofResponseSchemas,
   ServerMessageSchema,
   SubscriptionScopeSchema,
   InteractionResponseSchema,
@@ -160,4 +161,43 @@ it('requires explicit session routing and accepts an optional nonempty first mes
       payload: { ...command.payload, firstMessage: '' },
     }).success,
   ).toBe(false)
+})
+
+describe('turn.send command ids', () => {
+  const send = (payload: Record<string, unknown>) => ({
+    type: 'command',
+    requestId: 'r-6',
+    name: 'turn.send',
+    payload: { sessionId: 'session-1', threadId: 'thread-1', text: 'Hello', ...payload },
+  })
+
+  it('carries an optional command id and rejects an empty one', () => {
+    expect(ProofCommandSchemas['turn.send'].safeParse(send({ commandId: 'cmd-1' })).success).toBe(
+      true,
+    )
+    // Omitted by a client that predates the id; the environment mints one.
+    expect(ProofCommandSchemas['turn.send'].safeParse(send({})).success).toBe(true)
+    expect(ProofCommandSchemas['turn.send'].safeParse(send({ commandId: '' })).success).toBe(false)
+    expect(ProofCommandSchemas['turn.send'].safeParse(send({ commandId: ' ' })).success).toBe(false)
+  })
+
+  it('echoes the command id on the response and the turn.started event', () => {
+    const started = proofEvents.find((event) => event.name === 'turn.started')!
+    const payload = { ...started.payload, commandId: 'cmd-1' }
+    expect(
+      ProofEventSchemas['turn.started'].parse({ ...started, payload }).payload,
+    ).toMatchObject({ commandId: 'cmd-1' })
+    expect(
+      ProofResponseSchemas['turn.send'].parse({ type: 'response', requestId: 'r-6', payload })
+        .payload,
+    ).toMatchObject({ commandId: 'cmd-1' })
+    // An environment that predates the echo answers the same shape without it.
+    expect(
+      ProofResponseSchemas['turn.send'].safeParse({
+        type: 'response',
+        requestId: 'r-6',
+        payload: started.payload,
+      }).success,
+    ).toBe(true)
+  })
 })

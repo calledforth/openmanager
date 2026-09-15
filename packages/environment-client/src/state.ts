@@ -8,11 +8,13 @@ import type {
   SessionSummary as ProtocolSessionSummary,
   Thread,
   Turn,
+  TurnStart,
   Workspace,
 } from '@openmanager/protocol'
 import type {
   ConnectionState,
   EnvironmentState,
+  OutboxEntry,
   PendingInteraction,
   SessionStatus,
   SessionSummary,
@@ -55,6 +57,7 @@ export function createThreadState(
     interactions: [],
     failures: [],
     notices: [],
+    outbox: [],
     hydration,
   }
 }
@@ -309,15 +312,7 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
 
   switch (event.name) {
     case 'turn.started':
-      return patchThread(state, thread, (current) => ({
-        ...current,
-        turns: upsertById(current.turns, (turn) => turn.turnId, event.payload.turn),
-        messages: upsertById(
-          current.messages,
-          (message) => message.messageId,
-          event.payload.userMessage,
-        ),
-      }))
+      return patchThread(state, thread, (current) => confirmTurnStart(current, event.payload))
     case 'turn.completed':
     case 'turn.interrupted':
     case 'turn.failed': {
@@ -450,8 +445,13 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
   ).state
   const thread = threadSnapshot.thread
   const withThread = ensureThread(state, thread)
+  const existing = withThread.threads[thread.threadId]!
   const replaced: ThreadState = {
     ...createThreadState(thread, 'ready'),
+    // A snapshot describes what the environment has; a send it has not
+    // answered yet is still the client's to show, unless the snapshot is
+    // itself the answer.
+    outbox: reconcileOutbox(existing, threadSnapshot.messages),
     turns: threadSnapshot.turns,
     messages: threadSnapshot.messages,
     reasoning: threadSnapshot.reasoning,
@@ -520,6 +520,7 @@ export function applySessionHistory(
       ...current,
       turns: payload.turns.length > 0 ? payload.turns : current.turns,
       messages,
+      outbox: reconcileOutbox(current, payload.messages),
       interactions:
         interactions.length > 0 || current.hydration !== 'ready'
           ? interactions
@@ -529,17 +530,97 @@ export function applySessionHistory(
   })
 }
 
+/** The plain text of a message, for matching an echo against what arrived. */
+const messageText = (message: Message): string =>
+  message.content.map((block) => (block.type === 'text' ? block.text : '')).join('')
+
+/**
+ * Drop failed echoes the environment turns out to have accepted. A send whose
+ * connection dropped is reported as failed even though its turn may well have
+ * started; when an authoritative snapshot or history page then brings back a
+ * user message this client never had, that message is the echo. Each arriving
+ * message clears at most one echo, so a prompt deliberately sent twice keeps
+ * the copy that really did fail.
+ */
+function reconcileOutbox(current: ThreadState, incoming: readonly Message[]): OutboxEntry[] {
+  if (!current.outbox.some((entry) => entry.status === 'failed')) return current.outbox
+  const known = new Set(current.messages.map((message) => message.messageId))
+  const arrived = incoming
+    .filter((message) => message.role === 'user' && !known.has(message.messageId))
+    .map(messageText)
+  if (arrived.length === 0) return current.outbox
+  return current.outbox.filter((entry) => {
+    if (entry.status !== 'failed') return true
+    const index = arrived.indexOf(entry.text)
+    if (index === -1) return true
+    arrived.splice(index, 1)
+    return false
+  })
+}
+
+/**
+ * The confirmed start of a turn: the real turn and user message replace the
+ * echo its command id created. Keyed by ID throughout, so the `turn.send`
+ * response and the `turn.started` event may arrive in either order and only
+ * the first of them changes anything.
+ */
+function confirmTurnStart(current: ThreadState, payload: TurnStart): ThreadState {
+  const outbox = payload.commandId
+    ? current.outbox.filter((entry) => entry.commandId !== payload.commandId)
+    : current.outbox
+  return {
+    ...current,
+    turns: upsertById(current.turns, (turn) => turn.turnId, payload.turn),
+    messages: upsertById(current.messages, (message) => message.messageId, payload.userMessage),
+    outbox: outbox.length === current.outbox.length ? current.outbox : outbox,
+  }
+}
+
 /** Same shape as `turn.started`; used to fold a `turn.send` response in before the event arrives. */
 export function applyTurnStarted(
   state: EnvironmentState,
   thread: Thread,
-  payload: { turn: Turn; userMessage: Message },
+  payload: TurnStart,
 ): EnvironmentState {
+  return patchThread(state, thread, (current) => confirmTurnStart(current, payload))
+}
+
+/**
+ * Echo a send locally before the environment has answered. A repeat of a
+ * command id — a retry — reuses its row and clears the previous failure
+ * instead of adding a second one.
+ */
+export function applyTurnSending(
+  state: EnvironmentState,
+  thread: Thread,
+  send: { commandId: string; text: string },
+): EnvironmentState {
+  const entry: OutboxEntry = { commandId: send.commandId, text: send.text, status: 'pending' }
   return patchThread(state, thread, (current) => ({
     ...current,
-    turns: upsertById(current.turns, (turn) => turn.turnId, payload.turn),
-    messages: upsertById(current.messages, (message) => message.messageId, payload.userMessage),
+    outbox: upsertById(current.outbox, (item) => item.commandId, entry),
   }))
+}
+
+/** Mark an echoed send failed, keeping it on screen with the reason. */
+export function applyTurnSendFailed(
+  state: EnvironmentState,
+  thread: Thread,
+  commandId: string,
+  message: string,
+): EnvironmentState {
+  return patchThread(state, thread, (current) => {
+    const entry = current.outbox.find((item) => item.commandId === commandId)
+    if (!entry) return current
+    return {
+      ...current,
+      outbox: upsertById(current.outbox, (item) => item.commandId, {
+        ...entry,
+        status: 'failed',
+        error: message,
+      }),
+    }
+  })
 }
 
 /**

@@ -16,6 +16,8 @@ export interface UIMessage {
   isOptimistic?: boolean
   /** Why the host could not send this optimistic message, once it knows. */
   sendError?: string
+  /** The id of the send this row echoes; retrying with it reuses the row. */
+  commandId?: string
 }
 
 /** The persisted record of the thread on screen, plus whether this client drives it. */
@@ -119,6 +121,9 @@ export interface ActiveThreadStateValue {
   acknowledgeOptimisticMessage: (externalId: string) => void
   /** Send a prompt to the active session, or start a session from the open draft. */
   sendMessage: (content: string, attachments?: UploadedImageAttachment[]) => Promise<void>
+  /** Send a failed message again under its own id. Hosts without a retryable
+   * send leave this out and the failed row shows the reason only. */
+  retrySend?: (commandId: string) => Promise<void>
   abortSession: (externalId: string) => Promise<void>
   resolvePermission: (
     sessionExternalId: string,
@@ -140,6 +145,29 @@ export interface ActiveThreadStateValue {
 
 export const ActiveThreadStateContext = createContext<ActiveThreadStateValue | null>(null)
 
+/**
+ * The message stores, served separately from the thread state.
+ *
+ * Every message row subscribes to these, and the thread state value changes on
+ * every streamed token; a row that reached the stores through it would re-render
+ * for each token of every other row. This context holds only values that live as
+ * long as the host, so a row that reads it renders when its own inputs change
+ * and at no other time.
+ */
+export interface ActiveThreadStores {
+  streamingStore: StreamingMessageSource
+  remoteStreamingStore?: StreamingMessageSource
+  messageContentStore: MessageContentStore
+}
+
+export const ActiveThreadStoresContext = createContext<ActiveThreadStores | null>(null)
+
+export function useActiveThreadStores(): ActiveThreadStores {
+  const ctx = useContext(ActiveThreadStoresContext)
+  if (!ctx) throw new Error('useActiveThreadStores must be used within ActiveThreadStateProvider')
+  return ctx
+}
+
 export function useActiveThreadState(): ActiveThreadStateValue {
   const ctx = useContext(ActiveThreadStateContext)
   if (!ctx) throw new Error('useActiveThreadState must be used within ActiveThreadStateProvider')
@@ -151,7 +179,7 @@ export function useActiveThreadState(): ActiveThreadStateValue {
  * unfinished assistant messages — including turns that stopped emitting
  * events entirely, which no live event would ever trigger hydration for. */
 export function useStreamingMessage(messageExternalId: string, hydrate = false) {
-  const { streamingStore } = useActiveThreadState()
+  const { streamingStore } = useActiveThreadStores()
   useEffect(() => {
     if (!hydrate) return
     streamingStore.ensureHydrated(messageExternalId)
@@ -163,14 +191,14 @@ export function useStreamingMessage(messageExternalId: string, hydrate = false) 
  * `remoteStreamingStore` when the host provides one, the local store
  * otherwise; `enabled` keeps the subscription off for settled messages. */
 export function useRemoteStreamingMessage(messageExternalId: string, enabled: boolean) {
-  const { streamingStore, remoteStreamingStore } = useActiveThreadState()
+  const { streamingStore, remoteStreamingStore } = useActiveThreadStores()
   return useStoreSnapshot(remoteStreamingStore ?? streamingStore, messageExternalId, enabled)
 }
 
 /** The persisted body of a message. `undefined` while loading (or while
  * `enabled` is false), `null` when the host has none. */
 export function useMessageContent(messageExternalId: string, enabled: boolean) {
-  const { messageContentStore } = useActiveThreadState()
+  const { messageContentStore } = useActiveThreadStores()
   return useStoreSnapshot(messageContentStore, messageExternalId, enabled)
 }
 

@@ -395,4 +395,27 @@ export const MIGRATIONS: readonly Migration[] = [
       }
     },
   },
+  {
+    version: 7,
+    name: 'turn_command_id',
+    up(database) {
+      const columns = new Set(
+        (database.prepare('PRAGMA table_info(turns)').all() as { name: string }[]).map(
+          (column) => column.name,
+        ),
+      )
+      if (!columns.has('command_id')) {
+        // The client-minted id of the send that started the turn. Null on turns
+        // recorded before this column, which the unique index below tolerates
+        // because SQLite treats NULLs as distinct.
+        database.exec('ALTER TABLE turns ADD COLUMN command_id TEXT')
+      }
+      // Both the retry lookup and the guarantee that one command id can only
+      // ever have started one turn in a thread.
+      database.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS turns_thread_command_id_idx
+          ON turns(thread_id, command_id);
+      `)
+    },
+  },
 ]

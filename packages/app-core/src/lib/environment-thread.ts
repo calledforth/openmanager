@@ -35,6 +35,12 @@ export interface ProjectedMessage {
 interface TurnProjection {
   deps: unknown[]
   entries: ProjectedMessage[]
+  /**
+   * The message each user row was built from. A streamed token rebuilds its
+   * turn, but the prompt that started the turn has not changed, so its row is
+   * reused and the bubble on screen does not re-render.
+   */
+  userSources: Map<string, Message>
 }
 
 export interface ThreadProjection {
@@ -126,11 +132,22 @@ function projectTurn(
   if (previous && shallowEqualArray(previous.deps, deps)) return previous
 
   const entries: ProjectedMessage[] = []
+  const userSources = new Map<string, Message>()
   let sequenceNum = sequenceStart
   const settled = isTurnSettled(turn)
 
   for (const message of messages) {
     if (message.role !== 'user') continue
+    userSources.set(message.messageId, message)
+    const reused =
+      previous?.userSources.get(message.messageId) === message
+        ? previous?.entries.find((entry) => entry.message.externalId === message.messageId)
+        : undefined
+    if (reused && reused.message.sequenceNum === sequenceNum) {
+      entries.push(reused)
+      sequenceNum += 1
+      continue
+    }
     const content = contentText(message.content)
     const parts = imageParts(message)
     entries.push({
@@ -167,7 +184,7 @@ function projectTurn(
     })
   }
 
-  return { deps, entries }
+  return { deps, entries, userSources }
 }
 
 /** Project `thread`, reusing rows from `previous` whose inputs are unchanged. */
@@ -190,6 +207,22 @@ export function projectThread(
       messages.push(entry.message)
     }
     sequence += projection.entries.length
+  }
+
+  // Sends the environment has not confirmed yet close the timeline: they are
+  // always newer than every turn it told us about.
+  for (const entry of thread.outbox) {
+    messages.push({
+      externalId: `send:${entry.commandId}`,
+      role: 'user',
+      isFinal: true,
+      sequenceNum: sequence,
+      optimisticContent: entry.text,
+      isOptimistic: true,
+      commandId: entry.commandId,
+      ...(entry.error ? { sendError: entry.error } : {}),
+    })
+    sequence += 1
   }
 
   return {

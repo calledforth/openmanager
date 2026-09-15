@@ -1,13 +1,42 @@
-import { describe, expect, it, vi } from 'vitest'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import type { DatabaseSync } from 'node:sqlite'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentRuntime } from '@agentpack/runtime/node'
 import { ProofResponseSchemas, type EventEnvelope } from '@openmanager/protocol/node'
 import { createThreadService, type WorkspaceRuntimeResolver } from '../src/thread-service.js'
+import { createPersistentEventService } from '../src/event-service.js'
+import { openEnvironmentDatabase } from '../src/db/database.js'
 
 /** The registry seam: every ID the tests use maps to one canonical root. */
 const registered: WorkspaceRuntimeResolver = (workspaceId) =>
   workspaceId === '/workspace/project'
     ? { providerId: 'opencode', cwd: '/workspace/project' }
     : undefined
+
+const directories: string[] = []
+const databases: DatabaseSync[] = []
+
+afterEach(async () => {
+  for (const database of databases.splice(0)) database.close()
+  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true })))
+})
+
+/** A database with the registered workspace already known, ready for sessions. */
+async function createDatabase(): Promise<{ database: DatabaseSync }> {
+  const directory = await mkdtemp(join(tmpdir(), 'openmanager-threads-test-'))
+  directories.push(directory)
+  const database = openEnvironmentDatabase(directory)
+  databases.push(database)
+  database
+    .prepare(
+      `INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at)
+       VALUES (?, 'project', ?, 1, 1)`,
+    )
+    .run('/workspace/project', '/workspace/project')
+  return { database }
+}
 
 describe('workspace lifecycle', () => {
   it('keeps sessions listed while unavailable, refuses runtime work, and opens after recovery', async () => {
@@ -995,5 +1024,144 @@ describe('explicit session creation', () => {
       'thread.created',
       'session.deleted',
     ])
+  })
+})
+
+describe('sends deduplicated by command id', () => {
+  const input = {
+    environmentId: 'environment-1',
+    workspaceId: '/workspace/project',
+    providerId: 'opencode',
+  }
+
+  function setup(options: Parameters<typeof createThreadService>[5] = {}) {
+    const runtime = {
+      ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-1', state: 'created' }),
+      prompt: vi.fn().mockReturnValue(new Promise(() => undefined)),
+      cancel: vi.fn(),
+    }
+    const events: EventEnvelope[] = []
+    const service = createThreadService(
+      runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
+      { rejection: () => undefined },
+      (event) => events.push(event),
+      undefined,
+      registered,
+      options,
+    )
+    service.setEnvironmentId(input.environmentId)
+    const created = ProofResponseSchemas['session.create'].parse(
+      service.dispatch({
+        type: 'command',
+        name: 'session.create',
+        requestId: 'create',
+        payload: input,
+      }),
+    ).payload
+    const send = (commandId: string | undefined, text = 'hello', requestId = 'send') =>
+      service.dispatch({
+        type: 'command',
+        name: 'turn.send',
+        requestId,
+        payload: {
+          sessionId: created.session.sessionId,
+          threadId: created.thread.threadId,
+          text,
+          ...(commandId ? { commandId } : {}),
+        },
+      })
+    return { service, runtime, events, created, send }
+  }
+
+  it('answers a repeated command id with the turn it already started', async () => {
+    const { runtime, send } = setup()
+    const first = ProofResponseSchemas['turn.send'].parse(send('cmd-1')).payload
+    expect(first.commandId).toBe('cmd-1')
+    await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(1))
+
+    // The retry lands while the first turn is still running: it must replay,
+    // not collide with it.
+    const retry = ProofResponseSchemas['turn.send'].parse(send('cmd-1', 'hello', 'send-2')).payload
+    expect(retry).toEqual(first)
+    expect(runtime.prompt).toHaveBeenCalledTimes(1)
+    // A different send during the same running turn is still a conflict.
+    expect(send('cmd-2', 'other', 'send-3')).toMatchObject({
+      type: 'error',
+      error: { code: 'conflict' },
+    })
+  })
+
+  it('mints a command id for a client that sends none', async () => {
+    const { send } = setup()
+    const started = ProofResponseSchemas['turn.send'].parse(send(undefined)).payload
+    expect(started.commandId).toEqual(expect.any(String))
+  })
+
+  it('persists one turn.started per command id', async () => {
+    const { database } = await createDatabase()
+    const publish = vi.fn()
+    const events = createPersistentEventService(database, publish, {
+      sessionProviderId: () => 'opencode',
+    })
+    const runtime = {
+      ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-1', state: 'created' }),
+      prompt: vi.fn().mockReturnValue(new Promise(() => undefined)),
+      cancel: vi.fn(),
+    }
+    const build = () => {
+      const service = createThreadService(
+        runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
+        { rejection: () => undefined },
+        (event) => events.append(event),
+        undefined,
+        registered,
+        { database, flush: events.flush, appendAtomic: (batch) => events.appendAtomic(batch) },
+      )
+      service.setEnvironmentId(input.environmentId)
+      return service
+    }
+    const service = build()
+    const created = ProofResponseSchemas['session.create'].parse(
+      service.dispatch({
+        type: 'command',
+        name: 'session.create',
+        requestId: 'create',
+        payload: input,
+      }),
+    ).payload
+    const send = (service: ReturnType<typeof build>, requestId: string) =>
+      service.dispatch({
+        type: 'command',
+        name: 'turn.send',
+        requestId,
+        payload: {
+          sessionId: created.session.sessionId,
+          threadId: created.thread.threadId,
+          text: 'hello',
+          commandId: 'cmd-1',
+        },
+      })
+    const first = ProofResponseSchemas['turn.send'].parse(send(service, 'send-1')).payload
+    await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(1))
+
+    // A restart: nothing about this thread is left in memory, so the retry is
+    // answered from the log alone.
+    const restarted = build()
+    const replayed = ProofResponseSchemas['turn.send'].parse(send(restarted, 'send-2')).payload
+    expect(replayed).toEqual(first)
+    expect(runtime.prompt).toHaveBeenCalledTimes(1)
+
+    events.flush()
+    expect(database.prepare('SELECT count(*) AS count FROM turns').get()).toEqual({ count: 1 })
+    expect(
+      database.prepare('SELECT command_id FROM turns WHERE turn_id = ?').get(first.turn.turnId),
+    ).toEqual({ command_id: 'cmd-1' })
+    expect(
+      database.prepare("SELECT count(*) AS count FROM messages WHERE role = 'user'").get(),
+    ).toEqual({ count: 1 })
+    expect(publish.mock.calls.filter(([record]) => record.event.name === 'turn.started')).toHaveLength(
+      1,
+    )
+    events.close()
   })
 })

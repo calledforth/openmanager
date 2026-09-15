@@ -10,6 +10,7 @@ import {
   type Thread,
   type Turn,
   type TurnFailureReason,
+  type TurnStart,
   type Workspace,
 } from '@openmanager/protocol'
 import { EnvironmentClientError } from './errors'
@@ -22,6 +23,8 @@ import {
   applySessionCreated,
   applySessionHistory,
   applySessionOpen,
+  applyTurnSendFailed,
+  applyTurnSending,
   applyTurnStarted,
   applyWorkspaceList,
   applyWorkspaceRemoved,
@@ -38,6 +41,7 @@ import type {
   EnvironmentCommandName,
   EnvironmentCommands,
   EnvironmentState,
+  SendTurnInput,
   SessionStatus,
   ThreadTarget,
 } from './types'
@@ -297,7 +301,17 @@ export function createMockEnvironmentClient(
     scriptedReplies.set(turn.turnId, pending)
   }
 
-  const startTurn = (input: import('./types').SendTurnInput) => {
+  /** What each command id already started, keyed like the environment's own. */
+  const startedCommands = new Map<string, TurnStart>()
+  const commandKey = (target: ThreadTarget, commandId: string) => `${target.threadId}:${commandId}`
+
+  const startTurn = (input: SendTurnInput & { commandId: string }) => {
+    const replayed = startedCommands.get(commandKey(input, input.commandId))
+    if (replayed) {
+      // The retry still confirms its echo, exactly as the first send did.
+      store.update((state) => applyTurnStarted(state, input, replayed))
+      return replayed
+    }
     const thread = requireThread(input)
     if (thread.turns.some((turn) => turn.state === 'running' || turn.state === 'waiting')) {
       throw new EnvironmentClientError('conflict', 'A turn is already in progress.')
@@ -310,20 +324,17 @@ export function createMockEnvironmentClient(
       role: 'user',
       content: [{ type: 'text', text: input.text }],
     }
+    const started: TurnStart = { turn, userMessage, commandId: input.commandId }
+    startedCommands.set(commandKey(input, input.commandId), started)
     // Fold the user echo in before the event, the way the WebSocket client
     // applies `turn.send` before `turn.started` arrives. The event is then
     // a no-op instead of a second bubble.
-    store.update((state) => applyTurnStarted(state, input, { turn, userMessage }))
-    emit({
-      ...base(),
-      name: 'turn.started',
-      scope: threadScope(input),
-      payload: { turn, userMessage },
-    })
+    store.update((state) => applyTurnStarted(state, input, started))
+    emit({ ...base(), name: 'turn.started', scope: threadScope(input), payload: started })
     const context: MockTurnContext = { ...input, turnId: turn.turnId }
     const chunks = respond ? respond(context) : null
     if (chunks) scriptReply(context, chunks)
-    return { turn, userMessage }
+    return started
   }
 
   const commands: EnvironmentCommands = {
@@ -441,6 +452,7 @@ export function createMockEnvironmentClient(
                 sessionId: session.sessionId,
                 threadId: thread.threadId,
                 text: input.firstMessage,
+                commandId: nextId(),
               })
         return { session, thread, ...(firstTurn ? { firstTurn } : {}) }
       }),
@@ -523,7 +535,18 @@ export function createMockEnvironmentClient(
         cancelScriptsForThreads(session.threadIds)
         emit({ ...base(), name: 'session.deleted', scope: envScope(), payload: { sessionId } })
       }),
-    sendTurn: (input) => run('sendTurn', input, () => startTurn(input)),
+    sendTurn: (input) => {
+      const commandId = input.commandId ?? nextId()
+      const thread: Thread = { threadId: input.threadId, sessionId: input.sessionId }
+      store.update((state) => applyTurnSending(state, thread, { commandId, text: input.text }))
+      // Recorded with the id it actually ran under, minted or not.
+      const send = { ...input, commandId }
+      return run('sendTurn', send, () => startTurn(send)).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error)
+        store.update((state) => applyTurnSendFailed(state, thread, commandId, message))
+        throw error
+      })
+    },
     interruptTurn: (input) =>
       run('interruptTurn', input, () => {
         const thread = requireThread(input)

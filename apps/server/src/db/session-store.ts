@@ -15,6 +15,7 @@ import {
   type SessionSummary,
   type Thread,
   type Turn,
+  type TurnStart,
 } from '@openmanager/protocol/node'
 import {
   INTERACTIONS_FOR_TURN_SQL,
@@ -22,8 +23,11 @@ import {
   MESSAGE_PARTS_SQL,
   SESSION_LIST_FOR_ENVIRONMENT_SQL,
   SESSION_LIST_FOR_WORKSPACE_SQL,
+  THREAD_IN_SESSION_SQL,
   THREADS_FOR_SESSION_SQL,
+  TURN_FOR_COMMAND_ID_SQL,
   TURNS_FOR_THREAD_SQL,
+  USER_MESSAGE_FOR_TURN_SQL,
 } from './queries.ts'
 
 export interface SessionListQuery {
@@ -35,6 +39,12 @@ export interface SessionListQuery {
 export interface SessionListPage {
   sessions: SessionSummary[]
   nextCursor: SessionListCursor | null
+}
+
+export interface CommandTurnQuery {
+  sessionId: string
+  threadId: string
+  commandId: string
 }
 
 export interface SessionHistoryQuery {
@@ -151,7 +161,7 @@ export function listSessionHistory(
   query: SessionHistoryQuery,
 ): SessionHistoryPage | undefined {
   const thread = database
-    .prepare('SELECT thread_id, session_id FROM threads WHERE thread_id = ? AND session_id = ?')
+    .prepare(THREAD_IN_SESSION_SQL)
     .get(query.threadId, query.sessionId) as ThreadRow | undefined
   if (!thread) return undefined
 
@@ -200,5 +210,33 @@ function messageFromRow(database: DatabaseSync, row: MessageRow): Message {
     turnId: row.turn_id,
     role: row.role,
     content: parts.map((part) => ContentBlockSchema.parse(JSON.parse(part.content_json))),
+  }
+}
+
+/**
+ * The turn a command id already started in this thread, with the prompt it
+ * recorded. A retry of that id answers with this turn rather than starting a
+ * second one, including after a restart when nothing is left in memory.
+ */
+export function findTurnByCommandId(
+  database: DatabaseSync,
+  query: CommandTurnQuery,
+): TurnStart | undefined {
+  const thread = database
+    .prepare(THREAD_IN_SESSION_SQL)
+    .get(query.threadId, query.sessionId) as ThreadRow | undefined
+  if (!thread) return undefined
+  const turn = database.prepare(TURN_FOR_COMMAND_ID_SQL).get(query.threadId, query.commandId) as
+    | TurnRow
+    | undefined
+  if (!turn) return undefined
+  const message = database.prepare(USER_MESSAGE_FOR_TURN_SQL).get(turn.turn_id) as
+    | MessageRow
+    | undefined
+  if (!message) return undefined
+  return {
+    turn: TurnSchema.parse({ turnId: turn.turn_id, threadId: turn.thread_id, state: turn.state }),
+    userMessage: messageFromRow(database, message),
+    commandId: query.commandId,
   }
 }

@@ -69,11 +69,14 @@ export function UserMessage({
   parts,
   optimisticAttachments,
   sendError,
+  onRetry,
 }: {
   content: string
   parts?: MessagePart[]
   optimisticAttachments?: UploadedImageAttachment[]
   sendError?: string
+  /** Send this message again. Omitted when the host cannot retry it. */
+  onRetry?: () => void
 }) {
   const [previewImage, setPreviewImage] = useState<PreviewImage | null>(null)
   const persistedImages = (parts ?? []).flatMap((part) => {
@@ -117,8 +120,17 @@ export function UserMessage({
           )}
           {content && <div className="min-w-0 whitespace-pre-wrap break-words">{content}</div>}
           {sendError && (
-            <div className="mt-2 rounded-md border border-red-500/25 bg-red-500/10 px-2 py-1.5 text-[11px] leading-4 text-red-500">
-              Not sent: {sendError}
+            <div className="mt-2 flex items-start justify-between gap-2 rounded-md border border-red-500/25 bg-red-500/10 px-2 py-1.5 text-[11px] leading-4 text-red-500">
+              <span className="min-w-0 break-words">Not sent: {sendError}</span>
+              {onRetry && (
+                <button
+                  type="button"
+                  onClick={onRetry}
+                  className="shrink-0 font-medium underline-offset-2 hover:underline focus-visible:underline focus-visible:outline-none"
+                >
+                  Try again
+                </button>
+              )}
             </div>
           )}
         </div>

@@ -139,6 +139,18 @@ export const MessageSchema = z.object({
   content: z.array(ContentBlockSchema),
 })
 
+/**
+ * What a started turn looks like to the client that asked for it: the turn,
+ * the user message the environment recorded, and the command id that started
+ * it. The id is absent from environments that predate it, so a client falls
+ * back to the id it sent.
+ */
+export const TurnStartSchema = z.object({
+  turn: TurnSchema,
+  userMessage: MessageSchema,
+  commandId: EntityIdSchema.optional(),
+})
+
 const CancellationReasonSchema = z.enum([
   'user',
   'timeout',
@@ -261,6 +273,7 @@ export type HistoryCursor = z.infer<typeof HistoryCursorSchema>
 export type Thread = z.infer<typeof ThreadSchema>
 export type Turn = z.infer<typeof TurnSchema>
 export type Message = z.infer<typeof MessageSchema>
+export type TurnStart = z.infer<typeof TurnStartSchema>
 export type ContentBlock = z.infer<typeof ContentBlockSchema>
 export type Interaction = z.infer<typeof InteractionSchema>
 export type InteractionResponse = z.infer<typeof InteractionResponseSchema>

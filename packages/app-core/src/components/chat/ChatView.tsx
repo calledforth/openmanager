@@ -27,6 +27,7 @@ type TimelineMessage = Pick<
   | 'optimisticJobId'
   | 'isOptimistic'
   | 'sendError'
+  | 'commandId'
 >
 
 /**
@@ -41,6 +42,7 @@ export function ChatView() {
     activeThreadDriven,
     isMessagesLoading,
     acknowledgeOptimisticMessage,
+    retrySend,
   } = useActiveThreadState()
   const scrollRef = useRef<HTMLDivElement>(null)
   const shouldAutoScrollRef = useRef(true)
@@ -111,6 +113,7 @@ export function ChatView() {
             isDriven={activeThreadDriven}
             onStreamUpdate={scheduleStickToBottom}
             onPersistedContentReady={acknowledgeOptimisticMessage}
+            onRetrySend={retrySend}
           />
           <PendingPermissionFallback />
         </div>
@@ -127,6 +130,7 @@ function ConversationTimeline({
   isDriven,
   onStreamUpdate,
   onPersistedContentReady,
+  onRetrySend,
 }: {
   sessionId: string | null
   messages: TimelineMessage[]
@@ -135,6 +139,7 @@ function ConversationTimeline({
   isDriven: boolean
   onStreamUpdate: () => void
   onPersistedContentReady: (messageId: string) => void
+  onRetrySend?: (commandId: string) => Promise<void>
 }) {
   const [hydratingSessionId, setHydratingSessionId] = useState<string | null>(null)
   const isColdSessionLoad = !!sessionId && isMessagesLoading && messages.length === 0
@@ -176,6 +181,7 @@ function ConversationTimeline({
           hidden={isHydrating}
           onHydrated={handleHydrated}
           onPersistedContentReady={onPersistedContentReady}
+          onRetrySend={onRetrySend}
         />
       )}
     </>
@@ -190,6 +196,7 @@ function MessageTimeline({
   hidden,
   onHydrated,
   onPersistedContentReady,
+  onRetrySend,
 }: {
   messages: TimelineMessage[]
   scrollElement: HTMLDivElement | null
@@ -198,6 +205,7 @@ function MessageTimeline({
   hidden: boolean
   onHydrated: () => void
   onPersistedContentReady: (messageId: string) => void
+  onRetrySend?: (commandId: string) => Promise<void>
 }) {
   const [readyMessageIds, setReadyMessageIds] = useState<Set<string>>(() => new Set())
   const didReportHydratedRef = useRef(false)
@@ -275,6 +283,7 @@ function MessageTimeline({
                   onStreamUpdate={onStreamUpdate}
                   onReady={handleMessageReady}
                   onPersistedContentReady={onPersistedContentReady}
+                  onRetrySend={onRetrySend}
                   animate={!initialMessageIdsRef.current.has(message.externalId)}
                 />
               </div>
@@ -291,6 +300,7 @@ function MessageTimeline({
           onStreamUpdate={onStreamUpdate}
           onReady={handleMessageReady}
           onPersistedContentReady={onPersistedContentReady}
+          onRetrySend={onRetrySend}
           animate={!initialMessageIdsRef.current.has(message.externalId)}
         />
       ))}
@@ -304,6 +314,7 @@ function MessageRow({
   onStreamUpdate,
   onReady,
   onPersistedContentReady,
+  onRetrySend,
   animate,
 }: {
   message: TimelineMessage
@@ -311,8 +322,15 @@ function MessageRow({
   onStreamUpdate: () => void
   onReady: (messageId: string) => void
   onPersistedContentReady: (messageId: string) => void
+  onRetrySend?: (commandId: string) => Promise<void>
   animate: boolean
 }) {
+  // Resolved here rather than inside the memoized row: a row that reads the
+  // active-thread context re-renders on every streamed token.
+  const { commandId, sendError } = message
+  const retry = useCallback(() => {
+    if (commandId && onRetrySend) void onRetrySend(commandId)
+  }, [commandId, onRetrySend])
   return (
     <div className={cn(animate && 'chat-animate-slide-up')}>
       <ResolvedMessage
@@ -323,6 +341,7 @@ function MessageRow({
         optimisticAttachments={message.optimisticAttachments}
         isOptimistic={message.isOptimistic}
         sendError={message.sendError}
+        onRetry={sendError && commandId && onRetrySend ? retry : undefined}
         isDriven={isDriven}
         onStreamUpdate={onStreamUpdate}
         onReady={onReady}
@@ -340,6 +359,7 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
   optimisticAttachments?: TimelineMessage['optimisticAttachments']
   isOptimistic?: boolean
   sendError?: string
+  onRetry?: () => void
   isDriven: boolean
   onStreamUpdate: () => void
   onReady?: (messageId: string) => void
@@ -422,6 +442,7 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
         parts={parts}
         optimisticAttachments={props.optimisticAttachments}
         sendError={props.sendError}
+        onRetry={props.onRetry}
       />
     )
   }
