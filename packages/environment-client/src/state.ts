@@ -243,7 +243,8 @@ function resolveInteraction(
  * cascade instead of leaving orphaned subagent rows in the sidebar.
  */
 function removeSession(state: EnvironmentState, sessionId: string): EnvironmentState {
-  if (!state.sessions[sessionId]) return state
+  // The parent itself may never have been loaded (a paginated list can bring
+  // a child in first), so descendants are searched for regardless.
   const removed = new Set<string>()
   const pending = [sessionId]
   while (pending.length) {
@@ -254,6 +255,7 @@ function removeSession(state: EnvironmentState, sessionId: string): EnvironmentS
       if (session.parentSessionId === id) pending.push(session.sessionId)
     }
   }
+  if (![...removed].some((id) => id in state.sessions)) return state
   const sessions = { ...state.sessions }
   const threads = { ...state.threads }
   for (const id of removed) {

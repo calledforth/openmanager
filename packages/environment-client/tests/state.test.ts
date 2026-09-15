@@ -325,6 +325,56 @@ describe('applyEvent', () => {
     expect(deleted.activeThreadId).toBeNull()
     expect(deleted.sessionOpenFailure).toBeNull()
   })
+
+  it('removes a loaded child when its never-loaded parent is deleted', () => {
+    const child = {
+      sessionId: 'session-child',
+      workspaceId: WORKSPACE.workspaceId,
+      title: 'Child',
+      parentSessionId: 'parent-1',
+    }
+    // Only the child arrives: a paginated list can deliver it before the parent.
+    let state = applyEvent(
+      seeded(),
+      event({ name: 'session.created', scope: environmentScope, payload: { session: child } }),
+    )
+    state = applyEvent(
+      state,
+      event({
+        name: 'thread.created',
+        scope: { type: 'session', environmentId: ENV, sessionId: child.sessionId },
+        payload: { thread: { threadId: 'session-child-thread', sessionId: child.sessionId } },
+      }),
+    )
+    expect(state.sessionOrder).toContain(child.sessionId)
+
+    const deleted = applyEvent(
+      state,
+      event({
+        name: 'session.deleted',
+        scope: environmentScope,
+        payload: { sessionId: 'parent-1' },
+      }),
+    )
+    expect(deleted.sessions[child.sessionId]).toBeUndefined()
+    expect(deleted.threads['session-child-thread']).toBeUndefined()
+    expect(deleted.sessionOrder).not.toContain(child.sessionId)
+    expect(deleted.sessionOrder).toEqual([SESSION.sessionId])
+  })
+
+  it('keeps the same state when an unknown session with no descendants is deleted', () => {
+    const state = seeded()
+    expect(
+      applyEvent(
+        state,
+        event({
+          name: 'session.deleted',
+          scope: environmentScope,
+          payload: { sessionId: 'session-never-seen' },
+        }),
+      ),
+    ).toBe(state)
+  })
 })
 
 describe('optimistic sends', () => {

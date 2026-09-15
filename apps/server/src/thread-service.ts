@@ -125,6 +125,12 @@ export function createThreadService(
   const threads = new Map<string, ThreadRecord>()
   /** Host session per `providerId:providerSessionId` registered as a child this process. */
   const childSessionIds = new Map<string, string>()
+  /**
+   * Children the user deleted while this process runs, by the same key. The
+   * parent turn that delegated them may still report the subtask, and that
+   * report must not quietly recreate what the user removed.
+   */
+  const forgottenChildren = new Set<string>()
   // Supplied after construction so the service can be assembled before the
   // WebSocket publisher exists.
   let environmentId = ''
@@ -461,7 +467,7 @@ export function createThreadService(
     title: string | null,
   ) => {
     const key = `${parent.providerId}:${providerSessionId}`
-    if (childSessionIds.has(key)) return
+    if (childSessionIds.has(key) || forgottenChildren.has(key)) return
     if (options.database) {
       options.flush?.()
       const persisted = findSessionIdByProviderSession(
@@ -500,13 +506,39 @@ export function createThreadService(
       status: 'idle',
       updatedAt: Date.now(),
     }
-    // The stamp is a direct row update, so the row must already be committed
-    // when the host appends one event at a time instead of atomically.
-    options.flush?.()
-    persistRuntimeSession(record, providerSessionId)
-    childSessionIds.set(key, session.sessionId)
     sessions.set(session.sessionId, record)
     threads.set(thread.threadId, record)
+    // The stamp is a direct row update that follows the committed insert in
+    // the same synchronous step. A child without its provider identity can
+    // neither resume nor deduplicate, so a failed stamp takes the announced
+    // session back rather than leaving that row behind.
+    try {
+      options.flush?.()
+      persistRuntimeSession(record, providerSessionId)
+    } catch (error) {
+      options.onPersistenceError?.(error, 'session.created')
+      rollbackSession(record)
+      return
+    }
+    childSessionIds.set(key, session.sessionId)
+  }
+
+  /**
+   * Remember a child the user is deleting so a later report of the same
+   * provider child does not register it again. Read before the row goes.
+   */
+  const forgetChild = (sessionId: string) => {
+    for (const [key, hostId] of childSessionIds) {
+      if (hostId !== sessionId) continue
+      forgottenChildren.add(key)
+      return
+    }
+    if (!options.database) return
+    const summary = getSessionSummary(options.database, sessionId)
+    const providerSessionId = getProviderSessionId(options.database, sessionId)
+    if (summary && providerSessionId) {
+      forgottenChildren.add(`${summary.providerId}:${providerSessionId}`)
+    }
   }
 
   const summaryOf = (record: ThreadRecord): SessionSummary => ({
@@ -723,6 +755,7 @@ export function createThreadService(
                 scope: { type: 'environment', environmentId },
                 payload: { sessionId },
               })
+        if (parsed.data.name === 'session.delete' && session.parentSessionId) forgetChild(sessionId)
         try {
           appendEvent(event)
         } catch (error) {

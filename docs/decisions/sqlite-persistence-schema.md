@@ -263,7 +263,9 @@ Deleting a parent deletes its children. SQLite cascades the rows, the thread
 service drops the children's live records and abandons any turn they were
 running, and clients remove children from their own state when the parent's
 `session.deleted` arrives; no separate `session.deleted` is emitted per child.
-Deleting a child alone leaves the parent untouched. A child is never re-parented
+Deleting a child alone leaves the parent untouched, and the thread service
+remembers the deleted provider child for the rest of the process so the parent
+turn that delegated it cannot register it again. A child is never re-parented
 and always shares its parent's workspace, which the composite foreign key
 enforces.
 
