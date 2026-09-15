@@ -185,6 +185,20 @@ export function createConvexEnvironmentClient(
 
   const update = (reducer: (state: EnvironmentState) => EnvironmentState) => store.update(reducer)
 
+  /** Only this temporary IPC/Convex adapter infers status. The shared reducers
+   * now preserve the authoritative session field supplied by environment servers. */
+  const refreshLegacySessionStatus = (state: EnvironmentState, sessionId: string) => {
+    const session = state.sessions[sessionId]
+    if (!session) return state
+    const status = deriveSessionStatus(
+      session.threadIds
+        .map((id) => state.threads[id])
+        .filter((thread): thread is ThreadState => !!thread),
+    )
+    if (status === session.status) return state
+    return { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, status } } }
+  }
+
   // -------------------------------------------------------------------------
   // Live events over IPC
   // -------------------------------------------------------------------------
@@ -216,6 +230,9 @@ export function createConvexEnvironmentClient(
           continue
         }
         next = applyEvent(next, proof)
+        if (proof.scope.type === 'thread') {
+          next = refreshLegacySessionStatus(next, proof.scope.sessionId)
+        }
       }
       return next
     })
@@ -334,7 +351,7 @@ export function createConvexEnvironmentClient(
   }
 
   /**
-   * The store derives a session's status from the turns it has seen, which
+   * This legacy adapter derives a session's status from the turns it has seen, which
    * for a session driven elsewhere (or before this window existed) is none.
    * The catalog row knows better then: the projector writes `running`,
    * `waiting`, `error`, `done` and `idle`. A turn this renderer is watching
@@ -871,6 +888,7 @@ export function createConvexEnvironmentClient(
           loaded.history,
         )
         if (live) next = preserveLiveTurn(next, sessionId, live)
+        next = refreshLegacySessionStatus(next, sessionId)
         return applyActiveSession(next, sessionId)
       })
       const open = store
@@ -884,7 +902,12 @@ export function createConvexEnvironmentClient(
       gate()
       const session = requireSession(input.sessionId)
       const loaded = await loadSession(input.sessionId, session.workspaceId)
-      update((state) => applySessionHistory(state, threadOf(input.sessionId), loaded.history))
+      update((state) =>
+        refreshLegacySessionStatus(
+          applySessionHistory(state, threadOf(input.sessionId), loaded.history),
+          input.sessionId,
+        ),
+      )
       return loaded.history
     },
     async renameSession(sessionId, title) {

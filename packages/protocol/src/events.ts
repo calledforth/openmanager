@@ -8,6 +8,7 @@ import {
   ThreadScopeSchema,
   WorkspaceSchema,
   SessionSchema,
+  SessionStatusSchema,
   ThreadSchema,
   TurnStartSchema,
   ContentBlockSchema,
@@ -60,6 +61,7 @@ export const ProofEventSchemas = {
       sessionId: EntityIdSchema,
       title: z.string().nullable().optional(),
       titleSource: z.enum(['fallback', 'provider', 'user']).optional(),
+      status: SessionStatusSchema.optional(),
     }),
   ),
   'session.deleted': event(

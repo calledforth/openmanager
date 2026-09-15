@@ -67,6 +67,46 @@ describe('applyEnvironment', () => {
 })
 
 describe('applyEvent', () => {
+  it('uses server status even without a thread and preserves it through stale history', () => {
+    let state = applyEvent(
+      createInitialState(),
+      event({
+        name: 'session.created',
+        scope: environmentScope,
+        payload: { session: SESSION },
+      }),
+    )
+    for (const status of ['running', 'waiting', 'error', 'idle'] as const) {
+      state = applyEvent(
+        state,
+        event({
+          name: 'session.updated',
+          scope: environmentScope,
+          payload: { sessionId: SESSION.sessionId, status },
+        }),
+      )
+      expect(state.sessions[SESSION.sessionId]?.status).toBe(status)
+      expect(Object.keys(state.threads)).toHaveLength(0)
+    }
+    state = applyEvent(
+      state,
+      event({
+        name: 'session.updated',
+        scope: environmentScope,
+        payload: { sessionId: SESSION.sessionId, status: 'waiting' },
+      }),
+    )
+    state = applySessionHistory(state, THREAD, {
+      turns: [{ turnId: 'old', threadId: THREAD.threadId, state: 'completed' }],
+      messages: [],
+      interactions: [],
+      nextCursor: null,
+    })
+    expect(state.sessions[SESSION.sessionId]?.status).toBe('waiting')
+    state = applyTurnStarted(state, THREAD, turnStarted().payload)
+    expect(state.sessions[SESSION.sessionId]?.status).toBe('waiting')
+  })
+
   it('fixtures are protocol-valid events', () => {
     for (const fixture of [turnStarted(), delta('turn-1', 'm', 'x'), completed()]) {
       expect(ProofEventSchema.safeParse(fixture).success).toBe(true)
@@ -91,7 +131,7 @@ describe('applyEvent', () => {
 
   it('streams a turn: running, deltas coalesce, then completed', () => {
     let state = applyEvent(seeded(), turnStarted())
-    expect(selectSessionList(state)[0]?.status).toBe('running')
+    expect(selectSessionList(state)[0]?.status).toBe('idle')
     expect(selectActiveTurn(state)?.turnId).toBe('turn-1')
 
     state = applyEvent(state, delta('turn-1', 'assistant-1', 'Hel'))
@@ -123,7 +163,7 @@ describe('applyEvent', () => {
       }),
     )
     expect(selectPendingInteractions(state)).toHaveLength(1)
-    expect(selectSessionList(state)[0]?.status).toBe('waiting')
+    expect(selectSessionList(state)[0]?.status).toBe('idle')
 
     state = applyEvent(
       state,
@@ -141,7 +181,7 @@ describe('applyEvent', () => {
       }),
     )
     expect(selectPendingInteractions(state)).toHaveLength(0)
-    expect(selectSessionList(state)[0]?.status).toBe('running')
+    expect(selectSessionList(state)[0]?.status).toBe('idle')
   })
 
   it('optimistic resolve returns the turn to running and makes the later event a no-op', () => {
@@ -157,7 +197,7 @@ describe('applyEvent', () => {
     state = applyInteractionResolved(state, THREAD, permission.interactionId)
     expect(selectPendingInteractions(state)).toHaveLength(0)
     expect(selectActiveTurn(state)?.state).toBe('running')
-    expect(selectSessionList(state)[0]?.status).toBe('running')
+    expect(selectSessionList(state)[0]?.status).toBe('idle')
 
     const replayed = applyEvent(
       state,
@@ -177,7 +217,7 @@ describe('applyEvent', () => {
     expect(replayed).toBe(state)
   })
 
-  it('records failures and marks the session as errored', () => {
+  it('records turn failures without guessing the session status', () => {
     let state = applyEvent(seeded(), turnStarted())
     state = applyEvent(
       state,
@@ -190,7 +230,7 @@ describe('applyEvent', () => {
     expect(selectActiveThread(state)?.failures).toEqual([
       { turnId: 'turn-1', reason: 'provider_error', message: 'boom' },
     ])
-    expect(selectSessionList(state)[0]?.status).toBe('error')
+    expect(selectSessionList(state)[0]?.status).toBe('idle')
   })
 
   it('removes a workspace and its sessions when the environment announces the removal', () => {
@@ -231,6 +271,7 @@ describe('applyEvent', () => {
     expect(state.sessions[SESSION.sessionId]).toEqual({
       ...previous.sessions[SESSION.sessionId],
       title: 'Other client title',
+      updatedAt: '2026-09-10T00:00:00.000Z',
     })
   })
 
@@ -617,7 +658,7 @@ describe('snapshots', () => {
       interactions: [{ threadId: THREAD.threadId, interaction: permission }],
       nextCursor: null,
     })
-    expect(state.sessions[SESSION.sessionId]?.status).toBe('waiting')
+    expect(state.sessions[SESSION.sessionId]?.status).toBe('idle')
     expect(selectPendingInteractions(state, THREAD.threadId)[0]?.turnId).toBe('turn-1')
     expect(state.threads[THREAD.threadId]?.hydration).toBe('ready')
   })

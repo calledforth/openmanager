@@ -82,6 +82,13 @@ export function createEventProjector(
        SET state = 'resolved', response_json = ?, resolved_at = ?, updated_at = ?
        WHERE interaction_id = ? AND turn_id = ? AND kind = ? AND state = 'pending'`,
     ),
+    pendingInteractions: database.prepare(
+      "SELECT 1 FROM interactions WHERE turn_id = ? AND state = 'pending' LIMIT 1",
+    ),
+    cancelPendingInteractions: database.prepare(
+      `UPDATE interactions SET state = 'cancelled', resolved_at = ?, updated_at = ?
+       WHERE turn_id = ? AND state = 'pending'`,
+    ),
     selectMessage: database.prepare(
       'SELECT turn_id, thread_id, role, is_final FROM messages WHERE message_id = ?',
     ),
@@ -236,6 +243,14 @@ export function createEventProjector(
         // The registry deletes the row itself; sessions cascade with it.
         return
       case 'session.updated':
+        if (event.payload.status !== undefined) {
+          if (
+            s.updateSessionStatus.run(event.payload.status, at, event.payload.sessionId).changes !==
+            1
+          ) {
+            throw new Error(`Cannot update status for missing session ${event.payload.sessionId}`)
+          }
+        }
         if (event.payload.title !== undefined) {
           const titleSource = event.payload.titleSource ?? null
           s.updateSessionTitle.run(
@@ -305,10 +320,11 @@ export function createEventProjector(
             `Cannot resolve missing, mismatched, or settled interaction ${response.interactionId}`,
           )
         }
-        if (s.updateOpenTurnState.run('running', at, turnId, event.scope.threadId).changes !== 1) {
+        const status = s.pendingInteractions.get(turnId) ? 'waiting' : 'running'
+        if (s.updateOpenTurnState.run(status, at, turnId, event.scope.threadId).changes !== 1) {
           throw new Error(`Cannot resume missing or finished turn ${turnId}`)
         }
-        s.updateSessionStatus.run('running', at, event.scope.sessionId)
+        s.updateSessionStatus.run(status, at, event.scope.sessionId)
         return
       }
       case 'turn.completed':
@@ -333,6 +349,7 @@ export function createEventProjector(
           throw new Error(`Cannot finalize missing or finished turn ${turnId}`)
         }
         s.finalizeTurnMessages.run(at, turnId)
+        s.cancelPendingInteractions.run(at, at, turnId)
         const session = s.updateSessionStatus.run(
           event.name === 'turn.failed' ? 'error' : 'idle',
           at,

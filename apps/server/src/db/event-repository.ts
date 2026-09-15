@@ -3,10 +3,12 @@ import { isDeepStrictEqual } from 'node:util'
 import type { DatabaseSync } from 'node:sqlite'
 import {
   DurableEventSchema,
+  ProofEventSchemas,
   sameScope,
   type DurableEvent,
   type ProofEvent,
   type SubscriptionScope,
+  type SessionStatus,
 } from '@openmanager/protocol/node'
 import { createEventProjector, type EventProjectionOptions } from './event-projection.ts'
 import { EVENT_TOMBSTONE_SQL } from './queries.ts'
@@ -73,6 +75,7 @@ export function createEventRepository(
   const now = options.now ?? Date.now
   const project = createEventProjector(database, options)
   const statements = {
+    sessionStatus: database.prepare('SELECT status FROM sessions WHERE session_id = ?'),
     ensureStream: database.prepare(
       `INSERT INTO event_streams (
          scope_key, scope_type, session_id, thread_id, epoch, head_sequence,
@@ -117,15 +120,20 @@ export function createEventRepository(
     const stream = statements.selectStream.get(key) as StreamRow | undefined
     if (!stream) throw new Error(`Event stream ${key} vanished inside its transaction`)
     const records: DurableEvent[] = []
+    const statusEvents: DurableProofEvent[] = []
+    const replayStatus = (event: DurableProofEvent) => {
+      if (!changesSessionStatus(event)) return
+      const statusRecord = statements.selectByEventId.get(`${event.eventId}:status`) as
+        ExistingEventRow | undefined
+      if (statusRecord) statusEvents.push(JSON.parse(statusRecord.event_json) as DurableProofEvent)
+    }
     let head = stream.head_sequence
     for (const event of events) {
       const record = DurableEventSchema.parse({
         cursor: { scope, epoch: stream.epoch, sequence: head + 1 },
         event,
       })
-      const existing = statements.selectByEventId.get(event.eventId) as
-        | ExistingEventRow
-        | undefined
+      const existing = statements.selectByEventId.get(event.eventId) as ExistingEventRow | undefined
       if (existing) {
         const storedEvent: unknown = JSON.parse(existing.event_json)
         if (existing.scope_key !== key || !isDeepStrictEqual(storedEvent, record.event)) {
@@ -137,13 +145,14 @@ export function createEventRepository(
             event: storedEvent,
           }),
         )
+        // A publisher can fail after COMMIT. Retry the accompanying status
+        // record too, with its original cursor, instead of losing the broadcast.
+        replayStatus(event)
         continue
       }
       // The event may have been pruned by retention; its tombstone still carries
       // the original cursor and a payload hash, so a late retry deduplicates.
-      const tombstone = statements.selectTombstone.get(event.eventId) as
-        | TombstoneRow
-        | undefined
+      const tombstone = statements.selectTombstone.get(event.eventId) as TombstoneRow | undefined
       if (tombstone) {
         const serialized = JSON.stringify(record.event)
         if (
@@ -158,6 +167,7 @@ export function createEventRepository(
             event: record.event,
           }),
         )
+        replayStatus(event)
         continue
       }
       statements.insertEvent.run(
@@ -168,13 +178,46 @@ export function createEventRepository(
         JSON.stringify(record.event),
         Date.parse(event.timestamp),
       )
+      const sessionId =
+        changesSessionStatus(event) && event.scope.type === 'thread'
+          ? event.scope.sessionId
+          : undefined
+      const before = sessionId
+        ? (statements.sessionStatus.get(sessionId) as { status: SessionStatus } | undefined)?.status
+        : undefined
       project(event)
+      const after = sessionId
+        ? (statements.sessionStatus.get(sessionId) as { status: SessionStatus } | undefined)?.status
+        : undefined
+      if (sessionId && before !== undefined && after !== undefined && before !== after) {
+        statusEvents.push(
+          ProofEventSchemas['session.updated'].parse({
+            type: 'event',
+            name: 'session.updated',
+            eventId: `${event.eventId}:status`,
+            timestamp: event.timestamp,
+            scope: { type: 'environment', environmentId: scope.environmentId },
+            payload: { sessionId, status: after },
+          }),
+        )
+      }
       head = record.cursor.sequence
       records.push(record)
     }
 
     if (head !== stream.head_sequence) {
       statements.advanceHead.run(head, stream.head_sequence + 1, writtenAt, key)
+    }
+    // Both streams and the session row commit together. Clients subscribed
+    // only to the environment receive status without loading thread history.
+    if (statusEvents.length > 0) {
+      records.push(
+        ...writeScope(
+          { type: 'environment', environmentId: scope.environmentId },
+          statusEvents,
+          writtenAt,
+        ),
+      )
     }
     return records
   }
@@ -246,6 +289,15 @@ export function isTerminal(event: ProofEvent): event is TerminalEvent {
     event.name === 'turn.completed' ||
     event.name === 'turn.interrupted' ||
     event.name === 'turn.failed'
+  )
+}
+
+function changesSessionStatus(event: ProofEvent): boolean {
+  return (
+    event.name === 'turn.started' ||
+    isTerminal(event) ||
+    event.name === 'interaction.requested' ||
+    event.name === 'interaction.resolved'
   )
 }
 

@@ -456,7 +456,7 @@ function WorkspaceGroup({
                     <NotePencilIcon className="h-3 w-3" />
                   </button>
                 )}
-                {isChild && !showStatus ? (
+                {isChild && (!showStatus || s.status === 'ready') ? (
                   <Tooltip
                     content={
                       isOrphan ? 'Subagent transcript (parent unavailable)' : 'Subagent transcript'

@@ -360,10 +360,7 @@ function EnvironmentSessionStateProvider({
       selectSession,
     ],
   )
-  const internals = useMemo<DraftInternals>(
-    () => ({ startDraftSession }),
-    [startDraftSession],
-  )
+  const internals = useMemo<DraftInternals>(() => ({ startDraftSession }), [startDraftSession])
 
   return (
     <SessionStateContext.Provider value={value}>
@@ -489,7 +486,9 @@ function EnvironmentSidebarDataProvider({
       const entry: SidebarSessionEntry = {
         externalId: summary.sessionId,
         title: summary.title ?? undefined,
-        status: summary.status,
+        // Server idle means ready. Legacy desktop idle clears an unread
+        // completion marker, so keep the presentation alias at this boundary.
+        status: summary.status === 'idle' ? 'ready' : summary.status,
         providerId: (summary.providerId as ProviderId | undefined) ?? session.defaultProviderId,
         ...(summary.parentSessionId ? { parentExternalId: summary.parentSessionId } : {}),
         isDriven: true,
@@ -646,9 +645,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       beginSessionTurn()
       // The same id: the environment either starts the turn or answers with
       // the one this send already started.
-      await commands
-        .sendTurn({ ...current, text: pending.text, commandId })
-        .catch(() => failTurn())
+      await commands.sendTurn({ ...current, text: pending.text, commandId }).catch(() => failTurn())
     },
     [beginSessionTurn, client, commands, failTurn],
   )
@@ -756,7 +753,9 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
 
   return (
     <ActiveThreadStoresContext.Provider value={threadStores}>
-      <ActiveThreadStateContext.Provider value={value}>{children}</ActiveThreadStateContext.Provider>
+      <ActiveThreadStateContext.Provider value={value}>
+        {children}
+      </ActiveThreadStateContext.Provider>
     </ActiveThreadStoresContext.Provider>
   )
 }

@@ -69,6 +69,7 @@ type ActiveTurn = {
   runtimeMessageId?: string
   toolIds: Map<string, string>
   interactionIds: Map<string, string>
+  pendingInteractions: Set<string>
 }
 type ThreadRecord = {
   session: Session
@@ -446,11 +447,35 @@ export function createThreadService(
     if (options.database && projected.name === 'turn.started') return
     if (projected.name === 'turn.notice') publishTransient(projected)
     else appendRuntimeEvent(projected)
+    if (active && projected.name === 'interaction.requested') {
+      active.pendingInteractions.add(projected.payload.interaction.interactionId)
+      touch(record, 'waiting')
+    } else if (active && projected.name === 'interaction.resolved') {
+      active.pendingInteractions.delete(projected.payload.response.interactionId)
+      touch(record, active.pendingInteractions.size > 0 ? 'waiting' : 'running')
+    }
   }
 
   const touch = (record: ThreadRecord, status?: SessionStatus) => {
     record.updatedAt = Date.now()
-    if (status) record.status = status
+    if (!status || record.status === status) return
+    record.status = status
+    // SQLite emits status from its transaction. The in-memory test seam
+    // still models the same server-owned environment event.
+    if (!options.database) emitStatus(record, status)
+  }
+
+  const emitStatus = (record: ThreadRecord, status: SessionStatus) => {
+    appendRuntimeEvent(
+      ProofEventSchemas['session.updated'].parse({
+        type: 'event',
+        name: 'session.updated',
+        eventId: randomUUID(),
+        timestamp: new Date().toISOString(),
+        scope: { type: 'environment', environmentId },
+        payload: { sessionId: record.session.sessionId, status },
+      }),
+    )
   }
 
   /**
@@ -545,9 +570,7 @@ export function createThreadService(
     sessionId: record.session.sessionId,
     workspaceId: record.session.workspaceId,
     title: record.session.title,
-    ...(record.session.parentSessionId
-      ? { parentSessionId: record.session.parentSessionId }
-      : {}),
+    ...(record.session.parentSessionId ? { parentSessionId: record.session.parentSessionId } : {}),
     status: record.status,
     providerId: record.providerId,
     updatedAt: new Date(record.updatedAt).toISOString(),
@@ -985,6 +1008,7 @@ export function createThreadService(
           interruptRequested: false,
           toolIds: new Map(),
           interactionIds: new Map(),
+          pendingInteractions: new Set(),
         }
         record.activeTurn = active
         void record.runtimeSession
@@ -1092,6 +1116,15 @@ export function createThreadService(
       }
 
       const active = record.activeTurn
+      // An idle runtime can crash too. Expected reaping/shutdown is not a
+      // session failure; an unexpected exit must reach sidebar subscribers.
+      if (event.event === 'process_exited' && !active) {
+        if (!event.data.expected && record.status !== 'error') {
+          if (options.database) emitStatus(record, 'error')
+          touch(record, 'error')
+        }
+        return
+      }
       const turnScoped =
         event.event === 'prompt_completed' ||
         event.category === 'stream' ||
@@ -1108,7 +1141,7 @@ export function createThreadService(
       if (
         turnScoped &&
         (!active ||
-          !active.runtimeMessageId ||
+          (!active.runtimeMessageId && event.event !== 'process_exited') ||
           (event.messageId !== undefined && event.messageId !== active.runtimeMessageId))
       ) {
         return

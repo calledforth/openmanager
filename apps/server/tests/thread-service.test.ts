@@ -1271,6 +1271,40 @@ describe('durable session lifecycle', () => {
 
   type Harness = ReturnType<typeof setup>
 
+  it('persists an idle process crash once, ignores expected exits, and recovers on the next prompt', async () => {
+    const h = setup()
+    try {
+      await vi.waitFor(() => expect(h.runtime.ensureSession).toHaveBeenCalled())
+      const exit = {
+        providerId: 'opencode' as const,
+        threadId: h.created.thread.threadId,
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-persisted',
+        id: 'exit',
+        seq: 1,
+        timestamp: new Date().toISOString(),
+        category: 'lifecycle' as const,
+        event: 'process_exited' as const,
+        data: { exitCode: 1, expected: true },
+      }
+      h.service.onRuntimeEvent(exit)
+      const status = () =>
+        h.database
+          .prepare('SELECT status FROM sessions WHERE session_id = ?')
+          .get(h.created.session.sessionId)
+      expect(status()).toEqual({ status: 'idle' })
+      h.service.onRuntimeEvent({ ...exit, data: { ...exit.data, expected: false } })
+      h.service.onRuntimeEvent({ ...exit, data: { ...exit.data, expected: false } })
+      expect(status()).toEqual({ status: 'error' })
+      expect(h.published.filter((event) => event.name === 'session.updated')).toHaveLength(1)
+      h.dispatch(h.service, 'turn.send', { ...h.created.thread, text: 'Try again' })
+      expect(status()).toEqual({ status: 'running' })
+      await vi.waitFor(() => expect(status()).toEqual({ status: 'idle' }))
+    } finally {
+      h.close()
+    }
+  })
+
   /**
    * Drive the parent through a turn and hand it a provider subtask. That is
    * the only path that ever registers a child session, so every child test
@@ -1386,9 +1420,9 @@ describe('durable session lifecycle', () => {
           },
         },
       ])
-      expect(listed(h, h.service).find((item) => item.sessionId === child.session_id)).toMatchObject(
-        { parentSessionId: sessionId, workspaceId: '/workspace/project' },
-      )
+      expect(
+        listed(h, h.service).find((item) => item.sessionId === child.session_id),
+      ).toMatchObject({ parentSessionId: sessionId, workspaceId: '/workspace/project' })
 
       // The provider repeats the subtask; the same child must not be filed twice.
       h.service.onRuntimeEvent({
@@ -1497,9 +1531,9 @@ describe('durable session lifecycle', () => {
           .get(),
       ).toMatchObject({ count: 0 })
       expect(listed(h, h.service)).toEqual([])
-      expect(
-        h.published.filter((event) => event.name === 'session.deleted'),
-      ).toMatchObject([{ payload: { sessionId } }])
+      expect(h.published.filter((event) => event.name === 'session.deleted')).toMatchObject([
+        { payload: { sessionId } },
+      ])
       await vi.waitFor(() =>
         expect(h.runtime.cancel).toHaveBeenCalledWith(
           expect.objectContaining({ sessionId: 'provider-child' }),
@@ -1614,9 +1648,9 @@ describe('durable session lifecycle', () => {
         childSessionId: 'provider-child',
       })
       const child = childRow(h)!
-      expect(h.dispatch(h.service, 'session.delete', { sessionId: child.session_id })).toMatchObject(
-        { type: 'response' },
-      )
+      expect(
+        h.dispatch(h.service, 'session.delete', { sessionId: child.session_id }),
+      ).toMatchObject({ type: 'response' })
       expect(sessionCount(h)).toBe(1)
 
       // The still-running parent turn reports the same subtask again.
@@ -1658,9 +1692,9 @@ describe('durable session lifecycle', () => {
 
       // The restart knows the child only from SQLite, never from registration.
       const restarted = h.fresh()
-      expect(h.dispatch(restarted, 'session.delete', { sessionId: child.session_id })).toMatchObject(
-        { type: 'response' },
-      )
+      expect(
+        h.dispatch(restarted, 'session.delete', { sessionId: child.session_id }),
+      ).toMatchObject({ type: 'response' })
       expect(sessionCount(h)).toBe(1)
 
       expect(h.dispatch(restarted, 'session.open', { sessionId })).toMatchObject({

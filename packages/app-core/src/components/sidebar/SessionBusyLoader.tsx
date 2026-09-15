@@ -6,9 +6,10 @@ import { cn } from '../../lib/utils'
  *
  * - `working` — smooth continuous spin while the session runs.
  * - `needs` — static gold outlines (permission / question); row gets a right dither.
- * - `ready` — static green outlines; cleared to idle once the session is opened.
+ * - `ready` — static green outlines while the server session is idle.
+ * - `error` — static error outlines after a failure.
  */
-export type SessionBusyTone = 'working' | 'needs' | 'ready'
+export type SessionBusyTone = 'working' | 'needs' | 'ready' | 'error'
 
 const DOTS = [0, 1, 2, 3] as const
 
@@ -25,11 +26,13 @@ export function SessionBusyLoader({
   const animate = tone === 'working' && !reduceMotion
 
   const label =
-    tone === 'needs'
-      ? 'Session needs your attention'
-      : tone === 'ready'
-        ? 'Session ready to open'
-        : 'Session in progress'
+    tone === 'error'
+      ? 'Session failed'
+      : tone === 'needs'
+        ? 'Session needs your attention'
+        : tone === 'ready'
+          ? 'Session ready to open'
+          : 'Session in progress'
 
   return (
     <motion.div
@@ -49,7 +52,8 @@ export function SessionBusyLoader({
 
 export function sessionBusyTone(status: string): SessionBusyTone | null {
   if (status === 'waiting') return 'needs'
-  if (status === 'done') return 'ready'
+  if (status === 'ready' || status === 'done') return 'ready'
+  if (status === 'error') return 'error'
   if (status === 'running' || status === 'busy') return 'working'
   return null
 }

@@ -187,6 +187,30 @@ export function createMockEnvironmentClient(
     const schema = ProofEventSchemas[event.name] as { parse(input: unknown): ProofEvent }
     const parsed = schema.parse(event)
     store.update((state) => applyEvent(state, parsed))
+    // The mock plays the server as well as the client. Emit the authoritative
+    // summary update explicitly; production reducers never derive it from history.
+    if (
+      parsed.scope.type === 'thread' &&
+      (parsed.name === 'turn.started' ||
+        parsed.name === 'turn.completed' ||
+        parsed.name === 'turn.interrupted' ||
+        parsed.name === 'turn.failed' ||
+        parsed.name === 'interaction.requested' ||
+        parsed.name === 'interaction.resolved')
+    ) {
+      const state = store.getState()
+      const session = state.sessions[parsed.scope.sessionId]
+      if (session) {
+        const status = deriveSessionStatus(session.threadIds.map((id) => state.threads[id]!))
+        if (status !== session.status)
+          emit({
+            ...base(),
+            name: 'session.updated',
+            scope: envScope(),
+            payload: { sessionId: session.sessionId, status },
+          })
+      }
+    }
   }
 
   const envScope = () =>
@@ -758,7 +782,9 @@ function seedState(
   }
   for (const session of Object.values(state.sessions)) {
     const threads = session.threadIds.map((id) => state.threads[id]!)
-    const status = deriveSessionStatus(threads)
+    const status =
+      seed?.sessions?.find((entry) => entry.session.sessionId === session.sessionId)?.status ??
+      deriveSessionStatus(threads)
     if (status !== session.status) {
       state = {
         ...state,

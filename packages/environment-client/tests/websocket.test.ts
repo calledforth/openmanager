@@ -350,7 +350,7 @@ describe('websocket environment client', () => {
     socket.receive(record(3, delta('turn-1', 'assistant-1', '!')))
     const thread = selectActiveThread(client.getState())!
     expect(thread.messages[1]?.content).toEqual([{ type: 'text', text: 'Hi!' }])
-    expect(selectSessionList(client.getState())[0]?.status).toBe('running')
+    expect(selectSessionList(client.getState())[0]?.status).toBe('idle')
   })
 
   it('lists session summaries with a cursor and hydrates history after open', async () => {
@@ -1034,6 +1034,6 @@ it('folds the first turn from creation without a second turn.send round trip', a
   socket.respond('session.create', { session: SESSION, thread: THREAD, firstTurn })
   expect(await pending).toMatchObject({ firstTurn })
   expect(client.getState().threads[THREAD.threadId]?.messages).toEqual([firstTurn.userMessage])
-  expect(client.getState().sessions[SESSION.sessionId]?.status).toBe('running')
+  expect(client.getState().sessions[SESSION.sessionId]?.status).toBe('idle')
   expect(socket.sent.some((message) => message.name === 'turn.send')).toBe(false)
 })

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { FakeClaudeSdk, FakeConnectionFactory } from '@agentpack/runtime/testing'
 import { startServer } from '../src/server.js'
-import { ProofResponseSchemas } from '@openmanager/protocol/node'
+import { ProofEventSchemas, ProofResponseSchemas } from '@openmanager/protocol/node'
 import {
   assistantText,
   cleanupProtocolHosts,
@@ -89,6 +89,13 @@ describe('streamed provider through the server', () => {
         threadId: thread.threadId,
       })
 
+      const sidebar = await connectProtocol(host)
+      await handshake(sidebar)
+      const sidebarSubscription = await subscribe(sidebar, {
+        type: 'environment',
+        environmentId: host.server.identity.environmentId,
+      })
+
       const firstSend = client.command('turn.send', {
         sessionId: session.sessionId,
         threadId: thread.threadId,
@@ -110,6 +117,18 @@ describe('streamed provider through the server', () => {
       expect(completed.every((record) => record.cursor.epoch === completed[0]?.cursor.epoch)).toBe(
         true,
       )
+      const sidebarCompleted = await collectThreadRecords(sidebar, sidebarSubscription, (records) =>
+        records.some(
+          (record) =>
+            record.event.name === 'session.updated' &&
+            ProofEventSchemas['session.updated'].parse(record.event).payload.status === 'idle',
+        ),
+      )
+      expect(
+        sidebarCompleted.map(
+          (record) => ProofEventSchemas['session.updated'].parse(record.event).payload.status,
+        ),
+      ).toEqual(['running', 'idle'])
 
       const secondSend = client.command('turn.send', {
         sessionId: session.sessionId,
@@ -145,6 +164,22 @@ describe('streamed provider through the server', () => {
       for (let i = 1; i < interrupted.length; i++) {
         expect(interrupted[i]?.cursor.sequence).toBe((interrupted[i - 1]?.cursor.sequence ?? 0) + 1)
       }
+
+      const sidebarInterrupted = await collectThreadRecords(
+        sidebar,
+        sidebarSubscription,
+        (records) =>
+          records.some(
+            (record) =>
+              record.event.name === 'session.updated' &&
+              ProofEventSchemas['session.updated'].parse(record.event).payload.status === 'idle',
+          ),
+      )
+      expect(
+        sidebarInterrupted.map(
+          (record) => ProofEventSchemas['session.updated'].parse(record.event).payload.status,
+        ),
+      ).toEqual(['running', 'idle'])
 
       await host.server.close()
       const restarted = await startServer({

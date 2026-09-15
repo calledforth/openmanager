@@ -109,6 +109,45 @@ const type = async (text: string) => {
 }
 
 describe('the shared application over the environment client', () => {
+  it('updates sidebar glyphs from server status without opening the session', async () => {
+    const client = createMockEnvironmentClient({
+      seed: { workspaces: [WORKSPACE] },
+    })
+    client.emit({
+      type: 'event',
+      name: 'session.created',
+      eventId: 'created',
+      timestamp: new Date().toISOString(),
+      scope: { type: 'environment', environmentId: client.getState().environment!.environmentId },
+      payload: { session: SESSION },
+    })
+    await render(<App client={client} />)
+    const labels = {
+      idle: 'Session ready to open',
+      running: 'Session in progress',
+      waiting: 'Session needs your attention',
+      error: 'Session failed',
+    } as const
+    for (const status of ['idle', 'running', 'waiting', 'error', 'idle'] as const) {
+      await act(() =>
+        client.emit({
+          type: 'event',
+          name: 'session.updated',
+          eventId: `status-${status}`,
+          timestamp: new Date().toISOString(),
+          scope: {
+            type: 'environment',
+            environmentId: client.getState().environment!.environmentId,
+          },
+          payload: { sessionId: SESSION.sessionId, status },
+        }),
+      )
+      expect(container.querySelector(`[role="img"][aria-label="${labels[status]}"]`)).not.toBeNull()
+      expect(client.getState().activeSessionId).toBeNull()
+      expect(Object.keys(client.getState().threads)).toHaveLength(0)
+    }
+  })
+
   it('renders the sidebar, the empty-chat landing and a disabled composer', async () => {
     const client = createMockEnvironmentClient({ seed: SEEDED_HISTORY })
     await render(<App client={client} />)
