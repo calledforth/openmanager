@@ -303,8 +303,7 @@ export function createMockEnvironmentClient(
 
   /** What each command id already started, keyed like the environment's own. */
   const startedCommands = new Map<string, TurnStart>()
-  const commandKey = (target: ThreadTarget, commandId: string) =>
-    `${target.threadId}:${commandId}`
+  const commandKey = (target: ThreadTarget, commandId: string) => `${target.threadId}:${commandId}`
 
   const startTurn = (input: SendTurnInput & { commandId: string }) => {
     const replayed = startedCommands.get(commandKey(input, input.commandId))
@@ -541,13 +540,12 @@ export function createMockEnvironmentClient(
       const thread: Thread = { threadId: input.threadId, sessionId: input.sessionId }
       store.update((state) => applyTurnSending(state, thread, { commandId, text: input.text }))
       // Recorded with the id it actually ran under, minted or not.
-      return run('sendTurn', { ...input, commandId }, () => startTurn({ ...input, commandId })).catch(
-        (error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error)
-          store.update((state) => applyTurnSendFailed(state, thread, commandId, message))
-          throw error
-        },
-      )
+      const send = { ...input, commandId }
+      return run('sendTurn', send, () => startTurn(send)).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error)
+        store.update((state) => applyTurnSendFailed(state, thread, commandId, message))
+        throw error
+      })
     },
     interruptTurn: (input) =>
       run('interruptTurn', input, () => {
