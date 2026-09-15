@@ -850,7 +850,11 @@ describe('durable server event boundary', () => {
         type: 'command',
         requestId,
         name: 'session.create',
-        payload: { workspaceId: 'workspace-1' },
+        payload: {
+          environmentId: 'environment-1',
+          workspaceId: 'workspace-1',
+          providerId: 'opencode',
+        },
       })
 
     fail = true

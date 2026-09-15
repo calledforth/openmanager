@@ -989,6 +989,11 @@ describe('explicit session creation', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(runtime.ensureSession).not.toHaveBeenCalled()
     expect(runtime.prompt).not.toHaveBeenCalled()
-    expect(events).toEqual([])
+    // The session was announced before the first turn, so its removal is too.
+    expect(events.map((event) => event.name)).toEqual([
+      'session.created',
+      'thread.created',
+      'session.deleted',
+    ])
   })
 })
