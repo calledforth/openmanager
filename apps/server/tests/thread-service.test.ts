@@ -1550,6 +1550,40 @@ describe('durable session lifecycle', () => {
     }
   })
 
+  it('does not complete a turn when the workspace closes while the provider resolves', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      const restarted = h.fresh()
+      let release!: (value: { sessionId: string; state: string }) => void
+      h.runtime.ensureSession.mockClear()
+      h.runtime.ensureSession.mockReturnValueOnce(
+        new Promise((resolve) => {
+          release = resolve
+        }),
+      )
+      expect(h.dispatch(restarted, 'session.open', { sessionId })).toMatchObject({
+        type: 'response',
+      })
+      await vi.waitFor(() => expect(h.runtime.ensureSession).toHaveBeenCalled())
+      h.runtime.prompt.mockClear()
+      expect(
+        h.dispatch(restarted, 'turn.send', { ...h.created.thread, text: 'Queued' }),
+      ).toMatchObject({ type: 'response' })
+      expect(restarted.closeWorkspaceSessions('/workspace/project')).toBe(1)
+      h.published.length = 0
+      release({ sessionId: 'provider-persisted', state: 'loaded' })
+      await vi.waitFor(() => expect(h.runtime.cancel).toHaveBeenCalled())
+      // The prompt never ran, so nothing may report the turn as finished.
+      expect(h.runtime.prompt).not.toHaveBeenCalled()
+      expect(h.published.map((event) => event.name)).not.toContain('turn.completed')
+      expect(h.published.map((event) => event.name)).not.toContain('turn.failed')
+    } finally {
+      h.close()
+    }
+  })
+
   it('rejects resume without a load capability or stored provider identity', async () => {
     const h = setup()
     try {

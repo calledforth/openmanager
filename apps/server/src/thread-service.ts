@@ -285,6 +285,20 @@ export function createThreadService(
   }
 
   /**
+   * Abandon a dropped record's turn and stop any provider work behind it. The
+   * turn is cleared before the provider session resolves so a prompt that never
+   * ran cannot finalize as completed.
+   */
+  const abandonTurn = (item: ThreadRecord) => {
+    if (!item.activeTurn) return
+    item.activeTurn.interruptRequested = true
+    item.activeTurn = undefined
+    void item.runtimeSession
+      .then((sessionId) => runtime.cancel({ ...route(item), sessionId }))
+      .catch(() => undefined)
+  }
+
+  /**
    * Rebuild in-memory records for a session that only exists in SQLite, so the
    * runtime loads the stored provider thread instead of creating a second one.
    * A failed load drops the records again, keeping durable history and letting
@@ -438,12 +452,7 @@ export function createThreadService(
       let closed = 0
       for (const record of [...sessions.values()]) {
         if (record.session.workspaceId !== workspaceId) continue
-        for (const item of dropSessionRecords(record.session.sessionId)) {
-          if (!item.activeTurn) continue
-          void item.runtimeSession
-            .then((sessionId) => runtime.cancel({ ...route(item), sessionId }))
-            .catch(() => undefined)
-        }
+        for (const item of dropSessionRecords(record.session.sessionId)) abandonTurn(item)
         closed += 1
       }
       return closed
@@ -651,14 +660,7 @@ export function createThreadService(
             payload: { session: { ...session, title: parsed.data.payload.title } },
           })
         }
-        for (const item of dropSessionRecords(sessionId)) {
-          if (!item.activeTurn) continue
-          item.activeTurn.interruptRequested = true
-          item.activeTurn = undefined
-          void item.runtimeSession
-            .then((id) => runtime.cancel({ ...route(item), sessionId: id }))
-            .catch(() => undefined)
-        }
+        for (const item of dropSessionRecords(sessionId)) abandonTurn(item)
         return ProofResponseSchemas['session.delete'].parse({
           type: 'response',
           requestId: command.requestId,
