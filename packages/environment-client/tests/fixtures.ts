@@ -44,7 +44,7 @@ export const event = <E extends ProofEvent>(
   }) as E
 
 export const turnStarted = (turnId = 'turn-1', text = 'hello', commandId?: string) =>
-  event({
+  event<Extract<ProofEvent, { name: 'turn.started' }>>({
     name: 'turn.started',
     scope: threadScope,
     payload: {
