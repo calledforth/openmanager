@@ -398,6 +398,15 @@ export function createThreadService(
           )
         }
         if (!target) return errorResult(command.requestId, 'not_found', 'Workspace not found.')
+        // Order matters: a provider this build cannot run is a capability gap,
+        // not a missing resource, so it is answered before the health gate.
+        if (!Object.hasOwn(providers, input.providerId)) {
+          return errorResult(
+            command.requestId,
+            'capability_missing',
+            'This server cannot run the requested provider.',
+          )
+        }
         const providerRejection = rejectProvider(command.requestId, input.providerId)
         if (providerRejection) return providerRejection
         if (!(target.providers ?? [target.providerId]).includes(input.providerId)) {
@@ -405,13 +414,6 @@ export function createThreadService(
             command.requestId,
             'validation',
             'The workspace does not offer the requested provider. Choose an available provider.',
-          )
-        }
-        if (!Object.hasOwn(providers, input.providerId)) {
-          return errorResult(
-            command.requestId,
-            'capability_missing',
-            'This server cannot run the requested provider.',
           )
         }
         const providerId = input.providerId as ProviderId

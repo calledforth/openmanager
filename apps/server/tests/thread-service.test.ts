@@ -240,7 +240,7 @@ describe('thread command provider routing', () => {
     expect(runtime.ensureSession).not.toHaveBeenCalled()
   })
 
-  it('rejects a workspace mapped to a missing provider before runtime work', () => {
+  it('rejects an unhealthy provider before runtime work', () => {
     const runtime = {
       ensureSession: vi.fn(),
       prompt: vi.fn(),
@@ -250,10 +250,44 @@ describe('thread command provider routing', () => {
       runtime,
       {
         rejection: (providerId) =>
-          providerId === 'missing'
-            ? { code: 'not_found' as const, message: 'Provider not found.' }
+          providerId === 'opencode'
+            ? { code: 'unavailable' as const, message: 'Provider is unhealthy.' }
             : undefined,
       },
+      vi.fn(),
+      undefined,
+      () => ({ providerId: 'opencode', cwd: '/workspace/project' }),
+    )
+    service.setEnvironmentId('environment-1')
+
+    expect(
+      service.dispatch({
+        type: 'command',
+        requestId: 'create-1',
+        name: 'session.create',
+        payload: {
+          environmentId: 'environment-1',
+          providerId: 'opencode',
+          workspaceId: 'workspace-1',
+        },
+      }),
+    ).toEqual({
+      type: 'error',
+      requestId: 'create-1',
+      error: { code: 'unavailable', message: 'Provider is unhealthy.' },
+    })
+    expect(runtime.ensureSession).not.toHaveBeenCalled()
+  })
+
+  it('answers a provider this build cannot run with capability_missing', () => {
+    const runtime = {
+      ensureSession: vi.fn(),
+      prompt: vi.fn(),
+      cancel: vi.fn(),
+    } as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>
+    const service = createThreadService(
+      runtime,
+      { rejection: () => ({ code: 'not_found' as const, message: 'Provider not found.' }) },
       vi.fn(),
       undefined,
       () => ({ providerId: 'missing', cwd: '/workspace/project' }),
@@ -274,7 +308,10 @@ describe('thread command provider routing', () => {
     ).toEqual({
       type: 'error',
       requestId: 'create-1',
-      error: { code: 'not_found', message: 'Provider not found.' },
+      error: {
+        code: 'capability_missing',
+        message: 'This server cannot run the requested provider.',
+      },
     })
     expect(runtime.ensureSession).not.toHaveBeenCalled()
   })

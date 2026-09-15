@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AgentEvent, ProviderId } from '@agentpack/contract'
+import type { AgentEvent } from '@agentpack/contract'
 import { getFunctionName, type FunctionReference } from 'convex/server'
 import { selectActiveThread, selectSessionList } from '@openmanager/environment-client'
 import {
@@ -76,7 +76,6 @@ class FakeConvex implements ConvexGateway {
 class FakeBridge implements DesktopEventBridge {
   private acp = new Set<(event: AgentEvent) => void>()
   private stream = new Set<(event: AgentEvent) => void>()
-  lastProviderId: ProviderId = 'cursor'
   icons: Record<string, string> = {}
   resolveWorkspaceIcon(workspacePath: string) {
     return Promise.resolve(this.icons[workspacePath] ?? null)
@@ -89,7 +88,6 @@ class FakeBridge implements DesktopEventBridge {
     this.stream.add(callback)
     return () => this.stream.delete(callback)
   }
-  getLastProviderId = async () => this.lastProviderId
   /** The main process sends stream-class events on both channels. */
   emit(event: AgentEvent, channels: Array<'acp' | 'stream'> = ['acp', 'stream']) {
     if (channels.includes('acp')) for (const cb of this.acp) cb(event)
@@ -123,6 +121,8 @@ const SESSION_ROW = {
 }
 
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+const CREATE = { environmentId: 'env', workspaceId: 'C:/repo', providerId: 'cursor' } as const
 
 function setup() {
   const convex = new FakeConvex()
@@ -518,7 +518,7 @@ describe('createConvexEnvironmentClient', () => {
   it('creates a session through a job and adopts the id the provider announces', async () => {
     const { client, convex, bridge } = setup()
     client.connect()
-    const creating = client.commands.createSession({ workspaceId: 'C:/repo', title: 'New' })
+    const creating = client.commands.createSession({ ...CREATE, title: 'New' })
     await flush()
     expect(payloadOf(convex)).toMatchObject({
       type: 'create_session',
@@ -536,9 +536,17 @@ describe('createConvexEnvironmentClient', () => {
     expect(session).toEqual({ sessionId: 'session-9', workspaceId: 'C:/repo', title: 'New' })
     expect(thread).toEqual({ threadId: 'session-9', sessionId: 'session-9' })
     expect(client.getState().threads['session-9']?.hydration).toBe('ready')
-    await expect(client.commands.createSession({ workspaceId: 'nope' })).rejects.toMatchObject({
+    await expect(
+      client.commands.createSession({ ...CREATE, workspaceId: 'nope' }),
+    ).rejects.toMatchObject({
       code: 'not_found',
     })
+    await expect(
+      client.commands.createSession({ ...CREATE, environmentId: 'other' }),
+    ).rejects.toMatchObject({ code: 'validation' })
+    await expect(
+      client.commands.createSession({ ...CREATE, providerId: 'unknown' }),
+    ).rejects.toMatchObject({ code: 'validation' })
   })
 
   it('routes interruptions, deletions and interaction answers to the matching jobs', async () => {
@@ -688,8 +696,8 @@ describe('createConvexEnvironmentClient', () => {
   it('serializes session creation per workspace so announcements cannot cross', async () => {
     const { client, convex, bridge } = setup()
     client.connect()
-    const first = client.commands.createSession({ workspaceId: 'C:/repo', title: 'A' })
-    const second = client.commands.createSession({ workspaceId: 'C:/repo', title: 'B' })
+    const first = client.commands.createSession({ ...CREATE, title: 'A' })
+    const second = client.commands.createSession({ ...CREATE, title: 'B' })
     await flush()
     expect(convex.calls.filter((call) => call.name === 'jobs:submit')).toHaveLength(1)
 
