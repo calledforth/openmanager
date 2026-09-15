@@ -1195,9 +1195,9 @@ describe('sends deduplicated by command id', () => {
     expect(
       database.prepare("SELECT count(*) AS count FROM messages WHERE role = 'user'").get(),
     ).toEqual({ count: 1 })
-    expect(publish.mock.calls.filter(([record]) => record.event.name === 'turn.started')).toHaveLength(
-      1,
-    )
+    expect(
+      publish.mock.calls.filter(([record]) => record.event.name === 'turn.started'),
+    ).toHaveLength(1)
     events.close()
   })
 })
@@ -1510,6 +1510,41 @@ describe('durable session lifecycle', () => {
             h.dispatch(failed, 'turn.send', { sessionId, threadId, text: 'Hello' }),
           ).toMatchObject({ error: { code: 'not_found' } })
       })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('does not prompt for a session deleted while the provider session resolves', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      const restarted = h.fresh()
+      let release!: (value: { sessionId: string; state: string }) => void
+      h.runtime.ensureSession.mockClear()
+      h.runtime.ensureSession.mockReturnValueOnce(
+        new Promise((resolve) => {
+          release = resolve
+        }),
+      )
+      expect(h.dispatch(restarted, 'session.open', { sessionId })).toMatchObject({
+        type: 'response',
+      })
+      // Wait until the load is genuinely in flight, so deleting races the
+      // provider rather than the restore's own guard.
+      await vi.waitFor(() => expect(h.runtime.ensureSession).toHaveBeenCalled())
+      h.runtime.prompt.mockClear()
+      // The send is queued behind a provider session that has not resolved yet.
+      expect(
+        h.dispatch(restarted, 'turn.send', { ...h.created.thread, text: 'Queued' }),
+      ).toMatchObject({ type: 'response' })
+      expect(h.dispatch(restarted, 'session.delete', { sessionId })).toMatchObject({
+        type: 'response',
+      })
+      release({ sessionId: 'provider-persisted', state: 'loaded' })
+      await vi.waitFor(() => expect(h.runtime.cancel).toHaveBeenCalled())
+      expect(h.runtime.prompt).not.toHaveBeenCalled()
     } finally {
       h.close()
     }

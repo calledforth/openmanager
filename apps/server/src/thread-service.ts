@@ -868,16 +868,20 @@ export function createThreadService(
         }
         record.activeTurn = active
         void record.runtimeSession
-          .then((sessionId) =>
-            runtime.prompt({
+          .then((sessionId) => {
+            // Deleting the session or closing the workspace drops the record while
+            // the provider session is still resolving. Starting provider work for a
+            // record nothing points at any more would outlive the session itself.
+            if (threads.get(record.thread.threadId) !== record) return
+            return runtime.prompt({
               ...route(record, sessionId),
               prompt: {
                 text: input.text,
                 blocks: [{ type: 'text', text: input.text }],
               },
               userMessageId: userMessage.messageId,
-            }),
-          )
+            })
+          })
           .then(() => {
             if (
               record.activeTurn === active &&
