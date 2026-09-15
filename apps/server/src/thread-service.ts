@@ -28,6 +28,7 @@ import {
   type RuntimeSessionArgs,
 } from '@agentpack/runtime/node'
 import {
+  findSessionIdByProviderSession,
   findTurnByCommandId,
   getProviderSessionId,
   getSessionSummary,
@@ -122,6 +123,14 @@ export function createThreadService(
 ) {
   const sessions = new Map<string, ThreadRecord>()
   const threads = new Map<string, ThreadRecord>()
+  /** Host session per `providerId:providerSessionId` registered as a child this process. */
+  const childSessionIds = new Map<string, string>()
+  /**
+   * Children the user deleted while this process runs, by the same key. The
+   * parent turn that delegated them may still report the subtask, and that
+   * report must not quietly recreate what the user removed.
+   */
+  const forgottenChildren = new Set<string>()
   // Supplied after construction so the service can be assembled before the
   // WebSocket publisher exists.
   let environmentId = ''
@@ -269,17 +278,31 @@ export function createThreadService(
   }
 
   /**
-   * Forget a session and every thread record that belongs to it. Restored
-   * sessions can hold several thread records, so cleanup has to be
-   * session-wide or a partially available session is left behind.
+   * Forget a session, every thread record that belongs to it, and every child
+   * session under it. Restored sessions can hold several thread records, so
+   * cleanup has to be session-wide or a partially available session is left
+   * behind. Children go with the parent because SQLite cascades them the same
+   * way; a live child record outliving its deleted parent row could still
+   * prompt the provider.
    */
   const dropSessionRecords = (sessionId: string): ThreadRecord[] => {
-    sessions.delete(sessionId)
     const dropped: ThreadRecord[] = []
-    for (const [threadId, item] of threads) {
-      if (item.session.sessionId !== sessionId) continue
-      threads.delete(threadId)
-      dropped.push(item)
+    const pending = [sessionId]
+    const seen = new Set<string>()
+    while (pending.length) {
+      const id = pending.pop()!
+      if (seen.has(id)) continue
+      seen.add(id)
+      sessions.delete(id)
+      for (const [threadId, item] of threads) {
+        if (item.session.parentSessionId === id) pending.push(item.session.sessionId)
+        if (item.session.sessionId !== id) continue
+        threads.delete(threadId)
+        dropped.push(item)
+      }
+    }
+    for (const [key, hostId] of childSessionIds) {
+      if (seen.has(hostId)) childSessionIds.delete(key)
     }
     return dropped
   }
@@ -318,6 +341,7 @@ export function createThreadService(
           sessionId: session.sessionId,
           workspaceId: session.workspaceId,
           title: session.title,
+          ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
         },
         thread,
         providerId,
@@ -429,10 +453,101 @@ export function createThreadService(
     if (status) record.status = status
   }
 
+  /**
+   * File the provider's child session (a subagent transcript) as a host
+   * session under the parent, once. The provider repeats the subtask across
+   * updates and after reconnects, so the child is looked up in memory and
+   * then in SQLite before a new identity is minted. The provider session id
+   * is stamped in the same step as the rows, so the child can be resumed
+   * after a restart exactly like a session the user created.
+   */
+  const registerChildSession = (
+    parent: ThreadRecord,
+    providerSessionId: string,
+    title: string | null,
+  ) => {
+    const key = `${parent.providerId}:${providerSessionId}`
+    if (childSessionIds.has(key) || forgottenChildren.has(key)) return
+    if (options.database) {
+      options.flush?.()
+      const persisted = findSessionIdByProviderSession(
+        options.database,
+        parent.providerId,
+        providerSessionId,
+      )
+      if (persisted) {
+        childSessionIds.set(key, persisted)
+        return
+      }
+    }
+    const session: Session = {
+      sessionId: randomUUID(),
+      workspaceId: parent.session.workspaceId,
+      title,
+      parentSessionId: parent.session.sessionId,
+    }
+    const thread: Thread = { threadId: randomUUID(), sessionId: session.sessionId }
+    try {
+      persistCreatedThread(session, thread)
+    } catch (error) {
+      // The parent turn carries on; the child is offered again on the next update.
+      options.onPersistenceError?.(error, 'session.created')
+      return
+    }
+    const record: ThreadRecord = {
+      session,
+      thread,
+      providerId: parent.providerId,
+      cwd: parent.cwd,
+      runtimeSession: Promise.resolve(providerSessionId),
+      turns: [],
+      messages: [],
+      commandTurns: new Map(),
+      status: 'idle',
+      updatedAt: Date.now(),
+    }
+    sessions.set(session.sessionId, record)
+    threads.set(thread.threadId, record)
+    // The stamp is a direct row update that follows the committed insert in
+    // the same synchronous step. A child without its provider identity can
+    // neither resume nor deduplicate, so a failed stamp takes the announced
+    // session back rather than leaving that row behind.
+    try {
+      options.flush?.()
+      persistRuntimeSession(record, providerSessionId)
+    } catch (error) {
+      options.onPersistenceError?.(error, 'session.created')
+      rollbackSession(record)
+      return
+    }
+    childSessionIds.set(key, session.sessionId)
+  }
+
+  /**
+   * Remember a child the user is deleting so a later report of the same
+   * provider child does not register it again. Read before the row goes.
+   */
+  const forgetChild = (sessionId: string) => {
+    for (const [key, hostId] of childSessionIds) {
+      if (hostId !== sessionId) continue
+      forgottenChildren.add(key)
+      return
+    }
+    if (!options.database) return
+    const summary = getSessionSummary(options.database, sessionId)
+    const providerSessionId = getProviderSessionId(options.database, sessionId)
+    if (summary && providerSessionId) {
+      forgottenChildren.add(`${summary.providerId}:${providerSessionId}`)
+    }
+  }
+
   const summaryOf = (record: ThreadRecord): SessionSummary => ({
     sessionId: record.session.sessionId,
     workspaceId: record.session.workspaceId,
     title: record.session.title,
+    ...(record.session.parentSessionId
+      ? { parentSessionId: record.session.parentSessionId }
+      : {}),
     status: record.status,
     providerId: record.providerId,
     updatedAt: new Date(record.updatedAt).toISOString(),
@@ -452,6 +567,8 @@ export function createThreadService(
       let closed = 0
       for (const record of [...sessions.values()]) {
         if (record.session.workspaceId !== workspaceId) continue
+        // A child already went with its parent earlier in this pass.
+        if (!sessions.has(record.session.sessionId)) continue
         for (const item of dropSessionRecords(record.session.sessionId)) abandonTurn(item)
         closed += 1
       }
@@ -638,6 +755,7 @@ export function createThreadService(
                 scope: { type: 'environment', environmentId },
                 payload: { sessionId },
               })
+        if (parsed.data.name === 'session.delete' && session.parentSessionId) forgetChild(sessionId)
         try {
           appendEvent(event)
         } catch (error) {
@@ -998,6 +1116,19 @@ export function createThreadService(
 
       if (!active) {
         projectRuntimeEvent(record, event, undefined)
+        return
+      }
+
+      if (event.event === 'subtask_update') {
+        // Only a provider that exposes the child as a loadable session names
+        // one; the subtask itself has no protocol projection yet.
+        if (event.data.childSessionId) {
+          registerChildSession(
+            record,
+            event.data.childSessionId,
+            event.data.title ?? event.data.description ?? null,
+          )
+        }
         return
       }
 

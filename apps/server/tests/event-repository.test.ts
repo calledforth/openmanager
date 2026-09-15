@@ -303,6 +303,62 @@ describe('event repository transactions', () => {
     ).toEqual({ session_id: 'session-2' })
   })
 
+  it('files a child session under its parent and refuses one from another workspace', async () => {
+    const { database } = await createDatabase()
+    database.exec(`
+      INSERT INTO workspaces (
+        workspace_id, name, path, created_at, updated_at
+      ) VALUES ('workspace-2', 'Other', '/other', 1, 1);
+    `)
+    const environmentScope = { type: 'environment', environmentId: scope.environmentId } as const
+    const repository = createEventRepository(database, { sessionProviderId: () => 'cursor' })
+    const created = (session: {
+      sessionId: string
+      workspaceId: string
+      title: string
+      parentSessionId?: string
+    }) =>
+      ProofEventSchemas['session.created'].parse({
+        type: 'event',
+        name: 'session.created',
+        eventId: `created-${session.sessionId}`,
+        timestamp: started().timestamp,
+        scope: environmentScope,
+        payload: { session },
+      })
+
+    repository.appendEvents(environmentScope, [
+      created({
+        sessionId: 'session-child',
+        workspaceId: 'workspace-1',
+        title: 'Subagent',
+        parentSessionId: 'session-1',
+      }),
+    ])
+    expect(
+      database
+        .prepare('SELECT parent_session_id, workspace_id FROM sessions WHERE session_id = ?')
+        .get('session-child'),
+    ).toEqual({ parent_session_id: 'session-1', workspace_id: 'workspace-1' })
+
+    // The composite foreign key is what keeps a child inside its parent's workspace.
+    expect(() =>
+      repository.appendEvents(environmentScope, [
+        created({
+          sessionId: 'session-foreign',
+          workspaceId: 'workspace-2',
+          title: 'Elsewhere',
+          parentSessionId: 'session-1',
+        }),
+      ]),
+    ).toThrow()
+    expect(
+      database.prepare('SELECT count(*) AS count FROM sessions WHERE session_id = ?').get(
+        'session-foreign',
+      ),
+    ).toEqual({ count: 0 })
+  })
+
   it('retries rolled-back finalization with the complete buffered output', async () => {
     const { database } = await createDatabase()
     let fail = false

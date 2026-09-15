@@ -75,6 +75,12 @@ export const SessionSchema = z.object({
   sessionId: EntityIdSchema,
   workspaceId: EntityIdSchema,
   title: z.string().nullable(),
+  /**
+   * The session that delegated this one (a subagent transcript). Absent on
+   * top-level sessions and on environments that predate child sessions. A
+   * child always shares its parent's workspace and is deleted with it.
+   */
+  parentSessionId: EntityIdSchema.optional(),
 })
 /** Rolled-up lifecycle for the sidebar. Distinct from a turn's own state. */
 export const SessionStatusSchema = z.enum(['idle', 'running', 'waiting', 'error'])

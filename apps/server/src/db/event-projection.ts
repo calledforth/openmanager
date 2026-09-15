@@ -25,8 +25,9 @@ export function createEventProjector(
   const s = {
     insertSession: database.prepare(
       `INSERT INTO sessions (
-         session_id, workspace_id, provider_id, title, status, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, 'idle', ?, ?)`,
+         session_id, workspace_id, parent_session_id, provider_id, title, status,
+         created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, 'idle', ?, ?)`,
     ),
     updateWorkspaceName: database.prepare(
       'UPDATE workspaces SET name = ?, updated_at = ? WHERE workspace_id = ?',
@@ -211,9 +212,12 @@ export function createEventProjector(
         if (!providerId?.trim()) {
           throw new Error('session.created requires a host sessionProviderId resolver')
         }
+        // The composite foreign key rejects a parent from another workspace,
+        // so a child can never be filed under a session it cannot belong to.
         s.insertSession.run(
           session.sessionId,
           session.workspaceId,
+          session.parentSessionId ?? null,
           providerId,
           session.title,
           at,

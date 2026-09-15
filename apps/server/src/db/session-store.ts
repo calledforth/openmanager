@@ -64,6 +64,7 @@ export interface SessionHistoryPage {
 type SessionRow = {
   session_id: string
   workspace_id: string
+  parent_session_id: string | null
   provider_id: string
   title: string | null
   status: string
@@ -93,6 +94,7 @@ export function sessionRowToSummary(row: SessionRow): SessionSummary {
     sessionId: row.session_id,
     workspaceId: row.workspace_id,
     title: row.title,
+    ...(row.parent_session_id ? { parentSessionId: row.parent_session_id } : {}),
     status: row.status as SessionStatus,
     providerId: row.provider_id,
     updatedAt: new Date(row.updated_at).toISOString(),
@@ -140,11 +142,28 @@ export function getSessionSummary(
 ): SessionSummary | undefined {
   const row = database
     .prepare(
-      `SELECT session_id, workspace_id, provider_id, title, status, updated_at
+      `SELECT session_id, workspace_id, parent_session_id, provider_id, title, status, updated_at
        FROM sessions WHERE session_id = ?`,
     )
     .get(sessionId) as SessionRow | undefined
   return row ? sessionRowToSummary(row) : undefined
+}
+
+/**
+ * The host session already registered for a provider's own session id, if
+ * any. Child sessions are registered from provider subtask events, which
+ * repeat across turns and reconnects, so registration must find its earlier
+ * self instead of filing a second host session for the same provider thread.
+ */
+export function findSessionIdByProviderSession(
+  database: DatabaseSync,
+  providerId: string,
+  providerSessionId: string,
+): string | undefined {
+  const row = database
+    .prepare('SELECT session_id FROM sessions WHERE provider_id = ? AND provider_session_id = ?')
+    .get(providerId, providerSessionId) as { session_id: string } | undefined
+  return row?.session_id
 }
 
 /**

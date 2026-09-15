@@ -5,6 +5,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { openEnvironmentDatabase } from '../src/db/database.js'
 import {
+  findSessionIdByProviderSession,
   getSessionSummary,
   listSessionHistory,
   listSessionSummaries,
@@ -37,17 +38,22 @@ function seedSession(
     updatedAt: number
     status?: string
     providerId?: string
+    parentSessionId?: string
+    providerSessionId?: string
   },
 ) {
   database
     .prepare(
       `INSERT INTO sessions (
-         session_id, workspace_id, provider_id, title, status, created_at, updated_at
-       ) VALUES (?, 'workspace-1', ?, ?, ?, ?, ?)`,
+         session_id, workspace_id, parent_session_id, provider_id, provider_session_id,
+         title, status, created_at, updated_at
+       ) VALUES (?, 'workspace-1', ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       row.sessionId,
+      row.parentSessionId ?? null,
       row.providerId ?? 'opencode',
+      row.providerSessionId ?? null,
       row.title,
       row.status ?? 'idle',
       row.updatedAt,
@@ -118,6 +124,51 @@ describe('session summary list', () => {
     const last = listSessionSummaries(database, { cursor: second.nextCursor!, limit: 2 })
     expect(last.sessions.map((session) => session.sessionId)).toEqual(['session-1'])
     expect(last.nextCursor).toBeNull()
+  })
+
+  it('reports a parent session id only for the rows that have one', async () => {
+    const database = await createDatabase()
+    seedWorkspace(database)
+    seedSession(database, { sessionId: 'session-parent', title: 'Parent', updatedAt: 2_000 })
+    seedSession(database, {
+      sessionId: 'session-child',
+      title: 'Child',
+      updatedAt: 1_000,
+      parentSessionId: 'session-parent',
+    })
+
+    const page = listSessionSummaries(database, { limit: 50 })
+    expect(page.sessions.map((session) => session.parentSessionId)).toEqual([
+      undefined,
+      'session-parent',
+    ])
+    expect(page.sessions[0]).not.toHaveProperty('parentSessionId')
+    expect(getSessionSummary(database, 'session-child')).toMatchObject({
+      parentSessionId: 'session-parent',
+    })
+    expect(getSessionSummary(database, 'session-parent')).not.toHaveProperty('parentSessionId')
+  })
+})
+
+describe('provider session lookup', () => {
+  it('finds the host session for a provider thread and misses on a different provider', async () => {
+    const database = await createDatabase()
+    seedWorkspace(database)
+    seedSession(database, {
+      sessionId: 'session-1',
+      title: 'Chat',
+      updatedAt: 1_000,
+      providerSessionId: 'provider-abc',
+    })
+    seedSession(database, { sessionId: 'session-unstamped', title: 'New', updatedAt: 2_000 })
+
+    expect(findSessionIdByProviderSession(database, 'opencode', 'provider-abc')).toBe('session-1')
+    // A different provider, an unknown thread, and an unstamped row are all misses.
+    expect(findSessionIdByProviderSession(database, 'claude', 'provider-abc')).toBeUndefined()
+    expect(findSessionIdByProviderSession(database, 'opencode', 'provider-xyz')).toBeUndefined()
+    expect(
+      findSessionIdByProviderSession(database, 'opencode', 'session-unstamped'),
+    ).toBeUndefined()
   })
 })
 
