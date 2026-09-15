@@ -1264,6 +1264,268 @@ describe('durable session lifecycle', () => {
     }
   }
 
+  type Harness = ReturnType<typeof setup>
+
+  /**
+   * Drive the parent through a turn and hand it a provider subtask. That is
+   * the only path that ever registers a child session, so every child test
+   * goes through it rather than reaching into the service.
+   */
+  async function delegate(
+    h: Harness,
+    service: Harness['service'],
+    runtimeMessageId: string,
+    data: Record<string, unknown>,
+  ) {
+    const sent = ProofResponseSchemas['turn.send'].parse(
+      h.dispatch(service, 'turn.send', { ...h.created.thread, text: 'Delegate' }),
+    ).payload
+    const base = {
+      providerId: 'opencode' as const,
+      threadId: h.created.thread.threadId,
+      workspaceId: '/workspace/project',
+      sessionId: 'provider-persisted',
+      messageId: runtimeMessageId,
+      timestamp: '2026-09-15T00:00:00Z',
+    }
+    service.onRuntimeEvent({
+      ...base,
+      id: `${runtimeMessageId}-start`,
+      seq: 1,
+      category: 'lifecycle',
+      event: 'prompt_started',
+      data: { prompt: 'Delegate', userMessageId: sent.userMessage.messageId },
+    })
+    await vi.waitFor(() => expect(h.runtime.prompt).toHaveBeenCalled())
+    service.onRuntimeEvent({
+      ...base,
+      id: `${runtimeMessageId}-subtask`,
+      seq: 2,
+      category: 'session',
+      event: 'subtask_update',
+      data: { taskId: 'task-1', ...data },
+    })
+  }
+
+  /** The one child row, as the projection wrote it. */
+  const childRow = (h: Harness) =>
+    h.database
+      .prepare(
+        `SELECT session_id, parent_session_id, provider_session_id, workspace_id, title
+         FROM sessions WHERE parent_session_id IS NOT NULL`,
+      )
+      .get() as
+      | {
+          session_id: string
+          parent_session_id: string
+          provider_session_id: string
+          workspace_id: string
+          title: string | null
+        }
+      | undefined
+
+  const sessionCount = (h: Harness) =>
+    Number(
+      (h.database.prepare('SELECT COUNT(*) AS count FROM sessions').get() as { count: number })
+        .count,
+    )
+
+  const listed = (h: Harness, service: Harness['service']) =>
+    ProofResponseSchemas['session.list'].parse(h.dispatch(service, 'session.list', {})).payload
+      .sessions
+
+  it('files a provider child session under its parent exactly once, across a restart', async () => {
+    const h = setup()
+    h.runtime.prompt.mockImplementation(() => new Promise(() => undefined))
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+
+      // A subtask the provider cannot expose as a session registers nothing.
+      await delegate(h, h.service, 'assistant-1', { title: 'Anonymous work' })
+      expect(sessionCount(h)).toBe(1)
+      expect(childRow(h)).toBeUndefined()
+
+      h.published.length = 0
+      h.service.onRuntimeEvent({
+        providerId: 'opencode',
+        threadId: h.created.thread.threadId,
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-persisted',
+        messageId: 'assistant-1',
+        timestamp: '2026-09-15T00:00:01Z',
+        id: 'assistant-1-subtask-named',
+        seq: 3,
+        category: 'session',
+        event: 'subtask_update',
+        data: { taskId: 'task-1', title: 'Explore the repo', childSessionId: 'provider-child' },
+      })
+
+      const child = childRow(h)!
+      expect(child).toMatchObject({
+        parent_session_id: sessionId,
+        provider_session_id: 'provider-child',
+        workspace_id: '/workspace/project',
+        title: 'Explore the repo',
+      })
+      expect(h.published.filter((event) => event.name === 'session.created')).toMatchObject([
+        {
+          scope: { type: 'environment' },
+          payload: {
+            session: {
+              sessionId: child.session_id,
+              workspaceId: '/workspace/project',
+              parentSessionId: sessionId,
+              title: 'Explore the repo',
+            },
+          },
+        },
+      ])
+      expect(listed(h, h.service).find((item) => item.sessionId === child.session_id)).toMatchObject(
+        { parentSessionId: sessionId, workspaceId: '/workspace/project' },
+      )
+
+      // The provider repeats the subtask; the same child must not be filed twice.
+      h.service.onRuntimeEvent({
+        providerId: 'opencode',
+        threadId: h.created.thread.threadId,
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-persisted',
+        messageId: 'assistant-1',
+        timestamp: '2026-09-15T00:00:02Z',
+        id: 'assistant-1-subtask-repeat',
+        seq: 4,
+        category: 'session',
+        event: 'subtask_update',
+        data: { taskId: 'task-1', status: 'completed', childSessionId: 'provider-child' },
+      })
+      expect(sessionCount(h)).toBe(2)
+
+      // A restart has no memory of the registration, so the lookup carries it.
+      const restarted = h.fresh()
+      expect(h.dispatch(restarted, 'session.open', { sessionId })).toMatchObject({
+        type: 'response',
+      })
+      await restarted.resolveRuntimeSession(sessionId)
+      await delegate(h, restarted, 'assistant-3', {
+        title: 'Explore the repo',
+        childSessionId: 'provider-child',
+      })
+      expect(sessionCount(h)).toBe(2)
+      expect(childRow(h)?.session_id).toBe(child.session_id)
+    } finally {
+      h.close()
+    }
+  })
+
+  it('resumes a child session from its own provider thread after a restart', async () => {
+    const h = setup()
+    h.runtime.prompt.mockImplementation(() => new Promise(() => undefined))
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      await delegate(h, h.service, 'assistant-1', {
+        title: 'Explore the repo',
+        childSessionId: 'provider-child',
+      })
+      const child = childRow(h)!
+
+      const restarted = h.fresh()
+      h.runtime.ensureSession.mockClear()
+      expect(h.dispatch(restarted, 'session.open', { sessionId: child.session_id })).toMatchObject({
+        payload: { session: { sessionId: child.session_id, parentSessionId: sessionId } },
+      })
+      await restarted.resolveRuntimeSession(child.session_id)
+      expect(h.runtime.ensureSession).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ sessionId: 'provider-child' }),
+      )
+    } finally {
+      h.close()
+    }
+  })
+
+  it('deletes a child with its parent, cancelling the turn the child was running', async () => {
+    const h = setup()
+    h.runtime.prompt.mockImplementation(() => new Promise(() => undefined))
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      await delegate(h, h.service, 'assistant-1', {
+        title: 'Explore the repo',
+        childSessionId: 'provider-child',
+      })
+      const child = childRow(h)!
+      expect(h.dispatch(h.service, 'session.open', { sessionId: child.session_id })).toMatchObject({
+        type: 'response',
+      })
+      const childThreadId = (
+        h.database
+          .prepare('SELECT thread_id FROM threads WHERE session_id = ?')
+          .get(child.session_id) as { thread_id: string }
+      ).thread_id
+      expect(
+        h.dispatch(h.service, 'turn.send', {
+          sessionId: child.session_id,
+          threadId: childThreadId,
+          text: 'Child work',
+        }),
+      ).toMatchObject({ type: 'response' })
+      await vi.waitFor(() =>
+        expect(h.runtime.prompt).toHaveBeenCalledWith(
+          expect.objectContaining({ sessionId: 'provider-child' }),
+        ),
+      )
+
+      h.published.length = 0
+      h.runtime.cancel.mockClear()
+      expect(h.dispatch(h.service, 'session.delete', { sessionId })).toMatchObject({
+        type: 'response',
+      })
+      // SQLite cascades the child row; only the parent is announced.
+      expect(sessionCount(h)).toBe(0)
+      expect(h.database.prepare('SELECT COUNT(*) AS count FROM threads').get()).toMatchObject({
+        count: 0,
+      })
+      expect(
+        h.database
+          .prepare('SELECT COUNT(*) AS count FROM event_streams WHERE session_id IS NOT NULL')
+          .get(),
+      ).toMatchObject({ count: 0 })
+      expect(listed(h, h.service)).toEqual([])
+      expect(
+        h.published.filter((event) => event.name === 'session.deleted'),
+      ).toMatchObject([{ payload: { sessionId } }])
+      await vi.waitFor(() =>
+        expect(h.runtime.cancel).toHaveBeenCalledWith(
+          expect.objectContaining({ sessionId: 'provider-child' }),
+        ),
+      )
+    } finally {
+      h.close()
+    }
+  })
+
+  it('leaves the parent listed when only the child is deleted', async () => {
+    const h = setup()
+    h.runtime.prompt.mockImplementation(() => new Promise(() => undefined))
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      await delegate(h, h.service, 'assistant-1', {
+        title: 'Explore the repo',
+        childSessionId: 'provider-child',
+      })
+      const child = childRow(h)!
+      expect(
+        h.dispatch(h.service, 'session.delete', { sessionId: child.session_id }),
+      ).toMatchObject({ type: 'response' })
+      expect(listed(h, h.service).map((item) => item.sessionId)).toEqual([sessionId])
+      expect(childRow(h)).toBeUndefined()
+    } finally {
+      h.close()
+    }
+  })
+
   it('renames live and SQLite-only sessions without loading a provider', async () => {
     const h = setup()
     try {
@@ -1600,5 +1862,96 @@ describe('durable session lifecycle', () => {
     } finally {
       h.close()
     }
+  })
+})
+
+describe('child sessions without a database', () => {
+  it('lists a child under its parent and deletes both together', async () => {
+    const runtime = {
+      ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-session', state: 'created' }),
+      prompt: vi.fn(() => new Promise(() => undefined)),
+      cancel: vi.fn().mockResolvedValue(undefined),
+    }
+    const events: EventEnvelope[] = []
+    const service = createThreadService(
+      runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
+      { rejection: () => undefined },
+      (event) => events.push(event),
+      undefined,
+      registered,
+    )
+    service.setEnvironmentId('environment-1')
+    const created = ProofResponseSchemas['session.create'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'create-1',
+        name: 'session.create',
+        payload: {
+          environmentId: 'environment-1',
+          providerId: 'opencode',
+          workspaceId: '/workspace/project',
+        },
+      }),
+    ).payload
+    const { sessionId } = created.session
+    await service.resolveRuntimeSession(sessionId)
+    const sent = ProofResponseSchemas['turn.send'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'send-1',
+        name: 'turn.send',
+        payload: { ...created.thread, text: 'Delegate' },
+      }),
+    ).payload
+    const base = {
+      providerId: 'opencode' as const,
+      threadId: created.thread.threadId,
+      workspaceId: '/workspace/project',
+      sessionId: 'provider-session',
+      messageId: 'assistant-1',
+      timestamp: '2026-09-15T00:00:00Z',
+    }
+    service.onRuntimeEvent({
+      ...base,
+      id: 'start',
+      seq: 1,
+      category: 'lifecycle',
+      event: 'prompt_started',
+      data: { prompt: 'Delegate', userMessageId: sent.userMessage.messageId },
+    })
+    service.onRuntimeEvent({
+      ...base,
+      id: 'subtask',
+      seq: 2,
+      category: 'session',
+      event: 'subtask_update',
+      data: { taskId: 'task-1', title: 'Explore', childSessionId: 'provider-child' },
+    })
+
+    const list = () =>
+      ProofResponseSchemas['session.list'].parse(
+        service.dispatch({ type: 'command', requestId: 'list', name: 'session.list', payload: {} }),
+      ).payload.sessions
+    const child = list().find((item) => item.sessionId !== sessionId)
+    expect(child).toMatchObject({
+      parentSessionId: sessionId,
+      workspaceId: '/workspace/project',
+      title: 'Explore',
+    })
+    expect(events.filter((event) => event.name === 'session.created')).toHaveLength(2)
+
+    // Without SQLite there is no cascade, so the in-memory drop has to do it.
+    expect(
+      service.dispatch({
+        type: 'command',
+        requestId: 'delete',
+        name: 'session.delete',
+        payload: { sessionId },
+      }),
+    ).toMatchObject({ type: 'response' })
+    expect(list()).toEqual([])
+    expect(events.filter((event) => event.name === 'session.deleted')).toMatchObject([
+      { payload: { sessionId } },
+    ])
   })
 })

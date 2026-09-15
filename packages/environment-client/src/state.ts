@@ -105,10 +105,12 @@ function upsertSession(
 ): EnvironmentState {
   const existing = state.sessions[session.sessionId]
   const listed = session as Partial<ProtocolSessionSummary>
+  const parentSessionId = session.parentSessionId ?? existing?.parentSessionId
   const summary: SessionSummary = {
     sessionId: session.sessionId,
     workspaceId: session.workspaceId,
     title: session.title,
+    ...(parentSessionId ? { parentSessionId } : {}),
     status: listed.status ?? existing?.status ?? 'idle',
     providerId: listed.providerId ?? existing?.providerId,
     updatedAt: listed.updatedAt ?? existing?.updatedAt,
@@ -235,23 +237,41 @@ function resolveInteraction(
   return { ...updated, interactions }
 }
 
+/**
+ * Drop a session and every child under it. The environment deletes children
+ * with their parent and announces only the parent, so the client mirrors the
+ * cascade instead of leaving orphaned subagent rows in the sidebar.
+ */
 function removeSession(state: EnvironmentState, sessionId: string): EnvironmentState {
-  const session = state.sessions[sessionId]
-  if (!session) return state
+  if (!state.sessions[sessionId]) return state
+  const removed = new Set<string>()
+  const pending = [sessionId]
+  while (pending.length) {
+    const id = pending.pop()!
+    if (removed.has(id)) continue
+    removed.add(id)
+    for (const session of Object.values(state.sessions)) {
+      if (session.parentSessionId === id) pending.push(session.sessionId)
+    }
+  }
   const sessions = { ...state.sessions }
-  delete sessions[sessionId]
   const threads = { ...state.threads }
-  for (const threadId of session.threadIds) delete threads[threadId]
-  const clearActive = state.activeSessionId === sessionId
+  for (const id of removed) {
+    for (const threadId of sessions[id]?.threadIds ?? []) delete threads[threadId]
+    delete sessions[id]
+  }
+  const clearActive = state.activeSessionId !== null && removed.has(state.activeSessionId)
   return {
     ...state,
     sessions,
-    sessionOrder: state.sessionOrder.filter((id) => id !== sessionId),
+    sessionOrder: state.sessionOrder.filter((id) => !removed.has(id)),
     threads,
     activeSessionId: clearActive ? null : state.activeSessionId,
     activeThreadId: clearActive ? null : state.activeThreadId,
     sessionOpenFailure:
-      state.sessionOpenFailure?.sessionId === sessionId ? null : state.sessionOpenFailure,
+      state.sessionOpenFailure && removed.has(state.sessionOpenFailure.sessionId)
+        ? null
+        : state.sessionOpenFailure,
   }
 }
 

@@ -246,6 +246,27 @@ The immediate implementation should delete a session in one transaction and
 let these foreign keys enforce the graph cleanup. It must not manually delete a
 partial subset of child rows.
 
+### Child sessions
+
+A child session is a provider subagent transcript filed under the session
+that delegated it. The thread service registers one when a provider's subtask
+event names a loadable child session id (OpenCode does; Claude Code and Cursor
+do not expose one), storing `parent_session_id` and the child's own
+`provider_session_id` so the child resumes after a restart exactly like a
+user-created session. Registration is idempotent on
+`(provider_id, provider_session_id)`: repeated subtask updates and replays
+after a reconnect find the existing row instead of filing a second child.
+`session.created` carries `parentSessionId`, and session summaries expose it so
+the sidebar can nest children under their parent from durable state alone.
+
+Deleting a parent deletes its children. SQLite cascades the rows, the thread
+service drops the children's live records and abandons any turn they were
+running, and clients remove children from their own state when the parent's
+`session.deleted` arrives; no separate `session.deleted` is emitted per child.
+Deleting a child alone leaves the parent untouched. A child is never re-parented
+and always shares its parent's workspace, which the composite foreign key
+enforces.
+
 ## Convex mapping
 
 | Convex source                                       | SQLite target                                                                                                           |

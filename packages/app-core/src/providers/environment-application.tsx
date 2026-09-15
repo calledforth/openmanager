@@ -145,9 +145,6 @@ interface DraftInternals {
   /** Create the draft's session, open it and adopt it; returns its first
    * thread, or `null` when the draft was closed or replaced meanwhile. */
   startDraftSession: (text: string) => Promise<ThreadTarget | null>
-  /** The child session opened from a parent, while it is being viewed. The
-   * wire has no parent link, so the relationship is remembered here. */
-  childLink: { child: string; parent: string } | null
 }
 
 const DraftInternalsContext = createContext<DraftInternals | null>(null)
@@ -169,7 +166,6 @@ function EnvironmentSessionStateProvider({
   const [adoptedDraftSessionId, setAdoptedDraftSessionId] = useState<string | null>(null)
   const [defaultProviderId, setDefaultProviderIdState] = useState<ProviderId>(DEFAULT_PROVIDER_ID)
   const [draftRequest, setDraftRequest] = useState<DraftRequest | null>(null)
-  const [childLink, setChildLink] = useState<DraftInternals['childLink']>(null)
   const [error, setError] = useState<string | null>(null)
 
   // Bumped whenever the draft is opened, closed or replaced, so a session
@@ -214,7 +210,6 @@ function EnvironmentSessionStateProvider({
         activeSession?.workspaceId === workspacePath ? activeSession.sessionId : null
       draftGenerationRef.current += 1
       selectionRef.current = null
-      setChildLink(null)
       setError(null)
       setDraftWorkspaceId(workspacePath)
       setPendingDraftSessionStart(false)
@@ -233,7 +228,6 @@ function EnvironmentSessionStateProvider({
   const selectSession = useCallback(
     (_workspacePath: string, externalId: string) => {
       draftGenerationRef.current += 1
-      setChildLink(null)
       setError(null)
       setDraftWorkspaceId(null)
       setTurnPending(false)
@@ -313,13 +307,13 @@ function EnvironmentSessionStateProvider({
         }
       },
       selectSession,
-      openChildSession: async (childExternalId, parentExternalId) => {
+      // The environment lists a child under its parent, so opening either
+      // side is a plain session open; nothing is remembered here.
+      openChildSession: async (childExternalId) => {
         setError(null)
-        setChildLink({ child: childExternalId, parent: parentExternalId })
         await openSessionLatest(childExternalId)
       },
       closeChildSession: (parentExternalId) => {
-        setChildLink(null)
         void openSessionLatest(parentExternalId).catch(fail)
       },
       createSession: async (workspacePath) => openDraft(workspacePath),
@@ -367,8 +361,8 @@ function EnvironmentSessionStateProvider({
     ],
   )
   const internals = useMemo<DraftInternals>(
-    () => ({ startDraftSession, childLink }),
-    [childLink, startDraftSession],
+    () => ({ startDraftSession }),
+    [startDraftSession],
   )
 
   return (
@@ -497,6 +491,7 @@ function EnvironmentSidebarDataProvider({
         title: summary.title ?? undefined,
         status: summary.status,
         providerId: (summary.providerId as ProviderId | undefined) ?? session.defaultProviderId,
+        ...(summary.parentSessionId ? { parentExternalId: summary.parentSessionId } : {}),
         isDriven: true,
       }
       ;(grouped[summary.workspaceId] ??= []).push(entry)
@@ -576,7 +571,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
   const client = useEnvironmentClient()
   const { commands } = client
   const session = useContext(SessionStateContext)!
-  const { startDraftSession, childLink } = useContext(DraftInternalsContext)!
+  const { startDraftSession } = useContext(DraftInternalsContext)!
   const activeSession = useActiveSession()
   const thread = useActiveThread()
   const activeTurn = useActiveTurn()
@@ -592,13 +587,13 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
             externalId: activeSession.sessionId,
             title: activeSession.title ?? undefined,
             status: activeSession.status,
-            ...(childLink?.child === activeSession.sessionId
-              ? { parentExternalId: childLink.parent }
+            ...(activeSession.parentSessionId
+              ? { parentExternalId: activeSession.parentSessionId }
               : {}),
             isDriven: true,
           }
         : null,
-    [activeSession, childLink],
+    [activeSession],
   )
 
   const target = thread?.thread ?? null

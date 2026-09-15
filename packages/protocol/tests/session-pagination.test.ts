@@ -70,6 +70,26 @@ describe('session list and history pagination', () => {
     ).toBe(false)
   })
 
+  it('carries a parent session id and still reads a page that predates it', () => {
+    const child = { ...summary, sessionId: 'session-2', parentSessionId: 'session-1' } as const
+    expect(SessionSummarySchema.parse(child).parentSessionId).toBe('session-1')
+    // An environment that never heard of child sessions omits the field entirely.
+    expect(SessionSummarySchema.parse(summary)).not.toHaveProperty('parentSessionId')
+    const page = parseProofResult(
+      { name: 'session.list' as const, requestId: 'list-child' },
+      {
+        type: 'response',
+        requestId: 'list-child',
+        payload: { sessions: [child, summary], nextCursor: null },
+      },
+    )
+    if (page.type !== 'response') throw new Error('expected a page')
+    expect(page.payload.sessions.map((session) => session.parentSessionId)).toEqual([
+      'session-1',
+      undefined,
+    ])
+  })
+
   it('accepts a multi-page cursor and rejects an oversized limit', () => {
     const command = ProofCommandSchema.parse({
       type: 'command',

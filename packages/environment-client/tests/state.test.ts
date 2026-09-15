@@ -246,6 +246,85 @@ describe('applyEvent', () => {
     expect(state.activeSessionId).toBeNull()
     expect(state.threads[THREAD.threadId]).toBeUndefined()
   })
+
+  it('keeps the parent session id announced with a child session', () => {
+    const child = {
+      sessionId: 'session-child',
+      workspaceId: WORKSPACE.workspaceId,
+      title: 'Subagent',
+      parentSessionId: SESSION.sessionId,
+    }
+    const state = applyEvent(
+      seeded(),
+      event({ name: 'session.created', scope: environmentScope, payload: { session: child } }),
+    )
+    expect(state.sessions[child.sessionId]).toMatchObject({
+      parentSessionId: SESSION.sessionId,
+      status: 'idle',
+    })
+    // A top-level session gains no parent from the same code path.
+    expect(state.sessions[SESSION.sessionId]).not.toHaveProperty('parentSessionId')
+  })
+
+  it('cascades a parent deletion to its descendants and leaves other sessions alone', () => {
+    const nested = (sessionId: string, parentSessionId: string) => ({
+      session: { sessionId, workspaceId: WORKSPACE.workspaceId, title: sessionId, parentSessionId },
+      thread: { threadId: `${sessionId}-thread`, sessionId },
+    })
+    const unrelated = {
+      session: {
+        sessionId: 'session-other',
+        workspaceId: WORKSPACE.workspaceId,
+        title: 'Other',
+      },
+      thread: { threadId: 'thread-other', sessionId: 'session-other' },
+    }
+    let state = seeded()
+    for (const entry of [
+      nested('session-child', SESSION.sessionId),
+      nested('session-grandchild', 'session-child'),
+      unrelated,
+    ]) {
+      state = applyEvent(
+        state,
+        event({
+          name: 'session.created',
+          scope: environmentScope,
+          payload: { session: entry.session },
+        }),
+      )
+      state = applyEvent(
+        state,
+        event({
+          name: 'thread.created',
+          scope: { type: 'session', environmentId: ENV, sessionId: entry.session.sessionId },
+          payload: { thread: entry.thread },
+        }),
+      )
+    }
+    // The grandchild is the active selection, so deleting the root must clear it.
+    state = {
+      ...state,
+      activeSessionId: 'session-grandchild',
+      activeThreadId: 'session-grandchild-thread',
+      sessionOpenFailure: { sessionId: 'session-child', message: 'boom' },
+    }
+
+    const deleted = applyEvent(
+      state,
+      event({
+        name: 'session.deleted',
+        scope: environmentScope,
+        payload: { sessionId: SESSION.sessionId },
+      }),
+    )
+    expect(Object.keys(deleted.sessions)).toEqual(['session-other'])
+    expect(deleted.sessionOrder).toEqual(['session-other'])
+    expect(Object.keys(deleted.threads)).toEqual(['thread-other'])
+    expect(deleted.activeSessionId).toBeNull()
+    expect(deleted.activeThreadId).toBeNull()
+    expect(deleted.sessionOpenFailure).toBeNull()
+  })
 })
 
 describe('optimistic sends', () => {

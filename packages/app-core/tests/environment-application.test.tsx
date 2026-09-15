@@ -172,6 +172,34 @@ describe('the shared application over the environment client', () => {
     expect(client.calls.some((call) => call.command === 'resolveWorkspaceIcon')).toBe(false)
   })
 
+  it('nests a session that names a parent under it in the sidebar', async () => {
+    const child = {
+      sessionId: 'session-2',
+      workspaceId: WORKSPACE.workspaceId,
+      title: 'Subagent run',
+      parentSessionId: SESSION.sessionId,
+    }
+    const client = createMockEnvironmentClient({
+      seed: {
+        ...SEEDED_HISTORY,
+        sessions: [
+          ...SEEDED_HISTORY.sessions!,
+          { session: child, threads: [{ threadId: 'thread-2', sessionId: child.sessionId }] },
+        ],
+      },
+    })
+    await render(<App client={client} />)
+    await settle(client)
+    // `parentSessionId` reaches the sidebar as `parentExternalId`, which is what
+    // indents the row and marks it as a subagent transcript.
+    expect(container.textContent).toContain('SUBAGENT')
+    const row = buttonWithText('Subagent run')!.closest('div[style]') as HTMLElement
+    expect(row.style.paddingLeft).toBe('20px')
+    expect((buttonWithText('First')!.closest('div[style]') as HTMLElement).style.paddingLeft).toBe(
+      '8px',
+    )
+  })
+
   it('opens a session from the sidebar and shows its mocked message list', async () => {
     const client = createMockEnvironmentClient({ seed: SEEDED_HISTORY })
     await render(<App client={client} />)
