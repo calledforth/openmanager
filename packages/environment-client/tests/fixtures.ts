@@ -7,7 +7,7 @@ export const WORKSPACE = {
   path: 'C:/repo',
   lastUsedAt: null,
   lastActivityAt: null,
-  capabilities: { git: false, providers: [] },
+  capabilities: { git: false, providers: ['opencode'] },
   exists: true,
 }
 export const SESSION = { sessionId: 'session-1', workspaceId: WORKSPACE.workspaceId, title: null }

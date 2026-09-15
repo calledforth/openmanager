@@ -1,6 +1,7 @@
 import {
   ErrorEnvelopeSchema,
   PROTOCOL_VERSION,
+  SESSION_CREATE_EXPLICIT_CAPABILITY,
   ProofEventSchema,
   ServerMessageSchema,
   SubscriptionEventSchema,
@@ -688,8 +689,29 @@ export function createWebSocketEnvironmentClient(
       }
     },
     async createSession(input) {
+      if (!store.getState().connection.capabilities.includes(SESSION_CREATE_EXPLICIT_CAPABILITY)) {
+        throw new EnvironmentClientError(
+          'capability_missing',
+          'Update this environment to create sessions with an explicit provider and first message.',
+        )
+      }
       const payload = await request('session.create', input)
-      store.update((state) => applySessionCreated(state, payload))
+      store.update((state) => {
+        const created = applySessionCreated(state, payload)
+        const withProvider = {
+          ...created,
+          sessions: {
+            ...created.sessions,
+            [payload.session.sessionId]: {
+              ...created.sessions[payload.session.sessionId]!,
+              providerId: input.providerId,
+            },
+          },
+        }
+        return payload.firstTurn
+          ? applyTurnStarted(withProvider, payload.thread, payload.firstTurn)
+          : withProvider
+      })
       return payload
     },
     async openSession(sessionId) {

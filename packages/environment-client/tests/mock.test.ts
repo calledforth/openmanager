@@ -78,6 +78,8 @@ describe('mock environment client', () => {
   it('creates, opens, renames and deletes sessions through events', async () => {
     const client = createMockEnvironmentClient({ seed })
     const created = await client.commands.createSession({
+      environmentId: 'mock-environment',
+      providerId: 'opencode',
       workspaceId: WORKSPACE.workspaceId,
       title: 'New',
     })
@@ -280,4 +282,30 @@ describe('mock environment client', () => {
     client.reconnect()
     expect(client.getState().threads[THREAD.threadId]?.messages).toHaveLength(2)
   })
+})
+
+it('validates explicit mock creation and returns its first turn', async () => {
+  const client = createMockEnvironmentClient({ seed, respond: () => null })
+  const input = {
+    environmentId: 'mock-environment',
+    workspaceId: WORKSPACE.workspaceId,
+    providerId: 'opencode',
+  }
+  for (const payload of [
+    { ...input, environmentId: 'wrong' },
+    { ...input, providerId: 'missing' },
+    { ...input, firstMessage: '' },
+  ]) {
+    await expect(client.commands.createSession(payload)).rejects.toMatchObject({
+      code: 'validation',
+    })
+  }
+  expect(selectSessionList(client.getState())).toHaveLength(1)
+  const created = await client.commands.createSession({ ...input, firstMessage: 'hello' })
+  expect(created.firstTurn?.userMessage.content).toEqual([{ type: 'text', text: 'hello' }])
+  expect(client.getState().sessions[created.session.sessionId]).toMatchObject({
+    providerId: 'opencode',
+    status: 'running',
+  })
+  expect(client.calls.some((call) => call.command === 'sendTurn')).toBe(false)
 })

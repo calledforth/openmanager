@@ -1,4 +1,4 @@
-import type { AgentEvent, ProviderId } from '@agentpack/contract'
+import { isProviderId, type AgentEvent, type ProviderId } from '@agentpack/contract'
 import { api } from '@openmanager/convex/_generated/api'
 import type { FunctionReference } from 'convex/server'
 import {
@@ -76,7 +76,6 @@ export interface ConvexGateway {
 export interface DesktopEventBridge {
   onAcpEvent(callback: (event: AgentEvent) => void): () => void
   onStreamToken(callback: (event: AgentEvent) => void): () => void
-  getLastProviderId(): Promise<ProviderId>
   /** Workspace icon as a data URL from the main process; desktop IDs are paths. */
   resolveWorkspaceIcon(workspacePath: string): Promise<string | null>
 }
@@ -796,12 +795,28 @@ export function createConvexEnvironmentClient(
     },
     createSession(input) {
       gate()
+      if (input.environmentId !== environmentId) {
+        return Promise.reject(
+          new EnvironmentClientError(
+            'validation',
+            'The session belongs to a different environment.',
+          ),
+        )
+      }
       if (!store.getState().workspaces[input.workspaceId]) {
         return Promise.reject(new EnvironmentClientError('not_found', 'Workspace not found.'))
       }
+      if (!isProviderId(input.providerId)) {
+        return Promise.reject(
+          new EnvironmentClientError(
+            'validation',
+            'This desktop cannot run the requested provider.',
+          ),
+        )
+      }
+      const providerId = input.providerId
       return serializeCreation(input.workspaceId, async () => {
         gate()
-        const providerId = await bridge.getLastProviderId().catch((): ProviderId => 'opencode')
         const created = awaitSessionCreated(input.workspaceId)
         let job: ReturnType<typeof watchJob> | null = null
         try {

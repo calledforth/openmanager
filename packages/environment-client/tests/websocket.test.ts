@@ -81,6 +81,7 @@ const FULL_CAPABILITIES = [
   'workspace.icon',
   'session.list',
   'session.create',
+  'session.create.explicit',
   'session.open',
   'session.history',
   'turn.send',
@@ -391,7 +392,11 @@ describe('websocket environment client', () => {
 
   it('maps protocol errors to typed client errors', async () => {
     const { client, socket } = await connected()
-    const pending = client.commands.createSession({ workspaceId: 'missing' })
+    const pending = client.commands.createSession({
+      environmentId: ENV,
+      providerId: 'opencode',
+      workspaceId: 'missing',
+    })
     socket.receive({
       type: 'error',
       requestId: socket.last('session.create').requestId,
@@ -541,7 +546,11 @@ describe('websocket environment client', () => {
 
   it('rejects in-flight commands when the connection drops', async () => {
     const { client, socket } = await connected()
-    const pending = client.commands.createSession({ workspaceId: WORKSPACE.workspaceId })
+    const pending = client.commands.createSession({
+      environmentId: ENV,
+      providerId: 'opencode',
+      workspaceId: WORKSPACE.workspaceId,
+    })
     socket.drop(1006, 'gone')
     await expect(pending).rejects.toMatchObject({ code: 'unavailable' })
   })
@@ -855,4 +864,45 @@ describe('reconnectDelayMs', () => {
       expect(delay).toBeLessThanOrEqual(window)
     }
   })
+})
+
+it('refuses explicit creation on older environments without sending a lossy command', async () => {
+  const { client, socket } = await connected(['session.create'])
+  const before = socket.sent.length
+  await expect(
+    client.commands.createSession({
+      environmentId: ENV,
+      workspaceId: WORKSPACE.workspaceId,
+      providerId: 'opencode',
+      firstMessage: 'hello',
+    }),
+  ).rejects.toMatchObject({ code: 'capability_missing' })
+  expect(socket.sent).toHaveLength(before)
+})
+
+it('folds the first turn from creation without a second turn.send round trip', async () => {
+  const { client, socket } = await connected()
+  const input = {
+    environmentId: ENV,
+    workspaceId: WORKSPACE.workspaceId,
+    providerId: 'opencode',
+    firstMessage: 'hello',
+  }
+  const pending = client.commands.createSession(input)
+  expect(socket.last('session.create').payload).toEqual(input)
+  const firstTurn = {
+    turn: { turnId: 'first', threadId: THREAD.threadId, state: 'running' },
+    userMessage: {
+      messageId: 'user-first',
+      threadId: THREAD.threadId,
+      turnId: 'first',
+      role: 'user',
+      content: [{ type: 'text', text: 'hello' }],
+    },
+  }
+  socket.respond('session.create', { session: SESSION, thread: THREAD, firstTurn })
+  expect(await pending).toMatchObject({ firstTurn })
+  expect(client.getState().threads[THREAD.threadId]?.messages).toEqual([firstTurn.userMessage])
+  expect(client.getState().sessions[SESSION.sessionId]?.status).toBe('running')
+  expect(socket.sent.some((message) => message.name === 'turn.send')).toBe(false)
 })

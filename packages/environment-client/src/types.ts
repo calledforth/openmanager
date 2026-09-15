@@ -139,7 +139,10 @@ export interface EnvironmentState {
 }
 
 export interface CreateSessionInput {
+  environmentId: string
   workspaceId: string
+  providerId: string
+  firstMessage?: string
   title?: string
 }
 
@@ -179,7 +182,9 @@ export interface EnvironmentCommands {
   /** The workspace's icon as a data URL, or null when the folder has none. Not stored. */
   resolveWorkspaceIcon(workspaceId: string): Promise<string | null>
   listSessions(input?: ListSessionsInput | string): Promise<SessionListPage>
-  createSession(input: CreateSessionInput): Promise<{ session: Session; thread: Thread }>
+  createSession(
+    input: CreateSessionInput,
+  ): Promise<{ session: Session; thread: Thread; firstTurn?: { turn: Turn; userMessage: Message } }>
   /** Loads thread identities, then the newest history page for each thread. */
   openSession(sessionId: string): Promise<void>
   loadSessionHistory(input: LoadSessionHistoryInput): Promise<SessionHistoryPage>

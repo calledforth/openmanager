@@ -521,7 +521,11 @@ describe('workspace boundary', () => {
     const probe = vi.spyOn(host.server.runtime, 'probeProvider')
     // A root path sent in place of the ID, a sibling directory, and a made-up ID.
     for (const workspaceId of [host.root, join(host.root, '..', 'workspace-c'), 'workspace-1']) {
-      const createId = client.command('session.create', { workspaceId })
+      const createId = client.command('session.create', {
+        environmentId: host.server.identity.environmentId,
+        providerId: 'opencode',
+        workspaceId,
+      })
       expect(await client.next()).toMatchObject({
         type: 'error',
         requestId: createId,
@@ -627,7 +631,11 @@ describe('per-operation authorization', () => {
     const client = await connect(host, true, standard.credential)
     await handshake(client)
 
-    const createId = client.command('session.create', { workspaceId: host.workspaceId })
+    const createId = client.command('session.create', {
+      environmentId: host.server.identity.environmentId,
+      providerId: 'opencode',
+      workspaceId: host.workspaceId,
+    })
     const created = ProofResponseSchemas['session.create'].parse(await client.next())
     expect(created.requestId).toBe(createId)
     await vi.waitFor(() => expect(ensure).toHaveBeenCalledTimes(1))
@@ -641,6 +649,17 @@ describe('per-operation authorization', () => {
       requestId: sendId,
       error: { details: { requiredCapability: 'agent' } },
     })
+    expect(prompt).not.toHaveBeenCalled()
+    client.command('session.create', {
+      environmentId: host.server.identity.environmentId,
+      providerId: 'opencode',
+      workspaceId: host.workspaceId,
+      firstMessage: 'Hello runtime',
+    })
+    expect(AccessDeniedErrorSchema.parse(await client.next())).toMatchObject({
+      error: { details: { requiredCapability: 'agent' } },
+    })
+    expect(ensure).toHaveBeenCalledTimes(1)
     expect(prompt).not.toHaveBeenCalled()
   })
 })
@@ -831,6 +850,8 @@ describe('handshake and scoped subscriptions', () => {
     const cancel = vi.spyOn(host.server.runtime, 'cancel').mockReturnValue(pendingCancel)
 
     const createId = client.command('session.create', {
+      environmentId: host.server.identity.environmentId,
+      providerId: 'opencode',
       workspaceId: host.workspaceId,
       title: 'Runtime bridge',
     })
@@ -942,6 +963,8 @@ describe('handshake and scoped subscriptions', () => {
       payload: { providerId: 'opencode', health: { summary: 'error' } },
     })
     const unhealthyId = client.command('session.create', {
+      environmentId: host.server.identity.environmentId,
+      providerId: 'opencode',
       workspaceId: host.workspaceId,
     })
     expect(await client.next()).toMatchObject({
@@ -964,6 +987,8 @@ describe('handshake and scoped subscriptions', () => {
     })
 
     const requestId = client.command('session.create', {
+      environmentId: host.server.identity.environmentId,
+      providerId: 'opencode',
       workspaceId: host.otherWorkspaceId,
     })
     expect(await client.next()).toMatchObject({ type: 'response', requestId })
@@ -1133,4 +1158,45 @@ describe('protocol heartbeat timers', () => {
     expect(String(reason)).toBe('handshake_timeout')
     expect(host.server.sockets.connectionCount).toBe(0)
   })
+})
+
+it('broadcasts session.created to two environment subscribers without reloading', async () => {
+  const host = await setup()
+  const first = await connect(host)
+  const second = await connect(host)
+  await handshake(first)
+  await handshake(second)
+  const scope = { type: 'environment' as const, environmentId: host.server.identity.environmentId }
+  const firstSubscription = await subscribe(first, scope)
+  const secondSubscription = await subscribe(second, scope)
+  vi.spyOn(host.server.runtime, 'ensureSession').mockResolvedValue({
+    sessionId: 'provider-session',
+    state: 'created',
+  })
+  const requestId = first.command('session.create', {
+    environmentId: scope.environmentId,
+    workspaceId: host.workspaceId,
+    providerId: 'opencode',
+  })
+  const firstMessages = [await first.next(), await first.next()]
+  const response = ProofResponseSchemas['session.create'].parse(
+    firstMessages.find((message) => message.type === 'response' && message.requestId === requestId),
+  )
+  const announcement = (subscriptionId: string) => ({
+    name: 'subscription.event',
+    payload: {
+      subscriptionId,
+      record: {
+        event: {
+          name: 'session.created',
+          scope,
+          payload: { session: response.payload.session },
+        },
+      },
+    },
+  })
+  expect(firstMessages.find((message) => message.type === 'event')).toMatchObject(
+    announcement(firstSubscription),
+  )
+  expect(await second.next()).toMatchObject(announcement(secondSubscription))
 })

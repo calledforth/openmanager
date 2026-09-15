@@ -15,7 +15,7 @@ const WORKSPACE = {
   path: 'C:/repo',
   lastUsedAt: null,
   lastActivityAt: null,
-  capabilities: { git: false, providers: [] },
+  capabilities: { git: false, providers: ['opencode'] },
   exists: true,
 }
 const SESSION = { sessionId: 'session-1', workspaceId: WORKSPACE.workspaceId, title: 'First' }
@@ -81,7 +81,13 @@ const settle = async (client: MockEnvironmentClient) => {
   }
 }
 
-function App({ client, addWorkspace }: { client: MockEnvironmentClient; addWorkspace?: () => Promise<void> }) {
+function App({
+  client,
+  addWorkspace,
+}: {
+  client: MockEnvironmentClient
+  addWorkspace?: () => Promise<void>
+}) {
   return <MockEnvironmentApp client={client} addWorkspace={addWorkspace} />
 }
 
@@ -127,7 +133,9 @@ describe('the shared application over the environment client', () => {
     expect(labels()[0]!.nextElementSibling?.textContent).toBe('devbox')
     expect(buttonWithText('First')!.textContent).toContain('First on devbox')
 
-    await act(() => container.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]')!.click())
+    await act(() =>
+      container.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]')!.click(),
+    )
     // The picker menu portals to the body; its footer names the environment too.
     const menu = document.body.querySelector('[role="listbox"][aria-label="Choose a project"]')
     expect(menu?.textContent).toContain('Sessions run on devbox')
@@ -187,7 +195,14 @@ describe('the shared application over the environment client', () => {
     await settle(client)
 
     const commands = client.calls.map((call) => call.command)
-    expect(commands).toEqual(expect.arrayContaining(['createSession', 'openSession', 'sendTurn']))
+    expect(commands).toEqual(expect.arrayContaining(['createSession', 'openSession']))
+    expect(commands).not.toContain('sendTurn')
+    expect(client.calls.find((call) => call.command === 'createSession')?.input).toEqual({
+      environmentId: 'mock-environment',
+      workspaceId: WORKSPACE.workspaceId,
+      providerId: 'opencode',
+      firstMessage: 'hello there',
+    })
     expect(client.getState().activeSessionId).not.toBeNull()
     expect(container.textContent).toContain('hello there')
     expect(container.textContent).toContain('You said: hello there')
@@ -270,7 +285,10 @@ describe('the shared application over the environment client', () => {
         response: {
           kind: 'question',
           interactionId: 'q-1',
-          outcome: { outcome: 'answered', answers: [{ questionId: 'framework', selectedOptionIds: ['react'] }] },
+          outcome: {
+            outcome: 'answered',
+            answers: [{ questionId: 'framework', selectedOptionIds: ['react'] }],
+          },
         },
       }),
     )
@@ -332,7 +350,11 @@ describe('the shared application over the environment client', () => {
     })
     expect(container.textContent).toContain('Tokens')
     expect(occurrences('Tokens')).toBe(1)
-    expect(client.getState().threads[THREAD.threadId]?.messages.filter((message) => message.role === 'assistant')).toHaveLength(2)
+    expect(
+      client
+        .getState()
+        .threads[THREAD.threadId]?.messages.filter((message) => message.role === 'assistant'),
+    ).toHaveLength(2)
   })
 
   it('reconnects without duplicating the open session transcript', async () => {
