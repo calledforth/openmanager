@@ -45,6 +45,34 @@ describe('connection surfaces', () => {
     expect(screen.getByText('Session workspace stays mounted')).toBeInTheDocument()
   })
 
+  it('states offline politely while the network is gone, with nothing to press', () => {
+    const story = CONNECTION_STORIES.find((item) => item.id === 'offline')
+    if (!story) throw new Error('missing offline story')
+    const state = deriveConnectionUi(story.input)
+    render(<ConnectionBanner state={state} />)
+    expect(screen.getByRole('status')).toHaveTextContent('No network')
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+    expect(screen.getByText(state.description)).toBeInTheDocument()
+  })
+
+  it('offers a manual retry once the client has stopped retrying', async () => {
+    const user = userEvent.setup()
+    const onRetry = vi.fn()
+    const onChangeEnvironment = vi.fn()
+    const state = deriveConnectionUi({
+      environment: { status: 'selected', endpoint: 'http://127.0.0.1:43120', label: 'Home' },
+      bootstrap: { status: 'loading' },
+      transport: { phase: 'closed', hasConnected: true, failure: null, retriesExhausted: true },
+      network: { online: true },
+    })
+    render(<ConnectionBanner state={state} handlers={{ onRetry, onChangeEnvironment }} />)
+    expect(screen.getByRole('alert')).toHaveTextContent('Not connected')
+    await user.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(onRetry).toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Change environment' }))
+    expect(onChangeEnvironment).toHaveBeenCalled()
+  })
+
   it('submits a valid endpoint and optional token, and rejects a bad one', async () => {
     const user = userEvent.setup()
     const onConnect = vi.fn()

@@ -70,6 +70,12 @@ export interface ReconnectPolicy {
   multiplier: number
   /** Undefined retries forever while the failure is retryable. */
   maxAttempts?: number
+  /**
+   * Fraction of each backoff window that is randomized, 0 to 1. `1` is full
+   * jitter (`random() * window`), `0` disables jitter. Optional: an omitted
+   * value keeps the default, so older policies stay valid.
+   */
+  jitter?: number
 }
 
 export interface WebSocketEnvironmentClientOptions {
@@ -83,16 +89,42 @@ export interface WebSocketEnvironmentClientOptions {
   reconnect?: Partial<ReconnectPolicy>
   now?: () => number
   requestId?: () => string
+  /** Jitter source in `[0, 1)`. Injectable so reconnect tests are deterministic. */
+  random?: () => number
   timers?: {
     setTimeout: (fn: () => void, delayMs: number) => unknown
     clearTimeout: (handle: unknown) => void
   }
 }
 
+/**
+ * Full jitter over an exponential window: attempt N waits a random delay in
+ * `[0, min(500ms * 2^N, 15s))`, forever, until the failure is terminal. The
+ * randomization is what keeps every client of a restarted environment from
+ * re-dialing in the same millisecond. See `docs/connection-retry.md`.
+ */
 export const DEFAULT_RECONNECT: ReconnectPolicy = {
   initialDelayMs: 500,
   maxDelayMs: 15_000,
   multiplier: 2,
+  jitter: 1,
+}
+
+/**
+ * `window = min(initialDelayMs * multiplier ** attempt, maxDelayMs)`, then
+ * `delay = window * (1 - jitter) + random() * window * jitter`. The delay never
+ * exceeds the window, so `maxDelayMs` stays a real ceiling.
+ */
+export function reconnectDelayMs(
+  policy: ReconnectPolicy,
+  attempt: number,
+  random: () => number,
+): number {
+  const window = Math.min(policy.initialDelayMs * policy.multiplier ** attempt, policy.maxDelayMs)
+  const jitter = Math.min(Math.max(policy.jitter ?? 0, 0), 1)
+  if (jitter === 0) return window
+  const roll = Math.min(Math.max(random(), 0), 1)
+  return Math.round(window * (1 - jitter) + roll * window * jitter)
 }
 
 const OPEN = 1
@@ -150,7 +182,12 @@ export function createWebSocketEnvironmentClient(
   }
   const now = options.now ?? (() => Date.now())
   const nextRequestId = options.requestId ?? randomId
-  const reconnectPolicy: ReconnectPolicy = { ...DEFAULT_RECONNECT, ...options.reconnect }
+  const reconnectPolicy: ReconnectPolicy = {
+    ...DEFAULT_RECONNECT,
+    ...options.reconnect,
+    jitter: options.reconnect?.jitter ?? DEFAULT_RECONNECT.jitter,
+  }
+  const random = options.random ?? Math.random
   const store = createEnvironmentStore()
 
   let socket: WebSocketLike | null = null
@@ -221,16 +258,20 @@ export function createWebSocketEnvironmentClient(
   const scheduleReconnect = (failure: ConnectionFailure) => {
     clearReconnect()
     if (reconnectPolicy.maxAttempts !== undefined && attempts >= reconnectPolicy.maxAttempts) {
-      patchConnection({ phase: 'closed', failure })
+      // Out of attempts: the shell reads `retriesExhausted` as "offline, needs
+      // a manual retry" and only connect() starts the schedule again.
+      patchConnection({ phase: 'closed', failure, attempt: attempts, retriesExhausted: true })
       return
     }
-    const delay = Math.min(
-      reconnectPolicy.initialDelayMs * reconnectPolicy.multiplier ** attempts,
-      reconnectPolicy.maxDelayMs,
-    )
+    const delay = reconnectDelayMs(reconnectPolicy, attempts, random)
     attempts += 1
     const hasConnected = store.getState().connection.hasConnected
-    patchConnection({ phase: hasConnected ? 'reconnecting' : 'connecting', failure })
+    patchConnection({
+      phase: hasConnected ? 'reconnecting' : 'connecting',
+      failure,
+      attempt: attempts,
+      retriesExhausted: false,
+    })
     reconnectTimer = timers.setTimeout(() => {
       reconnectTimer = null
       open()
@@ -252,7 +293,8 @@ export function createWebSocketEnvironmentClient(
     )
     if (!closedSocket) return
     if (disposed || manualClose) {
-      patchConnection({ phase: 'closed', failure: null })
+      // A deliberate close is not a failed retry, so it must not read as offline.
+      patchConnection({ phase: 'closed', failure: null, attempt: 0, retriesExhausted: false })
       return
     }
     const current = store.getState().connection
@@ -270,7 +312,7 @@ export function createWebSocketEnvironmentClient(
   }
 
   const failTerminally = (failure: ConnectionFailure) => {
-    patchConnection({ phase: 'closed', failure })
+    patchConnection({ phase: 'closed', failure, retriesExhausted: true })
     manualClose = false
     const current = socket
     socket = null
@@ -328,6 +370,8 @@ export function createWebSocketEnvironmentClient(
       hasConnected: true,
       failure: null,
       capabilities: [...capabilities],
+      attempt: 0,
+      retriesExhausted: false,
     })
     for (const flush of queued.splice(0)) flush()
     void resync()
@@ -582,6 +626,11 @@ export function createWebSocketEnvironmentClient(
     if (!environmentId) return
     const generation = connectionGeneration
     subscribe({ type: 'environment', environmentId })
+    // Every scope the previous socket held is re-sent now rather than after the
+    // catalog reads: a server subscription is per-socket, so until it lands the
+    // open session's events are not sent at all. `subscribe` is idempotent, so
+    // the session.open below is free to ask for the same scopes again.
+    for (const subscription of [...subscriptions.values()]) subscribe(subscription.scope)
     const reads: Promise<unknown>[] = []
     if (supports('getEnvironment')) reads.push(commands.getEnvironment().catch(() => undefined))
     if (supports('listWorkspaces')) reads.push(commands.listWorkspaces().catch(() => undefined))
@@ -744,6 +793,14 @@ export function createWebSocketEnvironmentClient(
     supports,
     setActiveSession: (sessionId) => {
       openGeneration += 1
+      const previous = store.getState().activeSessionId
+      // Subscriptions outlive the store's active session, so a session left
+      // behind here would be re-subscribed by the next reconnect resync and
+      // keep mutating the store. `openSession` releases the previous session
+      // itself, and a repeated ID is left alone so its scopes stay live.
+      if (previous && previous !== sessionId) {
+        for (const scope of sessionScopes(previous)) unsubscribe(scope)
+      }
       store.update((state) => applyActiveSession(state, sessionId))
     },
     setActiveThread: (threadId) => store.update((state) => applyActiveThread(state, threadId)),
@@ -755,6 +812,9 @@ export function createWebSocketEnvironmentClient(
       if (current.failure && TERMINAL_CODES.has(current.failure.code)) {
         patchConnection({ failure: null })
       }
+      // Any explicit connect() is a fresh start, including one the shell makes
+      // on behalf of the user after retries were exhausted.
+      patchConnection({ attempt: 0, retriesExhausted: false })
       // A socket that disconnect() is still closing keeps open() from creating
       // a new one; clearing the flag lets its close event schedule a reconnect.
       manualClose = false
@@ -765,7 +825,7 @@ export function createWebSocketEnvironmentClient(
       manualClose = true
       const current = socket
       if (!current) {
-        patchConnection({ phase: 'closed', failure: null })
+        patchConnection({ phase: 'closed', failure: null, retriesExhausted: false })
         return
       }
       current.close(1000, 'client_disconnect')

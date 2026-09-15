@@ -21,7 +21,7 @@ export function WebEnvironmentClientProvider({
   children: ReactNode
   createClient?: typeof createWebSocketEnvironmentClient
 }) {
-  const { ui, environment, environments } = useConnection()
+  const { ui, environment, environments, retryNonce } = useConnection()
   const endpoint = environment.status === 'selected' ? environment.endpoint : null
   // Identity comes only from the selection's environment ID (filled from the
   // registry once bootstrap has answered). An endpoint can belong to several
@@ -30,14 +30,18 @@ export function WebEnvironmentClientProvider({
     environment.status === 'selected' ? (environment.environmentId ?? null) : null
   const stored = findStoredEnvironment(environments, environmentId)
   const credential = stored?.credential || undefined
-  const ready = ui.kind === 'ready'
+  // An offline blip must not tear the client down: the socket's own backoff
+  // loop is what recovers the session, and disposing would drop the store with
+  // it. Only a different environment, or a failure that needs a person,
+  // replaces the client.
+  const alive = ui.kind === 'ready' || ui.kind === 'offline'
 
   // The client is created inside the effect rather than memoized so that
   // StrictMode's setup → cleanup → setup replay (and any real remount) gets a
   // fresh instance; a disposed client ignores connect() for good.
   const [client, setClient] = useState<EnvironmentClient | null>(null)
   useEffect(() => {
-    if (!endpoint || !environmentId || !ready) {
+    if (!endpoint || !environmentId || !alive) {
       setClient(null)
       return
     }
@@ -48,7 +52,15 @@ export function WebEnvironmentClientProvider({
       next.dispose()
       setClient((current) => (current === next ? null : current))
     }
-  }, [createClient, credential, endpoint, environmentId, ready])
+  }, [createClient, credential, endpoint, environmentId, alive])
+
+  // A manual retry, or the network coming back, should dial now rather than at
+  // the end of the current backoff window. connect() on a live client is a
+  // no-op, so this is safe to run on every change.
+  useEffect(() => {
+    if (!client || retryNonce === 0) return
+    client.connect()
+  }, [client, retryNonce])
 
   return <EnvironmentClientProvider client={client}>{children}</EnvironmentClientProvider>
 }

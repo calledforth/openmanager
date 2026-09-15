@@ -113,6 +113,14 @@ export interface ConnectionState {
   failure: ConnectionFailure | null
   /** Command names advertised by the environment; empty until the handshake lands. */
   capabilities: readonly string[]
+  /** Failed connection attempts since the last successful handshake. */
+  attempt: number
+  /**
+   * The client has stopped retrying on its own: a terminal failure (auth,
+   * protocol, capability) or an exhausted `maxAttempts`. Only `connect()`
+   * brings it back. See `docs/connection-retry.md`.
+   */
+  retriesExhausted: boolean
 }
 
 /** Normalized, immutable. Every update produces a new root object. */

@@ -7,6 +7,7 @@ export const CONNECTION_KINDS = [
   'no_environment',
   'connecting',
   'reconnecting',
+  'offline',
   'unreachable',
   'incompatible_protocol',
   'unauthorized',
@@ -51,7 +52,12 @@ export type TransportStatus = {
   phase: 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'closed'
   hasConnected: boolean
   failure: { code: TransportFailureCode; message?: string } | null
+  /** The client has given up on its own: terminal failure or attempts exhausted. */
+  retriesExhausted?: boolean
 }
+
+/** What the browser reports about the device's network, not about this app. */
+export type NetworkStatus = { online: boolean }
 
 export type ConnectionUiState = {
   kind: ConnectionKind
@@ -70,6 +76,8 @@ export type DeriveConnectionInput = {
   environment: EnvironmentSelection
   bootstrap: BootstrapOutcome
   transport: TransportStatus
+  /** Omitted means "assume a network"; only an explicit offline reads as offline. */
+  network?: NetworkStatus
 }
 
 /** Keep a cached bootstrap while a later fetch is in flight. */
@@ -165,6 +173,28 @@ export function deriveConnectionUi(input: DeriveConnectionInput): ConnectionUiSt
     }
   }
 
+  // "Offline" is the one state where waiting will not help on its own: the
+  // device has no network, or the client has stopped retrying. Everything
+  // between a drop and that point is `reconnecting`. It outranks a ready
+  // bootstrap because that bootstrap was answered before the network went
+  // away; the socket behind it cannot still be alive.
+  const deviceOffline = input.network?.online === false
+  const stoppedRetrying = input.transport.retriesExhausted === true
+  if (deviceOffline || stoppedRetrying) {
+    return {
+      kind: 'offline',
+      surface: 'banner',
+      title: deviceOffline ? 'No network' : 'Not connected',
+      description: deviceOffline
+        ? `This device is offline. OpenManager reconnects to ${named} as soon as the network is back. Your session stays here.`
+        : `Retries to reach ${named} have stopped. Your session stays here until you retry.`,
+      action: deviceOffline ? undefined : 'retry',
+      secondaryAction: deviceOffline ? undefined : 'change_environment',
+      environmentLabel: label,
+      endpoint,
+    }
+  }
+
   if (input.transport.phase === 'connected' && input.bootstrap.status === 'ready') {
     return {
       kind: 'ready',
@@ -184,7 +214,7 @@ export function deriveConnectionUi(input: DeriveConnectionInput): ConnectionUiSt
       kind: 'reconnecting',
       surface: 'banner',
       title: 'Reconnecting',
-      description: `The connection to ${named} dropped. Retrying from the last connection status. Your session stays here.`,
+      description: `The connection to ${named} dropped. Retrying automatically with a growing delay. Your session stays here.`,
       action: 'retry',
       environmentLabel: label,
       endpoint,
