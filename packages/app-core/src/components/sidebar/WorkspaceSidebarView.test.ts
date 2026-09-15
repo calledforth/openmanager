@@ -34,7 +34,9 @@ describe('sessionBusyTone', () => {
     expect(sessionBusyTone('done')).toBe('ready')
     expect(sessionBusyTone('running')).toBe('working')
     expect(sessionBusyTone('busy')).toBe('working')
-    expect(sessionBusyTone('idle')).toBe(null)
+    expect(sessionBusyTone('ready')).toBe('ready')
+    expect(sessionBusyTone('idle')).toBe(null) // Legacy completion acknowledgement.
+    expect(sessionBusyTone('error')).toBe('error')
   })
 })
 

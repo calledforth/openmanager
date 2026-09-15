@@ -87,17 +87,6 @@ export function deriveSessionStatus(threads: readonly ThreadState[]): SessionSta
   return status
 }
 
-function refreshSessionStatus(state: EnvironmentState, sessionId: string): EnvironmentState {
-  const session = state.sessions[sessionId]
-  if (!session) return state
-  const threads = session.threadIds
-    .map((threadId) => state.threads[threadId])
-    .filter((thread): thread is ThreadState => thread !== undefined)
-  const status = deriveSessionStatus(threads)
-  if (status === session.status) return state
-  return { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, status } } }
-}
-
 function upsertSession(
   state: EnvironmentState,
   session: Session | ProtocolSessionSummary,
@@ -180,10 +169,7 @@ function patchThread(
   const current = withThread.threads[thread.threadId]!
   const updated = update(current)
   if (updated === current) return withThread
-  return refreshSessionStatus(
-    { ...withThread, threads: { ...withThread.threads, [thread.threadId]: updated } },
-    thread.sessionId,
-  )
+  return { ...withThread, threads: { ...withThread.threads, [thread.threadId]: updated } }
 }
 
 function setTurnState(thread: ThreadState, turnId: string, turnState: Turn['state']): ThreadState {
@@ -298,12 +284,17 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
       )
     case 'session.updated': {
       const session = state.sessions[event.payload.sessionId]
-      if (!session || event.payload.title === undefined) return state
+      if (!session) return state
       return {
         ...state,
         sessions: {
           ...state.sessions,
-          [session.sessionId]: { ...session, title: event.payload.title },
+          [session.sessionId]: {
+            ...session,
+            ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
+            ...(event.payload.status !== undefined ? { status: event.payload.status } : {}),
+            updatedAt: event.timestamp,
+          },
         },
       }
     }
@@ -485,10 +476,7 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
       interaction: item.interaction,
     })),
   }
-  return refreshSessionStatus(
-    { ...withThread, threads: { ...withThread.threads, [thread.threadId]: replaced } },
-    thread.sessionId,
-  )
+  return { ...withThread, threads: { ...withThread.threads, [thread.threadId]: replaced } }
 }
 
 /** `session.open` loads identities only; `session.history` hydrates the transcript. */

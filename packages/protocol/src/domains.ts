@@ -82,7 +82,7 @@ export const SessionSchema = z.object({
    */
   parentSessionId: EntityIdSchema.optional(),
 })
-/** Rolled-up lifecycle for the sidebar. Distinct from a turn's own state. */
+/** Server-owned lifecycle, persisted in sessions.status; see docs/session-status.md. */
 export const SessionStatusSchema = z.enum(['idle', 'running', 'waiting', 'error'])
 /**
  * Sidebar row. Deliberately excludes threads and messages so a list or

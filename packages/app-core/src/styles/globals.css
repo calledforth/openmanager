@@ -1023,6 +1023,10 @@ textarea,
   border-color: var(--basis-session-cube-ready);
 }
 
+.session-busy-ring--error .session-busy-dot {
+  border-color: var(--color-red-400, #f87171);
+}
+
 /* Soft stipple wash on the trailing ~10% of a needs/ready session row. */
 .session-row-dither {
   pointer-events: none;

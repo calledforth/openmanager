@@ -166,6 +166,134 @@ afterEach(async () => {
 })
 
 describe('event repository transactions', () => {
+  it('commits status broadcasts with lifecycle rows and stays waiting until every interaction resolves', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const statuses: unknown[] = []
+    const append = (event: Exclude<ProofEvent, { name: 'turn.notice' }>) => {
+      const records = repository.appendEvents(event.scope, [event])
+      for (const record of records) {
+        if (record.event.name !== 'session.updated') continue
+        expect(record.cursor.scope.type).toBe('environment')
+        statuses.push(ProofEventSchemas['session.updated'].parse(record.event).payload.status)
+      }
+      return records
+    }
+    append(started())
+    append(interactionRequested())
+    append(
+      ProofEventSchemas['interaction.requested'].parse({
+        ...interactionRequested(),
+        eventId: 'question-requested',
+        payload: {
+          turnId: 'turn-1',
+          interaction: {
+            kind: 'question',
+            interactionId: 'question-1',
+            questions: [{ questionId: 'q', prompt: 'Which?', options: [] }],
+          },
+        },
+      }),
+    )
+    append(
+      ProofEventSchemas['interaction.requested'].parse({
+        ...interactionRequested(),
+        eventId: 'permission-requested',
+        payload: {
+          turnId: 'turn-1',
+          interaction: {
+            kind: 'permission',
+            interactionId: 'permission-1',
+            toolCall: { toolCallId: 'tool-1', title: 'Read file' },
+            options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+          },
+        },
+      }),
+    )
+    append(interactionResolved())
+    expect(
+      database.prepare('SELECT status FROM sessions WHERE session_id = ?').get('session-1'),
+    ).toEqual({ status: 'waiting' })
+    for (const kind of ['question', 'permission'] as const) {
+      append(
+        ProofEventSchemas['interaction.resolved'].parse({
+          ...interactionResolved(),
+          eventId: `${kind}-resolved`,
+          payload: {
+            turnId: 'turn-1',
+            response: {
+              kind,
+              interactionId: `${kind}-1`,
+              outcome: { outcome: 'cancelled' },
+            },
+          },
+        }),
+      )
+    }
+    expect(statuses).toEqual(['running', 'waiting', 'running'])
+    append(completed())
+    expect(statuses).toEqual(['running', 'waiting', 'running', 'idle'])
+    expect(
+      database.prepare('SELECT status FROM sessions WHERE session_id = ?').get('session-1'),
+    ).toEqual({ status: 'idle' })
+    // Retried events return both original cursors and do not duplicate broadcasts.
+    expect(append(completed()).map((record) => record.event.eventId)).toEqual([
+      'event-completed',
+      'event-completed:status',
+    ])
+    expect(
+      database
+        .prepare("SELECT count(*) AS n FROM event_log WHERE event_name = 'session.updated'")
+        .get(),
+    ).toEqual({ n: 4 })
+  })
+
+  it('retries a retained status broadcast even after its triggering thread event is pruned', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const original = repository.appendEvents(scope, [started()])
+    repository.appendEvents(scope, [delta('Hello', 'event-delta')])
+    const retention = createEventRetention(database, {
+      maxEventsPerScope: 1,
+      now: () => Date.parse('2026-09-10T10:00:03.000Z'),
+    })
+    expect(retention.prune().deleted).toBe(1)
+
+    expect(repository.appendEvents(scope, [started()])).toEqual(original)
+    expect(database.prepare('SELECT count(*) AS n FROM event_log').get()).toEqual({ n: 2 })
+    expect(database.prepare('SELECT status FROM sessions').get()).toEqual({ status: 'running' })
+  })
+
+  it.each(['turn.completed', 'turn.interrupted', 'turn.failed'] as const)(
+    '%s settles pending interactions and broadcasts the terminal status atomically',
+    async (name) => {
+      const { database } = await createDatabase()
+      const repository = createEventRepository(database)
+      repository.appendEvents(scope, [started(), interactionRequested()])
+      const terminal = ProofEventSchemas[name].parse({
+        ...completed(),
+        name,
+        payload: {
+          turnId: 'turn-1',
+          reason: 'provider_process_crashed',
+          message: 'Provider crashed',
+        },
+      })
+      const records = repository.finalizeTurn(scope, [terminal])
+      const status = name === 'turn.failed' ? 'error' : 'idle'
+      expect(records.at(-1)?.event).toMatchObject({
+        name: 'session.updated',
+        payload: { sessionId: 'session-1', status },
+      })
+      expect(
+        database.prepare('SELECT status FROM sessions WHERE session_id = ?').get('session-1'),
+      ).toEqual({ status })
+      expect(database.prepare('SELECT state FROM interactions').get()).toEqual({
+        state: 'cancelled',
+      })
+    },
+  )
+
   it('atomically appends a batch, advances its cursor, and projects complete message parts', async () => {
     const { database } = await createDatabase()
     const repository = createEventRepository(database, { epoch: 'epoch-1' })
@@ -176,18 +304,24 @@ describe('event repository transactions', () => {
       delta(' world', 'event-3'),
     ])
 
-    expect(records.map((record) => record.cursor.sequence)).toEqual([2, 3])
+    expect(
+      records
+        .filter((record) => record.cursor.scope.type === 'thread')
+        .map((record) => record.cursor.sequence),
+    ).toEqual([2, 3])
     expect(
       database.prepare('SELECT head_sequence, oldest_sequence FROM event_streams').get(),
     ).toEqual({
       head_sequence: 3,
       oldest_sequence: 1,
     })
-    expect(database.prepare('SELECT sequence FROM event_log ORDER BY sequence').all()).toEqual([
-      { sequence: 1 },
-      { sequence: 2 },
-      { sequence: 3 },
-    ])
+    expect(
+      database
+        .prepare(
+          `SELECT sequence FROM event_log WHERE event_name != 'session.updated' ORDER BY sequence`,
+        )
+        .all(),
+    ).toEqual([{ sequence: 1 }, { sequence: 2 }, { sequence: 3 }])
     expect(
       database
         .prepare('SELECT content_json FROM message_parts WHERE message_id = ?')
@@ -204,7 +338,11 @@ describe('event repository transactions', () => {
 
     const records = repository.finalizeTurn(scope, [delta('Done', 'event-delta'), completed()])
 
-    expect(records.map((record) => record.cursor.sequence)).toEqual([2, 3])
+    expect(
+      records
+        .filter((record) => record.cursor.scope.type === 'thread')
+        .map((record) => record.cursor.sequence),
+    ).toEqual([2, 3])
     expect(
       database.prepare('SELECT state, finished_at FROM turns WHERE turn_id = ?').get('turn-1'),
     ).toEqual({
@@ -243,6 +381,7 @@ describe('event repository transactions', () => {
     expect(
       restarted
         .appendEvents(scope, [started(), event, event, started()])
+        .filter((record) => record.cursor.scope.type === 'thread')
         .map((record) => record.cursor.sequence),
     ).toEqual([1, 2, 2, 1])
     expect(database.prepare('SELECT head_sequence FROM event_streams').get()).toEqual({
@@ -353,9 +492,9 @@ describe('event repository transactions', () => {
       ]),
     ).toThrow()
     expect(
-      database.prepare('SELECT count(*) AS count FROM sessions WHERE session_id = ?').get(
-        'session-foreign',
-      ),
+      database
+        .prepare('SELECT count(*) AS count FROM sessions WHERE session_id = ?')
+        .get('session-foreign'),
     ).toEqual({ count: 0 })
   })
 
@@ -601,9 +740,13 @@ describe('event repository transactions', () => {
     expect(recovered.prepare('SELECT head_sequence FROM event_streams').get()).toEqual({
       head_sequence: 1,
     })
-    expect(recovered.prepare('SELECT sequence FROM event_log ORDER BY sequence').all()).toEqual([
-      { sequence: 1 },
-    ])
+    expect(
+      recovered
+        .prepare(
+          `SELECT sequence FROM event_log WHERE event_name != 'session.updated' ORDER BY sequence`,
+        )
+        .all(),
+    ).toEqual([{ sequence: 1 }])
     expect(recovered.prepare('SELECT state FROM turns WHERE turn_id = ?').get('turn-1')).toEqual({
       state: 'interrupted',
     })
@@ -718,9 +861,13 @@ describe('durable server event boundary', () => {
     events.append(started())
     events.append(delta('Hello', 'first'))
     events.append(delta(' world', 'second'))
-    expect(publish).toHaveBeenCalledTimes(1)
+    expect(publish).toHaveBeenCalledTimes(2)
     events.append(completed())
-    expect(publish.mock.calls.map(([record]) => record.cursor.sequence)).toEqual([1, 2, 3])
+    expect(
+      publish.mock.calls
+        .filter(([record]) => record.cursor.scope.type === 'thread')
+        .map(([record]) => record.cursor.sequence),
+    ).toEqual([1, 2, 3])
     events.close()
     createEventRetention(database, { now: () => Date.parse('2027-01-01') }).prune()
     expect(database.prepare('SELECT count(*) AS count FROM event_log').get()).toEqual({ count: 0 })
@@ -843,7 +990,7 @@ describe('durable server event boundary', () => {
     for (let i = 0; i < 1024; i++) events.append(delta('x', `token-${i}`))
     expect(commits).toHaveBeenCalledTimes(17)
     expect(database.prepare('SELECT n FROM part_writes').get()).toEqual({ n: 17 })
-    expect(database.prepare('SELECT count(*) AS count FROM event_log').get()).toEqual({ count: 17 })
+    expect(database.prepare('SELECT count(*) AS count FROM event_log').get()).toEqual({ count: 18 })
     events.append(delta('!', 'sparse'))
     vi.advanceTimersByTime(99)
     expect(commits).toHaveBeenCalledTimes(17)
@@ -878,7 +1025,7 @@ describe('durable server event boundary', () => {
     expect(database.prepare('SELECT count(*) AS count FROM turns').get()).toEqual({ count: 0 })
     fail = false
     events.flush()
-    expect(publish).toHaveBeenCalledTimes(1)
+    expect(publish).toHaveBeenCalledTimes(2)
     expect(() =>
       events.append({ ...started(), name: 'turn.notice' } as unknown as ProofEvent),
     ).toThrow('transient')
