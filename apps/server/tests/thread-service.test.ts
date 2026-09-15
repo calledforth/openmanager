@@ -1034,7 +1034,10 @@ describe('sends deduplicated by command id', () => {
     providerId: 'opencode',
   }
 
-  function setup(options: Parameters<typeof createThreadService>[5] = {}) {
+  function setup(
+    options: Parameters<typeof createThreadService>[5] = {},
+    resolve: WorkspaceRuntimeResolver = registered,
+  ) {
     const runtime = {
       ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-1', state: 'created' }),
       prompt: vi.fn().mockReturnValue(new Promise(() => undefined)),
@@ -1046,7 +1049,7 @@ describe('sends deduplicated by command id', () => {
       { rejection: () => undefined },
       (event) => events.push(event),
       undefined,
-      registered,
+      (workspaceId, context) => resolve(workspaceId, context),
       options,
     )
     service.setEnvironmentId(input.environmentId)
@@ -1091,6 +1094,26 @@ describe('sends deduplicated by command id', () => {
     })
   })
 
+  it('refuses to replay a send whose workspace the caller cannot reach', async () => {
+    let reachable = true
+    const { send, runtime } = setup({}, (workspaceId) =>
+      reachable ? registered(workspaceId) : undefined,
+    )
+    const first = ProofResponseSchemas['turn.send'].parse(send('cmd-1')).payload
+    await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(1))
+
+    reachable = false
+    // The stored turn carries the prompt, so the access check has to come
+    // before the replay rather than after it.
+    expect(send('cmd-1', 'hello', 'send-2')).toMatchObject({
+      type: 'error',
+      error: { code: 'not_found' },
+    })
+    expect(JSON.stringify(send('cmd-1', 'hello', 'send-3'))).not.toContain(
+      first.userMessage.messageId,
+    )
+  })
+
   it('mints a command id for a client that sends none', async () => {
     const { send } = setup()
     const started = ProofResponseSchemas['turn.send'].parse(send(undefined)).payload
@@ -1108,13 +1131,13 @@ describe('sends deduplicated by command id', () => {
       prompt: vi.fn().mockReturnValue(new Promise(() => undefined)),
       cancel: vi.fn(),
     }
-    const build = () => {
+    const build = (resolve: WorkspaceRuntimeResolver = registered) => {
       const service = createThreadService(
         runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
         { rejection: () => undefined },
         (event) => events.append(event),
         undefined,
-        registered,
+        resolve,
         { database, flush: events.flush, appendAtomic: (batch) => events.appendAtomic(batch) },
       )
       service.setEnvironmentId(input.environmentId)
@@ -1150,6 +1173,13 @@ describe('sends deduplicated by command id', () => {
     const replayed = ProofResponseSchemas['turn.send'].parse(send(restarted, 'send-2')).payload
     expect(replayed).toEqual(first)
     expect(runtime.prompt).toHaveBeenCalledTimes(1)
+
+    // Same retry, but the restarted service cannot reach the workspace: the
+    // durable lookup must be refused before it reads the prompt back.
+    const denied = build(() => undefined)
+    const refused = send(denied, 'send-3')
+    expect(refused).toMatchObject({ type: 'error', error: { code: 'not_found' } })
+    expect(JSON.stringify(refused)).not.toContain(first.userMessage.messageId)
 
     events.flush()
     expect(database.prepare('SELECT count(*) AS count FROM turns').get()).toEqual({ count: 1 })

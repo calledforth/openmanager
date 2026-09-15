@@ -224,6 +224,13 @@ export function createThreadService(
     return findTurnByCommandId(options.database, { sessionId, threadId, commandId })
   }
 
+  /** The workspace of a session whose thread is no longer in memory. */
+  const persistedWorkspaceId = (sessionId: string) => {
+    if (!options.database) return undefined
+    options.flush?.()
+    return getSessionSummary(options.database, sessionId)?.workspaceId
+  }
+
   const persistCreatedThread = (session: Session, thread: Thread) => {
     const timestamp = new Date().toISOString()
     const created = ProofEventSchemas['session.created'].parse({
@@ -623,6 +630,20 @@ export function createThreadService(
         const threadRecord = threads.get(input.threadId)
         const record =
           threadRecord?.session.sessionId === input.sessionId ? threadRecord : undefined
+        // Access is settled before anything is answered, a replay included: a
+        // caller who cannot reach the workspace must not learn what was sent
+        // to it. A thread no longer in memory names its workspace from the log.
+        const workspaceId = record?.session.workspaceId ?? persistedWorkspaceId(input.sessionId)
+        if (workspaceId === undefined) {
+          return errorResult(command.requestId, 'not_found', 'Thread not found.')
+        }
+        if (!resolveWorkspace(workspaceId, context)) {
+          return errorResult(
+            command.requestId,
+            'not_found',
+            'The session folder is unavailable. Restore the original folder path or its permissions, then reopen the session.',
+          )
+        }
         // A live thread has served every send since this process started, so
         // its own map answers without touching the log. Only a thread that is
         // no longer in memory needs the durable lookup, which is exactly the
@@ -635,13 +656,6 @@ export function createThreadService(
         if (replayed) return turnSendResult(command.requestId, replayed)
         if (!record) {
           return errorResult(command.requestId, 'not_found', 'Thread not found.')
-        }
-        if (!resolveWorkspace(record.session.workspaceId, context)) {
-          return errorResult(
-            command.requestId,
-            'not_found',
-            'The session folder is unavailable. Restore the original folder path or its permissions, then reopen the session.',
-          )
         }
         const providerRejection = rejectProvider(command.requestId, record.providerId)
         if (providerRejection) return providerRejection
