@@ -616,7 +616,9 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
         const current = targetRef.current
         if (!current) return
         beginSessionTurn()
-        await commands.sendTurn({ ...current, text })
+        // A rejected send keeps its own row on screen with the reason and a
+        // retry, so it is neither an error banner nor a composer rollback.
+        await commands.sendTurn({ ...current, text }).catch(() => failTurn())
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         failTurn(message)
@@ -625,6 +627,25 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       }
     },
     [beginDraftTurn, beginSessionTurn, commands, failTurn, isSessionDraftOpen, startDraftSession],
+  )
+
+  const retrySend = useCallback(
+    async (commandId: string) => {
+      const current = targetRef.current
+      if (!current) return
+      const pending = client
+        .getState()
+        .threads[current.threadId]?.outbox.find((entry) => entry.commandId === commandId)
+      if (!pending) return
+      setError(null)
+      beginSessionTurn()
+      // The same id: the environment either starts the turn or answers with
+      // the one this send already started.
+      await commands
+        .sendTurn({ ...current, text: pending.text, commandId })
+        .catch(() => failTurn())
+    },
+    [beginSessionTurn, client, commands, failTurn],
   )
 
   const respond = useCallback(
@@ -670,6 +691,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       error,
       acknowledgeOptimisticMessage: () => undefined,
       sendMessage,
+      retrySend,
       abortSession: async () => {
         const current = targetRef.current
         if (!current || !activeTurn) return
@@ -711,6 +733,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       findInteraction,
       projection.messages,
       respond,
+      retrySend,
       sendMessage,
       session.activeSessionId,
       stores,

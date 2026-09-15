@@ -327,6 +327,28 @@ describe('the shared application over the environment client', () => {
     expect(client.getState().threads[THREAD.threadId]?.messages).toHaveLength(3)
   })
 
+  it('keeps a refused prompt on screen with its reason and retries it under one id', async () => {
+    const client = createMockEnvironmentClient({
+      seed: { ...SEEDED_HISTORY, activeSessionId: SESSION.sessionId },
+      capabilities: ['listWorkspaces', 'listSessions', 'openSession', 'createSession'],
+    })
+    await render(<App client={client} />)
+    await type('echo me')
+    await act(() => button('Send')!.click())
+    await settle(client)
+    expect(occurrences('echo me')).toBe(1)
+    expect(container.textContent).toContain('Not sent: This environment does not support sendTurn.')
+
+    await act(() => buttonWithText('Try again')!.click())
+    await settle(client)
+    const sends = client.calls.filter((call) => call.command === 'sendTurn')
+    expect(sends).toHaveLength(2)
+    expect(sends[1]!.input).toEqual(sends[0]!.input)
+    // One row, one echo: the retry reused it instead of adding a second.
+    expect(occurrences('echo me')).toBe(1)
+    expect(client.getState().threads[THREAD.threadId]?.outbox).toHaveLength(1)
+  })
+
   it('appends streamed tokens onto one assistant message', async () => {
     const client = createMockEnvironmentClient({
       seed: { ...SEEDED_HISTORY, activeSessionId: SESSION.sessionId },

@@ -12,6 +12,7 @@ import {
   PageLimitSchema,
   ThreadSchema,
   TurnSchema,
+  TurnStartSchema,
   MessageSchema,
   SubscriptionScopeSchema,
   InteractionResponseSchema,
@@ -71,7 +72,14 @@ export const ProofCommandSchemas = {
       limit: PageLimitSchema.optional(),
     }),
   ),
-  'turn.send': command('turn.send', ThreadTargetSchema.extend({ text: TurnTextSchema })),
+  // `commandId` makes a send retryable: the environment answers a repeat of an
+  // id it has already run with that same turn instead of starting a second one.
+  // Optional on the wire so an older client still sends; the environment mints
+  // one for itself in that case.
+  'turn.send': command(
+    'turn.send',
+    ThreadTargetSchema.extend({ text: TurnTextSchema, commandId: EntityIdSchema.optional() }),
+  ),
   'turn.interrupt': command(
     'turn.interrupt',
     ThreadTargetSchema.extend({ turnId: EntityIdSchema }),
@@ -127,7 +135,7 @@ export const ProofResponseSchemas = {
       session: SessionSchema,
       thread: ThreadSchema,
       // Absent on older environments and when no first message was requested.
-      firstTurn: z.object({ turn: TurnSchema, userMessage: MessageSchema }).optional(),
+      firstTurn: TurnStartSchema.optional(),
     }),
   ),
   'session.open': response(
@@ -144,7 +152,7 @@ export const ProofResponseSchemas = {
       nextCursor: HistoryCursorSchema.nullable(),
     }),
   ),
-  'turn.send': response(z.object({ turn: TurnSchema, userMessage: MessageSchema })),
+  'turn.send': response(TurnStartSchema),
   'turn.interrupt': response(z.object({ turnId: EntityIdSchema })),
   'interaction.respond': response(z.null()),
   'subscription.subscribe': response(

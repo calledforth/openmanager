@@ -192,6 +192,22 @@ export function projectThread(
     sequence += projection.entries.length
   }
 
+  // Sends the environment has not confirmed yet close the timeline: they are
+  // always newer than every turn it told us about.
+  for (const entry of thread.outbox) {
+    messages.push({
+      externalId: `send:${entry.commandId}`,
+      role: 'user',
+      isFinal: true,
+      sequenceNum: sequence,
+      optimisticContent: entry.text,
+      isOptimistic: true,
+      commandId: entry.commandId,
+      ...(entry.error ? { sendError: entry.error } : {}),
+    })
+    sequence += 1
+  }
+
   return {
     thread,
     messages: shallowEqualArray(previous.messages, messages) ? previous.messages : messages,

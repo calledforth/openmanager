@@ -9,8 +9,7 @@ import {
   WorkspaceSchema,
   SessionSchema,
   ThreadSchema,
-  TurnSchema,
-  MessageSchema,
+  TurnStartSchema,
   ContentBlockSchema,
   InteractionSchema,
   InteractionResponseSchema,
@@ -65,11 +64,7 @@ export const ProofEventSchemas = {
     z.object({ sessionId: EntityIdSchema }),
   ),
   'thread.created': event('thread.created', SessionScopeSchema, z.object({ thread: ThreadSchema })),
-  'turn.started': event(
-    'turn.started',
-    ThreadScopeSchema,
-    z.object({ turn: TurnSchema, userMessage: MessageSchema }),
-  ),
+  'turn.started': event('turn.started', ThreadScopeSchema, TurnStartSchema),
   'turn.completed': event(
     'turn.completed',
     ThreadScopeSchema,

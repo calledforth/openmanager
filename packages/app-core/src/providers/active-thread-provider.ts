@@ -16,6 +16,8 @@ export interface UIMessage {
   isOptimistic?: boolean
   /** Why the host could not send this optimistic message, once it knows. */
   sendError?: string
+  /** The id of the send this row echoes; retrying with it reuses the row. */
+  commandId?: string
 }
 
 /** The persisted record of the thread on screen, plus whether this client drives it. */
@@ -119,6 +121,9 @@ export interface ActiveThreadStateValue {
   acknowledgeOptimisticMessage: (externalId: string) => void
   /** Send a prompt to the active session, or start a session from the open draft. */
   sendMessage: (content: string, attachments?: UploadedImageAttachment[]) => Promise<void>
+  /** Send a failed message again under its own id. Hosts without a retryable
+   * send leave this out and the failed row shows the reason only. */
+  retrySend?: (commandId: string) => Promise<void>
   abortSession: (externalId: string) => Promise<void>
   resolvePermission: (
     sessionExternalId: string,

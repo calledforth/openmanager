@@ -7,6 +7,9 @@ import {
   applySessionHistory,
   applySessionOpen,
   applySnapshot,
+  applyTurnSendFailed,
+  applyTurnSending,
+  applyTurnStarted,
   createInitialState,
   selectActiveThread,
   selectActiveTurn,
@@ -222,6 +225,64 @@ describe('applyEvent', () => {
     )
     expect(state.activeSessionId).toBeNull()
     expect(state.threads[THREAD.threadId]).toBeUndefined()
+  })
+})
+
+describe('optimistic sends', () => {
+  const sending = (commandId: string, text = 'hello') =>
+    applyTurnSending(seeded(), THREAD, { commandId, text })
+
+  it('echoes a pending message and confirms it from the response', () => {
+    const state = sending('cmd-1')
+    expect(state.threads[THREAD.threadId]?.outbox).toEqual([
+      { commandId: 'cmd-1', text: 'hello', status: 'pending' },
+    ])
+    const confirmed = applyTurnStarted(state, THREAD, {
+      ...turnStarted('turn-1', 'hello', 'cmd-1').payload,
+    })
+    expect(confirmed.threads[THREAD.threadId]?.outbox).toEqual([])
+    expect(confirmed.threads[THREAD.threadId]?.messages).toHaveLength(1)
+  })
+
+  it('confirms the echo from the event and applies a repeat of it once', () => {
+    const started = turnStarted('turn-1', 'hello', 'cmd-1')
+    const confirmed = applyEvent(sending('cmd-1'), started)
+    expect(confirmed.threads[THREAD.threadId]?.outbox).toEqual([])
+    const again = applyEvent(confirmed, started)
+    expect(again.threads[THREAD.threadId]?.messages).toHaveLength(1)
+    expect(again.threads[THREAD.threadId]?.turns).toHaveLength(1)
+  })
+
+  it('keeps a failed send on screen and reuses its row when it is retried', () => {
+    const failed = applyTurnSendFailed(sending('cmd-1'), THREAD, 'cmd-1', 'Provider is down')
+    expect(failed.threads[THREAD.threadId]?.outbox).toEqual([
+      { commandId: 'cmd-1', text: 'hello', status: 'failed', error: 'Provider is down' },
+    ])
+    const retried = applyTurnSending(failed, THREAD, { commandId: 'cmd-1', text: 'hello' })
+    expect(retried.threads[THREAD.threadId]?.outbox).toEqual([
+      { commandId: 'cmd-1', text: 'hello', status: 'pending' },
+    ])
+  })
+
+  it('ignores a failure for a send that is already confirmed', () => {
+    const confirmed = applyEvent(sending('cmd-1'), turnStarted('turn-1', 'hello', 'cmd-1'))
+    expect(applyTurnSendFailed(confirmed, THREAD, 'cmd-1', 'too late')).toBe(confirmed)
+  })
+
+  it('keeps unconfirmed sends when a snapshot replaces the thread', () => {
+    const state = applyTurnSendFailed(sending('cmd-1'), THREAD, 'cmd-1', 'Provider is down')
+    const replaced = applySnapshot(state, {
+      cursor: { scope: threadScope, epoch: 'epoch', sequence: 1 },
+      state: {
+        thread: THREAD,
+        turns: [],
+        messages: [],
+        reasoning: [],
+        tools: [],
+        interactions: [],
+      },
+    })
+    expect(replaced.threads[THREAD.threadId]?.outbox).toHaveLength(1)
   })
 })
 

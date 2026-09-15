@@ -51,8 +51,8 @@ export function createEventProjector(
     ),
     insertTurn: database.prepare(
       `INSERT INTO turns (
-         turn_id, thread_id, workspace_id, state, started_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?)`,
+         turn_id, thread_id, workspace_id, state, command_id, started_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ),
     selectTurnWorkspace: database.prepare(
       'SELECT workspace_id FROM turns WHERE turn_id = ? AND thread_id = ?',
@@ -164,6 +164,8 @@ export function createEventProjector(
       event.scope.threadId,
       thread.workspace_id,
       event.payload.turn.state,
+      // Unique per thread, so a replayed send cannot project a second turn.
+      event.payload.commandId ?? null,
       at,
       at,
     )

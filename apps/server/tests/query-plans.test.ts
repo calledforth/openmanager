@@ -21,8 +21,11 @@ import {
   SESSION_LIST_FOR_ENVIRONMENT_SQL,
   SESSION_LIST_FOR_WORKSPACE_SQL,
   STREAM_BOUNDS_SQL,
+  THREAD_IN_SESSION_SQL,
   THREADS_FOR_SESSION_SQL,
+  TURN_FOR_COMMAND_ID_SQL,
   TURNS_FOR_THREAD_SQL,
+  USER_MESSAGE_FOR_TURN_SQL,
 } from '../src/db/queries.js'
 
 const directories: string[] = []
@@ -61,6 +64,13 @@ describe('bounded query plans', () => {
     expect(plan(database, SESSION_LIST_FOR_ENVIRONMENT_SQL)).toEqual([
       'SEARCH sessions USING INDEX sessions_updated_at_idx ((updated_at,session_id)<(?,?))',
     ])
+  })
+
+  it('replays a deduplicated send from indexed turns and messages', async () => {
+    const database = await createDatabase()
+    expectIndexed(plan(database, THREAD_IN_SESSION_SQL), 'sqlite_autoindex_threads_')
+    expectIndexed(plan(database, TURN_FOR_COMMAND_ID_SQL), 'turns_thread_command_id_idx')
+    expectIndexed(plan(database, USER_MESSAGE_FOR_TURN_SQL), 'messages_turn_id_idx')
   })
 
   it('lists sessions for a workspace as one range of the composite index', async () => {

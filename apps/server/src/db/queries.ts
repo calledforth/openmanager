@@ -27,6 +27,12 @@ export const SESSION_LIST_FOR_WORKSPACE_SQL = `
   ORDER BY updated_at DESC, session_id DESC
   LIMIT ?`
 
+/** One thread, only if it belongs to the named session. */
+export const THREAD_IN_SESSION_SQL = `
+  SELECT thread_id, session_id
+  FROM threads
+  WHERE thread_id = ? AND session_id = ?`
+
 /** Threads of a session in creation order; the first step of session history. */
 export const THREADS_FOR_SESSION_SQL = `
   SELECT thread_id, session_id, workspace_id, provider_thread_id, created_at, updated_at
@@ -63,6 +69,19 @@ export const INTERACTIONS_FOR_TURN_SQL = `
   SELECT interaction_id, turn_id, kind, state, request_json, response_json, expires_at
   FROM interactions
   WHERE turn_id = ? AND state = 'pending'`
+
+/** Retry dedupe: the turn a command id already started in a thread, if any. */
+export const TURN_FOR_COMMAND_ID_SQL = `
+  SELECT turn_id, thread_id, state
+  FROM turns
+  WHERE thread_id = ? AND command_id = ?`
+
+/** The prompt a turn started with, replayed when its send is retried. */
+export const USER_MESSAGE_FOR_TURN_SQL = `
+  SELECT message_id, thread_id, turn_id, role, ordinal
+  FROM messages
+  WHERE turn_id = ? AND role = 'user'
+  LIMIT 1`
 
 /** Replay: durable events for a scope strictly after a cursor sequence, bounded. */
 export const EVENTS_AFTER_CURSOR_SQL = `

@@ -8,11 +8,13 @@ import type {
   SessionSummary as ProtocolSessionSummary,
   Thread,
   Turn,
+  TurnStart,
   Workspace,
 } from '@openmanager/protocol'
 import type {
   ConnectionState,
   EnvironmentState,
+  OutboxEntry,
   PendingInteraction,
   SessionStatus,
   SessionSummary,
@@ -55,6 +57,7 @@ export function createThreadState(
     interactions: [],
     failures: [],
     notices: [],
+    outbox: [],
     hydration,
   }
 }
@@ -309,15 +312,7 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
 
   switch (event.name) {
     case 'turn.started':
-      return patchThread(state, thread, (current) => ({
-        ...current,
-        turns: upsertById(current.turns, (turn) => turn.turnId, event.payload.turn),
-        messages: upsertById(
-          current.messages,
-          (message) => message.messageId,
-          event.payload.userMessage,
-        ),
-      }))
+      return patchThread(state, thread, (current) => confirmTurnStart(current, event.payload))
     case 'turn.completed':
     case 'turn.interrupted':
     case 'turn.failed': {
@@ -452,6 +447,9 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
   const withThread = ensureThread(state, thread)
   const replaced: ThreadState = {
     ...createThreadState(thread, 'ready'),
+    // A snapshot describes what the environment has; a send it has not
+    // answered yet is still the client's to show.
+    outbox: withThread.threads[thread.threadId]?.outbox ?? [],
     turns: threadSnapshot.turns,
     messages: threadSnapshot.messages,
     reasoning: threadSnapshot.reasoning,
@@ -529,17 +527,69 @@ export function applySessionHistory(
   })
 }
 
+/**
+ * The confirmed start of a turn: the real turn and user message replace the
+ * echo its command id created. Keyed by ID throughout, so the `turn.send`
+ * response and the `turn.started` event may arrive in either order and only
+ * the first of them changes anything.
+ */
+function confirmTurnStart(current: ThreadState, payload: TurnStart): ThreadState {
+  const outbox = payload.commandId
+    ? current.outbox.filter((entry) => entry.commandId !== payload.commandId)
+    : current.outbox
+  return {
+    ...current,
+    turns: upsertById(current.turns, (turn) => turn.turnId, payload.turn),
+    messages: upsertById(current.messages, (message) => message.messageId, payload.userMessage),
+    outbox: outbox.length === current.outbox.length ? current.outbox : outbox,
+  }
+}
+
 /** Same shape as `turn.started`; used to fold a `turn.send` response in before the event arrives. */
 export function applyTurnStarted(
   state: EnvironmentState,
   thread: Thread,
-  payload: { turn: Turn; userMessage: Message },
+  payload: TurnStart,
 ): EnvironmentState {
+  return patchThread(state, thread, (current) => confirmTurnStart(current, payload))
+}
+
+/**
+ * Echo a send locally before the environment has answered. A repeat of a
+ * command id — a retry — reuses its row and clears the previous failure
+ * instead of adding a second one.
+ */
+export function applyTurnSending(
+  state: EnvironmentState,
+  thread: Thread,
+  send: { commandId: string; text: string },
+): EnvironmentState {
+  const entry: OutboxEntry = { commandId: send.commandId, text: send.text, status: 'pending' }
   return patchThread(state, thread, (current) => ({
     ...current,
-    turns: upsertById(current.turns, (turn) => turn.turnId, payload.turn),
-    messages: upsertById(current.messages, (message) => message.messageId, payload.userMessage),
+    outbox: upsertById(current.outbox, (item) => item.commandId, entry),
   }))
+}
+
+/** Mark an echoed send failed, keeping it on screen with the reason. */
+export function applyTurnSendFailed(
+  state: EnvironmentState,
+  thread: Thread,
+  commandId: string,
+  message: string,
+): EnvironmentState {
+  return patchThread(state, thread, (current) => {
+    const entry = current.outbox.find((item) => item.commandId === commandId)
+    if (!entry) return current
+    return {
+      ...current,
+      outbox: upsertById(current.outbox, (item) => item.commandId, {
+        ...entry,
+        status: 'failed',
+        error: message,
+      }),
+    }
+  })
 }
 
 /**

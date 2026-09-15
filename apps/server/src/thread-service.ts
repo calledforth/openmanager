@@ -17,6 +17,7 @@ import {
   type Thread,
   type TurnFailureReason,
   type Turn,
+  type TurnStart,
 } from '@openmanager/protocol/node'
 import {
   projectAgentEvent,
@@ -27,6 +28,7 @@ import {
   type RuntimeSessionArgs,
 } from '@agentpack/runtime/node'
 import {
+  findTurnByCommandId,
   getSessionSummary,
   listSessionHistory,
   listSessionSummaries,
@@ -74,6 +76,8 @@ type ThreadRecord = {
   runtimeSession: Promise<string>
   turns: Turn[]
   messages: Message[]
+  /** What each command id already started here, so a retry never runs twice. */
+  commandTurns: Map<string, TurnStart>
   status: SessionStatus
   updatedAt: number
   activeTurn?: ActiveTurn
@@ -84,6 +88,9 @@ const errorResult = (requestId: string, code: ErrorCode, message: string) => ({
   requestId,
   error: { code, message },
 })
+
+const turnSendResult = (requestId: string, started: TurnStart) =>
+  ProofResponseSchemas['turn.send'].parse({ type: 'response', requestId, payload: started })
 
 /**
  * Own the host identities and runtime routes used by the proof-slice commands.
@@ -204,6 +211,17 @@ export function createThreadService(
         },
       }),
     )
+  }
+
+  /**
+   * The turn a command id already started, read from the log. Pending events
+   * are flushed first so a retry that arrives before the batch was written
+   * still finds its turn.
+   */
+  const findPersistedTurn = (sessionId: string, threadId: string, commandId: string) => {
+    if (!options.database) return undefined
+    options.flush?.()
+    return findTurnByCommandId(options.database, { sessionId, threadId, commandId })
   }
 
   const persistCreatedThread = (session: Session, thread: Thread) => {
@@ -461,6 +479,7 @@ export function createThreadService(
           runtimeSession,
           turns: [],
           messages: [],
+          commandTurns: new Map(),
           status: 'idle',
           updatedAt: Date.now(),
         }
@@ -597,8 +616,24 @@ export function createThreadService(
         if (!parsed.success) {
           return errorResult(command.requestId, 'validation', 'Invalid prompt request.')
         }
-        const record = threads.get(parsed.data.payload.threadId)
-        if (!record || record.session.sessionId !== parsed.data.payload.sessionId) {
+        const input = parsed.data.payload
+        // A client's own id makes the send retryable; a client that sends none
+        // gets a minted one so every turn is still recorded with exactly one.
+        const commandId = input.commandId ?? randomUUID()
+        const threadRecord = threads.get(input.threadId)
+        const record =
+          threadRecord?.session.sessionId === input.sessionId ? threadRecord : undefined
+        // A live thread has served every send since this process started, so
+        // its own map answers without touching the log. Only a thread that is
+        // no longer in memory needs the durable lookup, which is exactly the
+        // retry that crosses a restart.
+        const replayed = input.commandId
+          ? record
+            ? record.commandTurns.get(input.commandId)
+            : findPersistedTurn(input.sessionId, input.threadId, input.commandId)
+          : undefined
+        if (replayed) return turnSendResult(command.requestId, replayed)
+        if (!record) {
           return errorResult(command.requestId, 'not_found', 'Thread not found.')
         }
         if (!resolveWorkspace(record.session.workspaceId, context)) {
@@ -623,8 +658,9 @@ export function createThreadService(
           threadId: record.thread.threadId,
           turnId: turn.turnId,
           role: 'user',
-          content: [{ type: 'text', text: parsed.data.payload.text }],
+          content: [{ type: 'text', text: input.text }],
         }
+        const started: TurnStart = { turn, userMessage, commandId }
         if (options.database) {
           try {
             appendEvent(
@@ -634,7 +670,7 @@ export function createThreadService(
                 eventId: randomUUID(),
                 timestamp: new Date().toISOString(),
                 scope: threadScope(record),
-                payload: { turn, userMessage },
+                payload: started,
               }),
             )
           } catch (error) {
@@ -648,6 +684,7 @@ export function createThreadService(
         }
         record.turns.push(turn)
         record.messages.push(userMessage)
+        record.commandTurns.set(commandId, started)
         touch(record, 'running')
         const active: ActiveTurn = {
           turn,
@@ -662,8 +699,8 @@ export function createThreadService(
             runtime.prompt({
               ...route(record, sessionId),
               prompt: {
-                text: parsed.data.payload.text,
-                blocks: [{ type: 'text', text: parsed.data.payload.text }],
+                text: input.text,
+                blocks: [{ type: 'text', text: input.text }],
               },
               userMessageId: userMessage.messageId,
             }),
@@ -692,11 +729,7 @@ export function createThreadService(
               touch(record, 'error')
             }
           })
-        return ProofResponseSchemas['turn.send'].parse({
-          type: 'response',
-          requestId: command.requestId,
-          payload: { turn, userMessage },
-        })
+        return turnSendResult(command.requestId, started)
       }
 
       if (command.name === 'turn.interrupt') {

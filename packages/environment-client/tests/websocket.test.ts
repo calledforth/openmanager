@@ -369,12 +369,95 @@ describe('websocket environment client', () => {
     await flush()
     await flush()
     await opened.catch(() => undefined)
-    const sending = client.commands.sendTurn({ ...THREAD, text: 'go' })
-    expect(socket.last('turn.send').payload).toEqual({ ...THREAD, text: 'go' })
-    socket.respond('turn.send', turnStarted('turn-9', 'go').payload)
+    const sending = client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' })
+    expect(socket.last('turn.send').payload).toEqual({
+      ...THREAD,
+      text: 'go',
+      commandId: 'cmd-1',
+    })
+    socket.respond('turn.send', turnStarted('turn-9', 'go', 'cmd-1').payload)
     const result = await sending
     expect(result.turn.turnId).toBe('turn-9')
     expect(selectActiveThread(client.getState())?.turns[0]?.state).toBe('running')
+  })
+
+  it('echoes the message before the environment answers and mints a command id', async () => {
+    const { client, socket } = await connected()
+    const opened = client.commands.openSession(SESSION.sessionId)
+    await answerOpen(socket)
+    await flush()
+    await flush()
+    await opened.catch(() => undefined)
+    const sending = client.commands.sendTurn({ ...THREAD, text: 'go' })
+    const sent = socket.last('turn.send').payload as { commandId: string }
+    expect(sent.commandId).toEqual(expect.any(String))
+    expect(selectActiveThread(client.getState())?.outbox).toEqual([
+      { commandId: sent.commandId, text: 'go', status: 'pending' },
+    ])
+    socket.respond('turn.send', turnStarted('turn-9', 'go', sent.commandId).payload)
+    await sending
+    expect(selectActiveThread(client.getState())?.outbox).toEqual([])
+    expect(selectActiveThread(client.getState())?.messages).toHaveLength(1)
+  })
+
+  it('confirms the echo from an environment that does not return the command id', async () => {
+    const { client, socket } = await connected()
+    const opened = client.commands.openSession(SESSION.sessionId)
+    await answerOpen(socket)
+    await flush()
+    await flush()
+    await opened.catch(() => undefined)
+    const sending = client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' })
+    socket.respond('turn.send', turnStarted('turn-9', 'go').payload)
+    await sending
+    expect(selectActiveThread(client.getState())?.outbox).toEqual([])
+  })
+
+  it('keeps one row when the event arrives before the response, and after it', async () => {
+    const { client, socket } = await connected()
+    const opened = client.commands.openSession(SESSION.sessionId)
+    await answerOpen(socket)
+    await flush()
+    await flush()
+    await opened.catch(() => undefined)
+    const sending = client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' })
+    socket.receive(turnStarted('turn-9', 'go', 'cmd-1'))
+    expect(selectActiveThread(client.getState())?.outbox).toEqual([])
+    expect(selectActiveThread(client.getState())?.messages).toHaveLength(1)
+    socket.respond('turn.send', turnStarted('turn-9', 'go', 'cmd-1').payload)
+    await sending
+    socket.receive(turnStarted('turn-9', 'go', 'cmd-1'))
+    expect(selectActiveThread(client.getState())?.messages).toHaveLength(1)
+    expect(selectActiveThread(client.getState())?.turns).toHaveLength(1)
+  })
+
+  it('marks a rejected send failed and reuses its row on retry', async () => {
+    const { client, socket } = await connected()
+    const opened = client.commands.openSession(SESSION.sessionId)
+    await answerOpen(socket)
+    await flush()
+    await flush()
+    await opened.catch(() => undefined)
+    const sending = client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' })
+    const rejected = expect(sending).rejects.toThrow('Provider is down')
+    socket.receive({
+      type: 'error',
+      requestId: socket.last('turn.send').requestId,
+      error: { code: 'unavailable', message: 'Provider is down' },
+    })
+    await rejected
+    expect(selectActiveThread(client.getState())?.outbox).toEqual([
+      { commandId: 'cmd-1', text: 'go', status: 'failed', error: 'Provider is down' },
+    ])
+
+    const retry = client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' })
+    expect(selectActiveThread(client.getState())?.outbox).toEqual([
+      { commandId: 'cmd-1', text: 'go', status: 'pending' },
+    ])
+    socket.respond('turn.send', turnStarted('turn-9', 'go', 'cmd-1').payload)
+    await retry
+    expect(selectActiveThread(client.getState())?.outbox).toEqual([])
+    expect(selectActiveThread(client.getState())?.messages).toHaveLength(1)
   })
 
   it('resolves a workspace icon by ID without touching the store', async () => {

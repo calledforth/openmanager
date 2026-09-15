@@ -196,6 +196,33 @@ describe('mock environment client', () => {
     expect(selectSessionList(client.getState())[0]?.status).toBe('error')
   })
 
+  it('answers a retried command id with the same turn, even while it runs', async () => {
+    const client = createMockEnvironmentClient({ seed, respond: () => null })
+    const first = await client.commands.sendTurn({ ...THREAD, text: 'one', commandId: 'cmd-1' })
+    const retry = await client.commands.sendTurn({ ...THREAD, text: 'one', commandId: 'cmd-1' })
+    expect(retry).toEqual(first)
+    const thread = client.getState().threads[THREAD.threadId]!
+    expect(thread.turns).toHaveLength(1)
+    expect(thread.messages).toHaveLength(1)
+    expect(thread.outbox).toEqual([])
+  })
+
+  it('marks a refused send failed on its row and keeps the text', async () => {
+    const client = createMockEnvironmentClient({ seed, respond: () => null })
+    await client.commands.sendTurn({ ...THREAD, text: 'one' })
+    await expect(
+      client.commands.sendTurn({ ...THREAD, text: 'two', commandId: 'cmd-2' }),
+    ).rejects.toMatchObject({ code: 'conflict' })
+    expect(client.getState().threads[THREAD.threadId]?.outbox).toEqual([
+      {
+        commandId: 'cmd-2',
+        text: 'two',
+        status: 'failed',
+        error: 'A turn is already in progress.',
+      },
+    ])
+  })
+
   it('rejects a second turn while one is running', async () => {
     const client = createMockEnvironmentClient({ seed, respond: () => null })
     await client.commands.sendTurn({ ...THREAD, text: 'one' })

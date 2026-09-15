@@ -33,6 +33,8 @@ import {
   applySessionRemoved,
   applySessionTitle,
   applyThreadHydration,
+  applyTurnSendFailed,
+  applyTurnSending,
   applyTurnStarted,
   applyWorkspaceList,
   applyWorkspaceRemoved,
@@ -793,10 +795,22 @@ export function createWebSocketEnvironmentClient(
       store.update((state) => applySessionRemoved(state, sessionId))
     },
     async sendTurn(input) {
-      const payload = await request('turn.send', input)
+      const commandId = input.commandId ?? randomId()
       const thread: Thread = { threadId: input.threadId, sessionId: input.sessionId }
-      store.update((state) => applyTurnStarted(state, thread, payload))
-      return payload
+      // Echoed first, so the message is on screen before the round trip. The
+      // id makes every later signal about this send resolve the same row.
+      store.update((state) => applyTurnSending(state, thread, { commandId, text: input.text }))
+      try {
+        const payload = await request('turn.send', { ...input, commandId })
+        // An environment that predates the echoed id still confirms this row:
+        // we know which send the response answers.
+        store.update((state) => applyTurnStarted(state, thread, { ...payload, commandId }))
+        return payload
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        store.update((state) => applyTurnSendFailed(state, thread, commandId, message))
+        throw error
+      }
     },
     async interruptTurn(input) {
       await request('turn.interrupt', input)

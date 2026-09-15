@@ -27,6 +27,7 @@ type TimelineMessage = Pick<
   | 'optimisticJobId'
   | 'isOptimistic'
   | 'sendError'
+  | 'commandId'
 >
 
 /**
@@ -323,6 +324,7 @@ function MessageRow({
         optimisticAttachments={message.optimisticAttachments}
         isOptimistic={message.isOptimistic}
         sendError={message.sendError}
+        commandId={message.commandId}
         isDriven={isDriven}
         onStreamUpdate={onStreamUpdate}
         onReady={onReady}
@@ -340,11 +342,23 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
   optimisticAttachments?: TimelineMessage['optimisticAttachments']
   isOptimistic?: boolean
   sendError?: string
+  commandId?: string
   isDriven: boolean
   onStreamUpdate: () => void
   onReady?: (messageId: string) => void
   onPersistedContentReady?: (messageId: string) => void
 }) {
+  const { retrySend } = useActiveThreadState()
+  const commandId = props.commandId
+  const onRetry = useMemo(
+    () =>
+      commandId && retrySend
+        ? () => {
+            void retrySend(commandId)
+          }
+        : undefined,
+    [commandId, retrySend],
+  )
   const useRemoteStreaming = shouldUseRemoteStreaming(props.role, props.isFinal, props.isDriven)
   // A driven session takes its tokens from the host at zero latency, but that
   // copy starts empty on every reload. Hydrating restores the turn so far;
@@ -422,6 +436,7 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
         parts={parts}
         optimisticAttachments={props.optimisticAttachments}
         sendError={props.sendError}
+        onRetry={onRetry}
       />
     )
   }

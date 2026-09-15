@@ -43,7 +43,7 @@ export const event = <E extends ProofEvent>(
     ...partial,
   }) as E
 
-export const turnStarted = (turnId = 'turn-1', text = 'hello') =>
+export const turnStarted = (turnId = 'turn-1', text = 'hello', commandId?: string) =>
   event({
     name: 'turn.started',
     scope: threadScope,
@@ -56,6 +56,7 @@ export const turnStarted = (turnId = 'turn-1', text = 'hello') =>
         role: 'user',
         content: [{ type: 'text', text }],
       },
+      ...(commandId ? { commandId } : {}),
     },
   })
 
