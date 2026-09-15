@@ -127,14 +127,20 @@ describe('negative security tests', () => {
   it('rejects unauthenticated socket upgrades as auth, not as a missing route or crash', async () => {
     const host = await setup()
     const denied = await rejection(host.url)
-    expectClosedFor('unauthenticated WebSocket', {
-      status: denied.status,
-      code: denied.body.error?.code,
-    }, { status: 401, code: 'auth' })
+    expectClosedFor(
+      'unauthenticated WebSocket',
+      {
+        status: denied.status,
+        code: denied.body.error?.code,
+      },
+      { status: 401, code: 'auth' },
+    )
     expect(host.server.sockets.connectionCount).toBe(0)
 
     const events = host.server.audit.query({ type: 'auth.failed' })
-    expect(events, 'unauthenticated upgrade must write an auth.failed audit row').not.toHaveLength(0)
+    expect(events, 'unauthenticated upgrade must write an auth.failed audit row').not.toHaveLength(
+      0,
+    )
     expect(events[0]).toMatchObject({
       command: 'ws.upgrade',
       outcome: 'failed',
@@ -160,16 +166,22 @@ describe('negative security tests', () => {
     const closed = once(client.ws, 'close')
     expect(host.server.revokeClient(phone.client.clientId)).toBe(true)
     const [code, reason] = await closed
-    expect(code, 'revocation must close with 4401, not a generic 1006/1008').toBe(REVOKED_CLOSE_CODE)
+    expect(code, 'revocation must close with 4401, not a generic 1006/1008').toBe(
+      REVOKED_CLOSE_CODE,
+    )
     expect(String(reason)).toBe(REVOKED_CLOSE_REASON)
 
     const replay = await rejection(host.url, {
       headers: { authorization: `Bearer ${phone.credential}` },
     })
-    expectClosedFor('revoked credential reuse', {
-      status: replay.status,
-      code: replay.body.error?.code,
-    }, { status: 401, code: 'auth' })
+    expectClosedFor(
+      'revoked credential reuse',
+      {
+        status: replay.status,
+        code: replay.body.error?.code,
+      },
+      { status: 401, code: 'auth' },
+    )
 
     const revoked = host.server.audit.query({
       type: 'token.revoked',
@@ -178,9 +190,11 @@ describe('negative security tests', () => {
     expect(revoked).toMatchObject([
       { command: 'client.revoke', outcome: 'revoked', clientId: phone.client.clientId },
     ])
-    expect(host.server.audit.query({ type: 'auth.failed' }).some((event) => event.command === 'ws.upgrade')).toBe(
-      true,
-    )
+    expect(
+      host.server.audit
+        .query({ type: 'auth.failed' })
+        .some((event) => event.command === 'ws.upgrade'),
+    ).toBe(true)
     expect(containsSecret(host.server.audit.query())).toBe(false)
     expect(containsSecret(phone.credential) && containsSecret(host.stderr.join('\n'))).toBe(false)
   })
@@ -191,10 +205,14 @@ describe('negative security tests', () => {
       origin: 'https://attacker.example',
       headers: { authorization: `Bearer ${host.token}` },
     })
-    expectClosedFor('origin mismatch', {
-      status: denied.status,
-      code: denied.body.error?.code,
-    }, { status: 403, code: 'auth' })
+    expectClosedFor(
+      'origin mismatch',
+      {
+        status: denied.status,
+        code: denied.body.error?.code,
+      },
+      { status: 403, code: 'auth' },
+    )
     expect(denied.body.error).toMatchObject({ message: 'Origin is not allowed.' })
 
     const events = host.server.audit.query({ type: 'origin.rejected' })
@@ -274,6 +292,33 @@ describe('negative security tests', () => {
     ])
   })
 
+  it.each(['session.rename', 'session.delete'])(
+    'rejects %s for a read-only client',
+    async (name) => {
+      const host = await setup()
+      const watcher = host.server.clients.issue({
+        label: 'Watcher',
+        kind: 'paired',
+        capabilities: ['read'],
+      })
+      const client = await connect(host.url, watcher.credential)
+      client.command('protocol.handshake', {
+        protocolVersion: PROTOCOL_VERSION,
+        requiredCapabilities: [],
+      })
+      await client.next()
+      const requestId = client.command(name, {
+        sessionId: 's',
+        ...(name === 'session.rename' ? { title: 'Name' } : {}),
+      })
+      expect(await client.next()).toMatchObject({
+        type: 'error',
+        requestId,
+        error: { code: 'capability_missing', details: { requiredCapability: 'operate' } },
+      })
+    },
+  )
+
   it('keeps owner token issuance queryable in SQLite and writes no secrets to audit or logs', async () => {
     const host = await setup()
     const issued = host.server.audit.query({ type: 'token.issued' })
@@ -326,10 +371,14 @@ describe('negative security tests', () => {
         headers,
         body: Buffer.alloc(MAX_ATTACHMENT_BYTES + 1, 0x61),
       })
-      expectClosedFor(`oversized POST ${path}`, {
-        status: response.status,
-        code: ((await response.json()) as { error?: { code?: string } }).error?.code,
-      }, { status: 413, code: 'validation' })
+      expectClosedFor(
+        `oversized POST ${path}`,
+        {
+          status: response.status,
+          code: ((await response.json()) as { error?: { code?: string } }).error?.code,
+        },
+        { status: 413, code: 'validation' },
+      )
       expect(host.server.audit.query({ type: 'upload.rejected' }).length).toBeGreaterThan(0)
     }
     if (!sawRoute) {

@@ -94,6 +94,37 @@ function renderConnected(path: string, seed: MockSeed = SEED) {
 }
 
 describe('session workspace', () => {
+  it('renames and deletes a session through the shared sidebar', async () => {
+    const user = userEvent.setup()
+    const { client } = renderConnected('/')
+    await user.click(await screen.findByRole('button', { name: 'Rename session' }))
+    const title = screen.getByRole('textbox', { name: 'Session title' })
+    await user.clear(title)
+    await user.type(title, 'Renamed in web{Enter}')
+    expect(await screen.findByText('Renamed in web')).toBeInTheDocument()
+    expect(client.getState().sessions[SESSION.sessionId]?.title).toBe('Renamed in web')
+    await user.click(screen.getByRole('button', { name: 'Delete session' }))
+    await waitFor(() => expect(client.getState().sessions[SESSION.sessionId]).toBeUndefined())
+    expect(screen.queryByText('Renamed in web')).not.toBeInTheDocument()
+  })
+
+  it('opens persisted failed history from its URL without changing identity or status', async () => {
+    const { client } = renderConnected('/sessions/session-1', {
+      ...SEED,
+      sessions: [
+        {
+          ...SEED.sessions![0]!,
+          status: 'error',
+          turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'failed' }],
+        },
+      ],
+    })
+    expect(await screen.findByText('In the shared application package.')).toBeInTheDocument()
+    expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
+    expect(client.getState().sessions[SESSION.sessionId]?.status).toBe('error')
+    expect(client.getState().sessionOrder).toEqual([SESSION.sessionId])
+  })
+
   it.each(['missing', 'inaccessible'] as const)(
     'keeps %s sessions visible and recovers on retry',
     async (availability) => {

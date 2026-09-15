@@ -491,7 +491,8 @@ export function applySessionOpen(
       },
     }
   }
-  return refreshSessionStatus(next, payload.session.sessionId)
+  // The server summary is authoritative while history is still loading.
+  return next
 }
 
 /** Fold one history page into a thread. Newer pages replace; older pages prepend. */
@@ -500,7 +501,7 @@ export function applySessionHistory(
   thread: Thread,
   payload: ProofResponse<'session.history'>['payload'],
 ): EnvironmentState {
-  return patchThread(state, thread, (current) => {
+  const next = patchThread(state, thread, (current) => {
     const existingIds = new Set(current.messages.map((message) => message.messageId))
     const incoming = payload.messages.filter((message) => !existingIds.has(message.messageId))
     const messages =
@@ -528,6 +529,18 @@ export function applySessionHistory(
       hydration: 'ready',
     }
   })
+  // An empty transcript has no turn state from which to replace the persisted status.
+  const session = state.sessions[thread.sessionId]
+  if (session && next.threads[thread.threadId]?.turns.length === 0) {
+    return {
+      ...next,
+      sessions: {
+        ...next.sessions,
+        [session.sessionId]: { ...next.sessions[session.sessionId]!, status: session.status },
+      },
+    }
+  }
+  return next
 }
 
 /** The plain text of a message, for matching an echo against what arrived. */

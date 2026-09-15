@@ -668,16 +668,23 @@ describe('durable server event boundary', () => {
     events.close()
     createEventRetention(database, { now: () => Date.parse('2027-01-01') }).prune()
     expect(database.prepare('SELECT count(*) AS count FROM event_log').get()).toEqual({ count: 0 })
+    database.prepare("UPDATE sessions SET provider_session_id = 'provider-persisted'").run()
     database.close()
     const reopened = openEnvironmentDatabase(directory)
     databases.push(reopened)
-    const runtime = { ensureSession: vi.fn(), prompt: vi.fn(), cancel: vi.fn() }
+    const runtime = {
+      ensureSession: vi
+        .fn()
+        .mockResolvedValue({ sessionId: 'provider-persisted', state: 'loaded' }),
+      prompt: vi.fn(),
+      cancel: vi.fn(),
+    }
     const service = createThreadService(
       runtime,
       { rejection: () => undefined },
       vi.fn(),
       undefined,
-      undefined,
+      () => ({ providerId: 'cursor', cwd: '/workspace' }),
       { database: reopened },
     )
     const dispatch = (name: string, payload: Record<string, string>) =>
@@ -710,7 +717,10 @@ describe('durable server event boundary', () => {
         nextCursor: null,
       },
     })
-    expect(runtime.ensureSession).not.toHaveBeenCalled()
+    await service.resolveRuntimeSession('session-1')
+    expect(runtime.ensureSession).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 'provider-persisted', threadId: 'thread-1' }),
+    )
     // Retention tombstones preserve the cursor even though history no longer needs the log.
     const records = createEventRepository(reopened).appendEvents(scope, [started()])
     expect(records[0]?.cursor.sequence).toBe(1)

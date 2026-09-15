@@ -66,6 +66,7 @@ export interface SidebarDataValue {
   removeWorkspace: (path: string) => Promise<void>
   selectSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
   createSession: (workspacePath: string) => Promise<void>
+  renameSession?: (workspacePath: string, externalId: string, title: string | null) => Promise<void>
   deleteSession: (
     workspacePath: string,
     externalId: string,

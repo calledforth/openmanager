@@ -56,7 +56,11 @@ export const ProofEventSchemas = {
   'session.updated': event(
     'session.updated',
     EnvironmentScopeSchema,
-    z.object({ sessionId: EntityIdSchema, title: z.string().nullable().optional() }),
+    z.object({
+      sessionId: EntityIdSchema,
+      title: z.string().nullable().optional(),
+      titleSource: z.enum(['fallback', 'provider', 'user']).optional(),
+    }),
   ),
   'session.deleted': event(
     'session.deleted',

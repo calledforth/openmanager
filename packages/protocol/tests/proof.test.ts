@@ -22,6 +22,22 @@ import {
 } from './proof-fixtures.js'
 
 describe('proof slice wire families', () => {
+  it('trims rename titles, accepts null and rejects empty or oversized titles', () => {
+    const rename = (title: unknown) =>
+      ProofCommandSchemas['session.rename'].safeParse({
+        type: 'command',
+        requestId: 'rename',
+        name: 'session.rename',
+        payload: { sessionId: 'session-1', title },
+      })
+    expect(rename('  Name  ')).toMatchObject({
+      success: true,
+      data: { payload: { title: 'Name' } },
+    })
+    expect(rename(null).success).toBe(true)
+    expect(rename(' ').success).toBe(false)
+    expect(rename('x'.repeat(513)).success).toBe(false)
+  })
   it('covers every public command and event family with a wire example', () => {
     expect(proofCommands.map((c) => c.name).sort()).toEqual(Object.keys(ProofCommandSchemas).sort())
     expect(proofEvents.map((e) => e.name).sort()).toEqual(Object.keys(ProofEventSchemas).sort())

@@ -49,6 +49,7 @@ export interface SessionStateValue {
   closeChildSession: (parentExternalId: string) => void
   /** Open a new-session draft for `workspacePath`. */
   createSession: (workspacePath: string) => Promise<void>
+  renameSession?: (workspacePath: string, externalId: string, title: string | null) => Promise<void>
   deleteSession: (
     workspacePath: string,
     externalId: string,

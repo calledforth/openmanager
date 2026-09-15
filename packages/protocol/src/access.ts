@@ -68,6 +68,8 @@ export const COMMAND_ACCESS = Object.freeze({
   [PROVIDER_PROBE_CAPABILITY]: 'read',
   'composer.preferences.get': 'read',
   'session.create': 'operate',
+  'session.rename': 'operate',
+  'session.delete': 'operate',
   'workspace.add': 'operate',
   'workspace.remove': 'operate',
   'composer.preferences.set': 'operate',
@@ -84,9 +86,7 @@ export const COMMAND_ACCESS = Object.freeze({
  * connection plumbing; `undefined` means the name is not a protocol command.
  */
 export function requiredAccess(name: string): AccessCapability | null | undefined {
-  return Object.hasOwn(COMMAND_ACCESS, name)
-    ? COMMAND_ACCESS[name as CommandName]
-    : undefined
+  return Object.hasOwn(COMMAND_ACCESS, name) ? COMMAND_ACCESS[name as CommandName] : undefined
 }
 
 export function hasAccess(

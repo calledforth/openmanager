@@ -1,10 +1,16 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { DatabaseSync } from 'node:sqlite'
+import { DatabaseSync } from 'node:sqlite'
+import { runMigrations } from '../src/db/migrate.js'
+import { MIGRATIONS } from '../src/db/migrations.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentRuntime } from '@agentpack/runtime/node'
-import { ProofResponseSchemas, type EventEnvelope } from '@openmanager/protocol/node'
+import {
+  ProofResponseSchemas,
+  type EventEnvelope,
+  type CommandEnvelope,
+} from '@openmanager/protocol/node'
 import { createThreadService, type WorkspaceRuntimeResolver } from '../src/thread-service.js'
 import { createPersistentEventService } from '../src/event-service.js'
 import { openEnvironmentDatabase } from '../src/db/database.js'
@@ -262,8 +268,7 @@ describe('thread command provider routing', () => {
       requestId: 'create-1',
       error: {
         code: 'not_found',
-        message:
-          'Workspace not found.',
+        message: 'Workspace not found.',
       },
     })
     expect(runtime.ensureSession).not.toHaveBeenCalled()
@@ -1193,5 +1198,251 @@ describe('sends deduplicated by command id', () => {
       1,
     )
     events.close()
+  })
+})
+
+describe('durable session lifecycle', () => {
+  function setup() {
+    const database = new DatabaseSync(':memory:', { enableForeignKeyConstraints: true })
+    runMigrations(database, MIGRATIONS)
+    database.exec(
+      "INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at) VALUES ('/workspace/project', 'Project', '/workspace/project', 1, 1)",
+    )
+    const published: EventEnvelope[] = []
+    const events = createPersistentEventService(
+      database,
+      (record) => published.push(record.event),
+      { sessionProviderId: () => 'opencode' },
+    )
+    const runtime = {
+      ensureSession: vi
+        .fn()
+        .mockResolvedValue({ sessionId: 'provider-persisted', state: 'loaded' }),
+      prompt: vi.fn().mockResolvedValue(undefined),
+      cancel: vi.fn().mockResolvedValue(undefined),
+    }
+    const fresh = () => {
+      const service = createThreadService(
+        runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
+        { rejection: () => undefined },
+        events.append,
+        undefined,
+        registered,
+        { database, flush: events.flush, appendAtomic: events.appendAtomic },
+      )
+      service.setEnvironmentId('environment-1')
+      return service
+    }
+    const dispatch = (
+      service: ReturnType<typeof fresh>,
+      name: string,
+      payload: CommandEnvelope['payload'],
+    ) => service.dispatch({ type: 'command', requestId: name.replaceAll('.', '-'), name, payload })
+    const service = fresh()
+    const created = ProofResponseSchemas['session.create'].parse(
+      dispatch(service, 'session.create', {
+        environmentId: 'environment-1',
+        workspaceId: '/workspace/project',
+        providerId: 'opencode',
+        title: 'Original',
+      }),
+    ).payload
+    return {
+      database,
+      published,
+      events,
+      runtime,
+      fresh,
+      service,
+      created,
+      dispatch,
+      close: () => {
+        events.close()
+        database.close()
+      },
+    }
+  }
+
+  it('renames live and SQLite-only sessions without loading a provider', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      for (const service of [h.service, h.fresh()]) {
+        h.runtime.ensureSession.mockClear()
+        expect(
+          h.dispatch(service, 'session.rename', { sessionId, title: '  My title  ' }),
+        ).toMatchObject({ payload: { session: { sessionId, title: 'My title' } } })
+        expect(
+          h.database
+            .prepare('SELECT title, title_source, updated_at FROM sessions WHERE session_id = ?')
+            .get(sessionId),
+        ).toMatchObject({ title: 'My title', title_source: 'user', updated_at: expect.any(Number) })
+        expect(h.published.at(-1)).toMatchObject({
+          name: 'session.updated',
+          scope: { type: 'environment' },
+          payload: { sessionId, title: 'My title' },
+        })
+        expect(h.runtime.ensureSession).not.toHaveBeenCalled()
+      }
+    } finally {
+      h.close()
+    }
+  })
+
+  it('resumes the stored provider identity and status after restart and then sends a turn', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      // Reattaching stamps the row so the reattach is visible in the session list.
+      expect(
+        h.database.prepare('SELECT provider_session_id, updated_at FROM sessions').get(),
+      ).toMatchObject({
+        provider_session_id: 'provider-persisted',
+        updated_at: expect.any(Number),
+      })
+      h.database.prepare("UPDATE sessions SET status = 'error'").run()
+      const restarted = h.fresh()
+      h.runtime.ensureSession.mockClear()
+      h.published.length = 0
+      expect(h.dispatch(restarted, 'session.open', { sessionId })).toMatchObject({
+        payload: { session: { sessionId, status: 'error' }, threads: [h.created.thread] },
+      })
+      await restarted.resolveRuntimeSession(sessionId)
+      expect(h.runtime.ensureSession).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          sessionId: 'provider-persisted',
+          threadId: h.created.thread.threadId,
+        }),
+      )
+      expect(h.published.some((event) => event.name === 'session.created')).toBe(false)
+      expect(
+        h.dispatch(restarted, 'turn.send', { ...h.created.thread, text: 'Continue' }),
+      ).toMatchObject({ type: 'response' })
+      await vi.waitFor(() =>
+        expect(h.runtime.prompt).toHaveBeenCalledWith(
+          expect.objectContaining({ sessionId: 'provider-persisted' }),
+        ),
+      )
+      expect(h.database.prepare('SELECT COUNT(*) AS count FROM sessions').get()).toMatchObject({
+        count: 1,
+      })
+    } finally {
+      h.close()
+    }
+  })
+
+  it.each([false, true])(
+    'deletes messages, parts and session event logs (SQLite-only: %s)',
+    async (restart) => {
+      const h = setup()
+      try {
+        const { sessionId } = h.created.session
+        await h.service.resolveRuntimeSession(sessionId)
+        h.dispatch(h.service, 'turn.send', { ...h.created.thread, text: 'Saved message' })
+        await vi.waitFor(() => expect(h.runtime.prompt).toHaveBeenCalled())
+        const count = (table: string) =>
+          Number(
+            (
+              h.database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
+                count: number
+              }
+            ).count,
+          )
+        expect(count('messages')).toBeGreaterThan(0)
+        expect(count('message_parts')).toBeGreaterThan(0)
+        const before = count('event_log')
+        expect(before).toBeGreaterThan(1)
+        const scopedEventCount = () =>
+          Number(
+            (
+              h.database
+                .prepare(
+                  "SELECT COUNT(*) AS count FROM event_log WHERE json_extract(event_json, '$.scope.sessionId') = ?",
+                )
+                .get(sessionId) as { count: number }
+            ).count,
+          )
+        expect(scopedEventCount()).toBeGreaterThan(0)
+        const service = restart ? h.fresh() : h.service
+        expect(h.dispatch(service, 'session.delete', { sessionId })).toMatchObject({
+          type: 'response',
+          payload: null,
+        })
+        for (const table of ['sessions', 'threads', 'turns', 'messages', 'message_parts'])
+          expect(count(table)).toBe(0)
+        // Environment announcements survive for reconnect replay; scoped history cascades.
+        expect(count('event_log')).toBeLessThan(before)
+        expect(scopedEventCount()).toBe(0)
+        expect(
+          h.database
+            .prepare('SELECT COUNT(*) AS count FROM event_streams WHERE session_id = ?')
+            .get(sessionId),
+        ).toMatchObject({ count: 0 })
+        expect(h.published.at(-1)).toMatchObject({
+          name: 'session.deleted',
+          payload: { sessionId },
+        })
+        expect(h.dispatch(service, 'session.delete', { sessionId })).toMatchObject({
+          error: { code: 'not_found' },
+        })
+      } finally {
+        h.close()
+      }
+    },
+  )
+
+  it('cancels a running turn on delete and ignores its late completion', async () => {
+    const h = setup()
+    let finish!: () => void
+    h.runtime.prompt.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve
+        }),
+    )
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      h.dispatch(h.service, 'turn.send', { ...h.created.thread, text: 'Running' })
+      await vi.waitFor(() => expect(h.runtime.prompt).toHaveBeenCalled())
+      expect(h.dispatch(h.service, 'session.delete', { sessionId })).toMatchObject({
+        type: 'response',
+      })
+      await vi.waitFor(() =>
+        expect(h.runtime.cancel).toHaveBeenCalledWith(
+          expect.objectContaining({ sessionId: 'provider-persisted' }),
+        ),
+      )
+      const eventCount = h.published.length
+      finish()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(h.published).toHaveLength(eventCount)
+      expect(
+        h.dispatch(h.service, 'turn.send', { ...h.created.thread, text: 'Late' }),
+      ).toMatchObject({ error: { code: 'not_found' } })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('rejects resume without a load capability or stored provider identity', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      h.database.prepare('UPDATE sessions SET provider_session_id = NULL').run()
+      expect(h.dispatch(h.fresh(), 'session.open', { sessionId })).toMatchObject({
+        error: { code: 'unavailable' },
+      })
+      h.database.prepare("UPDATE sessions SET provider_id = 'unsupported'").run()
+      expect(h.dispatch(h.fresh(), 'session.open', { sessionId })).toMatchObject({
+        error: { code: 'capability_missing' },
+      })
+    } finally {
+      h.close()
+    }
   })
 })
