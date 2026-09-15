@@ -627,11 +627,11 @@ export function createThreadService(
         // its own map answers without touching the log. Only a thread that is
         // no longer in memory needs the durable lookup, which is exactly the
         // retry that crosses a restart.
-        const replayed = input.commandId
-          ? record
+        const replayed = !input.commandId
+          ? undefined
+          : record
             ? record.commandTurns.get(input.commandId)
             : findPersistedTurn(input.sessionId, input.threadId, input.commandId)
-          : undefined
         if (replayed) return turnSendResult(command.requestId, replayed)
         if (!record) {
           return errorResult(command.requestId, 'not_found', 'Thread not found.')

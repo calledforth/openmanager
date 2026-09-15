@@ -21,6 +21,7 @@ import { promptAttachment } from '@openmanager/app-core/lib/attachments'
 import type { PermissionSelection } from '@openmanager/app-core/providers/permission-provider'
 import {
   ActiveThreadStateContext,
+  ActiveThreadStoresContext,
   mergePersistedAndOptimisticMessages,
   shouldPreserveOptimisticMessages,
   type ActiveThreadDetails,
@@ -622,7 +623,15 @@ export function ActiveThreadStateProvider({ children }: { children: ReactNode })
     ],
   )
 
+  // Served separately from `value`, which changes on every streamed token.
+  const threadStores = useMemo(
+    () => ({ streamingStore, remoteStreamingStore, messageContentStore }),
+    [messageContentStore, remoteStreamingStore, streamingStore],
+  )
+
   return (
-    <ActiveThreadStateContext.Provider value={value}>{children}</ActiveThreadStateContext.Provider>
+    <ActiveThreadStoresContext.Provider value={threadStores}>
+      <ActiveThreadStateContext.Provider value={value}>{children}</ActiveThreadStateContext.Provider>
+    </ActiveThreadStoresContext.Provider>
   )
 }

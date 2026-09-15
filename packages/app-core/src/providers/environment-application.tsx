@@ -47,8 +47,10 @@ import {
 } from './sidebar-provider'
 import {
   ActiveThreadStateContext,
+  ActiveThreadStoresContext,
   type ActiveThreadDetails,
   type ActiveThreadStateValue,
+  type ActiveThreadStores,
 } from './active-thread-provider'
 import {
   PermissionStateProvider,
@@ -64,6 +66,8 @@ const DEFAULT_PROVIDER_ID: ProviderId = 'opencode'
 const COLLAPSED_WORKSPACES_KEY = 'openmanager.sidebar.collapsed-workspaces'
 
 const EMPTY_RECORD = {}
+/** Stable identity: an inline callback here re-renders every message row. */
+const noop = () => undefined
 const EMPTY_LIST: never[] = []
 
 export interface EnvironmentApplicationOptions {
@@ -689,7 +693,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       streamingStore: stores.streamingStore,
       messageContentStore: stores.messageContentStore,
       error,
-      acknowledgeOptimisticMessage: () => undefined,
+      acknowledgeOptimisticMessage: noop,
       sendMessage,
       retrySend,
       abortSession: async () => {
@@ -741,8 +745,18 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
     ],
   )
 
+  const threadStores = useMemo<ActiveThreadStores>(
+    () => ({
+      streamingStore: stores.streamingStore,
+      messageContentStore: stores.messageContentStore,
+    }),
+    [stores],
+  )
+
   return (
-    <ActiveThreadStateContext.Provider value={value}>{children}</ActiveThreadStateContext.Provider>
+    <ActiveThreadStoresContext.Provider value={threadStores}>
+      <ActiveThreadStateContext.Provider value={value}>{children}</ActiveThreadStateContext.Provider>
+    </ActiveThreadStoresContext.Provider>
   )
 }
 
