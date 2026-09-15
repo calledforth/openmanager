@@ -793,6 +793,14 @@ export function createWebSocketEnvironmentClient(
     supports,
     setActiveSession: (sessionId) => {
       openGeneration += 1
+      const previous = store.getState().activeSessionId
+      // Subscriptions outlive the store's active session, so a session left
+      // behind here would be re-subscribed by the next reconnect resync and
+      // keep mutating the store. `openSession` releases the previous session
+      // itself, and a repeated ID is left alone so its scopes stay live.
+      if (previous && previous !== sessionId) {
+        for (const scope of sessionScopes(previous)) unsubscribe(scope)
+      }
       store.update((state) => applyActiveSession(state, sessionId))
     },
     setActiveThread: (threadId) => store.update((state) => applyActiveThread(state, threadId)),

@@ -781,6 +781,49 @@ describe('websocket environment client', () => {
       { type: 'text', text: 'Hi!' },
     ])
   })
+
+  it('releases the previous session scopes when the active session is cleared', async () => {
+    const { client, socket, timers } = await connected()
+    const opened = client.commands.openSession(SESSION.sessionId)
+    await answerOpen(socket)
+    await opened
+
+    const subscribes = socket.sent.filter((message) => message.name === 'subscription.subscribe')
+    expect(
+      subscribes.map((message) => (message.payload as { scope: { type: string } }).scope.type),
+    ).toEqual(['environment', 'session', 'thread'])
+    for (const [index, request] of subscribes.entries()) {
+      socket.receive({
+        type: 'response',
+        requestId: request.requestId,
+        payload: {
+          subscriptionId: `sub-${index}`,
+          scope: (request.payload as { scope: unknown }).scope,
+        },
+      })
+    }
+
+    // Opening a draft clears the active session; its scopes must go with it.
+    client.setActiveSession(null)
+    expect(
+      socket.sent
+        .filter((message) => message.name === 'subscription.unsubscribe')
+        .map((message) => message.payload),
+    ).toEqual([{ subscriptionId: 'sub-1' }, { subscriptionId: 'sub-2' }])
+
+    socket.drop(1006)
+    await flush()
+    timers.advance(100)
+    const next = FakeSocket.instances[1]!
+    next.open()
+    next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    expect(
+      next.sent
+        .filter((message) => message.name === 'subscription.subscribe')
+        .map((message) => (message.payload as { scope: { type: string } }).scope.type),
+    ).toEqual(['environment'])
+  })
 })
 
 describe('reconnectDelayMs', () => {
