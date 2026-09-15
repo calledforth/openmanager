@@ -269,6 +269,53 @@ describe('optimistic sends', () => {
     expect(applyTurnSendFailed(confirmed, THREAD, 'cmd-1', 'too late')).toBe(confirmed)
   })
 
+  it('clears a failed echo the environment turns out to have accepted', () => {
+    const state = applyTurnSendFailed(sending('cmd-1'), THREAD, 'cmd-1', 'Connection lost')
+    const reconnected = applySnapshot(state, {
+      cursor: { scope: threadScope, epoch: 'epoch', sequence: 2 },
+      state: {
+        thread: THREAD,
+        turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'completed' }],
+        messages: [
+          {
+            messageId: 'user-1',
+            threadId: THREAD.threadId,
+            turnId: 'turn-1',
+            role: 'user',
+            content: [{ type: 'text', text: 'hello' }],
+          },
+        ],
+        reasoning: [],
+        tools: [],
+        interactions: [],
+      },
+    })
+    expect(reconnected.threads[THREAD.threadId]?.outbox).toEqual([])
+    expect(reconnected.threads[THREAD.threadId]?.messages).toHaveLength(1)
+  })
+
+  it('clears only one echo per arriving message when the same text was sent twice', () => {
+    let state = sending('cmd-1')
+    state = applyEvent(state, turnStarted('turn-1', 'hello', 'cmd-1'))
+    state = applyTurnSendFailed(
+      applyTurnSending(state, THREAD, { commandId: 'cmd-2', text: 'hello' }),
+      THREAD,
+      'cmd-2',
+      'Connection lost',
+    )
+    // The history page only re-states the message this client already has, so
+    // the second send is still the one that failed.
+    const hydrated = applySessionHistory(state, THREAD, {
+      messages: state.threads[THREAD.threadId]!.messages,
+      turns: state.threads[THREAD.threadId]!.turns,
+      interactions: [],
+      nextCursor: null,
+    })
+    expect(hydrated.threads[THREAD.threadId]?.outbox).toEqual([
+      { commandId: 'cmd-2', text: 'hello', status: 'failed', error: 'Connection lost' },
+    ])
+  })
+
   it('keeps unconfirmed sends when a snapshot replaces the thread', () => {
     const state = applyTurnSendFailed(sending('cmd-1'), THREAD, 'cmd-1', 'Provider is down')
     const replaced = applySnapshot(state, {

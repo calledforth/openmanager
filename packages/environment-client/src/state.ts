@@ -445,11 +445,13 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
   ).state
   const thread = threadSnapshot.thread
   const withThread = ensureThread(state, thread)
+  const existing = withThread.threads[thread.threadId]!
   const replaced: ThreadState = {
     ...createThreadState(thread, 'ready'),
     // A snapshot describes what the environment has; a send it has not
-    // answered yet is still the client's to show.
-    outbox: withThread.threads[thread.threadId]?.outbox ?? [],
+    // answered yet is still the client's to show, unless the snapshot is
+    // itself the answer.
+    outbox: reconcileOutbox(existing, threadSnapshot.messages),
     turns: threadSnapshot.turns,
     messages: threadSnapshot.messages,
     reasoning: threadSnapshot.reasoning,
@@ -518,12 +520,41 @@ export function applySessionHistory(
       ...current,
       turns: payload.turns.length > 0 ? payload.turns : current.turns,
       messages,
+      outbox: reconcileOutbox(current, payload.messages),
       interactions:
         interactions.length > 0 || current.hydration !== 'ready'
           ? interactions
           : current.interactions,
       hydration: 'ready',
     }
+  })
+}
+
+/** The plain text of a message, for matching an echo against what arrived. */
+const messageText = (message: Message): string =>
+  message.content.map((block) => (block.type === 'text' ? block.text : '')).join('')
+
+/**
+ * Drop failed echoes the environment turns out to have accepted. A send whose
+ * connection dropped is reported as failed even though its turn may well have
+ * started; when an authoritative snapshot or history page then brings back a
+ * user message this client never had, that message is the echo. Each arriving
+ * message clears at most one echo, so a prompt deliberately sent twice keeps
+ * the copy that really did fail.
+ */
+function reconcileOutbox(current: ThreadState, incoming: readonly Message[]): OutboxEntry[] {
+  if (!current.outbox.some((entry) => entry.status === 'failed')) return current.outbox
+  const known = new Set(current.messages.map((message) => message.messageId))
+  const arrived = incoming
+    .filter((message) => message.role === 'user' && !known.has(message.messageId))
+    .map(messageText)
+  if (arrived.length === 0) return current.outbox
+  return current.outbox.filter((entry) => {
+    if (entry.status !== 'failed') return true
+    const index = arrived.indexOf(entry.text)
+    if (index === -1) return true
+    arrived.splice(index, 1)
+    return false
   })
 }
 
