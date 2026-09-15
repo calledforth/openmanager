@@ -269,6 +269,22 @@ export function createThreadService(
   }
 
   /**
+   * Forget a session and every thread record that belongs to it. Restored
+   * sessions can hold several thread records, so cleanup has to be
+   * session-wide or a partially available session is left behind.
+   */
+  const dropSessionRecords = (sessionId: string): ThreadRecord[] => {
+    sessions.delete(sessionId)
+    const dropped: ThreadRecord[] = []
+    for (const [threadId, item] of threads) {
+      if (item.session.sessionId !== sessionId) continue
+      threads.delete(threadId)
+      dropped.push(item)
+    }
+    return dropped
+  }
+
+  /**
    * Rebuild in-memory records for a session that only exists in SQLite, so the
    * runtime loads the stored provider thread instead of creating a second one.
    * A failed load drops the records again, keeping durable history and letting
@@ -281,6 +297,7 @@ export function createThreadService(
     cwd: string,
     restoredThreads: Thread[],
   ) => {
+    const records: ThreadRecord[] = []
     for (const thread of restoredThreads) {
       const record: ThreadRecord = {
         session: {
@@ -304,12 +321,15 @@ export function createThreadService(
         updatedAt: Date.parse(session.updatedAt),
       }
       void record.runtimeSession.catch(() => {
-        if (sessions.get(session.sessionId) === record) sessions.delete(session.sessionId)
-        if (threads.get(thread.threadId) === record) threads.delete(thread.threadId)
+        // One thread failing to load leaves the session half attached, so the
+        // whole restore is abandoned and a later open retries it from SQLite.
+        const current = sessions.get(session.sessionId)
+        if (current && records.includes(current)) dropSessionRecords(session.sessionId)
       })
-      if (!sessions.has(session.sessionId)) sessions.set(session.sessionId, record)
+      records.push(record)
       threads.set(thread.threadId, record)
     }
+    if (records[0]) sessions.set(session.sessionId, records[0])
   }
 
   const rollbackSession = (record: ThreadRecord) => {
@@ -418,11 +438,10 @@ export function createThreadService(
       let closed = 0
       for (const record of [...sessions.values()]) {
         if (record.session.workspaceId !== workspaceId) continue
-        sessions.delete(record.session.sessionId)
-        if (threads.get(record.thread.threadId) === record) threads.delete(record.thread.threadId)
-        if (record.activeTurn) {
-          void record.runtimeSession
-            .then((sessionId) => runtime.cancel({ ...route(record), sessionId }))
+        for (const item of dropSessionRecords(record.session.sessionId)) {
+          if (!item.activeTurn) continue
+          void item.runtimeSession
+            .then((sessionId) => runtime.cancel({ ...route(item), sessionId }))
             .catch(() => undefined)
         }
         closed += 1
@@ -632,17 +651,13 @@ export function createThreadService(
             payload: { session: { ...session, title: parsed.data.payload.title } },
           })
         }
-        sessions.delete(sessionId)
-        for (const [threadId, item] of threads) {
-          if (item.session.sessionId !== sessionId) continue
-          threads.delete(threadId)
-          if (item.activeTurn) {
-            item.activeTurn.interruptRequested = true
-            item.activeTurn = undefined
-            void item.runtimeSession
-              .then((id) => runtime.cancel({ ...route(item), sessionId: id }))
-              .catch(() => undefined)
-          }
+        for (const item of dropSessionRecords(sessionId)) {
+          if (!item.activeTurn) continue
+          item.activeTurn.interruptRequested = true
+          item.activeTurn = undefined
+          void item.runtimeSession
+            .then((id) => runtime.cancel({ ...route(item), sessionId: id }))
+            .catch(() => undefined)
         }
         return ProofResponseSchemas['session.delete'].parse({
           type: 'response',

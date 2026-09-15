@@ -1433,6 +1433,8 @@ describe('durable session lifecycle', () => {
     const h = setup()
     try {
       const { sessionId } = h.created.session
+      // Settle the provider session write before close, or it lands on a closed database.
+      await h.service.resolveRuntimeSession(sessionId)
       h.dispatch(h.service, 'session.rename', { sessionId, title: 'My title' })
       const providerTitle = (title: string, titleSource?: 'provider') =>
         h.events.append(
@@ -1461,6 +1463,53 @@ describe('durable session lifecycle', () => {
       providerTitle('Later guess')
       h.events.flush()
       expect(stored()).toMatchObject({ title: 'Later guess', title_source: 'provider' })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('restores and abandons every thread of a multi-thread session together', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      const firstThreadId = h.created.thread.threadId
+      await h.service.resolveRuntimeSession(sessionId)
+      h.database
+        .prepare(
+          `INSERT INTO threads (thread_id, session_id, workspace_id, created_at, updated_at)
+           VALUES (?, ?, '/workspace/project', 1, 1)`,
+        )
+        .run('thread-second', sessionId)
+
+      const restarted = h.fresh()
+      expect(h.dispatch(restarted, 'session.open', { sessionId })).toMatchObject({
+        type: 'response',
+      })
+      await restarted.resolveRuntimeSession(sessionId)
+      // Both threads are addressable, not just the one the session maps to.
+      for (const threadId of [firstThreadId, 'thread-second'])
+        expect(
+          h.dispatch(restarted, 'turn.send', { sessionId, threadId, text: 'Hello' }),
+        ).toMatchObject({ type: 'response' })
+      // Let both turns finalize, so no write lands after the database closes.
+      await vi.waitFor(() =>
+        expect(
+          h.database.prepare("SELECT COUNT(*) AS count FROM turns WHERE state = 'running'").get(),
+        ).toMatchObject({ count: 0 }),
+      )
+
+      // A failed load abandons the whole session rather than leaving siblings behind.
+      const failed = h.fresh()
+      h.runtime.ensureSession.mockRejectedValueOnce(new Error('provider gone'))
+      expect(h.dispatch(failed, 'session.open', { sessionId })).toMatchObject({
+        type: 'response',
+      })
+      await vi.waitFor(() => {
+        for (const threadId of [firstThreadId, 'thread-second'])
+          expect(
+            h.dispatch(failed, 'turn.send', { sessionId, threadId, text: 'Hello' }),
+          ).toMatchObject({ error: { code: 'not_found' } })
+      })
     } finally {
       h.close()
     }
