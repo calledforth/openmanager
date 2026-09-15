@@ -29,6 +29,7 @@ import {
 } from '@agentpack/runtime/node'
 import {
   findTurnByCommandId,
+  getProviderSessionId,
   getSessionSummary,
   listSessionHistory,
   listSessionSummaries,
@@ -73,7 +74,6 @@ type ThreadRecord = {
   thread: Thread
   providerId: ProviderId
   cwd: string
-  titleSource?: string
   runtimeSession: Promise<string>
   turns: Turn[]
   messages: Message[]
@@ -266,6 +266,50 @@ export function createThreadService(
     }
     appendEvent(created)
     appendEvent(threadCreated)
+  }
+
+  /**
+   * Rebuild in-memory records for a session that only exists in SQLite, so the
+   * runtime loads the stored provider thread instead of creating a second one.
+   * A failed load drops the records again, keeping durable history and letting
+   * another open retry.
+   */
+  const restoreSession = (
+    session: SessionSummary,
+    providerId: ProviderId,
+    providerSessionId: string,
+    cwd: string,
+    restoredThreads: Thread[],
+  ) => {
+    for (const thread of restoredThreads) {
+      const record: ThreadRecord = {
+        session: {
+          sessionId: session.sessionId,
+          workspaceId: session.workspaceId,
+          title: session.title,
+        },
+        thread,
+        providerId,
+        cwd,
+        runtimeSession: Promise.resolve().then(() => {
+          if (threads.get(thread.threadId) !== record) throw new Error('Session was closed.')
+          return runtime
+            .ensureSession(route(record, providerSessionId))
+            .then((result) => result.sessionId)
+        }),
+        turns: [],
+        messages: [],
+        commandTurns: new Map(),
+        status: session.status,
+        updatedAt: Date.parse(session.updatedAt),
+      }
+      void record.runtimeSession.catch(() => {
+        if (sessions.get(session.sessionId) === record) sessions.delete(session.sessionId)
+        if (threads.get(thread.threadId) === record) threads.delete(thread.threadId)
+      })
+      if (!sessions.has(session.sessionId)) sessions.set(session.sessionId, record)
+      threads.set(thread.threadId, record)
+    }
   }
 
   const rollbackSession = (record: ThreadRecord) => {
@@ -580,7 +624,6 @@ export function createThreadService(
           for (const item of threads.values()) {
             if (item.session.sessionId !== sessionId) continue
             item.session.title = parsed.data.payload.title
-            item.titleSource = 'user'
             item.updatedAt = Date.parse(timestamp)
           }
           return ProofResponseSchemas['session.rename'].parse({
@@ -617,12 +660,6 @@ export function createThreadService(
           options.flush?.()
           const session = getSessionSummary(options.database, parsed.data.payload.sessionId)
           if (!session) return errorResult(command.requestId, 'not_found', 'Session not found.')
-          const stored = options.database
-            .prepare('SELECT provider_session_id, title_source FROM sessions WHERE session_id = ?')
-            .get(session.sessionId) as {
-            provider_session_id: string | null
-            title_source: string | null
-          }
           const providerId = session.providerId as ProviderId
           if (!providers[providerId]?.capabilities.canLoadSession) {
             return errorResult(
@@ -633,7 +670,8 @@ export function createThreadService(
           }
           const rejection = rejectProvider(command.requestId, providerId)
           if (rejection) return rejection
-          if (!stored.provider_session_id) {
+          const providerSessionId = getProviderSessionId(options.database, session.sessionId)
+          if (!providerSessionId) {
             return errorResult(
               command.requestId,
               'unavailable',
@@ -650,38 +688,7 @@ export function createThreadService(
           const restoredThreads = listThreadsForSession(options.database, session.sessionId)
           if (!restoredThreads.length)
             return errorResult(command.requestId, 'not_found', 'Thread not found.')
-          for (const thread of restoredThreads) {
-            const record: ThreadRecord = {
-              session: {
-                sessionId: session.sessionId,
-                workspaceId: session.workspaceId,
-                title: session.title,
-              },
-              thread,
-              providerId,
-              cwd: target.cwd,
-              titleSource: stored.title_source ?? undefined,
-              runtimeSession: Promise.resolve(stored.provider_session_id),
-              turns: [],
-              messages: [],
-              commandTurns: new Map(),
-              status: session.status,
-              updatedAt: Date.parse(session.updatedAt),
-            }
-            record.runtimeSession = Promise.resolve()
-              .then(() => {
-                if (threads.get(thread.threadId) !== record) throw new Error('Session was closed.')
-                return runtime.ensureSession(route(record, stored.provider_session_id!))
-              })
-              .then((result) => result.sessionId)
-            // A failed load keeps durable history and permits another open to retry.
-            void record.runtimeSession.catch(() => {
-              if (sessions.get(session.sessionId) === record) sessions.delete(session.sessionId)
-              if (threads.get(thread.threadId) === record) threads.delete(thread.threadId)
-            })
-            if (!sessions.has(session.sessionId)) sessions.set(session.sessionId, record)
-            threads.set(thread.threadId, record)
-          }
+          restoreSession(session, providerId, providerSessionId, target.cwd, restoredThreads)
           return ProofResponseSchemas['session.open'].parse({
             type: 'response',
             requestId: command.requestId,

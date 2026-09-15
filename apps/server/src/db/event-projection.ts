@@ -31,8 +31,13 @@ export function createEventProjector(
     updateWorkspaceName: database.prepare(
       'UPDATE workspaces SET name = ?, updated_at = ? WHERE workspace_id = ?',
     ),
+    // An event without provenance is a provider title, which must not overwrite
+    // a title the user set explicitly. Matches `providerTitlePatch` on desktop.
     updateSessionTitle: database.prepare(
-      'UPDATE sessions SET title = ?, title_source = COALESCE(?, title_source), updated_at = ? WHERE session_id = ?',
+      `UPDATE sessions
+          SET title = ?, title_source = COALESCE(?, title_source), updated_at = ?
+        WHERE session_id = ?
+          AND (? IS NOT NULL OR title_source IS NULL OR title_source <> 'user')`,
     ),
     updateSessionStatus: database.prepare(
       'UPDATE sessions SET status = ?, updated_at = ? WHERE session_id = ?',
@@ -228,11 +233,13 @@ export function createEventProjector(
         return
       case 'session.updated':
         if (event.payload.title !== undefined) {
+          const titleSource = event.payload.titleSource ?? null
           s.updateSessionTitle.run(
             event.payload.title,
-            event.payload.titleSource ?? null,
+            titleSource,
             at,
             event.payload.sessionId,
+            titleSource,
           )
         }
         return

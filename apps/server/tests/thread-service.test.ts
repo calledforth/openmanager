@@ -7,6 +7,7 @@ import { MIGRATIONS } from '../src/db/migrations.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentRuntime } from '@agentpack/runtime/node'
 import {
+  ProofEventSchemas,
   ProofResponseSchemas,
   type EventEnvelope,
   type CommandEnvelope,
@@ -1423,6 +1424,43 @@ describe('durable session lifecycle', () => {
       expect(
         h.dispatch(h.service, 'turn.send', { ...h.created.thread, text: 'Late' }),
       ).toMatchObject({ error: { code: 'not_found' } })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('keeps a user title when a provider renames the session afterwards', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      h.dispatch(h.service, 'session.rename', { sessionId, title: 'My title' })
+      const providerTitle = (title: string, titleSource?: 'provider') =>
+        h.events.append(
+          ProofEventSchemas['session.updated'].parse({
+            type: 'event',
+            name: 'session.updated',
+            eventId: crypto.randomUUID(),
+            timestamp: new Date().toISOString(),
+            scope: { type: 'environment', environmentId: 'environment-1' },
+            payload: { sessionId, title, ...(titleSource ? { titleSource } : {}) },
+          }),
+        )
+      const stored = () =>
+        h.database
+          .prepare('SELECT title, title_source FROM sessions WHERE session_id = ?')
+          .get(sessionId)
+      // A provider title carries no provenance, so it must not clobber the rename.
+      providerTitle('Provider guess')
+      h.events.flush()
+      expect(stored()).toMatchObject({ title: 'My title', title_source: 'user' })
+      // An explicit provider provenance is a deliberate downgrade and does apply.
+      providerTitle('Provider wins', 'provider')
+      h.events.flush()
+      expect(stored()).toMatchObject({ title: 'Provider wins', title_source: 'provider' })
+      // With the user claim gone, an unlabelled provider title applies again.
+      providerTitle('Later guess')
+      h.events.flush()
+      expect(stored()).toMatchObject({ title: 'Later guess', title_source: 'provider' })
     } finally {
       h.close()
     }
