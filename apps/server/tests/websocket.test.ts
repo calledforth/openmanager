@@ -864,6 +864,17 @@ describe('handshake and scoped subscriptions', () => {
     })
     const sent = ProofResponseSchemas['turn.send'].parse(await client.next())
     expect(sent.requestId).toBe(sendId)
+    expect(await client.next()).toMatchObject({
+      type: 'event',
+      name: 'subscription.event',
+      payload: {
+        subscriptionId,
+        record: {
+          cursor: { sequence: 1 },
+          event: { name: 'turn.started', payload: { turn: { turnId: sent.payload.turn.turnId } } },
+        },
+      },
+    })
     await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1))
     expect(prompt.mock.calls[0]?.[0]).toMatchObject({
       sessionId: 'provider-session',
@@ -895,7 +906,7 @@ describe('handshake and scoped subscriptions', () => {
       payload: {
         subscriptionId,
         record: {
-          cursor: { sequence: 1 },
+          cursor: { sequence: 2 },
           event: {
             name: 'turn.interrupted',
             scope: {

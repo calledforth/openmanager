@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { FakeClaudeSdk, FakeConnectionFactory } from '@agentpack/runtime/testing'
+import { startServer } from '../src/server.js'
 import { ProofResponseSchemas } from '@openmanager/protocol/node'
 import {
   assistantText,
@@ -72,7 +73,9 @@ describe('streamed provider through the server', () => {
       await handshake(client)
 
       const createId = client.command('session.create', { workspaceId: host.workspaceId })
-      const created = ProofResponseSchemas['session.create'].parse(await nextResponse(client, createId))
+      const created = ProofResponseSchemas['session.create'].parse(
+        await nextResponse(client, createId),
+      )
       expect(created).toMatchObject({ type: 'response', requestId: createId })
       const { session, thread } = created.payload
       const subscriptionId = await subscribe(client, {
@@ -96,13 +99,8 @@ describe('streamed provider through the server', () => {
       const completed = await collectThreadRecords(client, subscriptionId, (records) =>
         records.some((record) => record.event.name === 'turn.completed'),
       )
-      expect(eventNames(completed)).toEqual([
-        'turn.started',
-        'message.delta',
-        'message.delta',
-        'turn.completed',
-      ])
-      expect(sequences(completed)).toEqual([1, 2, 3, 4])
+      expect(eventNames(completed)).toEqual(['turn.started', 'message.delta', 'turn.completed'])
+      expect(sequences(completed)).toEqual([1, 2, 3])
       expect(assistantText(completed)).toBe('Hello')
       expect(completed.at(-1)?.event.payload).toMatchObject({ turnId: firstTurnId })
       expect(completed.every((record) => record.cursor.epoch === completed[0]?.cursor.epoch)).toBe(
@@ -139,9 +137,45 @@ describe('streamed provider through the server', () => {
       expect(names.filter((name) => name === 'turn.completed')).toEqual([])
       expect(names.filter((name) => name === 'turn.interrupted')).toEqual(['turn.interrupted'])
       expect(interrupted.at(-1)?.event.payload).toMatchObject({ turnId: secondTurnId })
-      expect(sequences(interrupted)[0]).toBe(5)
+      expect(sequences(interrupted)[0]).toBe(4)
       for (let i = 1; i < interrupted.length; i++) {
         expect(interrupted[i]?.cursor.sequence).toBe((interrupted[i - 1]?.cursor.sequence ?? 0) + 1)
+      }
+
+      await host.server.close()
+      const restarted = await startServer({
+        port: 0,
+        dataDir: host.dataDir,
+        logLevel: 'silent',
+        runtimeOptions: {
+          connections,
+          claudeSdk: new FakeClaudeSdk(),
+          health: { schedule: () => ({ cancel() {} }) },
+        },
+      })
+      try {
+        expect(
+          restarted.threadService.dispatch({
+            type: 'command',
+            requestId: 'history-after-restart',
+            name: 'session.history',
+            payload: { sessionId: session.sessionId, threadId: thread.threadId },
+          }),
+        ).toMatchObject({
+          payload: {
+            turns: [
+              { turnId: firstTurnId, state: 'completed' },
+              { turnId: secondTurnId, state: 'interrupted' },
+            ],
+            messages: [
+              { role: 'user', content: [{ type: 'text', text: 'complete me' }] },
+              { role: 'assistant', content: [{ type: 'text', text: 'Hello' }] },
+              { role: 'user', content: [{ type: 'text', text: 'interrupt me' }] },
+            ],
+          },
+        })
+      } finally {
+        await restarted.close()
       }
     },
   )

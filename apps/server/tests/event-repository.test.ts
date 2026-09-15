@@ -7,9 +7,13 @@ import type { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ProofEventSchemas,
+  ProofResponseSchemas,
   type ProofEvent,
   type SubscriptionScope,
 } from '@openmanager/protocol/node'
+import { createPersistentEventService } from '../src/event-service.js'
+import { createThreadService } from '../src/thread-service.js'
+import { createEventRetention } from '../src/db/event-retention.js'
 import { openEnvironmentDatabase } from '../src/db/database.js'
 import {
   createRepositoryEventBatcher,
@@ -407,9 +411,7 @@ describe('event repository transactions', () => {
     const request = interactionRequested()
     request.scope = otherScope
     const before = projectionSnapshot(database)
-    expect(() => repository.appendEvents(otherScope, [request])).toThrow(
-      'missing or finished turn',
-    )
+    expect(() => repository.appendEvents(otherScope, [request])).toThrow('missing or finished turn')
     expect(projectionSnapshot(database)).toEqual(before)
   })
 
@@ -564,6 +566,7 @@ describe('streaming event batching', () => {
   it('routes the terminal batch through finalizeTurn', () => {
     const repository: EventRepository = {
       appendEvents: vi.fn(() => []),
+      appendGroups: vi.fn(() => []),
       finalizeTurn: vi.fn(() => []),
     }
     const batcher = createRepositoryEventBatcher(repository)
@@ -639,5 +642,239 @@ describe('streaming event batching', () => {
     batcher.append(delta('token', 'event-token'))
 
     expect(batches).toHaveLength(1)
+  })
+})
+
+describe('durable server event boundary', () => {
+  it('hydrates completed history, summaries, and threads from SQLite after restart and retention', async () => {
+    const { database, directory } = await createDatabase()
+    const publish = vi.fn((record) => {
+      expect(
+        database
+          .prepare('SELECT event_id FROM event_log WHERE event_id = ?')
+          .get(record.event.eventId),
+      ).toEqual({ event_id: record.event.eventId })
+      if (record.event.name === 'turn.completed') {
+        expect(database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'completed' })
+      }
+    })
+    const events = createPersistentEventService(database, publish)
+    events.append(started())
+    events.append(delta('Hello', 'first'))
+    events.append(delta(' world', 'second'))
+    expect(publish).toHaveBeenCalledTimes(1)
+    events.append(completed())
+    expect(publish.mock.calls.map(([record]) => record.cursor.sequence)).toEqual([1, 2, 3])
+    events.close()
+    createEventRetention(database, { now: () => Date.parse('2027-01-01') }).prune()
+    expect(database.prepare('SELECT count(*) AS count FROM event_log').get()).toEqual({ count: 0 })
+    database.close()
+    const reopened = openEnvironmentDatabase(directory)
+    databases.push(reopened)
+    const runtime = { ensureSession: vi.fn(), prompt: vi.fn(), cancel: vi.fn() }
+    const service = createThreadService(
+      runtime,
+      { rejection: () => undefined },
+      vi.fn(),
+      undefined,
+      undefined,
+      { database: reopened },
+    )
+    const dispatch = (name: string, payload: Record<string, string>) =>
+      service.dispatch({
+        type: 'command',
+        requestId: 'read',
+        name,
+        payload,
+      })
+    expect(dispatch('session.list', {})).toMatchObject({
+      payload: {
+        sessions: [{ sessionId: 'session-1', status: 'idle', providerId: 'cursor' }],
+      },
+    })
+    expect(dispatch('session.open', { sessionId: 'session-1' })).toMatchObject({
+      payload: {
+        session: { sessionId: 'session-1' },
+        threads: [{ threadId: 'thread-1' }],
+      },
+    })
+    expect(
+      dispatch('session.history', { sessionId: 'session-1', threadId: 'thread-1' }),
+    ).toMatchObject({
+      payload: {
+        turns: [{ turnId: 'turn-1', state: 'completed' }],
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'Prompt' }] },
+          { role: 'assistant', content: [{ type: 'text', text: 'Hello world' }] },
+        ],
+        nextCursor: null,
+      },
+    })
+    expect(runtime.ensureSession).not.toHaveBeenCalled()
+    // Retention tombstones preserve the cursor even though history no longer needs the log.
+    const records = createEventRepository(reopened).appendEvents(scope, [started()])
+    expect(records[0]?.cursor.sequence).toBe(1)
+    const next = started('next-turn-started')
+    next.payload.turn.turnId = 'turn-2'
+    next.payload.userMessage.turnId = 'turn-2'
+    next.payload.userMessage.messageId = 'user-2'
+    const afterRestart = createEventRepository(reopened).appendEvents(scope, [next])
+    expect(afterRestart[0]?.cursor).toEqual({ ...publish.mock.calls[0]![0].cursor, sequence: 4 })
+  })
+
+  it.each(['running', 'waiting'] as const)(
+    'settles a persisted %s turn and preserves its partial content on reopen',
+    async (state) => {
+      const { database, directory } = await createDatabase()
+      const events = createPersistentEventService(database, vi.fn())
+      events.append(started())
+      events.append(delta('Partial answer', 'partial'))
+      if (state === 'waiting') events.append(interactionRequested())
+      events.flush()
+      database.close()
+      const reopened = openEnvironmentDatabase(directory)
+      databases.push(reopened)
+      expect(reopened.prepare('SELECT state, finished_at FROM turns').get()).toEqual({
+        state: 'interrupted',
+        finished_at: expect.any(Number),
+      })
+      expect(reopened.prepare('SELECT status FROM sessions').get()).toEqual({ status: 'idle' })
+      expect(
+        reopened
+          .prepare('SELECT content_json FROM message_parts WHERE message_id = ?')
+          .get('message-assistant'),
+      ).toEqual({ content_json: '{"type":"text","text":"Partial answer"}' })
+      expect(
+        reopened
+          .prepare('SELECT is_final FROM messages WHERE message_id = ?')
+          .get('message-assistant'),
+      ).toEqual({ is_final: 1 })
+      expect(
+        reopened
+          .prepare("SELECT count(*) AS count FROM interactions WHERE state = 'pending'")
+          .get(),
+      ).toEqual({ count: 0 })
+    },
+  )
+
+  it('bounds token flood transactions, log rows, and part writes by count and flushes sparse output by time', async () => {
+    vi.useFakeTimers()
+    const { database } = await createDatabase()
+    database.exec(`
+      CREATE TABLE part_writes (n INTEGER NOT NULL);
+      INSERT INTO part_writes VALUES (0);
+      CREATE TRIGGER count_part_insert AFTER INSERT ON message_parts BEGIN UPDATE part_writes SET n = n + 1; END;
+      CREATE TRIGGER count_part_update AFTER UPDATE ON message_parts BEGIN UPDATE part_writes SET n = n + 1; END;
+    `)
+    const commits = vi.fn()
+    const events = createPersistentEventService(database, vi.fn(), {
+      maxEvents: 64,
+      maxBytes: 1_000_000,
+      maxWaitMs: 100,
+      beforeCommit: commits,
+    })
+    events.append(started())
+    for (let i = 0; i < 1024; i++) events.append(delta('x', `token-${i}`))
+    expect(commits).toHaveBeenCalledTimes(17)
+    expect(database.prepare('SELECT n FROM part_writes').get()).toEqual({ n: 17 })
+    expect(database.prepare('SELECT count(*) AS count FROM event_log').get()).toEqual({ count: 17 })
+    events.append(delta('!', 'sparse'))
+    vi.advanceTimersByTime(99)
+    expect(commits).toHaveBeenCalledTimes(17)
+    vi.advanceTimersByTime(1)
+    expect(commits).toHaveBeenCalledTimes(18)
+    events.append(completed())
+    expect(
+      database
+        .prepare('SELECT count(*) AS count FROM message_parts WHERE message_id = ?')
+        .get('message-assistant'),
+    ).toEqual({ count: 1 })
+    expect(
+      database
+        .prepare('SELECT content_json FROM message_parts WHERE message_id = ?')
+        .get('message-assistant'),
+    ).toEqual({ content_json: JSON.stringify({ type: 'text', text: 'x'.repeat(1024) + '!' }) })
+    events.close()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('never publishes failed transactions and rejects transient notices', async () => {
+    const { database } = await createDatabase()
+    const publish = vi.fn()
+    let fail = true
+    const events = createPersistentEventService(database, publish, {
+      beforeCommit: () => {
+        if (fail) throw new Error('commit failed')
+      },
+    })
+    expect(() => events.append(started())).toThrow('commit failed')
+    expect(publish).not.toHaveBeenCalled()
+    expect(database.prepare('SELECT count(*) AS count FROM turns').get()).toEqual({ count: 0 })
+    fail = false
+    events.flush()
+    expect(publish).toHaveBeenCalledTimes(1)
+    expect(() =>
+      events.append({ ...started(), name: 'turn.notice' } as unknown as ProofEvent),
+    ).toThrow('transient')
+    events.close()
+  })
+
+  it('commits session and thread creation together and fails the command when the write fails', async () => {
+    const { database } = await createDatabase()
+    let fail = false
+    const commits = vi.fn(() => {
+      if (fail) throw new Error('disk full')
+    })
+    const publish = vi.fn()
+    const events = createPersistentEventService(database, publish, {
+      beforeCommit: commits,
+      sessionProviderId: () => 'cursor',
+    })
+    const runtime = {
+      ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-session', state: 'created' }),
+      prompt: vi.fn(),
+      cancel: vi.fn(),
+    }
+    const service = createThreadService(
+      runtime,
+      { rejection: () => undefined },
+      (event) => events.append(event),
+      undefined,
+      (workspaceId) =>
+        workspaceId === 'workspace-1' ? { providerId: 'opencode', cwd: '/workspace' } : undefined,
+      { database, flush: events.flush, appendAtomic: (batch) => events.appendAtomic(batch) },
+    )
+    service.setEnvironmentId('environment-1')
+    const create = (requestId: string) =>
+      service.dispatch({
+        type: 'command',
+        requestId,
+        name: 'session.create',
+        payload: { workspaceId: 'workspace-1' },
+      })
+
+    fail = true
+    expect(create('create-1')).toMatchObject({ type: 'error', error: { code: 'unavailable' } })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(runtime.ensureSession).not.toHaveBeenCalled()
+    expect(publish).not.toHaveBeenCalled()
+    // Only the seeded session exists: neither half of the failed creation was kept.
+    expect(database.prepare('SELECT count(*) AS count FROM sessions').get()).toEqual({ count: 1 })
+    expect(database.prepare('SELECT count(*) AS count FROM threads').get()).toEqual({ count: 1 })
+
+    fail = false
+    commits.mockClear()
+    const created = ProofResponseSchemas['session.create'].parse(create('create-2'))
+    expect(commits).toHaveBeenCalledTimes(1)
+    expect(publish.mock.calls.map(([record]) => record.event.name)).toEqual([
+      'session.created',
+      'thread.created',
+    ])
+    expect(
+      database
+        .prepare('SELECT count(*) AS count FROM threads WHERE session_id = ?')
+        .get(created.payload.session.sessionId),
+    ).toEqual({ count: 1 })
+    await vi.waitFor(() => expect(runtime.ensureSession).toHaveBeenCalledTimes(1))
   })
 })

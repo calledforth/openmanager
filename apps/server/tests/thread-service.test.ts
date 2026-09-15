@@ -742,3 +742,56 @@ describe('session summaries and paginated history', () => {
     expect(older.nextCursor).toBeNull()
   })
 })
+
+describe('persistence failures on the provider path', () => {
+  it('reports a failed write and still settles the turn in memory', async () => {
+    const runtime = {
+      ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-session', state: 'created' }),
+      prompt: vi.fn().mockResolvedValue(undefined),
+      cancel: vi.fn(),
+    } as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>
+    const failures: string[] = []
+    const service = createThreadService(
+      runtime,
+      { rejection: () => undefined },
+      (event) => {
+        if (event.name === 'turn.completed') throw new Error('disk full')
+      },
+      undefined,
+      registered,
+      { onPersistenceError: (_error, eventName) => failures.push(eventName) },
+    )
+    service.setEnvironmentId('environment-1')
+    const created = ProofResponseSchemas['session.create'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'create',
+        name: 'session.create',
+        payload: { workspaceId: '/workspace/project' },
+      }),
+    ).payload
+    const target = { sessionId: created.session.sessionId, threadId: created.thread.threadId }
+    const sent = ProofResponseSchemas['turn.send'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'send',
+        name: 'turn.send',
+        payload: { ...target, text: 'hello' },
+      }),
+    ).payload
+    await vi.waitFor(() => expect(failures).toEqual(['turn.completed']))
+    expect(
+      service.dispatch({
+        type: 'command',
+        requestId: 'history',
+        name: 'session.history',
+        payload: target,
+      }),
+    ).toMatchObject({ payload: { turns: [{ turnId: sent.turn.turnId, state: 'completed' }] } })
+    expect(
+      service.dispatch({ type: 'command', requestId: 'list', name: 'session.list', payload: {} }),
+    ).toMatchObject({
+      payload: { sessions: [{ sessionId: created.session.sessionId, status: 'idle' }] },
+    })
+  })
+})
