@@ -26,8 +26,16 @@ export interface EventRepositoryOptions extends EventProjectionOptions {
   beforeCommit?: () => void
 }
 
+/** Events for one scope; several groups may commit in one transaction. */
+export interface EventGroup {
+  scope: SubscriptionScope
+  events: readonly DurableProofEvent[]
+}
+
 export interface EventRepository {
   appendEvents(scope: SubscriptionScope, events: readonly DurableProofEvent[]): DurableEvent[]
+  /** Commit several scopes' events together, in order: all or none become durable. */
+  appendGroups(groups: readonly EventGroup[]): DurableEvent[]
   finalizeTurn(scope: ThreadScope, events: readonly DurableProofEvent[]): DurableEvent[]
 }
 
@@ -91,92 +99,100 @@ export function createEventRepository(
     ),
   }
 
-  const write = (
+  const writeScope = (
     scope: SubscriptionScope,
     events: readonly DurableProofEvent[],
+    writtenAt: number,
   ): DurableEvent[] => {
-    if (events.length === 0) return []
+    const key = scopeKey(scope)
+    statements.ensureStream.run(
+      key,
+      scope.type,
+      scope.type === 'environment' ? null : scope.sessionId,
+      scope.type === 'thread' ? scope.threadId : null,
+      newEpoch,
+      writtenAt,
+    )
+    // The row exists: ensureStream inserted it inside this same transaction.
+    const stream = statements.selectStream.get(key) as StreamRow | undefined
+    if (!stream) throw new Error(`Event stream ${key} vanished inside its transaction`)
+    const records: DurableEvent[] = []
+    let head = stream.head_sequence
     for (const event of events) {
-      if (!sameScope(scope, event.scope)) {
-        throw new Error('Every appended event must belong to the requested scope')
+      const record = DurableEventSchema.parse({
+        cursor: { scope, epoch: stream.epoch, sequence: head + 1 },
+        event,
+      })
+      const existing = statements.selectByEventId.get(event.eventId) as
+        | ExistingEventRow
+        | undefined
+      if (existing) {
+        const storedEvent: unknown = JSON.parse(existing.event_json)
+        if (existing.scope_key !== key || !isDeepStrictEqual(storedEvent, record.event)) {
+          throw new Error(`Event ID ${event.eventId} already belongs to a different event`)
+        }
+        records.push(
+          DurableEventSchema.parse({
+            cursor: { scope, epoch: stream.epoch, sequence: existing.sequence },
+            event: storedEvent,
+          }),
+        )
+        continue
       }
+      // The event may have been pruned by retention; its tombstone still carries
+      // the original cursor and a payload hash, so a late retry deduplicates.
+      const tombstone = statements.selectTombstone.get(event.eventId) as
+        | TombstoneRow
+        | undefined
+      if (tombstone) {
+        const serialized = JSON.stringify(record.event)
+        if (
+          tombstone.scope_key !== key ||
+          !hashEvent(serialized).equals(Buffer.from(tombstone.event_hash))
+        ) {
+          throw new Error(`Event ID ${event.eventId} already belongs to a different event`)
+        }
+        records.push(
+          DurableEventSchema.parse({
+            cursor: { scope, epoch: stream.epoch, sequence: tombstone.sequence },
+            event: record.event,
+          }),
+        )
+        continue
+      }
+      statements.insertEvent.run(
+        key,
+        record.cursor.sequence,
+        event.eventId,
+        event.name,
+        JSON.stringify(record.event),
+        Date.parse(event.timestamp),
+      )
+      project(event)
+      head = record.cursor.sequence
+      records.push(record)
     }
 
-    const key = scopeKey(scope)
+    if (head !== stream.head_sequence) {
+      statements.advanceHead.run(head, stream.head_sequence + 1, writtenAt, key)
+    }
+    return records
+  }
+
+  const write = (groups: readonly EventGroup[]): DurableEvent[] => {
+    const pending = groups.filter((group) => group.events.length > 0)
+    if (pending.length === 0) return []
+    for (const { scope, events } of pending) {
+      for (const event of events) {
+        if (!sameScope(scope, event.scope)) {
+          throw new Error('Every appended event must belong to the requested scope')
+        }
+      }
+    }
     database.exec('BEGIN IMMEDIATE')
     try {
       const writtenAt = now()
-      statements.ensureStream.run(
-        key,
-        scope.type,
-        scope.type === 'environment' ? null : scope.sessionId,
-        scope.type === 'thread' ? scope.threadId : null,
-        newEpoch,
-        writtenAt,
-      )
-      // The row exists: ensureStream inserted it inside this same transaction.
-      const stream = statements.selectStream.get(key) as StreamRow | undefined
-      if (!stream) throw new Error(`Event stream ${key} vanished inside its transaction`)
-      const records: DurableEvent[] = []
-      let head = stream.head_sequence
-      for (const event of events) {
-        const record = DurableEventSchema.parse({
-          cursor: { scope, epoch: stream.epoch, sequence: head + 1 },
-          event,
-        })
-        const existing = statements.selectByEventId.get(event.eventId) as
-          | ExistingEventRow
-          | undefined
-        if (existing) {
-          const storedEvent: unknown = JSON.parse(existing.event_json)
-          if (existing.scope_key !== key || !isDeepStrictEqual(storedEvent, record.event)) {
-            throw new Error(`Event ID ${event.eventId} already belongs to a different event`)
-          }
-          records.push(
-            DurableEventSchema.parse({
-              cursor: { scope, epoch: stream.epoch, sequence: existing.sequence },
-              event: storedEvent,
-            }),
-          )
-          continue
-        }
-        // The event may have been pruned by retention; its tombstone still carries
-        // the original cursor and a payload hash, so a late retry deduplicates.
-        const tombstone = statements.selectTombstone.get(event.eventId) as
-          | TombstoneRow
-          | undefined
-        if (tombstone) {
-          const serialized = JSON.stringify(record.event)
-          if (
-            tombstone.scope_key !== key ||
-            !hashEvent(serialized).equals(Buffer.from(tombstone.event_hash))
-          ) {
-            throw new Error(`Event ID ${event.eventId} already belongs to a different event`)
-          }
-          records.push(
-            DurableEventSchema.parse({
-              cursor: { scope, epoch: stream.epoch, sequence: tombstone.sequence },
-              event: record.event,
-            }),
-          )
-          continue
-        }
-        statements.insertEvent.run(
-          key,
-          record.cursor.sequence,
-          event.eventId,
-          event.name,
-          JSON.stringify(record.event),
-          Date.parse(event.timestamp),
-        )
-        project(event)
-        head = record.cursor.sequence
-        records.push(record)
-      }
-
-      if (head !== stream.head_sequence) {
-        statements.advanceHead.run(head, stream.head_sequence + 1, writtenAt, key)
-      }
+      const records = pending.flatMap(({ scope, events }) => writeScope(scope, events, writtenAt))
       options.beforeCommit?.()
       database.exec('COMMIT')
       return records
@@ -191,7 +207,8 @@ export function createEventRepository(
   }
 
   return {
-    appendEvents: write,
+    appendEvents: (scope, events) => write([{ scope, events }]),
+    appendGroups: write,
     finalizeTurn(scope, events) {
       const terminal = events.at(-1)
       if (!terminal || !isTerminal(terminal)) {
@@ -208,7 +225,7 @@ export function createEventRepository(
       ) {
         throw new Error('finalizeTurn events must all belong to the terminal turn')
       }
-      return write(scope, events)
+      return write([{ scope, events }])
     },
   }
 }

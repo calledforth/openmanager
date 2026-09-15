@@ -188,7 +188,13 @@ export async function startServer(config: ServerConfig) {
     (event) => eventService.append(event),
     (event) => publishThreadEvent(event),
     resolveWorkspace,
-    { database: eventDatabase, flush: eventService.flush },
+    {
+      database: eventDatabase,
+      flush: eventService.flush,
+      appendAtomic: (events) => eventService.appendAtomic(events),
+      onPersistenceError: (error, eventName) =>
+        log('error', 'event persistence failed', { eventName, reason: String(error) }),
+    },
   )
   closeWorkspaceSessions = (workspaceId) => {
     // Flush before the registry cascades deletion of the projected thread rows.

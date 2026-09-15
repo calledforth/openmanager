@@ -7,6 +7,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ProofEventSchemas,
+  ProofResponseSchemas,
   type ProofEvent,
   type SubscriptionScope,
 } from '@openmanager/protocol/node'
@@ -565,6 +566,7 @@ describe('streaming event batching', () => {
   it('routes the terminal batch through finalizeTurn', () => {
     const repository: EventRepository = {
       appendEvents: vi.fn(() => []),
+      appendGroups: vi.fn(() => []),
       finalizeTurn: vi.fn(() => []),
     }
     const batcher = createRepositoryEventBatcher(repository)
@@ -815,5 +817,64 @@ describe('durable server event boundary', () => {
       events.append({ ...started(), name: 'turn.notice' } as unknown as ProofEvent),
     ).toThrow('transient')
     events.close()
+  })
+
+  it('commits session and thread creation together and fails the command when the write fails', async () => {
+    const { database } = await createDatabase()
+    let fail = false
+    const commits = vi.fn(() => {
+      if (fail) throw new Error('disk full')
+    })
+    const publish = vi.fn()
+    const events = createPersistentEventService(database, publish, {
+      beforeCommit: commits,
+      sessionProviderId: () => 'cursor',
+    })
+    const runtime = {
+      ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-session', state: 'created' }),
+      prompt: vi.fn(),
+      cancel: vi.fn(),
+    }
+    const service = createThreadService(
+      runtime,
+      { rejection: () => undefined },
+      (event) => events.append(event),
+      undefined,
+      (workspaceId) =>
+        workspaceId === 'workspace-1' ? { providerId: 'opencode', cwd: '/workspace' } : undefined,
+      { database, flush: events.flush, appendAtomic: (batch) => events.appendAtomic(batch) },
+    )
+    service.setEnvironmentId('environment-1')
+    const create = (requestId: string) =>
+      service.dispatch({
+        type: 'command',
+        requestId,
+        name: 'session.create',
+        payload: { workspaceId: 'workspace-1' },
+      })
+
+    fail = true
+    expect(create('create-1')).toMatchObject({ type: 'error', error: { code: 'unavailable' } })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(runtime.ensureSession).not.toHaveBeenCalled()
+    expect(publish).not.toHaveBeenCalled()
+    // Only the seeded session exists: neither half of the failed creation was kept.
+    expect(database.prepare('SELECT count(*) AS count FROM sessions').get()).toEqual({ count: 1 })
+    expect(database.prepare('SELECT count(*) AS count FROM threads').get()).toEqual({ count: 1 })
+
+    fail = false
+    commits.mockClear()
+    const created = ProofResponseSchemas['session.create'].parse(create('create-2'))
+    expect(commits).toHaveBeenCalledTimes(1)
+    expect(publish.mock.calls.map(([record]) => record.event.name)).toEqual([
+      'session.created',
+      'thread.created',
+    ])
+    expect(
+      database
+        .prepare('SELECT count(*) AS count FROM threads WHERE session_id = ?')
+        .get(created.payload.session.sessionId),
+    ).toEqual({ count: 1 })
+    await vi.waitFor(() => expect(runtime.ensureSession).toHaveBeenCalledTimes(1))
   })
 })

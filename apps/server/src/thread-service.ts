@@ -95,7 +95,17 @@ export function createThreadService(
   // Routing is by registered workspace ID only (D9): there is no default that
   // treats the ID as a path, so an unregistered workspace can never run.
   resolveWorkspace: WorkspaceRuntimeResolver = () => undefined,
-  options: { database?: DatabaseSync; flush?: () => void } = {},
+  options: {
+    database?: DatabaseSync
+    flush?: () => void
+    /** Commit several host events together; falls back to one append per event. */
+    appendAtomic?: (events: readonly ProofEvent[]) => void
+    /**
+     * A failed write on the provider-driven path is reported here and the
+     * batch stays queued for the next append. Without a handler it throws.
+     */
+    onPersistenceError?: (error: unknown, eventName: string) => void
+  } = {},
 ) {
   const sessions = new Map<string, ThreadRecord>()
   const threads = new Map<string, ThreadRecord>()
@@ -123,8 +133,19 @@ export function createThreadService(
     return rejection ? errorResult(requestId, rejection.code, rejection.message) : undefined
   }
 
+  // Provider callbacks and turn settlement must not fail because a write did:
+  // the in-memory turn still settles, and the host decides how to report it.
+  const appendRuntimeEvent = (event: ProofEvent) => {
+    try {
+      appendEvent(event)
+    } catch (error) {
+      if (!options.onPersistenceError) throw error
+      options.onPersistenceError(error, event.name)
+    }
+  }
+
   const emitInterrupted = (record: ThreadRecord, turnId: string) => {
-    appendEvent(
+    appendRuntimeEvent(
       ProofEventSchemas['turn.interrupted'].parse({
         type: 'event',
         name: 'turn.interrupted',
@@ -142,7 +163,7 @@ export function createThreadService(
   }
 
   const emitCompleted = (record: ThreadRecord, turnId: string) => {
-    appendEvent(
+    appendRuntimeEvent(
       ProofEventSchemas['turn.completed'].parse({
         type: 'event',
         name: 'turn.completed',
@@ -159,7 +180,7 @@ export function createThreadService(
     turnId: string,
     reason: TurnFailureReason = 'provider_error',
   ) => {
-    appendEvent(
+    appendRuntimeEvent(
       ProofEventSchemas['turn.failed'].parse({
         type: 'event',
         name: 'turn.failed',
@@ -180,36 +201,37 @@ export function createThreadService(
     )
   }
 
-  const persistCreatedThread = (record: ThreadRecord) => {
-    const { session, thread } = record
+  const persistCreatedThread = (session: Session, thread: Thread) => {
     const timestamp = new Date().toISOString()
-    appendEvent(
-      ProofEventSchemas['session.created'].parse({
-        type: 'event',
-        name: 'session.created',
-        eventId: randomUUID(),
-        timestamp,
-        scope: { type: 'environment', environmentId },
-        payload: { session },
-      }),
-    )
-    appendEvent(
-      ProofEventSchemas['thread.created'].parse({
-        type: 'event',
-        name: 'thread.created',
-        eventId: randomUUID(),
-        timestamp,
-        scope: { type: 'session', environmentId, sessionId: session.sessionId },
-        payload: { thread },
-      }),
-    )
+    const created = ProofEventSchemas['session.created'].parse({
+      type: 'event',
+      name: 'session.created',
+      eventId: randomUUID(),
+      timestamp,
+      scope: { type: 'environment', environmentId },
+      payload: { session },
+    })
+    const threadCreated = ProofEventSchemas['thread.created'].parse({
+      type: 'event',
+      name: 'thread.created',
+      eventId: randomUUID(),
+      timestamp,
+      scope: { type: 'session', environmentId, sessionId: session.sessionId },
+      payload: { thread },
+    })
+    if (options.appendAtomic) {
+      options.appendAtomic([created, threadCreated])
+      return
+    }
+    appendEvent(created)
+    appendEvent(threadCreated)
   }
 
   const rollbackSession = (record: ThreadRecord) => {
     if (sessions.get(record.session.sessionId) !== record) return
     sessions.delete(record.session.sessionId)
     if (threads.get(record.thread.threadId) === record) threads.delete(record.thread.threadId)
-    appendEvent(
+    appendRuntimeEvent(
       ProofEventSchemas['session.deleted'].parse({
         type: 'event',
         name: 'session.deleted',
@@ -281,7 +303,7 @@ export function createThreadService(
     )
       return
     if (projected.name === 'turn.notice') publishTransient(projected)
-    else appendEvent(projected)
+    else appendRuntimeEvent(projected)
   }
 
   const touch = (record: ThreadRecord, status?: SessionStatus) => {
@@ -364,6 +386,20 @@ export function createThreadService(
           title: parsed.data.payload.title ?? null,
         }
         const thread: Thread = { threadId: randomUUID(), sessionId: session.sessionId }
+        // Durable before it is exposed or started: a failed write means no
+        // client learns of a session the host could not serve after a restart.
+        if (options.database) {
+          try {
+            persistCreatedThread(session, thread)
+          } catch (error) {
+            options.onPersistenceError?.(error, 'session.created')
+            return errorResult(
+              command.requestId,
+              'unavailable',
+              'The session could not be saved. Try again.',
+            )
+          }
+        }
         let record!: ThreadRecord
         const runtimeSession = Promise.resolve()
           .then(() => runtime.ensureSession(route(record)))
@@ -390,7 +426,6 @@ export function createThreadService(
         }
         sessions.set(session.sessionId, record)
         threads.set(thread.threadId, record)
-        if (options.database) persistCreatedThread(record)
         void record.runtimeSession.catch(() => rollbackSession(record))
         return ProofResponseSchemas['session.create'].parse({
           type: 'response',
@@ -518,16 +553,25 @@ export function createThreadService(
           content: [{ type: 'text', text: parsed.data.payload.text }],
         }
         if (options.database) {
-          appendEvent(
-            ProofEventSchemas['turn.started'].parse({
-              type: 'event',
-              name: 'turn.started',
-              eventId: randomUUID(),
-              timestamp: new Date().toISOString(),
-              scope: threadScope(record),
-              payload: { turn, userMessage },
-            }),
-          )
+          try {
+            appendEvent(
+              ProofEventSchemas['turn.started'].parse({
+                type: 'event',
+                name: 'turn.started',
+                eventId: randomUUID(),
+                timestamp: new Date().toISOString(),
+                scope: threadScope(record),
+                payload: { turn, userMessage },
+              }),
+            )
+          } catch (error) {
+            options.onPersistenceError?.(error, 'turn.started')
+            return errorResult(
+              command.requestId,
+              'unavailable',
+              'The message could not be saved. Try again.',
+            )
+          }
         }
         record.turns.push(turn)
         record.messages.push(userMessage)
