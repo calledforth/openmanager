@@ -139,6 +139,7 @@ function projectTurn(
   for (const message of messages) {
     if (message.role !== 'user') continue
     userSources.set(message.messageId, message)
+    // Linear, but over the handful of rows one turn produces.
     const reused =
       previous?.userSources.get(message.messageId) === message
         ? previous?.entries.find((entry) => entry.message.externalId === message.messageId)

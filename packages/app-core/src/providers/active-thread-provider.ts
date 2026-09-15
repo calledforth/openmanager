@@ -164,7 +164,9 @@ export const ActiveThreadStoresContext = createContext<ActiveThreadStores | null
 
 export function useActiveThreadStores(): ActiveThreadStores {
   const ctx = useContext(ActiveThreadStoresContext)
-  if (!ctx) throw new Error('useActiveThreadStores must be used within ActiveThreadStateProvider')
+  if (!ctx) {
+    throw new Error('useActiveThreadStores must be used within an ActiveThreadStoresContext provider')
+  }
   return ctx
 }
 
