@@ -31,8 +31,13 @@ export function createEventProjector(
     updateWorkspaceName: database.prepare(
       'UPDATE workspaces SET name = ?, updated_at = ? WHERE workspace_id = ?',
     ),
+    // An event without provenance is a provider title, which must not overwrite
+    // a title the user set explicitly. Matches `providerTitlePatch` on desktop.
     updateSessionTitle: database.prepare(
-      'UPDATE sessions SET title = ?, updated_at = ? WHERE session_id = ?',
+      `UPDATE sessions
+          SET title = ?, title_source = COALESCE(?, title_source), updated_at = ?
+        WHERE session_id = ?
+          AND (? IS NOT NULL OR title_source IS NULL OR title_source <> 'user')`,
     ),
     updateSessionStatus: database.prepare(
       'UPDATE sessions SET status = ?, updated_at = ? WHERE session_id = ?',
@@ -46,9 +51,7 @@ export function createEventProjector(
          thread_id, session_id, workspace_id, created_at, updated_at
        ) VALUES (?, ?, ?, ?, ?)`,
     ),
-    selectThreadWorkspace: database.prepare(
-      'SELECT workspace_id FROM threads WHERE thread_id = ?',
-    ),
+    selectThreadWorkspace: database.prepare('SELECT workspace_id FROM threads WHERE thread_id = ?'),
     insertTurn: database.prepare(
       `INSERT INTO turns (
          turn_id, thread_id, workspace_id, state, command_id, started_at, updated_at
@@ -132,8 +135,7 @@ export function createEventProjector(
   /** Adjacent text parts merge so coalesced deltas project to one row. */
   function appendContent(messageId: string, content: MessageContent, at: number): void {
     const last = s.selectLastPart.get(messageId) as
-      | { part_id: string; ordinal: number; part_type: string; content_json: string }
-      | undefined
+      { part_id: string; ordinal: number; part_type: string; content_json: string } | undefined
     if (content.type === 'text' && last?.part_type === 'text') {
       const previous = JSON.parse(last.content_json) as { type: 'text'; text: string }
       s.updatePartContent.run(
@@ -156,8 +158,7 @@ export function createEventProjector(
 
   function projectTurnStarted(event: TurnStarted, at: number): void {
     const thread = s.selectThreadWorkspace.get(event.scope.threadId) as
-      | { workspace_id: string }
-      | undefined
+      { workspace_id: string } | undefined
     if (!thread) throw new Error(`Cannot project turn for missing thread ${event.scope.threadId}`)
     s.insertTurn.run(
       event.payload.turn.turnId,
@@ -176,12 +177,10 @@ export function createEventProjector(
   function projectMessageDelta(event: MessageDelta, at: number): void {
     const { messageId, turnId, role, content } = event.payload
     const turn = s.selectTurnWorkspace.get(turnId, event.scope.threadId) as
-      | { workspace_id: string }
-      | undefined
+      { workspace_id: string } | undefined
     if (!turn) throw new Error(`Cannot project message for missing turn ${turnId}`)
     const existing = s.selectMessage.get(messageId) as
-      | { turn_id: string; thread_id: string; role: string; is_final: number }
-      | undefined
+      { turn_id: string; thread_id: string; role: string; is_final: number } | undefined
     if (
       existing &&
       (existing.turn_id !== turnId ||
@@ -234,7 +233,14 @@ export function createEventProjector(
         return
       case 'session.updated':
         if (event.payload.title !== undefined) {
-          s.updateSessionTitle.run(event.payload.title, at, event.payload.sessionId)
+          const titleSource = event.payload.titleSource ?? null
+          s.updateSessionTitle.run(
+            event.payload.title,
+            titleSource,
+            at,
+            event.payload.sessionId,
+            titleSource,
+          )
         }
         return
       case 'session.deleted':
@@ -242,8 +248,7 @@ export function createEventProjector(
         return
       case 'thread.created': {
         const session = s.selectSessionWorkspace.get(event.scope.sessionId) as
-          | { workspace_id: string }
-          | undefined
+          { workspace_id: string } | undefined
         if (!session) {
           throw new Error(`Cannot project thread for missing session ${event.scope.sessionId}`)
         }

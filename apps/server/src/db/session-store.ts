@@ -108,9 +108,7 @@ export function listSessionSummaries(
   query: SessionListQuery = {},
 ): SessionListPage {
   const limit = resolvePageLimit(query.limit)
-  const cursor = query.cursor
-    ? SessionListCursorSchema.parse(query.cursor)
-    : undefined
+  const cursor = query.cursor ? SessionListCursorSchema.parse(query.cursor) : undefined
   const updatedAtMs = cursor ? Date.parse(cursor.updatedAt) : FIRST_LIST_CURSOR.updatedAtMs
   const sessionId = cursor?.sessionId ?? FIRST_LIST_CURSOR.sessionId
   const rows = (
@@ -125,9 +123,7 @@ export function listSessionSummaries(
   return {
     sessions: page,
     nextCursor:
-      rows.length > limit && last
-        ? { updatedAt: last.updatedAt, sessionId: last.sessionId }
-        : null,
+      rows.length > limit && last ? { updatedAt: last.updatedAt, sessionId: last.sessionId } : null,
   }
 }
 
@@ -152,6 +148,21 @@ export function getSessionSummary(
 }
 
 /**
+ * The provider's own session id, stored when the runtime session first
+ * resolved. Resuming needs it to load the provider thread instead of
+ * creating a second one for the same session.
+ */
+export function getProviderSessionId(
+  database: DatabaseSync,
+  sessionId: string,
+): string | undefined {
+  const row = database
+    .prepare('SELECT provider_session_id FROM sessions WHERE session_id = ?')
+    .get(sessionId) as { provider_session_id: string | null } | undefined
+  return row?.provider_session_id ?? undefined
+}
+
+/**
  * One newest-first page of a thread's messages, with parts, turns, and
  * pending interactions hydrated. `nextCursor.ordinal` is the oldest ordinal
  * on this page — the exclusive bound for the next older page.
@@ -173,9 +184,7 @@ export function listSessionHistory(
     .prepare(MESSAGE_HISTORY_PAGE_SQL)
     .all(query.threadId, ordinal, limit + 1) as MessageRow[]
   const pageRows = rows.slice(0, limit)
-  const messages = pageRows
-    .map((row) => messageFromRow(database, row))
-    .reverse()
+  const messages = pageRows.map((row) => messageFromRow(database, row)).reverse()
   const turns = (database.prepare(TURNS_FOR_THREAD_SQL).all(query.threadId) as TurnRow[]).map(
     (row) =>
       TurnSchema.parse({
@@ -197,8 +206,7 @@ export function listSessionHistory(
     messages,
     turns,
     interactions,
-    nextCursor:
-      rows.length > limit && oldest !== undefined ? { ordinal: oldest.ordinal } : null,
+    nextCursor: rows.length > limit && oldest !== undefined ? { ordinal: oldest.ordinal } : null,
   }
 }
 

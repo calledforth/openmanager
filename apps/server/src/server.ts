@@ -62,6 +62,8 @@ export const SERVER_CAPABILITIES = [
   'session.create',
   SESSION_CREATE_EXPLICIT_CAPABILITY,
   'session.open',
+  'session.rename',
+  'session.delete',
   'session.history',
   'turn.send',
   'turn.interrupt',

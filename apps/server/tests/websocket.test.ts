@@ -1200,3 +1200,54 @@ it('broadcasts session.created to two environment subscribers without reloading'
   )
   expect(await second.next()).toMatchObject(announcement(secondSubscription))
 })
+
+it('broadcasts session.updated and session.deleted to a second environment subscriber', async () => {
+  const host = await setup()
+  const first = await connect(host)
+  const second = await connect(host)
+  await handshake(first)
+  await handshake(second)
+  const scope = { type: 'environment' as const, environmentId: host.server.identity.environmentId }
+  const subscriptionId = await subscribe(second, scope)
+  vi.spyOn(host.server.runtime, 'ensureSession').mockResolvedValue({
+    sessionId: 'provider-session',
+    state: 'created',
+  })
+  first.command('session.create', {
+    environmentId: scope.environmentId,
+    workspaceId: host.workspaceId,
+    providerId: 'opencode',
+  })
+  const { session } = ProofResponseSchemas['session.create'].parse(await first.next()).payload
+  await second.next()
+  await second.next() // workspace.updated after the provider session starts
+  first.command('session.rename', { sessionId: session.sessionId, title: 'Shared title' })
+  expect(await first.next()).toMatchObject({
+    type: 'response',
+    payload: { session: { ...session, title: 'Shared title' } },
+  })
+  expect(await second.next()).toMatchObject({
+    name: 'subscription.event',
+    payload: {
+      subscriptionId,
+      record: {
+        event: {
+          name: 'session.updated',
+          scope,
+          payload: { sessionId: session.sessionId, title: 'Shared title' },
+        },
+      },
+    },
+  })
+  first.command('session.delete', { sessionId: session.sessionId })
+  expect(await first.next()).toMatchObject({ type: 'response', payload: null })
+  expect(await second.next()).toMatchObject({
+    name: 'subscription.event',
+    payload: {
+      subscriptionId,
+      record: {
+        event: { name: 'session.deleted', scope, payload: { sessionId: session.sessionId } },
+      },
+    },
+  })
+})

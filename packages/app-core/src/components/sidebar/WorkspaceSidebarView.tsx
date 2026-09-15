@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   PlusIcon,
   CaretDoubleLeftIcon,
@@ -105,6 +105,7 @@ export function WorkspaceSidebarView({
   onCollapse,
   onCreateSession,
   onSelectSession,
+  onRenameSession,
   onDeleteSession,
   onAddWorkspace,
   settingsMenu,
@@ -121,6 +122,7 @@ export function WorkspaceSidebarView({
   onCollapse?: () => void
   onCreateSession: (workspacePath: string) => void
   onSelectSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
+  onRenameSession?: (workspacePath: string, externalId: string, title: string | null) => void
   onDeleteSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
   onAddWorkspace: () => void
   settingsMenu?: ReactNode
@@ -218,6 +220,7 @@ export function WorkspaceSidebarView({
               onToggleCollapse={() => onToggleWorkspaceCollapse(ws.path)}
               onSelectSession={onSelectSession}
               onCreateSession={onCreateSession}
+              onRenameSession={onRenameSession}
               onDeleteSession={onDeleteSession}
             />
           ))}
@@ -239,6 +242,7 @@ function WorkspaceGroup({
   onToggleCollapse,
   onSelectSession,
   onCreateSession,
+  onRenameSession,
   onDeleteSession,
 }: {
   workspace: SidebarWorkspace
@@ -249,8 +253,29 @@ function WorkspaceGroup({
   onToggleCollapse: () => void
   onSelectSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
   onCreateSession: (workspacePath: string) => void
+  onRenameSession?: (workspacePath: string, externalId: string, title: string | null) => void
   onDeleteSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
 }) {
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [draftTitle, setDraftTitle] = useState('')
+  // Enter and blur both commit, Escape abandons. The ref makes whichever fires
+  // first win, so the blur that follows a submit cannot rename a second time.
+  const renamingRef = useRef<string | null>(null)
+  const startRename = (externalId: string, title: string | null | undefined) => {
+    renamingRef.current = externalId
+    setEditingId(externalId)
+    setDraftTitle(title ?? '')
+  }
+  const finishRename = (externalId: string, commit: boolean) => {
+    if (renamingRef.current !== externalId) return
+    renamingRef.current = null
+    setEditingId(null)
+    if (commit) onRenameSession?.(workspace.path, externalId, draftTitle.trim() || null)
+  }
+  const focusTitleInput = useCallback((input: HTMLInputElement | null) => {
+    input?.focus()
+    input?.select()
+  }, [])
   const [visibleCount, setVisibleCount] = useState(SESSION_PREVIEW_LIMIT)
   const FolderIcon = workspace.missing
     ? FolderDashedIcon
@@ -355,9 +380,8 @@ function WorkspaceGroup({
             const tone = s.status === 'done' && isActive ? null : sessionBusyTone(s.status)
             const showStatus = tone !== null
             return (
-              <button
+              <div
                 key={s.externalId}
-                onClick={() => onSelectSession(workspace.path, s.externalId, providerId)}
                 className={cn(
                   'group relative flex w-full items-center gap-1.5 overflow-hidden rounded px-2 py-0.5 text-left transition-default',
                   isActive
@@ -383,12 +407,55 @@ function WorkspaceGroup({
                 ) : (
                   <ProviderIcon providerId={providerId} className="h-3 w-3 opacity-70" />
                 )}
-                <span className={cn(typographyLabel, 'relative flex-1 truncate font-normal')}>
-                  {s.title || 'New session'}
-                  {/* The heading above names the environment for sighted users;
+                {editingId === s.externalId ? (
+                  <form
+                    className="relative min-w-0 flex-1"
+                    onSubmit={(event) => {
+                      event.preventDefault()
+                      finishRename(s.externalId, true)
+                    }}
+                  >
+                    <input
+                      ref={focusTitleInput}
+                      aria-label="Session title"
+                      maxLength={512}
+                      value={draftTitle}
+                      onChange={(event) => setDraftTitle(event.target.value)}
+                      onBlur={() => finishRename(s.externalId, true)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Escape') finishRename(s.externalId, false)
+                      }}
+                      className={cn(
+                        typographyLabel,
+                        'w-full min-w-0 rounded-sm border border-[var(--basis-border-muted)] bg-[var(--basis-canvas-bg)] px-1 py-0 font-normal outline-none focus-visible:border-[var(--basis-border)]',
+                      )}
+                    />
+                  </form>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => onSelectSession(workspace.path, s.externalId, providerId)}
+                    className={cn(
+                      typographyLabel,
+                      'relative flex-1 truncate text-left font-normal',
+                    )}
+                  >
+                    {s.title || 'New session'}
+                    {/* The heading above names the environment for sighted users;
                       the row still says it so a row read alone is unambiguous. */}
-                  {environmentLabel && <span className="sr-only"> on {environmentLabel}</span>}
-                </span>
+                    {environmentLabel && <span className="sr-only"> on {environmentLabel}</span>}
+                  </button>
+                )}
+                {onRenameSession && editingId !== s.externalId && (
+                  <button
+                    type="button"
+                    aria-label="Rename session"
+                    onClick={() => startRename(s.externalId, s.title)}
+                    className="relative shrink-0 rounded text-muted-foreground opacity-0 transition-default group-hover:opacity-100 focus-visible:opacity-100 hover:text-[var(--basis-text)]"
+                  >
+                    <NotePencilIcon className="h-3 w-3" />
+                  </button>
+                )}
                 {isChild && !showStatus ? (
                   <Tooltip
                     content={
@@ -406,7 +473,7 @@ function WorkspaceGroup({
                     'relative z-[1] flex h-4 shrink-0 items-center justify-center overflow-hidden transition-[width]',
                     // Ring is 8×8 inside a 16px slot — same width as the delete
                     // control, so busy rows don't grow and trash stays anchored.
-                    showStatus ? 'w-4' : 'w-0 group-hover:w-4',
+                    showStatus ? 'w-4' : 'w-0 group-hover:w-4 group-focus-within:w-4',
                   )}
                 >
                   {tone && (
@@ -421,13 +488,13 @@ function WorkspaceGroup({
                       e.stopPropagation()
                       onDeleteSession(workspace.path, s.externalId, providerId)
                     }}
-                    className="absolute inset-0 flex items-center justify-center rounded text-muted-foreground opacity-0 transition-default group-hover:opacity-100 hover:bg-red-400/10 hover:text-red-400"
+                    className="absolute inset-0 flex items-center justify-center rounded text-muted-foreground opacity-0 transition-default group-hover:opacity-100 focus-visible:opacity-100 hover:bg-red-400/10 hover:text-red-400"
                     aria-label="Delete session"
                   >
                     <TrashIcon className="h-3 w-3" />
                   </button>
                 </span>
-              </button>
+              </div>
             )
           })}
           {hasMoreSessions && (

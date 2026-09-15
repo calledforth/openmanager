@@ -94,6 +94,9 @@ function Sidebar() {
         })
       }
       onSelectSession={(_workspace, sessionId) => void commands.openSession(sessionId)}
+      onRenameSession={(_workspace, sessionId, title) =>
+        void commands.renameSession(sessionId, title)
+      }
       onDeleteSession={(_workspace, sessionId) => void commands.deleteSession(sessionId)}
       onAddWorkspace={() => undefined}
     />
@@ -210,6 +213,44 @@ describe('mock environment client drives the shared UI', () => {
     await settle(client)
     expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
     expect(client.calls.map((call) => call.command)).toContain('openSession')
+  })
+
+  it('renames inline and deletes a session from the sidebar', async () => {
+    const client = createMockEnvironmentClient({
+      seed: { workspaces: [WORKSPACE], sessions: [{ session: SESSION, threads: [THREAD] }] },
+    })
+    await render(<App client={client} />)
+    // Escape abandons the edit without sending a command.
+    await act(() => button('Rename session')!.click())
+    await act(() =>
+      container
+        .querySelector<HTMLInputElement>('input[aria-label="Session title"]')!
+        .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })),
+    )
+    await settle(client)
+    expect(container.querySelector('input[aria-label="Session title"]')).toBeNull()
+    expect(client.calls.map((call) => call.command)).not.toContain('renameSession')
+
+    await act(() => button('Rename session')!.click())
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Session title"]')!
+    await act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
+        input,
+        '  Renamed  ',
+      )
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(() =>
+      container
+        .querySelector('form')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
+    )
+    await settle(client)
+    expect(client.getState().sessions[SESSION.sessionId]?.title).toBe('Renamed')
+    expect(container.textContent).toContain('Renamed')
+    await act(() => button('Delete session')!.click())
+    await settle(client)
+    expect(client.getState().sessions[SESSION.sessionId]).toBeUndefined()
   })
 
   it('creates a session from the sidebar and streams a reply through the composer', async () => {

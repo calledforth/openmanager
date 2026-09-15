@@ -38,7 +38,11 @@ const seeded = (): EnvironmentState => {
   let state = createInitialState()
   state = applyEvent(
     state,
-    event({ name: 'workspace.updated', scope: environmentScope, payload: { workspace: WORKSPACE } }),
+    event({
+      name: 'workspace.updated',
+      scope: environmentScope,
+      payload: { workspace: WORKSPACE },
+    }),
   )
   state = applyEvent(
     state,
@@ -214,6 +218,22 @@ describe('applyEvent', () => {
     ).toBe(next)
   })
 
+  it('applies a rename from another client without changing session identity or status', () => {
+    const previous = seeded()
+    const state = applyEvent(
+      previous,
+      event({
+        name: 'session.updated',
+        scope: environmentScope,
+        payload: { sessionId: SESSION.sessionId, title: 'Other client title' },
+      }),
+    )
+    expect(state.sessions[SESSION.sessionId]).toEqual({
+      ...previous.sessions[SESSION.sessionId],
+      title: 'Other client title',
+    })
+  })
+
   it('drops the active selection when the session is deleted', () => {
     const state = applyEvent(
       seeded(),
@@ -386,7 +406,11 @@ describe('snapshots', () => {
     let state = createInitialState()
     state = applyEvent(
       state,
-      event({ name: 'workspace.updated', scope: environmentScope, payload: { workspace: WORKSPACE } }),
+      event({
+        name: 'workspace.updated',
+        scope: environmentScope,
+        payload: { workspace: WORKSPACE },
+      }),
     )
     expect(selectRecentWorkspaces(state)).toEqual([])
 

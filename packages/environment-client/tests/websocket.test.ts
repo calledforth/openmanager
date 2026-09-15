@@ -170,6 +170,54 @@ async function connected(capabilities = FULL_CAPABILITIES, extraBootstrap: objec
 }
 
 describe('websocket environment client', () => {
+  it('rejects rename on older servers without sending the command', async () => {
+    const { client, socket } = await connected()
+    await expect(client.commands.renameSession(SESSION.sessionId, 'Name')).rejects.toMatchObject({
+      code: 'capability_missing',
+    })
+    expect(socket.sent.some((message) => message.name === 'session.rename')).toBe(false)
+    client.disconnect()
+  })
+
+  it('keeps the persisted status while opening and hydrating an empty transcript', async () => {
+    const { client, socket } = await connected()
+    const opened = client.commands.openSession(SESSION.sessionId)
+    socket.respond('session.open', {
+      session: { ...SESSION_SUMMARY, status: 'error' },
+      threads: [THREAD],
+    })
+    await flush()
+    expect(client.getState().sessions[SESSION.sessionId]?.status).toBe('error')
+    socket.respond('session.history', EMPTY_HISTORY)
+    await opened
+    expect(client.getState().sessions[SESSION.sessionId]?.status).toBe('error')
+    client.disconnect()
+  })
+
+  it('sends rename and delete commands and updates the local session', async () => {
+    const { client, socket } = await connected([
+      ...FULL_CAPABILITIES,
+      'session.rename',
+      'session.delete',
+    ])
+    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
+    await flush()
+    const rename = client.commands.renameSession(SESSION.sessionId, 'Renamed')
+    expect(socket.last('session.rename').payload).toEqual({
+      sessionId: SESSION.sessionId,
+      title: 'Renamed',
+    })
+    socket.respond('session.rename', { session: { ...SESSION, title: 'Renamed' } })
+    await rename
+    expect(client.getState().sessions[SESSION.sessionId]?.title).toBe('Renamed')
+    const remove = client.commands.deleteSession(SESSION.sessionId)
+    expect(socket.last('session.delete').payload).toEqual({ sessionId: SESSION.sessionId })
+    socket.respond('session.delete', null)
+    await remove
+    expect(client.getState().sessions[SESSION.sessionId]).toBeUndefined()
+    client.disconnect()
+  })
+
   it('does not show a stale open failure after navigating away', async () => {
     const { client, socket } = await connected()
     const opened = client.commands.openSession(SESSION.sessionId)

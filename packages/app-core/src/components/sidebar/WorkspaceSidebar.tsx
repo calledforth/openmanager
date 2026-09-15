@@ -29,6 +29,7 @@ export function WorkspaceSidebar({
     addWorkspace,
     selectSession,
     createSession,
+    renameSession,
     deleteSession,
     acknowledgeSessionDone,
   } = useSidebarData()
@@ -62,6 +63,9 @@ export function WorkspaceSidebar({
       onCollapse={onCollapse}
       onCreateSession={(workspacePath) => void createSession(workspacePath)}
       onSelectSession={selectSession}
+      onRenameSession={
+        renameSession ? (path, id, title) => void renameSession(path, id, title) : undefined
+      }
       onDeleteSession={(workspacePath, externalId, providerId) =>
         void deleteSession(workspacePath, externalId, providerId)
       }

@@ -29,6 +29,7 @@ import {
 } from '@agentpack/runtime/node'
 import {
   findTurnByCommandId,
+  getProviderSessionId,
   getSessionSummary,
   listSessionHistory,
   listSessionSummaries,
@@ -132,6 +133,16 @@ export function createThreadService(
     cwd: record.cwd,
     ...(sessionId ? { sessionId } : {}),
   })
+  // Persist the opaque identity before allowing prompts to use the provider session.
+  const persistRuntimeSession = (record: ThreadRecord, providerSessionId: string): string => {
+    options.database
+      ?.prepare(
+        'UPDATE sessions SET provider_id = ?, provider_session_id = ?, updated_at = ? WHERE session_id = ?',
+      )
+      .run(record.providerId, providerSessionId, Date.now(), record.session.sessionId)
+    return providerSessionId
+  }
+
   const threadScope = (record: ThreadRecord) =>
     ({
       type: 'thread',
@@ -257,6 +268,84 @@ export function createThreadService(
     appendEvent(threadCreated)
   }
 
+  /**
+   * Forget a session and every thread record that belongs to it. Restored
+   * sessions can hold several thread records, so cleanup has to be
+   * session-wide or a partially available session is left behind.
+   */
+  const dropSessionRecords = (sessionId: string): ThreadRecord[] => {
+    sessions.delete(sessionId)
+    const dropped: ThreadRecord[] = []
+    for (const [threadId, item] of threads) {
+      if (item.session.sessionId !== sessionId) continue
+      threads.delete(threadId)
+      dropped.push(item)
+    }
+    return dropped
+  }
+
+  /**
+   * Abandon a dropped record's turn and stop any provider work behind it. The
+   * turn is cleared before the provider session resolves so a prompt that never
+   * ran cannot finalize as completed.
+   */
+  const abandonTurn = (item: ThreadRecord) => {
+    if (!item.activeTurn) return
+    item.activeTurn.interruptRequested = true
+    item.activeTurn = undefined
+    void item.runtimeSession
+      .then((sessionId) => runtime.cancel({ ...route(item), sessionId }))
+      .catch(() => undefined)
+  }
+
+  /**
+   * Rebuild in-memory records for a session that only exists in SQLite, so the
+   * runtime loads the stored provider thread instead of creating a second one.
+   * A failed load drops the records again, keeping durable history and letting
+   * another open retry.
+   */
+  const restoreSession = (
+    session: SessionSummary,
+    providerId: ProviderId,
+    providerSessionId: string,
+    cwd: string,
+    restoredThreads: Thread[],
+  ) => {
+    const records: ThreadRecord[] = []
+    for (const thread of restoredThreads) {
+      const record: ThreadRecord = {
+        session: {
+          sessionId: session.sessionId,
+          workspaceId: session.workspaceId,
+          title: session.title,
+        },
+        thread,
+        providerId,
+        cwd,
+        runtimeSession: Promise.resolve().then(() => {
+          if (threads.get(thread.threadId) !== record) throw new Error('Session was closed.')
+          return runtime
+            .ensureSession(route(record, providerSessionId))
+            .then((result) => result.sessionId)
+        }),
+        turns: [],
+        messages: [],
+        commandTurns: new Map(),
+        status: session.status,
+        updatedAt: Date.parse(session.updatedAt),
+      }
+      void record.runtimeSession.catch(() => {
+        // One thread failing to load leaves the session half attached, so the
+        // whole restore is abandoned and a later open retries it from SQLite.
+        const current = sessions.get(session.sessionId)
+        if (current && records.includes(current)) dropSessionRecords(session.sessionId)
+      })
+      records.push(record)
+      threads.set(thread.threadId, record)
+    }
+    if (records[0]) sessions.set(session.sessionId, records[0])
+  }
+
   const rollbackSession = (record: ThreadRecord) => {
     if (sessions.get(record.session.sessionId) !== record) return
     sessions.delete(record.session.sessionId)
@@ -363,13 +452,7 @@ export function createThreadService(
       let closed = 0
       for (const record of [...sessions.values()]) {
         if (record.session.workspaceId !== workspaceId) continue
-        sessions.delete(record.session.sessionId)
-        if (threads.get(record.thread.threadId) === record) threads.delete(record.thread.threadId)
-        if (record.activeTurn) {
-          void record.runtimeSession
-            .then((sessionId) => runtime.cancel({ ...route(record), sessionId }))
-            .catch(() => undefined)
-        }
+        for (const item of dropSessionRecords(record.session.sessionId)) abandonTurn(item)
         closed += 1
       }
       return closed
@@ -416,11 +499,7 @@ export function createThreadService(
         try {
           target = resolveWorkspace(input.workspaceId, context)
         } catch {
-          return errorResult(
-            command.requestId,
-            'not_found',
-            WORKSPACE_UNAVAILABLE,
-          )
+          return errorResult(command.requestId, 'not_found', WORKSPACE_UNAVAILABLE)
         }
         if (!target) return errorResult(command.requestId, 'not_found', 'Workspace not found.')
         // Order matters: a provider this build cannot run is a capability gap,
@@ -476,7 +555,7 @@ export function createThreadService(
             } catch {
               /* reported by the host's callback; see WorkspaceRuntimeRoute */
             }
-            return result.sessionId
+            return persistRuntimeSession(record, result.sessionId)
           })
         record = {
           session,
@@ -512,11 +591,7 @@ export function createThreadService(
               context,
             )
           } catch {
-            result = errorResult(
-              command.requestId,
-              'not_found',
-              WORKSPACE_UNAVAILABLE,
-            )
+            result = errorResult(command.requestId, 'not_found', WORKSPACE_UNAVAILABLE)
           }
           const started = ProofResponseSchemas['turn.send'].safeParse(result)
           if (!started.success) {
@@ -533,6 +608,66 @@ export function createThreadService(
         })
       }
 
+      if (command.name === 'session.rename' || command.name === 'session.delete') {
+        const parsed = ProofCommandSchemas[command.name].safeParse(command)
+        if (!parsed.success)
+          return errorResult(command.requestId, 'validation', 'Invalid session request.')
+        options.flush?.()
+        const { sessionId } = parsed.data.payload
+        const record = sessions.get(sessionId)
+        const session =
+          record?.session ??
+          (options.database ? getSessionSummary(options.database, sessionId) : undefined)
+        if (!session) return errorResult(command.requestId, 'not_found', 'Session not found.')
+        const timestamp = new Date().toISOString()
+        const event =
+          parsed.data.name === 'session.rename'
+            ? ProofEventSchemas['session.updated'].parse({
+                type: 'event',
+                name: 'session.updated',
+                eventId: randomUUID(),
+                timestamp,
+                scope: { type: 'environment', environmentId },
+                payload: { sessionId, title: parsed.data.payload.title, titleSource: 'user' },
+              })
+            : ProofEventSchemas['session.deleted'].parse({
+                type: 'event',
+                name: 'session.deleted',
+                eventId: randomUUID(),
+                timestamp,
+                scope: { type: 'environment', environmentId },
+                payload: { sessionId },
+              })
+        try {
+          appendEvent(event)
+        } catch (error) {
+          options.onPersistenceError?.(error, event.name)
+          return errorResult(
+            command.requestId,
+            'unavailable',
+            'The session change could not be saved. Try again.',
+          )
+        }
+        if (parsed.data.name === 'session.rename') {
+          for (const item of threads.values()) {
+            if (item.session.sessionId !== sessionId) continue
+            item.session.title = parsed.data.payload.title
+            item.updatedAt = Date.parse(timestamp)
+          }
+          return ProofResponseSchemas['session.rename'].parse({
+            type: 'response',
+            requestId: command.requestId,
+            payload: { session: { ...session, title: parsed.data.payload.title } },
+          })
+        }
+        for (const item of dropSessionRecords(sessionId)) abandonTurn(item)
+        return ProofResponseSchemas['session.delete'].parse({
+          type: 'response',
+          requestId: command.requestId,
+          payload: null,
+        })
+      }
+
       if (command.name === 'session.open') {
         const parsed = ProofCommandSchemas['session.open'].safeParse(command)
         if (!parsed.success) {
@@ -542,13 +677,39 @@ export function createThreadService(
           options.flush?.()
           const session = getSessionSummary(options.database, parsed.data.payload.sessionId)
           if (!session) return errorResult(command.requestId, 'not_found', 'Session not found.')
+          const providerId = session.providerId as ProviderId
+          if (!providers[providerId]?.capabilities.canLoadSession) {
+            return errorResult(
+              command.requestId,
+              'capability_missing',
+              'Provider cannot resume sessions.',
+            )
+          }
+          const rejection = rejectProvider(command.requestId, providerId)
+          if (rejection) return rejection
+          const providerSessionId = getProviderSessionId(options.database, session.sessionId)
+          if (!providerSessionId) {
+            return errorResult(
+              command.requestId,
+              'unavailable',
+              'The provider session identity is unavailable.',
+            )
+          }
+          let target: WorkspaceRuntimeRoute | undefined
+          try {
+            target = resolveWorkspace(session.workspaceId, context)
+          } catch {
+            /* unavailable */
+          }
+          if (!target) return errorResult(command.requestId, 'not_found', WORKSPACE_UNAVAILABLE)
+          const restoredThreads = listThreadsForSession(options.database, session.sessionId)
+          if (!restoredThreads.length)
+            return errorResult(command.requestId, 'not_found', 'Thread not found.')
+          restoreSession(session, providerId, providerSessionId, target.cwd, restoredThreads)
           return ProofResponseSchemas['session.open'].parse({
             type: 'response',
             requestId: command.requestId,
-            payload: {
-              session,
-              threads: listThreadsForSession(options.database, session.sessionId),
-            },
+            payload: { session, threads: restoredThreads },
           })
         }
         const record = sessions.get(parsed.data.payload.sessionId)
@@ -709,16 +870,20 @@ export function createThreadService(
         }
         record.activeTurn = active
         void record.runtimeSession
-          .then((sessionId) =>
-            runtime.prompt({
+          .then((sessionId) => {
+            // Deleting the session or closing the workspace drops the record while
+            // the provider session is still resolving. Starting provider work for a
+            // record nothing points at any more would outlive the session itself.
+            if (threads.get(record.thread.threadId) !== record) return
+            return runtime.prompt({
               ...route(record, sessionId),
               prompt: {
                 text: input.text,
                 blocks: [{ type: 'text', text: input.text }],
               },
               userMessageId: userMessage.messageId,
-            }),
-          )
+            })
+          })
           .then(() => {
             if (
               record.activeTurn === active &&

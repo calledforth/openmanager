@@ -44,6 +44,18 @@ const userMessage = {
 } as const
 
 export const proofCommands = [
+  {
+    type: 'command',
+    requestId: 'rename',
+    name: 'session.rename',
+    payload: { sessionId: 'session-1', title: 'Example' },
+  },
+  {
+    type: 'command',
+    requestId: 'delete',
+    name: 'session.delete',
+    payload: { sessionId: 'session-1' },
+  },
   { type: 'command', requestId: 'r-1', name: 'environment.get', payload: null },
   { type: 'command', requestId: 'r-2', name: 'workspace.list', payload: null },
   {
@@ -129,6 +141,8 @@ export const proofCommands = [
 ] satisfies ProofCommand[]
 
 export const proofResponses = {
+  'session.rename': { type: 'response', requestId: 'rename', payload: { session } },
+  'session.delete': { type: 'response', requestId: 'delete', payload: null },
   'environment.get': {
     type: 'response',
     requestId: 'r-1',

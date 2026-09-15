@@ -65,6 +65,11 @@ export const ProofCommandSchemas = {
     }),
   ),
   'session.open': command('session.open', SessionTargetSchema),
+  'session.rename': command(
+    'session.rename',
+    SessionTargetSchema.extend({ title: z.string().trim().min(1).max(512).nullable() }),
+  ),
+  'session.delete': command('session.delete', SessionTargetSchema),
   'session.history': command(
     'session.history',
     ThreadTargetSchema.extend({
@@ -107,6 +112,8 @@ export const ProofCommandSchema = z.discriminatedUnion('name', [
   ProofCommandSchemas['session.list'],
   ProofCommandSchemas['session.create'],
   ProofCommandSchemas['session.open'],
+  ProofCommandSchemas['session.rename'],
+  ProofCommandSchemas['session.delete'],
   ProofCommandSchemas['session.history'],
   ProofCommandSchemas['turn.send'],
   ProofCommandSchemas['turn.interrupt'],
@@ -144,6 +151,8 @@ export const ProofResponseSchemas = {
       threads: z.array(ThreadSchema),
     }),
   ),
+  'session.rename': response(z.object({ session: SessionSchema })),
+  'session.delete': response(z.null()),
   'session.history': response(
     z.object({
       messages: z.array(MessageSchema),

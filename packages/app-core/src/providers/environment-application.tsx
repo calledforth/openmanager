@@ -323,6 +323,10 @@ function EnvironmentSessionStateProvider({
         void openSessionLatest(parentExternalId).catch(fail)
       },
       createSession: async (workspacePath) => openDraft(workspacePath),
+      renameSession: async (_workspacePath, externalId, title) => {
+        setError(null)
+        await commands.renameSession(externalId, title).catch(fail)
+      },
       deleteSession: async (_workspacePath, externalId) => {
         setError(null)
         await commands.deleteSession(externalId).catch(fail)
@@ -520,6 +524,7 @@ function EnvironmentSidebarDataProvider({
       removeWorkspace: session.removeWorkspace,
       selectSession: session.selectSession,
       createSession: session.createSession,
+      renameSession: session.renameSession,
       deleteSession: session.deleteSession,
     }),
     [
@@ -531,6 +536,7 @@ function EnvironmentSidebarDataProvider({
       session.activeWorkspacePath,
       session.addWorkspace,
       session.createSession,
+      session.renameSession,
       session.deleteSession,
       session.removeWorkspace,
       session.selectSession,
