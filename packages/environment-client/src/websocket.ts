@@ -162,6 +162,8 @@ type Subscription = {
   inflight: boolean
   /** Last applied durable event of the scope; what a reconnect resumes from. */
   cursor: Cursor | null
+  recovery?: Promise<void>
+  buffered?: DurableEvent[]
 }
 
 const scopeKey = (scope: SubscriptionScope) =>
@@ -219,6 +221,7 @@ export function createWebSocketEnvironmentClient(
   const pending = new Map<string, Pending>()
   const queued: Array<() => void> = []
   const subscriptions = new Map<string, Subscription>()
+  const transientIds = new Set<string>()
 
   const patchConnection = (patch: Parameters<typeof applyConnection>[1]) =>
     store.update((state) => applyConnection(state, patch))
@@ -298,9 +301,12 @@ export function createWebSocketEnvironmentClient(
     ready = false
     stopHeartbeat()
     connectionGeneration += 1
+    openGeneration += 1
     for (const subscription of subscriptions.values()) {
       subscription.subscriptionId = null
       subscription.inflight = false
+      subscription.buffered = undefined
+      subscription.recovery = undefined
     }
     rejectAllPending(
       new EnvironmentClientError('unavailable', reason || 'Connection closed.', { code }),
@@ -448,11 +454,22 @@ export function createWebSocketEnvironmentClient(
   const handleEvent = (raw: unknown) => {
     const live = SubscriptionEventSchema.safeParse(raw)
     if (live.success) {
-      applyRecord(live.data.payload.record)
+      const record = live.data.payload.record
+      const subscription = subscriptions.get(scopeKey(record.cursor.scope))
+      if (!subscription) return
+      if (subscription.buffered) {
+        subscription.buffered.push(record)
+        return
+      }
+      applyRecord(record)
       return
     }
     const transient = ProofEventSchema.safeParse(raw)
-    if (transient.success) store.update((state) => applyEvent(state, transient.data))
+    if (transient.success && !transientIds.has(transient.data.eventId)) {
+      transientIds.add(transient.data.eventId)
+      if (transientIds.size > 4096) transientIds.delete(transientIds.values().next().value!)
+      store.update((state) => applyEvent(state, transient.data))
+    }
   }
 
   const open = () => {
@@ -620,78 +637,107 @@ export function createWebSocketEnvironmentClient(
     }
   }
 
-  /**
-   * Re-establish a scope after a drop, from the cursor it held. The
-   * environment answers with the missed tail, folded in through the same
-   * path as live events, or with a snapshot that replaces the scope when the
-   * gap can no longer be replayed; the live subscription is part of either
-   * answer, so nothing committed after it can be missed. A scope with no
-   * cursor yet, or an environment without replay, subscribes plainly and
-   * relies on the reads that follow the handshake. An answer the client cannot
-   * use falls back the same way; a scope the environment no longer has is
-   * dropped, its removal reaches the store through the environment stream.
-   */
-  const recover = (subscription: Subscription) => {
-    if (subscription.subscriptionId || subscription.inflight) return
-    if (!subscription.cursor || !capabilities.has(REPLAY_NAME)) {
+  /** Snapshot and live registration share one server boundary; reconnect uses its cursor. */
+  const recover = (subscription: Subscription): Promise<void> => {
+    if (subscription.recovery) return subscription.recovery
+    if (subscription.subscriptionId || subscription.inflight) return Promise.resolve()
+    if (
+      !capabilities.has(REPLAY_NAME) ||
+      (!subscription.cursor && subscription.scope.type !== 'thread')
+    ) {
       subscribe(subscription.scope)
-      return
+      return Promise.resolve()
     }
     const key = scopeKey(subscription.scope)
+    const generation = connectionGeneration
     const command: ReplayCommand = {
       type: 'command',
       requestId: nextRequestId(),
       name: REPLAY_NAME,
       payload: { scope: subscription.scope, cursor: subscription.cursor },
     }
-    const fallback = (error: EnvironmentClientError) => {
-      subscription.inflight = false
-      if (subscriptions.get(key) !== subscription) return
-      if (error.code === 'not_found') subscriptions.delete(key)
-      else subscribe(subscription.scope)
-    }
-    pending.set(command.requestId, {
-      name: REPLAY_NAME,
-      resolve: (raw) => {
+    subscription.buffered = []
+    const recovery = new Promise<void>((resolve, reject) => {
+      const fail = (error: EnvironmentClientError) => {
         subscription.inflight = false
-        let result: ReturnType<typeof parseReplayResult>
-        try {
-          result = parseReplayResult(command, raw)
-        } catch (error) {
-          // A well-formed answer that does not fit the request still carried
-          // a live subscription; release it rather than hold two for the scope.
-          const granted = GrantedSubscriptionSchema.safeParse(raw)
-          if (granted.success) sendUnsubscribe(granted.data.payload.subscriptionId)
-          fallback(
-            new EnvironmentClientError(
-              'validation',
-              error instanceof Error ? error.message : 'Invalid replay result.',
-            ),
-          )
-          return
+        subscription.buffered = undefined
+        if (subscriptions.get(key) === subscription && generation === connectionGeneration) {
+          if (subscription.scope.type === 'thread') {
+            const threadId = subscription.scope.threadId
+            store.update((state) => applyThreadHydration(state, threadId, 'failed'))
+          } else if (error.code === 'not_found') subscriptions.delete(key)
+          else if (ready) subscribe(subscription.scope)
         }
-        if (result.type === 'error') {
-          fallback(EnvironmentClientError.fromProtocol(result.error))
-          return
-        }
-        const payload = result.payload
-        // Released while the answer was in flight: let the server side go too.
-        if (subscriptions.get(key) !== subscription) {
-          sendUnsubscribe(payload.subscriptionId)
-          return
-        }
-        subscription.subscriptionId = payload.subscriptionId
-        if (payload.mode === 'replay') {
-          for (const record of payload.events) applyRecord(record)
-        } else {
-          store.update((state) => applySnapshot(state, payload.snapshot))
-          subscription.cursor = payload.snapshot.cursor
-        }
-      },
-      reject: fallback,
+        reject(error)
+      }
+      pending.set(command.requestId, {
+        name: REPLAY_NAME,
+        resolve: (raw) => {
+          let result: ReturnType<typeof parseReplayResult>
+          try {
+            result = parseReplayResult(command, raw)
+          } catch (error) {
+            const granted = GrantedSubscriptionSchema.safeParse(raw)
+            if (granted.success) sendUnsubscribe(granted.data.payload.subscriptionId)
+            fail(
+              new EnvironmentClientError(
+                'validation',
+                error instanceof Error ? error.message : 'Invalid replay result.',
+              ),
+            )
+            return
+          }
+          if (result.type === 'error') {
+            fail(EnvironmentClientError.fromProtocol(result.error))
+            return
+          }
+          subscription.inflight = false
+          const payload = result.payload
+          if (subscriptions.get(key) !== subscription || generation !== connectionGeneration) {
+            sendUnsubscribe(payload.subscriptionId)
+            resolve()
+            return
+          }
+          subscription.subscriptionId = payload.subscriptionId
+          if (payload.mode === 'replay') {
+            for (const record of payload.events) applyRecord(record)
+            subscription.cursor = payload.to
+            if (subscription.scope.type === 'thread') {
+              const threadId = subscription.scope.threadId
+              store.update((state) => applyThreadHydration(state, threadId, 'ready'))
+            }
+          } else {
+            store.update((state) => applySnapshot(state, payload.snapshot))
+            subscription.cursor = payload.snapshot.cursor
+          }
+          const buffered = subscription.buffered ?? []
+          subscription.buffered = undefined
+          for (const record of buffered) applyRecord(record)
+          resolve()
+        },
+        reject: fail,
+      })
+      subscription.inflight = true
+      if (!rawSend(command)) {
+        pending.delete(command.requestId)
+        fail(new EnvironmentClientError('unavailable', 'Connection is not open.'))
+      }
     })
-    if (rawSend(command)) subscription.inflight = true
-    else pending.delete(command.requestId)
+    const tracked = recovery.finally(() => {
+      if (subscription.recovery === tracked) subscription.recovery = undefined
+    })
+    subscription.recovery = tracked
+    return tracked
+  }
+
+  const hydrateThread = (scope: SubscriptionScope) => {
+    const key = scopeKey(scope)
+    let subscription = subscriptions.get(key)
+    if (!subscription) {
+      subscription = { scope, subscriptionId: null, inflight: false, cursor: null }
+      subscriptions.set(key, subscription)
+    }
+    return recover(subscription)
   }
 
   const unsubscribe = (scope: SubscriptionScope) => {
@@ -728,7 +774,8 @@ export function createWebSocketEnvironmentClient(
     // lands the open session's events are not sent at all. Recovery is
     // idempotent, so the session.open below is free to ask for the same
     // scopes again.
-    for (const subscription of [...subscriptions.values()]) recover(subscription)
+    for (const subscription of [...subscriptions.values()])
+      void recover(subscription).catch(() => undefined)
     const reads: Promise<unknown>[] = []
     if (supports('getEnvironment')) reads.push(commands.getEnvironment().catch(() => undefined))
     if (supports('listWorkspaces')) reads.push(commands.listWorkspaces().catch(() => undefined))
@@ -736,9 +783,14 @@ export function createWebSocketEnvironmentClient(
     await Promise.all(reads)
     if (generation !== connectionGeneration || !ready) return
     const activeSessionId = store.getState().activeSessionId
-    if (activeSessionId && supports('openSession')) {
+    if (
+      activeSessionId &&
+      supports('openSession') &&
+      (!capabilities.has(REPLAY_NAME) ||
+        store.getState().sessions[activeSessionId]?.threadIds.length === 0)
+    ) {
       await commands.openSession(activeSessionId).catch(() => undefined)
-    } else if (activeSessionId) {
+    } else if (activeSessionId && !capabilities.has(REPLAY_NAME)) {
       for (const scope of sessionScopes(activeSessionId)) subscribe(scope)
     }
   }
@@ -849,10 +901,31 @@ export function createWebSocketEnvironmentClient(
       }
       if (generation !== openGeneration) return
       store.update((state) => applyActiveSession(applySessionOpen(state, payload), sessionId))
+      if (previous && previous !== sessionId) {
+        for (const scope of sessionScopes(previous)) unsubscribe(scope)
+      }
+      if (capabilities.has(REPLAY_NAME) && environmentId) {
+        subscribe({ type: 'session', environmentId, sessionId })
+        await Promise.all(
+          payload.threads.map((thread) =>
+            hydrateThread({ type: 'thread', environmentId: environmentId!, ...thread })
+              .then(() => {
+                if (generation === openGeneration)
+                  store.update((state) => applyThreadHydration(state, thread.threadId, 'ready'))
+              })
+              .catch(() => {
+                if (generation === openGeneration)
+                  store.update((state) => applyThreadHydration(state, thread.threadId, 'failed'))
+              }),
+          ),
+        )
+        return
+      }
       if (supports('loadSessionHistory')) {
         await Promise.all(
           payload.threads.map((thread) =>
             commands.loadSessionHistory({ sessionId, threadId: thread.threadId }).catch(() => {
+              if (generation !== openGeneration) return
               store.update((state) => applyThreadHydration(state, thread.threadId, 'failed'))
             }),
           ),
@@ -866,18 +939,20 @@ export function createWebSocketEnvironmentClient(
           return next
         })
       }
-      if (previous && previous !== sessionId) {
-        for (const scope of sessionScopes(previous)) unsubscribe(scope)
-      }
+      if (generation !== openGeneration) return
       for (const scope of sessionScopes(sessionId)) subscribe(scope)
     },
     async loadSessionHistory(input) {
+      const generation = connectionGeneration
+      const selection = openGeneration
       const payload = await request('session.history', input)
+      if (generation !== connectionGeneration || selection !== openGeneration) return payload
       store.update((state) =>
         applySessionHistory(
           state,
           { threadId: input.threadId, sessionId: input.sessionId },
           payload,
+          input.cursor !== undefined,
         ),
       )
       return payload

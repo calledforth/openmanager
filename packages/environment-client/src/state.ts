@@ -262,7 +262,7 @@ function removeSession(state: EnvironmentState, sessionId: string): EnvironmentS
  * (sessions, turns, tools, interactions) are idempotent, so a replayed event
  * cannot double-apply. Delta events (`message.delta`, `message.reasoning`,
  * `turn.notice`) append and are not; the transport de-duplicates those by
- * cursor, and event-ID tracking for replay lands with CAL-71.
+ * cursor at the snapshot/replay boundary.
  */
 export function applyEvent(state: EnvironmentState, event: ProofEvent): EnvironmentState {
   switch (event.name) {
@@ -394,6 +394,13 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
     outbox: reconcileOutbox(existing, threadSnapshot.messages),
     turns: threadSnapshot.turns,
     messages: retainOlderMessages(existing.messages, threadSnapshot.messages),
+    historyCursor:
+      existing.historyCursor !== undefined &&
+      existing.messages.findIndex(
+        (message) => message.messageId === threadSnapshot.messages[0]?.messageId,
+      ) > 0
+        ? existing.historyCursor
+        : threadSnapshot.nextCursor,
     reasoning: threadSnapshot.reasoning,
     tools: threadSnapshot.tools,
     interactions: threadSnapshot.interactions.map((item) => ({
@@ -419,7 +426,7 @@ function retainOlderMessages(known: readonly Message[], newest: readonly Message
   if (known.length === 0) return [...newest]
   const inSnapshot = new Set(newest.map((message) => message.messageId))
   const overlap = known.findIndex((message) => inSnapshot.has(message.messageId))
-  const older = overlap === -1 ? known : known.slice(0, overlap)
+  const older = overlap === -1 ? [] : known.slice(0, overlap)
   return older.length === 0 ? [...newest] : [...older, ...newest]
 }
 
@@ -454,6 +461,7 @@ export function applySessionHistory(
   state: EnvironmentState,
   thread: Thread,
   payload: ProofResponse<'session.history'>['payload'],
+  older = false,
 ): EnvironmentState {
   // A resumed transcript with no turns has no turn state to derive a status
   // from, so the persisted one stands.
@@ -462,7 +470,9 @@ export function applySessionHistory(
     const existingIds = new Set(current.messages.map((message) => message.messageId))
     const incoming = payload.messages.filter((message) => !existingIds.has(message.messageId))
     const messages =
-      current.hydration !== 'ready' ? payload.messages : [...incoming, ...current.messages]
+      !older && current.hydration !== 'ready'
+        ? payload.messages
+        : [...incoming, ...current.messages]
     const openTurn = payload.turns.find(
       (turn) => turn.state === 'waiting' || turn.state === 'running',
     )
@@ -476,14 +486,24 @@ export function applySessionHistory(
       }))
     return {
       ...current,
-      turns: payload.turns.length > 0 ? payload.turns : current.turns,
+      turns: older
+        ? [
+            ...payload.turns.filter(
+              (turn) => !current.turns.some((known) => known.turnId === turn.turnId),
+            ),
+            ...current.turns,
+          ]
+        : payload.turns.length > 0
+          ? payload.turns
+          : current.turns,
       messages,
       outbox: reconcileOutbox(current, payload.messages),
       interactions:
-        interactions.length > 0 || current.hydration !== 'ready'
+        !older && (interactions.length > 0 || current.hydration !== 'ready')
           ? interactions
           : current.interactions,
-      hydration: 'ready',
+      hydration: older ? current.hydration : 'ready',
+      historyCursor: payload.nextCursor,
     }
   })
   const restored = next.sessions[thread.sessionId]

@@ -542,7 +542,9 @@ export function createMockEnvironmentClient(
           })),
           nextCursor: page.nextCursor,
         }
-        store.update((state) => applySessionHistory(state, thread.thread, payload))
+        store.update((state) =>
+          applySessionHistory(state, thread.thread, payload, input.cursor !== undefined),
+        )
         return payload
       }),
     renameSession: (sessionId, title) =>

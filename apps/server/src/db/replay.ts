@@ -121,6 +121,7 @@ export function createReplayReader(database: DatabaseSync, options: ReplayReader
         // would load it. Reasoning and tool state live only in the event log,
         // which is what the snapshot stands in for, so they start over.
         messages: page.messages,
+        nextCursor: page.nextCursor,
         reasoning: [],
         tools: [],
         interactions: page.interactions.map(({ turnId, interaction }) => ({ turnId, interaction })),

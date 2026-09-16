@@ -592,8 +592,8 @@ describe('snapshots', () => {
     const state = applySnapshot(applyEvent(seeded(), turnStarted()), snapshot)
     const thread = state.threads[THREAD.threadId]!
     expect(thread.hydration).toBe('ready')
-    // The user message the page does not name is older than the page and stays.
-    expect(thread.messages.map((message) => message.messageId)).toEqual(['turn-1-user', 'm-1'])
+    // Without overlap there is no proof the old cache is contiguous with this page.
+    expect(thread.messages.map((message) => message.messageId)).toEqual(['m-1'])
     expect(thread.tools[0]?.status).toBe('completed')
     expect(state.sessions[SESSION.sessionId]?.status).toBe('idle')
   })
@@ -633,6 +633,8 @@ describe('snapshots', () => {
       { type: 'text', text: 'the whole answer' },
     ])
 
+    expect(replaced.threads[THREAD.threadId]?.historyCursor).toEqual({ ordinal: 1 })
+
     // Only what precedes the page counts as older; a message the client holds
     // after that point and the page does not name is not moved in front of it.
     const withStray = applyEvent(state, delta('turn-1', 'm-stray', 'never persisted'))
@@ -652,6 +654,40 @@ describe('snapshots', () => {
       'm-1',
       'm-2',
     ])
+  })
+
+  it('keeps an exhausted cursor when reopening a contiguous cached transcript', () => {
+    const start = turnStarted()
+    let state = applyEvent(seeded(), start)
+    state = applyEvent(state, delta('turn-1', 'assistant-1', 'answer'))
+    state = applySessionHistory(state, THREAD, {
+      messages: state.threads[THREAD.threadId]!.messages,
+      turns: [start.payload.turn],
+      interactions: [],
+      nextCursor: null,
+    })
+    state = {
+      ...state,
+      threads: {
+        ...state.threads,
+        [THREAD.threadId]: { ...state.threads[THREAD.threadId]!, hydration: 'loading' },
+      },
+    }
+    const snapshot: ScopeSnapshot = {
+      cursor: { scope: threadScope, epoch: 'epoch', sequence: 4 },
+      state: {
+        thread: THREAD,
+        turns: [start.payload.turn],
+        messages: [state.threads[THREAD.threadId]!.messages[1]!],
+        reasoning: [],
+        tools: [],
+        interactions: [],
+        nextCursor: { ordinal: 1 },
+      },
+    }
+    const restored = applySnapshot(state, snapshot).threads[THREAD.threadId]!
+    expect(restored.messages).toHaveLength(2)
+    expect(restored.historyCursor).toBeNull()
   })
 
   it('applies an environment snapshot to workspaces and sessions', () => {

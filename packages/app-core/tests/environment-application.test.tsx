@@ -4,6 +4,9 @@ import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import {
   createMockEnvironmentClient,
+  createEnvironmentStore,
+  applySessionHistory,
+  type SessionHistoryPage,
   type MockEnvironmentClient,
   type MockSeed,
 } from '@openmanager/environment-client'
@@ -262,6 +265,63 @@ describe('the shared application over the environment client', () => {
     expect(container.textContent).toContain('What changed?')
     expect(container.textContent).toContain('Two files were edited.')
     expect(container.querySelector('textarea')?.disabled).toBe(false)
+  })
+
+  it('loads an older history page through the chat and prevents duplicate clicks', async () => {
+    const mock = createMockEnvironmentClient({
+      seed: { ...SEEDED_HISTORY, activeSessionId: SESSION.sessionId },
+    })
+    const initial = mock.getState()
+    const store = createEnvironmentStore({
+      ...initial,
+      threads: {
+        ...initial.threads,
+        [THREAD.threadId]: { ...initial.threads[THREAD.threadId]!, historyCursor: { ordinal: 2 } },
+      },
+    })
+    let release: ((page: SessionHistoryPage) => void) | undefined
+    const load = vi.fn(async () => {
+      const page = await new Promise<SessionHistoryPage>((resolve) => {
+        release = resolve
+      })
+      store.update((state) => applySessionHistory(state, THREAD, page, true))
+      return page
+    })
+    const client = {
+      ...mock,
+      getState: store.getState,
+      subscribe: store.subscribe,
+      commands: { ...mock.commands, loadSessionHistory: load },
+    }
+    await render(<App client={client} />)
+    await act(() => {
+      buttonWithText('Load older messages')!.click()
+      buttonWithText('Load older messages')!.click()
+    })
+    expect(load).toHaveBeenCalledTimes(1)
+    expect(load).toHaveBeenCalledWith({ ...THREAD, cursor: { ordinal: 2 } })
+    expect(buttonWithText('Loading older messages')?.disabled).toBe(true)
+    await act(() =>
+      release!({
+        messages: [
+          {
+            messageId: 'older-user',
+            threadId: THREAD.threadId,
+            turnId: 'older-turn',
+            role: 'user',
+            content: [{ type: 'text', text: 'An earlier question' }],
+          },
+        ],
+        turns: [{ turnId: 'older-turn', threadId: THREAD.threadId, state: 'completed' }],
+        interactions: [],
+        nextCursor: null,
+      }),
+    )
+    expect(container.textContent).toContain('An earlier question')
+    expect(occurrences('What changed?')).toBe(1)
+    expect(occurrences('Two files were edited.')).toBe(1)
+    expect(buttonWithText('Load older messages')).toBeUndefined()
+    mock.dispose()
   })
 
   it('starts a session from a draft and streams the reply through the composer', async () => {

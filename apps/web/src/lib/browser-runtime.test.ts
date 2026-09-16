@@ -72,6 +72,7 @@ describe('browser runtime', () => {
       expect(source, file).not.toMatch(/from ['"]convex/)
       expect(source, file).not.toMatch(/CONVEX_URL/)
       expect(source, file).not.toMatch(/VITE_CONVEX/)
+      expect(source, file).not.toMatch(/stream:token|acp:event/)
     }
   })
 })

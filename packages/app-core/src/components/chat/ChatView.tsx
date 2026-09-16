@@ -7,7 +7,12 @@ import {
   useStreamingMessage,
   type UIMessage,
 } from '../../providers/active-thread-provider'
-import { AssistantMessage, ChatLoadingSkeleton, ChatViewPanel, UserMessage } from './ChatViewPrimitives'
+import {
+  AssistantMessage,
+  ChatLoadingSkeleton,
+  ChatViewPanel,
+  UserMessage,
+} from './ChatViewPrimitives'
 import { shouldHydrateLocalStream, shouldUseRemoteStreaming } from '../../lib/stream-continuity'
 import type { MessagePart } from '../../lib/streaming-messages-store'
 import { cn } from '../../lib/utils'
@@ -41,10 +46,17 @@ export function ChatView() {
     messages,
     activeThreadDriven,
     isMessagesLoading,
+    history,
     acknowledgeOptimisticMessage,
     retrySend,
   } = useActiveThreadState()
   const scrollRef = useRef<HTMLDivElement>(null)
+  const historyScrollRef = useRef<{
+    height: number
+    top: number
+    sessionId: string | null
+    firstId?: string
+  } | null>(null)
   const shouldAutoScrollRef = useRef(true)
   const lastKnownScrollTopRef = useRef(0)
   const pendingAutoScrollFrameRef = useRef<number | null>(null)
@@ -60,6 +72,19 @@ export function ChatView() {
       lastKnownScrollTopRef.current = el.scrollTop
     })
   }, [])
+
+  useLayoutEffect(() => {
+    const anchor = historyScrollRef.current
+    const el = scrollRef.current
+    if (!anchor || !el) return
+    if (anchor.sessionId !== activeSessionId) {
+      historyScrollRef.current = null
+    } else if (messages[0]?.externalId !== anchor.firstId) {
+      el.scrollTop = anchor.top + el.scrollHeight - anchor.height
+      lastKnownScrollTopRef.current = el.scrollTop
+      historyScrollRef.current = null
+    }
+  }, [messages, activeSessionId])
 
   const handleScroll = useCallback(() => {
     const el = scrollRef.current
@@ -105,6 +130,41 @@ export function ChatView() {
         className="custom-scrollbar flex-1 min-h-0 overflow-x-hidden overflow-y-auto"
       >
         <div className="mx-auto max-w-[52rem] space-y-1 px-4 pt-2 pb-44">
+          {history?.failed && (
+            <div role="alert" className="py-3 text-center text-sm">
+              History could not be synchronized.{' '}
+              <button
+                type="button"
+                className="underline focus-visible:outline-2 focus-visible:outline-ring"
+                onClick={() => void history.retry?.()}
+              >
+                Retry history
+              </button>
+            </div>
+          )}
+          {history?.hasMore && (
+            <div className="flex justify-center py-2">
+              <button
+                type="button"
+                disabled={history.isLoading || isMessagesLoading || history.failed}
+                className="rounded-md px-3 py-2 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50"
+                onClick={() => {
+                  shouldAutoScrollRef.current = false
+                  const el = scrollRef.current
+                  if (el)
+                    historyScrollRef.current = {
+                      height: el.scrollHeight,
+                      top: el.scrollTop,
+                      sessionId: activeSessionId,
+                      firstId: messages[0]?.externalId,
+                    }
+                  void history.loadMore()
+                }}
+              >
+                {history.isLoading ? 'Loading older messages…' : 'Load older messages'}
+              </button>
+            </div>
+          )}
           <ConversationTimeline
             sessionId={activeSessionId}
             messages={chatMessages}

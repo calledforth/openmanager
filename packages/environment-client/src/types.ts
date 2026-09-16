@@ -100,6 +100,8 @@ export interface ThreadState {
   /** Sends still waiting on the environment, oldest first, newest last. */
   outbox: OutboxEntry[]
   hydration: HydrationState
+  /** Exclusive boundary for the next older persisted page. */
+  historyCursor?: HistoryCursor | null
 }
 
 export type ConnectionPhase = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'closed'
