@@ -47,6 +47,14 @@ export async function expectCommand<N extends ProofCommandName>(
     const reason = error instanceof Error ? error.message : String(error)
     throw new Error(layer('protocol', `${step}: waiting for ${name} (${requestId}): ${reason}`))
   }
+  if (raw.type === 'error') {
+    throw new Error(
+      layer(
+        'protocol',
+        `${step}: ${name} ${requestId} returned ${raw.error.code}: ${raw.error.message}`,
+      ),
+    )
+  }
   expect(raw, layer('protocol', `${step}: ${name} ${requestId}`)).toMatchObject({
     type: 'response',
     requestId,

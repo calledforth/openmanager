@@ -7,6 +7,7 @@ import { expect } from 'vitest'
 import {
   PROTOCOL_VERSION,
   ProofResponseSchemas,
+  ProtocolHandshakeResponseSchema,
   ReplayResponseSchema,
   ServerMessageSchema,
   SubscriptionEventSchema,
@@ -96,7 +97,9 @@ export async function handshake(client: ProtocolClient) {
     protocolVersion: PROTOCOL_VERSION,
     requiredCapabilities: ['connection.heartbeat'],
   })
-  expect(await nextResponse(client, id)).toMatchObject({ type: 'response', requestId: id })
+  const result = ProtocolHandshakeResponseSchema.parse(await nextResponse(client, id))
+  expect(result).toMatchObject({ type: 'response', requestId: id })
+  return result
 }
 
 export async function subscribe(client: ProtocolClient, scope: SubscriptionScope) {

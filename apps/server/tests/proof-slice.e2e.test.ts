@@ -58,7 +58,11 @@ describe('proof slice e2e harness', () => {
       const stub = gatedSecondPrompt({ prefix: PREFIX, suffix: SUFFIX, second: 'interrupt' })
       const host = await startStubHost(stub.connections)
       const client = await connectProtocol(host)
-      await handshake(client)
+      const hello = await handshake(client)
+      expect(
+        hello.payload.environmentId,
+        layer('protocol', 'connect: handshake environment id'),
+      ).toBe(host.server.identity.environmentId)
 
       const catalog = await listCatalog(client, host, 'initial catalog')
       expect(
@@ -160,7 +164,11 @@ describe('proof slice e2e harness', () => {
       const stub = gatedFirstPrompt({ prefix: PREFIX, suffix: SUFFIX })
       const host = await startStubHost(stub.connections)
       const client = await connectProtocol(host)
-      await handshake(client)
+      const hello = await handshake(client)
+      expect(
+        hello.payload.environmentId,
+        layer('protocol', 'mid-stream connect: handshake environment id'),
+      ).toBe(host.server.identity.environmentId)
       await listCatalog(client, host, 'mid-stream catalog')
       const created = await createOpenedSession(
         client,
@@ -250,7 +258,11 @@ describe.skipIf(!liveProvider)('proof slice e2e harness (live provider)', () => 
       })
       workspaceRoot = host.workspaceRoot
       const client = await connectProtocol(host)
-      await handshake(client)
+      const hello = await handshake(client)
+      expect(
+        hello.payload.environmentId,
+        layer('protocol', 'live connect: handshake environment id'),
+      ).toBe(host.server.identity.environmentId)
       await listCatalog(client, host, 'live catalog')
       const created = await createOpenedSession(client, host, liveProvider!, 'live create')
       const { sessionId, threadId, scope } = created
@@ -318,18 +330,13 @@ describe.skipIf(!liveProvider)('proof slice e2e harness (live provider)', () => 
 })
 
 async function listCatalog(client: ProtocolClient, host: ProtocolHost, step: string) {
-  const environment = await expectCommand(client, 'environment.get', null, `${step}: environment.get`)
-  expect(
-    environment.payload.environment.environmentId,
-    layer('protocol', `${step}: environment id`),
-  ).toBe(host.server.identity.environmentId)
   const workspaces = await expectCommand(client, 'workspace.list', null, `${step}: workspace.list`)
   expect(
     workspaces.payload.workspaces.some((workspace) => workspace.workspaceId === host.workspaceId),
     layer('persistence', `${step}: configured workspace is listed`),
   ).toBe(true)
   const sessions = await expectCommand(client, 'session.list', {}, `${step}: session.list`)
-  return { environment: environment.payload.environment, ...workspaces.payload, ...sessions.payload }
+  return { ...workspaces.payload, ...sessions.payload }
 }
 
 async function createOpenedSession(
@@ -394,7 +401,10 @@ async function reconnectAndOpen(
   step: string,
 ) {
   const client = await connectProtocol(host)
-  await handshake(client)
+  const hello = await handshake(client)
+  expect(hello.payload.environmentId, layer('protocol', `${step}: handshake environment id`)).toBe(
+    host.server.identity.environmentId,
+  )
   const listed = await listCatalog(client, host, `${step}: catalog`)
   const opened = await expectCommand(client, 'session.open', { sessionId }, `${step}: session.open`)
   expect(
