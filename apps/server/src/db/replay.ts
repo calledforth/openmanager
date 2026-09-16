@@ -28,10 +28,17 @@ import {
  * same as a gap that retention has already pruned. Both limits stay well
  * under the socket's slow-consumer budget.
  */
-export const REPLAY_LIMITS = Object.freeze({
-  maxEvents: 500,
-  maxBytes: 256 * 1024,
-})
+export const REPLAY_LIMITS: { readonly maxEvents: number; readonly maxBytes: number } =
+  Object.freeze({
+    maxEvents: 500,
+    maxBytes: 256 * 1024,
+  })
+/**
+ * Bytes each record adds around its event on the wire: the cursor (scope ids,
+ * epoch, sequence) and its share of the response envelope. Counted against
+ * `maxBytes` so the frame, not just the events, stays inside the budget.
+ */
+const RECORD_OVERHEAD_BYTES = 512
 
 export type ReplayResult =
   | { mode: 'replay'; from: Cursor; to: Cursor; events: DurableEvent[] }
@@ -152,7 +159,7 @@ export function createReplayReader(database: DatabaseSync, options: ReplayReader
       const fits =
         rows.length === missing &&
         rows.every((row, index) => {
-          bytes += row.event_json.length
+          bytes += Buffer.byteLength(row.event_json) + RECORD_OVERHEAD_BYTES
           return row.sequence === cursor.sequence + index + 1 && bytes <= limits.maxBytes
         })
       // Too large to carry, or (defensively) not the contiguous tail the

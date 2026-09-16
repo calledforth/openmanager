@@ -143,6 +143,11 @@ const REPLAY_NAME = 'subscription.replay'
 const SubscribeResponseSchema = z.object({
   payload: z.object({ subscriptionId: z.string(), scope: z.any() }),
 })
+/** The one thing any successful replay answer is known to carry. */
+const GrantedSubscriptionSchema = z.object({
+  type: z.literal('response'),
+  payload: z.object({ subscriptionId: z.string() }),
+})
 
 type Pending = {
   name: string
@@ -653,6 +658,10 @@ export function createWebSocketEnvironmentClient(
         try {
           result = parseReplayResult(command, raw)
         } catch (error) {
+          // A well-formed answer that does not fit the request still carried
+          // a live subscription; release it rather than hold two for the scope.
+          const granted = GrantedSubscriptionSchema.safeParse(raw)
+          if (granted.success) sendUnsubscribe(granted.data.payload.subscriptionId)
           fallback(
             new EnvironmentClientError(
               'validation',

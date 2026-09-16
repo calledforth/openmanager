@@ -466,7 +466,7 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
     // itself the answer.
     outbox: reconcileOutbox(existing, threadSnapshot.messages),
     turns: threadSnapshot.turns,
-    messages: threadSnapshot.messages,
+    messages: retainOlderMessages(existing.messages, threadSnapshot.messages),
     reasoning: threadSnapshot.reasoning,
     tools: threadSnapshot.tools,
     interactions: threadSnapshot.interactions.map((item) => ({
@@ -477,6 +477,20 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
     })),
   }
   return { ...withThread, threads: { ...withThread.threads, [thread.threadId]: replaced } }
+}
+
+/**
+ * A thread snapshot carries the newest page of messages. History is only ever
+ * appended to, so a message the client already holds that the page does not
+ * name is older than the page: an earlier page it loaded. Those stay in front
+ * of the snapshot, in the order they were in, and the cursor the host keeps
+ * for the next older page stays valid.
+ */
+function retainOlderMessages(known: readonly Message[], newest: readonly Message[]): Message[] {
+  if (known.length === 0) return [...newest]
+  const inSnapshot = new Set(newest.map((message) => message.messageId))
+  const older = known.filter((message) => !inSnapshot.has(message.messageId))
+  return older.length === 0 ? [...newest] : [...older, ...newest]
 }
 
 /** `session.open` loads identities only; `session.history` hydrates the transcript. */

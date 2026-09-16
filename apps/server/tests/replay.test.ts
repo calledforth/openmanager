@@ -3,14 +3,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
-import {
-  ProofEventSchemas,
-  ReplayCursorError,
-  type Cursor,
-  type ProofEvent,
-} from '@openmanager/protocol/node'
+import { ProofEventSchemas, ReplayCursorError, type Cursor } from '@openmanager/protocol/node'
 import { openEnvironmentDatabase } from '../src/db/database.js'
-import { createEventRepository } from '../src/db/event-repository.js'
+import { createEventRepository, type DurableProofEvent } from '../src/db/event-repository.js'
 import { createEventRetention } from '../src/db/event-retention.js'
 import { createReplayReader } from '../src/db/replay.js'
 
@@ -53,7 +48,7 @@ async function createDatabase(): Promise<DatabaseSync> {
   return database
 }
 
-const started = (index: number, at = T0): ProofEvent =>
+const started = (index: number, at = T0): DurableProofEvent =>
   ProofEventSchemas['turn.started'].parse({
     type: 'event',
     name: 'turn.started',
@@ -72,7 +67,7 @@ const started = (index: number, at = T0): ProofEvent =>
     },
   })
 
-const delta = (index: number, text: string, at = T0): ProofEvent =>
+const delta = (index: number, text: string, at = T0): DurableProofEvent =>
   ProofEventSchemas['message.delta'].parse({
     type: 'event',
     name: 'message.delta',
@@ -87,7 +82,7 @@ const delta = (index: number, text: string, at = T0): ProofEvent =>
     },
   })
 
-const completed = (index: number, at = T0): ProofEvent =>
+const completed = (index: number, at = T0): DurableProofEvent =>
   ProofEventSchemas['turn.completed'].parse({
     type: 'event',
     name: 'turn.completed',
@@ -97,7 +92,7 @@ const completed = (index: number, at = T0): ProofEvent =>
     payload: { turnId: `turn-${index}` },
   })
 
-const titled = (index: number, at = T0): ProofEvent =>
+const titled = (index: number, at = T0): DurableProofEvent =>
   ProofEventSchemas['session.updated'].parse({
     type: 'event',
     name: 'session.updated',
@@ -212,7 +207,7 @@ describe('replay reader', () => {
     })
     expect(byCount.reader.read(threadScope, byCount.at(3))).toMatchObject({ mode: 'replay' })
 
-    const byBytes = await seeded({ limits: { maxBytes: 200 } })
+    const byBytes = await seeded({ limits: { maxBytes: 1024 } })
     expect(byBytes.reader.read(threadScope, byBytes.at(1))).toMatchObject({
       mode: 'snapshot',
       reason: 'gap_expired',

@@ -982,7 +982,10 @@ describe('cursor replay on reconnect', () => {
   })
   const names = (target: FakeSocket) =>
     target.sent
-      .filter((message) => message.name.startsWith('subscription.'))
+      .filter(
+        (message) =>
+          message.name.startsWith('subscription.') && message.name !== 'subscription.unsubscribe',
+      )
       .map(
         (message) =>
           `${message.name.slice('subscription.'.length)}:${(message.payload as { scope: { type: string } }).scope.type}`,
@@ -996,7 +999,11 @@ describe('cursor replay on reconnect', () => {
     await flush()
     await opened.catch(() => undefined)
     // No cursor yet anywhere, so the first connection subscribes plainly.
-    expect(names(socket)).toEqual(['subscribe:environment', 'subscribe:session', 'subscribe:thread'])
+    expect(names(socket)).toEqual([
+      'subscribe:environment',
+      'subscribe:session',
+      'subscribe:thread',
+    ])
     socket.receive(live(2, turnStarted()))
     socket.receive(live(3, delta('turn-1', 'assistant-1', 'Hi')))
     socket.drop(1006)
@@ -1083,7 +1090,9 @@ describe('cursor replay on reconnect', () => {
       { type: 'text', text: 'hello' },
       { type: 'text', text: 'Hi, the whole answer' },
     ])
-    expect(thread.turns).toEqual([{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'completed' }])
+    expect(thread.turns).toEqual([
+      { turnId: 'turn-1', threadId: THREAD.threadId, state: 'completed' },
+    ])
     // The snapshot's cursor is where live delivery resumes.
     next.receive(live(9, delta('turn-1', 'assistant-1', 'stale')))
     next.receive(live(10, delta('turn-1', 'assistant-1', '.')))
@@ -1140,6 +1149,10 @@ describe('cursor replay on reconnect', () => {
       { type: 'text', text: 'Hi' },
     ])
     expect(names(next).at(-1)).toBe('subscribe:thread')
+    // The subscription that answer granted is released, not left to pile up.
+    expect(next.last('subscription.unsubscribe').payload).toEqual({
+      subscriptionId: 'sub-thread-2',
+    })
   })
 })
 
