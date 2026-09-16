@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { SessionTitleSourceSchema } from './session-title.js'
 
 /** Host-owned resource identity, distinct from a command's request ID. */
 export const EntityIdSchema = z.string().min(1).max(256).regex(/^\S+$/)
@@ -89,6 +90,8 @@ export const SessionStatusSchema = z.enum(['idle', 'running', 'waiting', 'error'
  * environment snapshot cannot pull a transcript across the wire.
  */
 export const SessionSummarySchema = SessionSchema.extend({
+  /** Provenance keeps automatic titles from replacing a manual rename. */
+  titleSource: SessionTitleSourceSchema.optional(),
   status: SessionStatusSchema,
   providerId: EntityIdSchema,
   updatedAt: TimestampSchema,

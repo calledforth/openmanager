@@ -1903,6 +1903,105 @@ describe('durable session lifecycle', () => {
     }
   })
 
+  it('names an untitled session from its first prompt and leaves later turns alone', async () => {
+    const h = setup()
+    try {
+      // Settle the session the harness created, then give the untitled one its
+      // own provider identity: the row is unique on (provider, provider session).
+      await h.service.resolveRuntimeSession(h.created.session.sessionId)
+      h.runtime.ensureSession.mockResolvedValue({
+        sessionId: 'provider-untitled',
+        state: 'created',
+      })
+      const untitled = ProofResponseSchemas['session.create'].parse(
+        h.dispatch(h.service, 'session.create', {
+          environmentId: 'environment-1',
+          workspaceId: '/workspace/project',
+          providerId: 'opencode',
+        }),
+      ).payload
+      const { sessionId } = untitled.session
+      await h.service.resolveRuntimeSession(sessionId)
+      const stored = () =>
+        h.database
+          .prepare('SELECT title, title_source FROM sessions WHERE session_id = ?')
+          .get(sessionId)
+      expect(stored()).toMatchObject({ title: null, title_source: null })
+      const titleEvents = () =>
+        h.published
+          .filter((event) => event.name === 'session.updated')
+          .map((event) => ProofEventSchemas['session.updated'].parse(event))
+          .filter((event) => event.payload.title !== undefined)
+
+      const prompt = '  Port session   titles\n to the server  '
+      h.dispatch(h.service, 'turn.send', { ...untitled.thread, text: prompt })
+      h.events.flush()
+      const expected = 'Port session titles to the server'
+      expect(stored()).toMatchObject({ title: expected, title_source: 'fallback' })
+      // Environment scope, so a sidebar that never opened the session still learns the name.
+      expect(titleEvents()).toMatchObject([
+        {
+          scope: { type: 'environment' },
+          payload: { sessionId, title: expected, titleSource: 'fallback' },
+        },
+      ])
+      expect(listed(h, h.service).find((item) => item.sessionId === sessionId)).toMatchObject({
+        title: expected,
+        titleSource: 'fallback',
+      })
+
+      // Let each turn finalize, so no write lands after the database closes.
+      const settled = () =>
+        vi.waitFor(() =>
+          expect(
+            h.database.prepare("SELECT COUNT(*) AS count FROM turns WHERE state = 'running'").get(),
+          ).toMatchObject({ count: 0 }),
+        )
+      await settled()
+      // The session is named now, so a second prompt must not rename it.
+      h.dispatch(h.service, 'turn.send', { ...untitled.thread, text: 'A different subject' })
+      await settled()
+      h.events.flush()
+      expect(stored()).toMatchObject({ title: expected, title_source: 'fallback' })
+      expect(titleEvents()).toHaveLength(1)
+    } finally {
+      h.close()
+    }
+  })
+
+  it('lets a provider title replace the first-prompt fallback', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      h.service.onRuntimeEvent({
+        providerId: 'opencode',
+        threadId: h.created.thread.threadId,
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-persisted',
+        id: 'info',
+        seq: 1,
+        timestamp: new Date().toISOString(),
+        category: 'session',
+        event: 'session_info_update',
+        data: { title: '  Provider summary  ' },
+      })
+      h.events.flush()
+      expect(
+        h.database
+          .prepare('SELECT title, title_source FROM sessions WHERE session_id = ?')
+          .get(sessionId),
+      ).toMatchObject({ title: 'Provider summary', title_source: 'provider' })
+      expect(h.published.at(-1)).toMatchObject({
+        name: 'session.updated',
+        scope: { type: 'environment' },
+        payload: { sessionId, title: 'Provider summary', titleSource: 'provider' },
+      })
+    } finally {
+      h.close()
+    }
+  })
+
   it('keeps a user title when a provider renames the session afterwards', async () => {
     const h = setup()
     try {
@@ -1925,18 +2024,17 @@ describe('durable session lifecycle', () => {
         h.database
           .prepare('SELECT title, title_source FROM sessions WHERE session_id = ?')
           .get(sessionId)
-      // A provider title carries no provenance, so it must not clobber the rename.
+      // Neither an unlabelled title nor a declared provider title outranks a rename.
       providerTitle('Provider guess')
       h.events.flush()
       expect(stored()).toMatchObject({ title: 'My title', title_source: 'user' })
-      // An explicit provider provenance is a deliberate downgrade and does apply.
       providerTitle('Provider wins', 'provider')
       h.events.flush()
-      expect(stored()).toMatchObject({ title: 'Provider wins', title_source: 'provider' })
-      // With the user claim gone, an unlabelled provider title applies again.
-      providerTitle('Later guess')
+      expect(stored()).toMatchObject({ title: 'My title', title_source: 'user' })
+      // Another rename is the only thing that replaces one.
+      h.dispatch(h.service, 'session.rename', { sessionId, title: 'My second title' })
       h.events.flush()
-      expect(stored()).toMatchObject({ title: 'Later guess', title_source: 'provider' })
+      expect(stored()).toMatchObject({ title: 'My second title', title_source: 'user' })
     } finally {
       h.close()
     }

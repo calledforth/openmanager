@@ -6,6 +6,8 @@ import {
   ProofResponseSchemas,
   pageSessionSummaries,
   pageThreadMessages,
+  shouldReplaceSessionTitle,
+  titleFromPrompt,
   WorkspaceUnavailableDetailsSchema,
   type CommandEnvelope,
   type ErrorCode,
@@ -15,6 +17,7 @@ import {
   type Session,
   type SessionStatus,
   type SessionSummary,
+  type SessionTitleSource,
   type Thread,
   type TurnFailureReason,
   type Turn,
@@ -78,6 +81,8 @@ type ActiveTurn = {
 }
 type ThreadRecord = {
   session: Session
+  /** Provenance of `session.title`, so a rename outranks later automatic titles. */
+  titleSource?: SessionTitleSource
   thread: Thread
   providerId: ProviderId
   cwd: string
@@ -386,6 +391,7 @@ export function createThreadService(
         turns: [],
         messages: [],
         commandTurns: new Map(),
+        titleSource: session.titleSource,
         status: session.status,
         updatedAt: Date.parse(session.updatedAt),
       }
@@ -495,6 +501,42 @@ export function createThreadService(
     if (!options.database) emitStatus(record, status)
   }
 
+  /**
+   * Settle a title against its provenance and announce the winner. A manual
+   * rename outranks everything, a provider title outranks the first-prompt
+   * fallback, and the fallback only ever fills a placeholder — so the first
+   * meaningful turn names the session and later turns leave it alone.
+   */
+  const applyTitle = (record: ThreadRecord, title: string, source: SessionTitleSource): void => {
+    const nextTitle = title.trim()
+    if (!nextTitle) return
+    // A user title that happens to look generated is still the user's.
+    if (record.titleSource === 'user' && source !== 'user') return
+    if (!shouldReplaceSessionTitle(record.session.title, record.titleSource, source)) return
+    if (record.session.title === nextTitle && record.titleSource === source) return
+    // Announced before it is believed. A name is bookkeeping, so a failed write
+    // must not fail the turn that triggered it, and leaving the record on its
+    // old title keeps it a placeholder that the next turn names again.
+    try {
+      appendEvent(
+        ProofEventSchemas['session.updated'].parse({
+          type: 'event',
+          name: 'session.updated',
+          eventId: randomUUID(),
+          timestamp: new Date().toISOString(),
+          scope: { type: 'environment', environmentId },
+          payload: { sessionId: record.session.sessionId, title: nextTitle, titleSource: source },
+        }),
+      )
+    } catch (error) {
+      options.onPersistenceError?.(error, 'session.updated')
+      return
+    }
+    record.session.title = nextTitle
+    record.titleSource = source
+    record.updatedAt = Date.now()
+  }
+
   const emitStatus = (record: ThreadRecord, status: SessionStatus) => {
     appendRuntimeEvent(
       ProofEventSchemas['session.updated'].parse({
@@ -553,6 +595,7 @@ export function createThreadService(
       session,
       thread,
       providerId: parent.providerId,
+      titleSource: title ? 'provider' : undefined,
       cwd: parent.cwd,
       runtimeSession: Promise.resolve(providerSessionId),
       turns: [],
@@ -600,6 +643,7 @@ export function createThreadService(
     sessionId: record.session.sessionId,
     workspaceId: record.session.workspaceId,
     title: record.session.title,
+    ...(record.titleSource ? { titleSource: record.titleSource } : {}),
     ...(record.session.parentSessionId ? { parentSessionId: record.session.parentSessionId } : {}),
     status: record.status,
     providerId: record.providerId,
@@ -733,6 +777,7 @@ export function createThreadService(
           session,
           thread,
           providerId,
+          titleSource: input.title !== undefined ? 'fallback' : undefined,
           cwd: target.cwd,
           runtimeSession,
           turns: [],
@@ -824,6 +869,7 @@ export function createThreadService(
         if (parsed.data.name === 'session.rename') {
           for (const item of threads.values()) {
             if (item.session.sessionId !== sessionId) continue
+            item.titleSource = 'user'
             item.session.title = parsed.data.payload.title
             item.updatedAt = Date.parse(timestamp)
           }
@@ -1036,6 +1082,8 @@ export function createThreadService(
         record.messages.push(userMessage)
         record.commandTurns.set(commandId, started)
         touch(record, 'running')
+        const title = titleFromPrompt(input.text)
+        if (title) applyTitle(record, title, 'fallback')
         const active: ActiveTurn = {
           turn,
           userMessage,
@@ -1157,6 +1205,10 @@ export function createThreadService(
           if (options.database) emitStatus(record, 'error')
           touch(record, 'error')
         }
+        return
+      }
+      if (event.event === 'session_info_update') {
+        if (typeof event.data.title === 'string') applyTitle(record, event.data.title, 'provider')
         return
       }
       const turnScoped =

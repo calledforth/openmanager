@@ -124,11 +124,16 @@ describe('streamed provider through the server', () => {
             ProofEventSchemas['session.updated'].parse(record.event).payload.status === 'idle',
         ),
       )
+      const sidebarUpdates = sidebarCompleted.map(
+        (record) => ProofEventSchemas['session.updated'].parse(record.event).payload,
+      )
       expect(
-        sidebarCompleted.map(
-          (record) => ProofEventSchemas['session.updated'].parse(record.event).payload.status,
-        ),
+        sidebarUpdates.flatMap((payload) => (payload.status ? [payload.status] : [])),
       ).toEqual(['running', 'idle'])
+      // The sidebar never opened this session, so its name has to arrive here.
+      expect(sidebarUpdates.filter((payload) => payload.title !== undefined)).toMatchObject([
+        { title: 'complete me', titleSource: 'fallback' },
+      ])
 
       const secondSend = client.command('turn.send', {
         sessionId: session.sessionId,

@@ -554,7 +554,7 @@ export function createMockEnvironmentClient(
           ...base(),
           name: 'session.updated',
           scope: envScope(),
-          payload: { sessionId, title },
+          payload: { sessionId, title, titleSource: 'user' },
         })
       }),
     deleteSession: (sessionId) =>

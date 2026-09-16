@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { SessionTitleSourceSchema } from './session-title.js'
 import { EventEnvelopeSchema } from './envelopes.js'
 import {
   EntityIdSchema,
@@ -60,7 +61,7 @@ export const ProofEventSchemas = {
     z.object({
       sessionId: EntityIdSchema,
       title: z.string().nullable().optional(),
-      titleSource: z.enum(['fallback', 'provider', 'user']).optional(),
+      titleSource: SessionTitleSourceSchema.optional(),
       status: SessionStatusSchema.optional(),
     }),
   ),

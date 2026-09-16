@@ -32,13 +32,12 @@ export function createEventProjector(
     updateWorkspaceName: database.prepare(
       'UPDATE workspaces SET name = ?, updated_at = ? WHERE workspace_id = ?',
     ),
-    // An event without provenance is a provider title, which must not overwrite
-    // a title the user set explicitly. Matches `providerTitlePatch` on desktop.
+    // Only another manual rename may replace a title the user set explicitly.
     updateSessionTitle: database.prepare(
       `UPDATE sessions
           SET title = ?, title_source = COALESCE(?, title_source), updated_at = ?
         WHERE session_id = ?
-          AND (? IS NOT NULL OR title_source IS NULL OR title_source <> 'user')`,
+          AND (? = 'user' OR title_source IS NULL OR title_source <> 'user')`,
     ),
     updateSessionStatus: database.prepare(
       'UPDATE sessions SET status = ?, updated_at = ? WHERE session_id = ?',
