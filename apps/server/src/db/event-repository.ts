@@ -273,7 +273,8 @@ export function createEventRepository(
   }
 }
 
-function scopeKey(scope: SubscriptionScope): string {
+/** The `event_streams` / `event_log` key of a scope; shared with the replay reader. */
+export function scopeKey(scope: SubscriptionScope): string {
   switch (scope.type) {
     case 'environment':
       return JSON.stringify([scope.type, scope.environmentId])

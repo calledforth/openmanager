@@ -73,18 +73,55 @@ deadline.
 ## Resuming subscriptions
 
 Subscriptions are per socket, so a drop invalidates all of them. On every
-handshake the client re-sends a `subscription.subscribe` for every scope it
-still holds, before the catalog reads and before `session.open`; waiting for
-those would leave the open session with no server-side subscription, and events
-produced in that window would never be sent at all.
+handshake the client re-establishes every scope it still holds, before the
+catalog reads and before `session.open`; waiting for those would leave the open
+session with no server-side subscription, and events produced in that window
+would never be sent at all.
 
 Cursors are kept per scope, not per socket or subscription ID, so they survive
-the drop: a record at or below the last applied sequence for the same epoch is
-ignored, and a replayed tail after a reconnect is therefore harmless. The wire
-`subscription.subscribe` command carries only the scope — there is no cursor
-field — so the server cannot replay what was missed while the socket was down.
-Anything produced during the gap is recovered by the catalog reads and
-`session.open` that follow the handshake, not by the subscription itself.
+the drop. A scope that has a cursor is resumed with `subscription.replay`
+(`packages/protocol/src/replay.ts`), which carries the scope and the last
+applied cursor; a scope with no cursor yet, or an environment that does not
+advertise `subscription.replay`, falls back to a plain `subscription.subscribe`
+and the reads that follow the handshake.
+
+The environment answers a replay in one of two ways, and the live subscription
+is part of either answer:
+
+- **replay** — the exact contiguous tail `(cursor, head]`, applied through the
+  same path as live events. A record at or below the held cursor of the same
+  epoch is ignored, so an overlap between the tail and a live re-send is
+  harmless, and the client ends at `head` with no hole.
+- **snapshot** — the scope's state at `head`, replacing what the client had
+  (`applySnapshot`), when the tail cannot be replayed: the cursor is from a
+  different epoch (`stream_reset`), points ahead of the stream
+  (`cursor_ahead`), or is behind what the environment still holds
+  (`gap_expired`, which also covers a tail too large for one frame:
+  `REPLAY_LIMITS` in `apps/server/src/db/replay.ts`). A first subscription
+  with no cursor is answered the same way (`initial`).
+
+`decideReplay` is the shared rule; the server reads head and retention
+boundary together from `event_streams`, so the decision matches the log it
+then reads. The server registers the subscription and answers in the same
+tick as the read, so every event committed after the answer reaches the client
+live and in order, after the answer. An answer the client cannot reconcile
+with what it asked for (`parseReplayResult`) is not applied; the scope is
+subscribed plainly instead. A scope the environment no longer has is dropped.
+
+A thread snapshot carries all turns, pending interactions and the newest
+history page of messages, as `session.open` followed by `session.history`
+would load it. Older pages the client had already loaded stay in front of it:
+history is only appended to, so what the client holds before the first message
+the page names is older than the page, and the cursor for the next older page
+stays valid. Reasoning and
+tool state exist only in the event log, which is what the snapshot stands in
+for, so they start over. An environment snapshot carries the environment,
+every workspace and the newest page of sessions.
+
+The catalog reads and the `session.open` of the active session still run after
+recovery, as they did before replay existed: after an environment restart the
+open is what re-attaches the provider session, and the history merge is keyed
+by message ID, so it adds nothing a replay already delivered.
 
 ## How the shell maps this to UI
 

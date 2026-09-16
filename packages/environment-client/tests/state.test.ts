@@ -547,9 +547,66 @@ describe('snapshots', () => {
     const state = applySnapshot(applyEvent(seeded(), turnStarted()), snapshot)
     const thread = state.threads[THREAD.threadId]!
     expect(thread.hydration).toBe('ready')
-    expect(thread.messages).toHaveLength(1)
+    // The user message the page does not name is older than the page and stays.
+    expect(thread.messages.map((message) => message.messageId)).toEqual(['turn-1-user', 'm-1'])
     expect(thread.tools[0]?.status).toBe('completed')
     expect(state.sessions[SESSION.sessionId]?.status).toBe('idle')
+  })
+
+  it('keeps loaded older pages in front of the newest page a snapshot carries', () => {
+    const message = (messageId: string, text: string) => ({
+      messageId,
+      threadId: THREAD.threadId,
+      turnId: 'turn-1',
+      role: 'assistant' as const,
+      content: [{ type: 'text' as const, text }],
+    })
+    let state = applyEvent(seeded(), turnStarted())
+    state = applySessionHistory(state, THREAD, {
+      messages: [message('m-old', 'from an earlier page'), message('m-1', 'streamed so far')],
+      turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'running' }],
+      interactions: [],
+      nextCursor: { ordinal: 1 },
+    })
+    const replaced = applySnapshot(state, {
+      cursor: { scope: threadScope, epoch: 'epoch', sequence: 9 },
+      state: {
+        thread: THREAD,
+        turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'completed' }],
+        messages: [message('m-1', 'the whole answer'), message('m-2', 'and a follow-up')],
+        reasoning: [],
+        tools: [],
+        interactions: [],
+      },
+    })
+    expect(replaced.threads[THREAD.threadId]?.messages.map((item) => item.messageId)).toEqual([
+      'm-old',
+      'm-1',
+      'm-2',
+    ])
+    expect(replaced.threads[THREAD.threadId]?.messages[1]?.content).toEqual([
+      { type: 'text', text: 'the whole answer' },
+    ])
+
+    // Only what precedes the page counts as older; a message the client holds
+    // after that point and the page does not name is not moved in front of it.
+    const withStray = applyEvent(state, delta('turn-1', 'm-stray', 'never persisted'))
+    const settled = applySnapshot(withStray, {
+      cursor: { scope: threadScope, epoch: 'epoch', sequence: 10 },
+      state: {
+        thread: THREAD,
+        turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'completed' }],
+        messages: [message('m-1', 'the whole answer'), message('m-2', 'and a follow-up')],
+        reasoning: [],
+        tools: [],
+        interactions: [],
+      },
+    })
+    expect(settled.threads[THREAD.threadId]?.messages.map((item) => item.messageId)).toEqual([
+      'm-old',
+      'm-1',
+      'm-2',
+    ])
   })
 
   it('applies an environment snapshot to workspaces and sessions', () => {

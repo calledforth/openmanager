@@ -240,6 +240,7 @@ describe('session history pages', () => {
     expect(newest?.interactions).toEqual([
       {
         threadId: 'thread-1',
+        turnId: 'turn-1',
         interaction: expect.objectContaining({ interactionId: 'interaction-pending' }),
       },
     ])

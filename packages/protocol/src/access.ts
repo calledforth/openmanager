@@ -5,6 +5,7 @@ import { ErrorEnvelopeSchema } from './envelopes.js'
 import { ProtocolErrorSchema } from './errors.js'
 import { HEARTBEAT_CAPABILITY } from './heartbeat.js'
 import { PROVIDER_PROBE_CAPABILITY } from './providers.js'
+import type { ReplayCommand } from './replay.js'
 
 /**
  * Access capabilities are what a client's credential grants. They are distinct
@@ -44,6 +45,7 @@ export type CommandName =
   | typeof PROVIDER_PROBE_CAPABILITY
   | keyof typeof ProofCommandSchemas
   | keyof typeof ComposerCommandSchemas
+  | ReplayCommand['name']
 
 /**
  * The capability each command requires, or `null` for connection plumbing
@@ -64,6 +66,7 @@ export const COMMAND_ACCESS = Object.freeze({
   'session.history': 'read',
   'subscription.subscribe': 'read',
   'subscription.unsubscribe': 'read',
+  'subscription.replay': 'read',
   'provider.catalog.get': 'read',
   [PROVIDER_PROBE_CAPABILITY]: 'read',
   'composer.preferences.get': 'read',

@@ -57,7 +57,8 @@ export interface SessionHistoryQuery {
 export interface SessionHistoryPage {
   messages: Message[]
   turns: Turn[]
-  interactions: Array<{ threadId: string; interaction: Interaction }>
+  /** `turnId` is server-side detail for snapshots; the history response schema drops it. */
+  interactions: Array<{ threadId: string; turnId: string; interaction: Interaction }>
   nextCursor: HistoryCursor | null
 }
 
@@ -216,6 +217,7 @@ export function listSessionHistory(
     (database.prepare(INTERACTIONS_FOR_TURN_SQL).all(turn.turnId) as InteractionRow[]).map(
       (row) => ({
         threadId: query.threadId,
+        turnId: turn.turnId,
         interaction: InteractionSchema.parse(JSON.parse(row.request_json)),
       }),
     ),

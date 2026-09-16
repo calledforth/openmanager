@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import {
@@ -39,6 +40,7 @@ import {
 import { createPersistentEventService } from './event-service.ts'
 import { openEnvironmentDatabase } from './db/database.ts'
 import { createEventRetention } from './db/event-retention.ts'
+import { createReplayReader } from './db/replay.ts'
 import { createLogger } from './logger.ts'
 import { createProviderService } from './provider-service.ts'
 import { createRateLimiter } from './rate-limit.ts'
@@ -175,6 +177,9 @@ export async function startServer(config: ServerConfig) {
   let publishDurableEvent: (record: DurableEvent) => void = () => undefined
   let publishThreadEvent: (event: EventEnvelope) => void = () => undefined
   const eventDatabase = openEnvironmentDatabase(config.dataDir)
+  // One epoch per process for streams that start here; replay reads it for
+  // scopes that have no stream row yet.
+  const eventEpoch = randomUUID()
   const eventService = createPersistentEventService(
     eventDatabase,
     (record) => {
@@ -183,6 +188,7 @@ export async function startServer(config: ServerConfig) {
       else queueMicrotask(() => publishDurableEvent(record))
     },
     {
+      epoch: eventEpoch,
       sessionProviderId: (session) => {
         const target = resolveWorkspace(session.workspaceId)
         if (!target) throw new Error('Cannot persist session without a workspace provider')
@@ -191,6 +197,11 @@ export async function startServer(config: ServerConfig) {
       onError: (error) => log('error', 'event persistence failed', { reason: String(error) }),
     },
   )
+  const replayReader = createReplayReader(eventDatabase, {
+    epoch: eventEpoch,
+    environment: () => ({ environmentId: identity.environmentId, name: identity.label }),
+    workspaces: () => workspaces.list(),
+  })
   const stopRetention = createEventRetention(eventDatabase).schedule({
     onError: (error) => log('error', 'event retention failed', { reason: String(error) }),
   })
@@ -401,6 +412,7 @@ export async function startServer(config: ServerConfig) {
     rateLimiter,
     audit,
     bootstrap,
+    replay: (scope, cursor) => replayReader.read(scope, cursor),
     dispatchCommand: (command, context) =>
       workspaces.dispatch(command, context) ??
       threadService.dispatch(command, context) ??
