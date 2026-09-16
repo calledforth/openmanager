@@ -133,9 +133,12 @@ describe('session workspace', () => {
         ...SEED,
         workspaces: [{ ...WORKSPACE, exists: false, availability }],
       })
-      expect(await screen.findByRole('alert')).toHaveTextContent('Could not open session')
+      expect(await screen.findByRole('alert')).toHaveTextContent('Project folder unavailable')
       expect(screen.getByText('Sidebar move')).toBeInTheDocument()
       expect(screen.getByText(availability.toUpperCase())).toBeInTheDocument()
+      // The row stays listed and says why it cannot run, without claiming a
+      // lifecycle status the environment never reported.
+      expect(screen.getByLabelText('Project folder unavailable')).toBeInTheDocument()
       expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
       // The filesystem becomes usable again and the environment publishes it.
       client.emit({
@@ -152,6 +155,37 @@ describe('session workspace', () => {
       expect(screen.getByRole('textbox')).toBeEnabled()
     },
   )
+
+  it('deletes an unrecoverable session from the recovery panel after confirming', async () => {
+    const user = userEvent.setup()
+    const { client } = renderConnected('/sessions/session-1', {
+      ...SEED,
+      workspaces: [{ ...WORKSPACE, exists: false, availability: 'missing' }],
+    })
+    const panel = await screen.findByRole('region', { name: 'Session recovery' })
+    await user.click(within(panel).getByRole('button', { name: 'Delete session' }))
+    // One click only arms the action; the transcript is gone for good.
+    expect(client.getState().sessions[SESSION.sessionId]).toBeDefined()
+    await user.click(within(panel).getByRole('button', { name: 'Delete permanently' }))
+    await waitFor(() => expect(client.getState().sessions[SESSION.sessionId]).toBeUndefined())
+    expect(screen.queryByText('Sidebar move')).not.toBeInTheDocument()
+  })
+
+  it('keeps an unrecoverable session and reports why when deleting it fails', async () => {
+    const user = userEvent.setup()
+    const { client } = renderConnected('/sessions/session-1', {
+      ...SEED,
+      workspaces: [{ ...WORKSPACE, exists: false, availability: 'missing' }],
+    })
+    const panel = await screen.findByRole('region', { name: 'Session recovery' })
+    vi.spyOn(client.commands, 'deleteSession').mockRejectedValue(
+      new Error('Not connected to the environment.'),
+    )
+    await user.click(within(panel).getByRole('button', { name: 'Delete session' }))
+    await user.click(within(panel).getByRole('button', { name: 'Delete permanently' }))
+    expect(await within(panel).findByText('Not connected to the environment.')).toBeInTheDocument()
+    expect(client.getState().sessions[SESSION.sessionId]).toBeDefined()
+  })
 
   it('renders the shared sidebar, empty chat and composer once connected', async () => {
     renderConnected('/')

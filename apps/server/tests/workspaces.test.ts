@@ -249,6 +249,11 @@ describe('workspace registry', () => {
     expect(registry.list()).toEqual([alpha, { ...beta, exists: false, availability: 'missing' }])
     const context = { clientId: 'client-1', command: 'session.create' }
     expect(registry.resolve(beta!.workspaceId, context)).toBeUndefined()
+    // The reason is readable without a second audit entry, and an ID nobody
+    // registered stays distinguishable from a folder that went away.
+    expect(registry.availability(beta!.workspaceId)).toBe('missing')
+    expect(registry.availability(alpha!.workspaceId)).toBe('available')
+    expect(registry.availability('workspace-unknown')).toBe('unknown')
     expect(audits).toEqual([
       expect.objectContaining({
         type: 'workspace.rejected',

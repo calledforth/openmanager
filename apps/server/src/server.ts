@@ -218,6 +218,7 @@ export async function startServer(config: ServerConfig) {
       appendAtomic: (events) => eventService.appendAtomic(events),
       onPersistenceError: (error, eventName) =>
         log('error', 'event persistence failed', { eventName, reason: String(error) }),
+      workspaceAvailability: (workspaceId) => workspaces.availability(workspaceId),
     },
   )
   closeWorkspaceSessions = (workspaceId) => {

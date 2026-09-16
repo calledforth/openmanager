@@ -8,6 +8,22 @@ failures, disallowed roots, and roots replaced by a symlink to another location.
 Unavailable projects and their sessions stay in the sidebar. Opening a session
 shows an error with **Try again**; restoring access lets the same session reopen.
 
+## The error and what the UI does with it
+
+`session.create`, `session.open` and `turn.send` answer a registered folder that
+cannot be used with the `workspace_unavailable` error code and details
+`{ workspaceId, availability }`; only a workspace ID the environment does not
+know stays `not_found`. Its retry policy is `after_change`: the change is on
+disk, so retrying without one fails the same way.
+
+The session's server-owned lifecycle status (docs/session-status.md) is not
+touched — nothing ran, so nothing failed. The sidebar instead derives the row
+state from the workspace: a session in an unavailable project keeps its status
+and is marked unavailable, and the chat pane shows the recovery panel rather
+than a spinner. That panel names the folder, explains the on-disk fix, and
+offers **Try again** and a confirming **Delete session** so a session whose
+folder is never coming back can still be cleared.
+
 ## Moved folders
 
 A missing path may have been moved or deleted. The environment cannot reliably

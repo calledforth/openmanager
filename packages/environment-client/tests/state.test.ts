@@ -348,7 +348,7 @@ describe('applyEvent', () => {
       ...state,
       activeSessionId: 'session-grandchild',
       activeThreadId: 'session-grandchild-thread',
-      sessionOpenFailure: { sessionId: 'session-child', message: 'boom' },
+      sessionOpenFailure: { sessionId: 'session-child', message: 'boom', code: 'internal' },
     }
 
     const deleted = applyEvent(

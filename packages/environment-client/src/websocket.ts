@@ -21,7 +21,7 @@ import {
   type Thread,
 } from '@openmanager/protocol'
 import { z } from 'zod'
-import { EnvironmentClientError } from './errors'
+import { EnvironmentClientError, isEnvironmentClientError } from './errors'
 import {
   applyActiveSession,
   applyActiveThread,
@@ -840,6 +840,8 @@ export function createWebSocketEnvironmentClient(
             sessionOpenFailure: {
               sessionId,
               message: error instanceof Error ? error.message : 'Could not open this session.',
+              // A transport or programming failure is nobody's known code.
+              code: isEnvironmentClientError(error) ? error.code : 'internal',
             },
           }
         })
