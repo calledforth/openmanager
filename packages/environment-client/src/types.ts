@@ -10,6 +10,7 @@ import type {
   Session,
   SessionListCursor,
   SessionStatus,
+  SessionTitleSource,
   Thread,
   Turn,
   TurnFailureReason,
@@ -21,6 +22,8 @@ export type { SessionStatus }
 
 /** Protocol summary plus the thread IDs this client has already learned. */
 export interface SessionSummary extends Session {
+  /** Absent until the environment has named the session; see docs/session-titles.md. */
+  titleSource?: SessionTitleSource
   status: SessionStatus
   providerId?: string
   updatedAt?: string

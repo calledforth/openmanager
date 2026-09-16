@@ -96,6 +96,7 @@ export function projectAgentEvent(
       return emit('session.updated', environmentScope, {
         sessionId: context.sessionId,
         title: source.data.title,
+        titleSource: 'provider',
       })
     case 'prompt_started': {
       const turnId = required('turnId')

@@ -275,6 +275,51 @@ describe('applyEvent', () => {
     })
   })
 
+  it('records the provenance a server-owned title arrives with', () => {
+    let state = applyEvent(
+      seeded(),
+      event({
+        name: 'session.updated',
+        scope: environmentScope,
+        payload: {
+          sessionId: SESSION.sessionId,
+          title: 'First prompt',
+          titleSource: 'fallback',
+        },
+      }),
+    )
+    expect(state.sessions[SESSION.sessionId]).toMatchObject({
+      title: 'First prompt',
+      titleSource: 'fallback',
+    })
+    state = applyEvent(
+      state,
+      event({
+        name: 'session.updated',
+        scope: environmentScope,
+        payload: { sessionId: SESSION.sessionId, title: 'Provider title', titleSource: 'provider' },
+      }),
+    )
+    expect(state.sessions[SESSION.sessionId]).toMatchObject({
+      title: 'Provider title',
+      titleSource: 'provider',
+    })
+    // A status-only update leaves the title and its provenance alone.
+    state = applyEvent(
+      state,
+      event({
+        name: 'session.updated',
+        scope: environmentScope,
+        payload: { sessionId: SESSION.sessionId, status: 'running' },
+      }),
+    )
+    expect(state.sessions[SESSION.sessionId]).toMatchObject({
+      title: 'Provider title',
+      titleSource: 'provider',
+      status: 'running',
+    })
+  })
+
   it('drops the active selection when the session is deleted', () => {
     const state = applyEvent(
       seeded(),

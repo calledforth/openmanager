@@ -94,11 +94,13 @@ function upsertSession(
 ): EnvironmentState {
   const existing = state.sessions[session.sessionId]
   const listed = session as Partial<ProtocolSessionSummary>
+  const titleSource = listed.titleSource ?? existing?.titleSource
   const parentSessionId = session.parentSessionId ?? existing?.parentSessionId
   const summary: SessionSummary = {
     sessionId: session.sessionId,
     workspaceId: session.workspaceId,
     title: session.title,
+    ...(titleSource ? { titleSource } : {}),
     ...(parentSessionId ? { parentSessionId } : {}),
     status: listed.status ?? existing?.status ?? 'idle',
     providerId: listed.providerId ?? existing?.providerId,
@@ -291,6 +293,7 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
           ...state.sessions,
           [session.sessionId]: {
             ...session,
+            ...(event.payload.titleSource ? { titleSource: event.payload.titleSource } : {}),
             ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
             ...(event.payload.status !== undefined ? { status: event.payload.status } : {}),
             updatedAt: event.timestamp,
@@ -736,8 +739,11 @@ export function applySessionTitle(
   title: string | null,
 ): EnvironmentState {
   const session = state.sessions[sessionId]
-  if (!session || session.title === title) return state
-  return { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, title } } }
+  if (!session || (session.title === title && session.titleSource === 'user')) return state
+  return {
+    ...state,
+    sessions: { ...state.sessions, [sessionId]: { ...session, title, titleSource: 'user' } },
+  }
 }
 
 export function applyThreadHydration(

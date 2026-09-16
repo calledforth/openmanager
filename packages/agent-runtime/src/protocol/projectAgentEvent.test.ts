@@ -152,6 +152,13 @@ describe('agent to environment protocol projection', () => {
       payload: { phase: 'stop', tokens: 0 },
     })
   })
+  it('marks a provider title with its provenance', () => {
+    const source = fixtures.find((f) => f.event === 'session_info_update')!
+    expect(projectAgentEvent(source, context)).toMatchObject({
+      name: 'session.updated',
+      payload: { title: 'New title', titleSource: 'provider' },
+    })
+  })
   it.each([true, false])(
     'keeps recoverable=%s errors distinct from terminal failures',
     (recoverable) => {
