@@ -587,6 +587,26 @@ describe('snapshots', () => {
     expect(replaced.threads[THREAD.threadId]?.messages[1]?.content).toEqual([
       { type: 'text', text: 'the whole answer' },
     ])
+
+    // Only what precedes the page counts as older; a message the client holds
+    // after that point and the page does not name is not moved in front of it.
+    const withStray = applyEvent(state, delta('turn-1', 'm-stray', 'never persisted'))
+    const settled = applySnapshot(withStray, {
+      cursor: { scope: threadScope, epoch: 'epoch', sequence: 10 },
+      state: {
+        thread: THREAD,
+        turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'completed' }],
+        messages: [message('m-1', 'the whole answer'), message('m-2', 'and a follow-up')],
+        reasoning: [],
+        tools: [],
+        interactions: [],
+      },
+    })
+    expect(settled.threads[THREAD.threadId]?.messages.map((item) => item.messageId)).toEqual([
+      'm-old',
+      'm-1',
+      'm-2',
+    ])
   })
 
   it('applies an environment snapshot to workspaces and sessions', () => {

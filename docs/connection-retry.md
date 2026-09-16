@@ -111,8 +111,9 @@ subscribed plainly instead. A scope the environment no longer has is dropped.
 A thread snapshot carries all turns, pending interactions and the newest
 history page of messages, as `session.open` followed by `session.history`
 would load it. Older pages the client had already loaded stay in front of it:
-history is only appended to, so a message the page does not name is older than
-the page, and the cursor for the next older page stays valid. Reasoning and
+history is only appended to, so what the client holds before the first message
+the page names is older than the page, and the cursor for the next older page
+stays valid. Reasoning and
 tool state exist only in the event log, which is what the snapshot stands in
 for, so they start over. An environment snapshot carries the environment,
 every workspace and the newest page of sessions.
