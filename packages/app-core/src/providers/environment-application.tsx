@@ -482,6 +482,13 @@ function EnvironmentSidebarDataProvider({
   const recentEntries = useMemo(() => recentWorkspaces.map(toWorkspaceEntry), [recentWorkspaces])
   const sessionsByWorkspace = useMemo(() => {
     const grouped: Record<string, SidebarSessionEntry[]> = {}
+    const unavailableWorkspaces = new Set(
+      workspaceEntries
+        .filter((workspace) =>
+          workspace.availability ? workspace.availability !== 'available' : workspace.missing,
+        )
+        .map((workspace) => workspace.path),
+    )
     for (const summary of sessions) {
       const entry: SidebarSessionEntry = {
         externalId: summary.sessionId,
@@ -492,11 +499,12 @@ function EnvironmentSidebarDataProvider({
         providerId: (summary.providerId as ProviderId | undefined) ?? session.defaultProviderId,
         ...(summary.parentSessionId ? { parentExternalId: summary.parentSessionId } : {}),
         isDriven: true,
+        ...(unavailableWorkspaces.has(summary.workspaceId) ? { workspaceUnavailable: true } : {}),
       }
       ;(grouped[summary.workspaceId] ??= []).push(entry)
     }
     return grouped
-  }, [session.defaultProviderId, sessions])
+  }, [session.defaultProviderId, sessions, workspaceEntries])
 
   const isWorkspacesLoading =
     workspaces.length === 0 &&

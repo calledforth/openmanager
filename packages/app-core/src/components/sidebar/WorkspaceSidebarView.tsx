@@ -10,6 +10,7 @@ import {
   TrashIcon,
   NotePencilIcon,
   GitBranchIcon,
+  WarningCircleIcon,
 } from '@phosphor-icons/react'
 import type { ProviderId } from '@agentpack/contract'
 import { cn } from '../../lib/utils'
@@ -29,6 +30,8 @@ export interface SidebarSession {
   status: string
   providerId?: ProviderId
   parentExternalId?: string
+  /** Its project folder is unreachable, so the row cannot run until it is back. */
+  workspaceUnavailable?: boolean
 }
 
 export interface SidebarWorkspace {
@@ -399,7 +402,18 @@ function WorkspaceGroup({
                     )}
                   />
                 )}
-                {isChild ? (
+                {/* A row that cannot run says so where its provider glyph sits:
+                  the project header names the folder, the row explains itself. */}
+                {s.workspaceUnavailable ? (
+                  <Tooltip content="Project folder unavailable — open to recover" side="right">
+                    <span
+                      className="flex shrink-0 items-center"
+                      aria-label="Project folder unavailable"
+                    >
+                      <WarningCircleIcon className="h-3 w-3 text-[var(--basis-text-faint)]" />
+                    </span>
+                  </Tooltip>
+                ) : isChild ? (
                   <GitBranchIcon
                     className="h-3 w-3 shrink-0 text-[var(--basis-text-faint)]"
                     weight="regular"
@@ -438,6 +452,7 @@ function WorkspaceGroup({
                     className={cn(
                       typographyLabel,
                       'relative flex-1 truncate text-left font-normal',
+                      s.workspaceUnavailable && 'text-[var(--basis-text-muted)]',
                     )}
                   >
                     {s.title || 'New session'}

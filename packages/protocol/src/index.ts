@@ -18,8 +18,18 @@ export type {
 } from './envelopes.js'
 export { RequestIdSchema, MessageNameSchema } from './primitives.js'
 export type { RequestId, MessageName } from './primitives.js'
-export { ErrorCodeSchema, ProtocolErrorSchema, ERROR_RETRY_POLICY } from './errors.js'
-export type { ErrorCode, ProtocolError, ErrorRetryPolicy } from './errors.js'
+export {
+  ErrorCodeSchema,
+  ProtocolErrorSchema,
+  ERROR_RETRY_POLICY,
+  WorkspaceUnavailableDetailsSchema,
+} from './errors.js'
+export type {
+  ErrorCode,
+  ProtocolError,
+  ErrorRetryPolicy,
+  WorkspaceUnavailableDetails,
+} from './errors.js'
 export * from './domains.js'
 export * from './pagination.js'
 export * from './commands.js'

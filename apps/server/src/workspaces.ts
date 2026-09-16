@@ -389,6 +389,16 @@ export function openWorkspaceRegistry(
     register,
     unregister,
 
+    /**
+     * Why a workspace could not be routed to, for a caller that already
+     * audited the rejection and now has to phrase it: an unknown ID is a
+     * missing resource, a registered folder that cannot be used is recoverable.
+     */
+    availability(workspaceId: string): 'unknown' | RegisteredWorkspace['availability'] {
+      const workspace = byId.get(workspaceId)
+      return workspace ? refresh(workspace).availability : 'unknown'
+    },
+
     /** Look a workspace up without auditing; for callers that will report a miss themselves. */
     get(workspaceId: string): RegisteredWorkspace | undefined {
       const workspace = byId.get(workspaceId)
