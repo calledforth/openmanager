@@ -1,5 +1,5 @@
+import { foldProtocolEvent } from '@agentpack/view/protocol'
 import type {
-  ContentBlock,
   Message,
   ProofEvent,
   ProofResponse,
@@ -190,14 +190,6 @@ function setTurnState(thread: ThreadState, turnId: string, turnState: Turn['stat
   return { ...thread, turns }
 }
 
-function mergeContent(existing: readonly ContentBlock[], delta: ContentBlock): ContentBlock[] {
-  const last = existing.at(-1)
-  if (last?.type === 'text' && delta.type === 'text') {
-    return [...existing.slice(0, -1), { type: 'text', text: last.text + delta.text }]
-  }
-  return [...existing, delta]
-}
-
 /**
  * Drop a pending interaction and, when it was the last one blocking its turn,
  * return that turn to `running`. `turnId` may be null when the caller only
@@ -331,84 +323,16 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
       return patchThread(state, thread, (current) => confirmTurnStart(current, event.payload))
     case 'turn.completed':
     case 'turn.interrupted':
-    case 'turn.failed': {
-      const turnState =
-        event.name === 'turn.completed'
-          ? 'completed'
-          : event.name === 'turn.interrupted'
-            ? 'interrupted'
-            : 'failed'
-      return patchThread(state, thread, (current) => {
-        const updated = setTurnState(current, event.payload.turnId, turnState)
-        const interactions = updated.interactions.filter(
-          (item) => item.turnId !== event.payload.turnId,
-        )
-        const failures =
-          event.name === 'turn.failed'
-            ? upsertById(updated.failures, (item) => item.turnId, {
-                turnId: event.payload.turnId,
-                reason: event.payload.reason,
-                message: event.payload.message,
-              })
-            : updated.failures
-        return { ...updated, interactions, failures }
-      })
-    }
+    case 'turn.failed':
+    case 'message.delta':
+    case 'message.reasoning':
+    case 'tool.updated':
+      return patchThread(state, thread, (current) => foldProtocolEvent(current, event))
     case 'turn.notice':
       return patchThread(state, thread, (current) => ({
         ...current,
         notices: [...current.notices, event.payload],
       }))
-    case 'message.delta':
-      return patchThread(state, thread, (current) => {
-        const existing = current.messages.find(
-          (message) => message.messageId === event.payload.messageId,
-        )
-        const message: Message = existing
-          ? { ...existing, content: mergeContent(existing.content, event.payload.content) }
-          : {
-              messageId: event.payload.messageId,
-              threadId: thread.threadId,
-              turnId: event.payload.turnId,
-              role: event.payload.role,
-              content: [event.payload.content],
-            }
-        return {
-          ...current,
-          messages: upsertById(current.messages, (item) => item.messageId, message),
-        }
-      })
-    case 'message.reasoning':
-      return patchThread(state, thread, (current) => {
-        const existing = current.reasoning.find(
-          (entry) => entry.messageId === event.payload.messageId,
-        )
-        const content =
-          event.payload.content === undefined
-            ? (existing?.content ?? [])
-            : mergeContent(existing?.content ?? [], event.payload.content)
-        return {
-          ...current,
-          reasoning: upsertById(current.reasoning, (entry) => entry.messageId, {
-            messageId: event.payload.messageId,
-            turnId: event.payload.turnId,
-            phase: event.payload.phase,
-            content,
-            tokens: event.payload.tokens ?? existing?.tokens,
-          }),
-        }
-      })
-    case 'tool.updated':
-      return patchThread(state, thread, (current) => {
-        const existing = current.tools.find((tool) => tool.toolCallId === event.payload.toolCallId)
-        return {
-          ...current,
-          tools: upsertById(current.tools, (tool) => tool.toolCallId, {
-            ...existing,
-            ...event.payload,
-          }),
-        }
-      })
     case 'interaction.requested':
       return patchThread(state, thread, (current) => {
         const pending: PendingInteraction = {
@@ -612,7 +536,12 @@ function confirmTurnStart(current: ThreadState, payload: TurnStart): ThreadState
     : current.outbox
   return {
     ...current,
-    turns: upsertById(current.turns, (turn) => turn.turnId, payload.turn),
+    // A delayed send response must not rewind a turn that already progressed.
+    turns: upsertById(
+      current.turns,
+      (turn) => turn.turnId,
+      current.turns.find((turn) => turn.turnId === payload.turn.turnId) ?? payload.turn,
+    ),
     messages: upsertById(current.messages, (message) => message.messageId, payload.userMessage),
     outbox: outbox.length === current.outbox.length ? current.outbox : outbox,
   }

@@ -433,6 +433,9 @@ importers:
 
   packages/agent-view:
     dependencies:
+      '@openmanager/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@agentpack/contract':
         specifier: workspace:*
         version: link:../agent-contract
@@ -589,6 +592,9 @@ importers:
 
   packages/environment-client:
     dependencies:
+      '@agentpack/view':
+        specifier: workspace:*
+        version: link:../agent-view
       '@openmanager/protocol':
         specifier: workspace:*
         version: link:../protocol

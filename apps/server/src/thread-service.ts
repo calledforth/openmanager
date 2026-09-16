@@ -74,6 +74,7 @@ type ActiveTurn = {
   turn: Turn
   userMessage: Message
   interruptRequested: boolean
+  promptStarted?: boolean
   runtimeMessageId?: string
   toolIds: Map<string, string>
   interactionIds: Map<string, string>
@@ -94,6 +95,8 @@ type ThreadRecord = {
   status: SessionStatus
   updatedAt: number
   activeTurn?: ActiveTurn
+  /** A session-scoped cancel must drain before another prompt can start. */
+  cancellation?: Promise<void>
 }
 
 const errorResult = (requestId: string, code: ErrorCode, message: string, details?: unknown) => ({
@@ -1041,7 +1044,7 @@ export function createThreadService(
         }
         const providerRejection = rejectProvider(command.requestId, record.providerId)
         if (providerRejection) return providerRejection
-        if (record.activeTurn?.turn.state === 'running') {
+        if (record.activeTurn || record.cancellation) {
           return errorResult(command.requestId, 'conflict', 'A turn is already in progress.')
         }
         const turn: Turn = {
@@ -1098,7 +1101,13 @@ export function createThreadService(
             // Deleting the session or closing the workspace drops the record while
             // the provider session is still resolving. Starting provider work for a
             // record nothing points at any more would outlive the session itself.
-            if (threads.get(record.thread.threadId) !== record) return
+            if (
+              threads.get(record.thread.threadId) !== record ||
+              record.activeTurn !== active ||
+              active.interruptRequested
+            )
+              return
+            active.promptStarted = true
             return runtime.prompt({
               ...route(record, sessionId),
               prompt: {
@@ -1109,27 +1118,23 @@ export function createThreadService(
             })
           })
           .then(() => {
-            if (
-              record.activeTurn === active &&
-              !active.interruptRequested &&
-              turn.state === 'running'
-            ) {
-              emitCompleted(record, turn.turnId)
-              turn.state = 'completed'
+            if (active.promptStarted && record.activeTurn === active && turn.state === 'running') {
+              // A provider may settle without a terminal callback while cancel
+              // is still pending. Its prompt has ended either way.
+              if (active.interruptRequested) emitInterrupted(record, turn.turnId)
+              else emitCompleted(record, turn.turnId)
+              turn.state = active.interruptRequested ? 'interrupted' : 'completed'
               record.activeTurn = undefined
               touch(record, 'idle')
             }
           })
           .catch(() => {
-            if (
-              record.activeTurn === active &&
-              !active.interruptRequested &&
-              turn.state === 'running'
-            ) {
-              emitFailed(record, turn.turnId)
-              turn.state = 'failed'
+            if (record.activeTurn === active && turn.state === 'running') {
+              if (active.interruptRequested) emitInterrupted(record, turn.turnId)
+              else emitFailed(record, turn.turnId)
+              turn.state = active.interruptRequested ? 'interrupted' : 'failed'
               record.activeTurn = undefined
-              touch(record, 'error')
+              touch(record, active.interruptRequested ? 'idle' : 'error')
             }
           })
         return turnSendResult(command.requestId, started)
@@ -1157,24 +1162,34 @@ export function createThreadService(
         if (!active || active.turn.turnId !== parsed.data.payload.turnId) {
           return errorResult(command.requestId, 'conflict', 'Turn is not in progress.')
         }
-        active.interruptRequested = true
-        void record.runtimeSession
-          .then((sessionId) => runtime.cancel({ ...route(record), sessionId }))
-          .then(() => {
-            if (record.activeTurn?.turn.turnId !== active.turn.turnId) return
-            active.turn.state = 'interrupted'
-            record.activeTurn = undefined
-            touch(record, 'idle')
-            emitInterrupted(record, active.turn.turnId)
-          })
-          .catch(() => {
-            if (record.activeTurn?.turn.turnId !== active.turn.turnId) return
-            // Cancellation failure says nothing about the prompt's terminal
-            // state. Keep it active to prevent concurrent provider work and
-            // allow the client to retry interrupting the same turn. CAL-34
-            // owns projection of the eventual provider failure/completion.
-            active.interruptRequested = false
-          })
+        if (!active.interruptRequested) {
+          active.interruptRequested = true
+          record.cancellation = record.runtimeSession
+            .then((sessionId) => runtime.cancel({ ...route(record), sessionId }))
+            .then(() => {
+              if (record.activeTurn?.turn.turnId !== active.turn.turnId) return
+              active.turn.state = 'interrupted'
+              record.activeTurn = undefined
+              touch(record, 'idle')
+              emitInterrupted(record, active.turn.turnId)
+            })
+            .catch(() => {
+              if (record.activeTurn?.turn.turnId !== active.turn.turnId) return
+              // A prompt skipped during startup has no provider work left to stop.
+              if (!active.promptStarted) {
+                emitInterrupted(record, active.turn.turnId)
+                active.turn.state = 'interrupted'
+                record.activeTurn = undefined
+                touch(record, 'idle')
+                return
+              }
+              // A running prompt remains active so cancellation can be retried.
+              active.interruptRequested = false
+            })
+            .finally(() => {
+              record.cancellation = undefined
+            })
+        }
         return ProofResponseSchemas['turn.interrupt'].parse({
           type: 'response',
           requestId: command.requestId,
@@ -1280,10 +1295,12 @@ export function createThreadService(
         ((event.event === 'rpc_error' || event.event === 'runtime_error') &&
           event.data.recoverable !== true)
       ) {
-        projectRuntimeEvent(record, event, active, 'failed')
-        active.turn.state = 'failed'
+        const interrupted = active.interruptRequested
+        if (interrupted) emitInterrupted(record, active.turn.turnId)
+        else projectRuntimeEvent(record, event, active, 'failed')
+        active.turn.state = interrupted ? 'interrupted' : 'failed'
         record.activeTurn = undefined
-        touch(record, 'error')
+        touch(record, interrupted ? 'idle' : 'error')
         return
       }
 

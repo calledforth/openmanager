@@ -1037,13 +1037,15 @@ describe('cursor replay on reconnect', () => {
     expect(thread.messages[1]?.content).toEqual([{ type: 'text', text: 'Hi!' }])
     expect(thread.turns[0]?.state).toBe('completed')
 
-    // The tail moved the cursor: a live repeat is ignored, the next event lands.
+    // The tail moved the cursor: repeats and late parts cannot change the settled turn.
     next.receive(live(5, completed()))
     next.receive(live(4, delta('turn-1', 'assistant-1', '!')))
     next.receive(live(6, delta('turn-1', 'assistant-1', ' there')))
     expect(selectActiveThread(client.getState())?.messages[1]?.content).toEqual([
-      { type: 'text', text: 'Hi! there' },
+      { type: 'text', text: 'Hi!' },
     ])
+    next.receive(live(7, turnStarted('turn-2')))
+    expect(selectActiveThread(client.getState())?.turns.at(-1)?.turnId).toBe('turn-2')
     // The recovered subscription is the one released when the session goes.
     client.setActiveSession(null)
     expect(
@@ -1099,8 +1101,10 @@ describe('cursor replay on reconnect', () => {
     // The snapshot's cursor is where live delivery resumes.
     next.receive(live(9, delta('turn-1', 'assistant-1', 'stale')))
     next.receive(live(10, delta('turn-1', 'assistant-1', '.')))
+    next.receive(live(11, turnStarted('turn-2')))
+    expect(selectActiveThread(client.getState())?.turns.at(-1)?.turnId).toBe('turn-2')
     expect(selectActiveThread(client.getState())?.messages[1]?.content).toEqual([
-      { type: 'text', text: 'Hi, the whole answer.' },
+      { type: 'text', text: 'Hi, the whole answer' },
     ])
   })
 

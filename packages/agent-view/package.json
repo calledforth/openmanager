@@ -7,13 +7,18 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./protocol": {
+      "types": "./src/fold/foldProtocolEvent.ts",
+      "default": "./src/fold/foldProtocolEvent.ts"
     }
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@agentpack/contract": "workspace:*"
+    "@agentpack/contract": "workspace:*",
+    "@openmanager/protocol": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.9.3"

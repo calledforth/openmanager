@@ -58,6 +58,15 @@ describe('projectThread', () => {
     expect(row.message.isFinal).toBe(false)
   })
 
+  it.each(['completed', 'interrupted', 'failed'] as const)('closes snapshot reasoning on %s', (state) => {
+    const projection = projectThread(thread({
+      turns: [{ turnId: 't1', threadId: THREAD.threadId, state }],
+      reasoning: [{ messageId: 'r1', turnId: 't1', phase: 'delta', content: [{ type: 'text', text: 'thinking' }] }],
+    }))
+    expect(projection.messages[0]?.isFinal).toBe(true)
+    expect(projection.byId.get('turn:t1:assistant')?.content.parts?.[0]).toMatchObject({ type: 'reasoning', time: { end: 0 } })
+  })
+
   it('keeps row identity for turns whose inputs did not change', () => {
     const settled = thread({
       turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'completed' }],
@@ -106,48 +115,59 @@ describe('projectThread', () => {
 })
 
 describe('createEnvironmentThreadStores', () => {
-  it('serves the active thread and notifies subscribers on updates', async () => {
-    const client = createMockEnvironmentClient({
-      seed: {
-        workspaces: [
-          {
-            workspaceId: 'ws',
-            name: 'ws',
-            path: 'ws',
-            lastUsedAt: null,
-            lastActivityAt: null,
-            exists: true,
-            capabilities: { git: false, providers: [] },
-          },
-        ],
-        sessions: [
-          {
-            session: { sessionId: THREAD.sessionId, workspaceId: 'ws', title: null },
-            threads: [THREAD],
-          },
-        ],
-        activeSessionId: THREAD.sessionId,
-      },
-      respond: () => null,
-    })
-    const stores = createEnvironmentThreadStores(client)
-    expect(stores.current().messages).toEqual([])
+  it.each(['completed', 'interrupted'] as const)(
+    'settles %s through protocol events and preserves the partial reply',
+    async (outcome) => {
+      const client = createMockEnvironmentClient({
+        seed: {
+          workspaces: [
+            {
+              workspaceId: 'ws',
+              name: 'ws',
+              path: 'ws',
+              lastUsedAt: null,
+              lastActivityAt: null,
+              exists: true,
+              capabilities: { git: false, providers: [] },
+            },
+          ],
+          sessions: [
+            {
+              session: { sessionId: THREAD.sessionId, workspaceId: 'ws', title: null },
+              threads: [THREAD],
+            },
+          ],
+          activeSessionId: THREAD.sessionId,
+        },
+        respond: () => null,
+      })
+      const stores = createEnvironmentThreadStores(client)
+      expect(stores.current().messages).toEqual([])
 
-    let notified = 0
-    const stop = stores.streamingStore.subscribe('any', () => {
-      notified += 1
-    })
-    const { turn, userMessage } = await client.commands.sendTurn({ ...THREAD, text: 'go' })
-    expect(notified).toBeGreaterThan(0)
-    expect(stores.messageContentStore.get(userMessage.messageId)).toEqual({ content: 'go' })
+      let notified = 0
+      const stop = stores.streamingStore.subscribe('any', () => {
+        notified += 1
+      })
+      const { turn, userMessage } = await client.commands.sendTurn({ ...THREAD, text: 'go' })
+      expect(notified).toBeGreaterThan(0)
+      expect(stores.messageContentStore.get(userMessage.messageId)).toEqual({ content: 'go' })
 
-    const assistantId = client.streamAssistantText({ ...THREAD, turnId: turn.turnId }, 'partial')
-    expect(stores.streamingStore.get(assistantId)).toMatchObject({ content: 'partial' })
-    expect(stores.current().messages.at(-1)).toMatchObject({ externalId: assistantId, isFinal: false })
-    client.completeTurn({ ...THREAD, turnId: turn.turnId })
-    expect(stores.current().messages.at(-1)).toMatchObject({ externalId: assistantId, isFinal: true })
-    expect(stores.messageContentStore.get('missing')).toBeNull()
-    stop()
-    client.dispose()
-  })
+      const assistantId = client.streamAssistantText({ ...THREAD, turnId: turn.turnId }, 'partial')
+      expect(stores.streamingStore.get(assistantId)).toMatchObject({ content: 'partial' })
+      expect(stores.current().messages.at(-1)).toMatchObject({
+        externalId: assistantId,
+        isFinal: false,
+      })
+      if (outcome === 'completed') client.completeTurn({ ...THREAD, turnId: turn.turnId })
+      else await client.commands.interruptTurn({ ...THREAD, turnId: turn.turnId })
+      expect(stores.current().messages.at(-1)).toMatchObject({
+        externalId: assistantId,
+        isFinal: true,
+      })
+      expect(stores.messageContentStore.get(assistantId)?.content).toBe('partial')
+      expect(stores.messageContentStore.get('missing')).toBeNull()
+      stop()
+      client.dispose()
+    },
+  )
 })
