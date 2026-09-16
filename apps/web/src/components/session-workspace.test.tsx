@@ -171,6 +171,22 @@ describe('session workspace', () => {
     expect(screen.queryByText('Sidebar move')).not.toBeInTheDocument()
   })
 
+  it('keeps an unrecoverable session and reports why when deleting it fails', async () => {
+    const user = userEvent.setup()
+    const { client } = renderConnected('/sessions/session-1', {
+      ...SEED,
+      workspaces: [{ ...WORKSPACE, exists: false, availability: 'missing' }],
+    })
+    const panel = await screen.findByRole('region', { name: 'Session recovery' })
+    vi.spyOn(client.commands, 'deleteSession').mockRejectedValue(
+      new Error('Not connected to the environment.'),
+    )
+    await user.click(within(panel).getByRole('button', { name: 'Delete session' }))
+    await user.click(within(panel).getByRole('button', { name: 'Delete permanently' }))
+    expect(await within(panel).findByText('Not connected to the environment.')).toBeInTheDocument()
+    expect(client.getState().sessions[SESSION.sessionId]).toBeDefined()
+  })
+
   it('renders the shared sidebar, empty chat and composer once connected', async () => {
     renderConnected('/')
     expect(await screen.findByText('Sidebar move')).toBeInTheDocument()

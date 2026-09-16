@@ -22,12 +22,16 @@ function SessionOpenBoundary({ children }: { children: ReactNode }) {
     return session ? state.workspaces[session.workspaceId] : undefined
   })
   const [retrying, setRetrying] = useState(false)
-  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  // Keyed by session, not a bare flag: arming deletion for one session must
+  // not carry over to the next failed session shown in this same pane.
+  const [confirmingSessionId, setConfirmingSessionId] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   if (!failure) return children
   // The folder, not the request, is what has to change, so the pane explains
   // the on-disk fix and still offers a way out that does not need the folder.
   const unavailable = failure.code === 'workspace_unavailable'
+  const confirming = confirmingSessionId === failure.sessionId
   return (
     <div className="flex min-h-0 flex-1 overflow-y-auto p-6">
       {/* A landmark so the recovery actions are reachable on their own, not
@@ -53,7 +57,8 @@ function SessionOpenBoundary({ children }: { children: ReactNode }) {
             className={ACTION_CLASS}
             onClick={() => {
               setRetrying(true)
-              setConfirmingDelete(false)
+              setConfirmingSessionId(null)
+              setDeleteError(null)
               void client.commands
                 .openSession(failure.sessionId)
                 .catch(() => undefined)
@@ -68,31 +73,41 @@ function SessionOpenBoundary({ children }: { children: ReactNode }) {
               disabled={deleting}
               className={cn(
                 ACTION_CLASS,
-                confirmingDelete
+                confirming
                   ? 'border-red-400/50 text-red-400 hover:bg-red-400/10'
                   : 'text-[var(--basis-text-muted)] hover:text-[var(--basis-text)]',
               )}
               onClick={() => {
                 // Deleting a transcript is irreversible; the second click is
                 // the confirmation, so nothing is lost to a stray click here.
-                if (!confirmingDelete) {
-                  setConfirmingDelete(true)
+                if (!confirming) {
+                  setConfirmingSessionId(failure.sessionId)
+                  setDeleteError(null)
                   return
                 }
                 setDeleting(true)
                 void client.commands
                   .deleteSession(failure.sessionId)
-                  .catch(() => undefined)
-                  .finally(() => {
-                    setDeleting(false)
-                    setConfirmingDelete(false)
+                  .then(() => setConfirmingSessionId(null))
+                  .catch((error: unknown) => {
+                    // A refused delete leaves the session listed, so say so
+                    // instead of resetting the button as if it had worked.
+                    setDeleteError(
+                      error instanceof Error ? error.message : 'Could not delete this session.',
+                    )
                   })
+                  .finally(() => setDeleting(false))
               }}
             >
-              {confirmingDelete ? 'Delete permanently' : 'Delete session'}
+              {confirming ? 'Delete permanently' : 'Delete session'}
             </button>
           ) : null}
         </div>
+        {deleteError ? (
+          <p role="alert" className="text-red-400">
+            {deleteError}
+          </p>
+        ) : null}
         {unavailable ? (
           <p className="text-[var(--basis-text-muted)]">
             If you moved the folder, restore its original path to reopen this session. Adding the
