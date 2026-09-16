@@ -25,8 +25,20 @@ export function shouldReplaceSessionTitle(
   return isPlaceholderTitle(existingTitle)
 }
 
+export const SESSION_TITLE_MAX_LENGTH = 80
+/** Room for the ellipsis that replaces what was cut. */
+const SESSION_TITLE_CUT_LENGTH = SESSION_TITLE_MAX_LENGTH - 3
+
+/**
+ * Name a session after the prompt that started it: one line, short enough for
+ * a sidebar row. Measured in code points rather than UTF-16 units, so a cut
+ * cannot land inside an astral character and leave an unpaired surrogate.
+ */
 export function titleFromPrompt(text: string): string | undefined {
   const singleLine = text.replace(/\s+/g, ' ').trim()
   if (!singleLine) return undefined
-  return singleLine.length > 80 ? `${singleLine.slice(0, 77)}...` : singleLine
+  const characters = Array.from(singleLine)
+  return characters.length > SESSION_TITLE_MAX_LENGTH
+    ? `${characters.slice(0, SESSION_TITLE_CUT_LENGTH).join('')}...`
+    : singleLine
 }

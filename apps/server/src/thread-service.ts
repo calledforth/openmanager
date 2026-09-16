@@ -484,11 +484,11 @@ export function createThreadService(
     if (record.titleSource === 'user' && source !== 'user') return
     if (!shouldReplaceSessionTitle(record.session.title, record.titleSource, source)) return
     if (record.session.title === nextTitle && record.titleSource === source) return
-    record.session.title = nextTitle
-    record.titleSource = source
-    record.updatedAt = Date.now()
+    // Announced before it is believed. A name is bookkeeping, so a failed write
+    // must not fail the turn that triggered it, and leaving the record on its
+    // old title keeps it a placeholder that the next turn names again.
     try {
-      appendRuntimeEvent(
+      appendEvent(
         ProofEventSchemas['session.updated'].parse({
           type: 'event',
           name: 'session.updated',
@@ -498,10 +498,13 @@ export function createThreadService(
           payload: { sessionId: record.session.sessionId, title: nextTitle, titleSource: source },
         }),
       )
-    } catch {
-      // A host without an error handler lets `appendRuntimeEvent` rethrow. A
-      // title is bookkeeping: it must never turn an accepted turn into a failure.
+    } catch (error) {
+      options.onPersistenceError?.(error, 'session.updated')
+      return
     }
+    record.session.title = nextTitle
+    record.titleSource = source
+    record.updatedAt = Date.now()
   }
 
   const emitStatus = (record: ThreadRecord, status: SessionStatus) => {

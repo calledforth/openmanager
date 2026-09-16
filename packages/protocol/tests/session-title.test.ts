@@ -55,4 +55,12 @@ describe('titleFromPrompt', () => {
     expect(titleFromPrompt(long)).toBe(`${'b'.repeat(77)}...`)
     expect(titleFromPrompt(long)).toHaveLength(80)
   })
+
+  it('never cuts an astral character in half', () => {
+    // The 78th code point is the emoji, so a UTF-16 cut would strand a surrogate.
+    const emoji = `${'c'.repeat(77)}\u{1f600}${'d'.repeat(40)}`
+    const title = titleFromPrompt(emoji)
+    expect(title).toBe(`${'c'.repeat(77)}...`)
+    expect(title).not.toMatch(/[\ud800-\udfff]/)
+  })
 })
