@@ -485,14 +485,19 @@ export function createMockEnvironmentClient(
         const session = store.getState().sessions[sessionId]
         if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
         const workspace = store.getState().workspaces[session.workspaceId]
-        if (workspace && !workspace.exists) {
+        const availability =
+          workspace && (workspace.availability ?? (workspace.exists ? 'available' : 'missing'))
+        if (availability && availability !== 'available') {
           const message =
             'The session folder is missing, moved, or inaccessible on this environment. Restore the original folder path or its permissions, then try again. Your session is still listed.'
           store.update((state) => ({
             ...applyActiveSession(state, sessionId),
-            sessionOpenFailure: { sessionId, message },
+            sessionOpenFailure: { sessionId, message, code: 'workspace_unavailable' },
           }))
-          throw new EnvironmentClientError('not_found', message)
+          throw new EnvironmentClientError('workspace_unavailable', message, {
+            workspaceId: session.workspaceId,
+            availability,
+          })
         }
         store.update((state) => {
           let next = applySessionOpen(state, {

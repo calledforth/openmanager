@@ -4,6 +4,8 @@ export const ErrorCodeSchema = z.enum([
   'auth',
   'validation',
   'not_found',
+  /** The workspace is registered but its folder cannot be used right now. */
+  'workspace_unavailable',
   'conflict',
   'capability_missing',
   'protocol_incompatible',
@@ -25,6 +27,8 @@ export const ERROR_RETRY_POLICY = {
   auth: 'after_auth',
   validation: 'after_change',
   not_found: 'after_change',
+  // The change is on disk, not in the request: restore the folder, then retry.
+  workspace_unavailable: 'after_change',
   conflict: 'after_change',
   capability_missing: 'never',
   protocol_incompatible: 'after_upgrade',
@@ -40,3 +44,15 @@ export const ProtocolErrorSchema = z.object({
 })
 
 export type ProtocolError = z.infer<typeof ProtocolErrorSchema>
+
+/**
+ * Details carried by `workspace_unavailable`. The client names the workspace
+ * it must explain without matching on prose, and tells "restore the folder"
+ * apart from "restore its permissions" before its workspace list catches up.
+ */
+export const WorkspaceUnavailableDetailsSchema = z.object({
+  workspaceId: z.string().min(1).max(256),
+  availability: z.enum(['missing', 'inaccessible']),
+})
+
+export type WorkspaceUnavailableDetails = z.infer<typeof WorkspaceUnavailableDetailsSchema>

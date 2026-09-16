@@ -151,8 +151,13 @@ export interface EnvironmentState {
   threads: Record<string, ThreadState>
   activeSessionId: string | null
   activeThreadId: string | null
-  /** Last failed open, including sessions whose threads have not loaded yet. */
-  sessionOpenFailure?: { sessionId: string; message: string } | null
+  /**
+   * Last failed open, including sessions whose threads have not loaded yet.
+   * `code` lets the UI branch without matching prose: `workspace_unavailable`
+   * means the project folder is gone or unreadable, so the fix is on disk and
+   * the only moves are retrying after restoring it or deleting the session.
+   */
+  sessionOpenFailure?: { sessionId: string; message: string; code: ErrorCode } | null
   connection: ConnectionState
 }
 

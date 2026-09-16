@@ -148,6 +148,20 @@ describe('the shared application over the environment client', () => {
     }
   })
 
+  it('marks sessions in an unavailable project without touching their status', async () => {
+    const client = createMockEnvironmentClient({
+      seed: {
+        ...SEEDED_HISTORY,
+        workspaces: [{ ...WORKSPACE, exists: false, availability: 'missing' }],
+      },
+    })
+    await render(<App client={client} />)
+    // The row keeps the status the environment owns and gains the folder
+    // warning; the badge on the project header is the only other change.
+    expect(container.querySelector('[aria-label="Project folder unavailable"]')).not.toBeNull()
+    expect(client.getState().sessions[SESSION.sessionId]?.status).toBe('idle')
+  })
+
   it('renders the sidebar, the empty-chat landing and a disabled composer', async () => {
     const client = createMockEnvironmentClient({ seed: SEEDED_HISTORY })
     await render(<App client={client} />)

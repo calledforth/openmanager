@@ -59,6 +59,11 @@ describe('workspace lifecycle', () => {
       vi.fn(),
       undefined,
       (id) => (available ? registered(id) : undefined),
+      // The registry still knows the folder; it just cannot be used right now.
+      {
+        workspaceAvailability: (id) =>
+          id !== '/workspace/project' ? 'unknown' : available ? 'available' : 'missing',
+      },
     )
     service.setEnvironmentId('environment-1')
     const created = ProofResponseSchemas['session.create'].parse(
@@ -83,9 +88,13 @@ describe('workspace lifecycle', () => {
         name: 'session.open',
         payload: { sessionId: created.session.sessionId },
       })
+    const unavailable = {
+      code: 'workspace_unavailable',
+      details: { workspaceId: '/workspace/project', availability: 'missing' },
+    }
     expect(open()).toMatchObject({
       type: 'error',
-      error: { code: 'not_found', message: expect.stringContaining('try again') },
+      error: { ...unavailable, message: expect.stringContaining('try again') },
     })
     expect(
       service.dispatch({
@@ -96,6 +105,19 @@ describe('workspace lifecycle', () => {
           sessionId: created.session.sessionId,
           threadId: created.thread.threadId,
           text: 'hello',
+        },
+      }),
+    ).toMatchObject({ type: 'error', error: unavailable })
+    // An ID the environment never registered is a genuinely missing resource.
+    expect(
+      service.dispatch({
+        type: 'command',
+        requestId: 'create-unknown',
+        name: 'session.create',
+        payload: {
+          environmentId: 'environment-1',
+          providerId: 'opencode',
+          workspaceId: '/workspace/unknown',
         },
       }),
     ).toMatchObject({ type: 'error', error: { code: 'not_found' } })

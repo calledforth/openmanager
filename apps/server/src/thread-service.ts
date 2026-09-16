@@ -8,6 +8,7 @@ import {
   pageThreadMessages,
   shouldReplaceSessionTitle,
   titleFromPrompt,
+  WorkspaceUnavailableDetailsSchema,
   type CommandEnvelope,
   type ErrorCode,
   type EventEnvelope,
@@ -45,6 +46,10 @@ type ProviderId = keyof typeof providers
 
 const WORKSPACE_UNAVAILABLE =
   'The workspace folder is unavailable. Restore its path or permissions, then try again.'
+const SESSION_WORKSPACE_UNAVAILABLE =
+  'The session folder is missing, moved, or inaccessible on this environment. Restore the original folder path or its permissions, then try again. Your session is still listed.'
+const SEND_WORKSPACE_UNAVAILABLE =
+  'The session folder is unavailable. Restore the original folder path or its permissions, then reopen the session.'
 type RuntimeEvent = Parameters<HostDeps['emitEvent']>[0]
 type ProviderGate = {
   rejection(providerId: string): { code: ErrorCode; message: string } | undefined
@@ -91,10 +96,10 @@ type ThreadRecord = {
   activeTurn?: ActiveTurn
 }
 
-const errorResult = (requestId: string, code: ErrorCode, message: string) => ({
+const errorResult = (requestId: string, code: ErrorCode, message: string, details?: unknown) => ({
   type: 'error' as const,
   requestId,
-  error: { code, message },
+  error: { code, message, ...(details === undefined ? {} : { details }) },
 })
 
 const turnSendResult = (requestId: string, started: TurnStart) =>
@@ -125,6 +130,14 @@ export function createThreadService(
      * batch stays queued for the next append. Without a handler it throws.
      */
     onPersistenceError?: (error: unknown, eventName: string) => void
+    /**
+     * Why `resolveWorkspace` refused, so a registered folder that vanished is
+     * answered as recoverable instead of as a missing resource. Without it
+     * every refusal reads as an unknown workspace, which is the old behaviour.
+     */
+    workspaceAvailability?: (
+      workspaceId: string,
+    ) => 'unknown' | 'available' | 'missing' | 'inaccessible'
   } = {},
 ) {
   const sessions = new Map<string, ThreadRecord>()
@@ -165,6 +178,23 @@ export function createThreadService(
       sessionId: record.session.sessionId,
       threadId: record.thread.threadId,
     }) as const
+
+  /**
+   * Answer a workspace that would not resolve. A registered folder that is
+   * gone or unreadable is a recoverable state the client can explain and
+   * retry; only an ID the environment does not know is a missing resource.
+   */
+  const rejectWorkspace = (requestId: string, workspaceId: string, message: string) => {
+    const availability = options.workspaceAvailability?.(workspaceId) ?? 'unknown'
+    return availability === 'missing' || availability === 'inaccessible'
+      ? errorResult(
+          requestId,
+          'workspace_unavailable',
+          message,
+          WorkspaceUnavailableDetailsSchema.parse({ workspaceId, availability }),
+        )
+      : errorResult(requestId, 'not_found', 'Workspace not found.')
+  }
 
   const rejectProvider = (requestId: string, providerId: string) => {
     const rejection = providerGate.rejection(providerId)
@@ -683,9 +713,11 @@ export function createThreadService(
         try {
           target = resolveWorkspace(input.workspaceId, context)
         } catch {
-          return errorResult(command.requestId, 'not_found', WORKSPACE_UNAVAILABLE)
+          return rejectWorkspace(command.requestId, input.workspaceId, WORKSPACE_UNAVAILABLE)
         }
-        if (!target) return errorResult(command.requestId, 'not_found', 'Workspace not found.')
+        if (!target) {
+          return rejectWorkspace(command.requestId, input.workspaceId, WORKSPACE_UNAVAILABLE)
+        }
         // Order matters: a provider this build cannot run is a capability gap,
         // not a missing resource, so it is answered before the health gate.
         if (!Object.hasOwn(providers, input.providerId)) {
@@ -776,7 +808,7 @@ export function createThreadService(
               context,
             )
           } catch {
-            result = errorResult(command.requestId, 'not_found', WORKSPACE_UNAVAILABLE)
+            result = rejectWorkspace(command.requestId, input.workspaceId, WORKSPACE_UNAVAILABLE)
           }
           const started = ProofResponseSchemas['turn.send'].safeParse(result)
           if (!started.success) {
@@ -888,7 +920,13 @@ export function createThreadService(
           } catch {
             /* unavailable */
           }
-          if (!target) return errorResult(command.requestId, 'not_found', WORKSPACE_UNAVAILABLE)
+          if (!target) {
+            return rejectWorkspace(
+              command.requestId,
+              session.workspaceId,
+              SESSION_WORKSPACE_UNAVAILABLE,
+            )
+          }
           const restoredThreads = listThreadsForSession(options.database, session.sessionId)
           if (!restoredThreads.length)
             return errorResult(command.requestId, 'not_found', 'Thread not found.')
@@ -902,10 +940,10 @@ export function createThreadService(
         const record = sessions.get(parsed.data.payload.sessionId)
         if (!record) return errorResult(command.requestId, 'not_found', 'Session not found.')
         if (!resolveWorkspace(record.session.workspaceId, context)) {
-          return errorResult(
+          return rejectWorkspace(
             command.requestId,
-            'not_found',
-            'The session folder is missing, moved, or inaccessible on this environment. Restore the original folder path or its permissions, then try again. Your session is still listed.',
+            record.session.workspaceId,
+            SESSION_WORKSPACE_UNAVAILABLE,
           )
         }
         const providerRejection = rejectProvider(command.requestId, record.providerId)
@@ -986,11 +1024,7 @@ export function createThreadService(
           return errorResult(command.requestId, 'not_found', 'Thread not found.')
         }
         if (!resolveWorkspace(workspaceId, context)) {
-          return errorResult(
-            command.requestId,
-            'not_found',
-            'The session folder is unavailable. Restore the original folder path or its permissions, then reopen the session.',
-          )
+          return rejectWorkspace(command.requestId, workspaceId, SEND_WORKSPACE_UNAVAILABLE)
         }
         // A live thread has served every send since this process started, so
         // its own map answers without touching the log. Only a thread that is

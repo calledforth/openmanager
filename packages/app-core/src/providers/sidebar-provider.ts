@@ -35,6 +35,12 @@ export interface SidebarSessionEntry {
   clientId?: string
   parentExternalId?: string
   isDriven: boolean
+  /**
+   * Its project folder is not reachable right now, so the row is
+   * informational until the folder is restored. Derived from the workspace,
+   * never from `status`: the lifecycle value stays the one the server owns.
+   */
+  workspaceUnavailable?: boolean
 }
 
 /**
