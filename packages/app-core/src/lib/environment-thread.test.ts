@@ -16,13 +16,33 @@ describe('projectThread', () => {
         { turnId: 't2', threadId: THREAD.threadId, state: 'running' },
       ],
       messages: [
-        { messageId: 'u1', threadId: THREAD.threadId, turnId: 't1', role: 'user', content: [{ type: 'text', text: 'hi' }] },
-        { messageId: 'a1', threadId: THREAD.threadId, turnId: 't1', role: 'assistant', content: [{ type: 'text', text: 'hello' }] },
-        { messageId: 'u2', threadId: THREAD.threadId, turnId: 't2', role: 'user', content: [{ type: 'text', text: 'more' }] },
+        {
+          messageId: 'u1',
+          threadId: THREAD.threadId,
+          turnId: 't1',
+          role: 'user',
+          content: [{ type: 'text', text: 'hi' }],
+        },
+        {
+          messageId: 'a1',
+          threadId: THREAD.threadId,
+          turnId: 't1',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'hello' }],
+        },
+        {
+          messageId: 'u2',
+          threadId: THREAD.threadId,
+          turnId: 't2',
+          role: 'user',
+          content: [{ type: 'text', text: 'more' }],
+        },
       ],
     })
     const projection = projectThread(state)
-    expect(projection.messages.map((message) => [message.externalId, message.role, message.isFinal])).toEqual([
+    expect(
+      projection.messages.map((message) => [message.externalId, message.role, message.isFinal]),
+    ).toEqual([
       ['u1', 'user', true],
       ['a1', 'assistant', true],
       ['u2', 'user', true],
@@ -39,12 +59,32 @@ describe('projectThread', () => {
     const state = thread({
       turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'running' }],
       messages: [
-        { messageId: 'a1', threadId: THREAD.threadId, turnId: 't1', role: 'assistant', content: [{ type: 'text', text: 'done' }] },
+        {
+          messageId: 'a1',
+          threadId: THREAD.threadId,
+          turnId: 't1',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'done' }],
+        },
       ],
       reasoning: [
-        { messageId: 'r1', turnId: 't1', phase: 'stop', content: [{ type: 'text', text: 'think' }], tokens: 12 },
+        {
+          messageId: 'r1',
+          turnId: 't1',
+          phase: 'stop',
+          content: [{ type: 'text', text: 'think' }],
+          tokens: 12,
+        },
       ],
-      tools: [{ toolCallId: 'tool-1', turnId: 't1', title: 'pnpm test', kind: 'execute', status: 'in_progress' }],
+      tools: [
+        {
+          toolCallId: 'tool-1',
+          turnId: 't1',
+          title: 'pnpm test',
+          kind: 'execute',
+          status: 'in_progress',
+        },
+      ],
     })
     const row = projectThread(state).byId.get('a1')!
     expect(row.streaming.parts.map((part) => part.type)).toEqual(['reasoning', 'tool', 'text'])
@@ -58,20 +98,41 @@ describe('projectThread', () => {
     expect(row.message.isFinal).toBe(false)
   })
 
-  it.each(['completed', 'interrupted', 'failed'] as const)('closes snapshot reasoning on %s', (state) => {
-    const projection = projectThread(thread({
-      turns: [{ turnId: 't1', threadId: THREAD.threadId, state }],
-      reasoning: [{ messageId: 'r1', turnId: 't1', phase: 'delta', content: [{ type: 'text', text: 'thinking' }] }],
-    }))
-    expect(projection.messages[0]?.isFinal).toBe(true)
-    expect(projection.byId.get('turn:t1:assistant')?.content.parts?.[0]).toMatchObject({ type: 'reasoning', time: { end: 0 } })
-  })
+  it.each(['completed', 'interrupted', 'failed'] as const)(
+    'closes snapshot reasoning on %s',
+    (state) => {
+      const projection = projectThread(
+        thread({
+          turns: [{ turnId: 't1', threadId: THREAD.threadId, state }],
+          reasoning: [
+            {
+              messageId: 'r1',
+              turnId: 't1',
+              phase: 'delta',
+              content: [{ type: 'text', text: 'thinking' }],
+            },
+          ],
+        }),
+      )
+      expect(projection.messages[0]?.isFinal).toBe(true)
+      expect(projection.byId.get('turn:t1:assistant')?.content.parts?.[0]).toMatchObject({
+        type: 'reasoning',
+        time: { end: 0 },
+      })
+    },
+  )
 
   it('keeps row identity for turns whose inputs did not change', () => {
     const settled = thread({
       turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'completed' }],
       messages: [
-        { messageId: 'a1', threadId: THREAD.threadId, turnId: 't1', role: 'assistant', content: [{ type: 'text', text: 'old' }] },
+        {
+          messageId: 'a1',
+          threadId: THREAD.threadId,
+          turnId: 't1',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'old' }],
+        },
       ],
     })
     const first = projectThread(settled)
@@ -80,7 +141,13 @@ describe('projectThread', () => {
       turns: [...settled.turns, { turnId: 't2', threadId: THREAD.threadId, state: 'running' }],
       messages: [
         ...settled.messages,
-        { messageId: 'a2', threadId: THREAD.threadId, turnId: 't2', role: 'assistant', content: [{ type: 'text', text: 'n' }] },
+        {
+          messageId: 'a2',
+          threadId: THREAD.threadId,
+          turnId: 't2',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'n' }],
+        },
       ],
     })
     const second = projectThread(grown, first)
@@ -170,4 +237,11 @@ describe('createEnvironmentThreadStores', () => {
       client.dispose()
     },
   )
+
+  it('does not expose a remote stream_chunks store', () => {
+    const client = createMockEnvironmentClient()
+    const stores = createEnvironmentThreadStores(client)
+    expect(stores).not.toHaveProperty('remoteStreamingStore')
+    client.dispose()
+  })
 })

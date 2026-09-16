@@ -1,5 +1,20 @@
 # How `driven` Works — Desktop vs Remote Clients
 
+> **Superseded on the v2 path.** This document describes the Convex-era overlay:
+> the owner desktop reads `stream:token` / `acp:event` over IPC, and every other
+> client subscribes to Convex `stream_chunks`.
+>
+> Web never had that split. The environment-client WebSocket path streams
+> sequenced protocol events into one projection; it does not listen to those IPC
+> channels or subscribe to `stream_chunks`. Desktop still uses the overlay on
+> the legacy Electron + Convex host. At **thin-shell cutover** the desktop
+> shell loads the same web application and **must drop the overlay** — do not
+> reintroduce `driven` there.
+>
+> Historical design below is for the Convex desktop path only. See
+> [history-replay.md](./history-replay.md) and
+> [compatibility-adapters.md](./compatibility-adapters.md).
+
 ## The Core Question
 
 How do we know if a client should read tokens directly from the local SSE path or from Convex-backed state?

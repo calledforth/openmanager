@@ -10,6 +10,13 @@ import {
   type MockEnvironmentClient,
   type MockSeed,
 } from '@openmanager/environment-client'
+import { EnvironmentClientProvider } from '../src/providers/environment-client'
+import { EnvironmentApplicationProviders } from '../src/providers/environment-application'
+import {
+  useActiveThreadState,
+  useActiveThreadStores,
+} from '../src/providers/active-thread-provider'
+import { ThemeProvider } from '../src/providers/theme-provider'
 import { MockEnvironmentApp } from '../src/testing/mock-environment-app'
 
 const WORKSPACE = {
@@ -574,6 +581,39 @@ describe('the shared application over the environment client', () => {
     )
     expect(occurrences('What changed?')).toBe(1)
     expect(client.getState().threads[THREAD.threadId]?.messages).toHaveLength(2)
+  })
+
+  it('does not wire a remote stream_chunks store or ownership-driven split', async () => {
+    function Probe() {
+      const stores = useActiveThreadStores()
+      const { activeThreadDriven, remoteStreamingStore } = useActiveThreadState()
+      return (
+        <pre data-testid="overlay-probe">
+          {JSON.stringify({
+            activeThreadDriven,
+            hasRemoteOnState: remoteStreamingStore != null,
+            hasRemoteOnStores: stores.remoteStreamingStore != null,
+          })}
+        </pre>
+      )
+    }
+    const client = createMockEnvironmentClient()
+    await render(
+      <ThemeProvider>
+        <EnvironmentClientProvider client={client}>
+          <EnvironmentApplicationProviders collapsedWorkspaceStorage={null}>
+            <Probe />
+          </EnvironmentApplicationProviders>
+        </EnvironmentClientProvider>
+      </ThemeProvider>,
+    )
+    expect(
+      JSON.parse(container.querySelector('[data-testid="overlay-probe"]')!.textContent!),
+    ).toEqual({
+      activeThreadDriven: true,
+      hasRemoteOnState: false,
+      hasRemoteOnStores: false,
+    })
   })
 
   it('routes Add project through the host callback', async () => {

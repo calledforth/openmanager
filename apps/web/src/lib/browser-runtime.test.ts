@@ -55,7 +55,7 @@ describe('browser runtime', () => {
     expect(notified).toBe(2)
   })
 
-  it('does not import Electron, Convex, or a Convex URL', () => {
+    it('does not import Electron, Convex, IPC overlay channels, or stream_chunks', () => {
     const files = walk(srcRoot).filter(
       (path) =>
         /\.(ts|tsx)$/.test(path) &&
@@ -72,7 +72,8 @@ describe('browser runtime', () => {
       expect(source, file).not.toMatch(/from ['"]convex/)
       expect(source, file).not.toMatch(/CONVEX_URL/)
       expect(source, file).not.toMatch(/VITE_CONVEX/)
-      expect(source, file).not.toMatch(/stream:token|acp:event/)
+      expect(source, file).not.toMatch(/['"]stream:token['"]|['"]acp:event['"]/)
+      expect(source, file).not.toMatch(/['"]stream_chunks['"]|\bapi\.streamChunks\b|\bstreamChunks\./)
     }
   })
 })

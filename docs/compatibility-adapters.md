@@ -8,6 +8,12 @@ cover, and how to delete it when Convex is retired.
 
 Everything described here is scheduled for deletion. Do not build on it.
 
+The Convex adapter is also the last home of the `driven` IPC overlay
+(`acp:event` / `stream:token` plus Convex `stream_chunks`). The WebSocket
+backend never mounts those listeners. At **thin-shell cutover** desktop loads
+the same web application and must drop the overlay rather than reintroduce
+`driven`. See [driven-behavior-design.md](./driven-behavior-design.md).
+
 ## What exists
 
 | File                                                                             | Role                                                                                                                                                           |
@@ -114,6 +120,10 @@ providers.
    once the legacy providers are gone too.
 6. Remove this document and the "Convex/Electron compatibility" row from
    `packages/environment-client/README.md`.
+7. Delete the IPC overlay with the adapter: `stream:token` / `acp:event`
+   listeners in preload, `agent-host.ts`, and the Convex projector's
+   `streamChunks` writes. The thin-shell desktop must not grow a replacement
+   `driven` split; live turns already arrive as sequenced WebSocket events.
 
 Nothing in `packages/environment-client` or `packages/app-core` references the
 adapter, so those packages need no changes when it goes.

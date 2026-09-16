@@ -26,7 +26,8 @@ import type {
  *
  * The environment keeps reasoning and tool calls per turn rather than
  * interleaved with the text, so an assistant row orders them reasoning →
- * tools → text. Exact interleaving arrives with replay (CAL-71).
+ * tools → text. Live tokens arrive as protocol events on the environment
+ * client; there is no IPC overlay and no Convex `stream_chunks` store.
  */
 export interface ProjectedMessage {
   message: UIMessage

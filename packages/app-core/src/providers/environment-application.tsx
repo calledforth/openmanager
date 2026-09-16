@@ -498,6 +498,10 @@ function EnvironmentSidebarDataProvider({
         status: summary.status === 'idle' ? 'ready' : summary.status,
         providerId: (summary.providerId as ProviderId | undefined) ?? session.defaultProviderId,
         ...(summary.parentSessionId ? { parentExternalId: summary.parentSessionId } : {}),
+        // ChatView still branches on `isDriven` for the Convex IPC overlay.
+        // This path has one protocol-event stream and no `stream_chunks`
+        // subscription, so the flag is always true. Desktop must drop the
+        // overlay at thin-shell cutover rather than reintroduce `driven`.
         isDriven: true,
         ...(unavailableWorkspaces.has(summary.workspaceId) ? { workspaceUnavailable: true } : {}),
       }
@@ -597,6 +601,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
             ...(activeSession.parentSessionId
               ? { parentExternalId: activeSession.parentSessionId }
               : {}),
+            // Same shim as the sidebar: one projection, not owner-vs-observer.
             isDriven: true,
           }
         : null,
@@ -715,6 +720,8 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
     () => ({
       activeSessionId: session.activeSessionId,
       activeThread,
+      // Compatibility shim so ChatView reads `streamingStore`. There is no
+      // `remoteStreamingStore` on this path (that would be Convex stream_chunks).
       activeThreadDriven: true,
       isMessagesLoading: thread?.hydration === 'loading',
       history: {
@@ -791,6 +798,8 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
     ],
   )
 
+  // Intentionally no `remoteStreamingStore`: that would subscribe to Convex
+  // `stream_chunks`. Live turns are already in `streamingStore`.
   const threadStores = useMemo<ActiveThreadStores>(
     () => ({
       streamingStore: stores.streamingStore,

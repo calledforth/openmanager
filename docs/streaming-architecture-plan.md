@@ -1,5 +1,10 @@
 # Streaming Architecture Overhaul — Consolidated Plan
 
+> Convex-era plan. The v2 WebSocket path does not use the `driven` IPC overlay
+> (`stream:token` / `acp:event` vs Convex `stream_chunks`); that design is
+> superseded in [driven-behavior-design.md](./driven-behavior-design.md).
+> Desktop drops the overlay at thin-shell cutover.
+>
 > Final consolidated plan from all discussions. Covers schema, queries, SSE bridge, driven pattern, and addressed Q&A.
 
 ---
