@@ -49,6 +49,13 @@ state.
   draft's launch preferences, tells session state the turn began, starts the
   provider through platform capabilities, submits the job, and attaches the job
   id so session state can unlock the composer when the job finishes.
+- **Sending a prompt (environment client).** On the environment protocol there
+  is no job to submit: the environment client mints a `commandId` for the send,
+  echoes the row locally in its per-thread outbox under that id, and puts the id
+  on the `turn.send` command. The host dedupes on `(threadId, commandId)`, and
+  the `TurnStart` it returns — or the `turn.started` event, whichever lands
+  first — retires that echo, so `retrySend` reusing the id can never produce a
+  second turn. See `packages/protocol/docs/proof-slice.md`.
 - **Opening a draft.** Session state resets navigation and publishes a
   `draftRequest`; the composer seeds that workspace's selection from the
   previous session, the workspace's last pick, or the default provider, then

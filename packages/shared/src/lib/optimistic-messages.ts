@@ -2,6 +2,15 @@
 // from the desktop `active-session-provider` so it can be unit-tested without
 // React/Convex. Optimistic user messages are appended locally, ordered by a
 // synthetic sequenceNum, and cleared as the persisted user-message count grows.
+//
+// Convex-era only: the count-based reconciliation below is what you need when a
+// send has no identity of its own. Clients on the environment protocol do not
+// need it: `turn.send` carries a stable client-minted `commandId`, the echo is
+// keyed by that id in the environment client per-thread outbox, and the
+// `TurnStart` that comes back retires exactly that row
+// (packages/protocol/docs/proof-slice.md). Only apps/mobile still uses this, via
+// `useSessionMessages`; it goes when that app moves to the environment client.
+// Do not reach for it from apps/web or @openmanager/app-core.
 
 export interface PersistedMessageMeta {
   externalId: string
