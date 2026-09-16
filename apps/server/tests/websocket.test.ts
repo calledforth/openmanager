@@ -12,6 +12,7 @@ import {
   ProviderHealthChangedEventSchema,
   ProviderProbeResponseSchema,
   ProofResponseSchemas,
+  ReplayResponseSchema,
   ServerMessageSchema,
   type ServerMessage,
   type SubscriptionScope,
@@ -1249,5 +1250,139 @@ it('broadcasts session.updated and session.deleted to a second environment subsc
         event: { name: 'session.deleted', scope, payload: { sessionId: session.sessionId } },
       },
     },
+  })
+})
+
+describe('subscription replay', () => {
+  it('answers a cursor with the missed tail or a snapshot, then keeps the scope live', async () => {
+    const host = await setup()
+    const environmentId = host.server.identity.environmentId
+    const first = await connect(host)
+    await handshake(first)
+    vi.spyOn(host.server.runtime, 'ensureSession').mockResolvedValue({
+      sessionId: 'provider-session',
+      state: 'created',
+    })
+    let finishPrompt!: () => void
+    vi.spyOn(host.server.runtime, 'prompt').mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishPrompt = resolve
+      }) as never,
+    )
+    first.command('session.create', {
+      environmentId,
+      workspaceId: host.workspaceId,
+      providerId: 'opencode',
+    })
+    const created = ProofResponseSchemas['session.create'].parse(await first.next())
+    const sessionId = created.payload.session.sessionId
+    const threadId = created.payload.thread.threadId
+    const scope = { type: 'thread' as const, environmentId, sessionId, threadId }
+
+    // First contact has no cursor: a snapshot of the still-empty thread, and
+    // the subscription that will carry everything after it.
+    first.command('subscription.replay', { scope, cursor: null })
+    const initial = ReplayResponseSchema.parse(await first.next())
+    expect(initial.payload).toMatchObject({
+      mode: 'snapshot',
+      reason: 'initial',
+      snapshot: {
+        cursor: { scope, sequence: 0 },
+        state: { thread: { threadId, sessionId }, turns: [], messages: [] },
+      },
+    })
+    const epoch = initial.payload.mode === 'snapshot' ? initial.payload.snapshot.cursor.epoch : ''
+    const cursor = (sequence: number) => ({ scope, epoch, sequence })
+
+    first.command('turn.send', { sessionId, threadId, text: 'Hello' })
+    const sent = ProofResponseSchemas['turn.send'].parse(await first.next())
+    expect(await first.next()).toMatchObject({
+      type: 'event',
+      name: 'subscription.event',
+      payload: {
+        subscriptionId: initial.payload.subscriptionId,
+        record: { cursor: cursor(1), event: { name: 'turn.started' } },
+      },
+    })
+
+    // A client that held sequence 0 across a drop receives exactly the tail.
+    const second = await connect(host)
+    await handshake(second)
+    second.command('subscription.replay', { scope, cursor: cursor(0) })
+    const replayed = ReplayResponseSchema.parse(await second.next())
+    expect(replayed.payload).toMatchObject({
+      mode: 'replay',
+      from: cursor(0),
+      to: cursor(1),
+      events: [
+        {
+          cursor: cursor(1),
+          event: { name: 'turn.started', payload: { turn: { turnId: sent.payload.turn.turnId } } },
+        },
+      ],
+    })
+    // One that is already current receives an empty range, not a snapshot.
+    const third = await connect(host)
+    await handshake(third)
+    third.command('subscription.replay', { scope, cursor: cursor(1) })
+    const current = ReplayResponseSchema.parse(await third.next())
+    expect(current.payload).toMatchObject({ mode: 'replay', from: cursor(1), to: cursor(1), events: [] })
+    expect(host.server.sockets.subscriptionCount).toBe(3)
+
+    // Every recovered subscription is live from its answer onward.
+    finishPrompt()
+    for (const [client, answer] of [
+      [first, initial],
+      [second, replayed],
+      [third, current],
+    ] as const) {
+      expect(await client.next()).toMatchObject({
+        type: 'event',
+        name: 'subscription.event',
+        payload: {
+          subscriptionId: answer.payload.subscriptionId,
+          record: { cursor: cursor(2), event: { name: 'turn.completed' } },
+        },
+      })
+    }
+
+    // A cursor from another epoch cannot be reconciled: the snapshot carries
+    // the finished turn and the head the client resumes from.
+    third.command('subscription.replay', { scope, cursor: { ...cursor(1), epoch: 'elsewhere' } })
+    expect(ReplayResponseSchema.parse(await third.next()).payload).toMatchObject({
+      mode: 'snapshot',
+      reason: 'stream_reset',
+      snapshot: {
+        cursor: cursor(2),
+        state: {
+          turns: [{ turnId: sent.payload.turn.turnId, state: 'completed' }],
+          messages: [{ messageId: sent.payload.userMessage.messageId }],
+        },
+      },
+    })
+    expect(host.server.sockets.subscriptionCount).toBe(4)
+  })
+
+  it('rejects foreign, malformed, mismatched and unknown replay scopes without subscribing', async () => {
+    const host = await setup()
+    const environmentId = host.server.identity.environmentId
+    const client = await connect(host)
+    await handshake(client)
+    const scope = { type: 'thread' as const, environmentId, sessionId: 's', threadId: 't' }
+    client.command('subscription.replay', {
+      scope: { ...scope, environmentId: 'foreign' },
+      cursor: null,
+    })
+    expect(await client.next()).toMatchObject({ type: 'error', error: { code: 'auth' } })
+    client.command('subscription.replay', { scope })
+    expect(await client.next()).toMatchObject({ type: 'error', error: { code: 'validation' } })
+    client.command('subscription.replay', {
+      scope,
+      cursor: { scope: { ...scope, threadId: 'other' }, epoch: 'e', sequence: 1 },
+    })
+    expect(await client.next()).toMatchObject({ type: 'error', error: { code: 'validation' } })
+    client.command('subscription.replay', { scope, cursor: null })
+    expect(await client.next()).toMatchObject({ type: 'error', error: { code: 'not_found' } })
+    expect(host.server.sockets.subscriptionCount).toBe(0)
   })
 })

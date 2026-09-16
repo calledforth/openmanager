@@ -11,6 +11,9 @@ import {
   HEARTBEAT_CAPABILITY,
   negotiateProtocolHandshake,
   ProofCommandSchemas,
+  ReplayCommandSchema,
+  ReplayCursorError,
+  ReplayResponseSchema,
   RequestIdSchema,
   accessDenied,
   requiredAccess,
@@ -18,6 +21,7 @@ import {
   SubscriptionEventSchema,
   type BootstrapResponse,
   type CommandEnvelope,
+  type Cursor,
   type ErrorCode,
   type EventEnvelope,
   type ServerHeartbeatState,
@@ -26,6 +30,7 @@ import {
 import { auditValue, type AuditLog } from './audit.ts'
 import type { AuthenticatedClient } from './authorized-clients.ts'
 import type { CommandContext } from './command-context.ts'
+import type { ReplayResult } from './db/replay.ts'
 import type { RateLimiter, RateLimitPolicy } from './rate-limit.ts'
 import type { RequestGuard } from './request-guard.ts'
 
@@ -33,6 +38,7 @@ export const SOCKET_CAPABILITIES = [
   HEARTBEAT_CAPABILITY,
   'subscription.subscribe',
   'subscription.unsubscribe',
+  'subscription.replay',
 ]
 export const SOCKET_LIMITS = Object.freeze({
   handshakeTimeoutMs: 10_000,
@@ -75,6 +81,12 @@ export function attachWebSocket(
     rateLimiter: RateLimiter
     audit: AuditLog
     bootstrap: () => BootstrapResponse
+    /**
+     * Answer a reconnecting client's cursor: the missed tail of the scope or a
+     * snapshot of it. Synchronous on purpose, so the live subscription can be
+     * registered in the same tick as the read and no event can fall between.
+     */
+    replay?: (scope: SubscriptionScope, cursor: Cursor | null) => ReplayResult
     dispatchCommand?: (
       command: CommandEnvelope,
       context: CommandContext,
@@ -387,6 +399,68 @@ export function attachWebSocket(
             requestId: message.requestId,
             payload: { subscriptionId, scope },
           })
+          return
+        }
+        if (message.name === 'subscription.replay') {
+          const command = ReplayCommandSchema.safeParse(raw)
+          if (!command.success) {
+            reply(errorResult(message.requestId, 'validation', 'Invalid replay request.'))
+            return
+          }
+          const { scope, cursor } = command.data.payload
+          if (scope.environmentId !== options.bootstrap().environmentId) {
+            reply(errorResult(message.requestId, 'auth', 'Scope belongs to another environment.'))
+            return
+          }
+          if (!options.replay) {
+            reply(errorResult(message.requestId, 'unavailable', 'Replay is not available.'))
+            return
+          }
+          if (subscriptions.size >= SOCKET_LIMITS.maxSubscriptions) {
+            reply(errorResult(message.requestId, 'unavailable', 'Subscription limit reached.'))
+            return
+          }
+          let result: ReplayResult
+          try {
+            result = options.replay(scope, cursor)
+          } catch (error) {
+            reply(
+              error instanceof ReplayCursorError
+                ? errorResult(message.requestId, 'validation', error.message)
+                : errorResult(message.requestId, 'internal', 'Replay failed.'),
+            )
+            return
+          }
+          if (result.mode === 'missing') {
+            reply(errorResult(message.requestId, 'not_found', 'The scope no longer exists.'))
+            return
+          }
+          // Registered after the read and answered before this handler
+          // yields: every event committed from here on reaches the client
+          // live, after the answer, and nothing is delivered twice or lost.
+          const subscriptionId = randomUUID()
+          subscriptions.set(subscriptionId, scope)
+          reply(
+            ReplayResponseSchema.parse({
+              type: 'response',
+              requestId: message.requestId,
+              payload:
+                result.mode === 'replay'
+                  ? {
+                      mode: 'replay',
+                      subscriptionId,
+                      from: result.from,
+                      to: result.to,
+                      events: result.events,
+                    }
+                  : {
+                      mode: 'snapshot',
+                      subscriptionId,
+                      reason: result.reason,
+                      snapshot: result.snapshot,
+                    },
+            }),
+          )
           return
         }
         if (message.name === 'subscription.unsubscribe') {

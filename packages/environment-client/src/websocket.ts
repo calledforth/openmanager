@@ -9,11 +9,14 @@ import {
   createClientHeartbeatState,
   observeServerActivity,
   parseProtocolHandshakeResult,
+  parseReplayResult,
   respondToHeartbeat,
   type ClientHeartbeatState,
   type Cursor,
+  type DurableEvent,
   type ErrorCode,
   type ProtocolHandshakeCommand,
+  type ReplayCommand,
   type SubscriptionScope,
   type Thread,
 } from '@openmanager/protocol'
@@ -32,6 +35,7 @@ import {
   applySessionOpen,
   applySessionRemoved,
   applySessionTitle,
+  applySnapshot,
   applyThreadHydration,
   applyTurnSendFailed,
   applyTurnSending,
@@ -134,6 +138,7 @@ const OPEN = 1
 const HANDSHAKE_NAME = 'protocol.handshake'
 const SUBSCRIBE_NAME = 'subscription.subscribe'
 const UNSUBSCRIBE_NAME = 'subscription.unsubscribe'
+const REPLAY_NAME = 'subscription.replay'
 
 const SubscribeResponseSchema = z.object({
   payload: z.object({ subscriptionId: z.string(), scope: z.any() }),
@@ -148,8 +153,9 @@ type Pending = {
 type Subscription = {
   scope: SubscriptionScope
   subscriptionId: string | null
-  /** A `subscription.subscribe` is on the wire and unacknowledged. */
+  /** A `subscription.subscribe` or `subscription.replay` is on the wire and unanswered. */
   inflight: boolean
+  /** Last applied durable event of the scope; what a reconnect resumes from. */
   cursor: Cursor | null
 }
 
@@ -411,25 +417,33 @@ export function createWebSocketEnvironmentClient(
     }
   }
 
+  /**
+   * Fold one durable record in, at most once. Cursors belong to scopes, not
+   * sockets or subscription IDs, so the scope is the stable key even while an
+   * acknowledgement is in flight, and a record at or below the last applied
+   * sequence of the same epoch is a repeat: a replayed tail overlapping what
+   * arrived live, or a live event the environment sent twice.
+   */
+  const applyRecord = (record: DurableEvent) => {
+    const subscription = subscriptions.get(scopeKey(record.cursor.scope))
+    if (subscription) {
+      const cursor = subscription.cursor
+      if (
+        cursor &&
+        cursor.epoch === record.cursor.epoch &&
+        record.cursor.sequence <= cursor.sequence
+      ) {
+        return
+      }
+      subscription.cursor = record.cursor
+    }
+    store.update((state) => applyEvent(state, record.event))
+  }
+
   const handleEvent = (raw: unknown) => {
     const live = SubscriptionEventSchema.safeParse(raw)
     if (live.success) {
-      const { record } = live.data.payload
-      // Cursors belong to scopes, not sockets or subscription IDs, so the
-      // scope is the stable key even when an acknowledgement is still in flight.
-      const subscription = subscriptions.get(scopeKey(record.cursor.scope))
-      if (subscription) {
-        const cursor = subscription.cursor
-        if (
-          cursor &&
-          cursor.epoch === record.cursor.epoch &&
-          record.cursor.sequence <= cursor.sequence
-        ) {
-          return
-        }
-        subscription.cursor = record.cursor
-      }
-      store.update((state) => applyEvent(state, record.event))
+      applyRecord(live.data.payload.record)
       return
     }
     const transient = ProofEventSchema.safeParse(raw)
@@ -601,6 +615,76 @@ export function createWebSocketEnvironmentClient(
     }
   }
 
+  /**
+   * Re-establish a scope after a drop, from the cursor it held. The
+   * environment answers with the missed tail, folded in through the same
+   * path as live events, or with a snapshot that replaces the scope when the
+   * gap can no longer be replayed; the live subscription is part of either
+   * answer, so nothing committed after it can be missed. A scope with no
+   * cursor yet, or an environment without replay, subscribes plainly and
+   * relies on the reads that follow the handshake. An answer the client cannot
+   * use falls back the same way; a scope the environment no longer has is
+   * dropped, its removal reaches the store through the environment stream.
+   */
+  const recover = (subscription: Subscription) => {
+    if (subscription.subscriptionId || subscription.inflight) return
+    if (!subscription.cursor || !capabilities.has(REPLAY_NAME)) {
+      subscribe(subscription.scope)
+      return
+    }
+    const key = scopeKey(subscription.scope)
+    const command: ReplayCommand = {
+      type: 'command',
+      requestId: nextRequestId(),
+      name: REPLAY_NAME,
+      payload: { scope: subscription.scope, cursor: subscription.cursor },
+    }
+    const fallback = (error: EnvironmentClientError) => {
+      subscription.inflight = false
+      if (subscriptions.get(key) !== subscription) return
+      if (error.code === 'not_found') subscriptions.delete(key)
+      else subscribe(subscription.scope)
+    }
+    pending.set(command.requestId, {
+      name: REPLAY_NAME,
+      resolve: (raw) => {
+        subscription.inflight = false
+        let result: ReturnType<typeof parseReplayResult>
+        try {
+          result = parseReplayResult(command, raw)
+        } catch (error) {
+          fallback(
+            new EnvironmentClientError(
+              'validation',
+              error instanceof Error ? error.message : 'Invalid replay result.',
+            ),
+          )
+          return
+        }
+        if (result.type === 'error') {
+          fallback(EnvironmentClientError.fromProtocol(result.error))
+          return
+        }
+        const payload = result.payload
+        // Released while the answer was in flight: let the server side go too.
+        if (subscriptions.get(key) !== subscription) {
+          sendUnsubscribe(payload.subscriptionId)
+          return
+        }
+        subscription.subscriptionId = payload.subscriptionId
+        if (payload.mode === 'replay') {
+          for (const record of payload.events) applyRecord(record)
+        } else {
+          store.update((state) => applySnapshot(state, payload.snapshot))
+          subscription.cursor = payload.snapshot.cursor
+        }
+      },
+      reject: fallback,
+    })
+    if (rawSend(command)) subscription.inflight = true
+    else pending.delete(command.requestId)
+  }
+
   const unsubscribe = (scope: SubscriptionScope) => {
     const key = scopeKey(scope)
     const subscription = subscriptions.get(key)
@@ -628,12 +712,14 @@ export function createWebSocketEnvironmentClient(
   const resync = async () => {
     if (!environmentId) return
     const generation = connectionGeneration
-    subscribe({ type: 'environment', environmentId })
-    // Every scope the previous socket held is re-sent now rather than after the
-    // catalog reads: a server subscription is per-socket, so until it lands the
-    // open session's events are not sent at all. `subscribe` is idempotent, so
-    // the session.open below is free to ask for the same scopes again.
-    for (const subscription of [...subscriptions.values()]) subscribe(subscription.scope)
+    const environment = { type: 'environment', environmentId } as const
+    if (!subscriptions.has(scopeKey(environment))) subscribe(environment)
+    // Every scope the previous socket held is recovered now rather than after
+    // the catalog reads: a server subscription is per-socket, so until it
+    // lands the open session's events are not sent at all. Recovery is
+    // idempotent, so the session.open below is free to ask for the same
+    // scopes again.
+    for (const subscription of [...subscriptions.values()]) recover(subscription)
     const reads: Promise<unknown>[] = []
     if (supports('getEnvironment')) reads.push(commands.getEnvironment().catch(() => undefined))
     if (supports('listWorkspaces')) reads.push(commands.listWorkspaces().catch(() => undefined))

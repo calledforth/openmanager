@@ -22,6 +22,7 @@ describe('command access mapping', () => {
       'protocol.handshake',
       HEARTBEAT_CAPABILITY,
       PROVIDER_PROBE_CAPABILITY,
+      'subscription.replay',
       ...Object.keys(ProofCommandSchemas),
       ...Object.keys(ComposerCommandSchemas),
     ].sort()
@@ -43,6 +44,7 @@ describe('command access mapping', () => {
       'environment.get': 'read',
       'session.open': 'read',
       'subscription.subscribe': 'read',
+      'subscription.replay': 'read',
       'provider.probe': 'read',
       'composer.preferences.get': 'read',
       'session.create': 'operate',
