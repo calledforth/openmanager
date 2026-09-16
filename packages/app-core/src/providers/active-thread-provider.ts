@@ -105,6 +105,13 @@ export interface ActiveThreadStateValue {
   /** This client owns the thread: it created it, or adopted it from a draft. */
   activeThreadDriven: boolean
   isMessagesLoading: boolean
+  history?: {
+    hasMore: boolean
+    failed?: boolean
+    retry?: () => Promise<void>
+    isLoading: boolean
+    loadMore: () => Promise<void>
+  }
   messages: UIMessage[]
   /** Per-message streaming snapshots for turns this client drives; subscribe
    * through `useStreamingMessage`. */
@@ -165,7 +172,9 @@ export const ActiveThreadStoresContext = createContext<ActiveThreadStores | null
 export function useActiveThreadStores(): ActiveThreadStores {
   const ctx = useContext(ActiveThreadStoresContext)
   if (!ctx) {
-    throw new Error('useActiveThreadStores must be used within an ActiveThreadStoresContext provider')
+    throw new Error(
+      'useActiveThreadStores must be used within an ActiveThreadStoresContext provider',
+    )
   }
   return ctx
 }

@@ -998,15 +998,28 @@ describe('cursor replay on reconnect', () => {
   async function dropped() {
     const { client, socket, timers } = await connected(REPLAY_CAPABILITIES)
     const opened = client.commands.openSession(SESSION.sessionId)
-    await answerOpen(socket)
+    socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
     await flush()
-    await opened.catch(() => undefined)
-    // No cursor yet anywhere, so the first connection subscribes plainly.
-    expect(names(socket)).toEqual([
-      'subscribe:environment',
-      'subscribe:session',
-      'subscribe:thread',
-    ])
+    socket.respond('subscription.replay', {
+      mode: 'snapshot',
+      subscriptionId: 'sub-thread',
+      reason: 'initial',
+      snapshot: {
+        cursor: cursor(1),
+        state: {
+          thread: THREAD,
+          turns: [],
+          messages: [],
+          reasoning: [],
+          tools: [],
+          interactions: [],
+          nextCursor: null,
+        },
+      },
+    })
+    await opened
+    // A first thread open uses the atomic snapshot/live boundary.
+    expect(names(socket)).toEqual(['subscribe:environment', 'subscribe:session', 'replay:thread'])
     socket.receive(live(2, turnStarted()))
     socket.receive(live(3, delta('turn-1', 'assistant-1', 'Hi')))
     socket.drop(1006)
@@ -1018,6 +1031,110 @@ describe('cursor replay on reconnect', () => {
     await flush()
     return { client, next }
   }
+
+  it('buffers live records until recovery has applied the missing prefix', async () => {
+    const { client, next } = await dropped()
+    next.receive(live(5, delta('turn-1', 'assistant-1', ' there')))
+    next.respond('subscription.replay', {
+      mode: 'replay',
+      subscriptionId: 'sub-thread-2',
+      from: cursor(3),
+      to: cursor(4),
+      events: [record(4, delta('turn-1', 'assistant-1', '!'))],
+    })
+    expect(selectActiveThread(client.getState())?.messages[1]?.content).toEqual([
+      { type: 'text', text: 'Hi! there' },
+    ])
+    await answerCatalog(next)
+    await flush()
+    expect(
+      next.sent.some(
+        (message) => message.name === 'session.open' || message.name === 'session.history',
+      ),
+    ).toBe(false)
+    client.dispose()
+  })
+
+  it('hydrates from a cursor-bearing first page and ignores a duplicate at its boundary', async () => {
+    const { client, socket } = await connected(REPLAY_CAPABILITIES)
+    const opened = client.commands.openSession(SESSION.sessionId)
+    socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
+    await flush()
+    expect(socket.last('subscription.replay').payload).toEqual({
+      scope: cursor(0).scope,
+      cursor: null,
+    })
+    const start = turnStarted()
+    socket.respond('subscription.replay', {
+      mode: 'snapshot',
+      subscriptionId: 'sub-thread',
+      reason: 'initial',
+      snapshot: {
+        cursor: cursor(3),
+        state: {
+          thread: THREAD,
+          turns: [start.payload.turn],
+          messages: [
+            start.payload.userMessage,
+            {
+              messageId: 'assistant-1',
+              threadId: THREAD.threadId,
+              turnId: 'turn-1',
+              role: 'assistant',
+              content: [{ type: 'text', text: 'Hi' }],
+            },
+          ],
+          reasoning: [],
+          tools: [],
+          interactions: [],
+          nextCursor: { ordinal: 12 },
+        },
+      },
+    })
+    socket.receive(live(3, delta('turn-1', 'assistant-1', 'Hi')))
+    socket.receive(live(4, delta('turn-1', 'assistant-1', '!')))
+    await opened
+    expect(selectActiveThread(client.getState())?.historyCursor).toEqual({ ordinal: 12 })
+    expect(selectActiveThread(client.getState())?.messages[1]?.content).toEqual([
+      { type: 'text', text: 'Hi!' },
+    ])
+    expect(socket.sent.some((message) => message.name === 'session.history')).toBe(false)
+    client.dispose()
+  })
+
+  it('does not let an older page roll back live turn state or replace streamed text', async () => {
+    const { client, next } = await dropped()
+    next.respond('subscription.replay', {
+      mode: 'replay',
+      subscriptionId: 'sub-thread-2',
+      from: cursor(3),
+      to: cursor(3),
+      events: [],
+    })
+    const page = client.commands.loadSessionHistory({ ...THREAD, cursor: { ordinal: 12 } })
+    next.receive(live(4, delta('turn-1', 'assistant-1', '!')))
+    next.receive(live(5, completed()))
+    next.respond('session.history', {
+      messages: [
+        {
+          messageId: 'assistant-1',
+          threadId: THREAD.threadId,
+          turnId: 'turn-1',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'stale' }],
+        },
+      ],
+      turns: [turnStarted().payload.turn],
+      interactions: [],
+      nextCursor: null,
+    })
+    await page
+    expect(selectActiveThread(client.getState())?.turns[0]?.state).toBe('completed')
+    expect(selectActiveThread(client.getState())?.messages[1]?.content).toEqual([
+      { type: 'text', text: 'Hi!' },
+    ])
+    client.dispose()
+  })
 
   it('resumes a held cursor through subscription.replay and folds the missed tail in once', async () => {
     const { client, next } = await dropped()
@@ -1108,26 +1225,16 @@ describe('cursor replay on reconnect', () => {
     ])
   })
 
-  it('falls back to a plain subscribe when the environment cannot replay, and drops a scope it no longer has', async () => {
+  it('keeps the transcript failed when replay fails instead of silently skipping the gap', async () => {
     const { client, next } = await dropped()
-    const replay = next.last('subscription.replay')
     next.receive({
       type: 'error',
-      requestId: replay.requestId,
+      requestId: next.last('subscription.replay').requestId,
       error: { code: 'unavailable', message: 'Replay is not available.' },
     })
-    expect(names(next)).toEqual([
-      'subscribe:environment',
-      'subscribe:session',
-      'replay:thread',
-      'subscribe:thread',
-    ])
-    // Whatever arrives live after the fallback still de-duplicates by cursor.
-    next.receive(live(3, delta('turn-1', 'assistant-1', 'Hi')))
-    next.receive(live(4, delta('turn-1', 'assistant-1', '!')))
-    expect(selectActiveThread(client.getState())?.messages[1]?.content).toEqual([
-      { type: 'text', text: 'Hi!' },
-    ])
+    await flush()
+    expect(names(next)).toEqual(['subscribe:environment', 'subscribe:session', 'replay:thread'])
+    expect(selectActiveThread(client.getState())?.hydration).toBe('failed')
   })
 
   it('lets go of a scope the environment no longer has', async () => {
@@ -1155,7 +1262,8 @@ describe('cursor replay on reconnect', () => {
     expect(selectActiveThread(client.getState())?.messages[1]?.content).toEqual([
       { type: 'text', text: 'Hi' },
     ])
-    expect(names(next).at(-1)).toBe('subscribe:thread')
+    expect(names(next).at(-1)).toBe('replay:thread')
+    expect(selectActiveThread(client.getState())?.hydration).toBe('failed')
     // The subscription that answer granted is released, not left to pile up.
     expect(next.last('subscription.unsubscribe').payload).toEqual({
       subscriptionId: 'sub-thread-2',

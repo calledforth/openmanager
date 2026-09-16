@@ -20,6 +20,7 @@ import {
   MessageSchema,
   ContentBlockSchema,
   InteractionSchema,
+  HistoryCursorSchema,
   type SubscriptionScope,
 } from './domains.js'
 import { ProofEventSchema, ProofEventSchemas, type ProofEvent } from './events.js'
@@ -147,6 +148,7 @@ const ThreadSnapshotSchema = z
       thread: ThreadSchema,
       turns: z.array(TurnSchema),
       messages: z.array(MessageSchema),
+      nextCursor: HistoryCursorSchema.nullable().optional(),
       reasoning: z.array(
         z.object({
           messageId: EntityIdSchema,

@@ -689,12 +689,48 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
     [client],
   )
 
+  const historyRequests = useRef(new Set<string>())
+  const [loadingHistory, setLoadingHistory] = useState<string | null>(null)
+  const loadMoreHistory = useCallback(async () => {
+    const current = client.getState()
+    const target = current.activeThreadId ? current.threads[current.activeThreadId] : undefined
+    if (!target?.historyCursor || historyRequests.current.has(target.thread.threadId)) return
+    const threadId = target.thread.threadId
+    historyRequests.current.add(threadId)
+    setLoadingHistory(threadId)
+    setError(null)
+    try {
+      await commands.loadSessionHistory({ ...target.thread, cursor: target.historyCursor })
+    } catch (err) {
+      if (client.getState().activeThreadId === threadId) {
+        setError(err instanceof Error ? err.message : 'Could not load older messages.')
+      }
+    } finally {
+      historyRequests.current.delete(threadId)
+      setLoadingHistory((id) => (id === threadId ? null : id))
+    }
+  }, [client, commands])
+
   const value = useMemo<ActiveThreadStateValue>(
     () => ({
       activeSessionId: session.activeSessionId,
       activeThread,
       activeThreadDriven: true,
       isMessagesLoading: thread?.hydration === 'loading',
+      history: {
+        failed: thread?.hydration === 'failed',
+        retry: async () => {
+          if (session.activeSessionId)
+            await commands
+              .openSession(session.activeSessionId)
+              .catch((err) =>
+                setError(err instanceof Error ? err.message : 'Could not load history.'),
+              )
+        },
+        hasMore: !!thread?.historyCursor,
+        isLoading: loadingHistory === thread?.thread.threadId,
+        loadMore: loadMoreHistory,
+      },
       messages: projection.messages,
       streamingStore: stores.streamingStore,
       messageContentStore: stores.messageContentStore,
@@ -748,6 +784,10 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       session.activeSessionId,
       stores,
       thread?.hydration,
+      thread?.historyCursor,
+      thread?.thread.threadId,
+      loadingHistory,
+      loadMoreHistory,
     ],
   )
 

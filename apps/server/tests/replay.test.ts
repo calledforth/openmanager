@@ -8,6 +8,7 @@ import { openEnvironmentDatabase } from '../src/db/database.js'
 import { createEventRepository, type DurableProofEvent } from '../src/db/event-repository.js'
 import { createEventRetention } from '../src/db/event-retention.js'
 import { createReplayReader } from '../src/db/replay.js'
+import { listSessionHistory } from '../src/db/session-store.js'
 
 const directories: string[] = []
 const databases: DatabaseSync[] = []
@@ -178,6 +179,31 @@ describe('replay reader', () => {
       mode: 'snapshot',
       reason: 'cursor_ahead',
     })
+  })
+
+  it('continues the first snapshot with older history pages without skips or duplicates', async () => {
+    const { repository, reader, database } = await seeded()
+    for (let index = 2; index <= 61; index += 1) {
+      repository.appendEvents(threadScope, [started(index), delta(index, `answer-${index}`)])
+      repository.finalizeTurn(threadScope, [completed(index)])
+    }
+    const result = reader.read(threadScope, null)
+    if (result.mode !== 'snapshot' || !('thread' in result.snapshot.state))
+      throw new Error('Expected thread snapshot')
+    const newest = result.snapshot.state
+    expect(newest.messages).toHaveLength(100)
+    expect(newest.nextCursor).not.toBeNull()
+    const older = listSessionHistory(database, {
+      sessionId: 'session-1',
+      threadId: 'thread-1',
+      cursor: newest.nextCursor!,
+    })!
+    expect(older.nextCursor).toBeNull()
+    const ids = [...older.messages, ...newest.messages].map((message) => message.messageId)
+    expect(ids).toEqual(
+      Array.from({ length: 61 }, (_, i) => [`user-${i + 1}`, `assistant-${i + 1}`]).flat(),
+    )
+    expect(new Set(ids).size).toBe(122)
   })
 
   it('snapshots when retention has pruned the gap', async () => {
