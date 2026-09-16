@@ -57,6 +57,11 @@ export const submit = mutation({
   },
 })
 
+// Convex-era send. The web app and `@openmanager/app-core` no longer reach it:
+// they send over the environment protocol, where `turn.send` carries a stable
+// client-minted `commandId` the host dedupes on (packages/protocol/docs/proof-slice.md).
+// Kept because apps/mobile still submits through Convex jobs; it goes when that
+// app moves to the environment client.
 export const submitMessage = mutation({
   args: {
     workspacePath: v.string(),

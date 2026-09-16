@@ -48,7 +48,7 @@ IDs refer to host-owned identities, not a provider's session or thread IDs.
 | `session.create`           | `{ workspaceId, title? }`           | `{ session, thread }` with the initial thread          |
 | `session.open`             | `{ sessionId }`                     | `{ session, threads }` — no transcript                 |
 | `session.history`          | `{ sessionId, threadId, cursor?, limit? }` | `{ messages, turns, interactions, nextCursor }` |
-| `turn.send`                | `{ sessionId, threadId, text }`     | `{ turn, userMessage }`                                |
+| `turn.send`                | `{ sessionId, threadId, text, commandId? }` | `{ turn, userMessage, commandId }`             |
 | `turn.interrupt`           | `{ sessionId, threadId, turnId }`   | `{ turnId }` acknowledging the interrupt request       |
 | `interaction.respond`      | `{ sessionId, threadId, response }` | `null`                                                 |
 | `subscription.subscribe`   | `{ scope }`                         | `{ subscriptionId, scope }`                            |
@@ -78,6 +78,22 @@ Shape validation alone cannot establish those database relationships.
 initial command family. Success means the host accepted the turn and assigned
 identities, not that generation has completed. A host permits at most one active
 turn per thread for this slice and returns `conflict` for an incompatible send.
+
+`commandId` is the client's own idea of a send, minted before the command leaves
+the client and kept stable across every retry of that same prompt. It makes a
+send exactly-once from the caller's point of view: the host stores the turn it
+started under `(threadId, commandId)`, and a repeat of an id it has already
+answered returns that first turn unchanged instead of starting a second one —
+after the same access checks, so a replay cannot reveal a thread the caller
+cannot reach. Deduplication outlives the connection and the process: the record
+is durable, so a retry that crosses a reconnect or a host restart is still a
+no-op. A client that sends no `commandId` gets one minted by the host, so every
+turn is recorded with exactly one; such a send is not deduplicated, because the
+host has nothing to recognize it by. The id is echoed back in both the `turn.send`
+result and the `turn.started` event, which carry the identical `TurnStart` shape,
+so a client can retire the local echo it created for that id whichever arrives
+first.
+
 `turn.interrupt` targets a specific turn so a late request cannot cancel the next
 turn. Success acknowledges cancellation, while an eventual lifecycle event
 determines the final state. An already terminal turn may acknowledge as a no-op.
