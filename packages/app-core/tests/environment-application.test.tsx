@@ -430,35 +430,48 @@ describe('the shared application over the environment client', () => {
     expect(client.getState().threads[THREAD.threadId]?.outbox).toHaveLength(1)
   })
 
-  it('appends streamed tokens onto one assistant message', async () => {
-    const client = createMockEnvironmentClient({
-      seed: { ...SEEDED_HISTORY, activeSessionId: SESSION.sessionId },
-      respond: () => null,
-    })
-    await render(<App client={client} />)
-    const { turn } = await act(() => client.commands.sendTurn({ ...THREAD, text: 'stream me' }))
-    await settle(client)
-    expect(container.textContent).toContain('stream me')
-    expect(container.textContent).not.toContain('Tokens')
+  it.each(['completed', 'interrupted'] as const)(
+    'streams one assistant message and stops its live indicators on %s',
+    async (outcome) => {
+      const client = createMockEnvironmentClient({
+        seed: { ...SEEDED_HISTORY, activeSessionId: SESSION.sessionId },
+        respond: () => null,
+      })
+      await render(<App client={client} />)
+      const { turn } = await act(() => client.commands.sendTurn({ ...THREAD, text: 'stream me' }))
+      await settle(client)
+      expect(container.textContent).toContain('stream me')
+      expect(container.textContent).not.toContain('Tokens')
 
-    const target = { ...THREAD, turnId: turn.turnId }
-    await act(() => {
-      client.streamAssistantText(target, 'Tok', 'assistant-stream')
-    })
-    expect(container.textContent).toContain('Tok')
-    expect(container.textContent).not.toContain('Tokens')
+      const target = { ...THREAD, turnId: turn.turnId }
+      await act(() => {
+        client.streamAssistantText(target, 'Tok', 'assistant-stream')
+      })
+      expect(container.textContent).toContain('Tok')
+      expect(container.textContent).not.toContain('Tokens')
 
-    await act(() => {
-      client.streamAssistantText(target, 'ens', 'assistant-stream')
-    })
-    expect(container.textContent).toContain('Tokens')
-    expect(occurrences('Tokens')).toBe(1)
-    expect(
-      client
-        .getState()
-        .threads[THREAD.threadId]?.messages.filter((message) => message.role === 'assistant'),
-    ).toHaveLength(2)
-  })
+      await act(() => {
+        client.streamAssistantText(target, 'ens', 'assistant-stream')
+      })
+      expect(container.textContent).toContain('Tokens')
+      expect(occurrences('Tokens')).toBe(1)
+      expect(button('Stop')).not.toBeNull()
+      expect(container.querySelector('[data-chat-view] .opacity-90')).not.toBeNull()
+      await act(() => {
+        if (outcome === 'completed') client.completeTurn(target)
+        else button('Stop')!.click()
+      })
+      await settle(client)
+      expect(button('Stop')).toBeNull()
+      expect(container.querySelector('[data-chat-view] .opacity-90')).toBeNull()
+      expect(occurrences('Tokens')).toBe(1)
+      expect(
+        client
+          .getState()
+          .threads[THREAD.threadId]?.messages.filter((message) => message.role === 'assistant'),
+      ).toHaveLength(2)
+    },
+  )
 
   it('reconnects without duplicating the open session transcript', async () => {
     const client = createMockEnvironmentClient({

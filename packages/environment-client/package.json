@@ -18,6 +18,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@agentpack/view": "workspace:*",
     "@openmanager/protocol": "workspace:*",
     "zod": "4.4.3"
   },

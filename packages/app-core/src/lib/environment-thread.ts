@@ -1,3 +1,5 @@
+import { isTurnSettled } from '@agentpack/view'
+export { isTurnSettled } from '@agentpack/view'
 import type { ContentBlock, Message, Turn } from '@openmanager/protocol'
 import {
   selectActiveThread,
@@ -58,10 +60,6 @@ export const EMPTY_THREAD_PROJECTION: ThreadProjection = {
   turns: new Map(),
 }
 
-export function isTurnSettled(turn: Turn): boolean {
-  return turn.state === 'completed' || turn.state === 'interrupted' || turn.state === 'failed'
-}
-
 export function contentText(blocks: readonly ContentBlock[]): string {
   return blocks
     .map((block) => {
@@ -88,7 +86,7 @@ function imageParts(message: Message): MessagePart[] {
   )
 }
 
-function reasoningPart(entry: ReasoningEntry): MessagePart {
+function reasoningPart(entry: ReasoningEntry, settled: boolean): MessagePart {
   const text = contentText(entry.content)
   return {
     type: 'reasoning',
@@ -97,7 +95,7 @@ function reasoningPart(entry: ReasoningEntry): MessagePart {
     ...(entry.tokens !== undefined ? { tokens: entry.tokens } : {}),
     // The environment carries no wall-clock timing; a settled block shows the
     // plain "Thought" label, an open one keeps shimmering with the turn.
-    ...(entry.phase === 'stop' ? { time: { start: 0, end: 0 } } : {}),
+    ...(settled || entry.phase === 'stop' ? { time: { start: 0, end: 0 } } : {}),
   }
 }
 
@@ -161,7 +159,7 @@ function projectTurn(
 
   const assistantMessages = messages.filter((message) => message.role === 'assistant')
   const parts: MessagePart[] = [
-    ...reasoning.map(reasoningPart),
+    ...reasoning.map((entry) => reasoningPart(entry, settled)),
     ...tools.map(toolPart),
     ...assistantMessages.flatMap((message) => [
       { type: 'text', id: message.messageId, text: contentText(message.content) },

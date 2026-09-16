@@ -765,3 +765,55 @@ describe('snapshots', () => {
     expect(state.threads[THREAD.threadId]?.hydration).toBe('ready')
   })
 })
+
+describe('protocol turn finalization', () => {
+  it.each(['turn.completed', 'turn.interrupted', 'turn.failed'] as const)(
+    'settles %s, preserves partial text, closes reasoning and rejects late parts',
+    (name) => {
+      let state = applyEvent(seeded(), turnStarted())
+      state = applyEvent(state, delta('turn-1', 'assistant-1', 'partial'))
+      state = applyEvent(
+        state,
+        event({
+          name: 'message.reasoning',
+          scope: threadScope,
+          payload: {
+            turnId: 'turn-1',
+            messageId: 'reasoning-1',
+            phase: 'delta',
+            content: { type: 'text', text: 'thinking' },
+          },
+        }),
+      )
+      state = applyEvent(
+        state,
+        event({
+          name: 'interaction.requested',
+          scope: threadScope,
+          payload: { turnId: 'turn-1', interaction: permission },
+        }),
+      )
+      const terminal =
+        name === 'turn.failed'
+          ? event({
+              name,
+              scope: threadScope,
+              payload: { turnId: 'turn-1', reason: 'provider_error', message: 'Failed' },
+            })
+          : event({ name, scope: threadScope, payload: { turnId: 'turn-1' } })
+      state = applyEvent(state, terminal)
+      const settled = state.threads[THREAD.threadId]!
+      expect(settled.turns[0]?.state).toBe(name.slice(5))
+      expect(settled.messages.at(-1)?.content).toEqual([{ type: 'text', text: 'partial' }])
+      expect(settled.reasoning[0]?.phase).toBe('stop')
+      expect(settled.interactions).toEqual([])
+      expect(selectActiveTurn(state)).toBeNull()
+      expect(applyEvent(state, terminal).threads[THREAD.threadId]).toBe(settled)
+      expect(
+        applyEvent(state, delta('turn-1', 'assistant-1', 'late')).threads[THREAD.threadId],
+      ).toBe(settled)
+      expect(applyEvent(state, completed()).threads[THREAD.threadId]).toBe(settled)
+      expect(applyEvent(state, turnStarted()).threads[THREAD.threadId]?.turns[0]?.state).toBe(name.slice(5))
+    },
+  )
+})

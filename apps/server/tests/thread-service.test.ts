@@ -10,6 +10,7 @@ import {
   ProofEventSchemas,
   ProofResponseSchemas,
   type EventEnvelope,
+  type DurableEvent,
   type CommandEnvelope,
 } from '@openmanager/protocol/node'
 import { createThreadService, type WorkspaceRuntimeResolver } from '../src/thread-service.js'
@@ -420,7 +421,7 @@ describe('thread command provider routing', () => {
     ).toMatchObject({ type: 'error', error: { code: 'not_found' } })
   })
 
-  it('keeps the turn active and allows interrupt retry when cancellation fails', async () => {
+  it.each([true, false])('handles cancellation failure with prompt started=%s', async (promptStarted) => {
     const runtime = {
       ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-session', state: 'created' }),
       prompt: vi.fn(() => new Promise(() => undefined)),
@@ -467,6 +468,8 @@ describe('thread command provider routing', () => {
       threadId: created.payload.thread.threadId,
     }
 
+    if (promptStarted) await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(1))
+
     expect(
       service.dispatch({
         type: 'command',
@@ -478,6 +481,11 @@ describe('thread command provider routing', () => {
     await vi.waitFor(() => expect(runtime.cancel).toHaveBeenCalledTimes(1))
     await Promise.resolve()
     expect(events).not.toContainEqual(expect.objectContaining({ name: 'turn.failed' }))
+    if (!promptStarted) {
+      await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ name: 'turn.interrupted' })))
+      expect(runtime.prompt).not.toHaveBeenCalled()
+      return
+    }
 
     expect(
       service.dispatch({
@@ -2263,5 +2271,191 @@ describe('child sessions without a database', () => {
     expect(events.filter((event) => event.name === 'session.deleted')).toMatchObject([
       { payload: { sessionId } },
     ])
+  })
+})
+
+describe('turn finalization and cancellation races', () => {
+  async function setup() {
+    const { database } = await createDatabase()
+    const published: DurableEvent[] = []
+    const events = createPersistentEventService(database, (record) => published.push(record), {
+      sessionProviderId: () => 'opencode',
+    })
+    let finish!: () => void
+    let rejectCancel!: (error: Error) => void
+    let finishCancel!: () => void
+    const runtime = {
+      ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-session', state: 'created' }),
+      prompt: vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve
+          }),
+      ),
+      cancel: vi.fn(
+        () =>
+          new Promise<void>((resolve, reject) => {
+            finishCancel = resolve
+            rejectCancel = reject
+          }),
+      ),
+    }
+    const service = createThreadService(
+      runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
+      { rejection: () => undefined },
+      events.append,
+      undefined,
+      registered,
+      { database, flush: events.flush, appendAtomic: events.appendAtomic },
+    )
+    service.setEnvironmentId('environment-1')
+    const created = ProofResponseSchemas['session.create'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'create',
+        name: 'session.create',
+        payload: {
+          environmentId: 'environment-1',
+          workspaceId: '/workspace/project',
+          providerId: 'opencode',
+        },
+      }),
+    ).payload
+    const target = { sessionId: created.session.sessionId, threadId: created.thread.threadId }
+    const send = () =>
+      service.dispatch({
+        type: 'command',
+        requestId: 'send',
+        name: 'turn.send',
+        payload: { ...target, text: 'hello' },
+      })
+    const started = ProofResponseSchemas['turn.send'].parse(send()).payload
+    await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(1))
+    const base = {
+      id: 'runtime-start',
+      seq: 1,
+      timestamp: new Date().toISOString(),
+      providerId: 'opencode' as const,
+      threadId: target.threadId,
+      workspaceId: '/workspace/project',
+      sessionId: 'provider-session',
+      messageId: 'assistant-1',
+    }
+    service.onRuntimeEvent({
+      ...base,
+      category: 'lifecycle',
+      event: 'prompt_started',
+      data: { prompt: 'hello', userMessageId: started.userMessage.messageId },
+    })
+    service.onRuntimeEvent({
+      ...base,
+      id: 'runtime-text',
+      seq: 2,
+      category: 'stream',
+      event: 'agent_message_chunk',
+      data: { content: { type: 'text', text: 'partial reply' } },
+    })
+    const interrupt = () =>
+      service.dispatch({
+        type: 'command',
+        requestId: 'interrupt',
+        name: 'turn.interrupt',
+        payload: { ...target, turnId: started.turn.turnId },
+      })
+    const terminal = () =>
+      published.filter((item) =>
+        ['turn.completed', 'turn.interrupted', 'turn.failed'].includes(item.event.name),
+      )
+    const assertDurable = (state: string) => {
+      expect(
+        database.prepare('SELECT state FROM turns WHERE turn_id = ?').get(started.turn.turnId),
+      ).toMatchObject({ state })
+      expect(
+        database
+          .prepare('SELECT is_final FROM messages WHERE turn_id = ?')
+          .all(started.turn.turnId),
+      ).toEqual([
+        expect.objectContaining({ is_final: 1 }),
+        expect.objectContaining({ is_final: 1 }),
+      ])
+      expect(terminal()).toHaveLength(1)
+      const threadEvents = published.filter((item) => item.event.scope.type === 'thread')
+      expect(threadEvents.map((item) => item.cursor.sequence)).toEqual([1, 2, 3])
+      expect(
+        database
+          .prepare('SELECT head_sequence FROM event_streams WHERE thread_id = ?')
+          .get(target.threadId),
+      ).toMatchObject({ head_sequence: 3 })
+    }
+    return {
+      runtime,
+      service,
+      base,
+      send,
+      interrupt,
+      terminal,
+      assertDurable,
+      finish: () => finish(),
+      finishCancel: () => finishCancel(),
+      rejectCancel: () => rejectCancel(new Error('cancel failed')),
+    }
+  }
+
+  it('finalizes buffered text and the durable cursor once on provider completion', async () => {
+    const h = await setup()
+    h.service.onRuntimeEvent({
+      ...h.base,
+      id: 'runtime-end',
+      seq: 3,
+      category: 'lifecycle',
+      event: 'prompt_completed',
+      data: { stopReason: 'end_turn' },
+    })
+    h.finish()
+    await Promise.resolve()
+    h.assertDurable('completed')
+  })
+
+  it('coalesces repeated interrupts and persists a terminal state without a provider callback', async () => {
+    const h = await setup()
+    expect(h.interrupt()).toMatchObject({ type: 'response' })
+    expect(h.interrupt()).toMatchObject({ type: 'response' })
+    await vi.waitFor(() => expect(h.runtime.cancel).toHaveBeenCalledTimes(1))
+    h.finishCancel()
+    await vi.waitFor(() => expect(h.terminal()).toHaveLength(1))
+    h.finish()
+    await Promise.resolve()
+    h.assertDurable('interrupted')
+  })
+
+  it('settles a completed prompt even if its pending cancel later fails', async () => {
+    const h = await setup()
+    h.interrupt()
+    await vi.waitFor(() => expect(h.runtime.cancel).toHaveBeenCalledTimes(1))
+    h.finish()
+    await vi.waitFor(() => expect(h.terminal()).toHaveLength(1))
+    // A session-scoped cancel still in flight must never reach the next turn.
+    expect(h.send()).toMatchObject({ type: 'error', error: { code: 'conflict' } })
+    h.assertDurable('interrupted')
+    h.rejectCancel()
+    await vi.waitFor(() => expect(h.send()).toMatchObject({ type: 'response' }))
+  })
+
+  it('treats an abort-shaped provider error as interruption while stopping', async () => {
+    const h = await setup()
+    h.interrupt()
+    await vi.waitFor(() => expect(h.runtime.cancel).toHaveBeenCalledTimes(1))
+    h.service.onRuntimeEvent({
+      ...h.base,
+      id: 'runtime-abort',
+      seq: 3,
+      category: 'error',
+      event: 'runtime_error',
+      data: { kind: 'provider', message: 'Aborted', recoverable: false },
+    })
+    h.finishCancel()
+    h.finish()
+    await Promise.resolve()
+    h.assertDurable('interrupted')
   })
 })

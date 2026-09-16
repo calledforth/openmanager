@@ -1,4 +1,6 @@
 export type * from './fold/foldEvents.js'
+export type * from './fold/foldProtocolEvent.js'
+export { foldProtocolEvent, isTurnSettled } from './fold/foldProtocolEvent.js'
 export {
   deriveConnectionState,
   foldAgentEvents,

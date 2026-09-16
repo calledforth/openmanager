@@ -1,22 +1,30 @@
 import type {
-  ContentBlock,
   Environment,
   ErrorCode,
   HistoryCursor,
   Interaction,
   InteractionResponse,
   Message,
-  ProofEventSchemas,
   Session,
   SessionListCursor,
   SessionStatus,
   SessionTitleSource,
   Thread,
   Turn,
-  TurnFailureReason,
   Workspace,
 } from '@openmanager/protocol'
-import type { z } from 'zod'
+import type {
+  ReasoningEntry,
+  ToolState,
+  PendingInteraction,
+  TurnFailure,
+} from '@agentpack/view/protocol'
+export type {
+  ReasoningEntry,
+  ToolState,
+  PendingInteraction,
+  TurnFailure,
+} from '@agentpack/view/protocol'
 
 export type { SessionStatus }
 
@@ -53,29 +61,6 @@ export interface LoadSessionHistoryInput {
   threadId: string
   cursor?: HistoryCursor
   limit?: number
-}
-
-export interface ReasoningEntry {
-  messageId: string
-  turnId: string
-  phase: 'start' | 'delta' | 'stop'
-  content: ContentBlock[]
-  tokens?: number
-}
-
-export type ToolState = z.infer<(typeof ProofEventSchemas)['tool.updated']['shape']['payload']>
-
-export interface PendingInteraction {
-  sessionId: string
-  threadId: string
-  turnId: string
-  interaction: Interaction
-}
-
-export interface TurnFailure {
-  turnId: string
-  reason: TurnFailureReason
-  message: string
 }
 
 /**
