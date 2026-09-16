@@ -208,3 +208,10 @@ that callback is the SQLite insertion seam.
 Node and isolated-browser tests validate every command/response/event fixture.
 Runtime tests verify projection, host identities, omission of provider fields,
 reasoning without text, recovery, and plan continuation.
+
+The server package runs the proof slice against a live environment process in
+[`apps/server/tests/proof-slice.e2e.test.ts`](../../../apps/server/tests/proof-slice.e2e.test.ts):
+connect, list workspaces/sessions, open history, send, stream, interrupt, and
+reconnect. CI uses a stub provider; see
+[`apps/server/README.md`](../../../apps/server/README.md#proof-slice-e2e-harness)
+for running it locally against Claude or OpenCode.

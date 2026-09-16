@@ -7,9 +7,13 @@ import { expect } from 'vitest'
 import {
   PROTOCOL_VERSION,
   ProofResponseSchemas,
+  ReplayResponseSchema,
   ServerMessageSchema,
   SubscriptionEventSchema,
+  type Cursor,
   type DurableEvent,
+  type Message,
+  type ReplayResponse,
   type ServerMessage,
   type SubscriptionScope,
 } from '@openmanager/protocol/node'
@@ -47,6 +51,7 @@ export async function startProtocolHost(overrides: Partial<ServerConfig> = {}) {
     url: `${server.url.replace('http:', 'ws:')}/ws`,
     dataDir,
     workspaceId,
+    workspaceRoot,
   }
 }
 
@@ -98,6 +103,15 @@ export async function subscribe(client: ProtocolClient, scope: SubscriptionScope
   const requestId = client.command('subscription.subscribe', { scope })
   return ProofResponseSchemas['subscription.subscribe'].parse(await nextResponse(client, requestId))
     .payload.subscriptionId
+}
+
+export async function replay(
+  client: ProtocolClient,
+  scope: SubscriptionScope,
+  cursor: Cursor | null = null,
+): Promise<ReplayResponse> {
+  const requestId = client.command('subscription.replay', { scope, cursor })
+  return ReplayResponseSchema.parse(await nextResponse(client, requestId))
 }
 
 export async function nextNonPing(client: ProtocolClient): Promise<ServerMessage> {
@@ -174,6 +188,17 @@ export function assistantText(records: DurableEvent[]): string {
       if (payload.role !== 'assistant') return []
       return payload.content?.type === 'text' && payload.content.text ? [payload.content.text] : []
     })
+    .join('')
+}
+
+export function assistantTextFromMessages(messages: readonly Message[]): string {
+  return messages
+    .filter((message) => message.role === 'assistant')
+    .flatMap((message) =>
+      message.content.flatMap((block) =>
+        block.type === 'text' && block.text ? [block.text] : [],
+      ),
+    )
     .join('')
 }
 
