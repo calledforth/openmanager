@@ -89,9 +89,16 @@ export const ProofCommandSchemas = {
     'turn.interrupt',
     ThreadTargetSchema.extend({ turnId: EntityIdSchema }),
   ),
+  // One resolve command for approvals, questions and plans; `response.kind`
+  // says which. `commandId` makes it retryable the way a send is: a repeat of
+  // the id that settled the interaction succeeds, while any other answer to a
+  // settled interaction is a conflict. Optional so an older client still answers.
   'interaction.respond': command(
     'interaction.respond',
-    ThreadTargetSchema.extend({ response: InteractionResponseSchema }),
+    ThreadTargetSchema.extend({
+      response: InteractionResponseSchema,
+      commandId: EntityIdSchema.optional(),
+    }),
   ),
   'subscription.subscribe': command(
     'subscription.subscribe',

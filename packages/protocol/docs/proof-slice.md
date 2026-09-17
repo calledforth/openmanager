@@ -50,7 +50,7 @@ IDs refer to host-owned identities, not a provider's session or thread IDs.
 | `session.history`          | `{ sessionId, threadId, cursor?, limit? }` | `{ messages, turns, interactions, nextCursor }` |
 | `turn.send`                | `{ sessionId, threadId, text, commandId? }` | `{ turn, userMessage, commandId }`             |
 | `turn.interrupt`           | `{ sessionId, threadId, turnId }`   | `{ turnId }` acknowledging the interrupt request       |
-| `interaction.respond`      | `{ sessionId, threadId, response }` | `null`                                                 |
+| `interaction.respond`      | `{ sessionId, threadId, response, commandId? }` | `null`                                     |
 | `subscription.subscribe`   | `{ scope }`                         | `{ subscriptionId, scope }`                            |
 | `subscription.unsubscribe` | `{ subscriptionId }`                | `null`                                                 |
 
@@ -102,7 +102,12 @@ Interaction responses are discriminated by `kind`: permission selects an option,
 question supplies answers, and plan accepts/rejects. All kinds allow cancellation.
 The host checks that the interaction is still pending, belongs to the target
 thread, and that option/question IDs and answer cardinality match the original
-request. An expired or already settled interaction is a conflict. Interaction IDs
+request. An expired or already settled interaction is a conflict, with
+`details.interactionId`. The first answer wins: `commandId` names an answer
+across retries, so a repeat of the id that settled the interaction succeeds
+without reaching the provider again, while any other command — even one carrying
+the identical answer — is a conflict. Without ids on both sides the answer itself
+is compared. Interaction IDs
 are distinct from command request IDs. Option/question/todo IDs are local opaque
 tokens within that interaction and are not global provider resource identities.
 Plan continuation explicitly distinguishes `same_turn` from `follow_up_turn`;

@@ -69,6 +69,7 @@ export const SERVER_CAPABILITIES = [
   'session.history',
   'turn.send',
   'turn.interrupt',
+  'interaction.respond',
   'workspace.list',
   'workspace.add',
   'workspace.remove',

@@ -1773,6 +1773,77 @@ describe('durable session lifecycle', () => {
     }
   })
 
+  it('answers an interaction only the log remembers as already resolved after a restart', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      // The turn stays open, as it would while the provider waits on the user.
+      h.runtime.prompt.mockReturnValueOnce(new Promise(() => undefined))
+      const sent = ProofResponseSchemas['turn.send'].parse(
+        h.dispatch(h.service, 'turn.send', { ...h.created.thread, text: 'Go' }),
+      ).payload
+      const base = {
+        providerId: 'opencode' as const,
+        threadId: h.created.thread.threadId,
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-persisted',
+        messageId: 'assistant-1',
+        timestamp: new Date().toISOString(),
+      }
+      h.service.onRuntimeEvent({
+        ...base,
+        id: 'started',
+        seq: 1,
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'Go', userMessageId: sent.userMessage.messageId },
+      })
+      h.service.onRuntimeEvent({
+        ...base,
+        id: 'asked',
+        seq: 2,
+        category: 'permission',
+        event: 'permission_request',
+        data: {
+          requestId: 'provider-permission',
+          sessionId: 'provider-persisted',
+          toolCall: { toolCallId: 'tool-1', title: 'Run tests' },
+          options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+        },
+      })
+      h.events.flush()
+      const { interaction_id: interactionId } = h.database
+        .prepare('SELECT interaction_id FROM interactions')
+        .get() as { interaction_id: string }
+      const restarted = h.fresh()
+      const respond = (id: string, target = h.created.thread) =>
+        h.dispatch(restarted, 'interaction.respond', {
+          ...target,
+          response: {
+            kind: 'permission',
+            interactionId: id,
+            outcome: { outcome: 'selected', optionId: 'allow' },
+          },
+        })
+      // Its provider process died with the old host; nothing is left to answer.
+      const conflict = { type: 'error', error: { code: 'conflict', details: { interactionId } } }
+      const notFound = { type: 'error', error: { code: 'not_found' } }
+      // A client that reconnected by replay answers without reopening the session.
+      expect(respond(interactionId)).toMatchObject(conflict)
+      expect(respond(interactionId, { ...h.created.thread, sessionId: 'another' })).toMatchObject(
+        notFound,
+      )
+      expect(h.dispatch(restarted, 'session.open', { sessionId })).toMatchObject({
+        type: 'response',
+      })
+      expect(respond(interactionId)).toMatchObject(conflict)
+      expect(respond('never-raised')).toMatchObject(notFound)
+    } finally {
+      h.close()
+    }
+  })
+
   it('resumes the stored provider identity and status after restart and then sends a turn', async () => {
     const h = setup()
     try {

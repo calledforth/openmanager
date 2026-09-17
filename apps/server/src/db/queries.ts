@@ -76,6 +76,14 @@ export const TURN_FOR_COMMAND_ID_SQL = `
   FROM turns
   WHERE thread_id = ? AND command_id = ?`
 
+/** Whether a session's thread ever raised this interaction, whatever became of it. */
+export const INTERACTION_IN_THREAD_SQL = `
+  SELECT 1
+  FROM interactions
+  JOIN turns ON turns.turn_id = interactions.turn_id
+  JOIN threads ON threads.thread_id = turns.thread_id
+  WHERE interactions.interaction_id = ? AND threads.thread_id = ? AND threads.session_id = ?`
+
 /** The prompt a turn started with, replayed when its send is retried. */
 export const USER_MESSAGE_FOR_TURN_SQL = `
   SELECT message_id, thread_id, turn_id, role, ordinal

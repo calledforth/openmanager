@@ -19,6 +19,7 @@ import {
 } from '@openmanager/protocol/node'
 import {
   INTERACTIONS_FOR_TURN_SQL,
+  INTERACTION_IN_THREAD_SQL,
   MESSAGE_HISTORY_PAGE_SQL,
   MESSAGE_PARTS_SQL,
   SESSION_LIST_FOR_ENVIRONMENT_SQL,
@@ -242,6 +243,19 @@ function messageFromRow(database: DatabaseSync, row: MessageRow): Message {
     role: row.role,
     content: parts.map((part) => ContentBlockSchema.parse(JSON.parse(part.content_json))),
   }
+}
+
+/**
+ * Whether the log holds this interaction for the thread. One that memory has
+ * forgotten — a restart ends every turn — can only be settled by now.
+ */
+export function hasInteraction(
+  database: DatabaseSync,
+  query: { sessionId: string; threadId: string; interactionId: string },
+): boolean {
+  return !!database
+    .prepare(INTERACTION_IN_THREAD_SQL)
+    .get(query.interactionId, query.threadId, query.sessionId)
 }
 
 /**

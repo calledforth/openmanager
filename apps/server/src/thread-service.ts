@@ -12,6 +12,8 @@ import {
   type CommandEnvelope,
   type ErrorCode,
   type EventEnvelope,
+  type Interaction,
+  type InteractionResponse,
   type Message,
   type ProofEvent,
   type Session,
@@ -36,6 +38,7 @@ import {
   findTurnByCommandId,
   getProviderSessionId,
   getSessionSummary,
+  hasInteraction,
   listSessionHistory,
   listSessionSummaries,
   listThreadsForSession,
@@ -80,6 +83,22 @@ type ActiveTurn = {
   interactionIds: Map<string, string>
   pendingInteractions: Set<string>
 }
+/**
+ * What the host remembers about one interaction, so a resolve command can be
+ * checked against the request and answered the same way twice.
+ */
+type InteractionEntry = {
+  /** The provider's own request id; clients only ever see the host id. */
+  providerRequestId: string
+  turnId: string
+  interaction: Interaction
+  settled: boolean
+  /** The answer this host forwarded, and the command id that carried it. */
+  answer?: { commandId?: string; response: InteractionResponse }
+}
+type InteractionRuntime = Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'> &
+  // Optional so a host without interactive providers still assembles.
+  Partial<Pick<AgentRuntime, 'respondPermission' | 'respondQuestion' | 'respondPlan'>>
 type ThreadRecord = {
   session: Session
   /** Provenance of `session.title`, so a rename outranks later automatic titles. */
@@ -92,6 +111,8 @@ type ThreadRecord = {
   messages: Message[]
   /** What each command id already started here, so a retry never runs twice. */
   commandTurns: Map<string, TurnStart>
+  /** Every interaction this thread raised, by host id, pending or settled. */
+  interactions: Map<string, InteractionEntry>
   status: SessionStatus
   updatedAt: number
   activeTurn?: ActiveTurn
@@ -109,6 +130,50 @@ const turnSendResult = (requestId: string, started: TurnStart) =>
   ProofResponseSchemas['turn.send'].parse({ type: 'response', requestId, payload: started })
 
 /**
+ * Whether a repeat is the same answer. Two command ids decide it outright, so
+ * a second client sending an identical answer still loses; without ids on both
+ * sides the answer itself is all there is to compare.
+ */
+function sameAnswer(
+  first: { commandId?: string; response: InteractionResponse },
+  second: { commandId?: string; response: InteractionResponse },
+): boolean {
+  if (first.commandId && second.commandId) return first.commandId === second.commandId
+  // Both were parsed by the same schema, so key order is stable.
+  return JSON.stringify(first.response) === JSON.stringify(second.response)
+}
+
+/** Why a response does not fit the request it answers, if it does not. */
+function invalidResponse(interaction: Interaction, response: InteractionResponse): string | null {
+  if (interaction.kind !== response.kind) return 'Response does not match the interaction kind.'
+  if (interaction.kind === 'permission' && response.kind === 'permission') {
+    const { outcome } = response
+    if (
+      outcome.outcome === 'selected' &&
+      !interaction.options.some((option) => option.optionId === outcome.optionId)
+    )
+      return 'Unknown permission option.'
+    return null
+  }
+  if (interaction.kind === 'question' && response.kind === 'question') {
+    if (response.outcome.outcome !== 'answered') return null
+    const answered = new Set<string>()
+    for (const answer of response.outcome.answers) {
+      const question = interaction.questions.find((item) => item.questionId === answer.questionId)
+      if (!question) return 'Unknown question.'
+      if (answered.has(answer.questionId)) return 'A question was answered twice.'
+      answered.add(answer.questionId)
+      const selected = answer.selectedOptionIds ?? []
+      if (selected.some((id) => !question.options.some((option) => option.optionId === id)))
+        return 'Unknown question option.'
+      if (selected.length > 1 && !question.allowMultiple)
+        return 'This question accepts one option.'
+    }
+  }
+  return null
+}
+
+/**
  * Own the host identities and runtime routes used by the proof-slice commands.
  *
  * Runtime work is deliberately queued in a microtask. The returned command
@@ -116,7 +181,7 @@ const turnSendResult = (requestId: string, started: TurnStart) =>
  * event, including providers that emit synchronously while opening a session.
  */
 export function createThreadService(
-  runtime: Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
+  runtime: InteractionRuntime,
   providerGate: ProviderGate,
   appendEvent: (event: ProofEvent) => void,
   publishTransient: (event: EventEnvelope) => void = () => undefined,
@@ -394,6 +459,7 @@ export function createThreadService(
         turns: [],
         messages: [],
         commandTurns: new Map(),
+        interactions: new Map(),
         titleSource: session.titleSource,
         status: session.status,
         updatedAt: Date.parse(session.updatedAt),
@@ -487,9 +553,20 @@ export function createThreadService(
     if (projected.name === 'turn.notice') publishTransient(projected)
     else appendRuntimeEvent(projected)
     if (active && projected.name === 'interaction.requested') {
-      active.pendingInteractions.add(projected.payload.interaction.interactionId)
+      const { interaction } = projected.payload
+      active.pendingInteractions.add(interaction.interactionId)
+      if (providerInteractionId) {
+        record.interactions.set(interaction.interactionId, {
+          providerRequestId: providerInteractionId,
+          turnId: active.turn.turnId,
+          interaction,
+          settled: false,
+        })
+      }
       touch(record, 'waiting')
     } else if (active && projected.name === 'interaction.resolved') {
+      const entry = record.interactions.get(projected.payload.response.interactionId)
+      if (entry) entry.settled = true
       active.pendingInteractions.delete(projected.payload.response.interactionId)
       touch(record, active.pendingInteractions.size > 0 ? 'waiting' : 'running')
     }
@@ -604,6 +681,7 @@ export function createThreadService(
       turns: [],
       messages: [],
       commandTurns: new Map(),
+      interactions: new Map(),
       status: 'idle',
       updatedAt: Date.now(),
     }
@@ -786,6 +864,7 @@ export function createThreadService(
           turns: [],
           messages: [],
           commandTurns: new Map(),
+          interactions: new Map(),
           status: 'idle',
           updatedAt: Date.now(),
         }
@@ -1195,6 +1274,95 @@ export function createThreadService(
           requestId: command.requestId,
           payload: { turnId: active.turn.turnId },
         })
+      }
+
+      if (command.name === 'interaction.respond') {
+        const parsed = ProofCommandSchemas['interaction.respond'].safeParse(command)
+        if (!parsed.success) {
+          return errorResult(command.requestId, 'validation', 'Invalid interaction response.')
+        }
+        const { sessionId, threadId, response, commandId } = parsed.data.payload
+        const record = threads.get(threadId)
+        if (record && record.session.sessionId !== sessionId) {
+          return errorResult(command.requestId, 'not_found', 'Thread not found.')
+        }
+        const entry = record?.interactions.get(response.interactionId)
+        const done = () =>
+          ProofResponseSchemas['interaction.respond'].parse({
+            type: 'response',
+            requestId: command.requestId,
+            payload: null,
+          })
+        const alreadyResolved = () =>
+          errorResult(command.requestId, 'conflict', 'Interaction was already resolved.', {
+            interactionId: response.interactionId,
+          })
+        if (!record || !entry) {
+          // A restart ends every turn and cancels what it left pending, so an
+          // interaction only the log remembers is settled, not unknown. That
+          // holds with no thread in memory too: a client that reconnects by
+          // replay never reopens the session, yet may still show the prompt.
+          const logged =
+            options.database &&
+            (options.flush?.(),
+            hasInteraction(options.database, {
+              sessionId,
+              threadId,
+              interactionId: response.interactionId,
+            }))
+          if (logged) return alreadyResolved()
+          return errorResult(
+            command.requestId,
+            'not_found',
+            record ? 'Interaction not found.' : 'Thread not found.',
+          )
+        }
+        // First write wins. `answer` is set before the provider hears it, so a
+        // second answer racing the settlement event is refused here too and
+        // nothing is ever forwarded twice.
+        if (entry.answer) {
+          return sameAnswer(entry.answer, { commandId, response }) ? done() : alreadyResolved()
+        }
+        // Settled without an answer from here: it timed out or was cancelled.
+        if (entry.settled || record.activeTurn?.turn.turnId !== entry.turnId) {
+          return alreadyResolved()
+        }
+        const invalid = invalidResponse(entry.interaction, response)
+        if (invalid) return errorResult(command.requestId, 'validation', invalid)
+        const providerRejection = rejectProvider(command.requestId, record.providerId)
+        if (providerRejection) return providerRejection
+        const target = { providerId: record.providerId, requestId: entry.providerRequestId }
+        const forward =
+          response.kind === 'permission'
+            ? runtime.respondPermission &&
+              (() => runtime.respondPermission!({ ...target, outcome: response.outcome }))
+            : response.kind === 'question'
+              ? runtime.respondQuestion &&
+                (() => runtime.respondQuestion!({ ...target, outcome: response.outcome }))
+              : runtime.respondPlan &&
+                (() => runtime.respondPlan!({ ...target, outcome: response.outcome }))
+        if (!forward) {
+          return errorResult(
+            command.requestId,
+            'capability_missing',
+            'This environment cannot answer interactions.',
+          )
+        }
+        entry.answer = { commandId, response }
+        try {
+          forward()
+        } catch (error) {
+          entry.answer = undefined
+          // The provider no longer holds the request: it settled on its own
+          // and the event saying so never reached this turn.
+          if (error instanceof Error && /already resolved/.test(error.message)) {
+            entry.settled = true
+            return alreadyResolved()
+          }
+          // Anything else left the request parked, so it stays answerable.
+          return errorResult(command.requestId, 'internal', 'Could not answer the interaction.')
+        }
+        return done()
       }
 
       return undefined
