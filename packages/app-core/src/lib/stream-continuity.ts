@@ -1,5 +1,12 @@
 // How an unfinished assistant message gets its content, by who owns the session.
 //
+// Convex desktop only. The v2 WebSocket path does not use this split: there is
+// no IPC overlay and no Convex `stream_chunks` subscription. ChatView still
+// calls these helpers, but the environment host hardcodes `isDriven` true so
+// the local store is the environment-client projection. Desktop must drop the
+// overlay at thin-shell cutover rather than reintroduce `driven`.
+// See docs/driven-behavior-design.md.
+//
 // Not driven (mobile, a second desktop): subscribe to the Convex chunk stream —
 // the only channel that reaches this client at all.
 //

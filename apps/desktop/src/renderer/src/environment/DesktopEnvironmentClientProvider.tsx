@@ -41,6 +41,9 @@ export function DesktopEnvironmentClientProvider({
       next.connect()
     }
     if (config.backend === 'websocket') {
+      // WebSocket only. Do not attach `stream:token` / `acp:event` here —
+      // that overlay is Convex-adapter-only and is deleted at thin-shell
+      // cutover (docs/driven-behavior-design.md).
       // The main process validates the origin, but a local-storage override
       // can select this backend with whatever URL it was given; a bad one
       // must not take the whole renderer down with it.
