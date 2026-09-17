@@ -537,6 +537,45 @@ payload hash, kept for 30 days) so a late retry still deduplicates instead of
 being appended and projected again. The policy and its rationale are in the
 [schema decision](../../docs/decisions/sqlite-persistence-schema.md#event-retention).
 
+## Proof slice E2E harness
+
+`tests/proof-slice.e2e.test.ts` is the milestone walk of the architecture, driven
+by the existing protocol client (no browser). It starts a real environment
+server and runs:
+
+connect → list workspaces/sessions → open history → send → stream → interrupt →
+reconnect without losing the turn
+
+A second case drops the socket mid-stream and resumes with `subscription.replay`
+so a disconnected client catches up without gaps or duplicates.
+
+CI runs both cases against a stub provider (`FakeConnectionFactory`). Assertion
+messages are tagged so a failure log can tell layers apart:
+
+| Tag             | Meaning                                                                 |
+| --------------- | ----------------------------------------------------------------------- |
+| `[protocol]`    | Envelope, request correlation, event names, or sequence continuity      |
+| `[persistence]` | `session.list` / `session.history` / replay snapshot disagree with live |
+| `[ui]`          | Reconstructed transcript (folded deltas) has gaps, duplicates, or wrong text |
+
+This harness does not mount the web UI. `[ui]` is the chat view a client would
+render from protocol events.
+
+```sh
+pnpm --filter @openmanager/server test -- tests/proof-slice.e2e.test.ts
+```
+
+To run the same walk against a real provider on this machine (skipped in CI):
+
+```sh
+OPENMANAGER_LIVE_PROVIDER=claude pnpm --filter @openmanager/server test -- tests/proof-slice.e2e.test.ts
+OPENMANAGER_LIVE_PROVIDER=opencode pnpm --filter @openmanager/server test -- tests/proof-slice.e2e.test.ts
+```
+
+`OPENMANAGER_LIVE_CLAUDE=1` and `OPENMANAGER_LIVE_OPENCODE=1` are accepted as
+aliases. The live case still uses the protocol client, not a browser. Provider
+CLIs and their credentials must already work on the host.
+
 ## Checks
 
 ```sh
@@ -547,7 +586,8 @@ pnpm --filter server build
 ```
 
 `test` builds first so the CLI smoke test exercises the production JavaScript
-entry point. Negative security tests in `tests/security-negative.test.ts` assert
+entry point. The proof-slice harness above is part of `test` / `ci:server`.
+Negative security tests in `tests/security-negative.test.ts` assert
 the specific refusal (status and error code) so a crash or missing route cannot
 satisfy them. Tests cover configuration precedence and rejection, occupied ports,
 data-directory failures, concurrent identity initialization across processes,
