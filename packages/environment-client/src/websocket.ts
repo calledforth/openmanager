@@ -988,9 +988,23 @@ export function createWebSocketEnvironmentClient(
       await request('turn.interrupt', input)
     },
     async respondToInteraction(input) {
-      await request('interaction.respond', input)
       const thread: Thread = { threadId: input.threadId, sessionId: input.sessionId }
-      store.update((state) => applyInteractionResolved(state, thread, input.response.interactionId))
+      const settle = () =>
+        store.update((state) =>
+          applyInteractionResolved(state, thread, input.response.interactionId),
+        )
+      try {
+        await request('interaction.respond', {
+          ...input,
+          commandId: input.commandId ?? randomId(),
+        })
+      } catch (error) {
+        // Someone else answered first. The prompt is just as gone here, even
+        // if the event saying so was missed; the caller still hears it lost.
+        if (error instanceof EnvironmentClientError && error.code === 'conflict') settle()
+        throw error
+      }
+      settle()
     },
   }
 

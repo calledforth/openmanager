@@ -379,7 +379,7 @@ retains every preference field.
 `session.list` returns lightweight summaries with cursor pagination.
 `session.open` returns the summary and thread identities only;
 `session.history` pages one thread's transcript. `session.create`,
-`session.open`, `turn.send`, and `turn.interrupt` route directly
+`session.open`, `turn.send`, `turn.interrupt`, and `interaction.respond` route directly
 to the mounted runtime. Session creation resolves its workspace ID through the
 registry to a canonical root and, until workspace/provider preferences land,
 uses the desktop-compatible OpenCode fallback as the provider for every root.
@@ -399,6 +399,19 @@ classifies terminal outcomes; provider IDs, native IDs, stop reasons, process
 details and diagnostic payloads do not cross that boundary. An unexpected
 process exit during an active turn emits `turn.failed` with a generic
 `provider_process_exited` or `provider_process_crashed` reason.
+
+`interaction.respond` is the one resolve command for approvals, questions and
+plan reviews; `response.kind` selects which. The thread service checks the answer
+against the request it was shown for (option and question IDs, selection
+cardinality), maps the host interaction ID back to the provider's request and
+forwards the outcome to the runtime, where `PermissionBroker` settles approvals
+and `InteractionBroker` settles questions and plans. The broker's settlement comes
+back as one `interaction.resolved` event for every subscriber. The first answer
+wins: a repeat of the `commandId` that settled an interaction succeeds without
+reaching the provider again, and any other answer is a `conflict` carrying
+`details.interactionId` — as is an answer to an interaction that timed out, whose
+turn ended, or that only the log remembers after a restart. An ID the thread never
+raised is `not_found`.
 
 The SQLite event repository (not yet wired into the running server) exposes `appendEvents(scope, events)` and
 `finalizeTurn(scope, events)`. It allocates contiguous sequence numbers from the

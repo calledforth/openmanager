@@ -184,6 +184,12 @@ export interface InterruptTurnInput extends ThreadTarget {
 
 export interface RespondToInteractionInput extends ThreadTarget {
   response: InteractionResponse
+  /**
+   * Identity of this answer, stable across retries. The environment treats a
+   * repeat of the id that settled the interaction as success, and any other
+   * answer to a settled interaction as a conflict. Generated when omitted.
+   */
+  commandId?: string
 }
 
 /**

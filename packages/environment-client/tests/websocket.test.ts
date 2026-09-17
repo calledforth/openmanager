@@ -563,8 +563,42 @@ describe('websocket environment client', () => {
         outcome: { outcome: 'selected', optionId: 'allow' },
       },
     })
+    // Every answer carries an id so the environment can tell a retry from a rival.
+    expect(socket.last('interaction.respond').payload).toMatchObject({
+      commandId: expect.any(String),
+    })
     socket.respond('interaction.respond', null)
     await responding
+    expect(selectActiveThread(client.getState())?.interactions).toHaveLength(0)
+  })
+
+  it('drops a pending interaction another client answered first, and still reports losing', async () => {
+    const { client, socket } = await connected()
+    const opened = client.commands.openSession(SESSION.sessionId)
+    await answerOpen(socket, SESSION_SUMMARY, [THREAD], {
+      messages: [],
+      turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'waiting' }],
+      interactions: [{ threadId: THREAD.threadId, interaction: permission }],
+      nextCursor: null,
+    })
+    await flush()
+    await flush()
+    await opened.catch(() => undefined)
+    const responding = client.commands.respondToInteraction({
+      ...THREAD,
+      response: {
+        kind: 'permission',
+        interactionId: permission.interactionId,
+        outcome: { outcome: 'selected', optionId: 'allow' },
+      },
+    })
+    const rejected = expect(responding).rejects.toMatchObject({ code: 'conflict' })
+    socket.receive({
+      type: 'error',
+      requestId: socket.last('interaction.respond').requestId,
+      error: { code: 'conflict', message: 'Interaction was already resolved.' },
+    })
+    await rejected
     expect(selectActiveThread(client.getState())?.interactions).toHaveLength(0)
   })
 
