@@ -216,6 +216,8 @@ export function createWebSocketEnvironmentClient(
   let heartbeat: ClientHeartbeatState | null = null
   let environmentId = options.environmentId ?? null
   let capabilities = new Set<string>()
+  /** The id each unacknowledged interaction answer went out under. */
+  const answerIds = new Map<string, { answer: string; commandId: string }>()
   /** Bumped on every handshake and close so a stale resync stops after its awaits. */
   let connectionGeneration = 0
   const pending = new Map<string, Pending>()
@@ -989,15 +991,20 @@ export function createWebSocketEnvironmentClient(
     },
     async respondToInteraction(input) {
       const thread: Thread = { threadId: input.threadId, sessionId: input.sessionId }
-      const settle = () =>
-        store.update((state) =>
-          applyInteractionResolved(state, thread, input.response.interactionId),
-        )
+      const { interactionId } = input.response
+      const settle = () => {
+        answerIds.delete(interactionId)
+        store.update((state) => applyInteractionResolved(state, thread, interactionId))
+      }
+      // An answer whose acknowledgement was lost may already have won. Sending
+      // it again under the same id is a retry; a fresh id would be a rival.
+      const answer = JSON.stringify(input.response)
+      const previous = answerIds.get(interactionId)
+      const commandId =
+        input.commandId ?? (previous?.answer === answer ? previous.commandId : randomId())
+      answerIds.set(interactionId, { answer, commandId })
       try {
-        await request('interaction.respond', {
-          ...input,
-          commandId: input.commandId ?? randomId(),
-        })
+        await request('interaction.respond', { ...input, commandId })
       } catch (error) {
         // Someone else answered first. The prompt is just as gone here, even
         // if the event saying so was missed; the caller still hears it lost.

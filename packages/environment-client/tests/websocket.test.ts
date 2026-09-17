@@ -602,6 +602,44 @@ describe('websocket environment client', () => {
     expect(selectActiveThread(client.getState())?.interactions).toHaveLength(0)
   })
 
+  it('retries the same answer under the id it first went out with', async () => {
+    const { client, socket } = await connected()
+    const opened = client.commands.openSession(SESSION.sessionId)
+    await answerOpen(socket, SESSION_SUMMARY, [THREAD], {
+      messages: [],
+      turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'waiting' }],
+      interactions: [{ threadId: THREAD.threadId, interaction: permission }],
+      nextCursor: null,
+    })
+    await flush()
+    await flush()
+    await opened.catch(() => undefined)
+    const respond = (optionId: string) =>
+      client.commands.respondToInteraction({
+        ...THREAD,
+        response: {
+          kind: 'permission',
+          interactionId: permission.interactionId,
+          outcome: { outcome: 'selected', optionId },
+        },
+      })
+    const fail = async (pending: Promise<void>) => {
+      const rejected = expect(pending).rejects.toMatchObject({ code: 'unavailable' })
+      socket.receive({
+        type: 'error',
+        requestId: socket.last('interaction.respond').requestId,
+        error: { code: 'unavailable', message: 'Acknowledgement lost' },
+      })
+      await rejected
+      return (socket.last('interaction.respond').payload as { commandId: string }).commandId
+    }
+    const first = await fail(respond('allow'))
+    // The environment may have accepted it, so the repeat must not look like a rival.
+    expect(await fail(respond('allow'))).toBe(first)
+    // A different answer is a different command.
+    expect(await fail(respond('deny'))).not.toBe(first)
+  })
+
   it('releases a subscription that was dropped before its acknowledgement arrived', async () => {
     const { client, socket } = await connected()
     const opened = client.commands.openSession(SESSION.sessionId)

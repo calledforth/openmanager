@@ -1283,10 +1283,10 @@ export function createThreadService(
         }
         const { sessionId, threadId, response, commandId } = parsed.data.payload
         const record = threads.get(threadId)
-        if (!record || record.session.sessionId !== sessionId) {
+        if (record && record.session.sessionId !== sessionId) {
           return errorResult(command.requestId, 'not_found', 'Thread not found.')
         }
-        const entry = record.interactions.get(response.interactionId)
+        const entry = record?.interactions.get(response.interactionId)
         const done = () =>
           ProofResponseSchemas['interaction.respond'].parse({
             type: 'response',
@@ -1297,16 +1297,25 @@ export function createThreadService(
           errorResult(command.requestId, 'conflict', 'Interaction was already resolved.', {
             interactionId: response.interactionId,
           })
-        if (!entry) {
+        if (!record || !entry) {
           // A restart ends every turn and cancels what it left pending, so an
-          // interaction only the log remembers is settled, not unknown.
+          // interaction only the log remembers is settled, not unknown. That
+          // holds with no thread in memory too: a client that reconnects by
+          // replay never reopens the session, yet may still show the prompt.
           const logged =
             options.database &&
             (options.flush?.(),
-            hasInteraction(options.database, { threadId, interactionId: response.interactionId }))
-          return logged
-            ? alreadyResolved()
-            : errorResult(command.requestId, 'not_found', 'Interaction not found.')
+            hasInteraction(options.database, {
+              sessionId,
+              threadId,
+              interactionId: response.interactionId,
+            }))
+          if (logged) return alreadyResolved()
+          return errorResult(
+            command.requestId,
+            'not_found',
+            record ? 'Interaction not found.' : 'Thread not found.',
+          )
         }
         // First write wins. `answer` is set before the provider hears it, so a
         // second answer racing the settlement event is refused here too and

@@ -1817,12 +1817,9 @@ describe('durable session lifecycle', () => {
         .prepare('SELECT interaction_id FROM interactions')
         .get() as { interaction_id: string }
       const restarted = h.fresh()
-      expect(h.dispatch(restarted, 'session.open', { sessionId })).toMatchObject({
-        type: 'response',
-      })
-      const respond = (id: string) =>
+      const respond = (id: string, target = h.created.thread) =>
         h.dispatch(restarted, 'interaction.respond', {
-          ...h.created.thread,
+          ...target,
           response: {
             kind: 'permission',
             interactionId: id,
@@ -1830,11 +1827,18 @@ describe('durable session lifecycle', () => {
           },
         })
       // Its provider process died with the old host; nothing is left to answer.
-      expect(respond(interactionId)).toMatchObject({
-        type: 'error',
-        error: { code: 'conflict', details: { interactionId } },
+      const conflict = { type: 'error', error: { code: 'conflict', details: { interactionId } } }
+      const notFound = { type: 'error', error: { code: 'not_found' } }
+      // A client that reconnected by replay answers without reopening the session.
+      expect(respond(interactionId)).toMatchObject(conflict)
+      expect(respond(interactionId, { ...h.created.thread, sessionId: 'another' })).toMatchObject(
+        notFound,
+      )
+      expect(h.dispatch(restarted, 'session.open', { sessionId })).toMatchObject({
+        type: 'response',
       })
-      expect(respond('never-raised')).toMatchObject({ type: 'error', error: { code: 'not_found' } })
+      expect(respond(interactionId)).toMatchObject(conflict)
+      expect(respond('never-raised')).toMatchObject(notFound)
     } finally {
       h.close()
     }

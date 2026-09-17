@@ -251,9 +251,11 @@ function messageFromRow(database: DatabaseSync, row: MessageRow): Message {
  */
 export function hasInteraction(
   database: DatabaseSync,
-  query: { threadId: string; interactionId: string },
+  query: { sessionId: string; threadId: string; interactionId: string },
 ): boolean {
-  return !!database.prepare(INTERACTION_IN_THREAD_SQL).get(query.interactionId, query.threadId)
+  return !!database
+    .prepare(INTERACTION_IN_THREAD_SQL)
+    .get(query.interactionId, query.threadId, query.sessionId)
 }
 
 /**
