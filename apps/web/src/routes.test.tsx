@@ -1,6 +1,7 @@
-import { cleanup, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createMockEnvironmentClient } from '@openmanager/environment-client'
 import { ENVIRONMENT_STORAGE_KEY } from './lib/environment-store'
 import { CONNECTION_STORIES } from './stories/connection-states'
 import { renderWebApp } from './test-utils'
@@ -70,9 +71,100 @@ function storedRegistry() {
 }
 
 describe('web routes', () => {
+  it.each(['idle', 'running', 'question'] as const)(
+    'switches sessions with one open per route and opens a draft while %s',
+    async (activity) => {
+      const user = userEvent.setup()
+      seedRegistry([{ environmentId: 'env-local', endpoints: ['http://127.0.0.1:43120'] }])
+      mockBootstrap({ 'http://127.0.0.1:43120': { environmentId: 'env-local' } })
+      const client = createMockEnvironmentClient({
+        seed: {
+          environment: { environmentId: 'env-local', name: 'Local environment' },
+          workspaces: [
+            {
+              workspaceId: 'ws',
+              name: 'Project',
+              path: '/project',
+              lastUsedAt: null,
+              lastActivityAt: null,
+              exists: true,
+              capabilities: { git: false, providers: ['opencode'] },
+            },
+          ],
+          sessions: ['a', 'b'].map((id) => ({
+            session: { sessionId: id, workspaceId: 'ws', title: `Chat ${id.toUpperCase()}` },
+            threads: [{ sessionId: id, threadId: `thread-${id}` }],
+          })),
+        },
+        respond: () => null,
+      })
+      if (activity !== 'idle') {
+        const target = { sessionId: 'a', threadId: 'thread-a' }
+        const { turn } = await client.commands.sendTurn({ ...target, text: 'Keep working' })
+        if (activity === 'question')
+          client.requestInteraction(
+            { ...target, turnId: turn.turnId },
+            {
+              kind: 'question',
+              interactionId: 'question-1',
+              questions: [
+                {
+                  questionId: 'q1',
+                  prompt: 'Which option?',
+                  options: [{ optionId: 'yes', label: 'Yes' }],
+                },
+              ],
+            },
+          )
+      }
+      const { router } = renderWebApp('/sessions/a', { createEnvironmentClient: () => client })
+      await waitFor(() => expect(client.getState().activeSessionId).toBe('a'))
+      const opens = () =>
+        client.calls.filter((call) => call.command === 'openSession').map((call) => call.input)
+      expect(opens()).toEqual(['a'])
+      await user.click(screen.getByRole('button', { name: /Chat B/ }))
+      await waitFor(() => expect(client.getState().activeSessionId).toBe('b'))
+      await act(() => client.settle())
+      expect(router.state.location.pathname).toBe('/sessions/b')
+      // openSession is the client command for the wire's session.open.
+      expect(opens()).toEqual(['a', 'b'])
+
+      await user.click(screen.getByRole('button', { name: /Chat A/ }))
+      await waitFor(() => expect(client.getState().activeSessionId).toBe('a'))
+      expect(router.state.location.pathname).toBe('/sessions/a')
+      expect(opens()).toEqual(['a', 'b', 'a'])
+      await user.click(screen.getAllByRole('button', { name: 'New Agent' })[0]!)
+      await waitFor(() => expect(router.state.location.pathname).toBe('/'))
+      await act(() => client.settle())
+      expect(client.getState().activeSessionId).toBeNull()
+      expect(opens()).toEqual(['a', 'b', 'a'])
+
+      await act(() => router.history.back())
+      await waitFor(() => expect(client.getState().activeSessionId).toBe('a'))
+      expect(router.state.location.pathname).toBe('/sessions/a')
+      expect(opens()).toEqual(['a', 'b', 'a', 'a'])
+
+      await act(() => client.commands.deleteSession('a'))
+      await waitFor(() => expect(router.state.location.pathname).toBe('/'))
+      expect(client.getState().activeSessionId).toBeNull()
+      expect(opens()).toEqual(['a', 'b', 'a', 'a'])
+      if (activity === 'idle') {
+        await user.click(screen.getAllByRole('button', { name: 'New Agent' })[0]!)
+        await user.type(screen.getByRole('textbox'), 'A new conversation')
+        await user.click(screen.getByRole('button', { name: 'Send' }))
+        await waitFor(() => expect(client.getState().activeSessionId).not.toBeNull())
+        const createdId = client.getState().activeSessionId!
+        expect(router.state.location.pathname).toBe(`/sessions/${createdId}`)
+        expect(opens()).toEqual(['a', 'b', 'a', 'a', createdId])
+      }
+    },
+  )
+
   it('renders the no-environment screen on first run', async () => {
     renderWebApp('/')
-    expect(await screen.findByRole('heading', { name: 'No environment configured' })).toBeInTheDocument()
+    expect(
+      await screen.findByRole('heading', { name: 'No environment configured' }),
+    ).toBeInTheDocument()
     expect(screen.getByLabelText('Environment endpoint')).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Primary' })).toBeInTheDocument()
   })
@@ -330,7 +422,9 @@ describe('web routes', () => {
     renderWebApp('/')
     expect(await screen.findByRole('heading', { name: 'Not authorized' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Change environment' }))
-    expect(await screen.findByRole('heading', { name: 'Select an environment' })).toBeInTheDocument()
+    expect(
+      await screen.findByRole('heading', { name: 'Select an environment' }),
+    ).toBeInTheDocument()
     expect(screen.getByText('Local environment')).toBeInTheDocument()
     expect(storedRegistry().environments).toHaveLength(1)
     expect(storedRegistry().selectedId).toBeNull()

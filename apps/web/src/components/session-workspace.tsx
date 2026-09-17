@@ -1,8 +1,9 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import {
   useEnvironmentClientOptional,
   useEnvironmentState,
 } from '@openmanager/app-core/providers/environment-client'
+import { useNavigate } from '@tanstack/react-router'
 import { ChatWorkspace } from '@openmanager/app-core/components/chat/ChatWorkspace'
 import type { EnvironmentState } from '@openmanager/environment-client'
 
@@ -20,22 +21,31 @@ export function SessionWorkspace({ sessionId }: { sessionId?: string }) {
 function ConnectedSessionWorkspace({ sessionId }: { sessionId?: string }) {
   const client = useEnvironmentClientOptional()!
   const selector = useCallback(
-    (state: EnvironmentState) =>
-      sessionId
-        ? state.activeSessionId === sessionId
-          ? 'active'
-          : state.sessions[sessionId]
-            ? 'known'
-            : 'unknown'
-        : 'none',
+    (state: EnvironmentState) => Boolean(sessionId && state.sessions[sessionId]),
     [sessionId],
   )
-  const status = useEnvironmentState(selector)
+  const known = useEnvironmentState(selector)
+  const navigate = useNavigate()
+  const openedSessionRef = useRef<string | null>(null)
 
   useEffect(() => {
-    if (!sessionId || status !== 'known') return
+    // Only the route selects a session. Active-session updates must never
+    // retrigger an open for a route we are in the process of leaving.
+    if (!sessionId) {
+      client.setActiveSession(null)
+      return
+    }
+    if (!known) {
+      // Deleting the viewed session (including from recovery) removes its
+      // catalog entry. Replace that dead URL without observing active state.
+      if (openedSessionRef.current === sessionId) void navigate({ to: '/', replace: true })
+      return
+    }
+    openedSessionRef.current = sessionId
     void client.commands.openSession(sessionId).catch(() => undefined)
-  }, [client, sessionId, status])
+    // Invalidate an in-flight open when leaving for another session or draft.
+    return () => client.setActiveSession(null)
+  }, [client, sessionId, known, navigate])
 
   return <ChatWorkspace />
 }
