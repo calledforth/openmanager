@@ -140,16 +140,24 @@ describe('proof slice e2e harness', () => {
       const recovered = await reconnectAndOpen(host, scope, sessionId, threadId, 'after interrupt')
       expectHistoryTurn(recovered.history, firstTurnId, 'completed', 'after interrupt')
       expectHistoryTurn(recovered.history, secondTurnId, 'interrupted', 'after interrupt')
+      const turnMessages = (turnId: string) =>
+        recovered.history.messages.filter((message) => message.turnId === turnId)
+      for (const turnId of [firstTurnId, secondTurnId]) {
+        expect(
+          turnMessages(turnId).some(
+            (message) => message.role === 'user' && message.content[0]?.type === 'text',
+          ),
+          layer('persistence', `after interrupt: user prompt for ${turnId} survived reconnect`),
+        ).toBe(true)
+      }
       expect(
-        recovered.history.messages.some(
-          (message) => message.role === 'user' && message.content[0]?.type === 'text',
-        ),
-        layer('persistence', 'after interrupt: user prompts survived reconnect'),
-      ).toBe(true)
-      expect(
-        assistantTextFromMessages(recovered.history.messages),
+        assistantTextFromMessages(turnMessages(firstTurnId)),
         layer('persistence', 'after interrupt: completed assistant text survived reconnect'),
-      ).toContain(FULL)
+      ).toBe(FULL)
+      expect(
+        assistantTextFromMessages(turnMessages(secondTurnId)),
+        layer('persistence', 'after interrupt: interrupted partial text survived reconnect'),
+      ).toBe(PREFIX)
       expect(
         recovered.listed.sessions.some((session) => session.sessionId === sessionId),
         layer('persistence', 'after interrupt: session remains in the catalog'),
