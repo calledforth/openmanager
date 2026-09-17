@@ -413,6 +413,34 @@ reaching the provider again, and any other answer is a `conflict` carrying
 turn ended, or that only the log remembers after a restart. An ID the thread never
 raised is `not_found`.
 
+### Interaction expiry and multi-device delivery
+
+The runtime owns interaction deadlines: approvals and questions wait up to five
+minutes, and plan reviews wait up to thirty minutes. A deadline settles the
+request with `outcome: 'cancelled', reason: 'timeout'`. Agent/tool cancellation
+settles immediately with `tool_cancelled`; a closed provider session uses
+`session_closed`, runtime shutdown uses `runtime_disposed`, and an explicit
+user cancellation uses `user`. These are cancellation reasons, not fresh timers.
+Disconnecting a client does not cancel the request or reset its deadline.
+
+All these settlements use the existing `interaction.resolved` wire event,
+including expiry; there is no separate `interaction.expired` event. The event
+carries the host interaction ID and outcome, is persisted before publication,
+and reaches every authorized subscriber to that thread. Each client removes
+that interaction from its pending UI regardless of which device answered or
+whether the outcome was a timeout or cancellation. The broker settles once, so
+an answer racing a deadline cannot produce two winning outcomes.
+
+A new subscriber uses `subscription.replay` with a null cursor to receive a
+thread snapshot and establish its live subscription at the snapshot cursor.
+The snapshot contains only the current pending interactions: it includes a
+still-waiting request even if the client missed `interaction.requested`, and
+excludes settled requests even if it missed `interaction.resolved`. Existing
+clients reconnect with their cursor and receive replay or a snapshot fallback.
+Clients do not expire dialogs using a local clock. Terminal turn events also
+clear that turn's pending UI; after server restart, interrupted turns do not
+restore unanswerable requests as pending.
+
 The SQLite event repository (not yet wired into the running server) exposes `appendEvents(scope, events)` and
 `finalizeTurn(scope, events)`. It allocates contiguous sequence numbers from the
 durable scope head, inserts event rows, updates message/session/turn projections,

@@ -152,7 +152,12 @@ describe('applyEvent', () => {
     expect(selectActiveThread(twice)?.messages).toHaveLength(1)
   })
 
-  it('tracks pending interactions and returns the turn to running when resolved', () => {
+  it.each([
+    { outcome: 'selected', optionId: 'allow' },
+    { outcome: 'cancelled', reason: 'timeout' },
+    { outcome: 'cancelled', reason: 'tool_cancelled' },
+    { outcome: 'cancelled', reason: 'session_closed' },
+  ] as const)('removes pending UI on a broadcast outcome %j', (outcome) => {
     let state = applyEvent(seeded(), turnStarted())
     state = applyEvent(
       state,
@@ -175,12 +180,13 @@ describe('applyEvent', () => {
           response: {
             kind: 'permission',
             interactionId: permission.interactionId,
-            outcome: { outcome: 'selected', optionId: 'allow' },
+            outcome,
           },
         },
       }),
     )
     expect(selectPendingInteractions(state)).toHaveLength(0)
+    expect(selectActiveTurn(state)?.state).toBe('running')
     expect(selectSessionList(state)[0]?.status).toBe('idle')
   })
 
