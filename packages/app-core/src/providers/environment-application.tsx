@@ -73,6 +73,8 @@ const EMPTY_LIST: never[] = []
 export interface EnvironmentApplicationOptions {
   /** How this host lets the user add a workspace; absent means it cannot. */
   addWorkspace?: () => Promise<void>
+  /** Routed hosts navigate first; the destination owns session hydration. */
+  navigateSession?: (sessionId: string | null) => Promise<void>
   /** Where folded sidebar rows are remembered. Defaults to `localStorage`. */
   collapsedWorkspaceStorage?: Pick<Storage, 'getItem' | 'setItem'> | null
   /** Host actions for views (child sessions, icons, uploads). */
@@ -92,7 +94,10 @@ export function EnvironmentApplicationProviders({
 }: EnvironmentApplicationOptions & { children: ReactNode }) {
   return (
     <EnvironmentPlatformCapabilitiesProvider>
-      <EnvironmentSessionStateProvider addWorkspace={options.addWorkspace}>
+      <EnvironmentSessionStateProvider
+        addWorkspace={options.addWorkspace}
+        navigateSession={options.navigateSession}
+      >
         <EnvironmentComposerStateProvider>
           <EnvironmentSidebarDataProvider storage={options.collapsedWorkspaceStorage}>
             <EnvironmentActiveThreadProvider>
@@ -151,9 +156,11 @@ const DraftInternalsContext = createContext<DraftInternals | null>(null)
 
 function EnvironmentSessionStateProvider({
   addWorkspace,
+  navigateSession,
   children,
 }: {
   addWorkspace?: () => Promise<void>
+  navigateSession?: (sessionId: string | null) => Promise<void>
   children: ReactNode
 }) {
   const client = useEnvironmentClient()
@@ -198,14 +205,18 @@ function EnvironmentSessionStateProvider({
   const openSessionLatest = useCallback(
     async (sessionId: string) => {
       selectionRef.current = sessionId
+      if (navigateSession) {
+        await navigateSession(sessionId)
+        return
+      }
       await commands.openSession(sessionId)
       if (selectionRef.current !== sessionId) client.setActiveSession(selectionRef.current)
     },
-    [client, commands],
+    [client, commands, navigateSession],
   )
 
   const openDraft = useCallback(
-    (workspacePath: string) => {
+    async (workspacePath: string) => {
       const previousSessionId =
         activeSession?.workspaceId === workspacePath ? activeSession.sessionId : null
       draftGenerationRef.current += 1
@@ -215,6 +226,10 @@ function EnvironmentSessionStateProvider({
       setPendingDraftSessionStart(false)
       setTurnPending(false)
       setAdoptedDraftSessionId(null)
+      const generation = draftGenerationRef.current
+      if (navigateSession) await navigateSession(null)
+      // A later selection or draft landed while the navigation settled.
+      if (draftGenerationRef.current !== generation) return
       client.setActiveSession(null)
       setDraftRequest((prev) => ({
         workspacePath,
@@ -222,7 +237,7 @@ function EnvironmentSessionStateProvider({
         revision: (prev?.revision ?? 0) + 1,
       }))
     },
-    [activeSession, client],
+    [activeSession, client, navigateSession],
   )
 
   const selectSession = useCallback(

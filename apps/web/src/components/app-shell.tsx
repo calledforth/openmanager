@@ -1,10 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { ChatCircleIcon, GearIcon, PulseIcon } from '@phosphor-icons/react'
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
-import {
-  useActiveSession,
-  useEnvironmentClientOptional,
-} from '@openmanager/app-core/providers/environment-client'
+import { useEnvironmentClientOptional } from '@openmanager/app-core/providers/environment-client'
 import { EnvironmentApplicationProviders } from '@openmanager/app-core/providers/environment-application'
 import { WorkspaceSidebar } from '@openmanager/app-core/components/sidebar/WorkspaceSidebar'
 import type { EnvironmentClient } from '@openmanager/environment-client'
@@ -55,31 +52,6 @@ function NavLinks({ pathname, compact = false }: { pathname: string; compact?: b
   )
 }
 
-/**
- * Keeps the URL and the environment's active session in step. A session
- * chosen in the sidebar lands on its route from anywhere; opening a draft (no
- * active session) lands on the sessions root, but only from a session route so
- * a page like settings is not pulled away when the session merely clears.
- * Only *changes* navigate: the value on mount is whatever the route is about
- * to open itself.
- */
-function SessionRouteSync({ pathname }: { pathname: string }) {
-  const active = useActiveSession()
-  const navigate = useNavigate()
-  const activeSessionId = active?.sessionId ?? null
-  const previousRef = useRef(activeSessionId)
-  useEffect(() => {
-    if (previousRef.current === activeSessionId) return
-    previousRef.current = activeSessionId
-    if (activeSessionId) {
-      void navigate({ to: '/sessions/$sessionId', params: { sessionId: activeSessionId } })
-    } else if (isSessionPath(pathname) && pathname !== '/') {
-      void navigate({ to: '/' })
-    }
-  }, [activeSessionId, navigate, pathname])
-  return null
-}
-
 function ConnectedShell({
   client,
   pathname,
@@ -89,6 +61,14 @@ function ConnectedShell({
   pathname: string
   children: React.ReactNode
 }) {
+  const navigate = useNavigate()
+  const navigateSession = useCallback(
+    (sessionId: string | null) =>
+      sessionId
+        ? navigate({ to: '/sessions/$sessionId', params: { sessionId } })
+        : navigate({ to: '/' }),
+    [navigate],
+  )
   const { ui } = useConnection()
   const [addingWorkspace, setAddingWorkspace] = useState(false)
   const closeAddWorkspace = useCallback(() => setAddingWorkspace(false), [])
@@ -109,8 +89,7 @@ function ConnectedShell({
     [pathname, ui],
   )
   return (
-    <EnvironmentApplicationProviders addWorkspace={addWorkspace}>
-      <SessionRouteSync pathname={pathname} />
+    <EnvironmentApplicationProviders addWorkspace={addWorkspace} navigateSession={navigateSession}>
       <WorkspaceSidebar collapsed={false} settingsMenu={settingsMenu} />
       {children}
       <AddWorkspaceDialog client={client} open={addingWorkspace} onClose={closeAddWorkspace} />
@@ -121,8 +100,16 @@ function ConnectedShell({
 export function AppShell() {
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   const client = useEnvironmentClientOptional()
-  const { ui, connect, retry, changeEnvironment, selectEnvironment, removeEnvironment, environments, selectedId } =
-    useConnection()
+  const {
+    ui,
+    connect,
+    retry,
+    changeEnvironment,
+    selectEnvironment,
+    removeEnvironment,
+    environments,
+    selectedId,
+  } = useConnection()
   const ungated = pathname.startsWith('/playground/') || pathname === '/settings'
   const handlers = {
     onConnect: connect,

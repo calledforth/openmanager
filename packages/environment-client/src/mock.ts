@@ -153,6 +153,7 @@ export function createMockEnvironmentClient(
   }
   const store = createEnvironmentStore(seedState(environment, options.seed, capabilities))
   const calls: MockCommandCall[] = []
+  let openGeneration = 0
   const timers = new Set<ReturnType<typeof setTimeout>>()
   const drains = new Set<() => void>()
   const pendingCommands = new Set<(error: EnvironmentClientError) => void>()
@@ -480,8 +481,11 @@ export function createMockEnvironmentClient(
               })
         return { session, thread, ...(firstTurn ? { firstTurn } : {}) }
       }),
-    openSession: (sessionId) =>
-      run('openSession', sessionId, () => {
+    openSession: (sessionId) => {
+      const generation = ++openGeneration
+      return run('openSession', sessionId, () => {
+        // Like the wire client, an open overtaken by a later selection lands nowhere.
+        if (generation !== openGeneration) return
         const session = store.getState().sessions[sessionId]
         if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
         const workspace = store.getState().workspaces[session.workspaceId]
@@ -528,7 +532,8 @@ export function createMockEnvironmentClient(
           }
           return applyActiveSession(next, sessionId)
         })
-      }),
+      })
+    },
     loadSessionHistory: (input) =>
       run('loadSessionHistory', input, () => {
         const thread = requireThread(input)
@@ -618,7 +623,10 @@ export function createMockEnvironmentClient(
     getState: store.getState,
     subscribe: store.subscribe,
     supports: (command) => capabilities.has(command),
-    setActiveSession: (sessionId) => store.update((state) => applyActiveSession(state, sessionId)),
+    setActiveSession: (sessionId) => {
+      openGeneration += 1
+      store.update((state) => applyActiveSession(state, sessionId))
+    },
     setActiveThread: (threadId) => store.update((state) => applyActiveThread(state, threadId)),
     connect: () =>
       store.update((state) =>
