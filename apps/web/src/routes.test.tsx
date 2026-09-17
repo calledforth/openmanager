@@ -392,8 +392,8 @@ describe('web routes', () => {
     })
 
     renderWebApp('/settings')
-    expect(await screen.findByText('Home · Selected')).toBeInTheDocument()
     await screen.findByText(/Connected · Home/)
+    await waitFor(() => expect(screen.getByText('Home · Selected')).toBeInTheDocument())
     await user.click(screen.getByRole('button', { name: 'Select' }))
     // The shell remounts its content while the client is swapped, so re-query.
     await screen.findByText(/Connected · Lab/)
