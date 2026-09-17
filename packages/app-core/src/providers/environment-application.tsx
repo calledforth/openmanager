@@ -226,7 +226,10 @@ function EnvironmentSessionStateProvider({
       setPendingDraftSessionStart(false)
       setTurnPending(false)
       setAdoptedDraftSessionId(null)
+      const generation = draftGenerationRef.current
       if (navigateSession) await navigateSession(null)
+      // A later selection or draft landed while the navigation settled.
+      if (draftGenerationRef.current !== generation) return
       client.setActiveSession(null)
       setDraftRequest((prev) => ({
         workspacePath,

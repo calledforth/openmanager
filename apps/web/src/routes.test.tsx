@@ -160,6 +160,46 @@ describe('web routes', () => {
     },
   )
 
+  it('keeps the draft selected when an overtaken session open resolves last', async () => {
+    const user = userEvent.setup()
+    seedRegistry([{ environmentId: 'env-local', endpoints: ['http://127.0.0.1:43120'] }])
+    mockBootstrap({ 'http://127.0.0.1:43120': { environmentId: 'env-local' } })
+    const client = createMockEnvironmentClient({
+      latencyMs: 250,
+      seed: {
+        environment: { environmentId: 'env-local', name: 'Local environment' },
+        workspaces: [
+          {
+            workspaceId: 'ws',
+            name: 'Project',
+            path: '/project',
+            lastUsedAt: null,
+            lastActivityAt: null,
+            exists: true,
+            capabilities: { git: false, providers: ['opencode'] },
+          },
+        ],
+        sessions: ['a', 'b'].map((id) => ({
+          session: { sessionId: id, workspaceId: 'ws', title: `Chat ${id.toUpperCase()}` },
+          threads: [{ sessionId: id, threadId: `thread-${id}` }],
+        })),
+      },
+      respond: () => null,
+    })
+    const { router } = renderWebApp('/sessions/a', { createEnvironmentClient: () => client })
+    await waitFor(() => expect(client.getState().activeSessionId).toBe('a'))
+
+    // Leave for a draft while the open for B is still in flight.
+    await user.click(screen.getByRole('button', { name: /Chat B/ }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/sessions/b'))
+    expect(client.getState().activeSessionId).not.toBe('b')
+    await user.click(screen.getAllByRole('button', { name: 'New Agent' })[0]!)
+    await waitFor(() => expect(router.state.location.pathname).toBe('/'))
+    await act(() => client.settle())
+    expect(client.getState().activeSessionId).toBeNull()
+    expect(router.state.location.pathname).toBe('/')
+  })
+
   it('renders the no-environment screen on first run', async () => {
     renderWebApp('/')
     expect(
