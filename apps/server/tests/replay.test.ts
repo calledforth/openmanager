@@ -145,6 +145,37 @@ describe('replay reader', () => {
     })
   })
 
+  it('snapshots a still-running turn with its partial assistant text', async () => {
+    const database = await createDatabase()
+    const repository = createEventRepository(database, { epoch: 'epoch-1', now: () => T0 })
+    const reader = createReplayReader(database, {
+      epoch: 'epoch-fresh',
+      environment: () => environment,
+      workspaces: () => [workspace],
+    })
+    repository.appendEvents(threadScope, [started(1), delta(1, 'Hel')])
+
+    expect(reader.read(threadScope, null)).toMatchObject({
+      mode: 'snapshot',
+      reason: 'initial',
+      snapshot: {
+        cursor: { scope: threadScope, epoch: 'epoch-1', sequence: 2 },
+        state: {
+          thread: { threadId: 'thread-1', sessionId: 'session-1' },
+          turns: [{ turnId: 'turn-1', state: 'running' }],
+          messages: [
+            { messageId: 'user-1', role: 'user' },
+            {
+              messageId: 'assistant-1',
+              role: 'assistant',
+              content: [{ type: 'text', text: 'Hel' }],
+            },
+          ],
+        },
+      },
+    })
+  })
+
   it('answers a first subscription and a foreign epoch with a snapshot of the thread', async () => {
     const { reader, at } = await seeded()
     const initial = reader.read(threadScope, null)
