@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { DatabaseSync } from 'node:sqlite'
 import type { AgentRuntime } from '@agentpack/runtime/node'
 import {
   ProofResponseSchemas,
@@ -7,6 +8,9 @@ import {
   type InteractionResponse,
 } from '@openmanager/protocol/node'
 import { createThreadService, type WorkspaceRuntimeResolver } from '../src/thread-service.js'
+import { createPersistentEventService } from '../src/event-service.js'
+import { runMigrations } from '../src/db/migrate.js'
+import { MIGRATIONS } from '../src/db/migrations.js'
 
 const registered: WorkspaceRuntimeResolver = (workspaceId) =>
   workspaceId === '/workspace/project'
@@ -20,8 +24,13 @@ type RuntimeEvent = Parameters<ReturnType<typeof createThreadService>['onRuntime
  * first answer to a provider request emits its resolved event synchronously,
  * and a second one throws.
  */
-function harness() {
+function harness(database?: DatabaseSync) {
   const events: EventEnvelope[] = []
+  const persistent =
+    database &&
+    createPersistentEventService(database, (record) => events.push(record.event), {
+      sessionProviderId: () => 'opencode',
+    })
   const settled = new Set<string>()
   let emit: (event: RuntimeEvent) => void = () => undefined
   let seq = 0
@@ -77,9 +86,13 @@ function harness() {
   const service = createThreadService(
     runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
     { rejection: () => undefined },
-    (event) => events.push(event),
+    (event) => {
+      if (persistent) persistent.append(event)
+      else events.push(event)
+    },
     undefined,
     registered,
+    persistent ? { database, flush: persistent.flush, appendAtomic: persistent.appendAtomic } : {},
   )
   emit = (event) => service.onRuntimeEvent(event)
   service.setEnvironmentId('environment-1')
@@ -457,6 +470,50 @@ describe('plan continuation and history', () => {
       expect.objectContaining({ plan, state: 'resolved', outcome: { outcome: 'accepted' } }),
     ])
     expect(history(h).interactions).toEqual([])
+  })
+
+  it('retries a failed durable turn start without repeating acceptance or building twice', async () => {
+    const database = new DatabaseSync(':memory:', { enableForeignKeyConstraints: true })
+    runMigrations(database, MIGRATIONS)
+    database.exec(
+      "INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at) VALUES ('/workspace/project', 'Project', '/workspace/project', 1, 1)",
+    )
+    try {
+      const h = harness(database)
+      await vi.waitFor(() => expect(h.runtime.prompt).toHaveBeenCalledTimes(1))
+      const plan = h.request('plan_review_request', 'session', {
+        ...planRequest,
+        continuation: 'follow_up_turn',
+      })
+      database.exec(`CREATE TRIGGER reject_build BEFORE INSERT ON turns
+        BEGIN SELECT RAISE(ABORT, 'temporary persistence failure'); END`)
+      const first = h.respond(accept(plan), 'build-1', build)
+      h.finishPrompt()
+      expect(await first).toMatchObject({ type: 'error', error: { code: 'unavailable' } })
+      expect(h.runtime.prompt).toHaveBeenCalledTimes(1)
+      expect(history(h).turns).toHaveLength(1)
+      expect(history(h).plans?.[0]?.outcome).toEqual({ outcome: 'accepted' })
+      expect(h.respond(accept(plan), 'rival', build)).toMatchObject({
+        type: 'error',
+        error: { code: 'conflict' },
+      })
+      database.exec('DROP TRIGGER reject_build')
+      const retry = h.respond(accept(plan), 'build-1', build)
+      const concurrentRetry = h.respond(accept(plan), 'build-1', build)
+      expect(await retry).toMatchObject(ok)
+      expect(await concurrentRetry).toMatchObject(ok)
+      await vi.waitFor(() => expect(h.runtime.prompt).toHaveBeenCalledTimes(2))
+      expect(h.runtime.respondPlan).toHaveBeenCalledTimes(1)
+      expect(history(h).turns).toHaveLength(2)
+      expect(await h.respond(accept(plan), 'build-1', build)).toMatchObject(ok)
+      expect(h.runtime.prompt).toHaveBeenCalledTimes(2)
+      h.finishPrompt()
+      await vi.waitFor(() =>
+        expect(history(h).turns.every((turn) => turn.state === 'completed')).toBe(true),
+      )
+    } finally {
+      database.close()
+    }
   })
 
   it('Claude-style build releases the same turn without changing mode or sending again', async () => {

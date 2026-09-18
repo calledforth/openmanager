@@ -122,7 +122,8 @@ acceptance: the provider continues implementation itself. Build with
 and starts one recorded turn with `text` and the requested mode. The response
 acknowledges that new turn starting, not its completion. A failed, interrupted,
 or deleted proposing turn never starts a build. Retrying the winning command
-reuses its result; changing build intent is a conflict. A restart does not
+reuses its successful result; a failed follow-up start can be retried after its
+cause recovers, without forwarding acceptance again. Changing build intent is a conflict. A restart does not
 resume queued work, and a stale build request receives a resolved conflict.
 
 `session.history` optionally includes `plans`, separate from its pending

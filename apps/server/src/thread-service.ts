@@ -99,6 +99,7 @@ type InteractionEntry = {
   settled: boolean
   resolution?: InteractionResponse
   result?: Promise<ProofResponse<'interaction.respond'> | ReturnType<typeof errorResult>>
+  startBuild?: () => NonNullable<InteractionEntry['result']>
   /** The answer this host forwarded, and the command id that carried it. */
   answer?: InteractionAnswer
 }
@@ -798,16 +799,18 @@ export function createThreadService(
     const started: TurnStart = { turn, userMessage, commandId }
     if (options.database) {
       try {
-        appendEvent(
-          ProofEventSchemas['turn.started'].parse({
-            type: 'event',
-            name: 'turn.started',
-            eventId: randomUUID(),
-            timestamp: new Date().toISOString(),
-            scope: threadScope(record),
-            payload: started,
-          }),
-        )
+        const event = ProofEventSchemas['turn.started'].parse({
+          type: 'event',
+          name: 'turn.started',
+          eventId: randomUUID(),
+          timestamp: new Date().toISOString(),
+          scope: threadScope(record),
+          payload: started,
+        })
+        // A failed host command must not leave a start in the streaming
+        // buffer that a later retry could flush as an orphaned turn.
+        if (options.appendAtomic) options.appendAtomic([event])
+        else appendEvent(event)
       } catch (error) {
         options.onPersistenceError?.(error, 'turn.started')
         return errorResult(
@@ -1356,7 +1359,7 @@ export function createThreadService(
         // nothing is ever forwarded twice.
         if (entry.answer) {
           return sameAnswer(entry.answer, { commandId, response, build })
-            ? (entry.result?.then((result) => ({
+            ? ((entry.result ?? entry.startBuild?.())?.then((result) => ({
                 ...result,
                 requestId: command.requestId,
               })) ?? done())
@@ -1417,33 +1420,45 @@ export function createThreadService(
         if (followUp) {
           // A terminal event can precede the runtime promise settling. Reserve
           // the thread until both provider work and host bookkeeping drain.
-          entry.result = proposing.completion!.then(() => {
-            record.pendingBuild = false
-            if (
-              threads.get(threadId) !== record ||
-              proposing.turn.state !== 'completed' ||
-              proposing.promptFailed ||
-              proposing.interruptRequested
-            ) {
-              return errorResult(
-                command.requestId,
-                'conflict',
-                'The proposing turn did not complete.',
+          const buildCommandId = randomUUID()
+          entry.startBuild = () => {
+            record.pendingBuild = true
+            entry.result = proposing.completion!.then(() => {
+              record.pendingBuild = false
+              if (
+                threads.get(threadId) !== record ||
+                proposing.turn.state !== 'completed' ||
+                proposing.promptFailed ||
+                proposing.interruptRequested
+              ) {
+                return errorResult(
+                  command.requestId,
+                  'conflict',
+                  'The proposing turn did not complete.',
+                )
+              }
+              const result = sendTurn(
+                {
+                  type: 'command',
+                  requestId: command.requestId,
+                  name: 'turn.send',
+                  payload: { sessionId, threadId, text: build.text, commandId: buildCommandId },
+                },
+                context,
+                build.modeId,
               )
-            }
-            const result = sendTurn(
-              {
-                type: 'command',
-                requestId: command.requestId,
-                name: 'turn.send',
-                payload: { sessionId, threadId, text: build.text, commandId: randomUUID() },
-              },
-              context,
-              build.modeId,
-            )
-            return result.type === 'error' ? result : done()
-          })
-          return entry.result
+              // The verdict is already delivered, but a failed turn start has
+              // not consumed the build. Let the winning answer retry only that
+              // step, under the same send identity, once its cause recovers.
+              if (result.type === 'error') {
+                entry.result = undefined
+                return result
+              }
+              return done()
+            })
+            return entry.result
+          }
+          return entry.startBuild()
         }
         return done()
       }
