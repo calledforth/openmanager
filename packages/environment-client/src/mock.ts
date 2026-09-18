@@ -380,24 +380,36 @@ export function createMockEnvironmentClient(
     }
   }
 
-  /** Merges like the environment: a patch, where an absent field keeps its value. */
+  /**
+   * Merges like the environment: a patch, where an absent field keeps its
+   * value. `known` is false when the client side could not have named the
+   * pair, so the answer is returned but, as on the wire, not stored.
+   */
   const writePreference = (
     target: ComposerPreferenceTarget,
     patch: WorkspaceComposerPreference,
+    known = true,
   ) => {
     const defined = Object.fromEntries(
       Object.entries(patch).filter(([, value]) => value !== undefined),
     )
     const next = { ...preferences.get(preferenceKey(target)), ...defined }
     preferences.set(preferenceKey(target), next)
-    store.update((state) => applyComposerPreference(state, target, next))
+    if (known) store.update((state) => applyComposerPreference(state, target, next))
     return next
   }
 
-  const sessionPreferenceTarget = (sessionId: string): ComposerPreferenceTarget => {
+  /**
+   * The environment always knows a session's provider; the client only does
+   * once a session summary carried it.
+   */
+  const sessionPreferenceTarget = (sessionId: string) => {
     const session = store.getState().sessions[sessionId]
     if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
-    return { workspaceId: session.workspaceId, providerId: session.providerId ?? 'opencode' }
+    return {
+      target: { workspaceId: session.workspaceId, providerId: session.providerId ?? 'opencode' },
+      known: session.providerId !== undefined,
+    }
   }
 
   const startTurn = (input: SendTurnInput & { commandId: string }) => {
@@ -705,25 +717,24 @@ export function createMockEnvironmentClient(
     setSessionModel: (input) =>
       run('setSessionModel', input, () => {
         parseComposerPayload('composer.model.set', input)
-        return writePreference(sessionPreferenceTarget(input.sessionId), {
-          modelId: input.modelId,
-        })
+        const { target, known } = sessionPreferenceTarget(input.sessionId)
+        return writePreference(target, { modelId: input.modelId }, known)
       }),
     setSessionMode: (input) =>
       run('setSessionMode', input, () => {
         parseComposerPayload('composer.mode.set', input)
-        return writePreference(sessionPreferenceTarget(input.sessionId), { modeId: input.modeId })
+        const { target, known } = sessionPreferenceTarget(input.sessionId)
+        return writePreference(target, { modeId: input.modeId }, known)
       }),
     setSessionConfigOption: (input) =>
       run('setSessionConfigOption', input, () => {
         parseComposerPayload('composer.config_option.set', input)
-        const target = sessionPreferenceTarget(input.sessionId)
-        return writePreference(target, {
-          configValues: {
-            ...preferences.get(preferenceKey(target))?.configValues,
-            [input.configId]: input.value,
-          },
-        })
+        const { target, known } = sessionPreferenceTarget(input.sessionId)
+        const configValues = {
+          ...preferences.get(preferenceKey(target))?.configValues,
+          [input.configId]: input.value,
+        }
+        return writePreference(target, { configValues }, known)
       }),
   }
 

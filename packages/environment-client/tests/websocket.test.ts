@@ -23,6 +23,7 @@ import {
   WORKSPACE,
   completed,
   delta,
+  event,
   permission,
   turnStarted,
 } from './fixtures'
@@ -1567,6 +1568,91 @@ describe('composer commands', () => {
     })
     expect(await first).toEqual({ modelId: 'sonnet' })
     expect(preferenceOf(client)).toEqual({ modelId: 'opus' })
+    client.disconnect()
+  })
+
+  it('does not let a read answered first suppress an earlier setter', async () => {
+    const { client, socket } = await composing()
+    const sessionId = SESSION.sessionId
+    const write = client.commands.setSessionModel({ sessionId, modelId: 'opus' })
+    const read = client.commands.getComposerPreference(TARGET)
+    // The synchronous read overtakes the setter and still sees the old value.
+    socket.respond('composer.preferences.get', { preference: { modelId: 'sonnet' } })
+    expect(await read).toEqual({ modelId: 'sonnet' })
+    expect(preferenceOf(client)).toBeNull()
+    socket.respond('composer.model.set', { preference: { modelId: 'opus' } })
+    await write
+    expect(preferenceOf(client)).toEqual({ modelId: 'opus' })
+    client.disconnect()
+  })
+
+  it('drops a read that was issued before a write which has since landed', async () => {
+    const { client, socket } = await composing()
+    const read = client.commands.getComposerPreference(TARGET)
+    const readId = socket.last('composer.preferences.get').requestId
+    const write = client.commands.setComposerPreference({
+      ...TARGET,
+      preference: { modelId: 'opus' },
+    })
+    socket.respond('composer.preferences.set', { preference: { modelId: 'opus' } })
+    await write
+    socket.receive({ type: 'response', requestId: readId, payload: { preference: {} } })
+    expect(await read).toEqual({})
+    expect(preferenceOf(client)).toEqual({ modelId: 'opus' })
+
+    // A failed write stops shadowing reads.
+    const failed = client.commands.setSessionMode({ sessionId: SESSION.sessionId, modeId: 'x' })
+    socket.receive({
+      type: 'error',
+      requestId: socket.last('composer.mode.set').requestId,
+      error: { code: 'internal', message: 'Provider refused.' },
+    })
+    await expect(failed).rejects.toMatchObject({ code: 'internal' })
+    const later = client.commands.getComposerPreference(TARGET)
+    socket.respond('composer.preferences.get', { preference: { modelId: 'sonnet' } })
+    await later
+    expect(preferenceOf(client)).toEqual({ modelId: 'sonnet' })
+    client.disconnect()
+  })
+
+  it('files a setter answer under a provider learned while it was in flight', async () => {
+    const { client, socket } = await connected([...FULL_CAPABILITIES, ...COMPOSER_CAPABILITIES])
+    const pending = client.commands.setSessionModel({
+      sessionId: SESSION.sessionId,
+      modelId: 'opus',
+    })
+    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
+    await flush()
+    socket.respond('composer.model.set', { preference: { modelId: 'opus' } })
+    await pending
+    expect(preferenceOf(client)).toEqual({ modelId: 'opus' })
+    client.disconnect()
+  })
+
+  it('does not bring back a preference whose session or workspace went away in flight', async () => {
+    const { client, socket } = await composing()
+    socket.respond('workspace.list', { workspaces: [WORKSPACE] })
+    await flush()
+    const setter = client.commands.setSessionModel({
+      sessionId: SESSION.sessionId,
+      modelId: 'opus',
+    })
+    const write = client.commands.setComposerPreference({
+      ...TARGET,
+      preference: { modeId: 'plan' },
+    })
+    socket.receive(
+      event({
+        name: 'workspace.removed',
+        scope: { type: 'environment', environmentId: ENV },
+        payload: { workspaceId: WORKSPACE.workspaceId },
+      }),
+    )
+    socket.respond('composer.model.set', { preference: { modelId: 'opus' } })
+    socket.respond('composer.preferences.set', { preference: { modeId: 'plan' } })
+    expect(await setter).toEqual({ modelId: 'opus' })
+    expect(await write).toEqual({ modeId: 'plan' })
+    expect(client.getState().composerPreferences).toEqual({})
     client.disconnect()
   })
 
