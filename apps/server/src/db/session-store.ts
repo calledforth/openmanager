@@ -3,6 +3,8 @@ import {
   ContentBlockSchema,
   HistoryCursorSchema,
   InteractionSchema,
+  InteractionResponseSchema,
+  PlanHistoryEntrySchema,
   SessionListCursorSchema,
   SessionSummarySchema,
   TurnSchema,
@@ -10,6 +12,7 @@ import {
   type HistoryCursor,
   type Interaction,
   type Message,
+  type PlanHistoryEntry,
   type SessionListCursor,
   type SessionStatus,
   type SessionSummary,
@@ -60,6 +63,7 @@ export interface SessionHistoryPage {
   turns: Turn[]
   /** `turnId` is server-side detail for snapshots; the history response schema drops it. */
   interactions: Array<{ threadId: string; turnId: string; interaction: Interaction }>
+  plans: PlanHistoryEntry[]
   nextCursor: HistoryCursor | null
 }
 
@@ -194,9 +198,8 @@ export function listSessionHistory(
   database: DatabaseSync,
   query: SessionHistoryQuery,
 ): SessionHistoryPage | undefined {
-  const thread = database
-    .prepare(THREAD_IN_SESSION_SQL)
-    .get(query.threadId, query.sessionId) as ThreadRow | undefined
+  const thread = database.prepare(THREAD_IN_SESSION_SQL).get(query.threadId, query.sessionId) as
+    ThreadRow | undefined
   if (!thread) return undefined
 
   const limit = resolvePageLimit(query.limit)
@@ -226,10 +229,38 @@ export function listSessionHistory(
     ),
   )
   const oldest = pageRows.at(-1)
+  const plans = (
+    database
+      .prepare(
+        `
+    SELECT interactions.turn_id, request_json, response_json, interactions.state
+    FROM interactions JOIN turns ON turns.turn_id = interactions.turn_id
+    WHERE turns.thread_id = ? AND kind = 'plan'
+    ORDER BY interactions.created_at, interaction_id
+  `,
+      )
+      .all(query.threadId) as Array<{
+      turn_id: string
+      request_json: string
+      response_json: string | null
+      state: string
+    }>
+  ).map((row) =>
+    PlanHistoryEntrySchema.parse({
+      threadId: query.threadId,
+      turnId: row.turn_id,
+      plan: JSON.parse(row.request_json),
+      state: row.state,
+      outcome: row.response_json
+        ? InteractionResponseSchema.parse(JSON.parse(row.response_json)).outcome
+        : undefined,
+    }),
+  )
   return {
     messages,
     turns,
     interactions,
+    plans,
     nextCursor: rows.length > limit && oldest !== undefined ? { ordinal: oldest.ordinal } : null,
   }
 }
@@ -267,17 +298,14 @@ export function findTurnByCommandId(
   database: DatabaseSync,
   query: CommandTurnQuery,
 ): TurnStart | undefined {
-  const thread = database
-    .prepare(THREAD_IN_SESSION_SQL)
-    .get(query.threadId, query.sessionId) as ThreadRow | undefined
+  const thread = database.prepare(THREAD_IN_SESSION_SQL).get(query.threadId, query.sessionId) as
+    ThreadRow | undefined
   if (!thread) return undefined
   const turn = database.prepare(TURN_FOR_COMMAND_ID_SQL).get(query.threadId, query.commandId) as
-    | TurnRow
-    | undefined
+    TurnRow | undefined
   if (!turn) return undefined
   const message = database.prepare(USER_MESSAGE_FOR_TURN_SQL).get(turn.turn_id) as
-    | MessageRow
-    | undefined
+    MessageRow | undefined
   if (!message) return undefined
   return {
     turn: TurnSchema.parse({ turnId: turn.turn_id, threadId: turn.thread_id, state: turn.state }),

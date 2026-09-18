@@ -17,6 +17,7 @@ import {
   SubscriptionScopeSchema,
   InteractionResponseSchema,
   InteractionSchema,
+  PlanHistoryEntrySchema,
 } from './domains.js'
 
 const command = <N extends string, P extends z.ZodType>(name: N, payload: P) =>
@@ -24,6 +25,7 @@ const command = <N extends string, P extends z.ZodType>(name: N, payload: P) =>
 const response = <P extends z.ZodType>(payload: P) => ResponseEnvelopeSchema.extend({ payload })
 // Advertised separately so older environments cannot silently ignore explicit routing.
 export const SESSION_CREATE_EXPLICIT_CAPABILITY = 'session.create.explicit' as const
+export const PLAN_BUILD_CAPABILITY = 'plan.build' as const
 const TurnTextSchema = z.string().min(1)
 const EmptyPayloadSchema = z.null()
 const SessionTargetSchema = z.object({ sessionId: EntityIdSchema })
@@ -98,6 +100,9 @@ export const ProofCommandSchemas = {
     ThreadTargetSchema.extend({
       response: InteractionResponseSchema,
       commandId: EntityIdSchema.optional(),
+      // Accept and implement. Only valid for an accepted plan; ordinary accept
+      // and reject continue to forward just the provider's review verdict.
+      build: z.object({ text: TurnTextSchema, modeId: EntityIdSchema.optional() }).optional(),
     }),
   ),
   'subscription.subscribe': command(
@@ -165,6 +170,7 @@ export const ProofResponseSchemas = {
       messages: z.array(MessageSchema),
       turns: z.array(TurnSchema),
       interactions: z.array(z.object({ threadId: EntityIdSchema, interaction: InteractionSchema })),
+      plans: z.array(PlanHistoryEntrySchema).optional(),
       nextCursor: HistoryCursorSchema.nullable(),
     }),
   ),

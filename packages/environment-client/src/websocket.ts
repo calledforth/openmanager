@@ -1,4 +1,5 @@
 import {
+  PLAN_BUILD_CAPABILITY,
   ErrorEnvelopeSchema,
   PROTOCOL_VERSION,
   SESSION_CREATE_EXPLICIT_CAPABILITY,
@@ -1066,6 +1067,12 @@ export function createWebSocketEnvironmentClient(
       await request('turn.interrupt', input)
     },
     async respondToInteraction(input) {
+      if (input.build && !capabilities.has(PLAN_BUILD_CAPABILITY)) {
+        throw new EnvironmentClientError(
+          'capability_missing',
+          'This environment cannot build plans.',
+        )
+      }
       const thread: Thread = { threadId: input.threadId, sessionId: input.sessionId }
       const { interactionId } = input.response
       const settle = () => {
@@ -1074,7 +1081,7 @@ export function createWebSocketEnvironmentClient(
       }
       // An answer whose acknowledgement was lost may already have won. Sending
       // it again under the same id is a retry; a fresh id would be a rival.
-      const answer = JSON.stringify(input.response)
+      const answer = JSON.stringify({ response: input.response, build: input.build })
       const previous = answerIds.get(interactionId)
       const commandId =
         input.commandId ?? (previous?.answer === answer ? previous.commandId : randomId())

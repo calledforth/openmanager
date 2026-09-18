@@ -552,6 +552,60 @@ describe('websocket environment client', () => {
     })
   })
 
+  it('sends plan build intent and returns plan history without reopening review', async () => {
+    const { client, socket } = await connected([...FULL_CAPABILITIES, 'plan.build'])
+    const response = {
+      kind: 'plan' as const,
+      interactionId: 'plan-1',
+      outcome: { outcome: 'accepted' as const },
+    }
+    const build = { text: 'Implement the plan', modeId: 'agent' }
+    const pending = client.commands.respondToInteraction({ ...THREAD, response, build })
+    expect(socket.last('interaction.respond').payload).toMatchObject({
+      response,
+      build,
+      commandId: expect.any(String),
+    })
+    socket.respond('interaction.respond', null)
+    await pending
+    const plans = [
+      {
+        threadId: THREAD.threadId,
+        turnId: 'turn-1',
+        state: 'resolved',
+        outcome: response.outcome,
+        plan: {
+          kind: 'plan',
+          interactionId: 'plan-1',
+          markdown: '# Plan',
+          todos: [],
+          continuation: 'follow_up_turn',
+        },
+      },
+    ]
+    const history = client.commands.loadSessionHistory(THREAD)
+    socket.respond('session.history', {
+      messages: [],
+      turns: [],
+      interactions: [],
+      plans,
+      nextCursor: null,
+    })
+    await expect(history).resolves.toMatchObject({ plans, interactions: [] })
+  })
+
+  it('refuses plan builds on an older environment instead of silently only accepting', async () => {
+    const { client, socket } = await connected()
+    await expect(
+      client.commands.respondToInteraction({
+        ...THREAD,
+        response: { kind: 'plan', interactionId: 'plan-1', outcome: { outcome: 'accepted' } },
+        build: { text: 'Implement the plan', modeId: 'agent' },
+      }),
+    ).rejects.toMatchObject({ code: 'capability_missing' })
+    expect(socket.last('interaction.respond')).toBeUndefined()
+  })
+
   it('removes a pending interaction optimistically after responding', async () => {
     const { client, socket } = await connected()
     const opened = client.commands.openSession(SESSION.sessionId)

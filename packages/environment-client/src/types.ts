@@ -5,6 +5,7 @@ import type {
   Interaction,
   InteractionResponse,
   Message,
+  PlanHistoryEntry,
   ProviderCatalogEntry,
   Session,
   SessionListCursor,
@@ -49,6 +50,7 @@ export interface SessionHistoryPage {
   messages: Message[]
   turns: Turn[]
   interactions: Array<{ threadId: string; interaction: Interaction }>
+  plans?: PlanHistoryEntry[]
   nextCursor: HistoryCursor | null
 }
 
@@ -198,6 +200,8 @@ export interface InterruptTurnInput extends ThreadTarget {
 
 export interface RespondToInteractionInput extends ThreadTarget {
   response: InteractionResponse
+  /** Accept and implement a plan using its provider's continuation rule. */
+  build?: { text: string; modeId?: string }
   /**
    * Identity of this answer, stable across retries. The environment treats a
    * repeat of the id that settled the interaction as success, and any other

@@ -16,6 +16,7 @@ import {
   type InteractionResponse,
   type Message,
   type ProofEvent,
+  type ProofResponse,
   type Session,
   type SessionStatus,
   type SessionSummary,
@@ -78,6 +79,9 @@ type ActiveTurn = {
   userMessage: Message
   interruptRequested: boolean
   promptStarted?: boolean
+  /** Includes host terminal bookkeeping, not just the provider completion event. */
+  completion?: Promise<void>
+  promptFailed?: boolean
   runtimeMessageId?: string
   toolIds: Map<string, string>
   interactionIds: Map<string, string>
@@ -93,9 +97,17 @@ type InteractionEntry = {
   turnId: string
   interaction: Interaction
   settled: boolean
+  resolution?: InteractionResponse
+  result?: Promise<ProofResponse<'interaction.respond'> | ReturnType<typeof errorResult>>
   /** The answer this host forwarded, and the command id that carried it. */
-  answer?: { commandId?: string; response: InteractionResponse }
+  answer?: InteractionAnswer
 }
+type InteractionAnswer = {
+  commandId?: string
+  response: InteractionResponse
+  build?: { text: string; modeId?: string }
+}
+
 type InteractionRuntime = Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'> &
   // Optional so a host without interactive providers still assembles.
   Partial<Pick<AgentRuntime, 'respondPermission' | 'respondQuestion' | 'respondPlan'>>
@@ -118,6 +130,7 @@ type ThreadRecord = {
   activeTurn?: ActiveTurn
   /** A session-scoped cancel must drain before another prompt can start. */
   cancellation?: Promise<void>
+  pendingBuild?: boolean
 }
 
 const errorResult = (requestId: string, code: ErrorCode, message: string, details?: unknown) => ({
@@ -134,10 +147,8 @@ const turnSendResult = (requestId: string, started: TurnStart) =>
  * a second client sending an identical answer still loses; without ids on both
  * sides the answer itself is all there is to compare.
  */
-function sameAnswer(
-  first: { commandId?: string; response: InteractionResponse },
-  second: { commandId?: string; response: InteractionResponse },
-): boolean {
+function sameAnswer(first: InteractionAnswer, second: InteractionAnswer): boolean {
+  if (JSON.stringify(first.build) !== JSON.stringify(second.build)) return false
   if (first.commandId && second.commandId) return first.commandId === second.commandId
   // Both were parsed by the same schema, so key order is stable.
   return JSON.stringify(first.response) === JSON.stringify(second.response)
@@ -166,8 +177,7 @@ function invalidResponse(interaction: Interaction, response: InteractionResponse
       const selected = answer.selectedOptionIds ?? []
       if (selected.some((id) => !question.options.some((option) => option.optionId === id)))
         return 'Unknown question option.'
-      if (selected.length > 1 && !question.allowMultiple)
-        return 'This question accepts one option.'
+      if (selected.length > 1 && !question.allowMultiple) return 'This question accepts one option.'
     }
   }
   return null
@@ -566,7 +576,10 @@ export function createThreadService(
       touch(record, 'waiting')
     } else if (active && projected.name === 'interaction.resolved') {
       const entry = record.interactions.get(projected.payload.response.interactionId)
-      if (entry) entry.settled = true
+      if (entry) {
+        entry.settled = true
+        entry.resolution = projected.payload.response
+      }
       active.pendingInteractions.delete(projected.payload.response.interactionId)
       touch(record, active.pendingInteractions.size > 0 ? 'waiting' : 'running')
     }
@@ -730,6 +743,140 @@ export function createThreadService(
     providerId: record.providerId,
     updatedAt: new Date(record.updatedAt).toISOString(),
   })
+
+  const sendTurn = (command: CommandEnvelope, context?: CommandContext, modeId?: string) => {
+    const parsed = ProofCommandSchemas['turn.send'].safeParse(command)
+    if (!parsed.success) {
+      return errorResult(command.requestId, 'validation', 'Invalid prompt request.')
+    }
+    const input = parsed.data.payload
+    // A client's own id makes the send retryable; a client that sends none
+    // gets a minted one so every turn is still recorded with exactly one.
+    const commandId = input.commandId ?? randomUUID()
+    const threadRecord = threads.get(input.threadId)
+    const record = threadRecord?.session.sessionId === input.sessionId ? threadRecord : undefined
+    // Access is settled before anything is answered, a replay included: a
+    // caller who cannot reach the workspace must not learn what was sent
+    // to it. A thread no longer in memory names its workspace from the log.
+    const workspaceId = record?.session.workspaceId ?? persistedWorkspaceId(input.sessionId)
+    if (workspaceId === undefined) {
+      return errorResult(command.requestId, 'not_found', 'Thread not found.')
+    }
+    if (!resolveWorkspace(workspaceId, context)) {
+      return rejectWorkspace(command.requestId, workspaceId, SEND_WORKSPACE_UNAVAILABLE)
+    }
+    // A live thread has served every send since this process started, so
+    // its own map answers without touching the log. Only a thread that is
+    // no longer in memory needs the durable lookup, which is exactly the
+    // retry that crosses a restart.
+    const replayed = !input.commandId
+      ? undefined
+      : record
+        ? record.commandTurns.get(input.commandId)
+        : findPersistedTurn(input.sessionId, input.threadId, input.commandId)
+    if (replayed) return turnSendResult(command.requestId, replayed)
+    if (!record) {
+      return errorResult(command.requestId, 'not_found', 'Thread not found.')
+    }
+    const providerRejection = rejectProvider(command.requestId, record.providerId)
+    if (providerRejection) return providerRejection
+    if (record.activeTurn || record.cancellation || record.pendingBuild) {
+      return errorResult(command.requestId, 'conflict', 'A turn is already in progress.')
+    }
+    const turn: Turn = {
+      turnId: randomUUID(),
+      threadId: record.thread.threadId,
+      state: 'running',
+    }
+    const userMessage: Message = {
+      messageId: randomUUID(),
+      threadId: record.thread.threadId,
+      turnId: turn.turnId,
+      role: 'user',
+      content: [{ type: 'text', text: input.text }],
+    }
+    const started: TurnStart = { turn, userMessage, commandId }
+    if (options.database) {
+      try {
+        appendEvent(
+          ProofEventSchemas['turn.started'].parse({
+            type: 'event',
+            name: 'turn.started',
+            eventId: randomUUID(),
+            timestamp: new Date().toISOString(),
+            scope: threadScope(record),
+            payload: started,
+          }),
+        )
+      } catch (error) {
+        options.onPersistenceError?.(error, 'turn.started')
+        return errorResult(
+          command.requestId,
+          'unavailable',
+          'The message could not be saved. Try again.',
+        )
+      }
+    }
+    record.turns.push(turn)
+    record.messages.push(userMessage)
+    record.commandTurns.set(commandId, started)
+    touch(record, 'running')
+    const title = titleFromPrompt(input.text)
+    if (title) applyTitle(record, title, 'fallback')
+    const active: ActiveTurn = {
+      turn,
+      userMessage,
+      interruptRequested: false,
+      toolIds: new Map(),
+      interactionIds: new Map(),
+      pendingInteractions: new Set(),
+    }
+    record.activeTurn = active
+    active.completion = record.runtimeSession
+      .then((sessionId) => {
+        // Deleting the session or closing the workspace drops the record while
+        // the provider session is still resolving. Starting provider work for a
+        // record nothing points at any more would outlive the session itself.
+        if (
+          threads.get(record.thread.threadId) !== record ||
+          record.activeTurn !== active ||
+          active.interruptRequested
+        )
+          return
+        active.promptStarted = true
+        return runtime.prompt({
+          ...route(record, sessionId),
+          ...(modeId ? { desiredConfig: { modeId } } : {}),
+          prompt: {
+            text: input.text,
+            blocks: [{ type: 'text', text: input.text }],
+          },
+          userMessageId: userMessage.messageId,
+        })
+      })
+      .then(() => {
+        if (active.promptStarted && record.activeTurn === active && turn.state === 'running') {
+          // A provider may settle without a terminal callback while cancel
+          // is still pending. Its prompt has ended either way.
+          if (active.interruptRequested) emitInterrupted(record, turn.turnId)
+          else emitCompleted(record, turn.turnId)
+          turn.state = active.interruptRequested ? 'interrupted' : 'completed'
+          record.activeTurn = undefined
+          touch(record, 'idle')
+        }
+      })
+      .catch(() => {
+        active.promptFailed = true
+        if (record.activeTurn === active && turn.state === 'running') {
+          if (active.interruptRequested) emitInterrupted(record, turn.turnId)
+          else emitFailed(record, turn.turnId)
+          turn.state = active.interruptRequested ? 'interrupted' : 'failed'
+          record.activeTurn = undefined
+          touch(record, active.interruptRequested ? 'idle' : 'error')
+        }
+      })
+    return turnSendResult(command.requestId, started)
+  }
 
   const service = {
     setEnvironmentId(id: string) {
@@ -1080,144 +1227,31 @@ export function createThreadService(
           payload: {
             messages: page.messages,
             turns: record.turns,
-            interactions: [],
+            interactions: [...record.interactions.values()]
+              .filter((entry) => !entry.settled && record.activeTurn?.turn.turnId === entry.turnId)
+              .map((entry) => ({
+                threadId: record.thread.threadId,
+                interaction: entry.interaction,
+              })),
+            plans: [...record.interactions.values()]
+              .filter((entry) => entry.interaction.kind === 'plan')
+              .map((entry) => ({
+                threadId: record.thread.threadId,
+                turnId: entry.turnId,
+                plan: entry.interaction,
+                state: entry.resolution
+                  ? 'resolved'
+                  : entry.settled || record.activeTurn?.turn.turnId !== entry.turnId
+                    ? 'cancelled'
+                    : 'pending',
+                outcome: entry.resolution?.outcome,
+              })),
             nextCursor: page.nextCursor,
           },
         })
       }
 
-      if (command.name === 'turn.send') {
-        const parsed = ProofCommandSchemas['turn.send'].safeParse(command)
-        if (!parsed.success) {
-          return errorResult(command.requestId, 'validation', 'Invalid prompt request.')
-        }
-        const input = parsed.data.payload
-        // A client's own id makes the send retryable; a client that sends none
-        // gets a minted one so every turn is still recorded with exactly one.
-        const commandId = input.commandId ?? randomUUID()
-        const threadRecord = threads.get(input.threadId)
-        const record =
-          threadRecord?.session.sessionId === input.sessionId ? threadRecord : undefined
-        // Access is settled before anything is answered, a replay included: a
-        // caller who cannot reach the workspace must not learn what was sent
-        // to it. A thread no longer in memory names its workspace from the log.
-        const workspaceId = record?.session.workspaceId ?? persistedWorkspaceId(input.sessionId)
-        if (workspaceId === undefined) {
-          return errorResult(command.requestId, 'not_found', 'Thread not found.')
-        }
-        if (!resolveWorkspace(workspaceId, context)) {
-          return rejectWorkspace(command.requestId, workspaceId, SEND_WORKSPACE_UNAVAILABLE)
-        }
-        // A live thread has served every send since this process started, so
-        // its own map answers without touching the log. Only a thread that is
-        // no longer in memory needs the durable lookup, which is exactly the
-        // retry that crosses a restart.
-        const replayed = !input.commandId
-          ? undefined
-          : record
-            ? record.commandTurns.get(input.commandId)
-            : findPersistedTurn(input.sessionId, input.threadId, input.commandId)
-        if (replayed) return turnSendResult(command.requestId, replayed)
-        if (!record) {
-          return errorResult(command.requestId, 'not_found', 'Thread not found.')
-        }
-        const providerRejection = rejectProvider(command.requestId, record.providerId)
-        if (providerRejection) return providerRejection
-        if (record.activeTurn || record.cancellation) {
-          return errorResult(command.requestId, 'conflict', 'A turn is already in progress.')
-        }
-        const turn: Turn = {
-          turnId: randomUUID(),
-          threadId: record.thread.threadId,
-          state: 'running',
-        }
-        const userMessage: Message = {
-          messageId: randomUUID(),
-          threadId: record.thread.threadId,
-          turnId: turn.turnId,
-          role: 'user',
-          content: [{ type: 'text', text: input.text }],
-        }
-        const started: TurnStart = { turn, userMessage, commandId }
-        if (options.database) {
-          try {
-            appendEvent(
-              ProofEventSchemas['turn.started'].parse({
-                type: 'event',
-                name: 'turn.started',
-                eventId: randomUUID(),
-                timestamp: new Date().toISOString(),
-                scope: threadScope(record),
-                payload: started,
-              }),
-            )
-          } catch (error) {
-            options.onPersistenceError?.(error, 'turn.started')
-            return errorResult(
-              command.requestId,
-              'unavailable',
-              'The message could not be saved. Try again.',
-            )
-          }
-        }
-        record.turns.push(turn)
-        record.messages.push(userMessage)
-        record.commandTurns.set(commandId, started)
-        touch(record, 'running')
-        const title = titleFromPrompt(input.text)
-        if (title) applyTitle(record, title, 'fallback')
-        const active: ActiveTurn = {
-          turn,
-          userMessage,
-          interruptRequested: false,
-          toolIds: new Map(),
-          interactionIds: new Map(),
-          pendingInteractions: new Set(),
-        }
-        record.activeTurn = active
-        void record.runtimeSession
-          .then((sessionId) => {
-            // Deleting the session or closing the workspace drops the record while
-            // the provider session is still resolving. Starting provider work for a
-            // record nothing points at any more would outlive the session itself.
-            if (
-              threads.get(record.thread.threadId) !== record ||
-              record.activeTurn !== active ||
-              active.interruptRequested
-            )
-              return
-            active.promptStarted = true
-            return runtime.prompt({
-              ...route(record, sessionId),
-              prompt: {
-                text: input.text,
-                blocks: [{ type: 'text', text: input.text }],
-              },
-              userMessageId: userMessage.messageId,
-            })
-          })
-          .then(() => {
-            if (active.promptStarted && record.activeTurn === active && turn.state === 'running') {
-              // A provider may settle without a terminal callback while cancel
-              // is still pending. Its prompt has ended either way.
-              if (active.interruptRequested) emitInterrupted(record, turn.turnId)
-              else emitCompleted(record, turn.turnId)
-              turn.state = active.interruptRequested ? 'interrupted' : 'completed'
-              record.activeTurn = undefined
-              touch(record, 'idle')
-            }
-          })
-          .catch(() => {
-            if (record.activeTurn === active && turn.state === 'running') {
-              if (active.interruptRequested) emitInterrupted(record, turn.turnId)
-              else emitFailed(record, turn.turnId)
-              turn.state = active.interruptRequested ? 'interrupted' : 'failed'
-              record.activeTurn = undefined
-              touch(record, active.interruptRequested ? 'idle' : 'error')
-            }
-          })
-        return turnSendResult(command.requestId, started)
-      }
+      if (command.name === 'turn.send') return sendTurn(command, context)
 
       if (command.name === 'turn.interrupt') {
         const parsed = ProofCommandSchemas['turn.interrupt'].safeParse(command)
@@ -1281,7 +1315,7 @@ export function createThreadService(
         if (!parsed.success) {
           return errorResult(command.requestId, 'validation', 'Invalid interaction response.')
         }
-        const { sessionId, threadId, response, commandId } = parsed.data.payload
+        const { sessionId, threadId, response, commandId, build } = parsed.data.payload
         const record = threads.get(threadId)
         if (record && record.session.sessionId !== sessionId) {
           return errorResult(command.requestId, 'not_found', 'Thread not found.')
@@ -1321,11 +1355,19 @@ export function createThreadService(
         // second answer racing the settlement event is refused here too and
         // nothing is ever forwarded twice.
         if (entry.answer) {
-          return sameAnswer(entry.answer, { commandId, response }) ? done() : alreadyResolved()
+          return sameAnswer(entry.answer, { commandId, response, build })
+            ? (entry.result?.then((result) => ({
+                ...result,
+                requestId: command.requestId,
+              })) ?? done())
+            : alreadyResolved()
         }
         // Settled without an answer from here: it timed out or was cancelled.
         if (entry.settled || record.activeTurn?.turn.turnId !== entry.turnId) {
           return alreadyResolved()
+        }
+        if (build && (response.kind !== 'plan' || response.outcome.outcome !== 'accepted')) {
+          return errorResult(command.requestId, 'validation', 'Only an accepted plan can be built.')
         }
         const invalid = invalidResponse(entry.interaction, response)
         if (invalid) return errorResult(command.requestId, 'validation', invalid)
@@ -1348,11 +1390,21 @@ export function createThreadService(
             'This environment cannot answer interactions.',
           )
         }
-        entry.answer = { commandId, response }
+        const proposing = record.activeTurn!
+        const followUp =
+          build &&
+          entry.interaction.kind === 'plan' &&
+          entry.interaction.continuation === 'follow_up_turn'
+        if (followUp && !proposing.completion) {
+          return errorResult(command.requestId, 'conflict', 'The proposing turn has not started.')
+        }
+        entry.answer = { commandId, response, build }
+        if (followUp) record.pendingBuild = true
         try {
           forward()
         } catch (error) {
           entry.answer = undefined
+          if (followUp) record.pendingBuild = false
           // The provider no longer holds the request: it settled on its own
           // and the event saying so never reached this turn.
           if (error instanceof Error && /already resolved/.test(error.message)) {
@@ -1361,6 +1413,37 @@ export function createThreadService(
           }
           // Anything else left the request parked, so it stays answerable.
           return errorResult(command.requestId, 'internal', 'Could not answer the interaction.')
+        }
+        if (followUp) {
+          // A terminal event can precede the runtime promise settling. Reserve
+          // the thread until both provider work and host bookkeeping drain.
+          entry.result = proposing.completion!.then(() => {
+            record.pendingBuild = false
+            if (
+              threads.get(threadId) !== record ||
+              proposing.turn.state !== 'completed' ||
+              proposing.promptFailed ||
+              proposing.interruptRequested
+            ) {
+              return errorResult(
+                command.requestId,
+                'conflict',
+                'The proposing turn did not complete.',
+              )
+            }
+            const result = sendTurn(
+              {
+                type: 'command',
+                requestId: command.requestId,
+                name: 'turn.send',
+                payload: { sessionId, threadId, text: build.text, commandId: randomUUID() },
+              },
+              context,
+              build.modeId,
+            )
+            return result.type === 'error' ? result : done()
+          })
+          return entry.result
         }
         return done()
       }
