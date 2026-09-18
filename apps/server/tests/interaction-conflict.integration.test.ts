@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FakeClaudeSdk } from '@agentpack/runtime/testing'
 import type { SubscriptionScope } from '@openmanager/protocol/node'
 import {
@@ -13,7 +13,10 @@ import {
 } from './helpers/protocol-client.js'
 import { expectCommand, gatedFirstPrompt } from './helpers/proof-slice.js'
 
-afterEach(cleanupProtocolHosts)
+afterEach(async () => {
+  vi.restoreAllMocks()
+  await cleanupProtocolHosts()
+})
 
 const rivals = {
   permission: [
@@ -44,6 +47,10 @@ describe.each(['permission', 'question', 'plan'] as const)('%s answered by two c
       resolveWorkspace: () => ({ providerId: 'cursor', cwd: workspaceRoot }),
     })
     workspaceRoot = host.workspaceRoot
+    // Every answer the host hands to the provider goes through one of these.
+    const forwards = (['respondPermission', 'respondQuestion', 'respondPlan'] as const).map(
+      (method) => vi.spyOn(host.server.runtime, method),
+    )
     const clients = [await connectProtocol(host), await connectProtocol(host)] as const
     for (const client of clients) await handshake(client)
     const created = await expectCommand(
@@ -141,8 +148,12 @@ describe.each(['permission', 'question', 'plan'] as const)('%s answered by two c
       error: { code: 'conflict' },
     })
 
-    // The provider heard exactly one answer, and it was the winner's.
+    // The provider heard exactly one answer, and it was the winner's. Its
+    // request settles once whatever happens, so the forwards are counted too.
     expect(await providerResponse).toMatchObject({ outcome: rivals[kind][winner] })
+    expect(forwards.flatMap((forward) => forward.mock.calls)).toEqual([
+      [expect.objectContaining({ outcome: rivals[kind][winner] })],
+    ])
 
     // Run the turn out so any second settlement would have been delivered.
     stub.release()
