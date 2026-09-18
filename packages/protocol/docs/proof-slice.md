@@ -113,6 +113,25 @@ tokens within that interaction and are not global provider resource identities.
 Plan continuation explicitly distinguishes `same_turn` from `follow_up_turn`;
 acceptance must not trigger a second execution when the original turn continues.
 
+An environment advertising `plan.build` accepts an optional
+`build: { text, modeId? }` on `interaction.respond`, alongside an accepted plan
+response. This is the server equivalent of the desktop `build_plan` job. Plain
+accept/reject only forwards the verdict. Build with `same_turn` also only forwards
+acceptance: the provider continues implementation itself. Build with
+`follow_up_turn` reserves the thread, waits for the proposing prompt to drain,
+and starts one recorded turn with `text` and the requested mode. The response
+acknowledges that new turn starting, not its completion. A failed, interrupted,
+or deleted proposing turn never starts a build. Retrying the winning command
+reuses its successful result; a failed follow-up start can be retried after its
+cause recovers, without forwarding acceptance again. Changing build intent is a conflict. A restart does not
+resume queued work, and a stale build request receives a resolved conflict.
+
+`session.history` optionally includes `plans`, separate from its pending
+`interactions`: each entry contains `threadId`, `turnId`, the complete plan,
+lifecycle state, and its outcome when resolved. All plans of the requested thread
+are returned, independent of the message page. SQLite retains these records
+across restarts; clients must not treat historical entries as pending dialogs.
+
 ## Subscriptions and event ownership
 
 Scopes are exact, non-recursive streams:

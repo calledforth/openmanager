@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { DatabaseSync } from 'node:sqlite'
 import type { AgentRuntime } from '@agentpack/runtime/node'
 import {
   ProofResponseSchemas,
@@ -7,6 +8,9 @@ import {
   type InteractionResponse,
 } from '@openmanager/protocol/node'
 import { createThreadService, type WorkspaceRuntimeResolver } from '../src/thread-service.js'
+import { createPersistentEventService } from '../src/event-service.js'
+import { runMigrations } from '../src/db/migrate.js'
+import { MIGRATIONS } from '../src/db/migrations.js'
 
 const registered: WorkspaceRuntimeResolver = (workspaceId) =>
   workspaceId === '/workspace/project'
@@ -20,12 +24,19 @@ type RuntimeEvent = Parameters<ReturnType<typeof createThreadService>['onRuntime
  * first answer to a provider request emits its resolved event synchronously,
  * and a second one throws.
  */
-function harness() {
+function harness(database?: DatabaseSync) {
   const events: EventEnvelope[] = []
+  const persistent =
+    database &&
+    createPersistentEventService(database, (record) => events.push(record.event), {
+      sessionProviderId: () => 'opencode',
+    })
   const settled = new Set<string>()
   let emit: (event: RuntimeEvent) => void = () => undefined
   let seq = 0
   let target = { sessionId: '', threadId: '' }
+  let finishPrompt: () => void = () => undefined
+  let failPrompt: () => void = () => undefined
   const runtimeEvent = (event: string, category: string, data: unknown) =>
     ({
       id: `event-${++seq}`,
@@ -50,10 +61,20 @@ function harness() {
     }
   const runtime = {
     ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-session', state: 'created' }),
-    prompt: vi.fn(() => new Promise(() => undefined)),
+    prompt: vi.fn(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          finishPrompt = resolve
+          failPrompt = () => reject(new Error('provider failed'))
+        }),
+    ),
     cancel: vi.fn().mockResolvedValue(undefined),
     respondPermission: vi.fn(
-      settle('permission_resolved', 'permission', 'Permission request not found or already resolved'),
+      settle(
+        'permission_resolved',
+        'permission',
+        'Permission request not found or already resolved',
+      ),
     ),
     respondQuestion: vi.fn(
       settle('question_resolved', 'session', 'Question not found or already resolved'),
@@ -65,9 +86,13 @@ function harness() {
   const service = createThreadService(
     runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
     { rejection: () => undefined },
-    (event) => events.push(event),
+    (event) => {
+      if (persistent) persistent.append(event)
+      else events.push(event)
+    },
     undefined,
     registered,
+    persistent ? { database, flush: persistent.flush, appendAtomic: persistent.appendAtomic } : {},
   )
   emit = (event) => service.onRuntimeEvent(event)
   service.setEnvironmentId('environment-1')
@@ -105,7 +130,11 @@ function harness() {
     const requested = events.filter((item) => item.name === 'interaction.requested').at(-1)
     return (requested!.payload as { interaction: Interaction }).interaction
   }
-  const respond = (response: object, commandId?: string) =>
+  const respond = (
+    response: object,
+    commandId?: string,
+    build?: { text: string; modeId?: string },
+  ) =>
     service.dispatch({
       type: 'command',
       requestId: `respond-${++seq}`,
@@ -114,10 +143,23 @@ function harness() {
         ...target,
         response: response as InteractionResponse,
         ...(commandId ? { commandId } : {}),
+        ...(build ? { build } : {}),
       },
     })
   const resolved = () => events.filter((item) => item.name === 'interaction.resolved')
-  return { service, runtime, events, target, emit, runtimeEvent, request, respond, resolved }
+  return {
+    service,
+    runtime,
+    events,
+    target,
+    emit,
+    runtimeEvent,
+    request,
+    respond,
+    resolved,
+    finishPrompt: () => finishPrompt(),
+    failPrompt: () => failPrompt(),
+  }
 }
 
 const permissionRequest = {
@@ -180,7 +222,10 @@ describe('interaction.respond', () => {
     const question = h.request('question_request', 'session', questionRequest)
     const plan = h.request('plan_review_request', 'session', planRequest)
     const denied = { outcome: 'selected', optionId: 'deny' }
-    const answered = { outcome: 'answered', answers: [{ questionId: 'q1', selectedOptionIds: ['b'] }] }
+    const answered = {
+      outcome: 'answered',
+      answers: [{ questionId: 'q1', selectedOptionIds: ['b'] }],
+    }
     const rejected = { outcome: 'rejected', reason: 'needs tests' }
 
     expect(
@@ -359,5 +404,199 @@ describe('interaction.respond', () => {
       }),
     ).toMatchObject({ type: 'error', error: { code: 'not_found' } })
     expect(h.runtime.respondPermission).not.toHaveBeenCalled()
+  })
+})
+
+describe('plan continuation and history', () => {
+  const build = { text: 'Implement the approved plan', modeId: 'agent' }
+  const accept = (plan: Interaction) => ({
+    kind: 'plan',
+    interactionId: plan.interactionId,
+    outcome: { outcome: 'accepted' },
+  })
+  const history = (h: ReturnType<typeof harness>) =>
+    ProofResponseSchemas['session.history'].parse(
+      h.service.dispatch({
+        type: 'command',
+        requestId: 'history',
+        name: 'session.history',
+        payload: h.target,
+      }),
+    ).payload
+
+  it('waits for Cursor-style prompt drainage and builds once, even across retries and competing sends', async () => {
+    const h = harness()
+    await vi.waitFor(() => expect(h.runtime.prompt).toHaveBeenCalledTimes(1))
+    const plan = h.request('plan_review_request', 'session', {
+      ...planRequest,
+      continuation: 'follow_up_turn',
+    })
+    const first = h.respond(accept(plan), 'build-1', build)
+    const retry = h.respond(accept(plan), 'build-1', build)
+    expect(h.respond(accept(plan), 'build-2', build)).toMatchObject({
+      type: 'error',
+      error: { code: 'conflict' },
+    })
+    expect(h.respond(accept(plan), 'build-1')).toMatchObject({
+      type: 'error',
+      error: { code: 'conflict' },
+    })
+    h.emit(h.runtimeEvent('prompt_completed', 'lifecycle', { stopReason: 'end_turn' }))
+    expect(
+      h.service.dispatch({
+        type: 'command',
+        requestId: 'race',
+        name: 'turn.send',
+        payload: { ...h.target, text: 'unrelated prompt' },
+      }),
+    ).toMatchObject({ type: 'error', error: { code: 'conflict' } })
+    expect(h.runtime.prompt).toHaveBeenCalledTimes(1)
+    h.finishPrompt()
+    expect(await first).toMatchObject(ok)
+    expect(await retry).toMatchObject(ok)
+    expect(((await retry) as { requestId: string }).requestId).not.toBe(
+      ((await first) as { requestId: string }).requestId,
+    )
+    await vi.waitFor(() => expect(h.runtime.prompt).toHaveBeenCalledTimes(2))
+    expect(h.runtime.respondPlan).toHaveBeenCalledTimes(1)
+    expect(h.runtime.prompt).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        desiredConfig: { modeId: 'agent' },
+        prompt: { text: build.text, blocks: [{ type: 'text', text: build.text }] },
+      }),
+    )
+    expect(history(h).turns).toHaveLength(2)
+    expect(history(h).plans).toEqual([
+      expect.objectContaining({ plan, state: 'resolved', outcome: { outcome: 'accepted' } }),
+    ])
+    expect(history(h).interactions).toEqual([])
+  })
+
+  it('retries a failed durable turn start without repeating acceptance or building twice', async () => {
+    const database = new DatabaseSync(':memory:', { enableForeignKeyConstraints: true })
+    runMigrations(database, MIGRATIONS)
+    database.exec(
+      "INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at) VALUES ('/workspace/project', 'Project', '/workspace/project', 1, 1)",
+    )
+    try {
+      const h = harness(database)
+      await vi.waitFor(() => expect(h.runtime.prompt).toHaveBeenCalledTimes(1))
+      const plan = h.request('plan_review_request', 'session', {
+        ...planRequest,
+        continuation: 'follow_up_turn',
+      })
+      database.exec(`CREATE TRIGGER reject_build BEFORE INSERT ON turns
+        BEGIN SELECT RAISE(ABORT, 'temporary persistence failure'); END`)
+      const first = h.respond(accept(plan), 'build-1', build)
+      h.finishPrompt()
+      expect(await first).toMatchObject({ type: 'error', error: { code: 'unavailable' } })
+      expect(h.runtime.prompt).toHaveBeenCalledTimes(1)
+      expect(history(h).turns).toHaveLength(1)
+      expect(history(h).plans?.[0]?.outcome).toEqual({ outcome: 'accepted' })
+      expect(h.respond(accept(plan), 'rival', build)).toMatchObject({
+        type: 'error',
+        error: { code: 'conflict' },
+      })
+      database.exec('DROP TRIGGER reject_build')
+      const retry = h.respond(accept(plan), 'build-1', build)
+      const concurrentRetry = h.respond(accept(plan), 'build-1', build)
+      expect(await retry).toMatchObject(ok)
+      expect(await concurrentRetry).toMatchObject(ok)
+      await vi.waitFor(() => expect(h.runtime.prompt).toHaveBeenCalledTimes(2))
+      expect(h.runtime.respondPlan).toHaveBeenCalledTimes(1)
+      expect(history(h).turns).toHaveLength(2)
+      expect(await h.respond(accept(plan), 'build-1', build)).toMatchObject(ok)
+      expect(h.runtime.prompt).toHaveBeenCalledTimes(2)
+      h.finishPrompt()
+      await vi.waitFor(() =>
+        expect(history(h).turns.every((turn) => turn.state === 'completed')).toBe(true),
+      )
+    } finally {
+      database.close()
+    }
+  })
+
+  it('Claude-style build releases the same turn without changing mode or sending again', async () => {
+    const h = harness()
+    await vi.waitFor(() => expect(h.runtime.prompt).toHaveBeenCalledTimes(1))
+    const plan = h.request('plan_review_request', 'session', planRequest)
+    expect(h.respond(accept(plan), 'build-1', build)).toMatchObject(ok)
+    h.finishPrompt()
+    await vi.waitFor(() => expect(history(h).turns[0]?.state).toBe('completed'))
+    expect(h.runtime.prompt).toHaveBeenCalledTimes(1)
+    expect(h.runtime.prompt).not.toHaveBeenCalledWith(
+      expect.objectContaining({ desiredConfig: expect.anything() }),
+    )
+  })
+
+  it.each(['same_turn', 'follow_up_turn'])(
+    'ordinary accept/reject only forwards the verdict for %s',
+    async (continuation) => {
+      for (const outcome of [
+        { outcome: 'accepted' },
+        { outcome: 'rejected', reason: 'add tests' },
+      ]) {
+        const h = harness()
+        await vi.waitFor(() => expect(h.runtime.prompt).toHaveBeenCalledTimes(1))
+        const plan = h.request('plan_review_request', 'session', { ...planRequest, continuation })
+        expect(history(h).plans?.[0]?.state).toBe('pending')
+        expect(h.respond({ ...accept(plan), outcome })).toMatchObject(ok)
+        h.finishPrompt()
+        await vi.waitFor(() => expect(history(h).turns[0]?.state).toBe('completed'))
+        expect(h.runtime.prompt).toHaveBeenCalledTimes(1)
+        expect(history(h).plans?.[0]?.outcome).toEqual(outcome)
+      }
+    },
+  )
+
+  it.each(['failure', 'late failure', 'interrupt', 'delete'])(
+    'does not build after proposing turn %s',
+    async (ending) => {
+      const h = harness()
+      await vi.waitFor(() => expect(h.runtime.prompt).toHaveBeenCalledTimes(1))
+      const plan = h.request('plan_review_request', 'session', {
+        ...planRequest,
+        continuation: 'follow_up_turn',
+      })
+      const result = h.respond(accept(plan), 'build-1', build)
+      if (ending === 'late failure') {
+        h.emit(h.runtimeEvent('prompt_completed', 'lifecycle', { stopReason: 'end_turn' }))
+        h.failPrompt()
+      } else if (ending === 'failure') h.failPrompt()
+      else {
+        h.service.dispatch({
+          type: 'command',
+          requestId: 'stop',
+          name: ending === 'delete' ? 'session.delete' : 'turn.interrupt',
+          payload: { ...h.target, turnId: history(h).turns[0]!.turnId },
+        })
+        h.finishPrompt()
+      }
+      expect(await result).toMatchObject({ type: 'error', error: { code: 'conflict' } })
+      expect(h.runtime.prompt).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it('refuses build on rejection or a non-plan interaction before forwarding', () => {
+    const h = harness()
+    const permission = h.request('permission_request', 'permission', permissionRequest)
+    expect(
+      h.respond(
+        {
+          kind: 'permission',
+          interactionId: permission.interactionId,
+          outcome: { outcome: 'selected', optionId: 'allow' },
+        },
+        'bad-permission-build',
+        build,
+      ),
+    ).toMatchObject({ type: 'error', error: { code: 'validation' } })
+    expect(h.runtime.respondPermission).not.toHaveBeenCalled()
+    const plan = h.request('plan_review_request', 'session', planRequest)
+    expect(
+      h.respond({ ...accept(plan), outcome: { outcome: 'rejected' } }, 'bad-build', build),
+    ).toMatchObject({ type: 'error', error: { code: 'validation' } })
+    expect(h.runtime.respondPlan).not.toHaveBeenCalled()
+    expect(h.respond(accept(plan), 'good-build', build)).toMatchObject(ok)
   })
 })

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import {
+  PLAN_BUILD_CAPABILITY,
   BootstrapResponseSchema,
   COMPOSER_CONFIG_OPTION_SET_CAPABILITY,
   COMPOSER_MODEL_SET_CAPABILITY,
@@ -70,6 +71,7 @@ export const SERVER_CAPABILITIES = [
   'turn.send',
   'turn.interrupt',
   'interaction.respond',
+  PLAN_BUILD_CAPABILITY,
   'workspace.list',
   'workspace.add',
   'workspace.remove',

@@ -196,7 +196,11 @@ describe('session history pages', () => {
     )
     for (const ordinal of [0, 1, 2]) {
       insertMessage.run(`message-${ordinal}`, ordinal, ordinal + 1, ordinal + 1)
-      insertPart.run(`part-${ordinal}`, `message-${ordinal}`, JSON.stringify({ type: 'text', text: `m${ordinal}` }))
+      insertPart.run(
+        `part-${ordinal}`,
+        `message-${ordinal}`,
+        JSON.stringify({ type: 'text', text: `m${ordinal}` }),
+      )
     }
     const insertInteraction = database.prepare(
       `INSERT INTO interactions (
@@ -232,10 +236,7 @@ describe('session history pages', () => {
       threadId: 'thread-1',
       limit: 2,
     })
-    expect(newest?.messages.map((message) => message.messageId)).toEqual([
-      'message-1',
-      'message-2',
-    ])
+    expect(newest?.messages.map((message) => message.messageId)).toEqual(['message-1', 'message-2'])
     expect(newest?.nextCursor).toEqual({ ordinal: 1 })
     expect(newest?.interactions).toEqual([
       {
@@ -253,5 +254,68 @@ describe('session history pages', () => {
     })
     expect(older?.messages.map((message) => message.messageId)).toEqual(['message-0'])
     expect(older?.nextCursor).toBeNull()
+  })
+})
+
+describe('durable plan history', () => {
+  it('keeps pending, accepted, rejected and cancelled plans across reopening the database', async () => {
+    const database = await createDatabase()
+    seedWorkspace(database)
+    seedSession(database, { sessionId: 'session-plans', title: 'Plans', updatedAt: 1 })
+    database.exec(`
+      INSERT INTO threads (thread_id, session_id, workspace_id, created_at, updated_at)
+      VALUES ('thread-plans', 'session-plans', 'workspace-1', 1, 1);
+      INSERT INTO turns (turn_id, thread_id, workspace_id, state, started_at, updated_at)
+      VALUES ('turn-plans', 'thread-plans', 'workspace-1', 'waiting', 1, 1);
+    `)
+    const insert = database.prepare(`INSERT INTO interactions
+      (interaction_id, turn_id, kind, state, request_json, response_json, created_at, updated_at)
+      VALUES (?, 'turn-plans', 'plan', ?, ?, ?, ?, 1)`)
+    const outcomes = [
+      undefined,
+      { outcome: 'accepted' },
+      { outcome: 'rejected', reason: 'needs tests' },
+      undefined,
+    ]
+    for (const [i, state] of ['pending', 'resolved', 'resolved', 'cancelled'].entries()) {
+      const interactionId = `plan-${i}`
+      insert.run(
+        interactionId,
+        state,
+        JSON.stringify({
+          kind: 'plan',
+          interactionId,
+          markdown: `# Plan ${i}`,
+          todos: [],
+          continuation: i % 2 ? 'same_turn' : 'follow_up_turn',
+        }),
+        outcomes[i] ? JSON.stringify({ kind: 'plan', interactionId, outcome: outcomes[i] }) : null,
+        i,
+      )
+    }
+    const query = { sessionId: 'session-plans', threadId: 'thread-plans' }
+    const page = listSessionHistory(database, query)!
+    expect(page.interactions).toHaveLength(1)
+    expect(page.plans.map((entry) => entry.state)).toEqual([
+      'pending',
+      'resolved',
+      'resolved',
+      'cancelled',
+    ])
+    expect(page.plans.map((entry) => entry.outcome)).toEqual(outcomes)
+    expect(listSessionHistory(database, { ...query, sessionId: 'foreign' })).toBeUndefined()
+    database.close()
+    databases.splice(databases.indexOf(database), 1)
+    const reopened = openEnvironmentDatabase(directories.at(-1)!)
+    databases.push(reopened)
+    const recovered = listSessionHistory(reopened, query)!
+    expect(recovered.interactions).toEqual([])
+    expect(recovered.plans.map((entry) => entry.state)).toEqual([
+      'cancelled',
+      'resolved',
+      'resolved',
+      'cancelled',
+    ])
+    expect(recovered.plans.slice(1)).toEqual(page.plans.slice(1))
   })
 })

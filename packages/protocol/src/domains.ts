@@ -269,6 +269,16 @@ export const InteractionSchema = z.discriminatedUnion('kind', [
   }),
 ])
 
+/** Separate from pending interactions so historical plans never reopen review UI. */
+export const PlanHistoryEntrySchema = z.object({
+  threadId: EntityIdSchema,
+  turnId: EntityIdSchema,
+  plan: InteractionSchema.options[2],
+  state: z.enum(['pending', 'resolved', 'expired', 'cancelled']),
+  outcome: PlanReviewOutcomeSchema.optional(),
+})
+export type PlanHistoryEntry = z.infer<typeof PlanHistoryEntrySchema>
+
 export type EntityId = z.infer<typeof EntityIdSchema>
 export type SubscriptionScope = z.infer<typeof SubscriptionScopeSchema>
 export type Environment = z.infer<typeof EnvironmentSchema>
