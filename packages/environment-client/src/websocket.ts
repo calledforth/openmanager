@@ -25,10 +25,12 @@ import { EnvironmentClientError, isEnvironmentClientError } from './errors'
 import {
   applyActiveSession,
   applyActiveThread,
+  applyComposerPreference,
   applyConnection,
   applyEnvironment,
   applyEvent,
   applyInteractionResolved,
+  applyProviderCatalog,
   applySessionCreated,
   applySessionHistory,
   applySessionList,
@@ -46,10 +48,12 @@ import {
 } from './state'
 import { createEnvironmentStore } from './store'
 import type {
+  ComposerPreferenceTarget,
   ConnectionFailure,
   EnvironmentClient,
   EnvironmentCommandName,
   EnvironmentCommands,
+  WorkspaceComposerPreference,
 } from './types'
 import {
   WIRE_COMMANDS,
@@ -782,6 +786,8 @@ export function createWebSocketEnvironmentClient(
     if (supports('getEnvironment')) reads.push(commands.getEnvironment().catch(() => undefined))
     if (supports('listWorkspaces')) reads.push(commands.listWorkspaces().catch(() => undefined))
     if (supports('listSessions')) reads.push(commands.listSessions().catch(() => undefined))
+    if (supports('getProviderCatalog'))
+      reads.push(commands.getProviderCatalog().catch(() => undefined))
     await Promise.all(reads)
     if (generation !== connectionGeneration || !ready) return
     const activeSessionId = store.getState().activeSessionId
@@ -795,6 +801,32 @@ export function createWebSocketEnvironmentClient(
     } else if (activeSessionId && !capabilities.has(REPLAY_NAME)) {
       for (const scope of sessionScopes(activeSessionId)) subscribe(scope)
     }
+  }
+
+  /**
+   * Composer answers carry the whole preference, and the session setters run
+   * asynchronously on the environment, so two writes to one workspace and
+   * provider can be answered out of order. Each request takes a ticket when it
+   * is issued and only the newest answered ticket is kept.
+   */
+  let preferenceTickets = 0
+  const appliedPreferenceTickets = new Map<string, number>()
+  const preferenceWriter = (target: ComposerPreferenceTarget | null) => {
+    const ticket = ++preferenceTickets
+    return (preference: WorkspaceComposerPreference) => {
+      if (!target) return
+      const key = JSON.stringify([target.workspaceId, target.providerId])
+      if ((appliedPreferenceTickets.get(key) ?? 0) > ticket) return
+      appliedPreferenceTickets.set(key, ticket)
+      store.update((state) => applyComposerPreference(state, target, preference))
+    }
+  }
+  /** The pair a session setter's preference belongs to; null while either half is unknown. */
+  const sessionPreferenceTarget = (sessionId: string): ComposerPreferenceTarget | null => {
+    const session = store.getState().sessions[sessionId]
+    return session?.providerId
+      ? { workspaceId: session.workspaceId, providerId: session.providerId }
+      : null
   }
 
   let openGeneration = 0
@@ -1012,6 +1044,58 @@ export function createWebSocketEnvironmentClient(
         throw error
       }
       settle()
+    },
+    async getProviderCatalog() {
+      const payload = await request('provider.catalog.get', null)
+      store.update((state) => applyProviderCatalog(state, payload.providers))
+      return payload.providers
+    },
+    async getComposerPreference(input) {
+      const write = preferenceWriter(input)
+      const payload = await request('composer.preferences.get', {
+        workspaceId: input.workspaceId,
+        providerId: input.providerId,
+      })
+      write(payload.preference)
+      return payload.preference
+    },
+    async setComposerPreference(input) {
+      const write = preferenceWriter(input)
+      const payload = await request('composer.preferences.set', {
+        workspaceId: input.workspaceId,
+        providerId: input.providerId,
+        preference: input.preference,
+      })
+      write(payload.preference)
+      return payload.preference
+    },
+    async setSessionModel(input) {
+      const write = preferenceWriter(sessionPreferenceTarget(input.sessionId))
+      const payload = await request('composer.model.set', {
+        sessionId: input.sessionId,
+        modelId: input.modelId,
+      })
+      write(payload.preference)
+      return payload.preference
+    },
+    async setSessionMode(input) {
+      const write = preferenceWriter(sessionPreferenceTarget(input.sessionId))
+      const payload = await request('composer.mode.set', {
+        sessionId: input.sessionId,
+        modeId: input.modeId,
+      })
+      write(payload.preference)
+      return payload.preference
+    },
+    async setSessionConfigOption(input) {
+      const write = preferenceWriter(sessionPreferenceTarget(input.sessionId))
+      const payload = await request('composer.config_option.set', {
+        sessionId: input.sessionId,
+        configId: input.configId,
+        value: input.value,
+      })
+      write(payload.preference)
+      return payload.preference
     },
   }
 

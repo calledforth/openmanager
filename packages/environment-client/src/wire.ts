@@ -1,4 +1,4 @@
-import { ProofResponseSchemas, SessionSchema } from '@openmanager/protocol'
+import { ComposerResponseSchemas, ProofResponseSchemas, SessionSchema } from '@openmanager/protocol'
 import { z } from 'zod'
 import type { EnvironmentCommandName } from './types'
 
@@ -23,6 +23,12 @@ export const WIRE_COMMANDS = {
   sendTurn: 'turn.send',
   interruptTurn: 'turn.interrupt',
   respondToInteraction: 'interaction.respond',
+  getProviderCatalog: 'provider.catalog.get',
+  getComposerPreference: 'composer.preferences.get',
+  setComposerPreference: 'composer.preferences.set',
+  setSessionModel: 'composer.model.set',
+  setSessionMode: 'composer.mode.set',
+  setSessionConfigOption: 'composer.config_option.set',
 } as const satisfies Record<EnvironmentCommandName, string>
 
 export type WireCommandName = (typeof WIRE_COMMANDS)[EnvironmentCommandName]
@@ -45,6 +51,18 @@ export const WIRE_RESPONSES = {
   'turn.send': payload(ProofResponseSchemas['turn.send'].shape.payload),
   'turn.interrupt': payload(ProofResponseSchemas['turn.interrupt'].shape.payload),
   'interaction.respond': payload(ProofResponseSchemas['interaction.respond'].shape.payload),
+  'provider.catalog.get': payload(ComposerResponseSchemas['provider.catalog.get'].shape.payload),
+  'composer.preferences.get': payload(
+    ComposerResponseSchemas['composer.preferences.get'].shape.payload,
+  ),
+  'composer.preferences.set': payload(
+    ComposerResponseSchemas['composer.preferences.set'].shape.payload,
+  ),
+  'composer.model.set': payload(ComposerResponseSchemas['composer.model.set'].shape.payload),
+  'composer.mode.set': payload(ComposerResponseSchemas['composer.mode.set'].shape.payload),
+  'composer.config_option.set': payload(
+    ComposerResponseSchemas['composer.config_option.set'].shape.payload,
+  ),
 } as const satisfies Record<WireCommandName, z.ZodType>
 
 export type WireResponsePayload<N extends WireCommandName> = z.infer<

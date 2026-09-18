@@ -6,9 +6,17 @@ import {
   reconnectDelayMs,
   type WebSocketLike,
 } from '../src/websocket'
-import { selectActiveThread, selectSessionList } from '../src/state'
 import {
+  selectActiveThread,
+  selectComposerPreference,
+  selectProviderCatalog,
+  selectSessionList,
+} from '../src/state'
+import type { EnvironmentClient } from '../src/types'
+import {
+  BARE_PROVIDER,
   ENV,
+  PROVIDER,
   SESSION,
   SESSION_SUMMARY,
   THREAD,
@@ -1413,4 +1421,170 @@ it('folds the first turn from creation without a second turn.send round trip', a
   expect(client.getState().threads[THREAD.threadId]?.messages).toEqual([firstTurn.userMessage])
   expect(client.getState().sessions[SESSION.sessionId]?.status).toBe('idle')
   expect(socket.sent.some((message) => message.name === 'turn.send')).toBe(false)
+})
+
+describe('composer commands', () => {
+  const COMPOSER_CAPABILITIES = [
+    'provider.catalog.get',
+    'composer.preferences.get',
+    'composer.preferences.set',
+    'composer.model.set',
+    'composer.mode.set',
+    'composer.config_option.set',
+  ]
+  const TARGET = { workspaceId: WORKSPACE.workspaceId, providerId: PROVIDER.id }
+  const preferenceOf = (client: EnvironmentClient) =>
+    selectComposerPreference(client.getState(), TARGET.workspaceId, TARGET.providerId)
+
+  /** Connected, with the session and its provider already listed. */
+  async function composing() {
+    const context = await connected([...FULL_CAPABILITIES, ...COMPOSER_CAPABILITIES])
+    context.socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
+    await flush()
+    return context
+  }
+
+  it('rejects every composer command on an older environment without sending it', async () => {
+    const { client, socket } = await connected()
+    const sessionId = SESSION.sessionId
+    const attempts = [
+      client.commands.getProviderCatalog(),
+      client.commands.getComposerPreference(TARGET),
+      client.commands.setComposerPreference({ ...TARGET, preference: { modelId: 'opus' } }),
+      client.commands.setSessionModel({ sessionId, modelId: 'opus' }),
+      client.commands.setSessionMode({ sessionId, modeId: 'plan' }),
+      client.commands.setSessionConfigOption({ sessionId, configId: 'effort', value: 'high' }),
+    ]
+    for (const attempt of attempts) {
+      await expect(attempt).rejects.toMatchObject({ code: 'capability_missing' })
+    }
+    expect(socket.sent.some((message) => COMPOSER_CAPABILITIES.includes(message.name))).toBe(false)
+    expect(client.supports('getProviderCatalog')).toBe(false)
+    client.disconnect()
+  })
+
+  it('gates each composer command on its own capability', async () => {
+    const { client, socket } = await connected([...FULL_CAPABILITIES, 'composer.preferences.get'])
+    expect(client.supports('getComposerPreference')).toBe(true)
+    expect(client.supports('setComposerPreference')).toBe(false)
+    await expect(
+      client.commands.setComposerPreference({ ...TARGET, preference: {} }),
+    ).rejects.toMatchObject({ code: 'capability_missing' })
+    expect(socket.sent.some((message) => message.name === 'composer.preferences.set')).toBe(false)
+    client.disconnect()
+  })
+
+  it('reads the provider catalog into state after the handshake and on demand', async () => {
+    const { client, socket } = await composing()
+    expect(socket.last('provider.catalog.get').payload).toBeNull()
+    socket.respond('provider.catalog.get', { providers: [PROVIDER] })
+    await flush()
+    expect(selectProviderCatalog(client.getState())).toEqual([PROVIDER])
+
+    const refreshed = client.commands.getProviderCatalog()
+    socket.respond('provider.catalog.get', { providers: [BARE_PROVIDER] })
+    expect(await refreshed).toEqual([BARE_PROVIDER])
+    expect(selectProviderCatalog(client.getState())).toEqual([BARE_PROVIDER])
+    client.disconnect()
+  })
+
+  it('reads and writes workspace preferences with strict payloads', async () => {
+    const { client, socket } = await composing()
+    const read = client.commands.getComposerPreference({ ...TARGET, stray: true } as never)
+    expect(socket.last('composer.preferences.get').payload).toEqual(TARGET)
+    socket.respond('composer.preferences.get', { preference: { modelId: 'sonnet' } })
+    expect(await read).toEqual({ modelId: 'sonnet' })
+    expect(preferenceOf(client)).toEqual({ modelId: 'sonnet' })
+
+    const written = client.commands.setComposerPreference({
+      ...TARGET,
+      preference: { modeId: 'plan' },
+    })
+    expect(socket.last('composer.preferences.set').payload).toEqual({
+      ...TARGET,
+      preference: { modeId: 'plan' },
+    })
+    socket.respond('composer.preferences.set', {
+      preference: { modelId: 'sonnet', modeId: 'plan' },
+    })
+    expect(await written).toEqual({ modelId: 'sonnet', modeId: 'plan' })
+    expect(preferenceOf(client)).toEqual({ modelId: 'sonnet', modeId: 'plan' })
+    client.disconnect()
+  })
+
+  it('files a session setter answer under the session workspace and provider', async () => {
+    const { client, socket } = await composing()
+    const sessionId = SESSION.sessionId
+
+    const model = client.commands.setSessionModel({ sessionId, modelId: 'opus' })
+    expect(socket.last('composer.model.set').payload).toEqual({ sessionId, modelId: 'opus' })
+    socket.respond('composer.model.set', { preference: { modelId: 'opus' } })
+    await model
+
+    const mode = client.commands.setSessionMode({ sessionId, modeId: 'plan' })
+    expect(socket.last('composer.mode.set').payload).toEqual({ sessionId, modeId: 'plan' })
+    socket.respond('composer.mode.set', { preference: { modelId: 'opus', modeId: 'plan' } })
+    await mode
+
+    const option = client.commands.setSessionConfigOption({
+      sessionId,
+      configId: 'fast',
+      value: true,
+    })
+    expect(socket.last('composer.config_option.set').payload).toEqual({
+      sessionId,
+      configId: 'fast',
+      value: true,
+    })
+    const preference = { modelId: 'opus', modeId: 'plan', configValues: { fast: true } }
+    socket.respond('composer.config_option.set', { preference })
+    expect(await option).toEqual(preference)
+    expect(preferenceOf(client)).toEqual(preference)
+    client.disconnect()
+  })
+
+  it('returns a setter answer without storing it when the session provider is unknown', async () => {
+    const { client, socket } = await connected([...FULL_CAPABILITIES, ...COMPOSER_CAPABILITIES])
+    const pending = client.commands.setSessionModel({ sessionId: 'unlisted', modelId: 'opus' })
+    socket.respond('composer.model.set', { preference: { modelId: 'opus' } })
+    expect(await pending).toEqual({ modelId: 'opus' })
+    expect(client.getState().composerPreferences).toEqual({})
+    client.disconnect()
+  })
+
+  it('keeps the newest write when answers arrive out of order', async () => {
+    const { client, socket } = await composing()
+    const sessionId = SESSION.sessionId
+    const first = client.commands.setSessionModel({ sessionId, modelId: 'sonnet' })
+    const firstId = socket.last('composer.model.set').requestId
+    const second = client.commands.setSessionModel({ sessionId, modelId: 'opus' })
+    socket.respond('composer.model.set', { preference: { modelId: 'opus' } })
+    await second
+    socket.receive({
+      type: 'response',
+      requestId: firstId,
+      payload: { preference: { modelId: 'sonnet' } },
+    })
+    expect(await first).toEqual({ modelId: 'sonnet' })
+    expect(preferenceOf(client)).toEqual({ modelId: 'opus' })
+    client.disconnect()
+  })
+
+  it('leaves state alone when the environment rejects or answers invalidly', async () => {
+    const { client, socket } = await composing()
+    const sessionId = SESSION.sessionId
+    const rejected = client.commands.setSessionMode({ sessionId, modeId: 'plan' })
+    socket.receive({
+      type: 'error',
+      requestId: socket.last('composer.mode.set').requestId,
+      error: { code: 'not_found', message: 'Session not found.' },
+    })
+    await expect(rejected).rejects.toMatchObject({ code: 'not_found' })
+
+    const invalid = client.commands.getComposerPreference(TARGET)
+    socket.respond('composer.preferences.get', { preference: { modelId: 7 } })
+    await expect(invalid).rejects.toMatchObject({ code: 'validation' })
+    expect(client.getState().composerPreferences).toEqual({})
+    client.disconnect()
+  })
 })

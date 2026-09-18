@@ -1,25 +1,32 @@
 import {
+  ComposerCommandSchemas,
   ProofEventSchemas,
   ProofCommandSchemas,
+  ProviderCatalogEntrySchema,
+  WorkspaceComposerPreferenceSchema,
   type Environment,
   type Interaction,
   type InteractionResponse,
   type Message,
   type ProofEvent,
+  type ProviderCatalogEntry,
   type Session,
   type Thread,
   type Turn,
   type TurnFailureReason,
   type TurnStart,
   type Workspace,
+  type WorkspaceComposerPreference,
 } from '@openmanager/protocol'
 import { EnvironmentClientError } from './errors'
 import {
   applyActiveSession,
   applyActiveThread,
+  applyComposerPreference,
   applyConnection,
   applyEnvironment,
   applyEvent,
+  applyProviderCatalog,
   applySessionCreated,
   applySessionHistory,
   applySessionOpen,
@@ -36,6 +43,7 @@ import {
 import { createEnvironmentStore } from './store'
 import { pageSessionSummaries, pageThreadMessages } from './pagination'
 import type {
+  ComposerPreferenceTarget,
   ConnectionState,
   EnvironmentClient,
   EnvironmentCommandName,
@@ -62,6 +70,13 @@ export interface MockSeed {
   workspaces?: Workspace[]
   /** Icon data URLs by workspace ID; workspaces without an entry answer null. */
   workspaceIcons?: Record<string, string>
+  /** What `getProviderCatalog` answers. Already in state when the mock advertises it. */
+  providers?: ProviderCatalogEntry[]
+  /**
+   * Preferences the environment remembers, by workspace ID then provider ID.
+   * Like the wire, they reach state only once a composer command answers.
+   */
+  composerPreferences?: Record<string, Record<string, WorkspaceComposerPreference>>
   sessions?: MockSeedSession[]
   activeSessionId?: string | null
 }
@@ -329,6 +344,61 @@ export function createMockEnvironmentClient(
   /** What each command id already started, keyed like the environment's own. */
   const startedCommands = new Map<string, TurnStart>()
   const commandKey = (target: ThreadTarget, commandId: string) => `${target.threadId}:${commandId}`
+
+  const catalog = (options.seed?.providers ?? []).map((entry) =>
+    ProviderCatalogEntrySchema.parse(entry),
+  )
+  /** The environment's side of the preferences; state only sees answered reads. */
+  const preferences = new Map<string, WorkspaceComposerPreference>()
+  const preferenceKey = (target: ComposerPreferenceTarget) =>
+    JSON.stringify([target.workspaceId, target.providerId])
+  for (const [workspaceId, byProvider] of Object.entries(options.seed?.composerPreferences ?? {})) {
+    for (const [providerId, preference] of Object.entries(byProvider)) {
+      preferences.set(
+        preferenceKey({ workspaceId, providerId }),
+        WorkspaceComposerPreferenceSchema.parse(preference),
+      )
+    }
+  }
+
+  const parseComposerPayload = <N extends keyof typeof ComposerCommandSchemas>(
+    name: N,
+    payload: unknown,
+  ) => {
+    const parsed = ComposerCommandSchemas[name].safeParse({
+      type: 'command',
+      requestId: 'mock-composer',
+      name,
+      payload,
+    })
+    if (!parsed.success) throw new EnvironmentClientError('validation', `Invalid ${name} request.`)
+  }
+
+  const requireProvider = (providerId: string) => {
+    if (!catalog.some((provider) => provider.id === providerId)) {
+      throw new EnvironmentClientError('not_found', 'Provider not found.')
+    }
+  }
+
+  /** Merges like the environment: a patch, where an absent field keeps its value. */
+  const writePreference = (
+    target: ComposerPreferenceTarget,
+    patch: WorkspaceComposerPreference,
+  ) => {
+    const defined = Object.fromEntries(
+      Object.entries(patch).filter(([, value]) => value !== undefined),
+    )
+    const next = { ...preferences.get(preferenceKey(target)), ...defined }
+    preferences.set(preferenceKey(target), next)
+    store.update((state) => applyComposerPreference(state, target, next))
+    return next
+  }
+
+  const sessionPreferenceTarget = (sessionId: string): ComposerPreferenceTarget => {
+    const session = store.getState().sessions[sessionId]
+    if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
+    return { workspaceId: session.workspaceId, providerId: session.providerId ?? 'opencode' }
+  }
 
   const startTurn = (input: SendTurnInput & { commandId: string }) => {
     const replayed = startedCommands.get(commandKey(input, input.commandId))
@@ -615,6 +685,46 @@ export function createMockEnvironmentClient(
           payload: { turnId: pending.turnId, response: input.response as InteractionResponse },
         })
       }),
+    getProviderCatalog: () =>
+      run('getProviderCatalog', null, () => {
+        store.update((state) => applyProviderCatalog(state, catalog))
+        return catalog
+      }),
+    getComposerPreference: (input) =>
+      run('getComposerPreference', input, () => {
+        parseComposerPayload('composer.preferences.get', input)
+        requireProvider(input.providerId)
+        return writePreference(input, {})
+      }),
+    setComposerPreference: (input) =>
+      run('setComposerPreference', input, () => {
+        parseComposerPayload('composer.preferences.set', input)
+        requireProvider(input.providerId)
+        return writePreference(input, input.preference)
+      }),
+    setSessionModel: (input) =>
+      run('setSessionModel', input, () => {
+        parseComposerPayload('composer.model.set', input)
+        return writePreference(sessionPreferenceTarget(input.sessionId), {
+          modelId: input.modelId,
+        })
+      }),
+    setSessionMode: (input) =>
+      run('setSessionMode', input, () => {
+        parseComposerPayload('composer.mode.set', input)
+        return writePreference(sessionPreferenceTarget(input.sessionId), { modeId: input.modeId })
+      }),
+    setSessionConfigOption: (input) =>
+      run('setSessionConfigOption', input, () => {
+        parseComposerPayload('composer.config_option.set', input)
+        const target = sessionPreferenceTarget(input.sessionId)
+        return writePreference(target, {
+          configValues: {
+            ...preferences.get(preferenceKey(target))?.configValues,
+            [input.configId]: input.value,
+          },
+        })
+      }),
   }
 
   return {
@@ -756,6 +866,12 @@ function seedState(
     capabilities: [...capabilities].map((command) => WIRE_COMMANDS[command]),
   })
   state = applyWorkspaceList(state, seed?.workspaces ?? [])
+  if (capabilities.has('getProviderCatalog')) {
+    state = applyProviderCatalog(
+      state,
+      (seed?.providers ?? []).map((entry) => ProviderCatalogEntrySchema.parse(entry)),
+    )
+  }
   for (const [index, entry] of (seed?.sessions ?? []).entries()) {
     const threads = entry.threads ?? [
       { threadId: `${entry.session.sessionId}-thread`, sessionId: entry.session.sessionId },

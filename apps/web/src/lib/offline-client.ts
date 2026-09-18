@@ -23,6 +23,12 @@ const commands: EnvironmentCommands = {
   sendTurn: reject('sendTurn'),
   interruptTurn: reject('interruptTurn'),
   respondToInteraction: reject('respondToInteraction'),
+  getProviderCatalog: reject('getProviderCatalog'),
+  getComposerPreference: reject('getComposerPreference'),
+  setComposerPreference: reject('setComposerPreference'),
+  setSessionModel: reject('setSessionModel'),
+  setSessionMode: reject('setSessionMode'),
+  setSessionConfigOption: reject('setSessionConfigOption'),
 }
 
 /**
