@@ -3,6 +3,7 @@ import type {
   Message,
   ProofEvent,
   ProofResponse,
+  ProviderCatalogEntry,
   ScopeSnapshot,
   Session,
   SessionSummary as ProtocolSessionSummary,
@@ -10,6 +11,7 @@ import type {
   Turn,
   TurnStart,
   Workspace,
+  WorkspaceComposerPreference,
 } from '@openmanager/protocol'
 import type {
   ConnectionState,
@@ -38,6 +40,9 @@ export function createInitialState(): EnvironmentState {
     sessions: {},
     sessionOrder: [],
     threads: {},
+    providers: {},
+    providerOrder: [],
+    composerPreferences: {},
     activeSessionId: null,
     activeThreadId: null,
     connection: INITIAL_CONNECTION,
@@ -667,15 +672,60 @@ export function applyWorkspaceRemoved(
   if (!state.workspaces[workspaceId]) return state
   const workspaces = { ...state.workspaces }
   delete workspaces[workspaceId]
+  const composerPreferences = { ...state.composerPreferences }
+  delete composerPreferences[workspaceId]
   let next: EnvironmentState = {
     ...state,
     workspaces,
     workspaceOrder: state.workspaceOrder.filter((id) => id !== workspaceId),
+    composerPreferences,
   }
   for (const session of Object.values(state.sessions)) {
     if (session.workspaceId === workspaceId) next = removeSession(next, session.sessionId)
   }
   return next
+}
+
+const sameJson = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)
+
+/**
+ * The catalog is a whole read, not a patch: a provider the environment no
+ * longer lists is dropped. Unchanged entries keep their identity so a refresh
+ * does not re-render every picker.
+ */
+export function applyProviderCatalog(
+  state: EnvironmentState,
+  catalog: readonly ProviderCatalogEntry[],
+): EnvironmentState {
+  const providers: Record<string, ProviderCatalogEntry> = {}
+  for (const entry of catalog) {
+    const existing = state.providers[entry.id]
+    providers[entry.id] = existing && sameJson(existing, entry) ? existing : entry
+  }
+  const providerOrder = Object.keys(providers)
+  const unchanged =
+    shallowEqualArray(providerOrder, state.providerOrder) &&
+    providerOrder.every((id) => providers[id] === state.providers[id])
+  return unchanged ? state : { ...state, providers, providerOrder }
+}
+
+/** Replaces the remembered choice for one workspace and provider. */
+export function applyComposerPreference(
+  state: EnvironmentState,
+  target: { workspaceId: string; providerId: string },
+  preference: WorkspaceComposerPreference,
+): EnvironmentState {
+  const workspace = state.composerPreferences[target.workspaceId]
+  if (workspace?.[target.providerId] && sameJson(workspace[target.providerId], preference)) {
+    return state
+  }
+  return {
+    ...state,
+    composerPreferences: {
+      ...state.composerPreferences,
+      [target.workspaceId]: { ...workspace, [target.providerId]: preference },
+    },
+  }
 }
 
 export function applySessionRemoved(state: EnvironmentState, sessionId: string): EnvironmentState {
@@ -784,6 +834,21 @@ export function selectRecentWorkspaces(state: EnvironmentState, limit = 5): Work
     .filter((workspace) => workspace.exists && workspace.lastActivityAt !== null)
     .sort((a, b) => Date.parse(b.lastActivityAt!) - Date.parse(a.lastActivityAt!))
     .slice(0, Math.max(0, limit))
+}
+
+export function selectProviderCatalog(state: EnvironmentState): ProviderCatalogEntry[] {
+  return state.providerOrder
+    .map((id) => state.providers[id])
+    .filter((provider): provider is ProviderCatalogEntry => provider !== undefined)
+}
+
+/** Null until a composer command has answered for this workspace and provider. */
+export function selectComposerPreference(
+  state: EnvironmentState,
+  workspaceId: string,
+  providerId: string,
+): WorkspaceComposerPreference | null {
+  return state.composerPreferences[workspaceId]?.[providerId] ?? null
 }
 
 export function selectSessionList(state: EnvironmentState, workspaceId?: string): SessionSummary[] {

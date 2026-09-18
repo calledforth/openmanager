@@ -25,10 +25,12 @@ import { EnvironmentClientError, isEnvironmentClientError } from './errors'
 import {
   applyActiveSession,
   applyActiveThread,
+  applyComposerPreference,
   applyConnection,
   applyEnvironment,
   applyEvent,
   applyInteractionResolved,
+  applyProviderCatalog,
   applySessionCreated,
   applySessionHistory,
   applySessionList,
@@ -46,10 +48,12 @@ import {
 } from './state'
 import { createEnvironmentStore } from './store'
 import type {
+  ComposerPreferenceTarget,
   ConnectionFailure,
   EnvironmentClient,
   EnvironmentCommandName,
   EnvironmentCommands,
+  WorkspaceComposerPreference,
 } from './types'
 import {
   WIRE_COMMANDS,
@@ -782,6 +786,8 @@ export function createWebSocketEnvironmentClient(
     if (supports('getEnvironment')) reads.push(commands.getEnvironment().catch(() => undefined))
     if (supports('listWorkspaces')) reads.push(commands.listWorkspaces().catch(() => undefined))
     if (supports('listSessions')) reads.push(commands.listSessions().catch(() => undefined))
+    if (supports('getProviderCatalog'))
+      reads.push(commands.getProviderCatalog().catch(() => undefined))
     await Promise.all(reads)
     if (generation !== connectionGeneration || !ready) return
     const activeSessionId = store.getState().activeSessionId
@@ -795,6 +801,76 @@ export function createWebSocketEnvironmentClient(
     } else if (activeSessionId && !capabilities.has(REPLAY_NAME)) {
       for (const scope of sessionScopes(activeSessionId)) subscribe(scope)
     }
+  }
+
+  /**
+   * Composer answers carry the whole preference, and the session setters run
+   * asynchronously on the environment, so answers for one workspace and
+   * provider can arrive out of order. Every request takes a ticket when it is
+   * issued. A write is kept unless a later-issued write already landed. A read
+   * never outranks a write: it is dropped while a write for the same pair is
+   * unanswered (that answer is the newer truth) or once a later-issued write
+   * has landed.
+   *
+   * The pair is resolved when the answer arrives, not when the request leaves:
+   * a session may learn its provider in between, and a session or workspace
+   * removed in between must not get its preference back.
+   */
+  let preferenceTickets = 0
+  const appliedPreferenceWrites = new Map<string, number>()
+  const pendingPreferenceWrites = new Set<() => ComposerPreferenceTarget | null>()
+  const preferenceKey = (target: ComposerPreferenceTarget) =>
+    JSON.stringify([target.workspaceId, target.providerId])
+
+  const composerRequest = async <N extends Extract<WireCommandName, `composer.${string}`>>(
+    name: N,
+    payload: unknown,
+    kind: 'read' | 'write',
+    resolveTarget: () => ComposerPreferenceTarget | null,
+  ): Promise<WorkspaceComposerPreference> => {
+    const ticket = ++preferenceTickets
+    if (kind === 'write') pendingPreferenceWrites.add(resolveTarget)
+    let preference: WorkspaceComposerPreference
+    try {
+      preference = ((await request(name, payload)) as { preference: WorkspaceComposerPreference })
+        .preference
+    } finally {
+      pendingPreferenceWrites.delete(resolveTarget)
+    }
+    const target = resolveTarget()
+    if (!target) return preference
+    const key = preferenceKey(target)
+    if ((appliedPreferenceWrites.get(key) ?? 0) > ticket) return preference
+    if (kind === 'read') {
+      for (const pendingTarget of pendingPreferenceWrites) {
+        const other = pendingTarget()
+        if (other && preferenceKey(other) === key) return preference
+      }
+    } else {
+      appliedPreferenceWrites.set(key, ticket)
+    }
+    store.update((state) => applyComposerPreference(state, target, preference))
+    return preference
+  }
+
+  /** An explicit pair, unless its workspace was listed when asked and is gone now. */
+  const workspacePreferenceTarget = (input: ComposerPreferenceTarget) => {
+    const target = { workspaceId: input.workspaceId, providerId: input.providerId }
+    const wasListed = store.getState().workspaces[target.workspaceId] !== undefined
+    return () =>
+      wasListed && store.getState().workspaces[target.workspaceId] === undefined ? null : target
+  }
+
+  /**
+   * The pair a session setter's answer belongs to. Null while the session is
+   * unknown or has not reported its provider: the answer names neither, so
+   * there is nowhere honest to file it.
+   */
+  const sessionPreferenceTarget = (sessionId: string) => (): ComposerPreferenceTarget | null => {
+    const session = store.getState().sessions[sessionId]
+    return session?.providerId
+      ? { workspaceId: session.workspaceId, providerId: session.providerId }
+      : null
   }
 
   let openGeneration = 0
@@ -1013,6 +1089,50 @@ export function createWebSocketEnvironmentClient(
       }
       settle()
     },
+    async getProviderCatalog() {
+      const payload = await request('provider.catalog.get', null)
+      store.update((state) => applyProviderCatalog(state, payload.providers))
+      return payload.providers
+    },
+    getComposerPreference: (input) =>
+      composerRequest(
+        'composer.preferences.get',
+        { workspaceId: input.workspaceId, providerId: input.providerId },
+        'read',
+        workspacePreferenceTarget(input),
+      ),
+    setComposerPreference: (input) =>
+      composerRequest(
+        'composer.preferences.set',
+        {
+          workspaceId: input.workspaceId,
+          providerId: input.providerId,
+          preference: input.preference,
+        },
+        'write',
+        workspacePreferenceTarget(input),
+      ),
+    setSessionModel: (input) =>
+      composerRequest(
+        'composer.model.set',
+        { sessionId: input.sessionId, modelId: input.modelId },
+        'write',
+        sessionPreferenceTarget(input.sessionId),
+      ),
+    setSessionMode: (input) =>
+      composerRequest(
+        'composer.mode.set',
+        { sessionId: input.sessionId, modeId: input.modeId },
+        'write',
+        sessionPreferenceTarget(input.sessionId),
+      ),
+    setSessionConfigOption: (input) =>
+      composerRequest(
+        'composer.config_option.set',
+        { sessionId: input.sessionId, configId: input.configId, value: input.value },
+        'write',
+        sessionPreferenceTarget(input.sessionId),
+      ),
   }
 
   return {

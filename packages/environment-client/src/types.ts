@@ -5,6 +5,7 @@ import type {
   Interaction,
   InteractionResponse,
   Message,
+  ProviderCatalogEntry,
   Session,
   SessionListCursor,
   SessionStatus,
@@ -12,6 +13,7 @@ import type {
   Thread,
   Turn,
   Workspace,
+  WorkspaceComposerPreference,
 } from '@openmanager/protocol'
 import type {
   ReasoningEntry,
@@ -26,7 +28,7 @@ export type {
   TurnFailure,
 } from '@agentpack/view/protocol'
 
-export type { SessionStatus }
+export type { ProviderCatalogEntry, SessionStatus, WorkspaceComposerPreference }
 
 /** Protocol summary plus the thread IDs this client has already learned. */
 export interface SessionSummary extends Session {
@@ -136,6 +138,18 @@ export interface EnvironmentState {
   sessions: Record<string, SessionSummary>
   sessionOrder: string[]
   threads: Record<string, ThreadState>
+  /**
+   * Providers with their composer profile (models, modes, defaults), as last
+   * read by `getProviderCatalog`. Empty until that read lands.
+   */
+  providers: Record<string, ProviderCatalogEntry>
+  providerOrder: string[]
+  /**
+   * Remembered composer choices, by workspace ID and then provider ID. An
+   * entry exists only once a composer command has answered for that pair, so
+   * a missing entry means "not loaded", never "no preference".
+   */
+  composerPreferences: Record<string, Record<string, WorkspaceComposerPreference>>
   activeSessionId: string | null
   activeThreadId: string | null
   /**
@@ -192,6 +206,32 @@ export interface RespondToInteractionInput extends ThreadTarget {
   commandId?: string
 }
 
+export interface ComposerPreferenceTarget {
+  workspaceId: string
+  providerId: string
+}
+
+export interface SetComposerPreferenceInput extends ComposerPreferenceTarget {
+  /** A patch: fields left out keep the value the environment already holds. */
+  preference: WorkspaceComposerPreference
+}
+
+export interface SetSessionModelInput {
+  sessionId: string
+  modelId: string
+}
+
+export interface SetSessionModeInput {
+  sessionId: string
+  modeId: string
+}
+
+export interface SetSessionConfigOptionInput {
+  sessionId: string
+  configId: string
+  value: string | boolean
+}
+
 /**
  * Everything React may ask an environment to do. Reads return data; writes
  * also fold their result into the store so callers rarely need the value.
@@ -215,6 +255,16 @@ export interface EnvironmentCommands {
   sendTurn(input: SendTurnInput): Promise<{ turn: Turn; userMessage: Message }>
   interruptTurn(input: InterruptTurnInput): Promise<void>
   respondToInteraction(input: RespondToInteractionInput): Promise<void>
+  getProviderCatalog(): Promise<ProviderCatalogEntry[]>
+  getComposerPreference(input: ComposerPreferenceTarget): Promise<WorkspaceComposerPreference>
+  setComposerPreference(input: SetComposerPreferenceInput): Promise<WorkspaceComposerPreference>
+  /**
+   * The session setters change the live session and remember the choice for
+   * the session's workspace and provider; each resolves with that preference.
+   */
+  setSessionModel(input: SetSessionModelInput): Promise<WorkspaceComposerPreference>
+  setSessionMode(input: SetSessionModeInput): Promise<WorkspaceComposerPreference>
+  setSessionConfigOption(input: SetSessionConfigOptionInput): Promise<WorkspaceComposerPreference>
 }
 
 export type EnvironmentCommandName = keyof EnvironmentCommands

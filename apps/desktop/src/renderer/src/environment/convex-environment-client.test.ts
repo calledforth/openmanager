@@ -171,6 +171,21 @@ describe('createConvexEnvironmentClient', () => {
     expect(bridge.listenerCount()).toBe(0)
   })
 
+  it('does not advertise the composer commands and rejects them as unsupported', async () => {
+    const { client } = setup()
+    client.connect()
+    expect(client.supports('getProviderCatalog')).toBe(false)
+    expect(client.supports('setSessionModel')).toBe(false)
+    expect(client.getState().connection.capabilities).not.toContain('provider.catalog.get')
+    expect(client.getState().connection.capabilities).not.toContain('composer.model.set')
+    await expect(client.commands.getProviderCatalog()).rejects.toMatchObject({
+      code: 'capability_missing',
+    })
+    await expect(
+      client.commands.setSessionModel({ sessionId: 'session-1', modelId: 'opus' }),
+    ).rejects.toMatchObject({ code: 'capability_missing' })
+  })
+
   it('mirrors the Convex workspace and session catalog into the store', () => {
     const { client, convex } = setup()
     client.connect()

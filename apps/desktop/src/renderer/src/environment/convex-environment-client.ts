@@ -22,6 +22,7 @@ import {
   selectSessionList,
   WIRE_COMMANDS,
   type EnvironmentClient,
+  type EnvironmentCommandName,
   type EnvironmentCommands,
   type EnvironmentState,
   type ThreadState,
@@ -90,7 +91,21 @@ export interface ConvexEnvironmentClientOptions {
   jobTimeoutMs?: number
 }
 
-const ALL_CAPABILITIES = Object.values(WIRE_COMMANDS)
+/**
+ * The desktop composer still reads its catalog and preferences through the
+ * legacy composer-state provider, so this adapter does not carry them.
+ */
+const UNSUPPORTED: ReadonlySet<EnvironmentCommandName> = new Set([
+  'getProviderCatalog',
+  'getComposerPreference',
+  'setComposerPreference',
+  'setSessionModel',
+  'setSessionMode',
+  'setSessionConfigOption',
+])
+const ALL_CAPABILITIES = (Object.keys(WIRE_COMMANDS) as EnvironmentCommandName[])
+  .filter((command) => !UNSUPPORTED.has(command))
+  .map((command) => WIRE_COMMANDS[command])
 const SEEN_EVENT_LIMIT = 4096
 const INTERRUPTED_FINISH = /cancel|abort|interrupt/i
 const FAILED_FINISH = /error|fail/i
@@ -738,6 +753,9 @@ export function createConvexEnvironmentClient(
   // Commands
   // -------------------------------------------------------------------------
 
+  const unsupported = (command: EnvironmentCommandName) =>
+    Promise.reject<never>(EnvironmentClientError.unsupported(command))
+
   const gate = () => {
     if (disposed) throw new EnvironmentClientError('unavailable', 'Client is disposed.')
     if (!connected) throw new EnvironmentClientError('unavailable', 'Not connected.')
@@ -1018,6 +1036,12 @@ export function createConvexEnvironmentClient(
         job.stop()
       }
     },
+    getProviderCatalog: () => unsupported('getProviderCatalog'),
+    getComposerPreference: () => unsupported('getComposerPreference'),
+    setComposerPreference: () => unsupported('setComposerPreference'),
+    setSessionModel: () => unsupported('setSessionModel'),
+    setSessionMode: () => unsupported('setSessionMode'),
+    setSessionConfigOption: () => unsupported('setSessionConfigOption'),
   }
 
   // -------------------------------------------------------------------------
@@ -1039,7 +1063,7 @@ export function createConvexEnvironmentClient(
     commands,
     getState: store.getState,
     subscribe: store.subscribe,
-    supports: () => true,
+    supports: (command) => !UNSUPPORTED.has(command),
     setActiveSession: (sessionId) => update((state) => applyActiveSession(state, sessionId)),
     setActiveThread: (threadId) => update((state) => applyActiveThread(state, threadId)),
     connect() {

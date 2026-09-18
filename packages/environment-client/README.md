@@ -43,6 +43,27 @@ protocol adds them (CAL-50, CAL-58); replay-based hydration replaces
 `session.open` + `session.history` when CAL-71 lands. The mock advertises everything by default and
 can be narrowed with `capabilities` to exercise the gated paths.
 
+## Composer
+
+Six commands back the composer pickers, each gated on its own capability:
+
+| Command                                           | Wire name                                  |
+| ------------------------------------------------- | ------------------------------------------ |
+| `getProviderCatalog`                              | `provider.catalog.get`                     |
+| `getComposerPreference` / `setComposerPreference` | `composer.preferences.get` / `.set`        |
+| `setSessionModel` / `setSessionMode`              | `composer.model.set` / `composer.mode.set` |
+| `setSessionConfigOption`                          | `composer.config_option.set`               |
+
+The catalog (providers plus their models, modes and defaults) lands in
+`state.providers`; the WebSocket client reads it after every handshake, and
+`getProviderCatalog` refreshes it. Preferences land in
+`state.composerPreferences[workspaceId][providerId]` whenever a composer
+command answers. A missing entry means "not loaded yet", which is different
+from a loaded, empty preference. `setComposerPreference` is a patch, and the
+session setters change the live session and answer with the remembered
+preference for that session's workspace and provider. Read with
+`selectProviderCatalog` and `selectComposerPreference`.
+
 ## Browser safety
 
 The package depends only on `@openmanager/protocol` and `zod`. ESLint applies

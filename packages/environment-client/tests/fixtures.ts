@@ -1,4 +1,4 @@
-import type { Interaction, ProofEvent } from '@openmanager/protocol'
+import type { Interaction, ProofEvent, ProviderCatalogEntry } from '@openmanager/protocol'
 
 export const ENV = 'env-1'
 export const WORKSPACE = {
@@ -78,4 +78,55 @@ export const permission: Interaction = {
     { optionId: 'allow', name: 'Allow once', kind: 'allow_once' },
     { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
   ],
+}
+
+/** A provider no session has reported a catalog for yet. */
+export const BARE_PROVIDER: ProviderCatalogEntry = {
+  id: 'opencode',
+  displayName: 'OpenCode',
+  capabilities: {
+    canSetModel: true,
+    canSetMode: true,
+    canSetConfigOption: true,
+    canDeleteSession: false,
+    canLoadSession: true,
+    canListSessions: true,
+    canCancelPrompt: true,
+    supportsPlans: false,
+    supportsAvailableCommands: false,
+    supportsUsage: false,
+    supportsPermissionRequests: true,
+    supportsAuthentication: false,
+    supportsThoughtStreaming: false,
+    supportsSubtasks: false,
+    supportsExtensions: false,
+    supportsQuestions: false,
+  },
+  health: {
+    summary: 'ready',
+    refreshing: false,
+    install: 'installed',
+    auth: 'authenticated',
+    runtime: { state: 'running', liveProcesses: 1, activeTurns: 0 },
+    lastProbe: null,
+    update: 'current',
+  },
+}
+
+export const PROVIDER: ProviderCatalogEntry = {
+  ...BARE_PROVIDER,
+  profile: {
+    providerId: 'opencode',
+    availableModels: [
+      { modelId: 'sonnet', name: 'Sonnet' },
+      { modelId: 'opus', name: 'Opus', effortLevels: ['low', 'high'] },
+    ],
+    availableModes: [
+      { id: 'build', name: 'Build' },
+      { id: 'plan', name: 'Plan' },
+    ],
+    defaultModelId: 'sonnet',
+    defaultModeId: 'build',
+    updatedAt: 1_700_000_000_000,
+  },
 }
