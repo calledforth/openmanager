@@ -373,6 +373,24 @@ describe('the shared application over the environment client', () => {
     expect(client.getState().threads[THREAD.threadId]?.turns.at(-1)?.state).toBe('interrupted')
   })
 
+  it('interrupts a running turn from Escape, matching the Stop tooltip', async () => {
+    const client = createMockEnvironmentClient({
+      seed: { ...SEEDED_HISTORY, activeSessionId: SESSION.sessionId },
+      respond: () => null,
+    })
+    await render(<App client={client} />)
+    await type('slow')
+    await act(() => button('Send')!.click())
+    await settle(client)
+    expect(button('Stop')).not.toBeNull()
+    await act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    })
+    await settle(client)
+    expect(button('Stop')).toBeNull()
+    expect(client.getState().threads[THREAD.threadId]?.turns.at(-1)?.state).toBe('interrupted')
+  })
+
   it('answers a permission request from the fallback card', async () => {
     const client = createMockEnvironmentClient({
       seed: { ...SEEDED_HISTORY, activeSessionId: SESSION.sessionId },
