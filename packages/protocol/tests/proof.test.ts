@@ -22,6 +22,22 @@ import {
 } from './proof-fixtures.js'
 
 describe('proof slice wire families', () => {
+  it('rejects expiry events that do not carry a timeout', () => {
+    const expired = proofEvents.find((event) => event.name === 'interaction.expired')!
+    expect(() =>
+      ProofEventSchemas['interaction.expired'].parse({
+        ...expired,
+        payload: {
+          ...expired.payload,
+          response: {
+            kind: 'plan',
+            interactionId: 'plan-1',
+            outcome: { outcome: 'accepted' },
+          },
+        },
+      }),
+    ).toThrow()
+  })
   it('trims rename titles, accepts null and rejects empty or oversized titles', () => {
     const rename = (title: unknown) =>
       ProofCommandSchemas['session.rename'].safeParse({
@@ -200,9 +216,9 @@ describe('turn.send command ids', () => {
   it('echoes the command id on the response and the turn.started event', () => {
     const started = proofEvents.find((event) => event.name === 'turn.started')!
     const payload = { ...started.payload, commandId: 'cmd-1' }
-    expect(
-      ProofEventSchemas['turn.started'].parse({ ...started, payload }).payload,
-    ).toMatchObject({ commandId: 'cmd-1' })
+    expect(ProofEventSchemas['turn.started'].parse({ ...started, payload }).payload).toMatchObject({
+      commandId: 'cmd-1',
+    })
     expect(
       ProofResponseSchemas['turn.send'].parse({ type: 'response', requestId: 'r-6', payload })
         .payload,

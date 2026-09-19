@@ -88,7 +88,26 @@ type MessageRow = {
   ordinal: number
 }
 type PartRow = { content_json: string }
-type InteractionRow = { turn_id: string; request_json: string }
+type InteractionRow = {
+  turn_id: string
+  request_json: string
+  state: string
+  created_at: number
+  resolved_at: number | null
+  resolved_by_client_id: string | null
+}
+
+function interactionFromRow(row: InteractionRow): Interaction {
+  return InteractionSchema.parse({
+    ...JSON.parse(row.request_json),
+    lifecycle: {
+      state: row.state,
+      createdAt: new Date(row.created_at).toISOString(),
+      resolvedAt: row.resolved_at === null ? null : new Date(row.resolved_at).toISOString(),
+      resolvedByClientId: row.resolved_by_client_id,
+    },
+  })
+}
 
 const FIRST_LIST_CURSOR = {
   updatedAtMs: Number.MAX_SAFE_INTEGER,
@@ -224,7 +243,7 @@ export function listSessionHistory(
       (row) => ({
         threadId: query.threadId,
         turnId: turn.turnId,
-        interaction: InteractionSchema.parse(JSON.parse(row.request_json)),
+        interaction: interactionFromRow(row),
       }),
     ),
   )
@@ -233,23 +252,23 @@ export function listSessionHistory(
     database
       .prepare(
         `
-    SELECT interactions.turn_id, request_json, response_json, interactions.state
+    SELECT interactions.turn_id, request_json, response_json, interactions.state,
+           interactions.created_at, resolved_at, resolved_by_client_id
     FROM interactions JOIN turns ON turns.turn_id = interactions.turn_id
     WHERE turns.thread_id = ? AND kind = 'plan'
     ORDER BY interactions.created_at, interaction_id
   `,
       )
-      .all(query.threadId) as Array<{
-      turn_id: string
-      request_json: string
-      response_json: string | null
-      state: string
-    }>
+      .all(query.threadId) as Array<
+      InteractionRow & {
+        response_json: string | null
+      }
+    >
   ).map((row) =>
     PlanHistoryEntrySchema.parse({
       threadId: query.threadId,
       turnId: row.turn_id,
-      plan: JSON.parse(row.request_json),
+      plan: interactionFromRow(row),
       state: row.state,
       outcome: row.response_json
         ? InteractionResponseSchema.parse(JSON.parse(row.response_json)).outcome

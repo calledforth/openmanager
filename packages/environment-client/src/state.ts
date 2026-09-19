@@ -357,6 +357,7 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
         }
       })
     case 'interaction.resolved':
+    case 'interaction.expired':
       return patchThread(state, thread, (current) =>
         resolveInteraction(current, event.payload.response.interactionId, event.payload.turnId),
       )

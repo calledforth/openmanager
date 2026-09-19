@@ -298,7 +298,8 @@ function changesSessionStatus(event: ProofEvent): boolean {
     event.name === 'turn.started' ||
     isTerminal(event) ||
     event.name === 'interaction.requested' ||
-    event.name === 'interaction.resolved'
+    event.name === 'interaction.resolved' ||
+    event.name === 'interaction.expired'
   )
 }
 
@@ -314,6 +315,7 @@ function eventTurnId(event: DurableProofEvent): string | undefined {
     case 'tool.updated':
     case 'interaction.requested':
     case 'interaction.resolved':
+    case 'interaction.expired':
       return event.payload.turnId
     default:
       return undefined

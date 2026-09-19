@@ -212,7 +212,8 @@ export function createMockEnvironmentClient(
         parsed.name === 'turn.interrupted' ||
         parsed.name === 'turn.failed' ||
         parsed.name === 'interaction.requested' ||
-        parsed.name === 'interaction.resolved')
+        parsed.name === 'interaction.resolved' ||
+        parsed.name === 'interaction.expired')
     ) {
       const state = store.getState()
       const session = state.sessions[parsed.scope.sessionId]

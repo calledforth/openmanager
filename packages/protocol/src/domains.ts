@@ -215,10 +215,18 @@ export const PlanTodoSchema = z.object({
   content: z.string(),
   status: z.enum(['pending', 'in_progress', 'completed', 'cancelled']),
 })
+/** Durable host metadata; optional only for compatibility with older environments. */
+export const InteractionLifecycleSchema = z.object({
+  state: z.enum(['pending', 'resolved', 'expired', 'cancelled']),
+  createdAt: TimestampSchema,
+  resolvedAt: TimestampSchema.nullable(),
+  resolvedByClientId: EntityIdSchema.nullable(),
+})
 export const InteractionSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('permission'),
     interactionId: EntityIdSchema,
+    lifecycle: InteractionLifecycleSchema.optional(),
     toolCall: z.object({
       toolCallId: EntityIdSchema,
       title: z.string(),
@@ -238,6 +246,7 @@ export const InteractionSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('question'),
     interactionId: EntityIdSchema,
+    lifecycle: InteractionLifecycleSchema.optional(),
     title: z.string().optional(),
     questions: z
       .array(
@@ -260,6 +269,7 @@ export const InteractionSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('plan'),
     interactionId: EntityIdSchema,
+    lifecycle: InteractionLifecycleSchema.optional(),
     name: z.string().optional(),
     overview: z.string().optional(),
     markdown: z.string(),

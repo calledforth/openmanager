@@ -78,7 +78,7 @@ export function createEventProjector(
     ),
     resolvePendingInteraction: database.prepare(
       `UPDATE interactions
-       SET state = 'resolved', response_json = ?, resolved_at = ?, updated_at = ?
+       SET state = ?, response_json = ?, resolved_at = ?, updated_at = ?, resolved_by_client_id = ?
        WHERE interaction_id = ? AND turn_id = ? AND kind = ? AND state = 'pending'`,
     ),
     pendingInteractions: database.prepare(
@@ -304,12 +304,15 @@ export function createEventProjector(
         s.updateSessionStatus.run('waiting', at, event.scope.sessionId)
         return
       }
-      case 'interaction.resolved': {
+      case 'interaction.resolved':
+      case 'interaction.expired': {
         const { response, turnId } = event.payload
         const resolved = s.resolvePendingInteraction.run(
+          event.name === 'interaction.expired' ? 'expired' : 'resolved',
           JSON.stringify(response),
           at,
           at,
+          event.name === 'interaction.resolved' ? (event.payload.resolvedByClientId ?? null) : null,
           response.interactionId,
           turnId,
           response.kind,

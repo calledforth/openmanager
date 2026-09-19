@@ -192,6 +192,40 @@ const planRequest = {
 const ok = { type: 'response', payload: null }
 
 describe('interaction.respond', () => {
+  it('retains cancelled lifecycle metadata when a turn ends with an open plan', () => {
+    const h = harness()
+    const plan = h.request('plan_review_request', 'session', planRequest)
+    const terminal = h.runtimeEvent('prompt_completed', 'lifecycle', { stopReason: 'end_turn' })
+    h.emit(terminal)
+    const response = h.service.dispatch({
+      type: 'command',
+      requestId: 'history',
+      name: 'session.history',
+      payload: h.target,
+    })
+    expect(response).toMatchObject({
+      payload: {
+        interactions: [],
+        plans: [
+          {
+            state: 'cancelled',
+            plan: {
+              interactionId: plan.interactionId,
+              lifecycle: {
+                state: 'cancelled',
+                createdAt: plan.lifecycle?.createdAt,
+                resolvedAt: terminal.timestamp,
+                resolvedByClientId: null,
+              },
+            },
+          },
+        ],
+      },
+    })
+    // The original broadcast remains the immutable pending request.
+    expect(plan.lifecycle?.state).toBe('pending')
+  })
+
   it('forwards an approval under the provider request id and broadcasts the outcome', () => {
     const h = harness()
     const interaction = h.request('permission_request', 'permission', permissionRequest)
@@ -467,7 +501,14 @@ describe('plan continuation and history', () => {
     )
     expect(history(h).turns).toHaveLength(2)
     expect(history(h).plans).toEqual([
-      expect.objectContaining({ plan, state: 'resolved', outcome: { outcome: 'accepted' } }),
+      expect.objectContaining({
+        plan: {
+          ...plan,
+          lifecycle: { ...plan.lifecycle, state: 'resolved', resolvedAt: expect.any(String) },
+        },
+        state: 'resolved',
+        outcome: { outcome: 'accepted' },
+      }),
     ])
     expect(history(h).interactions).toEqual([])
   })
