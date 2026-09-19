@@ -551,6 +551,30 @@ export function MessageInputView({
     return () => window.removeEventListener('keydown', handler)
   }, [])
 
+  // The Stop / Cancel-planning buttons advertise Esc. Bind it for real so the
+  // tooltip is not a silent no-op — on web or desktop. Slash dismissal and
+  // other focused fields keep first claim on the key.
+  useEffect(() => {
+    if (!isStreaming && !isAwaitingPlanReview) return
+    const handler = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented || slashOpen) return
+      const target = e.target
+      if (target instanceof HTMLElement) {
+        const tag = target.tagName
+        if (
+          (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') &&
+          target !== textareaRef.current
+        ) {
+          return
+        }
+      }
+      e.preventDefault()
+      onAbort()
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [isAwaitingPlanReview, isStreaming, onAbort, slashOpen])
+
   const addFiles = useCallback(
     (files: File[]) => {
       if (!imageUploadEnabled) {
@@ -689,6 +713,11 @@ export function MessageInputView({
         }
       }
     }
+    if (e.key === 'Escape' && (isStreaming || isAwaitingPlanReview)) {
+      e.preventDefault()
+      onAbort()
+      return
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       void send()
@@ -699,6 +728,10 @@ export function MessageInputView({
     providerModelGroups.find((group) => group.providerId === currentProviderId)?.providerName ??
     currentProviderId
   const hasContent = text.trim().length > 0 || attachments.length > 0
+  // Do not advertise `/` until the provider has actually published commands.
+  // An empty list means the popup cannot open, so the hint would be a lie.
+  const composeHint =
+    slashCommands.length > 0 ? 'Ask anything, @ to mention, / for workflows' : 'Ask anything'
   const placeholder = textOverride
     ? textOverride.placeholder
     : !activeWorkspacePath
@@ -706,14 +739,14 @@ export function MessageInputView({
       : pendingDraftSessionStart
         ? 'Starting session...'
         : !activeSessionId && isSessionDraftOpen
-          ? 'Ask anything, @ to mention, / for workflows'
+          ? composeHint
           : !activeSessionId
             ? 'Select a session...'
             : !providerReady
               ? `Connecting to ${currentProviderName}...`
               : isAwaitingPlanReview
                 ? 'Describe what should change in the plan…'
-                : 'Ask anything, @ to mention, / for workflows'
+                : composeHint
 
   const isPlan = currentModeId === 'plan'
   const sendActive = textOverride
