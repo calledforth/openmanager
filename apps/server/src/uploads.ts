@@ -79,13 +79,24 @@ export function createUploadService(options: {
   const blobDirectory = join(options.dataDir, UPLOAD_DIRECTORY)
   const partialDirectory = join(blobDirectory, UPLOAD_PARTIAL_DIRECTORY)
   const tickets = new Map<string, Ticket>()
-  const transfers = new Set<() => void>()
+  /** In-flight transfers and the client each belongs to. */
+  const transfers = new Map<(reason?: string) => void, string>()
 
   mkdirSync(partialDirectory, { recursive: true })
   // Nothing is in flight when the process starts, so whatever is here was cut
   // off by a crash or a kill that the per-request cleanup never got to see.
   for (const entry of readdirSync(partialDirectory)) {
     rmSync(join(partialDirectory, entry), { force: true })
+  }
+  // A blob is renamed into place just before its row is written. A crash in
+  // between leaves a finished blob nothing names, so startup removes those too.
+  const recorded = options.database.prepare(
+    'SELECT 1 FROM attachments WHERE storage_key = ? LIMIT 1',
+  )
+  for (const entry of readdirSync(blobDirectory, { withFileTypes: true })) {
+    if (entry.isFile() && !recorded.get(`${UPLOAD_DIRECTORY}/${entry.name}`)) {
+      rmSync(join(blobDirectory, entry.name), { force: true })
+    }
   }
 
   const insert = options.database.prepare(`
@@ -222,19 +233,28 @@ export function createUploadService(options: {
       reject(reason, { sessionId: ticket.sessionId, receivedBytes: received }, who)
       refuse(request, response, status, code, message)
     }
-    const cut = () => {
-      if (abandon()) request.destroy()
+    // Shutdown cuts silently; a revocation is recorded against the client.
+    const cut = (reason?: string) => {
+      if (!abandon()) return
+      if (reason) reject(reason, { sessionId: ticket.sessionId, receivedBytes: received }, who)
+      request.destroy()
     }
     const deadline = setTimeout(
       () => fail('timeout', 408, 'unavailable', 'The upload took too long.'),
       transferTimeoutMs,
     )
     deadline.unref()
-    transfers.add(cut)
+    transfers.set(cut, ticket.clientId)
 
     const complete = () => {
       if (received !== ticket.sizeBytes) {
         fail('size_mismatch', 400, 'validation', 'The upload does not match the declared size.')
+        return
+      }
+      // The row carries no foreign key to the session, so a session deleted
+      // while the bytes were arriving has to be caught here.
+      if (options.sessionWorkspace(ticket.sessionId) !== ticket.workspaceId) {
+        fail('session_gone', 404, 'not_found', 'Session not found.')
         return
       }
       if (!settle()) return
@@ -252,8 +272,8 @@ export function createUploadService(options: {
           clock(),
         )
       } catch (error) {
-        // A session or workspace deleted mid-transfer fails the insert; the
-        // bytes must not outlive the row that would have named them.
+        // A workspace deleted mid-transfer fails the insert; the bytes must
+        // not outlive the row that would have named them.
         rmSync(partialPath, { force: true })
         rmSync(finalPath, { force: true })
         options.log('error', 'upload could not be recorded', {
@@ -430,15 +450,19 @@ export function createUploadService(options: {
       return true
     },
 
-    /** Drop a client's outstanding tickets, e.g. after its credential is revoked. */
+    /**
+     * End a client's uploads, e.g. after its credential is revoked: outstanding
+     * tickets are dropped and transfers already past authentication are cut.
+     */
     revokeClient(clientId: string): void {
       for (const [key, ticket] of tickets) if (ticket.clientId === clientId) tickets.delete(key)
+      for (const [cut, owner] of [...transfers]) if (owner === clientId) cut('revoked')
     },
 
     /** Cut every in-flight transfer and remove its partial file. */
     close(): void {
       tickets.clear()
-      for (const cut of [...transfers]) cut()
+      for (const cut of [...transfers.keys()]) cut()
     },
   }
 }

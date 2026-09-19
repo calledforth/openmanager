@@ -224,6 +224,57 @@ describe('upload tickets', () => {
     expect(await blobs(host)).toEqual([])
   })
 
+  it('cuts a revoked client’s transfer that is already under way', async () => {
+    const { host, sessionId } = await hostWithSession()
+    const phone = host.server.clients.issue({
+      label: 'Phone',
+      kind: 'paired',
+      capabilities: ['read', 'operate'],
+    })
+    const phoneClient = await connectProtocol({ ...host, token: phone.credential })
+    await handshake(phoneClient)
+    const ticket = await ticketFor(phoneClient, sessionId)
+    const request = httpRequest(`${host.server.url}${ticket.uploadPath}`, {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${phone.credential}`, 'content-length': BYTES.byteLength },
+    })
+    request.on('error', () => {})
+    request.write(BYTES.subarray(0, 8))
+    await expect.poll(() => partials(host)).toHaveLength(1)
+    expect(host.server.revokeClient(phone.client.clientId)).toBe(true)
+
+    await expect.poll(() => partials(host)).toEqual([])
+    expect(rejections(host)).toContain('revoked')
+    expect(await blobs(host)).toEqual([])
+    expect(attachmentRows(host)).toEqual([])
+  })
+
+  it('keeps nothing when the session is deleted while the bytes arrive', async () => {
+    const { host, client, sessionId } = await hostWithSession()
+    const ticket = await ticketFor(client, sessionId)
+    const request = httpRequest(`${host.server.url}${ticket.uploadPath}`, {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${host.token}`, 'content-length': BYTES.byteLength },
+    })
+    const status = new Promise<number | undefined>((resolve, reject) => {
+      request.on('response', (response) => {
+        response.resume()
+        resolve(response.statusCode)
+      })
+      request.on('error', reject)
+    })
+    request.write(BYTES.subarray(0, 8))
+    await expect.poll(() => partials(host)).toHaveLength(1)
+    await nextResponse(client, client.command('session.delete', { sessionId }))
+    request.end(BYTES.subarray(8))
+
+    expect(await status).toBe(404)
+    expect(rejections(host)).toContain('session_gone')
+    await expect.poll(() => partials(host)).toEqual([])
+    expect(await blobs(host)).toEqual([])
+    expect(attachmentRows(host)).toEqual([])
+  })
+
   it('requires the operate capability for a ticket', async () => {
     const { host, sessionId } = await hostWithSession()
     const watcher = host.server.clients.issue({
@@ -343,7 +394,7 @@ describe('upload service', () => {
   })
   const context = { clientId: 'client-1', command: 'upload.ticket.create' }
 
-  it('sweeps partial files left by a previous process', async () => {
+  it('sweeps partial files and unrecorded blobs left by a previous process', async () => {
     const now = { value: 1_000 }
     const { dataDir, database, create } = await isolatedService(now)
     const partial = join(dataDir, 'uploads', 'partial')
@@ -352,8 +403,30 @@ describe('upload service', () => {
     await writeFile(join(dataDir, 'uploads', 'finished'), 'a whole file')
     create()
     expect(await readdir(partial)).toEqual([])
-    expect(await readdir(join(dataDir, 'uploads'))).toEqual(['finished', 'partial'])
+    // A crash between the rename and the insert leaves a blob no row names.
+    expect(await readdir(join(dataDir, 'uploads'))).toEqual(['partial'])
     database.close()
+  })
+
+  it('keeps the blobs a row names when it sweeps', async () => {
+    const { host, client, sessionId } = await hostWithSession()
+    const ticket = await ticketFor(client, sessionId)
+    const stored = UploadResultSchema.parse(await (await put(host, ticket.uploadPath, BYTES)).json())
+    await writeFile(join(host.dataDir, 'uploads', 'unrecorded'), 'a whole file')
+    const database = openEnvironmentDatabase(host.dataDir)
+    const log = () => undefined
+    createUploadService({
+      dataDir: host.dataDir,
+      database,
+      audit: createAuditLog(log),
+      log,
+      rateLimiter: createRateLimiter(),
+      authenticate: () => undefined,
+      sessionWorkspace: () => undefined,
+      resolveWorkspace: () => undefined,
+    })
+    database.close()
+    expect(await blobs(host)).toEqual([stored.artifactId])
   })
 
   it('forgets expired tickets and bounds the ones a client can hold', async () => {

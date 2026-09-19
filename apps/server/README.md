@@ -204,7 +204,8 @@ The ticket is request-scoped, not a credential:
 - It is bound to the client that asked for it and to the session. The `PUT`
   must present that same client's credential; a ticket presented with another
   client's credential is refused and stays valid for its owner. Revoking a
-  client drops its tickets, and its credential no longer authenticates.
+  client drops its tickets, cuts any transfer of its that is already under way
+  (`revoked`), and its credential no longer authenticates.
 - It is single use. It is spent when the `PUT` is accepted, before a byte is
   read, so a failed or interrupted transfer needs a new ticket.
 - It expires after `UPLOAD_TICKET_TTL_MS` (2 minutes). Tickets live in memory,
@@ -219,9 +220,12 @@ arrived; the `attachments` row is inserted in the same step. The stored name is
 minted by the server: the client's `name` is display metadata and never reaches
 the filesystem. A body that differs from `sizeBytes`, a dropped connection, a
 transfer that outlasts `UPLOAD_TRANSFER_TIMEOUT_MS` (5 minutes) and a server
-shutdown all delete the partial file, and startup empties `uploads/partial/`
-for anything a crash left behind. No path leaves a partial file without a
-sweep, and a completed blob always has a metadata row.
+shutdown all delete the partial file. The session is checked again once the
+bytes are in, so one deleted mid-transfer answers `404` and keeps nothing.
+Startup empties `uploads/partial/` and removes any blob in `uploads/` that no
+`attachments` row names, which is what a crash between the move and the insert
+leaves behind. No path leaves a partial file without a sweep, and a completed
+blob always has a metadata row.
 
 MIME allowlisting is CAL-86, referencing an artifact from `turn.send` is
 CAL-88, retrieval is CAL-89, and retention of completed uploads that no
