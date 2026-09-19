@@ -418,4 +418,23 @@ export const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    version: 8,
+    name: 'session_composer_state',
+    up(database) {
+      const columns = new Set(
+        (database.prepare('PRAGMA table_info(sessions)').all() as { name: string }[]).map(
+          (column) => column.name,
+        ),
+      )
+      if (!columns.has('composer_json')) {
+        // The session's own model, mode and config selection (CAL-178),
+        // projected from `session.composer.updated`. Null until the session
+        // has one; such a session still reads the workspace preference.
+        database.exec(
+          'ALTER TABLE sessions ADD COLUMN composer_json TEXT CHECK (composer_json IS NULL OR json_valid(composer_json))',
+        )
+      }
+    },
+  },
 ]

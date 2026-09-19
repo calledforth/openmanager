@@ -240,6 +240,57 @@ export const proofEvents = [
     scope: environmentScope,
     payload: { sessionId: 'session-1' },
   },
+  {
+    ...base,
+    name: 'session.composer.updated',
+    scope: environmentScope,
+    payload: {
+      sessionId: 'session-1',
+      composer: {
+        modelId: 'claude-opus',
+        modeId: 'plan',
+        configValues: { effort: 'high', fast: true },
+        configOptions: [
+          {
+            type: 'select',
+            id: 'effort',
+            name: 'Effort',
+            category: 'thought_level',
+            currentValue: 'high',
+            options: [
+              { value: 'low', name: 'Low' },
+              { value: 'high', name: 'High' },
+            ],
+          },
+          { type: 'boolean', id: 'fast', name: 'Fast mode', currentValue: true },
+        ],
+      },
+    },
+  },
+  {
+    ...base,
+    name: 'composer.preferences.updated',
+    scope: environmentScope,
+    payload: {
+      workspaceId: 'workspace-1',
+      providerId: 'claude-code',
+      preference: { modelId: 'claude-opus', configValues: { effort: 'high' } },
+    },
+  },
+  {
+    ...base,
+    name: 'provider.catalog.updated',
+    scope: environmentScope,
+    payload: {
+      profile: {
+        providerId: 'claude-code',
+        availableModels: [{ modelId: 'claude-opus', name: 'Opus', effortLevels: ['low', 'high'] }],
+        availableModes: [{ id: 'plan', name: 'Plan' }],
+        defaultModelId: 'claude-opus',
+        updatedAt: 1,
+      },
+    },
+  },
   { ...base, name: 'thread.created', scope: sessionScope, payload: { thread } },
   {
     ...base,

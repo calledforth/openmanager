@@ -24,9 +24,14 @@ export type HostDeps = {
    *
    * Optional: a host with no persisted preferences (and every test that does
    * not care) simply supplies nothing, and callers pass an explicit
-   * `desiredConfig` where they have one. */
+   * `desiredConfig` where they have one.
+   *
+   * `threadId` lets a host that keeps a selection per session answer for that
+   * session, so two sessions in one workspace can run different models. A host
+   * that only remembers per workspace ignores it. */
   desiredSessionConfig?: (args: {
     providerId: ProviderId
     workspacePath: string
+    threadId: string
   }) => DesiredSessionConfig | undefined
 }

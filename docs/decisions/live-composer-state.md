@@ -1,0 +1,42 @@
+# Live composer state: dedicated events, selection per session
+
+Status: Accepted, 2026-09-19. Recorded from [CAL-178](https://linear.app/calledforth/issue/CAL-178/keep-catalog-and-session-composer-state-live-across-clients).
+
+## Decision
+
+The environment server owns composer state and pushes every change to every client as a durable environment-scoped event. Clients never refetch to find out what another client, or the agent, changed.
+
+| Event                          | Payload                                 | Meaning                                                             |
+| ------------------------------ | --------------------------------------- | ------------------------------------------------------------------- |
+| `session.composer.updated`     | `sessionId`, whole `composer` selection | One session's model, mode, config values and config options.        |
+| `composer.preferences.updated` | `workspaceId`, `providerId`, preference | The "last used" selection a new draft in that workspace opens with. |
+| `provider.catalog.updated`     | whole provider `profile`                | Models, modes and defaults the environment last learned.            |
+
+Each payload is the whole current value, not a patch, so a replayed or repeated event is harmless. Session summaries (`session.list`, the environment snapshot) carry the same `composer` selection. A server that does all of this advertises `composer.events`.
+
+**The selection belongs to the session.** Two sessions in one workspace can run different models. `composer.model.set`, `composer.mode.set` and `composer.config_option.set` change that session only. They also update the workspace preference, but that preference is only "last used": it seeds the next draft and never reaches into a session that already has a selection. A session with no selection yet (one that predates this change) takes the preference the first time its runtime reports, and owns it from then on.
+
+Within a selection the fields do not behave alike:
+
+- `modelId` and `configValues` are the user's choice. The server re-applies them before every prompt (`HostDeps.desiredSessionConfig` is asked per thread), so a provider reporting a different model replaces the choice only when the chosen model is no longer offered.
+- `modeId` follows the provider. Agents switch modes on their own (plan to build), so a `current_mode_update`, or a plan build the host starts in a given mode, always wins. Mode is still not enforced on respawn.
+- `configOptions` is the provider's latest listing for that session. Options the protocol cannot express are dropped rather than hiding the rest.
+
+## Alternatives considered
+
+| Alternative                                           | Assessment                                                                                                                                                                                                                   |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Refetch on `session.updated` / provider health change | `composer.preferences.get` answers for the workspace, not the session, so an agent-initiated mode switch is invisible to it. Neither trigger fires for a catalog change, and a refetch cannot be replayed after a reconnect. |
+| Keep the model global to a workspace and provider     | What desktop did when one provider process served every session. With one runtime per session it is simply wrong: picking a model in one chat would silently change it in another.                                           |
+| Ephemeral broadcast outside the event log             | Simpler to emit, but a client that was offline would need a second recovery path. Riding the sequenced log makes reconnect replay work with no composer-specific code.                                                       |
+
+## Persistence and recovery
+
+- The session selection is projected from `session.composer.updated` into `sessions.composer_json` in the same transaction as the event, so the log and the row cannot disagree. It does not touch `updated_at`; changing a model must not reorder the sidebar.
+- Preferences and profiles already live in the composer store's own tables. Their events are carriers only and project nothing.
+- Reconnect with a cursor replays the missed events. Reconnect without one (or across a gap) reads the selection from the session summaries, refetches the catalog, and marks held preferences as not loaded, because the snapshot does not carry them.
+- On the client a pushed preference counts as a landed write: the answer to a read issued before it is dropped.
+
+## Not covered here
+
+Wiring the pickers to this state is CAL-179, and draft preferences are CAL-180. The shared `resolveSessionComposerRuntime` still ranks the workspace preference above the session for the model; the environment path must rank `session.composer` first when CAL-179 lands. The desktop Convex path is unchanged.

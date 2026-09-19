@@ -217,6 +217,11 @@ export function createThreadService(
     workspaceAvailability?: (
       workspaceId: string,
     ) => 'unknown' | 'available' | 'missing' | 'inaccessible'
+    /**
+     * A turn is starting in a mode the host chose itself (a plan build), with
+     * no `composer.mode.set` for other clients' composers to have followed.
+     */
+    onSessionMode?: (sessionId: string, modeId: string) => void
   } = {},
 ) {
   const sessions = new Map<string, ThreadRecord>()
@@ -847,6 +852,7 @@ export function createThreadService(
         )
           return
         active.promptStarted = true
+        if (modeId) options.onSessionMode?.(record.session.sessionId, modeId)
         return runtime.prompt({
           ...route(record, sessionId),
           ...(modeId ? { desiredConfig: { modeId } } : {}),
@@ -901,6 +907,11 @@ export function createThreadService(
         closed += 1
       }
       return closed
+    },
+
+    /** The host session a runtime thread belongs to, while that session is loaded. */
+    sessionForThread(threadId: string): string | undefined {
+      return threads.get(threadId)?.session.sessionId
     },
 
     resolveRuntimeSession(sessionId: string) {

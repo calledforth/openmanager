@@ -5,6 +5,7 @@ import {
   PLAN_BUILD_CAPABILITY,
   BootstrapResponseSchema,
   COMPOSER_CONFIG_OPTION_SET_CAPABILITY,
+  COMPOSER_EVENTS_CAPABILITY,
   COMPOSER_MODEL_SET_CAPABILITY,
   COMPOSER_MODE_SET_CAPABILITY,
   COMPOSER_PREFERENCES_GET_CAPABILITY,
@@ -42,6 +43,7 @@ import { createPersistentEventService } from './event-service.ts'
 import { openEnvironmentDatabase } from './db/database.ts'
 import { createEventRetention } from './db/event-retention.ts'
 import { createReplayReader } from './db/replay.ts'
+import { getSessionSummary } from './db/session-store.ts'
 import { createLogger } from './logger.ts'
 import { createProviderService } from './provider-service.ts'
 import { createRateLimiter } from './rate-limit.ts'
@@ -61,6 +63,7 @@ export const SERVER_CAPABILITIES = [
   COMPOSER_MODEL_SET_CAPABILITY,
   COMPOSER_MODE_SET_CAPABILITY,
   COMPOSER_CONFIG_OPTION_SET_CAPABILITY,
+  COMPOSER_EVENTS_CAPABILITY,
   'session.list',
   'session.create',
   SESSION_CREATE_EXPLICIT_CAPABILITY,
@@ -148,11 +151,15 @@ export async function startServer(config: ServerConfig) {
       }
     })
   let onRuntimeEvent: HostDeps['emitEvent'] = () => undefined
+  // Until the composer service exists only the workspace preference can answer.
+  let desiredConfigFor: NonNullable<HostDeps['desiredSessionConfig']> = ({
+    providerId,
+    workspacePath,
+  }) => desiredSessionConfig(composerStore.getPreference(workspacePath, providerId))
   const runtime = mountAgentRuntime(
     log,
     (event) => onRuntimeEvent(event),
-    ({ providerId, workspacePath }) =>
-      desiredSessionConfig(composerStore.getPreference(workspacePath, providerId)),
+    (args) => desiredConfigFor(args),
     config.runtimeOptions,
   )
   let observeProviderCatalog: (providerId: string, result: RuntimeProviderBootstrap) => void = () =>
@@ -209,6 +216,7 @@ export async function startServer(config: ServerConfig) {
     onError: (error) => log('error', 'event retention failed', { reason: String(error) }),
   })
   emitWorkspaceEvent = (event) => eventService.append(event)
+  let recordSessionMode: (sessionId: string, modeId: string) => void = () => undefined
   const threadService = createThreadService(
     runtime,
     providerService,
@@ -222,6 +230,7 @@ export async function startServer(config: ServerConfig) {
       onPersistenceError: (error, eventName) =>
         log('error', 'event persistence failed', { eventName, reason: String(error) }),
       workspaceAvailability: (workspaceId) => workspaces.availability(workspaceId),
+      onSessionMode: (sessionId, modeId) => recordSessionMode(sessionId, modeId),
     },
   )
   closeWorkspaceSessions = (workspaceId) => {
@@ -234,7 +243,24 @@ export async function startServer(config: ServerConfig) {
     providerService,
     composerStore,
     (sessionId) => threadService.resolveRuntimeSession(sessionId),
+    {
+      // Composer changes ride the environment stream, so every client sees
+      // them live and a reconnect replays whatever it missed.
+      publish: (name, payload) =>
+        eventService.append({
+          type: 'event',
+          name,
+          eventId: randomUUID(),
+          timestamp: new Date().toISOString(),
+          scope: { type: 'environment', environmentId: identity.environmentId },
+          payload,
+        } as ProofEvent),
+      sessionForThread: (threadId) => threadService.sessionForThread(threadId),
+      readSessionComposer: (sessionId) => getSessionSummary(eventDatabase, sessionId)?.composer,
+    },
   )
+  desiredConfigFor = (args) => composerService.desiredFor(args)
+  recordSessionMode = (sessionId, modeId) => composerService.recordSessionMode(sessionId, modeId)
   observeProviderCatalog = (providerId, result) => composerService.observeProbe(providerId, result)
   threadService.setEnvironmentId(identity.environmentId)
   onRuntimeEvent = (event) => {

@@ -16,6 +16,12 @@ import {
   InteractionSchema,
   InteractionResponseSchema,
 } from './domains.js'
+import {
+  ComposerPreferenceTargetSchema,
+  ProviderComposerProfileSchema,
+  SessionComposerStateSchema,
+  WorkspaceComposerPreferenceSchema,
+} from './composer.js'
 
 const event = <N extends string, S extends z.ZodType, P extends z.ZodType>(
   name: N,
@@ -69,6 +75,28 @@ export const ProofEventSchemas = {
     'session.deleted',
     EnvironmentScopeSchema,
     z.object({ sessionId: EntityIdSchema }),
+  ),
+  /**
+   * Composer state is pushed, not refetched: `session.updated` says nothing
+   * about a selection, and a refetch cannot be replayed after a reconnect.
+   * Each payload is the whole current value, so applying one twice is safe.
+   */
+  'session.composer.updated': event(
+    'session.composer.updated',
+    EnvironmentScopeSchema,
+    z.object({ sessionId: EntityIdSchema, composer: SessionComposerStateSchema }),
+  ),
+  /** The remembered selection a new draft in this workspace opens with. */
+  'composer.preferences.updated': event(
+    'composer.preferences.updated',
+    EnvironmentScopeSchema,
+    ComposerPreferenceTargetSchema.extend({ preference: WorkspaceComposerPreferenceSchema }),
+  ),
+  /** A provider's models, modes or defaults as the environment last learned them. */
+  'provider.catalog.updated': event(
+    'provider.catalog.updated',
+    EnvironmentScopeSchema,
+    z.object({ profile: ProviderComposerProfileSchema }),
   ),
   'thread.created': event('thread.created', SessionScopeSchema, z.object({ thread: ThreadSchema })),
   'turn.started': event('turn.started', ThreadScopeSchema, TurnStartSchema),
@@ -159,6 +187,9 @@ export const ProofEventSchema = z.discriminatedUnion('name', [
   ProofEventSchemas['session.created'],
   ProofEventSchemas['session.updated'],
   ProofEventSchemas['session.deleted'],
+  ProofEventSchemas['session.composer.updated'],
+  ProofEventSchemas['composer.preferences.updated'],
+  ProofEventSchemas['provider.catalog.updated'],
   ProofEventSchemas['thread.created'],
   ProofEventSchemas['turn.started'],
   ProofEventSchemas['turn.completed'],

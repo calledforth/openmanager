@@ -64,6 +64,17 @@ session setters change the live session and answer with the remembered
 preference for that session's workspace and provider. Read with
 `selectProviderCatalog` and `selectComposerPreference`.
 
+An environment that advertises `composer.events` keeps all of it live. A
+session's own selection (model, mode, config values and the provider's config
+options) lands in `state.sessions[id].composer` from session listings and from
+`session.composer.updated`; read it with `selectSessionComposer`. It belongs to
+the session: a sibling session in the same workspace keeps its own model.
+`composer.preferences.updated` and `provider.catalog.updated` refresh the draft
+preference and a loaded catalog entry the same way, so a change made on another
+client, or by the agent, shows up without a refetch. A pushed preference
+outranks the answer to a read issued before it. After a reconnect that could
+not replay the gap, held preferences go back to "not loaded".
+
 ## Browser safety
 
 The package depends only on `@openmanager/protocol` and `zod`. ESLint applies

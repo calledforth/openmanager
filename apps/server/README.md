@@ -376,6 +376,16 @@ composer choice but is only applied by explicit commands, so a respawn does not
 fight provider plan/execute transitions. Restarting with the same data directory
 retains every preference field.
 
+The selection belongs to the session, not the workspace: two sessions in one
+workspace can run different models, and the session setters change only the
+addressed one. The workspace preference is "last used" and seeds the next
+draft. Every change is pushed to all clients as a durable environment event
+(`session.composer.updated`, `composer.preferences.updated`,
+`provider.catalog.updated`, advertised as `composer.events`), including a mode
+the agent switched by itself, and session summaries carry the current
+selection, so a reconnect restores it from replay or from the snapshot. See
+`docs/decisions/live-composer-state.md`.
+
 `session.list` returns lightweight summaries with cursor pagination.
 `session.open` returns the summary and thread identities only;
 `session.history` pages one thread's transcript. `session.create`,

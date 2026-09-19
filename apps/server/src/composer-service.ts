@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import {
   COMPOSER_CONFIG_OPTION_SET_CAPABILITY,
   COMPOSER_MODEL_SET_CAPABILITY,
@@ -5,11 +6,16 @@ import {
   COMPOSER_PREFERENCES_GET_CAPABILITY,
   COMPOSER_PREFERENCES_SET_CAPABILITY,
   ComposerCommandSchemas,
+  ComposerConfigOptionSchema,
   ComposerResponseSchemas,
   PROVIDER_CATALOG_CAPABILITY,
+  SessionComposerStateSchema,
   type CommandEnvelope,
+  type ComposerConfigOption,
   type ErrorCode,
+  type ProofEvent,
   type ProviderBootstrap,
+  type SessionComposerState,
   type WorkspaceComposerPreference,
 } from '@openmanager/protocol/node'
 import type {
@@ -35,6 +41,25 @@ type RuntimeControl = Pick<
   | 'applyDesiredConfig'
 >
 
+type ComposerEventName =
+  | 'session.composer.updated'
+  | 'composer.preferences.updated'
+  | 'provider.catalog.updated'
+type ComposerEventPayload<N extends ComposerEventName> = Extract<ProofEvent, { name: N }>['payload']
+
+export interface ComposerServiceOptions {
+  /**
+   * Broadcast a change to every client. The host wraps the payload in a
+   * durable environment event, so a reconnecting client replays it. Without a
+   * publisher the service still tracks state, for tests and offline hosts.
+   */
+  publish?: <N extends ComposerEventName>(name: N, payload: ComposerEventPayload<N>) => void
+  /** The host session that owns a runtime thread; probes and unknown threads have none. */
+  sessionForThread?: (threadId: string) => string | undefined
+  /** The session's persisted selection. Without it selections live in memory. */
+  readSessionComposer?: (sessionId: string) => SessionComposerState | undefined
+}
+
 const errorResult = (requestId: string, code: ErrorCode, message: string) => ({
   type: 'error' as const,
   requestId,
@@ -47,15 +72,62 @@ export function createComposerService(
   providers: ProviderSource,
   store: ComposerStore,
   resolveSession: ResolveSession,
+  options: ComposerServiceOptions = {},
 ) {
   const providerExists = (providerId: string) =>
     providers.snapshot().some((provider) => provider.id === providerId)
+
+  // Broadcasting is advisory: the write it describes has already happened, and
+  // a payload the protocol rejects (a workspace keyed by a path with spaces)
+  // must fail neither the command nor the runtime's event delivery.
+  const publish: NonNullable<ComposerServiceOptions['publish']> = (name, payload) => {
+    try {
+      options.publish?.(name, payload)
+    } catch {
+      // Clients converge on their next catalog or preference read.
+    }
+  }
 
   const writeProfile = (
     providerId: string,
     patch: Parameters<ComposerStore['upsertProfile']>[1],
   ) => {
-    if (Object.keys(patch).length > 0) store.upsertProfile(providerId, patch)
+    if (Object.keys(patch).length === 0) return
+    const before = store.getProfile(providerId)
+    const profile = store.upsertProfile(providerId, patch)
+    if (profile.updatedAt !== before?.updatedAt) publish('provider.catalog.updated', { profile })
+  }
+
+  const writePreference = (
+    workspaceId: string,
+    providerId: string,
+    patch: Parameters<ComposerStore['setPreference']>[2],
+  ) => {
+    const before = store.getPreference(workspaceId, providerId)
+    const preference = store.setPreference(workspaceId, providerId, patch)
+    if (!isDeepStrictEqual(before, preference)) {
+      publish('composer.preferences.updated', { workspaceId, providerId, preference })
+    }
+    return preference
+  }
+
+  const memorySelections = new Map<string, SessionComposerState>()
+  const selectionOf = (sessionId: string): SessionComposerState =>
+    (options.readSessionComposer
+      ? options.readSessionComposer(sessionId)
+      : memorySelections.get(sessionId)) ?? {}
+
+  /**
+   * A session's selection is its own: changing it never reaches a sibling
+   * session in the same workspace. The publisher persists it with the event.
+   */
+  const updateSelection = (sessionId: string, patch: Partial<SessionComposerState>) => {
+    const current = selectionOf(sessionId)
+    const merged = SessionComposerStateSchema.safeParse({ ...current, ...defined(patch) })
+    if (!merged.success || isDeepStrictEqual(merged.data, current)) return current
+    if (!options.readSessionComposer) memorySelections.set(sessionId, merged.data)
+    publish('session.composer.updated', { sessionId, composer: merged.data })
+    return merged.data
   }
 
   // Probe catalogs are fallback metadata. Once a live session has reported a
@@ -115,13 +187,54 @@ export function createComposerService(
       }
     },
 
+    /** The selection a client would see for this session right now. */
+    sessionComposer: selectionOf,
+
+    /** A mode the host started a turn in without a `composer.mode.set` (a plan build). */
+    recordSessionMode(sessionId: string, modeId: string) {
+      try {
+        updateSelection(sessionId, { modeId })
+      } catch {
+        // Display state only; the turn it describes must still start.
+      }
+    },
+
+    /**
+     * What a session's runtime must be configured with before a prompt: the
+     * session's own selection, and the workspace preference for whatever the
+     * session has not chosen yet.
+     */
+    desiredFor(args: { providerId: string; workspacePath: string; threadId?: string }) {
+      const sessionId = args.threadId ? options.sessionForThread?.(args.threadId) : undefined
+      return desiredSessionConfig(
+        store.getPreference(args.workspacePath, args.providerId),
+        sessionId ? selectionOf(sessionId) : undefined,
+      )
+    },
+
     onRuntimeEvent(event: Parameters<HostDeps['emitEvent']>[0]) {
       try {
         if (event.event === 'initialized' && event.data.agentInfo) {
           writeProfile(event.providerId, { agentInfo: event.data.agentInfo })
           return
         }
+        const sessionId = options.sessionForThread?.(event.threadId)
         if (event.event === 'session_created' || event.event === 'session_loaded') {
+          if (sessionId) {
+            // The first report seeds a session that has no selection yet from
+            // the workspace preference; after that the session owns it. Mode is
+            // the exception: the provider's live mode always wins.
+            const current = selectionOf(sessionId)
+            const preference = event.workspaceId
+              ? store.getPreference(event.workspaceId, event.providerId)
+              : {}
+            updateSelection(sessionId, {
+              modelId: current.modelId ?? preference.modelId ?? event.data.models?.currentModelId,
+              modeId: event.data.modes?.currentModeId ?? current.modeId,
+              configValues: current.configValues ?? preference.configValues,
+              configOptions: configOptionsPatch(event.data.configOptions),
+            })
+          }
           writeProfile(event.providerId, {
             ...modelPatch(event.data.models),
             ...modePatch(event.data.modes),
@@ -145,9 +258,18 @@ export function createComposerService(
             event.data.availableModels &&
             !event.data.availableModels.some((model) => model.id === selected)
           ) {
-            store.setPreference(event.workspaceId, event.providerId, {
+            writePreference(event.workspaceId, event.providerId, {
               modelId: event.data.currentModelId,
             })
+          }
+          if (sessionId && event.data.currentModelId) {
+            // The user's pick is re-applied before every prompt, so a report
+            // only replaces one the provider no longer offers.
+            const chosen = selectionOf(sessionId).modelId
+            const offered = event.data.availableModels
+            if (!chosen || (offered && !offered.some((model) => model.id === chosen))) {
+              updateSelection(sessionId, { modelId: event.data.currentModelId })
+            }
           }
           writeProfile(event.providerId, modelPatch(event.data))
           return
@@ -163,11 +285,21 @@ export function createComposerService(
             event.data.availableModes &&
             !event.data.availableModes.some((mode) => mode.id === selected)
           ) {
-            store.setPreference(event.workspaceId, event.providerId, {
+            writePreference(event.workspaceId, event.providerId, {
               modeId: event.data.currentModeId,
             })
           }
+          // The agent switches modes itself (plan to build); every composer follows.
+          if (sessionId && event.data.currentModeId) {
+            updateSelection(sessionId, { modeId: event.data.currentModeId })
+          }
           writeProfile(event.providerId, modePatch(event.data))
+          return
+        }
+        if (event.event === 'config_option_update' && sessionId) {
+          updateSelection(sessionId, {
+            configOptions: configOptionsPatch(event.data.configOptions),
+          })
         }
       } catch {
         // Provider metadata is advisory. Invalid or unpersistable catalog data
@@ -216,7 +348,7 @@ export function createComposerService(
         return response(
           COMPOSER_PREFERENCES_SET_CAPABILITY,
           command.requestId,
-          store.setPreference(workspaceId, providerId, preference),
+          writePreference(workspaceId, providerId, preference),
         )
       }
 
@@ -229,12 +361,16 @@ export function createComposerService(
           const resolved = await target(command.requestId, parsed.data.payload.sessionId)
           if ('type' in resolved) return resolved
           await runtime.setModel({ ...resolved, modelId: parsed.data.payload.modelId })
-          const preference = store.setPreference(resolved.workspaceId ?? resolved.cwd, resolved.providerId, {
+          const selection = updateSelection(parsed.data.payload.sessionId, {
             modelId: parsed.data.payload.modelId,
           })
-          if (preference.configValues) {
-            await runtime.applyDesiredConfig(resolved, { values: preference.configValues })
-          }
+          // The preference is only "last used": it seeds the next draft and
+          // leaves every other session's model alone.
+          const preference = writePreference(resolved.workspaceId ?? resolved.cwd, resolved.providerId, {
+            modelId: parsed.data.payload.modelId,
+          })
+          const values = selection.configValues ?? preference.configValues
+          if (values) await runtime.applyDesiredConfig(resolved, { values })
           return response(COMPOSER_MODEL_SET_CAPABILITY, command.requestId, preference)
         })()
       }
@@ -248,7 +384,8 @@ export function createComposerService(
           const resolved = await target(command.requestId, parsed.data.payload.sessionId)
           if ('type' in resolved) return resolved
           await runtime.setMode({ ...resolved, modeId: parsed.data.payload.modeId })
-          const preference = store.setPreference(resolved.workspaceId ?? resolved.cwd, resolved.providerId, {
+          updateSelection(parsed.data.payload.sessionId, { modeId: parsed.data.payload.modeId })
+          const preference = writePreference(resolved.workspaceId ?? resolved.cwd, resolved.providerId, {
             modeId: parsed.data.payload.modeId,
           })
           return response(COMPOSER_MODE_SET_CAPABILITY, command.requestId, preference)
@@ -270,8 +407,14 @@ export function createComposerService(
             configId: parsed.data.payload.configId,
             value: parsed.data.payload.value,
           })
+          updateSelection(parsed.data.payload.sessionId, {
+            configValues: {
+              ...(selectionOf(parsed.data.payload.sessionId).configValues ?? {}),
+              [parsed.data.payload.configId]: parsed.data.payload.value,
+            },
+          })
           const current = store.getPreference(workspaceId, resolved.providerId)
-          const preference = store.setPreference(workspaceId, resolved.providerId, {
+          const preference = writePreference(workspaceId, resolved.providerId, {
             configValues: {
               ...(current.configValues ?? {}),
               [parsed.data.payload.configId]: parsed.data.payload.value,
@@ -288,14 +431,34 @@ export function createComposerService(
 
 export function desiredSessionConfig(
   preference: WorkspaceComposerPreference,
+  selection?: SessionComposerState,
 ): DesiredSessionConfig | undefined {
   // Mode is persisted for composer display but deliberately not enforced on
   // respawn: doing so can fight the provider's plan/execute mode transitions.
+  const modelId = selection?.modelId ?? preference.modelId
+  const values = selection?.configValues ?? preference.configValues
   const desired = {
-    ...(preference.modelId ? { modelId: preference.modelId } : {}),
-    ...(preference.configValues ? { values: preference.configValues } : {}),
+    ...(modelId ? { modelId } : {}),
+    ...(values ? { values } : {}),
   }
   return Object.keys(desired).length > 0 ? desired : undefined
+}
+
+/** Options the protocol cannot carry are dropped, not allowed to hide the rest. */
+function configOptionsPatch(
+  options: readonly unknown[] | undefined,
+): ComposerConfigOption[] | undefined {
+  if (options === undefined) return undefined
+  return options.flatMap((option) => {
+    const parsed = ComposerConfigOptionSchema.safeParse(option)
+    return parsed.success ? [parsed.data] : []
+  })
+}
+
+function defined<T extends object>(value: T): Partial<T> {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => entry !== undefined),
+  ) as Partial<T>
 }
 
 function modelPatch(models: {

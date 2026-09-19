@@ -349,6 +349,37 @@ describe('AgentRuntime desired config', () => {
     expect(dispatchedModels).toEqual(['composer-2.5', 'claude-opus-5', 'composer-2.5'])
   })
 
+  it('asks the host per thread, so two sessions in one workspace keep their own model', async () => {
+    const desiredSessionConfig = vi.fn(({ threadId }: { threadId: string }) => ({
+      modelId: threadId === 'thread-1' ? 'claude-opus-5' : 'composer-2.5',
+    }))
+    // One process per thread, each with its own wire and applied state.
+    const wires: ReturnType<typeof modelWire>[] = []
+    const runtime = new AgentRuntime(
+      { emitEvent: vi.fn(), log: vi.fn(), desiredSessionConfig },
+      configs,
+      {
+        connections: new FakeConnectionFactory(() => {
+          wires.push(modelWire())
+          return wires.at(-1)!.wire
+        }),
+      },
+    )
+
+    await runtime.ensureSession({ ...ROUTE, threadId: 'thread-1' })
+    await runtime.ensureSession({ ...ROUTE, threadId: 'thread-2' })
+
+    expect(desiredSessionConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ providerId: ROUTE.providerId, threadId: 'thread-2' }),
+    )
+    // The first thread is moved to its own model; the second already reports
+    // the one it wants, so it is left alone rather than dragged along.
+    expect(wires[0]!.setSessionConfigOption).toHaveBeenCalledWith(
+      expect.objectContaining({ configId: 'model', value: 'claude-opus-5' }),
+    )
+    expect(wires[1]!.setSessionConfigOption).not.toHaveBeenCalled()
+  })
+
   it('drops what the provider cannot do at all', async () => {
     const { wire, setSessionConfigOption } = modelWire()
     const events: AgentEvent[] = []

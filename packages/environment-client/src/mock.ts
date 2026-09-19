@@ -44,6 +44,7 @@ import { createEnvironmentStore } from './store'
 import { pageSessionSummaries, pageThreadMessages } from './pagination'
 import type {
   ComposerPreferenceTarget,
+  SessionComposerState,
   ConnectionState,
   EnvironmentClient,
   EnvironmentCommandName,
@@ -412,6 +413,19 @@ export function createMockEnvironmentClient(
     }
   }
 
+  /** A session setter changes that session alone, and says so as the environment would. */
+  const writeSessionComposer = (sessionId: string, patch: SessionComposerState) => {
+    emit({
+      ...base(),
+      name: 'session.composer.updated',
+      scope: envScope(),
+      payload: {
+        sessionId,
+        composer: { ...store.getState().sessions[sessionId]?.composer, ...patch },
+      },
+    })
+  }
+
   const startTurn = (input: SendTurnInput & { commandId: string }) => {
     const replayed = startedCommands.get(commandKey(input, input.commandId))
     if (replayed) {
@@ -718,18 +732,26 @@ export function createMockEnvironmentClient(
       run('setSessionModel', input, () => {
         parseComposerPayload('composer.model.set', input)
         const { target, known } = sessionPreferenceTarget(input.sessionId)
+        writeSessionComposer(input.sessionId, { modelId: input.modelId })
         return writePreference(target, { modelId: input.modelId }, known)
       }),
     setSessionMode: (input) =>
       run('setSessionMode', input, () => {
         parseComposerPayload('composer.mode.set', input)
         const { target, known } = sessionPreferenceTarget(input.sessionId)
+        writeSessionComposer(input.sessionId, { modeId: input.modeId })
         return writePreference(target, { modeId: input.modeId }, known)
       }),
     setSessionConfigOption: (input) =>
       run('setSessionConfigOption', input, () => {
         parseComposerPayload('composer.config_option.set', input)
         const { target, known } = sessionPreferenceTarget(input.sessionId)
+        writeSessionComposer(input.sessionId, {
+          configValues: {
+            ...store.getState().sessions[input.sessionId]?.composer?.configValues,
+            [input.configId]: input.value,
+          },
+        })
         const configValues = {
           ...preferences.get(preferenceKey(target))?.configValues,
           [input.configId]: input.value,
