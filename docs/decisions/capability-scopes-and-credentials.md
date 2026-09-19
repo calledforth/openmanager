@@ -99,6 +99,7 @@ test that the map's key set equals the schema's key set.
 | `workspace.add`               | `operate`  | Registers a folder by an environment-local path (CAL-50).  |
 | `workspace.remove`            | `operate`  |                                                            |
 | `composer.preferences.set`    | `operate`  |                                                            |
+| `upload.ticket.create`        | `operate`  | The `PUT /uploads/<ticket>` it authorizes re-checks `operate`. |
 | `turn.send`                   | `agent`    |                                                            |
 | `turn.interrupt`              | `agent`    |                                                            |
 | `interaction.respond`         | `agent`    | Approvals and questions; see D5.                           |
@@ -118,7 +119,7 @@ decision.
 | `file.write`, `file.move`, `file.delete`                          | `operate`  | CAL-120, CAL-121   |
 | `git.status`, `git.diff`, `git.log`, `git.branch.list`            | `read`     | CAL-122, CAL-125   |
 | `git.stage`, `git.commit`, `git.checkout`, `git.branch.create`    | `operate`  | CAL-122, CAL-125   |
-| Attachment upload and download (HTTP)                            | `operate` / `read` | CAL-87       |
+| Attachment download (HTTP)                                       | `read`     | CAL-89             |
 | `terminal.*`                                                     | `terminal` | CAL-127, CAL-128   |
 | Client list, revoke client, revoke other clients (HTTP)          | `admin`    | CAL-104, CAL-105   |
 | Mint pairing link, revoke pairing link (HTTP)                    | `admin`    | CAL-102, CAL-103   |

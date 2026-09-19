@@ -1,7 +1,6 @@
 /**
- * Attachment upload policy. The HTTP route lands with CAL-87; this constant is
- * the size check that route must apply, so oversized-upload tests have a
- * documented reason to fail for once the endpoint exists.
+ * Attachment upload policy. `uploads.ts` applies it twice: to the size a ticket
+ * request declares, and to the bytes that actually arrive.
  */
 export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 

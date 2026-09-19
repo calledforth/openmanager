@@ -6,6 +6,7 @@ import { ProtocolErrorSchema } from './errors.js'
 import { HEARTBEAT_CAPABILITY } from './heartbeat.js'
 import { PROVIDER_PROBE_CAPABILITY } from './providers.js'
 import type { ReplayCommand } from './replay.js'
+import { UPLOAD_TICKET_CAPABILITY, UploadCommandSchemas } from './uploads.js'
 
 /**
  * Access capabilities are what a client's credential grants. They are distinct
@@ -45,6 +46,7 @@ export type CommandName =
   | typeof PROVIDER_PROBE_CAPABILITY
   | keyof typeof ProofCommandSchemas
   | keyof typeof ComposerCommandSchemas
+  | keyof typeof UploadCommandSchemas
   | ReplayCommand['name']
 
 /**
@@ -76,6 +78,7 @@ export const COMMAND_ACCESS = Object.freeze({
   'workspace.add': 'operate',
   'workspace.remove': 'operate',
   'composer.preferences.set': 'operate',
+  [UPLOAD_TICKET_CAPABILITY]: 'operate',
   'turn.send': 'agent',
   'turn.interrupt': 'agent',
   'interaction.respond': 'agent',

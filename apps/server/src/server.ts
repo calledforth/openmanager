@@ -12,6 +12,7 @@ import {
   COMPOSER_PREFERENCES_SET_CAPABILITY,
   PROTOCOL_VERSION,
   SESSION_CREATE_EXPLICIT_CAPABILITY,
+  UPLOAD_TICKET_CAPABILITY,
   PROVIDER_CATALOG_CAPABILITY,
   PROVIDER_DISCOVERY_CAPABILITY,
   PROVIDER_HEALTH_CAPABILITY,
@@ -49,6 +50,7 @@ import { createProviderService } from './provider-service.ts'
 import { createRateLimiter } from './rate-limit.ts'
 import { createRequestGuard } from './request-guard.ts'
 import { createThreadService, type WorkspaceRuntimeResolver } from './thread-service.ts'
+import { createUploadService } from './uploads.ts'
 import { attachWebSocket, SOCKET_CAPABILITIES } from './websocket.ts'
 import { openWorkspaceRegistry } from './workspaces.ts'
 
@@ -79,6 +81,7 @@ export const SERVER_CAPABILITIES = [
   'workspace.add',
   'workspace.remove',
   'workspace.icon',
+  UPLOAD_TICKET_CAPABILITY,
 ]
 
 /** A loopback-only listener exposing public liveness and connection discovery. */
@@ -262,6 +265,20 @@ export async function startServer(config: ServerConfig) {
   desiredConfigFor = (args) => composerService.desiredFor(args)
   recordSessionMode = (sessionId, modeId) => composerService.recordSessionMode(sessionId, modeId)
   observeProviderCatalog = (providerId, result) => composerService.observeProbe(providerId, result)
+  const uploads = createUploadService({
+    dataDir: config.dataDir,
+    database: eventDatabase,
+    audit,
+    log,
+    rateLimiter,
+    authenticate: (credential) => clients.authenticate(credential),
+    sessionWorkspace: (sessionId) => {
+      // A session created a moment ago may still be in the write batch.
+      eventService.flush()
+      return getSessionSummary(eventDatabase, sessionId)?.workspaceId
+    },
+    resolveWorkspace,
+  })
   threadService.setEnvironmentId(identity.environmentId)
   onRuntimeEvent = (event) => {
     composerService.onRuntimeEvent(event)
@@ -328,6 +345,7 @@ export async function startServer(config: ServerConfig) {
       response.end()
       return
     }
+    if (uploads.handle(request, response)) return
     if (request.method === 'GET' && (path === '/health' || path === '/bootstrap')) {
       response.writeHead(200, {
         'content-type': 'application/json; charset=utf-8',
@@ -447,6 +465,7 @@ export async function startServer(config: ServerConfig) {
       workspaces.dispatch(command, context) ??
       threadService.dispatch(command, context) ??
       providerService.dispatch(command, context) ??
+      uploads.dispatch(command, context) ??
       composerService.dispatch(command),
   })
   publishDurableEvent = (record) => sockets.publish(record)
@@ -466,6 +485,7 @@ export async function startServer(config: ServerConfig) {
     providerService.stop()
     await runtime.shutdown()
     stopRetention()
+    uploads.close()
     eventService.close()
     eventDatabase.close()
     composerStore.close()
@@ -491,6 +511,7 @@ export async function startServer(config: ServerConfig) {
     threadService,
     composerService,
     composerStore,
+    uploads,
     sockets,
     port: address.port,
     url: `http://127.0.0.1:${address.port}`,
@@ -498,7 +519,10 @@ export async function startServer(config: ServerConfig) {
     revokeClient(clientId: string): boolean {
       if (clientId === owner.clientId) return false
       const revoked = clients.revoke(clientId)
-      if (revoked) sockets.disconnectClient(clientId)
+      if (revoked) {
+        sockets.disconnectClient(clientId)
+        uploads.revokeClient(clientId)
+      }
       return revoked
     },
     /**
@@ -510,6 +534,7 @@ export async function startServer(config: ServerConfig) {
       const minted = clients.remintOwner()
       owner = minted.client
       sockets.disconnectClient(previousId)
+      uploads.revokeClient(previousId)
       // A socket that authenticated just before remint may not be in the map
       // yet; a second pass after the upgrade handler yields closes it too.
       setImmediate(() => sockets.disconnectClient(previousId))
@@ -523,6 +548,8 @@ export async function startServer(config: ServerConfig) {
     close: () => {
       if (!closePromise) {
         const socketClose = sockets.close()
+        // Before the listener: an in-flight PUT is cut and its partial file removed.
+        uploads.close()
         const httpClose = new Promise<void>((resolve, reject) => {
           server.close((error) => (error ? reject(error) : resolve()))
           server.closeAllConnections()
