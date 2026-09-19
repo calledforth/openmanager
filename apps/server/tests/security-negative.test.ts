@@ -347,44 +347,35 @@ describe('negative security tests', () => {
     ).toBe(true)
   })
 
-  it('rejects an oversized upload for the documented size policy once the route exists', async () => {
+  it('refuses upload bytes without a credential or a ticket the server issued', async () => {
     const host = await setup()
     expect(MAX_ATTACHMENT_BYTES).toBeGreaterThan(0)
     expect(isOversizedUpload(MAX_ATTACHMENT_BYTES)).toBe(false)
     expect(isOversizedUpload(MAX_ATTACHMENT_BYTES + 1)).toBe(true)
+    expect(isOversizedUpload(Number.POSITIVE_INFINITY)).toBe(true)
 
-    const headers = {
-      authorization: `Bearer ${host.token}`,
-      'content-type': 'application/octet-stream',
-    }
-    let sawRoute = false
-    for (const path of ['/attachments', '/upload', '/v1/attachments']) {
-      const probe = await fetch(`${host.server.url}${path}`, {
-        method: 'POST',
-        headers,
-        body: Buffer.from('probe'),
+    // Oversized, reused, expired and interrupted transfers need a session and
+    // live in uploads.integration.test.ts; these two need nothing but the route.
+    const put = async (headers: Record<string, string>) => {
+      const response = await fetch(`${host.server.url}/uploads/not-a-ticket`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/octet-stream', ...headers },
+        body: Buffer.from('bytes'),
       })
-      if (probe.status === 404) continue
-      sawRoute = true
-      const response = await fetch(`${host.server.url}${path}`, {
-        method: 'POST',
-        headers,
-        body: Buffer.alloc(MAX_ATTACHMENT_BYTES + 1, 0x61),
-      })
-      expectClosedFor(
-        `oversized POST ${path}`,
-        {
-          status: response.status,
-          code: ((await response.json()) as { error?: { code?: string } }).error?.code,
-        },
-        { status: 413, code: 'validation' },
-      )
-      expect(host.server.audit.query({ type: 'upload.rejected' }).length).toBeGreaterThan(0)
+      return {
+        status: response.status,
+        code: ((await response.json()) as { error?: { code?: string } }).error?.code,
+      }
     }
-    if (!sawRoute) {
-      // Feature not landed (CAL-87). The constant is the contract the route
-      // must enforce; a later upload that accepts oversized bodies fails above.
-      expect(isOversizedUpload(Number.POSITIVE_INFINITY)).toBe(true)
-    }
+    expectClosedFor('PUT without a credential', await put({}), { status: 401, code: 'auth' })
+    expectClosedFor(
+      'PUT with a ticket the server never issued',
+      await put({ authorization: `Bearer ${host.token}` }),
+      { status: 404, code: 'not_found' },
+    )
+    expect(
+      host.server.audit.query({ type: 'upload.rejected' }).map((event) => event.details.reason),
+    ).toEqual(['unknown_ticket'])
+    expect(host.server.audit.query({ type: 'auth.failed' }).length).toBeGreaterThan(0)
   })
 })

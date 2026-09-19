@@ -1,0 +1,62 @@
+import { z } from 'zod'
+import { CommandEnvelopeSchema, ResponseEnvelopeSchema } from './envelopes.js'
+import { EntityIdSchema } from './domains.js'
+
+export const UPLOAD_TICKET_CAPABILITY = 'upload.ticket.create' as const
+/** The ticket is the last path segment: `PUT /uploads/<ticket>`. */
+export const UPLOAD_PATH_PREFIX = '/uploads/' as const
+
+const command = <N extends string, P extends z.ZodType>(name: N, payload: P) =>
+  CommandEnvelopeSchema.extend({ name: z.literal(name), payload })
+const response = <P extends z.ZodType>(payload: P) => ResponseEnvelopeSchema.extend({ payload })
+
+/** A display name only. It never becomes a path on the environment. */
+export const UploadNameSchema = z.string().trim().min(1).max(255)
+export const UploadMimeTypeSchema = z
+  .string()
+  .max(255)
+  .regex(/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i)
+export const UploadSizeSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
+
+/**
+ * File bytes never travel on the WebSocket. A client declares the file on the
+ * command channel, receives a short-lived single-use ticket bound to its
+ * credential and the session, and PUTs the raw bytes to `uploadPath` over HTTP.
+ */
+export const UploadCommandSchemas = {
+  [UPLOAD_TICKET_CAPABILITY]: command(
+    UPLOAD_TICKET_CAPABILITY,
+    z.strictObject({
+      sessionId: EntityIdSchema,
+      name: UploadNameSchema,
+      mimeType: UploadMimeTypeSchema,
+      sizeBytes: UploadSizeSchema,
+    }),
+  ),
+} as const
+
+export const UploadResponseSchemas = {
+  [UPLOAD_TICKET_CAPABILITY]: response(
+    z.strictObject({
+      ticket: z.string().min(1).max(256),
+      /** Relative to the environment's HTTP origin, so local and remote routes agree. */
+      uploadPath: z.string().min(1).max(512),
+      expiresAt: z.iso.datetime(),
+      maxBytes: UploadSizeSchema,
+    }),
+  ),
+} as const
+
+/** The body of a successful `PUT`. A message references the artifact by this id. */
+export const UploadResultSchema = z.strictObject({
+  artifactId: EntityIdSchema,
+  sessionId: EntityIdSchema,
+  name: UploadNameSchema,
+  mimeType: UploadMimeTypeSchema,
+  sizeBytes: UploadSizeSchema,
+})
+
+export type UploadTicket = z.infer<
+  (typeof UploadResponseSchemas)[typeof UPLOAD_TICKET_CAPABILITY]
+>['payload']
+export type UploadResult = z.infer<typeof UploadResultSchema>

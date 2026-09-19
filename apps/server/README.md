@@ -94,6 +94,8 @@ discovery endpoints return JSON with `Cache-Control: no-store`:
   clients read `owner-credential` from the data directory instead. `/ws` and
   every command still require that credential; loopback grants nothing on
   those routes (threat model D2).
+- `PUT /uploads/<ticket>` receives the bytes of one prompt attachment; see
+  [Attachment uploads](#attachment-uploads).
 
 Neither `/health` nor `/bootstrap` includes paths, session data or credentials. Other methods
 and paths return 404. Request Host and forwarding headers never determine
@@ -177,9 +179,53 @@ command's capability before any service sees it:
 The mapping for today's commands: `read` covers subscriptions, `session.list`,
 `session.open`, `session.history`, provider catalog, discovery, health and
 probe, and `composer.preferences.get`;
-`operate` covers `session.create` and `composer.preferences.set`; `agent`
+`operate` covers `session.create`, `composer.preferences.set` and
+`upload.ticket.create`; `agent`
 covers `turn.send`, `turn.interrupt`, `interaction.respond` and the composer
 model, mode and config-option setters. The owner grant holds all five.
+
+## Attachment uploads
+
+File bytes never travel on the WebSocket, whose frames are capped at
+`SOCKET_LIMITS.maxPayloadBytes` and carry live stream traffic. An upload is two
+steps:
+
+1. `upload.ticket.create` (`operate`) declares one file for one session:
+   `{ sessionId, name, mimeType, sizeBytes }`. The server answers
+   `{ ticket, uploadPath, expiresAt, maxBytes }`. A `sizeBytes` over
+   `MAX_ATTACHMENT_BYTES` (25 MiB) is refused here, before any byte is sent.
+2. `PUT <uploadPath>` with `Authorization: Bearer <credential>` and the raw
+   bytes as the body. The server streams them to disk and answers `201` with
+   `{ artifactId, sessionId, name, mimeType, sizeBytes }`. A message references
+   the attachment by `artifactId`.
+
+The ticket is request-scoped, not a credential:
+
+- It is bound to the client that asked for it and to the session. The `PUT`
+  must present that same client's credential; a ticket presented with another
+  client's credential is refused and stays valid for its owner. Revoking a
+  client drops its tickets, and its credential no longer authenticates.
+- It is single use. It is spent when the `PUT` is accepted, before a byte is
+  read, so a failed or interrupted transfer needs a new ticket.
+- It expires after `UPLOAD_TICKET_TTL_MS` (2 minutes). Tickets live in memory,
+  hashed; a restart invalidates them all. A client holds at most
+  `UPLOAD_MAX_TICKETS_PER_CLIENT` (32) at a time.
+- Unknown, reused and foreign tickets all answer `404 not_found`; an expired
+  one answers `410`. Failed credentials count against the `auth_failure` limit.
+
+Bytes are written to `<data-dir>/uploads/partial/<artifactId>` and moved to
+`<data-dir>/uploads/<artifactId>` only after the full declared size has
+arrived; the `attachments` row is inserted in the same step. The stored name is
+minted by the server: the client's `name` is display metadata and never reaches
+the filesystem. A body that differs from `sizeBytes`, a dropped connection, a
+transfer that outlasts `UPLOAD_TRANSFER_TIMEOUT_MS` (5 minutes) and a server
+shutdown all delete the partial file, and startup empties `uploads/partial/`
+for anything a crash left behind. No path leaves a partial file without a
+sweep, and a completed blob always has a metadata row.
+
+MIME allowlisting is CAL-86, referencing an artifact from `turn.send` is
+CAL-88, retrieval is CAL-89, and retention of completed uploads that no
+message ever referenced is CAL-90.
 
 ## Host and origin policy
 
@@ -330,7 +376,7 @@ Types written today:
 | `pairing.issued`      | A pairing link is minted (CAL-102).                                  |
 | `pairing.exchanged`   | A pairing link is exchanged for a credential (CAL-102).              |
 | `pairing.rejected`    | A pairing exchange is refused (CAL-102).                             |
-| `upload.rejected`     | An attachment exceeds `MAX_ATTACHMENT_BYTES` (CAL-87).               |
+| `upload.rejected`     | A ticket request or `PUT /uploads/<ticket>` is refused; `details.reason` says why. |
 
 Refusals are also written to the structured log at `warn`; issue and revoke
 events are `info`, so a first-run mint does not look like a startup failure.

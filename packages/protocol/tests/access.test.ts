@@ -11,6 +11,7 @@ import {
   PROVIDER_PROBE_CAPABILITY,
   ProofCommandSchemas,
   ServerMessageSchema,
+  UploadCommandSchemas,
   accessDenied,
   hasAccess,
   requiredAccess,
@@ -25,6 +26,7 @@ describe('command access mapping', () => {
       'subscription.replay',
       ...Object.keys(ProofCommandSchemas),
       ...Object.keys(ComposerCommandSchemas),
+      ...Object.keys(UploadCommandSchemas),
     ].sort()
     expect(Object.keys(COMMAND_ACCESS).sort()).toEqual(commandNames)
   })
@@ -53,6 +55,7 @@ describe('command access mapping', () => {
       'workspace.add': 'operate',
       'workspace.remove': 'operate',
       'composer.preferences.set': 'operate',
+      'upload.ticket.create': 'operate',
       'turn.send': 'agent',
       'turn.interrupt': 'agent',
       'interaction.respond': 'agent',
