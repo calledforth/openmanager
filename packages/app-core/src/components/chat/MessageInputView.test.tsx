@@ -142,11 +142,11 @@ describe('MessageInputView', () => {
       setter.call(textarea, '/')
       textarea.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    expect(container.textContent).toContain('simplify')
+    expect(document.querySelector('[role="listbox"][aria-label="Slash commands"]')).not.toBeNull()
     await act(() => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     })
     expect(onAbort).not.toHaveBeenCalled()
-    expect(container.textContent).not.toContain('simplify')
+    expect(document.querySelector('[role="listbox"][aria-label="Slash commands"]')).toBeNull()
   })
 })
