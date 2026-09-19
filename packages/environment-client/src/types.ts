@@ -8,6 +8,7 @@ import type {
   PlanHistoryEntry,
   ProviderCatalogEntry,
   Session,
+  SessionComposerState,
   SessionListCursor,
   SessionStatus,
   SessionTitleSource,
@@ -29,7 +30,12 @@ export type {
   TurnFailure,
 } from '@agentpack/view/protocol'
 
-export type { ProviderCatalogEntry, SessionStatus, WorkspaceComposerPreference }
+export type {
+  ProviderCatalogEntry,
+  SessionComposerState,
+  SessionStatus,
+  WorkspaceComposerPreference,
+}
 
 /** Protocol summary plus the thread IDs this client has already learned. */
 export interface SessionSummary extends Session {
@@ -38,6 +44,11 @@ export interface SessionSummary extends Session {
   status: SessionStatus
   providerId?: string
   updatedAt?: string
+  /**
+   * The session's own model, mode and config selection, kept current by
+   * `session.composer.updated`. Absent until the environment reports one.
+   */
+  composer?: SessionComposerState
   threadIds: string[]
 }
 

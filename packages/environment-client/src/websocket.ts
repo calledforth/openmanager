@@ -16,6 +16,7 @@ import {
   type Cursor,
   type DurableEvent,
   type ErrorCode,
+  type ProofEvent,
   type ProtocolHandshakeCommand,
   type ReplayCommand,
   type SubscriptionScope,
@@ -27,6 +28,7 @@ import {
   applyActiveSession,
   applyActiveThread,
   applyComposerPreference,
+  applyComposerPreferencesReset,
   applyConnection,
   applyEnvironment,
   applyEvent,
@@ -455,7 +457,19 @@ export function createWebSocketEnvironmentClient(
       }
       subscription.cursor = record.cursor
     }
-    store.update((state) => applyEvent(state, record.event))
+    foldEvent(record.event)
+  }
+
+  /**
+   * A preference event is the environment's own ordering of writes, so it
+   * takes a ticket like a landed write: the answer to a request issued before
+   * it describes an older value and must not replace it.
+   */
+  const foldEvent = (event: ProofEvent) => {
+    if (event.name === 'composer.preferences.updated') {
+      appliedPreferenceWrites.set(preferenceKey(event.payload), ++preferenceTickets)
+    }
+    store.update((state) => applyEvent(state, event))
   }
 
   const handleEvent = (raw: unknown) => {
@@ -475,7 +489,7 @@ export function createWebSocketEnvironmentClient(
     if (transient.success && !transientIds.has(transient.data.eventId)) {
       transientIds.add(transient.data.eventId)
       if (transientIds.size > 4096) transientIds.delete(transientIds.values().next().value!)
-      store.update((state) => applyEvent(state, transient.data))
+      foldEvent(transient.data)
     }
   }
 
@@ -716,6 +730,11 @@ export function createWebSocketEnvironmentClient(
           } else {
             store.update((state) => applySnapshot(state, payload.snapshot))
             subscription.cursor = payload.snapshot.cursor
+            // Preference events were missed along with the rest of the gap and
+            // the snapshot does not carry them, so held ones read as unloaded.
+            if (subscription.scope.type === 'environment' && payload.reason !== 'initial') {
+              store.update(applyComposerPreferencesReset)
+            }
           }
           const buffered = subscription.buffered ?? []
           subscription.buffered = undefined

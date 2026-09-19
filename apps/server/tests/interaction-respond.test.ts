@@ -32,6 +32,10 @@ function harness(database?: DatabaseSync) {
       sessionProviderId: () => 'opencode',
     })
   const settled = new Set<string>()
+  /** Modes the host reported starting a turn in, as the composer would hear them. */
+  const sessionModes: Array<{ sessionId: string; modeId: string }> = []
+  const onSessionMode = (sessionId: string, modeId: string) =>
+    sessionModes.push({ sessionId, modeId })
   let emit: (event: RuntimeEvent) => void = () => undefined
   let seq = 0
   let target = { sessionId: '', threadId: '' }
@@ -92,7 +96,14 @@ function harness(database?: DatabaseSync) {
     },
     undefined,
     registered,
-    persistent ? { database, flush: persistent.flush, appendAtomic: persistent.appendAtomic } : {},
+    persistent
+      ? {
+          database,
+          flush: persistent.flush,
+          appendAtomic: persistent.appendAtomic,
+          onSessionMode,
+        }
+      : { onSessionMode },
   )
   emit = (event) => service.onRuntimeEvent(event)
   service.setEnvironmentId('environment-1')
@@ -151,6 +162,7 @@ function harness(database?: DatabaseSync) {
     service,
     runtime,
     events,
+    sessionModes,
     target,
     emit,
     runtimeEvent,
@@ -511,6 +523,20 @@ describe('plan continuation and history', () => {
       }),
     ])
     expect(history(h).interactions).toEqual([])
+
+    // The build's mode reaches composers only once the provider has started
+    // the prompt; a launch that failed first would leave them where they were.
+    expect(h.sessionModes).toEqual([])
+    const userMessage = history(h)
+      .messages.filter((message) => message.role === 'user')
+      .at(-1)!
+    h.emit(
+      h.runtimeEvent('prompt_started', 'lifecycle', {
+        prompt: build.text,
+        userMessageId: userMessage.messageId,
+      }),
+    )
+    expect(h.sessionModes).toEqual([{ sessionId: h.target.sessionId, modeId: 'agent' }])
   })
 
   it('retries a failed durable turn start without repeating acceptance or building twice', async () => {

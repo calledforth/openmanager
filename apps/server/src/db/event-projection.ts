@@ -42,6 +42,10 @@ export function createEventProjector(
     updateSessionStatus: database.prepare(
       'UPDATE sessions SET status = ?, updated_at = ? WHERE session_id = ?',
     ),
+    // Not a sidebar-ordering change, so `updated_at` stays put.
+    updateSessionComposer: database.prepare(
+      'UPDATE sessions SET composer_json = ? WHERE session_id = ?',
+    ),
     deleteSession: database.prepare('DELETE FROM sessions WHERE session_id = ?'),
     selectSessionWorkspace: database.prepare(
       'SELECT workspace_id FROM sessions WHERE session_id = ?',
@@ -260,6 +264,18 @@ export function createEventProjector(
             titleSource,
           )
         }
+        return
+      case 'session.composer.updated':
+        // A selection reported while its session is being deleted has no row
+        // left to describe; that is not worth rolling the batch back for.
+        s.updateSessionComposer.run(
+          JSON.stringify(event.payload.composer),
+          event.payload.sessionId,
+        )
+        return
+      case 'composer.preferences.updated':
+      case 'provider.catalog.updated':
+        // The composer store already holds both; the log only carries them to clients.
         return
       case 'session.deleted':
         s.deleteSession.run(event.payload.sessionId)

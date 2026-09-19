@@ -2,6 +2,9 @@ import { z } from 'zod'
 import { CommandEnvelopeSchema, ResponseEnvelopeSchema } from './envelopes.js'
 import { EntityIdSchema } from './domains.js'
 import { ProviderBootstrapSchema } from './providers.js'
+import { ComposerConfigValuesSchema } from './session-composer.js'
+
+export * from './session-composer.js'
 
 export const PROVIDER_CATALOG_CAPABILITY = 'provider.catalog.get' as const
 export const COMPOSER_PREFERENCES_GET_CAPABILITY = 'composer.preferences.get' as const
@@ -9,6 +12,13 @@ export const COMPOSER_PREFERENCES_SET_CAPABILITY = 'composer.preferences.set' as
 export const COMPOSER_MODEL_SET_CAPABILITY = 'composer.model.set' as const
 export const COMPOSER_MODE_SET_CAPABILITY = 'composer.mode.set' as const
 export const COMPOSER_CONFIG_OPTION_SET_CAPABILITY = 'composer.config_option.set' as const
+/**
+ * The environment pushes `session.composer.updated`,
+ * `composer.preferences.updated` and `provider.catalog.updated`, and session
+ * summaries carry `composer`. Without it a client only learns composer state
+ * from its own command responses.
+ */
+export const COMPOSER_EVENTS_CAPABILITY = 'composer.events' as const
 
 const command = <N extends string, P extends z.ZodType>(name: N, payload: P) =>
   CommandEnvelopeSchema.extend({ name: z.literal(name), payload })
@@ -45,11 +55,6 @@ export const ProviderComposerProfileSchema = z.strictObject({
   updatedAt: z.number().int().nonnegative(),
 })
 
-export const ComposerConfigValuesSchema = z.record(
-  z.string().min(1).max(1_024),
-  z.union([z.string().max(8_192), z.boolean()]),
-)
-
 export const WorkspaceComposerPreferenceSchema = z.strictObject({
   modelId: z.string().min(1).max(1_024).optional(),
   modeId: z.string().min(1).max(1_024).optional(),
@@ -60,10 +65,11 @@ export const ProviderCatalogEntrySchema = ProviderBootstrapSchema.extend({
   profile: ProviderComposerProfileSchema.optional(),
 })
 
-const preferenceTarget = z.strictObject({
+export const ComposerPreferenceTargetSchema = z.strictObject({
   workspaceId: EntityIdSchema,
   providerId: EntityIdSchema,
 })
+const preferenceTarget = ComposerPreferenceTargetSchema
 const sessionTarget = z.strictObject({ sessionId: EntityIdSchema })
 
 export const ComposerCommandSchemas = {

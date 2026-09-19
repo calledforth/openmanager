@@ -631,7 +631,11 @@ export class AgentRuntime {
   private durableDesired(args: RuntimeRoute): DesiredSessionConfig | undefined {
     const workspacePath = args.workspaceId ?? args.cwd
     if (!workspacePath) return undefined
-    return this.host.desiredSessionConfig?.({ providerId: args.providerId, workspacePath })
+    return this.host.desiredSessionConfig?.({
+      providerId: args.providerId,
+      workspacePath,
+      threadId: args.threadId,
+    })
   }
 
   /** Record what a respawn of this thread would need. Called on every

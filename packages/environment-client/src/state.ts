@@ -18,6 +18,7 @@ import type {
   EnvironmentState,
   OutboxEntry,
   PendingInteraction,
+  SessionComposerState,
   SessionStatus,
   SessionSummary,
   ThreadState,
@@ -110,6 +111,7 @@ function upsertSession(
     status: listed.status ?? existing?.status ?? 'idle',
     providerId: listed.providerId ?? existing?.providerId,
     updatedAt: listed.updatedAt ?? existing?.updatedAt,
+    ...composerOf(listed.composer, existing?.composer),
     threadIds: threadIds
       ? Array.from(new Set([...(existing?.threadIds ?? []), ...threadIds]))
       : (existing?.threadIds ?? []),
@@ -119,6 +121,20 @@ function upsertSession(
     sessions: { ...state.sessions, [session.sessionId]: summary },
     sessionOrder: appendUnique(state.sessionOrder, session.sessionId),
   }
+}
+
+/**
+ * A listing that names a selection is current; one that does not (a bare
+ * `Session`, an older environment) must not erase what an event delivered.
+ * The held object is kept when nothing changed, so selectors stay stable.
+ */
+function composerOf(
+  listed: SessionComposerState | undefined,
+  existing: SessionComposerState | undefined,
+): { composer?: SessionComposerState } {
+  const composer =
+    listed && existing && sameJson(listed, existing) ? existing : (listed ?? existing)
+  return composer ? { composer } : {}
 }
 
 /** Move a session's workspace `lastActivityAt` forward to `at`, never back. */
@@ -296,6 +312,37 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
             updatedAt: event.timestamp,
           },
         },
+      }
+    }
+    case 'session.composer.updated': {
+      // Announced only through the sidebar list: a session this client has
+      // not listed yet picks its selection up with the listing.
+      const session = state.sessions[event.payload.sessionId]
+      if (!session || (session.composer && sameJson(session.composer, event.payload.composer))) {
+        return state
+      }
+      return {
+        ...state,
+        sessions: {
+          ...state.sessions,
+          [session.sessionId]: { ...session, composer: event.payload.composer },
+        },
+      }
+    }
+    case 'composer.preferences.updated':
+      // A workspace this client no longer lists must not get a preference back.
+      return state.workspaces[event.payload.workspaceId]
+        ? applyComposerPreference(state, event.payload, event.payload.preference)
+        : state
+    case 'provider.catalog.updated': {
+      // Only a loaded catalog is patched; an unloaded one reads the profile
+      // with `provider.catalog.get`, which also brings the health it needs.
+      const profile = event.payload.profile
+      const provider = state.providers[profile.providerId]
+      if (!provider || (provider.profile && sameJson(provider.profile, profile))) return state
+      return {
+        ...state,
+        providers: { ...state.providers, [profile.providerId]: { ...provider, profile } },
       }
     }
     case 'session.deleted':
@@ -729,6 +776,13 @@ export function applyComposerPreference(
   }
 }
 
+/** Forget every held preference, so each reads as "not loaded" until asked for again. */
+export function applyComposerPreferencesReset(state: EnvironmentState): EnvironmentState {
+  return Object.keys(state.composerPreferences).length === 0
+    ? state
+    : { ...state, composerPreferences: {} }
+}
+
 export function applySessionRemoved(state: EnvironmentState, sessionId: string): EnvironmentState {
   return removeSession(state, sessionId)
 }
@@ -841,6 +895,14 @@ export function selectProviderCatalog(state: EnvironmentState): ProviderCatalogE
   return state.providerOrder
     .map((id) => state.providers[id])
     .filter((provider): provider is ProviderCatalogEntry => provider !== undefined)
+}
+
+/** Null until the environment has reported a selection for this session. */
+export function selectSessionComposer(
+  state: EnvironmentState,
+  sessionId: string,
+): SessionComposerState | null {
+  return state.sessions[sessionId]?.composer ?? null
 }
 
 /** Null until a composer command has answered for this workspace and provider. */

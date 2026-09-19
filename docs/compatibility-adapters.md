@@ -91,8 +91,9 @@ These are accepted for the migration window and disappear with the adapter:
   persisted by `respondToInteraction`.
 - **Clearing a title** (`renameSession(id, null)`) is rejected; Convex has no
   such operation.
-- **Composer state** (models, modes, config options, commands, usage) has no
-  protocol events yet; it stays with `ComposerStateProvider`.
+- **Composer state** (models, modes, config options, commands, usage) stays
+  with `ComposerStateProvider`. The environment server pushes it as protocol
+  events (`docs/decisions/live-composer-state.md`); this adapter emits none.
 - `workspaceId` is the filesystem path, which can contain spaces the protocol's
   entity-ID schema would reject on the wire. The adapter never validates its
   own events; workspace identity on the wire is CAL-51's job.

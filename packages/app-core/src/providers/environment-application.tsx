@@ -85,8 +85,10 @@ export interface EnvironmentApplicationOptions {
  * Implements every application provider contract over the environment
  * client, so the shared sidebar, chat, composer and interaction panels render
  * against an environment server (or the mock) with no host-specific
- * providers at all. Composer catalogs (models, modes, config options) have no
- * protocol events yet, so that provider publishes an empty selection.
+ * providers at all. The environment client keeps composer catalogs and each
+ * session's selection live (`selectProviderCatalog`, `selectSessionComposer`);
+ * the composer provider below does not read them yet and publishes an empty
+ * selection.
  */
 export function EnvironmentApplicationProviders({
   children,
@@ -385,7 +387,7 @@ function EnvironmentSessionStateProvider({
 }
 
 // ---------------------------------------------------------------------------
-// Composer state: no catalog on the wire yet, so the selection is empty.
+// Composer state: the client holds it live, the pickers are not wired to it yet.
 // ---------------------------------------------------------------------------
 
 function EnvironmentComposerStateProvider({ children }: { children: ReactNode }) {

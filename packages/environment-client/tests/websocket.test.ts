@@ -9,6 +9,7 @@ import {
 import {
   selectActiveThread,
   selectComposerPreference,
+  selectSessionComposer,
   selectProviderCatalog,
   selectSessionList,
 } from '../src/state'
@@ -1680,6 +1681,42 @@ describe('composer commands', () => {
     socket.respond('composer.model.set', { preference: { modelId: 'opus' } })
     await pending
     expect(preferenceOf(client)).toEqual({ modelId: 'opus' })
+    client.disconnect()
+  })
+
+  it('keeps a pushed preference over the answer to a read issued before it', async () => {
+    const { client, socket } = await composing()
+    socket.respond('workspace.list', { workspaces: [WORKSPACE] })
+    await flush()
+    const read = client.commands.getComposerPreference(TARGET)
+    // Another client changed the model while this read was in flight.
+    socket.receive(
+      event({
+        name: 'composer.preferences.updated',
+        scope: { type: 'environment', environmentId: ENV },
+        payload: { ...TARGET, preference: { modelId: 'opus' } },
+      }),
+    )
+    expect(preferenceOf(client)).toEqual({ modelId: 'opus' })
+    socket.respond('composer.preferences.get', { preference: { modelId: 'sonnet' } })
+    expect(await read).toEqual({ modelId: 'sonnet' })
+    expect(preferenceOf(client)).toEqual({ modelId: 'opus' })
+    client.disconnect()
+  })
+
+  it('follows a session selection pushed by the environment', async () => {
+    const { client, socket } = await composing()
+    socket.receive(
+      event({
+        name: 'session.composer.updated',
+        scope: { type: 'environment', environmentId: ENV },
+        payload: { sessionId: SESSION.sessionId, composer: { modelId: 'opus', modeId: 'plan' } },
+      }),
+    )
+    expect(selectSessionComposer(client.getState(), SESSION.sessionId)).toEqual({
+      modelId: 'opus',
+      modeId: 'plan',
+    })
     client.disconnect()
   })
 
