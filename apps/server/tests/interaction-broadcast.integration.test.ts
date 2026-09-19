@@ -1,3 +1,5 @@
+import { DatabaseSync } from 'node:sqlite'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FakeClaudeSdk } from '@agentpack/runtime/testing'
 import type { ReplayResponse, SubscriptionScope } from '@openmanager/protocol/node'
@@ -81,13 +83,24 @@ describe.each(['permission', 'question', 'plan'] as const)('%s settlement broadc
       if (event.name !== 'interaction.requested') throw new Error('expected interaction request')
       const { interaction, turnId } = event.payload
       expect(interaction.kind).toBe(kind)
+      expect(interaction.lifecycle).toEqual({
+        state: 'pending',
+        createdAt: event.timestamp,
+        resolvedAt: null,
+        resolvedByClientId: null,
+      })
       const timeoutMs = (kind === 'plan' ? 30 : 5) * 60 * 1000
       const deadline = timers.mock.calls.find((call) => call[1] === timeoutMs)?.[0]
       timers.mockRestore()
       expect(deadline).toBeTypeOf('function')
 
       // The second device missed the request event entirely, but still sees it.
-      const second = await connectProtocol(host)
+      const responder = host.server.clients.issue({
+        label: 'Second device',
+        kind: 'paired',
+        capabilities: ['read', 'agent'],
+      })
+      const second = await connectProtocol({ ...host, token: responder.credential })
       await handshake(second)
       const joined = await replay(second, scope, null)
       expect(threadSnapshot(joined).interactions).toEqual([{ interaction, turnId }])
@@ -96,6 +109,13 @@ describe.each(['permission', 'question', 'plan'] as const)('%s settlement broadc
         threadId: target.threadId,
         state: 'waiting',
       })
+
+      const history = await expectCommand(second, 'session.history', target, 'refresh history')
+      expect(history.payload.interactions).toEqual([{ threadId: target.threadId, interaction }])
+      const listed = await expectCommand(second, 'session.list', {}, 'waiting session')
+      expect(
+        listed.payload.sessions.find((session) => session.sessionId === target.sessionId)?.status,
+      ).toBe('waiting')
 
       if (settlement === 'answered') {
         const outcome =
@@ -110,6 +130,7 @@ describe.each(['permission', 'question', 'plan'] as const)('%s settlement broadc
           {
             ...target,
             response: { kind, interactionId: interaction.interactionId, outcome },
+            resolvedByClientId: host.server.owner.clientId, // Untrusted input must be ignored.
           },
           'answer on second device',
         )
@@ -123,16 +144,18 @@ describe.each(['permission', 'question', 'plan'] as const)('%s settlement broadc
       }
       await providerResponse
 
+      const settlementEvent =
+        settlement === 'timeout' ? 'interaction.expired' : 'interaction.resolved'
       const deliveries = await Promise.all([
         collectThreadRecords(first, firstSubscription, (records) =>
-          records.some((record) => record.event.name === 'interaction.resolved'),
+          records.some((record) => record.event.name === settlementEvent),
         ),
         collectThreadRecords(second, joined.payload.subscriptionId, (records) =>
-          records.some((record) => record.event.name === 'interaction.resolved'),
+          records.some((record) => record.event.name === settlementEvent),
         ),
       ])
       const resolutions = deliveries.map((records) =>
-        records.filter((record) => record.event.name === 'interaction.resolved'),
+        records.filter((record) => record.event.name === settlementEvent),
       )
       expect(resolutions[0]).toHaveLength(1)
       expect(resolutions[1]).toEqual(resolutions[0])
@@ -156,6 +179,34 @@ describe.each(['permission', 'question', 'plan'] as const)('%s settlement broadc
               }),
         },
       })
+
+      const settledEvent = resolutions[0]![0]!.event
+      if (settledEvent.name === 'interaction.resolved') {
+        expect(settledEvent.payload.resolvedByClientId).toBe(
+          settlement === 'answered' ? responder.client.clientId : null,
+        )
+      }
+      // Inspect via an independent read connection: event, payload and metadata committed together.
+      const database = new DatabaseSync(join(host.dataDir, 'openmanager.sqlite'), {
+        readOnly: true,
+      })
+      try {
+        expect(
+          database
+            .prepare(
+              `SELECT state, created_at, resolved_at, resolved_by_client_id
+          FROM interactions WHERE interaction_id = ?`,
+            )
+            .get(interaction.interactionId),
+        ).toEqual({
+          state: settlement === 'timeout' ? 'expired' : 'resolved',
+          created_at: Date.parse(event.timestamp),
+          resolved_at: Date.parse(settledEvent.timestamp),
+          resolved_by_client_id: settlement === 'answered' ? responder.client.clientId : null,
+        })
+      } finally {
+        database.close()
+      }
 
       // A fresh third device needs no historical resolve event to hide the dialog.
       const third = await connectProtocol(host)

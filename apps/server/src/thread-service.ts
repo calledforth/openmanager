@@ -104,6 +104,7 @@ type InteractionEntry = {
   answer?: InteractionAnswer
 }
 type InteractionAnswer = {
+  clientId?: string
   commandId?: string
   response: InteractionResponse
   build?: { text: string; modeId?: string }
@@ -288,6 +289,27 @@ export function createThreadService(
     } catch (error) {
       if (!options.onPersistenceError) throw error
       options.onPersistenceError(error, event.name)
+    }
+    if (
+      event.name === 'turn.completed' ||
+      event.name === 'turn.interrupted' ||
+      event.name === 'turn.failed'
+    ) {
+      const record = threads.get(event.scope.threadId)
+      for (const entry of record?.interactions.values() ?? []) {
+        if (entry.turnId !== event.payload.turnId || entry.settled) continue
+        entry.settled = true
+        if (entry.interaction.lifecycle) {
+          entry.interaction = {
+            ...entry.interaction,
+            lifecycle: {
+              ...entry.interaction.lifecycle,
+              state: 'cancelled',
+              resolvedAt: event.timestamp,
+            },
+          }
+        }
+      }
     }
   }
 
@@ -552,6 +574,11 @@ export function createThreadService(
       messageId,
       interactionId: active ? stableId(active.interactionIds, providerInteractionId) : undefined,
       toolCallId: active ? stableId(active.toolIds, providerToolId) : undefined,
+      resolvedByClientId:
+        active && providerInteractionId
+          ? record.interactions.get(stableId(active.interactionIds, providerInteractionId)!)?.answer
+              ?.clientId
+          : undefined,
       completionState,
       failureReason,
     })
@@ -575,11 +602,28 @@ export function createThreadService(
         })
       }
       touch(record, 'waiting')
-    } else if (active && projected.name === 'interaction.resolved') {
+    } else if (
+      active &&
+      (projected.name === 'interaction.resolved' || projected.name === 'interaction.expired')
+    ) {
       const entry = record.interactions.get(projected.payload.response.interactionId)
       if (entry) {
         entry.settled = true
         entry.resolution = projected.payload.response
+        if (entry.interaction.lifecycle) {
+          entry.interaction = {
+            ...entry.interaction,
+            lifecycle: {
+              ...entry.interaction.lifecycle,
+              state: projected.name === 'interaction.expired' ? 'expired' : 'resolved',
+              resolvedAt: projected.timestamp,
+              resolvedByClientId:
+                projected.name === 'interaction.resolved'
+                  ? (projected.payload.resolvedByClientId ?? null)
+                  : null,
+            },
+          }
+        }
       }
       active.pendingInteractions.delete(projected.payload.response.interactionId)
       touch(record, active.pendingInteractions.size > 0 ? 'waiting' : 'running')
@@ -1243,7 +1287,7 @@ export function createThreadService(
                 turnId: entry.turnId,
                 plan: entry.interaction,
                 state: entry.resolution
-                  ? 'resolved'
+                  ? (entry.interaction.lifecycle?.state ?? 'resolved')
                   : entry.settled || record.activeTurn?.turn.turnId !== entry.turnId
                     ? 'cancelled'
                     : 'pending',
@@ -1401,7 +1445,7 @@ export function createThreadService(
         if (followUp && !proposing.completion) {
           return errorResult(command.requestId, 'conflict', 'The proposing turn has not started.')
         }
-        entry.answer = { commandId, response, build }
+        entry.answer = { commandId, response, build, clientId: context?.clientId }
         if (followUp) record.pendingBuild = true
         try {
           forward()

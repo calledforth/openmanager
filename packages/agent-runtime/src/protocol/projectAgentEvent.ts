@@ -16,6 +16,7 @@ export interface ProtocolEventContext {
   turnId?: string
   messageId?: string
   interactionId?: string
+  resolvedByClientId?: string
   toolCallId?: string
   sessionTitle?: string | null
   /** Host interpretation of completion; provider stopReason strings are not portable. */
@@ -55,13 +56,33 @@ export function projectAgentEvent(
   const requested = (kind: 'permission' | 'question' | 'plan', fields: object) =>
     emit('interaction.requested', threadScope, {
       turnId: required('turnId'),
-      interaction: { ...fields, kind, interactionId: required('interactionId') },
+      interaction: {
+        ...fields,
+        kind,
+        interactionId: required('interactionId'),
+        lifecycle: {
+          state: 'pending',
+          createdAt: source.timestamp,
+          resolvedAt: null,
+          resolvedByClientId: null,
+        },
+      },
     })
-  const resolved = (kind: 'permission' | 'question' | 'plan', outcome: unknown) =>
-    emit('interaction.resolved', threadScope, {
-      turnId: required('turnId'),
-      response: { kind, interactionId: required('interactionId'), outcome },
-    })
+  const resolved = (
+    kind: 'permission' | 'question' | 'plan',
+    outcome: { outcome: string; reason?: string },
+  ) =>
+    emit(
+      outcome.outcome === 'cancelled' && outcome.reason === 'timeout'
+        ? 'interaction.expired'
+        : 'interaction.resolved',
+      threadScope,
+      {
+        turnId: required('turnId'),
+        response: { kind, interactionId: required('interactionId'), outcome },
+        resolvedByClientId: context.resolvedByClientId ?? null,
+      },
+    )
   const failed = (reason: TurnFailureReason = context.failureReason ?? 'provider_error') =>
     emit('turn.failed', threadScope, {
       turnId: required('turnId'),

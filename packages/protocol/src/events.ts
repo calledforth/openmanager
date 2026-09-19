@@ -149,7 +149,23 @@ export const ProofEventSchemas = {
   'interaction.resolved': event(
     'interaction.resolved',
     ThreadScopeSchema,
-    z.object({ turnId: EntityIdSchema, response: InteractionResponseSchema }),
+    z.object({
+      turnId: EntityIdSchema,
+      response: InteractionResponseSchema,
+      resolvedByClientId: EntityIdSchema.nullable().optional(),
+    }),
+  ),
+  'interaction.expired': event(
+    'interaction.expired',
+    ThreadScopeSchema,
+    z.object({
+      turnId: EntityIdSchema,
+      response: InteractionResponseSchema.refine(
+        (response) =>
+          response.outcome.outcome === 'cancelled' && response.outcome.reason === 'timeout',
+        'An expired interaction must carry a timeout outcome',
+      ),
+    }),
   ),
 } as const
 
@@ -170,5 +186,6 @@ export const ProofEventSchema = z.discriminatedUnion('name', [
   ProofEventSchemas['tool.updated'],
   ProofEventSchemas['interaction.requested'],
   ProofEventSchemas['interaction.resolved'],
+  ProofEventSchemas['interaction.expired'],
 ])
 export type ProofEvent = z.infer<typeof ProofEventSchema>

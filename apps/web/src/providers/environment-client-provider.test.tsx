@@ -1,3 +1,4 @@
+import { PROTOCOL_VERSION } from '@openmanager/protocol'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -50,7 +51,7 @@ function seedEnvironment() {
       ok: true,
       status: 200,
       json: async () => ({
-        protocolVersion: 1,
+        protocolVersion: PROTOCOL_VERSION,
         environmentId: 'env-local',
         label: 'Local environment',
         capabilities: ['connection.heartbeat'],

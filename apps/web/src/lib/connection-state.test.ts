@@ -1,3 +1,4 @@
+import { PROTOCOL_VERSION } from '@openmanager/protocol'
 import { describe, expect, it } from 'vitest'
 import { CONNECTION_STORIES, READY_CONNECTION_INPUT } from '../stories/connection-states'
 import { bootstrapOutcomeFromQuery, deriveConnectionUi } from './connection-state'
@@ -131,9 +132,9 @@ describe('deriveConnectionUi', () => {
 
   it('outranks a stale ready bootstrap when offline, but never an auth failure', () => {
     // The bootstrap succeeded before the network went away, so it proves nothing.
-    expect(
-      deriveConnectionUi({ ...READY_CONNECTION_INPUT, network: { online: false } }).kind,
-    ).toBe('offline')
+    expect(deriveConnectionUi({ ...READY_CONNECTION_INPUT, network: { online: false } }).kind).toBe(
+      'offline',
+    )
     expect(deriveConnectionUi({ ...READY_CONNECTION_INPUT, network: { online: true } }).kind).toBe(
       'ready',
     )
@@ -152,7 +153,7 @@ describe('deriveConnectionUi', () => {
       status: 'ready' as const,
       environmentId: 'env-local',
       label: 'Local environment',
-      protocolVersion: 1,
+      protocolVersion: PROTOCOL_VERSION,
     }
     expect(bootstrapOutcomeFromQuery(false, ready)).toEqual({ status: 'idle' })
     expect(bootstrapOutcomeFromQuery(true, undefined)).toEqual({ status: 'loading' })

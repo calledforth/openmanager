@@ -5,7 +5,7 @@ environment. Its protocol-owned fields are:
 
 ```json
 {
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "environmentId": "env-local",
   "capabilities": ["session.read", "turn.send"]
 }
@@ -26,8 +26,10 @@ its own schema before using them.
 
 `PROTOCOL_VERSION` is the version implemented by this package. A breaking wire
 change increments it; additive capabilities and bootstrap fields do not.
-Compatibility is deliberately exact for version 1. Clients and hosts must not
-guess that different versions are compatible.
+Compatibility is deliberately exact. Clients and hosts must not
+guess that different versions are compatible. Version 2 adds `interaction.expired`;
+version-1 peers are rejected before subscriptions so expiry cannot be silently
+ignored or repeatedly encountered during replay.
 
 Call `evaluateBootstrap` with the parsed HTTP body and the capabilities required
 by the current client path:
@@ -68,7 +70,7 @@ capabilities required for that connection:
   "requestId": "handshake-1",
   "name": "protocol.handshake",
   "payload": {
-    "protocolVersion": 1,
+    "protocolVersion": 2,
     "requiredCapabilities": ["session.read"]
   }
 }

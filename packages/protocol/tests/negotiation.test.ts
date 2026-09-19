@@ -75,10 +75,7 @@ describe('HTTP bootstrap negotiation', () => {
     { client: 1, server: 2 },
   ])('makes older/newer version mismatch renderable: %j', ({ client, server }) => {
     expect(
-      evaluateBootstrap(
-        { ...bootstrap, protocolVersion: server },
-        { protocolVersion: client },
-      ),
+      evaluateBootstrap({ ...bootstrap, protocolVersion: server }, { protocolVersion: client }),
     ).toEqual({
       state: 'incompatible_protocol',
       bootstrap: { ...bootstrap, protocolVersion: server },
@@ -88,8 +85,12 @@ describe('HTTP bootstrap negotiation', () => {
   })
 
   it('validates required capabilities as protocol names without rejecting unknown advertisements', () => {
-    expect(evaluateBootstrap({ ...bootstrap, capabilities: ['future.feature'] }).state).toBe('ready')
-    expect(() => evaluateBootstrap(bootstrap, { requiredCapabilities: ['Future.feature'] })).toThrow()
+    expect(evaluateBootstrap({ ...bootstrap, capabilities: ['future.feature'] }).state).toBe(
+      'ready',
+    )
+    expect(() =>
+      evaluateBootstrap(bootstrap, { requiredCapabilities: ['Future.feature'] }),
+    ).toThrow()
     expect(CapabilityListSchema.safeParse(['turn.send', 'turn.send']).success).toBe(false)
   })
 })
@@ -137,7 +138,7 @@ describe('WebSocket application handshake', () => {
           type: 'command',
           requestId: handshake.requestId,
           name: 'protocol.handshake',
-          payload: { protocolVersion: 2, futureClientField: true },
+          payload: { protocolVersion: PROTOCOL_VERSION + 1, futureClientField: true },
         },
         bootstrap,
       ),
@@ -146,7 +147,10 @@ describe('WebSocket application handshake', () => {
       requestId: handshake.requestId,
       error: {
         code: 'protocol_incompatible',
-        details: { clientProtocolVersion: 2, serverProtocolVersion: PROTOCOL_VERSION },
+        details: {
+          clientProtocolVersion: PROTOCOL_VERSION + 1,
+          serverProtocolVersion: PROTOCOL_VERSION,
+        },
       },
     })
   })
@@ -196,7 +200,7 @@ describe('WebSocket application handshake', () => {
     expect(() =>
       parseProtocolHandshakeResult(handshake, {
         ...accepted,
-        payload: { ...bootstrap, protocolVersion: 2 },
+        payload: { ...bootstrap, protocolVersion: PROTOCOL_VERSION + 1 },
       }),
     ).toThrow('accepted an incompatible')
     expect(() =>
@@ -218,15 +222,15 @@ describe('WebSocket application handshake', () => {
     ).toThrow('unrequested capability')
     const newerClient = {
       ...handshake,
-      payload: { ...handshake.payload, protocolVersion: 2 },
+      payload: { ...handshake.payload, protocolVersion: PROTOCOL_VERSION + 1 },
     }
     const incompatible = negotiateProtocolHandshake(newerClient, bootstrap)
     if (incompatible.type !== 'error' || incompatible.error.code !== 'protocol_incompatible') {
       throw new Error('Expected an incompatible protocol result')
     }
     for (const details of [
-      { ...incompatible.error.details, clientProtocolVersion: 3 },
-      { ...incompatible.error.details, serverProtocolVersion: 2 },
+      { ...incompatible.error.details, clientProtocolVersion: PROTOCOL_VERSION + 2 },
+      { ...incompatible.error.details, serverProtocolVersion: PROTOCOL_VERSION + 1 },
     ]) {
       expect(() =>
         parseProtocolHandshakeResult(newerClient, {

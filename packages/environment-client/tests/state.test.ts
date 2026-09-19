@@ -173,7 +173,10 @@ describe('applyEvent', () => {
     state = applyEvent(
       state,
       event({
-        name: 'interaction.resolved',
+        name:
+          'reason' in outcome && outcome.reason === 'timeout'
+            ? 'interaction.expired'
+            : 'interaction.resolved',
         scope: threadScope,
         payload: {
           turnId: 'turn-1',
@@ -855,7 +858,9 @@ describe('protocol turn finalization', () => {
         applyEvent(state, delta('turn-1', 'assistant-1', 'late')).threads[THREAD.threadId],
       ).toBe(settled)
       expect(applyEvent(state, completed()).threads[THREAD.threadId]).toBe(settled)
-      expect(applyEvent(state, turnStarted()).threads[THREAD.threadId]?.turns[0]?.state).toBe(name.slice(5))
+      expect(applyEvent(state, turnStarted()).threads[THREAD.threadId]?.turns[0]?.state).toBe(
+        name.slice(5),
+      )
     },
   )
 })

@@ -310,4 +310,17 @@ export const proofEvents = [
       },
     },
   },
+  {
+    ...base,
+    name: 'interaction.expired',
+    scope: threadScope,
+    payload: {
+      turnId: 'turn-1',
+      response: {
+        kind: 'question',
+        interactionId: 'interaction-1',
+        outcome: { outcome: 'cancelled', reason: 'timeout' },
+      },
+    },
+  },
 ] satisfies ProofEvent[]

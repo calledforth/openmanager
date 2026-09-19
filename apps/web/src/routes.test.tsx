@@ -1,3 +1,4 @@
+import { PROTOCOL_VERSION } from '@openmanager/protocol'
 import { act, cleanup, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -49,7 +50,7 @@ function mockBootstrap(byEndpoint: Record<string, { environmentId: string; label
         ok: true,
         status: 200,
         json: async () => ({
-          protocolVersion: 1,
+          protocolVersion: PROTOCOL_VERSION,
           capabilities: ['connection.heartbeat'],
           ...body,
         }),
@@ -255,7 +256,7 @@ describe('web routes', () => {
           ok: true,
           status: 200,
           json: async () => ({
-            protocolVersion: 1,
+            protocolVersion: PROTOCOL_VERSION,
             environmentId: 'env-local',
             label: 'Local environment',
             capabilities: ['connection.heartbeat'],
@@ -304,7 +305,7 @@ describe('web routes', () => {
                   grant: ['read', 'admin'],
                 }
               : {
-                  protocolVersion: 1,
+                  protocolVersion: PROTOCOL_VERSION,
                   environmentId: 'env-bootstrap',
                   label: 'Unexpected environment',
                   capabilities: ['connection.heartbeat'],
@@ -355,7 +356,7 @@ describe('web routes', () => {
       ok: true,
       status: 200,
       json: async () => ({
-        protocolVersion: 1,
+        protocolVersion: PROTOCOL_VERSION,
         environmentId: 'env-remote',
         label: 'Remote lab',
         capabilities: ['connection.heartbeat'],
@@ -486,7 +487,7 @@ describe('web routes', () => {
           ok: true,
           status: 200,
           json: async () => ({
-            protocolVersion: 1,
+            protocolVersion: PROTOCOL_VERSION,
             environmentId: 'env-local',
             capabilities: [],
             label: 'Local environment',

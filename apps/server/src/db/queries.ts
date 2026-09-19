@@ -66,7 +66,8 @@ export const TURNS_FOR_THREAD_SQL = `
 
 /** Pending interactions of one turn; settled rows stay out of history. Sorted by callers. */
 export const INTERACTIONS_FOR_TURN_SQL = `
-  SELECT interaction_id, turn_id, kind, state, request_json, response_json, expires_at
+  SELECT interaction_id, turn_id, kind, state, request_json, response_json, expires_at,
+         created_at, resolved_at, resolved_by_client_id
   FROM interactions
   WHERE turn_id = ? AND state = 'pending'`
 

@@ -248,6 +248,65 @@ describe('event repository transactions', () => {
     ).toEqual({ n: 4 })
   })
 
+  it('expires durably, stays waiting for another request, and rejects a late resolution', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const request = interactionRequested()
+    repository.appendEvents(scope, [
+      started(),
+      request,
+      {
+        ...request,
+        eventId: 'second-request',
+        payload: {
+          ...request.payload,
+          interaction: { ...request.payload.interaction, interactionId: 'second' },
+        },
+      },
+    ])
+    const expiry = ProofEventSchemas['interaction.expired'].parse({
+      ...interactionResolved(),
+      name: 'interaction.expired',
+      eventId: 'expired',
+      payload: {
+        turnId: 'turn-1',
+        response: {
+          kind: 'plan',
+          interactionId: 'interaction-1',
+          outcome: { outcome: 'cancelled', reason: 'timeout' },
+        },
+      },
+    })
+    const records = repository.appendEvents(scope, [expiry])
+    expect(database.prepare('SELECT status FROM sessions').get()).toEqual({ status: 'waiting' })
+    expect(
+      database
+        .prepare('SELECT state, resolved_by_client_id FROM interactions WHERE interaction_id = ?')
+        .get('interaction-1'),
+    ).toEqual({ state: 'expired', resolved_by_client_id: null })
+    expect(repository.appendEvents(scope, [expiry])).toEqual(records)
+    const before = projectionSnapshot(database)
+    expect(() => repository.appendEvents(scope, [interactionResolved()])).toThrow(
+      'settled interaction',
+    )
+    expect(projectionSnapshot(database)).toEqual(before)
+    const final = repository.appendEvents(scope, [
+      {
+        ...expiry,
+        eventId: 'second-expired',
+        payload: {
+          ...expiry.payload,
+          response: { ...expiry.payload.response, interactionId: 'second' },
+        },
+      },
+    ])
+    expect(database.prepare('SELECT status FROM sessions').get()).toEqual({ status: 'running' })
+    expect(final.at(-1)?.event).toMatchObject({
+      name: 'session.updated',
+      payload: { status: 'running' },
+    })
+  })
+
   it('retries a retained status broadcast even after its triggering thread event is pruned', async () => {
     const { database } = await createDatabase()
     const repository = createEventRepository(database)

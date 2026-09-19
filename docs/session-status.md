@@ -8,12 +8,12 @@ include it in `SessionSummary`. A newly created session starts `idle`.
 | ----------------------------------------------- | --------- |
 | Accepted prompt, before provider execution      | `running` |
 | Permission, question, or plan review request    | `waiting` |
-| Last pending interaction resolved               | `running` |
+| Last pending interaction resolved or expired    | `running` |
 | Completed or interrupted turn                   | `idle`    |
 | Failed turn or unexpected provider process exit | `error`   |
 | New prompt after an error                       | `running` |
 
-Resolving one of several pending interactions leaves the session `waiting`.
+Resolving or expiring one of several pending interactions leaves the session `waiting`.
 Finalizing a turn cancels its remaining pending interactions. An expected idle
 process exit (reaping or shutdown) leaves status unchanged. Startup recovery
 marks abandoned active turns interrupted and their sessions idle.
@@ -44,3 +44,28 @@ adapter boundary until the desktop switches to an environment server.
 
 Deploy the updated environment server with the updated client: older servers
 provide summary status but do not broadcast changes to sidebar-only subscribers.
+
+## Pending interaction lifecycle
+
+The server owns permission, question and plan requests in the SQLite `interactions`
+table. `interaction.requested` creates the pending row and moves its turn and
+session to waiting in the same transaction. Requests carry optional `lifecycle`
+metadata (state, creation time, settlement time and resolver client ID); new
+servers always populate it. History and replay snapshots reconstruct metadata
+from the row, including for requests created before this metadata was exposed.
+Reloading a client preserves pending requests without relying on dialog state.
+
+`interaction.resolved` records the response, settlement time and the authenticated
+client that answered. A client-supplied resolver is ignored. Provider cancellations
+have no client resolver. Broker deadlines emit `interaction.expired` with a
+cancelled/timeout response and persist the distinct expired state. Both events
+remove the pending request on subscribed clients. Plan history retains the final
+state and metadata. Expiring or resolving the last request resumes running;
+other open requests keep the turn and session waiting.
+
+Turn finalization and server startup recovery cancel abandoned requests; a client
+refresh is not a server restart and does not cancel the live provider continuation.
+No schema migration is needed: the existing interaction table already includes
+creation time, settlement time, state and the resolver foreign key. Deploy the
+server and clients together: protocol version 2 rejects version-1 peers at
+bootstrap/handshake before they can subscribe to an unknown expiry event.
