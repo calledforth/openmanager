@@ -83,6 +83,8 @@ type ActiveTurn = {
   completion?: Promise<void>
   promptFailed?: boolean
   runtimeMessageId?: string
+  /** The mode the host is starting this turn in (a plan build), if it chose one. */
+  modeId?: string
   toolIds: Map<string, string>
   interactionIds: Map<string, string>
   pendingInteractions: Set<string>
@@ -218,8 +220,10 @@ export function createThreadService(
       workspaceId: string,
     ) => 'unknown' | 'available' | 'missing' | 'inaccessible'
     /**
-     * A turn is starting in a mode the host chose itself (a plan build), with
-     * no `composer.mode.set` for other clients' composers to have followed.
+     * A turn started in a mode the host chose itself (a plan build), with no
+     * `composer.mode.set` for other clients' composers to have followed.
+     * Reported once the provider has started the prompt, never for a launch
+     * that failed.
      */
     onSessionMode?: (sessionId: string, modeId: string) => void
   } = {},
@@ -835,6 +839,7 @@ export function createThreadService(
       turn,
       userMessage,
       interruptRequested: false,
+      ...(modeId ? { modeId } : {}),
       toolIds: new Map(),
       interactionIds: new Map(),
       pendingInteractions: new Set(),
@@ -852,7 +857,6 @@ export function createThreadService(
         )
           return
         active.promptStarted = true
-        if (modeId) options.onSessionMode?.(record.session.sessionId, modeId)
         return runtime.prompt({
           ...route(record, sessionId),
           ...(modeId ? { desiredConfig: { modeId } } : {}),
@@ -1485,6 +1489,9 @@ export function createThreadService(
         const active = record.activeTurn
         if (!active || event.data.userMessageId !== active.userMessage.messageId) return
         active.runtimeMessageId = event.messageId
+        // Only now has the provider opened the session and accepted the mode.
+        // A launch that fails before this leaves every composer where it was.
+        if (active.modeId) options.onSessionMode?.(record.session.sessionId, active.modeId)
         projectRuntimeEvent(record, event, active)
         return
       }

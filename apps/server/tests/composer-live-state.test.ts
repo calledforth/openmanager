@@ -300,6 +300,55 @@ describe('composer broadcasts', () => {
     })
   })
 
+  it('keeps answering with a selection whose durable write failed', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'openmanager-composer-live-test-'))
+    directories.push(directory)
+    const store = openComposerStore(directory)
+    stores.push(store)
+    // The persisted row is what the event projector would have written.
+    let persisted: { modelId?: string } | undefined
+    let failing = true
+    const service = createComposerService(
+      {
+        setModel: vi.fn().mockResolvedValue(undefined),
+      } as unknown as Parameters<typeof createComposerService>[0],
+      { snapshot: () => [provider], rejection: () => undefined },
+      store,
+      () =>
+        Promise.resolve({
+          providerId: 'claude' as const,
+          threadId: 'thread-a',
+          workspaceId: 'workspace-1',
+          cwd: '/workspace/one',
+          sessionId: 'provider-thread-a',
+        }),
+      {
+        publish: (name, payload) => {
+          if (name !== 'session.composer.updated') return
+          if (failing) throw new Error('event log is down')
+          persisted = (payload as { composer: { modelId?: string } }).composer
+        },
+        sessionForThread: () => 'session-a',
+        readSessionComposer: () => persisted,
+      },
+    )
+
+    // The provider already switched, so the next prompt must not switch it back.
+    await service.dispatch(setModel('session-a', 'opus'))
+    expect(persisted).toBeUndefined()
+    expect(service.sessionComposer('session-a')).toEqual({ modelId: 'opus' })
+    expect(
+      service.desiredFor({ providerId: 'claude', workspacePath: 'workspace-1', threadId: 't' }),
+    ).toEqual({ modelId: 'opus' })
+
+    // Once a write lands, the persisted row is the only copy again.
+    failing = false
+    await service.dispatch(setModel('session-a', 'fable'))
+    expect(persisted).toEqual({ modelId: 'fable' })
+    persisted = { modelId: 'sonnet' }
+    expect(service.sessionComposer('session-a')).toEqual({ modelId: 'sonnet' })
+  })
+
   it('never lets a failing publisher fail the command or the runtime event', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'openmanager-composer-live-test-'))
     directories.push(directory)

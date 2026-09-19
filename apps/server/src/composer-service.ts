@@ -80,11 +80,16 @@ export function createComposerService(
   // Broadcasting is advisory: the write it describes has already happened, and
   // a payload the protocol rejects (a workspace keyed by a path with spaces)
   // must fail neither the command nor the runtime's event delivery.
-  const publish: NonNullable<ComposerServiceOptions['publish']> = (name, payload) => {
+  const publish = <N extends ComposerEventName>(
+    name: N,
+    payload: ComposerEventPayload<N>,
+  ): boolean => {
     try {
       options.publish?.(name, payload)
+      return true
     } catch {
       // Clients converge on their next catalog or preference read.
+      return false
     }
   }
 
@@ -111,11 +116,12 @@ export function createComposerService(
     return preference
   }
 
+  // With a persisted reader this only holds selections whose durable write
+  // failed: the provider already runs on them, so reads and the next prompt
+  // must keep answering with them until a later write lands.
   const memorySelections = new Map<string, SessionComposerState>()
   const selectionOf = (sessionId: string): SessionComposerState =>
-    (options.readSessionComposer
-      ? options.readSessionComposer(sessionId)
-      : memorySelections.get(sessionId)) ?? {}
+    memorySelections.get(sessionId) ?? options.readSessionComposer?.(sessionId) ?? {}
 
   /**
    * A session's selection is its own: changing it never reaches a sibling
@@ -125,8 +131,9 @@ export function createComposerService(
     const current = selectionOf(sessionId)
     const merged = SessionComposerStateSchema.safeParse({ ...current, ...defined(patch) })
     if (!merged.success || isDeepStrictEqual(merged.data, current)) return current
-    if (!options.readSessionComposer) memorySelections.set(sessionId, merged.data)
-    publish('session.composer.updated', { sessionId, composer: merged.data })
+    const persisted = publish('session.composer.updated', { sessionId, composer: merged.data })
+    if (persisted && options.readSessionComposer) memorySelections.delete(sessionId)
+    else memorySelections.set(sessionId, merged.data)
     return merged.data
   }
 

@@ -19,7 +19,7 @@ Each payload is the whole current value, not a patch, so a replayed or repeated 
 Within a selection the fields do not behave alike:
 
 - `modelId` and `configValues` are the user's choice. The server re-applies them before every prompt (`HostDeps.desiredSessionConfig` is asked per thread), so a provider reporting a different model replaces the choice only when the chosen model is no longer offered.
-- `modeId` follows the provider. Agents switch modes on their own (plan to build), so a `current_mode_update`, or a plan build the host starts in a given mode, always wins. Mode is still not enforced on respawn.
+- `modeId` follows the provider. Agents switch modes on their own (plan to build), so a `current_mode_update`, or a plan build the host starts in a given mode, always wins. A plan build's mode is reported once the provider has started the prompt, so a launch that fails leaves every composer where it was. Mode is still not enforced on respawn.
 - `configOptions` is the provider's latest listing for that session. Options the protocol cannot express are dropped rather than hiding the rest.
 
 ## Alternatives considered
@@ -33,6 +33,7 @@ Within a selection the fields do not behave alike:
 ## Persistence and recovery
 
 - The session selection is projected from `session.composer.updated` into `sessions.composer_json` in the same transaction as the event, so the log and the row cannot disagree. It does not touch `updated_at`; changing a model must not reorder the sidebar.
+- If that write fails, the command still succeeds (the provider has already switched) and the server keeps the selection in memory, so reads and the next prompt stay on it until a later write lands. Other clients catch up with that write.
 - Preferences and profiles already live in the composer store's own tables. Their events are carriers only and project nothing.
 - Reconnect with a cursor replays the missed events. Reconnect without one (or across a gap) reads the selection from the session summaries, refetches the catalog, and marks held preferences as not loaded, because the snapshot does not carry them.
 - On the client a pushed preference counts as a landed write: the answer to a read issued before it is dropped.
