@@ -676,7 +676,8 @@ describe('handshake and scoped subscriptions', () => {
     expect(await early.next()).toMatchObject({ type: 'error', error: { code: 'validation' } })
     await earlyClosed
     for (const payload of [
-      { protocolVersion: 2, futureVersionField: true },
+      { protocolVersion: 1, requiredCapabilities: [] }, // v1 cannot consume expiry events.
+      { protocolVersion: PROTOCOL_VERSION + 1, futureVersionField: true },
       { protocolVersion: PROTOCOL_VERSION, requiredCapabilities: ['terminal.open'] },
     ]) {
       const client = await connect(host)
@@ -685,7 +686,10 @@ describe('handshake and scoped subscriptions', () => {
       expect(await client.next()).toMatchObject({
         type: 'error',
         error: {
-          code: payload.protocolVersion === 2 ? 'protocol_incompatible' : 'capability_missing',
+          code:
+            payload.protocolVersion !== PROTOCOL_VERSION
+              ? 'protocol_incompatible'
+              : 'capability_missing',
         },
       })
       await closed
@@ -1326,7 +1330,12 @@ describe('subscription replay', () => {
     await handshake(third)
     third.command('subscription.replay', { scope, cursor: cursor(1) })
     const current = ReplayResponseSchema.parse(await third.next())
-    expect(current.payload).toMatchObject({ mode: 'replay', from: cursor(1), to: cursor(1), events: [] })
+    expect(current.payload).toMatchObject({
+      mode: 'replay',
+      from: cursor(1),
+      to: cursor(1),
+      events: [],
+    })
     expect(host.server.sockets.subscriptionCount).toBe(3)
 
     // Every recovered subscription is live from its answer onward.

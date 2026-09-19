@@ -30,13 +30,13 @@ Unknown or stale pong IDs never acknowledge the current ping.
 
 ## Timing
 
-`HEARTBEAT_POLICY` is normative for protocol version 1:
+`HEARTBEAT_POLICY` is normative for protocol version 2:
 
-| Setting | Value | Meaning |
-| --- | ---: | --- |
-| `serverPingIntervalMs` | 15,000 ms | Time from handshake, or one sent ping, to the next ping |
-| `pongTimeoutMs` | 10,000 ms | Maximum time the server waits for that ping's matching pong |
-| `clientIdleTimeoutMs` | 45,000 ms | Maximum time the client accepts without any valid server message |
+| Setting                |     Value | Meaning                                                          |
+| ---------------------- | --------: | ---------------------------------------------------------------- |
+| `serverPingIntervalMs` | 15,000 ms | Time from handshake, or one sent ping, to the next ping          |
+| `pongTimeoutMs`        | 10,000 ms | Maximum time the server waits for that ping's matching pong      |
+| `clientIdleTimeoutMs`  | 45,000 ms | Maximum time the client accepts without any valid server message |
 
 Each peer measures elapsed time with its own monotonic clock; timestamps never
 cross the wire. Exactly one ping may be outstanding. A pong received at its

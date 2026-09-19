@@ -67,4 +67,5 @@ Turn finalization and server startup recovery cancel abandoned requests; a clien
 refresh is not a server restart and does not cancel the live provider continuation.
 No schema migration is needed: the existing interaction table already includes
 creation time, settlement time, state and the resolver foreign key. Deploy the
-server and clients together so clients understand the new expiry event.
+server and clients together: protocol version 2 rejects version-1 peers at
+bootstrap/handshake before they can subscribe to an unknown expiry event.

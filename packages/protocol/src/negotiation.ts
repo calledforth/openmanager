@@ -10,7 +10,8 @@ import {
 } from './providers.js'
 
 /** Increment only when the wire contract changes incompatibly. */
-export const PROTOCOL_VERSION = 1 as const
+// Version 2 adds interaction.expired; v1 clients cannot fold or replay it.
+export const PROTOCOL_VERSION = 2 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema

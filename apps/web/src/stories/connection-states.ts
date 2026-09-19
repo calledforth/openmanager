@@ -1,3 +1,4 @@
+import { PROTOCOL_VERSION } from '@openmanager/protocol'
 import type { ConnectionKind, DeriveConnectionInput } from '../lib/connection-state'
 
 export type ConnectionStory = {
@@ -64,7 +65,8 @@ export const CONNECTION_STORIES: ConnectionStory[] = [
       environment: selected,
       bootstrap: {
         status: 'unreachable',
-        message: 'Could not reach http://127.0.0.1:43120. Check that the environment server is running, then retry.',
+        message:
+          'Could not reach http://127.0.0.1:43120. Check that the environment server is running, then retry.',
       },
       transport: {
         phase: 'closed',
@@ -86,7 +88,11 @@ export const CONNECTION_STORIES: ConnectionStory[] = [
         environmentId: 'env-local',
         label: 'Local environment',
       },
-      transport: { phase: 'closed', hasConnected: false, failure: { code: 'protocol_incompatible' } },
+      transport: {
+        phase: 'closed',
+        hasConnected: false,
+        failure: { code: 'protocol_incompatible' },
+      },
     },
   },
   {
@@ -110,7 +116,7 @@ export const READY_CONNECTION_INPUT: DeriveConnectionInput = {
     status: 'ready',
     environmentId: 'env-local',
     label: 'Local environment',
-    protocolVersion: 1,
+    protocolVersion: PROTOCOL_VERSION,
   },
   transport: { phase: 'connected', hasConnected: true, failure: null },
 }

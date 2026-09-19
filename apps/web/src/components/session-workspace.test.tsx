@@ -1,3 +1,4 @@
+import { PROTOCOL_VERSION } from '@openmanager/protocol'
 import { cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -77,7 +78,7 @@ function connectedEnvironment() {
       ok: true,
       status: 200,
       json: async () => ({
-        protocolVersion: 1,
+        protocolVersion: PROTOCOL_VERSION,
         capabilities: ['connection.heartbeat'],
         environmentId: 'env-local',
         label: 'Local environment',

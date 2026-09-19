@@ -1,3 +1,4 @@
+import { PROTOCOL_VERSION } from '@openmanager/protocol'
 import { build } from 'esbuild'
 import { fileURLToPath } from 'node:url'
 import { runInNewContext } from 'node:vm'
@@ -67,11 +68,14 @@ it('bundles the public entry for a browser and validates without Node globals', 
   expect(browserGlobals.proofEvents).toEqual(proofEvents)
   expect(browserGlobals.replayResults).toEqual([replayResponse, snapshotResponse])
   expect(browserGlobals.subscriptionEvent).toEqual(subscriptionEvent)
-  expect(browserGlobals.bootstrapState).toEqual({ state: 'ready', bootstrap: {
-    protocolVersion: 1,
-    environmentId: 'env-browser',
-    capabilities: ['session.read'],
-  } })
+  expect(browserGlobals.bootstrapState).toEqual({
+    state: 'ready',
+    bootstrap: {
+      protocolVersion: PROTOCOL_VERSION,
+      environmentId: 'env-browser',
+      capabilities: ['session.read'],
+    },
+  })
   expect(browserGlobals.handshakeResult).toMatchObject({
     type: 'error',
     requestId: 'browser-handshake',
