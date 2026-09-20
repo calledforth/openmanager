@@ -227,7 +227,17 @@ Startup empties `uploads/partial/` and removes any blob in `uploads/` that no
 leaves behind. No path leaves a partial file without a sweep, and a completed
 blob always has a metadata row.
 
-MIME allowlisting is CAL-86, referencing an artifact from `turn.send` is
+Tickets accept only `image/png`, `image/jpeg` and `image/webp`, matching the
+composer. MIME names are case-insensitive and stored lowercase. Other declared
+types (including SVG, HTML and generic binary) receive a typed `validation`
+error before a ticket or file is created. This validates declared metadata,
+not image decoding or file signatures. The ticket's MIME type is authoritative;
+the PUT may use `application/octet-stream` for its raw transport body.
+Local owner and paired remote clients follow the same size and type policy.
+The session's workspace must resolve at ticket creation and again at PUT time;
+clients cannot supply a destination path.
+
+Referencing an artifact from `turn.send` is
 CAL-88, retrieval is CAL-89, and retention of completed uploads that no
 message ever referenced is CAL-90.
 
