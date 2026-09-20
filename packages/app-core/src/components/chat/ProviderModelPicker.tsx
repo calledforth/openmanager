@@ -39,6 +39,9 @@ export type ProviderModelGroup = {
   providerId: ProviderId
   providerName: string
   models: ProviderModelOption[]
+  /** Why this provider cannot be switched to right now. Its models stay
+   * listed, so the picker says what is wrong instead of hiding the provider. */
+  unavailableReason?: string
 }
 
 /** Picker rail order — favorites sit above these. */
@@ -63,6 +66,7 @@ type FlatModel = {
   supportsFastMode?: boolean
   supportsAutoMode?: boolean
   contextWindowTokens?: number
+  unavailableReason?: string
   keywords: string
 }
 
@@ -183,6 +187,7 @@ export function ProviderModelPicker({
             ...(model.contextWindowTokens
               ? { contextWindowTokens: model.contextWindowTokens }
               : {}),
+            ...(group.unavailableReason ? { unavailableReason: group.unavailableReason } : {}),
             keywords: `${group.providerName} ${model.id} ${model.name} ${model.description ?? ''} ${label}`,
           }
         }),
@@ -288,6 +293,7 @@ export function ProviderModelPicker({
   }
 
   const selectModel = (model: FlatModel) => {
+    if (model.unavailableReason) return
     onChange(model.providerId, model.modelId)
     close()
   }
@@ -447,9 +453,12 @@ export function ProviderModelPicker({
                         type="button"
                         role="option"
                         aria-selected={selected}
+                        aria-disabled={model.unavailableReason ? true : undefined}
+                        title={model.unavailableReason}
                         onClick={() => selectModel(model)}
                         className={cn(
                           'flex min-w-0 flex-1 items-center gap-2 px-1.5 py-1.5 text-left text-11-regular leading-none transition-colors',
+                          model.unavailableReason && 'cursor-not-allowed opacity-40',
                           selected
                             ? 'text-[var(--basis-text-strong)]'
                             : active
@@ -485,6 +494,15 @@ export function ProviderModelPicker({
                     </div>
                   )
                 })}
+
+                {!searching && paneModels[0]?.unavailableReason && paneId !== FAVORITES_PANE && (
+                  <div
+                    className="px-3 pb-1 pt-2 text-11-regular text-[var(--basis-text-faint)]"
+                    role="note"
+                  >
+                    {paneModels[0].unavailableReason}
+                  </div>
+                )}
 
                 {paneModels.length === 0 && (
                   <div className="px-3 py-3 text-11-regular text-[var(--basis-text-faint)]">

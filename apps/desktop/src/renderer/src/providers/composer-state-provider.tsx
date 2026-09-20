@@ -482,6 +482,8 @@ export function ComposerStateProvider({ children }: { children: ReactNode }) {
     async (sessionExternalId: string, modelId: string) => {
       if (!activeWorkspacePath || !currentClientId) return
       const providerId = providerIdForSession(sessionExternalId)
+      // The composer shows this, so it must not outlive the change that fixed it.
+      setError(null)
       try {
         await submitJob({
           workspacePath: activeWorkspacePath,
@@ -531,6 +533,8 @@ export function ComposerStateProvider({ children }: { children: ReactNode }) {
     async (sessionExternalId: string, modeId: string) => {
       if (!activeWorkspacePath || !currentClientId) return
       const providerId = providerIdForSession(sessionExternalId)
+      // The composer shows this, so it must not outlive the change that fixed it.
+      setError(null)
       try {
         await submitJob({
           workspacePath: activeWorkspacePath,
@@ -580,6 +584,8 @@ export function ComposerStateProvider({ children }: { children: ReactNode }) {
     async (sessionExternalId: string, configId: string, value: SessionConfigValue) => {
       if (!activeWorkspacePath || !currentClientId) return
       const providerId = providerIdForSession(sessionExternalId)
+      // The composer shows this, so it must not outlive the change that fixed it.
+      setError(null)
       try {
         await submitJob({
           workspacePath: activeWorkspacePath,

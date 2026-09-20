@@ -124,6 +124,22 @@ describe('session composer resolution', () => {
     expect(resolved.models?.availableModels).toEqual(profile.availableModels)
   })
 
+  it('ranks the session model first where the selection belongs to the session', () => {
+    const owned = { modelOwner: 'session' } as const
+    const session = { sessionId: 'session-1', providerId: 'cursor' } as const
+    const chosen = resolveSessionComposerRuntime(
+      { ...session, models: { currentModelId: 'cursor/default' } },
+      { modelId: 'cursor/fast' },
+      profile,
+      owned,
+    )
+    expect(chosen.models?.currentModelId).toBe('cursor/default')
+
+    // Until the session has a model of its own, the last-used one stands in.
+    const unset = resolveSessionComposerRuntime(session, { modelId: 'cursor/fast' }, profile, owned)
+    expect(unset.models?.currentModelId).toBe('cursor/fast')
+  })
+
   it('lets the live runtime win for modes', () => {
     const resolved = resolveSessionComposerRuntime(
       {
