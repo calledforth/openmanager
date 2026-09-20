@@ -817,7 +817,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
             )
           }
           await startDraftSession(text, launch)
-          draftLaunched(activeWorkspacePath ?? '')
+          draftLaunched(activeWorkspacePath ?? '', launch)
           return
         }
         const current = targetRef.current

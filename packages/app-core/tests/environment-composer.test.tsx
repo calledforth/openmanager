@@ -290,6 +290,26 @@ describe('the composer over the environment client', () => {
     expect(probe.composer.composerConfigValues).toEqual({})
   })
 
+  it('keeps the picks of a newer draft opened while an earlier one was launching', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client)
+    await openDraft(client)
+    await act(() => probe.composer.setDraftModel('opus'))
+
+    let sending!: Promise<void>
+    await act(() => {
+      sending = probe.thread.sendMessage('hello')
+    })
+    await act(() => probe.session.createSession(WORKSPACE.workspaceId))
+    await act(() => probe.composer.setDraftConfigOption('effort', 'high'))
+    await settle(client)
+    await act(() => sending)
+
+    expect(commandsOf(client)).toContain('createSession')
+    expect(probe.session.isSessionDraftOpen).toBe(true)
+    expect(probe.composer.composerConfigValues).toEqual({ effort: 'high' })
+  })
+
   it('refuses picks the environment could not launch with', async () => {
     const limited = (Object.keys(WIRE_COMMANDS) as EnvironmentCommandName[]).filter(
       (command) => command !== 'setComposerPreference' && command !== 'setSessionMode',

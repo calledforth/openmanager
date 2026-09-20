@@ -72,7 +72,7 @@ export interface DraftLaunchInternals {
   draftLaunch: (workspaceId: string) => DraftLaunch
   /** The draft became a session: its picks are filed, so holding them any
    * longer would lay them over whatever the workspace remembers next. */
-  draftLaunched: (workspaceId: string) => void
+  draftLaunched: (workspaceId: string, launch: DraftLaunch) => void
 }
 
 export const DraftLaunchContext = createContext<DraftLaunchInternals | null>(null)
@@ -387,11 +387,17 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
     [canFilePicks, draftWorkspaceId, providerDisplayName, setDefaultProviderId],
   )
 
-  const draftLaunched = useCallback((workspaceId: string) => {
+  // The picks each launch was built from. Every pick replaces the workspace's
+  // selection object, so identity tells a launched draft's picks from those of
+  // a newer draft opened in the same workspace while the launch was running.
+  const launchedPicks = useRef(new WeakMap<DraftLaunch, DraftSelection>())
+  const draftLaunched = useCallback((workspaceId: string, launch: DraftLaunch) => {
+    const launched = launchedPicks.current.get(launch)
     setDraftSelections((prev) => {
       const current = prev[workspaceId]
+      if (!current || current !== launched) return prev
       // The provider is not part of the preference, so the workspace keeps it.
-      return current ? { ...prev, [workspaceId]: { providerId: current.providerId } } : prev
+      return { ...prev, [workspaceId]: { providerId: current.providerId } }
     })
   }, [])
 
@@ -413,11 +419,13 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
       // would pin the workspace to them.
       const picks = withHeldPicks(null, held)
       const modeId = resolved.modes?.currentModeId
-      return {
+      const launch: DraftLaunch = {
         providerId,
         ...(Object.keys(picks).length > 0 ? { preference: picks } : {}),
         ...(modeId && modeId !== profile?.defaultModeId ? { modeId } : {}),
       }
+      if (held) launchedPicks.current.set(launch, held)
+      return launch
     },
     [draftFor],
   )
