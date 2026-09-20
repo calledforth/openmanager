@@ -4,6 +4,7 @@ import {
   PROTOCOL_VERSION,
   SESSION_CREATE_EXPLICIT_CAPABILITY,
   ProofEventSchema,
+  ProviderHealthChangedEventSchema,
   ServerMessageSchema,
   SubscriptionEventSchema,
   advanceClientHeartbeat,
@@ -33,7 +34,10 @@ import {
   applyEnvironment,
   applyEvent,
   applyInteractionResolved,
+  applyProviderBootstrap,
   applyProviderCatalog,
+  applyProviderHealth,
+  applyProviderProbe,
   applySessionCreated,
   applySessionHistory,
   applySessionList,
@@ -389,6 +393,10 @@ export function createWebSocketEnvironmentClient(
       const environment = { environmentId: bootstrap.environmentId, name: label }
       store.update((state) => applyEnvironment(state, environment))
     }
+    // Providers and their health ride the handshake too, so the composer can
+    // tell a broken provider apart before the catalog read comes back.
+    const providers = bootstrap.providers
+    if (providers) store.update((state) => applyProviderBootstrap(state, providers))
     ready = true
     attempts = 0
     connectionGeneration += 1
@@ -483,6 +491,14 @@ export function createWebSocketEnvironmentClient(
         return
       }
       applyRecord(record)
+      return
+    }
+    // Health is broadcast to every socket outside any scope: it is a current
+    // reading, not history, so it has no cursor and no event ID to dedupe on.
+    const health = ProviderHealthChangedEventSchema.safeParse(raw)
+    if (health.success) {
+      const { providerId, health: next } = health.data.payload
+      store.update((state) => applyProviderHealth(state, providerId, next))
       return
     }
     const transient = ProofEventSchema.safeParse(raw)
@@ -1119,6 +1135,11 @@ export function createWebSocketEnvironmentClient(
       const payload = await request('provider.catalog.get', null)
       store.update((state) => applyProviderCatalog(state, payload.providers))
       return payload.providers
+    },
+    async probeProvider(input) {
+      const payload = await request('provider.probe', input)
+      store.update((state) => applyProviderProbe(state, payload.provider))
+      return payload.provider
     },
     getComposerPreference: (input) =>
       composerRequest(

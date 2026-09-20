@@ -311,6 +311,84 @@ describe('websocket environment client', () => {
     expect(socket.sent.some((message) => message.name === 'environment.get')).toBe(false)
   })
 
+  it('seeds providers and their health from the handshake', async () => {
+    const { client, socket } = await connected(FULL_CAPABILITIES, { providers: [BARE_PROVIDER] })
+    expect(selectProviderCatalog(client.getState())).toEqual([BARE_PROVIDER])
+    expect(socket.sent.some((message) => message.name === 'provider.catalog.get')).toBe(false)
+  })
+
+  it('keeps a read profile when a reconnect handshake lists the provider again', async () => {
+    const { client, socket, timers } = await connected(
+      [...FULL_CAPABILITIES, 'provider.catalog.get'],
+      { providers: [BARE_PROVIDER] },
+    )
+    socket.respond('provider.catalog.get', { providers: [PROVIDER] })
+    await flush()
+    socket.drop()
+    timers.advance(1000)
+    const next = FakeSocket.instances.at(-1)!
+    next.open()
+    const unhealthy = { ...BARE_PROVIDER.health, summary: 'error', auth: 'unauthenticated' }
+    next.respond('protocol.handshake', {
+      ...bootstrap(FULL_CAPABILITIES),
+      providers: [{ ...BARE_PROVIDER, health: unhealthy }],
+    })
+    await flush()
+    expect(client.getState().providers.opencode).toEqual({ ...PROVIDER, health: unhealthy })
+  })
+
+  it('folds provider_health_changed into the listed provider and ignores strangers', async () => {
+    const { client, socket } = await connected(FULL_CAPABILITIES, { providers: [BARE_PROVIDER] })
+    const health = { ...BARE_PROVIDER.health, summary: 'error', install: 'missing' }
+    socket.receive({
+      type: 'event',
+      name: 'provider_health_changed',
+      payload: { providerId: 'opencode', health },
+    })
+    socket.receive({
+      type: 'event',
+      name: 'provider_health_changed',
+      payload: { providerId: 'cursor', health },
+    })
+    expect(client.getState().providers.opencode?.health).toEqual(health)
+    expect(client.getState().providerOrder).toEqual(['opencode'])
+    // An unchanged reading must not wake subscribers.
+    const before = client.getState()
+    socket.receive({
+      type: 'event',
+      name: 'provider_health_changed',
+      payload: { providerId: 'opencode', health },
+    })
+    expect(client.getState()).toBe(before)
+  })
+
+  it('probes a provider only when the environment advertises it', async () => {
+    const older = await connected(FULL_CAPABILITIES, { providers: [BARE_PROVIDER] })
+    expect(older.client.supports('probeProvider')).toBe(false)
+    const sent = older.socket.sent.length
+    await expect(
+      older.client.commands.probeProvider({ providerId: 'opencode', workspaceId: 'ws-1' }),
+    ).rejects.toMatchObject({ code: 'capability_missing' })
+    expect(older.socket.sent.length).toBe(sent)
+
+    const { client, socket } = await connected(
+      [...FULL_CAPABILITIES, 'provider.catalog.get', 'provider.probe'],
+      { providers: [BARE_PROVIDER] },
+    )
+    socket.respond('provider.catalog.get', { providers: [PROVIDER] })
+    await flush()
+    const probe = client.commands.probeProvider({ providerId: 'opencode', workspaceId: 'ws-1' })
+    expect(socket.last('provider.probe').payload).toEqual({
+      providerId: 'opencode',
+      workspaceId: 'ws-1',
+    })
+    const health = { ...BARE_PROVIDER.health, summary: 'error', auth: 'unauthenticated' }
+    socket.respond('provider.probe', { provider: { ...BARE_PROVIDER, health } })
+    await expect(probe).resolves.toEqual({ ...BARE_PROVIDER, health })
+    // The probe answer carries no profile; the one already read stays.
+    expect(client.getState().providers.opencode).toEqual({ ...PROVIDER, health })
+  })
+
   it('refuses commands the environment does not advertise before sending anything', async () => {
     const { client, socket } = await connected(['session.create'])
     const before = socket.sent.length

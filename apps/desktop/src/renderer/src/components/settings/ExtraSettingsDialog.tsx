@@ -15,7 +15,10 @@ import {
 import type { ProviderId } from '@agentpack/contract'
 import { cn } from '@openmanager/app-core/lib/utils'
 import { UI_FONTS, type UiFontId } from '@openmanager/app-core/lib/fonts'
-import { describeProviderHealth, type ProviderHealthTone } from '../../lib/provider-health-view'
+import {
+  describeProviderHealth,
+  type ProviderHealthTone,
+} from '@openmanager/app-core/lib/provider-health-view'
 import {
   typographyBodySm,
   typographyCaption,

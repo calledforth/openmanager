@@ -8,14 +8,26 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import type {
-  PlanReviewOutcome,
-  ProviderId,
-  QuestionOutcome,
-  PermissionOption,
+import {
+  isProviderId,
+  type PlanReviewOutcome,
+  type ProviderId,
+  type ProviderMetadata,
+  type QuestionOutcome,
+  type PermissionOption,
 } from '@agentpack/contract'
+import {
+  deriveProviderUiStatus,
+  type ProviderHealthReport,
+} from '@openmanager/shared/contracts/provider-health'
 import type { InteractionResponse, Workspace } from '@openmanager/protocol'
-import type { PendingInteraction, ThreadTarget } from '@openmanager/environment-client'
+import {
+  selectProviderCatalog,
+  shallowEqualArray,
+  type PendingInteraction,
+  type ProviderCatalogEntry,
+  type ThreadTarget,
+} from '@openmanager/environment-client'
 import type { UploadedImageAttachment } from '../lib/attachments'
 import {
   useActiveSession,
@@ -29,7 +41,14 @@ import {
   useRecentWorkspaces,
   useWorkspaces,
 } from './environment-client'
-import { PlatformCapabilitiesContext, type PlatformCapabilitiesValue } from './platform-provider'
+import {
+  PlatformCapabilitiesContext,
+  coordinateProviderConnection,
+  providerBlocksComposer,
+  type AgentInfo,
+  type PlatformCapabilitiesValue,
+  type ProviderUiStatus,
+} from './platform-provider'
 import {
   SessionStateContext,
   type DraftRequest,
@@ -61,6 +80,7 @@ import { QuestionStateProvider, type PendingQuestion } from './question-provider
 import { PlanStateProvider, type PlanRow } from './plan-provider'
 import { ViewActionsContext, type ViewActions } from './view-actions'
 import { createEnvironmentThreadStores } from '../lib/environment-thread'
+import { providerHealthReportFromWire } from '../lib/provider-health-view'
 
 const DEFAULT_PROVIDER_ID: ProviderId = 'opencode'
 const COLLAPSED_WORKSPACES_KEY = 'openmanager.sidebar.collapsed-workspaces'
@@ -117,25 +137,130 @@ export function EnvironmentApplicationProviders({
 }
 
 // ---------------------------------------------------------------------------
-// Platform capabilities: the environment owns providers; nothing to start here.
+// Platform capabilities: the environment owns providers; this reads its
+// discovery and health, and probes through it.
 // ---------------------------------------------------------------------------
 
+const statusOf = (entry: Pick<ProviderCatalogEntry, 'health'>): ProviderUiStatus =>
+  deriveProviderUiStatus(providerHealthReportFromWire(entry.health))
+
 function EnvironmentPlatformCapabilitiesProvider({ children }: { children: ReactNode }) {
+  const client = useEnvironmentClient()
   const environment = useEnvironmentState((state) => state.environment)
+  const catalog = useEnvironmentState(selectProviderCatalog, shallowEqualArray)
+  // Advertised capabilities arrive with the handshake, so this re-reads them
+  // on connect rather than latching the pre-handshake "unsupported".
+  const canProbe = useConnectionState().capabilities.includes('provider.probe')
+  const [probing, setProbing] = useState<Partial<Record<ProviderId, boolean>>>({})
+  const [error, setError] = useState<string | null>(null)
+  const probesRef = useRef<Map<ProviderId, Promise<boolean>>>(new Map())
+
+  const derived = useMemo(() => {
+    const now = Date.now()
+    const providers: ProviderMetadata[] = []
+    const providerHealthByProvider: Partial<Record<ProviderId, ProviderHealthReport>> = {}
+    const agentUiStatusByProvider: Partial<Record<ProviderId, ProviderUiStatus>> = {}
+    const acpAgentInfoByProvider: Partial<Record<ProviderId, AgentInfo>> = {}
+    for (const entry of catalog) {
+      // The shared views key icons and copy by the providers they know.
+      if (!isProviderId(entry.id)) continue
+      providers.push({
+        id: entry.id,
+        displayName: entry.displayName,
+        capabilities: entry.capabilities,
+      })
+      const report = providerHealthReportFromWire(entry.health)
+      providerHealthByProvider[entry.id] = report
+      const status = deriveProviderUiStatus(report, now)
+      // Same bridge as desktop: a probe this client started reads as checking
+      // until the environment's own `refreshing` push takes over.
+      agentUiStatusByProvider[entry.id] =
+        status === 'unknown' && probing[entry.id] ? 'probing' : status
+      if (entry.profile?.agentInfo) acpAgentInfoByProvider[entry.id] = entry.profile.agentInfo
+    }
+    return {
+      providers,
+      providerHealthByProvider,
+      agentUiStatusByProvider,
+      acpAgentInfoByProvider,
+    }
+  }, [catalog, probing])
+
+  const providerDisplayName = useCallback(
+    (providerId: ProviderId) =>
+      derived.providers.find((provider) => provider.id === providerId)?.displayName ?? providerId,
+    [derived.providers],
+  )
+
+  /** Probe now and answer whether the provider can take a prompt. */
+  const probe = useCallback(
+    (providerId: ProviderId, workspaceId: string) =>
+      coordinateProviderConnection(probesRef.current, providerId, async () => {
+        setProbing((prev) => ({ ...prev, [providerId]: true }))
+        try {
+          const provider = await client.commands.probeProvider({ providerId, workspaceId })
+          return !providerBlocksComposer(statusOf(provider))
+        } catch {
+          return false
+        } finally {
+          setProbing((prev) => ({ ...prev, [providerId]: false }))
+        }
+      }),
+    [client],
+  )
+
+  const ensureProvider = useCallback(
+    async (providerId: ProviderId, cwd: string) => {
+      const entry = client.getState().providers[providerId]
+      // An environment that lists no providers gates sends on its own.
+      if (!entry) return true
+      const status = statusOf(entry)
+      // A probe spawns the CLI, so a provider already known to work is not
+      // re-checked before every new chat.
+      if (status === 'ready' || status === 'degraded') return true
+      if (!canProbe || !cwd) return !providerBlocksComposer(status)
+      return probe(providerId, cwd)
+    },
+    [canProbe, client, probe],
+  )
+
+  const retryProvider = useCallback(
+    async (providerId: ProviderId, cwd = '') => {
+      setError(null)
+      // A probe runs in a registered workspace; any one will do for a retry.
+      const workspaceId = cwd || client.getState().workspaceOrder[0]
+      if (!canProbe || !workspaceId) {
+        setError(
+          canProbe
+            ? 'Add a workspace to check providers.'
+            : 'This environment cannot re-check providers.',
+        )
+        return
+      }
+      const ready = await probe(providerId, workspaceId)
+      if (!ready) setError(`Failed to connect to ${providerDisplayName(providerId)}.`)
+    },
+    [canProbe, client, probe, providerDisplayName],
+  )
+
   const value = useMemo<PlatformCapabilitiesValue>(
     () => ({
-      providers: EMPTY_LIST,
-      providerHealthByProvider: EMPTY_RECORD,
-      agentUiStatusByProvider: EMPTY_RECORD,
-      acpAgentInfoByProvider: EMPTY_RECORD,
+      ...derived,
       acpPromptCapabilitiesByProvider: EMPTY_RECORD,
       currentClientId: environment?.environmentId ?? null,
-      error: null,
-      ensureProvider: async () => true,
-      retryProvider: async () => undefined,
-      providerDisplayName: (providerId) => providerId,
+      error,
+      ensureProvider,
+      retryProvider,
+      providerDisplayName,
     }),
-    [environment?.environmentId],
+    [
+      derived,
+      environment?.environmentId,
+      ensureProvider,
+      error,
+      providerDisplayName,
+      retryProvider,
+    ],
   )
   return (
     <PlatformCapabilitiesContext.Provider value={value}>
@@ -393,12 +518,16 @@ function EnvironmentSessionStateProvider({
 function EnvironmentComposerStateProvider({ children }: { children: ReactNode }) {
   const { activeSessionId, activeWorkspacePath, isSessionDraftOpen, defaultProviderId } =
     useContext(SessionStateContext)!
+  // The composer reads health for the provider it names, so an open session
+  // names its own rather than the draft default.
+  const listedProviderId = useActiveSession()?.providerId
+  const sessionProviderId = isProviderId(listedProviderId) ? listedProviderId : defaultProviderId
   const value = useMemo<ComposerStateValue>(() => {
     const noop = () => undefined
     const asyncNoop = async () => undefined
     return {
       acpSessionState: activeSessionId
-        ? { sessionId: activeSessionId, providerId: defaultProviderId }
+        ? { sessionId: activeSessionId, providerId: sessionProviderId }
         : null,
       draftSessionState:
         isSessionDraftOpen && activeWorkspacePath
@@ -419,7 +548,13 @@ function EnvironmentComposerStateProvider({ children }: { children: ReactNode })
       draftLaunchPreferences: () => ({ providerId: defaultProviderId }),
       sessionLaunchPreferences: () => ({}),
     }
-  }, [activeSessionId, activeWorkspacePath, defaultProviderId, isSessionDraftOpen])
+  }, [
+    activeSessionId,
+    activeWorkspacePath,
+    defaultProviderId,
+    isSessionDraftOpen,
+    sessionProviderId,
+  ])
   return <ComposerStateContext.Provider value={value}>{children}</ComposerStateContext.Provider>
 }
 
@@ -599,6 +734,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
   const client = useEnvironmentClient()
   const { commands } = client
   const session = useContext(SessionStateContext)!
+  const { ensureProvider, providerDisplayName } = useContext(PlatformCapabilitiesContext)!
   const { startDraftSession } = useContext(DraftInternalsContext)!
   const activeSession = useActiveSession()
   const thread = useActiveThread()
@@ -630,6 +766,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
   targetRef.current = target
 
   const { beginDraftTurn, beginSessionTurn, failTurn, isSessionDraftOpen } = session
+  const { activeWorkspacePath, defaultProviderId } = session
 
   const sendMessage = useCallback(
     async (content: string, attachments?: UploadedImageAttachment[]) => {
@@ -644,6 +781,13 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
         }
         if (!targetRef.current && isSessionDraftOpen) {
           beginDraftTurn()
+          // Refused here rather than by the environment's rejection: the user
+          // learns why before a session exists, and keeps what they typed.
+          if (!(await ensureProvider(defaultProviderId, activeWorkspacePath ?? ''))) {
+            throw new Error(
+              `${providerDisplayName(defaultProviderId)} is unavailable. Retry it from Settings.`,
+            )
+          }
           await startDraftSession(text)
           return
         }
@@ -660,7 +804,18 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
         throw err
       }
     },
-    [beginDraftTurn, beginSessionTurn, commands, failTurn, isSessionDraftOpen, startDraftSession],
+    [
+      activeWorkspacePath,
+      beginDraftTurn,
+      beginSessionTurn,
+      commands,
+      defaultProviderId,
+      ensureProvider,
+      failTurn,
+      isSessionDraftOpen,
+      providerDisplayName,
+      startDraftSession,
+    ],
   )
 
   const retrySend = useCallback(

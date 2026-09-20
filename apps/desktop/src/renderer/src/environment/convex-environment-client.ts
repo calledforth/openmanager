@@ -97,6 +97,7 @@ export interface ConvexEnvironmentClientOptions {
  */
 const UNSUPPORTED: ReadonlySet<EnvironmentCommandName> = new Set([
   'getProviderCatalog',
+  'probeProvider',
   'getComposerPreference',
   'setComposerPreference',
   'setSessionModel',
@@ -1037,6 +1038,7 @@ export function createConvexEnvironmentClient(
       }
     },
     getProviderCatalog: () => unsupported('getProviderCatalog'),
+    probeProvider: () => unsupported('probeProvider'),
     getComposerPreference: () => unsupported('getComposerPreference'),
     setComposerPreference: () => unsupported('setComposerPreference'),
     setSessionModel: () => unsupported('setSessionModel'),

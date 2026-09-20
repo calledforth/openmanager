@@ -3,6 +3,7 @@ import {
   type ProviderHealthReport,
   type ProviderUiStatus,
 } from '@openmanager/shared/contracts/provider-health'
+import type { ProviderHealth as WireProviderHealth } from '@openmanager/protocol'
 
 /** How one provider reads in the settings menu.
  *
@@ -120,4 +121,22 @@ function relativeAge(ms: number): string {
   const hours = Math.floor(minutes / 60)
   if (hours < 24) return `${hours}h ago`
   return `${Math.floor(hours / 24)}d ago`
+}
+
+/** Rebuild the report shape from what an environment sends. The wire carries
+ * the state of each axis and nothing else: paths, account labels and
+ * diagnostic messages stay on the server, so the detail lines that quote them
+ * are simply absent here. */
+export function providerHealthReportFromWire(wire: WireProviderHealth): ProviderHealthReport {
+  return {
+    refreshing: wire.refreshing,
+    health: {
+      install: { state: wire.install },
+      auth: { state: wire.auth },
+      runtime: wire.runtime,
+      models: { models: [], refreshedAt: null },
+      lastProbe: wire.lastProbe,
+      update: { state: wire.update },
+    },
+  }
 }

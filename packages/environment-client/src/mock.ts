@@ -27,6 +27,7 @@ import {
   applyEnvironment,
   applyEvent,
   applyProviderCatalog,
+  applyProviderProbe,
   applySessionCreated,
   applySessionHistory,
   applySessionOpen,
@@ -716,6 +717,23 @@ export function createMockEnvironmentClient(
       run('getProviderCatalog', null, () => {
         store.update((state) => applyProviderCatalog(state, catalog))
         return catalog
+      }),
+    // The mock's providers never change health: a probe answers what is seeded.
+    probeProvider: (input) =>
+      run('probeProvider', input, () => {
+        const entry = catalog.find((provider) => provider.id === input.providerId)
+        if (!entry) throw new EnvironmentClientError('not_found', 'Provider not found.')
+        if (!store.getState().workspaces[input.workspaceId]) {
+          throw new EnvironmentClientError('not_found', 'Workspace not found.')
+        }
+        const provider = {
+          id: entry.id,
+          displayName: entry.displayName,
+          capabilities: entry.capabilities,
+          health: entry.health,
+        }
+        store.update((state) => applyProviderProbe(state, provider))
+        return provider
       }),
     getComposerPreference: (input) =>
       run('getComposerPreference', input, () => {
