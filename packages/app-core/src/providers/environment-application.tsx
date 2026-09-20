@@ -17,6 +17,7 @@ import {
   type PermissionOption,
 } from '@agentpack/contract'
 import {
+  PROVIDER_HEALTH_STALE_MS,
   deriveProviderUiStatus,
   type ProviderHealthReport,
 } from '@openmanager/shared/contracts/provider-health'
@@ -151,9 +152,32 @@ function EnvironmentPlatformCapabilitiesProvider({ children }: { children: React
   // Advertised capabilities arrive with the handshake, so this re-reads them
   // on connect rather than latching the pre-handshake "unsupported".
   const canProbe = useConnectionState().capabilities.includes('provider.probe')
-  const [probing, setProbing] = useState<Partial<Record<ProviderId, boolean>>>({})
+  /** Probes in flight per provider: one per workspace can run at once. */
+  const [probing, setProbing] = useState<Partial<Record<ProviderId, number>>>({})
   const [error, setError] = useState<string | null>(null)
-  const probesRef = useRef<Map<ProviderId, Promise<boolean>>>(new Map())
+  // A probe runs in one workspace and can answer differently in another, so
+  // only callers asking about the same provider in the same workspace share one.
+  const probesRef = useRef<Map<string, Promise<boolean>>>(new Map())
+
+  // A reading ages out with no event to say so: a provider with nothing
+  // running reads ready until its last probe is too old to trust. One timer
+  // at the earliest such deadline re-derives then, rather than a ticking clock
+  // that would re-render every consumer on an interval.
+  const [staleTick, setStaleTick] = useState(0)
+  useEffect(() => {
+    const now = Date.now()
+    let deadline = Infinity
+    for (const entry of catalog) {
+      const at = entry.health.lastProbe ? Date.parse(entry.health.lastProbe.at) : NaN
+      if (entry.health.runtime.liveProcesses > 0 || Number.isNaN(at)) continue
+      const expires = at + PROVIDER_HEALTH_STALE_MS
+      if (expires >= now) deadline = Math.min(deadline, expires)
+    }
+    if (deadline === Infinity) return
+    // Staleness is strictly "older than", so land just past the deadline.
+    const timer = setTimeout(() => setStaleTick((tick) => tick + 1), deadline - now + 1)
+    return () => clearTimeout(timer)
+  }, [catalog, staleTick])
 
   const derived = useMemo(() => {
     const now = Date.now()
@@ -184,7 +208,9 @@ function EnvironmentPlatformCapabilitiesProvider({ children }: { children: React
       agentUiStatusByProvider,
       acpAgentInfoByProvider,
     }
-  }, [catalog, probing])
+    // `staleTick` is read for its timing only: it re-runs this at a deadline.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catalog, probing, staleTick])
 
   const providerDisplayName = useCallback(
     (providerId: ProviderId) =>
@@ -195,17 +221,21 @@ function EnvironmentPlatformCapabilitiesProvider({ children }: { children: React
   /** Probe now and answer whether the provider can take a prompt. */
   const probe = useCallback(
     (providerId: ProviderId, workspaceId: string) =>
-      coordinateProviderConnection(probesRef.current, providerId, async () => {
-        setProbing((prev) => ({ ...prev, [providerId]: true }))
-        try {
-          const provider = await client.commands.probeProvider({ providerId, workspaceId })
-          return !providerBlocksComposer(statusOf(provider))
-        } catch {
-          return false
-        } finally {
-          setProbing((prev) => ({ ...prev, [providerId]: false }))
-        }
-      }),
+      coordinateProviderConnection(
+        probesRef.current,
+        JSON.stringify([providerId, workspaceId]),
+        async () => {
+          setProbing((prev) => ({ ...prev, [providerId]: (prev[providerId] ?? 0) + 1 }))
+          try {
+            const provider = await client.commands.probeProvider({ providerId, workspaceId })
+            return !providerBlocksComposer(statusOf(provider))
+          } catch {
+            return false
+          } finally {
+            setProbing((prev) => ({ ...prev, [providerId]: (prev[providerId] ?? 1) - 1 }))
+          }
+        },
+      ),
     [client],
   )
 

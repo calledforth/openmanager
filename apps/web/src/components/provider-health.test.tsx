@@ -65,6 +65,9 @@ const seed = (providers: ProviderCatalogEntry[]): MockSeed => ({
   providers,
 })
 
+/** How long a probe stays evidence; mirrors `PROVIDER_HEALTH_STALE_MS`. */
+const PROVIDER_HEALTH_STALE_MS = 10 * 60 * 1000
+
 afterEach(() => {
   cleanup()
   localStorage.clear()
@@ -128,6 +131,19 @@ describe('provider health on web', () => {
     )
     // The mock's health never moves, so the retry comes back still broken.
     expect(await screen.findByRole('alert')).toHaveTextContent('Failed to connect to Cursor.')
+  })
+
+  it('stops calling a provider ready once its last check is too old to trust', async () => {
+    const almostStale = new Date(Date.now() - PROVIDER_HEALTH_STALE_MS + 400).toISOString()
+    renderConnected('/settings', [
+      provider('opencode', 'OpenCode', {
+        lastProbe: { outcome: 'ok', at: almostStale, durationMs: 12 },
+      }),
+    ])
+    expect(await screen.findByText('Ready · No session running')).toBeInTheDocument()
+    // No health event arrives; the reading ages out on its own.
+    expect(await screen.findByText(/^Not checked yet/, {}, { timeout: 3000 })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry OpenCode' })).toBeInTheDocument()
   })
 
   it('refuses a new chat against an unhealthy provider before creating a session', async () => {
