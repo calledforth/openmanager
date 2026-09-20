@@ -212,6 +212,16 @@ describe('provider connection coordination', () => {
     expect(third).not.toBe(first)
     await expect(third).resolves.toBe(true)
   })
+
+  it('keeps attempts under different keys apart', async () => {
+    // A probe runs in one workspace, so the environment keys by both.
+    const connections = new Map<string, Promise<boolean>>()
+    const here = coordinateProviderConnection(connections, 'cursor:here', async () => true)
+    const there = coordinateProviderConnection(connections, 'cursor:there', async () => false)
+    expect(there).not.toBe(here)
+    await expect(here).resolves.toBe(true)
+    await expect(there).resolves.toBe(false)
+  })
 })
 
 describe('composer gating on provider health', () => {

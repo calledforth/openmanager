@@ -1,4 +1,9 @@
-import { ComposerResponseSchemas, ProofResponseSchemas, SessionSchema } from '@openmanager/protocol'
+import {
+  ComposerResponseSchemas,
+  ProofResponseSchemas,
+  ProviderProbeResponseSchema,
+  SessionSchema,
+} from '@openmanager/protocol'
 import { z } from 'zod'
 import type { EnvironmentCommandName } from './types'
 
@@ -24,6 +29,7 @@ export const WIRE_COMMANDS = {
   interruptTurn: 'turn.interrupt',
   respondToInteraction: 'interaction.respond',
   getProviderCatalog: 'provider.catalog.get',
+  probeProvider: 'provider.probe',
   getComposerPreference: 'composer.preferences.get',
   setComposerPreference: 'composer.preferences.set',
   setSessionModel: 'composer.model.set',
@@ -52,6 +58,7 @@ export const WIRE_RESPONSES = {
   'turn.interrupt': payload(ProofResponseSchemas['turn.interrupt'].shape.payload),
   'interaction.respond': payload(ProofResponseSchemas['interaction.respond'].shape.payload),
   'provider.catalog.get': payload(ComposerResponseSchemas['provider.catalog.get'].shape.payload),
+  'provider.probe': payload(ProviderProbeResponseSchema.shape.payload),
   'composer.preferences.get': payload(
     ComposerResponseSchemas['composer.preferences.get'].shape.payload,
   ),

@@ -3,7 +3,9 @@ import type {
   Message,
   ProofEvent,
   ProofResponse,
+  ProviderBootstrap,
   ProviderCatalogEntry,
+  ProviderHealth,
   ScopeSnapshot,
   Session,
   SessionSummary as ProtocolSessionSummary,
@@ -755,6 +757,52 @@ export function applyProviderCatalog(
     shallowEqualArray(providerOrder, state.providerOrder) &&
     providerOrder.every((id) => providers[id] === state.providers[id])
   return unchanged ? state : { ...state, providers, providerOrder }
+}
+
+/**
+ * The handshake's provider list: who exists and how healthy they are, without
+ * composer profiles. A profile this client already read is kept, so a
+ * reconnect does not blank the pickers until the next catalog read lands.
+ */
+export function applyProviderBootstrap(
+  state: EnvironmentState,
+  bootstrap: readonly ProviderBootstrap[],
+): EnvironmentState {
+  return applyProviderCatalog(
+    state,
+    bootstrap.map((entry) => {
+      const profile = state.providers[entry.id]?.profile
+      return profile ? { ...entry, profile } : entry
+    }),
+  )
+}
+
+/** One provider's health moved. A provider this client does not list is ignored. */
+export function applyProviderHealth(
+  state: EnvironmentState,
+  providerId: string,
+  health: ProviderHealth,
+): EnvironmentState {
+  const provider = state.providers[providerId]
+  if (!provider || sameJson(provider.health, health)) return state
+  return { ...state, providers: { ...state.providers, [providerId]: { ...provider, health } } }
+}
+
+/** A probe answers with the whole provider entry, minus the composer profile. */
+export function applyProviderProbe(
+  state: EnvironmentState,
+  probed: ProviderBootstrap,
+): EnvironmentState {
+  const existing = state.providers[probed.id]
+  const next: ProviderCatalogEntry = existing?.profile
+    ? { ...probed, profile: existing.profile }
+    : probed
+  if (existing && sameJson(existing, next)) return state
+  return {
+    ...state,
+    providers: { ...state.providers, [probed.id]: next },
+    providerOrder: existing ? state.providerOrder : [...state.providerOrder, probed.id],
+  }
 }
 
 /** Replaces the remembered choice for one workspace and provider. */

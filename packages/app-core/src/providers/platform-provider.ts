@@ -27,10 +27,13 @@ export function providerBlocksComposer(status: ProviderUiStatus | undefined): bo
 
 /** Share one in-flight startup per provider so concurrent callers (a draft
  * being opened while a retry is clicked) do not spawn two processes. Once the
- * attempt settles the slot is cleared so a later retry can start afresh. */
-export function coordinateProviderConnection(
-  connections: Map<ProviderId, Promise<boolean>>,
-  providerId: ProviderId,
+ * attempt settles the slot is cleared so a later retry can start afresh.
+ *
+ * The key is whatever makes two attempts the same attempt: the provider on
+ * desktop, the provider and workspace where a check runs in one workspace. */
+export function coordinateProviderConnection<K = ProviderId>(
+  connections: Map<K, Promise<boolean>>,
+  providerId: K,
   start: () => Promise<boolean>,
 ): Promise<boolean> {
   const existing = connections.get(providerId)

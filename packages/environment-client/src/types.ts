@@ -6,6 +6,7 @@ import type {
   InteractionResponse,
   Message,
   PlanHistoryEntry,
+  ProviderBootstrap,
   ProviderCatalogEntry,
   Session,
   SessionComposerState,
@@ -152,8 +153,9 @@ export interface EnvironmentState {
   sessionOrder: string[]
   threads: Record<string, ThreadState>
   /**
-   * Providers with their composer profile (models, modes, defaults), as last
-   * read by `getProviderCatalog`. Empty until that read lands.
+   * Providers and their health, seeded by the handshake and kept current by
+   * `provider_health_changed`. The composer profile (models, modes, defaults)
+   * is absent on an entry until `getProviderCatalog` has read it.
    */
   providers: Record<string, ProviderCatalogEntry>
   providerOrder: string[]
@@ -231,6 +233,12 @@ export interface SetComposerPreferenceInput extends ComposerPreferenceTarget {
   preference: WorkspaceComposerPreference
 }
 
+export interface ProbeProviderInput {
+  providerId: string
+  /** Probes run in a registered workspace; the environment resolves its folder. */
+  workspaceId: string
+}
+
 export interface SetSessionModelInput {
   sessionId: string
   modelId: string
@@ -271,6 +279,8 @@ export interface EnvironmentCommands {
   interruptTurn(input: InterruptTurnInput): Promise<void>
   respondToInteraction(input: RespondToInteractionInput): Promise<void>
   getProviderCatalog(): Promise<ProviderCatalogEntry[]>
+  /** Re-checks one provider now; resolves with its entry once the probe settles. */
+  probeProvider(input: ProbeProviderInput): Promise<ProviderBootstrap>
   getComposerPreference(input: ComposerPreferenceTarget): Promise<WorkspaceComposerPreference>
   setComposerPreference(input: SetComposerPreferenceInput): Promise<WorkspaceComposerPreference>
   /**
