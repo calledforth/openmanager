@@ -421,7 +421,16 @@ function EnvironmentSessionStateProvider({
       // The environment seeds a new session's model and settings from the
       // workspace preference, so the draft's picks are filed there first. A
       // failure stops the launch: starting on something else would be worse.
-      if (preference && client.supports('setComposerPreference')) {
+      // The composer refuses picks this environment cannot act on, so these
+      // only trip if that changed under an open draft. Never launch on less
+      // than what the composer shows.
+      if (
+        (preference && !client.supports('setComposerPreference')) ||
+        (modeId !== undefined && !client.supports('setSessionMode'))
+      ) {
+        throw new Error('This environment cannot start a chat with the selected settings.')
+      }
+      if (preference) {
         await commands.setComposerPreference({
           workspaceId: draftWorkspaceId,
           providerId,
@@ -430,7 +439,7 @@ function EnvironmentSessionStateProvider({
       }
       // A mode has to be set on a session that exists and before its first
       // prompt, so that launch is create, switch, send rather than one command.
-      const switchMode = modeId !== undefined && client.supports('setSessionMode')
+      const switchMode = modeId !== undefined
       const { session, thread } = await commands.createSession({
         environmentId,
         workspaceId: draftWorkspaceId,
@@ -753,7 +762,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
   const session = useContext(SessionStateContext)!
   const { ensureProvider, providerDisplayName } = useContext(PlatformCapabilitiesContext)!
   const { startDraftSession } = useContext(DraftInternalsContext)!
-  const draftLaunch = useContext(DraftLaunchContext)!
+  const { draftLaunch, draftLaunched } = useContext(DraftLaunchContext)!
   const activeSession = useActiveSession()
   const thread = useActiveThread()
   const activeTurn = useActiveTurn()
@@ -808,6 +817,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
             )
           }
           await startDraftSession(text, launch)
+          draftLaunched(activeWorkspacePath ?? '')
           return
         }
         const current = targetRef.current
@@ -829,6 +839,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       beginSessionTurn,
       commands,
       draftLaunch,
+      draftLaunched,
       ensureProvider,
       failTurn,
       isSessionDraftOpen,

@@ -44,7 +44,8 @@ The environment composer provider (`packages/app-core/src/providers/environment-
 
 - An open session shows `session.composer` first. `resolveSessionComposerRuntime` takes `modelOwner: 'session'` for this; the workspace preference only stands in for a session that has no model yet. Desktop's Convex path keeps the default (`'workspace'`).
 - Session setters are the three commands and nothing else. A failure is shown in the composer; success arrives as the pushed event.
-- A draft's picks are held in the client until the first prompt. At launch they are filed as the workspace preference, because that is what the server seeds a new session from, and then `session.create` runs. A failed write stops the launch.
+- A draft's picks are held in the client until the first prompt. At launch they are filed as the workspace preference, because that is what the server seeds a new session from, and then `session.create` runs. A failed write stops the launch. Once the draft has become a session its picks are dropped, so the next draft follows what the workspace remembers by then.
+- Each composer command is negotiated on its own. A draft pick the environment could not file (`composer.preferences.set`) or apply (`composer.mode.set`) is refused in the composer, and a remembered mode is not shown, so a draft never displays something it cannot launch with.
 - Mode is the exception, since the server does not apply a remembered mode. A draft whose mode is not the provider's default launches as `session.create` (no first message), `composer.mode.set`, `turn.send`. If the switch fails the session is deleted and the draft stays open: prompting in agent mode when plan was asked for is not a fallback.
 - A provider whose health blocks the composer is listed in the draft picker but cannot be chosen.
 

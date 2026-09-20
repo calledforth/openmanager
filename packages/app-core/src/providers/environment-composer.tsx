@@ -67,9 +67,17 @@ export interface DraftLaunch {
   modeId?: string
 }
 
-/** Internal to the environment providers: the launch the open draft resolves to. */
-export const DraftLaunchContext = createContext<((workspaceId: string) => DraftLaunch) | null>(null)
+/** Internal to the environment providers: what the open draft launches with. */
+export interface DraftLaunchInternals {
+  draftLaunch: (workspaceId: string) => DraftLaunch
+  /** The draft became a session: its picks are filed, so holding them any
+   * longer would lay them over whatever the workspace remembers next. */
+  draftLaunched: (workspaceId: string) => void
+}
 
+export const DraftLaunchContext = createContext<DraftLaunchInternals | null>(null)
+
+const UNSUPPORTED_PICK = 'This environment cannot change that for a new chat.'
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
 /**
@@ -116,10 +124,15 @@ function draftConfigOptions(
   return best?.options
 }
 
-/** The preference as it will stand once the draft's held picks are filed. */
+/**
+ * The preference as it will stand once the draft's held picks are filed.
+ * Without `canSetMode` the mode is left out: a new session would start in the
+ * provider's default whatever is remembered, so the draft must not show another.
+ */
 function withHeldPicks(
   preference: WorkspaceComposerPreference | null,
   held: DraftSelection | undefined,
+  canSetMode = true,
 ): WorkspaceComposerPreference {
   const configValues =
     preference?.configValues || held?.configValues
@@ -129,7 +142,9 @@ function withHeldPicks(
     ...((held?.modelId ?? preference?.modelId)
       ? { modelId: held?.modelId ?? preference?.modelId }
       : {}),
-    ...((held?.modeId ?? preference?.modeId) ? { modeId: held?.modeId ?? preference?.modeId } : {}),
+    ...(canSetMode && (held?.modeId ?? preference?.modeId)
+      ? { modeId: held?.modeId ?? preference?.modeId }
+      : {}),
     ...(configValues ? { configValues } : {}),
   }
 }
@@ -155,7 +170,19 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
   } = useContext(SessionStateContext)!
   const { agentUiStatusByProvider, providerDisplayName } = useContext(PlatformCapabilitiesContext)!
   const catalog = useEnvironmentState(selectProviderCatalog, shallowEqualArray)
-  const connectionPhase = useConnectionState().phase
+  const connection = useConnectionState()
+  const connectionPhase = connection.phase
+  // Each composer command is negotiated on its own, so a catalog can be
+  // listed by an environment that cannot act on a pick. Advertised
+  // capabilities arrive with the handshake; this re-reads them on connect.
+  const { canFilePicks, canSetMode } = useMemo(
+    () => ({
+      canFilePicks: client.supports('setComposerPreference'),
+      canSetMode: client.supports('setSessionMode'),
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [client, connection.capabilities],
+  )
   const activeSession = useActiveSession()
   const [draftSelections, setDraftSelections] = useState<Record<string, DraftSelection>>({})
   const [error, setError] = useState<string | null>(null)
@@ -255,7 +282,10 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
       ? draftConfigOptions(state, draftWorkspaceId, draftProviderId, previousSessionId)
       : undefined,
   )
-  const draftPreference = useMemo(() => withHeldPicks(preference, held), [held, preference])
+  const draftPreference = useMemo(
+    () => withHeldPicks(preference, held, canSetMode),
+    [canSetMode, held, preference],
+  )
   const draftSessionState = useMemo<AcpSessionRuntimeState | null>(
     () =>
       draftWorkspaceId
@@ -303,6 +333,7 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
       const preference = withHeldPicks(
         selectComposerPreference(state, workspaceId, providerId),
         held,
+        client.supports('setSessionMode'),
       )
       const resolved = resolveDraftComposerRuntime({
         workspacePath: workspaceId,
@@ -316,8 +347,13 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
   )
 
   const holdDraftPick = useCallback(
-    (pick: (current: DraftSelection) => DraftSelection) => {
+    (supported: boolean, pick: (current: DraftSelection) => DraftSelection) => {
       if (!draftWorkspaceId) return
+      if (!supported) {
+        // Holding a pick the launch cannot honour would show one thing and run another.
+        setError(UNSUPPORTED_PICK)
+        return
+      }
       setError(null)
       setDraftSelections((prev) => {
         const current = prev[draftWorkspaceId]
@@ -339,16 +375,25 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
         setError(`${providerDisplayName(providerId)} is unavailable. Retry it from Settings.`)
         return
       }
-      setError(null)
+      // The provider itself rides `session.create`; only the model needs filing.
+      setError(modelId && !canFilePicks ? UNSUPPORTED_PICK : null)
       // New drafts elsewhere follow the last provider picked, as on desktop.
       setDefaultProviderId(providerId)
       setDraftSelections((prev) => ({
         ...prev,
-        [draftWorkspaceId]: { providerId, ...(modelId ? { modelId } : {}) },
+        [draftWorkspaceId]: { providerId, ...(modelId && canFilePicks ? { modelId } : {}) },
       }))
     },
-    [draftWorkspaceId, providerDisplayName, setDefaultProviderId],
+    [canFilePicks, draftWorkspaceId, providerDisplayName, setDefaultProviderId],
   )
+
+  const draftLaunched = useCallback((workspaceId: string) => {
+    setDraftSelections((prev) => {
+      const current = prev[workspaceId]
+      // The provider is not part of the preference, so the workspace keeps it.
+      return current ? { ...prev, [workspaceId]: { providerId: current.providerId } } : prev
+    })
+  }, [])
 
   const runSessionSetter = useCallback(async (work: () => Promise<unknown>) => {
     setError(null)
@@ -377,6 +422,11 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
     [draftFor],
   )
 
+  const launchInternals = useMemo<DraftLaunchInternals>(
+    () => ({ draftLaunch, draftLaunched }),
+    [draftLaunch, draftLaunched],
+  )
+
   const value = useMemo<ComposerStateValue>(
     () => ({
       acpSessionState,
@@ -385,11 +435,12 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
       providerComposerProfiles,
       agentEvents: EMPTY_LIST,
       error,
-      setDraftModel: (modelId) => holdDraftPick((current) => ({ ...current, modelId })),
-      setDraftMode: (modeId) => holdDraftPick((current) => ({ ...current, modeId })),
+      setDraftModel: (modelId) =>
+        holdDraftPick(canFilePicks, (current) => ({ ...current, modelId })),
+      setDraftMode: (modeId) => holdDraftPick(canSetMode, (current) => ({ ...current, modeId })),
       setDraftProvider,
       setDraftConfigOption: (configId, value) =>
-        holdDraftPick((current) => ({
+        holdDraftPick(canFilePicks, (current) => ({
           ...current,
           configValues: { ...current.configValues, [configId]: value },
         })),
@@ -425,6 +476,8 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
     }),
     [
       acpSessionState,
+      canFilePicks,
+      canSetMode,
       client,
       commands,
       composerConfigValues,
@@ -440,7 +493,7 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
 
   return (
     <ComposerStateContext.Provider value={value}>
-      <DraftLaunchContext.Provider value={draftLaunch}>{children}</DraftLaunchContext.Provider>
+      <DraftLaunchContext.Provider value={launchInternals}>{children}</DraftLaunchContext.Provider>
     </ComposerStateContext.Provider>
   )
 }

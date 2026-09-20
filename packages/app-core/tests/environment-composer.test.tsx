@@ -6,6 +6,8 @@ import {
   EnvironmentClientError,
   createMockEnvironmentClient,
   type MockEnvironmentClient,
+  WIRE_COMMANDS,
+  type EnvironmentCommandName,
   type MockSeed,
   type ProviderCatalogEntry,
 } from '@openmanager/environment-client'
@@ -268,6 +270,53 @@ describe('the composer over the environment client', () => {
       firstMessage: 'hello',
     })
     expect(commands).not.toContain('setSessionMode')
+
+    // The picks are filed now. A later draft follows what the workspace
+    // remembers by then, not what this one held.
+    client.emit({
+      type: 'event',
+      eventId: 'preference-moved-on',
+      timestamp: new Date().toISOString(),
+      name: 'composer.preferences.updated',
+      scope: { type: 'environment', environmentId: 'mock-environment' },
+      payload: {
+        workspaceId: WORKSPACE.workspaceId,
+        providerId: 'opencode',
+        preference: { modelId: 'sonnet' },
+      },
+    })
+    await openDraft(client)
+    expect(probe.composer.draftSessionState?.models?.currentModelId).toBe('sonnet')
+    expect(probe.composer.composerConfigValues).toEqual({})
+  })
+
+  it('refuses picks the environment could not launch with', async () => {
+    const limited = (Object.keys(WIRE_COMMANDS) as EnvironmentCommandName[]).filter(
+      (command) => command !== 'setComposerPreference' && command !== 'setSessionMode',
+    )
+    const client = createMockEnvironmentClient({
+      capabilities: limited,
+      seed: {
+        ...SEED,
+        composerPreferences: { [WORKSPACE.workspaceId]: { opencode: { modeId: 'plan' } } },
+      },
+    })
+    await mount(client)
+    await openDraft(client)
+    // A remembered mode cannot be applied here, so the draft does not claim it.
+    expect(probe.composer.draftSessionState?.modes?.currentModeId).toBe('build')
+
+    await act(() => probe.composer.setDraftModel('opus'))
+    expect(probe.composer.error).toBe('This environment cannot change that for a new chat.')
+    expect(probe.composer.draftSessionState?.models?.currentModelId).toBe('sonnet')
+    await act(() => probe.composer.setDraftMode('plan'))
+    expect(probe.composer.draftSessionState?.modes?.currentModeId).toBe('build')
+
+    // What is shown is what runs: one plain create on the provider's defaults.
+    await act(() => probe.thread.sendMessage('hello'))
+    await settle(client)
+    expect(inputOf(client, 'createSession')).toMatchObject({ firstMessage: 'hello' })
+    expect(commandsOf(client)).not.toContain('sendTurn')
   })
 
   it('switches a new session into the picked mode before its first prompt', async () => {
