@@ -17,7 +17,7 @@ import type { AuthenticatedClient } from './authorized-clients.ts'
 import type { CommandContext } from './command-context.ts'
 import type { Logger } from './logger.ts'
 import type { RateLimiter } from './rate-limit.ts'
-import { isOversizedUpload, MAX_ATTACHMENT_BYTES } from './upload-limits.ts'
+import { isAllowedUploadType, isOversizedUpload, MAX_ATTACHMENT_BYTES } from './upload-limits.ts'
 
 /** A ticket only has to outlive the gap between the command and the start of the PUT. */
 export const UPLOAD_TICKET_TTL_MS = 2 * 60_000
@@ -161,6 +161,14 @@ export function createUploadService(options: {
     }
     const input = parsed.data.payload
     const who = { clientId: context.clientId, command: command.name }
+    if (!isAllowedUploadType(input.mimeType)) {
+      reject('unsupported_type', { mimeType: input.mimeType }, who)
+      return errorResult(
+        command.requestId,
+        'validation',
+        'Attachments must be PNG, JPEG or WebP images.',
+      )
+    }
     if (isOversizedUpload(input.sizeBytes)) {
       reject('oversized', { sizeBytes: input.sizeBytes, maxBytes: MAX_ATTACHMENT_BYTES }, who)
       return errorResult(
@@ -182,7 +190,13 @@ export function createUploadService(options: {
     }
     const ticket = randomBytes(32).toString('base64url')
     const expiresAt = clock() + ticketTtlMs
-    tickets.set(hashTicket(ticket), { ...input, clientId: context.clientId, workspaceId, expiresAt })
+    tickets.set(hashTicket(ticket), {
+      ...input,
+      mimeType: input.mimeType.toLowerCase(),
+      clientId: context.clientId,
+      workspaceId,
+      expiresAt,
+    })
     return UploadResponseSchemas[UPLOAD_TICKET_CAPABILITY].parse({
       type: 'response',
       requestId: command.requestId,
@@ -419,7 +433,13 @@ export function createUploadService(options: {
           command,
           details: { requiredCapability: 'operate' },
         })
-        refuse(request, response, 403, 'capability_missing', 'Uploads require the operate capability.')
+        refuse(
+          request,
+          response,
+          403,
+          'capability_missing',
+          'Uploads require the operate capability.',
+        )
         return true
       }
       if (

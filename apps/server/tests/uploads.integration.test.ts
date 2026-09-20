@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, rmdir, writeFile } from 'node:fs/promises'
 import { request as httpRequest } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -76,7 +76,12 @@ async function ticketFor(client: ProtocolClient, sessionId: string) {
     .payload
 }
 
-function put(host: ProtocolHost, path: string, body: Buffer, token: string | undefined = host.token) {
+function put(
+  host: ProtocolHost,
+  path: string,
+  body: Buffer,
+  token: string | undefined = host.token,
+) {
   return fetch(`${host.server.url}${path}`, {
     method: 'PUT',
     headers: {
@@ -153,9 +158,120 @@ describe('upload tickets', () => {
     const ticket = UploadResponseSchemas['upload.ticket.create'].parse(
       await requestTicket(client, sessionId, { name: '..\\..\\evil/../../name.png' }),
     ).payload
-    const result = UploadResultSchema.parse(await (await put(host, ticket.uploadPath, BYTES)).json())
+    const result = UploadResultSchema.parse(
+      await (await put(host, ticket.uploadPath, BYTES)).json(),
+    )
     expect(await blobs(host)).toEqual([result.artifactId])
     expect(result.artifactId).toMatch(/^[0-9a-f-]{36}$/)
+  })
+
+  it.each(['owner', 'paired'] as const)(
+    'enforces the type and size policy for %s clients',
+    async (kind) => {
+      const { host, client: owner, sessionId } = await hostWithSession()
+      const credential =
+        kind === 'owner'
+          ? host.token
+          : host.server.clients.issue({
+              label: 'Remote',
+              kind: 'paired',
+              capabilities: ['read', 'operate'],
+            }).credential
+      const client =
+        kind === 'owner' ? owner : await connectProtocol({ ...host, token: credential })
+      if (kind === 'paired') await handshake(client)
+      for (const mimeType of [
+        'image/svg+xml',
+        'text/html',
+        'application/octet-stream',
+        'image/gif',
+      ]) {
+        expect(await requestTicket(client, sessionId, { mimeType })).toMatchObject({
+          type: 'error',
+          error: { code: 'validation' },
+        })
+      }
+      expect(
+        await requestTicket(client, sessionId, { sizeBytes: MAX_ATTACHMENT_BYTES + 1 }),
+      ).toMatchObject({ type: 'error', error: { code: 'validation' } })
+      expect(host.server.uploads.pendingTicketCount).toBe(0)
+      expect(await blobs(host)).toEqual([])
+      expect(await partials(host)).toEqual([])
+      expect(attachmentRows(host)).toEqual([])
+      expect(rejections(host).filter((reason) => reason === 'unsupported_type')).toHaveLength(4)
+      for (const mimeType of ['image/png', 'image/jpeg', 'image/webp', 'IMAGE/PNG']) {
+        const ticket = UploadResponseSchemas['upload.ticket.create'].parse(
+          await requestTicket(client, sessionId, { mimeType }),
+        ).payload
+        const response = await put(host, ticket.uploadPath, BYTES, credential)
+        expect(response.status).toBe(201)
+        expect(await response.json()).toMatchObject({ mimeType: mimeType.toLowerCase() })
+      }
+      expect(attachmentRows(host).map((row) => row.mime_type)).toEqual([
+        'image/png',
+        'image/jpeg',
+        'image/webp',
+        'image/png',
+      ])
+    },
+  )
+
+  it('rejects destination paths instead of treating them as upload options', async () => {
+    const { host, client, sessionId } = await hostWithSession()
+    expect(await requestTicket(client, sessionId, { path: '../../outside.png' })).toMatchObject({
+      type: 'error',
+      error: { code: 'validation' },
+    })
+    expect(host.server.uploads.pendingTicketCount).toBe(0)
+    expect(await blobs(host)).toEqual([])
+  })
+
+  it('requires an available workspace at ticket creation and at PUT time', async () => {
+    const { host, client, sessionId } = await hostWithSession()
+    const ticket = await ticketFor(client, sessionId)
+    // The helper creates an empty workspace; removing it makes registry resolution fail.
+    await rmdir(host.workspaceRoot)
+    expect(await requestTicket(client, sessionId)).toMatchObject({
+      type: 'error',
+      error: { code: 'not_found' },
+    })
+    const response = await put(host, ticket.uploadPath, BYTES)
+    expect(response.status).toBe(404)
+    expect(await response.json()).toMatchObject({ error: { code: 'not_found' } })
+    expect(await blobs(host)).toEqual([])
+    expect(await partials(host)).toEqual([])
+    expect(attachmentRows(host)).toEqual([])
+  })
+
+  it('removes bytes from an oversized chunked transfer without Content-Length', async () => {
+    const { host, client, sessionId } = await hostWithSession()
+    const ticket = await ticketFor(client, sessionId)
+    const response = await new Promise<{ status: number | undefined; body: string }>(
+      (resolve, reject) => {
+        const request = httpRequest(
+          `${host.server.url}${ticket.uploadPath}`,
+          {
+            method: 'PUT',
+            headers: { authorization: `Bearer ${host.token}` },
+          },
+          (response) => {
+            let body = ''
+            response.on('data', (chunk) => {
+              body += String(chunk)
+            })
+            response.on('end', () => resolve({ status: response.statusCode, body }))
+          },
+        )
+        request.on('error', reject)
+        request.write(BYTES)
+        request.end(BYTES)
+      },
+    )
+    expect(response.status).toBe(413)
+    expect(JSON.parse(response.body)).toMatchObject({ error: { code: 'validation' } })
+    await expect.poll(() => partials(host)).toEqual([])
+    expect(await blobs(host)).toEqual([])
+    expect(attachmentRows(host)).toEqual([])
   })
 
   it('refuses a reused ticket', async () => {
@@ -224,7 +340,7 @@ describe('upload tickets', () => {
     expect(await blobs(host)).toEqual([])
   })
 
-  it('cuts a revoked client’s transfer that is already under way', async () => {
+  it('cuts a revoked clientâ€™s transfer that is already under way', async () => {
     const { host, sessionId } = await hostWithSession()
     const phone = host.server.clients.issue({
       label: 'Phone',
@@ -411,7 +527,9 @@ describe('upload service', () => {
   it('keeps the blobs a row names when it sweeps', async () => {
     const { host, client, sessionId } = await hostWithSession()
     const ticket = await ticketFor(client, sessionId)
-    const stored = UploadResultSchema.parse(await (await put(host, ticket.uploadPath, BYTES)).json())
+    const stored = UploadResultSchema.parse(
+      await (await put(host, ticket.uploadPath, BYTES)).json(),
+    )
     await writeFile(join(host.dataDir, 'uploads', 'unrecorded'), 'a whole file')
     const database = openEnvironmentDatabase(host.dataDir)
     const log = () => undefined
