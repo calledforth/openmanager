@@ -42,6 +42,19 @@ export const ComposerCommandOptionSchema = z.strictObject({
 })
 
 /**
+ * How full the session's context window is, as the provider last reported it.
+ * `size` is never zero: a meter without a denominator is not a meter.
+ */
+export const ComposerUsageSchema = z.strictObject({
+  used: z.number().int().nonnegative(),
+  size: z.number().int().positive(),
+  /** Cumulative cost of the session so far. */
+  cost: z
+    .strictObject({ amount: z.number().nonnegative(), currency: z.string().min(1).max(16) })
+    .optional(),
+})
+
+/**
  * What one session's composer shows. The selection belongs to the session:
  * two sessions in one workspace can run different models. The workspace
  * preference only seeds a session that has no selection of its own yet.
@@ -49,7 +62,8 @@ export const ComposerCommandOptionSchema = z.strictObject({
  * `modelId` and `configValues` are the user's choice, which the environment
  * re-applies before a prompt. `modeId` follows the provider, which may switch
  * modes itself mid-turn. `configOptions` and `availableCommands` are the
- * provider's latest listings.
+ * provider's latest listings. `usage` is the provider's latest reading; a
+ * provider that reports none leaves it absent, and the composer shows no meter.
  */
 export const SessionComposerStateSchema = z.strictObject({
   modelId: id.optional(),
@@ -57,9 +71,11 @@ export const SessionComposerStateSchema = z.strictObject({
   configValues: ComposerConfigValuesSchema.optional(),
   configOptions: z.array(ComposerConfigOptionSchema).max(256).optional(),
   availableCommands: z.array(ComposerCommandOptionSchema).max(1_024).optional(),
+  usage: ComposerUsageSchema.optional(),
 })
 
 export type ComposerConfigValue = z.infer<typeof ComposerConfigValueSchema>
 export type ComposerConfigOption = z.infer<typeof ComposerConfigOptionSchema>
 export type ComposerCommandOption = z.infer<typeof ComposerCommandOptionSchema>
+export type ComposerUsage = z.infer<typeof ComposerUsageSchema>
 export type SessionComposerState = z.infer<typeof SessionComposerStateSchema>

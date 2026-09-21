@@ -5,7 +5,7 @@ environment. Its protocol-owned fields are:
 
 ```json
 {
-  "protocolVersion": 3,
+  "protocolVersion": 4,
   "environmentId": "env-local",
   "capabilities": ["session.read", "turn.send"]
 }
@@ -32,7 +32,8 @@ version-1 peers are rejected before subscriptions so expiry cannot be silently
 ignored or repeatedly encountered during replay. Version 3 adds
 `availableCommands` to the session composer selection: that object is strict, so
 a version-2 peer would reject every session summary and
-`session.composer.updated` event that carries the new field.
+`session.composer.updated` event that carries the new field. Version 4 adds
+`usage` to the same selection, for the same reason.
 
 Call `evaluateBootstrap` with the parsed HTTP body and the capabilities required
 by the current client path:
@@ -73,7 +74,7 @@ capabilities required for that connection:
   "requestId": "handshake-1",
   "name": "protocol.handshake",
   "payload": {
-    "protocolVersion": 3,
+    "protocolVersion": 4,
     "requiredCapabilities": ["session.read"]
   }
 }

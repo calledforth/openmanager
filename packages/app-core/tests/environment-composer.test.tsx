@@ -570,6 +570,34 @@ describe('the composer over the environment client', () => {
     expect(probe.composer.draftSessionState?.availableCommands).toEqual([])
   })
 
+  it('reads context usage off the session that reported it, and none off one that did not', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client)
+    await act(() => probe.session.selectSession(WORKSPACE.workspaceId, SESSION.sessionId))
+    await settle(client)
+    expect(probe.composer.acpSessionState?.usage).toBeUndefined()
+
+    client.emit({
+      type: 'event',
+      eventId: 'session-usage',
+      timestamp: new Date().toISOString(),
+      name: 'session.composer.updated',
+      scope: { type: 'environment', environmentId: 'mock-environment' },
+      payload: {
+        sessionId: SESSION.sessionId,
+        composer: { modelId: 'opus', usage: { used: 50_000, size: 200_000 } },
+      },
+    })
+    await settle(client)
+    expect(probe.composer.acpSessionState?.usage).toEqual({ used: 50_000, size: 200_000 })
+    // Usage is a reading of one session: a sibling and a draft have none.
+    await act(() => probe.session.selectSession(WORKSPACE.workspaceId, SIBLING.sessionId))
+    await settle(client)
+    expect(probe.composer.acpSessionState?.usage).toBeUndefined()
+    await openDraft(client)
+    expect(probe.composer.draftSessionState?.usage).toBeUndefined()
+  })
+
   it('surfaces a failed session change in the composer and clears it on the next', async () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     await act(() => root.render(<MockEnvironmentApp client={client} />))

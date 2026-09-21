@@ -304,6 +304,7 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
       ...(sessionComposer?.availableCommands
         ? { availableCommands: toAcpCommands(sessionComposer.availableCommands) }
         : {}),
+      ...(sessionComposer?.usage ? { usage: sessionComposer.usage } : {}),
     }
     return resolveSessionComposerRuntime(
       runtime,

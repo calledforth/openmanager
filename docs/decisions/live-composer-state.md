@@ -8,7 +8,7 @@ The environment server owns composer state and pushes every change to every clie
 
 | Event                          | Payload                                 | Meaning                                                             |
 | ------------------------------ | --------------------------------------- | ------------------------------------------------------------------- |
-| `session.composer.updated`     | `sessionId`, whole `composer` selection | One session's model, mode, config values, config options, commands. |
+| `session.composer.updated`     | `sessionId`, whole `composer` selection | One session's model, mode, config values, options, commands, usage. |
 | `composer.preferences.updated` | `workspaceId`, `providerId`, preference | The "last used" selection a new draft in that workspace opens with. |
 | `provider.catalog.updated`     | whole provider `profile`                | Models, modes and defaults the environment last learned.            |
 
@@ -22,6 +22,7 @@ Within a selection the fields do not behave alike:
 - `modeId` follows the provider. Agents switch modes on their own (plan to build), so a `current_mode_update`, or a plan build the host starts in a given mode, always wins. A plan build's mode is reported once the provider has started the prompt, so a launch that fails leaves every composer where it was. Mode is still not enforced on respawn.
 - `configOptions` is the provider's latest listing for that session. Options the protocol cannot express are dropped rather than hiding the rest.
 - `availableCommands` is the provider's latest slash-command listing, held the same way. A command is invoked as ordinary prompt text (`/name …`), so the listing is the whole feature: there is no command to run one. Providers list their commands again when a session loads, so an empty listing replaces the old one.
+- `usage` is the provider's latest context-window reading (`used`, `size`, optional cumulative `cost`). It is not a choice, but it rides the selection because it needs the same delivery: providers do not report usage again when a session loads, so only the persisted selection lets the meter survive a restart. A reading without a window size is ignored, and a provider that reports none (Cursor) leaves `usage` absent, so no meter renders.
 
 ## Alternatives considered
 

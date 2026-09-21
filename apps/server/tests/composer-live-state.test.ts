@@ -315,6 +315,35 @@ describe('composer broadcasts', () => {
     expect(service.sessionComposer('session-a').availableCommands).toEqual([])
   })
 
+  it('carries the context usage a provider reports, and nothing for one that reports none', async () => {
+    const { service, named } = await harness()
+    const report = (data: { used: number; size: number; cost?: { amount: number; currency: string } }) =>
+      service.onRuntimeEvent({
+        ...runtimeEvent('thread-a'),
+        category: 'session',
+        event: 'usage_update',
+        data,
+      })
+
+    report({ used: 19_433, size: 200_000, cost: { amount: 0.42, currency: 'USD' } })
+    expect(named('session.composer.updated')).toEqual([
+      {
+        sessionId: 'session-a',
+        composer: { usage: { used: 19_433, size: 200_000, cost: { amount: 0.42, currency: 'USD' } } },
+      },
+    ])
+    // A sibling whose provider never reports usage has no meter to show.
+    expect(service.sessionComposer('session-b').usage).toBeUndefined()
+
+    // The same reading is not news, and one without a window size is not a reading.
+    report({ used: 19_433, size: 200_000, cost: { amount: 0.42, currency: 'USD' } })
+    report({ used: 25_000, size: 0 })
+    expect(named('session.composer.updated')).toHaveLength(1)
+
+    report({ used: 23_854, size: 200_000 })
+    expect(service.sessionComposer('session-a').usage).toEqual({ used: 23_854, size: 200_000 })
+  })
+
   it('announces a catalog once per real change', async () => {
     const { service, named } = await harness()
     const created = {

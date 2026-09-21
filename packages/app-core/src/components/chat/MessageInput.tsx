@@ -223,6 +223,16 @@ export function MessageInput() {
   const slashCommands = runtimeState?.availableCommands?.length
     ? runtimeState.availableCommands
     : chrome.slashCommands
+  // An environment reports usage on the session itself; desktop folds it out
+  // of the agent events. A draft has no context window to measure yet.
+  const sessionUsage = activeSessionId ? acpSessionState?.usage : undefined
+  const usage =
+    sessionUsage && sessionUsage.size > 0
+      ? {
+          ...sessionUsage,
+          percent: Math.max(0, Math.min(100, (sessionUsage.used / sessionUsage.size) * 100)),
+        }
+      : (chrome.usage ?? null)
   const canChangeSettings = !!activeSessionId || isSessionDraftOpen
   const effectiveStatus = localSessionStatus ?? activeThread?.status
   const isStreaming = effectiveStatus === 'running' || effectiveStatus === 'busy'
@@ -365,7 +375,7 @@ export function MessageInput() {
           imageSupportMessage={imageSupportMessage}
           settingsError={composerError}
           slashCommands={slashCommands}
-          usage={chrome.usage ?? null}
+          usage={usage}
           onModeChange={(id) => {
             if (activeSessionId) {
               void setSessionMode(activeSessionId, id)

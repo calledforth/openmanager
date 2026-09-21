@@ -268,6 +268,7 @@ export const proofEvents = [
           { name: 'review', description: 'Review the current diff' },
           { name: 'search', description: 'Search the workspace', placeholder: 'query' },
         ],
+        usage: { used: 19_433, size: 200_000, cost: { amount: 0.42, currency: 'USD' } },
       },
     },
   },
