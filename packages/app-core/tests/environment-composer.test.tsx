@@ -546,6 +546,30 @@ describe('the composer over the environment client', () => {
     expect(probe.composer.draftSessionState?.availableCommands).toBeUndefined()
   })
 
+  it('does not lend a draft the commands of an older session once a newer one lists none', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client)
+    const list = (
+      sessionId: string,
+      availableCommands: Array<{ name: string; description: string }>,
+    ) =>
+      client.emit({
+        type: 'event',
+        eventId: `commands-${sessionId}`,
+        timestamp: new Date().toISOString(),
+        name: 'session.composer.updated',
+        scope: { type: 'environment', environmentId: 'mock-environment' },
+        payload: { sessionId, composer: { availableCommands } },
+      })
+    list(SESSION.sessionId, [{ name: 'review', description: 'Review the diff' }])
+    list(SIBLING.sessionId, [])
+    // The draft is opened from the sibling, whose empty listing is the answer.
+    await act(() => probe.session.selectSession(WORKSPACE.workspaceId, SIBLING.sessionId))
+    await settle(client)
+    await openDraft(client)
+    expect(probe.composer.draftSessionState?.availableCommands).toEqual([])
+  })
+
   it('surfaces a failed session change in the composer and clears it on the next', async () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     await act(() => root.render(<MockEnvironmentApp client={client} />))

@@ -481,7 +481,6 @@ function commandsPatch(
   }>,
 ): ComposerCommandOption[] {
   return commands
-    .slice(0, 1_024)
     .flatMap((command) => {
       const parsed = ComposerCommandOptionSchema.safeParse({
         name: command.name,
@@ -490,6 +489,7 @@ function commandsPatch(
       })
       return parsed.success ? [parsed.data] : []
     })
+    .slice(0, 1_024)
 }
 
 function defined<T extends object>(value: T): Partial<T> {

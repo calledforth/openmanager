@@ -121,7 +121,9 @@ function lastProviderIn(state: EnvironmentState, workspaceId: string): ProviderI
 /**
  * A draft has no session to list its settings or commands, so it borrows the
  * listing of the newest session on the same provider: the one it was opened
- * from, then one in its workspace, then any.
+ * from, then one in its workspace, then any. An empty command listing is the
+ * provider saying it offers none, so it is an answer; an empty settings
+ * listing is only a session that has not reported yet.
  */
 function draftListing<K extends 'configOptions' | 'availableCommands'>(
   state: EnvironmentState,
@@ -133,7 +135,8 @@ function draftListing<K extends 'configOptions' | 'availableCommands'>(
   let best: { rank: number; at: string; listed: NonNullable<SessionComposerState[K]> } | undefined
   for (const session of Object.values(state.sessions)) {
     const listed = session?.composer?.[listing]
-    if (!session || !listed?.length || session.providerId !== providerId) continue
+    const reported = listing === 'availableCommands' ? listed !== undefined : !!listed?.length
+    if (!session || !listed || !reported || session.providerId !== providerId) continue
     const rank =
       session.sessionId === previousSessionId ? 2 : session.workspaceId === workspaceId ? 1 : 0
     const at = session.updatedAt ?? ''
