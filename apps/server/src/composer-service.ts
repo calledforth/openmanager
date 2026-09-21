@@ -5,12 +5,14 @@ import {
   COMPOSER_MODE_SET_CAPABILITY,
   COMPOSER_PREFERENCES_GET_CAPABILITY,
   COMPOSER_PREFERENCES_SET_CAPABILITY,
+  ComposerCommandOptionSchema,
   ComposerCommandSchemas,
   ComposerConfigOptionSchema,
   ComposerResponseSchemas,
   PROVIDER_CATALOG_CAPABILITY,
   SessionComposerStateSchema,
   type CommandEnvelope,
+  type ComposerCommandOption,
   type ComposerConfigOption,
   type ErrorCode,
   type ProofEvent,
@@ -307,6 +309,14 @@ export function createComposerService(
           updateSelection(sessionId, {
             configOptions: configOptionsPatch(event.data.configOptions),
           })
+          return
+        }
+        if (event.event === 'available_commands_update' && sessionId) {
+          // The provider lists its commands again whenever a session loads, so
+          // an empty listing is a real "none now", not a gap to fill.
+          updateSelection(sessionId, {
+            availableCommands: commandsPatch(event.data.availableCommands),
+          })
         }
       } catch {
         // Provider metadata is advisory. Invalid or unpersistable catalog data
@@ -460,6 +470,26 @@ function configOptionsPatch(
     const parsed = ComposerConfigOptionSchema.safeParse(option)
     return parsed.success ? [parsed.data] : []
   })
+}
+
+/** Same rule for commands: one the protocol cannot carry costs only itself. */
+function commandsPatch(
+  commands: ReadonlyArray<{
+    name: string
+    description: string
+    input?: { placeholder?: string }
+  }>,
+): ComposerCommandOption[] {
+  return commands
+    .slice(0, 1_024)
+    .flatMap((command) => {
+      const parsed = ComposerCommandOptionSchema.safeParse({
+        name: command.name,
+        description: command.description,
+        ...(command.input?.placeholder ? { placeholder: command.input.placeholder } : {}),
+      })
+      return parsed.success ? [parsed.data] : []
+    })
 }
 
 function defined<T extends object>(value: T): Partial<T> {

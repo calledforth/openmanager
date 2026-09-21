@@ -20,6 +20,7 @@ import {
   shallowEqualArray,
   type EnvironmentState,
   type ProviderCatalogEntry,
+  type SessionComposerState,
 } from '@openmanager/environment-client'
 import type { SessionConfigValue } from '../components/chat/modelConfig'
 import {
@@ -32,6 +33,7 @@ import {
   ComposerStateContext,
   resolveDraftComposerRuntime,
   resolveSessionComposerRuntime,
+  type AcpCommandOption,
   type AcpSessionRuntimeState,
   type ComposerStateValue,
 } from './composer-provider'
@@ -117,29 +119,42 @@ function lastProviderIn(state: EnvironmentState, workspaceId: string): ProviderI
 }
 
 /**
- * A draft has no session to list its settings, so it borrows the listing of
- * the newest session on the same provider: the one it was opened from, then
- * one in its workspace, then any.
+ * A draft has no session to list its settings or commands, so it borrows the
+ * listing of the newest session on the same provider: the one it was opened
+ * from, then one in its workspace, then any.
  */
-function draftConfigOptions(
+function draftListing<K extends 'configOptions' | 'availableCommands'>(
   state: EnvironmentState,
+  listing: K,
   workspaceId: string,
   providerId: ProviderId,
   previousSessionId: string | null,
-): SessionConfigOption[] | undefined {
-  let best: { rank: number; at: string; options: SessionConfigOption[] } | undefined
+): NonNullable<SessionComposerState[K]> | undefined {
+  let best: { rank: number; at: string; listed: NonNullable<SessionComposerState[K]> } | undefined
   for (const session of Object.values(state.sessions)) {
-    const options = session?.composer?.configOptions
-    if (!session || !options?.length || session.providerId !== providerId) continue
+    const listed = session?.composer?.[listing]
+    if (!session || !listed?.length || session.providerId !== providerId) continue
     const rank =
       session.sessionId === previousSessionId ? 2 : session.workspaceId === workspaceId ? 1 : 0
     const at = session.updatedAt ?? ''
     if (!best || rank > best.rank || (rank === best.rank && at > best.at)) {
-      best = { rank, at, options: options as SessionConfigOption[] }
+      best = { rank, at, listed }
     }
   }
-  return best?.options
+  return best?.listed
 }
+
+/** The wire keeps only a command's hint; the composer reads it as ACP input. */
+const toAcpCommands = (
+  commands: NonNullable<SessionComposerState['availableCommands']>,
+): AcpCommandOption[] =>
+  commands.map((command) => ({
+    name: command.name,
+    description: command.description,
+    ...(command.placeholder
+      ? { input: { type: 'unstructured' as const, placeholder: command.placeholder } }
+      : {}),
+  }))
 
 /**
  * The preference as it will stand once the draft's held picks are filed.
@@ -283,6 +298,9 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
         : {}),
       ...(sessionComposer?.modelId ? { models: { currentModelId: sessionComposer.modelId } } : {}),
       ...(sessionComposer?.modeId ? { modes: { currentModeId: sessionComposer.modeId } } : {}),
+      ...(sessionComposer?.availableCommands
+        ? { availableCommands: toAcpCommands(sessionComposer.availableCommands) }
+        : {}),
     }
     return resolveSessionComposerRuntime(
       runtime,
@@ -300,7 +318,24 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
       : null
   const borrowedConfigOptions = useEnvironmentState((state) =>
     draftWorkspaceId
-      ? draftConfigOptions(state, draftWorkspaceId, draftProviderId, previousSessionId)
+      ? (draftListing(
+          state,
+          'configOptions',
+          draftWorkspaceId,
+          draftProviderId,
+          previousSessionId,
+        ) as SessionConfigOption[] | undefined)
+      : undefined,
+  )
+  const borrowedCommands = useEnvironmentState((state) =>
+    draftWorkspaceId
+      ? draftListing(
+          state,
+          'availableCommands',
+          draftWorkspaceId,
+          draftProviderId,
+          previousSessionId,
+        )
       : undefined,
   )
   const draftPreference = useMemo(
@@ -313,12 +348,22 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
         ? resolveDraftComposerRuntime({
             workspacePath: draftWorkspaceId,
             providerId: draftProviderId,
-            ...(borrowedConfigOptions ? { runtime: { configOptions: borrowedConfigOptions } } : {}),
+            ...(borrowedConfigOptions || borrowedCommands
+              ? {
+                  runtime: {
+                    ...(borrowedConfigOptions ? { configOptions: borrowedConfigOptions } : {}),
+                    ...(borrowedCommands
+                      ? { availableCommands: toAcpCommands(borrowedCommands) }
+                      : {}),
+                  },
+                }
+              : {}),
             preference: draftPreference,
             profile: providerComposerProfiles[draftProviderId],
           })
         : null,
     [
+      borrowedCommands,
       borrowedConfigOptions,
       draftPreference,
       draftProviderId,

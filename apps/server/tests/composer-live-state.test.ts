@@ -277,6 +277,44 @@ describe('composer broadcasts', () => {
     ])
   })
 
+  it('carries the slash commands a session lists, and the listing that replaces them', async () => {
+    const { service, named } = await harness()
+    const list = (availableCommands: Array<Record<string, unknown>>) =>
+      service.onRuntimeEvent({
+        ...runtimeEvent('thread-a'),
+        category: 'session',
+        event: 'available_commands_update',
+        data: { availableCommands },
+      } as Parameters<typeof service.onRuntimeEvent>[0])
+
+    list([
+      { name: 'review', description: 'Review the diff' },
+      { name: 'search', description: '', input: { type: 'unstructured', placeholder: 'query' } },
+      { name: '', description: 'Nameless' },
+    ])
+    expect(named('session.composer.updated')).toEqual([
+      {
+        sessionId: 'session-a',
+        composer: {
+          availableCommands: [
+            { name: 'review', description: 'Review the diff' },
+            { name: 'search', description: '', placeholder: 'query' },
+          ],
+        },
+      },
+    ])
+    expect(service.sessionComposer('session-b')).toEqual({})
+
+    // A reloaded session lists again; the same listing is not news, none is.
+    list([
+      { name: 'review', description: 'Review the diff' },
+      { name: 'search', description: '', input: { type: 'unstructured', placeholder: 'query' } },
+    ])
+    expect(named('session.composer.updated')).toHaveLength(1)
+    list([])
+    expect(service.sessionComposer('session-a').availableCommands).toEqual([])
+  })
+
   it('announces a catalog once per real change', async () => {
     const { service, named } = await harness()
     const created = {

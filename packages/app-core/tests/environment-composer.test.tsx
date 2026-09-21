@@ -498,6 +498,54 @@ describe('the composer over the environment client', () => {
     expect(probe.composer.acpSessionState?.models?.currentModelId).toBe('sonnet')
   })
 
+  it('lists the slash commands a session reports, and lends them to a draft', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client)
+    await act(() => probe.session.selectSession(WORKSPACE.workspaceId, SESSION.sessionId))
+    await settle(client)
+    expect(probe.composer.acpSessionState?.availableCommands).toBeUndefined()
+
+    client.emit({
+      type: 'event',
+      eventId: 'session-commands',
+      timestamp: new Date().toISOString(),
+      name: 'session.composer.updated',
+      scope: { type: 'environment', environmentId: 'mock-environment' },
+      payload: {
+        sessionId: SESSION.sessionId,
+        composer: {
+          modelId: 'opus',
+          availableCommands: [
+            { name: 'review', description: 'Review the diff' },
+            { name: 'search', description: 'Search', placeholder: 'query' },
+          ],
+        },
+      },
+    })
+    await settle(client)
+    expect(probe.composer.acpSessionState?.availableCommands).toEqual([
+      { name: 'review', description: 'Review the diff' },
+      {
+        name: 'search',
+        description: 'Search',
+        input: { type: 'unstructured', placeholder: 'query' },
+      },
+    ])
+    // The sibling has reported none of its own.
+    await act(() => probe.session.selectSession(WORKSPACE.workspaceId, SIBLING.sessionId))
+    await settle(client)
+    expect(probe.composer.acpSessionState?.availableCommands).toBeUndefined()
+
+    // A draft has no session yet, so it offers what the provider listed last.
+    await openDraft(client)
+    expect(probe.composer.draftSessionState?.availableCommands?.map((c) => c.name)).toEqual([
+      'review',
+      'search',
+    ])
+    await act(() => probe.composer.setDraftProvider('cursor'))
+    expect(probe.composer.draftSessionState?.availableCommands).toBeUndefined()
+  })
+
   it('surfaces a failed session change in the composer and clears it on the next', async () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     await act(() => root.render(<MockEnvironmentApp client={client} />))
