@@ -303,6 +303,70 @@ describe('artifact metadata', () => {
     }
   })
 
+  it('stores an image a tool returns once, however often the provider repeats it', async () => {
+    const data = GENERATED.toString('base64')
+    const content = [
+      { type: 'content', content: { type: 'image', mimeType: 'image/png', data } },
+    ] as const
+    const connections: FakeConnectionFactory = new FakeConnectionFactory({
+      initialize: async () => ({ protocolVersion: 1, authMethods: [] }),
+      newSession: async () => ({ sessionId: 'stub-session' }),
+      prompt: async (params) => {
+        const sessionId = promptSessionId(params)
+        await connections.last.sessionUpdate({
+          sessionId,
+          update: {
+            sessionUpdate: 'tool_call',
+            toolCallId: 'tool-1',
+            title: 'Render chart',
+            kind: 'other',
+            status: 'in_progress',
+            content: [...content],
+          },
+        })
+        // Providers resend a tool's whole content with every update.
+        await connections.last.sessionUpdate({
+          sessionId,
+          update: {
+            sessionUpdate: 'tool_call_update',
+            toolCallId: 'tool-1',
+            status: 'completed',
+            content: [...content],
+          },
+        })
+        return { stopReason: 'end_turn' }
+      },
+    })
+    const host = await startStubHost(connections)
+    const { client, sessionId, threadId, subscriptionId } = await openSession(host)
+    const sendId = client.command('turn.send', { sessionId, threadId, text: 'chart it' })
+    await nextResponse(client, sendId)
+    const records = await collectThreadRecords(client, subscriptionId, (seen) =>
+      seen.some((record) => record.event.name === 'turn.completed'),
+    )
+
+    const rows = attachmentRows(host.dataDir)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ session_id: sessionId, source: 'generated' })
+    const artifactId = rows[0]!.attachment_id as string
+    expect(
+      records
+        .filter((record) => record.event.name === 'message.delta')
+        .map((record) => record.event.payload),
+    ).toMatchObject([{ role: 'assistant', content: { type: 'artifact', artifactId } }])
+    expect(JSON.stringify(records)).not.toContain(data)
+
+    await host.server.close()
+    const restarted = await restart(host, connections)
+    try {
+      const bytes = await get(restarted.url, `/artifacts/${sessionId}/${artifactId}`, host.token)
+      expect(bytes.status).toBe(200)
+      expect(Buffer.from(await bytes.arrayBuffer())).toEqual(GENERATED)
+    } finally {
+      await restarted.close()
+    }
+  })
+
   it('refuses artifacts the caller cannot name', async () => {
     const connections = new FakeConnectionFactory({
       initialize: async () => ({ protocolVersion: 1, authMethods: [] }),
