@@ -85,7 +85,11 @@ export const ProofCommandSchemas = {
   // one for itself in that case.
   'turn.send': command(
     'turn.send',
-    ThreadTargetSchema.extend({ text: TurnTextSchema, commandId: EntityIdSchema.optional() }),
+    ThreadTargetSchema.extend({
+      text: TurnTextSchema,
+      commandId: EntityIdSchema.optional(),
+      artifactIds: z.array(EntityIdSchema).max(10).optional(),
+    }),
   ),
   'turn.interrupt': command(
     'turn.interrupt',

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import {
   ProofCommandSchemas,
@@ -44,6 +44,7 @@ import {
   listSessionSummaries,
   listThreadsForSession,
 } from './db/session-store.ts'
+import type { ArtifactStore } from './artifacts.ts'
 import type { CommandContext } from './command-context.ts'
 
 type ProviderId = keyof typeof providers
@@ -85,6 +86,7 @@ type ActiveTurn = {
   runtimeMessageId?: string
   /** The mode the host is starting this turn in (a plan build), if it chose one. */
   modeId?: string
+  generatedImages?: Set<string>
   toolIds: Map<string, string>
   interactionIds: Map<string, string>
   pendingInteractions: Set<string>
@@ -203,6 +205,7 @@ export function createThreadService(
   // treats the ID as a path, so an unregistered workspace can never run.
   resolveWorkspace: WorkspaceRuntimeResolver = () => undefined,
   options: {
+    artifacts?: ArtifactStore
     database?: DatabaseSync
     flush?: () => void
     /** Commit several host events together; falls back to one append per event. */
@@ -550,7 +553,25 @@ export function createThreadService(
     active: ActiveTurn | undefined,
     completionState?: ProtocolEventContext['completionState'],
     failureReason?: TurnFailureReason,
-  ) => {
+  ): void => {
+    if (active && options.artifacts && (event.event === 'tool_call' ||
+      event.event === 'tool_call_update' || event.event === 'tool_call_content')) {
+      const items = event.event === 'tool_call_content' ? [event.data.item] : event.data.content ?? []
+      for (const item of items) {
+        if (item.type !== 'content' || item.content.type !== 'image') continue
+        const image = item.content
+        const key = createHash('sha256').update(event.data.toolCallId)
+          .update(image.mimeType).update(image.data).digest('hex')
+        active.generatedImages ??= new Set()
+        if (active.generatedImages.has(key)) continue
+        active.generatedImages.add(key)
+        projectRuntimeEvent(record, { ...event, category: 'stream', event: 'agent_message_chunk',
+          data: { content: image } }, active)
+      }
+    }
+    // The durable prompt already names its uploaded images. Provider echoes must
+    // neither duplicate them nor relabel them as generated output.
+    if (options.database && event.event === 'user_message_chunk' && event.data.content.type === 'image') return
     const providerToolId =
       event.event === 'tool_call' ||
       event.event === 'tool_call_update' ||
@@ -592,6 +613,21 @@ export function createThreadService(
       failureReason,
     })
     if (!projected) return
+    if (projected.name === 'message.delta' && projected.payload.content.type === 'image' && options.artifacts) {
+      try {
+        const content = projected.payload.content
+        const metadata = options.artifacts.generated(record.session.sessionId,
+          record.session.workspaceId, content.mimeType, content.data)
+        projected.payload.content = options.artifacts.reference(metadata)
+      } catch (error) {
+        options.onPersistenceError?.(error, 'artifact.generated')
+        // Never fall back to putting image bytes in the event log.
+        publishTransient({ type: 'event', name: 'turn.notice', eventId: randomUUID(),
+          timestamp: event.timestamp, scope: threadScope(record),
+          payload: { turnId: projected.payload.turnId, message:'A generated image could not be stored.' } })
+        return
+      }
+    }
     // The create command already announced the session, and with a database
     // the user's turn is durable before provider work begins; the provider's
     // own signals would only repeat them.
@@ -837,6 +873,21 @@ export function createThreadService(
     if (record.activeTurn || record.cancellation || record.pendingBuild) {
       return errorResult(command.requestId, 'conflict', 'A turn is already in progress.')
     }
+    let promptImages: { type: 'image'; mimeType: string; data: string }[] = []
+    const artifactContent: Message['content'] = []
+    try {
+      for (const artifactId of new Set(input.artifactIds ?? [])) {
+        const metadata = options.artifacts?.get(input.sessionId, artifactId)
+        if (!metadata || metadata.workspaceId !== workspaceId) {
+          return errorResult(command.requestId, 'not_found', 'Artifact not found in this session.')
+        }
+        artifactContent.push(options.artifacts!.reference(metadata))
+        promptImages.push({ type: 'image', mimeType: metadata.mimeType,
+          data: options.artifacts!.read(metadata).toString('base64') })
+      }
+    } catch {
+      return errorResult(command.requestId, 'unavailable', 'An attachment could not be read.')
+    }
     const turn: Turn = {
       turnId: randomUUID(),
       threadId: record.thread.threadId,
@@ -847,7 +898,7 @@ export function createThreadService(
       threadId: record.thread.threadId,
       turnId: turn.turnId,
       role: 'user',
-      content: [{ type: 'text', text: input.text }],
+      content: [{ type: 'text', text: input.text }, ...artifactContent],
     }
     const started: TurnStart = { turn, userMessage, commandId }
     if (options.database) {
@@ -906,12 +957,13 @@ export function createThreadService(
           ...(modeId ? { desiredConfig: { modeId } } : {}),
           prompt: {
             text: input.text,
-            blocks: [{ type: 'text', text: input.text }],
+            blocks: [{ type: 'text', text: input.text }, ...promptImages],
           },
           userMessageId: userMessage.messageId,
         })
       })
       .then(() => {
+        promptImages = []
         if (active.promptStarted && record.activeTurn === active && turn.state === 'running') {
           // A provider may settle without a terminal callback while cancel
           // is still pending. Its prompt has ended either way.
@@ -923,6 +975,7 @@ export function createThreadService(
         }
       })
       .catch(() => {
+        promptImages = []
         active.promptFailed = true
         if (record.activeTurn === active && turn.state === 'running') {
           if (active.interruptRequested) emitInterrupted(record, turn.turnId)

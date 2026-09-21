@@ -12,6 +12,7 @@ import {
   type CommandEnvelope,
   type ErrorCode,
 } from '@openmanager/protocol/node'
+import { createArtifactStore, type ArtifactStore } from './artifacts.ts'
 import { auditValue, type AuditLog, type AuditValue } from './audit.ts'
 import type { AuthenticatedClient } from './authorized-clients.ts'
 import type { CommandContext } from './command-context.ts'
@@ -60,6 +61,7 @@ const hashTicket = (ticket: string) => createHash('sha256').update(ticket, 'utf8
  */
 export function createUploadService(options: {
   dataDir: string
+  artifacts?: ArtifactStore
   database: DatabaseSync
   audit: AuditLog
   log: Logger
@@ -99,12 +101,7 @@ export function createUploadService(options: {
     }
   }
 
-  const insert = options.database.prepare(`
-    INSERT INTO attachments (
-      attachment_id, workspace_id, message_id, uploaded_by_client_id, storage_key,
-      name, mime_type, size_bytes, metadata_json, created_at
-    ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
-  `)
+  const artifacts = options.artifacts ?? createArtifactStore(options.database, options.dataDir)
 
   const pruneExpired = () => {
     const now = clock()
@@ -218,7 +215,6 @@ export function createUploadService(options: {
     const artifactId = randomUUID()
     // The stored name is minted here. The client's file name is display text
     // in the metadata row and never reaches the filesystem.
-    const storageKey = `${UPLOAD_DIRECTORY}/${artifactId}`
     const partialPath = join(partialDirectory, artifactId)
     const finalPath = join(blobDirectory, artifactId)
     const file = createWriteStream(partialPath, { flags: 'wx' })
@@ -274,17 +270,11 @@ export function createUploadService(options: {
       if (!settle()) return
       try {
         renameSync(partialPath, finalPath)
-        insert.run(
-          artifactId,
-          ticket.workspaceId,
-          ticket.clientId,
-          storageKey,
-          ticket.name,
-          ticket.mimeType,
-          received,
-          JSON.stringify({ sessionId: ticket.sessionId, source: 'prompt' }),
-          clock(),
-        )
+        artifacts.record({
+          artifactId, sessionId: ticket.sessionId, workspaceId: ticket.workspaceId,
+          name: ticket.name, mimeType: ticket.mimeType, sizeBytes: received,
+          source: 'prompt', createdAt: clock(),
+        }, ticket.clientId)
       } catch (error) {
         // A workspace deleted mid-transfer fails the insert; the bytes must
         // not outlive the row that would have named them.
@@ -349,10 +339,11 @@ export function createUploadService(options: {
     /** Handle an upload route. Returns false when the request is not one. */
     handle(request: IncomingMessage, response: ServerResponse): boolean {
       const path = request.url?.split('?')[0] ?? ''
-      if (!path.startsWith(UPLOAD_PATH_PREFIX)) return false
+      const download = path.startsWith('/artifacts/')
+      if (!download && !path.startsWith(UPLOAD_PATH_PREFIX)) return false
       if (request.method === 'OPTIONS') {
         response.writeHead(204, {
-          'access-control-allow-methods': 'PUT',
+          'access-control-allow-methods': download ? 'GET' : 'PUT',
           'access-control-allow-headers': 'authorization, content-type',
           'access-control-max-age': '600',
           'cache-control': 'no-store',
@@ -360,14 +351,14 @@ export function createUploadService(options: {
         response.end()
         return true
       }
-      if (request.method !== 'PUT') {
-        respond(response, 405, errorResult(null, 'validation', 'Uploads use PUT.'), {
-          allow: 'PUT',
+      if (request.method !== (download ? 'GET' : 'PUT')) {
+        respond(response, 405, errorResult(null, 'validation', download ? 'Artifacts use GET.' : 'Uploads use PUT.'), {
+          allow: download ? 'GET' : 'PUT',
         })
         return true
       }
       const remoteAddress = request.socket.remoteAddress ?? 'unknown'
-      const command = `PUT ${UPLOAD_PATH_PREFIX}`
+      const command = download ? 'GET /artifacts/' : `PUT ${UPLOAD_PATH_PREFIX}`
       const lockout = options.rateLimiter.blocked('auth_failure', remoteAddress)
       if (!lockout.allowed) {
         options.audit.record({
@@ -399,6 +390,34 @@ export function createUploadService(options: {
           },
         })
         refuse(request, response, 401, 'auth', 'A valid client credential is required.')
+        return true
+      }
+      if (download) {
+        // /artifacts/<session-id>/<artifact-id>[/metadata]; no client paths reach disk.
+        const match = /^\/artifacts\/([^/]+)\/([^/]+)(\/metadata)?$/.exec(path)
+        const metadata = match ? artifacts.get(match[1]!, match[2]!) : undefined
+        if (!client.capabilities.includes('read') || !metadata ||
+          !options.resolveWorkspace(metadata.workspaceId, { clientId: client.clientId, command })) {
+          respond(response, 404, errorResult(null, 'not_found', 'Artifact not found.'))
+          return true
+        }
+        if (match![3]) {
+          respond(response, 200, metadata)
+          return true
+        }
+        try {
+          const bytes = artifacts.read(metadata)
+          response.writeHead(200, {
+            'content-type': metadata.mimeType,
+            'content-length': bytes.length,
+            'cache-control': 'no-store',
+            'x-content-type-options': 'nosniff',
+            'content-disposition': 'attachment',
+          })
+          response.end(bytes)
+        } catch {
+          respond(response, 404, errorResult(null, 'not_found', 'Artifact bytes are unavailable.'))
+        }
         return true
       }
       const who = { clientId: client.clientId, remoteAddress, command }

@@ -437,4 +437,35 @@ export const MIGRATIONS: readonly Migration[] = [
       }
     },
   },
+  {
+    version: 9,
+    name: 'artifact_session_and_source',
+    up(database) {
+      const columns = new Set(
+        (database.prepare('PRAGMA table_info(attachments)').all() as { name: string }[])
+          .map((column) => column.name),
+      )
+      if (!columns.has('session_id')) {
+        database.exec(`
+          ALTER TABLE attachments ADD COLUMN session_id TEXT
+            REFERENCES sessions(session_id) ON DELETE CASCADE;
+          UPDATE attachments SET session_id = (
+            SELECT session_id FROM sessions
+            WHERE session_id = json_extract(attachments.metadata_json, '$.sessionId')
+              AND workspace_id = attachments.workspace_id
+          );
+        `)
+      }
+      if (!columns.has('source')) {
+        database.exec(`
+          ALTER TABLE attachments ADD COLUMN source TEXT NOT NULL DEFAULT 'prompt'
+            CHECK (source IN ('prompt', 'generated'));
+          UPDATE attachments SET source = 'generated'
+            WHERE json_extract(metadata_json, '$.source') = 'generated';
+        `)
+      }
+      database.exec(`CREATE INDEX IF NOT EXISTS attachments_session_created_idx
+        ON attachments(session_id, created_at, attachment_id)`)
+    },
+  },
 ]

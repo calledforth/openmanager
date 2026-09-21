@@ -125,7 +125,15 @@ export const TurnSchema = z.object({
   threadId: EntityIdSchema,
   state: z.enum(['running', 'waiting', 'completed', 'interrupted', 'failed']),
 })
+export const ArtifactReferenceSchema = z.object({
+  type: z.literal('artifact'),
+  artifactId: EntityIdSchema,
+  mimeType: z.string().min(1),
+  name: z.string().min(1),
+  sizeBytes: z.number().int().positive(),
+})
 export const ContentBlockSchema = z.discriminatedUnion('type', [
+  ArtifactReferenceSchema,
   z.object({ type: z.literal('text'), text: z.string() }),
   z.object({ type: z.literal('image'), mimeType: z.string().min(1), data: z.string() }),
   z.object({ type: z.literal('audio'), mimeType: z.string().min(1), data: z.string() }),
