@@ -274,6 +274,30 @@ describe('the shared application over the environment client', () => {
     expect(container.querySelector('textarea')?.disabled).toBe(false)
   })
 
+  it('shows the context meter once the session reports usage, and not before', async () => {
+    const client = createMockEnvironmentClient({ seed: SEEDED_HISTORY })
+    await render(<App client={client} />)
+    await act(() => buttonWithText('First')!.click())
+    await settle(client)
+    const meter = () => container.querySelector('[aria-label^="Context window"]')
+    // A provider that reports no usage (Cursor) stays here: no meter at all.
+    expect(meter()).toBeNull()
+
+    client.emit({
+      type: 'event',
+      eventId: 'session-usage',
+      timestamp: new Date().toISOString(),
+      name: 'session.composer.updated',
+      scope: { type: 'environment', environmentId: 'mock-environment' },
+      payload: {
+        sessionId: SESSION.sessionId,
+        composer: { usage: { used: 50_000, size: 200_000 } },
+      },
+    })
+    await settle(client)
+    expect(meter()?.getAttribute('aria-label')).toBe('Context window 25% full')
+  })
+
   it('loads an older history page through the chat and prevents duplicate clicks', async () => {
     const mock = createMockEnvironmentClient({
       seed: { ...SEEDED_HISTORY, activeSessionId: SESSION.sessionId },

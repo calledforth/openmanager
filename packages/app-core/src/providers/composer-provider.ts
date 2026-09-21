@@ -4,6 +4,7 @@ import type {
   AvailableCommand,
   ProviderId,
   SessionConfigOption,
+  SessionUsage,
 } from '@agentpack/contract'
 import {
   resolveComposerChoice,
@@ -34,6 +35,9 @@ export interface AcpSessionRuntimeState {
     availableModes?: AcpModeOption[]
   }
   availableCommands?: AcpCommandOption[]
+  /** Context-window occupancy, where the host reads it off the session rather
+   * than off `agentEvents`. */
+  usage?: SessionUsage
 }
 
 export type DraftComposerSelection = {

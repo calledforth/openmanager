@@ -9,6 +9,7 @@ import {
   ComposerCommandSchemas,
   ComposerConfigOptionSchema,
   ComposerResponseSchemas,
+  ComposerUsageSchema,
   PROVIDER_CATALOG_CAPABILITY,
   SessionComposerStateSchema,
   type CommandEnvelope,
@@ -317,6 +318,18 @@ export function createComposerService(
           updateSelection(sessionId, {
             availableCommands: commandsPatch(event.data.availableCommands),
           })
+          return
+        }
+        if (event.event === 'usage_update' && sessionId) {
+          // Providers do not report usage again when a session loads, so the
+          // last reading is kept with the selection and survives a restart.
+          // One the protocol cannot carry (no window size) leaves it alone.
+          const usage = ComposerUsageSchema.safeParse({
+            used: Math.round(event.data.used),
+            size: Math.round(event.data.size),
+            ...(event.data.cost ? { cost: event.data.cost } : {}),
+          })
+          if (usage.success) updateSelection(sessionId, { usage: usage.data })
         }
       } catch {
         // Provider metadata is advisory. Invalid or unpersistable catalog data

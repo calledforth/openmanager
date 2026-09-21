@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   ComposerCommandOptionSchema,
   ComposerConfigOptionSchema,
+  ComposerUsageSchema,
   ProofEventSchemas,
   SessionComposerStateSchema,
   SessionSummarySchema,
@@ -72,6 +73,18 @@ describe('live composer state wire contract', () => {
         input: { type: 'unstructured' },
       }).success,
     ).toBe(false)
+  })
+
+  it('carries context usage only when there is a window to measure against', () => {
+    const usage = { used: 19_433, size: 200_000, cost: { amount: 0.42, currency: 'USD' } }
+    expect(SessionComposerStateSchema.parse({ usage })).toEqual({ usage })
+    expect(ComposerUsageSchema.parse({ used: 0, size: 200_000 })).toEqual({
+      used: 0,
+      size: 200_000,
+    })
+    expect(ComposerUsageSchema.safeParse({ used: 10, size: 0 }).success).toBe(false)
+    expect(ComposerUsageSchema.safeParse({ used: -1, size: 200_000 }).success).toBe(false)
+    expect(ComposerUsageSchema.safeParse({ used: 1.5, size: 200_000 }).success).toBe(false)
   })
 
   it('names the workspace and provider of a pushed preference', () => {
