@@ -50,6 +50,7 @@ import { createProviderService } from './provider-service.ts'
 import { createRateLimiter } from './rate-limit.ts'
 import { createRequestGuard } from './request-guard.ts'
 import { createThreadService, type WorkspaceRuntimeResolver } from './thread-service.ts'
+import { createArtifactStore } from './artifacts.ts'
 import { createUploadService } from './uploads.ts'
 import { attachWebSocket, SOCKET_CAPABILITIES } from './websocket.ts'
 import { openWorkspaceRegistry } from './workspaces.ts'
@@ -220,6 +221,7 @@ export async function startServer(config: ServerConfig) {
   })
   emitWorkspaceEvent = (event) => eventService.append(event)
   let recordSessionMode: (sessionId: string, modeId: string) => void = () => undefined
+  const artifacts = createArtifactStore(eventDatabase, config.dataDir)
   const threadService = createThreadService(
     runtime,
     providerService,
@@ -228,6 +230,7 @@ export async function startServer(config: ServerConfig) {
     resolveWorkspace,
     {
       database: eventDatabase,
+      artifacts,
       flush: eventService.flush,
       appendAtomic: (events) => eventService.appendAtomic(events),
       onPersistenceError: (error, eventName) =>
@@ -266,6 +269,7 @@ export async function startServer(config: ServerConfig) {
   recordSessionMode = (sessionId, modeId) => composerService.recordSessionMode(sessionId, modeId)
   observeProviderCatalog = (providerId, result) => composerService.observeProbe(providerId, result)
   const uploads = createUploadService({
+    artifacts,
     dataDir: config.dataDir,
     database: eventDatabase,
     audit,
