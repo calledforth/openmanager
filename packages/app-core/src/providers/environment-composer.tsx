@@ -46,8 +46,9 @@ const EMPTY_RECORD = {}
 const EMPTY_LIST: never[] = []
 const noop = () => undefined
 
-/** What the user picked in a draft and has not launched yet. It is held here
- * only: the environment learns of it when the draft becomes a session. */
+/** What the user picked in a draft and has not launched yet. Each pick is
+ * also filed as the workspace preference as it is made; it stays held so the
+ * draft shows it at once and launches with it whatever was filed since. */
 interface DraftSelection {
   providerId: ProviderId
   modelId?: string
@@ -97,6 +98,22 @@ function draftProviderFor(
     .filter((id) => !offered?.length || offered.includes(id))
   if (candidates.length === 0 || candidates.includes(picked)) return picked
   return candidates.find((id) => !providerBlocksComposer(statuses[id])) ?? candidates[0]!
+}
+
+/**
+ * The provider this workspace last ran: that of its most recently active
+ * top-level session. The environment keeps preferences per provider and none
+ * for the provider itself, so the sessions are the record, for every client.
+ */
+function lastProviderIn(state: EnvironmentState, workspaceId: string): ProviderId | undefined {
+  let best: { at: string; providerId: ProviderId } | undefined
+  for (const session of Object.values(state.sessions)) {
+    if (!session || session.workspaceId !== workspaceId || session.parentSessionId) continue
+    if (!isProviderId(session.providerId)) continue
+    const at = session.updatedAt ?? ''
+    if (!best || at > best.at) best = { at, providerId: session.providerId }
+  }
+  return best?.providerId
 }
 
 /**
@@ -204,8 +221,12 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
   const offeredProviders = useEnvironmentState((state) =>
     draftWorkspaceId ? state.workspaces[draftWorkspaceId]?.capabilities.providers : undefined,
   )
+  const lastProviderId = useEnvironmentState((state) =>
+    draftWorkspaceId ? lastProviderIn(state, draftWorkspaceId) : undefined,
+  )
   const draftProviderId = draftProviderFor(
     (draftWorkspaceId ? draftSelections[draftWorkspaceId]?.providerId : undefined) ??
+      lastProviderId ??
       defaultProviderId,
     catalog,
     offeredProviders,
@@ -323,7 +344,7 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
         liveRef.current
       const selection = draftSelections[workspaceId]
       const providerId = draftProviderFor(
-        selection?.providerId ?? defaultProviderId,
+        selection?.providerId ?? lastProviderIn(state, workspaceId) ?? defaultProviderId,
         catalog,
         state.workspaces[workspaceId]?.capabilities.providers,
         agentUiStatusByProvider,
@@ -346,8 +367,24 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
     [client],
   )
 
+  // Filed as it is made, so the workspace remembers a pick whether or not the
+  // draft is ever sent. A failure is shown and the pick stays held: the launch
+  // files it again and stops if that fails too.
+  const filePick = useCallback(
+    (workspaceId: string, providerId: ProviderId, preference: WorkspaceComposerPreference) => {
+      void commands
+        .setComposerPreference({ workspaceId, providerId, preference })
+        .catch((err: unknown) => setError(message(err)))
+    },
+    [commands],
+  )
+
   const holdDraftPick = useCallback(
-    (supported: boolean, pick: (current: DraftSelection) => DraftSelection) => {
+    (
+      supported: boolean,
+      pick: (current: DraftSelection) => DraftSelection,
+      filed: WorkspaceComposerPreference,
+    ) => {
       if (!draftWorkspaceId) return
       if (!supported) {
         // Holding a pick the launch cannot honour would show one thing and run another.
@@ -364,8 +401,9 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
           ),
         }
       })
+      if (canFilePicks) filePick(draftWorkspaceId, draftProviderId, filed)
     },
-    [draftProviderId, draftWorkspaceId],
+    [canFilePicks, draftProviderId, draftWorkspaceId, filePick],
   )
 
   const setDraftProvider = useCallback(
@@ -383,8 +421,9 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
         ...prev,
         [draftWorkspaceId]: { providerId, ...(modelId && canFilePicks ? { modelId } : {}) },
       }))
+      if (modelId && canFilePicks) filePick(draftWorkspaceId, providerId, { modelId })
     },
-    [canFilePicks, draftWorkspaceId, providerDisplayName, setDefaultProviderId],
+    [canFilePicks, draftWorkspaceId, filePick, providerDisplayName, setDefaultProviderId],
   )
 
   // The picks each launch was built from. Every pick replaces the workspace's
@@ -444,14 +483,20 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
       agentEvents: EMPTY_LIST,
       error,
       setDraftModel: (modelId) =>
-        holdDraftPick(canFilePicks, (current) => ({ ...current, modelId })),
-      setDraftMode: (modeId) => holdDraftPick(canSetMode, (current) => ({ ...current, modeId })),
+        holdDraftPick(canFilePicks, (current) => ({ ...current, modelId }), { modelId }),
+      setDraftMode: (modeId) =>
+        holdDraftPick(canSetMode, (current) => ({ ...current, modeId }), { modeId }),
       setDraftProvider,
       setDraftConfigOption: (configId, value) =>
-        holdDraftPick(canFilePicks, (current) => ({
-          ...current,
-          configValues: { ...current.configValues, [configId]: value },
-        })),
+        holdDraftPick(
+          canFilePicks,
+          (current) => ({
+            ...current,
+            configValues: { ...current.configValues, [configId]: value },
+          }),
+          // The environment replaces the values as a whole, so the rest ride along.
+          { configValues: { ...draftPreference.configValues, [configId]: value } },
+        ),
       setSessionModel: (sessionId, modelId) =>
         runSessionSetter(() => commands.setSessionModel({ sessionId, modelId })),
       setSessionMode: (sessionId, modeId) =>
@@ -490,6 +535,7 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
       commands,
       composerConfigValues,
       draftFor,
+      draftPreference.configValues,
       draftSessionState,
       error,
       holdDraftPick,
