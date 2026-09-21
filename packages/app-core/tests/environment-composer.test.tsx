@@ -230,6 +230,76 @@ describe('the composer over the environment client', () => {
     expect(probe.composer.composerConfigValues).toEqual({ effort: 'high' })
   })
 
+  it('files a draft pick as the workspace preference when it is made', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client)
+    await openDraft(client)
+
+    await act(() => probe.composer.setDraftModel('opus'))
+    await act(() => probe.composer.setDraftConfigOption('effort', 'high'))
+    await act(() => probe.composer.setDraftConfigOption('fast', true))
+    await act(() => probe.composer.setDraftMode('plan'))
+    await settle(client)
+    const filed = client.calls
+      .filter((call) => call.command === 'setComposerPreference')
+      .map((call) => call.input)
+    const target = { workspaceId: WORKSPACE.workspaceId, providerId: 'opencode' }
+    expect(filed).toEqual([
+      { ...target, preference: { modelId: 'opus' } },
+      { ...target, preference: { configValues: { effort: 'high' } } },
+      // The values are replaced as a whole, so earlier ones ride along.
+      { ...target, preference: { configValues: { effort: 'high', fast: true } } },
+      { ...target, preference: { modeId: 'plan' } },
+    ])
+
+    // Never sent, and already what the workspace remembers.
+    expect(probe.composer.sessionLaunchPreferences(WORKSPACE.workspaceId, 'opencode')).toEqual({
+      preferredConfigValues: { effort: 'high', fast: true },
+    })
+  })
+
+  it('shows a pick that could not be filed and keeps it for the launch', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client)
+    await openDraft(client)
+    vi.spyOn(client.commands, 'setComposerPreference').mockRejectedValue(
+      new EnvironmentClientError('unavailable', 'Preference refused.'),
+    )
+    await act(() => probe.composer.setDraftModel('opus'))
+    await settle(client)
+    expect(probe.composer.error).toBe('Preference refused.')
+    expect(probe.composer.draftSessionState?.models?.currentModelId).toBe('opus')
+  })
+
+  it('opens a draft on the provider the workspace last ran', async () => {
+    const client = createMockEnvironmentClient({
+      seed: {
+        ...SEED,
+        sessions: [
+          ...SEED.sessions!,
+          {
+            session: {
+              sessionId: 'session-3',
+              workspaceId: WORKSPACE.workspaceId,
+              title: 'Latest',
+            },
+            providerId: 'cursor',
+            updatedAt: '2999-01-01T00:00:00.000Z',
+            threads: [{ threadId: 't3', sessionId: 'session-3' }],
+          },
+        ],
+      },
+    })
+    await mount(client)
+    await openDraft(client)
+    expect(probe.composer.draftSessionState?.providerId).toBe('cursor')
+    expect(probe.composer.draftLaunchPreferences(WORKSPACE.workspaceId).providerId).toBe('cursor')
+
+    // A pick made here outranks it.
+    await act(() => probe.composer.setDraftProvider('opencode'))
+    expect(probe.composer.draftSessionState?.providerId).toBe('opencode')
+  })
+
   it('holds draft picks locally and launches the session with them', async () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     await mount(client)
@@ -245,8 +315,6 @@ describe('the composer over the environment client', () => {
     await act(() => probe.composer.setDraftConfigOption('effort', 'high'))
     expect(probe.composer.draftSessionState?.models?.currentModelId).toBe('opus')
     expect(probe.composer.composerConfigValues).toEqual({ effort: 'high' })
-    // Nothing reaches the environment until the draft is sent.
-    expect(commandsOf(client)).not.toContain('setComposerPreference')
     expect(probe.composer.draftLaunchPreferences(WORKSPACE.workspaceId)).toEqual({
       providerId: 'opencode',
       preferredModelId: 'opus',
@@ -257,10 +325,13 @@ describe('the composer over the environment client', () => {
     await act(() => probe.thread.sendMessage('hello'))
     await settle(client)
     const commands = commandsOf(client)
-    expect(commands.indexOf('setComposerPreference')).toBeLessThan(
-      commands.indexOf('createSession'),
+    // Filed once more at launch, whole, right before the session is created.
+    expect(commands.lastIndexOf('setComposerPreference')).toBe(
+      commands.indexOf('createSession') - 1,
     )
-    expect(inputOf(client, 'setComposerPreference')).toEqual({
+    expect(
+      client.calls.filter((call) => call.command === 'setComposerPreference').at(-1)?.input,
+    ).toEqual({
       workspaceId: WORKSPACE.workspaceId,
       providerId: 'opencode',
       preference: { modelId: 'opus', configValues: { effort: 'high' } },
