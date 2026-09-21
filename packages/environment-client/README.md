@@ -65,8 +65,8 @@ preference for that session's workspace and provider. Read with
 `selectProviderCatalog` and `selectComposerPreference`.
 
 An environment that advertises `composer.events` keeps all of it live. A
-session's own selection (model, mode, config values and the provider's config
-options) lands in `state.sessions[id].composer` from session listings and from
+session's own selection (model, mode, config values, and the provider's config
+options and slash commands) lands in `state.sessions[id].composer` from session listings and from
 `session.composer.updated`; read it with `selectSessionComposer`. It belongs to
 the session: a sibling session in the same workspace keeps its own model.
 `composer.preferences.updated` and `provider.catalog.updated` refresh the draft

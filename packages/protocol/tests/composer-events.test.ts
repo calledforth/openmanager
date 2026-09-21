@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  ComposerCommandOptionSchema,
   ComposerConfigOptionSchema,
   ProofEventSchemas,
   SessionComposerStateSchema,
@@ -49,6 +50,26 @@ describe('live composer state wire contract', () => {
         id: 'fast',
         name: 'Fast mode',
         currentValue: 'yes',
+      }).success,
+    ).toBe(false)
+  })
+
+  it('lists slash commands by name, with the hint for what follows one', () => {
+    const availableCommands = [
+      { name: 'review', description: '' },
+      { name: 'search', description: 'Search the workspace', placeholder: 'query' },
+    ]
+    expect(SessionComposerStateSchema.parse({ availableCommands })).toEqual({ availableCommands })
+    expect(SessionComposerStateSchema.parse({ availableCommands: [] })).toEqual({
+      availableCommands: [],
+    })
+    expect(ComposerCommandOptionSchema.safeParse({ name: '', description: '' }).success).toBe(false)
+    // The ACP input spec stays host-side; only its hint crosses.
+    expect(
+      ComposerCommandOptionSchema.safeParse({
+        name: 'search',
+        description: '',
+        input: { type: 'unstructured' },
       }).success,
     ).toBe(false)
   })

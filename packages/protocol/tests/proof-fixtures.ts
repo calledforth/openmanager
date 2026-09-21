@@ -264,6 +264,10 @@ export const proofEvents = [
           },
           { type: 'boolean', id: 'fast', name: 'Fast mode', currentValue: true },
         ],
+        availableCommands: [
+          { name: 'review', description: 'Review the current diff' },
+          { name: 'search', description: 'Search the workspace', placeholder: 'query' },
+        ],
       },
     },
   },

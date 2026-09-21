@@ -11,7 +11,9 @@ import {
 
 /** Increment only when the wire contract changes incompatibly. */
 // Version 2 adds interaction.expired; v1 clients cannot fold or replay it.
-export const PROTOCOL_VERSION = 2 as const
+// Version 3 adds `availableCommands` to the session composer selection, which
+// a v2 client's strict schema rejects along with the summary or event around it.
+export const PROTOCOL_VERSION = 3 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema
