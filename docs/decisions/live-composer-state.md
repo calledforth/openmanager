@@ -38,6 +38,17 @@ Within a selection the fields do not behave alike:
 - Reconnect with a cursor replays the missed events. Reconnect without one (or across a gap) reads the selection from the session summaries, refetches the catalog, and marks held preferences as not loaded, because the snapshot does not carry them.
 - On the client a pushed preference counts as a landed write: the answer to a read issued before it is dropped.
 
+## How the pickers use it
+
+The environment composer provider (`packages/app-core/src/providers/environment-composer.tsx`) reads all of the above and keeps no copy of it.
+
+- An open session shows `session.composer` first. `resolveSessionComposerRuntime` takes `modelOwner: 'session'` for this; the workspace preference only stands in for a session that has no model yet. Desktop's Convex path keeps the default (`'workspace'`).
+- Session setters are the three commands and nothing else. A failure is shown in the composer; success arrives as the pushed event.
+- A draft's picks are held in the client until the first prompt. At launch they are filed as the workspace preference, because that is what the server seeds a new session from, and then `session.create` runs. A failed write stops the launch. Once the draft has become a session its picks are dropped, so the next draft follows what the workspace remembers by then.
+- Each composer command is negotiated on its own. A draft pick the environment could not file (`composer.preferences.set`) or apply (`composer.mode.set`) is refused in the composer, and a remembered mode is not shown, so a draft never displays something it cannot launch with.
+- Mode is the exception, since the server does not apply a remembered mode. A draft whose mode is not the provider's default launches as `session.create` (no first message), `composer.mode.set`, `turn.send`. If the switch fails the session is deleted and the draft stays open: prompting in agent mode when plan was asked for is not a fallback.
+- A provider whose health blocks the composer is listed in the draft picker but cannot be chosen.
+
 ## Not covered here
 
-Wiring the pickers to this state is CAL-179, and draft preferences are CAL-180. The shared `resolveSessionComposerRuntime` still ranks the workspace preference above the session for the model; the environment path must rank `session.composer` first when CAL-179 lands. The desktop Convex path is unchanged.
+Writing a draft pick to the preference as it is made, and remembering the last provider per workspace, are CAL-180.

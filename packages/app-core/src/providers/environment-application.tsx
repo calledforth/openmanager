@@ -56,7 +56,11 @@ import {
   type LocalSessionStatus,
   type SessionStateValue,
 } from './session-provider'
-import { ComposerStateContext, type ComposerStateValue } from './composer-provider'
+import {
+  DraftLaunchContext,
+  EnvironmentComposerStateProvider,
+  type DraftLaunch,
+} from './environment-composer'
 import {
   SidebarDataContext,
   toggleCollapsedWorkspace,
@@ -106,10 +110,7 @@ export interface EnvironmentApplicationOptions {
  * Implements every application provider contract over the environment
  * client, so the shared sidebar, chat, composer and interaction panels render
  * against an environment server (or the mock) with no host-specific
- * providers at all. The environment client keeps composer catalogs and each
- * session's selection live (`selectProviderCatalog`, `selectSessionComposer`);
- * the composer provider below does not read them yet and publishes an empty
- * selection.
+ * providers at all. Composer state lives in `environment-composer.tsx`.
  */
 export function EnvironmentApplicationProviders({
   children,
@@ -304,9 +305,10 @@ function EnvironmentPlatformCapabilitiesProvider({ children }: { children: React
 // ---------------------------------------------------------------------------
 
 interface DraftInternals {
-  /** Create the draft's session, open it and adopt it; returns its first
-   * thread, or `null` when the draft was closed or replaced meanwhile. */
-  startDraftSession: (text: string) => Promise<ThreadTarget | null>
+  /** Create the draft's session with what the composer picked, open it and
+   * adopt it; returns its first thread, or `null` when the draft was closed or
+   * replaced meanwhile. */
+  startDraftSession: (text: string, launch: DraftLaunch) => Promise<ThreadTarget | null>
 }
 
 const DraftInternalsContext = createContext<DraftInternals | null>(null)
@@ -410,31 +412,72 @@ function EnvironmentSessionStateProvider({
   )
 
   const startDraftSession = useCallback(
-    async (text: string): Promise<ThreadTarget | null> => {
+    async (text: string, launch: DraftLaunch): Promise<ThreadTarget | null> => {
       if (!draftWorkspaceId) throw new Error('No draft is open')
       const generation = draftGenerationRef.current
       const environmentId = client.getState().environment?.environmentId
       if (!environmentId) throw new Error('No environment is connected')
+      const { providerId, preference, modeId } = launch
+      // The environment seeds a new session's model and settings from the
+      // workspace preference, so the draft's picks are filed there first. A
+      // failure stops the launch: starting on something else would be worse.
+      // The composer refuses picks this environment cannot act on, so these
+      // only trip if that changed under an open draft. Never launch on less
+      // than what the composer shows.
+      if (
+        (preference && !client.supports('setComposerPreference')) ||
+        (modeId !== undefined && !client.supports('setSessionMode'))
+      ) {
+        throw new Error('This environment cannot start a chat with the selected settings.')
+      }
+      if (preference) {
+        await commands.setComposerPreference({
+          workspaceId: draftWorkspaceId,
+          providerId,
+          preference,
+        })
+      }
+      // A mode has to be set on a session that exists and before its first
+      // prompt, so that launch is create, switch, send rather than one command.
+      const switchMode = modeId !== undefined
       const { session, thread } = await commands.createSession({
         environmentId,
         workspaceId: draftWorkspaceId,
-        providerId: defaultProviderId,
-        firstMessage: text,
+        providerId,
+        ...(switchMode ? {} : { firstMessage: text }),
       })
+      const target = { sessionId: session.sessionId, threadId: thread.threadId }
+      if (switchMode) {
+        try {
+          await commands.setSessionMode({ sessionId: session.sessionId, modeId })
+        } catch (err) {
+          // Prompting in the wrong mode (agent instead of plan) is not a
+          // fallback. The draft stays open with what was typed.
+          await commands.deleteSession(session.sessionId).catch(() => undefined)
+          throw err
+        }
+      }
       if (draftGenerationRef.current !== generation) {
         // The user moved on while the session was being created: do not pull
-        // the view back to it. Its accepted first turn continues in the sidebar.
+        // the view back to it. Its first turn continues in the sidebar.
+        if (switchMode) void commands.sendTurn({ ...target, text }).catch(() => undefined)
         return null
       }
       await openSessionLatest(session.sessionId)
       setAdoptedDraftSessionId(session.sessionId)
-      // Creation already returned the first turn; its state now drives the composer.
       setPendingDraftSessionStart(false)
-      setTurnPending(false)
       setDraftWorkspaceId(null)
-      return { sessionId: session.sessionId, threadId: thread.threadId }
+      if (switchMode) {
+        setTurnPending(true)
+        // As with any send, a refused prompt keeps its own row and retry.
+        await commands.sendTurn({ ...target, text }).catch(() => setTurnPending(false))
+      } else {
+        // Creation already returned the first turn; its state now drives the composer.
+        setTurnPending(false)
+      }
+      return target
     },
-    [client, commands, defaultProviderId, draftWorkspaceId, openSessionLatest],
+    [client, commands, draftWorkspaceId, openSessionLatest],
   )
 
   const value = useMemo<SessionStateValue>(
@@ -539,53 +582,6 @@ function EnvironmentSessionStateProvider({
       <DraftInternalsContext.Provider value={internals}>{children}</DraftInternalsContext.Provider>
     </SessionStateContext.Provider>
   )
-}
-
-// ---------------------------------------------------------------------------
-// Composer state: the client holds it live, the pickers are not wired to it yet.
-// ---------------------------------------------------------------------------
-
-function EnvironmentComposerStateProvider({ children }: { children: ReactNode }) {
-  const { activeSessionId, activeWorkspacePath, isSessionDraftOpen, defaultProviderId } =
-    useContext(SessionStateContext)!
-  // The composer reads health for the provider it names, so an open session
-  // names its own rather than the draft default.
-  const listedProviderId = useActiveSession()?.providerId
-  const sessionProviderId = isProviderId(listedProviderId) ? listedProviderId : defaultProviderId
-  const value = useMemo<ComposerStateValue>(() => {
-    const noop = () => undefined
-    const asyncNoop = async () => undefined
-    return {
-      acpSessionState: activeSessionId
-        ? { sessionId: activeSessionId, providerId: sessionProviderId }
-        : null,
-      draftSessionState:
-        isSessionDraftOpen && activeWorkspacePath
-          ? { sessionId: `draft:${activeWorkspacePath}`, providerId: defaultProviderId }
-          : null,
-      composerConfigValues: EMPTY_RECORD,
-      providerComposerProfiles: EMPTY_RECORD,
-      agentEvents: EMPTY_LIST,
-      error: null,
-      setDraftModel: noop,
-      setDraftMode: noop,
-      setDraftProvider: noop,
-      setDraftConfigOption: noop,
-      setSessionModel: asyncNoop,
-      setSessionMode: asyncNoop,
-      setSessionConfigOption: asyncNoop,
-      recordSessionMode: noop,
-      draftLaunchPreferences: () => ({ providerId: defaultProviderId }),
-      sessionLaunchPreferences: () => ({}),
-    }
-  }, [
-    activeSessionId,
-    activeWorkspacePath,
-    defaultProviderId,
-    isSessionDraftOpen,
-    sessionProviderId,
-  ])
-  return <ComposerStateContext.Provider value={value}>{children}</ComposerStateContext.Provider>
 }
 
 // ---------------------------------------------------------------------------
@@ -766,6 +762,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
   const session = useContext(SessionStateContext)!
   const { ensureProvider, providerDisplayName } = useContext(PlatformCapabilitiesContext)!
   const { startDraftSession } = useContext(DraftInternalsContext)!
+  const { draftLaunch, draftLaunched } = useContext(DraftLaunchContext)!
   const activeSession = useActiveSession()
   const thread = useActiveThread()
   const activeTurn = useActiveTurn()
@@ -796,7 +793,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
   targetRef.current = target
 
   const { beginDraftTurn, beginSessionTurn, failTurn, isSessionDraftOpen } = session
-  const { activeWorkspacePath, defaultProviderId } = session
+  const { activeWorkspacePath } = session
 
   const sendMessage = useCallback(
     async (content: string, attachments?: UploadedImageAttachment[]) => {
@@ -813,12 +810,14 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
           beginDraftTurn()
           // Refused here rather than by the environment's rejection: the user
           // learns why before a session exists, and keeps what they typed.
-          if (!(await ensureProvider(defaultProviderId, activeWorkspacePath ?? ''))) {
+          const launch = draftLaunch(activeWorkspacePath ?? '')
+          if (!(await ensureProvider(launch.providerId, activeWorkspacePath ?? ''))) {
             throw new Error(
-              `${providerDisplayName(defaultProviderId)} is unavailable. Retry it from Settings.`,
+              `${providerDisplayName(launch.providerId)} is unavailable. Retry it from Settings.`,
             )
           }
-          await startDraftSession(text)
+          await startDraftSession(text, launch)
+          draftLaunched(activeWorkspacePath ?? '', launch)
           return
         }
         const current = targetRef.current
@@ -839,7 +838,8 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       beginDraftTurn,
       beginSessionTurn,
       commands,
-      defaultProviderId,
+      draftLaunch,
+      draftLaunched,
       ensureProvider,
       failTurn,
       isSessionDraftOpen,

@@ -99,6 +99,32 @@ describe('buildProviderModelGroups', () => {
   })
 })
 
+describe('unavailable providers', () => {
+  it('marks a provider that cannot be switched to, but never the current one', () => {
+    const groups = buildProviderModelGroups({
+      providerOptions: PROVIDER_OPTIONS,
+      currentProviderId: 'cursor',
+      currentModels: [],
+      composerProfiles: {},
+      providers: PROVIDERS,
+      unavailableProviders: {
+        claude: 'Claude Code is unavailable.',
+        cursor: 'Cursor is unavailable.',
+      },
+    })
+
+    expect(groups.find((group) => group.providerId === 'claude')?.unavailableReason).toBe(
+      'Claude Code is unavailable.',
+    )
+    expect(groups.find((group) => group.providerId === 'cursor')).not.toHaveProperty(
+      'unavailableReason',
+    )
+    expect(groups.find((group) => group.providerId === 'opencode')).not.toHaveProperty(
+      'unavailableReason',
+    )
+  })
+})
+
 describe('metadataModelOptions', () => {
   it('is empty for a provider that only lists models on a live session', () => {
     expect(metadataModelOptions(PROVIDERS, 'cursor')).toEqual([])

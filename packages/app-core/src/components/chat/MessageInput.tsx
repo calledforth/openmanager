@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import type { ProviderId } from '@agentpack/contract'
 import { deriveSessionChrome } from '@agentpack/view'
 import { providerBlocksComposer, usePlatformCapabilities } from '../../providers/platform-provider'
 import { useSessionState } from '../../providers/session-provider'
@@ -49,6 +50,7 @@ export function MessageInput() {
     agentEvents,
     providerComposerProfiles,
     composerConfigValues,
+    error: composerError,
   } = useComposerState()
   const { agentUiStatusByProvider, providers, acpPromptCapabilitiesByProvider } =
     usePlatformCapabilities()
@@ -196,12 +198,24 @@ export function MessageInput() {
         ? rememberedEffort
         : ''
 
+  // A provider known to be broken cannot be switched to: the draft would only
+  // fail at send. Unknown health does not count; see `providerBlocksComposer`.
+  const unavailableProviders: Partial<Record<ProviderId, string>> = {}
+  for (const provider of providerOptions) {
+    const status = agentUiStatusByProvider[provider.id]
+    if (!providerBlocksComposer(status)) continue
+    unavailableProviders[provider.id] =
+      status === 'probing'
+        ? `Checking ${provider.name}…`
+        : `${provider.name} is unavailable. Retry it from Settings.`
+  }
   const providerModelGroups = buildProviderModelGroups({
     providerOptions,
     currentProviderId,
     currentModels: modelOptions,
     composerProfiles: providerComposerProfiles,
     providers,
+    unavailableProviders,
   })
   // Runtime state first, chrome as fallback — mirrors the model/mode resolution
   // above. Runtime state also carries the per-workspace draft copy, so the picker
@@ -349,6 +363,7 @@ export function MessageInput() {
             modelImageSupport !== undefined
           }
           imageSupportMessage={imageSupportMessage}
+          settingsError={composerError}
           slashCommands={slashCommands}
           usage={chrome.usage ?? null}
           onModeChange={(id) => {

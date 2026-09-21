@@ -137,17 +137,21 @@ export function resolveDraftComposerRuntime({
   }
 }
 
-// Resolve what the composer should display for an active session. Model
-// selection is provider-global agent state (not per session), so the workspace
-// preference — the single selection the job worker re-applies before every
-// prompt — is what the composer must show; live runtime and profile defaults
-// are fallbacks. Modes can be switched by the agent itself mid-session, so the
-// live runtime wins there. Catalogs fall back to the persisted provider
-// profile so controls render instantly, before any live session round-trip.
+// Resolve what the composer should display for an active session. On desktop
+// model selection is provider-global agent state (not per session), so the
+// workspace preference — the single selection the job worker re-applies before
+// every prompt — is what the composer must show; live runtime and profile
+// defaults are fallbacks. An environment keeps the selection per session
+// (`modelOwner: 'session'`): there the session's own model wins, and the
+// preference only stands in until the session has one. Modes can be switched
+// by the agent itself mid-session, so the live runtime wins there. Catalogs
+// fall back to the persisted provider profile so controls render instantly,
+// before any live session round-trip.
 export function resolveSessionComposerRuntime(
   runtime: AcpSessionRuntimeState,
   preference?: WorkspaceComposerPreference,
   profile?: ProviderComposerProfile,
+  { modelOwner = 'workspace' }: { modelOwner?: 'workspace' | 'session' } = {},
 ): AcpSessionRuntimeState {
   const availableModels = runtime.models?.availableModels?.length
     ? runtime.models.availableModels
@@ -155,13 +159,17 @@ export function resolveSessionComposerRuntime(
   const availableModes = runtime.modes?.availableModes?.length
     ? runtime.modes.availableModes
     : profile?.availableModes
+  const modelCandidates =
+    modelOwner === 'session'
+      ? [runtime.models?.currentModelId, preference?.modelId]
+      : [preference?.modelId, runtime.models?.currentModelId]
   const currentModelId =
     resolveComposerChoice(
-      [preference?.modelId, runtime.models?.currentModelId, profile?.defaultModelId],
+      [...modelCandidates, profile?.defaultModelId],
       availableModels?.map((model) => ({ id: model.modelId })),
     ) ??
-    preference?.modelId ??
-    runtime.models?.currentModelId
+    modelCandidates[0] ??
+    modelCandidates[1]
   const currentModeId =
     resolveComposerChoice(
       [runtime.modes?.currentModeId, preference?.modeId, profile?.defaultModeId],

@@ -343,6 +343,7 @@ export function MessageInputView({
   draftKey,
   imageUploadEnabled,
   imageSupportMessage,
+  settingsError,
   slashCommands = [],
   usage = null,
   onModeChange,
@@ -383,6 +384,8 @@ export function MessageInputView({
   draftKey: string
   imageUploadEnabled: boolean
   imageSupportMessage: string | null
+  /** Last failure from changing the model, mode or a setting. */
+  settingsError?: string | null
   slashCommands?: SlashCommandItem[]
   usage?: ComposerUsage | null
   onModeChange: (id: string) => void
@@ -810,6 +813,11 @@ export function MessageInputView({
         {(attachmentError || (attachments.length > 0 && imageSupportMessage)) && (
           <div className="px-2 pb-1 text-[11px] leading-4 text-amber-500" role="alert">
             {attachmentError ?? imageSupportMessage}
+          </div>
+        )}
+        {settingsError && (
+          <div className="px-2 pb-1 text-[11px] leading-4 text-amber-500" role="alert">
+            {settingsError}
           </div>
         )}
 
