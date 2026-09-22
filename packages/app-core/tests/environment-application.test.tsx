@@ -707,6 +707,7 @@ describe('the shared application over the environment client', () => {
         mimeType: 'image/png',
         size: 3,
         previewUrl: 'blob:composer-draft',
+        sessionId: SESSION.sessionId,
       },
     ])
     // The stored bytes are the composer's file, readable back by the id.
@@ -726,11 +727,52 @@ describe('the shared application over the environment client', () => {
     ])
   })
 
-  it('offers no uploader when the client cannot store artifacts, and lets a host supply one', async () => {
+  it('refuses to send images uploaded under another session', async () => {
+    const client = createMockEnvironmentClient({
+      seed: { ...SEEDED_HISTORY, activeSessionId: SESSION.sessionId },
+      respond: () => null,
+    })
+    let send: ReturnType<typeof useActiveThreadState>['sendMessage'] | undefined
+    function Probe() {
+      send = useActiveThreadState().sendMessage
+      return null
+    }
+    await render(
+      <ThemeProvider>
+        <EnvironmentClientProvider client={client}>
+          <EnvironmentApplicationProviders collapsedWorkspaceStorage={null}>
+            <ChatWorkspace />
+            <Probe />
+          </EnvironmentApplicationProviders>
+        </EnvironmentClientProvider>
+      </ThemeProvider>,
+    )
+    await settle(client)
+    // The upload finished after the user moved on: it belongs to the session
+    // it started in, and the environment would refuse the turn.
+    await expect(
+      act(() =>
+        send!('what is this?', [
+          {
+            id: 'artifact-elsewhere',
+            name: 'screenshot.png',
+            mimeType: 'image/png',
+            size: 3,
+            previewUrl: 'blob:composer-draft',
+            sessionId: 'session-elsewhere',
+          },
+        ]),
+      ),
+    ).rejects.toThrow('uploaded to another session')
+    expect(client.calls.find((call) => call.command === 'sendTurn')).toBeUndefined()
+  })
+
+  it('offers no uploader when the environment does not advertise tickets, and lets a host supply one', async () => {
     const mock = createMockEnvironmentClient({
       seed: { ...SEEDED_HISTORY, activeSessionId: SESSION.sessionId },
+      uploads: false,
     })
-    const client = { ...mock, uploadArtifact: undefined }
+    const client = mock
     let actions: ViewActions | undefined
     function Probe() {
       actions = useViewActions()
@@ -751,7 +793,7 @@ describe('the shared application over the environment client', () => {
     const hostUpload = vi.fn(async () => [])
     await render(
       <ThemeProvider>
-        <EnvironmentClientProvider client={mock}>
+        <EnvironmentClientProvider client={createMockEnvironmentClient({ seed: SEEDED_HISTORY })}>
           <EnvironmentApplicationProviders
             collapsedWorkspaceStorage={null}
             viewActions={{ uploadAttachments: hostUpload }}

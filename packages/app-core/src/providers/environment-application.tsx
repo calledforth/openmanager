@@ -808,6 +808,17 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
         if (attachments?.length && !targetRef.current) {
           throw new Error('Images can be attached once the session has started.')
         }
+        // An upload that finished after the user moved to another session is
+        // bound to the one it started in; the environment would refuse the
+        // turn, so refuse here and keep the text.
+        if (
+          attachments?.some(
+            (attachment) =>
+              attachment.sessionId && attachment.sessionId !== targetRef.current?.sessionId,
+          )
+        ) {
+          throw new Error('These images were uploaded to another session. Attach them again.')
+        }
         if (!targetRef.current && isSessionDraftOpen) {
           beginDraftTurn()
           // Refused here rather than by the environment's rejection: the user
@@ -1207,6 +1218,12 @@ function EnvironmentViewActions({
             if (!sessionId) throw new Error('Images can be attached once the session has started.')
             const uploaded: UploadedImageAttachment[] = []
             for (const draft of drafts) {
+              // Navigating away mid-batch: stop storing files under a session
+              // the send will no longer target. What is already stored has no
+              // release route; retention on the environment sweeps it.
+              if (activeSessionRef.current !== sessionId) {
+                throw new Error('The session changed while images were uploading.')
+              }
               const stored = await client.uploadArtifact!({
                 sessionId,
                 name: draft.file.name,
@@ -1219,6 +1236,7 @@ function EnvironmentViewActions({
                 mimeType: stored.mimeType,
                 size: stored.sizeBytes,
                 previewUrl: draft.previewUrl,
+                sessionId,
               })
             }
             return uploaded
