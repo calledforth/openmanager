@@ -1,5 +1,6 @@
 export type {
   AddWorkspaceInput,
+  ArtifactTarget,
   ComposerPreferenceTarget,
   ConnectionFailure,
   ConnectionPhase,

@@ -72,19 +72,34 @@ export function contentText(blocks: readonly ContentBlock[]): string {
     .join('')
 }
 
-function imageParts(message: Message): MessagePart[] {
-  return message.content.flatMap((block, index) =>
-    block.type === 'image'
-      ? [
-          {
-            type: 'image',
-            id: `${message.messageId}:image:${index}`,
-            url: `data:${block.mimeType};base64,${block.data}`,
-            name: `image-${index + 1}`,
-          },
-        ]
-      : [],
-  )
+function imageParts(message: Message, sessionId: string): MessagePart[] {
+  return message.content.flatMap((block, index): MessagePart[] => {
+    if (block.type === 'image') {
+      return [
+        {
+          type: 'image',
+          id: `${message.messageId}:image:${index}`,
+          url: `data:${block.mimeType};base64,${block.data}`,
+          name: `image-${index + 1}`,
+        },
+      ]
+    }
+    // The durable message only names stored bytes; the row reads them through
+    // the environment client when it is on screen.
+    if (block.type === 'artifact' && block.mimeType.startsWith('image/')) {
+      return [
+        {
+          type: 'image',
+          id: `${message.messageId}:artifact:${block.artifactId}`,
+          artifact: { sessionId, artifactId: block.artifactId },
+          name: block.name,
+          // What the agent produced is answer content, not part of its work trace.
+          ...(message.role === 'assistant' ? { generated: true } : {}),
+        },
+      ]
+    }
+    return []
+  })
 }
 
 function reasoningPart(entry: ReasoningEntry, settled: boolean): MessagePart {
@@ -149,7 +164,7 @@ function projectTurn(
       continue
     }
     const content = contentText(message.content)
-    const parts = imageParts(message)
+    const parts = imageParts(message, thread.thread.sessionId)
     entries.push({
       message: { externalId: message.messageId, role: 'user', isFinal: true, sequenceNum },
       content: { content, ...(parts.length ? { parts } : {}) },
@@ -164,7 +179,7 @@ function projectTurn(
     ...tools.map(toolPart),
     ...assistantMessages.flatMap((message) => [
       { type: 'text', id: message.messageId, text: contentText(message.content) },
-      ...imageParts(message),
+      ...imageParts(message, thread.thread.sessionId),
     ]),
     ...(failure
       ? [{ type: 'text', id: `failure:${turn.turnId}`, text: `Turn failed: ${failure.message}` }]
@@ -218,6 +233,15 @@ export function projectThread(
       isFinal: true,
       sequenceNum: sequence,
       optimisticContent: entry.text,
+      ...(entry.artifactIds?.length
+        ? {
+            optimisticAttachments: entry.artifactIds.map((artifactId, index) => ({
+              id: artifactId,
+              name: `image-${index + 1}`,
+              artifact: { sessionId: thread.thread.sessionId, artifactId },
+            })),
+          }
+        : {}),
       isOptimistic: true,
       commandId: entry.commandId,
       ...(entry.error ? { sendError: entry.error } : {}),

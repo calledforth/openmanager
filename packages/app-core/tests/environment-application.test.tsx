@@ -17,6 +17,7 @@ import {
   useActiveThreadStores,
 } from '../src/providers/active-thread-provider'
 import { ThemeProvider } from '../src/providers/theme-provider'
+import { ChatWorkspace } from '../src/components/chat/ChatWorkspace'
 import { MockEnvironmentApp } from '../src/testing/mock-environment-app'
 
 const WORKSPACE = {
@@ -605,6 +606,63 @@ describe('the shared application over the environment client', () => {
     )
     expect(occurrences('What changed?')).toBe(1)
     expect(client.getState().threads[THREAD.threadId]?.messages).toHaveLength(2)
+  })
+
+  it('sends uploaded images by artifact id and previews them from the environment', async () => {
+    URL.createObjectURL = vi.fn(() => 'blob:attached')
+    URL.revokeObjectURL = vi.fn()
+    const client = createMockEnvironmentClient({
+      seed: {
+        ...SEEDED_HISTORY,
+        activeSessionId: SESSION.sessionId,
+        artifacts: { 'artifact-1': new Blob(['png'], { type: 'image/png' }) },
+      },
+      respond: () => null,
+    })
+    let send: ReturnType<typeof useActiveThreadState>['sendMessage'] | undefined
+    function Probe() {
+      send = useActiveThreadState().sendMessage
+      return null
+    }
+    await render(
+      <ThemeProvider>
+        <EnvironmentClientProvider client={client}>
+          <EnvironmentApplicationProviders collapsedWorkspaceStorage={null}>
+            <ChatWorkspace />
+            <Probe />
+          </EnvironmentApplicationProviders>
+        </EnvironmentClientProvider>
+      </ThemeProvider>,
+    )
+    await settle(client)
+    await act(() =>
+      send!('what is this?', [
+        {
+          id: 'artifact-1',
+          name: 'screenshot.png',
+          mimeType: 'image/png',
+          size: 3,
+          previewUrl: 'blob:composer-draft',
+        },
+      ]),
+    )
+    await settle(client)
+
+    expect(client.calls.find((call) => call.command === 'sendTurn')?.input).toMatchObject({
+      text: 'what is this?',
+      artifactIds: ['artifact-1'],
+    })
+    // The durable message names the artifact; the bubble reads its bytes
+    // through the client instead of keeping the composer's local preview.
+    expect(client.getState().threads[THREAD.threadId]?.messages.at(-1)?.content).toEqual([
+      { type: 'text', text: 'what is this?' },
+      expect.objectContaining({ type: 'artifact', artifactId: 'artifact-1' }),
+    ])
+    expect(
+      container
+        .querySelector('[data-chat-view] button[aria-label^="Preview"] img')
+        ?.getAttribute('src'),
+    ).toBe('blob:attached')
   })
 
   it('does not wire a remote stream_chunks store or ownership-driven split', async () => {

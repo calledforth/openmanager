@@ -81,6 +81,8 @@ export interface MockSeed {
   composerPreferences?: Record<string, Record<string, WorkspaceComposerPreference>>
   sessions?: MockSeedSession[]
   activeSessionId?: string | null
+  /** Stored bytes by artifact ID; what `fetchArtifact` and a send's `artifactIds` resolve. */
+  artifacts?: Record<string, Blob>
 }
 
 export interface MockTurnContext extends ThreadTarget {
@@ -159,6 +161,7 @@ export function createMockEnvironmentClient(
   const now = options.now ?? (() => new Date().toISOString())
   const chunkDelayMs = options.chunkDelayMs ?? 0
   const latencyMs = options.latencyMs ?? 0
+  const artifacts = options.seed?.artifacts ?? {}
   const respond =
     options.respond === undefined
       ? (turn: MockTurnContext) => splitChunks(`You said: ${turn.text}`)
@@ -445,7 +448,22 @@ export function createMockEnvironmentClient(
       threadId: input.threadId,
       turnId: turn.turnId,
       role: 'user',
-      content: [{ type: 'text', text: input.text }],
+      content: [
+        { type: 'text', text: input.text },
+        ...[...new Set(input.artifactIds ?? [])].map((artifactId, index) => {
+          const blob = artifacts[artifactId]
+          if (!blob) {
+            throw new EnvironmentClientError('not_found', 'Artifact not found in this session.')
+          }
+          return {
+            type: 'artifact' as const,
+            artifactId,
+            mimeType: blob.type || 'application/octet-stream',
+            name: `image-${index + 1}`,
+            sizeBytes: blob.size,
+          }
+        }),
+      ],
     }
     const started: TurnStart = { turn, userMessage, commandId: input.commandId }
     startedCommands.set(commandKey(input, input.commandId), started)
@@ -672,7 +690,13 @@ export function createMockEnvironmentClient(
     sendTurn: (input) => {
       const commandId = input.commandId ?? nextId()
       const thread: Thread = { threadId: input.threadId, sessionId: input.sessionId }
-      store.update((state) => applyTurnSending(state, thread, { commandId, text: input.text }))
+      store.update((state) =>
+        applyTurnSending(state, thread, {
+          commandId,
+          text: input.text,
+          artifactIds: input.artifactIds,
+        }),
+      )
       // Recorded with the id it actually ran under, minted or not.
       const send = { ...input, commandId }
       return run('sendTurn', send, () => startTurn(send)).catch((error: unknown) => {
@@ -785,6 +809,12 @@ export function createMockEnvironmentClient(
     getState: store.getState,
     subscribe: store.subscribe,
     supports: (command) => capabilities.has(command),
+    fetchArtifact: async (input) => {
+      await new Promise<void>((resolve) => schedule(resolve, latencyMs))
+      const blob = artifacts[input.artifactId]
+      if (!blob) throw new EnvironmentClientError('not_found', 'Artifact not found.')
+      return blob
+    },
     setActiveSession: (sessionId) => {
       openGeneration += 1
       store.update((state) => applyActiveSession(state, sessionId))

@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useSyncExternalStore } from 'react'
 import type { PlanReviewOutcome, ProviderId, QuestionOutcome } from '@agentpack/contract'
-import type { UploadedImageAttachment } from '../lib/attachments'
+import type { OptimisticImage, UploadedImageAttachment } from '../lib/attachments'
 import type { LocalStreamingMessage, MessagePart } from '../lib/streaming-messages-store'
 import type { TurnRuntimeMetadata } from '../components/parts/turn-work-group'
 import type { PermissionSelection } from './permission-provider'
@@ -11,7 +11,7 @@ export interface UIMessage {
   isFinal?: boolean
   sequenceNum: number
   optimisticContent?: string
-  optimisticAttachments?: UploadedImageAttachment[]
+  optimisticAttachments?: OptimisticImage[]
   optimisticJobId?: string
   isOptimistic?: boolean
   /** Why the host could not send this optimistic message, once it knows. */

@@ -223,8 +223,11 @@ describe('artifact metadata', () => {
       expect(bytes.status).toBe(200)
       expect(bytes.headers.get('content-type')).toBe('image/png')
       expect(bytes.headers.get('x-content-type-options')).toBe('nosniff')
+      // The id never names other bytes, so a preview is fetched once per client.
+      expect(bytes.headers.get('cache-control')).toBe('private, max-age=31536000, immutable')
       expect(Buffer.from(await bytes.arrayBuffer())).toEqual(BYTES)
       const metadata = await get(restarted.url, `${path}/metadata`, host.token)
+      expect(metadata.headers.get('cache-control')).toBe('no-store')
       expect(await metadata.json()).toMatchObject({
         artifactId: artifact.artifactId,
         sessionId,
@@ -391,7 +394,10 @@ describe('artifact metadata', () => {
     })
 
     const path = `/artifacts/${first.sessionId}/${artifact.artifactId}`
-    expect((await get(host.server.url, path)).status).toBe(401)
+    const anonymous = await get(host.server.url, path)
+    expect(anonymous.status).toBe(401)
+    // A refusal must never be what a client keeps as the image.
+    expect(anonymous.headers.get('cache-control')).toBe('no-store')
     expect((await get(host.server.url, path, 'not-a-credential')).status).toBe(401)
     expect(
       (await get(host.server.url, `/artifacts/${second.sessionId}/${artifact.artifactId}`, host.token))
