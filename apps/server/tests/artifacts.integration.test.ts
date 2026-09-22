@@ -223,8 +223,11 @@ describe('artifact metadata', () => {
       expect(bytes.status).toBe(200)
       expect(bytes.headers.get('content-type')).toBe('image/png')
       expect(bytes.headers.get('x-content-type-options')).toBe('nosniff')
+      // Every read presents a credential; nothing answers from a browser cache.
+      expect(bytes.headers.get('cache-control')).toBe('no-store')
       expect(Buffer.from(await bytes.arrayBuffer())).toEqual(BYTES)
       const metadata = await get(restarted.url, `${path}/metadata`, host.token)
+      expect(metadata.headers.get('cache-control')).toBe('no-store')
       expect(await metadata.json()).toMatchObject({
         artifactId: artifact.artifactId,
         sessionId,
@@ -235,6 +238,46 @@ describe('artifact metadata', () => {
     } finally {
       await restarted.close()
     }
+  })
+
+  it('starts a turn from an image alone, with no empty text beside it', async () => {
+    const prompts: unknown[] = []
+    const connections = new FakeConnectionFactory({
+      initialize: async () => ({ protocolVersion: 1, authMethods: [] }),
+      newSession: async () => ({ sessionId: 'stub-session' }),
+      prompt: async (params) => {
+        prompts.push(params)
+        return { stopReason: 'end_turn' }
+      },
+    })
+    const host = await startStubHost(connections)
+    const { client, sessionId, threadId, subscriptionId } = await openSession(host)
+    const artifact = await upload(host, client, sessionId)
+
+    // Nothing at all is refused before the environment looks anything up.
+    const emptyId = client.command('turn.send', { sessionId, threadId, text: '' })
+    expect(await nextResponse(client, emptyId)).toMatchObject({
+      type: 'error',
+      error: { code: 'validation' },
+    })
+
+    const sendId = client.command('turn.send', {
+      sessionId,
+      threadId,
+      text: '',
+      artifactIds: [artifact.artifactId],
+    })
+    const sent = ProofResponseSchemas['turn.send'].parse(await nextResponse(client, sendId))
+    expect(sent.payload.userMessage.content).toEqual([
+      expect.objectContaining({ type: 'artifact', artifactId: artifact.artifactId }),
+    ])
+    await collectThreadRecords(client, subscriptionId, (records) =>
+      records.some((record) => record.event.name === 'turn.completed'),
+    )
+    expect((prompts[0] as { prompt: unknown[] }).prompt).toEqual([
+      { type: 'image', mimeType: 'image/png', data: BYTES.toString('base64') },
+    ])
+    await host.server.close()
   })
 
   it('stores a generated image like an upload and keeps its bytes out of the event log', async () => {
@@ -391,7 +434,10 @@ describe('artifact metadata', () => {
     })
 
     const path = `/artifacts/${first.sessionId}/${artifact.artifactId}`
-    expect((await get(host.server.url, path)).status).toBe(401)
+    const anonymous = await get(host.server.url, path)
+    expect(anonymous.status).toBe(401)
+    // A refusal must never be what a client keeps as the image.
+    expect(anonymous.headers.get('cache-control')).toBe('no-store')
     expect((await get(host.server.url, path, 'not-a-credential')).status).toBe(401)
     expect(
       (await get(host.server.url, `/artifacts/${second.sessionId}/${artifact.artifactId}`, host.token))

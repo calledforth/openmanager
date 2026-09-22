@@ -8,6 +8,7 @@ import {
   ServerMessageSchema,
   SubscriptionEventSchema,
   advanceClientHeartbeat,
+  artifactPath,
   createClientHeartbeatState,
   observeServerActivity,
   parseProtocolHandshakeResult,
@@ -104,6 +105,8 @@ export interface WebSocketEnvironmentClientOptions {
   /** When set, a handshake that reports a different environment is refused. */
   environmentId?: string
   WebSocket?: WebSocketConstructor
+  /** Used for artifact reads; defaults to the global `fetch`. */
+  fetch?: typeof globalThis.fetch
   reconnect?: Partial<ReconnectPolicy>
   now?: () => number
   requestId?: () => string
@@ -191,6 +194,36 @@ const TERMINAL_CODES: ReadonlySet<ErrorCode> = new Set([
 ])
 
 const randomId = () => globalThis.crypto.randomUUID()
+
+/**
+ * The HTTP address of a route on the environment behind `socketUrl`. The
+ * socket lives at `<endpoint>/ws`, so its directory is the endpoint, whatever
+ * path prefix a tunnel put in front of it.
+ */
+export function environmentHttpUrl(socketUrl: string, path: string): string {
+  const url = new URL(path.replace(/^\/+/, ''), new URL('.', socketUrl))
+  url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:'
+  return url.href
+}
+
+async function artifactReadError(response: Response): Promise<EnvironmentClientError> {
+  const body: unknown = await response.json().catch(() => null)
+  const parsed = z
+    .object({ error: z.object({ code: z.string(), message: z.string() }) })
+    .safeParse(body)
+  const code: ErrorCode =
+    response.status === 401
+      ? 'auth'
+      : response.status === 403
+        ? 'capability_missing'
+        : response.status === 404
+          ? 'not_found'
+          : 'unavailable'
+  return new EnvironmentClientError(
+    code,
+    parsed.success ? parsed.data.error.message : 'The artifact could not be read.',
+  )
+}
 
 /**
  * Real transport. One socket, one handshake, scope subscriptions that are
@@ -1085,9 +1118,12 @@ export function createWebSocketEnvironmentClient(
       const thread: Thread = { threadId: input.threadId, sessionId: input.sessionId }
       // Echoed first, so the message is on screen before the round trip. The
       // id makes every later signal about this send resolve the same row.
-      store.update((state) => applyTurnSending(state, thread, { commandId, text: input.text }))
+      const artifactIds = input.artifactIds?.length ? input.artifactIds : undefined
+      store.update((state) =>
+        applyTurnSending(state, thread, { commandId, text: input.text, artifactIds }),
+      )
       try {
-        const payload = await request('turn.send', { ...input, commandId })
+        const payload = await request('turn.send', { ...input, artifactIds, commandId })
         // An environment that predates the echoed id still confirms this row:
         // we know which send the response answers.
         store.update((state) => applyTurnStarted(state, thread, { ...payload, commandId }))
@@ -1187,6 +1223,24 @@ export function createWebSocketEnvironmentClient(
     getState: store.getState,
     subscribe: store.subscribe,
     supports,
+    async fetchArtifact(input, init) {
+      const fetchBytes = options.fetch ?? globalThis.fetch
+      let response: Response
+      try {
+        response = await fetchBytes(
+          environmentHttpUrl(options.url, artifactPath(input.sessionId, input.artifactId)),
+          {
+            headers: options.credential ? { authorization: `Bearer ${options.credential}` } : {},
+            signal: init?.signal,
+          },
+        )
+      } catch (error) {
+        if (init?.signal?.aborted) throw error
+        throw new EnvironmentClientError('unavailable', 'The environment could not be reached.')
+      }
+      if (!response.ok) throw await artifactReadError(response)
+      return response.blob()
+    },
     setActiveSession: (sessionId) => {
       openGeneration += 1
       const previous = store.getState().activeSessionId

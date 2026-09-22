@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import {
+  ARTIFACT_PATH_PREFIX,
   UPLOAD_PATH_PREFIX,
   UPLOAD_TICKET_CAPABILITY,
   UploadCommandSchemas,
@@ -339,7 +340,7 @@ export function createUploadService(options: {
     /** Handle an upload route. Returns false when the request is not one. */
     handle(request: IncomingMessage, response: ServerResponse): boolean {
       const path = request.url?.split('?')[0] ?? ''
-      const download = path.startsWith('/artifacts/')
+      const download = path.startsWith(ARTIFACT_PATH_PREFIX)
       if (!download && !path.startsWith(UPLOAD_PATH_PREFIX)) return false
       if (request.method === 'OPTIONS') {
         response.writeHead(204, {
@@ -358,7 +359,7 @@ export function createUploadService(options: {
         return true
       }
       const remoteAddress = request.socket.remoteAddress ?? 'unknown'
-      const command = download ? 'GET /artifacts/' : `PUT ${UPLOAD_PATH_PREFIX}`
+      const command = download ? `GET ${ARTIFACT_PATH_PREFIX}` : `PUT ${UPLOAD_PATH_PREFIX}`
       const lockout = options.rateLimiter.blocked('auth_failure', remoteAddress)
       if (!lockout.allowed) {
         options.audit.record({
@@ -407,6 +408,9 @@ export function createUploadService(options: {
         }
         try {
           const bytes = artifacts.read(metadata)
+          // Never cached: the browser keys its cache by URL, not credential,
+          // so a stored copy would outlive a revoked credential and answer
+          // another client on the same machine. Reuse lives in the client.
           response.writeHead(200, {
             'content-type': metadata.mimeType,
             'content-length': bytes.length,

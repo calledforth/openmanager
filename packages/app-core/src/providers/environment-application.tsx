@@ -798,13 +798,14 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
   const sendMessage = useCallback(
     async (content: string, attachments?: UploadedImageAttachment[]) => {
       const text = content.trim()
-      if (!text) return
+      // An image with no caption is still a turn.
+      if (!text && !attachments?.length) return
       setError(null)
       try {
-        // `turn.send` carries text only for now; refusing beats silently
-        // dropping an upload the composer just confirmed.
-        if (attachments?.length) {
-          throw new Error('This environment cannot send image attachments yet.')
+        // An upload belongs to a session, and a draft has none yet; refusing
+        // beats silently dropping an image the composer just confirmed.
+        if (attachments?.length && !targetRef.current) {
+          throw new Error('Images can be attached once the session has started.')
         }
         if (!targetRef.current && isSessionDraftOpen) {
           beginDraftTurn()
@@ -825,7 +826,11 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
         beginSessionTurn()
         // A rejected send keeps its own row on screen with the reason and a
         // retry, so it is neither an error banner nor a composer rollback.
-        await commands.sendTurn({ ...current, text }).catch(() => failTurn())
+        // An uploaded attachment's id is the artifact the environment stored.
+        const artifactIds = attachments?.map((attachment) => attachment.id)
+        await commands
+          .sendTurn({ ...current, text, ...(artifactIds?.length ? { artifactIds } : {}) })
+          .catch(() => failTurn())
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         failTurn(message)
@@ -860,7 +865,14 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       beginSessionTurn()
       // The same id: the environment either starts the turn or answers with
       // the one this send already started.
-      await commands.sendTurn({ ...current, text: pending.text, commandId }).catch(() => failTurn())
+      await commands
+        .sendTurn({
+          ...current,
+          text: pending.text,
+          ...(pending.artifactIds ? { artifactIds: pending.artifactIds } : {}),
+          commandId,
+        })
+        .catch(() => failTurn())
     },
     [beginSessionTurn, client, commands, failTurn],
   )

@@ -639,9 +639,14 @@ export function applyTurnStarted(
 export function applyTurnSending(
   state: EnvironmentState,
   thread: Thread,
-  send: { commandId: string; text: string },
+  send: { commandId: string; text: string; artifactIds?: string[] },
 ): EnvironmentState {
-  const entry: OutboxEntry = { commandId: send.commandId, text: send.text, status: 'pending' }
+  const entry: OutboxEntry = {
+    commandId: send.commandId,
+    text: send.text,
+    ...(send.artifactIds?.length ? { artifactIds: send.artifactIds } : {}),
+    status: 'pending',
+  }
   return patchThread(state, thread, (current) => ({
     ...current,
     outbox: upsertById(current.outbox, (item) => item.commandId, entry),

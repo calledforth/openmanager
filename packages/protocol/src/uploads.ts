@@ -6,6 +6,17 @@ export const UPLOAD_TICKET_CAPABILITY = 'upload.ticket.create' as const
 /** The ticket is the last path segment: `PUT /uploads/<ticket>`. */
 export const UPLOAD_PATH_PREFIX = '/uploads/' as const
 
+/** Stored bytes are read back with `GET /artifacts/<session-id>/<artifact-id>`. */
+export const ARTIFACT_PATH_PREFIX = '/artifacts/' as const
+
+/**
+ * Where an artifact's bytes live, relative to the environment's HTTP origin.
+ * Local and remote clients resolve it against whichever endpoint they reached
+ * the environment through, so both end up on the same route.
+ */
+export const artifactPath = (sessionId: string, artifactId: string) =>
+  `${ARTIFACT_PATH_PREFIX}${encodeURIComponent(sessionId)}/${encodeURIComponent(artifactId)}`
+
 const command = <N extends string, P extends z.ZodType>(name: N, payload: P) =>
   CommandEnvelopeSchema.extend({ name: z.literal(name), payload })
 const response = <P extends z.ZodType>(payload: P) => ResponseEnvelopeSchema.extend({ payload })

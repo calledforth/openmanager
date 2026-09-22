@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowsOutIcon, XIcon } from '@phosphor-icons/react'
+import { ArrowsOutIcon, ImageBrokenIcon, XIcon } from '@phosphor-icons/react'
 import type { StreamMessagePart } from '@openmanager/shared/lib/remote-stream-parts'
 import { cn } from '../../lib/utils'
-import type { UploadedImageAttachment } from '../../lib/attachments'
+import type { ArtifactSource, OptimisticImage } from '../../lib/attachments'
+import { partArtifact, useArtifactPreview } from '../../lib/artifact-preview'
 import { ReferenceComposerToolbar } from './composer-toolbar'
 import { chatUserInner, chatUserMessageShell } from './userMessageStyles'
 
@@ -13,6 +14,60 @@ type PreviewImage = {
   id: string
   url: string
   name: string
+}
+
+/** An image of the bubble: a URL the row already holds, or stored bytes to read. */
+type BubbleImage = {
+  id: string
+  name: string
+  url?: string
+  artifact?: ArtifactSource
+}
+
+const thumbnailShell =
+  'group relative h-14 w-14 shrink-0 overflow-hidden rounded-md border border-[var(--basis-border-muted)] bg-[var(--basis-surface)]'
+
+function ImageThumbnail({
+  image,
+  onPreview,
+}: {
+  image: BubbleImage
+  onPreview: (image: PreviewImage) => void
+}) {
+  const preview = useArtifactPreview(image.url ? undefined : image.artifact)
+  const url = image.url ?? preview.url
+  if (!url) {
+    return (
+      <div
+        role="img"
+        aria-label={preview.failed ? `${image.name} is unavailable` : `Loading ${image.name}`}
+        className={cn(
+          thumbnailShell,
+          'flex items-center justify-center text-[var(--basis-text-faint)]',
+          !preview.failed && 'animate-pulse',
+        )}
+      >
+        {preview.failed && <ImageBrokenIcon className="h-4 w-4" />}
+      </div>
+    )
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => onPreview({ id: image.id, url, name: image.name })}
+      className={thumbnailShell}
+      aria-label={`Preview ${image.name}`}
+    >
+      <img
+        src={url}
+        alt={image.name}
+        className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.03]"
+      />
+      <span className="pointer-events-none absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded border border-white/15 bg-black/55 text-white/75 opacity-0 shadow-sm backdrop-blur-sm transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+        <ArrowsOutIcon className="h-2.5 w-2.5" />
+      </span>
+    </button>
+  )
 }
 
 function ImagePreviewDialog({ image, onClose }: { image: PreviewImage; onClose: () => void }) {
@@ -73,23 +128,27 @@ export function UserMessage({
 }: {
   content: string
   parts?: MessagePart[]
-  optimisticAttachments?: UploadedImageAttachment[]
+  optimisticAttachments?: OptimisticImage[]
   sendError?: string
   /** Send this message again. Omitted when the host cannot retry it. */
   onRetry?: () => void
 }) {
   const [previewImage, setPreviewImage] = useState<PreviewImage | null>(null)
-  const persistedImages = (parts ?? []).flatMap((part) => {
-    if (part.type !== 'image' || typeof part.url !== 'string') return []
+  const persistedImages = (parts ?? []).flatMap((part): BubbleImage[] => {
+    if (part.type !== 'image') return []
+    const url = typeof part.url === 'string' ? part.url : undefined
+    const artifact = partArtifact(part)
+    if (!url && !artifact) return []
     return [
-      { id: part.id, url: part.url, name: typeof part.name === 'string' ? part.name : 'Image' },
+      { id: part.id, url, artifact, name: typeof part.name === 'string' ? part.name : 'Image' },
     ]
   })
-  const images = persistedImages.length
+  const images: BubbleImage[] = persistedImages.length
     ? persistedImages
     : (optimisticAttachments ?? []).map((attachment) => ({
         id: attachment.id,
         url: attachment.previewUrl,
+        artifact: attachment.artifact,
         name: attachment.name,
       }))
   return (
@@ -99,22 +158,7 @@ export function UserMessage({
           {images.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-1.5">
               {images.map((image) => (
-                <button
-                  type="button"
-                  key={image.id}
-                  onClick={() => setPreviewImage(image)}
-                  className="group relative h-14 w-14 shrink-0 overflow-hidden rounded-md border border-[var(--basis-border-muted)] bg-[var(--basis-surface)]"
-                  aria-label={`Preview ${image.name}`}
-                >
-                  <img
-                    src={image.url}
-                    alt={image.name}
-                    className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.03]"
-                  />
-                  <span className="pointer-events-none absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded border border-white/15 bg-black/55 text-white/75 opacity-0 shadow-sm backdrop-blur-sm transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
-                    <ArrowsOutIcon className="h-2.5 w-2.5" />
-                  </span>
-                </button>
+                <ImageThumbnail key={image.id} image={image} onPreview={setPreviewImage} />
               ))}
             </div>
           )}

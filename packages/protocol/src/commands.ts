@@ -86,9 +86,13 @@ export const ProofCommandSchemas = {
   'turn.send': command(
     'turn.send',
     ThreadTargetSchema.extend({
-      text: TurnTextSchema,
+      // Empty only when an attachment carries the turn: an image, no caption.
+      text: z.string(),
       commandId: EntityIdSchema.optional(),
       artifactIds: z.array(EntityIdSchema).max(10).optional(),
+    }).refine((turn) => turn.text.length > 0 || (turn.artifactIds?.length ?? 0) > 0, {
+      message: 'A turn needs text or an attachment.',
+      path: ['text'],
     }),
   ),
   'turn.interrupt': command(

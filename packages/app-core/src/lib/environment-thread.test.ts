@@ -245,3 +245,87 @@ describe('createEnvironmentThreadStores', () => {
     client.dispose()
   })
 })
+
+describe('artifact references', () => {
+  const reference = {
+    type: 'artifact' as const,
+    artifactId: 'artifact-1',
+    mimeType: 'image/png',
+    name: 'screenshot.png',
+    sizeBytes: 12,
+  }
+
+  it('projects attached and generated images as parts that name the stored bytes', () => {
+    const projection = projectThread(
+      thread({
+        turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'completed' }],
+        messages: [
+          {
+            messageId: 'u1',
+            threadId: THREAD.threadId,
+            turnId: 't1',
+            role: 'user',
+            content: [{ type: 'text', text: 'what is this?' }, reference],
+          },
+          {
+            messageId: 'a1',
+            threadId: THREAD.threadId,
+            turnId: 't1',
+            role: 'assistant',
+            content: [
+              { type: 'text', text: 'a chart' },
+              { ...reference, artifactId: 'artifact-2', name: 'generated-artifact-2.png' },
+              // Only images preview; other stored files are not a broken thumbnail.
+              { ...reference, artifactId: 'artifact-3', mimeType: 'application/pdf' },
+            ],
+          },
+        ],
+      }),
+    )
+    const artifact = (artifactId: string) => ({ sessionId: THREAD.sessionId, artifactId })
+    expect(projection.byId.get('u1')?.content).toEqual({
+      content: 'what is this?',
+      parts: [
+        {
+          type: 'image',
+          id: 'u1:artifact:artifact-1',
+          artifact: artifact('artifact-1'),
+          name: 'screenshot.png',
+        },
+      ],
+    })
+    expect(projection.byId.get('a1')?.content.parts).toEqual([
+      { type: 'text', id: 'a1', text: 'a chart' },
+      {
+        type: 'image',
+        id: 'a1:artifact:artifact-2',
+        artifact: artifact('artifact-2'),
+        name: 'generated-artifact-2.png',
+        generated: true,
+      },
+    ])
+  })
+
+  it('shows the attachments of a send the environment has not confirmed yet', () => {
+    const projection = projectThread(
+      thread({
+        outbox: [
+          { commandId: 'cmd-1', text: 'look', artifactIds: ['artifact-1'], status: 'pending' },
+        ],
+      }),
+    )
+    expect(projection.messages).toMatchObject([
+      {
+        externalId: 'send:cmd-1',
+        optimisticContent: 'look',
+        optimisticAttachments: [
+          {
+            id: 'artifact-1',
+            name: 'image-1',
+            artifact: { sessionId: THREAD.sessionId, artifactId: 'artifact-1' },
+          },
+        ],
+      },
+    ])
+  })
+})

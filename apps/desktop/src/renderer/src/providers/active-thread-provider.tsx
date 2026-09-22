@@ -231,7 +231,7 @@ export function ActiveThreadStateProvider({ children }: { children: ReactNode })
       setOptimisticUserMessages((prev) => {
         for (const message of prev) {
           for (const attachment of message.optimisticAttachments ?? []) {
-            URL.revokeObjectURL(attachment.previewUrl)
+            if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl)
           }
         }
         return []
@@ -267,7 +267,7 @@ export function ActiveThreadStateProvider({ children }: { children: ReactNode })
       const acknowledged = prev.find((message) => message.externalId === externalId)
       if (!acknowledged) return prev
       for (const attachment of acknowledged.optimisticAttachments ?? []) {
-        URL.revokeObjectURL(attachment.previewUrl)
+        if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl)
       }
       return prev.filter((message) => message.externalId !== externalId)
     })

@@ -87,6 +87,8 @@ export interface LoadSessionHistoryInput {
 export interface OutboxEntry {
   commandId: string
   text: string
+  /** Uploaded artifacts the send names, so a retry carries them again. */
+  artifactIds?: string[]
   status: 'pending' | 'failed'
   /** Why the send failed. Set only while `status` is `failed`. */
   error?: string
@@ -199,12 +201,20 @@ export interface ThreadTarget {
 
 export interface SendTurnInput extends ThreadTarget {
   text: string
+  /** Artifacts already uploaded to this session that the prompt attaches. */
+  artifactIds?: string[]
   /**
    * Identity of this send, stable across retries. Retrying with the same id
    * reuses the optimistic row and never produces a second message. Generated
    * by the client when omitted.
    */
   commandId?: string
+}
+
+/** An artifact is only ever addressed inside the session that owns it. */
+export interface ArtifactTarget {
+  sessionId: string
+  artifactId: string
 }
 
 export interface InterruptTurnInput extends ThreadTarget {
@@ -307,6 +317,12 @@ export interface EnvironmentClient {
   subscribe(listener: () => void): Unsubscribe
   /** Whether the environment advertises the command. Unknown before handshake. */
   supports(command: EnvironmentCommandName): boolean
+  /**
+   * Read an artifact's bytes over the environment's authorized HTTP route.
+   * Bytes never travel on the command channel. Clients that have no such
+   * route leave this out, and views show the image as unavailable.
+   */
+  fetchArtifact?(input: ArtifactTarget, init?: { signal?: AbortSignal }): Promise<Blob>
   /** Local selection; does not hydrate. Use `commands.openSession` for that. */
   setActiveSession(sessionId: string | null): void
   setActiveThread(threadId: string | null): void

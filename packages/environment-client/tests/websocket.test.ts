@@ -600,6 +600,93 @@ describe('websocket environment client', () => {
     expect(selectActiveThread(client.getState())?.messages).toHaveLength(1)
   })
 
+  it('names uploaded artifacts on the send and keeps them for a retry', async () => {
+    const { client, socket } = await connected()
+    const opened = client.commands.openSession(SESSION.sessionId)
+    await answerOpen(socket)
+    await flush()
+    await flush()
+    await opened.catch(() => undefined)
+    const sending = client.commands.sendTurn({
+      ...THREAD,
+      text: 'look',
+      artifactIds: ['artifact-1'],
+      commandId: 'cmd-1',
+    })
+    expect(socket.last('turn.send').payload).toEqual({
+      ...THREAD,
+      text: 'look',
+      artifactIds: ['artifact-1'],
+      commandId: 'cmd-1',
+    })
+    const rejected = expect(sending).rejects.toMatchObject({ code: 'unavailable' })
+    socket.receive({
+      type: 'error',
+      requestId: socket.last('turn.send').requestId,
+      error: { code: 'unavailable', message: 'Provider is offline.' },
+    })
+    await rejected
+    expect(selectActiveThread(client.getState())?.outbox).toEqual([
+      {
+        commandId: 'cmd-1',
+        text: 'look',
+        artifactIds: ['artifact-1'],
+        status: 'failed',
+        error: 'Provider is offline.',
+      },
+    ])
+  })
+
+  it('reads artifact bytes from the HTTP route beside the socket, with the credential', async () => {
+    const requests: Array<{ url: string; authorization: string | null }> = []
+    const client = createWebSocketEnvironmentClient({
+      // A tunnel may put a path prefix in front of the environment.
+      url: 'wss://tunnel.example/env-1/ws',
+      credential: 'secret',
+      WebSocket: FakeSocket,
+      fetch: async (input, init) => {
+        requests.push({
+          url: String(input),
+          authorization: new Headers(init?.headers).get('authorization'),
+        })
+        return new Response(new Blob(['png-bytes'], { type: 'image/png' }))
+      },
+    })
+    const blob = await client.fetchArtifact!({ sessionId: 'session 1', artifactId: 'artifact-1' })
+    expect(await blob.text()).toBe('png-bytes')
+    expect(requests).toEqual([
+      {
+        url: 'https://tunnel.example/env-1/artifacts/session%201/artifact-1',
+        authorization: 'Bearer secret',
+      },
+    ])
+    client.dispose()
+  })
+
+  it('maps a refused artifact read to a typed error', async () => {
+    const answer = (status: number, body: unknown) =>
+      createWebSocketEnvironmentClient({
+        url: 'ws://127.0.0.1:1/ws',
+        WebSocket: FakeSocket,
+        fetch: async () => new Response(JSON.stringify(body), { status }),
+      }).fetchArtifact!({ sessionId: 's', artifactId: 'a' })
+
+    await expect(
+      answer(401, { error: { code: 'auth', message: 'A valid client credential is required.' } }),
+    ).rejects.toMatchObject({ code: 'auth', message: 'A valid client credential is required.' })
+    await expect(answer(404, {})).rejects.toMatchObject({ code: 'not_found' })
+    await expect(answer(429, null)).rejects.toMatchObject({ code: 'unavailable' })
+    await expect(
+      createWebSocketEnvironmentClient({
+        url: 'ws://127.0.0.1:1/ws',
+        WebSocket: FakeSocket,
+        fetch: async () => {
+          throw new TypeError('fetch failed')
+        },
+      }).fetchArtifact!({ sessionId: 's', artifactId: 'a' }),
+    ).rejects.toMatchObject({ code: 'unavailable' })
+  })
+
   it('resolves a workspace icon by ID without touching the store', async () => {
     const { client, socket } = await connected()
     const before = client.getState()

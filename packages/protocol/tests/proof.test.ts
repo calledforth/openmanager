@@ -213,6 +213,15 @@ describe('turn.send command ids', () => {
     expect(ProofCommandSchemas['turn.send'].safeParse(send({ commandId: ' ' })).success).toBe(false)
   })
 
+  it('lets an attachment carry a turn with no text, but never nothing at all', () => {
+    const image = send({ text: '', artifactIds: ['artifact-1'] })
+    expect(ProofCommandSchemas['turn.send'].safeParse(image).success).toBe(true)
+    expect(ProofCommandSchemas['turn.send'].safeParse(send({ text: '' })).success).toBe(false)
+    expect(
+      ProofCommandSchemas['turn.send'].safeParse(send({ text: '', artifactIds: [] })).success,
+    ).toBe(false)
+  })
+
   it('echoes the command id on the response and the turn.started event', () => {
     const started = proofEvents.find((event) => event.name === 'turn.started')!
     const payload = { ...started.payload, commandId: 'cmd-1' }

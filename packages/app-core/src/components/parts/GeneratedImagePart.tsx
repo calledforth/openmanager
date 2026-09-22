@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowsOutIcon, XIcon } from '@phosphor-icons/react'
+import { ArrowsOutIcon, ImageBrokenIcon, XIcon } from '@phosphor-icons/react'
+import { partArtifact, useArtifactPreview } from '../../lib/artifact-preview'
 
 type GeneratedImage = {
   id: string
   url?: string
+  /** Stored bytes to read through the environment when the part carries no URL. */
+  artifact?: unknown
   name?: string
   description?: string
 }
@@ -13,6 +16,8 @@ export function GeneratedImagePart({ part }: { part: GeneratedImage }) {
   const [open, setOpen] = useState(false)
   const closeRef = useRef<HTMLButtonElement>(null)
   const name = part.name?.trim() || 'Generated image'
+  const preview = useArtifactPreview(part.url ? undefined : partArtifact(part))
+  const url = part.url ?? preview.url
 
   useEffect(() => {
     if (!open) return
@@ -28,7 +33,16 @@ export function GeneratedImagePart({ part }: { part: GeneratedImage }) {
     }
   }, [open])
 
-  if (!part.url) {
+  if (!url && preview.failed) {
+    return (
+      <div className="my-2 flex w-fit items-center gap-2 rounded-xl border border-[var(--basis-border-muted)] bg-[var(--basis-surface)] px-3 py-2 text-[11px] text-[var(--basis-text-faint)]">
+        <ImageBrokenIcon className="h-3.5 w-3.5" />
+        {name} is unavailable
+      </div>
+    )
+  }
+
+  if (!url) {
     return (
       <div className="my-2 h-56 max-w-md animate-pulse rounded-xl border border-[var(--basis-border-muted)] bg-[var(--basis-surface)]" />
     )
@@ -43,7 +57,7 @@ export function GeneratedImagePart({ part }: { part: GeneratedImage }) {
           aria-label={`Preview ${name}`}
           className="relative block max-w-full cursor-zoom-in overflow-hidden text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--basis-text-muted)]"
         >
-          <img src={part.url} alt={name} className="max-h-[440px] max-w-full object-contain" />
+          <img src={url} alt={name} className="max-h-[440px] max-w-full object-contain" />
           <span className="pointer-events-none absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-md border border-white/15 bg-black/55 text-white/80 opacity-0 shadow-sm backdrop-blur-sm transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
             <ArrowsOutIcon className="h-3.5 w-3.5" />
           </span>
@@ -72,7 +86,7 @@ export function GeneratedImagePart({ part }: { part: GeneratedImage }) {
             </button>
             <div role="dialog" aria-modal="true" aria-label={`Preview ${name}`}>
               <img
-                src={part.url}
+                src={url}
                 alt={name}
                 className="max-h-[88vh] max-w-[92vw] rounded-lg object-contain shadow-2xl"
               />
