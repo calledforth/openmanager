@@ -55,7 +55,7 @@ import type {
   SessionStatus,
   ThreadTarget,
 } from './types'
-import { WIRE_COMMANDS } from './wire'
+import { UPLOAD_TICKET_COMMAND, WIRE_COMMANDS } from './wire'
 
 export interface MockSeedSession {
   session: Session
@@ -94,6 +94,13 @@ export interface MockEnvironmentClientOptions {
   seed?: MockSeed
   /** Commands the mock advertises. Defaults to all of them. */
   capabilities?: readonly EnvironmentCommandName[]
+  /**
+   * Whether the mock advertises `upload.ticket.create` and stores uploads.
+   * Gated separately from `sendTurn`, as it is on the wire, so an
+   * environment that takes turns but not uploads can be modelled. Defaults
+   * to following `sendTurn`.
+   */
+  uploads?: boolean
   /**
    * Chunks streamed as the assistant reply after `sendTurn`. Return `null` to
    * leave the turn running so a test can script it by hand. Defaults to an echo.
@@ -149,6 +156,11 @@ const workspaceNameFromPath = (path: string) => {
   return trimmed.split(/[\\/]/).filter(Boolean).pop() ?? trimmed
 }
 
+const wireCapabilities = (capabilities: ReadonlySet<EnvironmentCommandName>, uploads: boolean) => [
+  ...[...capabilities].map((command) => WIRE_COMMANDS[command]),
+  ...(uploads ? [UPLOAD_TICKET_COMMAND] : []),
+]
+
 const defaultIds = () => {
   let counter = 0
   return () => `mock-${++counter}`
@@ -161,17 +173,18 @@ export function createMockEnvironmentClient(
   const now = options.now ?? (() => new Date().toISOString())
   const chunkDelayMs = options.chunkDelayMs ?? 0
   const latencyMs = options.latencyMs ?? 0
-  const artifacts = options.seed?.artifacts ?? {}
+  const artifacts: Record<string, Blob> = { ...options.seed?.artifacts }
   const respond =
     options.respond === undefined
       ? (turn: MockTurnContext) => splitChunks(`You said: ${turn.text}`)
       : options.respond
   const capabilities = new Set(options.capabilities ?? ALL_COMMANDS)
+  const uploads = options.uploads ?? capabilities.has('sendTurn')
   const environment: Environment = options.seed?.environment ?? {
     environmentId: 'mock-environment',
     name: 'Mock environment',
   }
-  const store = createEnvironmentStore(seedState(environment, options.seed, capabilities))
+  const store = createEnvironmentStore(seedState(environment, options.seed, capabilities, uploads))
   const calls: MockCommandCall[] = []
   let openGeneration = 0
   const timers = new Set<ReturnType<typeof setTimeout>>()
@@ -815,6 +828,22 @@ export function createMockEnvironmentClient(
       if (!blob) throw new EnvironmentClientError('not_found', 'Artifact not found.')
       return blob
     },
+    uploadArtifact: async (input) => {
+      await new Promise<void>((resolve) => schedule(resolve, latencyMs))
+      if (!uploads) throw EnvironmentClientError.unsupported(UPLOAD_TICKET_COMMAND)
+      if (!store.getState().sessions[input.sessionId]) {
+        throw new EnvironmentClientError('not_found', 'Session not found.')
+      }
+      const artifactId = nextId()
+      artifacts[artifactId] = input.bytes
+      return {
+        artifactId,
+        sessionId: input.sessionId,
+        name: input.name,
+        mimeType: input.mimeType,
+        sizeBytes: input.bytes.size,
+      }
+    },
     setActiveSession: (sessionId) => {
       openGeneration += 1
       store.update((state) => applyActiveSession(state, sessionId))
@@ -826,7 +855,7 @@ export function createMockEnvironmentClient(
           phase: 'connected',
           hasConnected: true,
           failure: null,
-          capabilities: [...capabilities].map((command) => WIRE_COMMANDS[command]),
+          capabilities: wireCapabilities(capabilities, uploads),
         }),
       ),
     disconnect: () =>
@@ -928,7 +957,7 @@ export function createMockEnvironmentClient(
           phase: 'connected',
           hasConnected: true,
           failure: null,
-          capabilities: [...capabilities].map((command) => WIRE_COMMANDS[command]),
+          capabilities: wireCapabilities(capabilities, uploads),
         }),
       )
     },
@@ -940,12 +969,13 @@ function seedState(
   environment: Environment,
   seed: MockSeed | undefined,
   capabilities: ReadonlySet<EnvironmentCommandName>,
+  uploads: boolean,
 ): EnvironmentState {
   let state = applyEnvironment(createInitialState(), environment)
   state = applyConnection(state, {
     phase: 'connected',
     hasConnected: true,
-    capabilities: [...capabilities].map((command) => WIRE_COMMANDS[command]),
+    capabilities: wireCapabilities(capabilities, uploads),
   })
   state = applyWorkspaceList(state, seed?.workspaces ?? [])
   if (capabilities.has('getProviderCatalog')) {

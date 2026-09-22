@@ -3,6 +3,8 @@ import {
   ProofResponseSchemas,
   ProviderProbeResponseSchema,
   SessionSchema,
+  UPLOAD_TICKET_CAPABILITY,
+  UploadResponseSchemas,
 } from '@openmanager/protocol'
 import { z } from 'zod'
 import type { EnvironmentCommandName } from './types'
@@ -37,7 +39,14 @@ export const WIRE_COMMANDS = {
   setSessionConfigOption: 'composer.config_option.set',
 } as const satisfies Record<EnvironmentCommandName, string>
 
-export type WireCommandName = (typeof WIRE_COMMANDS)[EnvironmentCommandName]
+/**
+ * Sent by `uploadArtifact`, not a `commands` member: the ticket is one half of
+ * a transfer whose other half is an HTTP `PUT`, and views never see it.
+ */
+export const UPLOAD_TICKET_COMMAND = UPLOAD_TICKET_CAPABILITY
+
+export type WireCommandName =
+  (typeof WIRE_COMMANDS)[EnvironmentCommandName] | typeof UPLOAD_TICKET_COMMAND
 
 const payload = <P extends z.ZodType>(schema: P) => z.object({ payload: schema })
 
@@ -70,6 +79,7 @@ export const WIRE_RESPONSES = {
   'composer.config_option.set': payload(
     ComposerResponseSchemas['composer.config_option.set'].shape.payload,
   ),
+  [UPLOAD_TICKET_COMMAND]: payload(UploadResponseSchemas[UPLOAD_TICKET_COMMAND].shape.payload),
 } as const satisfies Record<WireCommandName, z.ZodType>
 
 export type WireResponsePayload<N extends WireCommandName> = z.infer<

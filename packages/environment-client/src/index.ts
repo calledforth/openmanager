@@ -36,6 +36,8 @@ export type {
   TurnFailure,
   TurnNotice,
   Unsubscribe,
+  UploadArtifactInput,
+  UploadedArtifact,
   WorkspaceComposerPreference,
 } from './types'
 export { EnvironmentClientError, isEnvironmentClientError } from './errors'
@@ -87,7 +89,7 @@ export {
   resolvePageLimit,
   sessionListCursorOf,
 } from './pagination'
-export { WIRE_COMMANDS, type WireCommandName } from './wire'
+export { UPLOAD_TICKET_COMMAND, WIRE_COMMANDS, type WireCommandName } from './wire'
 export {
   createMockEnvironmentClient,
   type MockCommandCall,

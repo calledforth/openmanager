@@ -17,6 +17,7 @@ import {
   useActiveThreadStores,
 } from '../src/providers/active-thread-provider'
 import { ThemeProvider } from '../src/providers/theme-provider'
+import { useViewActions, type ViewActions } from '../src/providers/view-actions'
 import { ChatWorkspace } from '../src/components/chat/ChatWorkspace'
 import { MockEnvironmentApp } from '../src/testing/mock-environment-app'
 
@@ -663,6 +664,147 @@ describe('the shared application over the environment client', () => {
         .querySelector('[data-chat-view] button[aria-label^="Preview"] img')
         ?.getAttribute('src'),
     ).toBe('blob:attached')
+  })
+
+  it('uploads composer images to the environment and sends them by artifact id', async () => {
+    URL.createObjectURL = vi.fn(() => 'blob:attached')
+    URL.revokeObjectURL = vi.fn()
+    const client = createMockEnvironmentClient({
+      seed: { ...SEEDED_HISTORY, activeSessionId: SESSION.sessionId },
+      respond: () => null,
+    })
+    let actions: ViewActions | undefined
+    let send: ReturnType<typeof useActiveThreadState>['sendMessage'] | undefined
+    function Probe() {
+      actions = useViewActions()
+      send = useActiveThreadState().sendMessage
+      return null
+    }
+    await render(
+      <ThemeProvider>
+        <EnvironmentClientProvider client={client}>
+          <EnvironmentApplicationProviders collapsedWorkspaceStorage={null}>
+            <ChatWorkspace />
+            <Probe />
+          </EnvironmentApplicationProviders>
+        </EnvironmentClientProvider>
+      </ThemeProvider>,
+    )
+    await settle(client)
+    // No host action was passed in: the uploader comes from the client itself.
+    expect(actions?.uploadAttachments).toBeTypeOf('function')
+    const file = new File(['png'], 'screenshot.png', { type: 'image/png' })
+    let uploaded: Awaited<ReturnType<NonNullable<ViewActions['uploadAttachments']>>> = []
+    await act(async () => {
+      uploaded = await actions!.uploadAttachments!([
+        { id: 'draft-1', file, previewUrl: 'blob:composer-draft' },
+      ])
+    })
+    expect(uploaded).toEqual([
+      {
+        id: expect.any(String),
+        name: 'screenshot.png',
+        mimeType: 'image/png',
+        size: 3,
+        previewUrl: 'blob:composer-draft',
+        sessionId: SESSION.sessionId,
+      },
+    ])
+    // The stored bytes are the composer's file, readable back by the id.
+    await expect(
+      client.fetchArtifact!({ sessionId: SESSION.sessionId, artifactId: uploaded[0]!.id }),
+    ).resolves.toBe(file)
+
+    await act(() => send!('what is this?', uploaded))
+    await settle(client)
+    expect(client.calls.find((call) => call.command === 'sendTurn')?.input).toMatchObject({
+      text: 'what is this?',
+      artifactIds: [uploaded[0]!.id],
+    })
+    expect(client.getState().threads[THREAD.threadId]?.messages.at(-1)?.content).toEqual([
+      { type: 'text', text: 'what is this?' },
+      expect.objectContaining({ type: 'artifact', artifactId: uploaded[0]!.id }),
+    ])
+  })
+
+  it('refuses to send images uploaded under another session', async () => {
+    const client = createMockEnvironmentClient({
+      seed: { ...SEEDED_HISTORY, activeSessionId: SESSION.sessionId },
+      respond: () => null,
+    })
+    let send: ReturnType<typeof useActiveThreadState>['sendMessage'] | undefined
+    function Probe() {
+      send = useActiveThreadState().sendMessage
+      return null
+    }
+    await render(
+      <ThemeProvider>
+        <EnvironmentClientProvider client={client}>
+          <EnvironmentApplicationProviders collapsedWorkspaceStorage={null}>
+            <ChatWorkspace />
+            <Probe />
+          </EnvironmentApplicationProviders>
+        </EnvironmentClientProvider>
+      </ThemeProvider>,
+    )
+    await settle(client)
+    // The upload finished after the user moved on: it belongs to the session
+    // it started in, and the environment would refuse the turn.
+    await expect(
+      act(() =>
+        send!('what is this?', [
+          {
+            id: 'artifact-elsewhere',
+            name: 'screenshot.png',
+            mimeType: 'image/png',
+            size: 3,
+            previewUrl: 'blob:composer-draft',
+            sessionId: 'session-elsewhere',
+          },
+        ]),
+      ),
+    ).rejects.toThrow('uploaded to another session')
+    expect(client.calls.find((call) => call.command === 'sendTurn')).toBeUndefined()
+  })
+
+  it('offers no uploader when the environment does not advertise tickets, and lets a host supply one', async () => {
+    const mock = createMockEnvironmentClient({
+      seed: { ...SEEDED_HISTORY, activeSessionId: SESSION.sessionId },
+      uploads: false,
+    })
+    const client = mock
+    let actions: ViewActions | undefined
+    function Probe() {
+      actions = useViewActions()
+      return null
+    }
+    await render(
+      <ThemeProvider>
+        <EnvironmentClientProvider client={client}>
+          <EnvironmentApplicationProviders collapsedWorkspaceStorage={null}>
+            <Probe />
+          </EnvironmentApplicationProviders>
+        </EnvironmentClientProvider>
+      </ThemeProvider>,
+    )
+    await settle(mock)
+    expect(actions?.uploadAttachments).toBeUndefined()
+
+    const hostUpload = vi.fn(async () => [])
+    await render(
+      <ThemeProvider>
+        <EnvironmentClientProvider client={createMockEnvironmentClient({ seed: SEEDED_HISTORY })}>
+          <EnvironmentApplicationProviders
+            collapsedWorkspaceStorage={null}
+            viewActions={{ uploadAttachments: hostUpload }}
+          >
+            <Probe />
+          </EnvironmentApplicationProviders>
+        </EnvironmentClientProvider>
+      </ThemeProvider>,
+    )
+    await settle(mock)
+    expect(actions?.uploadAttachments).toBe(hostUpload)
   })
 
   it('sends an image with no caption as its own turn', async () => {

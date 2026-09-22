@@ -32,6 +32,19 @@ All implementations feed the same reducers (`applyEvent`, `applySnapshot`,
 Every reducer is idempotent by resource ID: replayed or duplicated events
 cannot double-apply.
 
+## Artifacts
+
+Bytes never travel on the command channel. `fetchArtifact` reads a stored
+image over `GET /artifacts/<session>/<artifact>` beside the socket, with the
+client credential as a Bearer header; `uploadArtifact` asks for a single-use
+`upload.ticket.create` ticket and `PUT`s the file to the path the ticket
+names. Both routes are resolved against the socket URL's directory, so a
+tunnel prefix in front of the environment is kept. Both members are optional
+on `EnvironmentClient`: an implementation with no HTTP route leaves them out,
+`app-core` then offers no image upload and shows stored images as unavailable.
+The mock keeps uploads in memory and hands them back to `fetchArtifact` and a
+send's `artifactIds`.
+
 ## Interface ahead of the wire
 
 The interface deliberately covers more than the server implements today.

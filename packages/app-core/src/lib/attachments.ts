@@ -8,6 +8,12 @@ export type DraftImageAttachment = {
 
 export type UploadedImageAttachment = PromptAttachment & {
   previewUrl: string
+  /**
+   * The session the bytes were stored under, when the host's storage is
+   * session-scoped. A send to any other session must refuse it rather than
+   * let the environment reject the whole turn.
+   */
+  sessionId?: string
 }
 
 /**

@@ -23,6 +23,7 @@ import {
   type ReplayCommand,
   type SubscriptionScope,
   type Thread,
+  UploadResultSchema,
 } from '@openmanager/protocol'
 import { z } from 'zod'
 import { EnvironmentClientError, isEnvironmentClientError } from './errors'
@@ -64,6 +65,7 @@ import type {
   WorkspaceComposerPreference,
 } from './types'
 import {
+  UPLOAD_TICKET_COMMAND,
   WIRE_COMMANDS,
   WIRE_RESPONSES,
   type WireCommandName,
@@ -206,7 +208,11 @@ export function environmentHttpUrl(socketUrl: string, path: string): string {
   return url.href
 }
 
-async function artifactReadError(response: Response): Promise<EnvironmentClientError> {
+/** A refused artifact transfer, as the typed error the command channel would raise. */
+async function artifactTransferError(
+  response: Response,
+  fallback: string,
+): Promise<EnvironmentClientError> {
   const body: unknown = await response.json().catch(() => null)
   const parsed = z
     .object({ error: z.object({ code: z.string(), message: z.string() }) })
@@ -216,13 +222,12 @@ async function artifactReadError(response: Response): Promise<EnvironmentClientE
       ? 'auth'
       : response.status === 403
         ? 'capability_missing'
-        : response.status === 404
+        : response.status === 404 || response.status === 410
           ? 'not_found'
-          : 'unavailable'
-  return new EnvironmentClientError(
-    code,
-    parsed.success ? parsed.data.error.message : 'The artifact could not be read.',
-  )
+          : response.status === 400 || response.status === 413 || response.status === 415
+            ? 'validation'
+            : 'unavailable'
+  return new EnvironmentClientError(code, parsed.success ? parsed.data.error.message : fallback)
 }
 
 /**
@@ -1238,8 +1243,44 @@ export function createWebSocketEnvironmentClient(
         if (init?.signal?.aborted) throw error
         throw new EnvironmentClientError('unavailable', 'The environment could not be reached.')
       }
-      if (!response.ok) throw await artifactReadError(response)
+      if (!response.ok) {
+        throw await artifactTransferError(response, 'The artifact could not be read.')
+      }
       return response.blob()
+    },
+    async uploadArtifact(input, init) {
+      // The ticket is single use and bound to this credential and session;
+      // the environment spends it before it reads a byte.
+      const ticket = await request(UPLOAD_TICKET_COMMAND, {
+        sessionId: input.sessionId,
+        name: input.name,
+        mimeType: input.mimeType,
+        sizeBytes: input.bytes.size,
+      })
+      const fetchBytes = options.fetch ?? globalThis.fetch
+      let response: Response
+      try {
+        response = await fetchBytes(environmentHttpUrl(options.url, ticket.uploadPath), {
+          method: 'PUT',
+          headers: {
+            ...(options.credential ? { authorization: `Bearer ${options.credential}` } : {}),
+            'content-type': input.mimeType,
+          },
+          body: input.bytes,
+          signal: init?.signal,
+        })
+      } catch (error) {
+        if (init?.signal?.aborted) throw error
+        throw new EnvironmentClientError('unavailable', 'The environment could not be reached.')
+      }
+      if (!response.ok) throw await artifactTransferError(response, 'The upload was refused.')
+      const parsed = UploadResultSchema.safeParse(await response.json().catch(() => null))
+      if (!parsed.success) {
+        throw new EnvironmentClientError('validation', 'Invalid upload response.', {
+          issues: parsed.error.issues,
+        })
+      }
+      return parsed.data
     },
     setActiveSession: (sessionId) => {
       openGeneration += 1

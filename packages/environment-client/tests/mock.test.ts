@@ -242,6 +242,37 @@ describe('mock environment client', () => {
     expect(error.code).toBe('capability_missing')
   })
 
+  it('gates uploads separately from turns', async () => {
+    const withUploads = createMockEnvironmentClient({ seed })
+    expect(withUploads.getState().connection.capabilities).toContain('upload.ticket.create')
+    const stored = await withUploads.uploadArtifact!({
+      sessionId: SESSION.sessionId,
+      name: 'shot.png',
+      mimeType: 'image/png',
+      bytes: new Blob(['png'], { type: 'image/png' }),
+    })
+    expect(stored).toMatchObject({
+      sessionId: SESSION.sessionId,
+      mimeType: 'image/png',
+      sizeBytes: 3,
+    })
+    await expect(
+      withUploads.fetchArtifact!({ sessionId: SESSION.sessionId, artifactId: stored.artifactId }),
+    ).resolves.toBeInstanceOf(Blob)
+
+    const turnsOnly = createMockEnvironmentClient({ seed, uploads: false })
+    expect(turnsOnly.supports('sendTurn')).toBe(true)
+    expect(turnsOnly.getState().connection.capabilities).not.toContain('upload.ticket.create')
+    const error = await turnsOnly.uploadArtifact!({
+      sessionId: SESSION.sessionId,
+      name: 'shot.png',
+      mimeType: 'image/png',
+      bytes: new Blob(['png']),
+    }).catch((e) => e)
+    expect(error).toBeInstanceOf(EnvironmentClientError)
+    expect(error.code).toBe('capability_missing')
+  })
+
   it('records every command for assertions', async () => {
     const client = createMockEnvironmentClient({ seed })
     await client.commands.listWorkspaces()

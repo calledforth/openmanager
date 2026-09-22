@@ -4,6 +4,7 @@ import {
   DEFAULT_RECONNECT,
   createWebSocketEnvironmentClient,
   reconnectDelayMs,
+  type WebSocketEnvironmentClientOptions,
   type WebSocketLike,
 } from '../src/websocket'
 import {
@@ -159,7 +160,11 @@ async function answerCatalog(
   socket.respond('session.list', { sessions: [], nextCursor: null })
 }
 
-async function connected(capabilities = FULL_CAPABILITIES, extraBootstrap: object = {}) {
+async function connected(
+  capabilities = FULL_CAPABILITIES,
+  extraBootstrap: object = {},
+  clientOptions: Partial<WebSocketEnvironmentClientOptions> = {},
+) {
   FakeSocket.instances = []
   const timers = createTimers()
   let requests = 0
@@ -171,6 +176,7 @@ async function connected(capabilities = FULL_CAPABILITIES, extraBootstrap: objec
     now: timers.now,
     requestId: () => `req-${++requests}`,
     reconnect: { initialDelayMs: 100, maxDelayMs: 1000, multiplier: 2 },
+    ...clientOptions,
   })
   client.connect()
   const socket = FakeSocket.instances[0]!
@@ -685,6 +691,143 @@ describe('websocket environment client', () => {
         },
       }).fetchArtifact!({ sessionId: 's', artifactId: 'a' }),
     ).rejects.toMatchObject({ code: 'unavailable' })
+  })
+
+  it('uploads an artifact with a ticket and a PUT of the bytes beside the socket', async () => {
+    const requests: Array<{
+      url: string
+      method: string | undefined
+      authorization: string | null
+      contentType: string | null
+      body: string
+    }> = []
+    const { client, socket } = await connected(
+      [...FULL_CAPABILITIES, 'upload.ticket.create'],
+      {},
+      {
+        url: 'wss://tunnel.example/env-1/ws',
+        fetch: async (input, init) => {
+          requests.push({
+            url: String(input),
+            method: init?.method,
+            authorization: new Headers(init?.headers).get('authorization'),
+            contentType: new Headers(init?.headers).get('content-type'),
+            body: await new Response(init?.body as Blob).text(),
+          })
+          return new Response(
+            JSON.stringify({
+              artifactId: 'artifact-1',
+              sessionId: 'session-1',
+              name: 'shot.png',
+              mimeType: 'image/png',
+              sizeBytes: 9,
+            }),
+            { status: 201 },
+          )
+        },
+      },
+    )
+    const pending = client.uploadArtifact!({
+      sessionId: 'session-1',
+      name: 'shot.png',
+      mimeType: 'image/png',
+      bytes: new Blob(['png-bytes'], { type: 'image/png' }),
+    })
+    expect(socket.last('upload.ticket.create').payload).toEqual({
+      sessionId: 'session-1',
+      name: 'shot.png',
+      mimeType: 'image/png',
+      sizeBytes: 9,
+    })
+    // No bytes move before the environment has issued the ticket.
+    expect(requests).toEqual([])
+    socket.respond('upload.ticket.create', {
+      ticket: 'ticket-1',
+      uploadPath: '/uploads/ticket-1',
+      expiresAt: new Date(60_000).toISOString(),
+      maxBytes: 9,
+    })
+    await expect(pending).resolves.toEqual({
+      artifactId: 'artifact-1',
+      sessionId: 'session-1',
+      name: 'shot.png',
+      mimeType: 'image/png',
+      sizeBytes: 9,
+    })
+    expect(requests).toEqual([
+      {
+        url: 'https://tunnel.example/env-1/uploads/ticket-1',
+        method: 'PUT',
+        authorization: `Bearer ${'a'.repeat(64)}`,
+        contentType: 'image/png',
+        body: 'png-bytes',
+      },
+    ])
+    client.dispose()
+  })
+
+  it('refuses an upload before the ticket when the environment does not advertise it', async () => {
+    let fetched = 0
+    const { client } = await connected(
+      FULL_CAPABILITIES,
+      {},
+      {
+        fetch: async () => {
+          fetched += 1
+          return new Response(null, { status: 500 })
+        },
+      },
+    )
+    await expect(
+      client.uploadArtifact!({
+        sessionId: 'session-1',
+        name: 'shot.png',
+        mimeType: 'image/png',
+        bytes: new Blob(['x']),
+      }),
+    ).rejects.toMatchObject({ code: 'capability_missing' })
+    expect(fetched).toBe(0)
+    client.dispose()
+  })
+
+  it('maps a refused upload to a typed error', async () => {
+    const upload = async (status: number, body: unknown) => {
+      const { client, socket } = await connected(
+        [...FULL_CAPABILITIES, 'upload.ticket.create'],
+        {},
+        {
+          fetch: async () => new Response(JSON.stringify(body), { status }),
+        },
+      )
+      const pending = client.uploadArtifact!({
+        sessionId: 'session-1',
+        name: 'shot.png',
+        mimeType: 'image/png',
+        bytes: new Blob(['x']),
+      })
+      socket.respond('upload.ticket.create', {
+        ticket: 't',
+        uploadPath: '/uploads/t',
+        expiresAt: new Date(60_000).toISOString(),
+        maxBytes: 1,
+      })
+      try {
+        await pending
+      } finally {
+        client.dispose()
+      }
+    }
+    await expect(
+      upload(413, {
+        error: { code: 'validation', message: 'The upload is larger than the ticket allows.' },
+      }),
+    ).rejects.toMatchObject({
+      code: 'validation',
+      message: 'The upload is larger than the ticket allows.',
+    })
+    await expect(upload(410, {})).rejects.toMatchObject({ code: 'not_found' })
+    await expect(upload(401, null)).rejects.toMatchObject({ code: 'auth' })
+    await expect(upload(201, { artifactId: 'a' })).rejects.toMatchObject({ code: 'validation' })
   })
 
   it('resolves a workspace icon by ID without touching the store', async () => {
