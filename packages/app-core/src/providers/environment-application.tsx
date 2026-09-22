@@ -798,7 +798,8 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
   const sendMessage = useCallback(
     async (content: string, attachments?: UploadedImageAttachment[]) => {
       const text = content.trim()
-      if (!text) return
+      // An image with no caption is still a turn.
+      if (!text && !attachments?.length) return
       setError(null)
       try {
         // An upload belongs to a session, and a draft has none yet; refusing

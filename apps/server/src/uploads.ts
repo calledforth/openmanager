@@ -408,13 +408,13 @@ export function createUploadService(options: {
         }
         try {
           const bytes = artifacts.read(metadata)
-          // An artifact id never names different bytes, so the copy a client
-          // holds stays good. `private` keeps it out of any shared cache: the
-          // response was only ever meant for the credential that asked.
+          // Never cached: the browser keys its cache by URL, not credential,
+          // so a stored copy would outlive a revoked credential and answer
+          // another client on the same machine. Reuse lives in the client.
           response.writeHead(200, {
             'content-type': metadata.mimeType,
             'content-length': bytes.length,
-            'cache-control': 'private, max-age=31536000, immutable',
+            'cache-control': 'no-store',
             'x-content-type-options': 'nosniff',
             'content-disposition': 'attachment',
           })

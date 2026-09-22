@@ -449,7 +449,7 @@ export function createMockEnvironmentClient(
       turnId: turn.turnId,
       role: 'user',
       content: [
-        { type: 'text', text: input.text },
+        ...(input.text ? [{ type: 'text' as const, text: input.text }] : []),
         ...[...new Set(input.artifactIds ?? [])].map((artifactId, index) => {
           const blob = artifacts[artifactId]
           if (!blob) {

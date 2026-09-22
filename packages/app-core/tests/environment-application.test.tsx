@@ -665,6 +665,61 @@ describe('the shared application over the environment client', () => {
     ).toBe('blob:attached')
   })
 
+  it('sends an image with no caption as its own turn', async () => {
+    URL.createObjectURL = vi.fn(() => 'blob:attached')
+    URL.revokeObjectURL = vi.fn()
+    const client = createMockEnvironmentClient({
+      seed: {
+        ...SEEDED_HISTORY,
+        activeSessionId: SESSION.sessionId,
+        artifacts: { 'artifact-1': new Blob(['png'], { type: 'image/png' }) },
+      },
+      respond: () => null,
+    })
+    let send: ReturnType<typeof useActiveThreadState>['sendMessage'] | undefined
+    function Probe() {
+      send = useActiveThreadState().sendMessage
+      return null
+    }
+    await render(
+      <ThemeProvider>
+        <EnvironmentClientProvider client={client}>
+          <EnvironmentApplicationProviders collapsedWorkspaceStorage={null}>
+            <ChatWorkspace />
+            <Probe />
+          </EnvironmentApplicationProviders>
+        </EnvironmentClientProvider>
+      </ThemeProvider>,
+    )
+    await settle(client)
+    await act(() =>
+      send!('   ', [
+        {
+          id: 'artifact-1',
+          name: 'screenshot.png',
+          mimeType: 'image/png',
+          size: 3,
+          previewUrl: 'blob:composer-draft',
+        },
+      ]),
+    )
+    await settle(client)
+
+    expect(client.calls.find((call) => call.command === 'sendTurn')?.input).toMatchObject({
+      text: '',
+      artifactIds: ['artifact-1'],
+    })
+    // The message is the image; no empty text block travels with it.
+    expect(client.getState().threads[THREAD.threadId]?.messages.at(-1)?.content).toEqual([
+      expect.objectContaining({ type: 'artifact', artifactId: 'artifact-1' }),
+    ])
+    expect(
+      container
+        .querySelector('[data-chat-view] button[aria-label^="Preview"] img')
+        ?.getAttribute('src'),
+    ).toBe('blob:attached')
+  })
+
   it('does not wire a remote stream_chunks store or ownership-driven split', async () => {
     function Probe() {
       const stores = useActiveThreadStores()

@@ -898,7 +898,11 @@ export function createThreadService(
       threadId: record.thread.threadId,
       turnId: turn.turnId,
       role: 'user',
-      content: [{ type: 'text', text: input.text }, ...artifactContent],
+      // A caption-less image sends no empty text block alongside it.
+      content: [
+        ...(input.text ? [{ type: 'text' as const, text: input.text }] : []),
+        ...artifactContent,
+      ],
     }
     const started: TurnStart = { turn, userMessage, commandId }
     if (options.database) {
@@ -957,7 +961,10 @@ export function createThreadService(
           ...(modeId ? { desiredConfig: { modeId } } : {}),
           prompt: {
             text: input.text,
-            blocks: [{ type: 'text', text: input.text }, ...promptImages],
+            blocks: [
+              ...(input.text ? [{ type: 'text' as const, text: input.text }] : []),
+              ...promptImages,
+            ],
           },
           userMessageId: userMessage.messageId,
         })
