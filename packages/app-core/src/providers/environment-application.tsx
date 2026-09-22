@@ -23,13 +23,14 @@ import {
 } from '@openmanager/shared/contracts/provider-health'
 import type { InteractionResponse, Workspace } from '@openmanager/protocol'
 import {
+  UPLOAD_TICKET_COMMAND,
   selectProviderCatalog,
   shallowEqualArray,
   type PendingInteraction,
   type ProviderCatalogEntry,
   type ThreadTarget,
 } from '@openmanager/environment-client'
-import type { UploadedImageAttachment } from '../lib/attachments'
+import type { DraftImageAttachment, UploadedImageAttachment } from '../lib/attachments'
 import {
   useActiveSession,
   useActiveThread,
@@ -1179,7 +1180,8 @@ function EnvironmentViewActions({
   // doubles as the icon cache key downstream, so it changes only when the
   // client or its advertised capabilities do; a failed lookup is a plain
   // fallback, never an error the view has to handle.
-  const iconsSupported = useConnectionState().capabilities.includes('workspace.icon')
+  const capabilities = useConnectionState().capabilities
+  const iconsSupported = capabilities.includes('workspace.icon')
   const resolveWorkspaceIcon = useMemo(
     () =>
       iconsSupported && client.supports('resolveWorkspaceIcon')
@@ -1188,9 +1190,51 @@ function EnvironmentViewActions({
         : undefined,
     [client, iconsSupported],
   )
+  // Composer images go to the environment itself: a ticket per file, then
+  // the bytes over its authorized route. The uploader is offered only when
+  // the client has that route and the environment advertises tickets, so a
+  // host that cannot store images shows no attach affordance at all. An
+  // upload belongs to a session; a draft has none, and the composer refuses
+  // images there before this is reached.
+  const uploadsSupported = capabilities.includes(UPLOAD_TICKET_COMMAND) && !!client.uploadArtifact
+  const activeSessionRef = useRef(activeSessionId)
+  activeSessionRef.current = activeSessionId
+  const uploadAttachments = useMemo(
+    () =>
+      uploadsSupported
+        ? async (drafts: DraftImageAttachment[]): Promise<UploadedImageAttachment[]> => {
+            const sessionId = activeSessionRef.current
+            if (!sessionId) throw new Error('Images can be attached once the session has started.')
+            const uploaded: UploadedImageAttachment[] = []
+            for (const draft of drafts) {
+              const stored = await client.uploadArtifact!({
+                sessionId,
+                name: draft.file.name,
+                mimeType: draft.file.type,
+                bytes: draft.file,
+              })
+              uploaded.push({
+                id: stored.artifactId,
+                name: stored.name,
+                mimeType: stored.mimeType,
+                size: stored.sizeBytes,
+                previewUrl: draft.previewUrl,
+              })
+            }
+            return uploaded
+          }
+        : undefined,
+    [client, uploadsSupported],
+  )
   const value = useMemo<ViewActions>(
-    () => ({ openChildSession, resolveWorkspaceIcon, ...actions, activeSessionId }),
-    [actions, activeSessionId, openChildSession, resolveWorkspaceIcon],
+    () => ({
+      openChildSession,
+      resolveWorkspaceIcon,
+      uploadAttachments,
+      ...actions,
+      activeSessionId,
+    }),
+    [actions, activeSessionId, openChildSession, resolveWorkspaceIcon, uploadAttachments],
   )
   return <ViewActionsContext.Provider value={value}>{children}</ViewActionsContext.Provider>
 }

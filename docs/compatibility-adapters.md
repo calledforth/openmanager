@@ -85,8 +85,15 @@ These are accepted for the migration window and disappear with the adapter:
 - **Session status in the sidebar** comes from the Convex row (`running`,
   `waiting`, `error`) until this renderer sees a turn of its own for the
   session; a turn watched locally then takes precedence over the row.
-- **Attachments** are not sent by `sendTurn` (text only); hydrated image parts
-  appear as `resource_link` blocks.
+- **Attachments** are not sent by `sendTurn` (text only) and the adapter has
+  no `uploadArtifact`, so the shared composer offers no image upload over it.
+  Hydrated image parts appear as `resource_link` blocks. The desktop's legacy
+  composer path (`DesktopViewActions` → Convex `_storage` → the `send_message`
+  job) is the last production path that writes to Convex storage; it goes with
+  the legacy providers at cutover, when the desktop mounts
+  `EnvironmentApplicationProviders` and uploads through tickets like the web
+  shell. Images stored in Convex before then stay readable through that legacy
+  path only; the environment server never imports them.
 - **Plan feedback messages** written by the legacy `resolvePlan` are not
   persisted by `respondToInteraction`.
 - **Clearing a title** (`renameSession(id, null)`) is rejected; Convex has no
@@ -125,6 +132,14 @@ providers.
    listeners in preload, `agent-host.ts`, and the Convex projector's
    `streamChunks` writes. The thin-shell desktop must not grow a replacement
    `driven` split; live turns already arrive as sequenced WebSocket events.
+8. Delete the Convex storage path with the legacy providers:
+   `apps/desktop/src/renderer/src/providers/desktop-view-actions.tsx` (uploads
+   through `attachments.generateUploadUrl` / `register` / `removeMany`), the
+   `attachments.resolveMany` read in `main/job-worker.ts`, the generated-image
+   upload and `attachments.assignToMessage` in `main/convex-projector.ts`,
+   `packages/convex/convex/attachments.ts`, its `_storage` cleanup cron in
+   `crons.ts`, and the `attachments` table. Convex-stored images are not
+   migrated; sessions from before cutover lose their image previews.
 
 Nothing in `packages/environment-client` or `packages/app-core` references the
 adapter, so those packages need no changes when it goes.

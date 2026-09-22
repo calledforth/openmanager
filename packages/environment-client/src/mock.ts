@@ -55,7 +55,7 @@ import type {
   SessionStatus,
   ThreadTarget,
 } from './types'
-import { WIRE_COMMANDS } from './wire'
+import { UPLOAD_TICKET_COMMAND, WIRE_COMMANDS } from './wire'
 
 export interface MockSeedSession {
   session: Session
@@ -149,6 +149,12 @@ const workspaceNameFromPath = (path: string) => {
   return trimmed.split(/[\\/]/).filter(Boolean).pop() ?? trimmed
 }
 
+/** Uploads travel with `turn.send`: an environment that takes turns takes tickets. */
+const wireCapabilities = (capabilities: ReadonlySet<EnvironmentCommandName>) => [
+  ...[...capabilities].map((command) => WIRE_COMMANDS[command]),
+  ...(capabilities.has('sendTurn') ? [UPLOAD_TICKET_COMMAND] : []),
+]
+
 const defaultIds = () => {
   let counter = 0
   return () => `mock-${++counter}`
@@ -161,7 +167,7 @@ export function createMockEnvironmentClient(
   const now = options.now ?? (() => new Date().toISOString())
   const chunkDelayMs = options.chunkDelayMs ?? 0
   const latencyMs = options.latencyMs ?? 0
-  const artifacts = options.seed?.artifacts ?? {}
+  const artifacts: Record<string, Blob> = { ...options.seed?.artifacts }
   const respond =
     options.respond === undefined
       ? (turn: MockTurnContext) => splitChunks(`You said: ${turn.text}`)
@@ -815,6 +821,24 @@ export function createMockEnvironmentClient(
       if (!blob) throw new EnvironmentClientError('not_found', 'Artifact not found.')
       return blob
     },
+    uploadArtifact: async (input) => {
+      await new Promise<void>((resolve) => schedule(resolve, latencyMs))
+      if (!capabilities.has('sendTurn')) {
+        throw EnvironmentClientError.unsupported(UPLOAD_TICKET_COMMAND)
+      }
+      if (!store.getState().sessions[input.sessionId]) {
+        throw new EnvironmentClientError('not_found', 'Session not found.')
+      }
+      const artifactId = nextId()
+      artifacts[artifactId] = input.bytes
+      return {
+        artifactId,
+        sessionId: input.sessionId,
+        name: input.name,
+        mimeType: input.mimeType,
+        sizeBytes: input.bytes.size,
+      }
+    },
     setActiveSession: (sessionId) => {
       openGeneration += 1
       store.update((state) => applyActiveSession(state, sessionId))
@@ -826,7 +850,7 @@ export function createMockEnvironmentClient(
           phase: 'connected',
           hasConnected: true,
           failure: null,
-          capabilities: [...capabilities].map((command) => WIRE_COMMANDS[command]),
+          capabilities: wireCapabilities(capabilities),
         }),
       ),
     disconnect: () =>
@@ -928,7 +952,7 @@ export function createMockEnvironmentClient(
           phase: 'connected',
           hasConnected: true,
           failure: null,
-          capabilities: [...capabilities].map((command) => WIRE_COMMANDS[command]),
+          capabilities: wireCapabilities(capabilities),
         }),
       )
     },
@@ -945,7 +969,7 @@ function seedState(
   state = applyConnection(state, {
     phase: 'connected',
     hasConnected: true,
-    capabilities: [...capabilities].map((command) => WIRE_COMMANDS[command]),
+    capabilities: wireCapabilities(capabilities),
   })
   state = applyWorkspaceList(state, seed?.workspaces ?? [])
   if (capabilities.has('getProviderCatalog')) {

@@ -15,6 +15,7 @@ import type {
   SessionTitleSource,
   Thread,
   Turn,
+  UploadResult,
   Workspace,
   WorkspaceComposerPreference,
 } from '@openmanager/protocol'
@@ -217,6 +218,18 @@ export interface ArtifactTarget {
   artifactId: string
 }
 
+/** A file the composer attaches. The environment stores it under the session. */
+export interface UploadArtifactInput {
+  sessionId: string
+  /** Display name only; it never becomes a path on the environment. */
+  name: string
+  mimeType: string
+  bytes: Blob
+}
+
+/** What a stored upload is known as; `sendTurn` attaches it by `artifactId`. */
+export type UploadedArtifact = UploadResult
+
 export interface InterruptTurnInput extends ThreadTarget {
   turnId: string
 }
@@ -323,6 +336,16 @@ export interface EnvironmentClient {
    * route leave this out, and views show the image as unavailable.
    */
   fetchArtifact?(input: ArtifactTarget, init?: { signal?: AbortSignal }): Promise<Blob>
+  /**
+   * Store a prompt attachment on the environment: a ticket on the command
+   * channel, then the bytes over the same authorized HTTP route family as
+   * `fetchArtifact`. Clients with no such route leave this out, and the
+   * composer offers no image upload.
+   */
+  uploadArtifact?(
+    input: UploadArtifactInput,
+    init?: { signal?: AbortSignal },
+  ): Promise<UploadedArtifact>
   /** Local selection; does not hydrate. Use `commands.openSession` for that. */
   setActiveSession(sessionId: string | null): void
   setActiveThread(threadId: string | null): void
