@@ -114,10 +114,14 @@ non-extractable WebCrypto key (as in D6) is the later hardening step.
 
 **D9. Clients refer to workspaces by ID, never by root path.** The server
 registers workspace roots and gives them IDs. A client may ask the server to
-register a folder by typing its path (`workspace.add`, `operate`); the server
-validates and canonicalizes it, and the ID it assigns is what every later
-command names. The canonical path is listed back for display. Clients send a
-workspace ID plus a path relative to it. The server resolves the real path (following symlinks
+register any folder on the environment by typing its absolute path
+(`workspace.add`, `operate`); the server checks that it exists and is a
+readable directory, canonicalizes it, and the ID it assigns is what every later
+command names. There is no allowlist of roots: being paired is the consent, as
+in T3 Code, and the boundary D9 enforces is path containment within a
+registered workspace, not which folders may be registered. The canonical path
+is listed back for display. Clients send a workspace ID plus a path relative
+to it. The server resolves the real path (following symlinks
 and Windows junctions, and handling case-insensitivity, UNC, 8.3 short names
 and `\\wsl$`) and rejects anything that lands outside the registered root.
 Absolute paths from clients are rejected. This boundary covers OpenManager's

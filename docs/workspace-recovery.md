@@ -4,7 +4,9 @@ The environment checks registered folders when listing them and when opening a
 session. It stores and publishes `available`, `missing`, or `inaccessible`.
 `exists` remains the compatibility flag for whether the folder can be used.
 Missing includes paths replaced by a file; inaccessible includes permission
-failures, disallowed roots, and roots replaced by a symlink to another location.
+failures and roots replaced by a symlink to another location. Which folder the
+environment was started from does not matter: a registered project stays
+available across a restart from anywhere.
 Unavailable projects and their sessions stay in the sidebar. Opening a session
 shows an error with **Try again**; restoring access lets the same session reopen.
 
@@ -38,7 +40,7 @@ indexed by the original working directory, and rebinding only the workspace
 record would not guarantee that a provider can resume the correct transcript.
 
 To recover an existing session, restore the folder at its original path (or
-restore permissions and the configured allowed roots), then choose **Try again**.
+restore its permissions), then choose **Try again**.
 To work at the new path, add it as a project and start a new session there.
 Do not remove the original project to recover it: explicit project removal also
 deletes its sessions.

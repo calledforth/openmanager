@@ -105,13 +105,11 @@ describe('configuration', () => {
     expect(() => loadConfig([], { OPENMANAGER_WORKSPACES: 'a\0b' })).toThrow('Workspace roots')
   })
 
-  it('loads an explicit registration allowlist with flag precedence', () => {
-    const env = { OPENMANAGER_ALLOWED_WORKSPACE_ROOTS: ['./one', './two'].join(delimiter) }
-    expect(loadConfig([], env).allowedWorkspaceRoots).toEqual([resolve('one'), resolve('two')])
-    expect(loadConfig(['--allowed-workspace-root', './three'], env).allowedWorkspaceRoots).toEqual([
-      resolve('three'),
-    ])
-    expect(() => loadConfig(['--allowed-workspace-root', ' '], {})).toThrow('Workspace roots')
+  it('no longer accepts a registration allowlist: any signed-in client may add any folder', () => {
+    expect(() => loadConfig(['--allowed-workspace-root', './one'], {})).toThrow()
+    expect(loadConfig([], { OPENMANAGER_ALLOWED_WORKSPACE_ROOTS: './one' })).not.toHaveProperty(
+      'allowedWorkspaceRoots',
+    )
   })
 
   it.each(['-1', '65536', '3.5', 'abc', '1e3', '', '9007199254740993'])(

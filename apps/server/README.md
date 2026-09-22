@@ -45,7 +45,6 @@ with a nonzero exit code and an error on stderr.
 | `--log-level` | `OPENMANAGER_LOG_LEVEL` | `info`                                      |
 | `--allowed-origin` (repeatable) | `OPENMANAGER_ALLOWED_ORIGINS` (comma-separated) | none |
 | `--allowed-host` (repeatable) | `OPENMANAGER_ALLOWED_HOSTS` (comma-separated) | none |
-| `--allowed-workspace-root` (repeatable) | `OPENMANAGER_ALLOWED_WORKSPACE_ROOTS` (platform PATH delimiter) | workspace roots |
 | `--workspace` (repeatable) | `OPENMANAGER_WORKSPACES` (separated by the platform PATH delimiter) | none |
 | `--remint-owner` | none (flag only) | off. Revokes the live owner row and publishes a new credential before listen. |
 | none | `OPENMANAGER_LOCAL_OWNER_CLAIM_KEY` | none. A 32-byte base64url key generated and shared by `pnpm dev:web`; without it `/local-owner` is hidden. |
@@ -320,34 +319,32 @@ server resolves it with `realpath.native` (including symlinks, Windows junctions
 and 8.3 names) and registers its canonical path with a stable SQLite ID. Nested
 roots remain separate projects.
 
-`--workspace` roots are also the default registration allowlist. To allow adding
-other projects, configure a broader boundary with repeatable
-`--allowed-workspace-root ~/code` or `OPENMANAGER_ALLOWED_WORKSPACE_ROOTS`
-(platform PATH delimiter). An explicit allowlist replaces the default; configured
-workspaces must be within it. With no allowed roots, additions are denied.
-Removing a project does not change the operator's allowlist.
+`--workspace` roots are a convenience for pre-registering folders on start; they
+do not define a boundary. Any signed-in client can register any folder on the
+environment with `workspace.add`: being paired is the consent, matching the
+model T3 Code uses. A server started with no `--workspace` lists whatever was
+registered before and accepts new folders as usual.
 
 `workspace.add` accepts only an absolute path in the **server host's** syntax,
 without `..` segments (either separator), NUL, or ambiguous Windows device/stream
 names. POSIX hosts reject Windows spellings; Windows requires a drive-qualified
 path or ordinary UNC share, not drive-relative, rooted-only, or device namespace
-paths. The server checks directory existence and read/search permission and
-requires the final canonical target to be at or below an allowed root. The
+paths. The server checks directory existence and read/search permission. The
 client only submits input and displays the server result. Rejections are audited
 and do not persist or emit a successful update.
 
-Symlinks/junctions are accepted only when their final target is allowed. Aliases
-to one directory share a registration, whose stored path is the canonical target,
-not the alias. Retargeting that original alias does not move the project. If the
+Symlinks/junctions register their final target. Aliases to one directory share
+a registration, whose stored path is the canonical target, not the alias. Retargeting that original alias does not move the project. If the
 stored canonical directory itself is replaced by a link, it becomes unavailable;
 re-register the new target explicitly. Canonical paths are compared by whole
 segments with exact case, including on case-sensitive Windows/macOS volumes.
 
 `workspace.list` returns `{ workspaceId, name, path, lastUsedAt, exists }`. Stored
-projects survive restarts. Missing, inaccessible, redirected, or newly disallowed
-paths remain listed with `exists: false` and cannot be used by `get`, `resolve`,
-or `resolvePath`. They become usable again when the same canonical directory is
-accessible and allowed. Explicit missing startup roots fail startup.
+projects survive restarts, whichever folder the server was later started from.
+Missing, inaccessible, or redirected paths remain listed with `exists: false`
+and cannot be used by `get`, `resolve`, or `resolvePath`. They become usable
+again when the same canonical directory is accessible. Explicit missing startup
+roots fail startup.
 
 `session.create` and `provider.probe` resolve IDs through the server registry
 before starting runtime work. File, git, upload and terminal commands obtain

@@ -41,7 +41,6 @@ async function fixture() {
   let now = Date.parse('2026-09-13T12:00:00Z')
   const open = (configured: string[], options: WorkspaceRegistryOptions = {}) => {
     const registry = openWorkspaceRegistry(dataDir, configured, audit, {
-      allowedRoots: [base],
       clock: () => now,
       events: { environmentId: 'env-1', emit: (event) => events.push(event) },
       ...options,
@@ -91,7 +90,7 @@ describe('workspace registry', () => {
       expect(registry.list()[0]).toMatchObject({ availability: 'missing' })
       expect(status()).toEqual({ availability: 'missing' })
       registry.close()
-      const restarted = open([roots.a], { allowedRoots: [roots.a, roots.b] })
+      const restarted = open([roots.a])
       expect(restarted.list()[0]).toMatchObject({
         workspaceId: alpha!.workspaceId,
         availability: 'missing',
@@ -354,28 +353,42 @@ describe('workspace registry', () => {
     expect(registry.list()[0]).toMatchObject({ exists: false, capabilities: { git: false } })
   })
 
-  it('defaults to configured roots, rejects outside paths and traversal without persisting or emitting', async () => {
+  it('rejects relative paths and traversal without persisting or emitting', async () => {
     const { roots, open, events, audits } = await fixture()
-    const registry = open([roots.a], { allowedRoots: undefined })
-    for (const path of ['../other', `${roots.a}/src/../src`, `${roots.a}\\src\\..\\src`, roots.b]) {
+    const registry = open([roots.a])
+    for (const path of ['../other', `${roots.a}/src/../src`, `${roots.a}\\src\\..\\src`]) {
       expect(registry.register({ path })).toMatchObject({ ok: false, code: 'validation' })
     }
     expect(registry.list()).toHaveLength(1)
     expect(events).toEqual([])
-    expect(audits).toHaveLength(4)
+    expect(audits).toHaveLength(3)
     expect(registry.register({ path: join(roots.a, 'src') }).ok).toBe(true)
-    registry.close()
-    expect(open([], { allowedRoots: [] }).register({ path: roots.a })).toMatchObject({ ok: false })
   })
 
-  it('checks symlink targets and canonicalizes aliases to a single registration', async () => {
+  it('registers any existing directory for a signed-in client, not only configured roots', async () => {
     const { roots, open } = await fixture()
-    const registry = open([roots.a], { allowedRoots: undefined })
+    // Being paired is the consent (threat model D9): no allowlist of roots exists.
+    const registry = open([roots.a])
+    expect(registry.register({ path: roots.b })).toMatchObject({
+      ok: true,
+      workspace: { path: canonicalizeRoot(roots.b), availability: 'available' },
+    })
+    expect(registry.register({ path: roots.outside }).ok).toBe(true)
+    expect(registry.list()).toHaveLength(3)
+    registry.close()
+    // A server started with nothing pre-registered still accepts folders.
+    expect(open([]).register({ path: roots.a }).ok).toBe(true)
+  })
+
+  it('canonicalizes symlink targets and aliases to a single registration', async () => {
+    const { roots, open } = await fixture()
+    const registry = open([roots.a])
     const type = process.platform === 'win32' ? 'junction' : 'dir'
-    await symlink(roots.b, join(roots.a, 'escape'), type)
-    expect(registry.register({ path: join(roots.a, 'escape') })).toMatchObject({
-      ok: false,
-      code: 'validation',
+    await symlink(roots.b, join(roots.a, 'elsewhere'), type)
+    // A link into another folder registers that folder, under its canonical path.
+    expect(registry.register({ path: join(roots.a, 'elsewhere') })).toMatchObject({
+      ok: true,
+      workspace: { path: canonicalizeRoot(roots.b) },
     })
     await symlink(join(roots.a, 'src'), join(roots.a, 'alias'), type)
     const added = registry.register({ path: join(roots.a, 'alias') })
@@ -386,28 +399,34 @@ describe('workspace registry', () => {
     expect(registry.register({ path: join(roots.a, 'src') })).toEqual(added)
   })
 
-  it('marks restored paths outside a narrowed allowlist unavailable', async () => {
+  it('keeps a project registered outside the launch folder available across a restart', async () => {
     const { roots, open } = await fixture()
-    const first = open([roots.a, roots.b])
-    const beta = first.list()[1]!
+    // Launched from alpha, a project in beta is added from a client.
+    const first = open([roots.a])
+    const added = first.register({ path: roots.b })
+    if (!added.ok) throw new Error('registration failed')
     first.close()
-    const second = open([roots.a], { allowedRoots: undefined })
-    expect(second.list().find((workspace) => workspace.workspaceId === beta.workspaceId)).toEqual({
-      ...beta,
-      exists: false,
-      availability: 'inaccessible',
+    // Restarted with a different launch folder: beta is still usable.
+    const second = open([roots.outside])
+    const beta = second
+      .list()
+      .find((workspace) => workspace.workspaceId === added.workspace.workspaceId)
+    expect(beta).toMatchObject({
+      path: canonicalizeRoot(roots.b),
+      exists: true,
+      availability: 'available',
     })
-    expect(second.resolve(beta.workspaceId)).toBeUndefined()
-    expect(second.get(beta.workspaceId)).toBeUndefined()
-    expect(second.resolvePath(beta.workspaceId, 'src')).toEqual({
-      ok: false,
-      reason: 'unknown_workspace',
-    })
+    expect(second.resolve(added.workspace.workspaceId)?.root).toBe(canonicalizeRoot(roots.b))
+    expect(second.get(added.workspace.workspaceId)).toBeDefined()
+    expect(second.resolvePath(added.workspace.workspaceId, 'src').ok).toBe(true)
+    // So is the original launch folder, which is no longer on the command line.
+    const alpha = second.list().find((workspace) => workspace.path === canonicalizeRoot(roots.a))
+    expect(alpha).toMatchObject({ exists: true, availability: 'available' })
   })
 
   it('refuses a stored directory replaced by a symlink before and after restart', async () => {
     const { roots, open } = await fixture()
-    const first = open([roots.a], { allowedRoots: undefined })
+    const first = open([roots.a])
     const added = first.register({ path: join(roots.a, 'src') })
     if (!added.ok) throw new Error('registration failed')
     await rm(join(roots.a, 'src'), { recursive: true })
@@ -422,7 +441,7 @@ describe('workspace registry', () => {
     }
     verify(first)
     first.close()
-    verify(open([roots.a], { allowedRoots: undefined }))
+    verify(open([roots.a]))
   })
 
   it('refuses unreadable directories and marks existing registrations unavailable', async () => {
@@ -446,14 +465,14 @@ describe('workspace registry', () => {
       const { roots, open } = await fixture()
       const unusual = join(roots.a, 'literal\\name')
       await mkdir(unusual)
-      const first = open([unusual], { allowedRoots: [roots.a] })
+      const first = open([unusual])
       const workspace = first.list()[0]!
       expect(workspace.exists).toBe(true)
       expect(first.get(workspace.workspaceId)?.root).toBe(canonicalizeRoot(unusual))
       expect(first.resolve(workspace.workspaceId)?.root).toBe(canonicalizeRoot(unusual))
       expect(first.resolvePath(workspace.workspaceId, 'new.txt').ok).toBe(true)
       first.close()
-      const second = open([], { allowedRoots: [roots.a] })
+      const second = open([])
       expect(second.list()).toEqual([workspace])
       expect(second.resolve(workspace.workspaceId)?.root).toBe(canonicalizeRoot(unusual))
     },
