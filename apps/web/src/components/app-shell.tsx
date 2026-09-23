@@ -141,8 +141,8 @@ export function AppShell() {
     </SidebarInset>
   )
 
-  // Fluid's inset layout: the sidebar sits on the canvas and the page is a
-  // raised card beside it.
+  // Fluid's default sidebar: one canvas colour for the rail and the page,
+  // split by a hairline.
   return (
     <SidebarProvider className="h-svh min-h-0 overflow-hidden bg-background text-foreground">
       {client ? (
@@ -151,7 +151,7 @@ export function AppShell() {
         </ConnectedShell>
       ) : (
         <>
-          <Sidebar variant="inset">
+          <Sidebar>
             <SidebarHeader>
               <SidebarWorkspaceHeader name="OpenManager" tile={<WorkspaceTile>O</WorkspaceTile>} />
             </SidebarHeader>

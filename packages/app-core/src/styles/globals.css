@@ -787,26 +787,6 @@ textarea,
 }
 
 /* Composer fade scrim — Basis-style canvas gradient (no glass) */
-.chat-composer-fade {
-  background: linear-gradient(
-    to top,
-    var(--basis-canvas-bg) 0%,
-    color-mix(in srgb, var(--basis-canvas-bg) 88%, transparent) 28%,
-    color-mix(in srgb, var(--basis-canvas-bg) 45%, transparent) 58%,
-    transparent 100%
-  );
-}
-
-/* Subtle top edge fade under the titlebar */
-.chat-pane-top-fade {
-  background: linear-gradient(
-    to bottom,
-    color-mix(in srgb, var(--basis-canvas-bg) 70%, transparent) 0%,
-    color-mix(in srgb, var(--basis-canvas-bg) 25%, transparent) 55%,
-    transparent 100%
-  );
-}
-
 @layer utilities {
   .theme-btn-plan {
     background-color: var(--send-plan-bg);

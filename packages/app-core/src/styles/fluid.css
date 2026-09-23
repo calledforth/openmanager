@@ -387,8 +387,10 @@
   --basis-scrollbar-thumb-hover: rgb(var(--overlay) / 0.12);
   --basis-selection-bg: var(--tint-soft);
   --basis-selection-fg: var(--foreground);
-  --basis-chat-composer-border: var(--border);
-  --basis-chat-user-border: var(--rule);
+  /* A very slight edge, so the composer and user messages read as shapes
+     on the canvas without a visible outline. */
+  --basis-chat-composer-border: color-mix(in oklab, var(--background), var(--foreground) 13%);
+  --basis-chat-user-border: color-mix(in oklab, var(--background), var(--foreground) 11%);
 }
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

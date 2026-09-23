@@ -19,10 +19,6 @@ type MessagePart = StreamMessagePart
 export function ChatViewPanel({ children }: { children: ReactNode }) {
   return (
     <div data-chat-view className="relative flex min-h-0 flex-1 flex-col">
-      <div
-        aria-hidden="true"
-        className="chat-pane-top-fade pointer-events-none absolute inset-x-0 top-0 z-10 h-5"
-      />
       {children}
     </div>
   )

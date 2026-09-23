@@ -70,7 +70,7 @@ export interface FluidWorkspaceSidebarViewProps {
 }
 
 /**
- * The project sidebar on Fluid Functionalism's inset sidebar: one collapsible
+ * The project sidebar on Fluid Functionalism's sidebar: one collapsible
  * group per project, sessions as menu rows with hover actions. Must render
  * inside a Fluid `SidebarProvider`, next to a `SidebarInset`.
  */
@@ -97,7 +97,7 @@ export function FluidWorkspaceSidebarView({
   const name = environmentLabel ?? 'OpenManager'
 
   return (
-    <Sidebar variant="inset">
+    <Sidebar>
       <SidebarHeader>
         <SidebarWorkspaceHeader
           name={name}
