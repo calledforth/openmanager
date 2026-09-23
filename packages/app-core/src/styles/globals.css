@@ -268,8 +268,10 @@ html[data-ui-font='inter'] {
   --font-sans: var(--font-inter-sans);
 }
 
-html[data-ui-font='geist'],
-html:not([data-ui-font]),
+/* On body, not html: the root stays 16px so rem sizes (the chat column,
+   spacing) don't change with the font. */
+html[data-ui-font='geist'] body,
+html:not([data-ui-font]) body,
 html[data-ui-font='inter'] body {
   font-size: 14px;
   line-height: 22.75px;
@@ -280,8 +282,8 @@ html[data-ui-font='inter'] body {
   font-style: normal;
 }
 
-html[data-ui-font='geist'],
-html:not([data-ui-font]),
+html[data-ui-font='geist'] .font-normal,
+html:not([data-ui-font]) .font-normal,
 html[data-ui-font='inter'] .font-normal {
   font-weight: 450;
   font-variation-settings: 'wght' 450;

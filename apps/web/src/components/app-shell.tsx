@@ -4,7 +4,6 @@ import { useEnvironmentClientOptional } from '@openmanager/app-core/providers/en
 import { EnvironmentApplicationProviders } from '@openmanager/app-core/providers/environment-application'
 import { FluidWorkspaceSidebar } from '@openmanager/app-core/components/sidebar/WorkspaceSidebar'
 import { useIcon } from '@openmanager/app-core/components/fluid/lib/icon-context'
-import { SizeProvider } from '@openmanager/app-core/components/fluid/lib/size-context'
 import {
   Sidebar,
   SidebarContent,
@@ -152,22 +151,17 @@ export function AppShell() {
         </ConnectedShell>
       ) : (
         <>
-          <SizeProvider size="default">
-            <Sidebar className="text-[15px]">
-              <SidebarHeader>
-                <SidebarWorkspaceHeader
-                  name="OpenManager"
-                  tile={<WorkspaceTile>O</WorkspaceTile>}
-                />
-              </SidebarHeader>
-              <SidebarContent>
-                <NavMenu pathname={pathname} includeSessions />
-              </SidebarContent>
-              <SidebarFooter>
-                <ConnectionStatusChip state={ui} />
-              </SidebarFooter>
-            </Sidebar>
-          </SizeProvider>
+          <Sidebar className="text-[15px]">
+            <SidebarHeader>
+              <SidebarWorkspaceHeader name="OpenManager" tile={<WorkspaceTile>O</WorkspaceTile>} />
+            </SidebarHeader>
+            <SidebarContent>
+              <NavMenu pathname={pathname} includeSessions />
+            </SidebarContent>
+            <SidebarFooter>
+              <ConnectionStatusChip state={ui} />
+            </SidebarFooter>
+          </Sidebar>
           {main}
         </>
       )}
