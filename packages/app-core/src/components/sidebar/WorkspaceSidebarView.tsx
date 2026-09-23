@@ -14,6 +14,7 @@ import {
 } from '@phosphor-icons/react'
 import type { ProviderId } from '@agentpack/contract'
 import { cn } from '../../lib/utils'
+import { describeUnavailableWorkspace } from '../../lib/workspace-availability'
 import { typographyBodySm, typographyLabel } from '../../lib/typography'
 import { ProviderIcon } from '../providers/ProviderIcon'
 import { Tooltip } from '../ui/Tooltip'
@@ -41,6 +42,22 @@ export interface SidebarWorkspace {
   missing?: boolean
   availability?: 'available' | 'missing' | 'inaccessible'
   sessions: SidebarSession[]
+}
+
+/** The header says why the folder cannot be used: the two causes have
+ * different fixes, and a strikethrough alone does not tell them apart. */
+function UnavailableBadge({ availability }: { availability: SidebarWorkspace['availability'] }) {
+  const copy = describeUnavailableWorkspace(availability)
+  return (
+    <Tooltip content={copy.reason} side="bottom" align="end">
+      <span
+        className="shrink-0 rounded-sm border border-[var(--basis-border-muted)] px-1 py-px text-[9px] leading-none tracking-wide text-[var(--basis-text-faint)]"
+        aria-label={copy.reason}
+      >
+        {copy.badge}
+      </span>
+    </Tooltip>
+  )
 }
 
 export interface SidebarSessionRow {
@@ -336,26 +353,7 @@ function WorkspaceGroup({
           </span>
         </button>
         {workspace.missing ? (
-          <Tooltip
-            content={
-              workspace.availability === 'inaccessible'
-                ? 'Folder cannot be accessed on this environment'
-                : 'Folder missing or moved on this environment'
-            }
-            side="bottom"
-            align="end"
-          >
-            <span
-              className="shrink-0 rounded-sm border border-[var(--basis-border-muted)] px-1 py-px text-[9px] leading-none tracking-wide text-[var(--basis-text-faint)]"
-              aria-label={
-                workspace.availability === 'inaccessible'
-                  ? 'Folder cannot be accessed on this environment'
-                  : 'Folder missing or moved on this environment'
-              }
-            >
-              {workspace.availability === 'inaccessible' ? 'INACCESSIBLE' : 'MISSING'}
-            </span>
-          </Tooltip>
+          <UnavailableBadge availability={workspace.availability} />
         ) : (
           <Tooltip content="New agent in this project" side="bottom" align="end">
             <button

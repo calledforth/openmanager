@@ -7,8 +7,10 @@ Missing includes paths replaced by a file; inaccessible includes permission
 failures and roots replaced by a symlink to another location. Which folder the
 environment was started from does not matter: a registered project stays
 available across a restart from anywhere.
-Unavailable projects and their sessions stay in the sidebar. Opening a session
-shows an error with **Try again**; restoring access lets the same session reopen.
+Unavailable projects and their sessions stay in the sidebar. The project header
+says which it is: **MISSING** for a folder that is gone or moved, **NO ACCESS**
+for one this environment cannot read. Opening a session shows an error with
+**Try again**; restoring access lets the same session reopen.
 
 ## The error and what the UI does with it
 
@@ -22,7 +24,8 @@ The session's server-owned lifecycle status (docs/session-status.md) is not
 touched — nothing ran, so nothing failed. The sidebar instead derives the row
 state from the workspace: a session in an unavailable project keeps its status
 and is marked unavailable, and the chat pane shows the recovery panel rather
-than a spinner. That panel names the folder, explains the on-disk fix, and
+than a spinner. That panel names the folder, says whether it is missing or
+unreadable and the on-disk fix for that cause, and
 offers **Try again** and a confirming **Delete session** so a session whose
 folder is never coming back can still be cleared.
 

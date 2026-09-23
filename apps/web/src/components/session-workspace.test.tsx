@@ -136,7 +136,13 @@ describe('session workspace', () => {
       })
       expect(await screen.findByRole('alert')).toHaveTextContent('Project folder unavailable')
       expect(screen.getByText('Sidebar move')).toBeInTheDocument()
-      expect(screen.getByText(availability.toUpperCase())).toBeInTheDocument()
+      // The badge names the cause, since the two need different fixes.
+      expect(
+        screen.getByText(availability === 'missing' ? 'MISSING' : 'NO ACCESS'),
+      ).toBeInTheDocument()
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        availability === 'missing' ? 'missing or was moved' : 'Permission denied',
+      )
       // The row stays listed and says why it cannot run, without claiming a
       // lifecycle status the environment never reported.
       expect(screen.getByLabelText('Project folder unavailable')).toBeInTheDocument()

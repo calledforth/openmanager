@@ -24,6 +24,7 @@ import {
   type SubscriptionScope,
   type Thread,
   UploadResultSchema,
+  WorkspaceUnavailableDetailsSchema,
 } from '@openmanager/protocol'
 import { z } from 'zod'
 import { EnvironmentClientError, isEnvironmentClientError } from './errors'
@@ -236,6 +237,15 @@ async function artifactTransferError(
  * mock uses. Commands issued while connecting wait for the handshake; commands
  * issued while closed reject immediately.
  */
+/** The cause the environment attached to a `workspace_unavailable` refusal.
+ * It is authoritative for this failure: the cached workspace may still say
+ * `available` when the folder was found unusable on open. */
+function unavailableCause(error: unknown): { availability?: 'missing' | 'inaccessible' } {
+  if (!isEnvironmentClientError(error) || error.code !== 'workspace_unavailable') return {}
+  const details = WorkspaceUnavailableDetailsSchema.safeParse(error.details)
+  return details.success ? { availability: details.data.availability } : {}
+}
+
 export function createWebSocketEnvironmentClient(
   options: WebSocketEnvironmentClientOptions,
 ): EnvironmentClient {
@@ -1046,6 +1056,7 @@ export function createWebSocketEnvironmentClient(
               message: error instanceof Error ? error.message : 'Could not open this session.',
               // A transport or programming failure is nobody's known code.
               code: isEnvironmentClientError(error) ? error.code : 'internal',
+              ...unavailableCause(error),
             },
           }
         })
