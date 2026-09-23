@@ -14,7 +14,10 @@ import {
 // Version 3 adds `availableCommands` to the session composer selection, which
 // a v2 client's strict schema rejects along with the summary or event around it.
 // Version 4 adds `usage` to the same strict selection, for the same reason.
-export const PROTOCOL_VERSION = 4 as const
+// Version 5 adds `promptCapabilities` to the provider composer profile and
+// `supportsImageInput` to its model rows; both objects are strict, so a v4
+// client would reject every catalog and `provider.catalog.updated` event.
+export const PROTOCOL_VERSION = 5 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema

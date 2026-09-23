@@ -15,7 +15,9 @@ import {
   type CommandEnvelope,
   type ComposerCommandOption,
   type ComposerConfigOption,
+  type ComposerModelOption,
   type ErrorCode,
+  type PromptCapabilities,
   type ProofEvent,
   type ProviderBootstrap,
   type SessionComposerState,
@@ -42,6 +44,7 @@ type RuntimeControl = Pick<
   | 'setMode'
   | 'setConfigOption'
   | 'applyDesiredConfig'
+  | 'modelImageInputSupport'
 >
 
 type ComposerEventName =
@@ -102,8 +105,63 @@ export function createComposerService(
   ) => {
     if (Object.keys(patch).length === 0) return
     const before = store.getProfile(providerId)
-    const profile = store.upsertProfile(providerId, patch)
+    const profile = store.upsertProfile(providerId, {
+      ...patch,
+      // A relisting replaces the rows but must not forget what was learned
+      // about them: image support describes the model, not the session that
+      // listed it, and no session listing ever carries it.
+      ...(patch.availableModels
+        ? { availableModels: withKnownImageInput(patch.availableModels, before?.availableModels) }
+        : {}),
+    })
     if (profile.updatedAt !== before?.updatedAt) publish('provider.catalog.updated', { profile })
+    if (patch.availableModels) enrichModelImageInput(providerId)
+  }
+
+  // One enrichment per provider at a time. A catalog write that lands while
+  // one runs marks it dirty, so the pass repeats against the new rows rather
+  // than a second pass racing the first over the same profile.
+  const enrichments = new Map<string, { dirty: boolean }>()
+  const enrichModelImageInput = (providerId: string) => {
+    const running = enrichments.get(providerId)
+    if (running) {
+      running.dirty = true
+      return
+    }
+    const state = { dirty: false }
+    enrichments.set(providerId, state)
+    void (async () => {
+      try {
+        do {
+          state.dirty = false
+          await enrichModelImageInputOnce(providerId)
+        } while (state.dirty)
+      } catch {
+        // Model metadata is advisory; an unanswerable lookup leaves rows unknown.
+      } finally {
+        enrichments.delete(providerId)
+      }
+    })()
+  }
+
+  const enrichModelImageInputOnce = async (providerId: string) => {
+    const pending = (store.getProfile(providerId)?.availableModels ?? [])
+      .filter((model) => model.supportsImageInput === undefined)
+      .map((model) => model.modelId)
+    if (pending.length === 0) return
+    const answers = await runtime.modelImageInputSupport(providerId, pending)
+    // Merged against the profile as it is *now*, not the snapshot the ids
+    // came from: a session may have relisted the catalog while the CLI ran.
+    const current = store.getProfile(providerId)?.availableModels
+    if (!current) return
+    let changed = false
+    const availableModels = current.map((model) => {
+      const answer = answers.get(model.modelId)
+      if (model.supportsImageInput !== undefined || typeof answer !== 'boolean') return model
+      changed = true
+      return { ...model, supportsImageInput: answer }
+    })
+    if (changed) writeProfile(providerId, { availableModels })
   }
 
   const writePreference = (
@@ -146,6 +204,7 @@ export function createComposerService(
     providerId: string,
     catalog: {
       agentInfo?: Parameters<ComposerStore['upsertProfile']>[1]['agentInfo']
+      promptCapabilities?: Parameters<ComposerStore['upsertProfile']>[1]['promptCapabilities']
       models?: Parameters<typeof modelPatch>[0]
       modes?: Parameters<typeof modePatch>[0]
     },
@@ -153,6 +212,9 @@ export function createComposerService(
     const current = store.getProfile(providerId)
     writeProfile(providerId, {
       ...(catalog.agentInfo ? { agentInfo: catalog.agentInfo } : {}),
+      // Unlike the catalogs, the handshake's answer is never stale relative
+      // to a session's: every process of the provider gives the same one.
+      ...(catalog.promptCapabilities ? { promptCapabilities: catalog.promptCapabilities } : {}),
       ...(current?.availableModels === undefined ? modelPatch(catalog.models) : {}),
       ...(current?.availableModes === undefined ? modePatch(catalog.modes) : {}),
     })
@@ -188,6 +250,7 @@ export function createComposerService(
       try {
         fillProfileFromCatalog(providerId, {
           agentInfo: probe.result.agentInfo,
+          promptCapabilities: promptCapabilitiesPatch(probe.result.promptCapabilities),
           models: probe.models,
           modes: probe.modes,
         })
@@ -224,8 +287,15 @@ export function createComposerService(
 
     onRuntimeEvent(event: Parameters<HostDeps['emitEvent']>[0]) {
       try {
-        if (event.event === 'initialized' && event.data.agentInfo) {
-          writeProfile(event.providerId, { agentInfo: event.data.agentInfo })
+        if (event.event === 'initialized') {
+          // Every process, probe or live session, answers this at handshake;
+          // the composer gates image attach on it, so it is recorded from
+          // whichever process speaks first and refreshed by each one after.
+          const promptCapabilities = promptCapabilitiesPatch(event.data.promptCapabilities)
+          writeProfile(event.providerId, {
+            ...(event.data.agentInfo ? { agentInfo: event.data.agentInfo } : {}),
+            ...(promptCapabilities ? { promptCapabilities } : {}),
+          })
           return
         }
         const sessionId = options.sessionForThread?.(event.threadId)
@@ -520,6 +590,7 @@ function modelPatch(models: {
     effortLevels?: string[]
     supportsFastMode?: boolean
     supportsAutoMode?: boolean
+    supportsImageInput?: boolean
   }>
 } | undefined) {
   const availableModels = models?.availableModels
@@ -535,7 +606,44 @@ function modelPatch(models: {
       ...(model.effortLevels?.length ? { effortLevels: model.effortLevels } : {}),
       ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
       ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
+      // Tri-state, so `false` survives: it is the answer that blocks an attach.
+      ...(model.supportsImageInput !== undefined
+        ? { supportsImageInput: model.supportsImageInput }
+        : {}),
     })),
+  }
+}
+
+/** Rows as relisted, each keeping the image answer its id already had. */
+function withKnownImageInput(
+  next: ComposerModelOption[],
+  previous: ComposerModelOption[] | undefined,
+): ComposerModelOption[] {
+  if (!previous?.length) return next
+  const known = new Map(
+    previous.flatMap((model) =>
+      model.supportsImageInput === undefined ? [] : [[model.modelId, model.supportsImageInput]],
+    ),
+  )
+  return next.map((model) => {
+    const answer = known.get(model.modelId)
+    return model.supportsImageInput === undefined && answer !== undefined
+      ? { ...model, supportsImageInput: answer }
+      : model
+  })
+}
+
+/** The wire triple, or nothing when the runtime had no handshake answer. A
+ * Claude probe reports a constant; an ACP one reports what `initialize`
+ * said, already normalised so an omitted field is `false`. */
+function promptCapabilitiesPatch(
+  capabilities: { image?: boolean; audio?: boolean; embeddedContext?: boolean } | undefined,
+): PromptCapabilities | undefined {
+  if (!capabilities) return undefined
+  return {
+    image: capabilities.image === true,
+    audio: capabilities.audio === true,
+    embeddedContext: capabilities.embeddedContext === true,
   }
 }
 

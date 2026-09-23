@@ -18,6 +18,9 @@ export interface ComposerModelOption {
   /** Whether the `auto` permission mode works here. The CLI hard-rejects it
    * otherwise, so the mode picker filters rather than letting the write fail. */
   supportsAutoMode?: boolean
+  /** Whether the model can read an image in a prompt. Absent is "nobody could
+   * say", which the composer lets through; `false` blocks the attach. */
+  supportsImageInput?: boolean
 }
 
 export interface ComposerModeOption {
@@ -26,11 +29,20 @@ export interface ComposerModeOption {
   description?: string
 }
 
+/** What a provider's process accepts in a prompt, as advertised at handshake. */
+export interface ComposerPromptCapabilities {
+  image: boolean
+  audio: boolean
+  embeddedContext: boolean
+}
+
 export interface ProviderComposerProfile {
   agentInfo?: {
     name?: string
     version?: string
   }
+  /** Absent until a process of this provider has completed a handshake. */
+  promptCapabilities?: ComposerPromptCapabilities
   availableModels?: ComposerModelOption[]
   availableModes?: ComposerModeOption[]
   defaultModelId?: string
@@ -184,6 +196,9 @@ export function withProviderCatalog(
           ...(model.effortLevels?.length ? { effortLevels: [...model.effortLevels] } : {}),
           ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
           ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
+          ...(model.supportsImageInput !== undefined
+            ? { supportsImageInput: model.supportsImageInput }
+            : {}),
         }),
       )
   const modes = profile?.availableModes?.length

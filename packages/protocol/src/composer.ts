@@ -32,12 +32,30 @@ export const ComposerModelOptionSchema = z.strictObject({
   effortLevels: z.array(z.string().min(1).max(128)).max(64).optional(),
   supportsFastMode: z.boolean().optional(),
   supportsAutoMode: z.boolean().optional(),
+  /**
+   * Whether the model can read an image in a prompt. Absent means the
+   * environment could not find out (ACP catalogs carry no such flag), which
+   * the composer treats as "let it through"; `false` blocks the attach.
+   */
+  supportsImageInput: z.boolean().optional(),
 })
 
 export const ComposerModeOptionSchema = z.strictObject({
   id: z.string().min(1).max(1_024),
   name: z.string().min(1).max(512),
   description: z.string().max(8_192).optional(),
+})
+
+/**
+ * The prompt content a provider accepts, as its process advertised at
+ * `initialize`. Every field is required: an agent that omits one has said
+ * `false`, and the environment records that answer rather than an absence a
+ * client would keep waiting on.
+ */
+export const PromptCapabilitiesSchema = z.strictObject({
+  image: z.boolean(),
+  audio: z.boolean(),
+  embeddedContext: z.boolean(),
 })
 
 export const ProviderComposerProfileSchema = z.strictObject({
@@ -48,6 +66,8 @@ export const ProviderComposerProfileSchema = z.strictObject({
       version: z.string().max(512).optional(),
     })
     .optional(),
+  /** Absent until a process of this provider has completed a handshake. */
+  promptCapabilities: PromptCapabilitiesSchema.optional(),
   availableModels: z.array(ComposerModelOptionSchema).max(2_048).optional(),
   availableModes: z.array(ComposerModeOptionSchema).max(256).optional(),
   defaultModelId: z.string().min(1).max(1_024).optional(),
@@ -122,6 +142,7 @@ export const ComposerResponseSchemas = {
 
 export type ComposerModelOption = z.infer<typeof ComposerModelOptionSchema>
 export type ComposerModeOption = z.infer<typeof ComposerModeOptionSchema>
+export type PromptCapabilities = z.infer<typeof PromptCapabilitiesSchema>
 export type ProviderComposerProfile = z.infer<typeof ProviderComposerProfileSchema>
 export type WorkspaceComposerPreference = z.infer<typeof WorkspaceComposerPreferenceSchema>
 export type ProviderCatalogEntry = z.infer<typeof ProviderCatalogEntrySchema>

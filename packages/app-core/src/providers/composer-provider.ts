@@ -65,6 +65,9 @@ export function toAcpModels(models: SessionModels): AcpSessionRuntimeState['mode
       ...(model.effortLevels?.length ? { effortLevels: model.effortLevels } : {}),
       ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
       ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
+      ...(model.supportsImageInput !== undefined
+        ? { supportsImageInput: model.supportsImageInput }
+        : {}),
     })),
   }
 }

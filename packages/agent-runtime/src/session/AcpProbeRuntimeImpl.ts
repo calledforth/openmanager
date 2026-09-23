@@ -4,6 +4,7 @@ import type { BackendEvent, BackendRoute } from '../backends/Backend.js'
 import { AuthRequiredError } from '../core/errors.js'
 import type { HostDeps } from '../host.js'
 import {
+  acpCommandBin,
   requireAcpConfig,
   type AcpProviderConfig,
   type ProviderConfig,
@@ -26,6 +27,7 @@ import {
   initializeRequest,
   isAuthRequired,
   listSessionsPaged,
+  normalizePromptCapabilities,
   object,
   routeEvent,
   sessionListAdvertised,
@@ -107,13 +109,13 @@ export class AcpProbeRuntimeImpl implements ProbeRuntime {
     }
     const advertised = sessionListAdvertised(response, this.deps.config.capabilities.canListSessions)
     const methods = authMethods(response)
-    const capabilities = object(response.agentCapabilities)
+    const promptCapabilities = normalizePromptCapabilities(response.agentCapabilities)
     this.emit(
       routeEvent(this.route(), undefined, 'lifecycle', 'initialized', {
         protocolVersion: string(response.protocolVersion),
         agentInfo: agentInfo(response),
         capabilities: { ...this.deps.config.capabilities, canListSessions: advertised },
-        promptCapabilities: capabilities.promptCapabilities,
+        promptCapabilities,
         authMethods: methods,
       }),
     )
@@ -122,7 +124,7 @@ export class AcpProbeRuntimeImpl implements ProbeRuntime {
       protocolVersion: string(response.protocolVersion),
       authMethods: methods,
       authenticated: true,
-      promptCapabilities: capabilities.promptCapabilities as ProbeResult['promptCapabilities'],
+      promptCapabilities,
       sessionListAdvertised: advertised,
       loadSessionAdvertised: this.deps.config.capabilities.canLoadSession,
     }
@@ -183,10 +185,7 @@ export class AcpProbeRuntimeImpl implements ProbeRuntime {
   private async connect(): Promise<void> {
     if (this.transport) return
     const command = this.deps.config.command
-    const bin =
-      process.env[command.envOverride] ??
-      (command.fallbackEnvOverride ? process.env[command.fallbackEnvOverride] : undefined) ??
-      command.bin
+    const bin = acpCommandBin(command)
     // A probe answers nothing: it never owns a session, so any agent-initiated
     // traffic is declined rather than routed.
     const client: acp.Client = {

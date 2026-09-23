@@ -23,7 +23,8 @@ describe('composer SQLite store', () => {
     const first = openComposerStore(directory)
     first.upsertProfile('cursor', {
       agentInfo: { name: 'Cursor Agent', version: '1.0' },
-      availableModels: [{ modelId: 'opus', name: 'Opus' }],
+      promptCapabilities: { image: true, audio: false, embeddedContext: false },
+      availableModels: [{ modelId: 'opus', name: 'Opus', supportsImageInput: false }],
       defaultModelId: 'opus',
     })
     first.setPreference('workspace-1', 'cursor', {
@@ -37,7 +38,8 @@ describe('composer SQLite store', () => {
     expect(reopened.getProfile('cursor')).toMatchObject({
       providerId: 'cursor',
       agentInfo: { name: 'Cursor Agent', version: '1.0' },
-      availableModels: [{ modelId: 'opus', name: 'Opus' }],
+      promptCapabilities: { image: true, audio: false, embeddedContext: false },
+      availableModels: [{ modelId: 'opus', name: 'Opus', supportsImageInput: false }],
       defaultModelId: 'opus',
     })
     expect(reopened.getPreference('workspace-1', 'cursor')).toEqual({

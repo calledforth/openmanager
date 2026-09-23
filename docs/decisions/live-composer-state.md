@@ -51,6 +51,16 @@ The environment composer provider (`packages/app-core/src/providers/environment-
 - Mode is the exception, since the server does not apply a remembered mode. A draft whose mode is not the provider's default launches as `session.create` (no first message), `composer.mode.set`, `turn.send`. If the switch fails the session is deleted and the draft stays open: prompting in agent mode when plan was asked for is not a fallback.
 - A provider whose health blocks the composer is listed in the draft picker but cannot be chosen.
 
+## What a provider and its models accept in a prompt
+
+Added 2026-09-23 for [CAL-196](https://linear.app/calledforth/issue/CAL-196/tell-the-web-composer-which-providers-and-models-accept-images). The composer refuses an image until it knows the provider takes image prompts and the model can read them. Desktop learned both through Electron; the web composer had no source and waited forever.
+
+Both answers are learned facts, so both ride the provider profile and `provider.catalog.updated`, not the static provider capabilities. The profile is what the environment last learned from a real process; the capabilities object is copied from config and never changes after boot. Putting a learned value there would have needed a second update path and a second broadcast for something the profile already persists, deduplicates and replays. Protocol version 5 carries the two fields.
+
+- `profile.promptCapabilities` is the handshake's answer: `image`, `audio`, `embeddedContext`, all required. The runtime normalises every ACP `initialize` response so an omitted capability is recorded as `false` (as ACP defines it) rather than forwarded as "nobody said", which is what left the composer checking forever. Every process of a provider answers it, probe or live session, so the health monitor's boot sweep fills it in for every installed provider before anyone opens a composer, and it survives restarts in `provider_profiles.prompt_capabilities_json`.
+- `availableModels[].supportsImageInput` is per model and tri-state: `true`, `false`, or absent for "nobody could say". Absent lets the image through, exactly as desktop treats every provider it cannot ask; only `false` blocks. ACP catalogs carry no such flag, so the server asks the provider's own CLI out of band (`opencode models <provider> --verbose --pure`, the lookup desktop ran from Electron, now shared from the runtime package) after any catalog write, one listing per upstream provider prefix, cached for the life of the server. The answer is merged into the profile as it is *by then*, by model id, because a session may have relisted the catalog while the CLI ran; a write that lands mid-lookup marks the pass dirty so it repeats. A relisting keeps the flags its ids already had, since the flag describes the model and no session listing ever carries it.
+- The composer reads the model answer off the model row first, so on web it is reactive by construction, and only asks the host's own lookup (desktop's IPC) when the row is silent. No web-specific hook: a function answering from the catalog would go stale the moment an enrichment landed after render.
+
 ## Not covered here
 
 Writing a draft pick to the preference as it is made, and remembering the last provider per workspace, are CAL-180.

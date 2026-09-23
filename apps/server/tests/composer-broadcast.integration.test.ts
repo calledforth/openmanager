@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { FakeClaudeSdk, FakeConnectionFactory } from '@agentpack/runtime/testing'
 import {
+  ComposerResponseSchemas,
+  PROVIDER_CATALOG_CAPABILITY,
   type DurableEvent,
   type ReplayResponse,
   type SubscriptionScope,
@@ -114,6 +116,58 @@ describe('composer state across clients', () => {
       composerOf(records, sessionId).some((composer) => composer.modeId === 'agent'),
     )
     expect(composerOf(switched, sessionId).at(-1)).toMatchObject({ modeId: 'agent' })
+  })
+
+  it('tells clients what a provider accepts in a prompt, from the handshake alone', async () => {
+    // Nothing below the socket is faked: the fake CLI answers `initialize`,
+    // the runtime normalises it, the composer service records it, and the
+    // catalog command reads it back the way the web composer will.
+    const connections = new FakeConnectionFactory({
+      initialize: async () => ({
+        protocolVersion: 1,
+        authMethods: [],
+        agentCapabilities: { promptCapabilities: { image: true } },
+      }),
+      newSession: async () => ({ sessionId: 'stub-session', modes: MODES }),
+    })
+    let workspaceRoot = ''
+    const host = await startProtocolHost({
+      runtimeOptions: {
+        connections,
+        claudeSdk: new FakeClaudeSdk(),
+        health: { schedule: () => ({ cancel() {} }) },
+      },
+      resolveWorkspace: () => ({ providerId: 'cursor', cwd: workspaceRoot }),
+    })
+    workspaceRoot = host.workspaceRoot
+    const client = await connectProtocol(host)
+    await handshake(client)
+    await expectCommand(
+      client,
+      'session.create',
+      {
+        environmentId: host.server.identity.environmentId,
+        providerId: 'cursor',
+        workspaceId: host.workspaceId,
+      },
+      'create',
+    )
+    const promptCapabilitiesOf = async () => {
+      const requestId = client.command(PROVIDER_CATALOG_CAPABILITY, null)
+      const listed = ComposerResponseSchemas[PROVIDER_CATALOG_CAPABILITY].parse(
+        await nextResponse(client, requestId),
+      )
+      return listed.payload.providers.find((provider) => provider.id === 'cursor')?.profile
+        ?.promptCapabilities
+    }
+    const deadline = Date.now() + 15_000
+    let capabilities = await promptCapabilitiesOf()
+    while (!capabilities && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25))
+      capabilities = await promptCapabilitiesOf()
+    }
+    // The omitted fields are answered, not left for a client to wait on.
+    expect(capabilities).toEqual({ image: true, audio: false, embeddedContext: false })
   })
 
   it('restores the current selection on reconnect, from replay and from a snapshot', async () => {

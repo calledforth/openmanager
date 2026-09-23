@@ -43,6 +43,7 @@ import {
   type OpenCodeQuestionRequest,
 } from '../providers/opencode-questions.js'
 import {
+  acpCommandBin,
   requireAcpConfig,
   type AcpProviderConfig,
   type ProviderConfig,
@@ -86,6 +87,7 @@ import {
   modelListingFromConfig,
   normalizeModeListing,
   normalizeModelListing,
+  normalizePromptCapabilities,
   number,
   object,
   routeEvent,
@@ -326,12 +328,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
   }
 
   private async connect(): Promise<void> {
-    const command =
-      process.env[this.config.command.envOverride] ??
-      (this.config.command.fallbackEnvOverride
-        ? process.env[this.config.command.fallbackEnvOverride]
-        : undefined) ??
-      this.config.command.bin
+    const command = acpCommandBin(this.config.command)
     this.nativeQuestions =
       this.config.quirks.nativeQuestions === 'opencode' ? await OpenCodeQuestions.create() : null
     const args = this.nativeQuestions
@@ -407,7 +404,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
           ...this.config.capabilities,
           canListSessions: this.sessionListAdvertisedValue,
         },
-        promptCapabilities: object(response.agentCapabilities).promptCapabilities,
+        promptCapabilities: normalizePromptCapabilities(response.agentCapabilities),
         authMethods: methods,
       }),
     )

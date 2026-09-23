@@ -1,8 +1,33 @@
 import type { ProviderCapabilities, ProviderId } from '@agentpack/contract'
 import type { ExtensionHandlers, SubtaskAdapter } from '../backends/acp/extensions.js'
+import type { HostDeps } from '../host.js'
 import { claude } from './claude.js'
 import { cursor } from './cursor.js'
 import { opencode } from './opencode.js'
+
+/** Answers "can this model read an image?" for a batch of model ids, outside
+ * any session. `true`/`false` is the provider's word; `null` is "it could not
+ * say" for that id, which the composer treats as let-it-through. An id the
+ * map does not mention at all is the same as `null`. Implementations own
+ * their caching: a runtime builds one lookup per provider and keeps it. */
+export type ModelImageInputLookup = (
+  modelIds: readonly string[],
+) => Promise<ReadonlyMap<string, boolean | null>>
+
+/** The binary an ACP provider is spawned as: the env override, its fallback,
+ * then the configured name. One rule for sessions, probes and any out-of-band
+ * CLI call, so a developer pointing `ACP_OPENCODE_BIN` at a build gets that
+ * build everywhere and never a mix. */
+export function acpCommandBin(
+  command: Pick<AcpProviderConfig['command'], 'bin' | 'envOverride' | 'fallbackEnvOverride'>,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return (
+    env[command.envOverride] ??
+    (command.fallbackEnvOverride ? env[command.fallbackEnvOverride] : undefined) ??
+    command.bin
+  )
+}
 
 /** What every provider carries, whatever it is reached over.
  *
@@ -34,6 +59,14 @@ export type AcpProviderConfig = ProviderConfigBase & {
   }
   extensions: ExtensionHandlers
   subtasks?: SubtaskAdapter
+  /** Per-model facts the ACP catalog cannot carry, answered by the provider's
+   * own CLI rather than over the wire. Optional: a provider without one
+   * reports every model as unknown, and the composer lets images through. */
+  models?: {
+    /** Built once per runtime, with the binary the runtime resolved, so the
+     * lookup's cache lives as long as the runtime and tests get a fresh one. */
+    imageInput: (deps: { command: string; log: HostDeps['log'] }) => ModelImageInputLookup
+  }
 }
 
 /** A provider driven in-process through the Anthropic Agent SDK rather than

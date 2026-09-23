@@ -403,6 +403,38 @@ describe('AgentRuntime desired config', () => {
   })
 })
 
+describe('AgentRuntime model image input', () => {
+  it('asks the provider hook once per runtime with the resolved binary, and nobody else', async () => {
+    const lookup = vi.fn(async (ids: readonly string[]) => new Map(ids.map((id) => [id, id.endsWith('vision')])))
+    const imageInput = vi.fn(() => lookup)
+    const withHook: Record<string, ProviderConfig> = {
+      ...configs,
+      opencode: { ...opencode, models: { imageInput } },
+    }
+    const runtime = new AgentRuntime({ emitEvent: vi.fn(), log: vi.fn() }, withHook as typeof configs, {
+      connections: new FakeConnectionFactory({}),
+    })
+    await expect(runtime.modelImageInputSupport('opencode', ['a/vision', 'a/text'])).resolves.toEqual(
+      new Map([
+        ['a/vision', true],
+        ['a/text', false],
+      ]),
+    )
+    await runtime.modelImageInputSupport('opencode', ['a/vision'])
+    // Built once, with the binary sessions and probes would spawn.
+    expect(imageInput).toHaveBeenCalledTimes(1)
+    expect(imageInput).toHaveBeenCalledWith(
+      expect.objectContaining({ command: process.env.ACP_OPENCODE_BIN ?? 'opencode' }),
+    )
+    // Providers without a hook, unknown providers and empty asks answer nothing.
+    await expect(runtime.modelImageInputSupport('cursor', ['x/y'])).resolves.toEqual(new Map())
+    await expect(runtime.modelImageInputSupport('claude', ['sonnet'])).resolves.toEqual(new Map())
+    await expect(runtime.modelImageInputSupport('nope', ['x/y'])).resolves.toEqual(new Map())
+    await expect(runtime.modelImageInputSupport('opencode', [])).resolves.toEqual(new Map())
+    expect(lookup).toHaveBeenCalledTimes(2)
+  })
+})
+
 describe('AgentRuntime provider probes', () => {
   it('probes in a throwaway process and disposes it', async () => {
     const { runtime, connections, events } = build({
