@@ -69,7 +69,9 @@ export function MessageInput() {
   const planState = usePlanStateOptional()
   const pendingPlan = planState?.pendingPlan ?? null
   const planEntries = useSessionPlanEntries()
-  const [modelImageSupport, setModelImageSupport] = useState<boolean | null | undefined>(undefined)
+  const [hostModelImageSupport, setHostModelImageSupport] = useState<boolean | null | undefined>(
+    undefined,
+  )
 
   const disabled =
     !activeWorkspacePath || pendingDraftSessionStart || (!activeSessionId && !isSessionDraftOpen)
@@ -99,6 +101,9 @@ export function MessageInput() {
     ...(model.effortLevels?.length ? { effortLevels: model.effortLevels } : {}),
     ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
     ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
+    ...(model.supportsImageInput !== undefined
+      ? { supportsImageInput: model.supportsImageInput }
+      : {}),
   }))
   // Provider metadata is the last resort behind runtime state and chrome, and
   // the only one that does not require the provider to have been used already.
@@ -241,24 +246,34 @@ export function MessageInput() {
   // Without an uploader there is nowhere for an image to go, whatever the model says.
   const canUploadImages = !!uploadAttachments
 
+  // The catalog answers first: an environment that has asked the provider's
+  // CLI puts the answer on the model row, where it is reactive by construction
+  // (a row learned after this render re-renders this). Only when the row is
+  // silent is the host's own lookup asked — desktop's IPC — and only a host
+  // that has one; without either, the model is unknown and lets images through.
+  const catalogImageSupport = [
+    modelOptions.find((model) => model.id === currentModelId),
+    capabilityCatalog.find((model) => model.id === currentModelId),
+  ]
+    .map((model) => model?.supportsImageInput)
+    .find((support) => support !== undefined)
+  const askHost = catalogImageSupport === undefined && !!currentModelId && !!getModelImageSupport
   useEffect(() => {
+    if (!askHost) return
     let cancelled = false
-    setModelImageSupport(undefined)
-    if (!currentModelId || !getModelImageSupport) {
-      setModelImageSupport(null)
-      return
-    }
-    getModelImageSupport(currentProviderId, currentModelId)
+    setHostModelImageSupport(undefined)
+    getModelImageSupport!(currentProviderId, currentModelId)
       .then((supported) => {
-        if (!cancelled) setModelImageSupport(supported)
+        if (!cancelled) setHostModelImageSupport(supported)
       })
       .catch(() => {
-        if (!cancelled) setModelImageSupport(null)
+        if (!cancelled) setHostModelImageSupport(null)
       })
     return () => {
       cancelled = true
     }
-  }, [currentModelId, currentProviderId, getModelImageSupport])
+  }, [askHost, currentModelId, currentProviderId, getModelImageSupport])
+  const modelImageSupport = catalogImageSupport ?? (askHost ? hostModelImageSupport : null)
 
   const uploadAndSend = async (text: string, drafts: DraftImageAttachment[]) => {
     // Questions never reach here: while one is pending the composer is replaced

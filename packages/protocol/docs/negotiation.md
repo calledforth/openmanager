@@ -5,7 +5,7 @@ environment. Its protocol-owned fields are:
 
 ```json
 {
-  "protocolVersion": 4,
+  "protocolVersion": 5,
   "environmentId": "env-local",
   "capabilities": ["session.read", "turn.send"]
 }
@@ -33,7 +33,10 @@ ignored or repeatedly encountered during replay. Version 3 adds
 `availableCommands` to the session composer selection: that object is strict, so
 a version-2 peer would reject every session summary and
 `session.composer.updated` event that carries the new field. Version 4 adds
-`usage` to the same selection, for the same reason.
+`usage` to the same selection, for the same reason. Version 5 adds
+`promptCapabilities` to the provider composer profile and `supportsImageInput`
+to its model rows: both objects are strict, so a version-4 peer would reject
+every `provider.catalog.get` response and `provider.catalog.updated` event.
 
 Call `evaluateBootstrap` with the parsed HTTP body and the capabilities required
 by the current client path:
@@ -74,7 +77,7 @@ capabilities required for that connection:
   "requestId": "handshake-1",
   "name": "protocol.handshake",
   "payload": {
-    "protocolVersion": 4,
+    "protocolVersion": 5,
     "requiredCapabilities": ["session.read"]
   }
 }

@@ -6,6 +6,7 @@ import type {
   ContentBlock,
   ModeListing,
   ModelListing,
+  PromptCapabilities,
   ProviderSessionInfo,
   SessionConfigOption,
   ToolCallContent,
@@ -84,6 +85,23 @@ export type SessionInitialState = {
   models?: ModelListing
   modes?: ModeListing
   configOptions: SessionConfigOption[]
+}
+
+/** The prompt content an agent accepts, read off its `initialize` response.
+ *
+ * Always a full triple after a successful handshake. ACP defines every
+ * omitted prompt capability as `false`, so an agent that sends no
+ * `promptCapabilities` at all has answered "text only" — and forwarding the
+ * raw `undefined` instead left every composer waiting on an answer that had
+ * already arrived. A `true` has to be a literal boolean: a truthy object or
+ * string in that slot is a malformed agent, not permission to attach. */
+export function normalizePromptCapabilities(agentCapabilities: unknown): PromptCapabilities {
+  const capabilities = object(object(agentCapabilities).promptCapabilities)
+  return {
+    image: capabilities.image === true,
+    audio: capabilities.audio === true,
+    embeddedContext: capabilities.embeddedContext === true,
+  }
 }
 
 export function normalizeModelListing(value: unknown): ModelListing {

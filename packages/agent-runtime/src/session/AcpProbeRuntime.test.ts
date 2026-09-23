@@ -66,6 +66,38 @@ describe('AcpProbeRuntime handshake', () => {
     })
   })
 
+  it('answers every prompt capability after a handshake, reading omitted ones as false', async () => {
+    // ACP defines each omitted prompt capability as `false`. An agent that
+    // sends none has answered "text only"; the composer must not wait on it.
+    const silent = build({
+      initialize: async () => ({ protocolVersion: 1, authMethods: [] }),
+    })
+    await expect(silent.probe.probe()).resolves.toMatchObject({
+      promptCapabilities: { image: false, audio: false, embeddedContext: false },
+    })
+    expect(silent.events.find((event) => event.event === 'initialized')).toMatchObject({
+      data: { promptCapabilities: { image: false, audio: false, embeddedContext: false } },
+    })
+    const partial = build({
+      initialize: async () => CURSOR_INITIALIZE,
+      authenticate: async () => ({}),
+    })
+    await expect(partial.probe.probe()).resolves.toMatchObject({
+      promptCapabilities: { image: true, audio: false, embeddedContext: false },
+    })
+    // Only a literal boolean grants a capability; a truthy string does not.
+    const malformed = build({
+      initialize: async () => ({
+        protocolVersion: 1,
+        authMethods: [],
+        agentCapabilities: { promptCapabilities: { image: 'yes', audio: 1 } },
+      }),
+    })
+    await expect(malformed.probe.probe()).resolves.toMatchObject({
+      promptCapabilities: { image: false, audio: false, embeddedContext: false },
+    })
+  })
+
   it('emits auth_required and rejects when the provider does not tolerate auth failure', async () => {
     const { probe, events } = build({
       initialize: async () => CURSOR_INITIALIZE,

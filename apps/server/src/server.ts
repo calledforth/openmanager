@@ -486,6 +486,7 @@ export async function startServer(config: ServerConfig) {
     await sockets.close()
     stopHealthEvents()
     providerService.stop()
+    composerService.stop()
     await runtime.shutdown()
     stopRetention()
     uploads.close()
@@ -553,6 +554,8 @@ export async function startServer(config: ServerConfig) {
         const socketClose = sockets.close()
         // Before the listener: an in-flight PUT is cut and its partial file removed.
         uploads.close()
+        // Before the store closes: a pending model lookup retry must not fire into it.
+        composerService.stop()
         const httpClose = new Promise<void>((resolve, reject) => {
           server.close((error) => (error ? reject(error) : resolve()))
           server.closeAllConnections()

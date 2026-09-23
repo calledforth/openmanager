@@ -30,7 +30,7 @@ Unknown or stale pong IDs never acknowledge the current ping.
 
 ## Timing
 
-`HEARTBEAT_POLICY` is normative for protocol version 4:
+`HEARTBEAT_POLICY` is normative for protocol version 5:
 
 | Setting                |     Value | Meaning                                                          |
 | ---------------------- | --------: | ---------------------------------------------------------------- |

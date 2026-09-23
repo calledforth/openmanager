@@ -289,7 +289,15 @@ export const proofEvents = [
     payload: {
       profile: {
         providerId: 'claude-code',
-        availableModels: [{ modelId: 'claude-opus', name: 'Opus', effortLevels: ['low', 'high'] }],
+        promptCapabilities: { image: true, audio: false, embeddedContext: false },
+        availableModels: [
+          {
+            modelId: 'claude-opus',
+            name: 'Opus',
+            effortLevels: ['low', 'high'],
+            supportsImageInput: true,
+          },
+        ],
         availableModes: [{ id: 'plan', name: 'Plan' }],
         defaultModelId: 'claude-opus',
         updatedAt: 1,

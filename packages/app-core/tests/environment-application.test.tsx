@@ -881,6 +881,164 @@ describe('the shared application over the environment client', () => {
     ).toBe('blob:attached')
   })
 
+  describe('the image gate reads the environment catalog', () => {
+    const PROVIDER = {
+      id: 'opencode',
+      displayName: 'OpenCode',
+      capabilities: {
+        canSetModel: true,
+        canSetMode: true,
+        canSetConfigOption: true,
+        canDeleteSession: false,
+        canLoadSession: true,
+        canListSessions: false,
+        canCancelPrompt: true,
+        supportsPlans: false,
+        supportsAvailableCommands: true,
+        supportsUsage: true,
+        supportsPermissionRequests: true,
+        supportsAuthentication: true,
+        supportsThoughtStreaming: true,
+        supportsSubtasks: true,
+        supportsExtensions: false,
+        supportsQuestions: true,
+      },
+      health: {
+        summary: 'ready' as const,
+        refreshing: false,
+        install: 'installed' as const,
+        auth: 'authenticated' as const,
+        runtime: { state: 'running' as const, liveProcesses: 1, activeTurns: 0 },
+        lastProbe: null,
+        update: 'current' as const,
+      },
+    }
+    const MODELS = [
+      { modelId: 'anthropic/sonnet', name: 'Sonnet', supportsImageInput: true },
+      { modelId: 'openai/o1', name: 'o1', supportsImageInput: false },
+      { modelId: 'local/llama', name: 'Llama' },
+    ]
+    const profile = (
+      image: boolean,
+      modelId: string,
+    ): NonNullable<NonNullable<MockSeed['providers']>[number]['profile']> => ({
+      providerId: 'opencode',
+      promptCapabilities: { image, audio: false, embeddedContext: false },
+      availableModels: MODELS,
+      defaultModelId: modelId,
+      updatedAt: 1,
+    })
+    /** A seeded session on the given model, with the composer open. */
+    const seed = (
+      providerProfile: ReturnType<typeof profile> | undefined,
+      modelId: string,
+    ): MockSeed => ({
+      ...SEEDED_HISTORY,
+      providers: [providerProfile ? { ...PROVIDER, profile: providerProfile } : PROVIDER],
+      sessions: SEEDED_HISTORY.sessions!.map((entry) => ({
+        ...entry,
+        providerId: 'opencode',
+        session: { ...entry.session, composer: { modelId } },
+      })),
+      activeSessionId: SESSION.sessionId,
+    })
+    const attach = async () => {
+      const input = container.querySelector<HTMLInputElement>('input[type="file"]')!
+      const file = new File(['png'], 'screenshot.png', { type: 'image/png' })
+      Object.defineProperty(input, 'files', { value: [file], configurable: true })
+      await act(() => {
+        input.dispatchEvent(new Event('change', { bubbles: true }))
+      })
+    }
+    const alertText = () => container.querySelector('[role="alert"]')?.textContent ?? null
+    const attached = () => container.querySelector('button[aria-label^="Remove "]') !== null
+
+    beforeEach(() => {
+      URL.createObjectURL = vi.fn(() => 'blob:composer-draft')
+      URL.revokeObjectURL = vi.fn()
+    })
+
+    it('attaches to a vision model of a provider that advertises image prompts', async () => {
+      const client = createMockEnvironmentClient({
+        seed: seed(profile(true, 'anthropic/sonnet'), 'anthropic/sonnet'),
+        respond: () => null,
+      })
+      await render(<App client={client} />)
+      await settle(client)
+      expect(container.textContent).not.toContain('Checking whether')
+      await attach()
+      expect(alertText()).toBeNull()
+      expect(attached()).toBe(true)
+    })
+
+    it('refuses a model the environment says cannot read images', async () => {
+      const client = createMockEnvironmentClient({
+        seed: seed(profile(true, 'openai/o1'), 'openai/o1'),
+        respond: () => null,
+      })
+      await render(<App client={client} />)
+      await settle(client)
+      await attach()
+      expect(alertText()).toBe('o1 cannot read images. Choose a vision-capable model.')
+      expect(attached()).toBe(false)
+    })
+
+    it('lets a model nobody could answer for through, as desktop does', async () => {
+      const client = createMockEnvironmentClient({
+        seed: seed(profile(true, 'local/llama'), 'local/llama'),
+        respond: () => null,
+      })
+      await render(<App client={client} />)
+      await settle(client)
+      await attach()
+      expect(alertText()).toBeNull()
+      expect(attached()).toBe(true)
+    })
+
+    it('says a provider does not advertise image prompts instead of checking forever', async () => {
+      const client = createMockEnvironmentClient({
+        seed: seed(profile(false, 'anthropic/sonnet'), 'anthropic/sonnet'),
+        respond: () => null,
+      })
+      await render(<App client={client} />)
+      await settle(client)
+      await attach()
+      expect(alertText()).toBe('OpenCode does not advertise image prompt support.')
+      expect(attached()).toBe(false)
+    })
+
+    it('waits while the environment has no handshake yet, then follows the pushed profile', async () => {
+      const client = createMockEnvironmentClient({
+        seed: seed(undefined, 'anthropic/sonnet'),
+        respond: () => null,
+      })
+      await render(<App client={client} />)
+      await settle(client)
+      await attach()
+      expect(alertText()).toBe('Checking whether the provider accepts image prompts…')
+      expect(attached()).toBe(false)
+      // The environment's first handshake lands as a catalog event, the same
+      // one a reconnecting client replays; nothing is refetched.
+      await act(() => {
+        client.emit({
+          type: 'event',
+          name: 'provider.catalog.updated',
+          eventId: 'catalog-1',
+          timestamp: new Date().toISOString(),
+          scope: {
+            type: 'environment',
+            environmentId: client.getState().environment!.environmentId,
+          },
+          payload: { profile: profile(true, 'anthropic/sonnet') },
+        })
+      })
+      await settle(client)
+      await attach()
+      expect(alertText()).toBeNull()
+      expect(attached()).toBe(true)
+    })
+  })
+
   it('does not wire a remote stream_chunks store or ownership-driven split', async () => {
     function Probe() {
       const stores = useActiveThreadStores()

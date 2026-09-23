@@ -17,7 +17,13 @@ export type ComposerModelChoice = {
   effortLevels?: string[]
   supportsFastMode?: boolean
   supportsAutoMode?: boolean
+  /** Tri-state on purpose: `false` blocks an image attach, absent lets it
+   * through, so the two must not be folded into one falsy value. */
+  supportsImageInput?: boolean
 }
+
+const imageInput = (model: { supportsImageInput?: boolean }) =>
+  model.supportsImageInput !== undefined ? { supportsImageInput: model.supportsImageInput } : {}
 
 /** The catalog a provider reported at handshake time, before any session.
  *
@@ -38,6 +44,7 @@ export function metadataModelOptions(
     ...(model.effortLevels?.length ? { effortLevels: model.effortLevels } : {}),
     ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
     ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
+    ...imageInput(model),
   }))
 }
 
@@ -91,6 +98,7 @@ export function buildProviderModelGroups(args: {
       ...(model.effortLevels?.length ? { effortLevels: model.effortLevels } : {}),
       ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
       ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
+      ...imageInput(model),
     }))
     const rawModels: ComposerModelChoice[] =
       provider.id === args.currentProviderId
@@ -122,6 +130,7 @@ export function buildProviderModelGroups(args: {
           : {}),
         ...((model.supportsFastMode ?? meta.supportsFastMode) ? { supportsFastMode: true } : {}),
         ...((model.supportsAutoMode ?? meta.supportsAutoMode) ? { supportsAutoMode: true } : {}),
+        ...imageInput({ supportsImageInput: model.supportsImageInput ?? meta.supportsImageInput }),
       }
     })
     const unavailableReason =

@@ -14,6 +14,7 @@ type PreferencePatch = Partial<WorkspaceComposerPreference>
 type ProfileRow = {
   provider_id: string
   agent_info_json: string | null
+  prompt_capabilities_json: string | null
   available_models_json: string | null
   available_modes_json: string | null
   default_model_id: string | null
@@ -32,24 +33,25 @@ export function openComposerStore(dataDir: string) {
   const database = openEnvironmentDatabase(dataDir)
 
   const readProfile = database.prepare(`
-    SELECT provider_id, agent_info_json, available_models_json, available_modes_json,
-           default_model_id, default_mode_id, updated_at
+    SELECT provider_id, agent_info_json, prompt_capabilities_json, available_models_json,
+           available_modes_json, default_model_id, default_mode_id, updated_at
     FROM provider_profiles
     WHERE provider_id = ?
   `)
   const listProfiles = database.prepare(`
-    SELECT provider_id, agent_info_json, available_models_json, available_modes_json,
-           default_model_id, default_mode_id, updated_at
+    SELECT provider_id, agent_info_json, prompt_capabilities_json, available_models_json,
+           available_modes_json, default_model_id, default_mode_id, updated_at
     FROM provider_profiles
     ORDER BY provider_id
   `)
   const writeProfile = database.prepare(`
     INSERT INTO provider_profiles (
-      provider_id, agent_info_json, available_models_json, available_modes_json,
-      default_model_id, default_mode_id, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      provider_id, agent_info_json, prompt_capabilities_json, available_models_json,
+      available_modes_json, default_model_id, default_mode_id, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(provider_id) DO UPDATE SET
       agent_info_json = excluded.agent_info_json,
+      prompt_capabilities_json = excluded.prompt_capabilities_json,
       available_models_json = excluded.available_models_json,
       available_modes_json = excluded.available_modes_json,
       default_model_id = excluded.default_model_id,
@@ -105,6 +107,7 @@ export function openComposerStore(dataDir: string) {
       writeProfile.run(
         next.providerId,
         json(next.agentInfo),
+        json(next.promptCapabilities),
         json(next.availableModels),
         json(next.availableModes),
         next.defaultModelId ?? null,
@@ -147,6 +150,9 @@ function profileFromRow(row: ProfileRow): ProviderComposerProfile {
   return ProviderComposerProfileSchema.parse({
     providerId: row.provider_id,
     ...(row.agent_info_json ? { agentInfo: JSON.parse(row.agent_info_json) } : {}),
+    ...(row.prompt_capabilities_json
+      ? { promptCapabilities: JSON.parse(row.prompt_capabilities_json) }
+      : {}),
     ...(row.available_models_json
       ? { availableModels: JSON.parse(row.available_models_json) }
       : {}),

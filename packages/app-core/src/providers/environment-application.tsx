@@ -13,6 +13,7 @@ import {
   type PlanReviewOutcome,
   type ProviderId,
   type ProviderMetadata,
+  type PromptCapabilities,
   type QuestionOutcome,
   type PermissionOption,
 } from '@agentpack/contract'
@@ -91,7 +92,6 @@ import { providerHealthReportFromWire } from '../lib/provider-health-view'
 const DEFAULT_PROVIDER_ID: ProviderId = 'opencode'
 const COLLAPSED_WORKSPACES_KEY = 'openmanager.sidebar.collapsed-workspaces'
 
-const EMPTY_RECORD = {}
 /** Stable identity: an inline callback here re-renders every message row. */
 const noop = () => undefined
 const EMPTY_LIST: never[] = []
@@ -187,6 +187,7 @@ function EnvironmentPlatformCapabilitiesProvider({ children }: { children: React
     const providerHealthByProvider: Partial<Record<ProviderId, ProviderHealthReport>> = {}
     const agentUiStatusByProvider: Partial<Record<ProviderId, ProviderUiStatus>> = {}
     const acpAgentInfoByProvider: Partial<Record<ProviderId, AgentInfo>> = {}
+    const acpPromptCapabilitiesByProvider: Partial<Record<ProviderId, PromptCapabilities>> = {}
     for (const entry of catalog) {
       // The shared views key icons and copy by the providers they know.
       if (!isProviderId(entry.id)) continue
@@ -203,12 +204,19 @@ function EnvironmentPlatformCapabilitiesProvider({ children }: { children: React
       agentUiStatusByProvider[entry.id] =
         status === 'unknown' && probing[entry.id] ? 'probing' : status
       if (entry.profile?.agentInfo) acpAgentInfoByProvider[entry.id] = entry.profile.agentInfo
+      // Same source desktop reads off `initialized`: the environment records
+      // the handshake's answer on the profile, so the composer's image gate
+      // has it before any session and keeps it across reconnects.
+      if (entry.profile?.promptCapabilities) {
+        acpPromptCapabilitiesByProvider[entry.id] = entry.profile.promptCapabilities
+      }
     }
     return {
       providers,
       providerHealthByProvider,
       agentUiStatusByProvider,
       acpAgentInfoByProvider,
+      acpPromptCapabilitiesByProvider,
     }
     // `staleTick` is read for its timing only: it re-runs this at a deadline.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -278,7 +286,6 @@ function EnvironmentPlatformCapabilitiesProvider({ children }: { children: React
   const value = useMemo<PlatformCapabilitiesValue>(
     () => ({
       ...derived,
-      acpPromptCapabilitiesByProvider: EMPTY_RECORD,
       currentClientId: environment?.environmentId ?? null,
       error,
       ensureProvider,

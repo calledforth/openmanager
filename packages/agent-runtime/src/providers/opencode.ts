@@ -1,6 +1,7 @@
 import type { SubtaskUpdate, ToolCall, ToolCallUpdate } from '@agentpack/contract'
 import { subtaskStatusFromTool, type SubtaskToolContext } from '../backends/acp/extensions.js'
 import type { AcpProviderConfig } from './index.js'
+import { createOpencodeModelImageInputLookup } from './opencode-models.js'
 
 const str = (value: unknown): string => (typeof value === 'string' ? value : '')
 
@@ -91,4 +92,6 @@ export const opencode: AcpProviderConfig = {
   },
   extensions: {},
   subtasks: { fromToolCall: opencodeSubtaskFromTool },
+  // ACP's catalog says nothing about vision; OpenCode's own CLI does.
+  models: { imageInput: (deps) => createOpencodeModelImageInputLookup(deps) },
 }
