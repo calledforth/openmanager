@@ -32,6 +32,24 @@ pnpm --filter @openmanager/server build
 pnpm --filter @openmanager/server start
 ```
 
+## Run at sign-in on Windows
+
+On native Windows the built server can register itself as a per-user logon
+task, so the environment is up after you sign in and stays up when the desktop
+app or a browser tab closes:
+
+```sh
+pnpm --filter @openmanager/server build
+node apps/server/dist/main.js service install
+node apps/server/dist/main.js service status
+node apps/server/dist/main.js service uninstall
+```
+
+`install` accepts the same flags as the server (`--port`, `--data-dir`,
+`--workspace`, ...) and bakes them into the task. The walkthrough, what the
+task does, and its limits are in [docs/windows-startup.md](../../docs/windows-startup.md).
+Linux and WSL get a systemd user unit in separate work.
+
 ## Configuration
 
 Flags override environment variables, which override defaults. Invalid values,
@@ -47,6 +65,8 @@ with a nonzero exit code and an error on stderr.
 | `--allowed-host` (repeatable) | `OPENMANAGER_ALLOWED_HOSTS` (comma-separated) | none |
 | `--workspace` (repeatable) | `OPENMANAGER_WORKSPACES` (separated by the platform PATH delimiter) | none |
 | `--remint-owner` | none (flag only) | off. Revokes the live owner row and publishes a new credential before listen. |
+| `--log-file` | `OPENMANAGER_LOG_FILE` | none. Appends the JSON log records (and startup errors) to this file instead of the console; a file of 10 MiB or more is rotated to `<file>.1` when the process starts. |
+| `--exit-with-parent` | none (flag only) | off. The server stops when the process that launched it exits. Set by the Windows logon task. |
 | none | `OPENMANAGER_LOCAL_OWNER_CLAIM_KEY` | none. A 32-byte base64url key generated and shared by `pnpm dev:web`; without it `/local-owner` is hidden. |
 
 ```sh

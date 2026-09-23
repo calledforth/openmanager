@@ -35,6 +35,17 @@ export interface ServerConfig {
    * the published file. Explicit only: there is no environment variable for this.
    */
   remintOwner?: boolean
+  /**
+   * Append JSON log records to this file instead of stdout/stderr. Used when the
+   * process has no console, for example under the Windows logon task.
+   */
+  logFile?: string
+  /**
+   * Stop when the parent process goes away. The Windows logon task runs the
+   * server under a headless console host; ending the task ends only that host,
+   * so the server watches it and follows. Explicit only: no environment variable.
+   */
+  exitWithParent?: boolean
 }
 
 export function validateOrigins(origins: readonly string[]): string[] {
@@ -121,6 +132,8 @@ export function loadConfig(
       'allowed-host': { type: 'string', multiple: true },
       workspace: { type: 'string', multiple: true },
       'remint-owner': { type: 'boolean' },
+      'log-file': { type: 'string' },
+      'exit-with-parent': { type: 'boolean' },
     },
     strict: true,
     allowPositionals: false,
@@ -154,6 +167,10 @@ export function loadConfig(
       'OPENMANAGER_ALLOWED_WORKSPACE_ROOTS is no longer supported: any signed-in client may register any folder.',
     )
   }
+  const logFile = values['log-file'] ?? env.OPENMANAGER_LOG_FILE
+  if (logFile !== undefined && (logFile.trim().length === 0 || logFile.includes('\0'))) {
+    throw new Error('Log file must be a non-empty filesystem path.')
+  }
   const localOwnerClaimKey = env.OPENMANAGER_LOCAL_OWNER_CLAIM_KEY?.trim()
   if (localOwnerClaimKey && !LOCAL_OWNER_CLAIM_KEY_PATTERN.test(localOwnerClaimKey)) {
     throw new Error('Local owner claim key must be 32 bytes of unpadded base64url.')
@@ -166,6 +183,8 @@ export function loadConfig(
     allowedHosts,
     workspaces,
     remintOwner: values['remint-owner'] === true,
+    ...(logFile !== undefined ? { logFile: resolve(logFile) } : {}),
+    ...(values['exit-with-parent'] ? { exitWithParent: true } : {}),
     ...(localOwnerClaimKey ? { localOwnerClaimKey } : {}),
   }
 }
