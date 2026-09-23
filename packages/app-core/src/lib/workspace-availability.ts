@@ -19,7 +19,7 @@ const INACCESSIBLE: UnavailableWorkspaceCopy = {
   badge: 'NO ACCESS',
   reason:
     'Permission denied: this environment cannot read the folder, or the folder was replaced by a link elsewhere.',
-  fix: 'Restore read access at this path, then try again.',
+  fix: 'Restore read access, or put the real folder back in place of the link, then try again.',
 }
 
 /**

@@ -625,7 +625,7 @@ export function createMockEnvironmentClient(
             'The session folder is missing, moved, or inaccessible on this environment. Restore the original folder path or its permissions, then try again. Your session is still listed.'
           store.update((state) => ({
             ...applyActiveSession(state, sessionId),
-            sessionOpenFailure: { sessionId, message, code: 'workspace_unavailable' },
+            sessionOpenFailure: { sessionId, message, code: 'workspace_unavailable', availability },
           }))
           throw new EnvironmentClientError('workspace_unavailable', message, {
             workspaceId: session.workspaceId,

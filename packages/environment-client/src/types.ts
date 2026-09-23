@@ -175,8 +175,15 @@ export interface EnvironmentState {
    * `code` lets the UI branch without matching prose: `workspace_unavailable`
    * means the project folder is gone or unreadable, so the fix is on disk and
    * the only moves are retrying after restoring it or deleting the session.
+   * `availability` is the cause the environment reported with that error, so
+   * the pane names it even before the workspace list catches up.
    */
-  sessionOpenFailure?: { sessionId: string; message: string; code: ErrorCode } | null
+  sessionOpenFailure?: {
+    sessionId: string
+    message: string
+    code: ErrorCode
+    availability?: 'missing' | 'inaccessible'
+  } | null
   connection: ConnectionState
 }
 

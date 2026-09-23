@@ -259,15 +259,20 @@ describe('websocket environment client', () => {
     socket.receive({
       type: 'error',
       requestId: socket.last('session.open').requestId,
-      error: { code: 'workspace_unavailable', message: 'Folder unavailable' },
+      error: {
+        code: 'workspace_unavailable',
+        message: 'Folder unavailable',
+        details: { workspaceId: SESSION.workspaceId, availability: 'inaccessible' },
+      },
     })
     await rejected
-    // The code travels with the failure so the pane can offer the recovery
-    // actions instead of a generic "could not open" message.
+    // The code and cause travel with the failure so the pane can offer the
+    // recovery actions for that cause instead of a generic "could not open".
     expect(client.getState().sessionOpenFailure).toEqual({
       sessionId: SESSION.sessionId,
       message: 'Folder unavailable',
       code: 'workspace_unavailable',
+      availability: 'inaccessible',
     })
     expect(selectSessionList(client.getState())).toHaveLength(1)
     expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
