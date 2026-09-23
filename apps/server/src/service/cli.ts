@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir, userInfo } from 'node:os'
-import { join } from 'node:path'
+import { join, win32 } from 'node:path'
 import { loadConfig, type ServerConfig } from '../config.ts'
 import {
   buildTaskXml,
@@ -245,7 +245,8 @@ function currentUserId(context: Context): string {
 
 function consoleHostPath(context: Context): string {
   const root = context.env.SystemRoot ?? context.env.windir ?? 'C:\\Windows'
-  return join(root, 'System32', 'conhost.exe')
+  // A Windows path even when the tests run elsewhere.
+  return win32.join(root, 'System32', 'conhost.exe')
 }
 
 export function defaultLogFile(dataDir: string): string {
