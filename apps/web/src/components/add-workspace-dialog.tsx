@@ -1,13 +1,18 @@
-import { useEffect, useId, useState, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import type { EnvironmentClient } from '@openmanager/environment-client'
-import { cn } from '../lib/utils'
+import { Button } from '@openmanager/app-core/components/fluid/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@openmanager/app-core/components/fluid/ui/dialog'
 
+// Tend's connect field, in mono because it holds a path.
 const fieldClass =
-  'w-full rounded-md border border-[var(--basis-border)] bg-[var(--basis-surface)] px-3 py-1.5 font-mono text-ui-sm text-[var(--basis-text)] outline-none focus-visible:border-[var(--basis-border-strong)]'
-const primaryButtonClass =
-  'rounded-md bg-[var(--basis-action-bg)] px-3 py-1.5 text-ui-sm text-[var(--basis-action-fg)] hover:bg-[var(--basis-action-hover)] disabled:opacity-50'
-const secondaryButtonClass =
-  'rounded-md border border-[var(--basis-border)] bg-[var(--basis-surface)] px-3 py-1.5 text-ui-sm text-[var(--basis-text)] hover:bg-[var(--basis-surface-hover)] disabled:opacity-50'
+  'h-9 w-full rounded-lg bg-hover/70 px-3 font-mono text-[15px] outline-none transition-colors duration-100 placeholder:text-faint focus:bg-hover'
 
 /**
  * The browser has no picker for a folder on the environment host, so the
@@ -25,27 +30,38 @@ export function AddWorkspaceDialog({
   open: boolean
   onClose: () => void
 }) {
-  if (!open) return null
-  return <AddWorkspaceForm client={client} onClose={onClose} />
+  // While the environment is answering, the dialog stays so the outcome has
+  // somewhere to land; the request itself cannot be cancelled. Busy lives up
+  // here so Escape, the scrim and the corner ✕ are all held off in one place;
+  // the form's own state resets with the panel.
+  const [busy, setBusy] = useState(false)
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next && !busy) onClose()
+      }}
+    >
+      <DialogContent showCloseButton={!busy}>
+        <AddWorkspaceForm client={client} busy={busy} setBusy={setBusy} onClose={onClose} />
+      </DialogContent>
+    </Dialog>
+  )
 }
 
-function AddWorkspaceForm({ client, onClose }: { client: EnvironmentClient; onClose: () => void }) {
-  const titleId = useId()
-  const inputId = useId()
+function AddWorkspaceForm({
+  client,
+  busy,
+  setBusy,
+  onClose,
+}: {
+  client: EnvironmentClient
+  busy: boolean
+  setBusy: (busy: boolean) => void
+  onClose: () => void
+}) {
   const [path, setPath] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-
-  // While the environment is answering, the dialog stays so the outcome has
-  // somewhere to land; the request itself cannot be cancelled.
-  useEffect(() => {
-    if (busy) return
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [busy, onClose])
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -58,6 +74,7 @@ function AddWorkspaceForm({ client, onClose }: { client: EnvironmentClient; onCl
     setError(null)
     try {
       await client.commands.addWorkspace({ path: trimmed })
+      setBusy(false)
       onClose()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -66,56 +83,40 @@ function AddWorkspaceForm({ client, onClose }: { client: EnvironmentClient; onCl
   }
 
   return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget && !busy) onClose()
-      }}
-    >
-      <form
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        className="w-full max-w-md rounded-xl border border-[var(--basis-border)] bg-[var(--basis-canvas-bg)] p-5 shadow-[0_12px_34px_rgba(0,0,0,0.25)]"
-        onSubmit={(event) => void submit(event)}
-      >
-        <h2 id={titleId} className="text-ui-base font-medium text-[var(--basis-text-strong)]">
-          Add a project
-        </h2>
-        <p className="mt-1 text-ui-xs text-[var(--basis-text-muted)]">
+    <form onSubmit={(event) => void submit(event)}>
+      <DialogHeader>
+        <DialogTitle>Add a project</DialogTitle>
+        <DialogDescription>
           Type the absolute path of a folder on the machine running this environment. The
           environment checks that the folder exists before adding it.
+        </DialogDescription>
+      </DialogHeader>
+      <input
+        name="path"
+        type="text"
+        autoFocus
+        autoComplete="off"
+        spellCheck={false}
+        placeholder="C:\Users\you\project or /home/you/project"
+        aria-label="Folder path"
+        className={fieldClass}
+        value={path}
+        disabled={busy}
+        onChange={(event) => setPath(event.target.value)}
+      />
+      {error ? (
+        <p className="mt-2 text-[13px] text-destructive" role="alert">
+          {error}
         </p>
-        <label className="mt-4 block text-ui-sm text-[var(--basis-text)]" htmlFor={inputId}>
-          Folder path
-        </label>
-        <input
-          id={inputId}
-          name="path"
-          type="text"
-          autoFocus
-          autoComplete="off"
-          spellCheck={false}
-          placeholder="C:\Users\you\project or /home/you/project"
-          className={cn(fieldClass, 'mt-1.5')}
-          value={path}
-          disabled={busy}
-          onChange={(event) => setPath(event.target.value)}
-        />
-        {error ? (
-          <p className="mt-2 text-ui-xs text-[var(--basis-danger,#d33)]" role="alert">
-            {error}
-          </p>
-        ) : null}
-        <div className="mt-4 flex justify-end gap-2">
-          <button type="button" className={secondaryButtonClass} onClick={onClose} disabled={busy}>
-            Cancel
-          </button>
-          <button type="submit" className={primaryButtonClass} disabled={busy}>
-            {busy ? 'Adding…' : 'Add project'}
-          </button>
-        </div>
-      </form>
-    </div>
+      ) : null}
+      <DialogFooter>
+        <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
+          Cancel
+        </Button>
+        <Button type="submit" variant="secondary" disabled={busy}>
+          {busy ? 'Adding…' : 'Add project'}
+        </Button>
+      </DialogFooter>
+    </form>
   )
 }

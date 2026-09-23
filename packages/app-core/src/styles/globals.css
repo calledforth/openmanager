@@ -734,8 +734,8 @@ textarea,
   .md .shiki span {
     color: var(--shiki-dark);
   }
-  html:is([data-theme='light'], [data-theme='graphite-light']) .md .shiki,
-  html:is([data-theme='light'], [data-theme='graphite-light']) .md .shiki span {
+  html:is([data-theme='light'], [data-theme='neutral-light']) .md .shiki,
+  html:is([data-theme='light'], [data-theme='neutral-light']) .md .shiki span {
     color: var(--shiki-light);
   }
 
@@ -924,27 +924,6 @@ textarea,
   animation: chat-fade-in 200ms ease-out;
 }
 
-@keyframes basis-tooltip-in {
-  from {
-    opacity: 0;
-    transform: scale(0.97);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-/* Shared hover-tip bubble motion — see components/ui/Tooltip.tsx. */
-.basis-tooltip-in {
-  animation: basis-tooltip-in 110ms ease-out;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .basis-tooltip-in {
-    animation: chat-fade-in 110ms ease-out;
-  }
-}
 .chat-animate-slide-up {
   animation: chat-slide-up 200ms ease-out;
 }

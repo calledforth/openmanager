@@ -9,16 +9,26 @@ import {
 } from 'react'
 import { DEFAULT_UI_FONT, isUiFontId, type UiFontId } from '../lib/fonts'
 
-/** `graphite`, `paper` and `graphite-light` are the Tend colour schemes (styles/fluid.css). */
-export type ThemeMode = 'dark' | 'light' | 'black' | 'graphite' | 'paper' | 'graphite-light'
+/** `neutral`, `paper` and `neutral-light` are the Tend colour schemes (styles/fluid.css). */
+export type ThemeMode = 'dark' | 'light' | 'black' | 'neutral' | 'paper' | 'neutral-light'
 
 export const THEME_MODES: readonly ThemeMode[] = [
   'dark',
   'light',
   'black',
-  'graphite',
+  'neutral',
   'paper',
-  'graphite-light',
+  'neutral-light',
+]
+
+/** Every theme with its display name, in the order pickers list them. */
+export const THEME_OPTIONS: ReadonlyArray<{ id: ThemeMode; label: string; hint: string }> = [
+  { id: 'light', label: 'Light', hint: 'the original light' },
+  { id: 'dark', label: 'Dark', hint: 'the original dark' },
+  { id: 'black', label: 'Black', hint: 'true black' },
+  { id: 'neutral-light', label: 'Neutral Light', hint: 'plain greys, light' },
+  { id: 'neutral', label: 'Neutral', hint: 'plain greys, dark' },
+  { id: 'paper', label: 'Paper', hint: 'warm greys, dark' },
 ]
 
 export function isThemeMode(value: string): value is ThemeMode {
@@ -27,7 +37,7 @@ export function isThemeMode(value: string): value is ThemeMode {
 
 /** Whether a theme paints on a light canvas (icons and code blocks switch on this). */
 export function isLightTheme(mode: ThemeMode): boolean {
-  return mode === 'light' || mode === 'graphite-light'
+  return mode === 'light' || mode === 'neutral-light'
 }
 
 const THEME_STORAGE_KEY = 'openmanager-theme'

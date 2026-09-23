@@ -1,5 +1,6 @@
 import { useContext, useMemo } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
+import { Button } from '@openmanager/app-core/components/fluid/ui/button'
 import { ProviderIcon } from '@openmanager/app-core/components/providers/ProviderIcon'
 import {
   describeProviderHealth,
@@ -10,21 +11,13 @@ import { SessionStateContext } from '@openmanager/app-core/providers/session-pro
 import { EnvironmentConnectForm, EnvironmentList } from '../components/connection-surfaces'
 import { UI_FONTS } from '../lib/fonts'
 import { useConnection } from '../providers/connection-provider'
-import { useTheme, type ThemeMode } from '../providers/theme-provider'
+import { THEME_OPTIONS } from '@openmanager/app-core/providers/theme-provider'
+import { useTheme } from '../providers/theme-provider'
 import { cn } from '../lib/utils'
 
 export const Route = createFileRoute('/settings')({
   component: SettingsPage,
 })
-
-const THEME_OPTIONS: Array<{ id: ThemeMode; label: string }> = [
-  { id: 'light', label: 'Light' },
-  { id: 'dark', label: 'Dark' },
-  { id: 'black', label: 'Black' },
-  { id: 'graphite-light', label: 'Graphite Light' },
-  { id: 'graphite', label: 'Graphite' },
-  { id: 'paper', label: 'Paper' },
-]
 
 function ChoiceGroup<T extends string>({
   name,
@@ -36,7 +29,7 @@ function ChoiceGroup<T extends string>({
   name: string
   label: string
   value: T
-  options: Array<{ id: T; label: string }>
+  options: ReadonlyArray<{ id: T; label: string }>
   onChange: (id: T) => void
 }) {
   return (
@@ -134,14 +127,14 @@ function ProvidersSection() {
                 </div>
               </div>
               {row.health.canRetry ? (
-                <button
+                <Button
                   type="button"
+                  variant="tertiary"
                   aria-label={`Retry ${row.displayName}`}
-                  className="rounded-md border border-[var(--basis-border)] bg-[var(--basis-surface)] px-2.5 py-1 text-ui-xs text-[var(--basis-text)] hover:bg-[var(--basis-surface-hover)]"
                   onClick={() => void platform.retryProvider(row.id, activeWorkspacePath ?? '')}
                 >
                   Retry
-                </button>
+                </Button>
               ) : null}
             </li>
           ))}
@@ -186,13 +179,9 @@ function SettingsPage() {
               onRemove={removeEnvironment}
             />
             {selectedId ? (
-              <button
-                type="button"
-                className="mt-3 rounded-md border border-[var(--basis-border)] bg-[var(--basis-surface)] px-3 py-1.5 text-ui-sm text-[var(--basis-text)] hover:bg-[var(--basis-surface-hover)]"
-                onClick={changeEnvironment}
-              >
+              <Button type="button" variant="tertiary" className="mt-3" onClick={changeEnvironment}>
                 Deselect environment
-              </button>
+              </Button>
             ) : null}
           </>
         )}
@@ -200,7 +189,7 @@ function SettingsPage() {
         <p className="mt-1 text-ui-xs text-[var(--basis-text-muted)]">
           A second URL for the same environment ID updates the existing record.
         </p>
-        <EnvironmentConnectForm onConnect={connect} submitLabel="Add environment" />
+        <EnvironmentConnectForm className="mt-3" onConnect={connect} submitLabel="Add environment" />
       </section>
 
       <ProvidersSection />

@@ -353,7 +353,6 @@ export function ExtraSettingsDialog({
                     <Tooltip
                       content={provider.health.detail ?? provider.health.label}
                       side="bottom"
-                      align="start"
                     >
                       <div
                         className={cn(

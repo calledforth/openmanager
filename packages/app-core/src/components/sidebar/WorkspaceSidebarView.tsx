@@ -49,7 +49,7 @@ export interface SidebarWorkspace {
 function UnavailableBadge({ availability }: { availability: SidebarWorkspace['availability'] }) {
   const copy = describeUnavailableWorkspace(availability)
   return (
-    <Tooltip content={copy.reason} side="bottom" align="end">
+    <Tooltip content={copy.reason} side="bottom">
       <span
         className="shrink-0 rounded-sm border border-[var(--basis-border-muted)] px-1 py-px text-[9px] leading-none tracking-wide text-[var(--basis-text-faint)]"
         aria-label={copy.reason}
@@ -170,7 +170,6 @@ export function WorkspaceSidebarView({
               content="Close sidebar"
               shortcut={sidebarToggleShortcut}
               side="bottom"
-              align="end"
             >
               <button
                 type="button"
@@ -210,7 +209,7 @@ export function WorkspaceSidebarView({
               <EnvironmentLabel label={environmentLabel} className="text-[11px]" />
             )}
           </div>
-          <Tooltip content="Add project" side="bottom" align="end">
+          <Tooltip content="Add project" side="bottom">
             <button
               type="button"
               onClick={onAddWorkspace}
@@ -355,7 +354,7 @@ function WorkspaceGroup({
         {workspace.missing ? (
           <UnavailableBadge availability={workspace.availability} />
         ) : (
-          <Tooltip content="New agent in this project" side="bottom" align="end">
+          <Tooltip content="New agent in this project" side="bottom">
             <button
               type="button"
               onClick={(e) => {

@@ -1,4 +1,5 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
+import { Button } from '@openmanager/app-core/components/fluid/ui/button'
 import {
   connectionActionLabel,
   type ConnectionAction,
@@ -11,12 +12,9 @@ import {
 } from '../lib/environment-store'
 import { cn } from '../lib/utils'
 
+// Tend's connect field: borderless, sits on the hover tint and darkens on focus.
 const fieldClass =
-  'w-full rounded-md border border-[var(--basis-border)] bg-[var(--basis-surface)] px-3 py-1.5 text-ui-sm text-[var(--basis-text)] outline-none focus-visible:border-[var(--basis-border-strong)]'
-const primaryButtonClass =
-  'rounded-md bg-[var(--basis-action-bg)] px-3 py-1.5 text-ui-sm text-[var(--basis-action-fg)] hover:bg-[var(--basis-action-hover)] disabled:opacity-50'
-const secondaryButtonClass =
-  'rounded-md border border-[var(--basis-border)] bg-[var(--basis-surface)] px-3 py-1.5 text-ui-sm text-[var(--basis-text)] hover:bg-[var(--basis-surface-hover)]'
+  'h-9 w-full rounded-lg bg-hover/70 px-3 text-[15px] outline-none transition-colors duration-100 placeholder:text-faint focus:bg-hover'
 
 export type ConnectionHandlers = {
   onConnect?: (endpoint: string, credential?: string) => void
@@ -35,28 +33,34 @@ function runAction(action: ConnectionAction, handlers: ConnectionHandlers, endpo
 function ActionButtons({
   state,
   handlers,
+  className,
   extra,
 }: {
   state: ConnectionUiState
   handlers: ConnectionHandlers
+  className?: string
   extra?: ReactNode
 }) {
   return (
-    <div className="mt-4 flex flex-wrap justify-center gap-2">
+    <div className={cn('flex flex-wrap gap-2', className)}>
       {extra}
       {state.action && state.action !== 'connect' ? (
-        <button type="button" className={primaryButtonClass} onClick={() => runAction(state.action!, handlers)}>
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={() => runAction(state.action!, handlers)}
+        >
           {connectionActionLabel(state.action)}
-        </button>
+        </Button>
       ) : null}
       {state.secondaryAction ? (
-        <button
+        <Button
           type="button"
-          className={secondaryButtonClass}
+          variant="ghost"
           onClick={() => runAction(state.secondaryAction!, handlers)}
         >
           {connectionActionLabel(state.secondaryAction)}
-        </button>
+        </Button>
       ) : null}
     </div>
   )
@@ -66,10 +70,12 @@ export function EnvironmentConnectForm({
   initialEndpoint = '',
   onConnect,
   submitLabel = 'Connect',
+  className,
 }: {
   initialEndpoint?: string
   onConnect: (endpoint: string, credential: string) => void
   submitLabel?: string
+  className?: string
 }) {
   const [endpointValue, setEndpointValue] = useState(initialEndpoint)
   const [credentialValue, setCredentialValue] = useState('')
@@ -92,48 +98,42 @@ export function EnvironmentConnectForm({
   }
 
   return (
-    <form className="mt-4 w-full max-w-md text-left" onSubmit={submit}>
-      <label className="block text-ui-sm text-[var(--basis-text)]" htmlFor="environment-endpoint">
-        Environment endpoint
-      </label>
+    <form className={cn('flex w-full flex-col gap-2.5 text-left', className)} onSubmit={submit}>
       <input
-        id="environment-endpoint"
         name="endpoint"
         type="text"
         inputMode="url"
         autoComplete="url"
         spellCheck={false}
         placeholder="http://127.0.0.1:43120"
-        className={cn(fieldClass, 'mt-1.5')}
+        aria-label="Environment endpoint"
+        className={fieldClass}
         value={endpointValue}
         onChange={(event) => setEndpointValue(event.target.value)}
       />
-      <label className="mt-3 block text-ui-sm text-[var(--basis-text)]" htmlFor="environment-credential">
-        Client token
-      </label>
-      <p className="mt-0.5 text-ui-xs text-[var(--basis-text-muted)]">
-        Optional. Leave blank on localhost to request the local owner token. Stored with
-        the environment, not with a particular URL.
-      </p>
       <input
-        id="environment-credential"
         name="credential"
         type="password"
         autoComplete="off"
         spellCheck={false}
-        placeholder="Paste owner-credential (omc1.…)"
-        className={cn(fieldClass, 'mt-1.5')}
+        placeholder="Client token (omc1.…)"
+        aria-label="Client token"
+        className={fieldClass}
         value={credentialValue}
         onChange={(event) => setCredentialValue(event.target.value)}
       />
-      <button type="submit" className={cn(primaryButtonClass, 'mt-3')}>
-        {submitLabel}
-      </button>
+      <p className="text-[13px] text-muted-foreground">
+        The token is optional. Leave it blank on localhost to request the local owner token. It
+        is stored with the environment, not with a particular URL.
+      </p>
       {error ? (
-        <p className="mt-2 text-ui-xs text-[var(--basis-text-muted)]" role="alert">
+        <p className="text-[13px] text-destructive" role="alert">
           {error}
         </p>
       ) : null}
+      <Button type="submit" variant="secondary" className="mt-2">
+        {submitLabel}
+      </Button>
     </form>
   )
 }
@@ -152,53 +152,48 @@ export function EnvironmentList({
   if (environments.length === 0) return null
 
   return (
-    <ul className="mt-4 w-full max-w-md space-y-2 text-left" aria-label="Saved environments">
+    <ul className="mt-4 flex w-full flex-col gap-2 text-left" aria-label="Saved environments">
       {environments.map((environment) => {
         const selected = environment.environmentId === selectedId
         return (
           <li
             key={environment.environmentId}
-            className={cn(
-              'rounded-md border px-3 py-2.5',
-              selected
-                ? 'border-[var(--basis-border-strong)] bg-[var(--basis-surface-elevated)]'
-                : 'border-[var(--basis-border)] bg-[var(--basis-surface)]',
-            )}
+            className={cn('rounded-lg px-3 py-2.5', selected ? 'bg-hover' : 'bg-hover/70')}
           >
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
-                <p className="text-ui-sm font-medium text-[var(--basis-text-strong)]">
+                <p className="text-[13px] font-medium text-foreground">
                   {environment.label}
                   {selected ? ' · Selected' : ''}
                 </p>
-                <p className="mt-0.5 font-mono text-ui-xs text-[var(--basis-text-faint)]">
+                <p className="mt-0.5 font-mono text-[12px] text-faint">
                   {environment.environmentId}
                 </p>
-                <p className="mt-1 font-mono text-ui-xs text-[var(--basis-text-muted)]">
+                <p className="mt-1 font-mono text-[12px] text-muted-foreground">
                   {environment.endpoints.join(' · ')}
                 </p>
-                <p className="mt-1 text-ui-xs text-[var(--basis-text-muted)]">
+                <p className="mt-1 text-[12px] text-muted-foreground">
                   {environment.credential ? 'Client token saved' : 'No client token'}
                 </p>
               </div>
               <div className="flex shrink-0 flex-col gap-1.5">
                 {onSelect && !selected ? (
-                  <button
+                  <Button
                     type="button"
-                    className={secondaryButtonClass}
+                    variant="secondary"
                     onClick={() => onSelect(environment.environmentId)}
                   >
                     Select
-                  </button>
+                  </Button>
                 ) : null}
                 {onRemove ? (
-                  <button
+                  <Button
                     type="button"
-                    className={secondaryButtonClass}
+                    variant="ghost"
                     onClick={() => onRemove(environment.environmentId)}
                   >
                     Remove
-                  </button>
+                  </Button>
                 ) : null}
               </div>
             </div>
@@ -226,13 +221,13 @@ export function ConnectionScreen({
     ? 'Choose a saved environment or add another endpoint. A second URL for the same environment ID updates the existing record.'
     : state.description
 
+  // Tend's connect page: a narrow column, vertically centred and lifted a
+  // little above the middle.
   return (
-    <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6">
-      <div className="flex w-full max-w-md flex-col items-center text-center">
-        <h1 className="text-ui-base font-medium text-[var(--basis-text-strong)]">{title}</h1>
-        <p className="mt-2 text-ui-sm leading-ui-normal text-[var(--basis-text-muted)]">
-          {description}
-        </p>
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-auto px-6 pb-24">
+      <div className="flex w-full max-w-[340px] flex-col">
+        <h1 className="text-[22px] font-semibold leading-[1.3] tracking-[-0.015em]">{title}</h1>
+        <p className="mt-1 text-[14px] text-muted-foreground">{description}</p>
         {state.kind === 'no_environment' ? (
           <>
             <EnvironmentList
@@ -242,12 +237,13 @@ export function ConnectionScreen({
               onRemove={handlers.onRemoveEnvironment}
             />
             <EnvironmentConnectForm
+              className={choosingSaved ? 'mt-4' : 'mt-7'}
               initialEndpoint={state.endpoint}
               onConnect={(endpoint, credential) => handlers.onConnect?.(endpoint, credential)}
             />
           </>
         ) : (
-          <ActionButtons state={state} handlers={handlers} />
+          <ActionButtons className="mt-7" state={state} handlers={handlers} />
         )}
       </div>
     </div>
@@ -283,22 +279,7 @@ export function ConnectionBanner({
           {state.description}
         </p>
       </div>
-      <div className="flex shrink-0 flex-wrap gap-2">
-        {state.action && state.action !== 'connect' ? (
-          <button type="button" className={primaryButtonClass} onClick={() => runAction(state.action!, handlers)}>
-            {connectionActionLabel(state.action)}
-          </button>
-        ) : null}
-        {state.secondaryAction ? (
-          <button
-            type="button"
-            className={secondaryButtonClass}
-            onClick={() => runAction(state.secondaryAction!, handlers)}
-          >
-            {connectionActionLabel(state.secondaryAction)}
-          </button>
-        ) : null}
-      </div>
+      <ActionButtons className="shrink-0" state={state} handlers={handlers} />
     </div>
   )
 }

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { DesktopViewActions } from './providers/desktop-view-actions'
 import { ThemeProvider } from '@openmanager/app-core/providers/theme-provider'
+import { FluidProviders } from '@openmanager/app-core/providers/fluid-provider'
+import { CommandPalette } from '@openmanager/app-core/components/command/CommandPalette'
 import { PlatformCapabilitiesProvider } from './providers/platform-capabilities-provider'
 import { SessionStateProvider } from './providers/session-state-provider'
 import { ComposerStateProvider } from './providers/composer-state-provider'
@@ -70,25 +72,28 @@ function AppShell() {
 function App() {
   return (
     <ThemeProvider>
-      <PlatformCapabilitiesProvider>
-        <SessionStateProvider>
-          <ComposerStateProvider>
-            <SidebarDataProvider>
-              <ActiveThreadStateProvider>
-                <DesktopPermissionStateProvider>
-                  <DesktopQuestionStateProvider>
-                    <DesktopPlanStateProvider>
-                      <DesktopViewActions>
-                        <AppShell />
-                      </DesktopViewActions>
-                    </DesktopPlanStateProvider>
-                  </DesktopQuestionStateProvider>
-                </DesktopPermissionStateProvider>
-              </ActiveThreadStateProvider>
-            </SidebarDataProvider>
-          </ComposerStateProvider>
-        </SessionStateProvider>
-      </PlatformCapabilitiesProvider>
+      <FluidProviders>
+        <CommandPalette />
+        <PlatformCapabilitiesProvider>
+          <SessionStateProvider>
+            <ComposerStateProvider>
+              <SidebarDataProvider>
+                <ActiveThreadStateProvider>
+                  <DesktopPermissionStateProvider>
+                    <DesktopQuestionStateProvider>
+                      <DesktopPlanStateProvider>
+                        <DesktopViewActions>
+                          <AppShell />
+                        </DesktopViewActions>
+                      </DesktopPlanStateProvider>
+                    </DesktopQuestionStateProvider>
+                  </DesktopPermissionStateProvider>
+                </ActiveThreadStateProvider>
+              </SidebarDataProvider>
+            </ComposerStateProvider>
+          </SessionStateProvider>
+        </PlatformCapabilitiesProvider>
+      </FluidProviders>
     </ThemeProvider>
   )
 }

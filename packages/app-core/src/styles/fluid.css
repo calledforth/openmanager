@@ -9,9 +9,8 @@
       these are derived from the --basis-* tokens, so fluid components sit
       correctly on the existing palette.
 
-   2. The Tend schemes (graphite, paper, graphite-light). Each sets only
-      four base colours; everything else is mixed from them — exactly as
-      Tend does — and the --basis-* tokens are then pointed back at the
+   2. The Tend schemes (neutral, paper, neutral-light), with Tend's exact
+      values and mixes, and the --basis-* tokens are then pointed back at the
       mixed values, so every existing surface in the app carries the
       scheme's hue too.
 
@@ -20,7 +19,7 @@
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 
 /* Fluid components' `dark:` utilities follow the app theme, not the OS. */
-@custom-variant dark (&:where(:root:not([data-theme='light'], [data-theme='graphite-light']) *));
+@custom-variant dark (&:where(:root:not([data-theme='light'], [data-theme='neutral-light']) *));
 
 @theme inline {
   --color-faint: var(--faint);
@@ -282,13 +281,26 @@
 }
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   §3  Tend schemes — four base colours each
+   §3  Tend schemes
+       Neutral is Tend's default: plain greys, set value by value. Paper
+       sets only four base colours and mixes everything else from them.
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-:root[data-theme='graphite'] {
-  --background: #15161a;
-  --foreground: #e6e8ec;
-  --muted-foreground: #8a8e97;
-  --faint: #585c65;
+:root[data-theme='neutral'] {
+  --background: #141414;
+  --foreground: #ededed;
+  --muted-foreground: #8f8f8f;
+  --faint: #5c5c5c;
+  --rule: rgb(255 255 255 / 0.075);
+  --border: oklch(1 0 0 / 10%);
+  --selected: #525252;
+  --surface-1: #171717;
+  --surface-2: #1e1e1e;
+  --surface-3: #252525;
+  --surface-4: #2c2c2c;
+  --surface-5: #333333;
+  --surface-6: #3a3a3a;
+  --surface-7: #414141;
+  --surface-8: #484848;
 }
 
 :root[data-theme='paper'] {
@@ -296,63 +308,30 @@
   --foreground: #ebe8e2;
   --muted-foreground: #938e86;
   --faint: #5f5b54;
-}
-
-:root[data-theme='graphite-light'] {
-  --background: #f7f8fa;
-  --foreground: #1a1c20;
-  --muted-foreground: #6d717a;
-  --faint: #a3a7af;
-}
-
-/* Dark schemes: Tend's dark mixes over the neutral dark overlays/shadows. */
-:root:is([data-theme='graphite'], [data-theme='paper']) {
-  color-scheme: dark;
   --rule: color-mix(in oklab, var(--background), var(--foreground) 8%);
   --border: color-mix(in oklab, var(--background), var(--foreground) 11%);
   --selected: color-mix(in oklab, var(--background), var(--foreground) 28%);
-
-  --basis-canvas-bg: var(--background);
-  --basis-surface: var(--surface-2);
-  --basis-surface-elevated: var(--surface-3);
-  --basis-surface-hover: var(--surface-4);
-  --basis-tab-active-bg: var(--surface-3);
-  --basis-border: var(--border);
-  --basis-border-muted: var(--rule);
-  --basis-border-strong: color-mix(in oklab, var(--background), var(--foreground) 22%);
-  --basis-chat-text: var(--foreground);
-  --basis-text: var(--foreground);
-  --basis-text-strong: var(--foreground);
-  --basis-text-muted: var(--muted-foreground);
-  --basis-text-faint: var(--faint);
-  --basis-action-bg: var(--foreground);
-  --basis-action-fg: var(--background);
-  --basis-action-hover: color-mix(in oklab, var(--foreground), var(--background) 10%);
-  --basis-accent-blue: var(--tint);
-  --basis-scrollbar-thumb: rgb(var(--overlay) / 0.08);
-  --basis-scrollbar-thumb-hover: rgb(var(--overlay) / 0.12);
-  --basis-selection-bg: var(--tint-soft);
-  --basis-selection-fg: var(--foreground);
-  --basis-chat-composer-border: var(--border);
-  --basis-chat-user-border: var(--rule);
 }
 
-/* Light scheme: Tend's light mixes; surfaces lift toward white. */
-:root[data-theme='graphite-light'] {
+:root[data-theme='neutral-light'] {
   color-scheme: light;
+  --background: #fcfcfc;
+  --foreground: #1a1a1a;
+  --muted-foreground: #737373;
+  --faint: #a8a8a8;
+  --rule: #ececec;
+  --border: oklch(0.922 0 0);
+  --selected: #d4d4d4;
   --tint: oklch(0.56 0.15 262);
   --tint-soft: oklch(0.56 0.15 262 / 0.12);
-  --rule: color-mix(in oklab, var(--background), var(--foreground) 8%);
-  --border: color-mix(in oklab, var(--background), var(--foreground) 9%);
-  --selected: color-mix(in oklab, var(--background), var(--foreground) 17%);
-  --surface-1: color-mix(in oklab, var(--background), var(--foreground) 1.5%);
-  --surface-2: var(--background);
-  --surface-3: color-mix(in oklab, var(--background) 30%, white);
-  --surface-4: var(--surface-3);
-  --surface-5: var(--surface-3);
-  --surface-6: var(--surface-3);
-  --surface-7: var(--surface-3);
-  --surface-8: var(--surface-3);
+  --surface-1: #fafafa;
+  --surface-2: #fcfcfc;
+  --surface-3: #ffffff;
+  --surface-4: #ffffff;
+  --surface-5: #ffffff;
+  --surface-6: #ffffff;
+  --surface-7: #ffffff;
+  --surface-8: #ffffff;
   --hover: rgb(0 0 0 / 0.04);
   --active: rgb(0 0 0 / 0.07);
   --destructive-light: #fef2f2;
@@ -367,15 +346,35 @@
   --shadow-8: var(--shadow-light-8);
   --shadow-2-inset: var(--shadow-light-2-inset);
   --shadow-3-inset: var(--shadow-light-3-inset);
+}
 
+/* The app's own --basis-* tokens, pointed at the scheme. */
+:root:is([data-theme='neutral'], [data-theme='paper']) {
+  color-scheme: dark;
+  --basis-canvas-bg: var(--background);
+  --basis-surface: var(--surface-2);
+  --basis-surface-elevated: var(--surface-3);
+  --basis-surface-hover: var(--surface-4);
+  --basis-tab-active-bg: var(--surface-3);
+  --basis-border-strong: color-mix(in oklab, var(--background), var(--foreground) 22%);
+  --basis-action-hover: color-mix(in oklab, var(--foreground), var(--background) 10%);
+}
+
+:root[data-theme='neutral-light'] {
   --basis-canvas-bg: var(--background);
   --basis-surface: var(--surface-3);
   --basis-surface-elevated: color-mix(in oklab, var(--background), var(--foreground) 4%);
   --basis-surface-hover: color-mix(in oklab, var(--background), var(--foreground) 4%);
   --basis-tab-active-bg: color-mix(in oklab, var(--background), var(--foreground) 9%);
+  --basis-border-strong: color-mix(in oklab, var(--background), var(--foreground) 25%);
+  --basis-action-hover: color-mix(in oklab, var(--foreground), var(--background) 12%);
+  --basis-session-cube-needs: #b8860b;
+  --basis-session-cube-ready: #2f8f45;
+}
+
+:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='neutral-light']) {
   --basis-border: var(--border);
   --basis-border-muted: var(--rule);
-  --basis-border-strong: color-mix(in oklab, var(--background), var(--foreground) 25%);
   --basis-chat-text: var(--foreground);
   --basis-text: var(--foreground);
   --basis-text-strong: var(--foreground);
@@ -383,10 +382,7 @@
   --basis-text-faint: var(--faint);
   --basis-action-bg: var(--foreground);
   --basis-action-fg: var(--background);
-  --basis-action-hover: color-mix(in oklab, var(--foreground), var(--background) 12%);
   --basis-accent-blue: var(--tint);
-  --basis-session-cube-needs: #b8860b;
-  --basis-session-cube-ready: #2f8f45;
   --basis-scrollbar-thumb: rgb(var(--overlay) / 0.08);
   --basis-scrollbar-thumb-hover: rgb(var(--overlay) / 0.12);
   --basis-selection-bg: var(--tint-soft);
@@ -399,18 +395,18 @@
    §4  Tend typography on the Tend schemes
        Geist's natural spacing (no positive tracking), 400 body weight.
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-:root:is([data-theme='graphite'], [data-theme='paper'], [data-theme='graphite-light']) {
+:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='neutral-light']) {
   --tracking-normal: 0em;
   --tracking-ui: 0em;
   --basis-letter-spacing: normal;
 }
 
-:root:is([data-theme='graphite'], [data-theme='paper'], [data-theme='graphite-light']) body {
+:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='neutral-light']) body {
   font-weight: 400;
   font-variation-settings: 'wght' 400;
 }
 
-:root:is([data-theme='graphite'], [data-theme='paper'], [data-theme='graphite-light']) :where(h1, h2) {
+:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='neutral-light']) :where(h1, h2) {
   letter-spacing: -0.015em;
 }
 

@@ -312,7 +312,6 @@ export function SearchableMenu({
                     key={`${section.id}:${option.id}`}
                     content={option.title}
                     side="right"
-                    align="center"
                   >
                     {row}
                   </Tooltip>
