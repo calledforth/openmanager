@@ -459,8 +459,8 @@ describe('workspace boundary', () => {
       clientId: host.server.owner.clientId,
       details: { reason: 'missing', command: 'workspace.add' },
     })
-    // An authenticated owner still cannot expand the operator's filesystem boundary.
-    for (const path of ['../other', `${host.root}/../workspace-a`, join(host.root, '..')]) {
+    // Relative and traversing spellings are refused before any lookup.
+    for (const path of ['../other', `${host.root}/../workspace-a`]) {
       const rejectedId = client.command('workspace.add', { path })
       expect(await client.next()).toMatchObject({
         type: 'error',
@@ -468,6 +468,17 @@ describe('workspace boundary', () => {
         error: { code: 'validation' },
       })
     }
+    // There is no allowlist of roots: a signed-in client may register any folder,
+    // including one above the folders the server was started with.
+    const parentId = client.command('workspace.add', { path: join(host.root, '..') })
+    await client.next()
+    const parent = ProofResponseSchemas['workspace.add'].parse(await client.next())
+    expect(parent.requestId).toBe(parentId)
+    expect(parent.payload.workspace).toMatchObject({
+      path: host.server.workspaces.get(parent.payload.workspace.workspaceId)!.root,
+      exists: true,
+      availability: 'available',
+    })
     const removeId = client.command('workspace.remove', {
       workspaceId: added.payload.workspace.workspaceId,
     })
@@ -490,6 +501,7 @@ describe('workspace boundary', () => {
     expect(host.server.workspaces.list().map((workspace) => workspace.name)).toEqual([
       'workspace-a',
       'workspace-b',
+      parent.payload.workspace.name,
     ])
   })
 

@@ -16,7 +16,6 @@ import { openEnvironmentDatabase } from './db/database.ts'
 import {
   canonicalizeRoot,
   canonicalizeUnavailableRoot,
-  isWithinRoot,
   PathBoundaryError,
   resolveWorkspacePath,
   validateRegistrationPath,
@@ -42,8 +41,6 @@ export type WorkspaceRegistration =
   | { ok: false; code: Extract<ErrorCode, 'validation' | 'not_found'>; message: string }
 
 export interface WorkspaceRegistryOptions {
-  /** Server-controlled registration boundary; defaults to configured roots. Empty denies all. */
-  allowedRoots?: readonly string[]
   clock?: () => number
   /** Where registration changes are announced so every connected client sees them. */
   events?: { environmentId: string; emit: (event: ProofEvent) => void }
@@ -72,11 +69,13 @@ function hasCode(error: unknown, ...codes: string[]): boolean {
 /**
  * The set of roots this environment exposes (threat model D9). Clients name a
  * workspace by the ID the server assigned and never send a root path in its
- * place. Registrations persist in the `workspaces` table, so a workspace
- * added from a client survives a restart; roots passed on the command line
- * are registered the same way on every start. A registered folder that has
- * since been moved or deleted stays listed, flagged as missing, until it is
- * unregistered or comes back.
+ * place. Any signed-in client may register any directory on this machine:
+ * being paired is the consent, and the boundary D9 enforces is that every
+ * later path stays inside the workspace it names. Registrations persist in
+ * the `workspaces` table, so a workspace added from a client survives a
+ * restart; roots passed on the command line are registered the same way on
+ * every start. A registered folder that has since been moved or deleted stays
+ * listed, flagged as missing, until it is unregistered or comes back.
  */
 export function openWorkspaceRegistry(
   dataDir: string,
@@ -84,22 +83,11 @@ export function openWorkspaceRegistry(
   audit: AuditLog,
   options: WorkspaceRegistryOptions = {},
 ) {
-  // An offline registered root must not prevent the environment from starting.
-  // Retain its configured boundary; every use still requires an exact realpath.
-  const allowedRoots = (options.allowedRoots ?? roots).map((root) => {
-    try {
-      return canonicalizeRoot(root)
-    } catch (error) {
-      if (hasCode(error, 'ENOENT', 'ENOTDIR', 'EACCES', 'EPERM')) {
-        return canonicalizeUnavailableRoot(root)
-      }
-      throw error
-    }
-  })
-  const isAllowed = (root: string) => allowedRoots.some((allowed) => isWithinRoot(allowed, root))
+  // A stored root is usable when it still resolves to itself: a directory
+  // replaced by a link elsewhere is refused (T12), not silently followed.
   const availabilityOf = (root: string): RegisteredWorkspace['availability'] => {
     try {
-      return isAllowed(root) && canonicalizeRoot(root) === root ? 'available' : 'inaccessible'
+      return canonicalizeRoot(root) === root ? 'available' : 'inaccessible'
     } catch (error) {
       return hasCode(error, 'ENOENT', 'ENOTDIR') ||
         (error instanceof Error && error.message.startsWith('Workspace root is not a directory'))
@@ -191,7 +179,6 @@ export function openWorkspaceRegistry(
         if (findByRoot(canonicalizeUnavailableRoot(configured))) continue
         throw error
       }
-      if (!isAllowed(root)) throw new Error('Configured workspace is outside allowed roots.')
       upsert(root, undefined)
     }
   } catch (error) {
@@ -356,9 +343,6 @@ export function openWorkspaceRegistry(
         'invalid',
         'That folder path cannot be resolved on this environment.',
       )
-    }
-    if (!isAllowed(root)) {
-      return reject('validation', 'escape', 'That folder is outside the allowed workspace roots.')
     }
     const workspace = toPublic(refresh(upsert(root, input.name?.trim() || undefined)))
     emit('workspace.updated', { workspace })

@@ -115,7 +115,6 @@ export async function startServer(config: ServerConfig) {
   let workspaces
   try {
     workspaces = openWorkspaceRegistry(config.dataDir, workspaceRoots, audit, {
-      allowedRoots: config.allowedWorkspaceRoots,
       events: {
         environmentId: identity.environmentId,
         emit: (event) => emitWorkspaceEvent(event),
