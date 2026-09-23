@@ -1,4 +1,4 @@
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   defaultLogFile,
@@ -127,7 +127,15 @@ describe('task definition', () => {
 })
 
 /** A scripted Task Scheduler: `registered` is the XML it returns for /Query /XML. */
-function fakeSystem(options: { registered?: string; healthy?: () => boolean; pids?: number[][] }) {
+function fakeSystem(options: {
+  registered?: string
+  healthy?: () => boolean
+  pids?: number[][]
+  /** Something unrelated keeps answering /health even after our task is ended. */
+  otherServer?: boolean
+  /** Task Scheduler itself is unreachable. */
+  queryFails?: boolean
+}) {
   const calls: string[][] = []
   const out: string[] = []
   const err: string[] = []
@@ -143,6 +151,18 @@ function fakeSystem(options: { registered?: string; healthy?: () => boolean; pid
     calls.push([file, ...args])
     if (file === 'schtasks.exe') {
       const verb = args[0]
+      if (verb === '/Query' && options.queryFails) {
+        return {
+          code: 1,
+          stdout: '',
+          stderr: 'ERROR: The Task Scheduler service is not available.',
+        }
+      }
+      if (verb === '/Query' && !args.includes('/TN')) {
+        const others = '"\\Microsoft\\Windows\\Other\\Task","N/A","Ready"\r\n'
+        const ours = registered === undefined ? '' : `"${TASK_NAME}","N/A","Ready"\r\n`
+        return { code: 0, stdout: `${others}${ours}`, stderr: '' }
+      }
       if (verb === '/Query' && registered === undefined) {
         return { code: 1, stdout: '', stderr: 'ERROR: The system cannot find the file specified.' }
       }
@@ -169,7 +189,7 @@ function fakeSystem(options: { registered?: string; healthy?: () => boolean; pid
         return { code: 0, stdout: 'SUCCESS', stderr: '' }
       }
       if (verb === '/End') {
-        health = () => false
+        if (!options.otherServer) health = () => false
         return { code: 0, stdout: 'SUCCESS', stderr: '' }
       }
     }
@@ -238,6 +258,10 @@ describe('service commands', () => {
 
   it('install registers the task from an XML file, starts it and waits for /health', async () => {
     const system = fakeSystem({})
+    // loadConfig resolves paths with the host's path module, so the expected
+    // values go through the same resolution to keep this test portable.
+    const dataDir = resolve(DATA_DIR)
+    const workspace = resolve('C:\\src\\repo')
     const code = await runServiceCommand(
       ['install', '--port', '43121', '--data-dir', DATA_DIR, '--workspace', 'C:\\src\\repo'],
       system.deps,
@@ -260,7 +284,7 @@ describe('service commands', () => {
       '/F',
     ])
     expect(system.removed).toEqual([`C:\\Temp\\${system.written[0]!.name}`])
-    expect(system.dirs).toEqual([DATA_DIR])
+    expect(system.dirs).toEqual([dataDir])
 
     const xml = system.registered!
     expect(xml).toContain('<UserId>MACHINE\\ada</UserId>')
@@ -273,16 +297,48 @@ describe('service commands', () => {
       '--port',
       '43121',
       '--data-dir',
-      DATA_DIR,
+      dataDir,
       '--log-level',
       'info',
       '--workspace',
-      'C:\\src\\repo',
+      workspace,
       '--log-file',
-      defaultLogFile(DATA_DIR),
+      defaultLogFile(dataDir),
       '--exit-with-parent',
     ])
     expect(system.out.at(-1)).toBe('Environment server is up at http://127.0.0.1:43121.')
+  })
+
+  it('install surfaces a Task Scheduler query failure instead of treating it as not installed', async () => {
+    const system = fakeSystem({ queryFails: true })
+    expect(await runServiceCommand(['install', '--port', '43121'], system.deps)).toBe(1)
+    expect(system.err[0]).toContain('Task Scheduler could not be queried')
+    expect(system.calls.map((call) => call[1])).toEqual(['/Query'])
+
+    const uninstall = fakeSystem({ queryFails: true })
+    expect(await runServiceCommand(['uninstall'], uninstall.deps)).toBe(1)
+    expect(uninstall.out).toEqual([])
+    expect(uninstall.calls.map((call) => call[1])).toEqual(['/Query'])
+  })
+
+  it('a replacement install checks the target port after the old server is stopped', async () => {
+    const existing = buildTaskXml({
+      userId: 'MACHINE\\ada',
+      command: 'conhost.exe',
+      arguments: ['--headless', NODE, ENTRY, '--port', '43120', '--exit-with-parent']
+        .map(quoteWindowsArgument)
+        .join(' '),
+      workingDirectory: DATA_DIR,
+    })
+    const system = fakeSystem({
+      registered: existing,
+      healthy: () => true,
+      otherServer: true,
+      pids: [[4242], []],
+    })
+    expect(await runServiceCommand(['install', '--port', '43120'], system.deps)).toBe(1)
+    expect(system.err[0]).toContain('already answers on http://127.0.0.1:43120')
+    expect(system.calls.map((call) => call[1])).not.toContain('/Create')
   })
 
   it('install rejects a dynamic port, remint, and a port another process already answers on', async () => {
@@ -318,6 +374,7 @@ describe('service commands', () => {
     expect(system.err).toEqual([])
     expect(code).toBe(0)
     expect(system.calls.map((call) => `${call[0]} ${call[1]}`)).toEqual([
+      'schtasks.exe /Query',
       'schtasks.exe /Query',
       'schtasks.exe /End',
       'powershell.exe -NoProfile',

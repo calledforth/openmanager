@@ -7,6 +7,7 @@ import {
   buildTaskXml,
   encodeTaskXml,
   flagValue,
+  parseCsvRecord,
   parseTaskStatus,
   parseWindowsCommandLine,
   quoteWindowsArgument,
@@ -136,10 +137,27 @@ function trimOutput(result: RunResult): string {
   return `${result.stderr}${result.stdout}`.trim().replace(/\s+/g, ' ')
 }
 
-/** Registered task XML, or `undefined` when Task Scheduler has no such task. */
+/**
+ * Registered task XML, or `undefined` when Task Scheduler has no such task.
+ * Absence is decided from the full task list (which succeeds whether or not
+ * our task exists) rather than from a failed `/TN` query, whose error text is
+ * locale-specific and also covers permission and service failures. Those are
+ * surfaced instead of being mistaken for "not installed".
+ */
 async function readTaskXml(context: Context): Promise<string | undefined> {
+  const listing = await schtasks(context, ['/Query', '/FO', 'CSV', '/NH'])
+  if (listing.code !== 0) {
+    throw new ServiceError(`Task Scheduler could not be queried: ${trimOutput(listing)}`)
+  }
+  const registered = listing.stdout
+    .split(/\r?\n/)
+    .some((line) => parseCsvRecord(line.trim())[0] === TASK_NAME)
+  if (!registered) return undefined
   const result = await schtasks(context, ['/Query', '/TN', TASK_NAME, '/XML'])
-  return result.code === 0 ? result.stdout : undefined
+  if (result.code !== 0) {
+    throw new ServiceError(`Task Scheduler could not read ${TASK_NAME}: ${trimOutput(result)}`)
+  }
+  return result.stdout
 }
 
 async function readTaskStatus(context: Context): Promise<TaskStatus | undefined> {
@@ -271,7 +289,10 @@ async function install(context: Context, flags: string[]): Promise<void> {
   if (existing) {
     context.stdout('Replacing the existing logon task.')
     await stopServer(context)
-  } else if (await isHealthy(context, config.port)) {
+  }
+  // Checked after the old server is gone, so a replacement cannot mistake an
+  // unrelated server on the target port for its own successful start.
+  if (await isHealthy(context, config.port)) {
     throw new ServiceError(
       `Something already answers on http://127.0.0.1:${config.port}. Stop it (for example a pnpm dev:web server) or pick another --port.`,
     )
