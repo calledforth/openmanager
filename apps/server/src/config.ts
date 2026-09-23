@@ -147,6 +147,13 @@ export function loadConfig(
   const workspaces = validateWorkspaceRoots(
     values.workspace ?? splitList(env.OPENMANAGER_WORKSPACES, delimiter) ?? [],
   )
+  // The registration allowlist is gone (D9 is containment only). A stale
+  // variable must not start a server whose reach silently widened.
+  if (env.OPENMANAGER_ALLOWED_WORKSPACE_ROOTS !== undefined) {
+    throw new Error(
+      'OPENMANAGER_ALLOWED_WORKSPACE_ROOTS is no longer supported: any signed-in client may register any folder.',
+    )
+  }
   const localOwnerClaimKey = env.OPENMANAGER_LOCAL_OWNER_CLAIM_KEY?.trim()
   if (localOwnerClaimKey && !LOCAL_OWNER_CLAIM_KEY_PATTERN.test(localOwnerClaimKey)) {
     throw new Error('Local owner claim key must be 32 bytes of unpadded base64url.')

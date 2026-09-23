@@ -107,8 +107,12 @@ describe('configuration', () => {
 
   it('no longer accepts a registration allowlist: any signed-in client may add any folder', () => {
     expect(() => loadConfig(['--allowed-workspace-root', './one'], {})).toThrow()
-    expect(loadConfig([], { OPENMANAGER_ALLOWED_WORKSPACE_ROOTS: './one' })).not.toHaveProperty(
-      'allowedWorkspaceRoots',
+    // A stale variable fails loudly rather than silently losing its boundary.
+    expect(() => loadConfig([], { OPENMANAGER_ALLOWED_WORKSPACE_ROOTS: './one' })).toThrow(
+      'no longer supported',
+    )
+    expect(() => loadConfig([], { OPENMANAGER_ALLOWED_WORKSPACE_ROOTS: '' })).toThrow(
+      'no longer supported',
     )
   })
 
