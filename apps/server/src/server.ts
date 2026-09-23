@@ -45,7 +45,7 @@ import { openEnvironmentDatabase } from './db/database.ts'
 import { createEventRetention } from './db/event-retention.ts'
 import { createReplayReader } from './db/replay.ts'
 import { getSessionSummary } from './db/session-store.ts'
-import { createLogger } from './logger.ts'
+import { createLogger, resolveLogSink } from './logger.ts'
 import { createProviderService } from './provider-service.ts'
 import { createRateLimiter } from './rate-limit.ts'
 import { createRequestGuard } from './request-guard.ts'
@@ -90,7 +90,7 @@ export async function startServer(config: ServerConfig) {
   const allowedOrigins = validateOrigins(config.allowedOrigins ?? [])
   const allowedHosts = validateHosts(config.allowedHosts ?? [])
   const workspaceRoots = validateWorkspaceRoots(config.workspaces ?? [])
-  const log = createLogger(config.logLevel)
+  const log = createLogger(config.logLevel, resolveLogSink(config.logFile))
   const rateLimiter = createRateLimiter()
   const identity = await loadEnvironmentIdentity(config.dataDir)
   const audit = createAuditLog(log, { dataDir: config.dataDir })
