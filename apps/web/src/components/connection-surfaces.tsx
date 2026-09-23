@@ -287,7 +287,7 @@ export function ConnectionBanner({
 export function ConnectionStatusChip({ state }: { state: ConnectionUiState }) {
   if (state.kind === 'no_environment') {
     return (
-      <p className="px-4 pb-3 text-ui-xs text-[var(--basis-text-muted)]">No environment</p>
+      <p className="px-2 text-[12px] text-muted-foreground">No environment</p>
     )
   }
 
@@ -303,7 +303,7 @@ export function ConnectionStatusChip({ state }: { state: ConnectionUiState }) {
         : 'text-[var(--basis-text-muted)]'
 
   return (
-    <p className={cn('px-4 pb-3 text-ui-xs', tone)}>
+    <p className={cn('px-2 text-[12px]', tone)}>
       {state.kind === 'ready' ? 'Connected' : state.title}
       {state.environmentLabel ? ` · ${state.environmentLabel}` : ''}
     </p>

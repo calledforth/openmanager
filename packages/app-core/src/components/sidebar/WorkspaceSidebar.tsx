@@ -1,23 +1,10 @@
 import { useEffect, type ReactNode } from 'react'
 import { useSidebarData } from '../../providers/sidebar-provider'
+import { FluidWorkspaceSidebarView } from './FluidWorkspaceSidebar'
 import { WorkspaceSidebarView } from './WorkspaceSidebarView'
 
-/**
- * The sidebar bound to `useSidebarData`. Hosts pass their own settings menu
- * as a slot and the shortcut label for their platform; everything else comes
- * from the sidebar contract.
- */
-export function WorkspaceSidebar({
-  collapsed,
-  onCollapse,
-  settingsMenu,
-  sidebarToggleShortcut,
-}: {
-  collapsed: boolean
-  onCollapse?: () => void
-  settingsMenu?: ReactNode
-  sidebarToggleShortcut?: string
-}) {
+/** The view props both sidebars share, read from the sidebar contract. */
+function useWorkspaceSidebarModel() {
   const {
     environment,
     workspaces,
@@ -45,33 +32,59 @@ export function WorkspaceSidebar({
     void acknowledgeSessionDone(activeWorkspacePath, activeSessionId, session.providerId)
   }, [acknowledgeSessionDone, activeSessionId, activeWorkspacePath, sessionsByWorkspace])
 
+  return {
+    environmentLabel: environment?.label,
+    workspaces: workspaces.map((workspace) => ({
+      path: workspace.path,
+      name: workspace.name,
+      missing: workspace.missing,
+      availability: workspace.availability,
+      sessions: sessionsByWorkspace[workspace.path] ?? [],
+    })),
+    activeWorkspacePath,
+    activeSessionId,
+    collapsedWorkspacePaths,
+    onToggleWorkspaceCollapse: toggleWorkspaceCollapsed,
+    onCreateSession: (workspacePath: string) => void createSession(workspacePath),
+    onSelectSession: selectSession,
+    onRenameSession: renameSession
+      ? (path: string, id: string, title: string | null) => void renameSession(path, id, title)
+      : undefined,
+    onDeleteSession: (...args: Parameters<typeof deleteSession>) => void deleteSession(...args),
+    onAddWorkspace: () => void addWorkspace(),
+  }
+}
+
+/**
+ * The sidebar bound to `useSidebarData`. Hosts pass their own settings menu
+ * as a slot and the shortcut label for their platform; everything else comes
+ * from the sidebar contract.
+ */
+export function WorkspaceSidebar({
+  collapsed,
+  onCollapse,
+  settingsMenu,
+  sidebarToggleShortcut,
+}: {
+  collapsed: boolean
+  onCollapse?: () => void
+  settingsMenu?: ReactNode
+  sidebarToggleShortcut?: string
+}) {
+  const model = useWorkspaceSidebarModel()
   return (
     <WorkspaceSidebarView
+      {...model}
       collapsed={collapsed}
-      environmentLabel={environment?.label}
-      workspaces={workspaces.map((workspace) => ({
-        path: workspace.path,
-        name: workspace.name,
-        missing: workspace.missing,
-        availability: workspace.availability,
-        sessions: sessionsByWorkspace[workspace.path] ?? [],
-      }))}
-      activeWorkspacePath={activeWorkspacePath}
-      activeSessionId={activeSessionId}
-      collapsedWorkspacePaths={collapsedWorkspacePaths}
-      onToggleWorkspaceCollapse={toggleWorkspaceCollapsed}
       onCollapse={onCollapse}
-      onCreateSession={(workspacePath) => void createSession(workspacePath)}
-      onSelectSession={selectSession}
-      onRenameSession={
-        renameSession ? (path, id, title) => void renameSession(path, id, title) : undefined
-      }
-      onDeleteSession={(workspacePath, externalId, providerId) =>
-        void deleteSession(workspacePath, externalId, providerId)
-      }
-      onAddWorkspace={() => void addWorkspace()}
       settingsMenu={settingsMenu}
       sidebarToggleShortcut={sidebarToggleShortcut}
     />
   )
+}
+
+/** The same sidebar on Fluid's inset layout; render inside a Fluid `SidebarProvider`. */
+export function FluidWorkspaceSidebar({ footer }: { footer?: ReactNode }) {
+  const model = useWorkspaceSidebarModel()
+  return <FluidWorkspaceSidebarView {...model} footer={footer} />
 }
