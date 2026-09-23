@@ -21,6 +21,9 @@ const THEME_OPTIONS: Array<{ id: ThemeMode; label: string }> = [
   { id: 'light', label: 'Light' },
   { id: 'dark', label: 'Dark' },
   { id: 'black', label: 'Black' },
+  { id: 'graphite-light', label: 'Graphite Light' },
+  { id: 'graphite', label: 'Graphite' },
+  { id: 'paper', label: 'Paper' },
 ]
 
 function ChoiceGroup<T extends string>({

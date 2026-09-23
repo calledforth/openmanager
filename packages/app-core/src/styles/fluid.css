@@ -1,0 +1,576 @@
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   Fluid Functionalism tokens + Tend colour schemes
+
+   Two layers, one direction of flow:
+
+   1. The Fluid Functionalism token set (surfaces, shadows, hover/active
+      overlays, faint, rule, tint, type-scale roles) that the components in
+      components/fluid read. On the original themes (dark / light / black)
+      these are derived from the --basis-* tokens, so fluid components sit
+      correctly on the existing palette.
+
+   2. The Tend schemes (graphite, paper, graphite-light). Each sets only
+      four base colours; everything else is mixed from them — exactly as
+      Tend does — and the --basis-* tokens are then pointed back at the
+      mixed values, so every existing surface in the app carries the
+      scheme's hue too.
+
+   Sources: tend/src/app/globals.css (schemes, mixes) and
+   fluid-functionalism/app/globals.css (neutral tokens, shadow recipes).
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+
+/* Fluid components' `dark:` utilities follow the app theme, not the OS. */
+@custom-variant dark (&:where(:root:not([data-theme='light'], [data-theme='graphite-light']) *));
+
+@theme inline {
+  --color-faint: var(--faint);
+  --color-rule: var(--rule);
+  --color-tint: var(--tint);
+  --color-tint-soft: var(--tint-soft);
+  --color-hover: var(--hover);
+  --color-active: var(--active);
+  --color-selected: var(--selected);
+  --color-destructive-light: var(--destructive-light);
+  --color-focus-ring: var(--focus-ring);
+
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-surface-4: var(--surface-4);
+  --color-surface-5: var(--surface-5);
+  --color-surface-6: var(--surface-6);
+  --color-surface-7: var(--surface-7);
+  --color-surface-8: var(--surface-8);
+
+  --shadow-surface-1: var(--shadow-1);
+  --shadow-surface-2: var(--shadow-2);
+  --shadow-surface-3: var(--shadow-3);
+  --shadow-surface-4: var(--shadow-4);
+  --shadow-surface-5: var(--shadow-5);
+  --shadow-surface-6: var(--shadow-6);
+  --shadow-surface-7: var(--shadow-7);
+  --shadow-surface-8: var(--shadow-8);
+
+  @keyframes spinner-move {
+    to {
+      stroke-dashoffset: -100;
+    }
+  }
+  @keyframes spinner-dash {
+    0%,
+    100% {
+      stroke-dasharray: 15 85;
+    }
+    50% {
+      stroke-dasharray: 40 60;
+    }
+  }
+  @keyframes sf-reveal-start {
+    from {
+      --sf-start: 1;
+    }
+    to {
+      --sf-start: 0;
+    }
+  }
+  @keyframes sf-reveal-end {
+    from {
+      --sf-end: 0;
+    }
+    to {
+      --sf-end: 1;
+    }
+  }
+  @keyframes sf-divider-start {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes sf-divider-end {
+    from {
+      opacity: 1;
+    }
+    to {
+      opacity: 0;
+    }
+  }
+}
+
+/* ── Type-scale roles (Tend runs the compact step) ── */
+:root {
+  --fs-display: 20px;
+  --fs-title: 15px;
+  --fs-subtitle: 13px;
+  --fs-body: 12px;
+  --fs-caption: 11px;
+}
+
+@media (min-width: 640px) {
+  :root {
+    --fs-display: 24px;
+  }
+}
+
+@utility text-display {
+  font-size: var(--fs-display, 28px);
+}
+@utility text-title {
+  font-size: var(--fs-title, 16px);
+}
+@utility text-subtitle {
+  font-size: var(--fs-subtitle, 14px);
+}
+@utility text-body {
+  font-size: var(--fs-body, 13px);
+}
+@utility text-caption {
+  font-size: var(--fs-caption, 12px);
+  line-height: 16px;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   §1  Shadow recipes (shared by every theme)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+:root {
+  --shadow-color: rgb(0 0 0 / 0.06);
+  --shadow-light-1: 0 0 0 1px var(--shadow-color);
+  --shadow-light-2: 0 0 0 1px var(--shadow-color), 0 1px 1px -0.5px var(--shadow-color);
+  --shadow-light-3:
+    0 0 0 1px var(--shadow-color), 0 1px 1px -0.5px var(--shadow-color),
+    0 3px 3px -1.5px var(--shadow-color);
+  --shadow-light-4:
+    0 0 0 1px var(--shadow-color), 0 1px 1px -0.5px var(--shadow-color),
+    0 3px 3px -1.5px var(--shadow-color), 0 6px 6px -3px var(--shadow-color);
+  --shadow-light-5:
+    0 0 0 1px var(--shadow-color), 0 1px 1px -0.5px var(--shadow-color),
+    0 3px 3px -1.5px var(--shadow-color), 0 6px 6px -3px var(--shadow-color),
+    0 12px 12px -6px var(--shadow-color);
+  --shadow-light-6:
+    0 0 0 1px var(--shadow-color), 0 1px 1px -0.5px var(--shadow-color),
+    0 3px 3px -1.5px var(--shadow-color), 0 6px 6px -3px var(--shadow-color),
+    0 12px 12px -6px var(--shadow-color), 0 24px 24px -12px var(--shadow-color);
+  --shadow-light-7:
+    0 0 0 1px var(--shadow-color), 0 1px 1px -0.5px var(--shadow-color),
+    0 3px 3px -1.5px var(--shadow-color), 0 6px 6px -3px var(--shadow-color),
+    0 12px 12px -6px var(--shadow-color), 0 24px 24px -12px var(--shadow-color),
+    0 48px 48px -24px var(--shadow-color);
+  --shadow-light-8:
+    0 0 0 1px var(--shadow-color), 0 1px 1px -0.5px var(--shadow-color),
+    0 3px 3px -1.5px var(--shadow-color), 0 6px 6px -3px var(--shadow-color),
+    0 12px 12px -6px var(--shadow-color), 0 24px 24px -12px var(--shadow-color),
+    0 48px 48px -24px var(--shadow-color), 0 96px 96px -48px var(--shadow-color);
+  --shadow-light-2-inset: inset 0 0 0 1px var(--shadow-color), 0 1px 1px -0.5px var(--shadow-color);
+  --shadow-light-3-inset:
+    inset 0 0 0 1px var(--shadow-color), 0 1px 1px -0.5px var(--shadow-color),
+    0 3px 3px -1.5px var(--shadow-color);
+
+  --dm-hi-base: rgba(255, 255, 255, 0.01);
+  --dm-hi-mid: rgba(255, 255, 255, 0.02);
+  --dm-hi-high: rgba(255, 255, 255, 0.04);
+  --dm-hi-peak: rgba(255, 255, 255, 0.06);
+  --dm-ring-base: rgba(255, 255, 255, 0.02);
+  --dm-ring-mid: rgba(255, 255, 255, 0.04);
+  --dm-ring-high: rgba(255, 255, 255, 0.06);
+  --dm-drop: rgba(0, 0, 0, 0.18);
+  --shadow-dark-1: inset 0 0 0 1px var(--dm-ring-base);
+  --shadow-dark-2:
+    inset 0 1px 0 0 var(--dm-hi-base), inset 0 0 0 1px var(--dm-ring-base),
+    0 1px 1px -0.5px var(--dm-drop);
+  --shadow-dark-3:
+    inset 0 1px 0 0 var(--dm-hi-mid), inset 0 0 0 1px var(--dm-ring-base),
+    0 0 0 1px rgba(0, 0, 0, 0.12), 0 1px 1px -0.5px var(--dm-drop),
+    0 3px 3px -1.5px var(--dm-drop);
+  --shadow-dark-4:
+    inset 0 1px 0 0 var(--dm-hi-mid), inset 0 0 0 1px var(--dm-ring-mid),
+    0 0 0 1px rgba(0, 0, 0, 0.14), 0 1px 1px -0.5px var(--dm-drop),
+    0 3px 3px -1.5px var(--dm-drop), 0 6px 6px -3px var(--dm-drop);
+  --shadow-dark-5:
+    inset 0 1px 0 0 var(--dm-hi-high), inset 0 0 0 1px var(--dm-ring-mid),
+    0 0 0 1px rgba(0, 0, 0, 0.16), 0 1px 1px -0.5px var(--dm-drop),
+    0 3px 3px -1.5px var(--dm-drop), 0 6px 6px -3px var(--dm-drop),
+    0 12px 12px -6px var(--dm-drop);
+  --shadow-dark-6:
+    inset 0 1px 0 0 var(--dm-hi-high), inset 0 0 0 1px var(--dm-ring-high),
+    0 0 0 1px rgba(0, 0, 0, 0.18), 0 1px 1px -0.5px var(--dm-drop),
+    0 3px 3px -1.5px var(--dm-drop), 0 6px 6px -3px var(--dm-drop),
+    0 12px 12px -6px var(--dm-drop), 0 24px 24px -12px var(--dm-drop);
+  --shadow-dark-7:
+    inset 0 1px 0 0 var(--dm-hi-peak), inset 0 0 0 1px var(--dm-ring-high),
+    0 0 0 1px rgba(0, 0, 0, 0.2), 0 1px 1px -0.5px var(--dm-drop),
+    0 3px 3px -1.5px var(--dm-drop), 0 6px 6px -3px var(--dm-drop),
+    0 12px 12px -6px var(--dm-drop), 0 24px 24px -12px var(--dm-drop),
+    0 48px 48px -24px var(--dm-drop);
+  --shadow-dark-8:
+    inset 0 1px 0 0 var(--dm-hi-peak), inset 0 0 0 1px var(--dm-ring-high),
+    0 0 0 1px rgba(0, 0, 0, 0.22), 0 1px 1px -0.5px var(--dm-drop),
+    0 3px 3px -1.5px var(--dm-drop), 0 6px 6px -3px var(--dm-drop),
+    0 12px 12px -6px var(--dm-drop), 0 24px 24px -12px var(--dm-drop),
+    0 48px 48px -24px var(--dm-drop), 0 96px 96px -48px var(--dm-drop);
+
+  --focus-ring: #6b97ff;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   §2  Fluid tokens on the original themes, read off --basis-*
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+
+/* Dark and black: the additive ladder mixed from the canvas. */
+:root {
+  --background: var(--basis-canvas-bg);
+  --foreground: var(--basis-text-strong);
+  --muted-foreground: var(--basis-text-muted);
+  --faint: var(--basis-text-faint);
+  --rule: var(--basis-border-muted);
+  --border: var(--basis-border);
+  --tint: oklch(0.74 0.12 262);
+  --tint-soft: oklch(0.74 0.12 262 / 0.16);
+  --surface-1: color-mix(in oklab, var(--background), var(--foreground) 1.3%);
+  --surface-2: color-mix(in oklab, var(--background), var(--foreground) 4.4%);
+  --surface-3: color-mix(in oklab, var(--background), var(--foreground) 7.4%);
+  --surface-4: color-mix(in oklab, var(--background), var(--foreground) 10.3%);
+  --surface-5: color-mix(in oklab, var(--background), var(--foreground) 13.4%);
+  --surface-6: color-mix(in oklab, var(--background), var(--foreground) 16.4%);
+  --surface-7: color-mix(in oklab, var(--background), var(--foreground) 19.4%);
+  --surface-8: color-mix(in oklab, var(--background), var(--foreground) 22.4%);
+  --hover: rgb(255 255 255 / 0.06);
+  --active: rgb(255 255 255 / 0.1);
+  --selected: #525252;
+  --destructive-light: #450a0a;
+  --overlay: 255 255 255;
+  --shadow-1: var(--shadow-dark-1);
+  --shadow-2: var(--shadow-dark-2);
+  --shadow-3: var(--shadow-dark-3);
+  --shadow-4: var(--shadow-dark-4);
+  --shadow-5: var(--shadow-dark-5);
+  --shadow-6: var(--shadow-dark-6);
+  --shadow-7: var(--shadow-dark-7);
+  --shadow-8: var(--shadow-dark-8);
+  --shadow-2-inset: var(--shadow-dark-2);
+  --shadow-3-inset: var(--shadow-dark-3);
+}
+
+/* Light: two colour steps, then white carried by shadow. */
+:root[data-theme='light'] {
+  --tint: oklch(0.56 0.15 262);
+  --tint-soft: oklch(0.56 0.15 262 / 0.12);
+  --surface-1: #fafafa;
+  --surface-2: #fcfcfc;
+  --surface-3: #ffffff;
+  --surface-4: #ffffff;
+  --surface-5: #ffffff;
+  --surface-6: #ffffff;
+  --surface-7: #ffffff;
+  --surface-8: #ffffff;
+  --hover: rgb(0 0 0 / 0.04);
+  --active: rgb(0 0 0 / 0.07);
+  --selected: #d4d4d4;
+  --destructive-light: #fef2f2;
+  --overlay: 0 0 0;
+  --shadow-1: var(--shadow-light-1);
+  --shadow-2: var(--shadow-light-2);
+  --shadow-3: var(--shadow-light-3);
+  --shadow-4: var(--shadow-light-4);
+  --shadow-5: var(--shadow-light-5);
+  --shadow-6: var(--shadow-light-6);
+  --shadow-7: var(--shadow-light-7);
+  --shadow-8: var(--shadow-light-8);
+  --shadow-2-inset: var(--shadow-light-2-inset);
+  --shadow-3-inset: var(--shadow-light-3-inset);
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   §3  Tend schemes — four base colours each
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+:root[data-theme='graphite'] {
+  --background: #15161a;
+  --foreground: #e6e8ec;
+  --muted-foreground: #8a8e97;
+  --faint: #585c65;
+}
+
+:root[data-theme='paper'] {
+  --background: #1a1917;
+  --foreground: #ebe8e2;
+  --muted-foreground: #938e86;
+  --faint: #5f5b54;
+}
+
+:root[data-theme='graphite-light'] {
+  --background: #f7f8fa;
+  --foreground: #1a1c20;
+  --muted-foreground: #6d717a;
+  --faint: #a3a7af;
+}
+
+/* Dark schemes: Tend's dark mixes over the neutral dark overlays/shadows. */
+:root:is([data-theme='graphite'], [data-theme='paper']) {
+  color-scheme: dark;
+  --rule: color-mix(in oklab, var(--background), var(--foreground) 8%);
+  --border: color-mix(in oklab, var(--background), var(--foreground) 11%);
+  --selected: color-mix(in oklab, var(--background), var(--foreground) 28%);
+
+  --basis-canvas-bg: var(--background);
+  --basis-surface: var(--surface-2);
+  --basis-surface-elevated: var(--surface-3);
+  --basis-surface-hover: var(--surface-4);
+  --basis-tab-active-bg: var(--surface-3);
+  --basis-border: var(--border);
+  --basis-border-muted: var(--rule);
+  --basis-border-strong: color-mix(in oklab, var(--background), var(--foreground) 22%);
+  --basis-chat-text: var(--foreground);
+  --basis-text: var(--foreground);
+  --basis-text-strong: var(--foreground);
+  --basis-text-muted: var(--muted-foreground);
+  --basis-text-faint: var(--faint);
+  --basis-action-bg: var(--foreground);
+  --basis-action-fg: var(--background);
+  --basis-action-hover: color-mix(in oklab, var(--foreground), var(--background) 10%);
+  --basis-accent-blue: var(--tint);
+  --basis-scrollbar-thumb: rgb(var(--overlay) / 0.08);
+  --basis-scrollbar-thumb-hover: rgb(var(--overlay) / 0.12);
+  --basis-selection-bg: var(--tint-soft);
+  --basis-selection-fg: var(--foreground);
+  --basis-chat-composer-border: var(--border);
+  --basis-chat-user-border: var(--rule);
+}
+
+/* Light scheme: Tend's light mixes; surfaces lift toward white. */
+:root[data-theme='graphite-light'] {
+  color-scheme: light;
+  --tint: oklch(0.56 0.15 262);
+  --tint-soft: oklch(0.56 0.15 262 / 0.12);
+  --rule: color-mix(in oklab, var(--background), var(--foreground) 8%);
+  --border: color-mix(in oklab, var(--background), var(--foreground) 9%);
+  --selected: color-mix(in oklab, var(--background), var(--foreground) 17%);
+  --surface-1: color-mix(in oklab, var(--background), var(--foreground) 1.5%);
+  --surface-2: var(--background);
+  --surface-3: color-mix(in oklab, var(--background) 30%, white);
+  --surface-4: var(--surface-3);
+  --surface-5: var(--surface-3);
+  --surface-6: var(--surface-3);
+  --surface-7: var(--surface-3);
+  --surface-8: var(--surface-3);
+  --hover: rgb(0 0 0 / 0.04);
+  --active: rgb(0 0 0 / 0.07);
+  --destructive-light: #fef2f2;
+  --overlay: 0 0 0;
+  --shadow-1: var(--shadow-light-1);
+  --shadow-2: var(--shadow-light-2);
+  --shadow-3: var(--shadow-light-3);
+  --shadow-4: var(--shadow-light-4);
+  --shadow-5: var(--shadow-light-5);
+  --shadow-6: var(--shadow-light-6);
+  --shadow-7: var(--shadow-light-7);
+  --shadow-8: var(--shadow-light-8);
+  --shadow-2-inset: var(--shadow-light-2-inset);
+  --shadow-3-inset: var(--shadow-light-3-inset);
+
+  --basis-canvas-bg: var(--background);
+  --basis-surface: var(--surface-3);
+  --basis-surface-elevated: color-mix(in oklab, var(--background), var(--foreground) 4%);
+  --basis-surface-hover: color-mix(in oklab, var(--background), var(--foreground) 4%);
+  --basis-tab-active-bg: color-mix(in oklab, var(--background), var(--foreground) 9%);
+  --basis-border: var(--border);
+  --basis-border-muted: var(--rule);
+  --basis-border-strong: color-mix(in oklab, var(--background), var(--foreground) 25%);
+  --basis-chat-text: var(--foreground);
+  --basis-text: var(--foreground);
+  --basis-text-strong: var(--foreground);
+  --basis-text-muted: var(--muted-foreground);
+  --basis-text-faint: var(--faint);
+  --basis-action-bg: var(--foreground);
+  --basis-action-fg: var(--background);
+  --basis-action-hover: color-mix(in oklab, var(--foreground), var(--background) 12%);
+  --basis-accent-blue: var(--tint);
+  --basis-session-cube-needs: #b8860b;
+  --basis-session-cube-ready: #2f8f45;
+  --basis-scrollbar-thumb: rgb(var(--overlay) / 0.08);
+  --basis-scrollbar-thumb-hover: rgb(var(--overlay) / 0.12);
+  --basis-selection-bg: var(--tint-soft);
+  --basis-selection-fg: var(--foreground);
+  --basis-chat-composer-border: var(--border);
+  --basis-chat-user-border: var(--rule);
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   §4  Tend typography on the Tend schemes
+       Geist's natural spacing (no positive tracking), 400 body weight.
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+:root:is([data-theme='graphite'], [data-theme='paper'], [data-theme='graphite-light']) {
+  --tracking-normal: 0em;
+  --tracking-ui: 0em;
+  --basis-letter-spacing: normal;
+}
+
+:root:is([data-theme='graphite'], [data-theme='paper'], [data-theme='graphite-light']) body {
+  font-weight: 400;
+  font-variation-settings: 'wght' 400;
+}
+
+:root:is([data-theme='graphite'], [data-theme='paper'], [data-theme='graphite-light']) :where(h1, h2) {
+  letter-spacing: -0.015em;
+}
+
+/* Colour-only tween while the theme swaps (ThemeProvider toggles the class). */
+html.transitioning *,
+html.transitioning *::before,
+html.transitioning *::after {
+  transition:
+    border-radius 180ms ease-in-out,
+    background-color 180ms ease-in-out,
+    color 180ms ease-in-out,
+    border-color 180ms ease-in-out,
+    fill 180ms ease-in-out,
+    stroke 180ms ease-in-out !important;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   §5  Scroll fades (fluid scroll-area / command menu)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+@property --sf-start {
+  syntax: '<number>';
+  inherits: false;
+  initial-value: 1;
+}
+@property --sf-end {
+  syntax: '<number>';
+  inherits: false;
+  initial-value: 1;
+}
+.scroll-fade,
+.scroll-fade-x {
+  --scroll-fade-size: 48px;
+}
+.scroll-fade {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--scroll-fade-size),
+    #000 calc(100% - var(--scroll-fade-size)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--scroll-fade-size),
+    #000 calc(100% - var(--scroll-fade-size)),
+    transparent 100%
+  );
+}
+.scroll-fade-x {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--scroll-fade-size),
+    #000 calc(100% - var(--scroll-fade-size)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--scroll-fade-size),
+    #000 calc(100% - var(--scroll-fade-size)),
+    transparent 100%
+  );
+}
+
+@supports (timeline-scope: --sf) {
+  .scroll-divider {
+    position: relative;
+    timeline-scope: --sf-scroller;
+    --scroll-divider-size: 48px;
+  }
+  .scroll-divider .scroll-fade {
+    scroll-timeline-name: --sf-scroller;
+  }
+  .scroll-divider::before,
+  .scroll-divider::after {
+    content: '';
+    position: absolute;
+    left: var(--scroll-divider-inset, 0px);
+    right: var(--scroll-divider-inset, 0px);
+    height: 1px;
+    background-color: var(--border);
+    pointer-events: none;
+    z-index: 1;
+    opacity: 0;
+  }
+  .scroll-divider::before {
+    top: 0;
+    animation: sf-divider-start both linear;
+    animation-timeline: --sf-scroller;
+    animation-range: 0 var(--scroll-divider-size);
+  }
+  .scroll-divider:first-child::before {
+    content: none;
+  }
+  .scroll-divider::after {
+    bottom: 0;
+    animation: sf-divider-end both linear;
+    animation-timeline: --sf-scroller;
+    animation-range: calc(100% - var(--scroll-divider-size)) 100%;
+  }
+}
+
+@supports (animation-timeline: scroll()) {
+  .scroll-fade {
+    mask-image: linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, var(--sf-start)) 0,
+      #000 var(--scroll-fade-size),
+      #000 calc(100% - var(--scroll-fade-size)),
+      rgba(0, 0, 0, var(--sf-end)) 100%
+    );
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, var(--sf-start)) 0,
+      #000 var(--scroll-fade-size),
+      #000 calc(100% - var(--scroll-fade-size)),
+      rgba(0, 0, 0, var(--sf-end)) 100%
+    );
+    animation:
+      sf-reveal-start both linear,
+      sf-reveal-end both linear;
+    animation-timeline: scroll(self), scroll(self);
+    animation-range-start: 0, calc(100% - var(--scroll-fade-size));
+    animation-range-end: var(--scroll-fade-size), 100%;
+  }
+  .scroll-fade-x {
+    mask-image: linear-gradient(
+      to right,
+      rgba(0, 0, 0, var(--sf-start)) 0,
+      #000 var(--scroll-fade-size),
+      #000 calc(100% - var(--scroll-fade-size)),
+      rgba(0, 0, 0, var(--sf-end)) 100%
+    );
+    -webkit-mask-image: linear-gradient(
+      to right,
+      rgba(0, 0, 0, var(--sf-start)) 0,
+      #000 var(--scroll-fade-size),
+      #000 calc(100% - var(--scroll-fade-size)),
+      rgba(0, 0, 0, var(--sf-end)) 100%
+    );
+    animation:
+      sf-reveal-start both linear,
+      sf-reveal-end both linear;
+    animation-timeline: scroll(self inline), scroll(self inline);
+    animation-range-start: 0, calc(100% - var(--scroll-fade-size));
+    animation-range-end: var(--scroll-fade-size), 100%;
+  }
+}
+
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* Radix scroll locks compensate for a scrollbar the app never shows. */
+body[data-scroll-locked][data-scroll-locked] {
+  margin-right: 0 !important;
+}

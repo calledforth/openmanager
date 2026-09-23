@@ -88,6 +88,9 @@
 @import '@fontsource/jetbrains-mono/500.css';
 @import '@fontsource/jetbrains-mono/600.css';
 
+/* Fluid Functionalism tokens and the Tend colour schemes. */
+@import './fluid.css';
+
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    §2  BASE — line rhythm & rendering (Geist; no Inter-only features)
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
@@ -731,8 +734,8 @@ textarea,
   .md .shiki span {
     color: var(--shiki-dark);
   }
-  html[data-theme='light'] .md .shiki,
-  html[data-theme='light'] .md .shiki span {
+  html:is([data-theme='light'], [data-theme='graphite-light']) .md .shiki,
+  html:is([data-theme='light'], [data-theme='graphite-light']) .md .shiki span {
     color: var(--shiki-light);
   }
 

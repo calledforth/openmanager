@@ -9,7 +9,26 @@ import {
 } from 'react'
 import { DEFAULT_UI_FONT, isUiFontId, type UiFontId } from '../lib/fonts'
 
-export type ThemeMode = 'dark' | 'light' | 'black'
+/** `graphite`, `paper` and `graphite-light` are the Tend colour schemes (styles/fluid.css). */
+export type ThemeMode = 'dark' | 'light' | 'black' | 'graphite' | 'paper' | 'graphite-light'
+
+export const THEME_MODES: readonly ThemeMode[] = [
+  'dark',
+  'light',
+  'black',
+  'graphite',
+  'paper',
+  'graphite-light',
+]
+
+export function isThemeMode(value: string): value is ThemeMode {
+  return (THEME_MODES as readonly string[]).includes(value)
+}
+
+/** Whether a theme paints on a light canvas (icons and code blocks switch on this). */
+export function isLightTheme(mode: ThemeMode): boolean {
+  return mode === 'light' || mode === 'graphite-light'
+}
 
 const THEME_STORAGE_KEY = 'openmanager-theme'
 const FONT_STORAGE_KEY = 'openmanager-font'
@@ -27,7 +46,7 @@ const ThemeContext = createContext<ThemeValue | null>(null)
 function readStoredTheme(): ThemeMode {
   try {
     const stored = localStorage.getItem(THEME_STORAGE_KEY)
-    if (stored === 'light' || stored === 'dark' || stored === 'black') return stored
+    if (stored && isThemeMode(stored)) return stored
   } catch {
     /* ignore */
   }
@@ -47,8 +66,13 @@ function readStoredFont(): UiFontId {
   return DEFAULT_UI_FONT
 }
 
-function applyTheme(mode: ThemeMode) {
+function applyTheme(mode: ThemeMode, animate = false) {
   const root = document.documentElement
+  // Colours tween for one beat while the scheme swaps (styles/fluid.css).
+  if (animate && root.dataset.theme !== (mode === 'dark' ? undefined : mode)) {
+    root.classList.add('transitioning')
+    window.setTimeout(() => root.classList.remove('transitioning'), 200)
+  }
   if (mode === 'dark') {
     delete root.dataset.theme
   } else {
@@ -73,7 +97,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   })
 
   useEffect(() => {
-    applyTheme(theme)
+    applyTheme(theme, true)
     try {
       localStorage.setItem(THEME_STORAGE_KEY, theme)
     } catch {

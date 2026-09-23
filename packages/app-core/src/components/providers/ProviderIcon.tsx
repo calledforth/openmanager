@@ -1,5 +1,5 @@
 import type { ProviderId } from '@agentpack/contract'
-import { useTheme } from '../../providers/theme-provider'
+import { isLightTheme, useTheme } from '../../providers/theme-provider'
 import { cn } from '../../lib/utils'
 
 /** SVGL brand marks — https://svgl.app (OpenCode, Cursor). */
@@ -81,7 +81,7 @@ export function ProviderIcon({
   className?: string
 }) {
   const { theme } = useTheme()
-  const dark = theme !== 'light'
+  const dark = !isLightTheme(theme)
   const sizeClass = cn('h-4 w-4 shrink-0', className)
 
   switch (providerId) {
