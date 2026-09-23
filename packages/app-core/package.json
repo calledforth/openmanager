@@ -54,6 +54,7 @@
     "./components/fluid/ui/dialog": "./src/components/fluid/ui/dialog.tsx",
     "./components/fluid/ui/sidebar": "./src/components/fluid/ui/sidebar.tsx",
     "./components/fluid/lib/icon-context": "./src/components/fluid/lib/icon-context.tsx",
+    "./components/fluid/lib/size-context": "./src/components/fluid/lib/size-context.tsx",
     "./components/fluid/sidebar-app/inset-topbar": "./src/components/fluid/sidebar-app/inset-topbar.tsx",
     "./components/fluid/sidebar-app/workspace-header": "./src/components/fluid/sidebar-app/workspace-header.tsx",
     "./components/markdown/Markdown": "./src/components/markdown/Markdown.tsx",

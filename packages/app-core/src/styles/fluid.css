@@ -572,3 +572,15 @@ html.transitioning *::after {
 body[data-scroll-locked][data-scroll-locked] {
   margin-right: 0 !important;
 }
+
+/* The sidebar list scrolls without Fluid's edge fade or its top/bottom
+   hairlines. */
+[data-slot='sidebar'] .scroll-fade {
+  -webkit-mask-image: none;
+  mask-image: none;
+  animation: none;
+}
+[data-slot='sidebar'] .scroll-divider::before,
+[data-slot='sidebar'] .scroll-divider::after {
+  content: none;
+}

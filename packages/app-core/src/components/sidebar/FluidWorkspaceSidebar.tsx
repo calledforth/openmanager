@@ -4,6 +4,7 @@ import type { ProviderId } from '@agentpack/contract'
 import { describeUnavailableWorkspace } from '../../lib/workspace-availability'
 import { cn } from '../../lib/utils'
 import type { IconComponent, IconComponentProps } from '../fluid/lib/icon-context'
+import { SizeProvider } from '../fluid/lib/size-context'
 import {
   Sidebar,
   SidebarContent,
@@ -96,56 +97,60 @@ export function FluidWorkspaceSidebarView({
     : (workspaces.find((workspace) => !workspace.missing)?.path ?? null)
   const name = environmentLabel ?? 'OpenManager'
 
+  // The app's 14px root shrinks Fluid's rem-sized rows, so the sidebar runs
+  // one step up the size ladder, with rows at Tend's 15px body size.
   return (
-    <Sidebar>
-      <SidebarHeader>
-        <SidebarWorkspaceHeader
-          name={name}
-          tile={<WorkspaceTile>{name.charAt(0).toUpperCase()}</WorkspaceTile>}
-        />
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              icon={SquarePen}
-              disabled={!newThreadTarget}
-              onClick={() => {
-                if (newThreadTarget) onCreateSession(newThreadTarget)
-              }}
-            >
-              New agent
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton icon={FolderPlus} onClick={onAddWorkspace}>
-              Add project
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
-      </SidebarHeader>
-
-      <SidebarContent>
-        {workspaces.length === 0 ? (
-          <p className="px-4 py-5 text-[13px] text-muted-foreground">No projects yet</p>
-        ) : null}
-        {workspaces.map((workspace) => (
-          <ProjectGroup
-            key={workspace.path}
-            workspace={workspace}
-            environmentLabel={environmentLabel}
-            isActiveWorkspace={workspace.path === activeWorkspacePath}
-            activeSessionId={activeSessionId}
-            isCollapsed={collapsedSet.has(workspace.path)}
-            onToggleCollapse={() => onToggleWorkspaceCollapse(workspace.path)}
-            onSelectSession={onSelectSession}
-            onCreateSession={onCreateSession}
-            onRenameSession={onRenameSession}
-            onDeleteSession={onDeleteSession}
+    <SizeProvider size="default">
+      <Sidebar className="text-[15px]">
+        <SidebarHeader>
+          <SidebarWorkspaceHeader
+            name={name}
+            tile={<WorkspaceTile>{name.charAt(0).toUpperCase()}</WorkspaceTile>}
           />
-        ))}
-      </SidebarContent>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                icon={SquarePen}
+                disabled={!newThreadTarget}
+                onClick={() => {
+                  if (newThreadTarget) onCreateSession(newThreadTarget)
+                }}
+              >
+                New agent
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton icon={FolderPlus} onClick={onAddWorkspace}>
+                Add project
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarHeader>
 
-      {footer ? <SidebarFooter>{footer}</SidebarFooter> : null}
-    </Sidebar>
+        <SidebarContent>
+          {workspaces.length === 0 ? (
+            <p className="px-4 py-5 text-[13px] text-muted-foreground">No projects yet</p>
+          ) : null}
+          {workspaces.map((workspace) => (
+            <ProjectGroup
+              key={workspace.path}
+              workspace={workspace}
+              environmentLabel={environmentLabel}
+              isActiveWorkspace={workspace.path === activeWorkspacePath}
+              activeSessionId={activeSessionId}
+              isCollapsed={collapsedSet.has(workspace.path)}
+              onToggleCollapse={() => onToggleWorkspaceCollapse(workspace.path)}
+              onSelectSession={onSelectSession}
+              onCreateSession={onCreateSession}
+              onRenameSession={onRenameSession}
+              onDeleteSession={onDeleteSession}
+            />
+          ))}
+        </SidebarContent>
+
+        {footer ? <SidebarFooter>{footer}</SidebarFooter> : null}
+      </Sidebar>
+    </SizeProvider>
   )
 }
 
@@ -216,7 +221,9 @@ function ProjectGroup({
     if (activeIndex >= 0) setVisibleCount((count) => Math.max(count, activeIndex + 1))
   }, [isCollapsed, isActiveWorkspace, activeSessionId, orderedSessions])
 
-  const unavailable = workspace.missing ? describeUnavailableWorkspace(workspace.availability) : null
+  const unavailable = workspace.missing
+    ? describeUnavailableWorkspace(workspace.availability)
+    : null
 
   return (
     <SidebarGroup
