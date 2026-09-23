@@ -426,10 +426,17 @@ describe('AgentRuntime model image input', () => {
     expect(imageInput).toHaveBeenCalledWith(
       expect.objectContaining({ command: process.env.ACP_OPENCODE_BIN ?? 'opencode' }),
     )
-    // Providers without a hook, unknown providers and empty asks answer nothing.
-    await expect(runtime.modelImageInputSupport('cursor', ['x/y'])).resolves.toEqual(new Map())
-    await expect(runtime.modelImageInputSupport('claude', ['sonnet'])).resolves.toEqual(new Map())
-    await expect(runtime.modelImageInputSupport('nope', ['x/y'])).resolves.toEqual(new Map())
+    // Providers without a hook and unknown providers answer "nobody can say"
+    // for every id — an answer, so the caller does not keep asking.
+    await expect(runtime.modelImageInputSupport('cursor', ['x/y'])).resolves.toEqual(
+      new Map([['x/y', null]]),
+    )
+    await expect(runtime.modelImageInputSupport('claude', ['sonnet'])).resolves.toEqual(
+      new Map([['sonnet', null]]),
+    )
+    await expect(runtime.modelImageInputSupport('nope', ['x/y'])).resolves.toEqual(
+      new Map([['x/y', null]]),
+    )
     await expect(runtime.modelImageInputSupport('opencode', [])).resolves.toEqual(new Map())
     expect(lookup).toHaveBeenCalledTimes(2)
   })

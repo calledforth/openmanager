@@ -463,20 +463,24 @@ export class AgentRuntime {
   /** Whether each of these models can read an image in a prompt.
    *
    * Asked out of band — the ACP catalog carries no such flag — and only of
-   * providers whose config offers a lookup; every other provider answers an
-   * empty map, which the caller reads as "unknown, let it through". The
-   * answer describes the model, not a session, so the lookup caches for the
-   * life of the runtime and a repeated ask spawns nothing. */
+   * providers whose config offers a lookup. Every other provider answers
+   * `null` for each id: "nobody can say", which the caller keeps and the
+   * composer reads as let-it-through. An id left out of the map means the
+   * lookup could not ask right now and the caller should try again later.
+   * The answer describes the model, not a session, so the lookup caches for
+   * the life of the runtime and a repeated ask spawns nothing. */
   async modelImageInputSupport(
     providerId: string,
     modelIds: readonly string[],
   ): Promise<ReadonlyMap<string, boolean | null>> {
+    if (modelIds.length === 0) return new Map()
+    const unknown = () => new Map(modelIds.map((modelId) => [modelId, null]))
     // Hosts key providers by the ids they were handed as strings; one this
     // runtime was not configured with is simply unknown, not an error.
-    if (modelIds.length === 0 || !Object.hasOwn(this.configs, providerId)) return new Map()
+    if (!Object.hasOwn(this.configs, providerId)) return unknown()
     const id = providerId as ProviderId
     const config = this.configs[id]
-    if (config.kind !== 'acp' || !config.models?.imageInput) return new Map()
+    if (config.kind !== 'acp' || !config.models?.imageInput) return unknown()
     let lookup = this.modelImageInputLookups.get(id)
     if (!lookup) {
       lookup = config.models.imageInput({

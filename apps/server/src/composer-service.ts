@@ -64,6 +64,22 @@ export interface ComposerServiceOptions {
   sessionForThread?: (threadId: string) => string | undefined
   /** The session's persisted selection. Without it selections live in memory. */
   readSessionComposer?: (sessionId: string) => SessionComposerState | undefined
+  /**
+   * How long to wait before asking again about models the lookup could not
+   * answer *right now* (its CLI failed or is held after a failure). Defaults
+   * to the runtime's own failure hold, so the retry lands once it has lifted.
+   */
+  modelImageInputRetryMs?: number
+  /** Timer seam for that retry; defaults to an unref'd `setTimeout`. */
+  scheduleModelImageInputRetry?: (run: () => void, delayMs: number) => () => void
+}
+
+const MODEL_IMAGE_INPUT_RETRY_MS = 5 * 60 * 1000
+
+const scheduleUnref = (run: () => void, delayMs: number) => {
+  const timer = setTimeout(run, delayMs)
+  timer.unref?.()
+  return () => clearTimeout(timer)
 }
 
 const errorResult = (requestId: string, code: ErrorCode, message: string) => ({
@@ -102,6 +118,8 @@ export function createComposerService(
   const writeProfile = (
     providerId: string,
     patch: Parameters<ComposerStore['upsertProfile']>[1],
+    // The enrichment's own write must not start another pass over itself.
+    { enrich = true }: { enrich?: boolean } = {},
   ) => {
     if (Object.keys(patch).length === 0) return
     const before = store.getProfile(providerId)
@@ -115,14 +133,23 @@ export function createComposerService(
         : {}),
     })
     if (profile.updatedAt !== before?.updatedAt) publish('provider.catalog.updated', { profile })
-    if (patch.availableModels) enrichModelImageInput(providerId)
+    if (enrich && patch.availableModels) enrichModelImageInput(providerId)
   }
 
   // One enrichment per provider at a time. A catalog write that lands while
   // one runs marks it dirty, so the pass repeats against the new rows rather
   // than a second pass racing the first over the same profile.
   const enrichments = new Map<string, { dirty: boolean }>()
+  // Rows the lookup could not answer *right now* are asked about again after
+  // the hold, independently of catalog writes: a stable catalog listed while
+  // the CLI was down would otherwise stay unresolved, and unresolved lets
+  // images through. One timer per provider; a new pass replaces it.
+  const retries = new Map<string, () => void>()
+  const retryMs = options.modelImageInputRetryMs ?? MODEL_IMAGE_INPUT_RETRY_MS
+  const schedule = options.scheduleModelImageInputRetry ?? scheduleUnref
   const enrichModelImageInput = (providerId: string) => {
+    retries.get(providerId)?.()
+    retries.delete(providerId)
     const running = enrichments.get(providerId)
     if (running) {
       running.dirty = true
@@ -131,29 +158,42 @@ export function createComposerService(
     const state = { dirty: false }
     enrichments.set(providerId, state)
     void (async () => {
+      let unanswered = false
       try {
         do {
           state.dirty = false
-          await enrichModelImageInputOnce(providerId)
+          unanswered = await enrichModelImageInputOnce(providerId)
         } while (state.dirty)
       } catch {
-        // Model metadata is advisory; an unanswerable lookup leaves rows unknown.
+        // Model metadata is advisory; an unanswerable lookup leaves rows
+        // unknown, and unknown is exactly what a retry is for.
+        unanswered = true
       } finally {
         enrichments.delete(providerId)
+      }
+      if (unanswered && !retries.has(providerId)) {
+        retries.set(
+          providerId,
+          schedule(() => {
+            retries.delete(providerId)
+            enrichModelImageInput(providerId)
+          }, retryMs),
+        )
       }
     })()
   }
 
-  const enrichModelImageInputOnce = async (providerId: string) => {
+  /** One pass. Resolves to whether any row was left for a later retry. */
+  const enrichModelImageInputOnce = async (providerId: string): Promise<boolean> => {
     const pending = (store.getProfile(providerId)?.availableModels ?? [])
       .filter((model) => model.supportsImageInput === undefined)
       .map((model) => model.modelId)
-    if (pending.length === 0) return
+    if (pending.length === 0) return false
     const answers = await runtime.modelImageInputSupport(providerId, pending)
     // Merged against the profile as it is *now*, not the snapshot the ids
     // came from: a session may have relisted the catalog while the CLI ran.
     const current = store.getProfile(providerId)?.availableModels
-    if (!current) return
+    if (!current) return false
     let changed = false
     const availableModels = current.map((model) => {
       const answer = answers.get(model.modelId)
@@ -161,7 +201,10 @@ export function createComposerService(
       changed = true
       return { ...model, supportsImageInput: answer }
     })
-    if (changed) writeProfile(providerId, { availableModels })
+    if (changed) writeProfile(providerId, { availableModels }, { enrich: false })
+    // `null` is an answer ("nobody can say") and is kept; an id the lookup
+    // did not mention at all could not be asked about and is worth retrying.
+    return pending.some((modelId) => !answers.has(modelId))
   }
 
   const writePreference = (

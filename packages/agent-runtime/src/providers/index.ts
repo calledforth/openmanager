@@ -6,10 +6,12 @@ import { cursor } from './cursor.js'
 import { opencode } from './opencode.js'
 
 /** Answers "can this model read an image?" for a batch of model ids, outside
- * any session. `true`/`false` is the provider's word; `null` is "it could not
- * say" for that id, which the composer treats as let-it-through. An id the
- * map does not mention at all is the same as `null`. Implementations own
- * their caching: a runtime builds one lookup per provider and keeps it. */
+ * any session. `true`/`false` is the provider's word; `null` is "asked, and
+ * it could not say" for that id, which the composer treats as let-it-through
+ * and the caller keeps. An id the map does not mention at all is "could not
+ * ask right now" (the CLI failed or is being held after a failure): the caller
+ * should ask again later. Implementations own their caching: a runtime builds
+ * one lookup per provider and keeps it. */
 export type ModelImageInputLookup = (
   modelIds: readonly string[],
 ) => Promise<ReadonlyMap<string, boolean | null>>

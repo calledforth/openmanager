@@ -453,6 +453,67 @@ describe('what a provider and its models accept in a prompt', () => {
     expect(runtime.modelImageInputSupport).toHaveBeenCalledWith('cursor', ['anthropic/opus'])
   })
 
+  it('asks again after the hold about rows the lookup could not answer, but not about answered ones', async () => {
+    const { runtime, store } = await harness()
+    const timers: Array<{ run: () => void; delayMs: number; cancelled: boolean }> = []
+    const service = createComposerService(
+      runtime,
+      { snapshot: () => [provider], rejection: () => undefined },
+      store,
+      () => undefined,
+      {
+        modelImageInputRetryMs: 1_000,
+        scheduleModelImageInputRetry: (run, delayMs) => {
+          const timer = { run, delayMs, cancelled: false }
+          timers.push(timer)
+          return () => {
+            timer.cancelled = true
+          }
+        },
+      },
+    )
+    // First ask: the CLI is down for `a/*`, so those ids come back unmentioned;
+    // `b/known` is answered "nobody can say", which is final.
+    runtime.modelImageInputSupport.mockImplementationOnce(
+      async () => new Map<string, boolean | null>([['b/known', null]]),
+    )
+    service.onRuntimeEvent({
+      id: 'event-1',
+      seq: 1,
+      timestamp: '2026-09-23T00:00:00.000Z',
+      providerId: 'cursor',
+      threadId: 'thread-1',
+      workspaceId: 'workspace-1',
+      sessionId: 'provider-session-1',
+      category: 'session',
+      event: 'current_model_update',
+      data: {
+        availableModels: [
+          { id: 'a/one', displayName: 'One' },
+          { id: 'b/known', displayName: 'Known' },
+        ],
+      },
+    })
+    await settle()
+    expect(timers).toHaveLength(1)
+    expect(timers[0]).toMatchObject({ delayMs: 1_000, cancelled: false })
+
+    // The hold lifts and the CLI is back.
+    runtime.modelImageInputSupport.mockImplementationOnce(
+      async (_provider: string, ids: string[]) =>
+        new Map<string, boolean | null>(ids.map((id) => [id, id === 'a/one' ? true : null])),
+    )
+    timers[0]!.run()
+    await settle()
+    expect(runtime.modelImageInputSupport).toHaveBeenLastCalledWith('cursor', ['a/one', 'b/known'])
+    expect(store.getProfile('cursor')?.availableModels).toEqual([
+      { modelId: 'a/one', name: 'One', supportsImageInput: true },
+      { modelId: 'b/known', name: 'Known' },
+    ])
+    // `b/known` was answered `null` both times: final, nothing left to retry.
+    expect(timers).toHaveLength(1)
+  })
+
   it('merges a slow answer into the catalog as it is by then, and re-asks for rows that arrived meanwhile', async () => {
     const { runtime, service, store } = await harness()
     let release!: (answers: Map<string, boolean | null>) => void

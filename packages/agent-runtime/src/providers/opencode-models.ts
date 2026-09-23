@@ -160,20 +160,19 @@ export function createOpencodeModelImageInputLookup(
       }
       const prefix = modelId.slice(0, slash)
       const held = failedUntil.get(prefix)
-      if (held !== undefined && held > now()) {
-        answers.set(modelId, null)
-        continue
-      }
+      // Inside the hold the id is left out: "could not ask right now", which
+      // the caller may retry, rather than `null`, which it would keep.
+      if (held !== undefined && held > now()) continue
       prefixes.add(prefix)
     }
     await Promise.all([...prefixes].map(listOnce))
     for (const modelId of modelIds) {
       if (answers.has(modelId)) continue
+      const prefix = modelId.slice(0, modelId.indexOf('/'))
+      if (failedUntil.has(prefix)) continue
       // Listed under this prefix but not printed: the CLI does not know it.
       // Remembered so the next ask for the same id costs no process.
-      if (!known.has(modelId) && !failedUntil.has(modelId.slice(0, modelId.indexOf('/')))) {
-        known.set(modelId, null)
-      }
+      if (!known.has(modelId)) known.set(modelId, null)
       answers.set(modelId, known.get(modelId) ?? null)
     }
     return answers

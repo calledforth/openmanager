@@ -103,14 +103,13 @@ describe('OpenCode model image input lookup', () => {
   it('holds a failed listing so a broken CLI is not respawned per model, then retries', async () => {
     const listings: Record<string, string | Error> = { openai: new Error('ENOENT') }
     const { lookup, execFile, log, advance } = build(listings)
-    await expect(lookup(['openai/gpt-5'])).resolves.toEqual(new Map([['openai/gpt-5', null]]))
+    // Not `null`: the CLI was not asked, so the id is left out for a retry.
+    await expect(lookup(['openai/gpt-5'])).resolves.toEqual(new Map())
     expect(log).toHaveBeenCalledWith(
       expect.objectContaining({ level: 'warn', data: expect.objectContaining({ provider: 'openai' }) }),
     )
     // A different model under the same provider inside the hold: no spawn.
-    await expect(lookup(['openai/gpt-5-mini'])).resolves.toEqual(
-      new Map([['openai/gpt-5-mini', null]]),
-    )
+    await expect(lookup(['openai/gpt-5-mini'])).resolves.toEqual(new Map())
     expect(execFile).toHaveBeenCalledTimes(1)
     // After the hold the CLI is asked again, and a fixed CLI answers.
     listings.openai = model('openai', 'gpt-5', true)
