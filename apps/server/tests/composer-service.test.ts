@@ -512,6 +512,32 @@ describe('what a provider and its models accept in a prompt', () => {
     ])
     // `b/known` was answered `null` both times: final, nothing left to retry.
     expect(timers).toHaveLength(1)
+
+    // Another unanswered listing leaves a retry pending; stopping cancels it
+    // and a timer that fires anyway asks nothing of a closed store.
+    runtime.modelImageInputSupport.mockImplementationOnce(async () => new Map())
+    service.onRuntimeEvent({
+      id: 'event-2',
+      seq: 2,
+      timestamp: '2026-09-23T00:00:01.000Z',
+      providerId: 'cursor',
+      threadId: 'thread-1',
+      workspaceId: 'workspace-1',
+      sessionId: 'provider-session-1',
+      category: 'session',
+      event: 'current_model_update',
+      data: { availableModels: [{ id: 'c/late', displayName: 'Late' }] },
+    })
+    await settle()
+    expect(timers).toHaveLength(2)
+    expect(timers[1]!.cancelled).toBe(false)
+    const calls = runtime.modelImageInputSupport.mock.calls.length
+    service.stop()
+    expect(timers[1]!.cancelled).toBe(true)
+    timers[1]!.run()
+    await settle()
+    expect(runtime.modelImageInputSupport).toHaveBeenCalledTimes(calls)
+    expect(timers).toHaveLength(2)
   })
 
   it('merges a slow answer into the catalog as it is by then, and re-asks for rows that arrived meanwhile', async () => {

@@ -147,9 +147,13 @@ export function createComposerService(
   const retries = new Map<string, () => void>()
   const retryMs = options.modelImageInputRetryMs ?? MODEL_IMAGE_INPUT_RETRY_MS
   const schedule = options.scheduleModelImageInputRetry ?? scheduleUnref
+  // Once stopped nothing is asked or scheduled again: a retry firing after
+  // the store closed would fail, be caught, and schedule itself forever.
+  let stopped = false
   const enrichModelImageInput = (providerId: string) => {
     retries.get(providerId)?.()
     retries.delete(providerId)
+    if (stopped) return
     const running = enrichments.get(providerId)
     if (running) {
       running.dirty = true
@@ -171,7 +175,7 @@ export function createComposerService(
       } finally {
         enrichments.delete(providerId)
       }
-      if (unanswered && !retries.has(providerId)) {
+      if (unanswered && !stopped && !retries.has(providerId)) {
         retries.set(
           providerId,
           schedule(() => {
@@ -289,6 +293,13 @@ export function createComposerService(
     }))
 
   return {
+    /** Cancel pending model lookups' retries. Call before closing the store. */
+    stop() {
+      stopped = true
+      for (const cancel of retries.values()) cancel()
+      retries.clear()
+    },
+
     observeProbe(providerId: string, probe: RuntimeProviderBootstrap) {
       try {
         fillProfileFromCatalog(providerId, {
