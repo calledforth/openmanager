@@ -1,7 +1,8 @@
 import { typographyBody } from '../../lib/typography'
 
-/** Sent user-message bubble — intentionally separate from composer `chatInputShell`. */
+/** Sent user-message bubble, sized to its text and held to the right —
+ * intentionally separate from composer `chatInputShell`. */
 export const chatUserMessageShell =
-  'flex w-full flex-col gap-0.5 rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-chat-user-border)] bg-[var(--basis-surface)] p-1'
+  'flex w-fit min-w-0 max-w-[80%] flex-col gap-0.5 rounded-xl border border-[var(--basis-chat-user-border)] bg-[var(--basis-chat-user-bg)] px-3.5 py-2.5'
 
-export const chatUserInner = `px-1 py-0.5 ${typographyBody} text-[var(--basis-text)]`
+export const chatUserInner = `${typographyBody} text-[var(--basis-text)]`

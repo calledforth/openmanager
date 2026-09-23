@@ -286,7 +286,9 @@
        sets only four base colours and mixes everything else from them.
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 :root[data-theme='neutral'] {
-  --background: #141414;
+  /* Tend's Neutral is #141414; this runs a step lighter, with user messages
+     on a #363636 bubble. */
+  --background: #171717;
   --foreground: #ededed;
   --muted-foreground: #8f8f8f;
   --faint: #5c5c5c;
@@ -393,16 +395,17 @@
   --basis-chat-user-border: color-mix(in oklab, var(--background), var(--foreground) 11%);
 }
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   §4  Tend typography on the Tend schemes
-       Geist's natural spacing (no positive tracking), 400 body weight.
-   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='neutral-light']) {
-  --tracking-normal: 0em;
-  --tracking-ui: 0em;
-  --basis-letter-spacing: normal;
+/* Neutral's user messages: a solid #363636 bubble, no edge. */
+:root[data-theme='neutral'] {
+  --basis-chat-user-bg: #363636;
+  --basis-chat-user-border: transparent;
 }
 
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   §4  Tend typography on the Tend schemes
+       400 body weight. Tracking stays the app's 0.01em: Tend's zero tracking
+       reads cramped at the app's 14px.
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 :root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='neutral-light']) body {
   font-weight: 400;
   font-variation-settings: 'wght' 400;

@@ -5,7 +5,6 @@ import type { StreamMessagePart } from '@openmanager/shared/lib/remote-stream-pa
 import { cn } from '../../lib/utils'
 import type { ArtifactSource, OptimisticImage } from '../../lib/attachments'
 import { partArtifact, useArtifactPreview } from '../../lib/artifact-preview'
-import { ReferenceComposerToolbar } from './composer-toolbar'
 import { chatUserInner, chatUserMessageShell } from './userMessageStyles'
 
 type MessagePart = StreamMessagePart
@@ -152,8 +151,8 @@ export function UserMessage({
         name: attachment.name,
       }))
   return (
-    <div className="w-full py-1">
-      <div className={cn(chatUserMessageShell, 'max-w-none')}>
+    <div className="flex w-full justify-end py-1">
+      <div className={chatUserMessageShell}>
         <div className={chatUserInner}>
           {images.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-1.5">
@@ -177,9 +176,6 @@ export function UserMessage({
               )}
             </div>
           )}
-        </div>
-        <div className="px-1 pb-0.5" onClick={(e) => e.stopPropagation()}>
-          <ReferenceComposerToolbar />
         </div>
       </div>
       {previewImage && (
