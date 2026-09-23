@@ -174,6 +174,25 @@ describe('the shared application over the environment client', () => {
     expect(client.getState().sessions[SESSION.sessionId]?.status).toBe('idle')
   })
 
+  it.each([
+    ['missing', 'MISSING', /missing or was moved/],
+    ['inaccessible', 'NO ACCESS', /^Permission denied/],
+  ] as const)('says why a %s project cannot be used', async (availability, badge, reason) => {
+    const client = createMockEnvironmentClient({
+      seed: {
+        ...SEEDED_HISTORY,
+        workspaces: [{ ...WORKSPACE, exists: false, availability }],
+      },
+    })
+    await render(<App client={client} />)
+    // The badge and its accessible name carry the cause, not only that the
+    // project is unusable: the two need different fixes.
+    const badgeNode = [...container.querySelectorAll('span')].find(
+      (node) => node.textContent === badge,
+    )
+    expect(badgeNode?.getAttribute('aria-label')).toMatch(reason)
+  })
+
   it('renders the sidebar, the empty-chat landing and a disabled composer', async () => {
     const client = createMockEnvironmentClient({ seed: SEEDED_HISTORY })
     await render(<App client={client} />)

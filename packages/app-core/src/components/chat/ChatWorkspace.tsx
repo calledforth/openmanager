@@ -5,6 +5,7 @@ import { FloatingChatComposer } from './FloatingChatComposer'
 import { MessageInput } from './MessageInput'
 import { useState, type ReactNode } from 'react'
 import { cn } from '../../lib/utils'
+import { describeUnavailableWorkspace } from '../../lib/workspace-availability'
 import {
   useEnvironmentClientOptional,
   useEnvironmentState,
@@ -31,6 +32,7 @@ function SessionOpenBoundary({ children }: { children: ReactNode }) {
   // The folder, not the request, is what has to change, so the pane explains
   // the on-disk fix and still offers a way out that does not need the folder.
   const unavailable = failure.code === 'workspace_unavailable'
+  const cause = describeUnavailableWorkspace(workspace?.availability)
   const confirming = confirmingSessionId === failure.sessionId
   return (
     <div className="flex min-h-0 flex-1 overflow-y-auto p-6">
@@ -46,8 +48,10 @@ function SessionOpenBoundary({ children }: { children: ReactNode }) {
           </h2>
           {workspace ? <p className="break-all font-mono text-ui-xs">{workspace.path}</p> : null}
           <p>{failure.message}</p>
-          {workspace?.availability === 'inaccessible' ? (
-            <p>Check folder permissions and the environment’s allowed workspace roots.</p>
+          {unavailable ? (
+            <p>
+              {cause.reason} {cause.fix}
+            </p>
           ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -108,7 +112,7 @@ function SessionOpenBoundary({ children }: { children: ReactNode }) {
             {deleteError}
           </p>
         ) : null}
-        {unavailable ? (
+        {unavailable && workspace?.availability !== 'inaccessible' ? (
           <p className="text-[var(--basis-text-muted)]">
             If you moved the folder, restore its original path to reopen this session. Adding the
             new path creates a separate project and keeps this session in the original project.
