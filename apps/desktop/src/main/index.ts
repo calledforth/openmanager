@@ -1,7 +1,5 @@
 import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron'
 import { join } from 'path'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { ConvexClient } from 'convex/browser'
 import { api } from '@openmanager/convex/_generated/api'
 import { JobWorker } from './job-worker'
@@ -13,7 +11,12 @@ import {
   type ProviderId,
   type ProviderMetadata,
 } from '@agentpack/contract'
-import { opencode as opencodeProvider, providers } from '@agentpack/runtime'
+import {
+  acpCommandBin,
+  createOpencodeModelImageInputLookup,
+  opencode as opencodeProvider,
+  providers,
+} from '@agentpack/runtime'
 import { loadOrCreateClientId } from './client-id'
 import { sanitizeProviderHealthCache } from './provider-health-cache'
 import store from './store'
@@ -44,8 +47,6 @@ let convexClient: ConvexClient | null = null
 let jobWorker: JobWorker | null = null
 let clientId: string | null = null
 let userDataPath = ''
-const execFileAsync = promisify(execFile)
-const modelImageSupportCache = new Map<string, boolean | null>()
 
 /** The workspace's remembered model for a provider, preferring the composer
  * preference and falling back to the pre-Cursor `lastSelectedModelByWorkspace`
@@ -95,69 +96,22 @@ function desiredConfigForWorkspace(
   return Object.keys(desired).length > 0 ? desired : undefined
 }
 
-function jsonObjects(output: string): Array<Record<string, any>> {
-  const objects: Array<Record<string, any>> = []
-  let start = -1
-  let depth = 0
-  let quoted = false
-  let escaped = false
-  for (let index = 0; index < output.length; index += 1) {
-    const char = output[index]
-    if (quoted) {
-      if (escaped) escaped = false
-      else if (char === '\\') escaped = true
-      else if (char === '"') quoted = false
-      continue
-    }
-    if (char === '"') quoted = true
-    else if (char === '{') {
-      if (depth === 0) start = index
-      depth += 1
-    } else if (char === '}' && depth > 0) {
-      depth -= 1
-      if (depth === 0 && start >= 0) {
-        try {
-          objects.push(JSON.parse(output.slice(start, index + 1)))
-        } catch {
-          // Ignore a malformed model block and leave support unknown.
-        }
-        start = -1
-      }
-    }
-  }
-  return objects
-}
+// The `opencode models` parser and its cache live in the runtime package now,
+// shared with the environment server, so the two hosts cannot drift. Named
+// directly rather than read out of `providers`, whose values are the whole
+// provider union: `command` lives on the ACP arm, and this call is about
+// OpenCode's own CLI, so there is nothing to narrow.
+const opencodeModelImageInput = createOpencodeModelImageInputLookup({
+  command: acpCommandBin(opencodeProvider.command),
+})
 
 async function modelSupportsImages(
   providerId: ProviderId,
   modelId: string,
 ): Promise<boolean | null> {
-  if (providerId !== 'opencode' || !modelId.includes('/')) return null
-  if (modelImageSupportCache.has(modelId)) return modelImageSupportCache.get(modelId) ?? null
-  const [modelProvider] = modelId.split('/', 1)
-  // Named directly rather than read out of `providers`, whose values are the
-  // whole provider union: `command` lives on the ACP arm, and this call is
-  // about OpenCode's own CLI, so there is nothing to narrow.
-  const command = process.env.ACP_OPENCODE_BIN ?? opencodeProvider.command.bin
-  try {
-    const { stdout } = await execFileAsync(
-      command,
-      ['models', modelProvider, '--verbose', '--pure'],
-      { windowsHide: true, maxBuffer: 32 * 1024 * 1024 },
-    )
-    const model = jsonObjects(stdout).find(
-      (item) => `${String(item.providerID)}/${String(item.id)}` === modelId,
-    )
-    const value =
-      typeof model?.capabilities?.input?.image === 'boolean'
-        ? (model.capabilities.input.image as boolean)
-        : null
-    modelImageSupportCache.set(modelId, value)
-    return value
-  } catch {
-    modelImageSupportCache.set(modelId, null)
-    return null
-  }
+  if (providerId !== 'opencode') return null
+  const answers = await opencodeModelImageInput([modelId])
+  return answers.get(modelId) ?? null
 }
 
 function getRuntimeConfig(): RuntimeConfig {

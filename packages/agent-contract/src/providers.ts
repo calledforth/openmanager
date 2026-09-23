@@ -32,6 +32,12 @@ export type ModelOption = {
    * The CLI hard-rejects `setPermissionMode('auto')` otherwise, so the mode
    * picker has to filter on this rather than let the write fail. */
   supportsAutoMode?: boolean
+  /** Whether this model can read an image in the prompt. Absent means nobody
+   * has been able to say — an ACP catalog carries no such flag, and only some
+   * providers can be asked out of band — which the composer treats as "let it
+   * through", the same way it treats a provider it cannot ask at all. `false`
+   * is a real answer and blocks the attach. */
+  supportsImageInput?: boolean
 }
 
 export type ModelListing = {

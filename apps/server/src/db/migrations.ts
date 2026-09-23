@@ -468,4 +468,22 @@ export const MIGRATIONS: readonly Migration[] = [
         ON attachments(session_id, created_at, attachment_id)`)
     },
   },
+  {
+    version: 10,
+    name: 'provider_prompt_capabilities',
+    up(database) {
+      const columns = new Set(
+        (database.prepare('PRAGMA table_info(provider_profiles)').all() as { name: string }[])
+          .map((column) => column.name),
+      )
+      if (!columns.has('prompt_capabilities_json')) {
+        // What the provider's process said it accepts in a prompt at
+        // `initialize` (CAL-196). Null until one has completed a handshake.
+        // Per-model image support rides `available_models_json`, so no column.
+        database.exec(
+          'ALTER TABLE provider_profiles ADD COLUMN prompt_capabilities_json TEXT CHECK (prompt_capabilities_json IS NULL OR json_valid(prompt_capabilities_json))',
+        )
+      }
+    },
+  },
 ]

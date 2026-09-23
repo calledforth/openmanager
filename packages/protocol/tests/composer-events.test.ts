@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest'
 import {
   ComposerCommandOptionSchema,
   ComposerConfigOptionSchema,
+  ComposerModelOptionSchema,
   ComposerUsageSchema,
   ProofEventSchemas,
+  ProviderComposerProfileSchema,
   SessionComposerStateSchema,
   SessionSummarySchema,
 } from '@openmanager/protocol'
@@ -98,6 +100,34 @@ describe('live composer state wire contract', () => {
         event(name, { workspaceId: 'workspace-1', providerId: 'cursor', preference: {} }),
       ).payload.preference,
     ).toEqual({})
+  })
+
+  it('carries what a provider and each of its models accept in a prompt', () => {
+    const name = 'provider.catalog.updated'
+    const profile = {
+      providerId: 'opencode',
+      promptCapabilities: { image: true, audio: false, embeddedContext: false },
+      availableModels: [
+        { modelId: 'anthropic/claude-sonnet-4', name: 'Sonnet', supportsImageInput: true },
+        { modelId: 'openai/o1-mini', name: 'o1 mini', supportsImageInput: false },
+        // An ACP catalog carries no flag: unknown, not refused.
+        { modelId: 'local/llama', name: 'Llama' },
+      ],
+      updatedAt: 1,
+    }
+    expect(ProofEventSchemas[name].parse(event(name, { profile })).payload.profile).toEqual(profile)
+    // A handshake answers all three or none; a partial triple is not an answer.
+    expect(
+      ProviderComposerProfileSchema.safeParse({
+        providerId: 'opencode',
+        promptCapabilities: { image: true },
+        updatedAt: 1,
+      }).success,
+    ).toBe(false)
+    expect(
+      ComposerModelOptionSchema.safeParse({ modelId: 'm', name: 'M', supportsImageInput: 'yes' })
+        .success,
+    ).toBe(false)
   })
 
   it('puts the selection on session summaries and keeps it optional', () => {

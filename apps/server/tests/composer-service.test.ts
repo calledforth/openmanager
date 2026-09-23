@@ -66,7 +66,10 @@ async function harness() {
     applyDesiredConfig: vi.fn().mockResolvedValue(undefined),
     providerModels: vi.fn(() => ({})),
     providerModes: vi.fn(() => ({})),
-  } as unknown as Parameters<typeof createComposerService>[0]
+    modelImageInputSupport: vi.fn(async () => new Map<string, boolean | null>()),
+  } as unknown as Parameters<typeof createComposerService>[0] & {
+    modelImageInputSupport: ReturnType<typeof vi.fn>
+  }
   const providers = {
     snapshot: () => [provider],
     rejection: () => undefined,
@@ -286,6 +289,299 @@ describe('composer service commands', () => {
       }),
     ).not.toThrow()
     expect(store.getProfile('cursor')?.availableModels).toEqual([])
+  })
+})
+
+const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+describe('what a provider and its models accept in a prompt', () => {
+  const initialized = (promptCapabilities?: Record<string, boolean>) => ({
+    id: 'event-1',
+    seq: 1,
+    timestamp: '2026-09-23T00:00:00.000Z',
+    providerId: 'cursor' as const,
+    threadId: 'desktop-bootstrap:cursor',
+    category: 'lifecycle' as const,
+    event: 'initialized' as const,
+    data: {
+      agentInfo: { name: 'cursor-agent' },
+      capabilities: provider.capabilities,
+      authMethods: [],
+      ...(promptCapabilities ? { promptCapabilities } : {}),
+    },
+  })
+
+  it('records the handshake answer on the profile and publishes it', async () => {
+    const { service, store } = await harness()
+    const published: unknown[] = []
+    const publishing = createComposerService(
+      { modelImageInputSupport: async () => new Map() } as unknown as Parameters<
+        typeof createComposerService
+      >[0],
+      { snapshot: () => [provider], rejection: () => undefined },
+      store,
+      () => undefined,
+      { publish: (name, payload) => published.push({ name, payload }) },
+    )
+    publishing.onRuntimeEvent(initialized({ image: true }))
+    expect(store.getProfile('cursor')).toMatchObject({
+      agentInfo: { name: 'cursor-agent' },
+      promptCapabilities: { image: true, audio: false, embeddedContext: false },
+    })
+    expect(published).toEqual([
+      {
+        name: 'provider.catalog.updated',
+        payload: {
+          profile: expect.objectContaining({
+            promptCapabilities: { image: true, audio: false, embeddedContext: false },
+          }),
+        },
+      },
+    ])
+    // The same answer from the next process is not a change worth an event.
+    publishing.onRuntimeEvent(initialized({ image: true }))
+    expect(published).toHaveLength(1)
+    // A handshake that says nothing is "text only", recorded as such rather
+    // than left blank for the composer to wait on. Legacy runtimes may still
+    // omit the field entirely; that is the one case nothing is recorded.
+    publishing.onRuntimeEvent(initialized({}))
+    expect(store.getProfile('cursor')?.promptCapabilities).toEqual({
+      image: false,
+      audio: false,
+      embeddedContext: false,
+    })
+    service.onRuntimeEvent(initialized())
+    expect(store.getProfile('cursor')?.promptCapabilities).toEqual({
+      image: false,
+      audio: false,
+      embeddedContext: false,
+    })
+  })
+
+  it('takes the probe answer too, without a live session', async () => {
+    const { service, store } = await harness()
+    service.observeProbe('cursor', {
+      result: {
+        authMethods: [],
+        authenticated: true,
+        sessionListAdvertised: false,
+        loadSessionAdvertised: false,
+        promptCapabilities: { image: true, audio: false, embeddedContext: true },
+      },
+      sessions: undefined,
+      commands: undefined,
+      models: undefined,
+      modes: undefined,
+    })
+    expect(store.getProfile('cursor')?.promptCapabilities).toEqual({
+      image: true,
+      audio: false,
+      embeddedContext: true,
+    })
+  })
+
+  it('asks the runtime which listed models read images and lands the answers on the rows', async () => {
+    const { runtime, service, store } = await harness()
+    runtime.modelImageInputSupport.mockImplementation(async (_provider: string, ids: string[]) =>
+      new Map(
+        ids.map((id) => [id, id === 'anthropic/sonnet' ? true : id === 'openai/o1' ? false : null]),
+      ),
+    )
+    service.onRuntimeEvent({
+      id: 'event-1',
+      seq: 1,
+      timestamp: '2026-09-23T00:00:00.000Z',
+      providerId: 'cursor',
+      threadId: 'thread-1',
+      workspaceId: 'workspace-1',
+      sessionId: 'provider-session-1',
+      category: 'lifecycle',
+      event: 'session_created',
+      data: {
+        models: {
+          availableModels: [
+            { id: 'anthropic/sonnet', displayName: 'Sonnet' },
+            { id: 'openai/o1', displayName: 'o1' },
+            { id: 'local/llama', displayName: 'Llama' },
+          ],
+          currentModelId: 'anthropic/sonnet',
+        },
+      },
+    })
+    await settle()
+    expect(runtime.modelImageInputSupport).toHaveBeenCalledWith('cursor', [
+      'anthropic/sonnet',
+      'openai/o1',
+      'local/llama',
+    ])
+    expect(store.getProfile('cursor')?.availableModels).toEqual([
+      { modelId: 'anthropic/sonnet', name: 'Sonnet', supportsImageInput: true },
+      { modelId: 'openai/o1', name: 'o1', supportsImageInput: false },
+      // Unanswered stays absent: unknown, not refused.
+      { modelId: 'local/llama', name: 'Llama' },
+    ])
+
+    // A relisting from the next session carries no flags, and must not lose
+    // them; only the genuinely new row is asked about.
+    runtime.modelImageInputSupport.mockClear()
+    service.onRuntimeEvent({
+      id: 'event-2',
+      seq: 2,
+      timestamp: '2026-09-23T00:00:01.000Z',
+      providerId: 'cursor',
+      threadId: 'thread-2',
+      workspaceId: 'workspace-1',
+      sessionId: 'provider-session-2',
+      category: 'session',
+      event: 'current_model_update',
+      data: {
+        availableModels: [
+          { id: 'openai/o1', displayName: 'o1' },
+          { id: 'anthropic/sonnet', displayName: 'Sonnet' },
+          { id: 'anthropic/opus', displayName: 'Opus' },
+        ],
+        currentModelId: 'openai/o1',
+      },
+    })
+    expect(store.getProfile('cursor')?.availableModels).toEqual([
+      { modelId: 'openai/o1', name: 'o1', supportsImageInput: false },
+      { modelId: 'anthropic/sonnet', name: 'Sonnet', supportsImageInput: true },
+      { modelId: 'anthropic/opus', name: 'Opus' },
+    ])
+    await settle()
+    expect(runtime.modelImageInputSupport).toHaveBeenCalledTimes(1)
+    expect(runtime.modelImageInputSupport).toHaveBeenCalledWith('cursor', ['anthropic/opus'])
+  })
+
+  it('asks again after the hold about rows the lookup could not answer, but not about answered ones', async () => {
+    const { runtime, store } = await harness()
+    const timers: Array<{ run: () => void; delayMs: number; cancelled: boolean }> = []
+    const service = createComposerService(
+      runtime,
+      { snapshot: () => [provider], rejection: () => undefined },
+      store,
+      () => undefined,
+      {
+        modelImageInputRetryMs: 1_000,
+        scheduleModelImageInputRetry: (run, delayMs) => {
+          const timer = { run, delayMs, cancelled: false }
+          timers.push(timer)
+          return () => {
+            timer.cancelled = true
+          }
+        },
+      },
+    )
+    // First ask: the CLI is down for `a/*`, so those ids come back unmentioned;
+    // `b/known` is answered "nobody can say", which is final.
+    runtime.modelImageInputSupport.mockImplementationOnce(
+      async () => new Map<string, boolean | null>([['b/known', null]]),
+    )
+    service.onRuntimeEvent({
+      id: 'event-1',
+      seq: 1,
+      timestamp: '2026-09-23T00:00:00.000Z',
+      providerId: 'cursor',
+      threadId: 'thread-1',
+      workspaceId: 'workspace-1',
+      sessionId: 'provider-session-1',
+      category: 'session',
+      event: 'current_model_update',
+      data: {
+        availableModels: [
+          { id: 'a/one', displayName: 'One' },
+          { id: 'b/known', displayName: 'Known' },
+        ],
+      },
+    })
+    await settle()
+    expect(timers).toHaveLength(1)
+    expect(timers[0]).toMatchObject({ delayMs: 1_000, cancelled: false })
+
+    // The hold lifts and the CLI is back.
+    runtime.modelImageInputSupport.mockImplementationOnce(
+      async (_provider: string, ids: string[]) =>
+        new Map<string, boolean | null>(ids.map((id) => [id, id === 'a/one' ? true : null])),
+    )
+    timers[0]!.run()
+    await settle()
+    expect(runtime.modelImageInputSupport).toHaveBeenLastCalledWith('cursor', ['a/one', 'b/known'])
+    expect(store.getProfile('cursor')?.availableModels).toEqual([
+      { modelId: 'a/one', name: 'One', supportsImageInput: true },
+      { modelId: 'b/known', name: 'Known' },
+    ])
+    // `b/known` was answered `null` both times: final, nothing left to retry.
+    expect(timers).toHaveLength(1)
+
+    // Another unanswered listing leaves a retry pending; stopping cancels it
+    // and a timer that fires anyway asks nothing of a closed store.
+    runtime.modelImageInputSupport.mockImplementationOnce(async () => new Map())
+    service.onRuntimeEvent({
+      id: 'event-2',
+      seq: 2,
+      timestamp: '2026-09-23T00:00:01.000Z',
+      providerId: 'cursor',
+      threadId: 'thread-1',
+      workspaceId: 'workspace-1',
+      sessionId: 'provider-session-1',
+      category: 'session',
+      event: 'current_model_update',
+      data: { availableModels: [{ id: 'c/late', displayName: 'Late' }] },
+    })
+    await settle()
+    expect(timers).toHaveLength(2)
+    expect(timers[1]!.cancelled).toBe(false)
+    const calls = runtime.modelImageInputSupport.mock.calls.length
+    service.stop()
+    expect(timers[1]!.cancelled).toBe(true)
+    timers[1]!.run()
+    await settle()
+    expect(runtime.modelImageInputSupport).toHaveBeenCalledTimes(calls)
+    expect(timers).toHaveLength(2)
+  })
+
+  it('merges a slow answer into the catalog as it is by then, and re-asks for rows that arrived meanwhile', async () => {
+    const { runtime, service, store } = await harness()
+    let release!: (answers: Map<string, boolean | null>) => void
+    runtime.modelImageInputSupport
+      .mockImplementationOnce(
+        () => new Promise<Map<string, boolean | null>>((resolve) => (release = resolve)),
+      )
+      .mockImplementation(async (_provider: string, ids: string[]) =>
+        new Map(ids.map((id) => [id, true])),
+      )
+    const listing = (seq: number, ids: string[]) => ({
+      id: `event-${seq}`,
+      seq,
+      timestamp: '2026-09-23T00:00:00.000Z',
+      providerId: 'cursor' as const,
+      threadId: 'thread-1',
+      workspaceId: 'workspace-1',
+      sessionId: 'provider-session-1',
+      category: 'session' as const,
+      event: 'current_model_update' as const,
+      data: { availableModels: ids.map((id) => ({ id, displayName: id })) },
+    })
+    service.onRuntimeEvent(listing(1, ['a/one', 'a/two']))
+    await settle()
+    // While the CLI runs, the catalog changes under it.
+    service.onRuntimeEvent(listing(2, ['a/two', 'a/three']))
+    release(
+      new Map([
+        ['a/one', false],
+        ['a/two', true],
+      ]),
+    )
+    await settle()
+    await settle()
+    // `a/one` is gone and stays gone; `a/two` got its answer; `a/three` was
+    // asked about in a second pass rather than left unknown.
+    expect(store.getProfile('cursor')?.availableModels).toEqual([
+      { modelId: 'a/two', name: 'a/two', supportsImageInput: true },
+      { modelId: 'a/three', name: 'a/three', supportsImageInput: true },
+    ])
+    expect(runtime.modelImageInputSupport).toHaveBeenCalledTimes(2)
+    expect(runtime.modelImageInputSupport).toHaveBeenLastCalledWith('cursor', ['a/three'])
   })
 })
 

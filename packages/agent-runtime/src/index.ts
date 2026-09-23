@@ -102,13 +102,22 @@ export type {
   TerminationRequest,
   ThreadId,
 } from './session/index.js'
-export { cursor, opencode, providers, requireAcpConfig } from './providers/index.js'
+export {
+  acpCommandBin,
+  cursor,
+  opencode,
+  providers,
+  requireAcpConfig,
+} from './providers/index.js'
 export type {
   AcpProviderConfig,
   ClaudeProviderConfig,
+  ModelImageInputLookup,
   ProviderConfig,
   ProviderConfigBase,
 } from './providers/index.js'
+export { createOpencodeModelImageInputLookup, jsonObjects } from './providers/opencode-models.js'
+export type { OpencodeModelLookupOptions } from './providers/opencode-models.js'
 export type { HostDeps, HostLogEntry } from './host.js'
 export { projectAgentEvent } from './protocol/projectAgentEvent.js'
 export type { ProtocolEventContext } from './protocol/projectAgentEvent.js'

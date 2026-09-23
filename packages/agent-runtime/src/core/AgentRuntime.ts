@@ -14,7 +14,12 @@ import type {
 import { isRecoverableError } from '@agentpack/contract'
 import type { BackendEvent, SessionResult } from '../backends/Backend.js'
 import type { HostDeps } from '../host.js'
-import { providers, type ProviderConfig } from '../providers/index.js'
+import {
+  acpCommandBin,
+  providers,
+  type ModelImageInputLookup,
+  type ProviderConfig,
+} from '../providers/index.js'
 import type { AcpConnectionFactory } from '../session/AcpConnection.js'
 import type { ClaudeSdk } from '../session/claude/sdk.js'
 import type { ProbeResult, ProbeRuntime, ProbeRuntimeFactory } from '../session/ProbeRuntime.js'
@@ -173,6 +178,9 @@ export class AgentRuntime {
    * can offer a never-selected provider's models but not its modes renders a
    * model picker beside a missing mode picker. */
   private readonly modesByProvider = new Map<ProviderId, ModeListing>()
+  /** One per provider that offers an out-of-band model lookup, built on first
+   * use so a provider nobody asks about never resolves a binary or spawns. */
+  private readonly modelImageInputLookups = new Map<ProviderId, ModelImageInputLookup>()
   private readonly timeouts: Partial<RuntimeTimeouts> | undefined
   /** App-wide and keyed by requestId. Every pending record carries its own
    * provider/thread/workspace/session, so responding needs no lookup table and
@@ -450,6 +458,38 @@ export class AgentRuntime {
    * the same caller, as `providerModels()`. */
   providerModes(): Partial<Record<ProviderId, ModeListing>> {
     return Object.fromEntries(this.modesByProvider) as Partial<Record<ProviderId, ModeListing>>
+  }
+
+  /** Whether each of these models can read an image in a prompt.
+   *
+   * Asked out of band — the ACP catalog carries no such flag — and only of
+   * providers whose config offers a lookup. Every other provider answers
+   * `null` for each id: "nobody can say", which the caller keeps and the
+   * composer reads as let-it-through. An id left out of the map means the
+   * lookup could not ask right now and the caller should try again later.
+   * The answer describes the model, not a session, so the lookup caches for
+   * the life of the runtime and a repeated ask spawns nothing. */
+  async modelImageInputSupport(
+    providerId: string,
+    modelIds: readonly string[],
+  ): Promise<ReadonlyMap<string, boolean | null>> {
+    if (modelIds.length === 0) return new Map()
+    const unknown = () => new Map(modelIds.map((modelId) => [modelId, null]))
+    // Hosts key providers by the ids they were handed as strings; one this
+    // runtime was not configured with is simply unknown, not an error.
+    if (!Object.hasOwn(this.configs, providerId)) return unknown()
+    const id = providerId as ProviderId
+    const config = this.configs[id]
+    if (config.kind !== 'acp' || !config.models?.imageInput) return unknown()
+    let lookup = this.modelImageInputLookups.get(id)
+    if (!lookup) {
+      lookup = config.models.imageInput({
+        command: acpCommandBin(config.command),
+        log: this.host.log,
+      })
+      this.modelImageInputLookups.set(id, lookup)
+    }
+    return lookup(modelIds)
   }
 
   /** Provider-level bootstrap in a throwaway process: spawn, `initialize`,

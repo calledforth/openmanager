@@ -45,7 +45,7 @@ import { openEnvironmentDatabase } from './db/database.ts'
 import { createEventRetention } from './db/event-retention.ts'
 import { createReplayReader } from './db/replay.ts'
 import { getSessionSummary } from './db/session-store.ts'
-import { createLogger } from './logger.ts'
+import { createLogger, resolveLogSink } from './logger.ts'
 import { createProviderService } from './provider-service.ts'
 import { createRateLimiter } from './rate-limit.ts'
 import { createRequestGuard } from './request-guard.ts'
@@ -90,7 +90,7 @@ export async function startServer(config: ServerConfig) {
   const allowedOrigins = validateOrigins(config.allowedOrigins ?? [])
   const allowedHosts = validateHosts(config.allowedHosts ?? [])
   const workspaceRoots = validateWorkspaceRoots(config.workspaces ?? [])
-  const log = createLogger(config.logLevel)
+  const log = createLogger(config.logLevel, resolveLogSink(config.logFile))
   const rateLimiter = createRateLimiter()
   const identity = await loadEnvironmentIdentity(config.dataDir)
   const audit = createAuditLog(log, { dataDir: config.dataDir })
@@ -486,6 +486,7 @@ export async function startServer(config: ServerConfig) {
     await sockets.close()
     stopHealthEvents()
     providerService.stop()
+    composerService.stop()
     await runtime.shutdown()
     stopRetention()
     uploads.close()
@@ -553,6 +554,8 @@ export async function startServer(config: ServerConfig) {
         const socketClose = sockets.close()
         // Before the listener: an in-flight PUT is cut and its partial file removed.
         uploads.close()
+        // Before the store closes: a pending model lookup retry must not fire into it.
+        composerService.stop()
         const httpClose = new Promise<void>((resolve, reject) => {
           server.close((error) => (error ? reject(error) : resolve()))
           server.closeAllConnections()
