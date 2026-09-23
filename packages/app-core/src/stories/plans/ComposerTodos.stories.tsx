@@ -32,7 +32,7 @@ const meta = {
     (Story) => (
       <ThemeProvider>
         <div className="flex min-h-screen items-end bg-[var(--basis-canvas-bg)] p-6">
-          <div className="mx-auto w-full max-w-[52rem]">
+          <div className="mx-auto w-full max-w-[46rem]">
             <Story />
           </div>
         </div>
