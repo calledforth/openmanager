@@ -612,6 +612,9 @@ export function createThreadService(
     completionState?: ProtocolEventContext['completionState'],
     failureReason?: TurnFailureReason,
   ): void => {
+    projectOwnEvent(record, event, active, completionState, failureReason)
+    // A generated image is filed after the tool call that produced it, so the
+    // transcript shows the result where it happened: after the work, not before.
     if (active && options.artifacts && (event.event === 'tool_call' ||
       event.event === 'tool_call_update' || event.event === 'tool_call_content')) {
       const items = event.event === 'tool_call_content' ? [event.data.item] : event.data.content ?? []
@@ -623,10 +626,19 @@ export function createThreadService(
         active.generatedImages ??= new Set()
         if (active.generatedImages.has(key)) continue
         active.generatedImages.add(key)
-        projectRuntimeEvent(record, { ...event, category: 'stream', event: 'agent_message_chunk',
+        projectOwnEvent(record, { ...event, category: 'stream', event: 'agent_message_chunk',
           data: { content: image } }, active)
       }
     }
+  }
+
+  const projectOwnEvent = (
+    record: ThreadRecord,
+    event: RuntimeEvent,
+    active: ActiveTurn | undefined,
+    completionState?: ProtocolEventContext['completionState'],
+    failureReason?: TurnFailureReason,
+  ): void => {
     // The durable prompt already names its uploaded images. Provider echoes must
     // neither duplicate them nor relabel them as generated output.
     if (options.database && event.event === 'user_message_chunk' && event.data.content.type === 'image') return

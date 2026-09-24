@@ -86,6 +86,19 @@ function orderOfMessages(messages: readonly Message[]): ActivityRef[] {
   }))
 }
 
+/** `base`, then whatever `extra` places that `base` does not, in `extra`'s order. */
+function mergeOrder(base: readonly ActivityRef[], extra: readonly ActivityRef[]): ActivityRef[] {
+  const placed = new Set(base.map((ref) => `${ref.kind}:${ref.id}`))
+  const merged = [...base]
+  for (const ref of extra) {
+    const key = `${ref.kind}:${ref.id}`
+    if (placed.has(key)) continue
+    placed.add(key)
+    merged.push(ref)
+  }
+  return merged
+}
+
 const upsertById = <T>(items: readonly T[], id: (item: T) => string, next: T): T[] => {
   const key = id(next)
   const index = items.findIndex((item) => id(item) === key)
@@ -552,10 +565,12 @@ export function applySessionHistory(
       !older && current.hydration !== 'ready'
         ? payload.messages
         : [...incoming, ...current.messages]
-    // A page carries no reasoning or tool state, so it only places its messages.
+    // A page carries no reasoning or tool state, so it only places its
+    // messages. Live activity that arrived while the page loaded keeps the
+    // place it already has, after everything the page names.
     const order =
       !older && current.hydration !== 'ready'
-        ? orderOfMessages(payload.messages)
+        ? mergeOrder(orderOfMessages(payload.messages), current.order)
         : [...orderOfMessages(incoming), ...current.order]
     const openTurn = payload.turns.find(
       (turn) => turn.state === 'waiting' || turn.state === 'running',

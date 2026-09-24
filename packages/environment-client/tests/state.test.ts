@@ -272,6 +272,46 @@ describe('applyEvent', () => {
     expect(thread.messages.at(-1)?.content).toEqual([{ type: 'text', text: 'Found it' }])
   })
 
+  it('keeps the place of live activity that arrived while a history page loaded', () => {
+    // Without replay the client subscribes before it loads history, so a
+    // running turn can place a thought or tool before the page answers.
+    let state = applyEvent(seeded(), turnStarted())
+    state = {
+      ...state,
+      threads: {
+        ...state.threads,
+        [THREAD.threadId]: { ...state.threads[THREAD.threadId]!, hydration: 'loading' },
+      },
+    }
+    state = applyEvent(
+      state,
+      event({
+        name: 'message.reasoning',
+        scope: threadScope,
+        payload: {
+          turnId: 'turn-1',
+          messageId: 'thought-live',
+          phase: 'delta',
+          content: { type: 'text', text: 'plan' },
+        },
+      }),
+    )
+    const userMessage = state.threads[THREAD.threadId]!.messages[0]!
+    state = applySessionHistory(state, THREAD, {
+      messages: [userMessage],
+      turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'running' }],
+      interactions: [],
+      nextCursor: null,
+    })
+    const thread = state.threads[THREAD.threadId]!
+    expect(thread.hydration).toBe('ready')
+    expect(thread.reasoning).toHaveLength(1)
+    expect(thread.order.map((ref) => `${ref.kind}:${ref.id}`)).toEqual([
+      'message:turn-1-user',
+      'reasoning:thought-live',
+    ])
+  })
+
   it('is idempotent for duplicated turn.started deliveries', () => {
     const once = applyEvent(seeded(), turnStarted())
     const twice = applyEvent(once, turnStarted())
