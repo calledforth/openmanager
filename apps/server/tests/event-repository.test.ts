@@ -1255,19 +1255,26 @@ describe('durable turn activity', () => {
       },
     ])
 
-    // An older page names its own turns' activity and nothing from other pages.
-    const olderOnly = listSessionHistory(database, {
+    // Pages partition activity by where it happened: the newest page carries
+    // what came after its oldest message's predecessor, the older page the rest,
+    // so prepending the older page restores the exact interleaving.
+    const newest = listSessionHistory(database, {
       sessionId: 'session-1',
       threadId: 'thread-1',
       limit: 1,
     })!
-    expect(olderOnly.messages.map((message) => message.messageId)).toEqual(['text-2'])
-    expect(olderOnly.order.map((ref) => ref.id)).toEqual([
-      'thought-1',
-      'tool-1',
-      'thought-2',
-      'text-2',
-    ])
+    expect(newest.messages.map((message) => message.messageId)).toEqual(['text-2'])
+    expect(newest.order.map((ref) => ref.id)).toEqual(['tool-1', 'thought-2', 'text-2'])
+    const older = listSessionHistory(database, {
+      sessionId: 'session-1',
+      threadId: 'thread-1',
+      cursor: newest.nextCursor!,
+      limit: 5,
+    })!
+    expect(older.order.map((ref) => ref.id)).toEqual(['message-user', 'thought-1', 'text-1'])
+    expect([...older.order, ...newest.order].map((ref) => ref.id)).toEqual(
+      page.order.map((ref) => ref.id),
+    )
 
     // Activity of a turn the thread no longer has goes with it.
     const foreign = createOtherThread(database)
@@ -1276,5 +1283,133 @@ describe('durable turn activity', () => {
         { ...reasoning('r9', 'thought-9', 'x'), scope: foreign },
       ]),
     ).toThrow(/missing turn/)
+  })
+
+  it('elides the oldest reasoning text once a page exceeds its budget', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const big = 'x'.repeat(200 * 1024)
+    const thought = (eventId: string, messageId: string) =>
+      ProofEventSchemas['message.reasoning'].parse({
+        type: 'event',
+        name: 'message.reasoning',
+        eventId,
+        timestamp: '2026-09-10T10:00:01.000Z',
+        scope,
+        payload: {
+          messageId,
+          turnId: 'turn-1',
+          phase: 'stop',
+          content: { type: 'text', text: big },
+          tokens: 50_000,
+        },
+      })
+    repository.appendEvents(scope, [
+      started(),
+      thought('r1', 'thought-1'),
+      thought('r2', 'thought-2'),
+      thought('r3', 'thought-3'),
+      delta('done', 't1'),
+      completed(),
+    ])
+    const page = listSessionHistory(database, { sessionId: 'session-1', threadId: 'thread-1' })!
+    // 600 KiB of thinking against a 384 KiB budget: the newest block stays whole,
+    // the ones before it say how much was left out and keep their token count.
+    expect(page.reasoning.map((block) => block.messageId)).toEqual([
+      'thought-1',
+      'thought-2',
+      'thought-3',
+    ])
+    expect(page.reasoning[2]?.content).toEqual([{ type: 'text', text: big }])
+    expect(page.reasoning[1]?.content).toEqual([
+      { type: 'text', text: `[${big.length} characters of thinking not loaded]` },
+    ])
+    expect(page.reasoning[0]?.content).toEqual(page.reasoning[1]?.content)
+    expect(page.reasoning.every((block) => block.tokens === 50_000)).toBe(true)
+    expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(512 * 1024)
+  })
+
+  it('backfills the activity of turns that happened before the table existed', async () => {
+    const { database, directory } = await createDatabase()
+    const repository = createEventRepository(database)
+    const reasoning = (eventId: string, text: string) =>
+      ProofEventSchemas['message.reasoning'].parse({
+        type: 'event',
+        name: 'message.reasoning',
+        eventId,
+        timestamp: '2026-09-10T10:00:01.000Z',
+        scope,
+        payload: {
+          messageId: 'thought-1',
+          turnId: 'turn-1',
+          phase: 'delta',
+          content: { type: 'text', text },
+        },
+      })
+    const tool = (eventId: string, status: 'in_progress' | 'completed') =>
+      ProofEventSchemas['tool.updated'].parse({
+        type: 'event',
+        name: 'tool.updated',
+        eventId,
+        timestamp: '2026-09-10T10:00:01.000Z',
+        scope,
+        payload: { toolCallId: 'tool-1', turnId: 'turn-1', title: 'Read file', status },
+      })
+    repository.appendEvents(scope, [
+      started(),
+      delta('Looking', 't1'),
+      tool('c1', 'in_progress'),
+      tool('c2', 'completed'),
+      reasoning('r1', 'Check'),
+      reasoning('r2', ' again'),
+      delta(' done', 't2'),
+      completed(),
+    ])
+    // A v10 database: the same event log and dense message ordinals, no activity rows.
+    database.exec(`
+      DELETE FROM turn_activity;
+      UPDATE messages SET ordinal = 0 WHERE message_id = 'message-user';
+      UPDATE messages SET ordinal = 1 WHERE message_id = 'message-assistant';
+      UPDATE schema_version SET version = 10;
+      PRAGMA user_version = 10;
+    `)
+    database.close()
+    databases.splice(databases.indexOf(database), 1)
+
+    const upgraded = openEnvironmentDatabase(directory)
+    databases.push(upgraded)
+    const page = listSessionHistory(upgraded, { sessionId: 'session-1', threadId: 'thread-1' })!
+    // Rows are back, folded as the projector would have; the turn reads as it
+    // did before the table existed: thoughts, then tools, then its text.
+    expect(page.tools).toEqual([
+      { toolCallId: 'tool-1', turnId: 'turn-1', title: 'Read file', status: 'completed' },
+    ])
+    expect(page.reasoning).toEqual([
+      {
+        messageId: 'thought-1',
+        turnId: 'turn-1',
+        phase: 'delta',
+        content: [{ type: 'text', text: 'Check again' }],
+      },
+    ])
+    expect(page.order.map((ref) => ref.id)).toEqual([
+      'message-user',
+      'tool-1',
+      'thought-1',
+      'message-assistant',
+    ])
+    expect(page.messages.map((message) => message.messageId)).toEqual([
+      'message-user',
+      'message-assistant',
+    ])
+    // Running the backfill again changes nothing.
+    upgraded.exec('UPDATE schema_version SET version = 10; PRAGMA user_version = 10;')
+    upgraded.close()
+    databases.splice(databases.indexOf(upgraded), 1)
+    const again = openEnvironmentDatabase(directory)
+    databases.push(again)
+    expect(listSessionHistory(again, { sessionId: 'session-1', threadId: 'thread-1' })!.order).toEqual(
+      page.order,
+    )
   })
 })

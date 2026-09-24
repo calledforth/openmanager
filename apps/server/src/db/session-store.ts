@@ -34,7 +34,7 @@ import {
   SESSION_LIST_FOR_WORKSPACE_SQL,
   THREAD_IN_SESSION_SQL,
   THREADS_FOR_SESSION_SQL,
-  TURN_ACTIVITY_FOR_TURN_SQL,
+  TURN_ACTIVITY_PAGE_SQL,
   TURN_FOR_COMMAND_ID_SQL,
   TURNS_FOR_THREAD_SQL,
   USER_MESSAGE_FOR_TURN_SQL,
@@ -267,13 +267,18 @@ export function listSessionHistory(
         ...(row.finished_at === null ? {} : { finishedAt: new Date(row.finished_at).toISOString() }),
       }),
   )
-  // The reasoning and tool calls of every turn with a message on this page,
-  // then one order across them and the page's messages. Both tables draw
-  // their ordinal from the same thread-wide counter, so the sort is exact.
-  const pageTurnIds = [...new Set(pageRows.map((row) => row.turn_id))]
-  const activityRows = pageTurnIds.flatMap(
-    (turnId) => database.prepare(TURN_ACTIVITY_FOR_TURN_SQL).all(turnId) as TurnActivityRow[],
-  )
+  // The reasoning and tool calls that belong to this page: everything after
+  // the newest message the next older page will carry, up to this page's own
+  // newest message. Activity goes with the message that followed it, and what
+  // followed nothing yet (a turn that ended in a tool call) goes with the
+  // newest page. Both tables draw their ordinal from the same thread-wide
+  // counter, so the window partitions activity across pages exactly and one
+  // sort interleaves it with the page's messages.
+  const olderBound = rows[limit]?.ordinal ?? -1
+  const newerBound = query.cursor ? (pageRows[0]?.ordinal ?? olderBound) : ordinal
+  const activityRows = database
+    .prepare(TURN_ACTIVITY_PAGE_SQL)
+    .all(query.threadId, olderBound, newerBound) as TurnActivityRow[]
   const reasoning: ReasoningBlock[] = []
   const tools: ToolCallState[] = []
   for (const row of activityRows) {
@@ -281,6 +286,7 @@ export function listSessionHistory(
     if (row.kind === 'reasoning') reasoning.push(ReasoningBlockSchema.parse(state))
     else tools.push(ToolCallStateSchema.parse(state))
   }
+  capReasoningText(reasoning)
   const order: ActivityRef[] = [
     ...pageRows.map((row) => ({
       ordinal: row.ordinal,
@@ -350,6 +356,40 @@ function messageFromRow(database: DatabaseSync, row: MessageRow): Message {
     turnId: row.turn_id,
     role: row.role,
     content: parts.map((part) => ContentBlockSchema.parse(JSON.parse(part.content_json))),
+  }
+}
+
+/**
+ * Reasoning text a page may carry before the oldest blocks are elided. A
+ * history page or a snapshot is one socket frame under a 1 MiB budget shared
+ * with the messages; a long session's thoughts alone could exceed it and cost
+ * the client its connection instead of its transcript.
+ */
+export const REASONING_TEXT_BUDGET_BYTES = 384 * 1024
+
+/**
+ * Keep the newest reasoning text whole and replace what falls outside the
+ * budget with a note of how much was left out. Tokens and phase stay, so the
+ * row still reads as a finished thought of a known size.
+ */
+function capReasoningText(reasoning: ReasoningBlock[]): void {
+  let remaining = REASONING_TEXT_BUDGET_BYTES
+  for (let index = reasoning.length - 1; index >= 0; index -= 1) {
+    const block = reasoning[index]!
+    const bytes = Buffer.byteLength(JSON.stringify(block.content), 'utf8')
+    if (bytes <= remaining) {
+      remaining -= bytes
+      continue
+    }
+    const characters = block.content.reduce(
+      (total, item) => total + (item.type === 'text' ? item.text.length : 0),
+      0,
+    )
+    reasoning[index] = {
+      ...block,
+      content: [{ type: 'text', text: `[${characters} characters of thinking not loaded]` }],
+    }
+    remaining = 0
   }
 }
 

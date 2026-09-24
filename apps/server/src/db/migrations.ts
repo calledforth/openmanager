@@ -1,3 +1,4 @@
+import type { DatabaseSync } from 'node:sqlite'
 import type { Migration } from './migrate.ts'
 
 /**
@@ -511,10 +512,190 @@ export const MIGRATIONS: readonly Migration[] = [
             REFERENCES turns(turn_id, thread_id, workspace_id) ON DELETE CASCADE,
           UNIQUE (thread_id, ordinal)
         ) STRICT;
-
-        CREATE INDEX IF NOT EXISTS turn_activity_turn_ordinal_idx
-          ON turn_activity(turn_id, ordinal);
       `)
+      backfillTurnActivity(database)
     },
   },
 ]
+
+type RetainedActivityRow = {
+  thread_id: string
+  sequence: number
+  event_name: 'message.reasoning' | 'tool.updated'
+  event_json: string
+}
+type BackfilledActivity = {
+  activityId: string
+  turnId: string
+  kind: 'reasoning' | 'tool'
+  createdAt: number
+  state: Record<string, unknown>
+}
+type TextBlock = { type: 'text'; text: string }
+
+/**
+ * Rebuild `turn_activity` for turns that already happened from the reasoning
+ * and tool events the log still retains. Retention keeps a window of events,
+ * so a turn older than that window stays text-only; everything inside it gets
+ * its thoughts and tool calls back.
+ *
+ * Those rows need ordinals among the turn's messages, which were numbered
+ * densely before this table existed. Each affected thread's message ordinals
+ * are scaled by 1000 (an order-preserving renumbering; history pages compare
+ * ordinals, never count them) and the turn's activity is filed in the gap just
+ * before its first assistant message, or just after its prompt when the turn
+ * produced no text. Interleaving within a turn is not recoverable from rows,
+ * so a backfilled turn reads as it did before: thoughts, then tools, then text.
+ * A history cursor a client held across the upgrade points below the new
+ * numbering and simply yields no older page; its next snapshot repairs it.
+ */
+function backfillTurnActivity(database: DatabaseSync): void {
+  const retained = database
+    .prepare(
+      `SELECT streams.thread_id, log.sequence, log.event_name, log.event_json
+       FROM event_log AS log
+       JOIN event_streams AS streams ON streams.scope_key = log.scope_key
+       WHERE streams.scope_type = 'thread'
+         AND log.event_name IN ('message.reasoning', 'tool.updated')
+       ORDER BY streams.thread_id, log.sequence`,
+    )
+    .all() as RetainedActivityRow[]
+  if (retained.length === 0) return
+
+  const selectTurn = database.prepare(
+    'SELECT workspace_id FROM turns WHERE turn_id = ? AND thread_id = ?',
+  )
+  const turnMessages = database.prepare(
+    `SELECT role, ordinal FROM messages WHERE turn_id = ? AND thread_id = ? ORDER BY ordinal`,
+  )
+  const scaleUp = database.prepare(
+    'UPDATE messages SET ordinal = ordinal * 1000 + 1000000000000 WHERE thread_id = ?',
+  )
+  const scaleDown = database.prepare(
+    'UPDATE messages SET ordinal = ordinal - 1000000000000 WHERE thread_id = ?',
+  )
+  const insert = database.prepare(
+    `INSERT OR IGNORE INTO turn_activity (
+       activity_id, workspace_id, thread_id, turn_id, kind, ordinal, state_json,
+       created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+
+  // Fold the retained events per thread into one entry per activity id, in
+  // the order each id first appeared, the same way the projector does live.
+  const byThread = new Map<string, Map<string, BackfilledActivity>>()
+  for (const row of retained) {
+    const event = JSON.parse(row.event_json) as {
+      timestamp: string
+      payload: Record<string, unknown>
+    }
+    const payload = event.payload
+    const turnId = String(payload.turnId ?? '')
+    if (!turnId) continue
+    const activityId = String(
+      row.event_name === 'message.reasoning' ? payload.messageId : payload.toolCallId,
+    )
+    if (!activityId) continue
+    let thread = byThread.get(row.thread_id)
+    if (!thread) {
+      thread = new Map()
+      byThread.set(row.thread_id, thread)
+    }
+    const existing = thread.get(activityId)
+    const createdAt = Date.parse(event.timestamp)
+    if (row.event_name === 'message.reasoning') {
+      const previous = (existing?.state ?? {}) as {
+        content?: Array<Record<string, unknown>>
+        tokens?: number
+      }
+      const blocks = previous.content ?? []
+      const last = blocks.at(-1) as TextBlock | undefined
+      const content = payload.content as Record<string, unknown> | undefined
+      const merged =
+        content === undefined
+          ? blocks
+          : last?.type === 'text' && content.type === 'text'
+            ? [...blocks.slice(0, -1), { type: 'text', text: last.text + String(content.text) }]
+            : [...blocks, content]
+      const tokens = payload.tokens as number | undefined
+      const total =
+        tokens === undefined ? previous.tokens : Math.max(previous.tokens ?? 0, tokens)
+      thread.set(activityId, {
+        activityId,
+        turnId,
+        kind: 'reasoning',
+        createdAt: existing?.createdAt ?? createdAt,
+        state: {
+          messageId: activityId,
+          turnId,
+          phase: payload.phase,
+          content: merged,
+          ...(total === undefined ? {} : { tokens: total }),
+        },
+      })
+    } else {
+      const { title, kind, status } = payload as Record<string, unknown>
+      thread.set(activityId, {
+        activityId,
+        turnId,
+        kind: 'tool',
+        createdAt: existing?.createdAt ?? createdAt,
+        state: {
+          ...(existing?.state ?? {}),
+          toolCallId: activityId,
+          turnId,
+          ...(title === undefined ? {} : { title }),
+          ...(kind === undefined ? {} : { kind }),
+          ...(status === undefined ? {} : { status }),
+        },
+      })
+    }
+  }
+
+  for (const [threadId, entries] of byThread) {
+    const byTurn = new Map<string, BackfilledActivity[]>()
+    for (const entry of entries.values()) {
+      const turn = selectTurn.get(entry.turnId, threadId) as { workspace_id: string } | undefined
+      if (!turn) continue
+      const list = byTurn.get(entry.turnId) ?? []
+      list.push({ ...entry, state: { ...entry.state, workspaceId: turn.workspace_id } })
+      byTurn.set(entry.turnId, list)
+    }
+    if (byTurn.size === 0) continue
+    scaleUp.run(threadId)
+    scaleDown.run(threadId)
+    for (const [turnId, list] of byTurn) {
+      const messages = turnMessages.all(turnId, threadId) as Array<{
+        role: string
+        ordinal: number
+      }>
+      if (messages.length === 0) continue
+      const firstAssistant = messages.find((message) => message.role === 'assistant')
+      // Up to 999 rows fit in the gap; a turn with more keeps its newest.
+      const kept = list.slice(-999)
+      const start = Math.max(
+        0,
+        firstAssistant
+          ? firstAssistant.ordinal - kept.length
+          : messages[messages.length - 1]!.ordinal + 1,
+      )
+      kept.forEach((entry, index) => {
+        const { workspaceId, ...state } = entry.state as { workspaceId: string } & Record<
+          string,
+          unknown
+        >
+        insert.run(
+          entry.activityId,
+          workspaceId,
+          threadId,
+          turnId,
+          entry.kind,
+          start + index,
+          JSON.stringify(state),
+          entry.createdAt,
+          entry.createdAt,
+        )
+      })
+    }
+  }
+}
