@@ -16,6 +16,7 @@ import {
   useActiveThreadState,
   useActiveThreadStores,
 } from '../src/providers/active-thread-provider'
+import { useSessionState, type SessionStateValue } from '../src/providers/session-provider'
 import { ThemeProvider } from '../src/providers/theme-provider'
 import { useViewActions, type ViewActions } from '../src/providers/view-actions'
 import { ChatWorkspace } from '../src/components/chat/ChatWorkspace'
@@ -782,8 +783,103 @@ describe('the shared application over the environment client', () => {
           },
         ]),
       ),
-    ).rejects.toThrow('uploaded to another session')
+    ).rejects.toThrow('uploaded for another chat')
     expect(client.calls.find((call) => call.command === 'sendTurn')).toBeUndefined()
+  })
+
+  it('uploads a draft image for its workspace and launches the new chat with it', async () => {
+    URL.createObjectURL = vi.fn(() => 'blob:attached')
+    URL.revokeObjectURL = vi.fn()
+    const client = createMockEnvironmentClient({ seed: SEEDED_HISTORY, respond: () => null })
+    let actions: ViewActions | undefined
+    let send: ReturnType<typeof useActiveThreadState>['sendMessage'] | undefined
+    let session: SessionStateValue | undefined
+    function Probe() {
+      actions = useViewActions()
+      send = useActiveThreadState().sendMessage
+      session = useSessionState()
+      return null
+    }
+    await render(
+      <ThemeProvider>
+        <EnvironmentClientProvider client={client}>
+          <EnvironmentApplicationProviders collapsedWorkspaceStorage={null}>
+            <ChatWorkspace />
+            <Probe />
+          </EnvironmentApplicationProviders>
+        </EnvironmentClientProvider>
+      </ThemeProvider>,
+    )
+    await settle(client)
+    await act(() => session!.createSession(WORKSPACE.workspaceId))
+    expect(session!.isSessionDraftOpen).toBe(true)
+
+    // No session yet: the image is held for the draft's workspace.
+    const file = new File(['png'], 'screenshot.png', { type: 'image/png' })
+    let uploaded: Awaited<ReturnType<NonNullable<ViewActions['uploadAttachments']>>> = []
+    await act(async () => {
+      uploaded = await actions!.uploadAttachments!([
+        { id: 'draft-1', file, previewUrl: 'blob:composer-draft' },
+      ])
+    })
+    expect(uploaded).toEqual([
+      expect.objectContaining({ name: 'screenshot.png', workspaceId: WORKSPACE.workspaceId }),
+    ])
+    expect(uploaded[0]).not.toHaveProperty('sessionId')
+
+    // The launch hands it to the new session's first message; no caption needed.
+    await act(() => send!('   ', uploaded))
+    await settle(client)
+    expect(client.calls.find((call) => call.command === 'createSession')?.input).toMatchObject({
+      workspaceId: WORKSPACE.workspaceId,
+      firstMessage: '',
+      artifactIds: [uploaded[0]!.id],
+    })
+    expect(client.calls.find((call) => call.command === 'sendTurn')).toBeUndefined()
+    const sessionId = client.getState().activeSessionId!
+    const threadId = client.getState().sessions[sessionId]!.threadIds[0]!
+    expect(client.getState().threads[threadId]?.messages[0]?.content).toEqual([
+      expect.objectContaining({ type: 'artifact', artifactId: uploaded[0]!.id }),
+    ])
+  })
+
+  it('refuses to launch a draft with images held for another workspace', async () => {
+    const client = createMockEnvironmentClient({ seed: SEEDED_HISTORY, respond: () => null })
+    let send: ReturnType<typeof useActiveThreadState>['sendMessage'] | undefined
+    let session: SessionStateValue | undefined
+    function Probe() {
+      send = useActiveThreadState().sendMessage
+      session = useSessionState()
+      return null
+    }
+    await render(
+      <ThemeProvider>
+        <EnvironmentClientProvider client={client}>
+          <EnvironmentApplicationProviders collapsedWorkspaceStorage={null}>
+            <ChatWorkspace />
+            <Probe />
+          </EnvironmentApplicationProviders>
+        </EnvironmentClientProvider>
+      </ThemeProvider>,
+    )
+    await settle(client)
+    await act(() => session!.createSession(WORKSPACE.workspaceId))
+    await expect(
+      act(() =>
+        send!('what is this?', [
+          {
+            id: 'artifact-elsewhere',
+            name: 'screenshot.png',
+            mimeType: 'image/png',
+            size: 3,
+            previewUrl: 'blob:composer-draft',
+            workspaceId: 'workspace-elsewhere',
+          },
+        ]),
+      ),
+    ).rejects.toThrow('uploaded for another chat')
+    expect(client.calls.find((call) => call.command === 'createSession')).toBeUndefined()
+    expect(session!.isSessionDraftOpen).toBe(true)
   })
 
   it('offers no uploader when the environment does not advertise tickets, and lets a host supply one', async () => {

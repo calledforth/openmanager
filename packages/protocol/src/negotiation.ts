@@ -20,7 +20,10 @@ import {
 // Version 6 adds the draft's `preference` and `modeId` to `session.create`. The
 // payload is not strict, so a v5 environment would drop both and start the
 // chat in the wrong mode.
-export const PROTOCOL_VERSION = 6 as const
+// Version 7 adds `artifactIds` to `session.create`, which a v6 environment would
+// drop along with the images, and lets an upload name a workspace in place of a
+// session, which the upload result says by carrying `workspaceId`.
+export const PROTOCOL_VERSION = 7 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema

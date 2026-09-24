@@ -14,6 +14,21 @@ export type UploadedImageAttachment = PromptAttachment & {
    * let the environment reject the whole turn.
    */
   sessionId?: string
+  /**
+   * The workspace a draft's upload is held for. Set with no `sessionId`: the
+   * draft had no session, and its launch hands the image to the new one.
+   */
+  workspaceId?: string
+}
+
+/** What an upload is stored for: the open session, or a draft's workspace. */
+export type UploadScope = { sessionId: string } | { workspaceId: string }
+
+export function sameUploadScope(a: UploadScope | null, b: UploadScope | null): boolean {
+  if (!a || !b) return a === b
+  return 'sessionId' in a
+    ? 'sessionId' in b && a.sessionId === b.sessionId
+    : 'workspaceId' in b && a.workspaceId === b.workspaceId
 }
 
 /**

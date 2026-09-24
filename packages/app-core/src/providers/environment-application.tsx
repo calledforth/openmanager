@@ -31,7 +31,12 @@ import {
   type ProviderCatalogEntry,
   type ThreadTarget,
 } from '@openmanager/environment-client'
-import type { DraftImageAttachment, UploadedImageAttachment } from '../lib/attachments'
+import {
+  sameUploadScope,
+  type DraftImageAttachment,
+  type UploadedImageAttachment,
+  type UploadScope,
+} from '../lib/attachments'
 import {
   useActiveSession,
   useActiveThread,
@@ -316,7 +321,11 @@ interface DraftInternals {
   /** Create the draft's session with what the composer picked, open it and
    * adopt it; returns its first thread, or `null` when the draft was closed or
    * replaced meanwhile. */
-  startDraftSession: (text: string, launch: DraftLaunch) => Promise<ThreadTarget | null>
+  startDraftSession: (
+    text: string,
+    launch: DraftLaunch,
+    artifactIds?: string[],
+  ) => Promise<ThreadTarget | null>
 }
 
 const DraftInternalsContext = createContext<DraftInternals | null>(null)
@@ -420,16 +429,21 @@ function EnvironmentSessionStateProvider({
   )
 
   const startDraftSession = useCallback(
-    async (text: string, launch: DraftLaunch): Promise<ThreadTarget | null> => {
+    async (
+      text: string,
+      launch: DraftLaunch,
+      artifactIds?: string[],
+    ): Promise<ThreadTarget | null> => {
       if (!draftWorkspaceId) throw new Error('No draft is open')
       const generation = draftGenerationRef.current
       const environmentId = client.getState().environment?.environmentId
       if (!environmentId) throw new Error('No environment is connected')
       const { providerId, preference, modeId } = launch
       // One command, as the draft shows it: the environment files the picks
-      // the new session is seeded from, starts the provider, and runs the
-      // first message in the picked mode. It refuses rather than launch on
-      // anything less, so the draft stays open with what was typed.
+      // the new session is seeded from, claims the images the draft uploaded,
+      // starts the provider, and runs the first message in the picked mode.
+      // It refuses rather than launch on anything less, so the draft stays
+      // open with what was typed and attached.
       const { session, thread } = await commands.createSession({
         environmentId,
         workspaceId: draftWorkspaceId,
@@ -437,6 +451,7 @@ function EnvironmentSessionStateProvider({
         firstMessage: text,
         ...(preference ? { preference } : {}),
         ...(modeId !== undefined ? { modeId } : {}),
+        ...(artifactIds?.length ? { artifactIds } : {}),
       })
       // The user moved on while the session was being created: do not pull
       // the view back to it. Its first turn continues in the sidebar.
@@ -774,22 +789,28 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       if (!text && !attachments?.length) return
       setError(null)
       try {
-        // An upload belongs to a session, and a draft has none yet; refusing
-        // beats silently dropping an image the composer just confirmed.
-        if (attachments?.length && !targetRef.current) {
-          throw new Error('Images can be attached once the session has started.')
-        }
-        // An upload that finished after the user moved to another session is
-        // bound to the one it started in; the environment would refuse the
-        // turn, so refuse here and keep the text.
+        // An upload is bound to the session it was stored under or, from a
+        // draft, held for that draft's workspace. One that finished after the
+        // user moved elsewhere would be refused by the environment with the
+        // whole turn, so refuse here and keep the text.
+        const draftWorkspaceId =
+          !targetRef.current && isSessionDraftOpen ? activeWorkspacePath : null
+        // A host's own uploader may name neither, and is left to the host.
         if (
-          attachments?.some(
-            (attachment) =>
-              attachment.sessionId && attachment.sessionId !== targetRef.current?.sessionId,
+          attachments?.some((attachment) =>
+            draftWorkspaceId
+              ? attachment.sessionId !== undefined ||
+                (attachment.workspaceId !== undefined &&
+                  attachment.workspaceId !== draftWorkspaceId)
+              : attachment.workspaceId !== undefined ||
+                (attachment.sessionId !== undefined &&
+                  attachment.sessionId !== targetRef.current?.sessionId),
           )
         ) {
-          throw new Error('These images were uploaded to another session. Attach them again.')
+          throw new Error('These images were uploaded for another chat. Attach them again.')
         }
+        // An uploaded attachment's id is the artifact the environment stored.
+        const artifactIds = attachments?.map((attachment) => attachment.id)
         if (!targetRef.current && isSessionDraftOpen) {
           beginDraftTurn()
           // Refused here rather than by the environment's rejection: the user
@@ -800,7 +821,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
               `${providerDisplayName(launch.providerId)} is unavailable. Retry it from Settings.`,
             )
           }
-          await startDraftSession(text, launch)
+          await startDraftSession(text, launch, artifactIds)
           draftLaunched(activeWorkspacePath ?? '', launch)
           return
         }
@@ -809,8 +830,6 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
         beginSessionTurn()
         // A rejected send keeps its own row on screen with the reason and a
         // retry, so it is neither an error banner nor a composer rollback.
-        // An uploaded attachment's id is the artifact the environment stored.
-        const artifactIds = attachments?.map((attachment) => attachment.id)
         await commands
           .sendTurn({ ...current, text, ...(artifactIds?.length ? { artifactIds } : {}) })
           .catch(() => failTurn())
@@ -1155,7 +1174,8 @@ function EnvironmentViewActions({
   actions?: Omit<ViewActions, 'activeSessionId'>
   children: ReactNode
 }) {
-  const { activeSessionId, openChildSession } = useContext(SessionStateContext)!
+  const { activeSessionId, activeWorkspacePath, isSessionDraftOpen, openChildSession } =
+    useContext(SessionStateContext)!
   const client = useEnvironmentClient()
   // Sidebar rows carry the workspace ID as their `path`, so the icon lookup
   // is the environment's own `workspace.icon` read. The function's identity
@@ -1176,27 +1196,32 @@ function EnvironmentViewActions({
   // the bytes over its authorized route. The uploader is offered only when
   // the client has that route and the environment advertises tickets, so a
   // host that cannot store images shows no attach affordance at all. An
-  // upload belongs to a session; a draft has none, and the composer refuses
-  // images there before this is reached.
+  // upload belongs to the open session or, from a draft, which has no session
+  // yet, is held for the draft's workspace until the launch claims it.
   const uploadsSupported = capabilities.includes(UPLOAD_TICKET_COMMAND) && !!client.uploadArtifact
-  const activeSessionRef = useRef(activeSessionId)
-  activeSessionRef.current = activeSessionId
+  const uploadScope: UploadScope | null = activeSessionId
+    ? { sessionId: activeSessionId }
+    : isSessionDraftOpen && activeWorkspacePath
+      ? { workspaceId: activeWorkspacePath }
+      : null
+  const uploadScopeRef = useRef(uploadScope)
+  uploadScopeRef.current = uploadScope
   const uploadAttachments = useMemo(
     () =>
       uploadsSupported
         ? async (drafts: DraftImageAttachment[]): Promise<UploadedImageAttachment[]> => {
-            const sessionId = activeSessionRef.current
-            if (!sessionId) throw new Error('Images can be attached once the session has started.')
+            const scope = uploadScopeRef.current
+            if (!scope) throw new Error('Open a chat to attach images.')
             const uploaded: UploadedImageAttachment[] = []
             for (const draft of drafts) {
-              // Navigating away mid-batch: stop storing files under a session
-              // the send will no longer target. What is already stored has no
+              // Navigating away mid-batch: stop storing files for a chat the
+              // send will no longer target. What is already stored has no
               // release route; retention on the environment sweeps it.
-              if (activeSessionRef.current !== sessionId) {
-                throw new Error('The session changed while images were uploading.')
+              if (!sameUploadScope(uploadScopeRef.current, scope)) {
+                throw new Error('The chat changed while images were uploading.')
               }
               const stored = await client.uploadArtifact!({
-                sessionId,
+                ...scope,
                 name: draft.file.name,
                 mimeType: draft.file.type,
                 bytes: draft.file,
@@ -1207,7 +1232,7 @@ function EnvironmentViewActions({
                 mimeType: stored.mimeType,
                 size: stored.sizeBytes,
                 previewUrl: draft.previewUrl,
-                sessionId,
+                ...scope,
               })
             }
             return uploaded

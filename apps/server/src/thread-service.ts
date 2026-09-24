@@ -54,6 +54,7 @@ const WORKSPACE_UNAVAILABLE =
   'The workspace folder is unavailable. Restore its path or permissions, then try again.'
 const SESSION_WORKSPACE_UNAVAILABLE =
   'The session folder is missing, moved, or inaccessible on this environment. Restore the original folder path or its permissions, then try again. Your session is still listed.'
+const ARTIFACTS_UNAVAILABLE = 'These images are no longer available. Attach them again.'
 const SEND_WORKSPACE_UNAVAILABLE =
   'The session folder is unavailable. Restore the original folder path or its permissions, then reopen the session.'
 type RuntimeEvent = Parameters<HostDeps['emitEvent']>[0]
@@ -1192,6 +1193,27 @@ export function createThreadService(
             'This provider cannot start a chat in another mode.',
           )
         }
+        // A draft's images were uploaded for this workspace by this client and
+        // held for it. Checked before anything is announced, so a stale or
+        // foreign id leaves no session behind; claimed once the session exists.
+        const artifactIds = input.artifactIds ? [...new Set(input.artifactIds)] : []
+        if (artifactIds.length > 0) {
+          if (!options.artifacts || !context) {
+            return errorResult(
+              command.requestId,
+              'capability_missing',
+              'This environment cannot attach images to a new chat.',
+            )
+          }
+          if (
+            !options.artifacts.claimable(artifactIds, {
+              workspaceId: input.workspaceId,
+              clientId: context.clientId,
+            })
+          ) {
+            return errorResult(command.requestId, 'not_found', ARTIFACTS_UNAVAILABLE)
+          }
+        }
         // Filed before the session exists, so a pick that cannot be saved stops
         // the launch rather than starting it on something the user did not
         // choose. What comes back is what the draft showed; the session keeps
@@ -1285,6 +1307,26 @@ export function createThreadService(
             options.onPersistenceError?.(error, 'session.composer.updated')
           }
         }
+        if (artifactIds.length > 0) {
+          // The claim points each row at the session, so the session row it
+          // references has to be written first.
+          options.flush?.()
+          let claimed = false
+          try {
+            claimed = options.artifacts!.claim(artifactIds, {
+              workspaceId: input.workspaceId,
+              clientId: context!.clientId,
+              sessionId: session.sessionId,
+            })
+          } catch (error) {
+            options.onPersistenceError?.(error, 'session.created')
+          }
+          if (!claimed) {
+            // Another launch took them in between, or the write failed.
+            rollbackSession(record)
+            return errorResult(command.requestId, 'not_found', ARTIFACTS_UNAVAILABLE)
+          }
+        }
         // Re-enter the existing turn command so validation, runtime scheduling and
         // history ownership remain in one place. No asynchronous gap is exposed.
         // A picked mode rides the first prompt the way a plan build's does: set
@@ -1301,6 +1343,7 @@ export function createThreadService(
                   sessionId: session.sessionId,
                   threadId: thread.threadId,
                   text: input.firstMessage,
+                  ...(artifactIds.length > 0 ? { artifactIds } : {}),
                 },
               },
               context,
@@ -1311,6 +1354,15 @@ export function createThreadService(
           }
           const started = ProofResponseSchemas['turn.send'].safeParse(result)
           if (!started.success) {
+            // The draft stays open with its images, so hand them back for the
+            // retry before the session's removal would take them with it.
+            if (artifactIds.length > 0) {
+              try {
+                options.artifacts!.release(artifactIds, session.sessionId)
+              } catch (error) {
+                options.onPersistenceError?.(error, 'session.created')
+              }
+            }
             // The session was already announced, so its removal must be too.
             rollbackSession(record)
             return result
