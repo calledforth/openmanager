@@ -1,3 +1,4 @@
+import type { DatabaseSync } from 'node:sqlite'
 import type { Migration } from './migrate.ts'
 
 /**
@@ -486,4 +487,206 @@ export const MIGRATIONS: readonly Migration[] = [
       }
     },
   },
+  {
+    version: 11,
+    name: 'turn_activity',
+    up(database) {
+      // A turn's reasoning blocks and tool calls, one row each, keyed by the
+      // id the events carry (a reasoning block's message id, a tool call id).
+      // Until now they lived only in the event log, so a history page or a
+      // snapshot came back as text alone. `ordinal` is drawn from the same
+      // thread-wide counter as `messages.ordinal`, so one sort across both
+      // tables gives the order text, thoughts and tools happened in. It is
+      // REAL so rows rebuilt for turns that already happened can sit between
+      // two message ordinals without renumbering the messages (see below);
+      // live rows always take the next integer.
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS turn_activity (
+          activity_id TEXT PRIMARY KEY NOT NULL,
+          workspace_id TEXT NOT NULL,
+          thread_id TEXT NOT NULL,
+          turn_id TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK (kind IN ('reasoning', 'tool')),
+          ordinal REAL NOT NULL CHECK (ordinal >= 0),
+          state_json TEXT NOT NULL CHECK (json_valid(state_json)),
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY (turn_id, thread_id, workspace_id)
+            REFERENCES turns(turn_id, thread_id, workspace_id) ON DELETE CASCADE,
+          UNIQUE (thread_id, ordinal)
+        ) STRICT;
+      `)
+      backfillTurnActivity(database)
+    },
+  },
 ]
+
+type RetainedActivityRow = {
+  thread_id: string
+  sequence: number
+  event_name: 'message.reasoning' | 'tool.updated'
+  event_json: string
+}
+type BackfilledActivity = {
+  activityId: string
+  turnId: string
+  kind: 'reasoning' | 'tool'
+  createdAt: number
+  state: Record<string, unknown>
+}
+type TextBlock = { type: 'text'; text: string }
+
+/**
+ * Rebuild `turn_activity` for turns that already happened from the reasoning
+ * and tool events the log still retains. Retention keeps a window of events,
+ * so a turn older than that window stays text-only; everything inside it gets
+ * its thoughts and tool calls back.
+ *
+ * Those rows need ordinals among the turn's messages, which were numbered
+ * densely before this table existed. Message ordinals are left exactly as
+ * they are, so a history cursor a client holds across the upgrade stays
+ * valid; the activity takes fractional ordinals in the unit gap just before
+ * the turn's first assistant message, or just after its prompt when the turn
+ * produced no text. Interleaving within a turn is not recoverable from rows,
+ * so a backfilled turn reads as it did before: thoughts, then tools, then text.
+ */
+function backfillTurnActivity(database: DatabaseSync): void {
+  const retained = database
+    .prepare(
+      `SELECT streams.thread_id, log.sequence, log.event_name, log.event_json
+       FROM event_log AS log
+       JOIN event_streams AS streams ON streams.scope_key = log.scope_key
+       WHERE streams.scope_type = 'thread'
+         AND log.event_name IN ('message.reasoning', 'tool.updated')
+       ORDER BY streams.thread_id, log.sequence`,
+    )
+    .all() as RetainedActivityRow[]
+  if (retained.length === 0) return
+
+  const selectTurn = database.prepare(
+    'SELECT workspace_id FROM turns WHERE turn_id = ? AND thread_id = ?',
+  )
+  const turnMessages = database.prepare(
+    `SELECT role, ordinal FROM messages WHERE turn_id = ? AND thread_id = ? ORDER BY ordinal`,
+  )
+  const insert = database.prepare(
+    `INSERT OR IGNORE INTO turn_activity (
+       activity_id, workspace_id, thread_id, turn_id, kind, ordinal, state_json,
+       created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+
+  // Fold the retained events per thread into one entry per activity id, in
+  // the order each id first appeared, the same way the projector does live.
+  const byThread = new Map<string, Map<string, BackfilledActivity>>()
+  for (const row of retained) {
+    const event = JSON.parse(row.event_json) as {
+      timestamp: string
+      payload: Record<string, unknown>
+    }
+    const payload = event.payload
+    const turnId = String(payload.turnId ?? '')
+    if (!turnId) continue
+    const activityId = String(
+      row.event_name === 'message.reasoning' ? payload.messageId : payload.toolCallId,
+    )
+    if (!activityId) continue
+    let thread = byThread.get(row.thread_id)
+    if (!thread) {
+      thread = new Map()
+      byThread.set(row.thread_id, thread)
+    }
+    const existing = thread.get(activityId)
+    const createdAt = Date.parse(event.timestamp)
+    if (row.event_name === 'message.reasoning') {
+      const previous = (existing?.state ?? {}) as {
+        content?: Array<Record<string, unknown>>
+        tokens?: number
+      }
+      const blocks = previous.content ?? []
+      const last = blocks.at(-1) as TextBlock | undefined
+      const content = payload.content as Record<string, unknown> | undefined
+      const merged =
+        content === undefined
+          ? blocks
+          : last?.type === 'text' && content.type === 'text'
+            ? [...blocks.slice(0, -1), { type: 'text', text: last.text + String(content.text) }]
+            : [...blocks, content]
+      const tokens = payload.tokens as number | undefined
+      const total =
+        tokens === undefined ? previous.tokens : Math.max(previous.tokens ?? 0, tokens)
+      thread.set(activityId, {
+        activityId,
+        turnId,
+        kind: 'reasoning',
+        createdAt: existing?.createdAt ?? createdAt,
+        state: {
+          messageId: activityId,
+          turnId,
+          phase: payload.phase,
+          content: merged,
+          ...(total === undefined ? {} : { tokens: total }),
+        },
+      })
+    } else {
+      const { title, kind, status } = payload as Record<string, unknown>
+      thread.set(activityId, {
+        activityId,
+        turnId,
+        kind: 'tool',
+        createdAt: existing?.createdAt ?? createdAt,
+        state: {
+          ...(existing?.state ?? {}),
+          toolCallId: activityId,
+          turnId,
+          ...(title === undefined ? {} : { title }),
+          ...(kind === undefined ? {} : { kind }),
+          ...(status === undefined ? {} : { status }),
+        },
+      })
+    }
+  }
+
+  for (const [threadId, entries] of byThread) {
+    const byTurn = new Map<string, BackfilledActivity[]>()
+    for (const entry of entries.values()) {
+      const turn = selectTurn.get(entry.turnId, threadId) as { workspace_id: string } | undefined
+      if (!turn) continue
+      const list = byTurn.get(entry.turnId) ?? []
+      list.push({ ...entry, state: { ...entry.state, workspaceId: turn.workspace_id } })
+      byTurn.set(entry.turnId, list)
+    }
+    if (byTurn.size === 0) continue
+    for (const [turnId, list] of byTurn) {
+      const messages = turnMessages.all(turnId, threadId) as Array<{
+        role: string
+        ordinal: number
+      }>
+      if (messages.length === 0) continue
+      const firstAssistant = messages.find((message) => message.role === 'assistant')
+      // The unit gap below the first assistant message, or above the last
+      // message when the turn produced no text, shared evenly by the rows.
+      const base = firstAssistant
+        ? firstAssistant.ordinal - 1
+        : messages[messages.length - 1]!.ordinal
+      const step = 1 / (list.length + 1)
+      list.forEach((entry, index) => {
+        const { workspaceId, ...state } = entry.state as { workspaceId: string } & Record<
+          string,
+          unknown
+        >
+        insert.run(
+          entry.activityId,
+          workspaceId,
+          threadId,
+          turnId,
+          entry.kind,
+          base + step * (index + 1),
+          JSON.stringify(state),
+          entry.createdAt,
+          entry.createdAt,
+        )
+      })
+    }
+  }
+}

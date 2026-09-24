@@ -154,7 +154,7 @@ async function joinMidTurn(stub: ReturnType<typeof gatedStub>) {
   const answer = await replay(second, scope, null)
   expect(answer.payload.mode).toBe('snapshot')
   const snapshot = threadSnapshot(answer)
-  expect(snapshot.turns).toEqual([
+  expect(snapshot.turns).toMatchObject([
     { turnId: sent.payload.turn.turnId, threadId: thread.threadId, state: 'running' },
   ])
   expect(assistantTextFromMessages(snapshot.messages)).toBe(PREFIX)

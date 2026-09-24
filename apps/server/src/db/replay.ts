@@ -118,12 +118,13 @@ export function createReplayReader(database: DatabaseSync, options: ReplayReader
         thread: { threadId: scope.threadId, sessionId: scope.sessionId },
         turns: page.turns,
         // The newest history page, as `session.open` then `session.history`
-        // would load it. Reasoning and tool state live only in the event log,
-        // which is what the snapshot stands in for, so they start over.
+        // would load it: its messages, the reasoning and tool calls of the
+        // turns on it, and the order all of them happened in.
         messages: page.messages,
         nextCursor: page.nextCursor,
-        reasoning: [],
-        tools: [],
+        reasoning: page.reasoning,
+        tools: page.tools,
+        order: page.order,
         interactions: page.interactions.map(({ turnId, interaction }) => ({ turnId, interaction })),
       },
     })

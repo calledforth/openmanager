@@ -124,6 +124,13 @@ export const TurnSchema = z.object({
   turnId: EntityIdSchema,
   threadId: EntityIdSchema,
   state: z.enum(['running', 'waiting', 'completed', 'interrupted', 'failed']),
+  /**
+   * When the turn started and settled, so a transcript can label finished
+   * work with how long it took. Absent on older environments and, for
+   * `finishedAt`, while the turn is still open.
+   */
+  startedAt: TimestampSchema.optional(),
+  finishedAt: TimestampSchema.optional(),
 })
 export const ArtifactReferenceSchema = z.object({
   type: z.literal('artifact'),
@@ -157,6 +164,48 @@ export const MessageSchema = z.object({
   turnId: EntityIdSchema,
   role: z.enum(['user', 'assistant']),
   content: z.array(ContentBlockSchema),
+})
+/**
+ * One reasoning block of a turn, as `message.reasoning` events accumulate it:
+ * a run of its own with its own message id, distinct from the turn's text.
+ */
+export const ReasoningBlockSchema = z.object({
+  messageId: EntityIdSchema,
+  turnId: EntityIdSchema,
+  phase: z.enum(['start', 'delta', 'stop']),
+  content: z.array(ContentBlockSchema),
+  tokens: z.number().int().nonnegative().optional(),
+})
+export const ToolKindSchema = z.enum([
+  'read',
+  'edit',
+  'delete',
+  'move',
+  'search',
+  'execute',
+  'think',
+  'fetch',
+  'switch_mode',
+  'other',
+])
+export const ToolCallStatusSchema = z.enum(['pending', 'in_progress', 'completed', 'failed'])
+/** What a `tool.updated` event carries, and what the environment keeps of a tool call. */
+export const ToolCallStateSchema = z.object({
+  toolCallId: EntityIdSchema,
+  turnId: EntityIdSchema,
+  title: z.string().optional(),
+  kind: ToolKindSchema.optional(),
+  status: ToolCallStatusSchema.optional(),
+})
+/**
+ * One thing that took its place in a turn's transcript, named by the id it is
+ * stored under. A list of these is the order messages, reasoning blocks and
+ * tool calls happened in, which their id-keyed lists alone cannot say.
+ */
+export const ActivityRefSchema = z.object({
+  kind: z.enum(['message', 'reasoning', 'tool']),
+  id: EntityIdSchema,
+  turnId: EntityIdSchema,
 })
 
 /**
@@ -313,6 +362,9 @@ export type HistoryCursor = z.infer<typeof HistoryCursorSchema>
 export type Thread = z.infer<typeof ThreadSchema>
 export type Turn = z.infer<typeof TurnSchema>
 export type Message = z.infer<typeof MessageSchema>
+export type ReasoningBlock = z.infer<typeof ReasoningBlockSchema>
+export type ToolCallState = z.infer<typeof ToolCallStateSchema>
+export type ActivityRef = z.infer<typeof ActivityRefSchema>
 export type TurnStart = z.infer<typeof TurnStartSchema>
 export type ContentBlock = z.infer<typeof ContentBlockSchema>
 export type Interaction = z.infer<typeof InteractionSchema>

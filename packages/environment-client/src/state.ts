@@ -1,4 +1,4 @@
-import { foldProtocolEvent } from '@agentpack/view/protocol'
+import { foldProtocolEvent, placeActivity } from '@agentpack/view/protocol'
 import { sessionListCursorOf } from '@openmanager/protocol'
 import type {
   Message,
@@ -17,6 +17,7 @@ import type {
   WorkspaceComposerPreference,
 } from '@openmanager/protocol'
 import type {
+  ActivityRef,
   ConnectionState,
   EnvironmentState,
   OutboxEntry,
@@ -63,12 +64,50 @@ export function createThreadState(
     messages: [],
     reasoning: [],
     tools: [],
+    order: [],
     interactions: [],
     failures: [],
     notices: [],
     outbox: [],
     hydration,
   }
+}
+
+/**
+ * The transcript order a page of persisted messages implies on its own. An
+ * environment that keeps no reasoning or tool state (an older one, or a
+ * snapshot that starts them over) still lists its messages in order.
+ */
+function orderOfMessages(messages: readonly Message[]): ActivityRef[] {
+  return messages.map((message) => ({
+    kind: 'message',
+    id: message.messageId,
+    turnId: message.turnId,
+  }))
+}
+
+/** `primary`, then the entries of `secondary` whose key `primary` lacks. */
+function mergeById<T>(
+  primary: readonly T[],
+  secondary: readonly T[],
+  key: (item: T) => string,
+): T[] {
+  const known = new Set(primary.map(key))
+  const extra = secondary.filter((item) => !known.has(key(item)))
+  return extra.length === 0 ? [...primary] : [...primary, ...extra]
+}
+
+/** `base`, then whatever `extra` places that `base` does not, in `extra`'s order. */
+function mergeOrder(base: readonly ActivityRef[], extra: readonly ActivityRef[]): ActivityRef[] {
+  const placed = new Set(base.map((ref) => `${ref.kind}:${ref.id}`))
+  const merged = [...base]
+  for (const ref of extra) {
+    const key = `${ref.kind}:${ref.id}`
+    if (placed.has(key)) continue
+    placed.add(key)
+    merged.push(ref)
+  }
+  return merged
 }
 
 const upsertById = <T>(items: readonly T[], id: (item: T) => string, next: T): T[] => {
@@ -380,7 +419,9 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
 
   switch (event.name) {
     case 'turn.started':
-      return patchThread(state, thread, (current) => confirmTurnStart(current, event.payload))
+      return patchThread(state, thread, (current) =>
+        confirmTurnStart(current, event.payload, event.timestamp),
+      )
     case 'turn.completed':
     case 'turn.interrupted':
     case 'turn.failed':
@@ -447,6 +488,7 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
   const thread = threadSnapshot.thread
   const withThread = ensureThread(state, thread)
   const existing = withThread.threads[thread.threadId]!
+  const messages = retainOlderMessages(existing.messages, threadSnapshot.messages)
   const replaced: ThreadState = {
     ...createThreadState(thread, 'ready'),
     // A snapshot describes what the environment has; a send it has not
@@ -454,7 +496,14 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
     // itself the answer.
     outbox: reconcileOutbox(existing, threadSnapshot.messages),
     turns: threadSnapshot.turns,
-    messages: retainOlderMessages(existing.messages, threadSnapshot.messages),
+    messages,
+    // Older pages the client keeps in front of the snapshot place their
+    // messages; the snapshot places its own page, reasoning and tools included
+    // when the environment reports them.
+    order: [
+      ...orderOfMessages(messages.slice(0, messages.length - threadSnapshot.messages.length)),
+      ...(threadSnapshot.order ?? orderOfMessages(threadSnapshot.messages)),
+    ],
     historyCursor:
       existing.historyCursor !== undefined &&
       existing.messages.findIndex(
@@ -534,6 +583,28 @@ export function applySessionHistory(
       !older && current.hydration !== 'ready'
         ? payload.messages
         : [...incoming, ...current.messages]
+    // The page places its messages, reasoning and tools in the order they
+    // happened; an older environment names messages only. Live activity that
+    // arrived while the page loaded keeps the place it already has, after
+    // everything the page names.
+    const pageOrder = payload.order ?? orderOfMessages(payload.messages)
+    const fresh = !older && current.hydration !== 'ready'
+    const order = fresh
+      ? mergeOrder(pageOrder, current.order)
+      : [
+          ...pageOrder.filter(
+            (ref) => !current.order.some((known) => known.kind === ref.kind && known.id === ref.id),
+          ),
+          ...current.order,
+        ]
+    // Reasoning and tools are keyed by id, so a page's entries replace what
+    // the client held for them and leave live ones it does not name alone.
+    const reasoning = fresh
+      ? mergeById(payload.reasoning ?? [], current.reasoning, (entry) => entry.messageId)
+      : mergeById(current.reasoning, payload.reasoning ?? [], (entry) => entry.messageId)
+    const tools = fresh
+      ? mergeById(payload.tools ?? [], current.tools, (tool) => tool.toolCallId)
+      : mergeById(current.tools, payload.tools ?? [], (tool) => tool.toolCallId)
     const openTurn = payload.turns.find(
       (turn) => turn.state === 'waiting' || turn.state === 'running',
     )
@@ -558,6 +629,9 @@ export function applySessionHistory(
           ? payload.turns
           : current.turns,
       messages,
+      reasoning,
+      tools,
+      order,
       outbox: reconcileOutbox(current, payload.messages),
       interactions:
         !older && (interactions.length > 0 || current.hydration !== 'ready')
@@ -611,19 +685,32 @@ function reconcileOutbox(current: ThreadState, incoming: readonly Message[]): Ou
  * response and the `turn.started` event may arrive in either order and only
  * the first of them changes anything.
  */
-function confirmTurnStart(current: ThreadState, payload: TurnStart): ThreadState {
+function confirmTurnStart(
+  current: ThreadState,
+  payload: TurnStart,
+  startedAt?: string,
+): ThreadState {
   const outbox = payload.commandId
     ? current.outbox.filter((entry) => entry.commandId !== payload.commandId)
     : current.outbox
+  // A delayed send response must not rewind a turn that already progressed.
+  // The `turn.started` event's time is when the work began; a `turn.send`
+  // response carries none, so whichever arrives second may only fill that in.
+  const existing = current.turns.find((turn) => turn.turnId === payload.turn.turnId)
+  const turn = existing
+    ? existing.startedAt || !startedAt
+      ? existing
+      : { ...existing, startedAt }
+    : { ...payload.turn, ...(startedAt && !payload.turn.startedAt ? { startedAt } : {}) }
   return {
     ...current,
-    // A delayed send response must not rewind a turn that already progressed.
-    turns: upsertById(
-      current.turns,
-      (turn) => turn.turnId,
-      current.turns.find((turn) => turn.turnId === payload.turn.turnId) ?? payload.turn,
-    ),
+    turns: upsertById(current.turns, (item) => item.turnId, turn),
     messages: upsertById(current.messages, (message) => message.messageId, payload.userMessage),
+    order: placeActivity(current.order, {
+      kind: 'message',
+      id: payload.userMessage.messageId,
+      turnId: payload.turn.turnId,
+    }),
     outbox: outbox.length === current.outbox.length ? current.outbox : outbox,
   }
 }

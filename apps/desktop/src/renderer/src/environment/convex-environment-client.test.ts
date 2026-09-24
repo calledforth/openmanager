@@ -469,7 +469,9 @@ describe('createConvexEnvironmentClient', () => {
     expect(convex.watcherCount('jobs:getStatus')).toBe(0)
 
     const thread = client.getState().threads['session-1']!
-    expect(thread.turns).toEqual([{ turnId: 'asst-1', threadId: 'session-1', state: 'running' }])
+    expect(thread.turns).toMatchObject([
+      { turnId: 'asst-1', threadId: 'session-1', state: 'running' },
+    ])
     expect(client.getState().sessions['session-1']?.status).toBe('running')
   })
 
@@ -769,7 +771,7 @@ describe('createConvexEnvironmentClient', () => {
 
     const thread = selectActiveThread(client.getState())!
     expect(thread.hydration).toBe('ready')
-    expect(thread.turns).toEqual([
+    expect(thread.turns).toMatchObject([
       { turnId: 'old-asst', threadId: 'session-1', state: 'completed' },
       { turnId: 'asst-1', threadId: 'session-1', state: 'running' },
     ])

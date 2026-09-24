@@ -228,6 +228,183 @@ describe('applyEvent', () => {
     expect(selectActiveThread(state)!.tools).toHaveLength(1)
   })
 
+  it('places each message, thought and tool in arrival order exactly once', () => {
+    const thought = (messageId: string, text: string) =>
+      event({
+        name: 'message.reasoning',
+        scope: threadScope,
+        payload: { turnId: 'turn-1', messageId, phase: 'delta', content: { type: 'text', text } },
+      })
+    const tool = (toolCallId: string, status: 'in_progress' | 'completed') =>
+      event({
+        name: 'tool.updated',
+        scope: threadScope,
+        payload: { turnId: 'turn-1', toolCallId, title: 'Read file', status },
+      })
+    let state = applyEvent(seeded(), turnStarted())
+    // Two thoughts, two tools and two text runs interleaved; every update of an
+    // entry already placed leaves the order alone.
+    for (const next of [
+      thought('thought-1', 'plan'),
+      thought('thought-1', ' more'),
+      tool('tool-1', 'in_progress'),
+      tool('tool-1', 'completed'),
+      delta('turn-1', 'assistant-1', 'Looking'),
+      delta('turn-1', 'assistant-1', ' closer'),
+      thought('thought-2', 'check'),
+      tool('tool-2', 'completed'),
+      delta('turn-1', 'assistant-2', 'Found it'),
+    ]) {
+      state = applyEvent(state, next)
+    }
+    const thread = selectActiveThread(state)!
+    expect(thread.order.map((ref) => `${ref.kind}:${ref.id}`)).toEqual([
+      'message:turn-1-user',
+      'reasoning:thought-1',
+      'tool:tool-1',
+      'message:assistant-1',
+      'reasoning:thought-2',
+      'tool:tool-2',
+      'message:assistant-2',
+    ])
+    // The second thought is its own block; the first stays closed.
+    expect(thread.reasoning.map((entry) => entry.phase)).toEqual(['stop', 'stop'])
+    expect(thread.messages.at(-1)?.content).toEqual([{ type: 'text', text: 'Found it' }])
+  })
+
+  it('keeps the place of live activity that arrived while a history page loaded', () => {
+    // Without replay the client subscribes before it loads history, so a
+    // running turn can place a thought or tool before the page answers.
+    let state = applyEvent(seeded(), turnStarted())
+    state = {
+      ...state,
+      threads: {
+        ...state.threads,
+        [THREAD.threadId]: { ...state.threads[THREAD.threadId]!, hydration: 'loading' },
+      },
+    }
+    state = applyEvent(
+      state,
+      event({
+        name: 'message.reasoning',
+        scope: threadScope,
+        payload: {
+          turnId: 'turn-1',
+          messageId: 'thought-live',
+          phase: 'delta',
+          content: { type: 'text', text: 'plan' },
+        },
+      }),
+    )
+    const userMessage = state.threads[THREAD.threadId]!.messages[0]!
+    state = applySessionHistory(state, THREAD, {
+      messages: [userMessage],
+      turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'running' }],
+      interactions: [],
+      nextCursor: null,
+    })
+    const thread = state.threads[THREAD.threadId]!
+    expect(thread.hydration).toBe('ready')
+    expect(thread.reasoning).toHaveLength(1)
+    expect(thread.order.map((ref) => `${ref.kind}:${ref.id}`)).toEqual([
+      'message:turn-1-user',
+      'reasoning:thought-live',
+    ])
+  })
+
+  it('restores reasoning, tools and their order from a history page and a snapshot', () => {
+    const turn = { turnId: 'turn-1', threadId: THREAD.threadId, state: 'completed' as const }
+    const message = (messageId: string, role: 'user' | 'assistant', text: string) => ({
+      messageId,
+      threadId: THREAD.threadId,
+      turnId: 'turn-1',
+      role,
+      content: [{ type: 'text' as const, text }],
+    })
+    const activity = {
+      reasoning: [
+        {
+          messageId: 'thought-1',
+          turnId: 'turn-1',
+          phase: 'stop' as const,
+          content: [{ type: 'text' as const, text: 'plan' }],
+        },
+      ],
+      tools: [
+        { toolCallId: 'tool-1', turnId: 'turn-1', title: 'Read', status: 'completed' as const },
+      ],
+      order: [
+        { kind: 'message' as const, id: 'user-1', turnId: 'turn-1' },
+        { kind: 'reasoning' as const, id: 'thought-1', turnId: 'turn-1' },
+        { kind: 'tool' as const, id: 'tool-1', turnId: 'turn-1' },
+        { kind: 'message' as const, id: 'assistant-1', turnId: 'turn-1' },
+      ],
+    }
+    const messages = [message('user-1', 'user', 'hi'), message('assistant-1', 'assistant', 'done')]
+
+    const fromHistory = applySessionHistory(seeded(), THREAD, {
+      messages,
+      turns: [turn],
+      interactions: [],
+      nextCursor: null,
+      ...activity,
+    }).threads[THREAD.threadId]!
+    expect(fromHistory.reasoning).toEqual(activity.reasoning)
+    expect(fromHistory.tools).toEqual(activity.tools)
+    expect(fromHistory.order).toEqual(activity.order)
+
+    const fromSnapshot = applySnapshot(seeded(), {
+      cursor: { scope: threadScope, epoch: 'epoch', sequence: 9 },
+      state: { thread: THREAD, turns: [turn], messages, interactions: [], ...activity },
+    }).threads[THREAD.threadId]!
+    expect(fromSnapshot.reasoning).toEqual(activity.reasoning)
+    expect(fromSnapshot.tools).toEqual(activity.tools)
+    expect(fromSnapshot.order).toEqual(activity.order)
+
+    // An older page prepends its entries; the newer ones keep what the client holds.
+    const olderPage = applySessionHistory(
+      { ...seeded(), threads: { [THREAD.threadId]: fromHistory } },
+      THREAD,
+      {
+        messages: [message('user-0', 'user', 'earlier')],
+        turns: [{ ...turn, turnId: 'turn-0' }, turn],
+        interactions: [],
+        nextCursor: null,
+        reasoning: [],
+        tools: [{ toolCallId: 'tool-0', turnId: 'turn-0', status: 'completed' }],
+        order: [
+          { kind: 'message', id: 'user-0', turnId: 'turn-0' },
+          { kind: 'tool', id: 'tool-0', turnId: 'turn-0' },
+        ],
+      },
+      true,
+    ).threads[THREAD.threadId]!
+    expect(olderPage.order.map((ref) => ref.id)).toEqual([
+      'user-0',
+      'tool-0',
+      'user-1',
+      'thought-1',
+      'tool-1',
+      'assistant-1',
+    ])
+    expect(olderPage.tools.map((tool) => tool.toolCallId)).toEqual(['tool-1', 'tool-0'])
+  })
+
+  it('stamps a turn with when it started and finished', () => {
+    const start = turnStarted()
+    let state = applyEvent(seeded(), { ...start, timestamp: '2026-09-24T10:00:00.000Z' })
+    expect(selectActiveTurn(state)?.startedAt).toBe('2026-09-24T10:00:00.000Z')
+    // The send response arriving second may not rewind the start.
+    state = applyTurnStarted(state, THREAD, start.payload)
+    expect(selectActiveThread(state)!.turns[0]?.startedAt).toBe('2026-09-24T10:00:00.000Z')
+    state = applyEvent(state, { ...completed(), timestamp: '2026-09-24T10:00:45.000Z' })
+    expect(selectActiveThread(state)!.turns[0]).toMatchObject({
+      state: 'completed',
+      startedAt: '2026-09-24T10:00:00.000Z',
+      finishedAt: '2026-09-24T10:00:45.000Z',
+    })
+  })
+
   it('is idempotent for duplicated turn.started deliveries', () => {
     const once = applyEvent(seeded(), turnStarted())
     const twice = applyEvent(once, turnStarted())

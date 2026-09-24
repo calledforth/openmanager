@@ -55,7 +55,75 @@ describe('projectThread', () => {
     })
   })
 
-  it('orders an assistant row as reasoning, tools, then text and maps tool status', () => {
+  it('follows arrival order across thoughts, tools and text runs', () => {
+    const message = (messageId: string, text: string) => ({
+      messageId,
+      threadId: THREAD.threadId,
+      turnId: 't1',
+      role: 'assistant' as const,
+      content: [{ type: 'text' as const, text }],
+    })
+    const state = thread({
+      turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'completed' }],
+      messages: [message('a1', 'Looking closer'), message('a2', 'Found it')],
+      reasoning: [
+        { messageId: 'r1', turnId: 't1', phase: 'stop', content: [{ type: 'text', text: 'plan' }] },
+        {
+          messageId: 'r2',
+          turnId: 't1',
+          phase: 'stop',
+          content: [{ type: 'text', text: 'check' }],
+        },
+      ],
+      tools: [
+        { toolCallId: 'tool-1', turnId: 't1', title: 'Read', status: 'completed' },
+        { toolCallId: 'tool-2', turnId: 't1', title: 'Grep', status: 'completed' },
+      ],
+      order: [
+        { kind: 'reasoning', id: 'r1', turnId: 't1' },
+        { kind: 'message', id: 'a1', turnId: 't1' },
+        { kind: 'tool', id: 'tool-1', turnId: 't1' },
+        { kind: 'reasoning', id: 'r2', turnId: 't1' },
+        { kind: 'tool', id: 'tool-2', turnId: 't1' },
+        { kind: 'message', id: 'a2', turnId: 't1' },
+        // A ref to something the thread does not hold places nothing.
+        { kind: 'tool', id: 'tool-gone', turnId: 't1' },
+      ],
+    })
+    const row = projectThread(state).byId.get('a1')!
+    expect(row.content.parts?.map((part) => part.id)).toEqual([
+      'reasoning:r1',
+      'a1',
+      'tool-1',
+      'reasoning:r2',
+      'tool-2',
+      'a2',
+    ])
+    // Separate runs stay separate paragraphs in the plain-text fallback.
+    expect(row.content.content).toBe('Looking closer\n\nFound it')
+    expect(row.message.isFinal).toBe(true)
+  })
+
+  it('labels a settled row with how long the turn ran when the environment says', () => {
+    const settledAt = (turn: Record<string, unknown>) =>
+      projectThread(
+        thread({
+          turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'completed', ...turn }],
+          tools: [{ toolCallId: 'tool-1', turnId: 't1', title: 'Read', status: 'completed' }],
+        }),
+      ).byId.get('turn:t1:assistant')!.content.runtime
+    expect(
+      settledAt({ startedAt: '2026-09-24T10:00:00.000Z', finishedAt: '2026-09-24T10:00:45.000Z' }),
+    ).toEqual({
+      startedAt: Date.parse('2026-09-24T10:00:00.000Z'),
+      completedAt: Date.parse('2026-09-24T10:00:45.000Z'),
+    })
+    // An older environment reports no timing; the row keeps the plain label.
+    expect(settledAt({})).toBeUndefined()
+    expect(settledAt({ startedAt: '2026-09-24T10:00:00.000Z' })).toBeUndefined()
+  })
+
+  it('orders an unplaced assistant row as reasoning, tools, then text and maps tool status', () => {
     const state = thread({
       turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'running' }],
       messages: [

@@ -20,12 +20,14 @@ import type {
   WorkspaceComposerPreference,
 } from '@openmanager/protocol'
 import type {
+  ActivityRef,
   ReasoningEntry,
   ToolState,
   PendingInteraction,
   TurnFailure,
 } from '@agentpack/view/protocol'
 export type {
+  ActivityRef,
   ReasoningEntry,
   ToolState,
   PendingInteraction,
@@ -113,6 +115,8 @@ export interface ThreadState {
   messages: Message[]
   reasoning: ReasoningEntry[]
   tools: ToolState[]
+  /** Messages, reasoning and tools in arrival order; see `ProtocolThreadView.order`. */
+  order: ActivityRef[]
   interactions: PendingInteraction[]
   failures: TurnFailure[]
   notices: TurnNotice[]
