@@ -33,16 +33,26 @@ export const UploadSizeSchema = z.number().int().positive().max(Number.MAX_SAFE_
  * File bytes never travel on the WebSocket. A client declares the file on the
  * command channel, receives a short-lived single-use ticket bound to its
  * credential and the session, and PUTs the raw bytes to `uploadPath` over HTTP.
+ *
+ * A draft has no session yet, so it names its workspace instead. That upload
+ * is held for the workspace, owned by the client that sent it, until the
+ * `session.create` that launches the draft names it in `artifactIds`.
  */
 export const UploadCommandSchemas = {
   [UPLOAD_TICKET_CAPABILITY]: command(
     UPLOAD_TICKET_CAPABILITY,
-    z.strictObject({
-      sessionId: EntityIdSchema,
-      name: UploadNameSchema,
-      mimeType: UploadMimeTypeSchema,
-      sizeBytes: UploadSizeSchema,
-    }),
+    z
+      .strictObject({
+        sessionId: EntityIdSchema.optional(),
+        workspaceId: EntityIdSchema.optional(),
+        name: UploadNameSchema,
+        mimeType: UploadMimeTypeSchema,
+        sizeBytes: UploadSizeSchema,
+      })
+      .refine((upload) => (upload.sessionId === undefined) !== (upload.workspaceId === undefined), {
+        message: 'An upload belongs to a session or, for a draft, to a workspace.',
+        path: ['sessionId'],
+      }),
   ),
 } as const
 
@@ -58,10 +68,14 @@ export const UploadResponseSchemas = {
   ),
 } as const
 
-/** The body of a successful `PUT`. A message references the artifact by this id. */
+/**
+ * The body of a successful `PUT`. A message references the artifact by this
+ * id. No `sessionId` means a draft's upload, held for `workspaceId`.
+ */
 export const UploadResultSchema = z.strictObject({
   artifactId: EntityIdSchema,
-  sessionId: EntityIdSchema,
+  sessionId: EntityIdSchema.optional(),
+  workspaceId: EntityIdSchema,
   name: UploadNameSchema,
   mimeType: UploadMimeTypeSchema,
   sizeBytes: UploadSizeSchema,

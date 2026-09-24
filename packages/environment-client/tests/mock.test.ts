@@ -260,6 +260,31 @@ describe('mock environment client', () => {
       withUploads.fetchArtifact!({ sessionId: SESSION.sessionId, artifactId: stored.artifactId }),
     ).resolves.toBeInstanceOf(Blob)
 
+    // A draft has no session yet: its upload is held for the workspace, and
+    // the create that launches the draft claims it once.
+    const held = await withUploads.uploadArtifact!({
+      workspaceId: SESSION.workspaceId,
+      name: 'draft.png',
+      mimeType: 'image/png',
+      bytes: new Blob(['png'], { type: 'image/png' }),
+    })
+    expect(held).not.toHaveProperty('sessionId')
+    expect(held.workspaceId).toBe(SESSION.workspaceId)
+    const launch = {
+      environmentId: withUploads.getState().environment!.environmentId,
+      workspaceId: SESSION.workspaceId,
+      providerId: 'opencode',
+      firstMessage: '',
+      artifactIds: [held.artifactId],
+    }
+    const { firstTurn } = await withUploads.commands.createSession(launch)
+    expect(firstTurn?.userMessage.content).toEqual([
+      expect.objectContaining({ type: 'artifact', artifactId: held.artifactId }),
+    ])
+    await expect(withUploads.commands.createSession(launch)).rejects.toMatchObject({
+      code: 'not_found',
+    })
+
     const turnsOnly = createMockEnvironmentClient({ seed, uploads: false })
     expect(turnsOnly.supports('sendTurn')).toBe(true)
     expect(turnsOnly.getState().connection.capabilities).not.toContain('upload.ticket.create')

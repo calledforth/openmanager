@@ -33,7 +33,8 @@ export const UPLOAD_PARTIAL_DIRECTORY = 'partial'
 
 type Ticket = {
   clientId: string
-  sessionId: string
+  /** Absent for a draft's upload, which is held for the workspace instead. */
+  sessionId?: string
   workspaceId: string
   name: string
   mimeType: string
@@ -47,11 +48,18 @@ const errorResult = (requestId: string | null, code: ErrorCode, message: string)
   error: { code, message },
 })
 
+/** What an audit record says the upload was for. */
+const scopeOf = (ticket: Pick<Ticket, 'sessionId' | 'workspaceId'>): Record<string, AuditValue> =>
+  ticket.sessionId === undefined
+    ? { workspaceId: ticket.workspaceId }
+    : { sessionId: ticket.sessionId }
+
 const hashTicket = (ticket: string) => createHash('sha256').update(ticket, 'utf8').digest('hex')
 
 /**
  * Request-scoped upload tickets (threat model T14, D9). File bytes stay off
- * the WebSocket: `upload.ticket.create` declares one file for one session and
+ * the WebSocket: `upload.ticket.create` declares one file for one session (or,
+ * for a draft that has none yet, for its workspace) and
  * answers a single-use ticket, and `PUT /uploads/<ticket>` streams the bytes to
  * environment blob storage and answers the artifact id a message references.
  *
@@ -175,22 +183,29 @@ export function createUploadService(options: {
         `Attachments are limited to ${MAX_ATTACHMENT_BYTES} bytes.`,
       )
     }
-    const workspaceId = options.sessionWorkspace(input.sessionId)
+    const workspaceId =
+      input.sessionId === undefined ? input.workspaceId! : options.sessionWorkspace(input.sessionId)
     if (workspaceId === undefined || !options.resolveWorkspace(workspaceId, context)) {
-      return errorResult(command.requestId, 'not_found', 'Session not found.')
+      return errorResult(
+        command.requestId,
+        'not_found',
+        input.sessionId === undefined ? 'Workspace not found.' : 'Session not found.',
+      )
     }
     pruneExpired()
     let held = 0
     for (const ticket of tickets.values()) if (ticket.clientId === context.clientId) held += 1
     if (held >= UPLOAD_MAX_TICKETS_PER_CLIENT || tickets.size >= UPLOAD_MAX_TICKETS) {
-      reject('ticket_limit', { sessionId: input.sessionId }, who)
+      reject('ticket_limit', scopeOf({ sessionId: input.sessionId, workspaceId }), who)
       return errorResult(command.requestId, 'unavailable', 'Too many uploads are pending.')
     }
     const ticket = randomBytes(32).toString('base64url')
     const expiresAt = clock() + ticketTtlMs
     tickets.set(hashTicket(ticket), {
-      ...input,
+      ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+      name: input.name,
       mimeType: input.mimeType.toLowerCase(),
+      sizeBytes: input.sizeBytes,
       clientId: context.clientId,
       workspaceId,
       expiresAt,
@@ -241,13 +256,13 @@ export function createUploadService(options: {
     }
     const fail = (reason: string, status: number, code: ErrorCode, message: string) => {
       if (!abandon()) return
-      reject(reason, { sessionId: ticket.sessionId, receivedBytes: received }, who)
+      reject(reason, { ...scopeOf(ticket), receivedBytes: received }, who)
       refuse(request, response, status, code, message)
     }
     // Shutdown cuts silently; a revocation is recorded against the client.
     const cut = (reason?: string) => {
       if (!abandon()) return
-      if (reason) reject(reason, { sessionId: ticket.sessionId, receivedBytes: received }, who)
+      if (reason) reject(reason, { ...scopeOf(ticket), receivedBytes: received }, who)
       request.destroy()
     }
     const deadline = setTimeout(
@@ -263,8 +278,12 @@ export function createUploadService(options: {
         return
       }
       // The row carries no foreign key to the session, so a session deleted
-      // while the bytes were arriving has to be caught here.
-      if (options.sessionWorkspace(ticket.sessionId) !== ticket.workspaceId) {
+      // while the bytes were arriving has to be caught here. A held upload has
+      // no session to lose; the workspace's foreign key covers its removal.
+      if (
+        ticket.sessionId !== undefined &&
+        options.sessionWorkspace(ticket.sessionId) !== ticket.workspaceId
+      ) {
         fail('session_gone', 404, 'not_found', 'Session not found.')
         return
       }
@@ -272,7 +291,9 @@ export function createUploadService(options: {
       try {
         renameSync(partialPath, finalPath)
         artifacts.record({
-          artifactId, sessionId: ticket.sessionId, workspaceId: ticket.workspaceId,
+          artifactId,
+          ...(ticket.sessionId === undefined ? {} : { sessionId: ticket.sessionId }),
+          workspaceId: ticket.workspaceId,
           name: ticket.name, mimeType: ticket.mimeType, sizeBytes: received,
           source: 'prompt', createdAt: clock(),
         }, ticket.clientId)
@@ -284,7 +305,7 @@ export function createUploadService(options: {
         options.log('error', 'upload could not be recorded', {
           reason: error instanceof Error ? error.message : 'unknown',
         })
-        reject('storage', { sessionId: ticket.sessionId, receivedBytes: received }, who)
+        reject('storage', { ...scopeOf(ticket), receivedBytes: received }, who)
         respond(response, 500, errorResult(null, 'internal', 'The upload could not be stored.'))
         return
       }
@@ -293,7 +314,8 @@ export function createUploadService(options: {
         201,
         UploadResultSchema.parse({
           artifactId,
-          sessionId: ticket.sessionId,
+          ...(ticket.sessionId === undefined ? {} : { sessionId: ticket.sessionId }),
+          workspaceId: ticket.workspaceId,
           name: ticket.name,
           mimeType: ticket.mimeType,
           sizeBytes: received,
@@ -311,7 +333,7 @@ export function createUploadService(options: {
     // bare close, or both.
     const interrupted = () => {
       if (!request.complete && abandon()) {
-        reject('interrupted', { sessionId: ticket.sessionId, receivedBytes: received }, who)
+        reject('interrupted', { ...scopeOf(ticket), receivedBytes: received }, who)
       }
     }
     request.on('close', interrupted)
@@ -436,7 +458,7 @@ export function createUploadService(options: {
       if (ticket.clientId !== client.clientId) {
         // The ticket stays valid for its owner: a stranger must not be able
         // to burn it by presenting it.
-        reject('foreign_ticket', { sessionId: ticket.sessionId }, who)
+        reject('foreign_ticket', scopeOf(ticket), who)
         refuse(request, response, 404, 'not_found', 'The upload ticket is not valid.')
         return true
       }
@@ -444,7 +466,7 @@ export function createUploadService(options: {
       // PUT racing the first finds nothing.
       tickets.delete(key)
       if (ticket.expiresAt <= clock()) {
-        reject('expired_ticket', { sessionId: ticket.sessionId }, who)
+        reject('expired_ticket', scopeOf(ticket), who)
         refuse(request, response, 410, 'not_found', 'The upload ticket has expired.')
         return true
       }
@@ -466,18 +488,26 @@ export function createUploadService(options: {
         return true
       }
       if (
-        options.sessionWorkspace(ticket.sessionId) !== ticket.workspaceId ||
+        (ticket.sessionId !== undefined &&
+          options.sessionWorkspace(ticket.sessionId) !== ticket.workspaceId) ||
         !options.resolveWorkspace(ticket.workspaceId, { clientId: client.clientId, command })
       ) {
-        reject('session_gone', { sessionId: ticket.sessionId }, who)
-        refuse(request, response, 404, 'not_found', 'Session not found.')
+        const reason = ticket.sessionId === undefined ? 'workspace_gone' : 'session_gone'
+        reject(reason, scopeOf(ticket), who)
+        refuse(
+          request,
+          response,
+          404,
+          'not_found',
+          ticket.sessionId === undefined ? 'Workspace not found.' : 'Session not found.',
+        )
         return true
       }
       const declared = request.headers['content-length']
       if (declared !== undefined && Number(declared) !== ticket.sizeBytes) {
         reject(
           Number(declared) > ticket.sizeBytes ? 'oversized' : 'size_mismatch',
-          { sessionId: ticket.sessionId, contentLength: auditValue(declared) },
+          { ...scopeOf(ticket), contentLength: auditValue(declared) },
           who,
         )
         refuse(

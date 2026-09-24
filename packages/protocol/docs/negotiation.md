@@ -5,7 +5,7 @@ environment. Its protocol-owned fields are:
 
 ```json
 {
-  "protocolVersion": 6,
+  "protocolVersion": 7,
   "environmentId": "env-local",
   "capabilities": ["session.read", "turn.send"]
 }
@@ -39,7 +39,10 @@ to its model rows: both objects are strict, so a version-4 peer would reject
 every `provider.catalog.get` response and `provider.catalog.updated` event.
 Version 6 adds the draft's `preference` and `modeId` to `session.create`. That
 payload is not strict, so a version-5 environment would drop both and start the
-chat in the wrong mode instead of refusing it.
+chat in the wrong mode instead of refusing it. Version 7 adds `artifactIds` to
+`session.create`, which a version-6 environment would drop along with the
+images, and lets an upload ticket name a workspace in place of a session for a
+draft; the upload result then carries `workspaceId` and no `sessionId`.
 
 Call `evaluateBootstrap` with the parsed HTTP body and the capabilities required
 by the current client path:
@@ -80,7 +83,7 @@ capabilities required for that connection:
   "requestId": "handshake-1",
   "name": "protocol.handshake",
   "payload": {
-    "protocolVersion": 6,
+    "protocolVersion": 7,
     "requiredCapabilities": ["session.read"]
   }
 }

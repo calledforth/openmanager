@@ -201,6 +201,8 @@ export interface CreateSessionInput {
   preference?: WorkspaceComposerPreference
   /** The mode the first message runs in. Needs `firstMessage`. */
   modeId?: string
+  /** Images the draft uploaded for this workspace; they ride the first message. */
+  artifactIds?: string[]
 }
 
 export interface AddWorkspaceInput {
@@ -234,8 +236,14 @@ export interface ArtifactTarget {
 }
 
 /** A file the composer attaches. The environment stores it under the session. */
-export interface UploadArtifactInput {
-  sessionId: string
+/**
+ * One file for one session, or for a draft's workspace: a draft has no
+ * session yet, so its upload is held there until the `createSession` that
+ * launches it names it in `artifactIds`. Exactly one of the two.
+ */
+export type UploadArtifactInput = (
+  { sessionId: string; workspaceId?: never } | { workspaceId: string; sessionId?: never }
+) & {
   /** Display name only; it never becomes a path on the environment. */
   name: string
   mimeType: string

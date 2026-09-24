@@ -15,6 +15,15 @@ export type ArtifactMetadata = {
   source: 'prompt' | 'generated'
 }
 
+/**
+ * What an upload records. A draft's upload has no session yet: it is held for
+ * its workspace and the client that sent it until `session.create` claims it.
+ */
+export type RecordedArtifact = Omit<ArtifactMetadata, 'sessionId'> & { sessionId?: string }
+
+/** Who may claim held uploads, and for which new session. */
+export type ArtifactClaim = { workspaceId: string; clientId: string; sessionId: string }
+
 /** Shared environment-owned metadata and bytes for uploads and provider output. */
 export function createArtifactStore(database: DatabaseSync, dataDir: string) {
   const directory = join(dataDir, 'uploads')
@@ -30,6 +39,28 @@ export function createArtifactStore(database: DatabaseSync, dataDir: string) {
     SELECT ?, session_id, workspace_id, ?, ?, ?, ?, ?, ?, ?, ? FROM sessions
       WHERE session_id = ? AND workspace_id = ?
   `)
+  const insertHeld = database.prepare(`
+    INSERT INTO attachments (attachment_id, session_id, workspace_id, uploaded_by_client_id,
+      storage_key, name, mime_type, size_bytes, created_at, source, metadata_json)
+    VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  // Only the client that uploaded a held image can hand it to a session, and
+  // only to a session in the workspace it was uploaded for.
+  const heldLookup = database.prepare(`
+    SELECT 1 FROM attachments WHERE attachment_id = ? AND session_id IS NULL
+      AND workspace_id = ? AND uploaded_by_client_id = ? AND source = 'prompt'
+  `)
+  const claimOne = database.prepare(`
+    UPDATE attachments SET session_id = ?,
+      metadata_json = json_set(COALESCE(metadata_json, '{}'), '$.sessionId', ?)
+    WHERE attachment_id = ? AND session_id IS NULL AND workspace_id = ?
+      AND uploaded_by_client_id = ? AND source = 'prompt'
+  `)
+  const releaseOne = database.prepare(`
+    UPDATE attachments SET session_id = NULL,
+      metadata_json = json_remove(COALESCE(metadata_json, '{}'), '$.sessionId')
+    WHERE attachment_id = ? AND session_id = ?
+  `)
   const get = (sessionId: string, artifactId: string) =>
     lookup.get(artifactId, sessionId) as ArtifactMetadata | undefined
   const path = (artifactId: string) => {
@@ -39,7 +70,14 @@ export function createArtifactStore(database: DatabaseSync, dataDir: string) {
     }
     return join(directory, artifactId)
   }
-  const record = (metadata: ArtifactMetadata, clientId?: string) => {
+  const record = (metadata: RecordedArtifact, clientId?: string) => {
+    if (metadata.sessionId === undefined) {
+      // The workspace's foreign key refuses a workspace removed mid-transfer.
+      insertHeld.run(metadata.artifactId, metadata.workspaceId, clientId ?? null,
+        `uploads/${metadata.artifactId}`, metadata.name, metadata.mimeType, metadata.sizeBytes,
+        metadata.createdAt, metadata.source, JSON.stringify({ source: metadata.source }))
+      return
+    }
     const result = insert.run(metadata.artifactId, clientId ?? null,
       `uploads/${metadata.artifactId}`, metadata.name, metadata.mimeType, metadata.sizeBytes,
       metadata.createdAt, metadata.source,
@@ -59,8 +97,43 @@ export function createArtifactStore(database: DatabaseSync, dataDir: string) {
     }
     return bytes
   }
+  /** Whether every held upload named here is one this client may give this workspace's new session. */
+  const claimable = (artifactIds: readonly string[], claim: Omit<ArtifactClaim, 'sessionId'>) =>
+    artifactIds.every(
+      (artifactId) => heldLookup.get(artifactId, claim.workspaceId, claim.clientId) !== undefined,
+    )
+  /**
+   * Hand held uploads to a new session, all or none: a launch that could only
+   * take some of its images would send a message the user did not write.
+   */
+  const claim = (artifactIds: readonly string[], target: ArtifactClaim) => {
+    database.exec('BEGIN IMMEDIATE')
+    try {
+      for (const artifactId of new Set(artifactIds)) {
+        const result = claimOne.run(target.sessionId, target.sessionId, artifactId,
+          target.workspaceId, target.clientId)
+        if (result.changes !== 1) {
+          database.exec('ROLLBACK')
+          return false
+        }
+      }
+      database.exec('COMMIT')
+      return true
+    } catch (error) {
+      database.exec('ROLLBACK')
+      throw error
+    }
+  }
+  /**
+   * Give claimed uploads back to the workspace when the launch that claimed
+   * them failed, so a retry can claim them again. Before the session goes:
+   * its deletion would take the rows with it.
+   */
+  const release = (artifactIds: readonly string[], sessionId: string) => {
+    for (const artifactId of new Set(artifactIds)) releaseOne.run(artifactId, sessionId)
+  }
   return {
-    get, record, read, path,
+    get, record, read, path, claimable, claim, release,
     reference(metadata: ArtifactMetadata) {
       return { type: 'artifact' as const, artifactId: metadata.artifactId,
         mimeType: metadata.mimeType, name: metadata.name, sizeBytes: metadata.sizeBytes }

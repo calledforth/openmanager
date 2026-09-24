@@ -1263,7 +1263,9 @@ export function createWebSocketEnvironmentClient(
       // The ticket is single use and bound to this credential and session;
       // the environment spends it before it reads a byte.
       const ticket = await request(UPLOAD_TICKET_COMMAND, {
-        sessionId: input.sessionId,
+        ...(input.sessionId !== undefined
+          ? { sessionId: input.sessionId }
+          : { workspaceId: input.workspaceId }),
         name: input.name,
         mimeType: input.mimeType,
         sizeBytes: input.bytes.size,

@@ -40,10 +40,23 @@ describe('upload ticket protocol', () => {
     ['an empty file', { sizeBytes: 0 }],
     ['a fractional size', { sizeBytes: 1.5 }],
     ['a missing session', { sessionId: '' }],
+    ['no session and no workspace', { sessionId: undefined }],
+    ['both a session and a workspace', { workspaceId: 'workspace-1' }],
+    ['an empty workspace', { sessionId: undefined, workspaceId: '' }],
   ])('rejects %s', (_, overrides) => {
     expect(
       UploadCommandSchemas[UPLOAD_TICKET_CAPABILITY].safeParse(ticketCommand(overrides)).success,
     ).toBe(false)
+  })
+
+  it('lets a draft, which has no session yet, upload for its workspace', () => {
+    const command = ticketCommand({ sessionId: undefined, workspaceId: 'workspace-1' })
+    expect(UploadCommandSchemas[UPLOAD_TICKET_CAPABILITY].parse(command).payload).toEqual({
+      workspaceId: 'workspace-1',
+      name: 'screenshot.png',
+      mimeType: 'image/png',
+      sizeBytes: 1024,
+    })
   })
 
   it('answers a relative upload path so local and remote routes agree', () => {
@@ -61,8 +74,12 @@ describe('upload ticket protocol', () => {
   })
 
   it('names the artifact a message will reference', () => {
-    const result = { artifactId: 'artifact-1', ...payload }
+    const result = { artifactId: 'artifact-1', workspaceId: 'workspace-1', ...payload }
     expect(UploadResultSchema.parse(result)).toEqual(result)
     expect(UploadResultSchema.safeParse({ ...result, storageKey: 'uploads/x' }).success).toBe(false)
+    // A draft's upload is held for the workspace until a session claims it.
+    const held = { ...result, sessionId: undefined }
+    expect(UploadResultSchema.parse(held)).toEqual(held)
+    expect(UploadResultSchema.safeParse({ ...held, workspaceId: undefined }).success).toBe(false)
   })
 })

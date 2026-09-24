@@ -232,6 +232,18 @@ describe('session.create launch picks', () => {
     ).toBe(false)
   })
 
+  it('lets the draft images carry a first message with no text, but never nothing at all', () => {
+    const parse = (payload: Record<string, unknown>) =>
+      ProofCommandSchemas['session.create'].safeParse(create(payload)).success
+    expect(parse({ firstMessage: '', artifactIds: ['artifact-1'] })).toBe(true)
+    expect(parse({ firstMessage: 'Look', artifactIds: ['artifact-1'] })).toBe(true)
+    expect(parse({ firstMessage: '' })).toBe(false)
+    expect(parse({ firstMessage: '', artifactIds: [] })).toBe(false)
+    // Attachments ride the first message, so there has to be one.
+    expect(parse({ artifactIds: ['artifact-1'] })).toBe(false)
+    expect(parse({ firstMessage: 'Look', artifactIds: Array(11).fill('artifact-1') })).toBe(false)
+  })
+
   it('refuses a preference field the protocol does not know', () => {
     expect(
       ProofCommandSchemas['session.create'].safeParse(create({ preference: { theme: 'dark' } }))

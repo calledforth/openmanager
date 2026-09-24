@@ -723,6 +723,7 @@ describe('websocket environment client', () => {
             JSON.stringify({
               artifactId: 'artifact-1',
               sessionId: 'session-1',
+              workspaceId: 'workspace-1',
               name: 'shot.png',
               mimeType: 'image/png',
               sizeBytes: 9,
@@ -755,6 +756,7 @@ describe('websocket environment client', () => {
     await expect(pending).resolves.toEqual({
       artifactId: 'artifact-1',
       sessionId: 'session-1',
+      workspaceId: 'workspace-1',
       name: 'shot.png',
       mimeType: 'image/png',
       sizeBytes: 9,
@@ -768,6 +770,41 @@ describe('websocket environment client', () => {
         body: 'png-bytes',
       },
     ])
+    client.dispose()
+  })
+
+  it('asks for a workspace ticket for a draft, which has no session yet', async () => {
+    const held = {
+      artifactId: 'artifact-1',
+      workspaceId: 'workspace-1',
+      name: 'shot.png',
+      mimeType: 'image/png',
+      sizeBytes: 9,
+    }
+    const { client, socket } = await connected(
+      [...FULL_CAPABILITIES, 'upload.ticket.create'],
+      {},
+      { fetch: async () => new Response(JSON.stringify(held), { status: 201 }) },
+    )
+    const pending = client.uploadArtifact!({
+      workspaceId: 'workspace-1',
+      name: 'shot.png',
+      mimeType: 'image/png',
+      bytes: new Blob(['png-bytes'], { type: 'image/png' }),
+    })
+    expect(socket.last('upload.ticket.create').payload).toEqual({
+      workspaceId: 'workspace-1',
+      name: 'shot.png',
+      mimeType: 'image/png',
+      sizeBytes: 9,
+    })
+    socket.respond('upload.ticket.create', {
+      ticket: 'ticket-1',
+      uploadPath: '/uploads/ticket-1',
+      expiresAt: new Date(60_000).toISOString(),
+      maxBytes: 9,
+    })
+    await expect(pending).resolves.toEqual(held)
     client.dispose()
   })
 
