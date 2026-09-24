@@ -1,4 +1,4 @@
-import { foldProtocolEvent } from '@agentpack/view/protocol'
+import { foldProtocolEvent, placeActivity } from '@agentpack/view/protocol'
 import { sessionListCursorOf } from '@openmanager/protocol'
 import type {
   Message,
@@ -17,6 +17,7 @@ import type {
   WorkspaceComposerPreference,
 } from '@openmanager/protocol'
 import type {
+  ActivityRef,
   ConnectionState,
   EnvironmentState,
   OutboxEntry,
@@ -63,12 +64,26 @@ export function createThreadState(
     messages: [],
     reasoning: [],
     tools: [],
+    order: [],
     interactions: [],
     failures: [],
     notices: [],
     outbox: [],
     hydration,
   }
+}
+
+/**
+ * The transcript order a page of persisted messages implies on its own. An
+ * environment that keeps no reasoning or tool state (an older one, or a
+ * snapshot that starts them over) still lists its messages in order.
+ */
+function orderOfMessages(messages: readonly Message[]): ActivityRef[] {
+  return messages.map((message) => ({
+    kind: 'message',
+    id: message.messageId,
+    turnId: message.turnId,
+  }))
 }
 
 const upsertById = <T>(items: readonly T[], id: (item: T) => string, next: T): T[] => {
@@ -447,6 +462,7 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
   const thread = threadSnapshot.thread
   const withThread = ensureThread(state, thread)
   const existing = withThread.threads[thread.threadId]!
+  const messages = retainOlderMessages(existing.messages, threadSnapshot.messages)
   const replaced: ThreadState = {
     ...createThreadState(thread, 'ready'),
     // A snapshot describes what the environment has; a send it has not
@@ -454,7 +470,9 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
     // itself the answer.
     outbox: reconcileOutbox(existing, threadSnapshot.messages),
     turns: threadSnapshot.turns,
-    messages: retainOlderMessages(existing.messages, threadSnapshot.messages),
+    messages,
+    // The snapshot starts reasoning and tool state over, so its order is its messages'.
+    order: orderOfMessages(messages),
     historyCursor:
       existing.historyCursor !== undefined &&
       existing.messages.findIndex(
@@ -534,6 +552,11 @@ export function applySessionHistory(
       !older && current.hydration !== 'ready'
         ? payload.messages
         : [...incoming, ...current.messages]
+    // A page carries no reasoning or tool state, so it only places its messages.
+    const order =
+      !older && current.hydration !== 'ready'
+        ? orderOfMessages(payload.messages)
+        : [...orderOfMessages(incoming), ...current.order]
     const openTurn = payload.turns.find(
       (turn) => turn.state === 'waiting' || turn.state === 'running',
     )
@@ -558,6 +581,7 @@ export function applySessionHistory(
           ? payload.turns
           : current.turns,
       messages,
+      order,
       outbox: reconcileOutbox(current, payload.messages),
       interactions:
         !older && (interactions.length > 0 || current.hydration !== 'ready')
@@ -624,6 +648,11 @@ function confirmTurnStart(current: ThreadState, payload: TurnStart): ThreadState
       current.turns.find((turn) => turn.turnId === payload.turn.turnId) ?? payload.turn,
     ),
     messages: upsertById(current.messages, (message) => message.messageId, payload.userMessage),
+    order: placeActivity(current.order, {
+      kind: 'message',
+      id: payload.userMessage.messageId,
+      turnId: payload.turn.turnId,
+    }),
     outbox: outbox.length === current.outbox.length ? current.outbox : outbox,
   }
 }

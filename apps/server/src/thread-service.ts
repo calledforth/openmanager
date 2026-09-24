@@ -84,12 +84,70 @@ type ActiveTurn = {
   completion?: Promise<void>
   promptFailed?: boolean
   runtimeMessageId?: string
+  /**
+   * The open text and reasoning runs of the turn, as host message ids. A run
+   * is a maximal stretch of one kind of stream event: the next event of any
+   * other kind (a thought after text, a tool call, the end of a block) closes
+   * it, and the next event of that kind opens a fresh one with a new id. That
+   * is the rule the desktop projector applies to its parts; carrying it here
+   * lets every client keep thoughts, text and tools in the order they happened.
+   */
+  textRunId?: string
+  reasoningRunId?: string
   /** The mode the host is starting this turn in (a plan build), if it chose one. */
   modeId?: string
   generatedImages?: Set<string>
   toolIds: Map<string, string>
   interactionIds: Map<string, string>
   pendingInteractions: Set<string>
+}
+
+/**
+ * Events that take their own place in the transcript, or end it. Any of them
+ * between two chunks of a run splits the run. Bookkeeping the provider sends
+ * mid-stream (usage, mode, model, command lists, a resolved request) does not.
+ */
+const RUN_BREAKING_EVENTS: ReadonlySet<RuntimeEvent['event']> = new Set<RuntimeEvent['event']>([
+  'tool_call',
+  'tool_call_update',
+  'tool_call_content',
+  'permission_request',
+  'question_request',
+  'plan_review_request',
+  'plan_update',
+  'subtask_update',
+  'extension_request',
+  'extension_notification',
+  'rpc_error',
+  'runtime_error',
+  'auth_required',
+  'capability_missing',
+  'prompt_completed',
+])
+
+/**
+ * The host message id an event of the turn is filed under. Text and thought
+ * chunks continue their open run or start a new one; a run-breaking event
+ * closes both runs, so the next chunk of either kind starts fresh. A thought's
+ * `stop` closes its own run after it is filed, which keeps providers that frame
+ * their blocks (Claude Code) at one id per block.
+ */
+function runMessageId(active: ActiveTurn, event: RuntimeEvent): string | undefined {
+  if (event.event === 'agent_message_chunk') {
+    active.reasoningRunId = undefined
+    return (active.textRunId ??= randomUUID())
+  }
+  if (event.event === 'agent_thought_chunk') {
+    active.textRunId = undefined
+    const id = (active.reasoningRunId ??= randomUUID())
+    if (event.data.phase === 'stop') active.reasoningRunId = undefined
+    return id
+  }
+  if (RUN_BREAKING_EVENTS.has(event.event)) {
+    active.textRunId = undefined
+    active.reasoningRunId = undefined
+  }
+  return active.runtimeMessageId
 }
 /**
  * What the host remembers about one interaction, so a resolve command can be
@@ -592,7 +650,9 @@ export function createThreadService(
     const messageId =
       event.event === 'prompt_started' || event.event === 'user_message_chunk'
         ? active?.userMessage.messageId
-        : active?.runtimeMessageId
+        : active
+          ? runMessageId(active, event)
+          : undefined
     const projected = projectAgentEvent(event, {
       eventId: randomUUID(),
       environmentId,

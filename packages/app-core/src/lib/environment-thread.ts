@@ -141,8 +141,9 @@ function projectTurn(
   const messages = thread.messages.filter((message) => message.turnId === turn.turnId)
   const reasoning = thread.reasoning.filter((entry) => entry.turnId === turn.turnId)
   const tools = thread.tools.filter((tool) => tool.turnId === turn.turnId)
+  const order = thread.order.filter((ref) => ref.turnId === turn.turnId)
   const failure = thread.failures.find((item) => item.turnId === turn.turnId)
-  const deps = [turn, sequenceStart, failure, ...messages, ...reasoning, ...tools]
+  const deps = [turn, sequenceStart, failure, ...messages, ...reasoning, ...tools, ...order]
   if (previous && shallowEqualArray(previous.deps, deps)) return previous
 
   const entries: ProjectedMessage[] = []
@@ -174,19 +175,52 @@ function projectTurn(
   }
 
   const assistantMessages = messages.filter((message) => message.role === 'assistant')
-  const parts: MessagePart[] = [
-    ...reasoning.map((entry) => reasoningPart(entry, settled)),
-    ...tools.map(toolPart),
-    ...assistantMessages.flatMap((message) => [
-      { type: 'text', id: message.messageId, text: contentText(message.content) },
-      ...imageParts(message, thread.thread.sessionId),
-    ]),
+  const textParts = (message: Message): MessagePart[] => [
+    { type: 'text', id: message.messageId, text: contentText(message.content) },
+    ...imageParts(message, thread.thread.sessionId),
+  ]
+  // The transcript follows the order things happened in: a thought, the tools
+  // it led to, the text that followed. Anything the order does not place (a
+  // page from an environment that keeps no order) falls back to the grouped
+  // layout, reasoning first and text last, so the answer still ends the turn.
+  const placed = new Set<string>()
+  const parts: MessagePart[] = []
+  for (const ref of order) {
+    const key = `${ref.kind}:${ref.id}`
+    if (placed.has(key)) continue
+    let placedParts: MessagePart[] | undefined
+    if (ref.kind === 'reasoning') {
+      const entry = reasoning.find((item) => item.messageId === ref.id)
+      placedParts = entry ? [reasoningPart(entry, settled)] : undefined
+    } else if (ref.kind === 'tool') {
+      const tool = tools.find((item) => item.toolCallId === ref.id)
+      placedParts = tool ? [toolPart(tool)] : undefined
+    } else {
+      const message = assistantMessages.find((item) => item.messageId === ref.id)
+      placedParts = message ? textParts(message) : undefined
+    }
+    if (!placedParts) continue
+    placed.add(key)
+    parts.push(...placedParts)
+  }
+  parts.push(
+    ...reasoning
+      .filter((entry) => !placed.has(`reasoning:${entry.messageId}`))
+      .map((entry) => reasoningPart(entry, settled)),
+    ...tools.filter((tool) => !placed.has(`tool:${tool.toolCallId}`)).map(toolPart),
+    ...assistantMessages
+      .filter((message) => !placed.has(`message:${message.messageId}`))
+      .flatMap(textParts),
     ...(failure
       ? [{ type: 'text', id: `failure:${turn.turnId}`, text: `Turn failed: ${failure.message}` }]
       : []),
-  ]
+  )
   if (parts.length > 0 || !settled) {
-    const content = assistantMessages.map((message) => contentText(message.content)).join('')
+    // Each run is its own message; the plain-text fallback keeps them as paragraphs.
+    const content = assistantMessages
+      .map((message) => contentText(message.content))
+      .filter((text) => text.length > 0)
+      .join('\n\n')
     entries.push({
       message: {
         externalId: assistantMessages[0]?.messageId ?? `turn:${turn.turnId}:assistant`,

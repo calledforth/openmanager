@@ -276,15 +276,28 @@ describe('replay and snapshot wire validation', () => {
       ScopeSnapshotSchema.safeParse({ ...thread, state: { ...thread.state, turns: [] } }).success,
     ).toBe(false)
   })
-  it('rejects snapshot sessions without their workspace and reasoning without its message', () => {
+  it('rejects snapshot sessions without their workspace', () => {
     const env = scopeSnapshots[0]
     expect(
       ScopeSnapshotSchema.safeParse({ ...env, state: { ...env.state, workspaces: [] } }).success,
     ).toBe(false)
+  })
+  it('accepts reasoning filed under its own message id', () => {
+    // A thought is a run of its own, so its id names no text message; only
+    // the turn it belongs to has to exist.
     const thread = scopeSnapshots[2]
     expect(
       ScopeSnapshotSchema.safeParse({ ...thread, state: { ...thread.state, messages: [] } })
         .success,
+    ).toBe(true)
+    expect(
+      ScopeSnapshotSchema.safeParse({
+        ...thread,
+        state: {
+          ...thread.state,
+          reasoning: [{ messageId: 'thought-9', turnId: 'turn-9', phase: 'stop', content: [] }],
+        },
+      }).success,
     ).toBe(false)
   })
 })

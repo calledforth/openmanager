@@ -2530,3 +2530,121 @@ describe('turn finalization and cancellation races', () => {
     h.assertDurable('interrupted')
   })
 })
+
+describe('transcript runs', () => {
+  it('files each text and reasoning run under its own message id', async () => {
+    const runtime = {
+      ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-session', state: 'created' }),
+      prompt: vi.fn(() => new Promise(() => undefined)),
+      cancel: vi.fn(),
+    } as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>
+    const events: EventEnvelope[] = []
+    const service = createThreadService(
+      runtime,
+      { rejection: () => undefined },
+      (event) => events.push(event),
+      undefined,
+      registered,
+    )
+    service.setEnvironmentId('environment-1')
+    const created = ProofResponseSchemas['session.create'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'create-runs',
+        name: 'session.create',
+        payload: {
+          environmentId: 'environment-1',
+          providerId: 'opencode',
+          workspaceId: '/workspace/project',
+        },
+      }),
+    ).payload
+    const target = { sessionId: created.session.sessionId, threadId: created.thread.threadId }
+    const started = ProofResponseSchemas['turn.send'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'send-runs',
+        name: 'turn.send',
+        payload: { ...target, text: 'hello' },
+      }),
+    ).payload
+    await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(1))
+
+    let seq = 0
+    const base = () => ({
+      id: `runtime-${(seq += 1)}`,
+      seq,
+      timestamp: new Date().toISOString(),
+      providerId: 'opencode' as const,
+      threadId: target.threadId,
+      workspaceId: '/workspace/project',
+      sessionId: 'provider-session',
+      messageId: 'assistant-1',
+    })
+    const thought = (text: string, phase: 'delta' | 'stop' = 'delta') =>
+      service.onRuntimeEvent({
+        ...base(),
+        category: 'stream',
+        event: 'agent_thought_chunk',
+        data: { phase, content: { type: 'text', text } },
+      })
+    const text = (value: string) =>
+      service.onRuntimeEvent({
+        ...base(),
+        category: 'stream',
+        event: 'agent_message_chunk',
+        data: { content: { type: 'text', text: value } },
+      })
+
+    service.onRuntimeEvent({
+      ...base(),
+      category: 'lifecycle',
+      event: 'prompt_started',
+      data: { prompt: 'hello', userMessageId: started.userMessage.messageId },
+    })
+    // Thought, text, tool, text, thought (framed), thought: six runs in all.
+    thought('Plan the')
+    thought(' change')
+    text('Looking')
+    // Provider bookkeeping mid-stream is not a boundary.
+    service.onRuntimeEvent({
+      ...base(),
+      category: 'session',
+      event: 'usage_update',
+      data: { used: 10, size: 100 },
+    })
+    text(' closer')
+    service.onRuntimeEvent({
+      ...base(),
+      category: 'tool',
+      event: 'tool_call',
+      data: { toolCallId: 'call-1', title: 'Read file', kind: 'read', status: 'completed' },
+    })
+    text('Found it')
+    thought('Check again')
+    thought('', 'stop')
+    thought('One more')
+
+    const reasoningIds = events
+      .filter((event) => event.name === 'message.reasoning')
+      .map((event) => (event.payload as { messageId: string }).messageId)
+    const textIds = events
+      .filter((event) => event.name === 'message.delta')
+      .filter((event) => (event.payload as { role: string }).role === 'assistant')
+      .map((event) => (event.payload as { messageId: string }).messageId)
+
+    // Same run, same id; each boundary starts a new one.
+    expect(reasoningIds).toHaveLength(5)
+    expect(reasoningIds[0]).toBe(reasoningIds[1])
+    expect(reasoningIds[2]).toBe(reasoningIds[3])
+    expect(new Set(reasoningIds).size).toBe(3)
+    expect(textIds).toHaveLength(3)
+    expect(textIds[0]).toBe(textIds[1])
+    expect(textIds[2]).not.toBe(textIds[0])
+    // Runs are host ids of their own, never the provider's message id or each other's.
+    const all = new Set([...reasoningIds, ...textIds])
+    expect(all.size).toBe(5)
+    expect(all.has('assistant-1')).toBe(false)
+    expect(all.has(started.userMessage.messageId)).toBe(false)
+  })
+})
