@@ -25,6 +25,10 @@ import { isAllowedUploadType, isOversizedUpload, MAX_ATTACHMENT_BYTES } from './
 export const UPLOAD_TICKET_TTL_MS = 2 * 60_000
 /** A transfer that has not finished by now is cut and its partial file removed. */
 export const UPLOAD_TRANSFER_TIMEOUT_MS = 5 * 60_000
+/** A draft's upload that no launch claimed by then is removed with its bytes. */
+export const HELD_UPLOAD_TTL_MS = 24 * 60 * 60_000
+/** How often issuing a ticket also sweeps expired held uploads. */
+export const HELD_UPLOAD_SWEEP_INTERVAL_MS = 15 * 60_000
 export const UPLOAD_MAX_TICKETS_PER_CLIENT = 32
 export const UPLOAD_MAX_TICKETS = 1024
 export const UPLOAD_DIRECTORY = 'uploads'
@@ -94,6 +98,22 @@ export function createUploadService(options: {
   const transfers = new Map<(reason?: string) => void, string>()
 
   mkdirSync(partialDirectory, { recursive: true })
+  const artifacts = options.artifacts ?? createArtifactStore(options.database, options.dataDir)
+  // A draft that was abandoned leaves its held uploads behind. Swept at
+  // startup and, while the server runs, whenever a ticket is issued.
+  let lastHeldSweep = clock()
+  const sweepHeld = () => {
+    lastHeldSweep = clock()
+    try {
+      const expired = artifacts.expireHeld(lastHeldSweep - HELD_UPLOAD_TTL_MS)
+      if (expired.length > 0) options.log('info', 'expired held uploads', { count: expired.length })
+    } catch (error) {
+      options.log('error', 'held uploads could not be swept', {
+        reason: error instanceof Error ? error.message : 'unknown',
+      })
+    }
+  }
+  sweepHeld()
   // Nothing is in flight when the process starts, so whatever is here was cut
   // off by a crash or a kill that the per-request cleanup never got to see.
   for (const entry of readdirSync(partialDirectory)) {
@@ -109,8 +129,6 @@ export function createUploadService(options: {
       rmSync(join(blobDirectory, entry.name), { force: true })
     }
   }
-
-  const artifacts = options.artifacts ?? createArtifactStore(options.database, options.dataDir)
 
   const pruneExpired = () => {
     const now = clock()
@@ -193,6 +211,7 @@ export function createUploadService(options: {
       )
     }
     pruneExpired()
+    if (clock() - lastHeldSweep >= HELD_UPLOAD_SWEEP_INTERVAL_MS) sweepHeld()
     let held = 0
     for (const ticket of tickets.values()) if (ticket.clientId === context.clientId) held += 1
     if (held >= UPLOAD_MAX_TICKETS_PER_CLIENT || tickets.size >= UPLOAD_MAX_TICKETS) {

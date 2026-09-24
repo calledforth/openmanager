@@ -228,7 +228,10 @@ and the first message carries them as `turn.send` would. Another client's
 upload, one held for another workspace, or one already claimed is refused
 (`not_found`) and leaves no session behind. If the first turn then cannot
 start, the images are handed back before the session is rolled back, so the
-draft can retry with them.
+draft can retry with them. A held upload that no launch claims within
+`HELD_UPLOAD_TTL_MS` (24 hours) belonged to an abandoned draft: it is removed
+with its bytes at startup and, while the server runs, when a ticket is issued
+(at most every `HELD_UPLOAD_SWEEP_INTERVAL_MS`, 15 minutes).
 
 The ticket is request-scoped, not a credential:
 
@@ -272,8 +275,7 @@ clients cannot supply a destination path.
 
 Referencing an artifact from `turn.send` is
 CAL-88, retrieval is CAL-89, draft uploads are CAL-198, and retention of
-completed uploads that no message ever referenced, held uploads no launch
-claimed included, is CAL-90.
+completed uploads that no message ever referenced is CAL-90.
 
 ## Host and origin policy
 

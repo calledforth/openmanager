@@ -576,7 +576,6 @@ export function createMockEnvironmentClient(
             'These images are no longer available. Attach them again.',
           )
         }
-        for (const artifactId of artifactIds) heldArtifacts.delete(artifactId)
         // Filed before the session exists, as the environment does, and kept
         // as the new session's own model and config: what the draft showed.
         const target = { workspaceId: input.workspaceId, providerId: input.providerId }
@@ -627,6 +626,9 @@ export function createMockEnvironmentClient(
                 commandId: nextId(),
                 ...(artifactIds.length > 0 ? { artifactIds } : {}),
               })
+        // Claimed only once the first turn started: a launch that failed keeps
+        // them held for the retry, as the environment hands them back.
+        for (const artifactId of artifactIds) heldArtifacts.delete(artifactId)
         if (launched?.modelId !== undefined || launched?.configValues !== undefined) {
           writeSessionComposer(session.sessionId, {
             ...(launched.modelId !== undefined ? { modelId: launched.modelId } : {}),

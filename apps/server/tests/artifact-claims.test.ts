@@ -1,3 +1,4 @@
+import { existsSync, writeFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -29,7 +30,12 @@ async function store() {
   `)
   const artifacts = createArtifactStore(database, directory)
   // A draft's upload: no session, held for the workspace and the client.
-  const hold = (artifactId: string, clientId = 'owner', workspaceId = 'workspace-1') =>
+  const hold = (
+    artifactId: string,
+    clientId = 'owner',
+    workspaceId = 'workspace-1',
+    createdAt = 1,
+  ) =>
     artifacts.record(
       {
         artifactId,
@@ -37,7 +43,7 @@ async function store() {
         name: `${artifactId}.png`,
         mimeType: 'image/png',
         sizeBytes: 3,
-        createdAt: 1,
+        createdAt,
         source: 'prompt',
       },
       clientId,
@@ -48,7 +54,7 @@ async function store() {
         .prepare('SELECT session_id FROM attachments WHERE attachment_id = ?')
         .get(artifactId) as { session_id: string | null } | undefined
     )?.session_id
-  return { database, artifacts, hold, sessionOf }
+  return { database, directory, artifacts, hold, sessionOf }
 }
 
 const OWNER_CLAIM = { workspaceId: 'workspace-1', clientId: 'owner', sessionId: 'session-1' }
@@ -107,6 +113,33 @@ describe('held uploads', () => {
     database.prepare('DELETE FROM sessions WHERE session_id = ?').run('session-1')
     expect(sessionOf('a')).toBeNull()
     expect(artifacts.claim(['a'], { ...OWNER_CLAIM, sessionId: 'session-2' })).toBe(true)
+  })
+
+  it('removes held uploads no launch claimed in time, with their bytes', async () => {
+    const { artifacts, database, hold, sessionOf } = await store()
+    const OLD = '00000000-0000-4000-8000-000000000001'
+    const FRESH = '00000000-0000-4000-8000-000000000002'
+    const CLAIMED = '00000000-0000-4000-8000-000000000003'
+    hold(OLD, 'owner', 'workspace-1', 100)
+    hold(FRESH, 'owner', 'workspace-1', 5_000)
+    hold(CLAIMED, 'owner', 'workspace-1', 100)
+    artifacts.claim([CLAIMED], OWNER_CLAIM)
+    // A row migrated with a session it no longer matches is not a draft's.
+    database.exec(`
+      INSERT INTO attachments (attachment_id, workspace_id, storage_key, name, mime_type,
+        size_bytes, metadata_json, created_at)
+      VALUES ('migrated', 'workspace-1', 'uploads/migrated', 'm.png', 'image/png', 1,
+        '{"sessionId":"session-gone","source":"prompt"}', 100)
+    `)
+    for (const id of [OLD, FRESH, CLAIMED]) writeFileSync(artifacts.path(id), 'png')
+
+    expect(artifacts.expireHeld(1_000)).toEqual([OLD])
+    expect(existsSync(artifacts.path(OLD))).toBe(false)
+    expect(sessionOf(OLD)).toBeUndefined()
+    expect(existsSync(artifacts.path(FRESH))).toBe(true)
+    expect(sessionOf(FRESH)).toBeNull()
+    expect(sessionOf(CLAIMED)).toBe('session-1')
+    expect(sessionOf('migrated')).toBeNull()
   })
 
   it('refuses to hold an upload for a workspace that is gone', async () => {

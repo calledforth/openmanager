@@ -298,6 +298,34 @@ describe('mock environment client', () => {
     expect(error.code).toBe('capability_missing')
   })
 
+  it('keeps held images for the retry when a launch fails', async () => {
+    let failures = 1
+    const client = createMockEnvironmentClient({
+      seed,
+      respond: () => {
+        if (failures-- > 0) throw new Error('provider refused the turn')
+        return null
+      },
+    })
+    const held = await client.uploadArtifact!({
+      workspaceId: SESSION.workspaceId,
+      name: 'draft.png',
+      mimeType: 'image/png',
+      bytes: new Blob(['png'], { type: 'image/png' }),
+    })
+    const launch = {
+      environmentId: client.getState().environment!.environmentId,
+      workspaceId: SESSION.workspaceId,
+      providerId: 'opencode',
+      firstMessage: '',
+      artifactIds: [held.artifactId],
+    }
+    await expect(client.commands.createSession(launch)).rejects.toThrow('provider refused')
+    await expect(client.commands.createSession(launch)).resolves.toMatchObject({
+      firstTurn: expect.anything(),
+    })
+  })
+
   it('records every command for assertions', async () => {
     const client = createMockEnvironmentClient({ seed })
     await client.commands.listWorkspaces()

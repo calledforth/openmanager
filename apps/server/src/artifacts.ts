@@ -61,6 +61,16 @@ export function createArtifactStore(database: DatabaseSync, dataDir: string) {
       metadata_json = json_remove(COALESCE(metadata_json, '{}'), '$.sessionId')
     WHERE attachment_id = ? AND session_id = ?
   `)
+  // Rows migrated with a session they no longer match keep that id in their
+  // metadata; only a draft's upload, or one a failed launch handed back, has none.
+  const heldBefore = database.prepare(`
+    SELECT attachment_id AS artifactId FROM attachments
+    WHERE session_id IS NULL AND source = 'prompt'
+      AND json_extract(metadata_json, '$.sessionId') IS NULL AND created_at < ?
+  `)
+  const deleteHeld = database.prepare(
+    'DELETE FROM attachments WHERE attachment_id = ? AND session_id IS NULL',
+  )
   const get = (sessionId: string, artifactId: string) =>
     lookup.get(artifactId, sessionId) as ArtifactMetadata | undefined
   const path = (artifactId: string) => {
@@ -132,8 +142,26 @@ export function createArtifactStore(database: DatabaseSync, dataDir: string) {
   const release = (artifactIds: readonly string[], sessionId: string) => {
     for (const artifactId of new Set(artifactIds)) releaseOne.run(artifactId, sessionId)
   }
+  /**
+   * Remove held uploads no launch claimed before `cutoff`: the draft was
+   * abandoned. Row first, then bytes, so a claim racing the sweep either wins
+   * the row or finds nothing; it never gets a row whose bytes are gone.
+   */
+  const expireHeld = (cutoff: number) => {
+    const expired: string[] = []
+    for (const { artifactId } of heldBefore.all(cutoff) as { artifactId: string }[]) {
+      if (deleteHeld.run(artifactId).changes !== 1) continue
+      expired.push(artifactId)
+      try {
+        rmSync(path(artifactId), { force: true })
+      } catch {
+        // An id this store did not mint names no file; startup sweeps strays.
+      }
+    }
+    return expired
+  }
   return {
-    get, record, read, path, claimable, claim, release,
+    get, record, read, path, claimable, claim, release, expireHeld,
     reference(metadata: ArtifactMetadata) {
       return { type: 'artifact' as const, artifactId: metadata.artifactId,
         mimeType: metadata.mimeType, name: metadata.name, sizeBytes: metadata.sizeBytes }

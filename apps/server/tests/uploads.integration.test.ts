@@ -12,7 +12,8 @@ import {
 } from '@openmanager/protocol/node'
 import { openEnvironmentDatabase } from '../src/db/database.js'
 import { MAX_ATTACHMENT_BYTES } from '../src/upload-limits.js'
-import { createUploadService } from '../src/uploads.js'
+import { createUploadService, HELD_UPLOAD_TTL_MS } from '../src/uploads.js'
+import { createArtifactStore } from '../src/artifacts.js'
 import { createAuditLog } from '../src/audit.js'
 import { createRateLimiter } from '../src/rate-limit.js'
 import {
@@ -521,6 +522,42 @@ describe('upload service', () => {
     expect(await readdir(partial)).toEqual([])
     // A crash between the rename and the insert leaves a blob no row names.
     expect(await readdir(join(dataDir, 'uploads'))).toEqual(['partial'])
+    database.close()
+  })
+
+  it('removes held uploads no launch claimed within a day, at startup and while running', async () => {
+    const now = { value: HELD_UPLOAD_TTL_MS + 10 }
+    const { dataDir, database, create } = await isolatedService(now)
+    database.exec(`INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at)
+      VALUES ('workspace-1', 'one', '/one', 1, 1)`)
+    const artifacts = createArtifactStore(database, dataDir)
+    const hold = async (artifactId: string, createdAt: number) => {
+      artifacts.record({
+        artifactId,
+        workspaceId: 'workspace-1',
+        name: 'draft.png',
+        mimeType: 'image/png',
+        sizeBytes: 4,
+        createdAt,
+        source: 'prompt',
+      })
+      await writeFile(artifacts.path(artifactId), 'png!')
+    }
+    const ABANDONED = '00000000-0000-4000-8000-00000000000a'
+    const RECENT = '00000000-0000-4000-8000-00000000000b'
+    await hold(ABANDONED, 5)
+    await hold(RECENT, now.value)
+
+    const service = create()
+    expect(await readdir(join(dataDir, 'uploads'))).toEqual(['partial', RECENT].sort())
+
+    // A day later, issuing a ticket sweeps the one that has aged out since.
+    now.value += HELD_UPLOAD_TTL_MS + 1
+    service.dispatch(ticketCommand('sweep'), context)
+    expect(await readdir(join(dataDir, 'uploads'))).toEqual(['partial'])
+    expect(database.prepare('SELECT count(*) AS count FROM attachments').get()).toEqual({
+      count: 0,
+    })
     database.close()
   })
 
