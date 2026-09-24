@@ -46,6 +46,21 @@ export function isTurnSettled(turn: Turn): boolean {
   return turn.state === 'completed' || turn.state === 'interrupted' || turn.state === 'failed'
 }
 
+/**
+ * Settle every open reasoning block in `turnId`. ACP providers stream thinking
+ * as bare deltas and never say when a block ends, so a block is closed by the
+ * next non-thought event in its turn: an assistant message chunk, a tool
+ * update, or the end of the turn. Providers that do frame their blocks (Claude
+ * Code) send an explicit `stop` first, which this leaves untouched.
+ */
+function closeReasoning(reasoning: ReasoningEntry[], turnId: string): ReasoningEntry[] {
+  if (!reasoning.some((entry) => entry.turnId === turnId && entry.phase !== 'stop'))
+    return reasoning
+  return reasoning.map((entry) =>
+    entry.turnId === turnId && entry.phase !== 'stop' ? { ...entry, phase: 'stop' } : entry,
+  )
+}
+
 function upsert<T>(items: T[], id: (item: T) => string, next: T): T[] {
   const index = items.findIndex((item) => id(item) === id(next))
   if (index === -1) return [...items, next]
@@ -93,9 +108,7 @@ export function foldProtocolEvent<T extends ProtocolThreadView>(current: T, even
           threadId: current.thread.threadId,
           state,
         }),
-        reasoning: current.reasoning.map((entry) =>
-          entry.turnId === turnId && entry.phase !== 'stop' ? { ...entry, phase: 'stop' } : entry,
-        ),
+        reasoning: closeReasoning(current.reasoning, turnId),
         interactions: current.interactions.filter((item) => item.turnId !== turnId),
         failures:
           event.name === 'turn.failed'
@@ -120,7 +133,15 @@ export function foldProtocolEvent<T extends ProtocolThreadView>(current: T, even
             role: event.payload.role,
             content: [event.payload.content],
           }
-      return { ...current, messages: upsert(current.messages, (item) => item.messageId, message) }
+      return {
+        ...current,
+        messages: upsert(current.messages, (item) => item.messageId, message),
+        // Text following a thought is what ends the thought for ACP providers.
+        reasoning:
+          message.role === 'assistant'
+            ? closeReasoning(current.reasoning, turnId)
+            : current.reasoning,
+      }
     }
     case 'message.reasoning': {
       const existing = current.reasoning.find(
@@ -148,6 +169,7 @@ export function foldProtocolEvent<T extends ProtocolThreadView>(current: T, even
           ...existing,
           ...event.payload,
         }),
+        reasoning: closeReasoning(current.reasoning, turnId),
       }
     }
     default:
