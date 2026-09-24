@@ -31,6 +31,16 @@ export interface TurnFailure {
   message: string
 }
 
+/**
+ * One thing that took its place in a turn's transcript: a message, a reasoning
+ * block or a tool call, named by the id it is stored under.
+ */
+export interface ActivityRef {
+  kind: 'message' | 'reasoning' | 'tool'
+  id: string
+  turnId: string
+}
+
 /** Snapshot-compatible inputs; transports retain ownership of cursors and deduplication. */
 export interface ProtocolThreadView {
   thread: Thread
@@ -38,8 +48,22 @@ export interface ProtocolThreadView {
   messages: Message[]
   reasoning: ReasoningEntry[]
   tools: ToolState[]
+  /**
+   * Messages, reasoning blocks and tool calls in the order they first appeared.
+   * The three lists above are keyed by id and say nothing about how their
+   * entries interleave; this is what a transcript walks to show a thought, the
+   * tools it led to, and the text that followed, in that order.
+   */
+  order: ActivityRef[]
   interactions: PendingInteraction[]
   failures: TurnFailure[]
+}
+
+/** Append `ref` unless the same entry is already placed. */
+export function placeActivity(order: ActivityRef[], ref: ActivityRef): ActivityRef[] {
+  return order.some((item) => item.kind === ref.kind && item.id === ref.id)
+    ? order
+    : [...order, ref]
 }
 
 export function isTurnSettled(turn: Turn): boolean {
@@ -136,6 +160,9 @@ export function foldProtocolEvent<T extends ProtocolThreadView>(current: T, even
       return {
         ...current,
         messages: upsert(current.messages, (item) => item.messageId, message),
+        order: existing
+          ? current.order
+          : placeActivity(current.order, { kind: 'message', id: message.messageId, turnId }),
         // Text following a thought is what ends the thought for ACP providers.
         reasoning:
           message.role === 'assistant'
@@ -159,6 +186,13 @@ export function foldProtocolEvent<T extends ProtocolThreadView>(current: T, even
               : mergeContent(existing?.content ?? [], event.payload.content),
           tokens: event.payload.tokens ?? existing?.tokens,
         }),
+        order: existing
+          ? current.order
+          : placeActivity(current.order, {
+              kind: 'reasoning',
+              id: event.payload.messageId,
+              turnId,
+            }),
       }
     }
     case 'tool.updated': {
@@ -169,6 +203,9 @@ export function foldProtocolEvent<T extends ProtocolThreadView>(current: T, even
           ...existing,
           ...event.payload,
         }),
+        order: existing
+          ? current.order
+          : placeActivity(current.order, { kind: 'tool', id: event.payload.toolCallId, turnId }),
         reasoning: closeReasoning(current.reasoning, turnId),
       }
     }

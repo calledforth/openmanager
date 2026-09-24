@@ -17,6 +17,7 @@ export type {
   OutboxEntry,
   SessionHistoryPage,
   SessionListPage,
+  ActivityRef,
   PendingInteraction,
   ProbeProviderInput,
   ProviderCatalogEntry,

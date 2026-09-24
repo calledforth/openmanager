@@ -105,12 +105,14 @@ describe('chat timeline re-renders', () => {
     const settledUserRenders = renders.user.filter((text) => text === 'What changed?').length
     const promptRenders = renders.user.filter((text) => text === 'and now?').length
 
+    // Two tokens of one text run share a message id, as a server's deltas do.
+    let messageId = ''
     await act(() => {
-      client.streamAssistantText({ ...THREAD, turnId }, 'one ')
+      messageId = client.streamAssistantText({ ...THREAD, turnId }, 'one ')
     })
     await flush()
     await act(() => {
-      client.streamAssistantText({ ...THREAD, turnId }, 'two ')
+      client.streamAssistantText({ ...THREAD, turnId }, 'two ', messageId)
     })
     await flush()
 

@@ -228,6 +228,90 @@ describe('applyEvent', () => {
     expect(selectActiveThread(state)!.tools).toHaveLength(1)
   })
 
+  it('places each message, thought and tool in arrival order exactly once', () => {
+    const thought = (messageId: string, text: string) =>
+      event({
+        name: 'message.reasoning',
+        scope: threadScope,
+        payload: { turnId: 'turn-1', messageId, phase: 'delta', content: { type: 'text', text } },
+      })
+    const tool = (toolCallId: string, status: 'in_progress' | 'completed') =>
+      event({
+        name: 'tool.updated',
+        scope: threadScope,
+        payload: { turnId: 'turn-1', toolCallId, title: 'Read file', status },
+      })
+    let state = applyEvent(seeded(), turnStarted())
+    // Two thoughts, two tools and two text runs interleaved; every update of an
+    // entry already placed leaves the order alone.
+    for (const next of [
+      thought('thought-1', 'plan'),
+      thought('thought-1', ' more'),
+      tool('tool-1', 'in_progress'),
+      tool('tool-1', 'completed'),
+      delta('turn-1', 'assistant-1', 'Looking'),
+      delta('turn-1', 'assistant-1', ' closer'),
+      thought('thought-2', 'check'),
+      tool('tool-2', 'completed'),
+      delta('turn-1', 'assistant-2', 'Found it'),
+    ]) {
+      state = applyEvent(state, next)
+    }
+    const thread = selectActiveThread(state)!
+    expect(thread.order.map((ref) => `${ref.kind}:${ref.id}`)).toEqual([
+      'message:turn-1-user',
+      'reasoning:thought-1',
+      'tool:tool-1',
+      'message:assistant-1',
+      'reasoning:thought-2',
+      'tool:tool-2',
+      'message:assistant-2',
+    ])
+    // The second thought is its own block; the first stays closed.
+    expect(thread.reasoning.map((entry) => entry.phase)).toEqual(['stop', 'stop'])
+    expect(thread.messages.at(-1)?.content).toEqual([{ type: 'text', text: 'Found it' }])
+  })
+
+  it('keeps the place of live activity that arrived while a history page loaded', () => {
+    // Without replay the client subscribes before it loads history, so a
+    // running turn can place a thought or tool before the page answers.
+    let state = applyEvent(seeded(), turnStarted())
+    state = {
+      ...state,
+      threads: {
+        ...state.threads,
+        [THREAD.threadId]: { ...state.threads[THREAD.threadId]!, hydration: 'loading' },
+      },
+    }
+    state = applyEvent(
+      state,
+      event({
+        name: 'message.reasoning',
+        scope: threadScope,
+        payload: {
+          turnId: 'turn-1',
+          messageId: 'thought-live',
+          phase: 'delta',
+          content: { type: 'text', text: 'plan' },
+        },
+      }),
+    )
+    const userMessage = state.threads[THREAD.threadId]!.messages[0]!
+    state = applySessionHistory(state, THREAD, {
+      messages: [userMessage],
+      turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'running' }],
+      interactions: [],
+      nextCursor: null,
+    })
+    const thread = state.threads[THREAD.threadId]!
+    expect(thread.hydration).toBe('ready')
+    expect(thread.reasoning).toHaveLength(1)
+    expect(thread.order.map((ref) => `${ref.kind}:${ref.id}`)).toEqual([
+      'message:turn-1-user',
+      'reasoning:thought-live',
+    ])
+  })
+
   it('is idempotent for duplicated turn.started deliveries', () => {
     const once = applyEvent(seeded(), turnStarted())
     const twice = applyEvent(once, turnStarted())

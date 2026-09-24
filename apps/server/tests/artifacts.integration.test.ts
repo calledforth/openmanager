@@ -398,6 +398,11 @@ describe('artifact metadata', () => {
         .map((record) => record.event.payload),
     ).toMatchObject([{ role: 'assistant', content: { type: 'artifact', artifactId } }])
     expect(JSON.stringify(records)).not.toContain(data)
+    // The result is filed after the tool call that produced it, so a transcript
+    // in arrival order shows the work before the image.
+    const names = records.map((record) => record.event.name)
+    expect(names.indexOf('tool.updated')).toBeGreaterThanOrEqual(0)
+    expect(names.indexOf('tool.updated')).toBeLessThan(names.indexOf('message.delta'))
 
     await host.server.close()
     const restarted = await restart(host, connections)

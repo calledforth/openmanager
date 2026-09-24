@@ -184,19 +184,13 @@ const ThreadSnapshotSchema = z
       ...state.tools,
       ...state.interactions,
     ]
+    // A reasoning block is filed under its own message id, distinct from the
+    // text runs of its turn, so it is checked against turns, not messages.
     if (referencedTurns.some((item) => !turnIds.has(item.turnId))) {
       ctx.addIssue({
         code: 'custom',
         path: ['state'],
         message: 'Snapshot references a missing turn',
-      })
-    }
-    const messageIds = new Set(state.messages.map((message) => message.messageId))
-    if (state.reasoning.some((item) => !messageIds.has(item.messageId))) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['state', 'reasoning'],
-        message: 'Snapshot reasoning references a missing message',
       })
     }
   })
