@@ -57,7 +57,14 @@ export type TranslatedMessage = {
  * index space to zero — which is why this map is cleared per message and why
  * `tool_result` correlation never uses an index. */
 type BlockState =
-  | { kind: 'text'; streamed: boolean }
+  | {
+      kind: 'text'
+      /** Every `text_delta` so far, so the `assistant` frame's copy of this
+       * block can be recognised by content rather than by position. */
+      text: string
+      /** An `assistant` frame already accounted for this block. */
+      matched: boolean
+    }
   | { kind: 'thinking' }
   | {
       kind: 'tool'
@@ -256,7 +263,7 @@ export class ClaudeMessageTranslator {
   ): BackendEvent[] {
     const type = string(block.type)
     if (type === 'text') {
-      this.blocks.set(index, { kind: 'text', streamed: false })
+      this.blocks.set(index, { kind: 'text', text: '', matched: false })
       return []
     }
     if (type === 'thinking' || type === 'redacted_thinking') {
@@ -301,10 +308,10 @@ export class ClaudeMessageTranslator {
   ): BackendEvent[] {
     const type = string(delta.type)
     if (type === 'text_delta') {
-      const block = this.blocks.get(index)
-      if (block?.kind === 'text') block.streamed = true
       const text = string(delta.text)
       if (!text) return []
+      const block = this.blocks.get(index)
+      if (block?.kind === 'text') block.text += text
       return [
         routeEvent(this.route(), sessionId, 'stream', 'agent_message_chunk', {
           content: { type: 'text', text },
@@ -397,35 +404,62 @@ export class ClaudeMessageTranslator {
 
   // --------------------------------------------------------------- snapshots
 
-  /** The finished assistant message, which arrives after its deltas.
+  /** An `assistant` frame: the CLI's own copy of content that (usually) already
+   * streamed.
    *
    * Its only job here is backfill. Text that streamed needs nothing — it is
    * already on screen and re-emitting would duplicate the paragraph — but a
    * text block that produced no delta at all (a cached completion, an
    * interrupted stream, a build with partial messages disabled) would otherwise
-   * never be shown at all. Positional, because the snapshot's content array is
-   * in the same order as the block indices that produced it. */
+   * never be shown at all.
+   *
+   * NOT positional, and NOT the end of the message. Live-verified (claude CLI,
+   * 2026-09) with partial messages on: the CLI emits one `assistant` frame PER
+   * content block, each with a single-element `content` (so the block always
+   * sits at index 0 whatever its stream index was), all sharing `message.id`,
+   * and each arriving BEFORE that block's `content_block_stop`. Looking the
+   * block up by position therefore misses whenever anything preceded it —
+   * every thinking-first answer — and clearing the index map here killed the
+   * still-streaming message's state (the thinking block never got its `stop`,
+   * the text block's snapshot found no record of having streamed, and the whole
+   * answer was emitted a second time). So a snapshot text block is matched to
+   * the streamed block that produced its text, and the map lives until the
+   * next `message_start`, which is the only real message boundary. */
   private assistantSnapshot(message: Extract<SDKMessage, { type: 'assistant' }>): BackendEvent[] {
     const content = object(message.message).content
     const blocks = Array.isArray(content) ? content : []
     const events: BackendEvent[] = []
-    blocks.forEach((raw, index) => {
+    for (const raw of blocks) {
       const block = object(raw)
-      if (string(block.type) !== 'text') return
-      const streaming = this.blocks.get(index)
-      if (streaming?.kind === 'text' && streaming.streamed) return
+      if (string(block.type) !== 'text') continue
       const text = string(block.text)
-      if (!text) return
+      if (!text) continue
+      if (this.claimStreamedText(text)) continue
       events.push(
         routeEvent(this.route(), message.session_id, 'stream', 'agent_message_chunk', {
           messageId: message.uuid,
           content: { type: 'text', text },
         }),
       )
-    })
-    // The message is over; its index space dies with it.
-    this.blocks.clear()
+    }
     return events
+  }
+
+  /** Is `text` a block that already streamed? Claims the block so two identical
+   * paragraphs in one message each get one match.
+   *
+   * Prefix rather than equality: the frame is built from the completed block,
+   * so the deltas normally add up to exactly its text — but if the tail is
+   * still in flight, or was lost, re-emitting the whole block would duplicate
+   * everything already on screen, which is the worse outcome. */
+  private claimStreamedText(text: string): boolean {
+    for (const block of this.blocks.values()) {
+      if (block.kind !== 'text' || block.matched || !block.text) continue
+      if (!text.startsWith(block.text)) continue
+      block.matched = true
+      return true
+    }
+    return false
   }
 
   /** A `user` frame is almost never the user. The CLI reports tool outcomes by
