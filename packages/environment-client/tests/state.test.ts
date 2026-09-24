@@ -116,7 +116,48 @@ describe('applyEvent', () => {
   it('builds the session list from environment-scoped events', () => {
     const state = seeded()
     expect(selectSessionList(state, WORKSPACE.workspaceId)).toEqual([
-      { ...SESSION, status: 'idle', threadIds: [THREAD.threadId] },
+      {
+        ...SESSION,
+        status: 'idle',
+        threadIds: [THREAD.threadId],
+        updatedAt: '2026-09-10T00:00:00.000Z',
+      },
+    ])
+  })
+
+  it('lists sessions newest first regardless of arrival order', () => {
+    const created = (sessionId: string, timestamp: string) => ({
+      ...event({
+        name: 'session.created' as const,
+        scope: environmentScope,
+        payload: { session: { ...SESSION, sessionId } },
+      }),
+      timestamp,
+    })
+    let state = seeded()
+    // The first listing was newest-first; later arrivals land at the end of
+    // `sessionOrder` and would otherwise render at the bottom of the sidebar.
+    state = applyEvent(state, created('session-old', '2026-09-01T00:00:00.000Z'))
+    state = applyEvent(state, created('session-new', '2026-09-12T00:00:00.000Z'))
+    expect(selectSessionList(state).map((session) => session.sessionId)).toEqual([
+      'session-new',
+      SESSION.sessionId,
+      'session-old',
+    ])
+
+    // Activity moves a session back to the top.
+    state = applyEvent(state, {
+      ...event({
+        name: 'session.updated' as const,
+        scope: sessionScope,
+        payload: { sessionId: 'session-old', status: 'running' },
+      }),
+      timestamp: '2026-09-13T00:00:00.000Z',
+    })
+    expect(selectSessionList(state).map((session) => session.sessionId)).toEqual([
+      'session-old',
+      'session-new',
+      SESSION.sessionId,
     ])
   })
 
@@ -143,6 +184,48 @@ describe('applyEvent', () => {
     state = applyEvent(state, completed())
     expect(selectSessionList(state)[0]?.status).toBe('idle')
     expect(selectActiveTurn(state)).toBeNull()
+  })
+
+  it('closes an open thought on the next assistant text or tool update, and a later thought reopens it', () => {
+    const thought = (text: string) =>
+      event({
+        name: 'message.reasoning',
+        scope: threadScope,
+        payload: {
+          turnId: 'turn-1',
+          messageId: 'reasoning-1',
+          phase: 'delta',
+          content: { type: 'text', text },
+        },
+      })
+    const tool = (status: 'in_progress' | 'completed') =>
+      event({
+        name: 'tool.updated',
+        scope: threadScope,
+        payload: { turnId: 'turn-1', toolCallId: 'tool-1', title: 'Read file', status },
+      })
+    const phase = (state: EnvironmentState) => selectActiveThread(state)!.reasoning[0]?.phase
+
+    // ACP providers only ever send deltas; text after the thought ends it.
+    let state = applyEvent(applyEvent(seeded(), turnStarted()), thought('plan'))
+    expect(phase(state)).toBe('delta')
+    state = applyEvent(state, delta('turn-1', 'assistant-1', 'Hello'))
+    expect(phase(state)).toBe('stop')
+    // Closing is idempotent: nothing to close means the thread is untouched.
+    const closedThread = selectActiveThread(state)
+    expect(
+      selectActiveThread(applyEvent(state, delta('turn-1', 'assistant-1', '!')))!.reasoning,
+    ).toBe(closedThread!.reasoning)
+
+    // A tool call ends a thought too, and thinking again after it reopens the block.
+    state = applyEvent(state, thought(' more'))
+    expect(phase(state)).toBe('delta')
+    state = applyEvent(state, tool('in_progress'))
+    expect(phase(state)).toBe('stop')
+    expect(selectActiveThread(state)!.reasoning[0]?.content).toEqual([
+      { type: 'text', text: 'plan more' },
+    ])
+    expect(selectActiveThread(state)!.tools).toHaveLength(1)
   })
 
   it('is idempotent for duplicated turn.started deliveries', () => {
