@@ -22,6 +22,7 @@ import {
   InteractionSchema,
   PlanHistoryEntrySchema,
 } from './domains.js'
+import { WorkspaceComposerPreferenceSchema } from './composer.js'
 
 const command = <N extends string, P extends z.ZodType>(name: N, payload: P) =>
   CommandEnvelopeSchema.extend({ name: z.literal(name), payload })
@@ -59,15 +60,28 @@ export const ProofCommandSchemas = {
       limit: PageLimitSchema.optional(),
     }),
   ),
+  // A draft launches in one command: the environment files the draft's picks,
+  // starts the provider, and runs the first turn in the picked mode. A mode
+  // only takes effect on a first turn, so it needs one.
   'session.create': command(
     'session.create',
-    z.object({
-      environmentId: EntityIdSchema,
-      workspaceId: EntityIdSchema,
-      providerId: EntityIdSchema,
-      title: z.string().max(512).optional(),
-      firstMessage: TurnTextSchema.optional(),
-    }),
+    z
+      .object({
+        environmentId: EntityIdSchema,
+        workspaceId: EntityIdSchema,
+        providerId: EntityIdSchema,
+        title: z.string().max(512).optional(),
+        firstMessage: TurnTextSchema.optional(),
+        /** Picks made in the draft. Filed as the workspace's "last used" before
+         * the provider starts, which is what a new session is seeded from. */
+        preference: WorkspaceComposerPreferenceSchema.optional(),
+        /** The mode the first turn runs in, when it is not the provider's default. */
+        modeId: z.string().min(1).max(1_024).optional(),
+      })
+      .refine((create) => create.modeId === undefined || create.firstMessage !== undefined, {
+        message: 'A mode applies to the first message, so it needs one.',
+        path: ['modeId'],
+      }),
   ),
   'session.open': command('session.open', SessionTargetSchema),
   'session.rename': command(

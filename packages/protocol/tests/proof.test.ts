@@ -195,6 +195,51 @@ it('requires explicit session routing and accepts an optional nonempty first mes
   ).toBe(false)
 })
 
+describe('session.create launch picks', () => {
+  const create = (payload: Record<string, unknown>) => ({
+    type: 'command',
+    requestId: 'r-4',
+    name: 'session.create',
+    payload: {
+      environmentId: 'environment-1',
+      workspaceId: 'workspace-1',
+      providerId: 'opencode',
+      ...payload,
+    },
+  })
+
+  it('carries the draft picks and the mode its first turn runs in', () => {
+    const parsed = ProofCommandSchemas['session.create'].parse(
+      create({
+        firstMessage: 'Plan it',
+        preference: { modelId: 'model-1', configValues: { effort: 'high' } },
+        modeId: 'plan',
+      }),
+    )
+    expect(parsed.payload).toMatchObject({
+      preference: { modelId: 'model-1', configValues: { effort: 'high' } },
+      modeId: 'plan',
+    })
+  })
+
+  it('refuses a mode with no first message to run it on', () => {
+    expect(
+      ProofCommandSchemas['session.create'].safeParse(create({ modeId: 'plan' })).success,
+    ).toBe(false)
+    expect(
+      ProofCommandSchemas['session.create'].safeParse(create({ firstMessage: 'Hi', modeId: '' }))
+        .success,
+    ).toBe(false)
+  })
+
+  it('refuses a preference field the protocol does not know', () => {
+    expect(
+      ProofCommandSchemas['session.create'].safeParse(create({ preference: { theme: 'dark' } }))
+        .success,
+    ).toBe(false)
+  })
+})
+
 describe('turn.send command ids', () => {
   const send = (payload: Record<string, unknown>) => ({
     type: 'command',

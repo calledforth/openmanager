@@ -17,7 +17,10 @@ import {
 // Version 5 adds `promptCapabilities` to the provider composer profile and
 // `supportsImageInput` to its model rows; both objects are strict, so a v4
 // client would reject every catalog and `provider.catalog.updated` event.
-export const PROTOCOL_VERSION = 5 as const
+// Version 6 adds the draft's `preference` and `modeId` to `session.create`. The
+// payload is not strict, so a v5 environment would drop both and start the
+// chat in the wrong mode.
+export const PROTOCOL_VERSION = 6 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema

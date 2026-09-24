@@ -426,64 +426,28 @@ function EnvironmentSessionStateProvider({
       const environmentId = client.getState().environment?.environmentId
       if (!environmentId) throw new Error('No environment is connected')
       const { providerId, preference, modeId } = launch
-      // The environment seeds a new session's model and settings from the
-      // workspace preference, so the draft's picks are filed there first. A
-      // failure stops the launch: starting on something else would be worse.
-      // The composer refuses picks this environment cannot act on, so these
-      // only trip if that changed under an open draft. Never launch on less
-      // than what the composer shows.
-      if (
-        (preference && !client.supports('setComposerPreference')) ||
-        (modeId !== undefined && !client.supports('setSessionMode'))
-      ) {
-        throw new Error('This environment cannot start a chat with the selected settings.')
-      }
-      if (preference) {
-        await commands.setComposerPreference({
-          workspaceId: draftWorkspaceId,
-          providerId,
-          preference,
-        })
-      }
-      // A mode has to be set on a session that exists and before its first
-      // prompt, so that launch is create, switch, send rather than one command.
-      const switchMode = modeId !== undefined
+      // One command, as the draft shows it: the environment files the picks
+      // the new session is seeded from, starts the provider, and runs the
+      // first message in the picked mode. It refuses rather than launch on
+      // anything less, so the draft stays open with what was typed.
       const { session, thread } = await commands.createSession({
         environmentId,
         workspaceId: draftWorkspaceId,
         providerId,
-        ...(switchMode ? {} : { firstMessage: text }),
+        firstMessage: text,
+        ...(preference ? { preference } : {}),
+        ...(modeId !== undefined ? { modeId } : {}),
       })
-      const target = { sessionId: session.sessionId, threadId: thread.threadId }
-      if (switchMode) {
-        try {
-          await commands.setSessionMode({ sessionId: session.sessionId, modeId })
-        } catch (err) {
-          // Prompting in the wrong mode (agent instead of plan) is not a
-          // fallback. The draft stays open with what was typed.
-          await commands.deleteSession(session.sessionId).catch(() => undefined)
-          throw err
-        }
-      }
-      if (draftGenerationRef.current !== generation) {
-        // The user moved on while the session was being created: do not pull
-        // the view back to it. Its first turn continues in the sidebar.
-        if (switchMode) void commands.sendTurn({ ...target, text }).catch(() => undefined)
-        return null
-      }
+      // The user moved on while the session was being created: do not pull
+      // the view back to it. Its first turn continues in the sidebar.
+      if (draftGenerationRef.current !== generation) return null
       await openSessionLatest(session.sessionId)
       setAdoptedDraftSessionId(session.sessionId)
       setPendingDraftSessionStart(false)
       setDraftWorkspaceId(null)
-      if (switchMode) {
-        setTurnPending(true)
-        // As with any send, a refused prompt keeps its own row and retry.
-        await commands.sendTurn({ ...target, text }).catch(() => setTurnPending(false))
-      } else {
-        // Creation already returned the first turn; its state now drives the composer.
-        setTurnPending(false)
-      }
-      return target
+      // Creation already returned the first turn; its state now drives the composer.
+      setTurnPending(false)
+      return { sessionId: session.sessionId, threadId: thread.threadId }
     },
     [client, commands, draftWorkspaceId, openSessionLatest],
   )

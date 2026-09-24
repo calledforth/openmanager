@@ -197,6 +197,10 @@ export interface CreateSessionInput {
   providerId: string
   firstMessage?: string
   title?: string
+  /** Picks made in the draft; the environment files them before it starts the provider. */
+  preference?: WorkspaceComposerPreference
+  /** The mode the first message runs in. Needs `firstMessage`. */
+  modeId?: string
 }
 
 export interface AddWorkspaceInput {
