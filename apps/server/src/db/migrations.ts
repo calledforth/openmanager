@@ -496,7 +496,10 @@ export const MIGRATIONS: readonly Migration[] = [
       // Until now they lived only in the event log, so a history page or a
       // snapshot came back as text alone. `ordinal` is drawn from the same
       // thread-wide counter as `messages.ordinal`, so one sort across both
-      // tables gives the order text, thoughts and tools happened in.
+      // tables gives the order text, thoughts and tools happened in. It is
+      // REAL so rows rebuilt for turns that already happened can sit between
+      // two message ordinals without renumbering the messages (see below);
+      // live rows always take the next integer.
       database.exec(`
         CREATE TABLE IF NOT EXISTS turn_activity (
           activity_id TEXT PRIMARY KEY NOT NULL,
@@ -504,7 +507,7 @@ export const MIGRATIONS: readonly Migration[] = [
           thread_id TEXT NOT NULL,
           turn_id TEXT NOT NULL,
           kind TEXT NOT NULL CHECK (kind IN ('reasoning', 'tool')),
-          ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+          ordinal REAL NOT NULL CHECK (ordinal >= 0),
           state_json TEXT NOT NULL CHECK (json_valid(state_json)),
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL,
@@ -540,14 +543,12 @@ type TextBlock = { type: 'text'; text: string }
  * its thoughts and tool calls back.
  *
  * Those rows need ordinals among the turn's messages, which were numbered
- * densely before this table existed. Each affected thread's message ordinals
- * are scaled by 1000 (an order-preserving renumbering; history pages compare
- * ordinals, never count them) and the turn's activity is filed in the gap just
- * before its first assistant message, or just after its prompt when the turn
+ * densely before this table existed. Message ordinals are left exactly as
+ * they are, so a history cursor a client holds across the upgrade stays
+ * valid; the activity takes fractional ordinals in the unit gap just before
+ * the turn's first assistant message, or just after its prompt when the turn
  * produced no text. Interleaving within a turn is not recoverable from rows,
  * so a backfilled turn reads as it did before: thoughts, then tools, then text.
- * A history cursor a client held across the upgrade points below the new
- * numbering and simply yields no older page; its next snapshot repairs it.
  */
 function backfillTurnActivity(database: DatabaseSync): void {
   const retained = database
@@ -567,12 +568,6 @@ function backfillTurnActivity(database: DatabaseSync): void {
   )
   const turnMessages = database.prepare(
     `SELECT role, ordinal FROM messages WHERE turn_id = ? AND thread_id = ? ORDER BY ordinal`,
-  )
-  const scaleUp = database.prepare(
-    'UPDATE messages SET ordinal = ordinal * 1000 + 1000000000000 WHERE thread_id = ?',
-  )
-  const scaleDown = database.prepare(
-    'UPDATE messages SET ordinal = ordinal - 1000000000000 WHERE thread_id = ?',
   )
   const insert = database.prepare(
     `INSERT OR IGNORE INTO turn_activity (
@@ -662,8 +657,6 @@ function backfillTurnActivity(database: DatabaseSync): void {
       byTurn.set(entry.turnId, list)
     }
     if (byTurn.size === 0) continue
-    scaleUp.run(threadId)
-    scaleDown.run(threadId)
     for (const [turnId, list] of byTurn) {
       const messages = turnMessages.all(turnId, threadId) as Array<{
         role: string
@@ -671,15 +664,13 @@ function backfillTurnActivity(database: DatabaseSync): void {
       }>
       if (messages.length === 0) continue
       const firstAssistant = messages.find((message) => message.role === 'assistant')
-      // Up to 999 rows fit in the gap; a turn with more keeps its newest.
-      const kept = list.slice(-999)
-      const start = Math.max(
-        0,
-        firstAssistant
-          ? firstAssistant.ordinal - kept.length
-          : messages[messages.length - 1]!.ordinal + 1,
-      )
-      kept.forEach((entry, index) => {
+      // The unit gap below the first assistant message, or above the last
+      // message when the turn produced no text, shared evenly by the rows.
+      const base = firstAssistant
+        ? firstAssistant.ordinal - 1
+        : messages[messages.length - 1]!.ordinal
+      const step = 1 / (list.length + 1)
+      list.forEach((entry, index) => {
         const { workspaceId, ...state } = entry.state as { workspaceId: string } & Record<
           string,
           unknown
@@ -690,7 +681,7 @@ function backfillTurnActivity(database: DatabaseSync): void {
           threadId,
           turnId,
           entry.kind,
-          start + index,
+          base + step * (index + 1),
           JSON.stringify(state),
           entry.createdAt,
           entry.createdAt,

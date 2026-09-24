@@ -264,7 +264,9 @@ export function listSessionHistory(
         threadId: row.thread_id,
         state: row.state,
         startedAt: new Date(row.started_at).toISOString(),
-        ...(row.finished_at === null ? {} : { finishedAt: new Date(row.finished_at).toISOString() }),
+        ...(row.finished_at === null
+          ? {}
+          : { finishedAt: new Date(row.finished_at).toISOString() }),
       }),
   )
   // The reasoning and tool calls that belong to this page: everything after
@@ -368,8 +370,10 @@ function messageFromRow(database: DatabaseSync, row: MessageRow): Message {
 export const REASONING_TEXT_BUDGET_BYTES = 384 * 1024
 
 /**
- * Keep the newest reasoning text whole and replace what falls outside the
- * budget with a note of how much was left out. Tokens and phase stay, so the
+ * Spend the budget on the newest reasoning first. A block that does not fit
+ * keeps as much of its tail as the budget still allows, behind a note of how
+ * much was left out, so the most recent thinking is always what survives;
+ * blocks past the budget keep the note alone. Tokens and phase stay, so every
  * row still reads as a finished thought of a known size.
  */
 function capReasoningText(reasoning: ReasoningBlock[]): void {
@@ -381,15 +385,17 @@ function capReasoningText(reasoning: ReasoningBlock[]): void {
       remaining -= bytes
       continue
     }
-    const characters = block.content.reduce(
-      (total, item) => total + (item.type === 'text' ? item.text.length : 0),
-      0,
-    )
+    const text = block.content.map((item) => (item.type === 'text' ? item.text : '')).join('')
+    let kept = text.slice(Math.max(0, text.length - remaining))
+    while (kept.length > 0 && Buffer.byteLength(kept, 'utf8') > remaining) {
+      kept = kept.slice(Math.ceil(kept.length / 8))
+    }
+    remaining -= Buffer.byteLength(kept, 'utf8')
+    const note = `[${text.length - kept.length} characters of thinking not loaded]`
     reasoning[index] = {
       ...block,
-      content: [{ type: 'text', text: `[${characters} characters of thinking not loaded]` }],
+      content: [{ type: 'text', text: kept ? `${note}\n${kept}` : note }],
     }
-    remaining = 0
   }
 }
 

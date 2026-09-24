@@ -1238,7 +1238,13 @@ describe('durable turn activity', () => {
     ])
     // A later update revises status and forgets nothing the first one said.
     expect(page.tools).toEqual([
-      { toolCallId: 'tool-1', turnId: 'turn-1', title: 'Read file', kind: 'read', status: 'completed' },
+      {
+        toolCallId: 'tool-1',
+        turnId: 'turn-1',
+        title: 'Read file',
+        kind: 'read',
+        status: 'completed',
+      },
     ])
     expect(page.messages.map((message) => message.messageId)).toEqual([
       'message-user',
@@ -1279,9 +1285,7 @@ describe('durable turn activity', () => {
     // Activity of a turn the thread no longer has goes with it.
     const foreign = createOtherThread(database)
     expect(() =>
-      repository.appendEvents(foreign, [
-        { ...reasoning('r9', 'thought-9', 'x'), scope: foreign },
-      ]),
+      repository.appendEvents(foreign, [{ ...reasoning('r9', 'thought-9', 'x'), scope: foreign }]),
     ).toThrow(/missing turn/)
   })
 
@@ -1313,20 +1317,64 @@ describe('durable turn activity', () => {
       completed(),
     ])
     const page = listSessionHistory(database, { sessionId: 'session-1', threadId: 'thread-1' })!
-    // 600 KiB of thinking against a 384 KiB budget: the newest block stays whole,
-    // the ones before it say how much was left out and keep their token count.
+    // 600 KiB of thinking against a 384 KiB budget: the newest block stays
+    // whole, the one before it keeps the tail that still fits behind a note of
+    // what was left out, the oldest keeps the note alone. Tokens survive on all.
     expect(page.reasoning.map((block) => block.messageId)).toEqual([
       'thought-1',
       'thought-2',
       'thought-3',
     ])
     expect(page.reasoning[2]?.content).toEqual([{ type: 'text', text: big }])
-    expect(page.reasoning[1]?.content).toEqual([
+    const middle = page.reasoning[1]?.content[0]
+    const middleText = middle?.type === 'text' ? middle.text : ''
+    expect(middleText).toMatch(/^\[\d+ characters of thinking not loaded\]\nx+$/)
+    expect(middleText.length).toBeGreaterThan(100 * 1024)
+    expect(middleText.length).toBeLessThan(big.length)
+    expect(page.reasoning[0]?.content).toEqual([
       { type: 'text', text: `[${big.length} characters of thinking not loaded]` },
     ])
-    expect(page.reasoning[0]?.content).toEqual(page.reasoning[1]?.content)
     expect(page.reasoning.every((block) => block.tokens === 50_000)).toBe(true)
     expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(512 * 1024)
+
+    // One block larger than the whole budget keeps its newest text, not a note alone.
+    const huge = 'y'.repeat(500 * 1024)
+    const other = createOtherThread(database)
+    const otherStart = started('other-started')
+    repository.appendEvents(other, [
+      {
+        ...otherStart,
+        scope: other,
+        payload: {
+          turn: { turnId: 'turn-2', threadId: 'thread-2', state: 'running' },
+          userMessage: {
+            ...otherStart.payload.userMessage,
+            messageId: 'other-user',
+            threadId: 'thread-2',
+            turnId: 'turn-2',
+          },
+        },
+      },
+      {
+        ...thought('other-r1', 'thought-huge'),
+        scope: other,
+        payload: {
+          ...thought('other-r1', 'thought-huge').payload,
+          turnId: 'turn-2',
+          content: { type: 'text', text: huge },
+        },
+      },
+      { ...completed('other-completed'), scope: other, payload: { turnId: 'turn-2' } },
+    ])
+    const otherPage = listSessionHistory(database, {
+      sessionId: 'session-2',
+      threadId: 'thread-2',
+    })!
+    const only = otherPage.reasoning[0]?.content[0]
+    const onlyText = only?.type === 'text' ? only.text : ''
+    expect(onlyText).toMatch(/^\[\d+ characters of thinking not loaded\]\ny+$/)
+    expect(onlyText.length).toBeGreaterThan(300 * 1024)
+    expect(Buffer.byteLength(JSON.stringify(otherPage))).toBeLessThan(512 * 1024)
   })
 
   it('backfills the activity of turns that happened before the table existed', async () => {
@@ -1402,14 +1450,42 @@ describe('durable turn activity', () => {
       'message-user',
       'message-assistant',
     ])
+    // Message ordinals are untouched, so a cursor held across the upgrade still
+    // pages, and the next live entry takes the integer above the fractions.
+    expect(
+      upgraded.prepare('SELECT message_id, ordinal FROM messages ORDER BY ordinal').all(),
+    ).toEqual([
+      { message_id: 'message-user', ordinal: 0 },
+      { message_id: 'message-assistant', ordinal: 1 },
+    ])
+    expect(
+      listSessionHistory(upgraded, {
+        sessionId: 'session-1',
+        threadId: 'thread-1',
+        cursor: { ordinal: 1 },
+      })!.messages.map((message) => message.messageId),
+    ).toEqual(['message-user'])
+    expect(upgraded.prepare('SELECT ordinal FROM turn_activity ORDER BY ordinal').all()).toEqual([
+      { ordinal: 1 / 3 },
+      { ordinal: 2 / 3 },
+    ])
+    createEventRepository(upgraded).appendEvents(scope, [
+      ProofEventSchemas['message.delta'].parse({
+        ...delta('later', 'later-delta'),
+        payload: { ...delta('later', 'later-delta').payload, messageId: 'later' },
+      }),
+    ])
+    expect(
+      upgraded.prepare("SELECT ordinal FROM messages WHERE message_id = 'later'").get(),
+    ).toEqual({ ordinal: 2 })
     // Running the backfill again changes nothing.
     upgraded.exec('UPDATE schema_version SET version = 10; PRAGMA user_version = 10;')
     upgraded.close()
     databases.splice(databases.indexOf(upgraded), 1)
     const again = openEnvironmentDatabase(directory)
     databases.push(again)
-    expect(listSessionHistory(again, { sessionId: 'session-1', threadId: 'thread-1' })!.order).toEqual(
-      page.order,
-    )
+    expect(
+      listSessionHistory(again, { sessionId: 'session-1', threadId: 'thread-1' })!.order,
+    ).toEqual([...page.order, { kind: 'message', id: 'later', turnId: 'turn-1' }])
   })
 })

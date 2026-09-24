@@ -99,12 +99,14 @@ export function createEventProjector(
       'SELECT turn_id, thread_id, role, is_final FROM messages WHERE message_id = ?',
     ),
     // One counter across messages and turn activity, so sorting both on
-    // `ordinal` gives the order text, thoughts and tools happened in.
+    // `ordinal` gives the order text, thoughts and tools happened in. Activity
+    // rebuilt by migration 11 sits at fractional ordinals between messages, so
+    // the next live ordinal is the integer above whatever is highest.
     nextMessageOrdinal: database.prepare(
-      `SELECT MAX(
+      `SELECT CAST(MAX(
          COALESCE((SELECT MAX(ordinal) FROM messages WHERE thread_id = ?), -1),
          COALESCE((SELECT MAX(ordinal) FROM turn_activity WHERE thread_id = ?), -1)
-       ) + 1 AS ordinal`,
+       ) AS INTEGER) + 1 AS ordinal`,
     ),
     selectActivity: database.prepare(
       'SELECT turn_id, thread_id, kind, state_json FROM turn_activity WHERE activity_id = ?',
