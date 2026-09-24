@@ -145,6 +145,48 @@ describe('applyEvent', () => {
     expect(selectActiveTurn(state)).toBeNull()
   })
 
+  it('closes an open thought on the next assistant text or tool update, and a later thought reopens it', () => {
+    const thought = (text: string) =>
+      event({
+        name: 'message.reasoning',
+        scope: threadScope,
+        payload: {
+          turnId: 'turn-1',
+          messageId: 'reasoning-1',
+          phase: 'delta',
+          content: { type: 'text', text },
+        },
+      })
+    const tool = (status: 'in_progress' | 'completed') =>
+      event({
+        name: 'tool.updated',
+        scope: threadScope,
+        payload: { turnId: 'turn-1', toolCallId: 'tool-1', title: 'Read file', status },
+      })
+    const phase = (state: EnvironmentState) => selectActiveThread(state)!.reasoning[0]?.phase
+
+    // ACP providers only ever send deltas; text after the thought ends it.
+    let state = applyEvent(applyEvent(seeded(), turnStarted()), thought('plan'))
+    expect(phase(state)).toBe('delta')
+    state = applyEvent(state, delta('turn-1', 'assistant-1', 'Hello'))
+    expect(phase(state)).toBe('stop')
+    // Closing is idempotent: nothing to close means the thread is untouched.
+    const closedThread = selectActiveThread(state)
+    expect(
+      selectActiveThread(applyEvent(state, delta('turn-1', 'assistant-1', '!')))!.reasoning,
+    ).toBe(closedThread!.reasoning)
+
+    // A tool call ends a thought too, and thinking again after it reopens the block.
+    state = applyEvent(state, thought(' more'))
+    expect(phase(state)).toBe('delta')
+    state = applyEvent(state, tool('in_progress'))
+    expect(phase(state)).toBe('stop')
+    expect(selectActiveThread(state)!.reasoning[0]?.content).toEqual([
+      { type: 'text', text: 'plan more' },
+    ])
+    expect(selectActiveThread(state)!.tools).toHaveLength(1)
+  })
+
   it('is idempotent for duplicated turn.started deliveries', () => {
     const once = applyEvent(seeded(), turnStarted())
     const twice = applyEvent(once, turnStarted())
