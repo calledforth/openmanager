@@ -290,15 +290,27 @@ export function createThreadService(
      */
     onSessionMode?: (sessionId: string, modeId: string) => void
     /**
-     * Files a draft's picks as the workspace's "last used" for this provider,
-     * which is what a new session's selection is seeded from. Called before
-     * the session exists; a throw refuses the create. Absent, a create that
-     * carries picks is refused rather than started on something else.
+     * Files a draft's picks, if it has any, as the workspace's "last used" for
+     * this provider, and answers the preference the new session launches on:
+     * what the draft showed. Called before the session exists; a throw refuses
+     * the create. Absent, a create that carries picks is refused rather than
+     * started on something else.
      */
-    fileLaunchPreference?: (
+    launchPreference?: (
       workspaceId: string,
       providerId: string,
-      preference: WorkspaceComposerPreference,
+      picks?: WorkspaceComposerPreference,
+    ) => WorkspaceComposerPreference
+    /**
+     * Gives a new session its own model and config, from the preference it
+     * launched on, before its provider starts. The provider is configured from
+     * the session's selection first, so another draft launching in the same
+     * workspace, which files its picks over that shared preference, cannot
+     * seed this session with them.
+     */
+    seedSessionComposer?: (
+      sessionId: string,
+      selection: Pick<WorkspaceComposerPreference, 'modelId' | 'configValues'>,
     ) => void
   } = {},
 ) {
@@ -1180,26 +1192,29 @@ export function createThreadService(
             'This provider cannot start a chat in another mode.',
           )
         }
-        // Filed before the session exists: the provider starts on whatever the
-        // workspace remembers, so a pick that cannot be saved must stop the
-        // launch rather than start it on something the user did not choose.
-        if (input.preference) {
-          if (!options.fileLaunchPreference) {
-            return errorResult(
-              command.requestId,
-              'capability_missing',
-              'This environment cannot start a chat with the selected settings.',
-            )
-          }
-          try {
-            options.fileLaunchPreference(input.workspaceId, providerId, input.preference)
-          } catch {
+        // Filed before the session exists, so a pick that cannot be saved stops
+        // the launch rather than starting it on something the user did not
+        // choose. What comes back is what the draft showed; the session keeps
+        // it as its own below.
+        let launched: WorkspaceComposerPreference | undefined
+        if (input.preference && !options.launchPreference) {
+          return errorResult(
+            command.requestId,
+            'capability_missing',
+            'This environment cannot start a chat with the selected settings.',
+          )
+        }
+        try {
+          launched = options.launchPreference?.(input.workspaceId, providerId, input.preference)
+        } catch {
+          if (input.preference) {
             return errorResult(
               command.requestId,
               'unavailable',
               'The chat settings could not be saved. Try again.',
             )
           }
+          // Nothing was picked: the provider's own seeding still applies.
         }
         const session: Session = {
           sessionId: randomUUID(),
@@ -1254,6 +1269,22 @@ export function createThreadService(
         sessions.set(session.sessionId, record)
         threads.set(thread.threadId, record)
         void record.runtimeSession.catch(() => rollbackSession(record))
+        // Before the provider starts, which is a microtask away: once the
+        // session has a selection of its own, a later launch in the workspace
+        // can only move the shared preference, not this session.
+        if (launched && (launched.modelId !== undefined || launched.configValues !== undefined)) {
+          try {
+            options.seedSessionComposer?.(session.sessionId, {
+              ...(launched.modelId !== undefined ? { modelId: launched.modelId } : {}),
+              ...(launched.configValues !== undefined
+                ? { configValues: launched.configValues }
+                : {}),
+            })
+          } catch (error) {
+            // Display and seeding state; the preference still stands in for it.
+            options.onPersistenceError?.(error, 'session.composer.updated')
+          }
+        }
         // Re-enter the existing turn command so validation, runtime scheduling and
         // history ownership remain in one place. No asynchronous gap is exposed.
         // A picked mode rides the first prompt the way a plan build's does: set

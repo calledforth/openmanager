@@ -318,16 +318,31 @@ export function createComposerService(
     sessionComposer: selectionOf,
 
     /**
-     * A draft's picks, filed by `session.create` before the provider starts.
-     * The same write as `composer.preferences.set`, so every client's next
-     * draft in the workspace follows it.
+     * A draft's picks, filed by `session.create` before the provider starts,
+     * and the preference the new session launches on. The same write as
+     * `composer.preferences.set`, so every client's next draft in the
+     * workspace follows it.
      */
-    fileLaunchPreference(
+    launchPreference(
       workspaceId: string,
       providerId: string,
-      preference: WorkspaceComposerPreference,
+      picks?: WorkspaceComposerPreference,
+    ): WorkspaceComposerPreference {
+      return picks
+        ? writePreference(workspaceId, providerId, picks)
+        : store.getPreference(workspaceId, providerId)
+    },
+
+    /**
+     * A new session's own model and config, from the preference it launched
+     * on. Written before its provider starts, so the first report seeds
+     * nothing over it and a concurrent launch cannot either.
+     */
+    seedSession(
+      sessionId: string,
+      selection: Pick<WorkspaceComposerPreference, 'modelId' | 'configValues'>,
     ) {
-      writePreference(workspaceId, providerId, preference)
+      updateSelection(sessionId, selection)
     },
 
     /** A mode the host started a turn in without a `composer.mode.set` (a plan build). */

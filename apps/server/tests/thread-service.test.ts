@@ -1068,19 +1068,24 @@ describe('explicit session creation', () => {
 
   it('files the draft picks before the provider starts and runs the first turn in its mode', async () => {
     const order: string[] = []
-    const fileLaunchPreference = vi.fn(() => void order.push('filed'))
-    const { create, runtime } = setup(registered, { fileLaunchPreference })
+    const preference = { modelId: 'opus', configValues: { effort: 'high' } }
+    const launchPreference = vi.fn(() => {
+      order.push('filed')
+      return preference
+    })
+    const seedSessionComposer = vi.fn(() => void order.push('seeded'))
+    const { create, runtime } = setup(registered, { launchPreference, seedSessionComposer })
     runtime.ensureSession.mockImplementation(async () => {
       order.push('started')
       return { sessionId: 'provider-1', state: 'created' }
     })
-    const preference = { modelId: 'opus', configValues: { effort: 'high' } }
     const created = ProofResponseSchemas['session.create'].parse(
       create({ ...input, firstMessage: 'Plan it', preference, modeId: 'plan' }),
     ).payload
-    expect(fileLaunchPreference).toHaveBeenCalledWith(input.workspaceId, 'opencode', preference)
+    expect(launchPreference).toHaveBeenCalledWith(input.workspaceId, 'opencode', preference)
+    expect(seedSessionComposer).toHaveBeenCalledWith(created.session.sessionId, preference)
     await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(1))
-    expect(order).toEqual(['filed', 'started'])
+    expect(order).toEqual(['filed', 'seeded', 'started'])
     // The same path a plan build takes: the mode is set on the live session
     // before the prompt, and a mode that cannot be set fails the turn.
     expect(runtime.prompt).toHaveBeenCalledWith(
@@ -1103,7 +1108,7 @@ describe('explicit session creation', () => {
       [{}, 'capability_missing'],
       [
         {
-          fileLaunchPreference: () => {
+          launchPreference: () => {
             throw new Error('disk full')
           },
         },
@@ -1118,6 +1123,43 @@ describe('explicit session creation', () => {
       expect(runtime.ensureSession).not.toHaveBeenCalled()
       expect(events).toEqual([])
     }
+  })
+
+  it('keeps each concurrent launch on its own picks', async () => {
+    // One shared preference, as the composer service keeps it per workspace.
+    let shared: Record<string, unknown> = {}
+    const selections = new Map<string, unknown>()
+    const { create, runtime } = setup(registered, {
+      launchPreference: (_workspaceId, _providerId, picks) => (shared = { ...shared, ...picks }),
+      seedSessionComposer: (sessionId, selection) => selections.set(sessionId, selection),
+    })
+    const first = ProofResponseSchemas['session.create'].parse(
+      create({ ...input, firstMessage: 'A', preference: { modelId: 'opus' } }),
+    ).payload
+    // The second draft files its pick before the first provider has started.
+    const second = ProofResponseSchemas['session.create'].parse(
+      create({ ...input, firstMessage: 'B', preference: { modelId: 'sonnet' } }),
+    ).payload
+    expect(runtime.ensureSession).not.toHaveBeenCalled()
+    expect(shared).toEqual({ modelId: 'sonnet' })
+    // Each session already owns the model its draft showed.
+    expect(selections.get(first.session.sessionId)).toEqual({ modelId: 'opus' })
+    expect(selections.get(second.session.sessionId)).toEqual({ modelId: 'sonnet' })
+  })
+
+  it('seeds a launch with no picks from the preference it launched on', () => {
+    const seedSessionComposer = vi.fn()
+    const { create } = setup(registered, {
+      launchPreference: () => ({ modelId: 'opus', modeId: 'plan' }),
+      seedSessionComposer,
+    })
+    const created = ProofResponseSchemas['session.create'].parse(
+      create({ ...input, firstMessage: 'Hello' }),
+    ).payload
+    // Mode is not seeded: the provider's live mode is what the session shows.
+    expect(seedSessionComposer).toHaveBeenCalledWith(created.session.sessionId, {
+      modelId: 'opus',
+    })
   })
 
   it('refuses a mode with no first message to run it on', async () => {

@@ -221,13 +221,17 @@ export async function startServer(config: ServerConfig) {
   })
   emitWorkspaceEvent = (event) => eventService.append(event)
   let recordSessionMode: (sessionId: string, modeId: string) => void = () => undefined
-  let fileLaunchPreference: (
+  let launchPreference: (
     workspaceId: string,
     providerId: string,
-    preference: WorkspaceComposerPreference,
-  ) => void = () => {
+    picks?: WorkspaceComposerPreference,
+  ) => WorkspaceComposerPreference = () => {
     throw new Error('The composer service is not ready.')
   }
+  let seedSessionComposer: (
+    sessionId: string,
+    selection: Pick<WorkspaceComposerPreference, 'modelId' | 'configValues'>,
+  ) => void = () => undefined
   const artifacts = createArtifactStore(eventDatabase, config.dataDir)
   const threadService = createThreadService(
     runtime,
@@ -244,8 +248,9 @@ export async function startServer(config: ServerConfig) {
         log('error', 'event persistence failed', { eventName, reason: String(error) }),
       workspaceAvailability: (workspaceId) => workspaces.availability(workspaceId),
       onSessionMode: (sessionId, modeId) => recordSessionMode(sessionId, modeId),
-      fileLaunchPreference: (workspaceId, providerId, preference) =>
-        fileLaunchPreference(workspaceId, providerId, preference),
+      launchPreference: (workspaceId, providerId, picks) =>
+        launchPreference(workspaceId, providerId, picks),
+      seedSessionComposer: (sessionId, selection) => seedSessionComposer(sessionId, selection),
     },
   )
   closeWorkspaceSessions = (workspaceId) => {
@@ -276,8 +281,9 @@ export async function startServer(config: ServerConfig) {
   )
   desiredConfigFor = (args) => composerService.desiredFor(args)
   recordSessionMode = (sessionId, modeId) => composerService.recordSessionMode(sessionId, modeId)
-  fileLaunchPreference = (workspaceId, providerId, preference) =>
-    composerService.fileLaunchPreference(workspaceId, providerId, preference)
+  launchPreference = (workspaceId, providerId, picks) =>
+    composerService.launchPreference(workspaceId, providerId, picks)
+  seedSessionComposer = (sessionId, selection) => composerService.seedSession(sessionId, selection)
   observeProviderCatalog = (providerId, result) => composerService.observeProbe(providerId, result)
   const uploads = createUploadService({
     artifacts,
