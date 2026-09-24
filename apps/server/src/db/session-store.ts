@@ -5,14 +5,19 @@ import {
   InteractionSchema,
   InteractionResponseSchema,
   PlanHistoryEntrySchema,
+  ReasoningBlockSchema,
   SessionListCursorSchema,
   SessionSummarySchema,
+  ToolCallStateSchema,
   TurnSchema,
   resolvePageLimit,
+  type ActivityRef,
   type HistoryCursor,
   type Interaction,
   type Message,
   type PlanHistoryEntry,
+  type ReasoningBlock,
+  type ToolCallState,
   type SessionListCursor,
   type SessionStatus,
   type SessionSummary,
@@ -29,6 +34,7 @@ import {
   SESSION_LIST_FOR_WORKSPACE_SQL,
   THREAD_IN_SESSION_SQL,
   THREADS_FOR_SESSION_SQL,
+  TURN_ACTIVITY_PAGE_SQL,
   TURN_FOR_COMMAND_ID_SQL,
   TURNS_FOR_THREAD_SQL,
   USER_MESSAGE_FOR_TURN_SQL,
@@ -64,6 +70,11 @@ export interface SessionHistoryPage {
   /** `turnId` is server-side detail for snapshots; the history response schema drops it. */
   interactions: Array<{ threadId: string; turnId: string; interaction: Interaction }>
   plans: PlanHistoryEntry[]
+  /** Reasoning blocks and tool calls of the turns whose messages are on the page. */
+  reasoning: ReasoningBlock[]
+  tools: ToolCallState[]
+  /** The page's messages, reasoning and tools in the order they happened. */
+  order: ActivityRef[]
   nextCursor: HistoryCursor | null
 }
 
@@ -80,7 +91,20 @@ type SessionRow = {
 }
 
 type ThreadRow = { thread_id: string; session_id: string }
-type TurnRow = { turn_id: string; thread_id: string; state: string }
+type TurnRow = {
+  turn_id: string
+  thread_id: string
+  state: string
+  started_at: number
+  finished_at: number | null
+}
+type TurnActivityRow = {
+  activity_id: string
+  turn_id: string
+  kind: 'reasoning' | 'tool'
+  ordinal: number
+  state_json: string
+}
 type MessageRow = {
   message_id: string
   thread_id: string
@@ -239,8 +263,44 @@ export function listSessionHistory(
         turnId: row.turn_id,
         threadId: row.thread_id,
         state: row.state,
+        startedAt: new Date(row.started_at).toISOString(),
+        ...(row.finished_at === null
+          ? {}
+          : { finishedAt: new Date(row.finished_at).toISOString() }),
       }),
   )
+  // The reasoning and tool calls that belong to this page: everything after
+  // the newest message the next older page will carry, up to this page's own
+  // newest message. Activity goes with the message that followed it, and what
+  // followed nothing yet (a turn that ended in a tool call) goes with the
+  // newest page. Both tables draw their ordinal from the same thread-wide
+  // counter, so the window partitions activity across pages exactly and one
+  // sort interleaves it with the page's messages.
+  const olderBound = rows[limit]?.ordinal ?? -1
+  const newerBound = query.cursor ? (pageRows[0]?.ordinal ?? olderBound) : ordinal
+  const activityRows = database
+    .prepare(TURN_ACTIVITY_PAGE_SQL)
+    .all(query.threadId, olderBound, newerBound) as TurnActivityRow[]
+  const reasoning: ReasoningBlock[] = []
+  const tools: ToolCallState[] = []
+  for (const row of activityRows) {
+    const state: unknown = JSON.parse(row.state_json)
+    if (row.kind === 'reasoning') reasoning.push(ReasoningBlockSchema.parse(state))
+    else tools.push(ToolCallStateSchema.parse(state))
+  }
+  capReasoningText(reasoning)
+  const order: ActivityRef[] = [
+    ...pageRows.map((row) => ({
+      ordinal: row.ordinal,
+      ref: { kind: 'message' as const, id: row.message_id, turnId: row.turn_id },
+    })),
+    ...activityRows.map((row) => ({
+      ordinal: row.ordinal,
+      ref: { kind: row.kind, id: row.activity_id, turnId: row.turn_id },
+    })),
+  ]
+    .sort((left, right) => left.ordinal - right.ordinal)
+    .map((item) => item.ref)
   const interactions = turns.flatMap((turn) =>
     (database.prepare(INTERACTIONS_FOR_TURN_SQL).all(turn.turnId) as InteractionRow[]).map(
       (row) => ({
@@ -283,6 +343,9 @@ export function listSessionHistory(
     turns,
     interactions,
     plans,
+    reasoning,
+    tools,
+    order,
     nextCursor: rows.length > limit && oldest !== undefined ? { ordinal: oldest.ordinal } : null,
   }
 }
@@ -295,6 +358,47 @@ function messageFromRow(database: DatabaseSync, row: MessageRow): Message {
     turnId: row.turn_id,
     role: row.role,
     content: parts.map((part) => ContentBlockSchema.parse(JSON.parse(part.content_json))),
+  }
+}
+
+/**
+ * Reasoning text a page may carry before the oldest blocks are elided. A
+ * history page or a snapshot is one socket frame under a 1 MiB budget shared
+ * with the messages; a long session's thoughts alone could exceed it and cost
+ * the client its connection instead of its transcript.
+ */
+export const REASONING_TEXT_BUDGET_BYTES = 384 * 1024
+
+/**
+ * Spend the budget on the newest reasoning first. A block that does not fit
+ * keeps as much of its tail as the budget still allows, behind a note of how
+ * much was left out, so the most recent thinking is always what survives;
+ * blocks past the budget keep the note alone. Tokens and phase stay, so every
+ * row still reads as a finished thought of a known size.
+ */
+function capReasoningText(reasoning: ReasoningBlock[]): void {
+  const encodedBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), 'utf8')
+  let remaining = REASONING_TEXT_BUDGET_BYTES
+  for (let index = reasoning.length - 1; index >= 0; index -= 1) {
+    const block = reasoning[index]!
+    const bytes = encodedBytes(block.content)
+    if (bytes <= remaining) {
+      remaining -= bytes
+      continue
+    }
+    const text = block.content.map((item) => (item.type === 'text' ? item.text : '')).join('')
+    // The budget is spent on the encoded frame, so the tail is measured as
+    // JSON: a newline or quote costs two bytes there, a control character six.
+    let kept = text.slice(Math.max(0, text.length - remaining))
+    while (kept.length > 0 && encodedBytes(kept) > remaining) {
+      kept = kept.slice(Math.ceil(kept.length / 8))
+    }
+    remaining -= encodedBytes(kept)
+    const note = `[${text.length - kept.length} characters of thinking not loaded]`
+    reasoning[index] = {
+      ...block,
+      content: [{ type: 'text', text: kept ? `${note}\n${kept}` : note }],
+    }
   }
 }
 

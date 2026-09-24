@@ -18,12 +18,14 @@ import {
   ThreadSchema,
   TurnSchema,
   MessageSchema,
-  ContentBlockSchema,
+  ReasoningBlockSchema,
+  ToolCallStateSchema,
+  ActivityRefSchema,
   InteractionSchema,
   HistoryCursorSchema,
   type SubscriptionScope,
 } from './domains.js'
-import { ProofEventSchema, ProofEventSchemas, type ProofEvent } from './events.js'
+import { ProofEventSchema, type ProofEvent } from './events.js'
 
 export const SequenceSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
 export const CursorSchema = z.object({
@@ -149,16 +151,13 @@ const ThreadSnapshotSchema = z
       turns: z.array(TurnSchema),
       messages: z.array(MessageSchema),
       nextCursor: HistoryCursorSchema.nullable().optional(),
-      reasoning: z.array(
-        z.object({
-          messageId: EntityIdSchema,
-          turnId: EntityIdSchema,
-          phase: z.enum(['start', 'delta', 'stop']),
-          content: z.array(ContentBlockSchema),
-          tokens: z.number().int().nonnegative().optional(),
-        }),
-      ),
-      tools: z.array(ProofEventSchemas['tool.updated'].shape.payload),
+      reasoning: z.array(ReasoningBlockSchema),
+      tools: z.array(ToolCallStateSchema),
+      /**
+       * Messages, reasoning and tools of the page in the order they happened.
+       * Absent from an older environment, which lists its messages only.
+       */
+      order: z.array(ActivityRefSchema).optional(),
       interactions: z.array(z.object({ turnId: EntityIdSchema, interaction: InteractionSchema })),
     }),
   })

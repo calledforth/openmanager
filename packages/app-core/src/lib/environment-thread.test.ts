@@ -104,6 +104,25 @@ describe('projectThread', () => {
     expect(row.message.isFinal).toBe(true)
   })
 
+  it('labels a settled row with how long the turn ran when the environment says', () => {
+    const settledAt = (turn: Record<string, unknown>) =>
+      projectThread(
+        thread({
+          turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'completed', ...turn }],
+          tools: [{ toolCallId: 'tool-1', turnId: 't1', title: 'Read', status: 'completed' }],
+        }),
+      ).byId.get('turn:t1:assistant')!.content.runtime
+    expect(
+      settledAt({ startedAt: '2026-09-24T10:00:00.000Z', finishedAt: '2026-09-24T10:00:45.000Z' }),
+    ).toEqual({
+      startedAt: Date.parse('2026-09-24T10:00:00.000Z'),
+      completedAt: Date.parse('2026-09-24T10:00:45.000Z'),
+    })
+    // An older environment reports no timing; the row keeps the plain label.
+    expect(settledAt({})).toBeUndefined()
+    expect(settledAt({ startedAt: '2026-09-24T10:00:00.000Z' })).toBeUndefined()
+  })
+
   it('orders an unplaced assistant row as reasoning, tools, then text and maps tool status', () => {
     const state = thread({
       turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'running' }],

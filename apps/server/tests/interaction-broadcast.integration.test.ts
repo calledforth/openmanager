@@ -104,11 +104,9 @@ describe.each(['permission', 'question', 'plan'] as const)('%s settlement broadc
       await handshake(second)
       const joined = await replay(second, scope, null)
       expect(threadSnapshot(joined).interactions).toEqual([{ interaction, turnId }])
-      expect(threadSnapshot(joined).turns).toContainEqual({
-        turnId,
-        threadId: target.threadId,
-        state: 'waiting',
-      })
+      expect(threadSnapshot(joined).turns).toContainEqual(
+        expect.objectContaining({ turnId, threadId: target.threadId, state: 'waiting' }),
+      )
 
       const history = await expectCommand(second, 'session.history', target, 'refresh history')
       expect(history.payload.interactions).toEqual([{ threadId: target.threadId, interaction }])

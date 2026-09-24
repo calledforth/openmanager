@@ -131,6 +131,8 @@ export function foldProtocolEvent<T extends ProtocolThreadView>(current: T, even
           turnId,
           threadId: current.thread.threadId,
           state,
+          // The terminal event's time is when the work stopped.
+          finishedAt: event.timestamp,
         }),
         reasoning: closeReasoning(current.reasoning, turnId),
         interactions: current.interactions.filter((item) => item.turnId !== turnId),
