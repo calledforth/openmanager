@@ -565,6 +565,14 @@ export function createMockEnvironmentClient(
             'The workspace does not offer the requested provider.',
           )
         }
+        // Filed before the session exists, as the environment does, so the
+        // new session is seeded from the draft's picks.
+        if (input.preference) {
+          writePreference(
+            { workspaceId: input.workspaceId, providerId: input.providerId },
+            input.preference,
+          )
+        }
         const session: Session = {
           sessionId: nextId(),
           workspaceId: input.workspaceId,
@@ -608,6 +616,9 @@ export function createMockEnvironmentClient(
                 text: input.firstMessage,
                 commandId: nextId(),
               })
+        // The first turn runs in the picked mode; the session reports it.
+        if (input.modeId !== undefined)
+          writeSessionComposer(session.sessionId, { modeId: input.modeId })
         return { session, thread, ...(firstTurn ? { firstTurn } : {}) }
       }),
     openSession: (sessionId) => {

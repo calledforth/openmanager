@@ -20,6 +20,7 @@ import {
   type DurableEvent,
   type EventEnvelope,
   type ProofEvent,
+  type WorkspaceComposerPreference,
 } from '@openmanager/protocol/node'
 import {
   providers,
@@ -220,6 +221,13 @@ export async function startServer(config: ServerConfig) {
   })
   emitWorkspaceEvent = (event) => eventService.append(event)
   let recordSessionMode: (sessionId: string, modeId: string) => void = () => undefined
+  let fileLaunchPreference: (
+    workspaceId: string,
+    providerId: string,
+    preference: WorkspaceComposerPreference,
+  ) => void = () => {
+    throw new Error('The composer service is not ready.')
+  }
   const artifacts = createArtifactStore(eventDatabase, config.dataDir)
   const threadService = createThreadService(
     runtime,
@@ -236,6 +244,8 @@ export async function startServer(config: ServerConfig) {
         log('error', 'event persistence failed', { eventName, reason: String(error) }),
       workspaceAvailability: (workspaceId) => workspaces.availability(workspaceId),
       onSessionMode: (sessionId, modeId) => recordSessionMode(sessionId, modeId),
+      fileLaunchPreference: (workspaceId, providerId, preference) =>
+        fileLaunchPreference(workspaceId, providerId, preference),
     },
   )
   closeWorkspaceSessions = (workspaceId) => {
@@ -266,6 +276,8 @@ export async function startServer(config: ServerConfig) {
   )
   desiredConfigFor = (args) => composerService.desiredFor(args)
   recordSessionMode = (sessionId, modeId) => composerService.recordSessionMode(sessionId, modeId)
+  fileLaunchPreference = (workspaceId, providerId, preference) =>
+    composerService.fileLaunchPreference(workspaceId, providerId, preference)
   observeProviderCatalog = (providerId, result) => composerService.observeProbe(providerId, result)
   const uploads = createUploadService({
     artifacts,

@@ -317,6 +317,19 @@ export function createComposerService(
     /** The selection a client would see for this session right now. */
     sessionComposer: selectionOf,
 
+    /**
+     * A draft's picks, filed by `session.create` before the provider starts.
+     * The same write as `composer.preferences.set`, so every client's next
+     * draft in the workspace follows it.
+     */
+    fileLaunchPreference(
+      workspaceId: string,
+      providerId: string,
+      preference: WorkspaceComposerPreference,
+    ) {
+      writePreference(workspaceId, providerId, preference)
+    },
+
     /** A mode the host started a turn in without a `composer.mode.set` (a plan build). */
     recordSessionMode(sessionId: string, modeId: string) {
       try {

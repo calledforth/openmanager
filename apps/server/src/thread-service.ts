@@ -25,6 +25,7 @@ import {
   type TurnFailureReason,
   type Turn,
   type TurnStart,
+  type WorkspaceComposerPreference,
 } from '@openmanager/protocol/node'
 import {
   projectAgentEvent,
@@ -288,6 +289,17 @@ export function createThreadService(
      * that failed.
      */
     onSessionMode?: (sessionId: string, modeId: string) => void
+    /**
+     * Files a draft's picks as the workspace's "last used" for this provider,
+     * which is what a new session's selection is seeded from. Called before
+     * the session exists; a throw refuses the create. Absent, a create that
+     * carries picks is refused rather than started on something else.
+     */
+    fileLaunchPreference?: (
+      workspaceId: string,
+      providerId: string,
+      preference: WorkspaceComposerPreference,
+    ) => void
   } = {},
 ) {
   const sessions = new Map<string, ThreadRecord>()
@@ -1159,6 +1171,36 @@ export function createThreadService(
           )
         }
         const providerId = input.providerId as ProviderId
+        // The runtime drops a mode the provider cannot set, so the first turn
+        // would run in the default one. Refused instead: the client picked it.
+        if (input.modeId !== undefined && !providers[providerId].capabilities.canSetMode) {
+          return errorResult(
+            command.requestId,
+            'capability_missing',
+            'This provider cannot start a chat in another mode.',
+          )
+        }
+        // Filed before the session exists: the provider starts on whatever the
+        // workspace remembers, so a pick that cannot be saved must stop the
+        // launch rather than start it on something the user did not choose.
+        if (input.preference) {
+          if (!options.fileLaunchPreference) {
+            return errorResult(
+              command.requestId,
+              'capability_missing',
+              'This environment cannot start a chat with the selected settings.',
+            )
+          }
+          try {
+            options.fileLaunchPreference(input.workspaceId, providerId, input.preference)
+          } catch {
+            return errorResult(
+              command.requestId,
+              'unavailable',
+              'The chat settings could not be saved. Try again.',
+            )
+          }
+        }
         const session: Session = {
           sessionId: randomUUID(),
           workspaceId: parsed.data.payload.workspaceId,
@@ -1214,11 +1256,13 @@ export function createThreadService(
         void record.runtimeSession.catch(() => rollbackSession(record))
         // Re-enter the existing turn command so validation, runtime scheduling and
         // history ownership remain in one place. No asynchronous gap is exposed.
+        // A picked mode rides the first prompt the way a plan build's does: set
+        // on the live session before the prompt, which fails if it cannot be.
         let firstTurn
         if (input.firstMessage !== undefined) {
           let result: unknown
           try {
-            result = service.dispatch(
+            result = sendTurn(
               {
                 ...command,
                 name: 'turn.send',
@@ -1229,6 +1273,7 @@ export function createThreadService(
                 },
               },
               context,
+              input.modeId,
             )
           } catch {
             result = rejectWorkspace(command.requestId, input.workspaceId, WORKSPACE_UNAVAILABLE)

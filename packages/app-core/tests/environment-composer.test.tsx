@@ -322,25 +322,19 @@ describe('the composer over the environment client', () => {
       preferredConfigValues: { effort: 'high' },
     })
 
+    const filedBeforeLaunch = commandsOf(client).length
     await act(() => probe.thread.sendMessage('hello'))
     await settle(client)
-    const commands = commandsOf(client)
-    // Filed once more at launch, whole, right before the session is created.
-    expect(commands.lastIndexOf('setComposerPreference')).toBe(
-      commands.indexOf('createSession') - 1,
-    )
-    expect(
-      client.calls.filter((call) => call.command === 'setComposerPreference').at(-1)?.input,
-    ).toEqual({
+    // One command: the create carries the picks, whole, for the environment
+    // to file before it starts the provider. The view then opens the session.
+    expect(commandsOf(client).slice(filedBeforeLaunch)).toEqual(['createSession', 'openSession'])
+    expect(inputOf(client, 'createSession')).toEqual({
+      environmentId: 'mock-environment',
       workspaceId: WORKSPACE.workspaceId,
       providerId: 'opencode',
+      firstMessage: 'hello',
       preference: { modelId: 'opus', configValues: { effort: 'high' } },
     })
-    expect(inputOf(client, 'createSession')).toMatchObject({
-      providerId: 'opencode',
-      firstMessage: 'hello',
-    })
-    expect(commands).not.toContain('setSessionMode')
 
     // The picks are filed now. A later draft follows what the workspace
     // remembers by then, not what this one held.
@@ -366,6 +360,14 @@ describe('the composer over the environment client', () => {
     await mount(client)
     await openDraft(client)
     await act(() => probe.composer.setDraftModel('opus'))
+    // Hold the create open so the newer draft is opened while it is in flight.
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    const create = client.commands.createSession.bind(client.commands)
+    vi.spyOn(client.commands, 'createSession').mockImplementation(async (input) => {
+      await held
+      return create(input)
+    })
 
     let sending!: Promise<void>
     await act(() => {
@@ -373,6 +375,7 @@ describe('the composer over the environment client', () => {
     })
     await act(() => probe.session.createSession(WORKSPACE.workspaceId))
     await act(() => probe.composer.setDraftConfigOption('effort', 'high'))
+    release()
     await settle(client)
     await act(() => sending)
 
@@ -410,7 +413,7 @@ describe('the composer over the environment client', () => {
     expect(commandsOf(client)).not.toContain('sendTurn')
   })
 
-  it('switches a new session into the picked mode before its first prompt', async () => {
+  it('launches a new session in the picked mode with one create', async () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     await mount(client)
     await openDraft(client)
@@ -419,30 +422,35 @@ describe('the composer over the environment client', () => {
 
     await act(() => probe.thread.sendMessage('plan this'))
     await settle(client)
-    const commands = commandsOf(client)
-    expect(inputOf(client, 'createSession')).not.toHaveProperty('firstMessage')
-    expect(commands.indexOf('createSession')).toBeLessThan(commands.indexOf('setSessionMode'))
-    expect(commands.indexOf('setSessionMode')).toBeLessThan(commands.indexOf('sendTurn'))
-    expect(inputOf(client, 'sendTurn')).toMatchObject({ text: 'plan this' })
+    expect(inputOf(client, 'createSession')).toMatchObject({
+      firstMessage: 'plan this',
+      modeId: 'plan',
+    })
+    // The environment runs the first message in the mode; nothing follows it.
+    expect(commandsOf(client)).not.toContain('setSessionMode')
+    expect(commandsOf(client)).not.toContain('sendTurn')
     const sessionId = client.getState().activeSessionId!
     expect(client.getState().sessions[sessionId]?.composer?.modeId).toBe('plan')
   })
 
-  it('does not prompt in the wrong mode when the switch fails', async () => {
+  it('keeps the draft open with what was typed when the environment refuses the launch', async () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     await mount(client)
     await openDraft(client)
     await act(() => probe.composer.setDraftMode('plan'))
-    const setSessionMode = vi
-      .spyOn(client.commands, 'setSessionMode')
-      .mockRejectedValue(new EnvironmentClientError('unavailable', 'Mode switch refused.'))
+    vi.spyOn(client.commands, 'createSession').mockRejectedValue(
+      new EnvironmentClientError(
+        'capability_missing',
+        'This provider cannot start a chat in another mode.',
+      ),
+    )
 
     let failure: unknown
     await act(() => probe.thread.sendMessage('plan this').catch((err) => (failure = err)))
     await settle(client)
-    expect(setSessionMode).toHaveBeenCalled()
-    expect((failure as Error).message).toBe('Mode switch refused.')
-    expect(commandsOf(client)).toContain('deleteSession')
+    expect((failure as Error).message).toBe('This provider cannot start a chat in another mode.')
+    // Nothing to clean up: no session was created, so none is deleted.
+    expect(commandsOf(client)).not.toContain('deleteSession')
     expect(commandsOf(client)).not.toContain('sendTurn')
     expect(probe.session.isSessionDraftOpen).toBe(true)
   })
