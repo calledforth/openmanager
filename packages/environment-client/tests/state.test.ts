@@ -116,7 +116,48 @@ describe('applyEvent', () => {
   it('builds the session list from environment-scoped events', () => {
     const state = seeded()
     expect(selectSessionList(state, WORKSPACE.workspaceId)).toEqual([
-      { ...SESSION, status: 'idle', threadIds: [THREAD.threadId] },
+      {
+        ...SESSION,
+        status: 'idle',
+        threadIds: [THREAD.threadId],
+        updatedAt: '2026-09-10T00:00:00.000Z',
+      },
+    ])
+  })
+
+  it('lists sessions newest first regardless of arrival order', () => {
+    const created = (sessionId: string, timestamp: string) => ({
+      ...event({
+        name: 'session.created' as const,
+        scope: environmentScope,
+        payload: { session: { ...SESSION, sessionId } },
+      }),
+      timestamp,
+    })
+    let state = seeded()
+    // The first listing was newest-first; later arrivals land at the end of
+    // `sessionOrder` and would otherwise render at the bottom of the sidebar.
+    state = applyEvent(state, created('session-old', '2026-09-01T00:00:00.000Z'))
+    state = applyEvent(state, created('session-new', '2026-09-12T00:00:00.000Z'))
+    expect(selectSessionList(state).map((session) => session.sessionId)).toEqual([
+      'session-new',
+      SESSION.sessionId,
+      'session-old',
+    ])
+
+    // Activity moves a session back to the top.
+    state = applyEvent(state, {
+      ...event({
+        name: 'session.updated' as const,
+        scope: sessionScope,
+        payload: { sessionId: 'session-old', status: 'running' },
+      }),
+      timestamp: '2026-09-13T00:00:00.000Z',
+    })
+    expect(selectSessionList(state).map((session) => session.sessionId)).toEqual([
+      'session-old',
+      'session-new',
+      SESSION.sessionId,
     ])
   })
 

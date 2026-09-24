@@ -265,6 +265,70 @@ describe('ClaudeMessageTranslator assistant snapshots', () => {
     expect(chunks[1]?.messageId).toBe('assistant-uuid')
   })
 
+  it('does not repeat text when the CLI snapshots each block on its own', () => {
+    // The exact frame order live-captured from `claude --include-partial-messages`:
+    // one `assistant` frame per content block, single-element content (so the
+    // block is always at index 0), arriving BEFORE that block's stop.
+    const { events, feed } = build()
+    const snapshot = (uuid: string, content: Record<string, unknown>[]) => ({
+      type: 'assistant',
+      message: { id: 'msg_1', role: 'assistant', content },
+      parent_tool_use_id: null,
+      uuid,
+      session_id: 'session-1',
+    })
+    feed(stream({ type: 'message_start', message: { role: 'assistant', content: [] } }))
+    feed(stream({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } }))
+    feed(stream({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '', estimated_tokens: 50 } }))
+    feed(snapshot('uuid-thinking', [{ type: 'thinking', thinking: '', signature: 'AAA' }]))
+    feed(stream({ type: 'content_block_stop', index: 0 }))
+    feed(stream({ type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } }))
+    feed(stream({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Hello ' } }))
+    feed(stream({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'there.' } }))
+    feed(snapshot('uuid-text', [{ type: 'text', text: 'Hello there.' }]))
+    feed(stream({ type: 'content_block_stop', index: 1 }))
+    feed(toolStart(2, 'toolu_1', 'Read'))
+    feed(toolInput(2, '{"file_path":"a.ts"}'))
+    feed(snapshot('uuid-tool', [{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: 'a.ts' } }]))
+    feed(stream({ type: 'content_block_stop', index: 2 }))
+
+    const text = dataOf<{ content: { text: string } }>(events, 'agent_message_chunk')
+    // Positional matching found nothing at index 0 for the text block and
+    // emitted the whole answer a second time; a thinking-first answer is the
+    // common case, so this was "every Claude Code reply renders twice".
+    expect(text.map((chunk) => chunk.content.text)).toEqual(['Hello ', 'there.'])
+    // And the thinking row still closes: its stop arrives after the frame
+    // that used to wipe the index map.
+    const phases = dataOf<{ phase: string }>(events, 'agent_thought_chunk').map((c) => c.phase)
+    expect(phases).toEqual(['start', 'delta', 'stop'])
+  })
+
+  it('still backfills a block that never streamed, once, whatever its index', () => {
+    const { events, feed } = build()
+    feed(stream({ type: 'message_start', message: { role: 'assistant', content: [] } }))
+    feed(stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }))
+    feed(stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Done.' } }))
+    // Two identical paragraphs: the streamed one is claimed exactly once, so
+    // the second is genuinely new and must show.
+    for (const uuid of ['uuid-a', 'uuid-b']) {
+      feed({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] },
+        parent_tool_use_id: null,
+        uuid,
+        session_id: 'session-1',
+      })
+    }
+    const chunks = dataOf<{ messageId?: string; content: { text: string } }>(
+      events,
+      'agent_message_chunk',
+    )
+    expect(chunks.map((chunk) => [chunk.content.text, chunk.messageId])).toEqual([
+      ['Done.', undefined],
+      ['Done.', 'uuid-b'],
+    ])
+  })
+
   it('gives each assistant message its own block index space', () => {
     const { events, feed } = build()
     feed(stream({ type: 'message_start', message: { role: 'assistant', content: [] } }))

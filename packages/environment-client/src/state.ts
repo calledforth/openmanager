@@ -1,4 +1,5 @@
 import { foldProtocolEvent } from '@agentpack/view/protocol'
+import { sessionListCursorOf } from '@openmanager/protocol'
 import type {
   Message,
   ProofEvent,
@@ -99,6 +100,8 @@ function upsertSession(
   state: EnvironmentState,
   session: Session | ProtocolSessionSummary,
   threadIds?: readonly string[],
+  /** When the session names no `updatedAt`, the time it was announced. */
+  at?: string,
 ): EnvironmentState {
   const existing = state.sessions[session.sessionId]
   const listed = session as Partial<ProtocolSessionSummary>
@@ -112,7 +115,7 @@ function upsertSession(
     ...(parentSessionId ? { parentSessionId } : {}),
     status: listed.status ?? existing?.status ?? 'idle',
     providerId: listed.providerId ?? existing?.providerId,
-    updatedAt: listed.updatedAt ?? existing?.updatedAt,
+    updatedAt: listed.updatedAt ?? existing?.updatedAt ?? at,
     ...composerOf(listed.composer, existing?.composer),
     threadIds: threadIds
       ? Array.from(new Set([...(existing?.threadIds ?? []), ...threadIds]))
@@ -294,8 +297,11 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
     case 'workspace.removed':
       return applyWorkspaceRemoved(state, event.payload.workspaceId)
     case 'session.created':
+      // The announced session carries no `updatedAt`; without the event time
+      // it would sort as the epoch and a brand-new session would open at the
+      // bottom of the sidebar.
       return touchWorkspaceActivity(
-        upsertSession(state, event.payload.session),
+        upsertSession(state, event.payload.session, undefined, event.timestamp),
         event.payload.session.sessionId,
         event.timestamp,
       )
@@ -967,11 +973,28 @@ export function selectComposerPreference(
   return state.composerPreferences[workspaceId]?.[providerId] ?? null
 }
 
+/**
+ * Newest first, on the same `(updatedAt, sessionId)` key the environment
+ * lists by. `sessionOrder` is arrival order and cannot be trusted for the
+ * sidebar: a session created after the first listing is appended at the end,
+ * and one that becomes active again never moves. Ties, and sessions with no
+ * timestamp (which sort as the epoch), fall back to the id so the order is
+ * stable across renders.
+ */
 export function selectSessionList(state: EnvironmentState, workspaceId?: string): SessionSummary[] {
   const sessions = state.sessionOrder
     .map((id) => state.sessions[id])
     .filter((session): session is SessionSummary => session !== undefined)
+    .sort(compareSessionsNewestFirst)
   return workspaceId ? sessions.filter((session) => session.workspaceId === workspaceId) : sessions
+}
+
+function compareSessionsNewestFirst(left: SessionSummary, right: SessionSummary): number {
+  const time =
+    Date.parse(sessionListCursorOf(right).updatedAt) -
+    Date.parse(sessionListCursorOf(left).updatedAt)
+  if (time !== 0) return time
+  return right.sessionId < left.sessionId ? -1 : right.sessionId > left.sessionId ? 1 : 0
 }
 
 export function selectActiveSession(state: EnvironmentState): SessionSummary | null {
