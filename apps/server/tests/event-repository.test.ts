@@ -20,7 +20,7 @@ import {
   createStreamingEventBatcher,
 } from '../src/db/event-batcher.js'
 import { createEventRepository, type EventRepository } from '../src/db/event-repository.js'
-import { listSessionHistory } from '../src/db/session-store.js'
+import { REASONING_TEXT_BUDGET_BYTES, listSessionHistory } from '../src/db/session-store.js'
 
 const directories: string[] = []
 const databases: DatabaseSync[] = []
@@ -1331,9 +1331,11 @@ describe('durable turn activity', () => {
     expect(middleText).toMatch(/^\[\d+ characters of thinking not loaded\]\nx+$/)
     expect(middleText.length).toBeGreaterThan(100 * 1024)
     expect(middleText.length).toBeLessThan(big.length)
-    expect(page.reasoning[0]?.content).toEqual([
-      { type: 'text', text: `[${big.length} characters of thinking not loaded]` },
-    ])
+    // The oldest block gets whatever the middle one left: the note, perhaps a short tail.
+    const oldest = page.reasoning[0]?.content[0]
+    const oldestText = oldest?.type === 'text' ? oldest.text : ''
+    expect(oldestText).toMatch(/^\[\d+ characters of thinking not loaded\](\nx+)?$/)
+    expect(oldestText.length).toBeLessThan(middleText.length)
     expect(page.reasoning.every((block) => block.tokens === 50_000)).toBe(true)
     expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(512 * 1024)
 
@@ -1375,6 +1377,31 @@ describe('durable turn activity', () => {
     expect(onlyText).toMatch(/^\[\d+ characters of thinking not loaded\]\ny+$/)
     expect(onlyText.length).toBeGreaterThan(300 * 1024)
     expect(Buffer.byteLength(JSON.stringify(otherPage))).toBeLessThan(512 * 1024)
+
+    // Text that doubles when encoded (one newline per character) is budgeted
+    // as the frame carries it, so the page still fits.
+    const dense = 'z\n'.repeat(400 * 1024)
+    repository.appendEvents(other, [
+      {
+        ...thought('other-r2', 'thought-dense'),
+        scope: other,
+        payload: {
+          ...thought('other-r2', 'thought-dense').payload,
+          turnId: 'turn-2',
+          content: { type: 'text', text: dense },
+        },
+      },
+    ])
+    const densePage = listSessionHistory(database, {
+      sessionId: 'session-2',
+      threadId: 'thread-2',
+    })!
+    const denseBlock = densePage.reasoning.at(-1)?.content[0]
+    const denseText = denseBlock?.type === 'text' ? denseBlock.text : ''
+    expect(denseText).toMatch(/characters of thinking not loaded\]\n\n?(z\n)+$/)
+    expect(Buffer.byteLength(JSON.stringify(densePage.reasoning))).toBeLessThan(
+      REASONING_TEXT_BUDGET_BYTES + 1024,
+    )
   })
 
   it('backfills the activity of turns that happened before the table existed', async () => {

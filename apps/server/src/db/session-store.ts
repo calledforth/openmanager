@@ -377,20 +377,23 @@ export const REASONING_TEXT_BUDGET_BYTES = 384 * 1024
  * row still reads as a finished thought of a known size.
  */
 function capReasoningText(reasoning: ReasoningBlock[]): void {
+  const encodedBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), 'utf8')
   let remaining = REASONING_TEXT_BUDGET_BYTES
   for (let index = reasoning.length - 1; index >= 0; index -= 1) {
     const block = reasoning[index]!
-    const bytes = Buffer.byteLength(JSON.stringify(block.content), 'utf8')
+    const bytes = encodedBytes(block.content)
     if (bytes <= remaining) {
       remaining -= bytes
       continue
     }
     const text = block.content.map((item) => (item.type === 'text' ? item.text : '')).join('')
+    // The budget is spent on the encoded frame, so the tail is measured as
+    // JSON: a newline or quote costs two bytes there, a control character six.
     let kept = text.slice(Math.max(0, text.length - remaining))
-    while (kept.length > 0 && Buffer.byteLength(kept, 'utf8') > remaining) {
+    while (kept.length > 0 && encodedBytes(kept) > remaining) {
       kept = kept.slice(Math.ceil(kept.length / 8))
     }
-    remaining -= Buffer.byteLength(kept, 'utf8')
+    remaining -= encodedBytes(kept)
     const note = `[${text.length - kept.length} characters of thinking not loaded]`
     reasoning[index] = {
       ...block,
