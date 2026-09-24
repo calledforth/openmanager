@@ -14,6 +14,9 @@ import {
   TurnSchema,
   TurnStartSchema,
   MessageSchema,
+  ReasoningBlockSchema,
+  ToolCallStateSchema,
+  ActivityRefSchema,
   SubscriptionScopeSchema,
   InteractionResponseSchema,
   InteractionSchema,
@@ -179,6 +182,14 @@ export const ProofResponseSchemas = {
       turns: z.array(TurnSchema),
       interactions: z.array(z.object({ threadId: EntityIdSchema, interaction: InteractionSchema })),
       plans: z.array(PlanHistoryEntrySchema).optional(),
+      /**
+       * The reasoning blocks and tool calls of the turns on this page, and the
+       * order they and the page's messages happened in. Absent from an older
+       * environment, which keeps messages only.
+       */
+      reasoning: z.array(ReasoningBlockSchema).optional(),
+      tools: z.array(ToolCallStateSchema).optional(),
+      order: z.array(ActivityRefSchema).optional(),
       nextCursor: HistoryCursorSchema.nullable(),
     }),
   ),

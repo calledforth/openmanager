@@ -5,14 +5,19 @@ import {
   InteractionSchema,
   InteractionResponseSchema,
   PlanHistoryEntrySchema,
+  ReasoningBlockSchema,
   SessionListCursorSchema,
   SessionSummarySchema,
+  ToolCallStateSchema,
   TurnSchema,
   resolvePageLimit,
+  type ActivityRef,
   type HistoryCursor,
   type Interaction,
   type Message,
   type PlanHistoryEntry,
+  type ReasoningBlock,
+  type ToolCallState,
   type SessionListCursor,
   type SessionStatus,
   type SessionSummary,
@@ -29,6 +34,7 @@ import {
   SESSION_LIST_FOR_WORKSPACE_SQL,
   THREAD_IN_SESSION_SQL,
   THREADS_FOR_SESSION_SQL,
+  TURN_ACTIVITY_FOR_TURN_SQL,
   TURN_FOR_COMMAND_ID_SQL,
   TURNS_FOR_THREAD_SQL,
   USER_MESSAGE_FOR_TURN_SQL,
@@ -64,6 +70,11 @@ export interface SessionHistoryPage {
   /** `turnId` is server-side detail for snapshots; the history response schema drops it. */
   interactions: Array<{ threadId: string; turnId: string; interaction: Interaction }>
   plans: PlanHistoryEntry[]
+  /** Reasoning blocks and tool calls of the turns whose messages are on the page. */
+  reasoning: ReasoningBlock[]
+  tools: ToolCallState[]
+  /** The page's messages, reasoning and tools in the order they happened. */
+  order: ActivityRef[]
   nextCursor: HistoryCursor | null
 }
 
@@ -80,7 +91,20 @@ type SessionRow = {
 }
 
 type ThreadRow = { thread_id: string; session_id: string }
-type TurnRow = { turn_id: string; thread_id: string; state: string }
+type TurnRow = {
+  turn_id: string
+  thread_id: string
+  state: string
+  started_at: number
+  finished_at: number | null
+}
+type TurnActivityRow = {
+  activity_id: string
+  turn_id: string
+  kind: 'reasoning' | 'tool'
+  ordinal: number
+  state_json: string
+}
 type MessageRow = {
   message_id: string
   thread_id: string
@@ -239,8 +263,36 @@ export function listSessionHistory(
         turnId: row.turn_id,
         threadId: row.thread_id,
         state: row.state,
+        startedAt: new Date(row.started_at).toISOString(),
+        ...(row.finished_at === null ? {} : { finishedAt: new Date(row.finished_at).toISOString() }),
       }),
   )
+  // The reasoning and tool calls of every turn with a message on this page,
+  // then one order across them and the page's messages. Both tables draw
+  // their ordinal from the same thread-wide counter, so the sort is exact.
+  const pageTurnIds = [...new Set(pageRows.map((row) => row.turn_id))]
+  const activityRows = pageTurnIds.flatMap(
+    (turnId) => database.prepare(TURN_ACTIVITY_FOR_TURN_SQL).all(turnId) as TurnActivityRow[],
+  )
+  const reasoning: ReasoningBlock[] = []
+  const tools: ToolCallState[] = []
+  for (const row of activityRows) {
+    const state: unknown = JSON.parse(row.state_json)
+    if (row.kind === 'reasoning') reasoning.push(ReasoningBlockSchema.parse(state))
+    else tools.push(ToolCallStateSchema.parse(state))
+  }
+  const order: ActivityRef[] = [
+    ...pageRows.map((row) => ({
+      ordinal: row.ordinal,
+      ref: { kind: 'message' as const, id: row.message_id, turnId: row.turn_id },
+    })),
+    ...activityRows.map((row) => ({
+      ordinal: row.ordinal,
+      ref: { kind: row.kind, id: row.activity_id, turnId: row.turn_id },
+    })),
+  ]
+    .sort((left, right) => left.ordinal - right.ordinal)
+    .map((item) => item.ref)
   const interactions = turns.flatMap((turn) =>
     (database.prepare(INTERACTIONS_FOR_TURN_SQL).all(turn.turnId) as InteractionRow[]).map(
       (row) => ({
@@ -283,6 +335,9 @@ export function listSessionHistory(
     turns,
     interactions,
     plans,
+    reasoning,
+    tools,
+    order,
     nextCursor: rows.length > limit && oldest !== undefined ? { ordinal: oldest.ordinal } : null,
   }
 }

@@ -20,6 +20,7 @@ import {
   createStreamingEventBatcher,
 } from '../src/db/event-batcher.js'
 import { createEventRepository, type EventRepository } from '../src/db/event-repository.js'
+import { listSessionHistory } from '../src/db/session-store.js'
 
 const directories: string[] = []
 const databases: DatabaseSync[] = []
@@ -1152,5 +1153,128 @@ describe('durable server event boundary', () => {
         .get(created.payload.session.sessionId),
     ).toEqual({ count: 1 })
     await vi.waitFor(() => expect(runtime.ensureSession).toHaveBeenCalledTimes(1))
+  })
+})
+
+describe('durable turn activity', () => {
+  it('keeps reasoning, tool calls and their order with the messages of a turn', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const at = (second: number) => `2026-09-10T10:00:0${second}.000Z`
+    const reasoning = (
+      eventId: string,
+      messageId: string,
+      text: string,
+      phase: 'delta' | 'stop' = 'delta',
+      tokens?: number,
+    ) =>
+      ProofEventSchemas['message.reasoning'].parse({
+        type: 'event',
+        name: 'message.reasoning',
+        eventId,
+        timestamp: at(1),
+        scope,
+        payload: {
+          messageId,
+          turnId: 'turn-1',
+          phase,
+          content: { type: 'text', text },
+          ...(tokens === undefined ? {} : { tokens }),
+        },
+      })
+    const tool = (eventId: string, patch: Record<string, unknown>) =>
+      ProofEventSchemas['tool.updated'].parse({
+        type: 'event',
+        name: 'tool.updated',
+        eventId,
+        timestamp: at(1),
+        scope,
+        payload: { toolCallId: 'tool-1', turnId: 'turn-1', ...patch },
+      })
+    const text = (eventId: string, messageId: string, value: string) =>
+      ProofEventSchemas['message.delta'].parse({
+        ...delta(value, eventId),
+        payload: { ...delta(value, eventId).payload, messageId },
+      })
+
+    repository.appendEvents(scope, [
+      started(),
+      reasoning('r1', 'thought-1', 'Plan the', 'delta', 3),
+      reasoning('r2', 'thought-1', ' change', 'delta', 7),
+      text('t1', 'text-1', 'Looking'),
+      text('t2', 'text-1', ' closer'),
+      tool('c1', { title: 'Read file', kind: 'read', status: 'in_progress' }),
+      tool('c2', { status: 'completed' }),
+      reasoning('r3', 'thought-2', 'Check', 'delta'),
+      reasoning('r4', 'thought-2', '', 'stop'),
+      text('t3', 'text-2', 'Found it'),
+      completed(),
+    ])
+
+    const page = listSessionHistory(database, { sessionId: 'session-1', threadId: 'thread-1' })!
+    expect(page.order.map((ref) => `${ref.kind}:${ref.id}`)).toEqual([
+      'message:message-user',
+      'reasoning:thought-1',
+      'message:text-1',
+      'tool:tool-1',
+      'reasoning:thought-2',
+      'message:text-2',
+    ])
+    // Text within a run merges; the token estimate keeps its highest reading.
+    expect(page.reasoning).toEqual([
+      {
+        messageId: 'thought-1',
+        turnId: 'turn-1',
+        phase: 'delta',
+        content: [{ type: 'text', text: 'Plan the change' }],
+        tokens: 7,
+      },
+      {
+        messageId: 'thought-2',
+        turnId: 'turn-1',
+        phase: 'stop',
+        content: [{ type: 'text', text: 'Check' }],
+      },
+    ])
+    // A later update revises status and forgets nothing the first one said.
+    expect(page.tools).toEqual([
+      { toolCallId: 'tool-1', turnId: 'turn-1', title: 'Read file', kind: 'read', status: 'completed' },
+    ])
+    expect(page.messages.map((message) => message.messageId)).toEqual([
+      'message-user',
+      'text-1',
+      'text-2',
+    ])
+    expect(page.turns).toEqual([
+      {
+        turnId: 'turn-1',
+        threadId: 'thread-1',
+        state: 'completed',
+        startedAt: at(0),
+        finishedAt: at(2),
+      },
+    ])
+
+    // An older page names its own turns' activity and nothing from other pages.
+    const olderOnly = listSessionHistory(database, {
+      sessionId: 'session-1',
+      threadId: 'thread-1',
+      limit: 1,
+    })!
+    expect(olderOnly.messages.map((message) => message.messageId)).toEqual(['text-2'])
+    expect(olderOnly.order.map((ref) => ref.id)).toEqual([
+      'thought-1',
+      'tool-1',
+      'thought-2',
+      'text-2',
+    ])
+
+    // Activity of a turn the thread no longer has goes with it.
+    const foreign = createOtherThread(database)
+    expect(() =>
+      repository.appendEvents(foreign, [
+        { ...reasoning('r9', 'thought-9', 'x'), scope: foreign },
+      ]),
+    ).toThrow(/missing turn/)
   })
 })

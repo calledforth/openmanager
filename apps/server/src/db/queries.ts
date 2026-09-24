@@ -64,6 +64,17 @@ export const TURNS_FOR_THREAD_SQL = `
   WHERE thread_id = ?
   ORDER BY started_at, turn_id`
 
+/**
+ * The reasoning blocks and tool calls of one turn in the order they happened.
+ * `ordinal` shares the thread-wide counter with `messages.ordinal`, so callers
+ * interleave the two by sorting on it.
+ */
+export const TURN_ACTIVITY_FOR_TURN_SQL = `
+  SELECT activity_id, turn_id, kind, ordinal, state_json
+  FROM turn_activity
+  WHERE turn_id = ?
+  ORDER BY ordinal`
+
 /** Pending interactions of one turn; settled rows stay out of history. Sorted by callers. */
 export const INTERACTIONS_FOR_TURN_SQL = `
   SELECT interaction_id, turn_id, kind, state, request_json, response_json, expires_at,

@@ -486,4 +486,35 @@ export const MIGRATIONS: readonly Migration[] = [
       }
     },
   },
+  {
+    version: 11,
+    name: 'turn_activity',
+    up(database) {
+      // A turn's reasoning blocks and tool calls, one row each, keyed by the
+      // id the events carry (a reasoning block's message id, a tool call id).
+      // Until now they lived only in the event log, so a history page or a
+      // snapshot came back as text alone. `ordinal` is drawn from the same
+      // thread-wide counter as `messages.ordinal`, so one sort across both
+      // tables gives the order text, thoughts and tools happened in.
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS turn_activity (
+          activity_id TEXT PRIMARY KEY NOT NULL,
+          workspace_id TEXT NOT NULL,
+          thread_id TEXT NOT NULL,
+          turn_id TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK (kind IN ('reasoning', 'tool')),
+          ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+          state_json TEXT NOT NULL CHECK (json_valid(state_json)),
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY (turn_id, thread_id, workspace_id)
+            REFERENCES turns(turn_id, thread_id, workspace_id) ON DELETE CASCADE,
+          UNIQUE (thread_id, ordinal)
+        ) STRICT;
+
+        CREATE INDEX IF NOT EXISTS turn_activity_turn_ordinal_idx
+          ON turn_activity(turn_id, ordinal);
+      `)
+    },
+  },
 ]

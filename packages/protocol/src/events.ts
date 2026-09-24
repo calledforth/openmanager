@@ -13,6 +13,7 @@ import {
   ThreadSchema,
   TurnStartSchema,
   ContentBlockSchema,
+  ToolCallStateSchema,
   InteractionSchema,
   InteractionResponseSchema,
 } from './domains.js'
@@ -145,30 +146,7 @@ export const ProofEventSchemas = {
       tokens: z.number().int().nonnegative().optional(),
     }),
   ),
-  'tool.updated': event(
-    'tool.updated',
-    ThreadScopeSchema,
-    z.object({
-      toolCallId: EntityIdSchema,
-      turnId: EntityIdSchema,
-      title: z.string().optional(),
-      kind: z
-        .enum([
-          'read',
-          'edit',
-          'delete',
-          'move',
-          'search',
-          'execute',
-          'think',
-          'fetch',
-          'switch_mode',
-          'other',
-        ])
-        .optional(),
-      status: z.enum(['pending', 'in_progress', 'completed', 'failed']).optional(),
-    }),
-  ),
+  'tool.updated': event('tool.updated', ThreadScopeSchema, ToolCallStateSchema),
   'interaction.requested': event(
     'interaction.requested',
     ThreadScopeSchema,

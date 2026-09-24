@@ -7,6 +7,9 @@ type SessionSummary = Extract<ProofEvent, { name: 'session.created' }>['payload'
 type TurnStarted = Extract<ProofEvent, { name: 'turn.started' }>
 type MessageDelta = Extract<ProofEvent, { name: 'message.delta' }>
 type MessageContent = MessageDelta['payload']['content']
+type MessageReasoning = Extract<ProofEvent, { name: 'message.reasoning' }>
+type ToolUpdated = Extract<ProofEvent, { name: 'tool.updated' }>
+type ActivityRow = { turn_id: string; thread_id: string; kind: string; state_json: string }
 
 export interface EventProjectionOptions {
   /** Host-owned provider identity, absent from the public session summary. */
@@ -95,8 +98,25 @@ export function createEventProjector(
     selectMessage: database.prepare(
       'SELECT turn_id, thread_id, role, is_final FROM messages WHERE message_id = ?',
     ),
+    // One counter across messages and turn activity, so sorting both on
+    // `ordinal` gives the order text, thoughts and tools happened in.
     nextMessageOrdinal: database.prepare(
-      'SELECT COALESCE(MAX(ordinal), -1) + 1 AS ordinal FROM messages WHERE thread_id = ?',
+      `SELECT MAX(
+         COALESCE((SELECT MAX(ordinal) FROM messages WHERE thread_id = ?), -1),
+         COALESCE((SELECT MAX(ordinal) FROM turn_activity WHERE thread_id = ?), -1)
+       ) + 1 AS ordinal`,
+    ),
+    selectActivity: database.prepare(
+      'SELECT turn_id, thread_id, kind, state_json FROM turn_activity WHERE activity_id = ?',
+    ),
+    insertActivity: database.prepare(
+      `INSERT INTO turn_activity (
+         activity_id, workspace_id, thread_id, turn_id, kind, ordinal, state_json,
+         created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    updateActivity: database.prepare(
+      'UPDATE turn_activity SET state_json = ?, updated_at = ? WHERE activity_id = ?',
     ),
     insertMessage: database.prepare(
       `INSERT INTO messages (
@@ -128,7 +148,9 @@ export function createEventProjector(
     isFinal: boolean,
     at: number,
   ): void {
-    const { ordinal } = s.nextMessageOrdinal.get(message.threadId) as { ordinal: number }
+    const { ordinal } = s.nextMessageOrdinal.get(message.threadId, message.threadId) as {
+      ordinal: number
+    }
     s.insertMessage.run(
       message.messageId,
       workspaceId,
@@ -211,6 +233,90 @@ export function createEventProjector(
     }
     appendContent(messageId, content, at)
     s.touchMessage.run(at, messageId)
+  }
+
+  /**
+   * Upsert one reasoning block or tool call of a turn. The first event for an
+   * id takes the next thread-wide ordinal, which fixes the entry's place among
+   * the turn's messages; later events only revise its state.
+   */
+  function upsertActivity(
+    event: MessageReasoning | ToolUpdated,
+    activityId: string,
+    kind: 'reasoning' | 'tool',
+    at: number,
+    next: (existing: unknown | undefined) => unknown,
+  ): void {
+    const { turnId } = event.payload
+    const turn = s.selectTurnWorkspace.get(turnId, event.scope.threadId) as
+      { workspace_id: string } | undefined
+    if (!turn) throw new Error(`Cannot project ${kind} for missing turn ${turnId}`)
+    const existing = s.selectActivity.get(activityId) as ActivityRow | undefined
+    if (existing) {
+      if (
+        existing.turn_id !== turnId ||
+        existing.thread_id !== event.scope.threadId ||
+        existing.kind !== kind
+      ) {
+        throw new Error(`Cannot update mismatched ${kind} ${activityId}`)
+      }
+      s.updateActivity.run(JSON.stringify(next(JSON.parse(existing.state_json))), at, activityId)
+      return
+    }
+    const { ordinal } = s.nextMessageOrdinal.get(event.scope.threadId, event.scope.threadId) as {
+      ordinal: number
+    }
+    s.insertActivity.run(
+      activityId,
+      turn.workspace_id,
+      event.scope.threadId,
+      turnId,
+      kind,
+      ordinal,
+      JSON.stringify(next(undefined)),
+      at,
+      at,
+    )
+  }
+
+  /** Mirrors the client fold: adjacent text merges, tokens only ever grow. */
+  function projectReasoning(event: MessageReasoning, at: number): void {
+    const { messageId, turnId, phase, content, tokens } = event.payload
+    upsertActivity(event, messageId, 'reasoning', at, (existing) => {
+      const previous = existing as
+        | { content: MessageContent[]; tokens?: number; phase: string }
+        | undefined
+      const blocks = previous?.content ?? []
+      const last = blocks.at(-1)
+      const merged =
+        content === undefined
+          ? blocks
+          : last?.type === 'text' && content.type === 'text'
+            ? [...blocks.slice(0, -1), { type: 'text', text: last.text + content.text }]
+            : [...blocks, content]
+      const total =
+        tokens === undefined ? previous?.tokens : Math.max(previous?.tokens ?? 0, tokens)
+      return {
+        messageId,
+        turnId,
+        phase,
+        content: merged,
+        ...(total === undefined ? {} : { tokens: total }),
+      }
+    })
+  }
+
+  /** Later updates fill in or revise title, kind and status; nothing is forgotten. */
+  function projectTool(event: ToolUpdated, at: number): void {
+    const { toolCallId, turnId, title, kind, status } = event.payload
+    upsertActivity(event, toolCallId, 'tool', at, (existing) => ({
+      ...((existing as Record<string, unknown> | undefined) ?? {}),
+      toolCallId,
+      turnId,
+      ...(title === undefined ? {} : { title }),
+      ...(kind === undefined ? {} : { kind }),
+      ...(status === undefined ? {} : { status }),
+    }))
   }
 
   return function projectEvent(event: DurableProofEvent): void {
@@ -379,7 +485,10 @@ export function createEventProjector(
         return
       }
       case 'message.reasoning':
+        projectReasoning(event, at)
+        return
       case 'tool.updated':
+        projectTool(event, at)
         return
     }
   }

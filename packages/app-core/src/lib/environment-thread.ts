@@ -11,6 +11,7 @@ import {
   type ToolState,
 } from '@openmanager/environment-client'
 import type { LocalStreamingMessage, MessagePart } from './streaming-messages-store'
+import type { TurnRuntimeMetadata } from '../components/parts/turn-work-group'
 import type {
   MessageContentSnapshot,
   MessageContentStore,
@@ -221,6 +222,7 @@ function projectTurn(
       .map((message) => contentText(message.content))
       .filter((text) => text.length > 0)
       .join('\n\n')
+    const runtime = turnRuntime(turn)
     entries.push({
       message: {
         externalId: assistantMessages[0]?.messageId ?? `turn:${turn.turnId}:assistant`,
@@ -228,12 +230,23 @@ function projectTurn(
         isFinal: settled,
         sequenceNum,
       },
-      content: { content, parts },
+      content: { content, parts, ...(runtime ? { runtime } : {}) },
       streaming: { content, parts, hasCompleteHistory: true },
     })
   }
 
   return { deps, entries, userSources }
+}
+
+/**
+ * When the turn ran, for the "Worked for 45s" label on its settled row. An
+ * environment that reports no timing gets the plain label.
+ */
+function turnRuntime(turn: Turn): TurnRuntimeMetadata | undefined {
+  const startedAt = turn.startedAt ? Date.parse(turn.startedAt) : Number.NaN
+  const completedAt = turn.finishedAt ? Date.parse(turn.finishedAt) : Number.NaN
+  if (!Number.isFinite(startedAt) || !Number.isFinite(completedAt)) return undefined
+  return { startedAt, completedAt }
 }
 
 /** Project `thread`, reusing rows from `previous` whose inputs are unchanged. */
