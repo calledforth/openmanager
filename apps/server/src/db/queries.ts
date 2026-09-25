@@ -12,7 +12,7 @@
  */
 export const SESSION_LIST_FOR_ENVIRONMENT_SQL = `
   SELECT session_id, workspace_id, parent_session_id, provider_id, title, title_source, status,
-         composer_json, created_at, updated_at
+         composer_json, settled_at, created_at, updated_at
   FROM sessions
   WHERE (updated_at, session_id) < (?, ?)
   ORDER BY updated_at DESC, session_id DESC
@@ -21,7 +21,7 @@ export const SESSION_LIST_FOR_ENVIRONMENT_SQL = `
 /** Newest sessions for one workspace, keyset-paginated by `(updated_at, session_id)`. */
 export const SESSION_LIST_FOR_WORKSPACE_SQL = `
   SELECT session_id, workspace_id, parent_session_id, provider_id, title, title_source, status,
-         composer_json, created_at, updated_at
+         composer_json, settled_at, created_at, updated_at
   FROM sessions
   WHERE workspace_id = ? AND (updated_at, session_id) < (?, ?)
   ORDER BY updated_at DESC, session_id DESC

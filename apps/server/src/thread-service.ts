@@ -191,6 +191,8 @@ type ThreadRecord = {
   interactions: Map<string, InteractionEntry>
   status: SessionStatus
   updatedAt: number
+  /** In-memory mode only; with SQLite the row is the single source. */
+  settledAt?: number
   activeTurn?: ActiveTurn
   /** A session-scoped cancel must drain before another prompt can start. */
   cancellation?: Promise<void>
@@ -793,6 +795,9 @@ export function createThreadService(
   }
 
   const emitStatus = (record: ThreadRecord, status: SessionStatus) => {
+    // Mirrors the SQLite projection: running or asking brings a settled session back.
+    const unsettle = record.settledAt !== undefined && (status === 'running' || status === 'waiting')
+    if (unsettle) record.settledAt = undefined
     appendRuntimeEvent(
       ProofEventSchemas['session.updated'].parse({
         type: 'event',
@@ -800,7 +805,11 @@ export function createThreadService(
         eventId: randomUUID(),
         timestamp: new Date().toISOString(),
         scope: { type: 'environment', environmentId },
-        payload: { sessionId: record.session.sessionId, status },
+        payload: {
+          sessionId: record.session.sessionId,
+          status,
+          ...(unsettle ? { settledAt: null } : {}),
+        },
       }),
     )
   }
@@ -904,6 +913,7 @@ export function createThreadService(
     status: record.status,
     providerId: record.providerId,
     updatedAt: new Date(record.updatedAt).toISOString(),
+    settledAt: record.settledAt === undefined ? null : new Date(record.settledAt).toISOString(),
   })
 
   const sendTurn = (command: CommandEnvelope, context?: CommandContext, modeId?: string) => {
@@ -1307,6 +1317,48 @@ export function createThreadService(
           type: 'response',
           requestId: command.requestId,
           payload: null,
+        })
+      }
+
+      if (command.name === 'session.settle') {
+        const parsed = ProofCommandSchemas['session.settle'].safeParse(command)
+        if (!parsed.success)
+          return errorResult(command.requestId, 'validation', 'Invalid session request.')
+        options.flush?.()
+        const { sessionId, settled } = parsed.data.payload
+        const record = sessions.get(sessionId)
+        const session =
+          record?.session ??
+          (options.database ? getSessionSummary(options.database, sessionId) : undefined)
+        if (!session) return errorResult(command.requestId, 'not_found', 'Session not found.')
+        const timestamp = new Date().toISOString()
+        const settledAt = settled ? timestamp : null
+        const event = ProofEventSchemas['session.updated'].parse({
+          type: 'event',
+          name: 'session.updated',
+          eventId: randomUUID(),
+          timestamp,
+          scope: { type: 'environment', environmentId },
+          payload: { sessionId, settledAt },
+        })
+        try {
+          appendEvent(event)
+        } catch (error) {
+          options.onPersistenceError?.(error, event.name)
+          return errorResult(
+            command.requestId,
+            'unavailable',
+            'The session change could not be saved. Try again.',
+          )
+        }
+        for (const item of threads.values()) {
+          if (item.session.sessionId !== sessionId) continue
+          item.settledAt = settled ? Date.parse(timestamp) : undefined
+        }
+        return ProofResponseSchemas['session.settle'].parse({
+          type: 'response',
+          requestId: command.requestId,
+          payload: { settledAt },
         })
       }
 

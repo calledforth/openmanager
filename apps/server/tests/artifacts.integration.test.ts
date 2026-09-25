@@ -147,7 +147,7 @@ describe('artifact metadata', () => {
     }
     // The raw file keeps the version this server now expects.
     const raw = new DatabaseSync(join(directory, DATABASE_FILENAME))
-    expect(raw.prepare('PRAGMA user_version').get()).toEqual({ user_version: 11 })
+    expect(raw.prepare('PRAGMA user_version').get()).toEqual({ user_version: 12 })
     raw.close()
   })
 

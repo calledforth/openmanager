@@ -2081,6 +2081,39 @@ describe('durable session lifecycle', () => {
     }
   })
 
+  it('settles a session, lists it settled, and brings it back', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      const settled = ProofResponseSchemas['session.settle'].parse(
+        h.dispatch(h.service, 'session.settle', { sessionId, settled: true }),
+      ).payload.settledAt
+      expect(settled).toEqual(expect.any(String))
+      h.events.flush()
+      const listed = () =>
+        ProofResponseSchemas['session.list'].parse(h.dispatch(h.service, 'session.list', {}))
+          .payload.sessions[0]
+      expect(listed()).toMatchObject({ sessionId, settledAt: settled })
+      expect(h.published.at(-1)).toMatchObject({
+        name: 'session.updated',
+        payload: { sessionId, settledAt: settled },
+      })
+      expect(
+        ProofResponseSchemas['session.settle'].parse(
+          h.dispatch(h.service, 'session.settle', { sessionId, settled: false }),
+        ).payload,
+      ).toEqual({ settledAt: null })
+      h.events.flush()
+      expect(listed()).toMatchObject({ sessionId, settledAt: null })
+      expect(
+        h.dispatch(h.service, 'session.settle', { sessionId: 'missing', settled: true }),
+      ).toMatchObject({ type: 'error', error: { code: 'not_found' } })
+    } finally {
+      h.close()
+    }
+  })
+
   it('keeps a user title when a provider renames the session afterwards', async () => {
     const h = setup()
     try {

@@ -111,7 +111,7 @@ function renderConnected(path: string, providers: ProviderCatalogEntry[]) {
 describe('provider health on web', () => {
   it('describes each provider the way desktop does and retries a broken one', async () => {
     const user = userEvent.setup()
-    const { client } = renderConnected('/settings', [
+    const { client } = renderConnected('/settings?tab=providers', [
       provider('opencode', 'OpenCode', {}),
       provider('cursor', 'Cursor', { summary: 'error', auth: 'unauthenticated' }),
       provider('claude', 'Claude Code', { summary: 'error', install: 'missing' }),
@@ -135,7 +135,7 @@ describe('provider health on web', () => {
 
   it('stops calling a provider ready once its last check is too old to trust', async () => {
     const almostStale = new Date(Date.now() - PROVIDER_HEALTH_STALE_MS + 400).toISOString()
-    renderConnected('/settings', [
+    renderConnected('/settings?tab=providers', [
       provider('opencode', 'OpenCode', {
         lastProbe: { outcome: 'ok', at: almostStale, durationMs: 12 },
       }),

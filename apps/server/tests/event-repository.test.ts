@@ -249,6 +249,53 @@ describe('event repository transactions', () => {
     ).toEqual({ n: 4 })
   })
 
+  it('settles without reordering and unsettles on the next turn through the status broadcast', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const environment = { type: 'environment', environmentId: 'environment-1' } as const
+    const settle = (eventId: string, settledAt: string | null) =>
+      ProofEventSchemas['session.updated'].parse({
+        type: 'event',
+        name: 'session.updated',
+        eventId,
+        timestamp: '2026-09-10T09:00:00.000Z',
+        scope: environment,
+        payload: { sessionId: 'session-1', settledAt },
+      })
+    const row = () =>
+      database
+        .prepare('SELECT settled_at, updated_at FROM sessions WHERE session_id = ?')
+        .get('session-1')
+    const broadcasts = (records: ReturnType<EventRepository['appendEvents']>) =>
+      records
+        .filter((record) => record.event.name === 'session.updated')
+        .map((record) => ProofEventSchemas['session.updated'].parse(record.event).payload)
+
+    repository.appendEvents(environment, [settle('settle-1', '2026-09-10T09:00:00.000Z')])
+    expect(row()).toEqual({ settled_at: Date.parse('2026-09-10T09:00:00.000Z'), updated_at: 1 })
+
+    expect(broadcasts(repository.appendEvents(scope, [started()]))).toEqual([
+      { sessionId: 'session-1', status: 'running', settledAt: null },
+    ])
+    expect(row()).toMatchObject({ settled_at: null })
+    // Only the transition carries it; later status changes leave settling alone.
+    expect(broadcasts(repository.appendEvents(scope, [completed()]))).toEqual([
+      { sessionId: 'session-1', status: 'idle' },
+    ])
+
+    repository.appendEvents(environment, [settle('settle-2', '2026-09-10T11:00:00.000Z')])
+    repository.appendEvents(environment, [settle('unsettle-2', null)])
+    expect(row()).toMatchObject({ settled_at: null })
+    expect(() =>
+      repository.appendEvents(environment, [
+        ProofEventSchemas['session.updated'].parse({
+          ...settle('settle-missing', '2026-09-10T11:00:00.000Z'),
+          payload: { sessionId: 'session-missing', settledAt: '2026-09-10T11:00:00.000Z' },
+        }),
+      ]),
+    ).toThrow(/missing session/)
+  })
+
   it('expires durably, stays waiting for another request, and rejects a late resolution', async () => {
     const { database } = await createDatabase()
     const repository = createEventRepository(database)

@@ -57,7 +57,7 @@ type SearchableMenuProps = {
   maxHeight?: number
   align?: 'start' | 'center' | 'end'
   /** `island` matches the model-picker shell: soft outer shadow, bordered
-   * search field, roomier rows, and a left accent for the selected item. */
+   * search field, roomier rows, and no check mark (the fill marks the pick). */
   variant?: 'default' | 'island'
   'aria-label'?: string
 }
@@ -177,15 +177,8 @@ export function SearchableMenu({
         aria-label={ariaLabel}
         onKeyDown={onMenuKeyDown}
         className={cn(
-          'fixed z-[200] flex flex-col overflow-hidden bg-[var(--basis-canvas-bg)]',
-          island
-            ? cn(
-                'rounded-[calc(var(--basis-chat-shell-radius)+4px)]',
-                'shadow-[0_16px_40px_rgba(0,0,0,0.22)]',
-              )
-            : cn(
-                'rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)] shadow-xl',
-              ),
+          // The composer's floating surface (fluid.css §3b): no outline.
+          'fixed z-[200] flex flex-col overflow-hidden rounded-[10px] bg-float shadow-float',
         )}
         style={{
           left: menuCoords.left,
@@ -196,14 +189,7 @@ export function SearchableMenu({
         }}
       >
         {searchable && (
-          <div
-            className={cn(
-              'shrink-0',
-              island
-                ? 'px-2.5 pb-1 pt-2'
-                : 'border-b border-[var(--basis-border-muted)] px-2.5 py-1.5',
-            )}
-          >
+          <div className={cn('shrink-0', island ? 'px-2.5 pb-1 pt-2' : 'px-2.5 pb-0.5 pt-2')}>
             <div
               className={cn(
                 'flex items-center text-[var(--basis-text-faint)]',
@@ -269,25 +255,15 @@ export function SearchableMenu({
                       'text-11-regular',
                       island ? 'gap-2 rounded-md px-2.5 py-1.5' : 'gap-2 px-2.5 py-1',
                       option.disabled && 'cursor-default opacity-40',
+                      // Fills only, which read on the floating surface in
+                      // every scheme: active for the pick, hover for the cursor.
                       selected
-                        ? island
-                          ? 'bg-[var(--basis-surface)] text-[var(--basis-text-strong)]'
-                          : 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]'
+                        ? 'bg-active text-[var(--basis-text-strong)]'
                         : active
-                          ? island
-                            ? 'bg-[var(--basis-surface)]/70 text-[var(--basis-text)]'
-                            : 'bg-[var(--basis-surface)] text-[var(--basis-text)]'
-                          : island
-                            ? 'text-[var(--basis-text-muted)] hover:bg-[var(--basis-surface)]/70 hover:text-[var(--basis-text)]'
-                            : 'text-[var(--basis-text-muted)] hover:bg-[var(--basis-surface)] hover:text-[var(--basis-text)]',
+                          ? 'bg-hover text-[var(--basis-text)]'
+                          : 'text-[var(--basis-text-muted)] hover:bg-hover hover:text-[var(--basis-text)]',
                     )}
                   >
-                    {island && selected && (
-                      <span
-                        aria-hidden
-                        className="absolute bottom-1.5 left-0 top-1.5 w-0.5 rounded-full bg-[var(--basis-text-strong)]"
-                      />
-                    )}
                     {option.icon && <span className="shrink-0">{option.icon}</span>}
                     <span className="min-w-0 flex-1">
                       <span className="block truncate">{option.label}</span>

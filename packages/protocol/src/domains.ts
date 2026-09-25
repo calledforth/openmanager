@@ -45,6 +45,15 @@ export const WorkspaceCapabilitiesSchema = z.object({
   git: z.boolean(),
   providers: z.array(EntityIdSchema),
 })
+/**
+ * Where a git workspace's checkout points, read from `HEAD` when the workspace
+ * is listed or used. `branch` is null on a detached HEAD; `worktree` marks a
+ * linked worktree (its `.git` is a file naming the main repository's gitdir).
+ */
+export const WorkspaceGitSchema = z.object({
+  branch: z.string().max(256).nullable(),
+  worktree: z.boolean(),
+})
 export const WorkspaceSchema = z.object({
   workspaceId: EntityIdSchema,
   name: z.string(),
@@ -61,6 +70,8 @@ export const WorkspaceSchema = z.object({
   availability: z.enum(['available', 'missing', 'inaccessible']).optional(),
   /** Defaulted for the same reason: an older environment reads as offering nothing. */
   capabilities: WorkspaceCapabilitiesSchema.default({ git: false, providers: [] }),
+  /** Absent outside a git checkout and on older environments. */
+  git: WorkspaceGitSchema.optional(),
 })
 /**
  * A workspace icon travels inline as a `data:image/...;base64,` URL so a
@@ -96,6 +107,12 @@ export const SessionSummarySchema = SessionSchema.extend({
   status: SessionStatusSchema,
   providerId: EntityIdSchema,
   updatedAt: TimestampSchema,
+  /**
+   * When the user put the session away. Null or absent means it is active.
+   * The environment clears it when the session starts a turn or asks the
+   * user something, so finished work never hides work that needs attention.
+   */
+  settledAt: TimestampSchema.nullable().optional(),
   /** Absent until the session has a selection, and on older environments. */
   composer: SessionComposerStateSchema.optional(),
 })
@@ -353,6 +370,7 @@ export type EntityId = z.infer<typeof EntityIdSchema>
 export type SubscriptionScope = z.infer<typeof SubscriptionScopeSchema>
 export type Environment = z.infer<typeof EnvironmentSchema>
 export type Workspace = z.infer<typeof WorkspaceSchema>
+export type WorkspaceGit = z.infer<typeof WorkspaceGitSchema>
 export type WorkspaceCapabilities = z.infer<typeof WorkspaceCapabilitiesSchema>
 export type Session = z.infer<typeof SessionSchema>
 export type SessionStatus = z.infer<typeof SessionStatusSchema>

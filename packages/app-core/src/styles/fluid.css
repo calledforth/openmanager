@@ -19,7 +19,7 @@
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 
 /* Fluid components' `dark:` utilities follow the app theme, not the OS. */
-@custom-variant dark (&:where(:root:not([data-theme='light'], [data-theme='neutral-light']) *));
+@custom-variant dark (&:where(:root:not([data-theme='light'], [data-theme='neutral-light'], [data-theme='neutral-light-soft']) *));
 
 @theme inline {
   --color-faint: var(--faint);
@@ -49,6 +49,12 @@
   --shadow-surface-6: var(--shadow-6);
   --shadow-surface-7: var(--shadow-7);
   --shadow-surface-8: var(--shadow-8);
+
+  /* §3b: bg-float, shadow-float, rounded-float. */
+  --color-float: var(--float-bg);
+  --shadow-float: var(--float-shadow);
+  --shadow-float-rest: var(--float-shadow-rest);
+  --radius-float: var(--float-radius);
 
   @keyframes spinner-move {
     to {
@@ -315,7 +321,62 @@
   --selected: color-mix(in oklab, var(--background), var(--foreground) 28%);
 }
 
-:root[data-theme='neutral-light'] {
+/* Lovable and Claude-ish: warm near-blacks, never grey or blue-black. One
+   flat canvas behind sidebar and chat; the composer, command palette and
+   menus sit on a single lighter step, set outright rather than mixed. */
+:root[data-theme='lovable'] {
+  --background: #1d1d1c;
+  --foreground: #ededeb;
+  --muted-foreground: #9a9a96;
+  --faint: #62625f;
+  --tint: oklch(0.8 0.1 75);
+  --tint-soft: oklch(0.8 0.1 75 / 0.16);
+  --float-bg: #272726;
+  --basis-chat-user-bg: #272726;
+}
+
+:root[data-theme='claudeish'] {
+  --background: #1f1e1d;
+  --foreground: #f0eee6;
+  --muted-foreground: #a6a39b;
+  --faint: #6b6963;
+  --tint: #d97757;
+  --tint-soft: rgb(217 119 87 / 0.18);
+  --float-bg: #262624;
+  --basis-chat-user-bg: #262624;
+}
+
+:root:is([data-theme='lovable'], [data-theme='claudeish']) {
+  --rule: color-mix(in oklab, var(--background), var(--foreground) 8%);
+  --border: color-mix(in oklab, var(--background), var(--foreground) 11%);
+  --selected: color-mix(in oklab, var(--background), var(--foreground) 28%);
+}
+
+/* Carbon: neutral #141414 with one #222222 step for everything that floats
+   or holds a message, #FDFDFD ink (not #FEFFFF, which leans cyan), and a
+   single lime accent on the send button, focus and selection. */
+:root[data-theme='carbon'] {
+  --background: #141414;
+  --foreground: #fdfdfd;
+  --muted-foreground: #8f8f8f;
+  --faint: #5a5a5a;
+  --rule: rgb(255 255 255 / 0.07);
+  --border: rgb(255 255 255 / 0.1);
+  --selected: #3a3a3a;
+  --tint: #c5f23a;
+  --tint-soft: rgb(197 242 58 / 0.16);
+  --float-bg: #222222;
+  --surface-1: #181818;
+  --surface-2: #1c1c1c;
+  --surface-3: #222222;
+  --surface-4: #2a2a2a;
+  --surface-5: #313131;
+  --surface-6: #383838;
+  --surface-7: #3f3f3f;
+  --surface-8: #464646;
+}
+
+:root:is([data-theme='neutral-light'], [data-theme='neutral-light-soft']) {
   color-scheme: light;
   --background: #fcfcfc;
   --foreground: #1a1a1a;
@@ -350,8 +411,15 @@
   --shadow-3-inset: var(--shadow-light-3-inset);
 }
 
+/* Neutral Light Soft: Neutral Light with lighter secondary text and larger chat text. */
+:root[data-theme='neutral-light-soft'] {
+  --muted-foreground: #858585;
+  --chat-assistant-size: 14.25px;
+  --chat-user-size: 14.25px;
+}
+
 /* The app's own --basis-* tokens, pointed at the scheme. */
-:root:is([data-theme='neutral'], [data-theme='paper']) {
+:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='lovable'], [data-theme='claudeish'], [data-theme='carbon']) {
   color-scheme: dark;
   --basis-canvas-bg: var(--background);
   --basis-surface: var(--surface-2);
@@ -362,7 +430,7 @@
   --basis-action-hover: color-mix(in oklab, var(--foreground), var(--background) 10%);
 }
 
-:root[data-theme='neutral-light'] {
+:root:is([data-theme='neutral-light'], [data-theme='neutral-light-soft']) {
   --basis-canvas-bg: var(--background);
   --basis-surface: var(--surface-3);
   --basis-surface-elevated: color-mix(in oklab, var(--background), var(--foreground) 4%);
@@ -374,7 +442,7 @@
   --basis-session-cube-ready: #2f8f45;
 }
 
-:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='neutral-light']) {
+:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='lovable'], [data-theme='claudeish'], [data-theme='carbon'], [data-theme='neutral-light'], [data-theme='neutral-light-soft']) {
   --basis-border: var(--border);
   --basis-border-muted: var(--rule);
   --basis-chat-text: var(--foreground);
@@ -401,18 +469,76 @@
   --basis-chat-user-border: transparent;
 }
 
+/* Carbon reads body text a step under its #FDFDFD headings, so long replies
+   don't glare on near-black, and puts the lime on the primary action. */
+:root[data-theme='carbon'] {
+  --basis-text: #e6e6e6;
+  --basis-chat-text: #e6e6e6;
+  --basis-chat-user-bg: #222222;
+  --basis-chat-user-border: transparent;
+  --basis-action-bg: var(--tint);
+  --basis-action-fg: #141414;
+  --basis-action-hover: color-mix(in oklab, var(--tint), #ffffff 14%);
+}
+
+/* The light schemes follow suit: a quiet grey fill instead of a white box
+   with an outline, so a message reads by colour the way it does on dark. */
+:root:is([data-theme='light'], [data-theme='neutral-light'], [data-theme='neutral-light-soft']) {
+  --basis-chat-user-bg: color-mix(in oklab, var(--basis-canvas-bg), #000 5.5%);
+  --basis-chat-user-border: transparent;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   §3b Floating surfaces (Linear's palette): the command palette, the
+       composer and the menus that open from it. No outline: a hairline of
+       shadow gives the edge and a long soft drop lifts the panel, so it
+       reads as a card resting over the page. The scrim behind a floating
+       dialog stays faint, so the page is still readable.
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+:root {
+  --float-radius: 12px;
+  --float-bg: color-mix(in oklab, var(--background), var(--foreground) 5%);
+  /* On dark, a faint top light and a black contact ring stand in for the
+     hairline, which would read as a border in white. */
+  --float-shadow:
+    inset 0 1px 0 0 rgb(255 255 255 / 0.05), inset 0 0 0 1px rgb(255 255 255 / 0.035),
+    0 0 0 1px rgb(0 0 0 / 0.32), 0 2px 4px rgb(0 0 0 / 0.14), 0 8px 18px -4px rgb(0 0 0 / 0.22),
+    0 24px 56px -12px rgb(0 0 0 / 0.5);
+  --float-scrim: rgb(0 0 0 / 0.24);
+  /* The composer rests on the page all the time, so it keeps the edge but
+     only a short drop; the long one is for panels that open over it. */
+  --float-shadow-rest:
+    inset 0 1px 0 0 rgb(255 255 255 / 0.05), inset 0 0 0 1px rgb(255 255 255 / 0.035),
+    0 0 0 1px rgb(0 0 0 / 0.32), 0 2px 4px rgb(0 0 0 / 0.12), 0 8px 16px -8px rgb(0 0 0 / 0.2);
+}
+
+:root:is([data-theme='light'], [data-theme='neutral-light'], [data-theme='neutral-light-soft']) {
+  --float-bg: #ffffff;
+  --float-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.045), 0 1px 2px rgb(0 0 0 / 0.04), 0 4px 10px -2px rgb(0 0 0 / 0.05),
+    0 16px 40px -8px rgb(0 0 0 / 0.12), 0 32px 72px -24px rgb(0 0 0 / 0.1);
+  --float-scrim: rgb(0 0 0 / 0.03);
+  --float-shadow-rest:
+    0 0 0 1px rgb(0 0 0 / 0.05), 0 1px 2px rgb(0 0 0 / 0.04), 0 4px 12px -4px rgb(0 0 0 / 0.06);
+}
+
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    §4  Tend typography on the Tend schemes
        400 body weight. Tracking stays the app's 0.01em: Tend's zero tracking
        reads cramped at the app's 14px.
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='neutral-light']) body {
+:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='lovable'], [data-theme='claudeish'], [data-theme='carbon'], [data-theme='neutral-light'], [data-theme='neutral-light-soft']) body {
   font-weight: 400;
   font-variation-settings: 'wght' 400;
 }
 
-:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='neutral-light']) :where(h1, h2) {
+:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='lovable'], [data-theme='claudeish'], [data-theme='carbon'], [data-theme='neutral-light'], [data-theme='neutral-light-soft']) :where(h1, h2) {
   letter-spacing: -0.015em;
+}
+
+/* Neutral Light Soft reads its replies at 400, to match the lighter ink. */
+:root[data-theme='neutral-light-soft'] .md {
+  font-weight: 400;
 }
 
 /* Colour-only tween while the theme swaps (ThemeProvider toggles the class). */

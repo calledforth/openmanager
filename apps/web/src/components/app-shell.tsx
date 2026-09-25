@@ -2,6 +2,8 @@ import { useCallback, useState, type ReactNode } from 'react'
 import { Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import { useEnvironmentClientOptional } from '@openmanager/app-core/providers/environment-client'
 import { EnvironmentApplicationProviders } from '@openmanager/app-core/providers/environment-application'
+import { useSidebarData } from '@openmanager/app-core/providers/sidebar-provider'
+import { ProjectIcon } from '@openmanager/app-core/components/sidebar/ProjectIcon'
 import { FluidWorkspaceSidebar } from '@openmanager/app-core/components/sidebar/WorkspaceSidebar'
 import { useIcon } from '@openmanager/app-core/components/fluid/lib/icon-context'
 import {
@@ -57,6 +59,32 @@ function NavMenu({ pathname, includeSessions }: { pathname: string; includeSessi
   )
 }
 
+/** Project / session for the chat pane's topbar; reads the sidebar contract,
+ *  so it only renders inside the environment providers. */
+function SessionTrail() {
+  const { workspaces, sessionsByWorkspace, activeWorkspacePath, activeSessionId } = useSidebarData()
+  const project = workspaces.find((workspace) => workspace.path === activeWorkspacePath)
+  const session = activeWorkspacePath
+    ? sessionsByWorkspace[activeWorkspacePath]?.find((row) => row.externalId === activeSessionId)
+    : undefined
+  const title = (activeSessionId && session?.title) || 'New session'
+  return (
+    <div
+      className="flex min-w-0 items-center gap-1.5 text-[13px] text-muted-foreground"
+      title={project ? `${project.name} / ${title}` : title}
+    >
+      {project ? (
+        <>
+          <ProjectIcon workspacePath={project.path} className="h-3.5 w-3.5 shrink-0 opacity-80" />
+          <span className="min-w-0 shrink truncate">{project.name}</span>
+          <span className="shrink-0 text-faint">/</span>
+        </>
+      ) : null}
+      <span className="min-w-0 truncate text-foreground">{title}</span>
+    </div>
+  )
+}
+
 function ConnectedShell({
   client,
   pathname,
@@ -74,7 +102,6 @@ function ConnectedShell({
         : navigate({ to: '/' }),
     [navigate],
   )
-  const { ui } = useConnection()
   const [addingWorkspace, setAddingWorkspace] = useState(false)
   const closeAddWorkspace = useCallback(() => setAddingWorkspace(false), [])
   // The dialog owns the round trip; the sidebar only needs to know it opened.
@@ -86,14 +113,8 @@ function ConnectedShell({
   }, [client])
   return (
     <EnvironmentApplicationProviders addWorkspace={addWorkspace} navigateSession={navigateSession}>
-      <FluidWorkspaceSidebar
-        footer={
-          <>
-            <NavMenu pathname={pathname} includeSessions={false} />
-            <ConnectionStatusChip state={ui} />
-          </>
-        }
-      />
+      {/* A healthy connection says nothing; trouble shows as the banner. */}
+      <FluidWorkspaceSidebar footer={<NavMenu pathname={pathname} includeSessions={false} />} />
       {children}
       <AddWorkspaceDialog client={client} open={addingWorkspace} onClose={closeAddWorkspace} />
     </EnvironmentApplicationProviders>
@@ -126,7 +147,9 @@ export function AppShell() {
 
   const main = (
     <SidebarInset className="overflow-hidden">
-      <SidebarInsetTopbar />
+      <SidebarInsetTopbar>
+        {client && isSessionPath(pathname) ? <SessionTrail /> : null}
+      </SidebarInsetTopbar>
       {showBanner ? <ConnectionBanner state={ui} handlers={handlers} /> : null}
       {showScreen ? (
         <ConnectionScreen

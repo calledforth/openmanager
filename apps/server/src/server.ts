@@ -73,6 +73,7 @@ export const SERVER_CAPABILITIES = [
   'session.open',
   'session.rename',
   'session.delete',
+  'session.settle',
   'session.history',
   'turn.send',
   'turn.interrupt',

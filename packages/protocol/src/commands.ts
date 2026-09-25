@@ -21,6 +21,7 @@ import {
   InteractionResponseSchema,
   InteractionSchema,
   PlanHistoryEntrySchema,
+  TimestampSchema,
 } from './domains.js'
 
 const command = <N extends string, P extends z.ZodType>(name: N, payload: P) =>
@@ -75,6 +76,9 @@ export const ProofCommandSchemas = {
     SessionTargetSchema.extend({ title: z.string().trim().min(1).max(512).nullable() }),
   ),
   'session.delete': command('session.delete', SessionTargetSchema),
+  // Settling moves a finished session out of the active list; `settled: false`
+  // brings it back. Either way the change reaches every client as `session.updated`.
+  'session.settle': command('session.settle', SessionTargetSchema.extend({ settled: z.boolean() })),
   'session.history': command(
     'session.history',
     ThreadTargetSchema.extend({
@@ -137,6 +141,7 @@ export const ProofCommandSchema = z.discriminatedUnion('name', [
   ProofCommandSchemas['session.open'],
   ProofCommandSchemas['session.rename'],
   ProofCommandSchemas['session.delete'],
+  ProofCommandSchemas['session.settle'],
   ProofCommandSchemas['session.history'],
   ProofCommandSchemas['turn.send'],
   ProofCommandSchemas['turn.interrupt'],
@@ -176,6 +181,7 @@ export const ProofResponseSchemas = {
   ),
   'session.rename': response(z.object({ session: SessionSchema })),
   'session.delete': response(z.null()),
+  'session.settle': response(z.object({ settledAt: TimestampSchema.nullable() })),
   'session.history': response(
     z.object({
       messages: z.array(MessageSchema),

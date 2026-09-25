@@ -237,12 +237,20 @@ export function createMockEnvironmentClient(
       const session = state.sessions[parsed.scope.sessionId]
       if (session) {
         const status = deriveSessionStatus(session.threadIds.map((id) => state.threads[id]!))
-        if (status !== session.status)
+        // Like the environment, a turn or a question brings a settled session back.
+        const unsettle =
+          !!session.settledAt &&
+          (parsed.name === 'turn.started' || parsed.name === 'interaction.requested')
+        if (status !== session.status || unsettle)
           emit({
             ...base(),
             name: 'session.updated',
             scope: envScope(),
-            payload: { sessionId: session.sessionId, status },
+            payload: {
+              sessionId: session.sessionId,
+              status,
+              ...(unsettle ? { settledAt: null } : {}),
+            },
           })
       }
     }
@@ -691,6 +699,18 @@ export function createMockEnvironmentClient(
           name: 'session.updated',
           scope: envScope(),
           payload: { sessionId, title, titleSource: 'user' },
+        })
+      }),
+    settleSession: (sessionId, settled) =>
+      run('settleSession', { sessionId, settled }, () => {
+        if (!store.getState().sessions[sessionId]) {
+          throw new EnvironmentClientError('not_found', 'Session not found.')
+        }
+        emit({
+          ...base(),
+          name: 'session.updated',
+          scope: envScope(),
+          payload: { sessionId, settledAt: settled ? now() : null },
         })
       }),
     deleteSession: (sessionId) =>

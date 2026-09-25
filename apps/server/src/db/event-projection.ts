@@ -45,6 +45,14 @@ export function createEventProjector(
     updateSessionStatus: database.prepare(
       'UPDATE sessions SET status = ?, updated_at = ? WHERE session_id = ?',
     ),
+    // Neither is settling: the session keeps its place when it comes back.
+    updateSessionSettled: database.prepare(
+      'UPDATE sessions SET settled_at = ? WHERE session_id = ?',
+    ),
+    // Work that needs the user brings a settled session back to the active list.
+    unsettleSession: database.prepare(
+      'UPDATE sessions SET settled_at = NULL WHERE session_id = ? AND settled_at IS NOT NULL',
+    ),
     // Not a sidebar-ordering change, so `updated_at` stays put.
     updateSessionComposer: database.prepare(
       'UPDATE sessions SET composer_json = ? WHERE session_id = ?',
@@ -207,6 +215,7 @@ export function createEventProjector(
     )
     insertMessage(event.payload.userMessage, thread.workspace_id, true, at)
     s.updateSessionStatus.run('running', at, event.scope.sessionId)
+    s.unsettleSession.run(event.scope.sessionId)
   }
 
   function projectMessageDelta(event: MessageDelta, at: number): void {
@@ -372,6 +381,13 @@ export function createEventProjector(
             titleSource,
           )
         }
+        if (event.payload.settledAt !== undefined) {
+          const settledAt =
+            event.payload.settledAt === null ? null : Date.parse(event.payload.settledAt)
+          if (s.updateSessionSettled.run(settledAt, event.payload.sessionId).changes !== 1) {
+            throw new Error(`Cannot settle missing session ${event.payload.sessionId}`)
+          }
+        }
         return
       case 'session.composer.updated':
         // A selection reported while its session is being deleted has no row
@@ -426,6 +442,7 @@ export function createEventProjector(
           throw new Error(`Cannot mark missing or finished turn ${turnId} as waiting`)
         }
         s.updateSessionStatus.run('waiting', at, event.scope.sessionId)
+        s.unsettleSession.run(event.scope.sessionId)
         return
       }
       case 'interaction.resolved':

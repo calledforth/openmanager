@@ -9,8 +9,18 @@ import {
 } from 'react'
 import { DEFAULT_UI_FONT, isUiFontId, type UiFontId } from '../lib/fonts'
 
-/** `neutral`, `paper` and `neutral-light` are the Tend colour schemes (styles/fluid.css). */
-export type ThemeMode = 'dark' | 'light' | 'black' | 'neutral' | 'paper' | 'neutral-light'
+/** `neutral`, `paper`, `lovable`, `claudeish`, `carbon` and the two `neutral-light` schemes are the Tend colour schemes (styles/fluid.css). */
+export type ThemeMode =
+  | 'dark'
+  | 'light'
+  | 'black'
+  | 'neutral'
+  | 'paper'
+  | 'lovable'
+  | 'claudeish'
+  | 'carbon'
+  | 'neutral-light'
+  | 'neutral-light-soft'
 
 export const THEME_MODES: readonly ThemeMode[] = [
   'dark',
@@ -18,7 +28,11 @@ export const THEME_MODES: readonly ThemeMode[] = [
   'black',
   'neutral',
   'paper',
+  'lovable',
+  'claudeish',
+  'carbon',
   'neutral-light',
+  'neutral-light-soft',
 ]
 
 /** Every theme with its display name, in the order pickers list them. */
@@ -27,8 +41,12 @@ export const THEME_OPTIONS: ReadonlyArray<{ id: ThemeMode; label: string; hint: 
   { id: 'dark', label: 'Dark', hint: 'the original dark' },
   { id: 'black', label: 'Black', hint: 'true black' },
   { id: 'neutral-light', label: 'Neutral Light', hint: 'plain greys, light' },
+  { id: 'neutral-light-soft', label: 'Neutral Light Soft', hint: 'plain greys, lighter ink' },
   { id: 'neutral', label: 'Neutral', hint: 'plain greys, dark' },
   { id: 'paper', label: 'Paper', hint: 'warm greys, dark' },
+  { id: 'lovable', label: 'Lovable', hint: 'warm charcoal, dark' },
+  { id: 'claudeish', label: 'Claude-ish', hint: 'warm charcoal with clay, dark' },
+  { id: 'carbon', label: 'Carbon', hint: 'neutral black with lime, dark' },
 ]
 
 export function isThemeMode(value: string): value is ThemeMode {
@@ -37,7 +55,7 @@ export function isThemeMode(value: string): value is ThemeMode {
 
 /** Whether a theme paints on a light canvas (icons and code blocks switch on this). */
 export function isLightTheme(mode: ThemeMode): boolean {
-  return mode === 'light' || mode === 'neutral-light'
+  return mode === 'light' || mode === 'neutral-light' || mode === 'neutral-light-soft'
 }
 
 const THEME_STORAGE_KEY = 'openmanager-theme'

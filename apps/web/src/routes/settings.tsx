@@ -1,6 +1,11 @@
-import { useContext, useMemo } from 'react'
-import { createFileRoute } from '@tanstack/react-router'
+import { useContext, useMemo, type ReactNode } from 'react'
+import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { Button } from '@openmanager/app-core/components/fluid/ui/button'
+import {
+  TabsSubtle,
+  TabsSubtleItem,
+  TabsSubtlePanel,
+} from '@openmanager/app-core/components/fluid/ui/tabs-subtle'
 import { ProviderIcon } from '@openmanager/app-core/components/providers/ProviderIcon'
 import {
   describeProviderHealth,
@@ -15,9 +20,43 @@ import { THEME_OPTIONS } from '@openmanager/app-core/providers/theme-provider'
 import { useTheme } from '../providers/theme-provider'
 import { cn } from '../lib/utils'
 
+const SETTINGS_TABS = [
+  { id: 'environments', label: 'Environments' },
+  { id: 'appearance', label: 'Appearance' },
+  { id: 'providers', label: 'Providers' },
+] as const
+
+type SettingsTab = (typeof SETTINGS_TABS)[number]['id']
+
+function isSettingsTab(value: unknown): value is SettingsTab {
+  return SETTINGS_TABS.some((tab) => tab.id === value)
+}
+
 export const Route = createFileRoute('/settings')({
+  // The tab lives in the URL, so a section can be linked to and survives a reload.
+  validateSearch: (search: Record<string, unknown>): { tab?: SettingsTab } =>
+    isSettingsTab(search.tab) ? { tab: search.tab } : {},
   component: SettingsPage,
 })
+
+/** One titled block of a settings tab. */
+function SettingsSection({
+  title,
+  description,
+  children,
+}: {
+  title: string
+  description?: ReactNode
+  children: ReactNode
+}) {
+  return (
+    <section className="mt-8 first:mt-0">
+      <h2 className="text-[13px] font-medium text-foreground">{title}</h2>
+      {description ? <p className="mt-1 text-[13px] text-muted-foreground">{description}</p> : null}
+      {children}
+    </section>
+  )
+}
 
 function ChoiceGroup<T extends string>({
   name,
@@ -40,10 +79,12 @@ function ChoiceGroup<T extends string>({
           <label
             key={option.id}
             className={cn(
-              'cursor-pointer rounded-md border px-3 py-1.5 text-ui-sm',
+              // Selection is a fill, never an outline.
+              'cursor-pointer rounded-md px-3 py-1.5 text-[13px] transition-colors duration-100',
+              'has-[:focus-visible]:ring-1 has-[:focus-visible]:ring-focus-ring',
               selected
-                ? 'border-[var(--basis-border-strong)] bg-[var(--basis-surface-elevated)] text-[var(--basis-text-strong)]'
-                : 'border-[var(--basis-border)] text-[var(--basis-text-muted)] hover:bg-[var(--basis-surface)]',
+                ? 'bg-active text-foreground'
+                : 'text-muted-foreground hover:bg-hover hover:text-foreground',
             )}
           >
             <input
@@ -74,7 +115,7 @@ const PROVIDER_TONE_CLASS: Record<ProviderHealthTone, string> = {
  * desktop settings menu. Settings also renders with no environment connected,
  * where there are no providers to describe and the section stays out.
  */
-function ProvidersSection() {
+function ProvidersPanel() {
   const platform = useContext(PlatformCapabilitiesContext)
   const activeWorkspacePath = useContext(SessionStateContext)?.activeWorkspacePath ?? null
   const rows = useMemo(() => {
@@ -96,23 +137,33 @@ function ProvidersSection() {
       }
     })
   }, [platform])
-  if (!platform) return null
+  if (!platform) {
+    return (
+      <SettingsSection title="Providers">
+        <p className="mt-2 text-[13px] text-muted-foreground">
+          Connect to an environment to see its providers.
+        </p>
+      </SettingsSection>
+    )
+  }
 
   return (
-    <section className="mt-8 max-w-lg">
-      <h2 className="text-ui-sm font-medium text-[var(--basis-text)]">Providers</h2>
+    <SettingsSection
+      title="Providers"
+      description="The coding agents this environment can run, and whether each is ready."
+    >
       {rows.length === 0 ? (
-        <p className="mt-2 text-ui-sm text-[var(--basis-text-muted)]">
+        <p className="mt-2 text-[13px] text-muted-foreground">
           This environment has not reported any providers.
         </p>
       ) : (
-        <ul className="mt-2 divide-y divide-[var(--basis-border-muted)] rounded-md border border-[var(--basis-border)]">
+        <ul className="mt-3 flex flex-col gap-1">
           {rows.map((row) => (
-            <li key={row.id} className="flex items-center gap-3 px-3 py-2">
+            <li key={row.id} className="flex items-center gap-3 rounded-lg bg-hover/70 px-3 py-2.5">
               <ProviderIcon providerId={row.id} className="h-4 w-4 shrink-0" />
               <div className="min-w-0 flex-1">
-                <div className="truncate text-ui-sm text-[var(--basis-text)]">{row.name}</div>
-                <div className="flex items-center gap-1.5 text-ui-xs text-[var(--basis-text-muted)]">
+                <div className="truncate text-[13px] text-foreground">{row.name}</div>
+                <div className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
                   <span
                     aria-hidden
                     className={cn(
@@ -141,35 +192,39 @@ function ProvidersSection() {
         </ul>
       )}
       {platform.error ? (
-        <p role="alert" className="mt-2 text-ui-xs text-red-400">
+        <p role="alert" className="mt-2 text-[12px] text-destructive">
           {platform.error}
         </p>
       ) : null}
-    </section>
+    </SettingsSection>
   )
 }
 
-function SettingsPage() {
-  const { theme, setTheme, font, setFont } = useTheme()
-  const { ui, environments, selectedId, connect, selectEnvironment, removeEnvironment, changeEnvironment } =
-    useConnection()
+function EnvironmentsPanel() {
+  const {
+    ui,
+    environments,
+    selectedId,
+    connect,
+    selectEnvironment,
+    removeEnvironment,
+    changeEnvironment,
+  } = useConnection()
+  const status = `${ui.title}${ui.environmentLabel ? ` · ${ui.environmentLabel}` : ''}`
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-auto px-8 py-8">
-      <h1 className="text-ui-base font-medium text-[var(--basis-text-strong)]">Settings</h1>
-      <p className="mt-1 max-w-lg text-ui-sm text-[var(--basis-text-muted)]">
-        Appearance uses the same tokens as the desktop renderer. Environments are stored by
-        bootstrap ID, with a list of endpoints and an optional client token.
-      </p>
-
-      <section className="mt-8 max-w-lg">
-        <h2 className="text-ui-sm font-medium text-[var(--basis-text)]">Environment</h2>
-        <p className="mt-1 text-ui-xs text-[var(--basis-text-muted)]">{ui.title}</p>
+    <>
+      <SettingsSection
+        title="Saved environments"
+        description={
+          <>
+            {status}. Environments are keyed by their bootstrap ID; each keeps its endpoints and an
+            optional client token.
+          </>
+        }
+      >
         {environments.length === 0 ? (
-          <p className="mt-2 text-ui-sm text-[var(--basis-text-muted)]">
-            No environments yet. Add an endpoint URL; the shell keys the record by the bootstrap
-            environment ID.
-          </p>
+          <p className="mt-2 text-[13px] text-muted-foreground">No environments yet.</p>
         ) : (
           <>
             <EnvironmentList
@@ -185,17 +240,26 @@ function SettingsPage() {
             ) : null}
           </>
         )}
-        <h3 className="mt-6 text-ui-sm font-medium text-[var(--basis-text)]">Add environment</h3>
-        <p className="mt-1 text-ui-xs text-[var(--basis-text-muted)]">
-          A second URL for the same environment ID updates the existing record.
-        </p>
-        <EnvironmentConnectForm className="mt-3" onConnect={connect} submitLabel="Add environment" />
-      </section>
+      </SettingsSection>
+      <SettingsSection
+        title="Add environment"
+        description="A second URL for the same environment ID updates the existing record."
+      >
+        <EnvironmentConnectForm
+          className="mt-3"
+          onConnect={connect}
+          submitLabel="Add environment"
+        />
+      </SettingsSection>
+    </>
+  )
+}
 
-      <ProvidersSection />
-
-      <section className="mt-8 max-w-lg">
-        <h2 className="text-ui-sm font-medium text-[var(--basis-text)]">Theme</h2>
+function AppearancePanel() {
+  const { theme, setTheme, font, setFont } = useTheme()
+  return (
+    <>
+      <SettingsSection title="Theme">
         <ChoiceGroup
           name="theme"
           label="Theme"
@@ -203,12 +267,60 @@ function SettingsPage() {
           options={THEME_OPTIONS}
           onChange={setTheme}
         />
-      </section>
-
-      <section className="mt-8 max-w-lg">
-        <h2 className="text-ui-sm font-medium text-[var(--basis-text)]">Font</h2>
+      </SettingsSection>
+      <SettingsSection title="Font">
         <ChoiceGroup name="font" label="Font" value={font} options={UI_FONTS} onChange={setFont} />
-      </section>
+      </SettingsSection>
+    </>
+  )
+}
+
+const PANELS: Record<SettingsTab, () => ReactNode> = {
+  environments: EnvironmentsPanel,
+  appearance: AppearancePanel,
+  providers: ProvidersPanel,
+}
+
+function SettingsPage() {
+  const navigate = useNavigate()
+  const tab = Route.useSearch().tab ?? 'environments'
+  const selectedIndex = SETTINGS_TABS.findIndex((item) => item.id === tab)
+  const Panel = PANELS[tab]
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-auto px-8 pb-10 pt-4">
+      <div className="mx-auto w-full max-w-2xl">
+        <h1 className="text-[18px] font-medium text-foreground">Settings</h1>
+        <TabsSubtle
+          aria-label="Settings sections"
+          idPrefix="settings"
+          size="compact"
+          className="mt-4"
+          selectedIndex={selectedIndex}
+          onSelect={(index) =>
+            void navigate({
+              to: '/settings',
+              search: { tab: SETTINGS_TABS[index]!.id },
+              replace: true,
+            })
+          }
+        >
+          {SETTINGS_TABS.map((item, index) => (
+            <TabsSubtleItem key={item.id} index={index} label={item.label} />
+          ))}
+        </TabsSubtle>
+        {SETTINGS_TABS.map((item, index) => (
+          <TabsSubtlePanel
+            key={item.id}
+            index={index}
+            selectedIndex={selectedIndex}
+            idPrefix="settings"
+            className="mt-8"
+          >
+            <Panel />
+          </TabsSubtlePanel>
+        ))}
+      </div>
     </div>
   )
 }

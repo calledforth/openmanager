@@ -1,4 +1,5 @@
-import { useEffect, type ReactNode } from 'react'
+import { useContext, useEffect, type ReactNode } from 'react'
+import { PlatformCapabilitiesContext } from '../../providers/platform-provider'
 import { useSidebarData } from '../../providers/sidebar-provider'
 import { FluidWorkspaceSidebarView } from './FluidWorkspaceSidebar'
 import { WorkspaceSidebarView } from './WorkspaceSidebarView'
@@ -17,9 +18,11 @@ function useWorkspaceSidebarModel() {
     selectSession,
     createSession,
     renameSession,
+    settleSession,
     deleteSession,
     acknowledgeSessionDone,
   } = useSidebarData()
+  const providerLabel = useContext(PlatformCapabilitiesContext)?.providerDisplayName
 
   // Opening a finished session (or finishing while focused) clears the green
   // ready glyph — it only means "done and waiting to be opened".
@@ -39,6 +42,7 @@ function useWorkspaceSidebarModel() {
       name: workspace.name,
       missing: workspace.missing,
       availability: workspace.availability,
+      ...(workspace.git ? { git: workspace.git } : {}),
       sessions: sessionsByWorkspace[workspace.path] ?? [],
     })),
     activeWorkspacePath,
@@ -50,8 +54,12 @@ function useWorkspaceSidebarModel() {
     onRenameSession: renameSession
       ? (path: string, id: string, title: string | null) => void renameSession(path, id, title)
       : undefined,
+    onSettleSession: settleSession
+      ? (path: string, id: string, settled: boolean) => void settleSession(path, id, settled)
+      : undefined,
     onDeleteSession: (...args: Parameters<typeof deleteSession>) => void deleteSession(...args),
     onAddWorkspace: () => void addWorkspace(),
+    providerLabel,
   }
 }
 
@@ -85,6 +93,7 @@ export function WorkspaceSidebar({
 
 /** The same sidebar on Fluid's inset layout; render inside a Fluid `SidebarProvider`. */
 export function FluidWorkspaceSidebar({ footer }: { footer?: ReactNode }) {
+  // Projects are not groups on this layout, so the folding props go unused.
   const model = useWorkspaceSidebarModel()
   return <FluidWorkspaceSidebarView {...model} footer={footer} />
 }

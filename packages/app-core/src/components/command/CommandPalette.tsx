@@ -1,16 +1,90 @@
-import { useMemo } from 'react'
-import { Palette, Type } from 'lucide-react'
+import { useMemo, type ReactNode } from 'react'
+import { Check, Palette, Type } from 'lucide-react'
 import {
   CommandMenu,
+  CommandMenuChip,
   CommandMenuDialog,
   CommandMenuEmpty,
-  CommandMenuFooter,
   CommandMenuInput,
+  CommandMenuItem,
   CommandMenuList,
   type CommandMenuItemData,
 } from '../fluid/ui/command-menu'
 import { UI_FONTS } from '../../lib/fonts'
 import { THEME_OPTIONS, useTheme } from '../../providers/theme-provider'
+
+/** A palette row. `current` marks the option already in effect with a check
+ *  at the trailing edge, where Linear keeps its key caps. */
+export type CommandPaletteItemData = CommandMenuItemData & { current?: boolean }
+
+export interface CommandPaletteViewProps {
+  items: readonly CommandPaletteItemData[]
+  /** What the commands act on, shown as a chip above the field. */
+  context?: { prefix?: ReactNode; label: ReactNode }
+  placeholder?: string
+  open?: boolean
+  defaultOpen?: boolean
+  onOpenChange?: (open: boolean) => void
+  /** @default "mod+k" */
+  shortcut?: string | null
+}
+
+/**
+ * The palette's look, after Linear's: a floating card with no outline, no
+ * divider under the field and no hint strip, tall rows whose highlight is a
+ * soft fill.
+ */
+export function CommandPaletteView({
+  items,
+  context,
+  placeholder = 'Type a command or search…',
+  open,
+  defaultOpen,
+  onOpenChange,
+  shortcut,
+}: CommandPaletteViewProps) {
+  return (
+    <CommandMenuDialog
+      title="Search and commands"
+      open={open}
+      defaultOpen={defaultOpen}
+      onOpenChange={onOpenChange}
+      shortcut={shortcut}
+      className="max-w-[640px]"
+    >
+      <CommandMenu items={items}>
+        {context && <CommandMenuChip prefix={context.prefix}>{context.label}</CommandMenuChip>}
+        <CommandMenuInput icon={null} placeholder={placeholder} className="text-[15px] leading-6" />
+        <CommandMenuList
+          className="gap-0 px-1.5 pb-1.5 pt-0.5"
+          renderItem={(item) => <CommandPaletteItem item={item} />}
+        >
+          <CommandMenuEmpty>Nothing matches.</CommandMenuEmpty>
+        </CommandMenuList>
+      </CommandMenu>
+    </CommandMenuDialog>
+  )
+}
+
+/** Rows a notch taller and larger than the menu's default, as in Linear. */
+function CommandPaletteItem({ item }: { item: CommandPaletteItemData }) {
+  return (
+    // Every row reads at full strength, as in Linear; the fill alone says
+    // which one Enter runs. Key caps come from the item's `shortcut`.
+    <CommandMenuItem
+      value={item.value}
+      className="h-11 gap-3 px-3 text-[14px] text-foreground [&>svg:first-child]:text-muted-foreground"
+    >
+      <span className="flex min-w-0 flex-1 items-baseline gap-2">
+        <span className="truncate">{item.label}</span>
+        {item.description && (
+          <span className="min-w-0 truncate text-muted-foreground/70">{item.description}</span>
+        )}
+      </span>
+      {item.current && <Check aria-label="Current" className="h-4 w-4 shrink-0 text-foreground" />}
+    </CommandMenuItem>
+  )
+}
 
 /**
  * ⌘K / Ctrl+K from anywhere. For now it switches themes and fonts, the way
@@ -20,7 +94,7 @@ import { THEME_OPTIONS, useTheme } from '../../providers/theme-provider'
 export function CommandPalette() {
   const { theme, setTheme, font, setFont } = useTheme()
 
-  const items = useMemo<CommandMenuItemData[]>(
+  const items = useMemo<CommandPaletteItemData[]>(
     () => [
       ...THEME_OPTIONS.map((option) => ({
         value: `theme:${option.id}`,
@@ -28,7 +102,7 @@ export function CommandPalette() {
         description: option.hint,
         icon: Palette,
         group: 'Themes',
-        action: option.id === theme ? 'Current' : 'Use',
+        current: option.id === theme,
         keywords: ['theme', 'colour', 'color', 'scheme', 'appearance', 'dark', 'light'],
         keepOpen: true,
         onSelect: () => setTheme(option.id),
@@ -38,7 +112,7 @@ export function CommandPalette() {
         label: option.label,
         icon: Type,
         group: 'Fonts',
-        action: option.id === font ? 'Current' : 'Use',
+        current: option.id === font,
         keywords: ['font', 'typeface', 'type', 'text'],
         keepOpen: true,
         onSelect: () => setFont(option.id),
@@ -47,15 +121,5 @@ export function CommandPalette() {
     [theme, setTheme, font, setFont],
   )
 
-  return (
-    <CommandMenuDialog title="Search and commands">
-      <CommandMenu items={items}>
-        <CommandMenuInput placeholder="Search commands" />
-        <CommandMenuList>
-          <CommandMenuEmpty>Nothing matches.</CommandMenuEmpty>
-        </CommandMenuList>
-        <CommandMenuFooter />
-      </CommandMenu>
-    </CommandMenuDialog>
-  )
+  return <CommandPaletteView items={items} />
 }

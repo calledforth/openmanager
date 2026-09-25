@@ -624,6 +624,7 @@ function toWorkspaceEntry(workspace: Workspace): WorkspaceEntry {
     availability: workspace.availability,
     lastActivityAt: workspace.lastActivityAt,
     capabilities: workspace.capabilities,
+    ...(workspace.git ? { git: workspace.git } : {}),
   }
 }
 
@@ -634,6 +635,7 @@ function EnvironmentSidebarDataProvider({
   storage?: EnvironmentApplicationOptions['collapsedWorkspaceStorage']
   children: ReactNode
 }) {
+  const client = useEnvironmentClient()
   const session = useContext(SessionStateContext)!
   const environmentState = useEnvironmentState((state) => state.environment)
   const workspaces = useWorkspaces()
@@ -690,11 +692,21 @@ function EnvironmentSidebarDataProvider({
         // overlay at thin-shell cutover rather than reintroduce `driven`.
         isDriven: true,
         ...(unavailableWorkspaces.has(summary.workspaceId) ? { workspaceUnavailable: true } : {}),
+        ...(summary.updatedAt ? { updatedAt: summary.updatedAt } : {}),
+        settledAt: summary.settledAt ?? null,
       }
       ;(grouped[summary.workspaceId] ??= []).push(entry)
     }
     return grouped
   }, [session.defaultProviderId, sessions, workspaceEntries])
+
+  // Offered only once the environment says it can keep the change.
+  const canSettle = connection.phase === 'connected' && client.supports('settleSession')
+  const settleSession = useCallback(
+    (_workspacePath: string, externalId: string, settled: boolean) =>
+      client.commands.settleSession(externalId, settled),
+    [client],
+  )
 
   const isWorkspacesLoading =
     workspaces.length === 0 &&
@@ -717,9 +729,12 @@ function EnvironmentSidebarDataProvider({
       selectSession: session.selectSession,
       createSession: session.createSession,
       renameSession: session.renameSession,
+      ...(canSettle ? { settleSession } : {}),
       deleteSession: session.deleteSession,
     }),
     [
+      canSettle,
+      settleSession,
       collapsedWorkspacePaths,
       environment,
       isWorkspacesLoading,

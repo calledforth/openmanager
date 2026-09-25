@@ -5,7 +5,7 @@ import remarkBreaks from 'remark-breaks'
 import rehypeExternalLinks from 'rehype-external-links'
 import rehypeShikiFromHighlighter from '@shikijs/rehype/core'
 import type { PluggableList } from 'unified'
-import type { Nodes } from 'hast'
+import type { Element, ElementContent, Nodes, Root } from 'hast'
 import { CheckIcon, CopyIcon } from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
 import { SHIKI_THEMES, useShikiHighlighter } from '../../lib/shiki'
@@ -67,6 +67,57 @@ function CopyButton({ value }: { value: string }) {
   )
 }
 
+/** `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, or an `rgb[a]()` / `hsl[a]()` call. */
+const COLOR_VALUE = /^(#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})|(?:rgba?|hsla?)\([^()]*\))$/i
+
+/**
+ * Colour values in running prose. Stricter than COLOR_VALUE because bare text
+ * is noisy: 3/4-digit hex must contain a letter so `#123` (an issue ref) stays
+ * plain, and the value can't be glued to a word, a URL fragment, or a hyphen.
+ */
+const PROSE_COLOR =
+  /(?<![\w#&/-])(#(?:[0-9a-f]{6}(?:[0-9a-f]{2})?|(?=[0-9a-f]{0,3}[a-f])[0-9a-f]{3,4})|(?:rgba?|hsla?)\([^()\n]*\))(?![\w-])/gi
+
+function swatchNode(color: string): ElementContent {
+  return {
+    type: 'element',
+    tagName: 'span',
+    properties: { className: ['md-swatch'], style: `background-color: ${color}`, ariaHidden: 'true' },
+    children: [],
+  }
+}
+
+/** Rehype plugin: puts a swatch before colour values in prose (code is handled by the `code` component). */
+function rehypeColorSwatches() {
+  const walk = (parent: Root | Element) => {
+    const next: ElementContent[] = []
+    let changed = false
+    for (const child of parent.children as ElementContent[]) {
+      if (child.type === 'element') {
+        if (child.tagName !== 'code' && child.tagName !== 'pre') walk(child)
+        next.push(child)
+        continue
+      }
+      if (child.type !== 'text') {
+        next.push(child)
+        continue
+      }
+      let last = 0
+      for (const match of child.value.matchAll(PROSE_COLOR)) {
+        const start = match.index
+        if (start > last) next.push({ type: 'text', value: child.value.slice(last, start) })
+        next.push(swatchNode(match[0]), { type: 'text', value: match[0] })
+        last = start + match[0].length
+        changed = true
+      }
+      if (last === 0) next.push(child)
+      else if (last < child.value.length) next.push({ type: 'text', value: child.value.slice(last) })
+    }
+    if (changed) parent.children = next
+  }
+  return (tree: Root) => walk(tree)
+}
+
 /**
  * Only elements that need React live here. Everything typographic — margins,
  * list markers, rules, table rhythm — is one CSS block on `.md` in globals.css.
@@ -99,6 +150,28 @@ const components: Components = {
       </span>
     )
   },
+  // Scroll container, so the table itself can stay a real full-width table.
+  table({ node: _node, ...props }) {
+    return (
+      <div className="md-table">
+        <table {...props} />
+      </div>
+    )
+  },
+  // Inline code that is exactly a colour value gets a swatch (GitHub-style).
+  // Block code never matches: shiki emits element children, and the plain
+  // path's text carries a trailing newline the anchored pattern rejects.
+  code({ node: _node, children, ...props }) {
+    const color = typeof children === 'string' && COLOR_VALUE.test(children) ? children : null
+    return (
+      <code {...props}>
+        {color ? (
+          <span className="md-swatch" style={{ backgroundColor: color }} aria-hidden="true" />
+        ) : null}
+        {children}
+      </code>
+    )
+  },
   img({ src, alt }) {
     return <img src={typeof src === 'string' ? src : undefined} alt={alt ?? ''} loading="lazy" />
   },
@@ -122,6 +195,7 @@ export const Markdown = memo(function Markdown({ children, className, dimmed }: 
   const rehypePlugins = useMemo<PluggableList>(() => {
     const plugins: PluggableList = [
       [rehypeExternalLinks, { target: '_blank', rel: ['noopener', 'noreferrer'] }],
+      rehypeColorSwatches,
     ]
     if (highlighter) {
       plugins.push([

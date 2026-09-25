@@ -52,6 +52,7 @@ describe('command access mapping', () => {
       'session.create': 'operate',
       'session.rename': 'operate',
       'session.delete': 'operate',
+      'session.settle': 'operate',
       'workspace.add': 'operate',
       'workspace.remove': 'operate',
       'composer.preferences.set': 'operate',

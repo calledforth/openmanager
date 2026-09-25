@@ -113,10 +113,26 @@ interface DialogContentProps
    *  panel whose height follows its content (a command menu) keeps its top
    *  edge still. @default "center" */
   position?: "center" | "top";
+  /** `float` is the command palette's look (Linear's): the app-wide floating
+   *  surface (bg-float / shadow-float, fluid.css §3b) over a faint scrim,
+   *  popping in on the moderate spring from a touch smaller. @default "surface" */
+  appearance?: "surface" | "float";
 }
 
 const DialogContent = forwardRef<HTMLDivElement, DialogContentProps>(
-  ({ className, children, size = "sm", container, showCloseButton = true, position = "center", ...props }, ref) => {
+  (
+    {
+      className,
+      children,
+      size = "sm",
+      container,
+      showCloseButton = true,
+      position = "center",
+      appearance = "surface",
+      ...props
+    },
+    ref
+  ) => {
     const XIcon = useIcon("x");
     const open = useContext(DialogOpenContext);
     const shape = useShape();
@@ -126,6 +142,9 @@ const DialogContent = forwardRef<HTMLDivElement, DialogContentProps>(
     // width only, the padding stays put (see /docs/sizes).
     const compact = useSize().variant === "compact";
     const [mounted, setMounted] = useState(false);
+    const float = appearance === "float";
+    const tier = float ? spring.moderate : spring.slow;
+    const hiddenScale = float ? 0.96 : 0.97;
 
     useEffect(() => {
       if (open) setMounted(true);
@@ -156,13 +175,15 @@ const DialogContent = forwardRef<HTMLDivElement, DialogContentProps>(
           <motion.div
             className={cn(
               container ? "absolute" : "fixed",
+              "inset-0 z-50",
               // Tend: a lighter scrim than the library's 40/80 — the page
-              // should stay legible behind the palette.
-              "inset-0 z-50 bg-black/15 dark:bg-black/55"
+              // should stay legible behind the palette. Floating dialogs go
+              // lighter still.
+              float ? "bg-[var(--float-scrim)]" : "bg-black/15 dark:bg-black/55"
             )}
             initial={{ opacity: 0 }}
             animate={{ opacity: open ? 1 : 0 }}
-            transition={open ? spring.slow : spring.slow.exit}
+            transition={open ? tier : tier.exit}
           />
         </DialogPrimitive.Overlay>
         <DialogPrimitive.Content ref={ref} asChild forceMount {...props}>
@@ -171,22 +192,27 @@ const DialogContent = forwardRef<HTMLDivElement, DialogContentProps>(
               container ? "absolute" : "fixed",
               "left-1/2 z-50 w-[calc(100%-2rem)]",
               position === "top" ? "top-[12dvh]" : "top-1/2",
-              surfaceClasses(dialogLevel),
+              float ? "rounded-float bg-float shadow-float" : surfaceClasses(dialogLevel),
               "p-6 focus:outline-none",
               size === "sm" && (compact ? "max-w-[360px]" : "max-w-[400px]"),
               size === "lg" && (compact ? "max-w-[480px]" : "max-w-[540px]"),
               size === "xl" && (compact ? "max-w-[800px]" : "max-w-[880px]"),
-              shape.container,
+              !float && shape.container,
               className
             )}
-            initial={{ opacity: 0, scale: 0.97, x: "-50%", y: position === "top" ? 0 : "-50%" }}
-            animate={{
-              opacity: open ? 1 : 0,
-              scale: open ? 1 : 0.97,
+            initial={{
+              opacity: 0,
+              scale: hiddenScale,
               x: "-50%",
               y: position === "top" ? 0 : "-50%",
             }}
-            transition={open ? spring.slow : spring.slow.exit}
+            animate={{
+              opacity: open ? 1 : 0,
+              scale: open ? 1 : hiddenScale,
+              x: "-50%",
+              y: position === "top" ? 0 : "-50%",
+            }}
+            transition={open ? tier : tier.exit}
             onAnimationComplete={handleExitComplete}
           >
             <SurfaceProvider value={dialogLevel}>

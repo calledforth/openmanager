@@ -1009,6 +1009,38 @@ const CommandMenuFilters = forwardRef<HTMLDivElement, CommandMenuFiltersProps>(
 CommandMenuFilters.displayName = "CommandMenuFilters";
 
 // ---------------------------------------------------------------------------
+// CommandMenuChip — what the commands act on, above the field (Linear's
+// "CAL-95 · Implement…" chip). A quiet fill, no outline.
+// ---------------------------------------------------------------------------
+
+export interface CommandMenuChipProps extends Omit<HTMLAttributes<HTMLDivElement>, "prefix"> {
+  /** The dimmer lead, e.g. an id or a project name. */
+  prefix?: ReactNode;
+  children: ReactNode;
+}
+
+const CommandMenuChip = forwardRef<HTMLDivElement, CommandMenuChipProps>(
+  ({ prefix, className, children, ...props }, ref) => {
+    const compact = useSize().variant === "compact";
+    return (
+      <div
+        ref={ref}
+        data-slot="command-menu-chip"
+        className={cn("flex shrink-0 min-w-0", compact ? "px-3 pt-2.5" : "px-3.5 pt-3", className)}
+        {...props}
+      >
+        <span className="inline-flex h-6 min-w-0 max-w-full items-center gap-1.5 rounded-md bg-hover px-2 text-[12px] leading-4 text-foreground">
+          {prefix && <span className="shrink-0 text-muted-foreground">{prefix}</span>}
+          <span className="truncate">{children}</span>
+        </span>
+      </div>
+    );
+  }
+);
+
+CommandMenuChip.displayName = "CommandMenuChip";
+
+// ---------------------------------------------------------------------------
 // CommandMenuList — the scrolling rows under a divider, grouped by heading,
 // with the fluid hover fill.
 // ---------------------------------------------------------------------------
@@ -1045,12 +1077,12 @@ const CommandMenuList = forwardRef<HTMLDivElement, CommandMenuListProps>(
       // Flex does what percentages cannot: the area shrinks to what the
       // shell leaves it, and the viewport shrinks with it (min-h-0) and
       // scrolls; short content sizes both to the rows.
-      // scroll-divider draws the edges: the top hairline rides the header
-      // line (pulled up 1px onto it) and strengthens once rows pass under
-      // it; the bottom hairline stands while rows continue below and goes at
-      // the end, which is why the footer draws no line of its own.
+      // scroll-divider draws the edges: the top hairline appears only once
+      // rows pass under the field (Linear draws no line under its search
+      // field at rest); the bottom hairline stands while rows continue below
+      // and goes at the end, which is why the footer draws no line of its own.
       <ScrollArea
-        className="scroll-divider flex min-h-0 flex-1 flex-col border-t border-border/60 [&::before]:!-top-px"
+        className="scroll-divider flex min-h-0 flex-1 flex-col"
         viewportClassName="min-h-0 flex-1 [&>div[style]]:!block [&>div[style]]:!min-w-0 [scroll-timeline-name:--sf-scroller]"
       >
         <div
@@ -1450,6 +1482,8 @@ export interface CommandMenuDialogProps {
   container?: HTMLElement | null;
   /** Merged onto the dialog panel. */
   className?: string;
+  /** See DialogContent. @default "float" */
+  appearance?: "surface" | "float";
   children: ReactNode;
 }
 
@@ -1464,6 +1498,7 @@ function CommandMenuDialog({
   modal,
   container,
   className,
+  appearance = "float",
   children,
 }: CommandMenuDialogProps) {
   const [internalOpen, setInternalOpen] = useState(defaultOpen);
@@ -1533,6 +1568,7 @@ function CommandMenuDialog({
         // the field stays put while the rows under it filter down. Below
         // 580px of height the cap is 76dvh and the top lands on 12dvh.
         position="top"
+        appearance={appearance}
         className={cn(
           "top-[max(12dvh,calc(50dvh-220px))] flex max-h-[min(440px,76dvh)] flex-col overflow-hidden p-0",
           className
@@ -1558,6 +1594,7 @@ export {
   CommandMenu,
   CommandMenuDialog,
   CommandMenuInput,
+  CommandMenuChip,
   CommandMenuTabs,
   CommandMenuFilters,
   CommandMenuList,

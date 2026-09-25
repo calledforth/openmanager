@@ -53,6 +53,7 @@
     "./components/fluid/ui/button": "./src/components/fluid/ui/button.tsx",
     "./components/fluid/ui/dialog": "./src/components/fluid/ui/dialog.tsx",
     "./components/fluid/ui/sidebar": "./src/components/fluid/ui/sidebar.tsx",
+    "./components/fluid/ui/tabs-subtle": "./src/components/fluid/ui/tabs-subtle.tsx",
     "./components/fluid/lib/icon-context": "./src/components/fluid/lib/icon-context.tsx",
     "./components/fluid/lib/size-context": "./src/components/fluid/lib/size-context.tsx",
     "./components/fluid/sidebar-app/inset-topbar": "./src/components/fluid/sidebar-app/inset-topbar.tsx",

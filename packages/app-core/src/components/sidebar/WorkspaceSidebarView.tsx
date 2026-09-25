@@ -33,6 +33,10 @@ export interface SidebarSession {
   parentExternalId?: string
   /** Its project folder is unreachable, so the row cannot run until it is back. */
   workspaceUnavailable?: boolean
+  /** ISO time of the last activity, when the host tracks it. */
+  updatedAt?: string
+  /** ISO time the user settled it; null or absent while it is active. */
+  settledAt?: string | null
 }
 
 export interface SidebarWorkspace {
@@ -41,6 +45,8 @@ export interface SidebarWorkspace {
   /** Registered but not on disk right now; no session can start here. */
   missing?: boolean
   availability?: 'available' | 'missing' | 'inaccessible'
+  /** The checkout's branch (null when detached) and whether it is a linked worktree. */
+  git?: { branch: string | null; worktree: boolean }
   sessions: SidebarSession[]
 }
 

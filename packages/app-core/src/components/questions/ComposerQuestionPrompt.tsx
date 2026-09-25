@@ -99,7 +99,7 @@ export function QuestionCard({ flow }: { flow: QuestionFlow }) {
       onKeyDown={onKeyDown}
       role="group"
       aria-label="Agent question"
-      className="flex flex-col gap-2.5 overflow-hidden rounded-t-[var(--basis-chat-shell-radius)] border border-b-0 border-[var(--basis-border)] bg-[var(--basis-surface)] px-3.5 py-3 focus:outline-none"
+      className="flex flex-col gap-2.5 overflow-hidden rounded-t-[10px] px-3.5 py-3 focus:outline-none"
     >
       <div
         key={index}

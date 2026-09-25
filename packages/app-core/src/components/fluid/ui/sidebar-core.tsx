@@ -37,6 +37,8 @@ import { Tooltip } from "./tooltip";
 
 export const SIDEBAR_COOKIE_NAME = "sidebar_state";
 export const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
+/** localStorage key for the drag-resized desktop width. */
+export const SIDEBAR_WIDTH_STORAGE_KEY = "sidebar_width";
 export const SIDEBAR_WIDTH = "16rem";
 export const SIDEBAR_WIDTH_MOBILE = "18rem";
 /** Bare-key toggle defaults: "[" for a left sidebar, "]" for a right one.
@@ -127,14 +129,33 @@ function useIsMobile(breakpoint: number): boolean {
   return !!isMobile;
 }
 
+// Persisted desktop state, read once on mount. Either reader returns
+// undefined when nothing usable was stored, so the props stay the fallback.
+function readStoredOpen(): boolean | undefined {
+  if (typeof document === "undefined") return undefined;
+  const match = document.cookie.match(new RegExp(`(?:^|; )${SIDEBAR_COOKIE_NAME}=(true|false)`));
+  return match ? match[1] === "true" : undefined;
+}
+
+function readStoredWidth(): string | undefined {
+  try {
+    const px = Number(window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY));
+    if (!Number.isFinite(px) || px <= 0) return undefined;
+    return `${Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, px))}px`;
+  } catch {
+    return undefined;
+  }
+}
+
 // ─── SidebarProvider ─────────────────────────────────────────────────────────
 
 export interface SidebarProviderProps extends HTMLAttributes<HTMLDivElement> {
   defaultOpen?: boolean;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
-  /** Persist the desktop open state to the `sidebar_state` cookie so a server
-   *  layout can read it back into `defaultOpen`. Mobile state never persists. */
+  /** Persist the desktop open state (`sidebar_state` cookie) and the
+   *  drag-resized width (localStorage) and restore both on mount. Mobile
+   *  state never persists. */
   persist?: boolean;
   /** Bare-key toggle shortcut. Defaults to "[" for a left sidebar and "]"
    *  for a right one; `null` disables it. */
@@ -184,11 +205,25 @@ const SidebarProvider = forwardRef<HTMLDivElement, SidebarProviderProps>(
     }, []);
     const registerSide = useCallback((next: SidebarSide) => setSide(next), []);
 
-    // Live width: the prop is the starting point, the rail's drag-resize
-    // updates it at runtime.
-    const [width, setWidth] = useState(widthProp);
-    useEffect(() => setWidth(widthProp), [widthProp]);
+    // Live width: a persisted drag-resize wins over the prop on mount, the
+    // rail's drag-resize updates it at runtime, and a changed prop resets it.
+    const [width, setWidth] = useState(() => (persist && readStoredWidth()) || widthProp);
+    const lastWidthPropRef = useRef(widthProp);
+    useEffect(() => {
+      if (lastWidthPropRef.current === widthProp) return;
+      lastWidthPropRef.current = widthProp;
+      setWidth(widthProp);
+    }, [widthProp]);
     const [isResizing, setIsResizing] = useState(false);
+    // Save once the drag settles, not on every pointer move.
+    useEffect(() => {
+      if (!persist || isResizing || !width.endsWith("px")) return;
+      try {
+        window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(parseFloat(width)));
+      } catch {
+        // Storage unavailable (private mode, quota) — the width just won't stick.
+      }
+    }, [persist, isResizing, width]);
 
     // Default shortcut mirrors the sidebar's edge: "[" left, "]" right.
     const shortcut =
@@ -198,7 +233,7 @@ const SidebarProvider = forwardRef<HTMLDivElement, SidebarProviderProps>(
           : SIDEBAR_KEYBOARD_SHORTCUT
         : shortcutProp;
 
-    const [internalOpen, setInternalOpen] = useState(defaultOpen);
+    const [internalOpen, setInternalOpen] = useState(() => (persist ? (readStoredOpen() ?? defaultOpen) : defaultOpen));
     const open = openProp ?? internalOpen;
     const openRef = useRef(open);
     openRef.current = open;

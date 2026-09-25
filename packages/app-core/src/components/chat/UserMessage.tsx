@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowsOutIcon, ImageBrokenIcon, XIcon } from '@phosphor-icons/react'
+import { ArrowsOutIcon, CheckIcon, CopyIcon, ImageBrokenIcon, XIcon } from '@phosphor-icons/react'
 import type { StreamMessagePart } from '@openmanager/shared/lib/remote-stream-parts'
 import { cn } from '../../lib/utils'
 import type { ArtifactSource, OptimisticImage } from '../../lib/attachments'
 import { partArtifact, useArtifactPreview } from '../../lib/artifact-preview'
+import { Tooltip } from '../ui/Tooltip'
 import { chatUserInner, chatUserMessageShell } from './userMessageStyles'
 
 type MessagePart = StreamMessagePart
@@ -118,6 +119,36 @@ function ImagePreviewDialog({ image, onClose }: { image: PreviewImage; onClose: 
   )
 }
 
+/** Copies the prompt's text; shown under the bubble while the row is hovered. */
+function CopyMessageButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  useEffect(() => {
+    if (!copied) return
+    const timer = setTimeout(() => setCopied(false), 1400)
+    return () => clearTimeout(timer)
+  }, [copied])
+  const label = copied ? 'Copied' : 'Copy message'
+  return (
+    <Tooltip content={label} side="bottom">
+      <button
+        type="button"
+        aria-label={label}
+        onClick={() => {
+          void navigator.clipboard.writeText(text).then(() => setCopied(true))
+        }}
+        className={cn(
+          'flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-[color,background-color,opacity] duration-100',
+          'text-[var(--basis-text-faint)] hover:bg-hover hover:text-[var(--basis-text)]',
+          'opacity-0 focus-visible:opacity-100 group-hover/user:opacity-100 pointer-coarse:opacity-100',
+          copied && 'opacity-100',
+        )}
+      >
+        {copied ? <CheckIcon size={13} weight="bold" /> : <CopyIcon size={13} />}
+      </button>
+    </Tooltip>
+  )
+}
+
 export function UserMessage({
   content,
   parts,
@@ -151,7 +182,7 @@ export function UserMessage({
         name: attachment.name,
       }))
   return (
-    <div className="flex w-full justify-end py-1">
+    <div className="group/user flex w-full flex-col items-end pt-6 pb-1">
       <div className={chatUserMessageShell}>
         <div className={chatUserInner}>
           {images.length > 0 && (
@@ -178,6 +209,14 @@ export function UserMessage({
           )}
         </div>
       </div>
+      {/* Under the bubble's right edge, where the eye finishes reading it. */}
+      {content ? (
+        <div className="mt-1 flex justify-end">
+          <CopyMessageButton text={content} />
+        </div>
+      ) : (
+        <div className="h-2" />
+      )}
       {previewImage && (
         <ImagePreviewDialog image={previewImage} onClose={() => setPreviewImage(null)} />
       )}

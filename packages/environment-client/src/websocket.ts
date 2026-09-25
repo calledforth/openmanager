@@ -46,6 +46,7 @@ import {
   applySessionList,
   applySessionOpen,
   applySessionRemoved,
+  applySessionSettled,
   applySessionTitle,
   applySnapshot,
   applyThreadHydration,
@@ -1123,6 +1124,10 @@ export function createWebSocketEnvironmentClient(
     async renameSession(sessionId, title) {
       const payload = await request('session.rename', { sessionId, title })
       store.update((state) => applySessionTitle(state, sessionId, payload.session.title))
+    },
+    async settleSession(sessionId, settled) {
+      const payload = await request('session.settle', { sessionId, settled })
+      store.update((state) => applySessionSettled(state, sessionId, payload.settledAt))
     },
     async deleteSession(sessionId) {
       await request('session.delete', { sessionId })

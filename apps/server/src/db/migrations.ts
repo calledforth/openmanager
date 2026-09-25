@@ -519,6 +519,22 @@ export const MIGRATIONS: readonly Migration[] = [
       backfillTurnActivity(database)
     },
   },
+  {
+    version: 12,
+    name: 'session_settled_at',
+    up(database) {
+      const columns = new Set(
+        (database.prepare('PRAGMA table_info(sessions)').all() as { name: string }[]).map(
+          (column) => column.name,
+        ),
+      )
+      if (!columns.has('settled_at')) {
+        // When the user settled the session, projected from `session.updated`.
+        // Null while the session is active; a new turn or question clears it.
+        database.exec('ALTER TABLE sessions ADD COLUMN settled_at INTEGER')
+      }
+    },
+  },
 ]
 
 type RetainedActivityRow = {
