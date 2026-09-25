@@ -9,7 +9,7 @@ import {
   useId,
   type HTMLAttributes,
 } from "react";
-import { motion, useMotionValue, animate, type Transition } from "framer-motion";
+import { motion, useMotionValue, animate, type Transition } from "motion/react";
 import * as SwitchPrimitive from "@radix-ui/react-switch";
 import { cn } from "../lib/utils";
 import { spring } from "../lib/springs";

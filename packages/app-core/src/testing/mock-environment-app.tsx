@@ -1,5 +1,6 @@
 import type { EnvironmentClient } from '@openmanager/environment-client'
 import { ChatWorkspace } from '../components/chat/ChatWorkspace'
+import { SidebarInset, SidebarProvider } from '../components/fluid/ui/sidebar'
 import { WorkspaceSidebar } from '../components/sidebar/WorkspaceSidebar'
 import { EnvironmentApplicationProviders } from '../providers/environment-application'
 import { EnvironmentClientProvider } from '../providers/environment-client'
@@ -24,12 +25,15 @@ export function MockEnvironmentApp({
           addWorkspace={addWorkspace}
           collapsedWorkspaceStorage={null}
         >
-          <div className="flex h-screen w-screen min-w-0 overflow-hidden bg-[var(--basis-canvas-bg)] text-[var(--basis-text)]">
-            <WorkspaceSidebar collapsed={false} />
-            <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--basis-canvas-bg)]">
+          <SidebarProvider
+            persist={false}
+            className="h-screen w-screen min-w-0 overflow-hidden bg-[var(--basis-canvas-bg)] text-[var(--basis-text)]"
+          >
+            <WorkspaceSidebar />
+            <SidebarInset className="overflow-hidden">
               <ChatWorkspace />
-            </div>
-          </div>
+            </SidebarInset>
+          </SidebarProvider>
         </EnvironmentApplicationProviders>
       </EnvironmentClientProvider>
     </ThemeProvider>

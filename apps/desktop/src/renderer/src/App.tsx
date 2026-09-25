@@ -12,6 +12,11 @@ import { DesktopPermissionStateProvider } from './providers/permission-provider'
 import { DesktopQuestionStateProvider } from './providers/question-provider'
 import { DesktopPlanStateProvider } from './providers/plan-provider'
 import { WorkspaceSidebar } from '@openmanager/app-core/components/sidebar/WorkspaceSidebar'
+import {
+  SidebarInset,
+  SidebarProvider,
+  useSidebar,
+} from '@openmanager/app-core/components/fluid/ui/sidebar'
 import { ChatWorkspace } from '@openmanager/app-core/components/chat/ChatWorkspace'
 import { SidebarSettingsMenu } from './components/sidebar/SidebarSettingsMenu'
 import { ConvexTelemetryPanel } from './components/telemetry/ConvexTelemetryPanel'
@@ -25,43 +30,55 @@ void ensureShiki().catch((error) => {
   console.error('Failed to initialize syntax highlighting', error)
 })
 
-const sidebarToggleShortcut = window.electronAPI.platform === 'darwin' ? '⌘B' : 'Ctrl+B'
-
-function AppShell() {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(true)
-  const [convexOpen, setConvexOpen] = useState(false)
-
+/** Ctrl/⌘+B toggles the sidebar, alongside Fluid's bare `[` shortcut. */
+function useSidebarToggleShortcut() {
+  const { toggleSidebar } = useSidebar()
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return
       if (event.key.toLowerCase() !== 'b') return
       event.preventDefault()
-      setSidebarCollapsed((v) => !v)
+      toggleSidebar()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+  }, [toggleSidebar])
+}
+
+function AppLayout() {
+  const [convexOpen, setConvexOpen] = useState(false)
+  useSidebarToggleShortcut()
 
   return (
-    <div className="flex h-screen w-screen min-w-0 overflow-hidden bg-[var(--basis-canvas-bg)] text-[var(--basis-text)]">
+    <>
       <WorkspaceSidebar
-        collapsed={sidebarCollapsed}
-        onCollapse={() => setSidebarCollapsed(true)}
-        settingsMenu={
-          <SidebarSettingsMenu convexOpen={convexOpen} onToggleConvex={() => setConvexOpen((v) => !v)} />
+        // The window has no native titlebar: this strip drags it, and on
+        // macOS it clears the traffic lights.
+        titlebar={<div className="titlebar-drag h-[var(--basis-titlebar-height)] shrink-0" />}
+        footer={
+          <div className="flex justify-end px-1">
+            <SidebarSettingsMenu
+              convexOpen={convexOpen}
+              onToggleConvex={() => setConvexOpen((v) => !v)}
+            />
+          </div>
         }
-        sidebarToggleShortcut={sidebarToggleShortcut}
       />
-      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--basis-canvas-bg)]">
-        <AppChrome
-          sidebarCollapsed={sidebarCollapsed}
-          onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
-        />
+      <SidebarInset className="overflow-hidden">
+        <AppChrome />
         <ChatWorkspace />
-      </div>
+      </SidebarInset>
       <ConvexTelemetryPanel open={convexOpen} onOpenChange={setConvexOpen} />
       <UpdateNotification />
-    </div>
+    </>
+  )
+}
+
+function AppShell() {
+  return (
+    <SidebarProvider className="h-screen w-screen min-w-0 overflow-hidden bg-[var(--basis-canvas-bg)] text-[var(--basis-text)]">
+      <AppLayout />
+    </SidebarProvider>
   )
 }
 

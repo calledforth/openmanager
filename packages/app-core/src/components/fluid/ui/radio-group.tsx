@@ -12,7 +12,7 @@ import {
   type ReactNode,
   type HTMLAttributes,
 } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence } from "motion/react";
 import * as RadioGroupPrimitive from "@radix-ui/react-radio-group";
 import { cn } from "../lib/utils";
 import { spring } from "../lib/springs";

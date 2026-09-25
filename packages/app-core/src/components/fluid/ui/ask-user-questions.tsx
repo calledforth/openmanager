@@ -11,7 +11,7 @@ import {
   type HTMLAttributes,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion } from "motion/react";
 import { RadioGroup as RadioGroupPrimitive } from "@base-ui/react/radio-group";
 import { Radio as RadioPrimitive } from "@base-ui/react/radio";
 import { CheckboxGroup as CheckboxGroupPrimitive } from "@base-ui/react/checkbox-group";
@@ -761,7 +761,7 @@ const AskUserQuestions = forwardRef<HTMLDivElement, AskUserQuestionsProps>(
     // ── Selected-row grouping (merges contiguous selections) ─────
     // Mirrors the CheckboxGroup pattern: contiguous selected indices
     // collapse into a single rounded background block; stable IDs let
-    // framer-motion morph block size/position when neighbours toggle.
+    // motion morph block size/position when neighbours toggle.
     // The Other row gets its own input-field-style indicator (see below) and
     // is intentionally excluded here so it doesn't merge into a contiguous
     // bg-accent block with adjacent selected options.

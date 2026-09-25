@@ -12,7 +12,7 @@ import {
   type ReactNode,
   type HTMLAttributes,
 } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence } from "motion/react";
 import * as Collapsible from "@radix-ui/react-collapsible";
 
 // SSR-safe layout effect (client components still server-render in Next).
@@ -32,7 +32,7 @@ import type { BadgeColor } from "./badge";
 //
 // ThinkingSteps and ThinkingStepDetails are both single collapsible sections,
 // built directly on Radix's Collapsible (Root/Trigger/Content) with the
-// library's framer-motion springs layered on top.
+// library's motion springs layered on top.
 
 /** Open state of the nearest ThinkingSteps root, for the header trigger/panel. */
 const ThinkingStepsOpenContext = createContext(false);
@@ -137,7 +137,7 @@ interface CollapsePanelProps {
 }
 
 /**
- * Collapsible panel with a framer-motion height + spring animation.
+ * Collapsible panel with a motion height + spring animation.
  *
  * Radix's Content would apply `hidden` the moment a collapsible closes (it
  * can't observe the JS-driven exit animation), which is `display: none` and

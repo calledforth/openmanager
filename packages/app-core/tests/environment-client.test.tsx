@@ -18,6 +18,7 @@ import {
   useSessionsByWorkspace,
 } from '../src/providers/environment-client'
 import { WorkspaceSidebarView } from '../src/components/sidebar/WorkspaceSidebarView'
+import { SidebarProvider } from '../src/components/fluid/ui/sidebar'
 import { MessageInputView } from '../src/components/chat/MessageInputView'
 import {
   AssistantMessage,
@@ -72,7 +73,6 @@ function Sidebar() {
   const commands = useEnvironmentCommands()
   return (
     <WorkspaceSidebarView
-      collapsed={false}
       workspaces={groups.map(({ workspace, sessions }) => ({
         path: workspace.workspaceId,
         name: workspace.name,
@@ -84,8 +84,6 @@ function Sidebar() {
       }))}
       activeWorkspacePath={active?.workspaceId ?? null}
       activeSessionId={active?.sessionId ?? null}
-      collapsedWorkspacePaths={[]}
-      onToggleWorkspaceCollapse={() => undefined}
       onCreateSession={(workspaceId) =>
         void commands.createSession({
           environmentId: 'mock-environment',
@@ -174,7 +172,9 @@ function App({ client }: { client: MockEnvironmentClient }) {
   return (
     <ThemeProvider>
       <EnvironmentClientProvider client={client}>
-        <Sidebar />
+        <SidebarProvider persist={false}>
+          <Sidebar />
+        </SidebarProvider>
         <Chat />
         <Composer />
       </EnvironmentClientProvider>
@@ -184,6 +184,12 @@ function App({ client }: { client: MockEnvironmentClient }) {
 
 const button = (label: string) =>
   container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)
+/** A row in the sidebar header ("New agent", "Add project"): labelled by its
+ *  text, not an aria-label. */
+const headerRow = (text: string) =>
+  [...container.querySelectorAll<HTMLButtonElement>('[data-sidebar="header"] button')].find(
+    (node) => node.textContent?.includes(text),
+  )
 const sessionButtons = () =>
   [...container.querySelectorAll<HTMLButtonElement>('button')].filter(
     (node) => node.textContent?.includes('session') || node.textContent?.includes('First'),
@@ -215,42 +221,18 @@ describe('mock environment client drives the shared UI', () => {
     expect(client.calls.map((call) => call.command)).toContain('openSession')
   })
 
-  it('renames inline and deletes a session from the sidebar', async () => {
+  it('reflects a rename and a delete in the sidebar', async () => {
     const client = createMockEnvironmentClient({
       seed: { workspaces: [WORKSPACE], sessions: [{ session: SESSION, threads: [THREAD] }] },
     })
     await render(<App client={client} />)
-    // Escape abandons the edit without sending a command.
-    await act(() => button('Rename session')!.click())
-    await act(() =>
-      container
-        .querySelector<HTMLInputElement>('input[aria-label="Session title"]')!
-        .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })),
-    )
+    // The rows offer neither action; both stay on the contract.
+    await act(() => client.commands.renameSession(SESSION.sessionId, 'Renamed'))
     await settle(client)
-    expect(container.querySelector('input[aria-label="Session title"]')).toBeNull()
-    expect(client.calls.map((call) => call.command)).not.toContain('renameSession')
-
-    await act(() => button('Rename session')!.click())
-    const input = container.querySelector<HTMLInputElement>('input[aria-label="Session title"]')!
-    await act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
-        input,
-        '  Renamed  ',
-      )
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    await act(() =>
-      container
-        .querySelector('form')!
-        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
-    )
-    await settle(client)
-    expect(client.getState().sessions[SESSION.sessionId]?.title).toBe('Renamed')
     expect(container.textContent).toContain('Renamed')
-    await act(() => button('Delete session')!.click())
+    await act(() => client.commands.deleteSession(SESSION.sessionId))
     await settle(client)
-    expect(client.getState().sessions[SESSION.sessionId]).toBeUndefined()
+    expect(container.textContent).not.toContain('Renamed')
   })
 
   it('creates a session from the sidebar and streams a reply through the composer', async () => {
@@ -258,7 +240,7 @@ describe('mock environment client drives the shared UI', () => {
     await render(<App client={client} />)
     expect(sessionButtons()).toHaveLength(0)
 
-    await act(() => button('New Agent')!.click())
+    await act(() => headerRow('New agent')!.click())
     await settle(client)
     const created = client.getState().sessionOrder[0]!
     await act(() => client.commands.openSession(created))

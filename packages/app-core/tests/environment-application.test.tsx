@@ -112,6 +112,12 @@ const buttonWithText = (text: string) =>
   [...container.querySelectorAll<HTMLButtonElement>('button')].find((node) =>
     node.textContent?.includes(text),
   )
+/** A row in the sidebar header ("New agent", "Add project"): labelled by its
+ *  text, not an aria-label. */
+const headerRow = (text: string) =>
+  [...container.querySelectorAll<HTMLButtonElement>('[data-sidebar="header"] button')].find(
+    (node) => node.textContent?.includes(text),
+  )
 const type = async (text: string) => {
   const textarea = container.querySelector('textarea')!
   const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!
@@ -135,11 +141,13 @@ describe('the shared application over the environment client', () => {
       payload: { session: SESSION },
     })
     await render(<App client={client} />)
-    const labels = {
-      idle: 'Session ready to open',
-      running: 'Session in progress',
-      waiting: 'Session needs your attention',
-      error: 'Session failed',
+    // Live work gets a glyph and says what it is doing; a session at rest
+    // shows its age instead, so idle has no glyph at all.
+    const glyphs = {
+      idle: null,
+      running: { label: 'Session in progress', copy: 'Working' },
+      waiting: { label: 'Session needs your attention', copy: 'Needs input' },
+      error: { label: 'Session failed', copy: 'Failed' },
     } as const
     for (const status of ['idle', 'running', 'waiting', 'error', 'idle'] as const) {
       await act(() =>
@@ -155,7 +163,14 @@ describe('the shared application over the environment client', () => {
           payload: { sessionId: SESSION.sessionId, status },
         }),
       )
-      expect(container.querySelector(`[role="img"][aria-label="${labels[status]}"]`)).not.toBeNull()
+      const glyph = glyphs[status]
+      const card = buttonWithText('First')!
+      if (glyph) {
+        expect(card.querySelector(`[role="img"][aria-label="${glyph.label}"]`)).not.toBeNull()
+        expect(card.textContent).toContain(glyph.copy)
+      } else {
+        expect(card.querySelector('[role="img"]')).toBeNull()
+      }
       expect(client.getState().activeSessionId).toBeNull()
       expect(Object.keys(client.getState().threads)).toHaveLength(0)
     }
@@ -169,9 +184,11 @@ describe('the shared application over the environment client', () => {
       },
     })
     await render(<App client={client} />)
-    // The row keeps the status the environment owns and gains the folder
-    // warning; the badge on the project header is the only other change.
-    expect(container.querySelector('[aria-label="Project folder unavailable"]')).not.toBeNull()
+    // The card keeps the status the environment owns; its project line gains
+    // the unavailable badge and the card dims.
+    const card = buttonWithText('First')!
+    expect(card.textContent).toContain('MISSING')
+    expect(card.className).toContain('opacity-70')
     expect(client.getState().sessions[SESSION.sessionId]?.status).toBe('idle')
   })
 
@@ -186,12 +203,12 @@ describe('the shared application over the environment client', () => {
       },
     })
     await render(<App client={client} />)
-    // The badge and its accessible name carry the cause, not only that the
-    // project is unusable: the two need different fixes.
+    // The badge and its tooltip carry the cause, not only that the project is
+    // unusable: the two need different fixes.
     const badgeNode = [...container.querySelectorAll('span')].find(
       (node) => node.textContent === badge,
     )
-    expect(badgeNode?.getAttribute('aria-label')).toMatch(reason)
+    expect(badgeNode?.getAttribute('title')).toMatch(reason)
   })
 
   it('renders the sidebar, the empty-chat landing and a disabled composer', async () => {
@@ -204,7 +221,7 @@ describe('the shared application over the environment client', () => {
     expect(container.querySelector('textarea')?.disabled).toBe(true)
   })
 
-  it('names the environment on the sidebar, its session rows, the landing and the project picker', async () => {
+  it('names the environment on the sidebar session rows, the landing and the project picker', async () => {
     const client = createMockEnvironmentClient({
       seed: { ...SEEDED_HISTORY, environment: { environmentId: 'env-1', name: 'devbox' } },
     })
@@ -213,8 +230,8 @@ describe('the shared application over the environment client', () => {
       [...container.querySelectorAll('span.sr-only')].filter(
         (node) => node.textContent === 'Sessions run on ',
       )
-    // Beside the Projects heading and under the landing headline.
-    expect(labels()).toHaveLength(2)
+    // Under the landing headline; the sidebar names it on each session row.
+    expect(labels()).toHaveLength(1)
     expect(labels()[0]!.nextElementSibling?.textContent).toBe('devbox')
     expect(buttonWithText('First')!.textContent).toContain('First on devbox')
 
@@ -229,16 +246,28 @@ describe('the shared application over the environment client', () => {
   it('shows the workspace icon the environment resolves and falls back when it has none', async () => {
     const other = { ...WORKSPACE, workspaceId: 'C:/other', path: 'C:/other', name: 'other' }
     const icon = 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4='
+    const otherSession = { sessionId: 'session-2', workspaceId: other.workspaceId, title: 'Second' }
     const client = createMockEnvironmentClient({
-      seed: { workspaces: [WORKSPACE, other], workspaceIcons: { [WORKSPACE.workspaceId]: icon } },
+      seed: {
+        workspaces: [WORKSPACE, other],
+        workspaceIcons: { [WORKSPACE.workspaceId]: icon },
+        // The sidebar shows a project only on its sessions' cards.
+        sessions: [
+          { session: SESSION, threads: [THREAD] },
+          { session: otherSession, threads: [{ threadId: 'thread-2', sessionId: 'session-2' }] },
+        ],
+      },
     })
     await render(<App client={client} />)
     await settle(client)
-    // The sidebar row and the landing's workspace pick both show it; the
+    // The session card and the landing's workspace pick both show it; the
     // workspace without one keeps its folder glyph instead of a broken image.
     const images = [...container.querySelectorAll('img')].map((img) => img.getAttribute('src'))
     expect(images.length).toBeGreaterThan(0)
     expect(new Set(images)).toEqual(new Set([icon]))
+    expect(buttonWithText('First')!.querySelector('img')?.getAttribute('src')).toBe(icon)
+    expect(buttonWithText('Second')!.querySelector('img')).toBeNull()
+    expect(buttonWithText('Second')!.querySelector('svg')).not.toBeNull()
     const asked = client.calls
       .filter((call) => call.command === 'resolveWorkspaceIcon')
       .map((call) => call.input)
@@ -275,14 +304,14 @@ describe('the shared application over the environment client', () => {
     })
     await render(<App client={client} />)
     await settle(client)
-    // `parentSessionId` reaches the sidebar as `parentExternalId`, which is what
-    // indents the row and marks it as a subagent transcript.
-    expect(container.textContent).toContain('SUBAGENT')
-    const row = buttonWithText('Subagent run')!.closest('div[style]') as HTMLElement
-    expect(row.style.paddingLeft).toBe('20px')
-    expect((buttonWithText('First')!.closest('div[style]') as HTMLElement).style.paddingLeft).toBe(
-      '8px',
-    )
+    // `parentSessionId` reaches the sidebar as `parentExternalId`, which files
+    // the transcript in a list inside its parent's card instead of a card of
+    // its own.
+    const card = buttonWithText('First')!.closest('[role="listitem"]')!
+    const childRow = buttonWithText('Subagent run')!
+    expect(card.contains(childRow)).toBe(true)
+    expect(card.contains(childRow.closest('[role="list"]'))).toBe(true)
+    expect(card.parentElement!.children).toHaveLength(1)
   })
 
   it('opens a session from the sidebar and shows its mocked message list', async () => {
@@ -380,7 +409,7 @@ describe('the shared application over the environment client', () => {
   it('starts a session from a draft and streams the reply through the composer', async () => {
     const client = createMockEnvironmentClient({ seed: { workspaces: [WORKSPACE] } })
     await render(<App client={client} />)
-    await act(() => button('New Agent')!.click())
+    await act(() => headerRow('New agent')!.click())
     expect(container.textContent).toContain('Start with a message below')
     expect(container.querySelector('textarea')?.disabled).toBe(false)
 
@@ -1172,7 +1201,7 @@ describe('the shared application over the environment client', () => {
     const addWorkspace = vi.fn(async () => undefined)
     const client = createMockEnvironmentClient()
     await render(<App client={client} addWorkspace={addWorkspace} />)
-    await act(() => button('Add project')!.click())
+    await act(() => headerRow('Add project')!.click())
     expect(addWorkspace).toHaveBeenCalledOnce()
   })
 })

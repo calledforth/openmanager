@@ -21,7 +21,7 @@ import {
   type RefObject,
   type SetStateAction,
 } from "react";
-import { animate, motion, useReducedMotion } from "framer-motion";
+import { animate, motion, useReducedMotion } from "motion/react";
 import { cn } from "../lib/utils";
 import { spring } from "../lib/springs";
 import { useIcon, type IconComponent } from "../lib/icon-context";

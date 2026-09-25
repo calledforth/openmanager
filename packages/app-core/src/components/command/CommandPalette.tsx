@@ -1,5 +1,5 @@
 import { useMemo, type ReactNode } from 'react'
-import { Check, Palette, Type } from 'lucide-react'
+import { CheckIcon, PaletteIcon, TextTIcon } from '@phosphor-icons/react'
 import {
   CommandMenu,
   CommandMenuChip,
@@ -10,6 +10,7 @@ import {
   CommandMenuList,
   type CommandMenuItemData,
 } from '../fluid/ui/command-menu'
+import { phosphorIcon } from '../fluid/lib/icon-context'
 import { UI_FONTS } from '../../lib/fonts'
 import { THEME_OPTIONS, useTheme } from '../../providers/theme-provider'
 
@@ -81,10 +82,15 @@ function CommandPaletteItem({ item }: { item: CommandPaletteItemData }) {
           <span className="min-w-0 truncate text-muted-foreground/70">{item.description}</span>
         )}
       </span>
-      {item.current && <Check aria-label="Current" className="h-4 w-4 shrink-0 text-foreground" />}
+      {item.current && (
+        <CheckIcon aria-label="Current" className="h-4 w-4 shrink-0 text-foreground" />
+      )}
     </CommandMenuItem>
   )
 }
+
+const ThemeIcon = phosphorIcon(PaletteIcon)
+const FontIcon = phosphorIcon(TextTIcon)
 
 /**
  * ⌘K / Ctrl+K from anywhere. For now it switches themes and fonts, the way
@@ -100,7 +106,7 @@ export function CommandPalette() {
         value: `theme:${option.id}`,
         label: option.label,
         description: option.hint,
-        icon: Palette,
+        icon: ThemeIcon,
         group: 'Themes',
         current: option.id === theme,
         keywords: ['theme', 'colour', 'color', 'scheme', 'appearance', 'dark', 'light'],
@@ -110,7 +116,7 @@ export function CommandPalette() {
       ...UI_FONTS.map((option) => ({
         value: `font:${option.id}`,
         label: option.label,
-        icon: Type,
+        icon: FontIcon,
         group: 'Fonts',
         current: option.id === font,
         keywords: ['font', 'typeface', 'type', 'text'],

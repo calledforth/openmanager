@@ -643,7 +643,9 @@ describe('the composer over the environment client', () => {
     await act(() => root.render(<MockEnvironmentApp client={client} />))
     await settle(client)
     await act(() =>
-      container.querySelector<HTMLButtonElement>('button[aria-label="New Agent"]')!.click(),
+      [...container.querySelectorAll<HTMLButtonElement>('[data-sidebar="header"] button')]
+        .find((node) => node.textContent?.includes('New agent'))!
+        .click(),
     )
     await settle(client)
     const trigger = [...container.querySelectorAll('button')].find((node) =>

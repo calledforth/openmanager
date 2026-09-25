@@ -2,7 +2,7 @@ import { type IconName } from "../lib/icon-context";
 
 // ---------------------------------------------------------------------------
 // Seed navigation data — replace with your own. Icons are keys into the
-// icon context (lucide by default; override via IconProvider).
+// icon context (Phosphor by default; override via IconProvider).
 // ---------------------------------------------------------------------------
 
 export interface NavItem {

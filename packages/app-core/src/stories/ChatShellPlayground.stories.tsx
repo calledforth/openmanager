@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { WorkspaceSidebarView } from '../components/sidebar/WorkspaceSidebarView'
+import { SidebarProvider } from '../components/fluid/ui/sidebar'
 import { ChatViewPanel, UserMessage, AssistantMessage } from '../components/chat/ChatViewPrimitives'
 import { MessageInputView } from '../components/chat/MessageInputView'
 import { FloatingChatComposer } from '../components/chat/FloatingChatComposer'
@@ -561,7 +562,6 @@ function buildStreamUpdates(
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 function Demo() {
-  const [collapsed, setCollapsed] = useState(false)
   const [status, setStatus] = useState<'disconnected' | 'connecting' | 'connected'>('connected')
   const [modeId, setModeId] = useState('default')
   const [modelId, setModelId] = useState('claude-sonnet-4-5')
@@ -682,14 +682,14 @@ function Demo() {
   return (
     <ThemeProvider>
       <>
-        <div className="flex h-screen w-screen min-w-0 overflow-hidden bg-background text-foreground selection:bg-accent/25 selection:text-foreground">
+        <SidebarProvider
+          persist={false}
+          className="flex h-screen w-screen min-w-0 overflow-hidden bg-background text-foreground selection:bg-accent/25 selection:text-foreground"
+        >
           <WorkspaceSidebarView
-            collapsed={collapsed}
             workspaces={workspaces}
             activeWorkspacePath="/workspace/openmanager"
             activeSessionId="sess-1"
-            collapsedWorkspacePaths={[]}
-            onToggleWorkspaceCollapse={() => undefined}
             onCreateSession={() => undefined}
             onSelectSession={() => undefined}
             onDeleteSession={() => undefined}
@@ -863,7 +863,7 @@ function Demo() {
               </FloatingChatComposer>
             </div>
           </div>
-        </div>
+        </SidebarProvider>
       </>
     </ThemeProvider>
   )

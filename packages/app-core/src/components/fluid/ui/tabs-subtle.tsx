@@ -12,7 +12,7 @@ import {
   type HTMLAttributes,
 } from "react";
 import * as TabsPrimitive from "@radix-ui/react-tabs";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence } from "motion/react";
 import type { IconComponent } from "../lib/icon-context";
 import { cn } from "../lib/utils";
 import { spring } from "../lib/springs";

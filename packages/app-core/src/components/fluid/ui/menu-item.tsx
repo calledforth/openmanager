@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import type { IconComponent } from "../lib/icon-context";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence } from "motion/react";
 import { cn } from "../lib/utils";
 import { fontWeights } from "../lib/font-weight";
 import { shapeMap } from "../lib/shape-context";

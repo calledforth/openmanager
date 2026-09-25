@@ -1,10 +1,9 @@
 import { useContext, useEffect, type ReactNode } from 'react'
 import { PlatformCapabilitiesContext } from '../../providers/platform-provider'
 import { useSidebarData } from '../../providers/sidebar-provider'
-import { FluidWorkspaceSidebarView } from './FluidWorkspaceSidebar'
 import { WorkspaceSidebarView } from './WorkspaceSidebarView'
 
-/** The view props both sidebars share, read from the sidebar contract. */
+/** The view's props, read from the sidebar contract. */
 function useWorkspaceSidebarModel() {
   const {
     environment,
@@ -12,8 +11,6 @@ function useWorkspaceSidebarModel() {
     sessionsByWorkspace,
     activeWorkspacePath,
     activeSessionId,
-    collapsedWorkspacePaths,
-    toggleWorkspaceCollapsed,
     addWorkspace,
     selectSession,
     createSession,
@@ -47,8 +44,6 @@ function useWorkspaceSidebarModel() {
     })),
     activeWorkspacePath,
     activeSessionId,
-    collapsedWorkspacePaths,
-    onToggleWorkspaceCollapse: toggleWorkspaceCollapsed,
     onCreateSession: (workspacePath: string) => void createSession(workspacePath),
     onSelectSession: selectSession,
     onRenameSession: renameSession
@@ -64,36 +59,16 @@ function useWorkspaceSidebarModel() {
 }
 
 /**
- * The sidebar bound to `useSidebarData`. Hosts pass their own settings menu
- * as a slot and the shortcut label for their platform; everything else comes
- * from the sidebar contract.
+ * The session sidebar bound to `useSidebarData`; render inside a Fluid
+ * `SidebarProvider`. Hosts add their own rows through the slots.
  */
 export function WorkspaceSidebar({
-  collapsed,
-  onCollapse,
-  settingsMenu,
-  sidebarToggleShortcut,
+  titlebar,
+  footer,
 }: {
-  collapsed: boolean
-  onCollapse?: () => void
-  settingsMenu?: ReactNode
-  sidebarToggleShortcut?: string
+  titlebar?: ReactNode
+  footer?: ReactNode
 }) {
   const model = useWorkspaceSidebarModel()
-  return (
-    <WorkspaceSidebarView
-      {...model}
-      collapsed={collapsed}
-      onCollapse={onCollapse}
-      settingsMenu={settingsMenu}
-      sidebarToggleShortcut={sidebarToggleShortcut}
-    />
-  )
-}
-
-/** The same sidebar on Fluid's inset layout; render inside a Fluid `SidebarProvider`. */
-export function FluidWorkspaceSidebar({ footer }: { footer?: ReactNode }) {
-  // Projects are not groups on this layout, so the folding props go unused.
-  const model = useWorkspaceSidebarModel()
-  return <FluidWorkspaceSidebarView {...model} footer={footer} />
+  return <WorkspaceSidebarView {...model} titlebar={titlebar} footer={footer} />
 }

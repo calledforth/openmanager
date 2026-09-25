@@ -16,7 +16,7 @@ import {
   type ReactNode,
   type TextareaHTMLAttributes,
 } from "react";
-import { AnimatePresence, motion, Reorder, useReducedMotion } from "framer-motion";
+import { AnimatePresence, motion, Reorder, useReducedMotion } from "motion/react";
 import { cn } from "../lib/utils";
 import { fontWeights } from "../lib/font-weight";
 import { spring } from "../lib/springs";

@@ -77,14 +77,14 @@ for (const item of items.values()) {
   for (const file of item?.files ?? []) {
     const target = targetOf(item, file)
     if (target.startsWith('app/')) continue
-    const content = file.content.replace(
-      /(from\s+|import\s*\(\s*)(["'])(@\/[^"']+)\2/g,
-      (_all, pre, quote, spec) => {
+    const content = file.content
+      .replace(/(from\s+|import\s*\(\s*)(["'])(@\/[^"']+)\2/g, (_all, pre, quote, spec) => {
         let rel = path.posix.relative(path.posix.dirname(target), resolveAlias(spec))
         if (!rel.startsWith('.')) rel = `./${rel}`
         return `${pre}${quote}${rel}${quote}`
-      },
-    )
+      })
+      // The app imports Motion by its current name.
+      .replace(/(["'])framer-motion\1/g, '$1motion/react$1')
     const dest = path.join(DEST, target)
     fs.mkdirSync(path.dirname(dest), { recursive: true })
     fs.writeFileSync(dest, content)

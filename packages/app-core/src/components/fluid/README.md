@@ -28,3 +28,12 @@ These are Tend's edits, kept so the look matches Tend:
   the menu open, and the list has hairlines but no scroll fade
   (`[scroll-timeline-name:--sf-scroller]` instead of
   `[--scroll-fade-size:32px] scroll-fade`).
+
+OpenManager's own edit:
+
+- `lib/icon-context.tsx`: the default icons are Phosphor, not lucide
+  (Phosphor is the app's only icon library). `phosphorIcon()` wraps each glyph
+  and maps the components' `strokeWidth` to a weight (≤1.25 light, ≤1.75
+  regular, above that bold). A re-pull restores the lucide version, so
+  re-apply this file afterwards. The registry's `framer-motion` imports need
+  no manual step: the vendor script rewrites them to `motion/react`.

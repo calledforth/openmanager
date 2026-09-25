@@ -4,7 +4,7 @@ import { useEnvironmentClientOptional } from '@openmanager/app-core/providers/en
 import { EnvironmentApplicationProviders } from '@openmanager/app-core/providers/environment-application'
 import { useSidebarData } from '@openmanager/app-core/providers/sidebar-provider'
 import { ProjectIcon } from '@openmanager/app-core/components/sidebar/ProjectIcon'
-import { FluidWorkspaceSidebar } from '@openmanager/app-core/components/sidebar/WorkspaceSidebar'
+import { WorkspaceSidebar } from '@openmanager/app-core/components/sidebar/WorkspaceSidebar'
 import { useIcon } from '@openmanager/app-core/components/fluid/lib/icon-context'
 import {
   Sidebar,
@@ -114,7 +114,7 @@ function ConnectedShell({
   return (
     <EnvironmentApplicationProviders addWorkspace={addWorkspace} navigateSession={navigateSession}>
       {/* A healthy connection says nothing; trouble shows as the banner. */}
-      <FluidWorkspaceSidebar footer={<NavMenu pathname={pathname} includeSessions={false} />} />
+      <WorkspaceSidebar footer={<NavMenu pathname={pathname} includeSessions={false} />} />
       {children}
       <AddWorkspaceDialog client={client} open={addingWorkspace} onClose={closeAddWorkspace} />
     </EnvironmentApplicationProviders>

@@ -21,7 +21,7 @@ import {
   type HTMLAttributes,
   type Ref,
 } from "react";
-import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
+import { motion, AnimatePresence, useReducedMotion } from "motion/react";
 import { cn } from "../lib/utils";
 import { spring, exitFallbackMs } from "../lib/springs";
 import { fontWeights } from "../lib/font-weight";
@@ -528,7 +528,7 @@ const BREAKPOINT_HIDDEN: Record<number, string> = {
   1280: "max-xl:hidden max-xl:opacity-0 max-xl:duration-160 xl:duration-240 xl:starting:opacity-0",
 };
 
-// Props framer-motion redefines with incompatible signatures; they must not
+// Props motion redefines with incompatible signatures; they must not
 // be forwarded onto a motion.div.
 type MotionSafeDivProps = Omit<
   HTMLAttributes<HTMLDivElement>,

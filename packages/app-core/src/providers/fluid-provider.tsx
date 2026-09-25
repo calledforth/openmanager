@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { MotionConfig } from 'framer-motion'
+import { MotionConfig } from 'motion/react'
 import { SizeProvider } from '../components/fluid/lib/size-context'
 import { TooltipProvider } from '../components/fluid/ui/tooltip'
 

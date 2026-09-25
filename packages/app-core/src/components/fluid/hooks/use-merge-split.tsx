@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion } from "motion/react";
 import { spring } from "../lib/springs";
 import type { ItemRect } from "./use-fluid-hover";
 
@@ -40,7 +40,7 @@ export interface SelBlock extends Rect {
   enterFrom?: { top: number; height: number; radii: [number, number, number, number] };
 }
 
-// A contiguous run of selected/checked rows, with a stable id so framer-motion
+// A contiguous run of selected/checked rows, with a stable id so motion
 // can morph it across renders rather than exit+re-enter.
 export type Run = { start: number; end: number; id: number };
 

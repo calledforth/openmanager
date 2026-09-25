@@ -1,5 +1,13 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { ArrowRightLeft, Check, Cpu, Pencil, Plus, Trash2 } from 'lucide-react'
+import {
+  ArrowsLeftRightIcon,
+  CheckIcon,
+  CpuIcon,
+  PencilSimpleIcon,
+  PlusIcon,
+  TrashIcon,
+} from '@phosphor-icons/react'
+import { phosphorIcon } from '../../components/fluid/lib/icon-context'
 import { ThemeProvider } from '../../providers/theme-provider'
 import {
   CommandPalette,
@@ -10,12 +18,12 @@ import {
 /** Session commands the palette could run with a session open, as Linear's
  *  palette runs issue commands on the chip's issue. Display only here. */
 const SESSION_ITEMS: CommandPaletteItemData[] = [
-  { value: 'new', label: 'New agent', icon: Plus, shortcut: 'N' },
-  { value: 'settle', label: 'Settle session', icon: Check, shortcut: 'S' },
-  { value: 'rename', label: 'Rename…', icon: Pencil, shortcut: 'R' },
-  { value: 'model', label: 'Change model…', icon: Cpu, shortcut: 'M' },
-  { value: 'mode', label: 'Switch to Plan mode', icon: ArrowRightLeft, shortcut: 'shift+tab' },
-  { value: 'delete', label: 'Delete session…', icon: Trash2, shortcut: 'mod+backspace' },
+  { value: 'new', label: 'New agent', icon: phosphorIcon(PlusIcon), shortcut: 'N' },
+  { value: 'settle', label: 'Settle session', icon: phosphorIcon(CheckIcon), shortcut: 'S' },
+  { value: 'rename', label: 'Rename…', icon: phosphorIcon(PencilSimpleIcon), shortcut: 'R' },
+  { value: 'model', label: 'Change model…', icon: phosphorIcon(CpuIcon), shortcut: 'M' },
+  { value: 'mode', label: 'Switch to Plan mode', icon: phosphorIcon(ArrowsLeftRightIcon), shortcut: 'shift+tab' },
+  { value: 'delete', label: 'Delete session…', icon: phosphorIcon(TrashIcon), shortcut: 'mod+backspace' },
 ]
 
 /** A stand-in page, so the scrim and the shadow have something to sit on. */

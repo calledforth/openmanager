@@ -166,7 +166,7 @@ const ScrollBar = forwardRef<
       data-visible={visible ? "" : undefined}
       // Scrollbar show/hide is plain CSS opacity matching the cue fade —
       // 160ms in, 120ms out (exits faster, per the animation guidelines);
-      // spring tokens are framer-motion configs and don't apply here.
+      // spring tokens are motion configs and don't apply here.
       className={cn(
         // The 10px track stays as a comfortable hit target; the thumb inside
         // it rests narrow and low-contrast, then widens + darkens on hover so
