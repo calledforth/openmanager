@@ -14,6 +14,7 @@ import {
   type CommandEnvelope,
 } from '@openmanager/protocol/node'
 import { createThreadService, type WorkspaceRuntimeResolver } from '../src/thread-service.js'
+import type { ArtifactStore } from '../src/artifacts.js'
 import { createPersistentEventService } from '../src/event-service.js'
 import { openEnvironmentDatabase } from '../src/db/database.js'
 
@@ -958,7 +959,10 @@ describe('explicit session creation', () => {
     workspaceId: '/workspace/project',
     providerId: 'opencode',
   }
-  function setup(resolve: WorkspaceRuntimeResolver = registered) {
+  function setup(
+    resolve: WorkspaceRuntimeResolver = registered,
+    options: Parameters<typeof createThreadService>[5] = {},
+  ) {
     const runtime = {
       ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-1', state: 'created' }),
       prompt: vi.fn().mockReturnValue(new Promise(() => undefined)),
@@ -971,6 +975,7 @@ describe('explicit session creation', () => {
       (event) => events.push(event),
       undefined,
       resolve,
+      options,
     )
     service.setEnvironmentId(input.environmentId)
     const create = (payload: import('@openmanager/protocol/node').CommandEnvelope['payload']) =>
@@ -1060,6 +1065,210 @@ describe('explicit session creation', () => {
       'thread.created',
       'session.deleted',
     ])
+  })
+
+  it('files the draft picks before the provider starts and runs the first turn in its mode', async () => {
+    const order: string[] = []
+    const preference = { modelId: 'opus', configValues: { effort: 'high' } }
+    const launchPreference = vi.fn(() => {
+      order.push('filed')
+      return preference
+    })
+    const seedSessionComposer = vi.fn(() => void order.push('seeded'))
+    const { create, runtime } = setup(registered, { launchPreference, seedSessionComposer })
+    runtime.ensureSession.mockImplementation(async () => {
+      order.push('started')
+      return { sessionId: 'provider-1', state: 'created' }
+    })
+    const created = ProofResponseSchemas['session.create'].parse(
+      create({ ...input, firstMessage: 'Plan it', preference, modeId: 'plan' }),
+    ).payload
+    expect(launchPreference).toHaveBeenCalledWith(input.workspaceId, 'opencode', preference)
+    expect(seedSessionComposer).toHaveBeenCalledWith(created.session.sessionId, preference)
+    await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(1))
+    expect(order).toEqual(['filed', 'seeded', 'started'])
+    // The same path a plan build takes: the mode is set on the live session
+    // before the prompt, and a mode that cannot be set fails the turn.
+    expect(runtime.prompt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        desiredConfig: { modeId: 'plan' },
+        userMessageId: created.firstTurn!.userMessage.messageId,
+      }),
+    )
+  })
+
+  it('prompts without a mode of its own when the create names none', async () => {
+    const { create, runtime } = setup()
+    create({ ...input, firstMessage: 'Hello' })
+    await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(1))
+    expect(runtime.prompt.mock.calls[0]![0]).not.toHaveProperty('desiredConfig')
+  })
+
+  it('refuses picks it cannot file rather than start on something else', async () => {
+    for (const [options, code] of [
+      [{}, 'capability_missing'],
+      [
+        {
+          launchPreference: () => {
+            throw new Error('disk full')
+          },
+        },
+        'unavailable',
+      ],
+    ] as const) {
+      const { create, runtime, events } = setup(registered, options)
+      expect(
+        create({ ...input, firstMessage: 'Hello', preference: { modelId: 'opus' } }),
+      ).toMatchObject({ type: 'error', error: { code } })
+      await Promise.resolve()
+      expect(runtime.ensureSession).not.toHaveBeenCalled()
+      expect(events).toEqual([])
+    }
+  })
+
+  it('keeps each concurrent launch on its own picks', async () => {
+    // One shared preference, as the composer service keeps it per workspace.
+    let shared: Record<string, unknown> = {}
+    const selections = new Map<string, unknown>()
+    const { create, runtime } = setup(registered, {
+      launchPreference: (_workspaceId, _providerId, picks) => (shared = { ...shared, ...picks }),
+      seedSessionComposer: (sessionId, selection) => selections.set(sessionId, selection),
+    })
+    const first = ProofResponseSchemas['session.create'].parse(
+      create({ ...input, firstMessage: 'A', preference: { modelId: 'opus' } }),
+    ).payload
+    // The second draft files its pick before the first provider has started.
+    const second = ProofResponseSchemas['session.create'].parse(
+      create({ ...input, firstMessage: 'B', preference: { modelId: 'sonnet' } }),
+    ).payload
+    expect(runtime.ensureSession).not.toHaveBeenCalled()
+    expect(shared).toEqual({ modelId: 'sonnet' })
+    // Each session already owns the model its draft showed.
+    expect(selections.get(first.session.sessionId)).toEqual({ modelId: 'opus' })
+    expect(selections.get(second.session.sessionId)).toEqual({ modelId: 'sonnet' })
+  })
+
+  it('seeds a launch with no picks from the preference it launched on', () => {
+    const seedSessionComposer = vi.fn()
+    const { create } = setup(registered, {
+      launchPreference: () => ({ modelId: 'opus', modeId: 'plan' }),
+      seedSessionComposer,
+    })
+    const created = ProofResponseSchemas['session.create'].parse(
+      create({ ...input, firstMessage: 'Hello' }),
+    ).payload
+    // Mode is not seeded: the provider's live mode is what the session shows.
+    expect(seedSessionComposer).toHaveBeenCalledWith(created.session.sessionId, {
+      modelId: 'opus',
+    })
+  })
+
+  describe('images a draft uploaded for its workspace', () => {
+    const context = { clientId: 'owner', command: 'session.create' }
+    const heldStore = (overrides: Record<string, unknown> = {}) => ({
+      claimable: vi.fn(() => true),
+      claim: vi.fn(() => true),
+      release: vi.fn(),
+      get: vi.fn(() => undefined),
+      ...overrides,
+    })
+    const createWith = (
+      service: ReturnType<typeof createThreadService>,
+      payload: Record<string, unknown>,
+      withContext = true,
+    ) =>
+      service.dispatch(
+        {
+          type: 'command',
+          name: 'session.create',
+          requestId: 'create',
+          payload: { ...input, firstMessage: '', artifactIds: ['artifact-1'], ...payload },
+        },
+        withContext ? context : undefined,
+      )
+
+    it('refuses ids it cannot claim before announcing anything', async () => {
+      const artifacts = heldStore({ claimable: vi.fn(() => false) })
+      const { service, runtime, events } = setup(registered, {
+        artifacts: artifacts as unknown as ArtifactStore,
+      })
+      expect(createWith(service, {})).toMatchObject({
+        type: 'error',
+        error: { code: 'not_found', message: expect.stringContaining('Attach them again') },
+      })
+      expect(artifacts.claimable).toHaveBeenCalledWith(['artifact-1'], {
+        workspaceId: input.workspaceId,
+        clientId: 'owner',
+      })
+      expect(artifacts.claim).not.toHaveBeenCalled()
+      await Promise.resolve()
+      expect(runtime.ensureSession).not.toHaveBeenCalled()
+      expect(events).toEqual([])
+    })
+
+    it('refuses images when it cannot tell who is asking', () => {
+      const { service, events } = setup(registered, {
+        artifacts: heldStore() as unknown as ArtifactStore,
+      })
+      expect(createWith(service, {}, false)).toMatchObject({
+        type: 'error',
+        error: { code: 'capability_missing' },
+      })
+      expect(events).toEqual([])
+    })
+
+    it('hands the images back when the first turn cannot start', async () => {
+      // Claimed, but the turn's own lookup fails: the send refuses it.
+      const artifacts = heldStore()
+      const { service, events } = setup(registered, {
+        artifacts: artifacts as unknown as ArtifactStore,
+      })
+      expect(createWith(service, { firstMessage: 'Look' })).toMatchObject({
+        type: 'error',
+        error: { code: 'not_found' },
+      })
+      const sessionId = (events[0] as unknown as { payload: { session: { sessionId: string } } })
+        .payload.session.sessionId
+      expect(artifacts.claim).toHaveBeenCalledWith(['artifact-1'], {
+        workspaceId: input.workspaceId,
+        clientId: 'owner',
+        sessionId,
+      })
+      expect(artifacts.release).toHaveBeenCalledWith(['artifact-1'], sessionId)
+      expect(events.map((event) => event.name)).toEqual([
+        'session.created',
+        'thread.created',
+        'session.deleted',
+      ])
+    })
+
+    it('rolls the session back when another launch claimed the images first', () => {
+      const artifacts = heldStore({ claim: vi.fn(() => false) })
+      const { service, events } = setup(registered, {
+        artifacts: artifacts as unknown as ArtifactStore,
+      })
+      expect(createWith(service, {})).toMatchObject({
+        type: 'error',
+        error: { code: 'not_found' },
+      })
+      expect(artifacts.release).not.toHaveBeenCalled()
+      expect(events.map((event) => event.name)).toEqual([
+        'session.created',
+        'thread.created',
+        'session.deleted',
+      ])
+    })
+  })
+
+  it('refuses a mode with no first message to run it on', async () => {
+    const { create, runtime, events } = setup()
+    expect(create({ ...input, modeId: 'plan' })).toMatchObject({
+      type: 'error',
+      error: { code: 'validation' },
+    })
+    await Promise.resolve()
+    expect(runtime.ensureSession).not.toHaveBeenCalled()
+    expect(events).toEqual([])
   })
 })
 

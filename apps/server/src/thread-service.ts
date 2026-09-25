@@ -25,6 +25,7 @@ import {
   type TurnFailureReason,
   type Turn,
   type TurnStart,
+  type WorkspaceComposerPreference,
 } from '@openmanager/protocol/node'
 import {
   projectAgentEvent,
@@ -53,6 +54,7 @@ const WORKSPACE_UNAVAILABLE =
   'The workspace folder is unavailable. Restore its path or permissions, then try again.'
 const SESSION_WORKSPACE_UNAVAILABLE =
   'The session folder is missing, moved, or inaccessible on this environment. Restore the original folder path or its permissions, then try again. Your session is still listed.'
+const ARTIFACTS_UNAVAILABLE = 'These images are no longer available. Attach them again.'
 const SEND_WORKSPACE_UNAVAILABLE =
   'The session folder is unavailable. Restore the original folder path or its permissions, then reopen the session.'
 type RuntimeEvent = Parameters<HostDeps['emitEvent']>[0]
@@ -290,6 +292,29 @@ export function createThreadService(
      * that failed.
      */
     onSessionMode?: (sessionId: string, modeId: string) => void
+    /**
+     * Files a draft's picks, if it has any, as the workspace's "last used" for
+     * this provider, and answers the preference the new session launches on:
+     * what the draft showed. Called before the session exists; a throw refuses
+     * the create. Absent, a create that carries picks is refused rather than
+     * started on something else.
+     */
+    launchPreference?: (
+      workspaceId: string,
+      providerId: string,
+      picks?: WorkspaceComposerPreference,
+    ) => WorkspaceComposerPreference
+    /**
+     * Gives a new session its own model and config, from the preference it
+     * launched on, before its provider starts. The provider is configured from
+     * the session's selection first, so another draft launching in the same
+     * workspace, which files its picks over that shared preference, cannot
+     * seed this session with them.
+     */
+    seedSessionComposer?: (
+      sessionId: string,
+      selection: Pick<WorkspaceComposerPreference, 'modelId' | 'configValues'>,
+    ) => void
   } = {},
 ) {
   const sessions = new Map<string, ThreadRecord>()
@@ -1169,6 +1194,60 @@ export function createThreadService(
           )
         }
         const providerId = input.providerId as ProviderId
+        // The runtime drops a mode the provider cannot set, so the first turn
+        // would run in the default one. Refused instead: the client picked it.
+        if (input.modeId !== undefined && !providers[providerId].capabilities.canSetMode) {
+          return errorResult(
+            command.requestId,
+            'capability_missing',
+            'This provider cannot start a chat in another mode.',
+          )
+        }
+        // A draft's images were uploaded for this workspace by this client and
+        // held for it. Checked before anything is announced, so a stale or
+        // foreign id leaves no session behind; claimed once the session exists.
+        const artifactIds = input.artifactIds ? [...new Set(input.artifactIds)] : []
+        if (artifactIds.length > 0) {
+          if (!options.artifacts || !context) {
+            return errorResult(
+              command.requestId,
+              'capability_missing',
+              'This environment cannot attach images to a new chat.',
+            )
+          }
+          if (
+            !options.artifacts.claimable(artifactIds, {
+              workspaceId: input.workspaceId,
+              clientId: context.clientId,
+            })
+          ) {
+            return errorResult(command.requestId, 'not_found', ARTIFACTS_UNAVAILABLE)
+          }
+        }
+        // Filed before the session exists, so a pick that cannot be saved stops
+        // the launch rather than starting it on something the user did not
+        // choose. What comes back is what the draft showed; the session keeps
+        // it as its own below.
+        let launched: WorkspaceComposerPreference | undefined
+        if (input.preference && !options.launchPreference) {
+          return errorResult(
+            command.requestId,
+            'capability_missing',
+            'This environment cannot start a chat with the selected settings.',
+          )
+        }
+        try {
+          launched = options.launchPreference?.(input.workspaceId, providerId, input.preference)
+        } catch {
+          if (input.preference) {
+            return errorResult(
+              command.requestId,
+              'unavailable',
+              'The chat settings could not be saved. Try again.',
+            )
+          }
+          // Nothing was picked: the provider's own seeding still applies.
+        }
         const session: Session = {
           sessionId: randomUUID(),
           workspaceId: parsed.data.payload.workspaceId,
@@ -1222,13 +1301,51 @@ export function createThreadService(
         sessions.set(session.sessionId, record)
         threads.set(thread.threadId, record)
         void record.runtimeSession.catch(() => rollbackSession(record))
+        // Before the provider starts, which is a microtask away: once the
+        // session has a selection of its own, a later launch in the workspace
+        // can only move the shared preference, not this session.
+        if (launched && (launched.modelId !== undefined || launched.configValues !== undefined)) {
+          try {
+            options.seedSessionComposer?.(session.sessionId, {
+              ...(launched.modelId !== undefined ? { modelId: launched.modelId } : {}),
+              ...(launched.configValues !== undefined
+                ? { configValues: launched.configValues }
+                : {}),
+            })
+          } catch (error) {
+            // Display and seeding state; the preference still stands in for it.
+            options.onPersistenceError?.(error, 'session.composer.updated')
+          }
+        }
+        if (artifactIds.length > 0) {
+          // The claim points each row at the session, so the session row it
+          // references has to be written first.
+          options.flush?.()
+          let claimed = false
+          try {
+            claimed = options.artifacts!.claim(artifactIds, {
+              workspaceId: input.workspaceId,
+              clientId: context!.clientId,
+              sessionId: session.sessionId,
+            })
+          } catch (error) {
+            options.onPersistenceError?.(error, 'session.created')
+          }
+          if (!claimed) {
+            // Another launch took them in between, or the write failed.
+            rollbackSession(record)
+            return errorResult(command.requestId, 'not_found', ARTIFACTS_UNAVAILABLE)
+          }
+        }
         // Re-enter the existing turn command so validation, runtime scheduling and
         // history ownership remain in one place. No asynchronous gap is exposed.
+        // A picked mode rides the first prompt the way a plan build's does: set
+        // on the live session before the prompt, which fails if it cannot be.
         let firstTurn
         if (input.firstMessage !== undefined) {
           let result: unknown
           try {
-            result = service.dispatch(
+            result = sendTurn(
               {
                 ...command,
                 name: 'turn.send',
@@ -1236,15 +1353,26 @@ export function createThreadService(
                   sessionId: session.sessionId,
                   threadId: thread.threadId,
                   text: input.firstMessage,
+                  ...(artifactIds.length > 0 ? { artifactIds } : {}),
                 },
               },
               context,
+              input.modeId,
             )
           } catch {
             result = rejectWorkspace(command.requestId, input.workspaceId, WORKSPACE_UNAVAILABLE)
           }
           const started = ProofResponseSchemas['turn.send'].safeParse(result)
           if (!started.success) {
+            // The draft stays open with its images, so hand them back for the
+            // retry before the session's removal would take them with it.
+            if (artifactIds.length > 0) {
+              try {
+                options.artifacts!.release(artifactIds, session.sessionId)
+              } catch (error) {
+                options.onPersistenceError?.(error, 'session.created')
+              }
+            }
             // The session was already announced, so its removal must be too.
             rollbackSession(record)
             return result

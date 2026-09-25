@@ -174,6 +174,8 @@ export function createMockEnvironmentClient(
   const chunkDelayMs = options.chunkDelayMs ?? 0
   const latencyMs = options.latencyMs ?? 0
   const artifacts: Record<string, Blob> = { ...options.seed?.artifacts }
+  /** A draft's uploads, by artifact id, and the workspace each is held for. */
+  const heldArtifacts = new Map<string, string>()
   const respond =
     options.respond === undefined
       ? (turn: MockTurnContext) => splitChunks(`You said: ${turn.text}`)
@@ -573,6 +575,21 @@ export function createMockEnvironmentClient(
             'The workspace does not offer the requested provider.',
           )
         }
+        // Checked before anything exists, as the environment does, so a stale
+        // id leaves no session behind.
+        const artifactIds = [...new Set(input.artifactIds ?? [])]
+        if (artifactIds.some((artifactId) => heldArtifacts.get(artifactId) !== input.workspaceId)) {
+          throw new EnvironmentClientError(
+            'not_found',
+            'These images are no longer available. Attach them again.',
+          )
+        }
+        // Filed before the session exists, as the environment does, and kept
+        // as the new session's own model and config: what the draft showed.
+        const target = { workspaceId: input.workspaceId, providerId: input.providerId }
+        const launched = input.preference
+          ? writePreference(target, input.preference)
+          : preferences.get(preferenceKey(target))
         const session: Session = {
           sessionId: nextId(),
           workspaceId: input.workspaceId,
@@ -615,7 +632,20 @@ export function createMockEnvironmentClient(
                 threadId: thread.threadId,
                 text: input.firstMessage,
                 commandId: nextId(),
+                ...(artifactIds.length > 0 ? { artifactIds } : {}),
               })
+        // Claimed only once the first turn started: a launch that failed keeps
+        // them held for the retry, as the environment hands them back.
+        for (const artifactId of artifactIds) heldArtifacts.delete(artifactId)
+        if (launched?.modelId !== undefined || launched?.configValues !== undefined) {
+          writeSessionComposer(session.sessionId, {
+            ...(launched.modelId !== undefined ? { modelId: launched.modelId } : {}),
+            ...(launched.configValues !== undefined ? { configValues: launched.configValues } : {}),
+          })
+        }
+        // The first turn runs in the picked mode; the session reports it.
+        if (input.modeId !== undefined)
+          writeSessionComposer(session.sessionId, { modeId: input.modeId })
         return { session, thread, ...(firstTurn ? { firstTurn } : {}) }
       }),
     openSession: (sessionId) => {
@@ -851,14 +881,24 @@ export function createMockEnvironmentClient(
     uploadArtifact: async (input) => {
       await new Promise<void>((resolve) => schedule(resolve, latencyMs))
       if (!uploads) throw EnvironmentClientError.unsupported(UPLOAD_TICKET_COMMAND)
-      if (!store.getState().sessions[input.sessionId]) {
-        throw new EnvironmentClientError('not_found', 'Session not found.')
+      // A draft's upload is held for its workspace until a create claims it.
+      const workspaceId =
+        input.sessionId !== undefined
+          ? store.getState().sessions[input.sessionId]?.workspaceId
+          : store.getState().workspaces[input.workspaceId!]?.workspaceId
+      if (workspaceId === undefined) {
+        throw new EnvironmentClientError(
+          'not_found',
+          input.sessionId !== undefined ? 'Session not found.' : 'Workspace not found.',
+        )
       }
       const artifactId = nextId()
       artifacts[artifactId] = input.bytes
+      if (input.sessionId === undefined) heldArtifacts.set(artifactId, workspaceId)
       return {
         artifactId,
-        sessionId: input.sessionId,
+        ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
+        workspaceId,
         name: input.name,
         mimeType: input.mimeType,
         sizeBytes: input.bytes.size,

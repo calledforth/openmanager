@@ -61,12 +61,13 @@ interface DraftSelection {
 /** What a draft hands to `session.create` when its first prompt is sent. */
 export interface DraftLaunch {
   providerId: ProviderId
-  /** The draft's held picks. Filed as the workspace preference first, because
-   * that is what the environment seeds a new session's selection from. */
+  /** The draft's held picks. The environment files them as the workspace
+   * preference before it starts the provider, because that is what a new
+   * session's selection is seeded from. */
   preference?: WorkspaceComposerPreference
   /** A mode other than the provider's default. The environment does not apply
-   * a remembered mode on its own, so the session is switched before it is
-   * prompted. */
+   * a remembered mode on its own, so the create names it and the first
+   * message runs in it. */
   modeId?: string
 }
 

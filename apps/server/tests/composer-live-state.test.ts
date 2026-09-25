@@ -165,6 +165,44 @@ describe('per-session composer selection', () => {
     })
     expect(service.sessionComposer('session-a').modelId).toBe('opus')
   })
+
+  it('keeps a launched session on the picks it launched with while a sibling launches', async () => {
+    const { service, store } = await harness()
+    // Draft A launches: its picks are filed and it keeps what came back.
+    const launchedA = service.launchPreference('workspace-1', 'claude', {
+      modelId: 'opus',
+      configValues: { effort: 'high' },
+    })
+    service.seedSession('session-a', launchedA)
+    // Draft B launches before A's provider has reported anything.
+    service.seedSession(
+      'session-b',
+      service.launchPreference('workspace-1', 'claude', { modelId: 'fable' }),
+    )
+    expect(store.getPreference('workspace-1', 'claude')).toEqual({
+      modelId: 'fable',
+      configValues: { effort: 'high' },
+    })
+
+    service.onRuntimeEvent({
+      ...runtimeEvent('thread-a'),
+      category: 'lifecycle',
+      event: 'session_created',
+      data: { models: { currentModelId: 'default', availableModels: [] } },
+    })
+    expect(service.sessionComposer('session-a')).toMatchObject({
+      modelId: 'opus',
+      configValues: { effort: 'high' },
+    })
+    expect(
+      service.desiredFor({ providerId: 'claude', workspacePath: 'workspace-1', threadId: 'thread-a' }),
+    ).toEqual({ modelId: 'opus', values: { effort: 'high' } })
+    // With no picks, a launch reads what the workspace remembers.
+    expect(service.launchPreference('workspace-1', 'claude')).toEqual({
+      modelId: 'fable',
+      configValues: { effort: 'high' },
+    })
+  })
 })
 
 describe('composer broadcasts', () => {

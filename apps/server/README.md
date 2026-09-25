@@ -210,17 +210,33 @@ File bytes never travel on the WebSocket, whose frames are capped at
 steps:
 
 1. `upload.ticket.create` (`operate`) declares one file for one session:
-   `{ sessionId, name, mimeType, sizeBytes }`. The server answers
+   `{ sessionId, name, mimeType, sizeBytes }`, or, from a draft that has no
+   session yet, for its workspace: `{ workspaceId, ... }`. The server answers
    `{ ticket, uploadPath, expiresAt, maxBytes }`. A `sizeBytes` over
    `MAX_ATTACHMENT_BYTES` (25 MiB) is refused here, before any byte is sent.
 2. `PUT <uploadPath>` with `Authorization: Bearer <credential>` and the raw
    bytes as the body. The server streams them to disk and answers `201` with
-   `{ artifactId, sessionId, name, mimeType, sizeBytes }`. A message references
-   the attachment by `artifactId`.
+   `{ artifactId, sessionId, workspaceId, name, mimeType, sizeBytes }`, with
+   no `sessionId` for a draft's upload. A message references the attachment by
+   `artifactId`.
+
+A draft's upload is held: its row has no session, and belongs to the
+workspace and to the client that sent it. The `session.create` that launches
+the draft names it in `artifactIds`. The server checks every id before it
+announces the session, then claims them all for it in one transaction or none,
+and the first message carries them as `turn.send` would. Another client's
+upload, one held for another workspace, or one already claimed is refused
+(`not_found`) and leaves no session behind. If the first turn then cannot
+start, the images are handed back before the session is rolled back, so the
+draft can retry with them. A held upload that no launch claims within
+`HELD_UPLOAD_TTL_MS` (24 hours) belonged to an abandoned draft: it is removed
+with its bytes at startup and, while the server runs, when a ticket is issued
+(at most every `HELD_UPLOAD_SWEEP_INTERVAL_MS`, 15 minutes).
 
 The ticket is request-scoped, not a credential:
 
-- It is bound to the client that asked for it and to the session. The `PUT`
+- It is bound to the client that asked for it and to the session (or the
+  draft's workspace). The `PUT`
   must present that same client's credential; a ticket presented with another
   client's credential is refused and stays valid for its owner. Revoking a
   client drops its tickets, cuts any transfer of its that is already under way
@@ -240,7 +256,8 @@ minted by the server: the client's `name` is display metadata and never reaches
 the filesystem. A body that differs from `sizeBytes`, a dropped connection, a
 transfer that outlasts `UPLOAD_TRANSFER_TIMEOUT_MS` (5 minutes) and a server
 shutdown all delete the partial file. The session is checked again once the
-bytes are in, so one deleted mid-transfer answers `404` and keeps nothing.
+bytes are in, so one deleted mid-transfer answers `404` and keeps nothing; for
+a held upload the workspace's foreign key refuses the row instead.
 Startup empties `uploads/partial/` and removes any blob in `uploads/` that no
 `attachments` row names, which is what a crash between the move and the insert
 leaves behind. No path leaves a partial file without a sweep, and a completed
@@ -257,8 +274,8 @@ The session's workspace must resolve at ticket creation and again at PUT time;
 clients cannot supply a destination path.
 
 Referencing an artifact from `turn.send` is
-CAL-88, retrieval is CAL-89, and retention of completed uploads that no
-message ever referenced is CAL-90.
+CAL-88, retrieval is CAL-89, draft uploads are CAL-198, and retention of
+completed uploads that no message ever referenced is CAL-90.
 
 ## Host and origin policy
 

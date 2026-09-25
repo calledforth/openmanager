@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FakeClaudeSdk, FakeConnectionFactory } from '@agentpack/runtime/testing'
 import {
   ProofResponseSchemas,
@@ -54,9 +54,13 @@ async function openSession(host: ProtocolHost) {
   return { client, sessionId: session.sessionId, threadId: thread.threadId, subscriptionId }
 }
 
-async function upload(host: ProtocolHost, client: ProtocolClient, sessionId: string) {
+async function upload(
+  host: ProtocolHost,
+  client: ProtocolClient,
+  scope: string | { workspaceId: string },
+) {
   const requestId = client.command('upload.ticket.create', {
-    sessionId,
+    ...(typeof scope === 'string' ? { sessionId: scope } : scope),
     name: 'screenshot.png',
     mimeType: 'image/png',
     sizeBytes: BYTES.byteLength,
@@ -277,6 +281,91 @@ describe('artifact metadata', () => {
     expect((prompts[0] as { prompt: unknown[] }).prompt).toEqual([
       { type: 'image', mimeType: 'image/png', data: BYTES.toString('base64') },
     ])
+    await host.server.close()
+  })
+
+  it('launches a draft with the images it uploaded for its workspace', async () => {
+    const prompts: unknown[] = []
+    const connections = new FakeConnectionFactory({
+      initialize: async () => ({ protocolVersion: 1, authMethods: [] }),
+      newSession: async () => ({ sessionId: 'stub-session' }),
+      prompt: async (params) => {
+        prompts.push(params)
+        return { stopReason: 'end_turn' }
+      },
+    })
+    const host = await startStubHost(connections)
+    const client = await connectProtocol(host)
+    await handshake(client)
+
+    // A ticket for a workspace this environment does not know is refused.
+    const unknownId = client.command('upload.ticket.create', {
+      workspaceId: 'workspace-unknown',
+      name: 'screenshot.png',
+      mimeType: 'image/png',
+      sizeBytes: BYTES.byteLength,
+    })
+    expect(await nextResponse(client, unknownId)).toMatchObject({
+      type: 'error',
+      error: { code: 'not_found' },
+    })
+
+    // No session yet: the image is held for the workspace.
+    const artifact = await upload(host, client, { workspaceId: host.workspaceId })
+    expect(artifact).not.toHaveProperty('sessionId')
+    expect(artifact.workspaceId).toBe(host.workspaceId)
+    expect(attachmentRows(host.dataDir)).toEqual([
+      expect.objectContaining({ attachment_id: artifact.artifactId, session_id: null }),
+    ])
+
+    const createId = client.command('session.create', {
+      environmentId: host.server.identity.environmentId,
+      providerId: 'opencode',
+      workspaceId: host.workspaceId,
+      firstMessage: '',
+      artifactIds: [artifact.artifactId],
+    })
+    const created = ProofResponseSchemas['session.create'].parse(
+      await nextResponse(client, createId),
+    ).payload
+    expect(created.firstTurn?.userMessage.content).toEqual([
+      expect.objectContaining({ type: 'artifact', artifactId: artifact.artifactId }),
+    ])
+    expect(attachmentRows(host.dataDir)).toEqual([
+      expect.objectContaining({
+        attachment_id: artifact.artifactId,
+        session_id: created.session.sessionId,
+      }),
+    ])
+    await vi.waitFor(() => expect(prompts).toHaveLength(1))
+    expect((prompts[0] as { prompt: unknown[] }).prompt).toEqual([
+      { type: 'image', mimeType: 'image/png', data: BYTES.toString('base64') },
+    ])
+    // Now the session's own artifact, read back through its route.
+    const bytes = await get(
+      host.server.url,
+      `/artifacts/${created.session.sessionId}/${artifact.artifactId}`,
+      host.token,
+    )
+    expect(bytes.status).toBe(200)
+
+    // Claimed once: launching again with it is refused and leaves no session.
+    const againId = client.command('session.create', {
+      environmentId: host.server.identity.environmentId,
+      providerId: 'opencode',
+      workspaceId: host.workspaceId,
+      firstMessage: 'again',
+      artifactIds: [artifact.artifactId],
+    })
+    expect(await nextResponse(client, againId)).toMatchObject({
+      type: 'error',
+      error: { code: 'not_found' },
+    })
+    const listId = client.command('session.list', {})
+    expect(
+      ProofResponseSchemas['session.list'].parse(await nextResponse(client, listId)).payload
+        .sessions,
+    ).toHaveLength(1)
     await host.server.close()
   })
 
