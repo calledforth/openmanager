@@ -2865,7 +2865,8 @@ describe('session rows on a provider other than the workspace default', () => {
       // As the host wires it: the service names the provider a session is being
       // created on; the workspace default only stands in when it names none.
       sessionProviderId: (session) =>
-        service.providerForSession(session.sessionId) ?? registered(session.workspaceId)!.providerId,
+        service.providerForSession(session.sessionId) ??
+        registered(session.workspaceId)!.providerId,
     })
     const runtime = {
       // Still spawning: the row must not wait for the runtime stamp.
