@@ -1299,6 +1299,9 @@ const SidebarGroup = forwardRef<HTMLDivElement, SidebarGroupProps>(
     const contentRef = useRef<HTMLDivElement>(null);
     const height = useMotionValue(0);
     const [measured, setMeasured] = useState(false);
+    // Reduced motion snaps the fold, as the rows inside it do.
+    const reduceMotion = useReducedMotion() ?? false;
+    const still = { duration: 0 };
     const openRef = useRef(open);
     openRef.current = open;
     // The collapse wrapper must clip while animating, but a permanently
@@ -1341,7 +1344,7 @@ const SidebarGroup = forwardRef<HTMLDivElement, SidebarGroupProps>(
       const controls = animate(
         height,
         open ? el.offsetHeight : 0,
-        open ? spring.moderate : spring.moderate.exit
+        reduceMotion ? still : open ? spring.moderate : spring.moderate.exit
       );
       void controls.then(() => {
         if (!current) return;
@@ -1354,7 +1357,7 @@ const SidebarGroup = forwardRef<HTMLDivElement, SidebarGroupProps>(
         current = false;
         controls.stop();
       };
-    }, [collapsible, height, open]);
+    }, [collapsible, height, open, reduceMotion]);
 
     // The label and any header actions stay put; everything else after the
     // label rides in the collapse wrapper. If no SidebarGroupLabel child is
@@ -1405,7 +1408,7 @@ const SidebarGroup = forwardRef<HTMLDivElement, SidebarGroupProps>(
               style={measured ? { height } : undefined}
               initial={false}
               animate={{ opacity: open ? 1 : 0 }}
-              transition={open ? spring.moderate : spring.moderate.exit}
+              transition={reduceMotion ? still : open ? spring.moderate : spring.moderate.exit}
             >
               <div ref={contentRef} className="flex w-full min-w-0 flex-col">
                 {rest}
