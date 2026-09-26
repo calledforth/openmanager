@@ -42,20 +42,23 @@ function NavMenu({ pathname, includeSessions }: { pathname: string; includeSessi
     { to: '/settings', label: 'Settings', icon: SettingsIcon },
     { to: '/playground/connection', label: 'States', icon: StatesIcon },
   ] as const
+  // Fluid's menu is a bare list; the nav keeps the shell's pages a landmark.
   return (
-    <SidebarMenu aria-label="Primary">
-      {items.map((item) => (
-        <SidebarMenuItem key={item.to}>
-          <SidebarMenuButton
-            icon={item.icon}
-            isActive={item.to === '/' ? isSessionPath(pathname) : pathname === item.to}
-            onClick={() => void navigate({ to: item.to })}
-          >
-            {item.label}
-          </SidebarMenuButton>
-        </SidebarMenuItem>
-      ))}
-    </SidebarMenu>
+    <nav aria-label="Primary">
+      <SidebarMenu>
+        {items.map((item) => (
+          <SidebarMenuItem key={item.to}>
+            <SidebarMenuButton
+              icon={item.icon}
+              isActive={item.to === '/' ? isSessionPath(pathname) : pathname === item.to}
+              onClick={() => void navigate({ to: item.to })}
+            >
+              {item.label}
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        ))}
+      </SidebarMenu>
+    </nav>
   )
 }
 

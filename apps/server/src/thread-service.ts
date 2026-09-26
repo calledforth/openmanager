@@ -1502,6 +1502,12 @@ export function createThreadService(
           record?.session ??
           (options.database ? getSessionSummary(options.database, sessionId) : undefined)
         if (!session) return errorResult(command.requestId, 'not_found', 'Session not found.')
+        // Only a turn starting clears `settledAt`, so a live session settled
+        // now would stay on the shelf after it finishes. Bringing one back is fine.
+        const status = record?.status ?? ('status' in session ? session.status : 'idle')
+        if (settled && (status === 'running' || status === 'waiting')) {
+          return errorResult(command.requestId, 'conflict', 'A live session cannot be settled.')
+        }
         const timestamp = new Date().toISOString()
         const settledAt = settled ? timestamp : null
         const event = ProofEventSchemas['session.updated'].parse({

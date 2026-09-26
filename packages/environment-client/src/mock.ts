@@ -744,8 +744,11 @@ export function createMockEnvironmentClient(
       }),
     settleSession: (sessionId, settled) =>
       run('settleSession', { sessionId, settled }, () => {
-        if (!store.getState().sessions[sessionId]) {
-          throw new EnvironmentClientError('not_found', 'Session not found.')
+        const session = store.getState().sessions[sessionId]
+        if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
+        // Mirrors the environment: a live session would stay settled after it finishes.
+        if (settled && (session.status === 'running' || session.status === 'waiting')) {
+          throw new EnvironmentClientError('conflict', 'A live session cannot be settled.')
         }
         emit({
           ...base(),

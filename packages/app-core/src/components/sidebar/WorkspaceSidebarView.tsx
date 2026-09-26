@@ -625,7 +625,9 @@ function SessionCard({
             </div>
           ) : null}
         </div>
-        {onSettleSession ? (
+        {/* Live work cannot be settled: the environment refuses it, since
+            nothing would bring the card back once the turn finished. */}
+        {onSettleSession && tone !== 'working' && tone !== 'needs' ? (
           <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5 opacity-0 transition-opacity duration-80 group-focus-within/card:opacity-100 group-hover/card:opacity-100 pointer-coarse:opacity-100">
             <CardAction
               label="Settle"

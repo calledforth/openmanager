@@ -2368,6 +2368,38 @@ describe('durable session lifecycle', () => {
     }
   })
 
+  it('refuses to settle a live session but still brings one back', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      const summary = () =>
+        ProofResponseSchemas['session.list'].parse(h.dispatch(h.service, 'session.list', {}))
+          .payload.sessions[0]
+      h.dispatch(h.service, 'turn.send', { ...h.created.thread, text: 'Keep going' })
+      expect(summary()).toMatchObject({ sessionId, status: 'running' })
+      expect(h.dispatch(h.service, 'session.settle', { sessionId, settled: true })).toMatchObject({
+        type: 'error',
+        error: { code: 'conflict' },
+      })
+      expect(summary()).toMatchObject({ sessionId, settledAt: null })
+      expect(
+        ProofResponseSchemas['session.settle'].parse(
+          h.dispatch(h.service, 'session.settle', { sessionId, settled: false }),
+        ).payload,
+      ).toEqual({ settledAt: null })
+
+      await vi.waitFor(() => expect(summary()).toMatchObject({ status: 'idle' }))
+      expect(
+        ProofResponseSchemas['session.settle'].parse(
+          h.dispatch(h.service, 'session.settle', { sessionId, settled: true }),
+        ).payload.settledAt,
+      ).toEqual(expect.any(String))
+      h.events.flush()
+    } finally {
+      h.close()
+    }
+  })
+
   it('keeps a user title when a provider renames the session afterwards', async () => {
     const h = setup()
     try {

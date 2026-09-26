@@ -85,7 +85,11 @@ for (const item of items.values()) {
       })
       // The app imports Motion by its current name.
       .replace(/(["'])framer-motion\1/g, '$1motion/react$1')
-    const dest = path.join(DEST, target)
+    const dest = path.resolve(DEST, target)
+    // A registry target must not write outside the vendored directory.
+    if (!dest.startsWith(path.resolve(DEST) + path.sep)) {
+      throw new Error(`${item.name}: target ${target} escapes ${DEST}`)
+    }
     fs.mkdirSync(path.dirname(dest), { recursive: true })
     fs.writeFileSync(dest, content)
     written += 1

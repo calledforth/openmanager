@@ -134,7 +134,7 @@ describe('web routes', () => {
       await waitFor(() => expect(client.getState().activeSessionId).toBe('a'))
       expect(router.state.location.pathname).toBe('/sessions/a')
       expect(opens()).toEqual(['a', 'b', 'a'])
-      await user.click(screen.getAllByRole('button', { name: 'New Agent' })[0]!)
+      await user.click(screen.getByRole('button', { name: 'New agent' }))
       await waitFor(() => expect(router.state.location.pathname).toBe('/'))
       await act(() => client.settle())
       expect(client.getState().activeSessionId).toBeNull()
@@ -150,7 +150,7 @@ describe('web routes', () => {
       expect(client.getState().activeSessionId).toBeNull()
       expect(opens()).toEqual(['a', 'b', 'a', 'a'])
       if (activity === 'idle') {
-        await user.click(screen.getAllByRole('button', { name: 'New Agent' })[0]!)
+        await user.click(screen.getByRole('button', { name: 'New agent' }))
         await user.type(screen.getByRole('textbox'), 'A new conversation')
         await user.click(screen.getByRole('button', { name: 'Send' }))
         await waitFor(() => expect(client.getState().activeSessionId).not.toBeNull())
@@ -194,7 +194,7 @@ describe('web routes', () => {
     await user.click(screen.getByRole('button', { name: /Chat B/ }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/sessions/b'))
     expect(client.getState().activeSessionId).not.toBe('b')
-    await user.click(screen.getAllByRole('button', { name: 'New Agent' })[0]!)
+    await user.click(screen.getByRole('button', { name: 'New agent' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/'))
     await act(() => client.settle())
     expect(client.getState().activeSessionId).toBeNull()
@@ -519,9 +519,9 @@ describe('web routes', () => {
 
     renderWebApp('/')
 
-    expect(await screen.findByRole('button', { name: 'New Agent' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'New agent' })).toBeInTheDocument()
     expect(screen.getByText('No projects yet')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
   })
 
   it('shows an in-shell unreachable banner instead of replacing the session', async () => {

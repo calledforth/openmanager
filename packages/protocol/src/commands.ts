@@ -107,6 +107,7 @@ export const ProofCommandSchemas = {
   'session.delete': command('session.delete', SessionTargetSchema),
   // Settling moves a finished session out of the active list; `settled: false`
   // brings it back. Either way the change reaches every client as `session.updated`.
+  // Settling a running or waiting session is a `conflict`; bringing one back never is.
   'session.settle': command('session.settle', SessionTargetSchema.extend({ settled: z.boolean() })),
   // Clears `doneAt` once the user has looked at a finished session, so every
   // client stops showing it as done. A session that is not done is a no-op.

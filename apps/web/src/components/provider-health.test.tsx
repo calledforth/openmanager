@@ -151,7 +151,7 @@ describe('provider health on web', () => {
     const { client } = renderConnected('/', [
       provider('opencode', 'OpenCode', { summary: 'error', auth: 'unauthenticated' }),
     ])
-    await user.click((await screen.findAllByRole('button', { name: 'New Agent' }))[0]!)
+    await user.click(await screen.findByRole('button', { name: 'New agent' }))
     const textbox = await screen.findByRole('textbox')
     await waitFor(() => expect(textbox).toBeEnabled())
     await user.type(textbox, 'hello')
