@@ -8,7 +8,10 @@ import {
 } from './helpers/protocol-client.js'
 import { expectCommand } from './helpers/proof-slice.js'
 
-afterEach(cleanupProtocolHosts)
+afterEach(async () => {
+  vi.unstubAllEnvs()
+  await cleanupProtocolHosts()
+})
 
 /**
  * `session.list` and `session.open` answer from the projected session row,
@@ -17,6 +20,9 @@ afterEach(cleanupProtocolHosts)
  */
 describe('a session created on a provider other than the workspace default', () => {
   it('is listed and opened on its own provider before its runtime has started', async () => {
+    // The runtime checks that the executable exists before the fake SDK takes
+    // over, and the CI runners have no Claude Code. Any executable will do.
+    vi.stubEnv('CLAUDE_CODE_BIN', process.execPath)
     const claude = new FakeClaudeSdk()
     // The runtime stamp follows the provider's handshake. Held, so the row
     // has to be right on its own.
