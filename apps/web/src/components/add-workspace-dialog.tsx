@@ -1,5 +1,6 @@
-import { useState, type FormEvent } from 'react'
+import { useCallback, useState, type FormEvent } from 'react'
 import type { EnvironmentClient } from '@openmanager/environment-client'
+import { AddProjectPalette } from '@openmanager/app-core/components/workspace/AddProjectPalette'
 import { Button } from '@openmanager/app-core/components/fluid/ui/button'
 import {
   Dialog,
@@ -15,13 +16,44 @@ const fieldClass =
   'h-9 w-full rounded-lg bg-hover/70 px-3 font-mono text-[15px] outline-none transition-colors duration-100 placeholder:text-faint focus:bg-hover'
 
 /**
- * The browser has no picker for a folder on the environment host, so the
- * path is typed and the environment validates it: it must be an absolute
- * path to a folder that exists there. The environment's refusal is shown in
- * place, with the typed path kept, so a typo is a quick fix rather than a
+ * Add project. An environment that lists its folders gets the folder
+ * browser; an older one gets a typed path it validates: an absolute path to a
+ * folder that exists there. Either way the environment's refusal is shown in
+ * place, with what was typed kept, so a typo is a quick fix rather than a
  * fresh start.
  */
 export function AddWorkspaceDialog({
+  client,
+  open,
+  onClose,
+}: {
+  client: EnvironmentClient
+  open: boolean
+  onClose: () => void
+}) {
+  const browse = useCallback((path?: string) => client.commands.browseFolders(path), [client])
+  const add = useCallback(
+    async (path: string) => {
+      await client.commands.addWorkspace({ path })
+    },
+    [client],
+  )
+  if (client.supports('browseFolders')) {
+    return (
+      <AddProjectPalette
+        open={open}
+        onOpenChange={(next) => {
+          if (!next) onClose()
+        }}
+        browse={browse}
+        onAdd={add}
+      />
+    )
+  }
+  return <AddWorkspacePathDialog client={client} open={open} onClose={onClose} />
+}
+
+function AddWorkspacePathDialog({
   client,
   open,
   onClose,

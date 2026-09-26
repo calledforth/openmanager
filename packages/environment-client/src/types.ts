@@ -1,6 +1,9 @@
 import type {
   Environment,
+  EnvironmentSettings,
+  EnvironmentSettingsPatch,
   ErrorCode,
+  FilesystemListing,
   HistoryCursor,
   Interaction,
   InteractionResponse,
@@ -35,6 +38,9 @@ export type {
 } from '@agentpack/view/protocol'
 
 export type {
+  EnvironmentSettings,
+  EnvironmentSettingsPatch,
+  FilesystemListing,
   ProviderCatalogEntry,
   SessionComposerState,
   SessionStatus,
@@ -347,6 +353,15 @@ export interface EnvironmentCommands {
   setSessionModel(input: SetSessionModelInput): Promise<WorkspaceComposerPreference>
   setSessionMode(input: SetSessionModeInput): Promise<WorkspaceComposerPreference>
   setSessionConfigOption(input: SetSessionConfigOptionInput): Promise<WorkspaceComposerPreference>
+  /**
+   * The child folders of a folder on the environment's machine, for picking a
+   * project. `~` is its home folder; no path lists where Add project starts.
+   */
+  browseFolders(path?: string): Promise<FilesystemListing>
+  /** Settings the environment shares with every client. Not stored. */
+  getEnvironmentSettings(): Promise<EnvironmentSettings>
+  /** A patch: settings left out keep their value. Resolves with all of them. */
+  setEnvironmentSettings(patch: EnvironmentSettingsPatch): Promise<EnvironmentSettings>
 }
 
 export type EnvironmentCommandName = keyof EnvironmentCommands

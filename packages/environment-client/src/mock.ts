@@ -5,6 +5,7 @@ import {
   ProviderCatalogEntrySchema,
   WorkspaceComposerPreferenceSchema,
   type Environment,
+  type EnvironmentSettings,
   type Interaction,
   type InteractionResponse,
   type Message,
@@ -83,6 +84,14 @@ export interface MockSeed {
   activeSessionId?: string | null
   /** Stored bytes by artifact ID; what `fetchArtifact` and a send's `artifactIds` resolve. */
   artifacts?: Record<string, Blob>
+  /**
+   * The environment's folders for `browseFolders`: child folder names by
+   * absolute folder path. A path with no entry is not there.
+   */
+  folders?: Record<string, readonly string[]>
+  /** What `~` means, and where browsing starts with no setting. Defaults to the first folder. */
+  home?: string
+  environmentSettings?: Partial<EnvironmentSettings>
 }
 
 export interface MockTurnContext extends ThreadTarget {
@@ -390,6 +399,10 @@ export function createMockEnvironmentClient(
   )
   /** The environment's side of the preferences; state only sees answered reads. */
   const preferences = new Map<string, WorkspaceComposerPreference>()
+  let environmentSettings: EnvironmentSettings = {
+    addProjectStartsIn: '',
+    ...options.seed?.environmentSettings,
+  }
   const preferenceKey = (target: ComposerPreferenceTarget) =>
     JSON.stringify([target.workspaceId, target.providerId])
   for (const [workspaceId, byProvider] of Object.entries(options.seed?.composerPreferences ?? {})) {
@@ -890,6 +903,37 @@ export function createMockEnvironmentClient(
         }
         return writePreference(target, { configValues }, known)
       }),
+    browseFolders: (path) =>
+      run('browseFolders', path, () => {
+        const folders = options.seed?.folders ?? {}
+        const home = options.seed?.home ?? Object.keys(folders)[0] ?? '/'
+        const expand = (input: string) =>
+          input === '~' ? home : /^~[\\/]/.test(input) ? joinMockPath(home, input.slice(2)) : input
+        const requested = expand(path ?? (environmentSettings.addProjectStartsIn || home))
+        const folder = trimMockPath(requested)
+        const children = folders[folder]
+        if (!children) {
+          throw new EnvironmentClientError('not_found', `No folder exists at ${folder}.`)
+        }
+        return {
+          path: folder,
+          parentPath: parentMockPath(folder),
+          entries: [...children]
+            .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }))
+            .map((name) => ({ name, path: joinMockPath(folder, name) })),
+          readable: true,
+        }
+      }),
+    getEnvironmentSettings: () =>
+      run('getEnvironmentSettings', null, () => ({ ...environmentSettings })),
+    setEnvironmentSettings: (patch) =>
+      run('setEnvironmentSettings', patch, () => {
+        environmentSettings = {
+          ...environmentSettings,
+          ...Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)),
+        }
+        return { ...environmentSettings }
+      }),
   }
 
   return {
@@ -1131,4 +1175,26 @@ function splitChunks(text: string, size = 12): string[] {
     chunks.push(text.slice(index, index + size))
   }
   return chunks.length ? chunks : ['']
+}
+
+/** A mock path's separator: backslash when the path already uses one. */
+const mockSeparator = (path: string) => (path.includes('\\') ? '\\' : '/')
+
+/** Drop a trailing separator, except the one a root needs (`/`, `C:\`). */
+function trimMockPath(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, '')
+  if (trimmed === '') return '/'
+  return /^[a-z]:$/i.test(trimmed) ? `${trimmed}\\` : trimmed
+}
+
+function joinMockPath(parent: string, name: string): string {
+  const separator = mockSeparator(parent)
+  return /[\\/]$/.test(parent) ? `${parent}${name}` : `${parent}${separator}${name}`
+}
+
+function parentMockPath(path: string): string | null {
+  const cut = path.replace(/[\\/]+$/, '').search(/[\\/][^\\/]*$/)
+  if (cut === -1) return null
+  const parent = trimMockPath(path.slice(0, cut + 1))
+  return parent === path ? null : parent
 }

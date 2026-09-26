@@ -1242,6 +1242,13 @@ export function createWebSocketEnvironmentClient(
         'write',
         sessionPreferenceTarget(input.sessionId),
       ),
+    browseFolders: (path) => request('filesystem.browse', path === undefined ? {} : { path }),
+    async getEnvironmentSettings() {
+      return (await request('environment.settings.get', null)).settings
+    },
+    async setEnvironmentSettings(patch) {
+      return (await request('environment.settings.set', { settings: patch })).settings
+    },
   }
 
   return {

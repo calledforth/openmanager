@@ -93,7 +93,8 @@ export interface ConvexEnvironmentClientOptions {
 
 /**
  * The desktop composer still reads its catalog and preferences through the
- * legacy composer-state provider, so this adapter does not carry them.
+ * legacy composer-state provider, so this adapter does not carry them. Desktop
+ * picks project folders with the native dialog, so it has no folder browsing.
  */
 const UNSUPPORTED: ReadonlySet<EnvironmentCommandName> = new Set([
   'settleSession',
@@ -105,6 +106,9 @@ const UNSUPPORTED: ReadonlySet<EnvironmentCommandName> = new Set([
   'setSessionModel',
   'setSessionMode',
   'setSessionConfigOption',
+  'browseFolders',
+  'getEnvironmentSettings',
+  'setEnvironmentSettings',
 ])
 const ALL_CAPABILITIES = (Object.keys(WIRE_COMMANDS) as EnvironmentCommandName[])
   .filter((command) => !UNSUPPORTED.has(command))
@@ -1049,6 +1053,9 @@ export function createConvexEnvironmentClient(
     setSessionModel: () => unsupported('setSessionModel'),
     setSessionMode: () => unsupported('setSessionMode'),
     setSessionConfigOption: () => unsupported('setSessionConfigOption'),
+    browseFolders: () => unsupported('browseFolders'),
+    getEnvironmentSettings: () => unsupported('getEnvironmentSettings'),
+    setEnvironmentSettings: () => unsupported('setEnvironmentSettings'),
   }
 
   // -------------------------------------------------------------------------

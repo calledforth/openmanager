@@ -43,6 +43,9 @@ chat in the wrong mode instead of refusing it. Version 7 adds `artifactIds` to
 `session.create`, which a version-6 environment would drop along with the
 images, and lets an upload ticket name a workspace in place of a session for a
 draft; the upload result then carries `workspaceId` and no `sessionId`.
+Version 8 adds `filesystem.browse`, which lists the environment's folders for
+Add project's picker, and `environment.settings.get`/`.set`, which hold settings
+every paired client shares, starting with the folder that picker opens in.
 
 Call `evaluateBootstrap` with the parsed HTTP body and the capabilities required
 by the current client path:
