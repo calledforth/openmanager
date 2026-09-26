@@ -16,7 +16,8 @@ include it in `SessionSummary`. A newly created session starts `idle`.
 Resolving or expiring one of several pending interactions leaves the session `waiting`.
 Finalizing a turn cancels its remaining pending interactions. An expected idle
 process exit (reaping or shutdown) leaves status unchanged. Startup recovery
-marks abandoned active turns interrupted and their sessions idle.
+marks abandoned active turns interrupted and their sessions `error`: nobody asked
+for that work to stop, so the sidebar shows it as failed rather than quietly idle.
 
 For turn and interaction transitions, the event repository compares the session
 row before and after projection. On a change it appends an environment-scoped
@@ -32,10 +33,26 @@ status from summaries and these events; thread events, optimistic commands,
 history pages, and thread snapshots never infer or overwrite it. The mock server
 emits the same explicit status updates for tests and stories.
 
-The shared sidebar shows idle as ready (green), running as working (animated,
-respecting reduced motion), waiting as needing attention (gold), and error as
-failed (red). Opening a server-backed session does not acknowledge or change
-its lifecycle status. Legacy desktop `busy` and `done` values remain supported
+## Done (unseen completions)
+
+`SessionSummary.doneAt` is set when a turn **completes** and stays set until a
+client sends `session.acknowledge`, which clears it for every client with a
+`session.updated { sessionId, doneAt: null }`. The next `turn.started` also
+clears it, and an interrupted or failed turn never sets it: an interrupt was
+the user's own doing, and a failure already shows as `error`. Setting or
+clearing `doneAt` never moves `updated_at`, so the session keeps its place.
+Changes ride the same derived status event as the status itself
+(`{ sessionId, status, doneAt }`), so sidebar-only subscribers see them.
+Acknowledging a session that is not done is a no-op and publishes nothing.
+`sessions.done_at` arrives in migration 13; existing sessions start with
+nothing unseen.
+
+The shared sidebar maps idle with `doneAt` to **done** (mint), plain idle to
+its age, running to working (iris), waiting to needs input (amber), and error
+to failed (coral). The glyph animates each state and marks transitions once;
+reduced motion keeps the colours and drops the motion. A client acknowledges
+a done session when it is the active one and the window is visible, so work
+that finishes while the user is away still shows when they come back. Legacy desktop `busy` and `done` values remain supported
 by the glyph component while that host migrates to the environment client.
 The environment adapter maps server `idle` to the display-only `ready` alias;
 legacy desktop `idle` still clears the unread-completion glyph.

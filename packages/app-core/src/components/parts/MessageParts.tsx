@@ -13,7 +13,7 @@ import { canonicalizeToolName } from './ToolRegistry'
 import { AskedQuestionPart } from '../questions/AskedQuestionPart'
 import { readAskedQuestions } from '../questions/askedQuestion'
 import { ImageGenerationToolPart } from './ImageGenerationToolPart'
-import { GeneratedImagePart } from './GeneratedImagePart'
+import { GeneratedImages } from './GeneratedImagePart'
 
 interface Part {
   type: string
@@ -107,9 +107,9 @@ function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode
     }
     case 'image':
       return (
-        <GeneratedImagePart
+        <GeneratedImages
           key={key}
-          part={part as Parameters<typeof GeneratedImagePart>[0]['part']}
+          parts={[part as Parameters<typeof GeneratedImages>[0]['parts'][number]]}
         />
       )
     case 'retry':
@@ -159,17 +159,37 @@ export function MessageParts({ parts, isStreaming }: { parts: Part[]; isStreamin
 
   if (safeParts.length === 0) return null
 
-  return (
-    <>
-      {activityNodes.map((node, idx) =>
-        node.kind === 'part' ? (
-          renderPart(node.part, idx, isStreaming)
-        ) : (
-          <ActivityGroup key={node.id} summary={node.summary}>
-            {node.items.map((item, itemIdx) => renderPart(item, itemIdx, isStreaming))}
-          </ActivityGroup>
-        ),
-      )}
-    </>
-  )
+  // Consecutive images render as one gallery rather than a card each.
+  const rendered: ReactNode[] = []
+  for (let idx = 0; idx < activityNodes.length; idx++) {
+    const node = activityNodes[idx]
+    if (node.kind === 'part' && node.part.type === 'image') {
+      const start = idx
+      const run: Part[] = [node.part]
+      while (idx + 1 < activityNodes.length) {
+        const next = activityNodes[idx + 1]
+        if (next.kind !== 'part' || next.part.type !== 'image') break
+        run.push(next.part)
+        idx++
+      }
+      rendered.push(
+        <GeneratedImages
+          key={getPartKey(run[0], start)}
+          parts={run as unknown as Parameters<typeof GeneratedImages>[0]['parts']}
+        />,
+      )
+      continue
+    }
+    rendered.push(
+      node.kind === 'part' ? (
+        renderPart(node.part, idx, isStreaming)
+      ) : (
+        <ActivityGroup key={node.id} summary={node.summary}>
+          {node.items.map((item, itemIdx) => renderPart(item, itemIdx, isStreaming))}
+        </ActivityGroup>
+      ),
+    )
+  }
+
+  return <>{rendered}</>
 }

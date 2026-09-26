@@ -1,5 +1,5 @@
 import { PROTOCOL_VERSION } from '@openmanager/protocol'
-import { cleanup, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createMockEnvironmentClient, type MockSeed } from '@openmanager/environment-client'
@@ -87,6 +87,17 @@ function connectedEnvironment() {
   )
 }
 
+/** The session list; the topbar trail repeats the open session's title. It
+ *  mounts once the environment connects. */
+const sidebar = () => {
+  const content = document.querySelector<HTMLElement>('[data-sidebar="content"]')
+  if (!content) throw new Error('The sidebar has not mounted yet.')
+  return content
+}
+/** Re-queries the sidebar on each try: the disconnected shell has its own,
+ *  which the connected one replaces. */
+const findInSidebar = (text: string) => waitFor(() => within(sidebar()).getByText(text))
+
 function renderConnected(path: string, seed: MockSeed = SEED) {
   connectedEnvironment()
   const client = createMockEnvironmentClient({ seed })
@@ -95,18 +106,18 @@ function renderConnected(path: string, seed: MockSeed = SEED) {
 }
 
 describe('session workspace', () => {
-  it('renames and deletes a session through the shared sidebar', async () => {
-    const user = userEvent.setup()
+  // The rows no longer offer rename or delete; the commands stay on the
+  // client, and the sidebar has to follow them wherever they come from.
+  it('reflects a session renamed and deleted through the client', async () => {
     const { client } = renderConnected('/')
-    await user.click(await screen.findByRole('button', { name: 'Rename session' }))
-    const title = screen.getByRole('textbox', { name: 'Session title' })
-    await user.clear(title)
-    await user.type(title, 'Renamed in web{Enter}')
-    expect(await screen.findByText('Renamed in web')).toBeInTheDocument()
+    expect(await findInSidebar('Sidebar move')).toBeInTheDocument()
+    await act(() => client.commands.renameSession(SESSION.sessionId, 'Renamed in web'))
+    expect(await within(sidebar()).findByText('Renamed in web')).toBeInTheDocument()
+    expect(within(sidebar()).queryByText('Sidebar move')).not.toBeInTheDocument()
     expect(client.getState().sessions[SESSION.sessionId]?.title).toBe('Renamed in web')
-    await user.click(screen.getByRole('button', { name: 'Delete session' }))
+    await act(() => client.commands.deleteSession(SESSION.sessionId))
     await waitFor(() => expect(client.getState().sessions[SESSION.sessionId]).toBeUndefined())
-    expect(screen.queryByText('Renamed in web')).not.toBeInTheDocument()
+    expect(within(sidebar()).queryByText('Renamed in web')).not.toBeInTheDocument()
   })
 
   it('opens persisted failed history from its URL without changing identity or status', async () => {
@@ -135,7 +146,7 @@ describe('session workspace', () => {
         workspaces: [{ ...WORKSPACE, exists: false, availability }],
       })
       expect(await screen.findByRole('alert')).toHaveTextContent('Project folder unavailable')
-      expect(screen.getByText('Sidebar move')).toBeInTheDocument()
+      expect(within(sidebar()).getByText('Sidebar move')).toBeInTheDocument()
       // The badge names the cause, since the two need different fixes.
       expect(
         screen.getByText(availability === 'missing' ? 'MISSING' : 'NO ACCESS'),
@@ -143,9 +154,11 @@ describe('session workspace', () => {
       expect(screen.getByRole('alert')).toHaveTextContent(
         availability === 'missing' ? 'missing or was moved' : 'Permission denied',
       )
-      // The row stays listed and says why it cannot run, without claiming a
-      // lifecycle status the environment never reported.
-      expect(screen.getByLabelText('Project folder unavailable')).toBeInTheDocument()
+      // The card stays listed, dimmed, without claiming a lifecycle status
+      // the environment never reported.
+      const card = within(sidebar()).getByText('Sidebar move').closest('button')!
+      expect(card).toHaveClass('opacity-70')
+      expect(client.getState().sessions[SESSION.sessionId]?.status).not.toBe('error')
       expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
       // The filesystem becomes usable again and the environment publishes it.
       client.emit({
@@ -200,7 +213,7 @@ describe('session workspace', () => {
     expect(screen.getAllByText('repo').length).toBeGreaterThan(0)
     expect(screen.getByText(/Let's build in/)).toBeInTheDocument()
     expect(screen.getByRole('textbox')).toBeDisabled()
-    expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
   })
 
   it('opens a session from the sidebar, shows its messages and moves to its route', async () => {
@@ -233,20 +246,50 @@ describe('session workspace', () => {
       expect(screen.queryByRole('dialog', { name: 'Add a project' })).not.toBeInTheDocument()
     })
     expect(client.calls).toContainEqual({ command: 'addWorkspace', input: { path: 'C:/other' } })
-    expect(await screen.findByText('other')).toBeInTheDocument()
+    await waitFor(() =>
+      expect(
+        Object.values(client.getState().workspaces).map((workspace) => workspace.path),
+      ).toContain('C:/other'),
+    )
+    // The sidebar lists sessions, not projects, so a project with none has no
+    // row there; the draft's project picker is where it shows up.
+    const picker = screen.getByText("Let's build in").parentElement!
+    await user.click(within(picker).getByRole('button'))
+    const projects = await screen.findByRole('listbox', { name: 'Choose a project' })
+    expect(within(projects).getByText('other')).toBeInTheDocument()
   })
 
-  it('marks a registered project whose folder is gone and offers no new agent there', async () => {
+  it('marks sessions in a project whose folder is gone and starts new agents elsewhere', async () => {
+    const GONE = { ...WORKSPACE, workspaceId: 'C:/gone', name: 'gone', path: 'C:/gone' }
     renderConnected('/', {
       ...SEED,
-      workspaces: [
-        WORKSPACE,
-        { ...WORKSPACE, workspaceId: 'C:/gone', name: 'gone', path: 'C:/gone', exists: false },
+      workspaces: [WORKSPACE, { ...GONE, exists: false }],
+      sessions: [
+        ...SEED.sessions!,
+        {
+          session: { sessionId: 'session-gone', workspaceId: GONE.workspaceId, title: 'Lost work' },
+          threads: [{ threadId: 'thread-gone', sessionId: 'session-gone' }],
+        },
       ],
     })
-    expect(await screen.findByText('gone')).toBeInTheDocument()
-    expect(screen.getByText('MISSING')).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: 'New Agent' })).toHaveLength(2)
+    // The badge rides the card of the missing project's session, and only it.
+    const lost = (await findInSidebar('Lost work')).closest('button')!
+    expect(lost).toHaveTextContent('gone')
+    expect(lost).toHaveTextContent('MISSING')
+    const healthy = within(sidebar()).getByText('Sidebar move').closest('button')!
+    expect(healthy).not.toHaveTextContent('MISSING')
+    expect(within(sidebar()).getAllByText('MISSING')).toHaveLength(1)
+    // New agent targets a project that still exists.
+    expect(screen.getByRole('button', { name: 'New agent' })).toBeEnabled()
+  })
+
+  it('offers no new agent when every registered project is gone', async () => {
+    renderConnected('/', {
+      ...SEED,
+      workspaces: [{ ...WORKSPACE, exists: false }],
+    })
+    expect(await findInSidebar('MISSING')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'New agent' })).toBeDisabled()
   })
 
   it('sends a prompt through the composer and renders the streamed reply', async () => {

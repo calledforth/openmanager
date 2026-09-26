@@ -1,10 +1,10 @@
 import type { ReactNode } from 'react'
 
-/** Bottom dock: Basis-style canvas gradient fade */
+/** Bottom dock: the composer floats over the transcript, no fade behind it. */
 export function FloatingChatComposer({ children }: { children: ReactNode }) {
   return (
-    <div className="chat-composer-fade pointer-events-none absolute inset-x-0 bottom-0 z-20 pt-20">
-      <div className="pointer-events-auto mx-auto w-full max-w-[52rem] px-4 pb-1.5 pt-0">
+    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 pt-20">
+      <div className="pointer-events-auto mx-auto w-full max-w-[48rem] px-4 pb-1.5 pt-0">
         {children}
       </div>
     </div>

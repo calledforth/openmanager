@@ -59,6 +59,8 @@ export {
   applySessionList,
   applySessionOpen,
   applySessionRemoved,
+  applySessionSettled,
+  applySessionAcknowledged,
   applySessionTitle,
   applySnapshot,
   applyThreadHydration,

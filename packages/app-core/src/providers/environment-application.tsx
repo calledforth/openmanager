@@ -603,6 +603,7 @@ function toWorkspaceEntry(workspace: Workspace): WorkspaceEntry {
     availability: workspace.availability,
     lastActivityAt: workspace.lastActivityAt,
     capabilities: workspace.capabilities,
+    ...(workspace.git ? { git: workspace.git } : {}),
   }
 }
 
@@ -613,6 +614,7 @@ function EnvironmentSidebarDataProvider({
   storage?: EnvironmentApplicationOptions['collapsedWorkspaceStorage']
   children: ReactNode
 }) {
+  const client = useEnvironmentClient()
   const session = useContext(SessionStateContext)!
   const environmentState = useEnvironmentState((state) => state.environment)
   const workspaces = useWorkspaces()
@@ -658,9 +660,10 @@ function EnvironmentSidebarDataProvider({
       const entry: SidebarSessionEntry = {
         externalId: summary.sessionId,
         title: summary.title ?? undefined,
-        // Server idle means ready. Legacy desktop idle clears an unread
+        // Idle with an unseen completion is done until someone opens it. Plain
+        // server idle means ready; legacy desktop idle clears an unread
         // completion marker, so keep the presentation alias at this boundary.
-        status: summary.status === 'idle' ? 'ready' : summary.status,
+        status: summary.status === 'idle' ? (summary.doneAt ? 'done' : 'ready') : summary.status,
         providerId: (summary.providerId as ProviderId | undefined) ?? session.defaultProviderId,
         ...(summary.parentSessionId ? { parentExternalId: summary.parentSessionId } : {}),
         // ChatView still branches on `isDriven` for the Convex IPC overlay.
@@ -669,11 +672,27 @@ function EnvironmentSidebarDataProvider({
         // overlay at thin-shell cutover rather than reintroduce `driven`.
         isDriven: true,
         ...(unavailableWorkspaces.has(summary.workspaceId) ? { workspaceUnavailable: true } : {}),
+        ...(summary.updatedAt ? { updatedAt: summary.updatedAt } : {}),
+        settledAt: summary.settledAt ?? null,
       }
       ;(grouped[summary.workspaceId] ??= []).push(entry)
     }
     return grouped
   }, [session.defaultProviderId, sessions, workspaceEntries])
+
+  // Offered only once the environment says it can keep the change.
+  const canSettle = connection.phase === 'connected' && client.supports('settleSession')
+  const settleSession = useCallback(
+    (_workspacePath: string, externalId: string, settled: boolean) =>
+      client.commands.settleSession(externalId, settled),
+    [client],
+  )
+
+  const canAcknowledge = connection.phase === 'connected' && client.supports('acknowledgeSession')
+  const acknowledgeSessionDone = useCallback(
+    (_workspacePath: string, externalId: string) => client.commands.acknowledgeSession(externalId),
+    [client],
+  )
 
   const isWorkspacesLoading =
     workspaces.length === 0 &&
@@ -696,9 +715,15 @@ function EnvironmentSidebarDataProvider({
       selectSession: session.selectSession,
       createSession: session.createSession,
       renameSession: session.renameSession,
+      ...(canSettle ? { settleSession } : {}),
+      ...(canAcknowledge ? { acknowledgeSessionDone } : {}),
       deleteSession: session.deleteSession,
     }),
     [
+      canSettle,
+      settleSession,
+      canAcknowledge,
+      acknowledgeSessionDone,
       collapsedWorkspacePaths,
       environment,
       isWorkspacesLoading,

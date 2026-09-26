@@ -1,84 +1,75 @@
 import { describe, expect, it } from 'vitest'
-import {
-  flattenSidebarSessions,
-  isSidebarSessionActive,
-  type SidebarSession,
-} from './WorkspaceSidebarView'
-import { sessionBusyTone } from './SessionBusyLoader'
+import { formatRelativeTime } from '../../lib/relative-time'
+import { partitionSidebarSessions } from './WorkspaceSidebarView'
+import type { SidebarSession, SidebarWorkspace } from './sidebar-sessions'
 
 const session = (
   externalId: string,
-  parentExternalId?: string,
-  status: string = 'idle',
-): SidebarSession => ({
-  externalId,
-  parentExternalId,
-  status,
-  providerId: 'opencode',
+  updatedAt: string,
+  extra: Partial<SidebarSession> = {},
+): SidebarSession => ({ externalId, status: 'ready', updatedAt, ...extra })
+
+const workspace = (path: string, sessions: SidebarSession[]): SidebarWorkspace => ({
+  path,
+  name: path,
+  sessions,
 })
 
-describe('isSidebarSessionActive', () => {
-  it('keeps in-flight, waiting, and unread-done sessions visible under a collapsed project', () => {
-    expect(isSidebarSessionActive('running')).toBe(true)
-    expect(isSidebarSessionActive('busy')).toBe(true)
-    expect(isSidebarSessionActive('waiting')).toBe(true)
-    expect(isSidebarSessionActive('done')).toBe(true)
-    expect(isSidebarSessionActive('idle')).toBe(false)
-    expect(isSidebarSessionActive('error')).toBe(false)
+const ids = (entries: ReturnType<typeof partitionSidebarSessions>['active']) =>
+  entries.map((entry) => [
+    entry.root.session.externalId,
+    ...entry.children.map((child) => child.session.externalId),
+  ])
+
+describe('partitionSidebarSessions', () => {
+  it('merges every project into one newest-first active list', () => {
+    const { active, settled } = partitionSidebarSessions([
+      workspace('alpha', [
+        session('a1', '2026-09-24T10:00:00Z'),
+        session('a2', '2026-09-20T10:00:00Z'),
+      ]),
+      workspace('beta', [session('b1', '2026-09-23T10:00:00Z')]),
+    ])
+    expect(ids(active)).toEqual([['a1'], ['b1'], ['a2']])
+    expect(active.map((entry) => entry.root.workspace.path)).toEqual(['alpha', 'beta', 'alpha'])
+    expect(settled).toEqual([])
+  })
+
+  it('puts settled work away, most recently settled first, children with their parent', () => {
+    const { active, settled } = partitionSidebarSessions([
+      workspace('alpha', [
+        session('old', '2026-09-24T09:00:00Z', { settledAt: '2026-09-22T10:00:00Z' }),
+        session('parent', '2026-09-24T08:00:00Z', { settledAt: '2026-09-23T10:00:00Z' }),
+        session('child', '2026-09-24T11:00:00Z', { parentExternalId: 'parent' }),
+        session('live', '2026-09-24T07:00:00Z', { status: 'running' }),
+      ]),
+    ])
+    expect(ids(active)).toEqual([['live']])
+    expect(ids(settled)).toEqual([['parent', 'child'], ['old']])
+  })
+
+  it('keeps an orphaned child visible as its own entry', () => {
+    const { active } = partitionSidebarSessions([
+      workspace('alpha', [session('orphan', '2026-09-24T10:00:00Z', { parentExternalId: 'gone' })]),
+    ])
+    expect(ids(active)).toEqual([['orphan']])
   })
 })
 
-describe('sessionBusyTone', () => {
-  it('maps waiting to needs, done to ready, and in-flight statuses to working', () => {
-    expect(sessionBusyTone('waiting')).toBe('needs')
-    expect(sessionBusyTone('done')).toBe('ready')
-    expect(sessionBusyTone('running')).toBe('working')
-    expect(sessionBusyTone('busy')).toBe('working')
-    expect(sessionBusyTone('ready')).toBe('ready')
-    expect(sessionBusyTone('idle')).toBe(null) // Legacy completion acknowledgement.
-    expect(sessionBusyTone('error')).toBe('error')
-  })
-})
-
-describe('flattenSidebarSessions', () => {
-  it('places nested subagent transcripts directly beneath their ancestry', () => {
-    const rows = flattenSidebarSessions([
-      session('new-root'),
-      session('grandchild', 'child'),
-      session('child', 'root'),
-      session('root'),
-    ])
-
-    expect(
-      rows.map(({ session: row, depth, isChild }) => ({
-        id: row.externalId,
-        depth,
-        isChild,
-      })),
-    ).toEqual([
-      { id: 'new-root', depth: 0, isChild: false },
-      { id: 'root', depth: 0, isChild: false },
-      { id: 'child', depth: 1, isChild: true },
-      { id: 'grandchild', depth: 2, isChild: true },
-    ])
+describe('formatRelativeTime', () => {
+  const now = Date.parse('2026-09-24T12:00:00Z')
+  it.each([
+    ['2026-09-24T11:59:30Z', 'now'],
+    ['2026-09-24T11:55:00Z', '5m'],
+    ['2026-09-24T09:00:00Z', '3h'],
+    ['2026-09-22T12:00:00Z', '2d'],
+  ])('%s reads as %s', (iso, expected) => {
+    expect(formatRelativeTime(iso, now)).toBe(expected)
   })
 
-  it('keeps orphaned and cyclic child sessions visible', () => {
-    const rows = flattenSidebarSessions([
-      session('orphan', 'missing'),
-      session('cycle-a', 'cycle-b'),
-      session('cycle-b', 'cycle-a'),
-    ])
-
-    expect(rows.map(({ session: row }) => row.externalId).sort()).toEqual([
-      'cycle-a',
-      'cycle-b',
-      'orphan',
-    ])
-    expect(rows.find(({ session: row }) => row.externalId === 'orphan')).toMatchObject({
-      depth: 0,
-      isChild: true,
-      isOrphan: true,
-    })
+  it('falls back to a date after a week and to nothing for bad input', () => {
+    expect(formatRelativeTime('2026-09-01T12:00:00Z', now)).not.toMatch(/d$/)
+    expect(formatRelativeTime('not a date', now)).toBe('')
+    expect(formatRelativeTime(undefined, now)).toBe('')
   })
 })

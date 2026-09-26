@@ -9,7 +9,57 @@ import {
 } from 'react'
 import { DEFAULT_UI_FONT, isUiFontId, type UiFontId } from '../lib/fonts'
 
-export type ThemeMode = 'dark' | 'light' | 'black'
+/** `neutral`, `paper`, `lovable`, `lovable-light`, `claudeish`, `carbon` and the two `neutral-light` schemes are the Tend colour schemes (styles/fluid.css). */
+export type ThemeMode =
+  | 'dark'
+  | 'light'
+  | 'black'
+  | 'neutral'
+  | 'paper'
+  | 'lovable'
+  | 'claudeish'
+  | 'carbon'
+  | 'neutral-light'
+  | 'neutral-light-soft'
+  | 'lovable-light'
+
+export const THEME_MODES: readonly ThemeMode[] = [
+  'dark',
+  'light',
+  'black',
+  'neutral',
+  'paper',
+  'lovable',
+  'claudeish',
+  'carbon',
+  'neutral-light',
+  'neutral-light-soft',
+  'lovable-light',
+]
+
+/** Every theme with its display name, in the order pickers list them. */
+export const THEME_OPTIONS: ReadonlyArray<{ id: ThemeMode; label: string; hint: string }> = [
+  { id: 'light', label: 'Light', hint: 'the original light' },
+  { id: 'dark', label: 'Dark', hint: 'the original dark' },
+  { id: 'black', label: 'Black', hint: 'true black' },
+  { id: 'neutral-light', label: 'Neutral Light', hint: 'plain greys, light' },
+  { id: 'neutral-light-soft', label: 'Neutral Light Soft', hint: 'plain greys, lighter ink' },
+  { id: 'neutral', label: 'Neutral', hint: 'plain greys, dark' },
+  { id: 'paper', label: 'Paper', hint: 'warm greys, dark' },
+  { id: 'lovable', label: 'Lovable', hint: 'warm charcoal, dark' },
+  { id: 'lovable-light', label: 'Lovable Light', hint: 'warm cream, light' },
+  { id: 'claudeish', label: 'Claude-ish', hint: 'warm charcoal with clay, dark' },
+  { id: 'carbon', label: 'Carbon', hint: 'neutral black with lime, dark' },
+]
+
+export function isThemeMode(value: string): value is ThemeMode {
+  return (THEME_MODES as readonly string[]).includes(value)
+}
+
+/** Whether a theme paints on a light canvas (icons and code blocks switch on this). */
+export function isLightTheme(mode: ThemeMode): boolean {
+  return mode === 'light' || mode === 'neutral-light' || mode === 'neutral-light-soft' || mode === 'lovable-light'
+}
 
 const THEME_STORAGE_KEY = 'openmanager-theme'
 const FONT_STORAGE_KEY = 'openmanager-font'
@@ -27,7 +77,7 @@ const ThemeContext = createContext<ThemeValue | null>(null)
 function readStoredTheme(): ThemeMode {
   try {
     const stored = localStorage.getItem(THEME_STORAGE_KEY)
-    if (stored === 'light' || stored === 'dark' || stored === 'black') return stored
+    if (stored && isThemeMode(stored)) return stored
   } catch {
     /* ignore */
   }
@@ -47,8 +97,13 @@ function readStoredFont(): UiFontId {
   return DEFAULT_UI_FONT
 }
 
-function applyTheme(mode: ThemeMode) {
+function applyTheme(mode: ThemeMode, animate = false) {
   const root = document.documentElement
+  // Colours tween for one beat while the scheme swaps (styles/fluid.css).
+  if (animate && root.dataset.theme !== (mode === 'dark' ? undefined : mode)) {
+    root.classList.add('transitioning')
+    window.setTimeout(() => root.classList.remove('transitioning'), 200)
+  }
   if (mode === 'dark') {
     delete root.dataset.theme
   } else {
@@ -73,7 +128,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   })
 
   useEffect(() => {
-    applyTheme(theme)
+    applyTheme(theme, true)
     try {
       localStorage.setItem(THEME_STORAGE_KEY, theme)
     } catch {

@@ -114,8 +114,8 @@ export function ComposerTodos({
   return (
     <div
       className={cn(
-        'overflow-hidden rounded-t-[var(--basis-chat-shell-radius)] border border-b-0 border-[var(--basis-border-muted)]',
-        'bg-[var(--basis-canvas-bg)]',
+        // No surface of its own: it rides the composer's floating card.
+        'overflow-hidden rounded-t-[10px]',
       )}
     >
       <button

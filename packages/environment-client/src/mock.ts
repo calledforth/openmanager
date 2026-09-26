@@ -239,12 +239,31 @@ export function createMockEnvironmentClient(
       const session = state.sessions[parsed.scope.sessionId]
       if (session) {
         const status = deriveSessionStatus(session.threadIds.map((id) => state.threads[id]!))
-        if (status !== session.status)
+        // Like the environment, a turn or a question brings a settled session back.
+        const unsettle =
+          !!session.settledAt &&
+          (parsed.name === 'turn.started' || parsed.name === 'interaction.requested')
+        // Only a completed turn leaves news; any other ending or a new turn clears it.
+        const doneAt =
+          parsed.name === 'turn.completed'
+            ? parsed.timestamp
+            : parsed.name === 'turn.started' ||
+                parsed.name === 'turn.interrupted' ||
+                parsed.name === 'turn.failed'
+              ? null
+              : undefined
+        const doneChanged = doneAt !== undefined && doneAt !== (session.doneAt ?? null)
+        if (status !== session.status || unsettle || doneChanged)
           emit({
             ...base(),
             name: 'session.updated',
             scope: envScope(),
-            payload: { sessionId: session.sessionId, status },
+            payload: {
+              sessionId: session.sessionId,
+              status,
+              ...(unsettle ? { settledAt: null } : {}),
+              ...(doneChanged ? { doneAt } : {}),
+            },
           })
       }
     }
@@ -721,6 +740,33 @@ export function createMockEnvironmentClient(
           name: 'session.updated',
           scope: envScope(),
           payload: { sessionId, title, titleSource: 'user' },
+        })
+      }),
+    settleSession: (sessionId, settled) =>
+      run('settleSession', { sessionId, settled }, () => {
+        const session = store.getState().sessions[sessionId]
+        if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
+        // Mirrors the environment: a live session would stay settled after it finishes.
+        if (settled && (session.status === 'running' || session.status === 'waiting')) {
+          throw new EnvironmentClientError('conflict', 'A live session cannot be settled.')
+        }
+        emit({
+          ...base(),
+          name: 'session.updated',
+          scope: envScope(),
+          payload: { sessionId, settledAt: settled ? now() : null },
+        })
+      }),
+    acknowledgeSession: (sessionId) =>
+      run('acknowledgeSession', { sessionId }, () => {
+        const session = store.getState().sessions[sessionId]
+        if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
+        if (!session.doneAt) return
+        emit({
+          ...base(),
+          name: 'session.updated',
+          scope: envScope(),
+          payload: { sessionId, doneAt: null },
         })
       }),
     deleteSession: (sessionId) =>

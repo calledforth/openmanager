@@ -134,7 +134,7 @@ describe('web routes', () => {
       await waitFor(() => expect(client.getState().activeSessionId).toBe('a'))
       expect(router.state.location.pathname).toBe('/sessions/a')
       expect(opens()).toEqual(['a', 'b', 'a'])
-      await user.click(screen.getAllByRole('button', { name: 'New Agent' })[0]!)
+      await user.click(screen.getByRole('button', { name: 'New agent' }))
       await waitFor(() => expect(router.state.location.pathname).toBe('/'))
       await act(() => client.settle())
       expect(client.getState().activeSessionId).toBeNull()
@@ -150,7 +150,7 @@ describe('web routes', () => {
       expect(client.getState().activeSessionId).toBeNull()
       expect(opens()).toEqual(['a', 'b', 'a', 'a'])
       if (activity === 'idle') {
-        await user.click(screen.getAllByRole('button', { name: 'New Agent' })[0]!)
+        await user.click(screen.getByRole('button', { name: 'New agent' }))
         await user.type(screen.getByRole('textbox'), 'A new conversation')
         await user.click(screen.getByRole('button', { name: 'Send' }))
         await waitFor(() => expect(client.getState().activeSessionId).not.toBeNull())
@@ -194,7 +194,7 @@ describe('web routes', () => {
     await user.click(screen.getByRole('button', { name: /Chat B/ }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/sessions/b'))
     expect(client.getState().activeSessionId).not.toBe('b')
-    await user.click(screen.getAllByRole('button', { name: 'New Agent' })[0]!)
+    await user.click(screen.getByRole('button', { name: 'New agent' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/'))
     await act(() => client.settle())
     expect(client.getState().activeSessionId).toBeNull()
@@ -215,6 +215,7 @@ describe('web routes', () => {
     renderWebApp('/settings')
 
     expect(await screen.findByRole('heading', { name: 'Settings' })).toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: 'Appearance' }))
     await user.click(screen.getByRole('radio', { name: 'Light' }))
     expect(screen.getByRole('radio', { name: 'Light' })).toBeChecked()
     expect(document.documentElement.dataset.theme).toBe('light')
@@ -269,7 +270,7 @@ describe('web routes', () => {
     await user.type(await screen.findByLabelText('Environment endpoint'), 'http://127.0.0.1:43120')
     await user.click(screen.getByRole('button', { name: 'Connect' }))
 
-    expect(await screen.findByText(/Connected · Local environment/)).toBeInTheDocument()
+    expect((await screen.findAllByRole('button', { name: /new agent/i })).length).toBeGreaterThan(0)
     expect(storedRegistry()).toMatchObject({
       selectedId: 'env-local',
       environments: [
@@ -321,7 +322,7 @@ describe('web routes', () => {
     expect(await screen.findByRole('heading', { name: 'Not authorized' })).toBeInTheDocument()
     expect(screen.getByText(/belongs to a different environment/i)).toBeInTheDocument()
     expect(localStorage.getItem(ENVIRONMENT_STORAGE_KEY)).toBeNull()
-    expect(screen.queryByText(/Connected ·/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /new agent/i })).not.toBeInTheDocument()
   })
 
   it('connects from the first-run screen using the bootstrap response', async () => {
@@ -335,8 +336,7 @@ describe('web routes', () => {
     await user.type(screen.getByLabelText('Client token'), 'client-token')
     await user.click(screen.getByRole('button', { name: 'Connect' }))
 
-    expect(await screen.findByText(/Connected · Local environment/)).toBeInTheDocument()
-    expect(await screen.findByRole('button', { name: 'New Agent' })).toBeInTheDocument()
+    expect((await screen.findAllByRole('button', { name: /new agent/i })).length).toBeGreaterThan(0)
     expect(storedRegistry()).toMatchObject({
       selectedId: 'env-local',
       environments: [
@@ -368,7 +368,7 @@ describe('web routes', () => {
     await user.type(await screen.findByLabelText('Environment endpoint'), 'https://tunnel.example')
     await user.click(screen.getByRole('button', { name: 'Connect' }))
 
-    expect(await screen.findByText(/Connected · Remote lab/)).toBeInTheDocument()
+    expect((await screen.findAllByRole('button', { name: /new agent/i })).length).toBeGreaterThan(0)
     expect(storedRegistry().environments).toEqual([
       expect.objectContaining({
         environmentId: 'env-remote',
@@ -519,9 +519,9 @@ describe('web routes', () => {
 
     renderWebApp('/')
 
-    expect(await screen.findByRole('button', { name: 'New Agent' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'New agent' })).toBeInTheDocument()
     expect(screen.getByText('No projects yet')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
   })
 
   it('shows an in-shell unreachable banner instead of replacing the session', async () => {
@@ -547,7 +547,7 @@ describe('web routes', () => {
     })
 
     renderWebApp('/missing')
-    await screen.findByText(/Connected · Local environment/)
+    await screen.findAllByRole('button', { name: /new agent/i })
     await waitFor(() =>
       expect(screen.getByRole('heading', { name: 'Page not found' })).toBeInTheDocument(),
     )

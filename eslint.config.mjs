@@ -117,6 +117,8 @@ export default [
       'dist/',
       'node_modules/',
       'packages/convex/convex/_generated/',
+      // Vendored Fluid Functionalism components: re-pull, don't hand-edit.
+      'packages/app-core/src/components/fluid/',
     ],
   },
 ]

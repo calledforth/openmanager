@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { existsSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import { basename, join, resolve } from 'node:path'
 import {
   ProofCommandSchemas,
   ProofEventSchemas,
@@ -9,6 +9,7 @@ import {
   type ErrorCode,
   type ProofEvent,
   type Workspace,
+  type WorkspaceGit,
 } from '@openmanager/protocol/node'
 import { auditValue, type AuditLog } from './audit.ts'
 import type { CommandContext } from './command-context.ts'
@@ -21,6 +22,34 @@ import {
   validateRegistrationPath,
 } from './workspace-paths.ts'
 import { resolveWorkspaceIconDataUrl } from './workspace-icons.ts'
+
+/**
+ * The branch a checkout is on, from at most two small reads: `.git` (a
+ * directory, or a file naming a linked worktree's gitdir) and its `HEAD`.
+ * Never runs git and never walks the tree (D9 cost budget).
+ */
+export function readWorkspaceGit(root: string): WorkspaceGit | undefined {
+  const dotGit = join(root, '.git')
+  try {
+    let gitDir = dotGit
+    let worktree = false
+    const stat = statSync(dotGit)
+    if (stat.isFile()) {
+      const match = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, 'utf8'))
+      if (!match?.[1]) return undefined
+      gitDir = resolve(root, match[1].trim())
+      // Submodules also use a `.git` file; only `<repo>/.git/worktrees/<name>` is a worktree.
+      worktree = /[\\/]worktrees[\\/][^\\/]+[\\/]?$/.test(gitDir)
+    } else if (!stat.isDirectory()) {
+      return undefined
+    }
+    const head = readFileSync(join(gitDir, 'HEAD'), 'utf8').trim()
+    const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(head)
+    return { branch: ref?.[1] ? ref[1].slice(0, 256) : null, worktree }
+  } catch {
+    return undefined
+  }
+}
 
 export interface RegisteredWorkspace {
   readonly workspaceId: string
@@ -226,7 +255,23 @@ export function openWorkspaceRegistry(
         git: exists && existsSync(join(workspace.root, '.git')),
         providers: [...providers],
       },
+      ...gitOf(workspace),
     }
+  }
+
+  // The checkout each workspace was last announced on, so a branch switch
+  // made outside the app reaches clients the next time the workspace is used.
+  const announcedGit = new Map<string, string>()
+  const gitOf = (workspace: RegisteredWorkspace): { git?: WorkspaceGit } => {
+    const git =
+      workspace.availability === 'available' ? readWorkspaceGit(workspace.root) : undefined
+    announcedGit.set(workspace.workspaceId, JSON.stringify(git ?? null))
+    return git ? { git } : {}
+  }
+  const gitChanged = (workspace: RegisteredWorkspace): boolean => {
+    const previous = announcedGit.get(workspace.workspaceId)
+    if (previous === undefined || workspace.availability !== 'available') return false
+    return previous !== JSON.stringify(readWorkspaceGit(workspace.root) ?? null)
   }
 
   const emit = (
@@ -254,7 +299,12 @@ export function openWorkspaceRegistry(
     providers?: readonly string[],
   ): RegisteredWorkspace => {
     const availability = availabilityOf(workspace.root)
-    if (workspace.availability === availability) return workspace
+    if (workspace.availability === availability) {
+      if (gitChanged(workspace)) {
+        emit('workspace.updated', { workspace: toPublic(workspace, sessionActivity, providers) })
+      }
+      return workspace
+    }
     statements.availability.run(availability, clock(), workspace.workspaceId)
     const updated = Object.freeze({ ...workspace, availability })
     byId.set(workspace.workspaceId, updated)

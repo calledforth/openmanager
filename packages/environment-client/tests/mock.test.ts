@@ -137,6 +137,16 @@ describe('mock environment client', () => {
     expect(client.getState().sessions[SESSION.sessionId]?.status).toBe('idle')
   })
 
+  it('refuses to settle a live session, like the environment', async () => {
+    const client = createMockEnvironmentClient({ seed, respond: () => null })
+    await client.commands.sendTurn({ ...THREAD, text: 'wait' })
+    await expect(client.commands.settleSession(SESSION.sessionId, true)).rejects.toMatchObject({
+      code: 'conflict',
+    })
+    await client.commands.settleSession(SESSION.sessionId, false)
+    expect(client.getState().sessions[SESSION.sessionId]?.settledAt).toBeNull()
+  })
+
   it('interrupts a scripted reply before it completes', async () => {
     const client = createMockEnvironmentClient({ seed, chunkDelayMs: 50 })
     const { turn } = await client.commands.sendTurn({ ...THREAD, text: 'long' })

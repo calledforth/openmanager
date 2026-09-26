@@ -88,6 +88,9 @@
 @import '@fontsource/jetbrains-mono/500.css';
 @import '@fontsource/jetbrains-mono/600.css';
 
+/* Fluid Functionalism tokens and the Tend colour schemes. */
+@import './fluid.css';
+
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    §2  BASE — line rhythm & rendering (Geist; no Inter-only features)
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
@@ -121,6 +124,11 @@
   --basis-session-cube: var(--basis-text-muted);
   --basis-session-cube-needs: #d4a017;
   --basis-session-cube-ready: #6fbf73;
+  /* Session status palette: colour only when something runs, asks, or has news. */
+  --basis-status-working: #a193ff;
+  --basis-status-needs: #f4b942;
+  --basis-status-done: #5ed8a4;
+  --basis-status-error: #ff6f6f;
   --basis-scrollbar-track: transparent;
   --basis-scrollbar-thumb: color-mix(in srgb, var(--basis-text-muted) 28%, transparent);
   --basis-scrollbar-thumb-hover: color-mix(in srgb, var(--basis-text-muted) 48%, transparent);
@@ -135,6 +143,7 @@
   --basis-selection-fg: var(--basis-text-strong);
   --basis-chat-composer-border: var(--basis-border);
   --basis-chat-user-border: var(--basis-border-muted);
+  --basis-chat-user-bg: var(--basis-surface);
 
   --lh-tight: 1.3;
   --lh-snug: 1.375;
@@ -142,6 +151,7 @@
   --lh-readable: 1.625;
   --lh-prose: 1.75;
   --lh-loose: 1.9;
+  /* Reading size for transcript prose, user bubbles and the composer. */
   --chat-assistant-size: 14px;
   --chat-user-size: 14px;
 
@@ -196,9 +206,9 @@ html[data-theme='black'] {
   --basis-border: #262626;
   --basis-border-muted: #1f1f1f;
   --basis-border-strong: #3a3a3a;
-  --basis-chat-text: #ffffff;
-  --basis-text: #ffffff;
-  --basis-text-strong: #ffffff;
+  --basis-chat-text: #e0e0e0;
+  --basis-text: #e0e0e0;
+  --basis-text-strong: #e0e0e0;
   --basis-text-muted: #a0a0a0;
   --basis-text-faint: #858585;
   --basis-chat-composer-border: transparent;
@@ -210,6 +220,10 @@ html[data-theme='black'] {
   --basis-session-cube: var(--basis-text-muted);
   --basis-session-cube-needs: #a07a12;
   --basis-session-cube-ready: #4f9654;
+  --basis-status-working: #9486f5;
+  --basis-status-needs: #e0a93c;
+  --basis-status-done: #4fc493;
+  --basis-status-error: #f06464;
   --basis-scrollbar-thumb: color-mix(in srgb, var(--basis-text-muted) 28%, transparent);
   --basis-scrollbar-thumb-hover: color-mix(in srgb, var(--basis-text-muted) 48%, transparent);
 }
@@ -237,6 +251,10 @@ html[data-theme='light'] {
   --basis-session-cube: var(--basis-text-muted);
   --basis-session-cube-needs: #b8860b;
   --basis-session-cube-ready: #2f8f45;
+  --basis-status-working: #6b56e0;
+  --basis-status-needs: #b7791f;
+  --basis-status-done: #1f9d6b;
+  --basis-status-error: #d64545;
   --basis-scrollbar-thumb: #d9d9d9;
   --basis-scrollbar-thumb-hover: #c4c4c4;
 }
@@ -251,8 +269,8 @@ html[data-ui-font='inter'] {
   --leading-ui-normal: 1.625;
   --leading-ui-relaxed: 1.625;
   --lh-default: 1.625;
-  --lh-readable: 1.625;
-  --lh-prose: 1.625;
+  --lh-readable: 1.65;
+  --lh-prose: 1.65;
 }
 
 html[data-ui-font='geist'],
@@ -264,8 +282,10 @@ html[data-ui-font='inter'] {
   --font-sans: var(--font-inter-sans);
 }
 
-html[data-ui-font='geist'],
-html:not([data-ui-font]),
+/* On body, not html: the root stays 16px so rem sizes (the chat column,
+   spacing) don't change with the font. */
+html[data-ui-font='geist'] body,
+html:not([data-ui-font]) body,
 html[data-ui-font='inter'] body {
   font-size: 14px;
   line-height: 22.75px;
@@ -276,8 +296,8 @@ html[data-ui-font='inter'] body {
   font-style: normal;
 }
 
-html[data-ui-font='geist'],
-html:not([data-ui-font]),
+html[data-ui-font='geist'] .font-normal,
+html:not([data-ui-font]) .font-normal,
 html[data-ui-font='inter'] .font-normal {
   font-weight: 450;
   font-variation-settings: 'wght' 450;
@@ -487,7 +507,11 @@ textarea,
   .md {
     font-family: var(--font-sans);
     font-size: var(--chat-assistant-size);
-    font-weight: 400;
+    font-weight: 450;
+    /* body pins 'wght' 450 via font-variation-settings, which inherits and
+       overrides font-weight — without this reset strong/headings render at
+       body weight. */
+    font-variation-settings: normal;
     line-height: var(--lh-prose);
     letter-spacing: var(--tracking-normal);
     color: var(--basis-text);
@@ -509,7 +533,7 @@ textarea,
 
   /* ── Paragraphs ─────────────────────────────────────── */
   .md p {
-    margin: 0 0 0.7em;
+    margin: 0 0 1em;
   }
 
   /* ── Headings — size + color carry the hierarchy ─────── */
@@ -519,20 +543,22 @@ textarea,
   .md h4,
   .md h5,
   .md h6 {
-    margin: 1.5em 0 0.5em;
-    font-weight: 500;
-    line-height: var(--lh-snug);
+    margin: 1.6em 0 0.6em;
+    font-weight: 600;
+    line-height: var(--lh-tight);
     letter-spacing: var(--tracking-normal);
     color: var(--basis-text-strong);
   }
   .md h1 {
-    font-size: 1.32em;
+    font-size: 1.5em;
+    letter-spacing: -0.015em;
   }
   .md h2 {
-    font-size: 1.16em;
+    font-size: 1.25em;
+    letter-spacing: -0.01em;
   }
   .md h3 {
-    font-size: 1.04em;
+    font-size: 1.1em;
   }
   .md h4 {
     font-size: 1em;
@@ -553,7 +579,7 @@ textarea,
   /* ── Lists — markers restored (preflight strips them) ── */
   .md ul,
   .md ol {
-    margin: 0.7em 0;
+    margin: 0 0 1em;
     padding-left: 1.35em;
   }
   .md ul {
@@ -575,7 +601,7 @@ textarea,
     list-style: lower-roman;
   }
   .md li {
-    margin: 0.22em 0;
+    margin: 0.4em 0;
     padding-left: 0.15em;
   }
   .md li::marker {
@@ -585,10 +611,10 @@ textarea,
   /* Nested lists and list paragraphs tighten up rather than double-space. */
   .md li > ul,
   .md li > ol {
-    margin: 0.22em 0 0.1em;
+    margin: 0.4em 0 0;
   }
   .md li > p {
-    margin-bottom: 0.35em;
+    margin-bottom: 0.5em;
   }
   .md li > p:last-child {
     margin-bottom: 0;
@@ -637,7 +663,7 @@ textarea,
 
   /* ── Quotes ─────────────────────────────────────────── */
   .md blockquote {
-    margin: 0.9em 0;
+    margin: 1.1em 0;
     padding: 0.1em 0 0.1em 0.9em;
     border-left: 2px solid var(--basis-border);
     color: var(--basis-text-muted);
@@ -648,7 +674,7 @@ textarea,
 
   /* ── Emphasis ───────────────────────────────────────── */
   .md strong {
-    font-weight: 500;
+    font-weight: 600;
     color: var(--basis-text-strong);
   }
   .md em {
@@ -673,17 +699,28 @@ textarea,
   /* ── Inline code ────────────────────────────────────── */
   .md :not(pre) > code {
     font-family: var(--font-mono);
-    font-size: 0.875em;
-    padding: 0.1em 0.34em;
-    border: 1px solid var(--basis-border-muted);
-    border-radius: 4px;
-    background: color-mix(in srgb, var(--basis-text) 7%, transparent);
+    font-size: 0.85em;
+    padding: 0.12em 0.4em;
+    border-radius: 5px;
+    border: 1px solid color-mix(in srgb, var(--basis-text) 16%, transparent);
+    background: transparent;
     color: var(--basis-text-strong);
+  }
+
+  /* Inline colour values (`#ff8800`, `rgb(…)`, `hsl(…)`) get a swatch. */
+  .md-swatch {
+    display: inline-block;
+    width: 0.8em;
+    height: 0.8em;
+    margin-right: 0.35em;
+    vertical-align: -0.05em;
+    border-radius: 3px;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--basis-text) 22%, transparent);
   }
 
   /* ── Code blocks ────────────────────────────────────── */
   .md-code {
-    margin: 0.9em 0;
+    margin: 1.1em 0;
     border: 1px solid var(--basis-border);
     border-radius: 8px;
     overflow: hidden;
@@ -708,9 +745,9 @@ textarea,
   }
   .md-code pre {
     margin: 0;
-    padding: 0.7em 0.85em;
+    padding: 0.8em 0.95em;
     overflow-x: auto;
-    font-size: 12.5px;
+    font-size: 13px;
     line-height: var(--lh-readable);
     /* shiki writes a theme background inline; the shell owns it instead. */
     background: transparent !important;
@@ -731,37 +768,40 @@ textarea,
   .md .shiki span {
     color: var(--shiki-dark);
   }
-  html[data-theme='light'] .md .shiki,
-  html[data-theme='light'] .md .shiki span {
+  html:is([data-theme='light'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light']) .md .shiki,
+  html:is([data-theme='light'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light']) .md .shiki span {
     color: var(--shiki-light);
   }
 
-  /* ── Tables — scroll horizontally instead of overflowing ── */
-  .md table {
-    display: block;
-    width: max-content;
-    max-width: 100%;
+  /* ── Tables — open grid: rules between rows, no frame ── */
+  .md-table {
+    margin: 1.1em 0;
     overflow-x: auto;
-    margin: 1em 0;
-    font-size: 0.92em;
-    border: 1px solid var(--basis-border);
-    border-radius: 6px;
-    border-collapse: separate;
-    border-spacing: 0;
+  }
+  .md table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.93em;
   }
   .md th,
   .md td {
-    padding: 0.4em 0.7em;
+    padding: 0.6em 0.9em;
     text-align: left;
+    vertical-align: top;
     border-bottom: 1px solid var(--basis-border-muted);
   }
   .md th {
-    font-weight: 500;
+    font-weight: 600;
+    white-space: nowrap;
     color: var(--basis-text-strong);
-    background: var(--basis-surface);
   }
-  .md tbody tr:last-child td {
-    border-bottom: 0;
+  .md td {
+    color: var(--basis-text-muted);
+    transition: background-color 80ms, color 80ms;
+  }
+  .md tbody tr:hover td {
+    background: color-mix(in srgb, var(--basis-text) 5%, transparent);
+    color: var(--basis-text-strong);
   }
 
   /* ── Media ──────────────────────────────────────────── */
@@ -784,26 +824,6 @@ textarea,
 }
 
 /* Composer fade scrim — Basis-style canvas gradient (no glass) */
-.chat-composer-fade {
-  background: linear-gradient(
-    to top,
-    var(--basis-canvas-bg) 0%,
-    color-mix(in srgb, var(--basis-canvas-bg) 88%, transparent) 28%,
-    color-mix(in srgb, var(--basis-canvas-bg) 45%, transparent) 58%,
-    transparent 100%
-  );
-}
-
-/* Subtle top edge fade under the titlebar */
-.chat-pane-top-fade {
-  background: linear-gradient(
-    to bottom,
-    color-mix(in srgb, var(--basis-canvas-bg) 70%, transparent) 0%,
-    color-mix(in srgb, var(--basis-canvas-bg) 25%, transparent) 55%,
-    transparent 100%
-  );
-}
-
 @layer utilities {
   .theme-btn-plan {
     background-color: var(--send-plan-bg);
@@ -921,27 +941,6 @@ textarea,
   animation: chat-fade-in 200ms ease-out;
 }
 
-@keyframes basis-tooltip-in {
-  from {
-    opacity: 0;
-    transform: scale(0.97);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-/* Shared hover-tip bubble motion — see components/ui/Tooltip.tsx. */
-.basis-tooltip-in {
-  animation: basis-tooltip-in 110ms ease-out;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .basis-tooltip-in {
-    animation: chat-fade-in 110ms ease-out;
-  }
-}
 .chat-animate-slide-up {
   animation: chat-slide-up 200ms ease-out;
 }
@@ -989,9 +988,10 @@ textarea,
   }
 }
 
-/* Session status ring — 2×2 outline dots. Working spins via motion;
- * needs / ready stay static (gold / green). See SessionBusyLoader.tsx. */
+/* Session status glyph: 2×2 dots, each state with its own motion.
+ * See SessionBusyLoader.tsx. Loops stop under reduced motion (below). */
 .session-busy-ring {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   grid-template-rows: repeat(2, 1fr);
@@ -1001,45 +1001,283 @@ textarea,
   padding: 0;
   flex-shrink: 0;
   place-items: stretch;
+  color: var(--basis-status-working);
 }
 
 .session-busy-dot {
   display: block;
-  box-sizing: border-box;
   width: 100%;
   height: 100%;
   min-width: 2px;
   min-height: 2px;
   border-radius: 9999px;
-  background: transparent;
-  border: 1px solid var(--basis-session-cube);
+  background: currentColor;
+  transition:
+    transform 550ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    opacity 300ms ease;
 }
 
+/* Working: light runs clockwise (TL, TR, BR, BL) with a soft glow. */
+.session-busy-ring--working {
+  filter: drop-shadow(0 0 3px color-mix(in srgb, currentColor 70%, transparent));
+}
+.session-busy-ring--working .session-busy-dot {
+  animation: session-glyph-chase 1.1s linear infinite;
+}
+.session-busy-ring--working .session-busy-dot:nth-child(2) {
+  animation-delay: 0.275s;
+}
+.session-busy-ring--working .session-busy-dot:nth-child(4) {
+  animation-delay: 0.55s;
+}
+.session-busy-ring--working .session-busy-dot:nth-child(3) {
+  animation-delay: 0.825s;
+}
+
+/* Needs you: two knocks, a rest, and again. */
+.session-busy-ring--needs {
+  color: var(--basis-status-needs);
+}
 .session-busy-ring--needs .session-busy-dot {
-  border-color: var(--basis-session-cube-needs);
+  animation: session-glyph-knock 2.2s ease-in-out infinite;
+}
+.session-busy-ring--needs .session-busy-dot:nth-child(2),
+.session-busy-ring--needs .session-busy-dot:nth-child(3) {
+  animation-delay: 0.08s;
 }
 
-.session-busy-ring--ready .session-busy-dot {
-  border-color: var(--basis-session-cube-ready);
+/* Done: the dots draw together into one, which pings until opened. */
+.session-busy-ring--done {
+  color: var(--basis-status-done);
+}
+.session-busy-ring--done .session-busy-dot:nth-child(1) {
+  transform: translate(calc(50% + 0.75px), calc(50% + 0.75px)) scale(1.5);
+}
+.session-busy-ring--done .session-busy-dot:nth-child(2) {
+  transform: translate(calc(-50% - 0.75px), calc(50% + 0.75px)) scale(1.5);
+}
+.session-busy-ring--done .session-busy-dot:nth-child(3) {
+  transform: translate(calc(50% + 0.75px), calc(-50% - 0.75px)) scale(1.5);
+}
+.session-busy-ring--done .session-busy-dot:nth-child(4) {
+  transform: translate(calc(-50% - 0.75px), calc(-50% - 0.75px)) scale(1.5);
+}
+.session-busy-ring--done::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 9999px;
+  box-shadow: 0 0 0 1px currentColor;
+  opacity: 0;
+  animation: session-glyph-ping 2.6s ease-out infinite;
 }
 
-.session-busy-ring--error .session-busy-dot {
-  border-color: var(--color-red-400, #f87171);
+/* Failed: the dots sit slightly apart; they jolt once when it happens. */
+.session-busy-ring--error {
+  color: var(--basis-status-error);
+}
+.session-busy-ring--error .session-busy-dot:nth-child(1) {
+  transform: translate(-0.75px, -0.75px);
+}
+.session-busy-ring--error .session-busy-dot:nth-child(2) {
+  transform: translate(0.75px, -0.75px);
+}
+.session-busy-ring--error .session-busy-dot:nth-child(3) {
+  transform: translate(-0.75px, 0.75px);
+}
+.session-busy-ring--error .session-busy-dot:nth-child(4) {
+  transform: translate(0.75px, 0.75px);
+}
+.session-busy-ring--error.session-busy-ring--moment {
+  animation: session-glyph-shake 450ms ease-in-out 1;
 }
 
-/* Soft stipple wash on the trailing ~10% of a needs/ready session row. */
+/* One spray of sparks when a session finishes (SessionBusyLoader `burst`). */
+.session-busy-sparks {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+}
+.session-busy-sparks i {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 3px;
+  height: 3px;
+  margin: -1.5px 0 0 -1.5px;
+  border-radius: 9999px;
+  background: currentColor;
+  opacity: 0;
+  animation: session-glyph-spark 750ms cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+}
+.session-busy-sparks i:nth-child(even) {
+  background: color-mix(in srgb, currentColor 45%, white);
+}
+
+@keyframes session-glyph-chase {
+  0% {
+    opacity: 1;
+    transform: scale(1.25);
+  }
+  30%,
+  100% {
+    opacity: 0.3;
+    transform: scale(0.8);
+  }
+}
+@keyframes session-glyph-knock {
+  0%,
+  36%,
+  100% {
+    transform: translateY(0);
+  }
+  6%,
+  20% {
+    transform: translateY(-2px);
+  }
+  12%,
+  27% {
+    transform: translateY(0);
+  }
+}
+@keyframes session-glyph-ping {
+  0% {
+    transform: scale(0.3);
+    opacity: 0.9;
+  }
+  55%,
+  100% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+@keyframes session-glyph-shake {
+  0%,
+  100% {
+    transform: none;
+  }
+  20% {
+    transform: translateX(-2px);
+  }
+  40% {
+    transform: translateX(2px);
+  }
+  60% {
+    transform: translateX(-1px);
+  }
+  80% {
+    transform: translateX(1px);
+  }
+}
+@keyframes session-glyph-spark {
+  0% {
+    opacity: 1;
+    transform: rotate(var(--spark-turn)) translateX(0) scale(1.2);
+  }
+  100% {
+    opacity: 0;
+    transform: rotate(var(--spark-turn)) translateX(11px) scale(0.2);
+  }
+}
+
+/* A card's one-off flash when its session finishes or fails. */
+.session-card-flash {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0;
+}
+.session-card-flash--done {
+  background: radial-gradient(
+    140% 160% at 100% 0%,
+    color-mix(in srgb, var(--basis-status-done) 26%, transparent),
+    transparent 70%
+  );
+  animation: session-card-flash 1.5s ease-out;
+}
+.session-card-flash--error {
+  background: radial-gradient(
+    140% 160% at 100% 0%,
+    color-mix(in srgb, var(--basis-status-error) 24%, transparent),
+    transparent 70%
+  );
+  animation: session-card-flash 1.1s ease-out;
+}
+
+/* The gradient that stays while a card is done or failed: the flash settles
+ * into it rather than disappearing. Anchored at the glyph's corner. */
+.session-card-wash {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  animation: session-card-wash-in 600ms ease-out;
+}
+.session-card-wash--done {
+  background: radial-gradient(
+    130% 150% at 100% 0%,
+    color-mix(in srgb, var(--basis-status-done) 13%, transparent),
+    transparent 65%
+  );
+}
+.session-card-wash--error {
+  background: radial-gradient(
+    130% 150% at 100% 0%,
+    color-mix(in srgb, var(--basis-status-error) 12%, transparent),
+    transparent 65%
+  );
+}
+@keyframes session-card-wash-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes session-card-flash {
+  12% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-busy-ring,
+  .session-busy-dot,
+  .session-busy-ring--done::after,
+  .session-card-wash,
+  .session-row-dither {
+    animation: none !important;
+    transition: none;
+  }
+  .session-busy-ring--working .session-busy-dot {
+    opacity: 0.9;
+  }
+  .session-busy-sparks,
+  .session-card-flash {
+    display: none;
+  }
+}
+
+/* Soft stipple wash on the trailing edge of a session row that needs you. */
 .session-row-dither {
   pointer-events: none;
   position: absolute;
   inset-block: 0;
   right: 0;
-  width: 10%;
-  min-width: 18px;
-  max-width: 36px;
+  width: 18%;
+  min-width: 28px;
+  max-width: 56px;
+  border-radius: inherit;
   background-image:
     linear-gradient(
       to left,
-      color-mix(in srgb, var(--session-dither-color) 22%, transparent),
+      color-mix(in srgb, var(--session-dither-color) 18%, transparent),
       transparent
     ),
     radial-gradient(
@@ -1053,14 +1291,21 @@ textarea,
   -webkit-mask-image: linear-gradient(to left, black 15%, transparent 100%);
   mask-image: linear-gradient(to left, black 15%, transparent 100%);
   opacity: 0.9;
+  animation: session-dither-in 600ms ease-out;
+}
+
+@keyframes session-dither-in {
+  from {
+    opacity: 0;
+  }
 }
 
 .session-row-dither--needs {
-  --session-dither-color: var(--basis-session-cube-needs);
+  --session-dither-color: var(--basis-status-needs);
 }
 
 .session-row-dither--ready {
-  --session-dither-color: var(--basis-session-cube-ready);
+  --session-dither-color: var(--basis-status-done);
 }
 
 @media (prefers-reduced-motion: reduce) {

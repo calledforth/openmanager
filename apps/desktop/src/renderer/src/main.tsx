@@ -5,7 +5,8 @@ import { ConvexProvider } from 'convex/react'
 import App from './App'
 import { createConvexClient } from './lib/convex'
 import type { RuntimeConfig } from '../../shared/runtime-config'
-import { ThemeProvider } from '@openmanager/app-core/providers/theme-provider'
+import { ThemeProvider, isThemeMode } from '@openmanager/app-core/providers/theme-provider'
+import { FluidProviders } from '@openmanager/app-core/providers/fluid-provider'
 import { ConvexConfigurationRequired } from './components/settings/ConvexSettingsDialog'
 import { DesktopEnvironmentClientProvider } from './environment/DesktopEnvironmentClientProvider'
 import {
@@ -15,7 +16,7 @@ import {
 
 try {
   const stored = localStorage.getItem('openmanager-theme')
-  if (stored === 'light' || stored === 'black') document.documentElement.dataset.theme = stored
+  if (stored && stored !== 'dark' && isThemeMode(stored)) document.documentElement.dataset.theme = stored
 } catch {
   /* ignore */
 }
@@ -41,7 +42,9 @@ async function bootstrap() {
     root.render(
       <StrictMode>
         <ThemeProvider>
-          <ConvexConfigurationRequired />
+          <FluidProviders>
+            <ConvexConfigurationRequired />
+          </FluidProviders>
         </ThemeProvider>
       </StrictMode>,
     )

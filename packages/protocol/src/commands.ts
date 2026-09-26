@@ -21,6 +21,7 @@ import {
   InteractionResponseSchema,
   InteractionSchema,
   PlanHistoryEntrySchema,
+  TimestampSchema,
 } from './domains.js'
 import { WorkspaceComposerPreferenceSchema } from './composer.js'
 
@@ -104,6 +105,13 @@ export const ProofCommandSchemas = {
     SessionTargetSchema.extend({ title: z.string().trim().min(1).max(512).nullable() }),
   ),
   'session.delete': command('session.delete', SessionTargetSchema),
+  // Settling moves a finished session out of the active list; `settled: false`
+  // brings it back. Either way the change reaches every client as `session.updated`.
+  // Settling a running or waiting session is a `conflict`; bringing one back never is.
+  'session.settle': command('session.settle', SessionTargetSchema.extend({ settled: z.boolean() })),
+  // Clears `doneAt` once the user has looked at a finished session, so every
+  // client stops showing it as done. A session that is not done is a no-op.
+  'session.acknowledge': command('session.acknowledge', SessionTargetSchema),
   'session.history': command(
     'session.history',
     ThreadTargetSchema.extend({
@@ -166,6 +174,8 @@ export const ProofCommandSchema = z.discriminatedUnion('name', [
   ProofCommandSchemas['session.open'],
   ProofCommandSchemas['session.rename'],
   ProofCommandSchemas['session.delete'],
+  ProofCommandSchemas['session.settle'],
+  ProofCommandSchemas['session.acknowledge'],
   ProofCommandSchemas['session.history'],
   ProofCommandSchemas['turn.send'],
   ProofCommandSchemas['turn.interrupt'],
@@ -205,6 +215,8 @@ export const ProofResponseSchemas = {
   ),
   'session.rename': response(z.object({ session: SessionSchema })),
   'session.delete': response(z.null()),
+  'session.settle': response(z.object({ settledAt: TimestampSchema.nullable() })),
+  'session.acknowledge': response(z.null()),
   'session.history': response(
     z.object({
       messages: z.array(MessageSchema),

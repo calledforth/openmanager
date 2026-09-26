@@ -96,6 +96,8 @@ export interface ConvexEnvironmentClientOptions {
  * legacy composer-state provider, so this adapter does not carry them.
  */
 const UNSUPPORTED: ReadonlySet<EnvironmentCommandName> = new Set([
+  'settleSession',
+  'acknowledgeSession',
   'getProviderCatalog',
   'probeProvider',
   'getComposerPreference',
@@ -1037,6 +1039,9 @@ export function createConvexEnvironmentClient(
         job.stop()
       }
     },
+    // Web only for now; the Convex host has no settled state to keep.
+    settleSession: () => unsupported('settleSession'),
+    acknowledgeSession: () => unsupported('acknowledgeSession'),
     getProviderCatalog: () => unsupported('getProviderCatalog'),
     probeProvider: () => unsupported('probeProvider'),
     getComposerPreference: () => unsupported('getComposerPreference'),

@@ -1,54 +1,90 @@
-import { useCallback, useMemo, useState } from 'react'
-import { ChatCircleIcon, GearIcon, PulseIcon } from '@phosphor-icons/react'
-import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
+import { useCallback, useState, type ReactNode } from 'react'
+import { Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import { useEnvironmentClientOptional } from '@openmanager/app-core/providers/environment-client'
 import { EnvironmentApplicationProviders } from '@openmanager/app-core/providers/environment-application'
+import { useSidebarData } from '@openmanager/app-core/providers/sidebar-provider'
+import { ProjectIcon } from '@openmanager/app-core/components/sidebar/ProjectIcon'
 import { WorkspaceSidebar } from '@openmanager/app-core/components/sidebar/WorkspaceSidebar'
+import { useIcon } from '@openmanager/app-core/components/fluid/lib/icon-context'
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarHeader,
+  SidebarInset,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+} from '@openmanager/app-core/components/fluid/ui/sidebar'
+import { SidebarInsetTopbar } from '@openmanager/app-core/components/fluid/sidebar-app/inset-topbar'
+import {
+  SidebarWorkspaceHeader,
+  WorkspaceTile,
+} from '@openmanager/app-core/components/fluid/sidebar-app/workspace-header'
 import type { EnvironmentClient } from '@openmanager/environment-client'
 import { useConnection } from '../providers/connection-provider'
-import { cn } from '../lib/utils'
 import { AddWorkspaceDialog } from './add-workspace-dialog'
 import { ConnectionBanner, ConnectionScreen, ConnectionStatusChip } from './connection-surfaces'
-
-const nav = [
-  { to: '/', label: 'Sessions', icon: ChatCircleIcon },
-  { to: '/settings', label: 'Settings', icon: GearIcon },
-  { to: '/playground/connection', label: 'States', icon: PulseIcon },
-] as const
 
 function isSessionPath(pathname: string) {
   return pathname === '/' || pathname.startsWith('/sessions/')
 }
 
-function NavLinks({ pathname, compact = false }: { pathname: string; compact?: boolean }) {
+/** The shell's own pages as sidebar rows; Sessions only when the project list isn't there. */
+function NavMenu({ pathname, includeSessions }: { pathname: string; includeSessions: boolean }) {
+  const navigate = useNavigate()
+  const SessionsIcon = useIcon('message-circle')
+  const SettingsIcon = useIcon('settings')
+  const StatesIcon = useIcon('sliders-horizontal')
+  const items = [
+    ...(includeSessions ? [{ to: '/', label: 'Sessions', icon: SessionsIcon }] : []),
+    { to: '/settings', label: 'Settings', icon: SettingsIcon },
+    { to: '/playground/connection', label: 'States', icon: StatesIcon },
+  ] as const
+  // Fluid's menu is a bare list; the nav keeps the shell's pages a landmark.
   return (
-    <nav
-      className={cn('flex gap-0.5', compact ? 'flex-row' : 'flex-col px-2')}
-      aria-label="Primary"
-    >
-      {nav.map((item) => {
-        if (compact && item.to === '/') return null
-        const active = item.to === '/' ? isSessionPath(pathname) : pathname === item.to
-        return (
-          <Link
-            key={item.to}
-            to={item.to}
-            title={item.label}
-            aria-label={compact ? item.label : undefined}
-            className={cn(
-              'flex items-center gap-2 rounded-md text-ui-sm transition-colors',
-              compact ? 'h-7 w-7 justify-center' : 'px-2 py-1.5',
-              active
-                ? 'bg-[var(--basis-surface-elevated)] text-[var(--basis-text)]'
-                : 'text-[var(--basis-text-muted)] hover:bg-[var(--basis-surface)] hover:text-[var(--basis-text)]',
-            )}
-          >
-            <item.icon className="h-3.5 w-3.5" weight={active ? 'fill' : 'regular'} />
-            {compact ? null : item.label}
-          </Link>
-        )
-      })}
+    <nav aria-label="Primary">
+      <SidebarMenu>
+        {items.map((item) => (
+          <SidebarMenuItem key={item.to}>
+            <SidebarMenuButton
+              icon={item.icon}
+              isActive={item.to === '/' ? isSessionPath(pathname) : pathname === item.to}
+              onClick={() => void navigate({ to: item.to })}
+            >
+              {item.label}
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        ))}
+      </SidebarMenu>
     </nav>
+  )
+}
+
+/** Project / session for the chat pane's topbar; reads the sidebar contract,
+ *  so it only renders inside the environment providers. */
+function SessionTrail() {
+  const { workspaces, sessionsByWorkspace, activeWorkspacePath, activeSessionId } = useSidebarData()
+  const project = workspaces.find((workspace) => workspace.path === activeWorkspacePath)
+  const session = activeWorkspacePath
+    ? sessionsByWorkspace[activeWorkspacePath]?.find((row) => row.externalId === activeSessionId)
+    : undefined
+  const title = (activeSessionId && session?.title) || 'New session'
+  return (
+    <div
+      className="flex min-w-0 items-center gap-1.5 text-[13px] text-muted-foreground"
+      title={project ? `${project.name} / ${title}` : title}
+    >
+      {project ? (
+        <>
+          <ProjectIcon workspacePath={project.path} className="h-3.5 w-3.5 shrink-0 opacity-80" />
+          <span className="min-w-0 shrink truncate">{project.name}</span>
+          <span className="shrink-0 text-faint">/</span>
+        </>
+      ) : null}
+      <span className="min-w-0 truncate text-foreground">{title}</span>
+    </div>
   )
 }
 
@@ -59,7 +95,7 @@ function ConnectedShell({
 }: {
   client: EnvironmentClient
   pathname: string
-  children: React.ReactNode
+  children: ReactNode
 }) {
   const navigate = useNavigate()
   const navigateSession = useCallback(
@@ -69,7 +105,6 @@ function ConnectedShell({
         : navigate({ to: '/' }),
     [navigate],
   )
-  const { ui } = useConnection()
   const [addingWorkspace, setAddingWorkspace] = useState(false)
   const closeAddWorkspace = useCallback(() => setAddingWorkspace(false), [])
   // The dialog owns the round trip; the sidebar only needs to know it opened.
@@ -79,18 +114,10 @@ function ConnectedShell({
     }
     setAddingWorkspace(true)
   }, [client])
-  const settingsMenu = useMemo(
-    () => (
-      <div className="flex w-full items-center justify-between gap-2">
-        <ConnectionStatusChip state={ui} />
-        <NavLinks pathname={pathname} compact />
-      </div>
-    ),
-    [pathname, ui],
-  )
   return (
     <EnvironmentApplicationProviders addWorkspace={addWorkspace} navigateSession={navigateSession}>
-      <WorkspaceSidebar collapsed={false} settingsMenu={settingsMenu} />
+      {/* A healthy connection says nothing; trouble shows as the banner. */}
+      <WorkspaceSidebar footer={<NavMenu pathname={pathname} includeSessions={false} />} />
       {children}
       <AddWorkspaceDialog client={client} open={addingWorkspace} onClose={closeAddWorkspace} />
     </EnvironmentApplicationProviders>
@@ -122,7 +149,10 @@ export function AppShell() {
   const showBanner = !ungated && ui.surface === 'banner'
 
   const main = (
-    <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+    <SidebarInset className="overflow-hidden">
+      <SidebarInsetTopbar>
+        {client && isSessionPath(pathname) ? <SessionTrail /> : null}
+      </SidebarInsetTopbar>
       {showBanner ? <ConnectionBanner state={ui} handlers={handlers} /> : null}
       {showScreen ? (
         <ConnectionScreen
@@ -134,27 +164,33 @@ export function AppShell() {
       ) : (
         <Outlet />
       )}
-    </main>
+    </SidebarInset>
   )
 
+  // Fluid's default sidebar: one canvas colour for the rail and the page,
+  // split by a hairline.
   return (
-    <div className="flex h-screen w-screen min-w-0 overflow-hidden bg-[var(--basis-canvas-bg)] text-[var(--basis-text)]">
+    <SidebarProvider className="h-svh min-h-0 overflow-hidden bg-background text-foreground">
       {client ? (
         <ConnectedShell client={client} pathname={pathname}>
           {main}
         </ConnectedShell>
       ) : (
         <>
-          <aside className="flex w-[var(--basis-sidebar-width)] shrink-0 flex-col border-r border-[var(--basis-border-muted)] bg-[var(--basis-canvas-bg)]">
-            <div className="px-4 py-4 text-ui-sm font-medium tracking-ui text-[var(--basis-text-strong)]">
-              OpenManager
-            </div>
-            <ConnectionStatusChip state={ui} />
-            <NavLinks pathname={pathname} />
-          </aside>
+          <Sidebar className="text-[15px]">
+            <SidebarHeader>
+              <SidebarWorkspaceHeader name="OpenManager" tile={<WorkspaceTile>O</WorkspaceTile>} />
+            </SidebarHeader>
+            <SidebarContent>
+              <NavMenu pathname={pathname} includeSessions />
+            </SidebarContent>
+            <SidebarFooter>
+              <ConnectionStatusChip state={ui} />
+            </SidebarFooter>
+          </Sidebar>
           {main}
         </>
       )}
-    </div>
+    </SidebarProvider>
   )
 }

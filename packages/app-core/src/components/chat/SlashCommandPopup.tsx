@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { cn } from '../../lib/utils'
+import { composerPopover } from './chatComposerStyles'
 import type { SlashCommandItem } from './slashCommands'
 
 type PopupCoords = { left: number; bottom: number; width: number }
@@ -66,10 +67,7 @@ export function SlashCommandPopup({
       ref={listRef}
       role="listbox"
       aria-label="Slash commands"
-      className={cn(
-        'fixed z-[200] flex flex-col overflow-hidden border border-[var(--basis-border)] bg-[var(--basis-canvas-bg)] shadow-xl',
-        'rounded-[var(--basis-chat-shell-radius)]',
-      )}
+      className={cn('fixed z-[200] flex flex-col overflow-hidden', composerPopover)}
       style={{ left: coords.left, bottom: coords.bottom, width: coords.width, maxHeight: 260 }}
     >
       <div className="min-h-0 flex-1 overflow-y-auto py-1">
@@ -89,8 +87,8 @@ export function SlashCommandPopup({
                 'flex w-full items-baseline gap-2 px-2.5 py-1 text-left transition-colors',
                 'text-11-regular',
                 active
-                  ? 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]'
-                  : 'text-[var(--basis-text-muted)] hover:bg-[var(--basis-surface)] hover:text-[var(--basis-text)]',
+                  ? 'bg-active text-[var(--basis-text-strong)]'
+                  : 'text-[var(--basis-text-muted)] hover:bg-hover hover:text-[var(--basis-text)]',
               )}
             >
               <span className="shrink-0 font-medium text-[var(--basis-text)]">/{command.name}</span>

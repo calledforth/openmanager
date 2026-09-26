@@ -1,123 +1,158 @@
 import { useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import type { ProviderId } from '@agentpack/contract'
 import { ThemeProvider } from '../../providers/theme-provider'
-import {
-  WorkspaceSidebarView,
-  type SidebarWorkspace,
-} from '../../components/sidebar/WorkspaceSidebarView'
+import { SidebarInset, SidebarProvider } from '../../components/fluid/ui/sidebar'
+import { WorkspaceSidebarView } from '../../components/sidebar/WorkspaceSidebarView'
+import type { SidebarWorkspace } from '../../components/sidebar/sidebar-sessions'
 
-const data: SidebarWorkspace[] = [
+const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString()
+
+const PROVIDER_NAMES: Record<string, string> = {
+  opencode: 'OpenCode',
+  cursor: 'Cursor',
+  'claude-code': 'Claude Code',
+  codex: 'Codex',
+}
+
+const initial: SidebarWorkspace[] = [
   {
     path: '/workspace/openmanager',
     name: 'openmanager',
+    git: { branch: 't3code/revamp-chat-typography', worktree: true },
     sessions: [
       {
         externalId: 'sess-001',
-        title: 'UI polish for timeline',
-        status: 'idle',
-        providerId: 'opencode',
+        title: 'Status-based sidebar with settle',
+        status: 'running',
+        providerId: 'claude-code' as ProviderId,
+        updatedAt: ago(1),
+      },
+      {
+        externalId: 'sess-001-a',
+        title: 'Explore t3code settle mechanism',
+        status: 'ready',
+        providerId: 'claude-code' as ProviderId,
+        parentExternalId: 'sess-001',
+        updatedAt: ago(3),
       },
       {
         externalId: 'sess-002',
-        title: 'Streaming bug fix',
-        status: 'running',
-        providerId: 'cursor',
+        title: 'Composer image capabilities',
+        status: 'waiting',
+        providerId: 'codex' as ProviderId,
+        updatedAt: ago(12),
       },
       {
         externalId: 'sess-003',
-        title: 'Permission flow QA',
-        status: 'busy',
-        providerId: 'opencode',
+        title: 'Theme token audit',
+        status: 'ready',
+        providerId: 'cursor' as ProviderId,
+        updatedAt: ago(60 * 5),
+        settledAt: ago(60 * 4),
       },
       {
         externalId: 'sess-004',
-        title: 'Composer toolbar cleanup',
-        status: 'idle',
-        providerId: 'opencode',
-      },
-      {
-        externalId: 'sess-005',
-        title: 'Sidebar session collapse',
-        status: 'idle',
-        providerId: 'cursor',
-      },
-      {
-        externalId: 'sess-006',
-        title: 'Theme token audit',
-        status: 'idle',
-        providerId: 'opencode',
-      },
-      {
-        externalId: 'sess-007',
-        title: 'Agent rename pass',
-        status: 'waiting',
-        providerId: 'cursor',
+        title: 'Streaming re-render cascade',
+        status: 'ready',
+        providerId: 'opencode' as ProviderId,
+        updatedAt: ago(60 * 30),
+        settledAt: ago(60 * 26),
       },
     ],
   },
   {
-    path: '/workspace/opencode.ref',
-    name: 'opencode.ref',
+    path: '/workspace/tend',
+    name: 'tend',
+    git: { branch: 'main', worktree: false },
     sessions: [
       {
         externalId: 'sess-101',
-        title: 'Storybook docs',
-        status: 'waiting',
-        providerId: 'cursor',
+        title: 'Port Graphite scheme',
+        status: 'error',
+        providerId: 'cursor' as ProviderId,
+        updatedAt: ago(40),
+      },
+      {
+        externalId: 'sess-102',
+        title: 'Connect screen inputs',
+        // Finished while the user was elsewhere: done until it is opened.
+        status: 'done',
+        providerId: 'opencode' as ProviderId,
+        updatedAt: ago(60 * 20),
+      },
+    ],
+  },
+  {
+    path: '/workspace/notes',
+    name: 'notes',
+    missing: true,
+    availability: 'missing',
+    sessions: [
+      {
+        externalId: 'sess-201',
+        title: 'Weekly review',
+        status: 'ready',
+        providerId: 'claude-code' as ProviderId,
+        workspaceUnavailable: true,
+        updatedAt: ago(60 * 24 * 3),
       },
     ],
   },
 ]
 
+function Demo() {
+  const [workspaces, setWorkspaces] = useState(initial)
+  const [activeSessionId, setActiveSessionId] = useState<string | null>('sess-001')
+  const patch = (externalId: string, change: Record<string, unknown>) =>
+    setWorkspaces((current) =>
+      current.map((workspace) => ({
+        ...workspace,
+        sessions: workspace.sessions.map((session) =>
+          session.externalId === externalId ? { ...session, ...change } : session,
+        ),
+      })),
+    )
+
+  return (
+    <ThemeProvider>
+      <SidebarProvider className="h-svh min-h-0 overflow-hidden bg-background text-foreground">
+        <WorkspaceSidebarView
+          environmentLabel="studio-workstation"
+          workspaces={workspaces}
+          activeWorkspacePath="/workspace/openmanager"
+          activeSessionId={activeSessionId}
+          onCreateSession={() => undefined}
+          onSelectSession={(_, id) => setActiveSessionId(id)}
+          onRenameSession={(_, id, title) => patch(id, { title: title ?? undefined })}
+          onSettleSession={(_, id, settled) =>
+            patch(id, { settledAt: settled ? new Date().toISOString() : null })
+          }
+          onDeleteSession={(_, id) =>
+            setWorkspaces((current) =>
+              current.map((workspace) => ({
+                ...workspace,
+                sessions: workspace.sessions.filter((session) => session.externalId !== id),
+              })),
+            )
+          }
+          onAddWorkspace={() => undefined}
+          providerLabel={(providerId) => PROVIDER_NAMES[providerId] ?? providerId}
+        />
+        <SidebarInset />
+      </SidebarProvider>
+    </ThemeProvider>
+  )
+}
+
 const meta = {
   title: 'App/WorkspaceSidebarView',
   parameters: { layout: 'fullscreen' },
-  tags: ['autodocs'],
 } satisfies Meta
 
 export default meta
 type Story = StoryObj
 
-function Demo({ collapsed }: { collapsed: boolean }) {
-  const [isCollapsed, setIsCollapsed] = useState(collapsed)
-  const [activeSessionId, setActiveSessionId] = useState<string | null>('sess-002')
-  const [collapsedPaths, setCollapsedPaths] = useState<string[]>(['/workspace/opencode.ref'])
-
-  return (
-    <ThemeProvider>
-      <>
-        <div className="h-screen w-screen bg-background">
-          <WorkspaceSidebarView
-            collapsed={isCollapsed}
-            environmentLabel="studio-workstation"
-            workspaces={data}
-            activeWorkspacePath="/workspace/openmanager"
-            activeSessionId={activeSessionId}
-            collapsedWorkspacePaths={collapsedPaths}
-            onToggleWorkspaceCollapse={(path) =>
-              setCollapsedPaths((prev) =>
-                prev.includes(path) ? prev.filter((x) => x !== path) : [...prev, path],
-              )
-            }
-            onCreateSession={() => undefined}
-            onSelectSession={(_, id) => setActiveSessionId(id)}
-            onDeleteSession={() => undefined}
-            onAddWorkspace={() => undefined}
-          />
-        </div>
-      </>
-    </ThemeProvider>
-  )
-}
-
-export const Connected: Story = {
-  render: () => <Demo collapsed={false} />,
-}
-
-export const Connecting: Story = {
-  render: () => <Demo collapsed={false} />,
-}
-
-export const DisconnectedCollapsed: Story = {
-  render: () => <Demo collapsed={true} />,
+export const ActiveAndSettled: Story = {
+  render: () => <Demo />,
 }

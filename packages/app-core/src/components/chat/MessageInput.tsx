@@ -12,6 +12,8 @@ import { QuestionCard } from '../questions/ComposerQuestionPrompt'
 import { useQuestionFlow } from '../questions/useQuestionFlow'
 import { ComposerPlanPrompt } from '../plans/ComposerPlanPrompt'
 import { ComposerTodos, useSessionPlanEntries } from '../plans/ComposerTodos'
+import { cn } from '../../lib/utils'
+import { composerFrame } from './chatComposerStyles'
 import { MessageInputView } from './MessageInputView'
 import {
   buildProviderModelGroups,
@@ -333,10 +335,14 @@ export function MessageInput() {
     return () => planState.setBuildHandler(null)
   }, [buildPlan, planState])
 
+  // A question card or the todo list sits on top of the composer, and the
+  // three share one floating card.
+  const attachedTop = planEntries.length > 0 || !!questionFlow
+
   return (
     <div className="flex w-full flex-col">
       {questionFlow ? null : <ComposerPlanPrompt />}
-      <div className="flex w-full flex-col">
+      <div className={cn('flex w-full flex-col', attachedTop && composerFrame)}>
         {questionFlow ? <QuestionCard flow={questionFlow} /> : null}
         <ComposerTodos entries={planEntries} />
         <MessageInputView
@@ -379,7 +385,7 @@ export function MessageInput() {
                 }
               : undefined
           }
-          attachedTop={planEntries.length > 0 || !!questionFlow}
+          attachedTop={attachedTop}
           draftKey={draftKey}
           imageUploadEnabled={
             canUploadImages &&

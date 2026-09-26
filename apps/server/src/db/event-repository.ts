@@ -75,7 +75,9 @@ export function createEventRepository(
   const now = options.now ?? Date.now
   const project = createEventProjector(database, options)
   const statements = {
-    sessionStatus: database.prepare('SELECT status FROM sessions WHERE session_id = ?'),
+    sessionStatus: database.prepare(
+      'SELECT status, settled_at, done_at FROM sessions WHERE session_id = ?',
+    ),
     ensureStream: database.prepare(
       `INSERT INTO event_streams (
          scope_key, scope_type, session_id, thread_id, epoch, head_sequence,
@@ -183,13 +185,23 @@ export function createEventRepository(
           ? event.scope.sessionId
           : undefined
       const before = sessionId
-        ? (statements.sessionStatus.get(sessionId) as { status: SessionStatus } | undefined)?.status
+        ? (statements.sessionStatus.get(sessionId) as SessionStatusRow | undefined)
         : undefined
       project(event)
       const after = sessionId
-        ? (statements.sessionStatus.get(sessionId) as { status: SessionStatus } | undefined)?.status
+        ? (statements.sessionStatus.get(sessionId) as SessionStatusRow | undefined)
         : undefined
-      if (sessionId && before !== undefined && after !== undefined && before !== after) {
+      // Activity that unsettles a session rides the same environment event as
+      // its status, so a sidebar that never loads the thread still sees it.
+      const unsettled = !!before?.settled_at && after?.settled_at === null
+      // Done rides it too: set when a turn completes, cleared when the next starts.
+      const doneChanged = !!before && !!after && before.done_at !== after.done_at
+      if (
+        sessionId &&
+        before &&
+        after &&
+        (before.status !== after.status || unsettled || doneChanged)
+      ) {
         statusEvents.push(
           ProofEventSchemas['session.updated'].parse({
             type: 'event',
@@ -197,7 +209,14 @@ export function createEventRepository(
             eventId: `${event.eventId}:status`,
             timestamp: event.timestamp,
             scope: { type: 'environment', environmentId: scope.environmentId },
-            payload: { sessionId, status: after },
+            payload: {
+              sessionId,
+              status: after.status,
+              ...(unsettled ? { settledAt: null } : {}),
+              ...(doneChanged
+                ? { doneAt: after.done_at === null ? null : new Date(after.done_at).toISOString() }
+                : {}),
+            },
           }),
         )
       }
@@ -291,6 +310,12 @@ export function isTerminal(event: ProofEvent): event is TerminalEvent {
     event.name === 'turn.interrupted' ||
     event.name === 'turn.failed'
   )
+}
+
+type SessionStatusRow = {
+  status: SessionStatus
+  settled_at: number | null
+  done_at: number | null
 }
 
 function changesSessionStatus(event: ProofEvent): boolean {

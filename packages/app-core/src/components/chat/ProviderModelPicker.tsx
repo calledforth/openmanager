@@ -12,6 +12,7 @@ import { createPortal } from 'react-dom'
 import { CaretDownIcon, MagnifyingGlassIcon, StarIcon } from '@phosphor-icons/react'
 import type { ProviderId } from '@agentpack/contract'
 import { cn } from '../../lib/utils'
+import { composerChip, composerPopover } from './chatComposerStyles'
 import { ProviderIcon } from '../providers/ProviderIcon'
 import { Tooltip } from '../ui/Tooltip'
 import { usePortaledMenu } from '../ui/usePortaledMenu'
@@ -339,11 +340,7 @@ export function ProviderModelPicker({
           id={listId}
           aria-label="Select model"
           onKeyDown={onMenuKeyDown}
-          className={cn(
-            'relative flex flex-col overflow-hidden bg-[var(--basis-canvas-bg)]',
-            'rounded-[calc(var(--basis-chat-shell-radius)+4px)]',
-            'shadow-[0_16px_40px_rgba(0,0,0,0.22)]',
-          )}
+          className={cn('relative flex flex-col overflow-hidden', composerPopover)}
           style={{
             width: MENU_WIDTH,
             minHeight: MENU_MIN_HEIGHT,
@@ -351,7 +348,7 @@ export function ProviderModelPicker({
           }}
         >
           <div className="shrink-0 px-3 pb-1 pt-3">
-            <div className="flex items-center gap-2 rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)] bg-[var(--basis-surface)] px-2.5 py-2 text-[var(--basis-text-faint)]">
+            <div className="flex items-center gap-2 rounded-md bg-hover px-2.5 py-2 text-[var(--basis-text-faint)]">
               <MagnifyingGlassIcon weight="light" className="h-3.5 w-3.5 shrink-0" />
               <input
                 ref={searchRef}
@@ -375,7 +372,7 @@ export function ProviderModelPicker({
               <div
                 role="tablist"
                 aria-label="Agent providers"
-                className="flex w-12 shrink-0 flex-col gap-0.5 overflow-y-auto rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)] bg-[var(--basis-surface)] py-1.5"
+                className="flex w-12 shrink-0 flex-col gap-0.5 overflow-y-auto rounded-md bg-hover py-1.5"
               >
                 <RailButton
                   selected={paneId === FAVORITES_PANE}
@@ -432,23 +429,14 @@ export function ProviderModelPicker({
                       }}
                       className={cn(
                         'group relative flex w-full items-center gap-1 rounded-md px-1.5',
-                        selected
-                          ? 'bg-[var(--basis-surface)]'
-                          : active
-                            ? 'bg-[var(--basis-surface)]/70'
-                            : 'hover:bg-[var(--basis-surface)]/70',
+                        // Selection is a fill, never an outline or a bar.
+                        selected ? 'bg-active' : active ? 'bg-hover' : 'hover:bg-hover',
                       )}
                       onMouseEnter={() => {
                         setActiveIndex(index)
                         setPreviewing(true)
                       }}
                     >
-                      {selected && (
-                        <span
-                          aria-hidden
-                          className="absolute bottom-1.5 left-0 top-1.5 w-0.5 rounded-full bg-[var(--basis-text-strong)]"
-                        />
-                      )}
                       <button
                         type="button"
                         role="option"
@@ -533,10 +521,9 @@ export function ProviderModelPicker({
         }}
         disabled={disabled}
         className={cn(
-          'flex max-w-[240px] items-center gap-1.5 border-0 bg-transparent px-0.5 py-0 text-11-regular leading-none text-[var(--basis-text)] transition-colors duration-150',
-          'hover:text-[var(--basis-text-strong)]',
-          open && 'text-[var(--basis-text-strong)]',
-          disabled && 'cursor-default opacity-40',
+          composerChip,
+          'max-w-[240px] gap-1.5',
+          open && 'bg-active text-[var(--basis-text-strong)]',
         )}
       >
         <ProviderIcon providerId={currentProviderId} />
@@ -557,8 +544,8 @@ function ModelMetaCard({ rows, top }: { rows: MetaRow[]; top: number }) {
     <div
       className={cn(
         'pointer-events-none absolute left-[calc(100%+10px)] z-[201] w-[220px]',
-        'rounded-[var(--basis-chat-shell-radius)] border border-[var(--basis-border)]',
-        'bg-[var(--basis-surface)] px-3 py-2.5 shadow-[0_12px_32px_rgba(0,0,0,0.2)]',
+        composerPopover,
+        'px-3 py-2.5',
       )}
       style={{ top }}
       role="tooltip"
@@ -601,9 +588,8 @@ function RailButton({
         onClick={onSelect}
         className={cn(
           'relative mx-1 flex h-9 w-[calc(100%-0.5rem)] items-center justify-center rounded-md text-[var(--basis-text-muted)] transition-colors',
-          'hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
-          selected &&
-            'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)] ring-1 ring-[var(--basis-border)]',
+          'hover:bg-hover hover:text-[var(--basis-text)]',
+          selected && 'bg-active text-[var(--basis-text-strong)]',
         )}
       >
         <span className={cn('opacity-70 transition-opacity', selected && 'opacity-100')}>

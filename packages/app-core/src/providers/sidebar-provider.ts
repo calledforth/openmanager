@@ -18,6 +18,8 @@ export interface WorkspaceEntry {
   /** ISO timestamp of the latest session activity; orders the recents list. */
   lastActivityAt?: string | null
   capabilities?: WorkspaceCapabilitySummary
+  /** The checkout's branch (null when detached) and whether it is a linked worktree. */
+  git?: { branch: string | null; worktree: boolean }
 }
 
 /** Where the listed projects live and their sessions run. */
@@ -41,6 +43,10 @@ export interface SidebarSessionEntry {
    * never from `status`: the lifecycle value stays the one the server owns.
    */
   workspaceUnavailable?: boolean
+  /** ISO time of the last activity; hosts that do not track it leave it out. */
+  updatedAt?: string
+  /** ISO time the user settled it; null or absent while it is active. */
+  settledAt?: string | null
 }
 
 /**
@@ -73,6 +79,8 @@ export interface SidebarDataValue {
   selectSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
   createSession: (workspacePath: string) => Promise<void>
   renameSession?: (workspacePath: string, externalId: string, title: string | null) => Promise<void>
+  /** Settle (`true`) or bring back (`false`). Hosts without settling leave it out. */
+  settleSession?: (workspacePath: string, externalId: string, settled: boolean) => Promise<void>
   deleteSession: (
     workspacePath: string,
     externalId: string,

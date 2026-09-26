@@ -3,7 +3,7 @@ import type { PlanEntry } from '@agentpack/contract'
 import { ThemeProvider } from '../../providers/theme-provider'
 import { ComposerTodos } from '../../components/plans/ComposerTodos'
 import { MessageInputView } from '../../components/chat/MessageInputView'
-import { chatInputShell } from '../../components/chat/chatComposerStyles'
+import { chatInputShell, composerFrame } from '../../components/chat/chatComposerStyles'
 import { cn } from '../../lib/utils'
 
 const SAMPLE_ENTRIES: PlanEntry[] = [
@@ -32,7 +32,7 @@ const meta = {
     (Story) => (
       <ThemeProvider>
         <div className="flex min-h-screen items-end bg-[var(--basis-canvas-bg)] p-6">
-          <div className="mx-auto w-full max-w-[52rem]">
+          <div className="mx-auto w-full max-w-[48rem]">
             <Story />
           </div>
         </div>
@@ -50,7 +50,7 @@ export const Collapsed: Story = {
     defaultOpen: false,
   },
   render: (args) => (
-    <div className="flex w-full flex-col">
+    <div className={composerFrame}>
       <ComposerTodos {...args} />
       <div
         className={cn(
@@ -70,7 +70,7 @@ export const Expanded: Story = {
     defaultOpen: true,
   },
   render: (args) => (
-    <div className="flex w-full flex-col">
+    <div className={composerFrame}>
       <ComposerTodos {...args} />
       <div
         className={cn(
@@ -86,7 +86,7 @@ export const Expanded: Story = {
 
 export const WithRealComposer: Story = {
   render: () => (
-    <div className="flex w-full flex-col">
+    <div className={composerFrame}>
       <ComposerTodos entries={SAMPLE_ENTRIES} defaultOpen={false} />
       <MessageInputView
         disabled={false}

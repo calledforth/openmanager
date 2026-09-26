@@ -249,6 +249,169 @@ describe('event repository transactions', () => {
     ).toEqual({ n: 4 })
   })
 
+  it('settles without reordering and unsettles on the next turn through the status broadcast', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const environment = { type: 'environment', environmentId: 'environment-1' } as const
+    const settle = (eventId: string, settledAt: string | null) =>
+      ProofEventSchemas['session.updated'].parse({
+        type: 'event',
+        name: 'session.updated',
+        eventId,
+        timestamp: '2026-09-10T09:00:00.000Z',
+        scope: environment,
+        payload: { sessionId: 'session-1', settledAt },
+      })
+    const row = () =>
+      database
+        .prepare('SELECT settled_at, updated_at FROM sessions WHERE session_id = ?')
+        .get('session-1')
+    const broadcasts = (records: ReturnType<EventRepository['appendEvents']>) =>
+      records
+        .filter((record) => record.event.name === 'session.updated')
+        .map((record) => ProofEventSchemas['session.updated'].parse(record.event).payload)
+
+    repository.appendEvents(environment, [settle('settle-1', '2026-09-10T09:00:00.000Z')])
+    expect(row()).toEqual({ settled_at: Date.parse('2026-09-10T09:00:00.000Z'), updated_at: 1 })
+
+    expect(broadcasts(repository.appendEvents(scope, [started()]))).toEqual([
+      { sessionId: 'session-1', status: 'running', settledAt: null },
+    ])
+    expect(row()).toMatchObject({ settled_at: null })
+    // Only the transition carries it; later status changes leave settling alone.
+    expect(broadcasts(repository.appendEvents(scope, [completed()]))).toEqual([
+      { sessionId: 'session-1', status: 'idle', doneAt: expect.any(String) },
+    ])
+
+    repository.appendEvents(environment, [settle('settle-2', '2026-09-10T11:00:00.000Z')])
+    repository.appendEvents(environment, [settle('unsettle-2', null)])
+    expect(row()).toMatchObject({ settled_at: null })
+    expect(() =>
+      repository.appendEvents(environment, [
+        ProofEventSchemas['session.updated'].parse({
+          ...settle('settle-missing', '2026-09-10T11:00:00.000Z'),
+          payload: { sessionId: 'session-missing', settledAt: '2026-09-10T11:00:00.000Z' },
+        }),
+      ]),
+    ).toThrow(/missing session/)
+  })
+
+  it('marks a completed turn done until acknowledged, and a new turn clears it', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const environment = { type: 'environment', environmentId: 'environment-1' } as const
+    const doneAt = () =>
+      (
+        database.prepare('SELECT done_at FROM sessions WHERE session_id = ?').get('session-1') as {
+          done_at: number | null
+        }
+      ).done_at
+    const broadcasts = (records: ReturnType<EventRepository['appendEvents']>) =>
+      records
+        .filter((record) => record.event.name === 'session.updated')
+        .map((record) => ProofEventSchemas['session.updated'].parse(record.event).payload)
+    const acknowledge = (eventId: string) =>
+      ProofEventSchemas['session.updated'].parse({
+        type: 'event',
+        name: 'session.updated',
+        eventId,
+        timestamp: '2026-09-10T10:05:00.000Z',
+        scope: environment,
+        payload: { sessionId: 'session-1', doneAt: null },
+      })
+    const secondTurn = (name: 'turn.started', eventId: string) => {
+      const first = started(eventId)
+      return ProofEventSchemas[name].parse({
+        ...first,
+        payload: {
+          ...first.payload,
+          turn: { ...first.payload.turn, turnId: 'turn-2' },
+          userMessage: {
+            ...first.payload.userMessage,
+            messageId: 'message-user-2',
+            turnId: 'turn-2',
+          },
+        },
+      })
+    }
+
+    // Starting is not news.
+    expect(broadcasts(repository.appendEvents(scope, [started()]))).toEqual([
+      { sessionId: 'session-1', status: 'running' },
+    ])
+    expect(doneAt()).toBeNull()
+
+    const [finished] = broadcasts(repository.appendEvents(scope, [completed()]))
+    expect(finished).toEqual({ sessionId: 'session-1', status: 'idle', doneAt: expect.any(String) })
+    expect(doneAt()).toBe(Date.parse(finished!.doneAt!))
+
+    // Acknowledging clears it and leaves the session's place in the list alone.
+    const before = database
+      .prepare('SELECT updated_at FROM sessions WHERE session_id = ?')
+      .get('session-1')
+    repository.appendEvents(environment, [acknowledge('ack-1')])
+    expect(doneAt()).toBeNull()
+    expect(
+      database.prepare('SELECT updated_at FROM sessions WHERE session_id = ?').get('session-1'),
+    ).toEqual(before)
+
+    // Unacknowledged results are superseded by the next turn, which says so.
+    repository.appendEvents(scope, [secondTurn('turn.started', 'started-2')])
+    repository.appendEvents(scope, [
+      ProofEventSchemas['turn.completed'].parse({
+        ...completed('completed-2'),
+        payload: { turnId: 'turn-2' },
+      }),
+    ])
+    expect(doneAt()).not.toBeNull()
+    const third = started('started-3')
+    expect(
+      broadcasts(
+        repository.appendEvents(scope, [
+          ProofEventSchemas['turn.started'].parse({
+            ...third,
+            payload: {
+              ...third.payload,
+              turn: { ...third.payload.turn, turnId: 'turn-3' },
+              userMessage: {
+                ...third.payload.userMessage,
+                messageId: 'message-user-3',
+                turnId: 'turn-3',
+              },
+            },
+          }),
+        ]),
+      ),
+    ).toEqual([{ sessionId: 'session-1', status: 'running', doneAt: null }])
+    expect(doneAt()).toBeNull()
+
+    // A failed turn is not done: it shows as the error status instead.
+    expect(
+      broadcasts(
+        repository.appendEvents(scope, [
+          ProofEventSchemas['turn.failed'].parse({
+            type: 'event',
+            name: 'turn.failed',
+            eventId: 'failed-3',
+            timestamp: '2026-09-10T10:09:00.000Z',
+            scope,
+            payload: { turnId: 'turn-3', reason: 'provider_error', message: 'Boom.' },
+          }),
+        ]),
+      ),
+    ).toEqual([{ sessionId: 'session-1', status: 'error' }])
+    expect(doneAt()).toBeNull()
+
+    expect(() =>
+      repository.appendEvents(environment, [
+        ProofEventSchemas['session.updated'].parse({
+          ...acknowledge('ack-missing'),
+          payload: { sessionId: 'session-missing', doneAt: null },
+        }),
+      ]),
+    ).toThrow(/missing session/)
+  })
+
   it('expires durably, stays waiting for another request, and rejects a late resolution', async () => {
     const { database } = await createDatabase()
     const repository = createEventRepository(database)
@@ -813,7 +976,8 @@ describe('event repository transactions', () => {
     expect(
       recovered.prepare('SELECT status FROM sessions WHERE session_id = ?').get('session-1'),
     ).toEqual({
-      status: 'idle',
+      // Nobody asked the turn to stop, so the session shows as failed.
+      status: 'error',
     })
     expect(recovered.prepare('SELECT role, is_final FROM messages').all()).toEqual([
       { role: 'user', is_final: 1 },
@@ -1011,7 +1175,7 @@ describe('durable server event boundary', () => {
         state: 'interrupted',
         finished_at: expect.any(Number),
       })
-      expect(reopened.prepare('SELECT status FROM sessions').get()).toEqual({ status: 'idle' })
+      expect(reopened.prepare('SELECT status FROM sessions').get()).toEqual({ status: 'error' })
       expect(
         reopened
           .prepare('SELECT content_json FROM message_parts WHERE message_id = ?')

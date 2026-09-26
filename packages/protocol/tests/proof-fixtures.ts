@@ -56,6 +56,18 @@ export const proofCommands = [
     name: 'session.delete',
     payload: { sessionId: 'session-1' },
   },
+  {
+    type: 'command',
+    requestId: 'settle',
+    name: 'session.settle',
+    payload: { sessionId: 'session-1', settled: true },
+  },
+  {
+    type: 'command',
+    requestId: 'acknowledge',
+    name: 'session.acknowledge',
+    payload: { sessionId: 'session-1' },
+  },
   { type: 'command', requestId: 'r-1', name: 'environment.get', payload: null },
   { type: 'command', requestId: 'r-2', name: 'workspace.list', payload: null },
   {
@@ -143,6 +155,12 @@ export const proofCommands = [
 export const proofResponses = {
   'session.rename': { type: 'response', requestId: 'rename', payload: { session } },
   'session.delete': { type: 'response', requestId: 'delete', payload: null },
+  'session.settle': {
+    type: 'response',
+    requestId: 'settle',
+    payload: { settledAt: '2026-09-24T10:00:00.000Z' },
+  },
+  'session.acknowledge': { type: 'response', requestId: 'acknowledge', payload: null },
   'environment.get': {
     type: 'response',
     requestId: 'r-1',

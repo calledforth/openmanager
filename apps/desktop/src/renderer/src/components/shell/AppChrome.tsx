@@ -15,6 +15,7 @@ import { cn } from '@openmanager/app-core/lib/utils'
 import { typographyBody } from '@openmanager/app-core/lib/typography'
 import { Tooltip } from '@openmanager/app-core/components/ui/Tooltip'
 import { ProjectIcon } from '@openmanager/app-core/components/sidebar/ProjectIcon'
+import { useSidebar } from '@openmanager/app-core/components/fluid/ui/sidebar'
 
 const isMac = window.electronAPI.platform === 'darwin'
 const showWindowControls = !isMac
@@ -45,13 +46,9 @@ function useTitlebarTrail() {
   return { projectName, chatTitle }
 }
 
-export function AppChrome({
-  sidebarCollapsed,
-  onToggleSidebar,
-}: {
-  sidebarCollapsed: boolean
-  onToggleSidebar: () => void
-}) {
+export function AppChrome() {
+  const { open: sidebarOpen, toggleSidebar } = useSidebar()
+  const sidebarCollapsed = !sidebarOpen
   const [maximized, setMaximized] = useState(false)
   const { activeWorkspacePath } = useSessionState()
   const { createSession } = useSidebarData()
@@ -77,22 +74,30 @@ export function AppChrome({
       className="flex h-[var(--basis-titlebar-height)] shrink-0 items-stretch bg-[var(--basis-canvas-bg)]"
       data-app-titlebar
     >
-      {sidebarCollapsed && (
-        <div
-          className="titlebar-no-drag flex shrink-0 items-center gap-0.5 pl-3.5 pr-2"
-          data-sidebar-icons
+      <div
+        className={cn(
+          'titlebar-no-drag flex shrink-0 items-center gap-0.5 pr-2',
+          sidebarCollapsed ? 'pl-3.5' : 'pl-1.5',
+          isMac && sidebarCollapsed && 'pl-[76px]',
+        )}
+        data-sidebar-icons
+      >
+        <Tooltip
+          content={sidebarCollapsed ? 'Open sidebar' : 'Close sidebar'}
+          shortcut={isMac ? '⌘B' : 'Ctrl+B'}
+          side="bottom"
         >
-          <Tooltip content="Open sidebar" shortcut={isMac ? '⌘B' : 'Ctrl+B'} side="bottom">
-            <button
-              type="button"
-              onClick={onToggleSidebar}
-              className={titlebarIconBtnClass}
-              aria-label="Open sidebar"
-              aria-expanded={false}
-            >
-              <SidebarSimpleIcon weight="light" className="h-[16px] w-[18px]" />
-            </button>
-          </Tooltip>
+          <button
+            type="button"
+            onClick={toggleSidebar}
+            className={titlebarIconBtnClass}
+            aria-label={sidebarCollapsed ? 'Open sidebar' : 'Close sidebar'}
+            aria-expanded={!sidebarCollapsed}
+          >
+            <SidebarSimpleIcon weight="light" className="h-[16px] w-[18px]" />
+          </button>
+        </Tooltip>
+        {sidebarCollapsed && (
           <Tooltip content="New thread" side="bottom">
             <button
               type="button"
@@ -104,14 +109,11 @@ export function AppChrome({
               <PlusIcon weight="light" className="h-[16px] w-[18px]" />
             </button>
           </Tooltip>
-        </div>
-      )}
+        )}
+      </div>
 
       <div
-        className={cn(
-          'titlebar-drag flex min-w-0 flex-1 items-center justify-center gap-1.5 px-2',
-          isMac && sidebarCollapsed && 'pl-[72px]',
-        )}
+        className="titlebar-drag flex min-w-0 flex-1 items-center justify-center gap-1.5 px-2"
         title={fullTitle}
       >
         {projectName && activeWorkspacePath ? (

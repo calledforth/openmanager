@@ -1,6 +1,7 @@
 import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { cn } from '../../lib/utils'
+import { composerPopover } from './chatComposerStyles'
 
 /** Context-window occupancy as reported by the provider's ACP `usage_update`. */
 export type ComposerUsage = {
@@ -107,8 +108,7 @@ export function ContextMeter({ usage }: { usage: ComposerUsage }) {
             role="tooltip"
             className={cn(
               'pointer-events-none fixed z-[200] flex flex-col gap-1 px-2.5 py-2',
-              'border border-[var(--basis-border)] bg-[var(--basis-canvas-bg)] shadow-xl',
-              'rounded-[var(--basis-chat-shell-radius)]',
+              composerPopover,
             )}
             style={{ left: coords.left, bottom: coords.bottom, width: CARD_WIDTH }}
           >

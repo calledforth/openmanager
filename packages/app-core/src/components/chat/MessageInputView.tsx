@@ -26,6 +26,9 @@ import { usePortaledMenu } from '../ui/usePortaledMenu'
 import {
   chatInputShell,
   chatComposerTextarea,
+  composerChip,
+  composerFrame,
+  composerPopover,
   btnSend,
   COMPOSER_TEXTAREA_MAX_PX,
 } from './chatComposerStyles'
@@ -136,19 +139,10 @@ function PillSelect<T extends string>({
           onClick={toggle}
           disabled={isDisabled}
           className={cn(
-            'flex max-w-[220px] items-center font-medium transition-colors duration-150',
-            ghost
-              ? cn(
-                  'gap-0.5 border-0 bg-transparent px-0.5 py-0 text-11-regular leading-none text-[var(--basis-text)]',
-                  'hover:text-[var(--basis-text-strong)]',
-                  open && 'text-[var(--basis-text-strong)]',
-                )
-              : cn(
-                  'gap-1 rounded-full border border-[var(--basis-border-muted)] bg-[var(--basis-surface)] px-2 py-1 text-11-regular text-[var(--basis-text)]',
-                  'hover:border-[var(--basis-border)] hover:bg-[var(--basis-surface-hover)]',
-                  open && 'border-[var(--basis-border)] bg-[var(--basis-surface-hover)]',
-                ),
-            isDisabled && 'cursor-default opacity-40',
+            composerChip,
+            'max-w-[220px] gap-1',
+            ghost ? 'bg-transparent' : 'bg-hover',
+            open && 'bg-active text-[var(--basis-text-strong)]',
           )}
         >
           <span className="truncate">{label}</span>
@@ -193,10 +187,9 @@ function ModelConfigMenu({
           aria-label="Edit model settings"
           aria-expanded={open}
           className={cn(
-            'flex h-5 w-5 items-center justify-center rounded text-[var(--basis-text-faint)] transition-colors',
-            'hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
-            open && 'bg-[var(--basis-surface-hover)] text-[var(--basis-text)]',
-            disabled && 'cursor-default opacity-40',
+            composerChip,
+            'w-6 justify-center px-0 text-[var(--basis-text-faint)] hover:text-[var(--basis-text)]',
+            open && 'bg-active text-[var(--basis-text)]',
           )}
         >
           <FadersHorizontalIcon size={12} weight="regular" />
@@ -207,7 +200,7 @@ function ModelConfigMenu({
         createPortal(
           <div
             ref={menuRef}
-            className="fixed z-[9999] overflow-hidden rounded-xl border border-[var(--basis-border)] bg-[var(--basis-menu-bg,var(--basis-surface))] shadow-[0_12px_34px_rgba(0,0,0,0.18)]"
+            className={cn('fixed z-[9999] overflow-hidden', composerPopover)}
             style={{
               left: menuCoords.left,
               top: menuCoords.top,
@@ -217,7 +210,7 @@ function ModelConfigMenu({
             role="dialog"
             aria-label="Model settings"
           >
-            <div className="border-b border-[var(--basis-border-muted)] px-3 py-2">
+            <div className="px-3 pb-1 pt-2.5">
               <div className="text-11-medium text-[var(--basis-text-strong)]">Model settings</div>
               <div className="mt-0.5 text-[10px] leading-4 text-[var(--basis-text-muted)]">
                 Applied to prompts in this workspace
@@ -233,7 +226,7 @@ function ModelConfigMenu({
                 return (
                   <div
                     key={option.id}
-                    className="flex min-h-10 items-center justify-between gap-3 rounded-lg px-2 py-1.5 hover:bg-[var(--basis-surface-hover)]"
+                    className="flex min-h-10 items-center justify-between gap-3 rounded-lg px-2 py-1.5 hover:bg-hover"
                   >
                     <span className="min-w-0">
                       <span className="block text-11-medium text-[var(--basis-text)]">
@@ -262,10 +255,8 @@ function ModelConfigMenu({
                           if (nextValue !== undefined) onChange(option.id, nextValue)
                         }}
                         className={cn(
-                          'relative h-[18px] w-8 shrink-0 rounded-full border transition-colors',
-                          checked
-                            ? 'border-[var(--basis-action-bg)] bg-[var(--basis-action-bg)]'
-                            : 'border-[var(--basis-border)] bg-[var(--basis-surface)]',
+                          'relative h-[18px] w-8 shrink-0 rounded-full transition-colors',
+                          checked ? 'bg-[var(--basis-action-bg)]' : 'bg-active',
                         )}
                       >
                         <span
@@ -279,7 +270,7 @@ function ModelConfigMenu({
                       <select
                         value={option.currentValue}
                         onChange={(event) => onChange(option.id, event.target.value)}
-                        className="h-7 max-w-[132px] shrink-0 rounded-md border border-[var(--basis-border)] bg-[var(--basis-surface)] px-2 text-11-regular text-[var(--basis-text)] outline-none hover:bg-[var(--basis-surface-hover)] focus:border-[var(--basis-action-bg)]"
+                        className="h-7 max-w-[132px] shrink-0 rounded-md border-0 bg-hover px-2 text-11-regular text-[var(--basis-text)] outline-none hover:bg-active focus-visible:bg-active"
                         aria-label={option.name}
                       >
                         {option.options.map((entry) => (
@@ -728,7 +719,9 @@ export function MessageInputView({
   const configSummary = sessionConfigSummary(configOptions)
 
   return (
-    <div className="flex w-full flex-col">
+    // Attached under a question card or the todo list, the composer is part of
+    // a stack that MessageInput frames; on its own it is the card.
+    <div className={cn('flex w-full flex-col', !attachedTop && composerFrame)}>
       {slashOpen && (
         <SlashCommandPopup
           anchorRef={shellRef}
@@ -743,9 +736,10 @@ export function MessageInputView({
         ref={shellRef}
         className={cn(
           chatInputShell,
-          'gap-1 p-1 transition-[border-color,box-shadow]',
+          'gap-1 p-1 transition-colors',
           attachedTop && 'rounded-t-none',
-          isDragging && 'border-[var(--basis-action-bg)]',
+          // A drop target reads by fill, like every other state here.
+          isDragging && 'bg-active',
         )}
         onDragEnter={(event) => {
           event.preventDefault()
@@ -822,7 +816,7 @@ export function MessageInputView({
         )}
 
         <div className="flex items-center justify-between gap-1.5 px-1 pb-0.5">
-          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto scrollbar-hide">
+          <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto scrollbar-hide">
             <Tooltip
               content={
                 isAwaitingPlanReview
@@ -835,13 +829,14 @@ export function MessageInputView({
                 onClick={() => fileInputRef.current?.click()}
                 disabled={disabled || !imageUploadEnabled || sending || isAwaitingPlanReview}
                 aria-label="Attach images"
-                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--basis-text-muted)] transition-colors hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)] disabled:cursor-not-allowed disabled:opacity-35"
+                className={cn(
+                  composerChip,
+                  'w-6 justify-center px-0 text-[var(--basis-text-muted)] hover:text-[var(--basis-text)]',
+                )}
               >
                 <PlusIcon size={12} />
               </button>
             </Tooltip>
-
-            <div className="mx-0.5 h-3.5 w-px shrink-0 bg-[var(--basis-border-muted)]" />
 
             {showModelControl && (
               <ProviderModelPicker
@@ -904,10 +899,9 @@ export function MessageInputView({
             )}
 
             {usage && (
-              <>
-                <div className="mx-0.5 h-3.5 w-px shrink-0 bg-[var(--basis-border-muted)]" />
+              <span className="ml-1 flex shrink-0 items-center">
                 <ContextMeter usage={usage} />
-              </>
+              </span>
             )}
           </div>
 

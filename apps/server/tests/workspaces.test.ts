@@ -9,6 +9,7 @@ import { openEnvironmentDatabase } from '../src/db/database.js'
 import { canonicalizeRoot } from '../src/workspace-paths.js'
 import {
   openWorkspaceRegistry,
+  readWorkspaceGit,
   type WorkspaceRegistryOptions,
   type WorkspaceRegistry,
 } from '../src/workspaces.js'
@@ -61,6 +62,42 @@ const listed = (name: string, path: string, extra: Record<string, unknown> = {})
   availability: 'available',
   capabilities: { git: false, providers: [] },
   ...extra,
+})
+
+describe('workspace git head', () => {
+  it('reads the branch of a checkout, a linked worktree and a detached head', async () => {
+    const { roots } = await fixture()
+    expect(readWorkspaceGit(roots.a)).toBeUndefined()
+
+    await mkdir(join(roots.a, '.git'))
+    await writeFile(join(roots.a, '.git', 'HEAD'), 'ref: refs/heads/feat/settle\n')
+    expect(readWorkspaceGit(roots.a)).toEqual({ branch: 'feat/settle', worktree: false })
+
+    const gitDir = join(roots.a, '.git', 'worktrees', 'beta')
+    await mkdir(gitDir, { recursive: true })
+    await writeFile(join(gitDir, 'HEAD'), '0123456789abcdef0123456789abcdef01234567\n')
+    await writeFile(join(roots.b, '.git'), `gitdir: ${gitDir}\n`)
+    expect(readWorkspaceGit(roots.b)).toEqual({ branch: null, worktree: true })
+  })
+
+  it('announces a branch switch the next time the workspace is used', async () => {
+    const { roots, open, events } = await fixture()
+    await mkdir(join(roots.a, '.git'))
+    await writeFile(join(roots.a, '.git', 'HEAD'), 'ref: refs/heads/main\n')
+    const registry = open([roots.a])
+    const [alpha] = registry.list()
+    expect(alpha).toMatchObject({ git: { branch: 'main', worktree: false } })
+    const announced = events.length
+    registry.resolve(alpha!.workspaceId)
+    expect(events).toHaveLength(announced)
+
+    await writeFile(join(roots.a, '.git', 'HEAD'), 'ref: refs/heads/feature\n')
+    registry.resolve(alpha!.workspaceId)
+    expect(events.at(-1)).toMatchObject({
+      name: 'workspace.updated',
+      payload: { workspace: { git: { branch: 'feature', worktree: false } } },
+    })
+  })
 })
 
 describe('workspace registry', () => {
