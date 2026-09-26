@@ -91,6 +91,7 @@
     "./components/sidebar/SessionBusyLoader": "./src/components/sidebar/SessionBusyLoader.tsx",
     "./components/sidebar/WorkspaceSidebar": "./src/components/sidebar/WorkspaceSidebar.tsx",
     "./components/sidebar/WorkspaceSidebarView": "./src/components/sidebar/WorkspaceSidebarView.tsx",
+    "./components/workspace/AddProjectPalette": "./src/components/workspace/AddProjectPalette.tsx",
     "./components/ui/SearchableMenu": "./src/components/ui/SearchableMenu.tsx",
     "./components/ui/text-shimmer": "./src/components/ui/text-shimmer.tsx",
     "./components/ui/Tooltip": "./src/components/ui/Tooltip.tsx",

@@ -7,6 +7,12 @@ import { HEARTBEAT_CAPABILITY } from './heartbeat.js'
 import { PROVIDER_PROBE_CAPABILITY } from './providers.js'
 import type { ReplayCommand } from './replay.js'
 import { UPLOAD_TICKET_CAPABILITY, UploadCommandSchemas } from './uploads.js'
+import {
+  ENVIRONMENT_SETTINGS_GET_CAPABILITY,
+  ENVIRONMENT_SETTINGS_SET_CAPABILITY,
+  FILESYSTEM_BROWSE_CAPABILITY,
+  FilesystemCommandSchemas,
+} from './filesystem.js'
 
 /**
  * Access capabilities are what a client's credential grants. They are distinct
@@ -47,6 +53,7 @@ export type CommandName =
   | keyof typeof ProofCommandSchemas
   | keyof typeof ComposerCommandSchemas
   | keyof typeof UploadCommandSchemas
+  | keyof typeof FilesystemCommandSchemas
   | ReplayCommand['name']
 
 /**
@@ -72,6 +79,7 @@ export const COMMAND_ACCESS = Object.freeze({
   'provider.catalog.get': 'read',
   [PROVIDER_PROBE_CAPABILITY]: 'read',
   'composer.preferences.get': 'read',
+  [ENVIRONMENT_SETTINGS_GET_CAPABILITY]: 'read',
   'session.create': 'operate',
   'session.rename': 'operate',
   'session.delete': 'operate',
@@ -81,6 +89,10 @@ export const COMMAND_ACCESS = Object.freeze({
   'workspace.remove': 'operate',
   'composer.preferences.set': 'operate',
   [UPLOAD_TICKET_CAPABILITY]: 'operate',
+  // Lists any folder the environment can read, so it needs the grant that
+  // registers one; `read` alone must not reveal the machine's directory tree.
+  [FILESYSTEM_BROWSE_CAPABILITY]: 'operate',
+  [ENVIRONMENT_SETTINGS_SET_CAPABILITY]: 'operate',
   'turn.send': 'agent',
   'turn.interrupt': 'agent',
   'interaction.respond': 'agent',

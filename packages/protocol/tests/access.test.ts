@@ -7,6 +7,7 @@ import {
   COMMAND_ACCESS,
   ComposerCommandSchemas,
   ERROR_RETRY_POLICY,
+  FilesystemCommandSchemas,
   HEARTBEAT_CAPABILITY,
   PROVIDER_PROBE_CAPABILITY,
   ProofCommandSchemas,
@@ -27,6 +28,7 @@ describe('command access mapping', () => {
       ...Object.keys(ProofCommandSchemas),
       ...Object.keys(ComposerCommandSchemas),
       ...Object.keys(UploadCommandSchemas),
+      ...Object.keys(FilesystemCommandSchemas),
     ].sort()
     expect(Object.keys(COMMAND_ACCESS).sort()).toEqual(commandNames)
   })
