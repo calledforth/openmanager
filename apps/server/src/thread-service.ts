@@ -321,6 +321,16 @@ export function createThreadService(
 ) {
   const sessions = new Map<string, ThreadRecord>()
   const threads = new Map<string, ThreadRecord>()
+  /**
+   * The provider a session is being created on, from before its row is
+   * written until its record exists. The projection asks the host which
+   * provider to file the row under while `session.created` is still being
+   * appended, and the record that answers from then on is built afterwards;
+   * without this the host can only guess the workspace default, and a
+   * session on any other provider is listed and opened as that default until
+   * the runtime stamp lands.
+   */
+  const announcedProviders = new Map<string, ProviderId>()
   /** Host session per `providerId:providerSessionId` registered as a child this process. */
   const childSessionIds = new Map<string, string>()
   /**
@@ -491,7 +501,12 @@ export function createThreadService(
     return getSessionSummary(options.database, sessionId)?.workspaceId
   }
 
-  const persistCreatedThread = (session: Session, thread: Thread) => {
+  /**
+   * Announce a session and its thread. `providerId` is what `providerForSession`
+   * answers while the row is projected; the caller clears it once the record
+   * holds it, so a session never has two sources of truth.
+   */
+  const persistCreatedThread = (session: Session, thread: Thread, providerId: ProviderId) => {
     const timestamp = new Date().toISOString()
     const created = ProofEventSchemas['session.created'].parse({
       type: 'event',
@@ -509,12 +524,19 @@ export function createThreadService(
       scope: { type: 'session', environmentId, sessionId: session.sessionId },
       payload: { thread },
     })
-    if (options.appendAtomic) {
-      options.appendAtomic([created, threadCreated])
-      return
+    announcedProviders.set(session.sessionId, providerId)
+    try {
+      if (options.appendAtomic) {
+        options.appendAtomic([created, threadCreated])
+        return
+      }
+      appendEvent(created)
+      appendEvent(threadCreated)
+    } catch (error) {
+      // No record follows a failed announcement, so nothing else clears it.
+      announcedProviders.delete(session.sessionId)
+      throw error
     }
-    appendEvent(created)
-    appendEvent(threadCreated)
   }
 
   /**
@@ -883,7 +905,7 @@ export function createThreadService(
     }
     const thread: Thread = { threadId: randomUUID(), sessionId: session.sessionId }
     try {
-      persistCreatedThread(session, thread)
+      persistCreatedThread(session, thread, parent.providerId)
     } catch (error) {
       // The parent turn carries on; the child is offered again on the next update.
       options.onPersistenceError?.(error, 'session.created')
@@ -905,6 +927,7 @@ export function createThreadService(
     }
     sessions.set(session.sessionId, record)
     threads.set(thread.threadId, record)
+    announcedProviders.delete(session.sessionId)
     // The stamp is a direct row update that follows the committed insert in
     // the same synchronous step. A child without its provider identity can
     // neither resume nor deduplicate, so a failed stamp takes the announced
@@ -1139,6 +1162,15 @@ export function createThreadService(
       return threads.get(threadId)?.session.sessionId
     },
 
+    /**
+     * The provider a loaded session runs on, or the one a session still being
+     * announced was created on. Unknown for a session only the database
+     * remembers.
+     */
+    providerForSession(sessionId: string): ProviderId | undefined {
+      return sessions.get(sessionId)?.providerId ?? announcedProviders.get(sessionId)
+    },
+
     resolveRuntimeSession(sessionId: string) {
       const record = sessions.get(sessionId)
       if (!record) return undefined
@@ -1268,7 +1300,7 @@ export function createThreadService(
         // means no client learns of a session the host could not serve after a
         // restart, and every connected client sees the session at once.
         try {
-          persistCreatedThread(session, thread)
+          persistCreatedThread(session, thread, providerId)
         } catch (error) {
           options.onPersistenceError?.(error, 'session.created')
           return errorResult(
@@ -1310,6 +1342,7 @@ export function createThreadService(
         }
         sessions.set(session.sessionId, record)
         threads.set(thread.threadId, record)
+        announcedProviders.delete(session.sessionId)
         void record.runtimeSession.catch(() => rollbackSession(record))
         // Before the provider starts, which is a microtask away: once the
         // session has a selection of its own, a later launch in the workspace

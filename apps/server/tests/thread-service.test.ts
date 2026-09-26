@@ -2935,3 +2935,58 @@ describe('transcript runs', () => {
     expect(all.has(started.userMessage.messageId)).toBe(false)
   })
 })
+
+describe('session rows on a provider other than the workspace default', () => {
+  it('lists and opens a new session on its own provider before its runtime has started', async () => {
+    const { database } = await createDatabase()
+    const events = createPersistentEventService(database, () => undefined, {
+      // As the host wires it: the service names the provider a session is being
+      // created on; the workspace default only stands in when it names none.
+      sessionProviderId: (session) =>
+        service.providerForSession(session.sessionId) ??
+        registered(session.workspaceId)!.providerId,
+    })
+    const runtime = {
+      // Still spawning: the row must not wait for the runtime stamp.
+      ensureSession: vi.fn().mockReturnValue(new Promise(() => undefined)),
+      prompt: vi.fn(),
+      cancel: vi.fn(),
+    }
+    const service = createThreadService(
+      runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
+      { rejection: () => undefined },
+      events.append,
+      undefined,
+      (workspaceId) =>
+        workspaceId === '/workspace/project'
+          ? { providerId: 'opencode', providers: ['opencode', 'claude'], cwd: workspaceId }
+          : undefined,
+      { database, flush: events.flush, appendAtomic: events.appendAtomic },
+    )
+    service.setEnvironmentId('environment-1')
+    const dispatch = (name: string, payload: CommandEnvelope['payload']) =>
+      service.dispatch({ type: 'command', requestId: name.replaceAll('.', '-'), name, payload })
+    const created = ProofResponseSchemas['session.create'].parse(
+      dispatch('session.create', {
+        environmentId: 'environment-1',
+        workspaceId: '/workspace/project',
+        providerId: 'claude',
+      }),
+    ).payload
+    const { sessionId } = created.session
+
+    const listed = ProofResponseSchemas['session.list'].parse(dispatch('session.list', {})).payload
+    expect(listed.sessions).toMatchObject([{ sessionId, providerId: 'claude' }])
+    const opened = ProofResponseSchemas['session.open'].parse(
+      dispatch('session.open', { sessionId }),
+    ).payload
+    expect(opened.session).toMatchObject({ sessionId, providerId: 'claude' })
+    expect(service.providerForSession(sessionId)).toBe('claude')
+    await vi.waitFor(() =>
+      expect(runtime.ensureSession).toHaveBeenCalledWith(
+        expect.objectContaining({ providerId: 'claude' }),
+      ),
+    )
+    events.close()
+  })
+})
