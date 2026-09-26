@@ -356,8 +356,10 @@ export interface EnvironmentCommands {
   /**
    * The child folders of a folder on the environment's machine, for picking a
    * project. `~` is its home folder; no path lists where Add project starts.
+   * A `prefix` lists only folders whose names start with it, ignoring case:
+   * how a listing too large to send whole (`omitted` > 0) is reached.
    */
-  browseFolders(path?: string): Promise<FilesystemListing>
+  browseFolders(path?: string, prefix?: string): Promise<FilesystemListing>
   /** Settings the environment shares with every client. Not stored. */
   getEnvironmentSettings(): Promise<EnvironmentSettings>
   /** A patch: settings left out keep their value. Resolves with all of them. */

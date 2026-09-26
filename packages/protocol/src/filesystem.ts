@@ -49,6 +49,11 @@ export const FilesystemCommandSchemas = {
        * `addProjectStartsIn` setting, or home when that is empty or gone.
        */
       path: EnvironmentPathSchema.optional(),
+      /**
+       * List only the folders whose names start with this, ignoring case.
+       * How a client reaches every folder of one too large to send whole.
+       */
+      prefix: z.string().max(1024).optional(),
     }),
   ),
   [ENVIRONMENT_SETTINGS_GET_CAPABILITY]: command(ENVIRONMENT_SETTINGS_GET_CAPABILITY, z.null()),
@@ -68,10 +73,17 @@ export const FilesystemResponseSchemas = {
       /** The folder above it, or null at a drive, share or filesystem root. */
       parentPath: EnvironmentPathSchema.nullable(),
       /**
-       * Every child folder, sorted by name. Links and junctions that resolve
-       * to a folder count as folders. Not capped.
+       * The child folders, sorted by name. Links and junctions that resolve
+       * to a folder count as folders. There is no count cap: every folder is
+       * sent unless the listing would outgrow one socket frame.
        */
       entries: z.array(FilesystemEntrySchema),
+      /**
+       * Folders left out, from the end of the sorted list, because the
+       * listing hit its size budget. Browsing again with a `prefix` reaches
+       * them.
+       */
+      omitted: z.number().int().nonnegative(),
       /** False when the folder exists but the environment may not list it. */
       readable: z.boolean(),
     }),

@@ -59,6 +59,7 @@ describe('addTarget', () => {
     path: 'C:\\code',
     parentPath: 'C:\\',
     readable: true,
+    omitted: 0,
     entries: ['App', 'app-web'].map((name) => entry('C:\\code', name)),
   }
 

@@ -57,7 +57,7 @@ function AddProjectDemo({ startsIn = '' }: { startsIn?: string }) {
       <AddProjectPalette
         open={open}
         onOpenChange={setOpen}
-        browse={(path) => client.commands.browseFolders(path)}
+        browse={(path, prefix) => client.commands.browseFolders(path, prefix)}
         onAdd={async (path) => {
           await client.commands.addWorkspace({ path })
         }}

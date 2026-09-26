@@ -26,8 +26,11 @@ const FolderIcon = phosphorIcon(FolderSimpleIcon)
 export interface AddProjectPaletteProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  /** Lists a folder on the environment; no path lists where Add project starts. */
-  browse: (path?: string) => Promise<FilesystemListing>
+  /**
+   * Lists a folder on the environment; no path lists where Add project
+   * starts, and a prefix lists only the children whose names start with it.
+   */
+  browse: (path?: string, prefix?: string) => Promise<FilesystemListing>
   /** Registers the folder. A rejection is shown in place and the palette stays open. */
   onAdd: (path: string) => Promise<void>
 }
@@ -132,13 +135,31 @@ function FolderBrowser({
     )
   }, [browse, folder, started, remember])
 
+  // A folder too big to send whole is asked for again by the typed prefix,
+  // so every child stays reachable.
+  const base = folder === null ? undefined : listed[folder]
+  const narrowKey =
+    folder !== null && filter && base?.ok && base.listing.omitted > 0
+      ? `${folder}\u0000${filter}`
+      : null
+  useEffect(() => {
+    if (narrowKey === null || folder === null || requested.current.has(narrowKey)) return
+    requested.current.add(narrowKey)
+    browse(folder, filter).then(
+      (listing) => remember(narrowKey, { ok: true, listing }),
+      (error: unknown) => remember(narrowKey, { ok: false, message: messageOf(error) }),
+    )
+  }, [browse, folder, filter, narrowKey, remember])
+  const narrowed = narrowKey === null ? undefined : listed[narrowKey]
+  const narrowing = narrowKey !== null && !narrowed
+
   // While the next folder loads, the last one stays up rather than flashing
   // empty; nothing acts on it until the field's own folder has arrived.
-  const current = folder === null ? undefined : listed[folder]
-  const [shownFolder, setShownFolder] = useState<string | null>(null)
-  if (current && folder !== shownFolder) setShownFolder(folder)
-  const shown =
-    current ?? (folder === null || shownFolder === null ? undefined : listed[shownFolder])
+  const current = narrowed ?? base
+  const currentKey = narrowed ? narrowKey : folder
+  const [shownKey, setShownKey] = useState<string | null>(null)
+  if (current && currentKey !== shownKey) setShownKey(currentKey)
+  const shown = current ?? (folder === null || shownKey === null ? undefined : listed[shownKey])
   const listing = current?.ok ? current.listing : null
 
   const items = useMemo<CommandMenuItemData[]>(() => {
@@ -150,11 +171,14 @@ function FolderBrowser({
       action: `Open ${entry.name}`,
       keepOpen: true,
       onSelect: () => {
+        // A row of the last folder, still up while the next one loads.
+        if (!current) return
         setAddError(null)
         setQuery(asFolderInput(entry.path))
       },
     }))
   }, [shown, current, filter])
+  const omitted = shown?.ok ? shown.listing.omitted : 0
 
   const target = listing ? addTarget(listing, filter) : null
 
@@ -193,7 +217,7 @@ function FolderBrowser({
   let empty: string
   if (!started) empty = 'Loading…'
   else if (folder === null) empty = 'Type a folder path, starting with ~, / or a drive like C:\\.'
-  else if (!shown) empty = 'Loading…'
+  else if (!shown || narrowing) empty = 'Loading…'
   else if (!shown.ok) empty = shown.message
   else if (!shown.listing.readable) empty = 'This folder cannot be opened.'
   else if (filter && current) empty = `No folder here starts with “${filter}”.`
@@ -245,6 +269,12 @@ function FolderBrowser({
       >
         <CommandMenuEmpty>{empty}</CommandMenuEmpty>
       </CommandMenuList>
+      {omitted > 0 ? (
+        <p className="shrink-0 px-4 pt-1 text-[12px] text-muted-foreground">
+          {omitted.toLocaleString()} more {omitted === 1 ? 'folder' : 'folders'} not shown. Type the
+          start of a name to find one.
+        </p>
+      ) : null}
       <div className="flex h-11 shrink-0 items-center gap-4 px-4 text-[12px] text-muted-foreground">
         <span className="flex items-center gap-1.5">
           Open <CommandMenuShortcut keys="enter" className="ml-0" />

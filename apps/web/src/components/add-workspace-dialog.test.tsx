@@ -225,6 +225,68 @@ describe('add project folder browser', () => {
     expect(field()).toHaveValue('C:\\Users\\you\\')
   })
 
+  it('opens at home when the start folder has gone', async () => {
+    render(
+      <AddWorkspaceDialog
+        client={browsingClient({ startsIn: 'C:\\Users\\you\\gone' })}
+        open
+        onClose={() => undefined}
+      />,
+    )
+    await waitFor(() => expect(field()).toHaveValue('C:\\Users\\you\\'))
+  })
+
+  it('ignores rows of the last folder while the next one loads', async () => {
+    const user = userEvent.setup()
+    const client = browsingClient()
+    const browseFolders = client.commands.browseFolders
+    const slow: EnvironmentClient = {
+      ...client,
+      commands: {
+        ...client.commands,
+        browseFolders: (path, prefix) =>
+          path === 'C:\\Users\\you\\code\\'
+            ? new Promise(() => undefined)
+            : browseFolders(path, prefix),
+      },
+    }
+    render(<AddWorkspaceDialog client={slow} open onClose={() => undefined} />)
+    await waitFor(() => expect(rows()).toEqual(['code', 'Documents']))
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(field()).toHaveValue('C:\\Users\\you\\code\\'))
+    // Home's rows are still up; Enter must not step into one of them.
+    expect(rows()).toEqual(['code', 'Documents'])
+    await user.keyboard('{Enter}')
+    expect(field()).toHaveValue('C:\\Users\\you\\code\\')
+  })
+
+  it('reaches every folder of one too large to send whole by asking with the prefix', async () => {
+    const user = userEvent.setup()
+    const client = browsingClient({ startsIn: 'C:\\Users\\you\\code' })
+    const browseFolders = client.commands.browseFolders
+    const partial: EnvironmentClient = {
+      ...client,
+      commands: {
+        ...client.commands,
+        // The environment could only fit the first folder in its frame.
+        browseFolders: async (path, prefix) => {
+          const listing = await browseFolders(path, prefix)
+          if (prefix !== undefined) return listing
+          return { ...listing, entries: listing.entries.slice(0, 1), omitted: 2 }
+        },
+      },
+    }
+    render(<AddWorkspaceDialog client={partial} open onClose={() => undefined} />)
+    await waitFor(() => expect(rows()).toEqual(['openmanager']))
+    expect(screen.getByText(/2 more folders not shown/)).toBeInTheDocument()
+    await user.type(field(), 'te')
+    await waitFor(() => expect(rows()).toEqual(['tend']))
+    expect(client.calls).toContainEqual({
+      command: 'browseFolders',
+      input: { path: 'C:\\Users\\you\\code\\', prefix: 'te' },
+    })
+  })
+
   it('cannot go above a drive root', async () => {
     render(
       <AddWorkspaceDialog

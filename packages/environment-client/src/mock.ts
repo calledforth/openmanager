@@ -903,15 +903,19 @@ export function createMockEnvironmentClient(
         }
         return writePreference(target, { configValues }, known)
       }),
-    browseFolders: (path) =>
-      run('browseFolders', path, () => {
+    browseFolders: (path, prefix) =>
+      run('browseFolders', prefix === undefined ? path : { path, prefix }, () => {
         const folders = options.seed?.folders ?? {}
         const home = options.seed?.home ?? Object.keys(folders)[0] ?? '/'
         const expand = (input: string) =>
           input === '~' ? home : /^~[\\/]/.test(input) ? joinMockPath(home, input.slice(2)) : input
-        const requested = expand(path ?? (environmentSettings.addProjectStartsIn || home))
-        const folder = trimMockPath(requested)
-        const children = folders[folder]
+        // Like the environment: a start folder that has gone falls back home.
+        const startsIn = environmentSettings.addProjectStartsIn
+        const start = startsIn && folders[trimMockPath(expand(startsIn))] ? startsIn : home
+        const folder = trimMockPath(expand(path ?? start))
+        const children = folders[folder]?.filter(
+          (name) => !prefix || name.toLowerCase().startsWith(prefix.toLowerCase()),
+        )
         if (!children) {
           throw new EnvironmentClientError('not_found', `No folder exists at ${folder}.`)
         }
@@ -921,6 +925,7 @@ export function createMockEnvironmentClient(
           entries: [...children]
             .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }))
             .map((name) => ({ name, path: joinMockPath(folder, name) })),
+          omitted: 0,
           readable: true,
         }
       }),

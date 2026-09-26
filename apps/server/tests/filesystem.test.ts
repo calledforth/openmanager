@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join, parse, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { FakeConnectionFactory } from '@agentpack/runtime/testing'
+import type { CommandEnvelope } from '@openmanager/protocol/node'
 import {
   openEnvironmentSettings,
   type EnvironmentSettingsStore,
@@ -51,8 +52,8 @@ async function service(home: string) {
   return { settings, filesystem: createFilesystemService({ settings, home: () => home }) }
 }
 
-const command = (name: string, payload: unknown) => ({
-  type: 'command' as const,
+const command = (name: string, payload: CommandEnvelope['payload']): CommandEnvelope => ({
+  type: 'command',
   requestId: 'req-1',
   name,
   payload,
@@ -98,6 +99,20 @@ describe('listFolder', () => {
     ])
     expect(listing.entries[1]).toEqual({ name: 'alpha', path: join(home, 'alpha') })
     expect(listing).toMatchObject({ path: home, parentPath: parse(home).dir, readable: true })
+  })
+
+  it('narrows by prefix ignoring case, and sends only what fits its budget', async () => {
+    const home = await tree()
+    expect((await listFolder(home, { prefix: 'ITEM' })).entries.map((e) => e.name)).toEqual([
+      'item9',
+      'item10',
+    ])
+    const bytes = (name: string) =>
+      Buffer.byteLength(JSON.stringify({ name, path: join(home, name) })) + 1
+    const partial = await listFolder(home, { maxBytes: bytes('.hidden') + bytes('alpha') })
+    expect(partial.entries.map((e) => e.name)).toEqual(['.hidden', 'alpha'])
+    expect(partial.omitted).toBe(4)
+    expect((await listFolder(home)).omitted).toBe(0)
   })
 
   it('has no parent at a filesystem root', async () => {

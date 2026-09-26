@@ -31,7 +31,10 @@ export function AddWorkspaceDialog({
   open: boolean
   onClose: () => void
 }) {
-  const browse = useCallback((path?: string) => client.commands.browseFolders(path), [client])
+  const browse = useCallback(
+    (path?: string, prefix?: string) => client.commands.browseFolders(path, prefix),
+    [client],
+  )
   const add = useCallback(
     async (path: string) => {
       await client.commands.addWorkspace({ path })

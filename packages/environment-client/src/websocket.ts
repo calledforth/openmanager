@@ -1242,7 +1242,11 @@ export function createWebSocketEnvironmentClient(
         'write',
         sessionPreferenceTarget(input.sessionId),
       ),
-    browseFolders: (path) => request('filesystem.browse', path === undefined ? {} : { path }),
+    browseFolders: (path, prefix) =>
+      request('filesystem.browse', {
+        ...(path === undefined ? {} : { path }),
+        ...(prefix === undefined ? {} : { prefix }),
+      }),
     async getEnvironmentSettings() {
       return (await request('environment.settings.get', null)).settings
     },

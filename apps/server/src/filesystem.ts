@@ -71,11 +71,22 @@ async function isFolder(parent: string, entry: Dirent): Promise<boolean> {
 }
 
 /**
- * The child folders of `path`, every one of them. A folder the environment
- * may not read lists as unreadable rather than failing, so the picker can
- * still step back out of it.
+ * Bytes of entries one listing may carry. A listing is one socket frame, and
+ * a frame past the socket's 1 MiB slow-consumer budget costs the client its
+ * connection, so a folder with tens of thousands of children (WinSxS, a big
+ * `.pnpm` store) is sent in part and reached by prefix instead.
  */
-export async function listFolder(path: string): Promise<FilesystemListing> {
+export const BROWSE_MAX_BYTES = 512 * 1024
+
+/**
+ * The child folders of `path`, every one of them, or those starting with
+ * `prefix`. A folder the environment may not read lists as unreadable rather
+ * than failing, so the picker can still step back out of it.
+ */
+export async function listFolder(
+  path: string,
+  options: { prefix?: string; maxBytes?: number } = {},
+): Promise<FilesystemListing> {
   try {
     if (!(await stat(path)).isDirectory()) {
       throw new BrowseError('validation', `${path} is a file, not a folder.`)
@@ -93,17 +104,27 @@ export async function listFolder(path: string): Promise<FilesystemListing> {
   try {
     dirents = await readdir(path, { withFileTypes: true })
   } catch (error) {
-    if (hasCode(error, 'EACCES', 'EPERM')) return { path, parentPath, entries: [], readable: false }
+    if (hasCode(error, 'EACCES', 'EPERM')) {
+      return { path, parentPath, entries: [], omitted: 0, readable: false }
+    }
     throw error
   }
+  const prefix = options.prefix?.toLowerCase()
+  if (prefix) dirents = dirents.filter((entry) => entry.name.toLowerCase().startsWith(prefix))
   const folders = await Promise.all(
     dirents.map(async (entry) => ((await isFolder(path, entry)) ? entry.name : null)),
   )
-  const entries: FilesystemEntry[] = folders
-    .filter((name): name is string => name !== null)
-    .sort(byName.compare)
-    .map((name) => ({ name, path: join(path, name) }))
-  return { path, parentPath, entries, readable: true }
+  const names = folders.filter((name): name is string => name !== null).sort(byName.compare)
+  const maxBytes = options.maxBytes ?? BROWSE_MAX_BYTES
+  const entries: FilesystemEntry[] = []
+  let bytes = 0
+  for (const name of names) {
+    const entry = { name, path: join(path, name) }
+    bytes += Buffer.byteLength(JSON.stringify(entry)) + 1
+    if (bytes > maxBytes) break
+    entries.push(entry)
+  }
+  return { path, parentPath, entries, omitted: names.length - entries.length, readable: true }
 }
 
 export interface FilesystemServiceOptions {
@@ -142,8 +163,10 @@ export function createFilesystemService(options: FilesystemServiceOptions) {
     return listFolder(resolve(home()))
   }
 
-  const browse = (path: string | undefined): Promise<FilesystemListing> =>
-    path === undefined ? startListing() : listFolder(resolveBrowsePath(path, home(), platform))
+  const browse = (path: string | undefined, prefix?: string): Promise<FilesystemListing> =>
+    path === undefined
+      ? startListing()
+      : listFolder(resolveBrowsePath(path, home(), platform), { prefix })
 
   /** Check each setting in a patch; returns the refusal message, if any. */
   const checkSettings = async (patch: EnvironmentSettingsPatch): Promise<string | null> => {
@@ -171,7 +194,7 @@ export function createFilesystemService(options: FilesystemServiceOptions) {
               return errorResult(command.requestId, 'validation', 'Invalid browse request.')
             }
             try {
-              const listing = await browse(parsed.data.payload.path)
+              const listing = await browse(parsed.data.payload.path, parsed.data.payload.prefix)
               return FilesystemResponseSchemas[FILESYSTEM_BROWSE_CAPABILITY].parse({
                 type: 'response',
                 requestId: command.requestId,
