@@ -4,6 +4,7 @@ import {
   applyEnvironment,
   applyEvent,
   applyInteractionResolved,
+  applySessionAcknowledged,
   applySessionHistory,
   applySessionOpen,
   applySnapshot,
@@ -105,6 +106,57 @@ describe('applyEvent', () => {
     expect(state.sessions[SESSION.sessionId]?.status).toBe('waiting')
     state = applyTurnStarted(state, THREAD, turnStarted().payload)
     expect(state.sessions[SESSION.sessionId]?.status).toBe('waiting')
+  })
+
+  it('tracks an unseen completion without moving the session, and clears it on acknowledge', () => {
+    const doneAt = '2026-09-26T10:00:00.000Z'
+    let state = applyEvent(
+      createInitialState(),
+      event({ name: 'session.created', scope: environmentScope, payload: { session: SESSION } }),
+    )
+    state = applyEvent(
+      state,
+      event({
+        name: 'session.updated',
+        scope: environmentScope,
+        payload: { sessionId: SESSION.sessionId, status: 'idle', doneAt },
+      }),
+    )
+    const finished = state.sessions[SESSION.sessionId]
+    expect(finished).toMatchObject({ status: 'idle', doneAt })
+
+    // A later update that says nothing about it keeps what is known.
+    state = applyEvent(
+      state,
+      event({
+        name: 'session.updated',
+        scope: environmentScope,
+        payload: { sessionId: SESSION.sessionId, title: 'Renamed' },
+      }),
+    )
+    expect(state.sessions[SESSION.sessionId]?.doneAt).toBe(doneAt)
+
+    const acknowledged = applySessionAcknowledged(state, SESSION.sessionId)
+    expect(acknowledged.sessions[SESSION.sessionId]).toMatchObject({
+      doneAt: null,
+      updatedAt: state.sessions[SESSION.sessionId]?.updatedAt,
+    })
+    expect(applySessionAcknowledged(acknowledged, SESSION.sessionId)).toBe(acknowledged)
+
+    // The broadcast from another client lands the same way.
+    const fromElsewhere = applyEvent(
+      state,
+      event({
+        name: 'session.updated',
+        scope: environmentScope,
+        payload: { sessionId: SESSION.sessionId, doneAt: null },
+      }),
+    )
+    expect(fromElsewhere.sessions[SESSION.sessionId]).toMatchObject({
+      doneAt: null,
+      updatedAt: state.sessions[SESSION.sessionId]?.updatedAt,
+    })
+    expect(finished?.status).toBe('idle')
   })
 
   it('fixtures are protocol-valid events', () => {

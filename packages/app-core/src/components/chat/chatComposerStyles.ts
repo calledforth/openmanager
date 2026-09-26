@@ -6,7 +6,7 @@ import { typographyBody } from '../../lib/typography'
  * whole stack, so a question card or the todo list attached on top shares
  * one card instead of each drawing an edge. */
 export const composerFrame =
-  'flex w-full flex-col rounded-[10px] bg-[var(--basis-chat-user-bg)] shadow-float-rest'
+  'flex w-full flex-col rounded-[10px] bg-[var(--basis-chat-composer-bg,var(--basis-chat-user-bg))] shadow-float-rest'
 
 /** Composer shell only — sent user bubbles use `userMessageStyles`. It sits on
  * `composerFrame` and draws no surface of its own. */

@@ -660,9 +660,10 @@ function EnvironmentSidebarDataProvider({
       const entry: SidebarSessionEntry = {
         externalId: summary.sessionId,
         title: summary.title ?? undefined,
-        // Server idle means ready. Legacy desktop idle clears an unread
+        // Idle with an unseen completion is done until someone opens it. Plain
+        // server idle means ready; legacy desktop idle clears an unread
         // completion marker, so keep the presentation alias at this boundary.
-        status: summary.status === 'idle' ? 'ready' : summary.status,
+        status: summary.status === 'idle' ? (summary.doneAt ? 'done' : 'ready') : summary.status,
         providerId: (summary.providerId as ProviderId | undefined) ?? session.defaultProviderId,
         ...(summary.parentSessionId ? { parentExternalId: summary.parentSessionId } : {}),
         // ChatView still branches on `isDriven` for the Convex IPC overlay.
@@ -684,6 +685,12 @@ function EnvironmentSidebarDataProvider({
   const settleSession = useCallback(
     (_workspacePath: string, externalId: string, settled: boolean) =>
       client.commands.settleSession(externalId, settled),
+    [client],
+  )
+
+  const canAcknowledge = connection.phase === 'connected' && client.supports('acknowledgeSession')
+  const acknowledgeSessionDone = useCallback(
+    (_workspacePath: string, externalId: string) => client.commands.acknowledgeSession(externalId),
     [client],
   )
 
@@ -709,11 +716,14 @@ function EnvironmentSidebarDataProvider({
       createSession: session.createSession,
       renameSession: session.renameSession,
       ...(canSettle ? { settleSession } : {}),
+      ...(canAcknowledge ? { acknowledgeSessionDone } : {}),
       deleteSession: session.deleteSession,
     }),
     [
       canSettle,
       settleSession,
+      canAcknowledge,
+      acknowledgeSessionDone,
       collapsedWorkspacePaths,
       environment,
       isWorkspacesLoading,

@@ -243,7 +243,17 @@ export function createMockEnvironmentClient(
         const unsettle =
           !!session.settledAt &&
           (parsed.name === 'turn.started' || parsed.name === 'interaction.requested')
-        if (status !== session.status || unsettle)
+        // Only a completed turn leaves news; any other ending or a new turn clears it.
+        const doneAt =
+          parsed.name === 'turn.completed'
+            ? parsed.timestamp
+            : parsed.name === 'turn.started' ||
+                parsed.name === 'turn.interrupted' ||
+                parsed.name === 'turn.failed'
+              ? null
+              : undefined
+        const doneChanged = doneAt !== undefined && doneAt !== (session.doneAt ?? null)
+        if (status !== session.status || unsettle || doneChanged)
           emit({
             ...base(),
             name: 'session.updated',
@@ -252,6 +262,7 @@ export function createMockEnvironmentClient(
               sessionId: session.sessionId,
               status,
               ...(unsettle ? { settledAt: null } : {}),
+              ...(doneChanged ? { doneAt } : {}),
             },
           })
       }
@@ -741,6 +752,18 @@ export function createMockEnvironmentClient(
           name: 'session.updated',
           scope: envScope(),
           payload: { sessionId, settledAt: settled ? now() : null },
+        })
+      }),
+    acknowledgeSession: (sessionId) =>
+      run('acknowledgeSession', { sessionId }, () => {
+        const session = store.getState().sessions[sessionId]
+        if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
+        if (!session.doneAt) return
+        emit({
+          ...base(),
+          name: 'session.updated',
+          scope: envScope(),
+          payload: { sessionId, doneAt: null },
         })
       }),
     deleteSession: (sessionId) =>

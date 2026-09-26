@@ -14,14 +14,15 @@ const session = (
 })
 
 describe('sessionBusyTone', () => {
-  it('maps waiting to needs, done to ready, and in-flight statuses to working', () => {
+  it('maps waiting to needs, unseen completions to done, and in-flight statuses to working', () => {
     expect(sessionBusyTone('waiting')).toBe('needs')
-    expect(sessionBusyTone('done')).toBe('ready')
+    expect(sessionBusyTone('done')).toBe('done')
     expect(sessionBusyTone('running')).toBe('working')
     expect(sessionBusyTone('busy')).toBe('working')
-    expect(sessionBusyTone('ready')).toBe('ready')
-    expect(sessionBusyTone('idle')).toBe(null) // Legacy completion acknowledgement.
     expect(sessionBusyTone('error')).toBe('error')
+    // At rest (and already seen): no glyph, the card shows its age.
+    expect(sessionBusyTone('ready')).toBe(null)
+    expect(sessionBusyTone('idle')).toBe(null)
   })
 })
 

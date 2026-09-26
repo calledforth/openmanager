@@ -308,19 +308,25 @@ function isEditable(target: EventTarget | null): boolean {
 // Filtering
 // ---------------------------------------------------------------------------
 
-/** Every word of the query appears somewhere in the label, description, or
- *  keywords, case-insensitively. Order is kept: rows never re-sort under
- *  the cursor as the query grows. */
+/** Every word of the query appears somewhere in the label or description,
+ *  or starts one of the keywords, case-insensitively. Keywords are shared
+ *  across a whole group ("theme", "font"), so they only count from the start
+ *  and from two letters on: a lone "c" must not match every row that happens
+ *  to carry "colour". Order is kept: rows never re-sort under the cursor as
+ *  the query grows. */
 export function defaultCommandMenuFilter(
   item: CommandMenuItemData,
   query: string
 ): boolean {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
   if (words.length === 0) return true;
-  const haystack = [item.label, item.description ?? "", ...(item.keywords ?? [])]
-    .join(" ")
-    .toLowerCase();
-  return words.every((word) => haystack.includes(word));
+  const text = `${item.label} ${item.description ?? ""}`.toLowerCase();
+  const keywords = (item.keywords ?? []).map((keyword) => keyword.toLowerCase());
+  return words.every(
+    (word) =>
+      text.includes(word) ||
+      (word.length >= 2 && keywords.some((keyword) => keyword.startsWith(word)))
+  );
 }
 
 /** Groups the visible rows into sections, suggestions first while the query
@@ -442,8 +448,8 @@ export interface CommandMenuProps
   items: readonly CommandMenuItemData[];
   /** Runs when a row is picked, after the item's own `onSelect`. */
   onSelect?: (item: CommandMenuItemData) => void;
-  /** Match an item against the query. Default: every word of the query
-   *  appears in the label, description, or keywords. */
+  /** Match an item against the query. Default: defaultCommandMenuFilter
+   *  (every word in the label or description, or starting a keyword). */
   filter?: (item: CommandMenuItemData, query: string) => boolean;
   /** Controlled query. */
   query?: string;

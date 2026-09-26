@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { AnimatePresence, motion, useReducedMotion, type MotionProps } from 'motion/react'
 import {
   ArrowUUpLeftIcon,
@@ -50,7 +50,9 @@ const SETTLED_OPEN_KEY = 'openmanager.sidebar.settled-open'
  *  open Settled while the cards fit above it: its default spot. */
 const SETTLED_SHARE = 0.3
 const DEFAULT_PROVIDER_ID: ProviderId = 'opencode'
-const cardBodyClass = 'flex w-full min-w-0 flex-col gap-1 rounded-[10px] px-3 py-2.5 text-left'
+// Positioned so the card's status washes and dither paint beneath its text.
+const cardBodyClass =
+  'relative flex w-full min-w-0 flex-col gap-1 rounded-[10px] px-3 py-2.5 text-left'
 
 // Fluid rows take an icon component that maps their stroke to a Phosphor weight.
 const NewAgentIcon = phosphorIcon(NotePencilIcon)
@@ -205,25 +207,59 @@ function writeSettledOpen(open: boolean) {
   }
 }
 
-const STATUS_COPY: Record<Exclude<SessionBusyTone, 'ready'>, string> = {
+const STATUS_COPY: Record<SessionBusyTone, string> = {
   working: 'Working',
   needs: 'Needs input',
+  done: 'Done',
   error: 'Failed',
 }
 
+const STATUS_TEXT: Record<SessionBusyTone, string> = {
+  working: 'text-[color:var(--basis-status-working)]',
+  needs: 'text-[color:var(--basis-status-needs)]',
+  done: 'text-[color:var(--basis-status-done)]',
+  error: 'text-[color:var(--basis-status-error)]',
+}
+
+/** A one-off change worth marking, keyed so each one replays its effect. */
+type StatusMoment = { tone: SessionBusyTone; key: number }
+
+/**
+ * Changes are events, not only states: when a session finishes, asks, or
+ * fails while the sidebar is watching, mark it once. What the card already
+ * showed when it first rendered is left alone, so opening the app is quiet.
+ */
+function useStatusMoment(tone: SessionBusyTone | null): StatusMoment | null {
+  const previous = useRef(tone)
+  const [moment, setMoment] = useState<StatusMoment | null>(null)
+  useEffect(() => {
+    if (previous.current === tone) return
+    previous.current = tone
+    setMoment(tone && tone !== 'working' ? { tone, key: Date.now() } : null)
+  }, [tone])
+  return moment
+}
+
 /** Live work says what it is doing; anything at rest says how long ago. */
-function StatusOrAge({ status, iso, now }: { status: string; iso?: string; now: number }) {
-  const tone = sessionBusyTone(status)
-  if (tone && tone !== 'ready') {
+function StatusOrAge({
+  tone,
+  iso,
+  now,
+  moment,
+}: {
+  tone: SessionBusyTone | null
+  iso?: string
+  now: number
+  moment?: StatusMoment | null
+}) {
+  if (tone) {
     return (
-      <span
-        className={cn(
-          'flex items-center gap-1.5',
-          tone === 'needs' && 'text-[color:var(--basis-warning,#d4a24c)]',
-          tone === 'error' && 'text-destructive',
-        )}
-      >
-        <SessionBusyLoader tone={tone} />
+      <span className={cn('flex items-center gap-1.5', STATUS_TEXT[tone])}>
+        <SessionBusyLoader
+          tone={tone}
+          className={moment?.tone === tone ? 'session-busy-ring--moment' : undefined}
+          burst={moment?.tone === 'done' && tone === 'done' ? moment.key : undefined}
+        />
         {STATUS_COPY[tone]}
       </span>
     )
@@ -231,6 +267,15 @@ function StatusOrAge({ status, iso, now }: { status: string; iso?: string; now: 
   const age = formatRelativeTime(iso, now)
   return age ? <span className="tabular-nums">{age}</span> : null
 }
+
+/** The tap on the shoulder when a session starts waiting on the user. */
+const NUDGE: Keyframe[] = [
+  { transform: 'translateX(0)' },
+  { transform: 'translateX(-3px)', offset: 0.2 },
+  { transform: 'translateX(3px)', offset: 0.45 },
+  { transform: 'translateX(-1.5px)', offset: 0.7 },
+  { transform: 'translateX(0)' },
+]
 
 function CardAction({
   label,
@@ -464,6 +509,18 @@ function SessionCard({
   const git = workspace.git
   const select = () => onSelectSession(workspace.path, session.externalId, providerId)
   const providerName = providerLabel?.(providerId) ?? providerId
+  const tone = sessionBusyTone(session.status)
+  const moment = useStatusMoment(tone)
+  const reduceMotion = useReducedMotion() ?? false
+  const cardRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (moment?.tone !== 'needs' || reduceMotion) return
+    const card = cardRef.current
+    // Web Animations is everywhere the app runs, but not in every test DOM.
+    if (typeof card?.animate === 'function') {
+      card.animate(NUDGE, { duration: 500, easing: 'ease-in-out' })
+    }
+  }, [moment, reduceMotion])
 
   const projectLine = (
     <span className="flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-muted-foreground">
@@ -481,7 +538,7 @@ function SessionCard({
       ) : null}
       {/* Gives way to the hover actions, which sit over this corner. */}
       <span className="ml-auto flex shrink-0 items-center pl-2 transition-opacity duration-80 group-focus-within/card:opacity-0 group-hover/card:opacity-0 pointer-coarse:opacity-0">
-        <StatusOrAge status={session.status} iso={session.updatedAt} now={now} />
+        <StatusOrAge tone={tone} iso={session.updatedAt} now={now} moment={moment} />
       </span>
     </span>
   )
@@ -514,12 +571,29 @@ function SessionCard({
     <motion.div role="listitem" className="overflow-hidden" {...rowMotion}>
       <div className="group/card relative pb-1">
         <div
+          ref={cardRef}
           className={cn(
             // Selection is a fill, never an outline, on every scheme.
-            'rounded-[10px] transition-colors duration-100',
+            'relative rounded-[10px] transition-colors duration-100',
             isActive ? 'bg-active' : 'hover:bg-hover',
           )}
         >
+          {tone === 'needs' ? (
+            <span aria-hidden="true" className="session-row-dither session-row-dither--needs" />
+          ) : null}
+          {tone === 'done' || tone === 'error' ? (
+            <span
+              aria-hidden="true"
+              className={cn('session-card-wash', `session-card-wash--${tone}`)}
+            />
+          ) : null}
+          {moment?.tone === 'done' || moment?.tone === 'error' ? (
+            <span
+              key={moment.key}
+              aria-hidden="true"
+              className={cn('session-card-flash', `session-card-flash--${moment.tone}`)}
+            />
+          ) : null}
           <button
             type="button"
             aria-current={isActive ? 'page' : undefined}
@@ -596,11 +670,7 @@ function ChildRow({
         <GitBranchIcon className="h-3 w-3 shrink-0 opacity-70" aria-hidden />
         <span className="truncate">{session.title || 'Subagent'}</span>
         <span className="ml-auto shrink-0 pl-2 text-[11px] text-faint">
-          {tone && tone !== 'ready' ? (
-            <SessionBusyLoader tone={tone} />
-          ) : (
-            formatRelativeTime(session.updatedAt, now)
-          )}
+          {tone ? <SessionBusyLoader tone={tone} /> : formatRelativeTime(session.updatedAt, now)}
         </span>
       </button>
     </div>
@@ -623,7 +693,6 @@ function SettledRow({
   const { session, workspace, depth } = row
   const providerId = session.providerId ?? DEFAULT_PROVIDER_ID
   const tone = sessionBusyTone(session.status)
-  const live = tone !== null && tone !== 'ready'
   return (
     <MotionMenuItem className="overflow-hidden" {...rowMotion}>
       <SidebarMenuButton
@@ -641,7 +710,7 @@ function SettledRow({
         </span>
       </SidebarMenuButton>
       <SidebarMenuBadge>
-        {live ? (
+        {tone ? (
           <SessionBusyLoader tone={tone} />
         ) : (
           formatRelativeTime(session.settledAt ?? session.updatedAt, now)

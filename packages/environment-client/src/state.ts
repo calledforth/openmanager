@@ -156,6 +156,7 @@ function upsertSession(
     providerId: listed.providerId ?? existing?.providerId,
     updatedAt: listed.updatedAt ?? existing?.updatedAt ?? at,
     ...settledOf(listed.settledAt, existing?.settledAt),
+    ...doneOf(listed.doneAt, existing?.doneAt),
     ...composerOf(listed.composer, existing?.composer),
     threadIds: threadIds
       ? Array.from(new Set([...(existing?.threadIds ?? []), ...threadIds]))
@@ -175,6 +176,15 @@ function settledOf(
 ): Pick<SessionSummary, 'settledAt'> {
   const settledAt = listed !== undefined ? listed : existing
   return settledAt !== undefined ? { settledAt } : {}
+}
+
+/** Likewise for unseen completions: silence from an older environment keeps what is known. */
+function doneOf(
+  listed: string | null | undefined,
+  existing: string | null | undefined,
+): Pick<SessionSummary, 'doneAt'> {
+  const doneAt = listed !== undefined ? listed : existing
+  return doneAt !== undefined ? { doneAt } : {}
 }
 
 /**
@@ -357,7 +367,7 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
     case 'session.updated': {
       const session = state.sessions[event.payload.sessionId]
       if (!session) return state
-      const { title, status, settledAt } = event.payload
+      const { title, status, settledAt, doneAt } = event.payload
       return {
         ...state,
         sessions: {
@@ -368,7 +378,8 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
             ...(title !== undefined ? { title } : {}),
             ...(status !== undefined ? { status } : {}),
             ...(settledAt !== undefined ? { settledAt } : {}),
-            // Settling alone is not activity; the session keeps its place.
+            ...(doneAt !== undefined ? { doneAt } : {}),
+            // Settling or acknowledging alone is not activity; the session keeps its place.
             ...(title !== undefined || status !== undefined ? { updatedAt: event.timestamp } : {}),
           },
         },
@@ -967,6 +978,16 @@ export function applySessionSettled(
   const session = state.sessions[sessionId]
   if (!session || (session.settledAt ?? null) === settledAt) return state
   return { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, settledAt } } }
+}
+
+/** The user has looked at a finished session; it stops showing as done. */
+export function applySessionAcknowledged(
+  state: EnvironmentState,
+  sessionId: string,
+): EnvironmentState {
+  const session = state.sessions[sessionId]
+  if (!session || !session.doneAt) return state
+  return { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, doneAt: null } } }
 }
 
 export function applyThreadHydration(

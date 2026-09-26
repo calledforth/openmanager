@@ -51,6 +51,11 @@ export interface SessionSummary extends Session {
   /** When the user settled the session; null or absent while it is active. */
   settledAt?: string | null
   /**
+   * When the last turn completed, while nobody has opened the session since.
+   * Null or absent means there is nothing unseen.
+   */
+  doneAt?: string | null
+  /**
    * The session's own model, mode and config selection, kept current by
    * `session.composer.updated`. Absent until the environment reports one.
    */
@@ -324,6 +329,8 @@ export interface EnvironmentCommands {
   renameSession(sessionId: string, title: string | null): Promise<void>
   /** Move a session out of the active list (`true`) or back into it (`false`). */
   settleSession(sessionId: string, settled: boolean): Promise<void>
+  /** The user has looked at a finished session; every client stops showing it as done. */
+  acknowledgeSession(sessionId: string): Promise<void>
   deleteSession(sessionId: string): Promise<void>
   sendTurn(input: SendTurnInput): Promise<{ turn: Turn; userMessage: Message }>
   interruptTurn(input: InterruptTurnInput): Promise<void>

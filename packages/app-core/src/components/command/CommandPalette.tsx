@@ -109,7 +109,9 @@ export function CommandPalette() {
         icon: ThemeIcon,
         group: 'Themes',
         current: option.id === theme,
-        keywords: ['theme', 'colour', 'color', 'scheme', 'appearance', 'dark', 'light'],
+        // No "dark"/"light" here: every hint already says which it is, so
+        // those words find the matching themes instead of all of them.
+        keywords: ['theme', 'colour', 'color', 'scheme', 'appearance'],
         keepOpen: true,
         onSelect: () => setTheme(option.id),
       })),

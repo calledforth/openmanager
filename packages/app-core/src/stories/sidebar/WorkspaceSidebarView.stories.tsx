@@ -76,7 +76,8 @@ const initial: SidebarWorkspace[] = [
       {
         externalId: 'sess-102',
         title: 'Connect screen inputs',
-        status: 'ready',
+        // Finished while the user was elsewhere: done until it is opened.
+        status: 'done',
         providerId: 'opencode' as ProviderId,
         updatedAt: ago(60 * 20),
       },

@@ -1,59 +1,73 @@
 import type { CSSProperties } from 'react'
-import { motion, useReducedMotion } from 'motion/react'
 import { cn } from '../../lib/utils'
 
-/** 2×2 outline-dot ring used as the sidebar session status glyph.
+/** The 2×2 dot glyph that shows a session's state in the sidebar. Each state
+ * moves in its own way, and the motion matches how urgent it is:
  *
- * - `working` — smooth continuous spin while the session runs.
- * - `needs` — static gold outlines (permission / question); row gets a right dither.
- * - `ready` — static green outlines while the server session is idle.
- * - `error` — static error outlines after a failure.
+ * - `working`: light runs clockwise around the dots (iris).
+ * - `needs`: the dots knock twice, rest, and knock again (amber).
+ * - `done`: the dots draw together into one dot that pings, until the user
+ *   opens the session (mint).
+ * - `error`: the dots jolt apart once and then hold still (coral).
+ *
+ * The motion is pure CSS (globals.css, `.session-busy-*`) and stops under
+ * `prefers-reduced-motion`. Colour and shape still carry the state.
  */
-export type SessionBusyTone = 'working' | 'needs' | 'ready' | 'error'
+export type SessionBusyTone = 'working' | 'needs' | 'done' | 'error'
 
 const DOTS = [0, 1, 2, 3] as const
+const SPARKS = [0, 1, 2, 3, 4, 5, 6, 7] as const
+
+const LABEL: Record<SessionBusyTone, string> = {
+  working: 'Session in progress',
+  needs: 'Session needs your attention',
+  done: 'Session finished',
+  error: 'Session failed',
+}
 
 export function SessionBusyLoader({
   className,
   style,
   tone = 'working',
+  burst,
 }: {
   className?: string
   style?: CSSProperties
   tone?: SessionBusyTone
+  /** Change this to throw one spray of sparks, used when a session finishes. */
+  burst?: number
 }) {
-  const reduceMotion = useReducedMotion()
-  const animate = tone === 'working' && !reduceMotion
-
-  const label =
-    tone === 'error'
-      ? 'Session failed'
-      : tone === 'needs'
-        ? 'Session needs your attention'
-        : tone === 'ready'
-          ? 'Session ready to open'
-          : 'Session in progress'
-
   return (
-    <motion.div
+    <div
       role="img"
-      aria-label={label}
+      aria-label={LABEL[tone]}
       className={cn('session-busy-ring', `session-busy-ring--${tone}`, className)}
       style={style}
-      animate={animate ? { rotate: 360 } : undefined}
-      transition={animate ? { duration: 2.8, repeat: Infinity, ease: 'linear' } : undefined}
     >
       {DOTS.map((index) => (
         <i key={index} className="session-busy-dot" aria-hidden="true" />
       ))}
-    </motion.div>
+      {burst ? (
+        // Keyed so every new burst remounts and plays from the start.
+        <span key={burst} className="session-busy-sparks" aria-hidden="true">
+          {SPARKS.map((index) => (
+            <i
+              key={index}
+              style={{ '--spark-turn': `${index / SPARKS.length}turn` } as CSSProperties}
+            />
+          ))}
+        </span>
+      ) : null}
+    </div>
   )
 }
 
+/** The glyph a session status earns, or null when it is at rest and shows its age. */
 export function sessionBusyTone(status: string): SessionBusyTone | null {
   if (status === 'waiting') return 'needs'
-  if (status === 'ready' || status === 'done') return 'ready'
+  if (status === 'done') return 'done'
   if (status === 'error') return 'error'
   if (status === 'running' || status === 'busy') return 'working'
+  // `ready` / `idle`: nothing is happening and nothing is unseen.
   return null
 }

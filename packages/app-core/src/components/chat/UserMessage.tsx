@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowsOutIcon, CheckIcon, CopyIcon, ImageBrokenIcon, XIcon } from '@phosphor-icons/react'
+import { ArrowsOutIcon, CheckIcon, ImageBrokenIcon, XIcon } from '@phosphor-icons/react'
 import type { StreamMessagePart } from '@openmanager/shared/lib/remote-stream-parts'
 import { cn } from '../../lib/utils'
 import type { ArtifactSource, OptimisticImage } from '../../lib/attachments'
@@ -119,6 +119,26 @@ function ImagePreviewDialog({ image, onClose }: { image: PreviewImage; onClose: 
   )
 }
 
+/** Phosphor's Copy glyph (same 256 grid and regular stroke) with rounded corners. */
+function SoftCopyIcon({ size }: { size: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 256 256"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={16}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M168 168h24a24 24 0 0 0 24-24V64a24 24 0 0 0-24-24h-80a24 24 0 0 0-24 24v24" />
+      <rect x="40" y="88" width="128" height="128" rx="24" />
+    </svg>
+  )
+}
+
 /** Copies the prompt's text; shown under the bubble while the row is hovered. */
 function CopyMessageButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
@@ -143,7 +163,7 @@ function CopyMessageButton({ text }: { text: string }) {
           copied && 'opacity-100',
         )}
       >
-        {copied ? <CheckIcon size={13} weight="bold" /> : <CopyIcon size={13} />}
+        {copied ? <CheckIcon size={13} weight="bold" /> : <SoftCopyIcon size={13} />}
       </button>
     </Tooltip>
   )

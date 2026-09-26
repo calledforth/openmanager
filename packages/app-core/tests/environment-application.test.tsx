@@ -176,6 +176,44 @@ describe('the shared application over the environment client', () => {
     }
   })
 
+  it('shows an unseen completion as done until the session is opened', async () => {
+    const client = createMockEnvironmentClient({
+      seed: { workspaces: [WORKSPACE] },
+    })
+    const environmentId = client.getState().environment!.environmentId
+    client.emit({
+      type: 'event',
+      name: 'session.created',
+      eventId: 'created',
+      timestamp: new Date().toISOString(),
+      scope: { type: 'environment', environmentId },
+      payload: { session: SESSION },
+    })
+    await render(<App client={client} />)
+    await act(() =>
+      client.emit({
+        type: 'event',
+        name: 'session.updated',
+        eventId: 'finished',
+        timestamp: new Date().toISOString(),
+        scope: { type: 'environment', environmentId },
+        payload: { sessionId: SESSION.sessionId, status: 'idle', doneAt: new Date().toISOString() },
+      }),
+    )
+    const card = () => buttonWithText('First')!
+    expect(card().querySelector('[role="img"][aria-label="Session finished"]')).not.toBeNull()
+    expect(card().textContent).toContain('Done')
+
+    // Opening it is looking at it: done clears for every client, and the card
+    // goes back to showing its age.
+    await act(async () => card().click())
+    await vi.waitFor(() =>
+      expect(client.getState().sessions[SESSION.sessionId]?.doneAt ?? null).toBeNull(),
+    )
+    expect(card().querySelector('[role="img"]')).toBeNull()
+    expect(card().textContent).not.toContain('Done')
+  })
+
   it('marks sessions in an unavailable project without touching their status', async () => {
     const client = createMockEnvironmentClient({
       seed: {

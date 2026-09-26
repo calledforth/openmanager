@@ -113,6 +113,12 @@ export const SessionSummarySchema = SessionSchema.extend({
    * user something, so finished work never hides work that needs attention.
    */
   settledAt: TimestampSchema.nullable().optional(),
+  /**
+   * When the last turn completed, while the user has not opened the session
+   * since. Null or absent means there is nothing unseen: the environment clears
+   * it on `session.acknowledge` and whenever the next turn starts.
+   */
+  doneAt: TimestampSchema.nullable().optional(),
   /** Absent until the session has a selection, and on older environments. */
   composer: SessionComposerStateSchema.optional(),
 })

@@ -88,6 +88,7 @@ type SessionRow = {
   status: string
   composer_json?: string | null
   settled_at?: number | null
+  done_at?: number | null
   updated_at: number
 }
 
@@ -152,6 +153,7 @@ export function sessionRowToSummary(row: SessionRow): SessionSummary {
     providerId: row.provider_id,
     updatedAt: new Date(row.updated_at).toISOString(),
     settledAt: row.settled_at ? new Date(row.settled_at).toISOString() : null,
+    doneAt: row.done_at ? new Date(row.done_at).toISOString() : null,
     ...(row.composer_json ? { composer: JSON.parse(row.composer_json) } : {}),
   })
 }
@@ -198,7 +200,7 @@ export function getSessionSummary(
   const row = database
     .prepare(
       `SELECT session_id, workspace_id, parent_session_id, provider_id, title, title_source, status,
-              composer_json, settled_at, updated_at
+              composer_json, settled_at, done_at, updated_at
        FROM sessions WHERE session_id = ?`,
     )
     .get(sessionId) as SessionRow | undefined

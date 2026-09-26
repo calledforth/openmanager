@@ -53,6 +53,11 @@ export function createEventProjector(
     unsettleSession: database.prepare(
       'UPDATE sessions SET settled_at = NULL WHERE session_id = ? AND settled_at IS NOT NULL',
     ),
+    // Done is unseen work, not activity: it never moves the session in the list.
+    updateSessionDone: database.prepare('UPDATE sessions SET done_at = ? WHERE session_id = ?'),
+    clearSessionDone: database.prepare(
+      'UPDATE sessions SET done_at = NULL WHERE session_id = ? AND done_at IS NOT NULL',
+    ),
     // Not a sidebar-ordering change, so `updated_at` stays put.
     updateSessionComposer: database.prepare(
       'UPDATE sessions SET composer_json = ? WHERE session_id = ?',
@@ -216,6 +221,8 @@ export function createEventProjector(
     insertMessage(event.payload.userMessage, thread.workspace_id, true, at)
     s.updateSessionStatus.run('running', at, event.scope.sessionId)
     s.unsettleSession.run(event.scope.sessionId)
+    // The earlier result is superseded by the turn now running.
+    s.clearSessionDone.run(event.scope.sessionId)
   }
 
   function projectMessageDelta(event: MessageDelta, at: number): void {
@@ -388,6 +395,12 @@ export function createEventProjector(
             throw new Error(`Cannot settle missing session ${event.payload.sessionId}`)
           }
         }
+        if (event.payload.doneAt !== undefined) {
+          const doneAt = event.payload.doneAt === null ? null : Date.parse(event.payload.doneAt)
+          if (s.updateSessionDone.run(doneAt, event.payload.sessionId).changes !== 1) {
+            throw new Error(`Cannot acknowledge missing session ${event.payload.sessionId}`)
+          }
+        }
         return
       case 'session.composer.updated':
         // A selection reported while its session is being deleted has no row
@@ -501,6 +514,10 @@ export function createEventProjector(
         if (session.changes !== 1) {
           throw new Error(`Cannot finalize turn for missing session ${event.scope.sessionId}`)
         }
+        // Only a completed turn is news. An interrupt was the user's own doing,
+        // and a failure shows as the error status instead.
+        if (event.name === 'turn.completed') s.updateSessionDone.run(at, event.scope.sessionId)
+        else s.clearSessionDone.run(event.scope.sessionId)
         return
       }
       case 'message.reasoning':

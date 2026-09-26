@@ -72,6 +72,8 @@ export const ProofEventSchemas = {
       status: SessionStatusSchema.optional(),
       /** Present only when the session was settled (a time) or brought back (null). */
       settledAt: TimestampSchema.nullable().optional(),
+      /** Present only when a turn completed (a time) or the user acknowledged it (null). */
+      doneAt: TimestampSchema.nullable().optional(),
     }),
   ),
   'session.deleted': event(

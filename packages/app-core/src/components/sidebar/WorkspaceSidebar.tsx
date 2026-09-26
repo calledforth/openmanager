@@ -1,7 +1,21 @@
-import { useContext, useEffect, type ReactNode } from 'react'
+import { useContext, useEffect, useSyncExternalStore, type ReactNode } from 'react'
 import { PlatformCapabilitiesContext } from '../../providers/platform-provider'
 import { useSidebarData } from '../../providers/sidebar-provider'
 import { WorkspaceSidebarView } from './WorkspaceSidebarView'
+
+function subscribeVisibility(onChange: () => void) {
+  document.addEventListener('visibilitychange', onChange)
+  return () => document.removeEventListener('visibilitychange', onChange)
+}
+
+/** Whether the user can actually see the window; a hidden tab has not seen anything. */
+function useDocumentVisible(): boolean {
+  return useSyncExternalStore(
+    subscribeVisibility,
+    () => document.visibilityState !== 'hidden',
+    () => true,
+  )
+}
 
 /** The view's props, read from the sidebar contract. */
 function useWorkspaceSidebarModel() {
@@ -20,17 +34,22 @@ function useWorkspaceSidebarModel() {
     acknowledgeSessionDone,
   } = useSidebarData()
   const providerLabel = useContext(PlatformCapabilitiesContext)?.providerDisplayName
+  const visible = useDocumentVisible()
 
-  // Opening a finished session (or finishing while focused) clears the green
-  // ready glyph — it only means "done and waiting to be opened".
+  // Done only means "finished and not looked at yet". Opening the session, or
+  // having it on screen while it finishes, clears it. A hidden window waits
+  // until the user comes back, so work that finished while away still shows.
   useEffect(() => {
-    if (!acknowledgeSessionDone || !activeWorkspacePath || !activeSessionId) return
+    if (!visible || !acknowledgeSessionDone || !activeWorkspacePath || !activeSessionId) return
     const session = sessionsByWorkspace[activeWorkspacePath]?.find(
       (row) => row.externalId === activeSessionId,
     )
     if (!session || session.status !== 'done') return
-    void acknowledgeSessionDone(activeWorkspacePath, activeSessionId, session.providerId)
-  }, [acknowledgeSessionDone, activeSessionId, activeWorkspacePath, sessionsByWorkspace])
+    // Best effort: a failed clear leaves the marker, and the next open retries.
+    acknowledgeSessionDone(activeWorkspacePath, activeSessionId, session.providerId).catch(
+      () => undefined,
+    )
+  }, [acknowledgeSessionDone, activeSessionId, activeWorkspacePath, sessionsByWorkspace, visible])
 
   return {
     environmentLabel: environment?.label,

@@ -35,7 +35,8 @@ export function openEnvironmentDatabase(
 
 /**
  * Reconcile work that cannot still be live after the owning server process has
- * restarted. Keeping this in one transaction prevents clients from observing a
+ * restarted. The turn is recorded as interrupted, but its session shows as
+ * failed: nobody asked for it to stop, so the user should notice. Keeping this in one transaction prevents clients from observing a
  * session whose status disagrees with its turn, messages, or interactions.
  */
 export function recoverInterruptedTurns(database: DatabaseSync, now = Date.now()): number {
@@ -46,7 +47,7 @@ export function recoverInterruptedTurns(database: DatabaseSync, now = Date.now()
     database
       .prepare(
         `UPDATE sessions
-         SET status = 'idle', updated_at = ?
+         SET status = 'error', updated_at = ?
          WHERE session_id IN (
            SELECT threads.session_id
            FROM threads

@@ -195,6 +195,8 @@ type ThreadRecord = {
   updatedAt: number
   /** In-memory mode only; with SQLite the row is the single source. */
   settledAt?: number
+  /** In-memory mode only: when the last turn completed, until acknowledged. */
+  doneAt?: number
   activeTurn?: ActiveTurn
   /** A session-scoped cancel must drain before another prompt can start. */
   cancellation?: Promise<void>
@@ -393,6 +395,10 @@ export function createThreadService(
       event.name === 'turn.failed'
     ) {
       const record = threads.get(event.scope.threadId)
+      // Mirrors the SQLite projection: only a completed turn leaves news behind.
+      if (record) {
+        record.doneAt = event.name === 'turn.completed' ? Date.parse(event.timestamp) : undefined
+      }
       for (const entry of record?.interactions.values() ?? []) {
         if (entry.turnId !== event.payload.turnId || entry.settled) continue
         entry.settled = true
@@ -823,6 +829,8 @@ export function createThreadService(
     // Mirrors the SQLite projection: running or asking brings a settled session back.
     const unsettle = record.settledAt !== undefined && (status === 'running' || status === 'waiting')
     if (unsettle) record.settledAt = undefined
+    // A new turn supersedes the last result, as `turn.started` does in SQLite.
+    if (status === 'running' || status === 'waiting') record.doneAt = undefined
     appendRuntimeEvent(
       ProofEventSchemas['session.updated'].parse({
         type: 'event',
@@ -834,6 +842,7 @@ export function createThreadService(
           sessionId: record.session.sessionId,
           status,
           ...(unsettle ? { settledAt: null } : {}),
+          doneAt: record.doneAt === undefined ? null : new Date(record.doneAt).toISOString(),
         },
       }),
     )
@@ -939,6 +948,7 @@ export function createThreadService(
     providerId: record.providerId,
     updatedAt: new Date(record.updatedAt).toISOString(),
     settledAt: record.settledAt === undefined ? null : new Date(record.settledAt).toISOString(),
+    doneAt: record.doneAt === undefined ? null : new Date(record.doneAt).toISOString(),
   })
 
   const sendTurn = (command: CommandEnvelope, context?: CommandContext, modeId?: string) => {
@@ -1487,6 +1497,51 @@ export function createThreadService(
           type: 'response',
           requestId: command.requestId,
           payload: { settledAt },
+        })
+      }
+
+      if (command.name === 'session.acknowledge') {
+        const parsed = ProofCommandSchemas['session.acknowledge'].safeParse(command)
+        if (!parsed.success)
+          return errorResult(command.requestId, 'validation', 'Invalid session request.')
+        options.flush?.()
+        const { sessionId } = parsed.data.payload
+        const record = sessions.get(sessionId)
+        const summary = options.database
+          ? getSessionSummary(options.database, sessionId)
+          : record
+            ? summaryOf(record)
+            : undefined
+        if (!summary) return errorResult(command.requestId, 'not_found', 'Session not found.')
+        // Several clients may open the same finished session; only the first
+        // one has anything to clear, and the rest must not add noise.
+        if (summary.doneAt) {
+          const event = ProofEventSchemas['session.updated'].parse({
+            type: 'event',
+            name: 'session.updated',
+            eventId: randomUUID(),
+            timestamp: new Date().toISOString(),
+            scope: { type: 'environment', environmentId },
+            payload: { sessionId, doneAt: null },
+          })
+          try {
+            appendEvent(event)
+          } catch (error) {
+            options.onPersistenceError?.(error, event.name)
+            return errorResult(
+              command.requestId,
+              'unavailable',
+              'The session change could not be saved. Try again.',
+            )
+          }
+          for (const item of threads.values()) {
+            if (item.session.sessionId === sessionId) item.doneAt = undefined
+          }
+        }
+        return ProofResponseSchemas['session.acknowledge'].parse({
+          type: 'response',
+          requestId: command.requestId,
+          payload: null,
         })
       }
 

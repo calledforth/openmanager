@@ -1544,6 +1544,51 @@ describe('durable session lifecycle', () => {
     }
   })
 
+  it('shows a completed turn as done until someone acknowledges it', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      const summary = () =>
+        ProofResponseSchemas['session.list'].parse(h.dispatch(h.service, 'session.list', {}))
+          .payload.sessions[0]
+      expect(summary()).toMatchObject({ sessionId, status: 'idle', doneAt: null })
+
+      h.dispatch(h.service, 'turn.send', { ...h.created.thread, text: 'Finish this' })
+      await vi.waitFor(() => expect(summary()).toMatchObject({ status: 'idle' }))
+      h.events.flush()
+      const doneAt = summary()!.doneAt
+      expect(doneAt).toEqual(expect.any(String))
+      expect(h.published.filter((event) => event.name === 'session.updated').at(-1)).toMatchObject({
+        payload: { sessionId, status: 'idle', doneAt },
+      })
+
+      const updates = () => h.published.filter((event) => event.name === 'session.updated').length
+      expect(
+        ProofResponseSchemas['session.acknowledge'].parse(
+          h.dispatch(h.service, 'session.acknowledge', { sessionId }),
+        ).payload,
+      ).toBeNull()
+      h.events.flush()
+      expect(summary()).toMatchObject({ sessionId, doneAt: null })
+      expect(h.published.at(-1)).toMatchObject({
+        name: 'session.updated',
+        payload: { sessionId, doneAt: null },
+      })
+
+      // A second client opening it has nothing left to clear, so it adds no noise.
+      const before = updates()
+      h.dispatch(h.service, 'session.acknowledge', { sessionId })
+      h.events.flush()
+      expect(updates()).toBe(before)
+      expect(h.dispatch(h.service, 'session.acknowledge', { sessionId: 'missing' })).toMatchObject({
+        type: 'error',
+        error: { code: 'not_found' },
+      })
+    } finally {
+      h.close()
+    }
+  })
+
   /**
    * Drive the parent through a turn and hand it a provider subtask. That is
    * the only path that ever registers a child session, so every child test
