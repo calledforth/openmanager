@@ -14,6 +14,8 @@ const PROVIDER_NAMES: Record<string, string> = {
   'claude-code': 'Claude Code',
   codex: 'Codex',
 }
+// Kept outside the render, as a host's would be, so unchanged rows skip it.
+const providerLabel = (providerId: string) => PROVIDER_NAMES[providerId] ?? providerId
 
 const initial: SidebarWorkspace[] = [
   {
@@ -125,8 +127,12 @@ function Demo() {
           onCreateSession={() => undefined}
           onSelectSession={(_, id) => setActiveSessionId(id)}
           onRenameSession={(_, id, title) => patch(id, { title: title ?? undefined })}
+          // A round trip's worth of wait, as the environment would take: the
+          // row should move on the click, not when this lands.
           onSettleSession={(_, id, settled) =>
-            patch(id, { settledAt: settled ? new Date().toISOString() : null })
+            new Promise((resolve) => setTimeout(resolve, 250)).then(() =>
+              patch(id, { settledAt: settled ? new Date().toISOString() : null }),
+            )
           }
           onDeleteSession={(_, id) =>
             setWorkspaces((current) =>
@@ -137,7 +143,7 @@ function Demo() {
             )
           }
           onAddWorkspace={() => undefined}
-          providerLabel={(providerId) => PROVIDER_NAMES[providerId] ?? providerId}
+          providerLabel={providerLabel}
         />
         <SidebarInset />
       </SidebarProvider>

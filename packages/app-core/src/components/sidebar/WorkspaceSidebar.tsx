@@ -68,8 +68,9 @@ function useWorkspaceSidebarModel() {
     onRenameSession: renameSession
       ? (path: string, id: string, title: string | null) => void renameSession(path, id, title)
       : undefined,
+    // The view moves the row at once and puts it back if this rejects.
     onSettleSession: settleSession
-      ? (path: string, id: string, settled: boolean) => void settleSession(path, id, settled)
+      ? (path: string, id: string, settled: boolean) => settleSession(path, id, settled)
       : undefined,
     onDeleteSession: (...args: Parameters<typeof deleteSession>) => void deleteSession(...args),
     onAddWorkspace: () => void addWorkspace(),
