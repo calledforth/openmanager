@@ -1,4 +1,13 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import { AnimatePresence, motion, useReducedMotion, type MotionProps } from 'motion/react'
 import {
   ArrowUUpLeftIcon,
@@ -181,22 +190,100 @@ function useActiveFloor(
   return floor
 }
 
+// A card is the largest thing that moves here, so the room it takes or gives
+// up moves on the slow tier, without the tier's bounce: a height that
+// overshoots opens a gap under the card.
+const ROOM = { ...spring.slow, bounce: 0 }
+
 /**
  * How a row joins and leaves a list: it grows from nothing and fades in, or
- * folds away, on the moderate spring the rest of the sidebar moves on, and
- * the rows around it close the gap as it goes. Rows present when the list
- * first fills in appear as they are, so opening the app animates nothing.
+ * fades and then folds away, and the rows around it close the gap as it
+ * goes. Leaving, the row fades a tier quicker than its room closes, so it is
+ * gone before the space is and nothing is seen squashing. Rows present when
+ * the list first fills in appear as they are, so opening the app animates
+ * nothing.
  */
 function useRowMotion(armed: boolean): MotionProps {
   const reduceMotion = useReducedMotion() ?? false
-  const still = { duration: 0 }
-  return {
-    layout: 'position',
-    initial: armed ? { height: 0, opacity: 0 } : false,
-    animate: { height: 'auto', opacity: 1, transition: reduceMotion ? still : spring.moderate },
-    exit: { height: 0, opacity: 0, transition: reduceMotion ? still : spring.moderate.exit },
-    transition: reduceMotion ? still : spring.moderate,
-  }
+  return useMemo(() => {
+    const still = { duration: 0 }
+    return {
+      layout: 'position',
+      initial: armed ? { height: 0, opacity: 0 } : false,
+      animate: {
+        height: 'auto',
+        opacity: 1,
+        transition: reduceMotion ? still : { height: ROOM, opacity: spring.slow },
+      },
+      exit: {
+        height: 0,
+        opacity: 0,
+        transition: reduceMotion
+          ? still
+          : { height: spring.slow.exit, opacity: spring.moderate.exit },
+      },
+      transition: reduceMotion ? still : spring.moderate,
+    }
+  }, [armed, reduceMotion])
+}
+
+/**
+ * Settling answers the click, not the environment. The row moves the moment
+ * it is asked to, and the environment's own record takes over once the
+ * command lands. A refused or failed command drops the stand-in, so the row
+ * moves back.
+ */
+function useOptimisticSettle(
+  workspaces: SidebarWorkspace[],
+  onSettleSession: WorkspaceSidebarViewProps['onSettleSession'],
+): [SidebarWorkspace[], WorkspaceSidebarViewProps['onSettleSession']] {
+  const [pending, setPending] = useState<ReadonlyMap<string, string | null>>(() => new Map())
+  const shown = useMemo(
+    () =>
+      pending.size === 0
+        ? workspaces
+        : workspaces.map((workspace) =>
+            workspace.sessions.some((session) => pending.has(session.externalId))
+              ? {
+                  ...workspace,
+                  sessions: workspace.sessions.map((session) =>
+                    pending.has(session.externalId)
+                      ? { ...session, settledAt: pending.get(session.externalId) ?? null }
+                      : session,
+                  ),
+                }
+              : workspace,
+          ),
+    [pending, workspaces],
+  )
+  // The host hands over a new callback on every render; the rows keep one.
+  const request = useRef(onSettleSession)
+  useLayoutEffect(() => {
+    request.current = onSettleSession
+  })
+  const canSettle = onSettleSession !== undefined
+  const settle = useMemo<WorkspaceSidebarViewProps['onSettleSession']>(
+    () =>
+      canSettle
+        ? (workspacePath, externalId, settled) => {
+            const settledAt = settled ? new Date().toISOString() : null
+            setPending((current) => new Map(current).set(externalId, settledAt))
+            const release = () =>
+              setPending((current) => {
+                // A later click on the same row owns the stand-in now.
+                if (current.get(externalId) !== settledAt) return current
+                const next = new Map(current)
+                next.delete(externalId)
+                return next
+              })
+            Promise.resolve()
+              .then(() => request.current?.(workspacePath, externalId, settled))
+              .then(release, release)
+          }
+        : undefined,
+    [canSettle],
+  )
+  return [shown, settle]
 }
 
 function writeSettledOpen(open: boolean) {
@@ -310,8 +397,13 @@ export interface WorkspaceSidebarViewProps {
   /** Rename and delete stay on the contract, but the rows do not offer them
    *  for now: settling is the one thing a row does besides opening. */
   onRenameSession?: (workspacePath: string, externalId: string, title: string | null) => void
-  /** Absent when the host cannot keep a settled session; the action is hidden. */
-  onSettleSession?: (workspacePath: string, externalId: string, settled: boolean) => void
+  /** Absent when the host cannot keep a settled session; the action is hidden.
+   *  The row moves at once; a returned promise that rejects moves it back. */
+  onSettleSession?: (
+    workspacePath: string,
+    externalId: string,
+    settled: boolean,
+  ) => void | Promise<unknown>
   onDeleteSession?: (workspacePath: string, externalId: string, providerId: ProviderId) => void
   onAddWorkspace: () => void
   /** The name a provider goes by; the raw id when the host has no catalog. */
@@ -330,17 +422,27 @@ export interface WorkspaceSidebarViewProps {
  */
 export function WorkspaceSidebarView({
   environmentLabel,
-  workspaces,
+  workspaces: listed,
   activeWorkspacePath,
   activeSessionId,
   onCreateSession,
-  onSelectSession,
-  onSettleSession,
+  onSelectSession: requestSelect,
+  onSettleSession: requestSettle,
   onAddWorkspace,
   providerLabel,
   titlebar,
   footer,
 }: WorkspaceSidebarViewProps) {
+  const [workspaces, onSettleSession] = useOptimisticSettle(listed, requestSettle)
+  // Rows are memoized, so they get one select callback for good.
+  const selectRef = useRef(requestSelect)
+  useLayoutEffect(() => {
+    selectRef.current = requestSelect
+  })
+  const onSelectSession = useCallback<WorkspaceSidebarViewProps['onSelectSession']>(
+    (...args) => selectRef.current(...args),
+    [],
+  )
   const present = (path: string | null) =>
     path !== null && workspaces.some((workspace) => workspace.path === path && !workspace.missing)
   const newThreadTarget = present(activeWorkspacePath)
@@ -403,22 +505,20 @@ export function WorkspaceSidebarView({
         ) : (
           <SidebarGroup ref={setActiveGroup} style={{ minHeight: activeFloor }}>
             <SidebarGroupLabel>Active</SidebarGroupLabel>
-            {active.length === 0 ? (
-              <p className="px-2 pb-2 pt-1 text-[13px] leading-5 text-faint">
-                {settled.length > 0 ? 'All caught up.' : 'No sessions yet.'}
-              </p>
-            ) : (
-              // Divs, not ul/li: the app's unlayered list rules outrank utilities.
-              // Cards space themselves (padding, not gap) so a leaving card
-              // folds its spacing away with it.
-              <div role="list" className="flex flex-col">
-                <AnimatePresence initial={false}>
-                  {active.map((entry) => (
-                    <SessionCard key={entry.root.session.externalId} entry={entry} {...shared} />
-                  ))}
-                </AnimatePresence>
-              </div>
-            )}
+            {/* Divs, not ul/li: the app's unlayered list rules outrank
+                utilities. Cards space themselves (padding, not gap) so a
+                leaving card folds its spacing away with it. The list stays
+                mounted when it empties, so the last card still folds away. */}
+            <div role="list" className="flex flex-col">
+              <AnimatePresence initial={false}>
+                {active.map((entry) => (
+                  <MemoSessionCard key={entry.root.session.externalId} entry={entry} {...shared} />
+                ))}
+              </AnimatePresence>
+            </div>
+            <EmptyNote show={active.length === 0} rowMotion={rowMotion}>
+              {settled.length > 0 ? 'All caught up.' : 'No sessions yet.'}
+            </EmptyNote>
           </SidebarGroup>
         )}
 
@@ -444,39 +544,101 @@ export function WorkspaceSidebarView({
               <span className="text-[12px]">Settled</span>
               <span className="text-[12px] tabular-nums text-faint">{settled.length}</span>
             </SidebarGroupLabel>
-            {settled.length === 0 ? (
-              <p className="px-2 pb-2 pt-1 text-[13px] leading-5 text-faint">
-                Settle a finished thread and it waits here.
-              </p>
-            ) : (
-              <SidebarMenu>
-                <AnimatePresence initial={false}>
-                  {settled
-                    .slice(0, settledVisible)
-                    .flatMap((entry) => [entry.root, ...entry.children])
-                    .map((row) => (
-                      <SettledRow key={row.session.externalId} row={row} {...shared} />
-                    ))}
-                </AnimatePresence>
-                {settled.length > settledVisible ? (
-                  <SidebarMenuItem>
-                    <SidebarMenuButton
-                      icon={ShowMoreIcon}
-                      className="text-muted-foreground"
-                      onClick={() => setSettledVisible((count) => count + SETTLED_PAGE_SIZE)}
-                    >
-                      Show more
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                ) : null}
-              </SidebarMenu>
-            )}
+            <EmptyNote show={settled.length === 0} rowMotion={rowMotion}>
+              Settle a finished thread and it waits here.
+            </EmptyNote>
+            {/* Mounted while empty too, so the last row still folds away. */}
+            <SidebarMenu>
+              <AnimatePresence initial={false}>
+                {settled
+                  .slice(0, settledVisible)
+                  .flatMap((entry) => [entry.root, ...entry.children])
+                  .map((row) => (
+                    <MemoSettledRow key={row.session.externalId} row={row} {...shared} />
+                  ))}
+              </AnimatePresence>
+              {settled.length > settledVisible ? (
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    icon={ShowMoreIcon}
+                    className="text-muted-foreground"
+                    onClick={() => setSettledVisible((count) => count + SETTLED_PAGE_SIZE)}
+                  >
+                    Show more
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ) : null}
+            </SidebarMenu>
           </SidebarGroup>
         ) : null}
       </SidebarContent>
 
       {footer ? <SidebarFooter>{footer}</SidebarFooter> : null}
     </Sidebar>
+  )
+}
+
+/** What an empty list says, coming and going the way a row does. */
+function EmptyNote({
+  show,
+  rowMotion,
+  children,
+}: {
+  show: boolean
+  rowMotion: MotionProps
+  children: ReactNode
+}) {
+  return (
+    <AnimatePresence initial={false}>
+      {show ? (
+        <motion.div key="empty" className="overflow-hidden" {...rowMotion}>
+          <p className="px-2 pb-2 pt-1 text-[13px] leading-5 text-faint">{children}</p>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
+  )
+}
+
+// Every change to any session hands the sidebar a fresh copy of every row, so
+// the rows compare what they show rather than which object it came in.
+function sameFields(a: object, b: object): boolean {
+  if (a === b) return true
+  const keys = Object.keys(a)
+  if (keys.length !== Object.keys(b).length) return false
+  return keys.every((key) =>
+    Object.is((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]),
+  )
+}
+
+function sameWorkspace(a: SidebarWorkspace, b: SidebarWorkspace): boolean {
+  return (
+    a === b ||
+    (a.path === b.path &&
+      a.name === b.name &&
+      a.missing === b.missing &&
+      a.availability === b.availability &&
+      a.git?.branch === b.git?.branch &&
+      a.git?.worktree === b.git?.worktree)
+  )
+}
+
+function sameRow(a: SidebarBoardRow, b: SidebarBoardRow): boolean {
+  return (
+    a.depth === b.depth &&
+    sameFields(a.session, b.session) &&
+    sameWorkspace(a.workspace, b.workspace)
+  )
+}
+
+function sameHandlers(a: RowHandlers, b: RowHandlers): boolean {
+  return (
+    a.activeSessionId === b.activeSessionId &&
+    a.environmentLabel === b.environmentLabel &&
+    a.now === b.now &&
+    a.onSelectSession === b.onSelectSession &&
+    a.onSettleSession === b.onSettleSession &&
+    a.providerLabel === b.providerLabel &&
+    a.rowMotion === b.rowMotion
   )
 }
 
@@ -642,6 +804,15 @@ function SessionCard({
   )
 }
 
+const MemoSessionCard = memo(
+  SessionCard,
+  (a, b) =>
+    sameHandlers(a, b) &&
+    sameRow(a.entry.root, b.entry.root) &&
+    a.entry.children.length === b.entry.children.length &&
+    a.entry.children.every((child, index) => sameRow(child, b.entry.children[index]!)),
+)
+
 /** A subagent transcript, kept under the card of the session that started it. */
 function ChildRow({
   row,
@@ -731,3 +902,5 @@ function SettledRow({
     </MotionMenuItem>
   )
 }
+
+const MemoSettledRow = memo(SettledRow, (a, b) => sameHandlers(a, b) && sameRow(a.row, b.row))

@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { MotionGlobalConfig } from 'motion/react'
 import {
   createMockEnvironmentClient,
   type MockEnvironmentClient,
@@ -43,6 +44,9 @@ let container: HTMLDivElement
 let root: Root
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  // Sidebar rows fold in and out; jsdom never finishes the animation, so a
+  // removed row would linger. Motion lands every animation at once instead.
+  MotionGlobalConfig.skipAnimations = true
   vi.stubGlobal('matchMedia', (query: string) => ({
     matches: false,
     media: query,
@@ -60,6 +64,7 @@ afterEach(async () => {
   container.remove()
   globalThis.localStorage?.clear()
   vi.unstubAllGlobals()
+  MotionGlobalConfig.skipAnimations = false
 })
 const render = (node: ReactNode) => act(() => root.render(node))
 const settle = (client: MockEnvironmentClient) => act(() => client.settle())

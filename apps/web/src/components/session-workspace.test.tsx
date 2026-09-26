@@ -117,7 +117,10 @@ describe('session workspace', () => {
     expect(client.getState().sessions[SESSION.sessionId]?.title).toBe('Renamed in web')
     await act(() => client.commands.deleteSession(SESSION.sessionId))
     await waitFor(() => expect(client.getState().sessions[SESSION.sessionId]).toBeUndefined())
-    expect(within(sidebar()).queryByText('Renamed in web')).not.toBeInTheDocument()
+    // The card folds away rather than vanishing.
+    await waitFor(() =>
+      expect(within(sidebar()).queryByText('Renamed in web')).not.toBeInTheDocument(),
+    )
   })
 
   it('opens persisted failed history from its URL without changing identity or status', async () => {
@@ -188,7 +191,7 @@ describe('session workspace', () => {
     expect(client.getState().sessions[SESSION.sessionId]).toBeDefined()
     await user.click(within(panel).getByRole('button', { name: 'Delete permanently' }))
     await waitFor(() => expect(client.getState().sessions[SESSION.sessionId]).toBeUndefined())
-    expect(screen.queryByText('Sidebar move')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('Sidebar move')).not.toBeInTheDocument())
   })
 
   it('keeps an unrecoverable session and reports why when deleting it fails', async () => {

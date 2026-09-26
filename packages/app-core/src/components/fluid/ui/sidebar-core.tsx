@@ -21,7 +21,13 @@ import {
   type HTMLAttributes,
   type Ref,
 } from "react";
-import { motion, AnimatePresence, useReducedMotion } from "motion/react";
+import {
+  motion,
+  AnimatePresence,
+  animate,
+  useMotionValue,
+  useReducedMotion,
+} from "motion/react";
 import { cn } from "../lib/utils";
 import { spring, exitFallbackMs } from "../lib/springs";
 import { fontWeights } from "../lib/font-weight";
@@ -1284,19 +1290,17 @@ const SidebarGroup = forwardRef<HTMLDivElement, SidebarGroupProps>(
     // Measured-height collapse: animate between 0 and the content's real
     // offsetHeight — never to "auto", which framer measures wrong under a
     // scaled ancestor.
+    //
+    // The height is a motion value, not state. Rows growing in or folding
+    // away inside an open group change its content height on every frame of
+    // their animation; the observer writes each new height straight to the
+    // wrapper, in the same frame, instead of re-rendering the group and its
+    // rows once a frame and trailing the content by one.
     const contentRef = useRef<HTMLDivElement>(null);
-    const [contentHeight, setContentHeight] = useState<number | null>(null);
-    useIsoLayoutEffect(() => {
-      if (!collapsible) return;
-      const el = contentRef.current;
-      if (!el || typeof ResizeObserver === "undefined") return;
-      const measure = () => setContentHeight(el.offsetHeight);
-      measure();
-      const ro = new ResizeObserver(measure);
-      ro.observe(el);
-      return () => ro.disconnect();
-    }, [collapsible]);
-    const measured = contentHeight !== null;
+    const height = useMotionValue(0);
+    const [measured, setMeasured] = useState(false);
+    const openRef = useRef(open);
+    openRef.current = open;
     // The collapse wrapper must clip while animating, but a permanently
     // clipped box shaves the 2px focus ring off a group's first and last
     // rows — so clipping lifts once an open group has settled.
@@ -1306,17 +1310,51 @@ const SidebarGroup = forwardRef<HTMLDivElement, SidebarGroupProps>(
     }, [open]);
 
     // Height animates only when THIS group toggles. When the measured height
-    // changes underneath it instead — a nested sub-menu collapsing inside the
-    // group — the wrapper must snap: a spring re-targeted every frame chases
-    // the child's own animation, lands well after it, and drags everything
-    // below the group along late. Tracked with a ref so a controlled `open`
-    // is covered too, and cleared once the toggle's animation lands.
+    // changes underneath it instead — a nested sub-menu collapsing, a row
+    // folding away — the wrapper must snap: a spring re-targeted every frame
+    // chases the child's own animation, lands well after it, and drags
+    // everything below the group along late. Tracked with a ref so a
+    // controlled `open` is covered too, and cleared once the toggle lands.
     const prevOpenRef = useRef(open);
     const togglingRef = useRef(false);
     if (prevOpenRef.current !== open) {
       prevOpenRef.current = open;
       togglingRef.current = true;
     }
+    useIsoLayoutEffect(() => {
+      if (!collapsible) return;
+      const el = contentRef.current;
+      if (!el || typeof ResizeObserver === "undefined") return;
+      const measure = () => {
+        if (!togglingRef.current) height.jump(openRef.current ? el.offsetHeight : 0);
+        setMeasured(true);
+      };
+      measure();
+      const ro = new ResizeObserver(measure);
+      ro.observe(el);
+      return () => ro.disconnect();
+    }, [collapsible, height]);
+    useIsoLayoutEffect(() => {
+      const el = contentRef.current;
+      if (!collapsible || !togglingRef.current || !el) return;
+      let current = true;
+      const controls = animate(
+        height,
+        open ? el.offsetHeight : 0,
+        open ? spring.moderate : spring.moderate.exit
+      );
+      void controls.then(() => {
+        if (!current) return;
+        togglingRef.current = false;
+        // Whatever the content did while the wrapper was moving, land on it.
+        height.jump(open ? el.offsetHeight : 0);
+        if (open) setSettled(true);
+      });
+      return () => {
+        current = false;
+        controls.stop();
+      };
+    }, [collapsible, height, open]);
 
     // The label and any header actions stay put; everything else after the
     // label rides in the collapse wrapper. If no SidebarGroupLabel child is
@@ -1364,27 +1402,10 @@ const SidebarGroup = forwardRef<HTMLDivElement, SidebarGroupProps>(
                 open && settled ? "overflow-visible" : "overflow-hidden",
                 !measured && !open && "h-0"
               )}
+              style={measured ? { height } : undefined}
               initial={false}
-              animate={
-                measured
-                  ? { height: open ? contentHeight : 0, opacity: open ? 1 : 0 }
-                  : { opacity: open ? 1 : 0 }
-              }
-              // Do NOT simplify this to `open ? spring.moderate : …`. The
-              // togglingRef arm is what stops a re-measure from springing —
-              // without it a nested collapse makes this wrapper chase its own
-              // child and everything below the group moves late.
-              transition={
-                togglingRef.current
-                  ? open
-                    ? spring.moderate
-                    : spring.moderate.exit
-                  : { duration: 0 }
-              }
-              onAnimationComplete={() => {
-                togglingRef.current = false;
-                if (open) setSettled(true);
-              }}
+              animate={{ opacity: open ? 1 : 0 }}
+              transition={open ? spring.moderate : spring.moderate.exit}
             >
               <div ref={contentRef} className="flex w-full min-w-0 flex-col">
                 {rest}
