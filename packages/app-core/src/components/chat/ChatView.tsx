@@ -315,11 +315,18 @@ function MessageTimeline({
   // Positions only mean "the same row" while nothing is inserted above. When
   // an older page is prepended every index shifts, so forget them before the
   // virtualizer lays the new rows out; they fall back to the flat estimate.
+  // A prepend is told apart from the first row's own id changing in place (a
+  // new session's first message confirmed) by the old first row reappearing
+  // further down; an in-place swap keeps its predecessor's height.
   const firstMessageId = messages[0]?.externalId
   const indexedFromMessageIdRef = useRef(firstMessageId)
   if (indexedFromMessageIdRef.current !== firstMessageId) {
+    const previousFirstId = indexedFromMessageIdRef.current
     indexedFromMessageIdRef.current = firstMessageId
-    heightByIndexRef.current.clear()
+    const prepended =
+      previousFirstId !== undefined &&
+      messages.some((message, index) => index > 0 && message.externalId === previousFirstId)
+    if (prepended) heightByIndexRef.current.clear()
   }
   const getItemKey = useCallback(
     (index: number) => messages[index]?.externalId ?? index,
