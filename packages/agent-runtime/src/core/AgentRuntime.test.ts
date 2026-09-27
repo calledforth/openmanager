@@ -413,19 +413,26 @@ describe('AgentRuntime desired config', () => {
    * state. An agent with no mode option to read back (legacy
    * `session/set_mode`) would otherwise take a blind write before every
    * prompt. */
+  const MODES = {
+    currentModeId: 'default',
+    availableModes: [
+      { id: 'default', name: 'Default' },
+      { id: 'bypassPermissions', name: 'Bypass' },
+    ],
+  }
   function modeWire(setSessionMode: (params: unknown) => Promise<unknown>) {
     const spy = vi.fn(setSessionMode)
     return {
       wire: {
-        newSession: async () => ({ sessionId: 'session-1' }),
+        newSession: async () => ({ sessionId: 'session-1', modes: MODES }),
         setSessionMode: spy,
         prompt: async () => ({ stopReason: 'end_turn' }),
       } as FakeWire,
       setSessionMode: spy,
     }
   }
-  const hostWithMode = (log = vi.fn()) => ({
-    emitEvent: vi.fn(),
+  const hostWithMode = (log = vi.fn(), emitEvent = vi.fn()) => ({
+    emitEvent,
     log,
     desiredSessionConfig: () => ({ modeId: 'bypassPermissions' }),
   })
@@ -444,6 +451,42 @@ describe('AgentRuntime desired config', () => {
     expect(setSessionMode).toHaveBeenCalledWith(
       expect.objectContaining({ modeId: 'bypassPermissions' }),
     )
+  })
+
+  /** What the composer ends up holding. `session_created` has already told
+   * it the agent's default, and a legacy `session/set_mode` reads nothing
+   * back, so without an explicit report it would persist the wrong mode and
+   * the next restart would restore that. */
+  const reportedModes = (emitEvent: ReturnType<typeof vi.fn>) =>
+    emitEvent.mock.calls
+      .map(([event]) => event as AgentEvent)
+      .filter((event) => event.event === 'current_mode_update')
+      .map((event) => (event.data as { currentModeId?: string }).currentModeId)
+
+  it('reports the restored mode even when the write reads nothing back', async () => {
+    const { wire } = modeWire(async () => ({}))
+    const emitEvent = vi.fn()
+    const runtime = new AgentRuntime(hostWithMode(vi.fn(), emitEvent), configs, {
+      connections: new FakeConnectionFactory(wire),
+    })
+
+    await runtime.ensureSession({ ...ROUTE, threadId: 'thread-1' })
+
+    expect(reportedModes(emitEvent)).toEqual(['bypassPermissions'])
+  })
+
+  it("reports the agent's own mode when it refuses the restore", async () => {
+    const { wire } = modeWire(async () => {
+      throw new Error('Unknown mode')
+    })
+    const emitEvent = vi.fn()
+    const runtime = new AgentRuntime(hostWithMode(vi.fn(), emitEvent), configs, {
+      connections: new FakeConnectionFactory(wire),
+    })
+
+    await runtime.ensureSession({ ...ROUTE, threadId: 'thread-1' })
+
+    expect(reportedModes(emitEvent)).toEqual(['default'])
   })
 
   it('starts anyway when the agent refuses a restored mode', async () => {
