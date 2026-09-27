@@ -475,6 +475,40 @@ describe('AgentRuntime desired config', () => {
     expect(reportedModes(emitEvent)).toEqual(['bypassPermissions'])
   })
 
+  it('reports the mode the agent read back, not the one it was asked for', async () => {
+    // An agent with a mode option answers the write with its effective state,
+    // which need not be the requested mode.
+    const modeOption = (currentValue: string): SessionConfigOption[] => [
+      {
+        type: 'select',
+        id: 'mode',
+        name: 'Mode',
+        category: 'mode',
+        currentValue,
+        options: [
+          { value: 'default', name: 'Default' },
+          { value: 'bypassPermissions', name: 'Bypass' },
+        ],
+      },
+    ]
+    const wire = {
+      newSession: async () => ({ sessionId: 'session-1', configOptions: modeOption('default') }),
+      setSessionConfigOption: vi.fn(async () => ({ configOptions: modeOption('default') })),
+      prompt: async () => ({ stopReason: 'end_turn' }),
+    } satisfies FakeWire
+    const emitEvent = vi.fn()
+    const runtime = new AgentRuntime(hostWithMode(vi.fn(), emitEvent), configs, {
+      connections: new FakeConnectionFactory(wire),
+    })
+
+    await runtime.ensureSession({ ...ROUTE, threadId: 'thread-1' })
+
+    expect(wire.setSessionConfigOption).toHaveBeenCalledWith(
+      expect.objectContaining({ configId: 'mode', value: 'bypassPermissions' }),
+    )
+    expect(reportedModes(emitEvent).at(-1)).toBe('default')
+  })
+
   it("reports the agent's own mode when it refuses the restore", async () => {
     const { wire } = modeWire(async () => {
       throw new Error('Unknown mode')

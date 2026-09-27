@@ -360,8 +360,10 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
     // Reported whether or not the write itself announced anything: a legacy
     // `session/set_mode` reads nothing back, and a load that fell back to
     // `session/new` has already told the composer the agent's default. The
-    // composer must end up holding the mode the process is really in.
-    this.reportMode(modeId)
+    // composer must end up holding the mode the process is really in: the
+    // agent's read-back when it has a mode option (it may have settled on
+    // another mode than the one asked for), what was sent when it has none.
+    this.reportMode(modeListingFromConfig(this.configOptions())?.currentModeId ?? modeId)
   }
 
   /** The agent's mode as last read back: its mode option when it has one,
