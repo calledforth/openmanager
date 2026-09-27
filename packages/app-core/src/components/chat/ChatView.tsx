@@ -312,6 +312,15 @@ function MessageTimeline({
   // and knock a reader off the bottom mid-reply. Its predecessor's height is
   // the right starting point.
   const heightByIndexRef = useRef(new Map<number, number>())
+  // Positions only mean "the same row" while nothing is inserted above. When
+  // an older page is prepended every index shifts, so forget them before the
+  // virtualizer lays the new rows out; they fall back to the flat estimate.
+  const firstMessageId = messages[0]?.externalId
+  const indexedFromMessageIdRef = useRef(firstMessageId)
+  if (indexedFromMessageIdRef.current !== firstMessageId) {
+    indexedFromMessageIdRef.current = firstMessageId
+    heightByIndexRef.current.clear()
+  }
   const getItemKey = useCallback(
     (index: number) => messages[index]?.externalId ?? index,
     [messages],
