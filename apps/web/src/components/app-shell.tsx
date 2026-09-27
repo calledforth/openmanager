@@ -1,11 +1,16 @@
-import { useCallback, useState, type ReactNode } from 'react'
+import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import { Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import { useEnvironmentClientOptional } from '@openmanager/app-core/providers/environment-client'
 import { EnvironmentApplicationProviders } from '@openmanager/app-core/providers/environment-application'
 import { useSidebarData } from '@openmanager/app-core/providers/sidebar-provider'
 import { ProjectIcon } from '@openmanager/app-core/components/sidebar/ProjectIcon'
 import { WorkspaceSidebar } from '@openmanager/app-core/components/sidebar/WorkspaceSidebar'
-import { useIcon } from '@openmanager/app-core/components/fluid/lib/icon-context'
+import { phosphorIcon, useIcon } from '@openmanager/app-core/components/fluid/lib/icon-context'
+import {
+  CommandPalette,
+  type CommandPaletteItemData,
+} from '@openmanager/app-core/components/command/CommandPalette'
+import { FolderPlusIcon, NotePencilIcon } from '@phosphor-icons/react'
 import {
   Sidebar,
   SidebarContent,
@@ -26,6 +31,9 @@ import type { EnvironmentClient } from '@openmanager/environment-client'
 import { useConnection } from '../providers/connection-provider'
 import { AddWorkspaceDialog } from './add-workspace-dialog'
 import { ConnectionBanner, ConnectionScreen, ConnectionStatusChip } from './connection-surfaces'
+
+const NewAgentIcon = phosphorIcon(NotePencilIcon)
+const AddProjectIcon = phosphorIcon(FolderPlusIcon)
 
 function isSessionPath(pathname: string) {
   return pathname === '/' || pathname.startsWith('/sessions/')
@@ -59,6 +67,102 @@ function NavMenu({ pathname, includeSessions }: { pathname: string; includeSessi
         ))}
       </SidebarMenu>
     </nav>
+  )
+}
+
+const NO_COMMANDS: readonly CommandPaletteItemData[] = []
+
+/**
+ * ⌘K with the shell's own commands on top. Settings is always there; the
+ * workspace commands come in once an environment is connected.
+ */
+function ShellCommandPalette({
+  commands = NO_COMMANDS,
+}: {
+  commands?: readonly CommandPaletteItemData[]
+}) {
+  const navigate = useNavigate()
+  const SettingsIcon = useIcon('settings')
+  const items = useMemo<CommandPaletteItemData[]>(
+    () => [
+      ...commands,
+      {
+        value: 'go:settings',
+        label: 'Open settings',
+        icon: SettingsIcon,
+        group: 'Go to',
+        keywords: ['settings', 'preferences', 'environments', 'options'],
+        onSelect: () => void navigate({ to: '/settings' }),
+      },
+    ],
+    [commands, SettingsIcon, navigate],
+  )
+  return <CommandPalette commands={items} />
+}
+
+/**
+ * What the connected shell lays over the page: Add project and the palette.
+ * Both read the sidebar contract, so they live inside the environment
+ * providers.
+ */
+function ConnectedOverlays({
+  client,
+  addingWorkspace,
+  closeAddWorkspace,
+}: {
+  client: EnvironmentClient
+  addingWorkspace: boolean
+  closeAddWorkspace: () => void
+}) {
+  const { workspaces, activeWorkspacePath, addWorkspace, createSession } = useSidebarData()
+  // A project just added opens as a new agent in it: adding one is the
+  // first step of working there.
+  const openAdded = useCallback(
+    (workspaceId: string) => void createSession(workspaceId),
+    [createSession],
+  )
+  // New agent starts where the sidebar's button would: the open project,
+  // else the first one still on disk.
+  const newAgentTarget =
+    workspaces.find((workspace) => workspace.path === activeWorkspacePath && !workspace.missing)
+      ?.path ??
+    workspaces.find((workspace) => !workspace.missing)?.path ??
+    null
+  const commands = useMemo<CommandPaletteItemData[]>(
+    () => [
+      ...(newAgentTarget
+        ? [
+            {
+              value: 'action:new-agent',
+              label: 'New agent',
+              icon: NewAgentIcon,
+              group: 'Actions',
+              keywords: ['new', 'agent', 'session', 'chat', 'thread', 'start'],
+              onSelect: () => void createSession(newAgentTarget),
+            },
+          ]
+        : []),
+      {
+        value: 'action:add-project',
+        label: 'Add project',
+        icon: AddProjectIcon,
+        group: 'Actions',
+        keywords: ['add', 'project', 'workspace', 'folder', 'open'],
+        onSelect: () => void addWorkspace(),
+      },
+    ],
+    [newAgentTarget, createSession, addWorkspace],
+  )
+  return (
+    <>
+      <ShellCommandPalette commands={commands} />
+      <AddWorkspaceDialog
+        client={client}
+        open={addingWorkspace}
+        onClose={closeAddWorkspace}
+        onAdded={openAdded}
+      />
+    </>
   )
 }
 
@@ -119,7 +223,11 @@ function ConnectedShell({
       {/* A healthy connection says nothing; trouble shows as the banner. */}
       <WorkspaceSidebar footer={<NavMenu pathname={pathname} includeSessions={false} />} />
       {children}
-      <AddWorkspaceDialog client={client} open={addingWorkspace} onClose={closeAddWorkspace} />
+      <ConnectedOverlays
+        client={client}
+        addingWorkspace={addingWorkspace}
+        closeAddWorkspace={closeAddWorkspace}
+      />
     </EnvironmentApplicationProviders>
   )
 }
@@ -189,6 +297,7 @@ export function AppShell() {
             </SidebarFooter>
           </Sidebar>
           {main}
+          <ShellCommandPalette />
         </>
       )}
     </SidebarProvider>

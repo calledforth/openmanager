@@ -1,8 +1,11 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { CommandPalette } from '../src/components/command/CommandPalette'
+import {
+  CommandPalette,
+  type CommandPaletteItemData,
+} from '../src/components/command/CommandPalette'
 import { ThemeProvider } from '../src/providers/theme-provider'
 
 window.matchMedia ??= ((query: string) => ({
@@ -33,14 +36,14 @@ const rowLabels = () =>
     (el) => el.querySelector('.truncate')?.textContent,
   )
 
-function openPalette() {
+function openPalette(commands?: CommandPaletteItemData[]) {
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
   act(() =>
     root!.render(
       <ThemeProvider>
-        <CommandPalette />
+        <CommandPalette commands={commands} />
       </ThemeProvider>,
     ),
   )
@@ -56,6 +59,26 @@ describe('CommandPalette', () => {
   it('opens on Ctrl+K with the field focused', () => {
     const input = openPalette()
     expect(document.activeElement).toBe(input)
+  })
+
+  it("lists the host's commands first and runs one", () => {
+    const addProject = vi.fn()
+    const input = openPalette([
+      {
+        value: 'action:add-project',
+        label: 'Add project',
+        group: 'Actions',
+        keywords: ['workspace', 'folder'],
+        onSelect: addProject,
+      },
+    ])
+    expect(rowLabels()[0]).toBe('Add project')
+    act(() => type(input, 'folder'))
+    expect(rowLabels()).toEqual(['Add project'])
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(addProject).toHaveBeenCalledTimes(1)
   })
 
   it('narrows the rows as the query grows', () => {

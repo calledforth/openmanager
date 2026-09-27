@@ -233,7 +233,9 @@ function FolderBrowser({
         setQuery(next)
       }}
     >
-      <div className="flex shrink-0 items-center pl-2.5">
+      {/* The field's own row sizes to its content; let it take the width
+          left of the Up button so a long path isn't clipped. */}
+      <div className="flex shrink-0 items-center pl-2.5 [&>[data-slot=command-menu-input]]:min-w-0 [&>[data-slot=command-menu-input]]:flex-1">
         <Button
           type="button"
           variant="ghost"

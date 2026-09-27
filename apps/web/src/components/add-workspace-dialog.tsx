@@ -20,16 +20,19 @@ const fieldClass =
  * browser; an older one gets a typed path it validates: an absolute path to a
  * folder that exists there. Either way the environment's refusal is shown in
  * place, with what was typed kept, so a typo is a quick fix rather than a
- * fresh start.
+ * fresh start. Once the environment has it, `onAdded` hears which project
+ * it was, so the host can take the user straight to it.
  */
 export function AddWorkspaceDialog({
   client,
   open,
   onClose,
+  onAdded,
 }: {
   client: EnvironmentClient
   open: boolean
   onClose: () => void
+  onAdded?: (workspaceId: string) => void
 }) {
   const browse = useCallback(
     (path?: string, prefix?: string) => client.commands.browseFolders(path, prefix),
@@ -37,9 +40,10 @@ export function AddWorkspaceDialog({
   )
   const add = useCallback(
     async (path: string) => {
-      await client.commands.addWorkspace({ path })
+      const workspace = await client.commands.addWorkspace({ path })
+      onAdded?.(workspace.workspaceId)
     },
-    [client],
+    [client, onAdded],
   )
   if (client.supports('browseFolders')) {
     return (
@@ -53,17 +57,19 @@ export function AddWorkspaceDialog({
       />
     )
   }
-  return <AddWorkspacePathDialog client={client} open={open} onClose={onClose} />
+  return <AddWorkspacePathDialog client={client} open={open} onClose={onClose} onAdded={onAdded} />
 }
 
 function AddWorkspacePathDialog({
   client,
   open,
   onClose,
+  onAdded,
 }: {
   client: EnvironmentClient
   open: boolean
   onClose: () => void
+  onAdded?: (workspaceId: string) => void
 }) {
   // While the environment is answering, the dialog stays so the outcome has
   // somewhere to land; the request itself cannot be cancelled. Busy lives up
@@ -78,7 +84,13 @@ function AddWorkspacePathDialog({
       }}
     >
       <DialogContent showCloseButton={!busy}>
-        <AddWorkspaceForm client={client} busy={busy} setBusy={setBusy} onClose={onClose} />
+        <AddWorkspaceForm
+          client={client}
+          busy={busy}
+          setBusy={setBusy}
+          onClose={onClose}
+          onAdded={onAdded}
+        />
       </DialogContent>
     </Dialog>
   )
@@ -89,11 +101,13 @@ function AddWorkspaceForm({
   busy,
   setBusy,
   onClose,
+  onAdded,
 }: {
   client: EnvironmentClient
   busy: boolean
   setBusy: (busy: boolean) => void
   onClose: () => void
+  onAdded?: (workspaceId: string) => void
 }) {
   const [path, setPath] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -108,9 +122,10 @@ function AddWorkspaceForm({
     setBusy(true)
     setError(null)
     try {
-      await client.commands.addWorkspace({ path: trimmed })
+      const workspace = await client.commands.addWorkspace({ path: trimmed })
       setBusy(false)
       onClose()
+      onAdded?.(workspace.workspaceId)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setBusy(false)
