@@ -105,6 +105,11 @@ export const ProofCommandSchemas = {
     SessionTargetSchema.extend({ title: z.string().trim().min(1).max(512).nullable() }),
   ),
   'session.delete': command('session.delete', SessionTargetSchema),
+  // Names the session again from its conversation with the environment's
+  // title model, replacing whatever title it has, a rename included. Answers
+  // once the new title is saved; the change also reaches every client as
+  // `session.updated`. `unavailable` when title generation is off or failed.
+  'session.title.regenerate': command('session.title.regenerate', SessionTargetSchema),
   // Settling moves a finished session out of the active list; `settled: false`
   // brings it back. Either way the change reaches every client as `session.updated`.
   // Settling a running or waiting session is a `conflict`; bringing one back never is.
@@ -174,6 +179,7 @@ export const ProofCommandSchema = z.discriminatedUnion('name', [
   ProofCommandSchemas['session.open'],
   ProofCommandSchemas['session.rename'],
   ProofCommandSchemas['session.delete'],
+  ProofCommandSchemas['session.title.regenerate'],
   ProofCommandSchemas['session.settle'],
   ProofCommandSchemas['session.acknowledge'],
   ProofCommandSchemas['session.history'],
@@ -215,6 +221,7 @@ export const ProofResponseSchemas = {
   ),
   'session.rename': response(z.object({ session: SessionSchema })),
   'session.delete': response(z.null()),
+  'session.title.regenerate': response(z.object({ session: SessionSchema })),
   'session.settle': response(z.object({ settledAt: TimestampSchema.nullable() })),
   'session.acknowledge': response(z.null()),
   'session.history': response(

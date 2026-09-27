@@ -179,7 +179,7 @@ describe('filesystem service', () => {
         command('environment.settings.set', { settings: { addProjectStartsIn: '~/nope' } }),
       ),
     ).toMatchObject({ type: 'error', error: { code: 'validation' } })
-    expect(settings.get()).toEqual({ addProjectStartsIn: '' })
+    expect(settings.get()).toMatchObject({ addProjectStartsIn: '' })
 
     expect(
       await filesystem.dispatch(
@@ -212,7 +212,22 @@ describe('environment settings store', () => {
     first.close()
     const second = openEnvironmentSettings(dataDir)
     stores.push(second)
-    expect(second.get()).toEqual({ addProjectStartsIn: '~/code' })
+    expect(second.get()).toMatchObject({ addProjectStartsIn: '~/code' })
+  })
+
+  it('titles with Codex on its default model until the setting names another', async () => {
+    const dataDir = await tempDir('openmanager-settings-test-')
+    const settings = openEnvironmentSettings(dataDir)
+    stores.push(settings)
+    expect(settings.get().titleGeneration).toEqual({ provider: 'codex', model: '' })
+    settings.set({ titleGeneration: { provider: 'claude', model: ' sonnet ' } })
+    expect(settings.get()).toEqual({
+      addProjectStartsIn: '',
+      titleGeneration: { provider: 'claude', model: 'sonnet' },
+    })
+    expect(() =>
+      settings.set({ titleGeneration: { provider: 'gemini' as 'claude', model: '' } }),
+    ).toThrow()
   })
 })
 

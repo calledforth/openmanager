@@ -13,6 +13,7 @@ describe('configuration', () => {
       allowedHosts: [],
       workspaces: [],
       probeProviders: true,
+      generateTitles: true,
       remintOwner: false,
     })
   })
@@ -31,6 +32,7 @@ describe('configuration', () => {
       allowedHosts: [],
       workspaces: [],
       probeProviders: true,
+      generateTitles: true,
       remintOwner: false,
     })
     expect(
@@ -43,6 +45,7 @@ describe('configuration', () => {
       allowedHosts: [],
       workspaces: [],
       probeProviders: true,
+      generateTitles: true,
       remintOwner: false,
     })
   })

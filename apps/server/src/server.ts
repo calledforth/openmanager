@@ -34,6 +34,7 @@ import { mountAgentRuntime } from './agent-runtime.ts'
 import { createComposerService, desiredSessionConfig } from './composer-service.ts'
 import { openComposerStore } from './composer-store.ts'
 import { openEnvironmentSettings } from './environment-settings.ts'
+import { createTitleGenerator } from './session-titles/generator.ts'
 import { createFilesystemService } from './filesystem.ts'
 import { auditValue, createAuditLog } from './audit.ts'
 import type { ServerConfig } from './config.ts'
@@ -79,6 +80,7 @@ export const SERVER_CAPABILITIES = [
   'session.open',
   'session.rename',
   'session.delete',
+  'session.title.regenerate',
   'session.settle',
   'session.acknowledge',
   'session.history',
@@ -263,6 +265,14 @@ export async function startServer(config: ServerConfig) {
     selection: Pick<WorkspaceComposerPreference, 'modelId' | 'configValues'>,
   ) => void = () => undefined
   const artifacts = createArtifactStore(eventDatabase, config.dataDir)
+  const titles =
+    config.titleGenerator ??
+    (config.generateTitles
+      ? createTitleGenerator({
+          setting: () => environmentSettings.get().titleGeneration,
+          log: (level, message, data) => log(level, message, data),
+        })
+      : undefined)
   const threadService = createThreadService(
     runtime,
     providerService,
@@ -281,6 +291,9 @@ export async function startServer(config: ServerConfig) {
       launchPreference: (workspaceId, providerId, picks) =>
         launchPreference(workspaceId, providerId, picks),
       seedSessionComposer: (sessionId, selection) => seedSessionComposer(sessionId, selection),
+      ...(titles ? { titles } : {}),
+      onTitleFailure: (sessionId, error) =>
+        log('warn', 'session title was not generated', { sessionId, reason: String(error) }),
     },
   )
   sessionProvider = (sessionId) => threadService.providerForSession(sessionId)
@@ -619,7 +632,12 @@ export async function startServer(config: ServerConfig) {
           server.close((error) => (error ? reject(error) : resolve()))
           server.closeAllConnections()
         })
-        closePromise = Promise.all([socketClose, httpClose, runtime.shutdown()]).then(() => {
+        closePromise = Promise.all([
+          socketClose,
+          httpClose,
+          runtime.shutdown(),
+          threadService.stopTitles(),
+        ]).then(() => {
           stopRetention()
           eventService.close()
           eventDatabase.close()

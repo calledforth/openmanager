@@ -83,6 +83,8 @@ export const COMMAND_ACCESS = Object.freeze({
   'session.create': 'operate',
   'session.rename': 'operate',
   'session.delete': 'operate',
+  // Runs the title model, which costs the environment's owner a model call.
+  'session.title.regenerate': 'operate',
   'session.settle': 'operate',
   'session.acknowledge': 'operate',
   'workspace.add': 'operate',

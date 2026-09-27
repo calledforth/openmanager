@@ -50,6 +50,9 @@ export interface SessionStateValue {
   /** Open a new-session draft for `workspacePath`. */
   createSession: (workspacePath: string) => Promise<void>
   renameSession?: (workspacePath: string, externalId: string, title: string | null) => Promise<void>
+  /** Name the session again with the environment's title model. Hosts
+   * whose environment cannot generate titles leave it out. */
+  regenerateSessionTitle?: (externalId: string) => Promise<void>
   deleteSession: (
     workspacePath: string,
     externalId: string,

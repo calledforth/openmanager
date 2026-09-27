@@ -79,6 +79,9 @@ export interface SidebarDataValue {
   selectSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
   createSession: (workspacePath: string) => Promise<void>
   renameSession?: (workspacePath: string, externalId: string, title: string | null) => Promise<void>
+  /** Name the session again with the environment's title model. Hosts
+   * whose environment cannot generate titles leave it out. */
+  regenerateSessionTitle?: (externalId: string) => Promise<void>
   /** Settle (`true`) or bring back (`false`). Hosts without settling leave it out. */
   settleSession?: (workspacePath: string, externalId: string, settled: boolean) => Promise<void>
   deleteSession: (

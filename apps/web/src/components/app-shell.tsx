@@ -10,7 +10,7 @@ import {
   CommandPalette,
   type CommandPaletteItemData,
 } from '@openmanager/app-core/components/command/CommandPalette'
-import { FolderPlusIcon, NotePencilIcon } from '@phosphor-icons/react'
+import { ArrowsClockwiseIcon, FolderPlusIcon, NotePencilIcon } from '@phosphor-icons/react'
 import {
   Sidebar,
   SidebarContent,
@@ -34,6 +34,7 @@ import { ConnectionBanner, ConnectionScreen, ConnectionStatusChip } from './conn
 
 const NewAgentIcon = phosphorIcon(NotePencilIcon)
 const AddProjectIcon = phosphorIcon(FolderPlusIcon)
+const RegenerateTitleIcon = phosphorIcon(ArrowsClockwiseIcon)
 
 function isSessionPath(pathname: string) {
   return pathname === '/' || pathname.startsWith('/sessions/')
@@ -114,7 +115,14 @@ function ConnectedOverlays({
   addingWorkspace: boolean
   closeAddWorkspace: () => void
 }) {
-  const { workspaces, activeWorkspacePath, addWorkspace, createSession } = useSidebarData()
+  const {
+    workspaces,
+    activeWorkspacePath,
+    activeSessionId,
+    addWorkspace,
+    createSession,
+    regenerateSessionTitle,
+  } = useSidebarData()
   // A project just added opens as a new agent in it: adding one is the
   // first step of working there.
   const openAdded = useCallback(
@@ -150,8 +158,22 @@ function ConnectedOverlays({
         keywords: ['add', 'project', 'workspace', 'folder', 'open'],
         onSelect: () => void addWorkspace(),
       },
+      // Only for the session on screen, and only where the environment
+      // can write titles; the new name arrives like any other rename.
+      ...(activeSessionId && regenerateSessionTitle
+        ? [
+            {
+              value: 'action:regenerate-title',
+              label: 'Regenerate title',
+              icon: RegenerateTitleIcon,
+              group: 'Actions',
+              keywords: ['regenerate', 'rename', 'title', 'name', 'session'],
+              onSelect: () => void regenerateSessionTitle(activeSessionId),
+            },
+          ]
+        : []),
     ],
-    [newAgentTarget, createSession, addWorkspace],
+    [newAgentTarget, createSession, addWorkspace, activeSessionId, regenerateSessionTitle],
   )
   return (
     <>

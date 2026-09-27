@@ -401,6 +401,7 @@ export function createMockEnvironmentClient(
   const preferences = new Map<string, WorkspaceComposerPreference>()
   let environmentSettings: EnvironmentSettings = {
     addProjectStartsIn: '',
+    titleGeneration: { provider: 'codex', model: '' },
     ...options.seed?.environmentSettings,
   }
   const preferenceKey = (target: ComposerPreferenceTarget) =>
@@ -753,6 +754,21 @@ export function createMockEnvironmentClient(
           name: 'session.updated',
           scope: envScope(),
           payload: { sessionId, title, titleSource: 'user' },
+        })
+      }),
+    regenerateSessionTitle: (sessionId) =>
+      run('regenerateSessionTitle', { sessionId }, () => {
+        const session = store.getState().sessions[sessionId]
+        if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
+        emit({
+          ...base(),
+          name: 'session.updated',
+          scope: envScope(),
+          payload: {
+            sessionId,
+            title: `Regenerated ${session.title ?? 'session'}`,
+            titleSource: 'generated',
+          },
         })
       }),
     settleSession: (sessionId, settled) =>

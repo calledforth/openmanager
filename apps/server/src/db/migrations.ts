@@ -567,6 +567,28 @@ export const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    version: 15,
+    name: 'session_title_generated',
+    up(database) {
+      const columns = new Set(
+        (database.prepare('PRAGMA table_info(sessions)').all() as { name: string }[]).map(
+          (column) => column.name,
+        ),
+      )
+      if (!columns.has('title_generated')) {
+        // Set while the title is one the title model wrote; `title_source`
+        // then reads 'provider'. The `generated` source cannot go into
+        // `title_source` itself: widening its CHECK means rebuilding
+        // `sessions`, and dropping that table inside this transaction, with
+        // foreign keys on, would cascade through every session's history.
+        database.exec(`
+          ALTER TABLE sessions ADD COLUMN title_generated INTEGER NOT NULL DEFAULT 0
+            CHECK (title_generated IN (0, 1))
+        `)
+      }
+    },
+  },
 ]
 
 type RetainedActivityRow = {

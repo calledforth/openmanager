@@ -961,12 +961,13 @@ export function applySessionTitle(
   state: EnvironmentState,
   sessionId: string,
   title: string | null,
+  titleSource: 'user' | 'generated' = 'user',
 ): EnvironmentState {
   const session = state.sessions[sessionId]
-  if (!session || (session.title === title && session.titleSource === 'user')) return state
+  if (!session || (session.title === title && session.titleSource === titleSource)) return state
   return {
     ...state,
-    sessions: { ...state.sessions, [sessionId]: { ...session, title, titleSource: 'user' } },
+    sessions: { ...state.sessions, [sessionId]: { ...session, title, titleSource } },
   }
 }
 

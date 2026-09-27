@@ -333,6 +333,12 @@ export interface EnvironmentCommands {
   openSession(sessionId: string): Promise<void>
   loadSessionHistory(input: LoadSessionHistoryInput): Promise<SessionHistoryPage>
   renameSession(sessionId: string, title: string | null): Promise<void>
+  /**
+   * Name the session again from its conversation with the environment's
+   * title model. Settles once the new title is saved; fails `unavailable`
+   * when titles are turned off there or the model could not answer.
+   */
+  regenerateSessionTitle(sessionId: string): Promise<void>
   /** Move a session out of the active list (`true`) or back into it (`false`). */
   settleSession(sessionId: string, settled: boolean): Promise<void>
   /** The user has looked at a finished session; every client stops showing it as done. */

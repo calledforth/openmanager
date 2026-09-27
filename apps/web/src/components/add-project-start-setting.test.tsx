@@ -45,7 +45,9 @@ describe('add project start setting', () => {
     await user.clear(field())
     await user.type(field(), '  ~/work  {Enter}')
     await waitFor(() => expect(field()).toHaveValue('~/work'))
-    expect(await client.commands.getEnvironmentSettings()).toEqual({ addProjectStartsIn: '~/work' })
+    expect(await client.commands.getEnvironmentSettings()).toMatchObject({
+      addProjectStartsIn: '~/work',
+    })
   })
 
   it('resets to the home folder', async () => {

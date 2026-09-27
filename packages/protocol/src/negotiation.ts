@@ -25,7 +25,10 @@ import {
 // session, which the upload result says by carrying `workspaceId`.
 // Version 8 adds folder browsing (`filesystem.browse`) and environment-wide
 // settings (`environment.settings.get`/`.set`) for Add project's picker.
-export const PROTOCOL_VERSION = 8 as const
+// Version 9 adds the `generated` title source, which a v8 client's enum
+// rejects along with the session summary or event carrying it, the
+// `titleGeneration` environment setting, and `session.title.regenerate`.
+export const PROTOCOL_VERSION = 9 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema
