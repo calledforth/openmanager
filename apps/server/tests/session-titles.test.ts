@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { CliRequest } from '../src/session-titles/cli.js'
-import { needsShell, shellArgument } from '../src/session-titles/cli.js'
+import { CliError, needsShell, runCli, shellArgument } from '../src/session-titles/cli.js'
 import { formatTitleContext } from '../src/session-titles/context.js'
 import { createTitleGenerator, TitleGenerationError } from '../src/session-titles/generator.js'
 import {
@@ -249,6 +249,26 @@ describe('title generator', () => {
     ])
   })
 
+  it('deletes the OpenCode session of a run that failed after saving it', async () => {
+    const runner = recordingRunner((request) => {
+      if (request.args[0] === 'session') return ''
+      throw new CliError(
+        'opencode exited with code 1',
+        JSON.stringify({ type: 'step_start', sessionID: 'ses_2' }),
+      )
+    })
+    const generator = createTitleGenerator({
+      setting: () => ({ provider: 'opencode', model: '' }),
+      env: { ...env, ACP_OPENCODE_BIN: 'opencode-dev' },
+      run: runner.run,
+    })
+    await expect(generator.generate({ message: 'x' })).rejects.toMatchObject({ reason: 'failed' })
+    expect(runner.requests.map((request) => request.args)).toEqual([
+      ['run', '--format', 'json', '--agent', 'plan'],
+      ['session', 'delete', 'ses_2'],
+    ])
+  })
+
   it('reports a failed or empty answer as a failure, not a title', async () => {
     const logged: string[] = []
     const failing = createTitleGenerator({
@@ -271,4 +291,36 @@ describe('title generator', () => {
     })
     await expect(empty.generate({ message: 'x' })).rejects.toMatchObject({ reason: 'failed' })
   })
+})
+
+describe('running a title CLI', () => {
+  it.skipIf(process.platform === 'win32')(
+    'kills a CLI that ignores SIGTERM, and what it started, when stopped',
+    { timeout: 15_000 },
+    async () => {
+      const controller = new AbortController()
+      const script = [
+        "process.on('SIGTERM', () => {})",
+        "require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' })",
+        "console.log('started')",
+        'setInterval(() => {}, 1000)',
+      ].join(';')
+      const started = Date.now()
+      const run = runCli({
+        command: process.execPath,
+        args: ['-e', script],
+        cwd: process.cwd(),
+        env: process.env,
+        timeoutMs: 60_000,
+        signal: controller.signal,
+      })
+      setTimeout(() => controller.abort(), 500)
+      const error = await run.catch((caught: unknown) => caught)
+      expect(error).toBeInstanceOf(CliError)
+      expect((error as CliError).stdout).toContain('started')
+      // Bounded by the kill grace, not the 60 s timeout, even with a
+      // grandchild holding the output pipes open.
+      expect(Date.now() - started).toBeLessThan(8_000)
+    },
+  )
 })

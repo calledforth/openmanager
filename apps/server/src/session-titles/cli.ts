@@ -15,6 +15,18 @@ export type CliRequest = {
 /** Runs a CLI to completion and answers its stdout. Injected by tests. */
 export type CliRunner = (request: CliRequest) => Promise<string>
 
+/** A CLI that failed or was stopped, with what it had printed by then: a
+ * failed run may still have created something that needs cleaning up. */
+export class CliError extends Error {
+  readonly stdout: string
+
+  constructor(message: string, stdout: string, options?: { cause?: unknown }) {
+    super(message, options)
+    this.name = 'CliError'
+    this.stdout = stdout
+  }
+}
+
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 const KILL_GRACE_MS = 2_000
 
@@ -47,7 +59,14 @@ export function shellArgument(value: string): string {
 export const runCli: CliRunner = (request) =>
   new Promise((resolve, reject) => {
     const shell = needsShell(request.command)
-    const options = { cwd: request.cwd, env: request.env, windowsHide: true }
+    // Elsewhere the CLI leads its own process group, so stopping it can reach
+    // everything it started, not only the process spawned here.
+    const options = {
+      cwd: request.cwd,
+      env: request.env,
+      windowsHide: true,
+      detached: process.platform !== 'win32',
+    }
     const child = shell
       ? spawn([request.command, ...request.args].map(shellArgument).join(' '), {
           ...options,
@@ -64,11 +83,38 @@ export const runCli: CliRunner = (request) =>
       stopped = {
         reason,
         tree:
-          pid !== undefined && process.platform === 'win32'
-            ? treeKiller(KILL_GRACE_MS)(pid).then((gone) => gone || child.kill())
-            : Promise.resolve(child.kill()),
+          pid === undefined
+            ? Promise.resolve()
+            : process.platform === 'win32'
+              ? treeKiller(KILL_GRACE_MS)(pid).then((gone) => gone || child.kill())
+              : killGroup(pid),
       }
     }
+    /**
+     * SIGTERM to the whole group, then SIGKILL once the CLI has exited or the
+     * grace window has passed, whichever is first. Bounded either way, so a
+     * CLI that ignores SIGTERM cannot hold a pass (or a shutdown) open.
+     */
+    const killGroup = (pid: number) =>
+      new Promise<void>((resolve) => {
+        const signalGroup = (signal: NodeJS.Signals) => {
+          try {
+            process.kill(-pid, signal)
+          } catch {
+            // The group is already gone.
+          }
+        }
+        const finish = () => {
+          clearTimeout(timer)
+          // Anything the CLI left behind in its group goes with it.
+          signalGroup('SIGKILL')
+          resolve()
+        }
+        const timer = setTimeout(finish, KILL_GRACE_MS)
+        timer.unref?.()
+        child.once('exit', finish)
+        signalGroup('SIGTERM')
+      })
     const collect = (chunks: Buffer[]) => (chunk: Buffer) => {
       size += chunk.length
       if (size > MAX_OUTPUT_BYTES) stop(new Error(`${request.command} wrote too much output.`))
@@ -87,16 +133,18 @@ export const runCli: CliRunner = (request) =>
     const finish = (error?: Error) => {
       clearTimeout(timer)
       request.signal?.removeEventListener('abort', onAbort)
+      const printed = Buffer.concat(stdout).toString('utf8')
       if (stopped) {
         const { reason, tree } = stopped
+        const failure = new CliError(reason.message, printed, { cause: reason })
         void tree.then(
-          () => reject(reason),
-          () => reject(reason),
+          () => reject(failure),
+          () => reject(failure),
         )
         return
       }
-      if (error) reject(error)
-      else resolve(Buffer.concat(stdout).toString('utf8'))
+      if (error) reject(new CliError(error.message, printed, { cause: error }))
+      else resolve(printed)
     }
     child.on('error', (error) => finish(error))
     child.on('close', (code) => {

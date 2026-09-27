@@ -1687,7 +1687,18 @@ export function createThreadService(
             return ProofResponseSchemas['session.title.regenerate'].parse({
               type: 'response',
               requestId,
-              payload: { session: { ...session, title: generated.title } },
+              // Built field by field: `session` may be a summary read before the
+              // title changed, and its provenance and times are stale now.
+              payload: {
+                session: {
+                  sessionId,
+                  workspaceId: session.workspaceId,
+                  title: generated.title,
+                  ...(session.parentSessionId
+                    ? { parentSessionId: session.parentSessionId }
+                    : {}),
+                },
+              },
             })
           })
           .catch((error: unknown) => {

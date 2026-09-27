@@ -15,7 +15,7 @@ import {
   type TitleGenerationProvider,
   type TitleGenerationSetting,
 } from '@openmanager/protocol/node'
-import { needsShell, runCli, type CliRunner } from './cli.ts'
+import { CliError, needsShell, runCli, type CliRunner } from './cli.ts'
 import {
   buildTitlePrompt,
   parseGeneratedTitle,
@@ -246,6 +246,10 @@ async function runCursor({ model, prompt, cwd, env, run, timeoutMs, signal }: Ru
   return envelope.result
 }
 
+/** Deleting a session is a local file operation; it gets seconds, not the
+ * pass's minute and a half, so a stopped pass or a closing server waits little. */
+const OPENCODE_CLEANUP_TIMEOUT_MS = 5_000
+
 /**
  * `opencode run` with the read-only `plan` agent. OpenCode saves every run as
  * a session, so the one a title created is deleted once it has answered;
@@ -253,26 +257,24 @@ async function runCursor({ model, prompt, cwd, env, run, timeoutMs, signal }: Ru
  */
 async function runOpencode({ model, prompt, cwd, env, run, timeoutMs, signal }: Run) {
   const command = acpCommandBin(opencode.command, env)
-  const stdout = await run({
-    command,
-    args: ['run', '--format', 'json', '--agent', 'plan', ...(model ? ['--model', model] : [])],
-    input: prompt,
-    cwd,
-    env,
-    timeoutMs,
-    ...(signal ? { signal } : {}),
-  })
-  const events = jsonObjects(stdout)
-  const sessionId = events.map((event) => event.sessionID).find((id) => typeof id === 'string')
-  if (typeof sessionId === 'string') {
-    await run({
+  let stdout = ''
+  try {
+    stdout = await run({
       command,
-      args: ['session', 'delete', sessionId],
+      args: ['run', '--format', 'json', '--agent', 'plan', ...(model ? ['--model', model] : [])],
+      input: prompt,
       cwd,
       env,
-      timeoutMs: 15_000,
-    }).catch(() => undefined)
+      timeoutMs,
+      ...(signal ? { signal } : {}),
+    })
+  } catch (error) {
+    // A run that failed or was stopped may already have saved its session.
+    if (error instanceof CliError) await deleteOpencodeSession(error.stdout)
+    throw error
   }
+  await deleteOpencodeSession(stdout)
+  const events = jsonObjects(stdout)
   const failure = events.find((event) => event.type === 'error')
   if (failure) throw new Error(`OpenCode: ${JSON.stringify(failure.error)}`)
   return events
@@ -283,4 +285,22 @@ async function runOpencode({ model, prompt, cwd, env, run, timeoutMs, signal }: 
         : []
     })
     .join('')
+
+  /** Best effort, and quick: a leftover session is untidy, not a failure. It
+   * runs even for a stopped pass, since that is when a session is most likely
+   * to be left behind, but on its own short timeout rather than the pass's
+   * signal, so stopping the pass cannot skip the cleanup. */
+  async function deleteOpencodeSession(printed: string) {
+    const sessionId = jsonObjects(printed)
+      .map((event) => event.sessionID)
+      .find((id) => typeof id === 'string')
+    if (typeof sessionId !== 'string') return
+    await run({
+      command,
+      args: ['session', 'delete', sessionId],
+      cwd,
+      env,
+      timeoutMs: OPENCODE_CLEANUP_TIMEOUT_MS,
+    }).catch(() => undefined)
+  }
 }
