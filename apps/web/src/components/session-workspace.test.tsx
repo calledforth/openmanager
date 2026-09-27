@@ -210,12 +210,13 @@ describe('session workspace', () => {
     expect(client.getState().sessions[SESSION.sessionId]).toBeDefined()
   })
 
-  it('renders the shared sidebar, empty chat and composer once connected', async () => {
+  it('renders the shared sidebar, empty chat and a ready composer once connected', async () => {
     renderConnected('/')
     expect(await screen.findByText('Sidebar move')).toBeInTheDocument()
     expect(screen.getAllByText('repo').length).toBeGreaterThan(0)
     expect(screen.getByText(/Let's build in/)).toBeInTheDocument()
-    expect(screen.getByRole('textbox')).toBeDisabled()
+    // The project the landing names is open as a draft: typing needs no pick first.
+    expect(screen.getByRole('textbox')).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
   })
 

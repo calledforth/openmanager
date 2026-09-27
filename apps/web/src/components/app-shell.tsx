@@ -219,7 +219,12 @@ function ConnectedShell({
     setAddingWorkspace(true)
   }, [client])
   return (
-    <EnvironmentApplicationProviders addWorkspace={addWorkspace} navigateSession={navigateSession}>
+    <EnvironmentApplicationProviders
+      addWorkspace={addWorkspace}
+      navigateSession={navigateSession}
+      // `/` is the new-session landing: a draft is ready there on arrival.
+      onLanding={pathname === '/'}
+    >
       {/* A healthy connection says nothing; trouble shows as the banner. */}
       <WorkspaceSidebar footer={<NavMenu pathname={pathname} includeSessions={false} />} />
       {children}

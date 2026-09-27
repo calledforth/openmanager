@@ -106,6 +106,11 @@ export interface EnvironmentApplicationOptions {
   addWorkspace?: () => Promise<void>
   /** Routed hosts navigate first; the destination owns session hydration. */
   navigateSession?: (sessionId: string | null) => Promise<void>
+  /** True while the host shows its new-session landing (on the web, the `/`
+   * route). With no session and no draft open there, a draft stands in the
+   * most recently used project, so the composer is ready on arrival. Left
+   * false, a draft opens only when asked for. */
+  onLanding?: boolean
   /** Where folded sidebar rows are remembered. Defaults to `localStorage`. */
   collapsedWorkspaceStorage?: Pick<Storage, 'getItem' | 'setItem'> | null
   /** Host actions for views (child sessions, icons, uploads). */
@@ -127,6 +132,7 @@ export function EnvironmentApplicationProviders({
       <EnvironmentSessionStateProvider
         addWorkspace={options.addWorkspace}
         navigateSession={options.navigateSession}
+        onLanding={options.onLanding ?? false}
       >
         <EnvironmentComposerStateProvider>
           <EnvironmentSidebarDataProvider storage={options.collapsedWorkspaceStorage}>
@@ -330,20 +336,41 @@ interface DraftInternals {
 
 const DraftInternalsContext = createContext<DraftInternals | null>(null)
 
+/** A project a session can be started in right now. */
+function canHostDraft(workspace: Workspace | undefined): workspace is Workspace {
+  if (!workspace) return false
+  return workspace.availability ? workspace.availability === 'available' : workspace.exists
+}
+
+/** Where a landing draft opens: the project most recently worked in, else
+ * the first one listed that is there to work in. */
+function landingWorkspaceFor(workspaces: Workspace[], recent: Workspace[]): string | null {
+  return (recent.find(canHostDraft) ?? workspaces.find(canHostDraft))?.workspaceId ?? null
+}
+
 function EnvironmentSessionStateProvider({
   addWorkspace,
   navigateSession,
+  onLanding,
   children,
 }: {
   addWorkspace?: () => Promise<void>
   navigateSession?: (sessionId: string | null) => Promise<void>
+  onLanding: boolean
   children: ReactNode
 }) {
   const client = useEnvironmentClient()
   const { commands } = client
   const activeSession = useActiveSession()
   const activeTurn = useActiveTurn()
-  const [draftWorkspaceId, setDraftWorkspaceId] = useState<string | null>(null)
+  const workspaces = useWorkspaces()
+  const recentWorkspaces = useRecentWorkspaces()
+  // A draft the user opened. The landing's own draft is derived below.
+  const [openedDraftWorkspaceId, setDraftWorkspaceId] = useState<string | null>(null)
+  // The landing's draft, once it has been shown. Held so that activity in
+  // another project, which reorders the recent list, does not move a draft
+  // the user may already be typing into.
+  const [heldLandingWorkspaceId, setHeldLandingWorkspaceId] = useState<string | null>(null)
   const [pendingDraftSessionStart, setPendingDraftSessionStart] = useState(false)
   const [turnPending, setTurnPending] = useState(false)
   const [adoptedDraftSessionId, setAdoptedDraftSessionId] = useState<string | null>(null)
@@ -360,6 +387,24 @@ function EnvironmentSessionStateProvider({
   const selectionRef = useRef<string | null>(null)
 
   const activeSessionId = activeSession?.sessionId ?? null
+  // The session the client has selected, whether or not its row has arrived.
+  const selectedSessionId = useEnvironmentState((state) => state.activeSessionId)
+
+  // Without this the landing names a project while nothing is open in it, and
+  // the composer below stays locked until another project is picked.
+  const landingOpen = onLanding && selectedSessionId === null && openedDraftWorkspaceId === null
+  const heldLandingWorkspace = workspaces.find(
+    (workspace) => workspace.workspaceId === heldLandingWorkspaceId,
+  )
+  const landingWorkspaceId = !landingOpen
+    ? null
+    : canHostDraft(heldLandingWorkspace)
+      ? heldLandingWorkspace.workspaceId
+      : landingWorkspaceFor(workspaces, recentWorkspaces)
+  // Leaving the landing lets go, so the next visit starts from the most recent.
+  useEffect(() => setHeldLandingWorkspaceId(landingWorkspaceId), [landingWorkspaceId])
+  const draftWorkspaceId = openedDraftWorkspaceId ?? landingWorkspaceId
+
   const isSessionDraftOpen = activeSessionId === null && draftWorkspaceId !== null
   const activeWorkspacePath = activeSession?.workspaceId ?? draftWorkspaceId
 
