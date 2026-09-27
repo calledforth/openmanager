@@ -396,9 +396,13 @@ function EnvironmentSessionStateProvider({
   const heldLandingWorkspace = workspaces.find(
     (workspace) => workspace.workspaceId === heldLandingWorkspaceId,
   )
+  // Availability decides only where a draft first opens. Once shown, it stays
+  // while its project is listed, as a draft the user opened does: moving it
+  // would hide what was typed, and a folder can come back. Removing the
+  // project ends it the same way removal ends any draft.
   const landingWorkspaceId = !landingOpen
     ? null
-    : canHostDraft(heldLandingWorkspace)
+    : heldLandingWorkspace
       ? heldLandingWorkspace.workspaceId
       : landingWorkspaceFor(workspaces, recentWorkspaces)
   // Leaving the landing lets go, so the next visit starts from the most recent.

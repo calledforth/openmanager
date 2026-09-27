@@ -1340,6 +1340,28 @@ describe('the new-session landing', () => {
     expect(seen.session!.activeWorkspacePath).toBe(RECENT.workspaceId)
   })
 
+  it('keeps a draft in a project whose folder goes missing, like any open draft', async () => {
+    const client = createMockEnvironmentClient({ seed: { workspaces: [OLDER, RECENT] } })
+    const { seen } = await mount(client)
+    expect(seen.session!.activeWorkspacePath).toBe(RECENT.workspaceId)
+
+    await act(() =>
+      client.emit({
+        type: 'event',
+        name: 'workspace.updated',
+        eventId: 'recent-missing',
+        timestamp: new Date().toISOString(),
+        scope: {
+          type: 'environment',
+          environmentId: client.getState().environment!.environmentId,
+        },
+        payload: { workspace: { ...RECENT, exists: false, availability: 'missing' } },
+      }),
+    )
+    // Moving it would hide what was typed; the folder may come back.
+    expect(seen.session!.activeWorkspacePath).toBe(RECENT.workspaceId)
+  })
+
   it('gives way to a project the user picks', async () => {
     const client = createMockEnvironmentClient({ seed: { workspaces: [OLDER, RECENT] } })
     const { seen } = await mount(client)
