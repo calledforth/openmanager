@@ -88,10 +88,11 @@ describe('a provider nobody has opened', () => {
       ])
     })
     // No client named a folder, and nothing was opened to find any of it out.
-    expect(spawnedIn(connections)).toEqual([
-      `cursor@${host.workspaceRoot}`,
-      `opencode@${host.workspaceRoot}`,
-    ])
+    // The registry's own spelling of the root: a temp directory can reach the
+    // test under a short name the registry has already resolved.
+    const root = host.server.workspaces.get(host.workspaceId)?.root
+    expect(root).toBeDefined()
+    expect(spawnedIn(connections)).toEqual([`cursor@${root}`, `opencode@${root}`])
     expect(newSession).not.toHaveBeenCalled()
     // The listing already said whether each model reads images.
     expect(execFile).toHaveBeenCalledTimes(1)
