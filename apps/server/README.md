@@ -465,10 +465,12 @@ selection for one workspace/provider pair. `composer.model.set`,
 addressed live session before persisting it. A model change also reconciles the
 remembered config values against the provider's refreshed option list, matching
 the desktop runtime behavior. New and respawned provider processes automatically
-pull the durable model and config values from SQLite. Mode remains a persisted
-composer choice but is only applied by explicit commands, so a respawn does not
-fight provider plan/execute transitions. Restarting with the same data directory
-retains every preference field.
+pull the durable model and config values from SQLite, and start in the session's own mode:
+a session left in `bypassPermissions` is still in it after a server restart. The
+session's mode follows every switch the agent makes by itself (plan to build), so
+restoring it does not fight those transitions. The workspace's remembered mode is
+never forced on a session; it only seeds drafts. Restarting with the same data
+directory retains every preference field.
 
 The selection belongs to the session, not the workspace: two sessions in one
 workspace can run different models, and the session setters change only the

@@ -323,8 +323,31 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
     // process, whose model/config state is process-global *and* restored from
     // disk: `session/new` can report a model left behind by an already-exited
     // process, and this is where that gets corrected.
-    if (this.spec.desiredConfig) await this.applyDesiredConfig(this.spec.desiredConfig)
+    const { modeId, ...rest } = this.spec.desiredConfig ?? {}
+    if (Object.keys(rest).length > 0) await this.applyDesiredConfig(rest)
+    if (modeId !== undefined) await this.restoreMode(modeId)
     return result
+  }
+
+  /** A mode the session was last in, put back on a fresh process.
+   *
+   * Best-effort, unlike model: an agent that has dropped the mode (or never
+   * lists modes, so the host cannot tell) would otherwise fail every start,
+   * and with it the `setMode` the user would reach for to get out, which also
+   * needs a started process. The agent's own mode stands, and its report
+   * corrects the composer. A mode a caller names for a prompt is re-applied
+   * with that prompt and still fails it loudly. */
+  private async restoreMode(modeId: string): Promise<void> {
+    try {
+      await this.applyDesiredConfig({ modeId })
+    } catch (error) {
+      this.host.log({
+        scope: 'acp',
+        level: 'warn',
+        message: "Could not restore the session's mode; keeping the agent's",
+        data: { providerId: this.providerId, modeId, error: String(error) },
+      })
+    }
   }
 
   private async connect(): Promise<void> {

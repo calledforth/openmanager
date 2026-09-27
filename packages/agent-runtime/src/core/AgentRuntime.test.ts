@@ -380,6 +380,107 @@ describe('AgentRuntime desired config', () => {
     expect(wires[1]!.setSessionConfigOption).not.toHaveBeenCalled()
   })
 
+  it("lays a caller's config over the host's instead of replacing it", async () => {
+    // A plan build names only the mode; this caller names only a value, which
+    // takes the same path on a wire with no mode. Replacing the durable config
+    // with either cold-started the process on the CLI's default model.
+    const { wire, setSessionConfigOption } = modelWire()
+    const runtime = new AgentRuntime(
+      {
+        emitEvent: vi.fn(),
+        log: vi.fn(),
+        desiredSessionConfig: () => ({ modelId: 'claude-opus-5' }),
+      },
+      configs,
+      { connections: new FakeConnectionFactory(wire) },
+    )
+
+    await runtime.ensureSession({
+      ...ROUTE,
+      threadId: 'thread-1',
+      desiredConfig: { values: { fast: true } },
+    })
+
+    expect(setSessionConfigOption).toHaveBeenCalledWith(
+      expect.objectContaining({ configId: 'model', value: 'claude-opus-5' }),
+    )
+    expect(setSessionConfigOption).toHaveBeenCalledWith(
+      expect.objectContaining({ configId: 'fast', value: true }),
+    )
+  })
+
+  /** A host's mode restores a restarted session; it is not per-message
+   * state. An agent with no mode option to read back (legacy
+   * `session/set_mode`) would otherwise take a blind write before every
+   * prompt. */
+  function modeWire(setSessionMode: (params: unknown) => Promise<unknown>) {
+    const spy = vi.fn(setSessionMode)
+    return {
+      wire: {
+        newSession: async () => ({ sessionId: 'session-1' }),
+        setSessionMode: spy,
+        prompt: async () => ({ stopReason: 'end_turn' }),
+      } as FakeWire,
+      setSessionMode: spy,
+    }
+  }
+  const hostWithMode = (log = vi.fn()) => ({
+    emitEvent: vi.fn(),
+    log,
+    desiredSessionConfig: () => ({ modeId: 'bypassPermissions' }),
+  })
+
+  it("restores the host's mode when a process starts, and not before every prompt", async () => {
+    const { wire, setSessionMode } = modeWire(async () => ({}))
+    const runtime = new AgentRuntime(hostWithMode(), configs, {
+      connections: new FakeConnectionFactory(wire),
+    })
+    const route = { ...ROUTE, threadId: 'thread-1' }
+
+    await runtime.prompt({ ...route, prompt: PROMPT })
+    await runtime.prompt({ ...route, prompt: PROMPT })
+
+    expect(setSessionMode).toHaveBeenCalledTimes(1)
+    expect(setSessionMode).toHaveBeenCalledWith(
+      expect.objectContaining({ modeId: 'bypassPermissions' }),
+    )
+  })
+
+  it('starts anyway when the agent refuses a restored mode', async () => {
+    // Failing the start would also block the setMode the user reaches for to
+    // get out of it, since that needs a started process too.
+    const { wire } = modeWire(async () => {
+      throw new Error('Unknown mode')
+    })
+    const log = vi.fn()
+    const runtime = new AgentRuntime(hostWithMode(log), configs, {
+      connections: new FakeConnectionFactory(wire),
+    })
+
+    await expect(runtime.ensureSession({ ...ROUTE, threadId: 'thread-1' })).resolves.toBeDefined()
+    expect(log).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('restore') }),
+    )
+  })
+
+  it('still fails a prompt on a mode its caller asked for', async () => {
+    const { wire } = modeWire(async () => {
+      throw new Error('Unknown mode')
+    })
+    const runtime = new AgentRuntime(hostWithMode(), configs, {
+      connections: new FakeConnectionFactory(wire),
+    })
+
+    await expect(
+      runtime.prompt({
+        ...ROUTE,
+        threadId: 'thread-1',
+        desiredConfig: { modeId: 'plan' },
+        prompt: PROMPT,
+      }),
+    ).rejects.toThrow()
+  })
+
   it('drops what the provider cannot do at all', async () => {
     const { wire, setSessionConfigOption } = modelWire()
     const events: AgentEvent[] = []

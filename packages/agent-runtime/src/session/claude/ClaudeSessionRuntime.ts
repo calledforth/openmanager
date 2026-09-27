@@ -202,6 +202,19 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
   private appliedOutputStyle: string | undefined
   private appliedModelId: string | undefined
   private appliedModeId: string | undefined
+  /** Set when an `ExitPlanMode` review is approved, until the CLI reports the
+   * mode it left plan for (live-verified on 2.1.220: a `system/status` frame
+   * with `permissionMode: 'default'`, then the same on the next `init`).
+   *
+   * Reports are adopted only while this is set. The stream can still hold a
+   * frame from before a `setMode` the user just made, and adopting that frame
+   * would undo the user's switch; after a plan approval the only stale value
+   * a frame can carry is `plan`, which is never adopted.
+   *
+   * What is left is the gap between the approval and that frame: a process
+   * that dies inside it is remembered, and restarted, in plan. The CLI sends
+   * the frame as soon as the tool is allowed, so the gap is one frame long. */
+  private leavingPlan = false
   private appliedAt: string | undefined
 
   private readonly config: ClaudeProviderConfig
@@ -645,9 +658,37 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     // and deciding second meant a stray result corrupted a turn it had no
     // business touching even when it was correctly refused.
     if (message.type === 'result' && !this.ownsResult(message)) return
+    this.noteReportedMode(message)
     const translated = this.translator.translate(message)
     for (const event of translated.events) this.emit(event)
     if (translated.completed) this.completeTurn(translated.completed)
+  }
+
+  /** Follow the CLI out of plan mode after an approved plan.
+   *
+   * The CLI switches mode on its own when `ExitPlanMode` is allowed, and says
+   * so only on `system` frames. Without this the runtime keeps believing it is
+   * in `plan`: the composer shows the wrong mode, and a restarted process,
+   * which launches in the session's remembered mode, goes back into plan. */
+  private noteReportedMode(message: SDKMessage): void {
+    if (!this.leavingPlan || message.type !== 'system') return
+    if (message.subtype !== 'status' && message.subtype !== 'init') return
+    const reported = claudePermissionMode(
+      (message as { permissionMode?: string }).permissionMode,
+    )
+    if (!reported || reported === 'plan') return
+    this.leavingPlan = false
+    if (reported === this.appliedModeId) return
+    this.noteApplied({ modeId: reported })
+    this.emit(
+      routeEvent(
+        this.route(),
+        message.session_id,
+        'session',
+        'current_mode_update',
+        claudeModeListing(reported, this.currentModel()),
+      ),
+    )
   }
 
   /** Is this terminal result the one the active dispatch is waiting for?
@@ -1084,6 +1125,9 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     const mode = claudePermissionMode(modeId)
     if (!mode) throw new Error(`${this.providerId} has no permission mode "${modeId}"`)
     await this.queryOrThrow().setPermissionMode(mode)
+    // The user's own switch settles where the session is; a plan exit the CLI
+    // has not reported yet must not override it when it does.
+    this.leavingPlan = false
     this.noteApplied({ modeId: mode })
     this.emit(
       // The catalog rides along with every update. Consumers replace their
@@ -1401,6 +1445,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
         : review?.outcome === 'rejected'
           ? { behavior: 'deny', message: review.reason ?? 'User rejected the plan.' }
           : USER_CANCELLED
+    if (result.behavior === 'allow') this.leavingPlan = true
     this.planDecisions.set(options.toolUseID, result)
     return result
   }

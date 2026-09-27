@@ -384,15 +384,14 @@ export function createComposerService(
         if (event.event === 'session_created' || event.event === 'session_loaded') {
           if (sessionId) {
             // The first report seeds a session that has no selection yet from
-            // the workspace preference; after that the session owns it. Mode is
-            // the exception: the provider's live mode always wins.
+            // the workspace preference; after that the session owns it.
             const current = selectionOf(sessionId)
             const preference = event.workspaceId
               ? store.getPreference(event.workspaceId, event.providerId)
               : {}
             updateSelection(sessionId, {
               modelId: current.modelId ?? preference.modelId ?? event.data.models?.currentModelId,
-              modeId: event.data.modes?.currentModeId ?? current.modeId,
+              modeId: reportedMode(event.event, current.modeId, event.data.modes),
               configValues: current.configValues ?? preference.configValues,
               configOptions: configOptionsPatch(event.data.configOptions),
             })
@@ -615,15 +614,44 @@ export function desiredSessionConfig(
   preference: WorkspaceComposerPreference,
   selection?: SessionComposerState,
 ): DesiredSessionConfig | undefined {
-  // Mode is persisted for composer display but deliberately not enforced on
-  // respawn: doing so can fight the provider's plan/execute mode transitions.
   const modelId = selection?.modelId ?? preference.modelId
   const values = selection?.configValues ?? preference.configValues
+  // Mode comes from the session alone, never the workspace preference, and
+  // the runtime applies it only when a process starts. The session's mode
+  // follows every switch the agent makes itself (plan to build), so it puts a
+  // restarted process back where the session was — without it the process
+  // comes back in the provider's default and quietly drops a mode like
+  // `bypassPermissions`. The workspace's "last used" mode only seeds drafts:
+  // forcing it on every session was what fought those plan/build transitions.
+  const modeId = selection?.modeId
   const desired = {
     ...(modelId ? { modelId } : {}),
+    ...(modeId ? { modeId } : {}),
     ...(values ? { values } : {}),
   }
   return Object.keys(desired).length > 0 ? desired : undefined
+}
+
+/**
+ * The mode a session should show after its process reports in.
+ *
+ * A created session is in whatever the provider says. A *loaded* one is a
+ * restarted process reporting the provider's default before the session's own
+ * mode is re-applied (ACP applies it after the load event), so taking the
+ * report at face value would overwrite a remembered `bypassPermissions` with
+ * `default` — for good, if the process dies before the re-apply lands. The
+ * remembered mode is kept unless the provider no longer offers it.
+ */
+function reportedMode(
+  event: 'session_created' | 'session_loaded',
+  remembered: string | undefined,
+  modes: { currentModeId?: string; availableModes?: Array<{ id: string }> } | undefined,
+): string | undefined {
+  const reported = modes?.currentModeId
+  if (event === 'session_created' || remembered === undefined) return reported ?? remembered
+  const offered = modes?.availableModes
+  if (offered === undefined || offered.some((mode) => mode.id === remembered)) return remembered
+  return reported ?? remembered
 }
 
 /** Options the protocol cannot carry are dropped, not allowed to hide the rest. */
