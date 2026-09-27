@@ -18,7 +18,12 @@ const children: ChildProcess[] = []
 const clients: WebSocket[] = []
 
 async function launch(dataDir: string) {
+  // A developer's own server may have handed this shell its workspaces, and a
+  // server with a workspace probes its providers, which is not under test.
+  const env = { ...process.env }
+  delete env.OPENMANAGER_WORKSPACES
   const child = spawn(process.execPath, [entry, '--port=0', '--data-dir', dataDir], {
+    env,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   })

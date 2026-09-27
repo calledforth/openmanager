@@ -28,6 +28,7 @@ import type {
   DesiredSessionConfig,
   HostDeps,
   ProviderBootstrap as RuntimeProviderBootstrap,
+  ProviderCatalog as RuntimeProviderCatalog,
   RuntimeRoute,
 } from '@agentpack/runtime/node'
 import type { ComposerStore } from './composer-store.ts'
@@ -245,8 +246,10 @@ export function createComposerService(
     return merged.data
   }
 
-  // Probe catalogs are fallback metadata. Once a live session has reported a
-  // catalog, keep that exact process view instead of replacing it with a probe.
+  // What a probe learned, outside any session. It decides which models are
+  // listed and never how a listed one reads: a session describes its models
+  // in the agent's own words, and a probe that rewrote them would trade the
+  // two wordings back and forth for as long as both kept reporting.
   const fillProfileFromCatalog = (
     providerId: string,
     catalog: {
@@ -257,12 +260,19 @@ export function createComposerService(
     },
   ) => {
     const current = store.getProfile(providerId)
+    const listed = modelPatch(catalog.models).availableModels
     writeProfile(providerId, {
       ...(catalog.agentInfo ? { agentInfo: catalog.agentInfo } : {}),
       // Unlike the catalogs, the handshake's answer is never stale relative
       // to a session's: every process of the provider gives the same one.
       ...(catalog.promptCapabilities ? { promptCapabilities: catalog.promptCapabilities } : {}),
-      ...(current?.availableModels === undefined ? modelPatch(catalog.models) : {}),
+      // An empty listing is a probe that could not say, not a provider with
+      // nothing to offer, and must not empty a catalog that was read.
+      ...(listed?.length
+        ? { availableModels: relistedModels(listed, current?.availableModels) }
+        : {}),
+      // No probe can ask an ACP agent for its modes, so a probe's answer only
+      // ever fills a gap here.
       ...(current?.availableModes === undefined ? modePatch(catalog.modes) : {}),
     })
   }
@@ -311,6 +321,25 @@ export function createComposerService(
       } catch {
         // A successful provider probe remains successful if its optional
         // composer metadata is malformed or cannot be persisted.
+      }
+    },
+
+    /**
+     * What any probe learned, including the health probes no client asked
+     * for. Those are the only ones a provider nobody has opened ever gets, so
+     * they are what lets a composer offer it.
+     */
+    observeCatalog(providerId: string, catalog: RuntimeProviderCatalog) {
+      if (stopped) return
+      try {
+        fillProfileFromCatalog(providerId, {
+          agentInfo: catalog.agentInfo,
+          promptCapabilities: promptCapabilitiesPatch(catalog.promptCapabilities),
+          models: catalog.models,
+          modes: catalog.modes,
+        })
+      } catch {
+        // Advisory, as above: the probe that learned this still succeeded.
       }
     },
 
@@ -694,6 +723,29 @@ function modelPatch(models: {
         : {}),
     })),
   }
+}
+
+/**
+ * The catalog after a probe relisted it: the rows already held, in the order
+ * they were held, minus the ones no longer offered, then the new ones.
+ *
+ * A held row keeps everything it says and takes from the relisting only what
+ * it had no answer for. Order is kept for the same reason wording is: two
+ * sources that list the same models in different orders would otherwise
+ * reshuffle every picker each time either of them reported.
+ */
+function relistedModels(
+  listed: ComposerModelOption[],
+  held: ComposerModelOption[] | undefined,
+): ComposerModelOption[] {
+  if (!held?.length) return listed
+  const offered = new Map(listed.map((model) => [model.modelId, model]))
+  const kept = held.flatMap((model) => {
+    const relisted = offered.get(model.modelId)
+    return relisted ? [{ ...relisted, ...model }] : []
+  })
+  const known = new Set(held.map((model) => model.modelId))
+  return [...kept, ...listed.filter((model) => !known.has(model.modelId))]
 }
 
 /** Rows as relisted, each keeping the image answer its id already had. */

@@ -21,6 +21,14 @@ export interface ServerConfig {
   allowedHosts?: readonly string[]
   /** Folders registered as workspaces on every start. Clients may register others later. */
   workspaces?: readonly string[]
+  /**
+   * Probe every provider when the server starts, in the folder most recently
+   * worked in, instead of waiting for a client to ask about one. It is what
+   * lets a composer offer a provider nobody has opened yet. Probing spawns
+   * each provider's CLI, so the command line turns it on and a server started
+   * from code, a test for one, has to ask.
+   */
+  probeProviders?: boolean
   /** Test-only runtime seams (fake ACP transport, fake Claude SDK, timers). */
   runtimeOptions?: AgentRuntimeOptions
   /** Test-only workspace → provider routing. Production resolves through the workspace registry. */
@@ -182,6 +190,7 @@ export function loadConfig(
     allowedOrigins,
     allowedHosts,
     workspaces,
+    probeProviders: true,
     remintOwner: values['remint-owner'] === true,
     ...(logFile !== undefined ? { logFile: resolve(logFile) } : {}),
     ...(values['exit-with-parent'] ? { exitWithParent: true } : {}),

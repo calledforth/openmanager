@@ -12,6 +12,7 @@ describe('configuration', () => {
       allowedOrigins: [],
       allowedHosts: [],
       workspaces: [],
+      probeProviders: true,
       remintOwner: false,
     })
   })
@@ -29,6 +30,7 @@ describe('configuration', () => {
       allowedOrigins: [],
       allowedHosts: [],
       workspaces: [],
+      probeProviders: true,
       remintOwner: false,
     })
     expect(
@@ -40,6 +42,7 @@ describe('configuration', () => {
       allowedOrigins: [],
       allowedHosts: [],
       workspaces: [],
+      probeProviders: true,
       remintOwner: false,
     })
   })
