@@ -10,6 +10,9 @@ import {
   COMPOSER_MODE_SET_CAPABILITY,
   COMPOSER_PREFERENCES_GET_CAPABILITY,
   COMPOSER_PREFERENCES_SET_CAPABILITY,
+  ENVIRONMENT_SETTINGS_GET_CAPABILITY,
+  ENVIRONMENT_SETTINGS_SET_CAPABILITY,
+  FILESYSTEM_BROWSE_CAPABILITY,
   PROTOCOL_VERSION,
   SESSION_CREATE_EXPLICIT_CAPABILITY,
   UPLOAD_TICKET_CAPABILITY,
@@ -30,6 +33,8 @@ import {
 import { mountAgentRuntime } from './agent-runtime.ts'
 import { createComposerService, desiredSessionConfig } from './composer-service.ts'
 import { openComposerStore } from './composer-store.ts'
+import { openEnvironmentSettings } from './environment-settings.ts'
+import { createFilesystemService } from './filesystem.ts'
 import { auditValue, createAuditLog } from './audit.ts'
 import type { ServerConfig } from './config.ts'
 import { validateHosts, validateOrigins, validateWorkspaceRoots } from './config.ts'
@@ -86,6 +91,9 @@ export const SERVER_CAPABILITIES = [
   'workspace.remove',
   'workspace.icon',
   UPLOAD_TICKET_CAPABILITY,
+  FILESYSTEM_BROWSE_CAPABILITY,
+  ENVIRONMENT_SETTINGS_GET_CAPABILITY,
+  ENVIRONMENT_SETTINGS_SET_CAPABILITY,
 ]
 
 /** A loopback-only listener exposing public liveness and connection discovery. */
@@ -98,6 +106,8 @@ export async function startServer(config: ServerConfig) {
   const identity = await loadEnvironmentIdentity(config.dataDir)
   const audit = createAuditLog(log, { dataDir: config.dataDir })
   const composerStore = openComposerStore(config.dataDir)
+  const environmentSettings = openEnvironmentSettings(config.dataDir)
+  const filesystem = createFilesystemService({ settings: environmentSettings })
   const clients = openAuthorizedClients(config.dataDir, Date.now, audit)
   // Local first run needs no pairing UI: the process mints the owner credential.
   // Reminting is explicit (`--remint-owner` or `remintOwner()`), not a restart side effect.
@@ -127,6 +137,7 @@ export async function startServer(config: ServerConfig) {
     })
   } catch (error) {
     composerStore.close()
+    environmentSettings.close()
     clients.close()
     audit.close()
     throw error
@@ -497,6 +508,7 @@ export async function startServer(config: ServerConfig) {
       threadService.dispatch(command, context) ??
       providerService.dispatch(command, context) ??
       uploads.dispatch(command, context) ??
+      filesystem.dispatch(command, context) ??
       composerService.dispatch(command),
   })
   publishDurableEvent = (record) => sockets.publish(record)
@@ -521,6 +533,7 @@ export async function startServer(config: ServerConfig) {
     eventService.close()
     eventDatabase.close()
     composerStore.close()
+    environmentSettings.close()
     clients.close()
     workspaces.close()
     audit.close()
@@ -543,6 +556,7 @@ export async function startServer(config: ServerConfig) {
     threadService,
     composerService,
     composerStore,
+    environmentSettings,
     uploads,
     sockets,
     port: address.port,
@@ -593,6 +607,7 @@ export async function startServer(config: ServerConfig) {
           eventService.close()
           eventDatabase.close()
           composerStore.close()
+          environmentSettings.close()
           clients.close()
           workspaces.close()
           audit.close()

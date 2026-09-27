@@ -551,6 +551,22 @@ export const MIGRATIONS: readonly Migration[] = [
       }
     },
   },
+  {
+    version: 14,
+    name: 'environment_settings',
+    up(database) {
+      // Settings every client of this environment shares, one row per key.
+      // A key with no row takes its default, so a setting added later needs
+      // no migration of its own.
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS environment_settings (
+          key TEXT PRIMARY KEY NOT NULL,
+          value_json TEXT NOT NULL CHECK (json_valid(value_json)),
+          updated_at INTEGER NOT NULL
+        ) STRICT;
+      `)
+    },
+  },
 ]
 
 type RetainedActivityRow = {

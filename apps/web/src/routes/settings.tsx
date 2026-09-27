@@ -13,6 +13,7 @@ import {
 } from '@openmanager/app-core/lib/provider-health-view'
 import { PlatformCapabilitiesContext } from '@openmanager/app-core/providers/platform-provider'
 import { SessionStateContext } from '@openmanager/app-core/providers/session-provider'
+import { AddProjectStartSetting } from '../components/add-project-start-setting'
 import { EnvironmentConnectForm, EnvironmentList } from '../components/connection-surfaces'
 import { UI_FONTS } from '../lib/fonts'
 import { useConnection } from '../providers/connection-provider'
@@ -241,6 +242,7 @@ function EnvironmentsPanel() {
           </>
         )}
       </SettingsSection>
+      <ConnectedEnvironmentSettings />
       <SettingsSection
         title="Add environment"
         description="A second URL for the same environment ID updates the existing record."
@@ -252,6 +254,22 @@ function EnvironmentsPanel() {
         />
       </SettingsSection>
     </>
+  )
+}
+
+/** Settings the connected environment keeps for all of its clients. */
+function ConnectedEnvironmentSettings() {
+  return (
+    <AddProjectStartSetting
+      section={(field) => (
+        <SettingsSection
+          title="Add project starts in"
+          description="The folder Add project opens in on this environment, for every device connected to it. Leave it empty to start in the home folder (~)."
+        >
+          {field}
+        </SettingsSection>
+      )}
+    />
   )
 }
 

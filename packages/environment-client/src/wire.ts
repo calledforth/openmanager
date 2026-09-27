@@ -1,5 +1,6 @@
 import {
   ComposerResponseSchemas,
+  FilesystemResponseSchemas,
   ProofResponseSchemas,
   ProviderProbeResponseSchema,
   SessionSchema,
@@ -39,6 +40,9 @@ export const WIRE_COMMANDS = {
   setSessionModel: 'composer.model.set',
   setSessionMode: 'composer.mode.set',
   setSessionConfigOption: 'composer.config_option.set',
+  browseFolders: 'filesystem.browse',
+  getEnvironmentSettings: 'environment.settings.get',
+  setEnvironmentSettings: 'environment.settings.set',
 } as const satisfies Record<EnvironmentCommandName, string>
 
 /**
@@ -82,6 +86,13 @@ export const WIRE_RESPONSES = {
   'composer.mode.set': payload(ComposerResponseSchemas['composer.mode.set'].shape.payload),
   'composer.config_option.set': payload(
     ComposerResponseSchemas['composer.config_option.set'].shape.payload,
+  ),
+  'filesystem.browse': payload(FilesystemResponseSchemas['filesystem.browse'].shape.payload),
+  'environment.settings.get': payload(
+    FilesystemResponseSchemas['environment.settings.get'].shape.payload,
+  ),
+  'environment.settings.set': payload(
+    FilesystemResponseSchemas['environment.settings.set'].shape.payload,
   ),
   [UPLOAD_TICKET_COMMAND]: payload(UploadResponseSchemas[UPLOAD_TICKET_COMMAND].shape.payload),
 } as const satisfies Record<WireCommandName, z.ZodType>

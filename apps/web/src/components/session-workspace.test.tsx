@@ -237,22 +237,29 @@ describe('session workspace', () => {
     expect(client.getState().activeSessionId).toBe('session-1')
   })
 
-  it('adds a project by typing a path the environment accepts', async () => {
+  it('adds a project picked in the folder browser', async () => {
     const user = userEvent.setup()
-    const { client } = renderConnected('/')
+    const { client } = renderConnected('/', {
+      ...SEED,
+      home: 'C:/work',
+      folders: { 'C:/work': ['other'], 'C:/work/other': [] },
+    })
     await user.click(await screen.findByRole('button', { name: 'Add project' }))
     const dialog = await screen.findByRole('dialog', { name: 'Add a project' })
-    expect(dialog).toBeInTheDocument()
-    await user.type(screen.getByLabelText('Folder path'), 'C:/other')
-    await user.click(within(dialog).getByRole('button', { name: 'Add project' }))
+    await waitFor(() => expect(screen.getByLabelText('Folder path')).toHaveValue('C:/work/'))
+    await user.type(screen.getByLabelText('Folder path'), 'other')
+    await user.click(within(dialog).getByRole('button', { name: /Add other/ }))
     await waitFor(() => {
       expect(screen.queryByRole('dialog', { name: 'Add a project' })).not.toBeInTheDocument()
     })
-    expect(client.calls).toContainEqual({ command: 'addWorkspace', input: { path: 'C:/other' } })
+    expect(client.calls).toContainEqual({
+      command: 'addWorkspace',
+      input: { path: 'C:/work/other' },
+    })
     await waitFor(() =>
       expect(
         Object.values(client.getState().workspaces).map((workspace) => workspace.path),
-      ).toContain('C:/other'),
+      ).toContain('C:/work/other'),
     )
     // The sidebar lists sessions, not projects, so a project with none has no
     // row there; the draft's project picker is where it shows up.
