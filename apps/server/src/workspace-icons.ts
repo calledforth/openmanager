@@ -36,6 +36,8 @@ export const WORKSPACE_ICON_SOURCE_MAX_BYTES = 256 * 1024
 export const WORKSPACE_ICON_MANIFEST_MAX_BYTES = 64 * 1024
 /** Top-level folders scanned for declared icons, beyond the nested app roots. */
 const WORKSPACE_ICON_MAX_TOP_LEVEL_DIRS = 64
+/** Top-level folders checked for their own `.git` while filling that quota. */
+const WORKSPACE_ICON_MAX_TOP_LEVEL_CANDIDATES = 256
 
 /**
  * Common nested package roots for monorepos / split frontend-backend trees.
@@ -286,8 +288,10 @@ const OBJECT_REL_RE = /\brel\s*:\s*["']([^"']*)["']/i
 const OBJECT_HREF_RE = /\bhref\s*:\s*["']([^"']+)["']/i
 // Next `metadata.icons`: the first quoted image path shortly after `icons:`,
 // which covers `icons: '/x.png'`, `{ icon: '/x.png' }`, and `{ icon: [{ url }] }`.
+// The export may be `const metadata`, `function generateMetadata`, or an
+// arrow `const generateMetadata = async () => ...`.
 const NEXT_METADATA_RE =
-  /\bexport\s+(?:const\s+metadata\b|(?:async\s+)?function\s+generateMetadata\b)/
+  /\bexport\s+(?:(?:const|let|var)\s+(?:metadata|generateMetadata)\b|(?:async\s+)?function\s+generateMetadata\b)/
 const NEXT_ICONS_KEY_RE = /\bicons\s*:/g
 const NEXT_ICON_URL_RE = /["']([^"'\s]+\.(?:svg|png|ico|jpe?g|webp|gif))(?:[?#][^"']*)?["']/i
 const NEXT_ICONS_WINDOW = 400
@@ -520,10 +524,14 @@ async function topLevelAppDirs(root: string): Promise<string[]> {
     .map((entry) => entry.name)
     .sort()
   // Clones are dropped before the cap, so they cannot use up the scan slots.
-  const ownRepository = await Promise.all(names.map((name) => isOwnRepository(root, name)))
-  return names
-    .filter((_, index) => !ownRepository[index])
-    .slice(0, WORKSPACE_ICON_MAX_TOP_LEVEL_DIRS)
+  // Checked one at a time and only until the cap fills, so a root with
+  // thousands of folders costs at most a bounded run of `lstat`s.
+  const appDirs: string[] = []
+  for (const name of names.slice(0, WORKSPACE_ICON_MAX_TOP_LEVEL_CANDIDATES)) {
+    if (appDirs.length >= WORKSPACE_ICON_MAX_TOP_LEVEL_DIRS) break
+    if (!(await isOwnRepository(root, name))) appDirs.push(name)
+  }
+  return appDirs
 }
 
 // ---------------------------------------------------------------------------

@@ -408,6 +408,11 @@ describe('declared icon parsing', () => {
     expect(
       extractNextMetadataIconHrefs("export const metadata = { icons: { other: 'lucide' } }"),
     ).toEqual([])
+    expect(
+      extractNextMetadataIconHrefs(
+        "export const generateMetadata = async () => ({ icons: { icon: '/arrow.svg' } })",
+      ),
+    ).toEqual(['/arrow.svg'])
     // `icons` outside the metadata export is some other setting.
     expect(extractNextMetadataIconHrefs("const theme = { icons: { menu: '/menu.svg' } }")).toEqual(
       [],
