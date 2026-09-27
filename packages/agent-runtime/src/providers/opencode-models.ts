@@ -1,4 +1,4 @@
-import { execFile as nodeExecFile } from 'node:child_process'
+import { execFile as nodeExecFile, type ChildProcess } from 'node:child_process'
 import type { ModelListing, ModelOption } from '@agentpack/contract'
 import type { HostDeps } from '../host.js'
 import { treeKiller } from '../session/ChildProcessConnection.js'
@@ -46,34 +46,54 @@ const MAX_OUTPUT_BYTES = 32 * 1024 * 1024
 
 const KILL_GRACE_MS = 2_000
 
-/** Runs the CLI, and settles only once it has exited.
+/** Runs a provider's CLI, and settles only once everything it started is gone.
  *
- * The signal is handled here rather than handed to Node. Node kills the
+ * Neither the signal nor the timeout is handed to Node. Node kills the
  * process it spawned and nothing else, and on Windows `opencode` is a
  * launcher: the process doing the work is its child, which would carry on
- * after the launcher died. So an abort takes the whole tree. */
-const defaultExecFile: ExecFile = (command, args, { signal, ...options }) =>
+ * after the launcher died. So both go through `killTree`, and a stopped run
+ * rejects only after that has finished *and* the launcher has closed,
+ * whichever is later. */
+export const execCli: ExecFile = (command, args, { signal, timeout, ...options }) =>
   new Promise((resolve, reject) => {
+    let stopped: { reason: unknown; tree: Promise<void> } | undefined
     const child = nodeExecFile(command, args, options, (error, stdout) => {
-      signal?.removeEventListener('abort', stop)
-      if (signal?.aborted) reject(signal.reason ?? new Error('The CLI was stopped'))
-      else if (error) reject(error)
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+      if (stopped) {
+        const { reason, tree } = stopped
+        void tree.then(() => reject(reason))
+      } else if (error) reject(error)
       else resolve({ stdout: String(stdout) })
     })
-    const stop = (): void => {
-      const pid = child.pid
-      if (pid === undefined || child.exitCode !== null) return
-      if (process.platform !== 'win32') {
-        child.kill()
-        return
-      }
-      void treeKiller(KILL_GRACE_MS)(pid).then((gone) => {
-        if (!gone) child.kill()
-      })
+    const stop = (reason: unknown): void => {
+      // A child that has already exited is about to report on its own.
+      if (stopped || child.exitCode !== null || child.signalCode !== null) return
+      stopped = { reason, tree: killTree(child) }
     }
-    if (signal?.aborted) stop()
-    else signal?.addEventListener('abort', stop, { once: true })
+    const onAbort = (): void => stop(signal?.reason ?? new Error(`${command} was stopped`))
+    const timer = timeout
+      ? setTimeout(() => stop(new Error(`${command} did not finish within ${timeout}ms`)), timeout)
+      : undefined
+    timer?.unref?.()
+    if (signal?.aborted) onAbort()
+    else signal?.addEventListener('abort', onAbort, { once: true })
   })
+
+/** Resolves once the kill has been carried out, not merely asked for. */
+function killTree(child: ChildProcess): Promise<void> {
+  const pid = child.pid
+  // Never started: Node reports the spawn error through the callback.
+  if (pid === undefined) return Promise.resolve()
+  if (process.platform !== 'win32') {
+    child.kill()
+    return Promise.resolve()
+  }
+  // `taskkill /T` has returned by the time this resolves, so the tree is gone.
+  return treeKiller(KILL_GRACE_MS)(pid).then((gone) => {
+    if (!gone) child.kill()
+  })
+}
 
 /** Every top-level JSON object in `output`, in order. The CLI's `--pure`
  * output is a stream of objects rather than one array, and a banner or a
@@ -158,7 +178,7 @@ const CATALOG_TIMEOUT_MS = 30_000
  * way it has exited by then. Resolves empty when it ran and printed nothing
  * usable, which a caller must read as "could not say". */
 export async function listOpencodeModels(options: OpencodeCatalogOptions): Promise<ModelListing> {
-  const execFile = options.execFile ?? defaultExecFile
+  const execFile = options.execFile ?? execCli
   const { stdout } = await execFile(options.command, ['models', '--verbose', '--pure'], {
     windowsHide: true,
     maxBuffer: MAX_OUTPUT_BYTES,
@@ -201,7 +221,7 @@ function contextWindowOf(model: Record<string, unknown>): number | undefined {
 export function createOpencodeModelImageInputLookup(
   options: OpencodeModelLookupOptions,
 ): ModelImageInputLookup {
-  const execFile = options.execFile ?? defaultExecFile
+  const execFile = options.execFile ?? execCli
   const now = options.now ?? Date.now
   const failureHoldMs = options.failureHoldMs ?? FAILURE_HOLD_MS
   /** Every model the CLI has ever printed, plus `null` for ids it was asked

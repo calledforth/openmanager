@@ -1,6 +1,10 @@
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
   createOpencodeModelImageInputLookup,
+  execCli,
   jsonObjects,
   listOpencodeModels,
   type ExecFile,
@@ -49,6 +53,95 @@ describe('jsonObjects', () => {
       '\n',
     )
     expect(jsonObjects(output)).toEqual([{ a: 1 }, { b: '}' }, { c: { nested: true } }])
+  })
+})
+
+describe('running a provider CLI', () => {
+  const RUN = { windowsHide: true, maxBuffer: 1024 * 1024 }
+  const alive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+  /** A launcher that starts the process doing the work, leaves a note of
+   * who that is, and then waits: the shape `opencode` has on Windows. */
+  const launcher = (note: string) =>
+    [
+      "const { spawn } = require('node:child_process')",
+      "const worker = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' })",
+      `require('node:fs').writeFileSync(${JSON.stringify(note)}, String(worker.pid))`,
+      'setTimeout(() => {}, 60000)',
+    ].join(';')
+
+  it('answers with what the CLI printed', async () => {
+    await expect(execCli(process.execPath, ['-e', "console.log('listed')"], RUN)).resolves.toEqual(
+      { stdout: expect.stringContaining('listed') },
+    )
+  })
+
+  it('rejects when the CLI cannot be started', async () => {
+    await expect(execCli('no-such-provider-cli', [], RUN)).rejects.toThrow()
+  })
+
+  it('has taken the CLI down by the time a stopped run rejects', async () => {
+    const controller = new AbortController()
+    const run = execCli(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], {
+      ...RUN,
+      signal: controller.signal,
+    })
+    run.catch(() => undefined)
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    const stoppedAt = Date.now()
+    controller.abort(new Error('the probe was disposed'))
+
+    await expect(run).rejects.toThrow('the probe was disposed')
+    expect(Date.now() - stoppedAt).toBeLessThan(10_000)
+  })
+
+  // Only Windows has the launcher, and only there can a tree be taken down
+  // without the child having been started in a process group of its own.
+  it.runIf(process.platform === 'win32')(
+    'takes the process doing the work down with its launcher',
+    async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'openmanager-cli-tree-'))
+      const note = join(directory, 'worker.pid')
+      const controller = new AbortController()
+      try {
+        const run = execCli(process.execPath, ['-e', launcher(note)], {
+          ...RUN,
+          signal: controller.signal,
+        })
+        run.catch(() => undefined)
+        const worker = await vi.waitFor(
+          async () => {
+            const pid = Number(await readFile(note, 'utf8'))
+            expect(pid).toBeGreaterThan(0)
+            return pid
+          },
+          { timeout: 5_000 },
+        )
+        expect(alive(worker)).toBe(true)
+
+        controller.abort(new Error('the probe was disposed'))
+        await expect(run).rejects.toThrow('the probe was disposed')
+        // Gone already, not merely on its way out.
+        expect(alive(worker)).toBe(false)
+      } finally {
+        controller.abort()
+        await rm(directory, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it('stops a CLI that overruns its budget the same way', async () => {
+    const startedAt = Date.now()
+    await expect(
+      execCli(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { ...RUN, timeout: 200 }),
+    ).rejects.toThrow(/did not finish within 200ms/)
+    expect(Date.now() - startedAt).toBeLessThan(10_000)
   })
 })
 
