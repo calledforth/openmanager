@@ -4,6 +4,7 @@ import { cursor } from '../providers/cursor.js'
 import { opencode } from '../providers/opencode.js'
 import type { AcpProviderConfig } from '../providers/index.js'
 import { AcpProbeRuntimeImpl } from './AcpProbeRuntimeImpl.js'
+import type { RuntimeTimeouts } from './constants.js'
 import { FakeConnectionFactory, type FakeWire } from './test-connection.js'
 
 const CURSOR_INITIALIZE = {
@@ -16,7 +17,11 @@ const CURSOR_INITIALIZE = {
   authMethods: [{ id: 'cursor_login', name: 'Cursor' }],
 }
 
-function build(wire: FakeWire, config: AcpProviderConfig = cursor) {
+function build(
+  wire: FakeWire,
+  config: AcpProviderConfig = cursor,
+  timeouts?: Partial<RuntimeTimeouts>,
+) {
   const events: BackendEvent[] = []
   const connections = new FakeConnectionFactory(wire)
   const probe = new AcpProbeRuntimeImpl(
@@ -31,6 +36,7 @@ function build(wire: FakeWire, config: AcpProviderConfig = cursor) {
       host: { log: vi.fn() },
       connections,
       onEvent: (event) => events.push(event),
+      ...(timeouts ? { timeouts } : {}),
     },
   )
   return { probe, events, connections }
@@ -148,6 +154,165 @@ describe('AcpProbeRuntime handshake', () => {
     expect(connections.connections).toHaveLength(1)
     await probe.dispose()
     expect(connections.last.terminated).toEqual({ reason: 'disposed' })
+  })
+})
+
+describe('AcpProbeRuntime model catalog', () => {
+  const HANDSHAKE = {
+    initialize: async () => CURSOR_INITIALIZE,
+    authenticate: async () => ({}),
+  }
+  const LISTING = {
+    models: [
+      { value: 'composer-2.5', name: 'Composer 2.5' },
+      {
+        value: 'gpt-5.4',
+        name: 'GPT-5.4',
+        configOptions: [{ id: 'reasoning', type: 'select', currentValue: 'medium', options: [] }],
+      },
+    ],
+  }
+  const CATALOG = {
+    availableModels: [
+      { id: 'composer-2.5', displayName: 'Composer 2.5' },
+      { id: 'gpt-5.4', displayName: 'GPT-5.4' },
+    ],
+  }
+
+  it("reads Cursor's catalog from its own listing, without opening a session", async () => {
+    const request = vi.fn(async () => LISTING)
+    const newSession = vi.fn()
+    const { probe } = build({ ...HANDSHAKE, request, newSession })
+
+    await expect(probe.listModels('C:/workspace')).resolves.toEqual(CATALOG)
+    expect(request).toHaveBeenCalledWith('cursor/list_available_models', {})
+    expect(newSession).not.toHaveBeenCalled()
+  })
+
+  it('opens a session only when the listing will not answer without one', async () => {
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Failed to initialize ACP services'))
+      .mockResolvedValueOnce(LISTING)
+    const newSession = vi.fn(async () => ({ sessionId: 'probe-session', configOptions: [] }))
+    const { probe } = build({ ...HANDSHAKE, request, newSession })
+
+    await expect(probe.listModels('C:/workspace')).resolves.toEqual(CATALOG)
+    expect(newSession).toHaveBeenCalledWith({ cwd: 'C:/workspace', mcpServers: [] })
+    expect(request).toHaveBeenCalledTimes(2)
+  })
+
+  it("falls back to the session's own model control on a CLI without the listing", async () => {
+    const request = vi.fn(async () => {
+      throw new Error('"Method not found": cursor/list_available_models')
+    })
+    const newSession = vi.fn(async () => ({
+      sessionId: 'probe-session',
+      configOptions: [
+        {
+          type: 'select',
+          id: 'model',
+          name: 'Model',
+          category: 'model',
+          currentValue: 'composer-2.5',
+          options: [{ value: 'composer-2.5', name: 'Composer 2.5' }],
+        },
+      ],
+    }))
+    const { probe } = build({ ...HANDSHAKE, request, newSession })
+
+    await expect(probe.listModels('C:/workspace')).resolves.toEqual({
+      currentModelId: 'composer-2.5',
+      availableModels: [{ id: 'composer-2.5', displayName: 'Composer 2.5' }],
+    })
+  })
+
+  it('never opens a session for a provider that would keep it', async () => {
+    const list = vi.fn(async () => CATALOG)
+    const newSession = vi.fn()
+    const { probe, connections } = build(
+      { ...HANDSHAKE, newSession },
+      { ...opencode, models: { catalog: { via: 'cli', list } } },
+    )
+
+    await expect(probe.listModels('C:/workspace')).resolves.toEqual(CATALOG)
+    // Asked where a session would be opened: a provider can be configured
+    // per folder.
+    expect(list).toHaveBeenCalledWith(
+      expect.objectContaining({ command: 'opencode', cwd: 'C:/workspace' }),
+    )
+    expect(newSession).not.toHaveBeenCalled()
+    // The CLI answers on its own; no ACP process is spawned to ask it.
+    expect(connections.connections).toHaveLength(0)
+  })
+
+  it('takes the CLI it was reading from down with it', async () => {
+    let exited = false
+    const list = vi.fn(
+      ({ signal }: { signal?: AbortSignal }) =>
+        new Promise<never>((_resolve, reject) => {
+          // The read rejects only once its process has exited.
+          signal?.addEventListener('abort', () =>
+            setTimeout(() => {
+              exited = true
+              reject(new Error('The operation was aborted'))
+            }, 5),
+          )
+        }),
+    )
+    const { probe } = build(HANDSHAKE, { ...opencode, models: { catalog: { via: 'cli', list } } })
+    const reading = probe.listModels('C:/workspace')
+    reading.catch(() => undefined)
+
+    await probe.dispose()
+    expect(exited).toBe(true)
+    await expect(reading).rejects.toThrow('aborted')
+    // And it starts nothing once it is gone.
+    await expect(probe.listModels('C:/workspace')).rejects.toThrow()
+    expect(list).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not ask a provider that names no way of being asked', async () => {
+    const request = vi.fn()
+    const newSession = vi.fn()
+    const { models: _models, ...silent } = cursor
+    const { probe, connections } = build({ ...HANDSHAKE, request, newSession }, silent)
+
+    await expect(probe.listModels('C:/workspace')).resolves.toEqual({})
+    expect(request).not.toHaveBeenCalled()
+    expect(newSession).not.toHaveBeenCalled()
+    expect(connections.connections).toHaveLength(0)
+  })
+
+  it('reports a listing refused for want of a login as an auth failure', async () => {
+    const request = vi.fn(async () => {
+      throw Object.assign(new Error('Authentication required'), { code: -32002 })
+    })
+    const newSession = vi.fn()
+    const { probe, events } = build({ ...HANDSHAKE, request, newSession })
+
+    await expect(probe.listModels('C:/workspace')).rejects.toThrow('Authentication required')
+    expect(newSession).not.toHaveBeenCalled()
+    expect(events.some((event) => event.event === 'auth_required')).toBe(true)
+  })
+
+  it('gives up on a listing the agent never answers', async () => {
+    const { probe } = build(
+      { ...HANDSHAKE, request: () => new Promise<never>(() => undefined) },
+      {
+        ...cursor,
+        models: {
+          catalog: {
+            via: 'extension',
+            method: 'cursor/list_available_models',
+            read: () => ({}),
+            sessionFallback: false,
+          },
+        },
+      },
+      { controlRequestMs: 10 },
+    )
+    await expect(probe.listModels('C:/workspace')).rejects.toThrow(/cursor\/list_available_models/)
   })
 })
 

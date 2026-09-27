@@ -193,6 +193,7 @@ describe('composer service commands', () => {
         },
       },
     })
+    // A probe that has nothing to say about models or modes changes neither.
     service.observeProbe('cursor', {
       result: {
         authMethods: [],
@@ -202,8 +203,8 @@ describe('composer service commands', () => {
       },
       sessions: undefined,
       commands: undefined,
-      models: { availableModels: [{ id: 'stale', displayName: 'Stale Probe Model' }] },
-      modes: undefined,
+      models: undefined,
+      modes: { availableModes: [{ id: 'ask', displayName: 'Ask' }] },
     })
 
     expect(
@@ -228,6 +229,154 @@ describe('composer service commands', () => {
           },
         ],
       },
+    })
+  })
+
+  describe('a catalog learned by a probe', () => {
+    const sessionListed = (
+      service: Awaited<ReturnType<typeof harness>>['service'],
+      availableModels: Array<{ id: string; displayName: string; description?: string }>,
+    ) =>
+      service.onRuntimeEvent({
+        id: 'event-1',
+        seq: 1,
+        timestamp: '2026-09-09T00:00:00.000Z',
+        providerId: 'cursor',
+        threadId: 'thread-1',
+        workspaceId: 'workspace-1',
+        sessionId: 'provider-session-1',
+        category: 'lifecycle',
+        event: 'session_created',
+        data: { models: { availableModels, currentModelId: availableModels[0]!.id } },
+      })
+
+    it('is what lets a provider nobody has opened be offered at all', async () => {
+      const { service, store } = await harness()
+      expect(store.getProfile('cursor')).toBeUndefined()
+
+      service.observeCatalog('cursor', {
+        agentInfo: { name: 'cursor-agent', version: '2026.07.23' },
+        promptCapabilities: { image: true },
+      })
+      service.observeCatalog('cursor', {
+        models: {
+          availableModels: [
+            { id: 'composer-2.5', displayName: 'Composer 2.5' },
+            { id: 'gpt-5.4', displayName: 'GPT-5.4', supportsImageInput: true },
+          ],
+        },
+      })
+
+      expect(store.getProfile('cursor')).toMatchObject({
+        agentInfo: { name: 'cursor-agent', version: '2026.07.23' },
+        promptCapabilities: { image: true, audio: false, embeddedContext: false },
+        availableModels: [
+          { modelId: 'composer-2.5', name: 'Composer 2.5' },
+          { modelId: 'gpt-5.4', name: 'GPT-5.4', supportsImageInput: true },
+        ],
+      })
+      // It names what is on offer, not what a new session starts on.
+      expect(store.getProfile('cursor')?.defaultModelId).toBeUndefined()
+    })
+
+    it('adds what is new and drops what is gone, without rewording or reordering the rest', async () => {
+      const { service, store } = await harness()
+      sessionListed(service, [
+        { id: 'opus', displayName: 'Anthropic/Opus', description: 'Most capable' },
+        { id: 'retired', displayName: 'Anthropic/Retired' },
+        { id: 'sonnet', displayName: 'Anthropic/Sonnet' },
+      ])
+
+      service.observeCatalog('cursor', {
+        models: {
+          availableModels: [
+            { id: 'haiku', displayName: 'anthropic/Haiku' },
+            { id: 'sonnet', displayName: 'anthropic/Sonnet', contextWindowTokens: 200_000 },
+            { id: 'opus', displayName: 'anthropic/Opus', supportsImageInput: true },
+          ],
+        },
+      })
+
+      expect(store.getProfile('cursor')?.availableModels).toEqual([
+        // Held rows keep their wording and their place, and take only the
+        // answers they did not have.
+        {
+          modelId: 'opus',
+          name: 'Anthropic/Opus',
+          description: 'Most capable',
+          supportsImageInput: true,
+        },
+        { modelId: 'sonnet', name: 'Anthropic/Sonnet', contextWindowTokens: 200_000 },
+        { modelId: 'haiku', name: 'anthropic/Haiku' },
+      ])
+      expect(store.getProfile('cursor')?.defaultModelId).toBe('opus')
+    })
+
+    it('announces nothing when it says what is already known', async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'openmanager-composer-service-test-'))
+      directories.push(directory)
+      const store = openComposerStore(directory)
+      stores.push(store)
+      const publish = vi.fn()
+      const service = createComposerService(
+        { modelImageInputSupport: vi.fn(async () => new Map()) } as never,
+        { snapshot: () => [provider], rejection: () => undefined },
+        store,
+        () => undefined,
+        { publish },
+      )
+      const catalog = {
+        models: {
+          availableModels: [
+            { id: 'sonnet', displayName: 'Sonnet' },
+            { id: 'opus', displayName: 'Opus' },
+          ],
+        },
+      }
+      service.observeCatalog('cursor', catalog)
+      expect(publish).toHaveBeenCalledTimes(1)
+
+      // The same models in another order, as a second source might list them.
+      service.observeCatalog('cursor', {
+        models: { availableModels: [...catalog.models.availableModels].reverse() },
+      })
+      service.observeCatalog('cursor', catalog)
+      expect(publish).toHaveBeenCalledTimes(1)
+      expect(store.getProfile('cursor')?.availableModels?.map((model) => model.modelId)).toEqual([
+        'sonnet',
+        'opus',
+      ])
+    })
+
+    it('reads an empty listing as "could not say" and keeps the catalog it has', async () => {
+      const { service, store } = await harness()
+      sessionListed(service, [{ id: 'opus', displayName: 'Opus' }])
+      service.observeCatalog('cursor', { models: { availableModels: [] } })
+      service.observeCatalog('cursor', { models: {} })
+      service.observeCatalog('cursor', {})
+      expect(store.getProfile('cursor')?.availableModels).toEqual([
+        { modelId: 'opus', name: 'Opus' },
+      ])
+    })
+
+    it('gives way to what the next session lists', async () => {
+      const { service, store } = await harness()
+      service.observeCatalog('cursor', {
+        models: { availableModels: [{ id: 'opus', displayName: 'anthropic/Opus' }] },
+      })
+      sessionListed(service, [{ id: 'opus', displayName: 'Anthropic/Opus' }])
+      expect(store.getProfile('cursor')?.availableModels).toEqual([
+        { modelId: 'opus', name: 'Anthropic/Opus' },
+      ])
+    })
+
+    it('is ignored once the service has stopped', async () => {
+      const { service, store } = await harness()
+      service.stop()
+      service.observeCatalog('cursor', {
+        models: { availableModels: [{ id: 'opus', displayName: 'Opus' }] },
+      })
+      expect(store.getProfile('cursor')).toBeUndefined()
     })
   })
 

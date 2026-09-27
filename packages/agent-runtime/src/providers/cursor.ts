@@ -1,4 +1,5 @@
 import type {
+  ModelListing,
   PlanDocument,
   PlanReviewOutcome,
   PlanTodo,
@@ -139,6 +140,26 @@ function acknowledgeGeneratedImage(params: unknown): unknown {
   }
 }
 
+/** `cursor/list_available_models` answers `{ models: [{ value, name,
+ * configOptions? }] }`. `value` is the id the session's own model control
+ * accepts, which is what makes a row read here safe to offer before any
+ * session exists. The per-model `configOptions` are left alone: a session
+ * reports the ones that apply to the model it is actually on. */
+export function cursorModelListing(response: unknown): ModelListing {
+  const models = (response as { models?: unknown } | null | undefined)?.models
+  if (!Array.isArray(models)) return {}
+  const seen = new Set<string>()
+  const availableModels = models.flatMap((value) => {
+    const model = (value ?? {}) as Record<string, unknown>
+    const id = str(model.value).trim()
+    const displayName = str(model.name).trim()
+    if (!id || !displayName || seen.has(id)) return []
+    seen.add(id)
+    return [{ id, displayName }]
+  })
+  return availableModels.length > 0 ? { availableModels } : {}
+}
+
 export const cursor: AcpProviderConfig = {
   kind: 'acp',
   id: 'cursor',
@@ -243,6 +264,17 @@ export const cursor: AcpProviderConfig = {
     },
     fromExtension: {
       'cursor/task': parseCursorTask,
+    },
+  },
+  models: {
+    catalog: {
+      via: 'extension',
+      method: 'cursor/list_available_models',
+      read: cursorModelListing,
+      // Cursor keeps no record of a session that was never prompted:
+      // `session/load` on one answers "Session not found". So a session
+      // opened only to ask leaves nothing in the user's history.
+      sessionFallback: true,
     },
   },
 }

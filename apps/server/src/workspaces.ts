@@ -424,6 +424,21 @@ export function openWorkspaceRegistry(
     unregister,
 
     /**
+     * The folder most recently worked in that can still be opened: where a
+     * provider is probed before any client has named a workspace. Folders
+     * never used keep their registration order behind the used ones.
+     *
+     * Reads the filesystem but records nothing. A listing or an open persists
+     * and announces what it finds; this is asked from inside those very
+     * announcements, so it must not make one of its own.
+     */
+    mostRecent(): RegisteredWorkspace | undefined {
+      return [...byId.values()]
+        .sort((left, right) => (right.lastUsedAt ?? -1) - (left.lastUsedAt ?? -1))
+        .find((workspace) => availabilityOf(workspace.root) === 'available')
+    },
+
+    /**
      * Why a workspace could not be routed to, for a caller that already
      * audited the rejection and now has to phrase it: an unknown ID is a
      * missing resource, a registered folder that cannot be used is recoverable.

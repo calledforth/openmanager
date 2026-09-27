@@ -31,8 +31,11 @@ export interface ProbeRuntime {
   /** Paginated `session/list`. Requires `probe()` to have reported
    * `sessionListAdvertised`. Cheap: ~55ms per page. */
   listSessions(cwd: string): Promise<ProviderSessionInfo[]>
-  /** Model catalog, where the provider exposes one. Costs a `session/new`
-   * (~3.5s on Cursor) in this throwaway process, never in a live one. */
+  /** Model catalog, by whatever route the provider offers that leaves nothing
+   * behind: the handshake's own list, an extension request, the provider's
+   * CLI. Empty means "could not say", never "offers no models", and a
+   * provider with no such route always answers empty. Asked in this
+   * throwaway process, never in a live one. */
   listModels(cwd: string): Promise<ModelListing>
   /** Always call; the process leaks otherwise. */
   dispose(): Promise<void>
@@ -58,17 +61,19 @@ export type ProbeResult = {
    * time fills it in, and the bootstrap surfaces it without waiting for a
    * session. */
   commands?: AvailableCommand[]
-  /** Model catalog the provider knows about before any session exists.
+  /** Model catalog the handshake itself carried.
    *
-   * Absent over ACP for the same reason `commands` is: a model list only ever
-   * arrives as `current_mode_update`/`session/new` state on a live session, so
-   * an ACP probe leaves this undefined rather than reporting an empty catalog.
-   * Claude Code answers it at handshake time — `initialize` carries `models`
-   * — which is what lets the composer offer a provider the user has never run
-   * a session with. Without it the picker can only list providers it has
-   * already seen models from, and a never-used provider is invisible and
-   * therefore unselectable: it cannot produce models until it is chosen, and
-   * it cannot be chosen until it has produced models. */
+   * Absent over ACP for the same reason `commands` is: `initialize` has no
+   * field for it, so an ACP probe leaves this undefined rather than reporting
+   * an empty catalog. Claude Code answers it at handshake time — `initialize`
+   * carries `models`. Everyone else is asked separately, through
+   * `listModels`.
+   *
+   * One or the other has to answer before any session exists. A composer can
+   * only list providers it has seen models from, so a provider that names its
+   * models nowhere but on a live session is invisible and therefore
+   * unselectable: it cannot produce models until it is chosen, and it cannot
+   * be chosen until it has produced models. */
   models?: ModelListing
   /** Permission/mode catalog the provider knows about before any session
    * exists, on exactly the same terms as `models`.

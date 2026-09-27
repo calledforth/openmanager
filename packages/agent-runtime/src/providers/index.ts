@@ -1,8 +1,9 @@
-import type { ProviderCapabilities, ProviderId } from '@agentpack/contract'
+import type { ModelListing, ProviderCapabilities, ProviderId } from '@agentpack/contract'
 import type { ExtensionHandlers, SubtaskAdapter } from '../backends/acp/extensions.js'
 import type { HostDeps } from '../host.js'
 import { claude } from './claude.js'
 import { cursor } from './cursor.js'
+import type { ExecFile } from './opencode-models.js'
 import { opencode } from './opencode.js'
 
 /** Answers "can this model read an image?" for a batch of model ids, outside
@@ -15,6 +16,45 @@ import { opencode } from './opencode.js'
 export type ModelImageInputLookup = (
   modelIds: readonly string[],
 ) => Promise<ReadonlyMap<string, boolean | null>>
+
+/** How a provider names its models to a process that owns no session.
+ *
+ * ACP itself only lists models on `session/new`, and a session is not a free
+ * thing to open for the sake of a question: some agents keep every session
+ * they are asked for, prompted or not, and the user would find one more empty
+ * chat in the agent's own history each time the catalog was read. So each
+ * provider says how it can be asked without leaving anything behind, and one
+ * that cannot is simply not asked. */
+export type ModelCatalogSource =
+  | {
+      /** An extension request on the probe's own connection. */
+      via: 'extension'
+      method: string
+      read: (response: unknown) => ModelListing
+      /** Whether `session/new` may be spent when the request alone does not
+       * answer. Only for an agent known to forget a session nobody prompted. */
+      sessionFallback: boolean
+    }
+  | {
+      /** The provider's own CLI, outside ACP altogether. */
+      via: 'cli'
+      list: (deps: ProviderCliDeps) => Promise<ModelListing>
+    }
+
+/** What a provider needs to be asked through its own CLI. */
+export type ProviderCliDeps = {
+  /** The binary, already resolved through the env override. */
+  command: string
+  log: HostDeps['log']
+  /** How the CLI is run. Absent outside tests, where it is `node:child_process`. */
+  execFile?: ExecFile
+  /** Where to run it. A provider can be configured per folder, so a question
+   * about what it offers is asked where a session would be opened. */
+  cwd?: string
+  /** Aborted when whoever asked is torn down. The CLI is a child like any
+   * other and must not outlive the process that spawned it. */
+  signal?: AbortSignal
+}
 
 /** The binary an ACP provider is spawned as: the env override, its fallback,
  * then the configured name. One rule for sessions, probes and any out-of-band
@@ -61,13 +101,19 @@ export type AcpProviderConfig = ProviderConfigBase & {
   }
   extensions: ExtensionHandlers
   subtasks?: SubtaskAdapter
-  /** Per-model facts the ACP catalog cannot carry, answered by the provider's
-   * own CLI rather than over the wire. Optional: a provider without one
-   * reports every model as unknown, and the composer lets images through. */
+  /** What the provider can say about its models outside a session. Both are
+   * optional, and independent of each other. */
   models?: {
-    /** Built once per runtime, with the binary the runtime resolved, so the
+    /** Per-model facts the ACP catalog cannot carry, answered by the
+     * provider's own CLI rather than over the wire. A provider without one
+     * reports every model as unknown, and the composer lets images through.
+     *
+     * Built once per runtime, with the binary the runtime resolved, so the
      * lookup's cache lives as long as the runtime and tests get a fresh one. */
-    imageInput: (deps: { command: string; log: HostDeps['log'] }) => ModelImageInputLookup
+    imageInput?: (deps: ProviderCliDeps) => ModelImageInputLookup
+    /** The catalog itself. Without one the provider's models are only known
+     * once a session has run, and until then no composer can offer it. */
+    catalog?: ModelCatalogSource
   }
 }
 

@@ -1,11 +1,13 @@
 import type {
   AgentEvent,
+  AgentInfo,
   AvailableCommand,
   CapabilityKey,
   ModeListing,
   ModelListing,
   PermissionOutcome,
   PlanReviewOutcome,
+  PromptCapabilities,
   PromptInput,
   ProviderId,
   ProviderSessionInfo,
@@ -20,6 +22,7 @@ import {
   type ModelImageInputLookup,
   type ProviderConfig,
 } from '../providers/index.js'
+import type { ExecFile } from '../providers/opencode-models.js'
 import type { AcpConnectionFactory } from '../session/AcpConnection.js'
 import type { ClaudeSdk } from '../session/claude/sdk.js'
 import type { ProbeResult, ProbeRuntime, ProbeRuntimeFactory } from '../session/ProbeRuntime.js'
@@ -68,6 +71,19 @@ export type ProviderBootstrap = {
   /** Mode catalog the probe could answer without a session, hoisted for the
    * same reason as `commands` and `models`. `undefined` over ACP. */
   modes: ModeListing | undefined
+}
+
+/** What a throwaway process learned about a provider outside any session.
+ *
+ * Every field is optional because the two questions are asked separately: a
+ * handshake answers who the agent is and what a prompt may carry, and only
+ * some providers can name their models in the same breath. The rest are asked
+ * afterwards, and that answer arrives on its own. */
+export type ProviderCatalog = {
+  agentInfo?: AgentInfo
+  promptCapabilities?: PromptCapabilities
+  models?: ModelListing
+  modes?: ModeListing
 }
 
 export type RuntimeSessionArgs = RuntimeRoute & {
@@ -139,11 +155,19 @@ export type AgentRuntimeOptions = {
   /** The same seam for the Claude arm, which spawns its CLI through the SDK
    * rather than through `connections`. Tests inject `FakeClaudeSdk`. */
   claudeSdk?: ClaudeSdk
+  /** The third seam: how a provider asked through its own CLI, rather than
+   * over a connection, is run. Defaults to `node:child_process`. */
+  execFile?: ExecFile
   timeouts?: Partial<RuntimeTimeouts>
   /** Overrides for the health monitor's cadence, probe budget and clock. */
   health?: Pick<
     ProviderHealthMonitorDeps,
-    'refreshIntervalMs' | 'probeTimeoutMs' | 'now' | 'schedule'
+    | 'refreshIntervalMs'
+    | 'probeTimeoutMs'
+    | 'catalogRefreshIntervalMs'
+    | 'catalogTimeoutMs'
+    | 'now'
+    | 'schedule'
   >
   /** Overrides for the idle reaper's thresholds and timer. */
   reaper?: Pick<SessionReaperDeps, 'idleMs' | 'sweepMs' | 'schedule'>
@@ -192,14 +216,18 @@ export class AgentRuntime {
   /** Every probe this runtime builds, live or throwaway, comes from here.
    * Shared with the health monitor so both go through the same dispatch. */
   private readonly probes: ProbeRuntimeFactory
-  /** Last model catalog each provider reported at handshake time.
+  /** Last model catalog each provider reported outside a session.
    *
    * Fed by every probe, which is the point: the desktop only bootstraps the
    * provider the user is about to talk to, while the health monitor probes
    * *all* of them at boot. A catalog learned there is what lets the composer
-   * list a provider nobody has selected yet. Providers whose models only
-   * exist on a live session (every ACP one) never appear in this map. */
+   * list a provider nobody has selected yet. One provider answers at the
+   * handshake; the others are asked by the health probe once it has finished
+   * (`ProbeRuntime.listModels`), and land here the same way. */
   private readonly modelsByProvider = new Map<ProviderId, ModelListing>()
+  private readonly catalogListeners = new Set<
+    (providerId: ProviderId, catalog: ProviderCatalog) => void
+  >()
   /** Last mode catalog each provider reported at handshake time. Same
    * lifecycle and same justification as `modelsByProvider` — a composer that
    * can offer a never-selected provider's models but not its modes renders a
@@ -209,6 +237,7 @@ export class AgentRuntime {
    * use so a provider nobody asks about never resolves a binary or spawns. */
   private readonly modelImageInputLookups = new Map<ProviderId, ModelImageInputLookup>()
   private readonly timeouts: Partial<RuntimeTimeouts> | undefined
+  private readonly execFile: ExecFile | undefined
   /** App-wide and keyed by requestId. Every pending record carries its own
    * provider/thread/workspace/session, so responding needs no lookup table and
    * a dying runtime settles only its own thread's requests. */
@@ -223,6 +252,7 @@ export class AgentRuntime {
     this.configs = configs
     this.connectionsValue = options.connections
     this.timeouts = options.timeouts
+    this.execFile = options.execFile
     this.permissions = new PermissionBroker((settlement) =>
       this.forward(settlement.providerId, {
         threadId: settlement.threadId,
@@ -265,6 +295,7 @@ export class AgentRuntime {
       host,
       connections: () => this.acpConnections(),
       ...(options.timeouts ? { timeouts: options.timeouts } : {}),
+      ...(options.execFile ? { execFile: options.execFile } : {}),
     })
     this.probes = {
       create: (providerId, cwd, probeOptions) => {
@@ -275,10 +306,27 @@ export class AgentRuntime {
             const result = await probe.probe()
             if (result.models) this.modelsByProvider.set(providerId, result.models)
             if (result.modes) this.modesByProvider.set(providerId, result.modes)
+            this.announceCatalog(providerId, {
+              ...(result.agentInfo ? { agentInfo: result.agentInfo } : {}),
+              ...(result.promptCapabilities
+                ? { promptCapabilities: result.promptCapabilities }
+                : {}),
+              ...(result.models ? { models: result.models } : {}),
+              ...(result.modes ? { modes: result.modes } : {}),
+            })
             return result
           },
           listSessions: (dir) => probe.listSessions(dir),
-          listModels: (dir) => probe.listModels(dir),
+          listModels: async (dir) => {
+            const models = await probe.listModels(dir)
+            // An empty answer is "could not say", never "offers nothing": it
+            // must not erase a catalog an earlier probe did read.
+            if (models.availableModels?.length) {
+              this.modelsByProvider.set(providerId, models)
+              this.announceCatalog(providerId, { models })
+            }
+            return models
+          },
           dispose: () => probe.dispose(),
         }
       },
@@ -320,9 +368,46 @@ export class AgentRuntime {
 
   /** Fallback directory for health probes of providers the user has not used
    * yet — the last workspace they had open. Without it those providers stay
-   * `'unknown'`, which is correct but uninformative. */
+   * `'unknown'`, which is correct but uninformative.
+   *
+   * Providers the monitor had to skip for want of a directory are probed as
+   * soon as one arrives. Deferred by a microtask so a caller that sets the
+   * directory and then bootstraps a provider in the same tick has registered
+   * its own probe first, and the monitor joins that one instead of racing it. */
   setDefaultProbeCwd(cwd: string | undefined): void {
     this.defaultProbeCwd = cwd && cwd.length > 0 ? cwd : undefined
+    if (this.defaultProbeCwd !== undefined) queueMicrotask(() => this.health.retrySkipped())
+  }
+
+  /** Hear what any probe learns about a provider, as it learns it.
+   *
+   * For a host that keeps its own catalog rather than polling
+   * `providerModels()`. The health monitor's probes are silent, so without
+   * this a provider nobody has bootstrapped would be probed, found healthy,
+   * and still be unknown to the host. */
+  onProviderCatalog(
+    listener: (providerId: ProviderId, catalog: ProviderCatalog) => void,
+  ): () => void {
+    this.catalogListeners.add(listener)
+    return () => this.catalogListeners.delete(listener)
+  }
+
+  private announceCatalog(providerId: ProviderId, catalog: ProviderCatalog): void {
+    if (Object.keys(catalog).length === 0) return
+    for (const listener of this.catalogListeners) {
+      try {
+        listener(providerId, catalog)
+      } catch (error) {
+        // What a host does with a catalog is its own business; its failure
+        // must not turn a probe that succeeded into one that threw.
+        this.host.log({
+          scope: 'agent-runtime',
+          level: 'warn',
+          message: 'A provider catalog listener failed',
+          data: { providerId, error: error instanceof Error ? error.message : String(error) },
+        })
+      }
+    }
   }
 
   private census(providerId: ProviderId): ProviderRuntimeCensus {
@@ -513,6 +598,7 @@ export class AgentRuntime {
       lookup = config.models.imageInput({
         command: acpCommandBin(config.command),
         log: this.host.log,
+        ...(this.execFile ? { execFile: this.execFile } : {}),
       })
       this.modelImageInputLookups.set(id, lookup)
     }
@@ -1038,7 +1124,8 @@ export class AgentRuntime {
     this.interactions.settleAll()
     try {
       await withTimeout(
-        this.registry.shutdown({ reason: 'disposed' }),
+        // The probe the monitor was holding is a child like any other.
+        Promise.all([this.registry.shutdown({ reason: 'disposed' }), this.health.drain()]),
         SHUTDOWN_BUDGET_MS,
         () =>
           new Error(`Session runtimes did not all exit within ${SHUTDOWN_BUDGET_MS}ms`),
@@ -1074,6 +1161,7 @@ export class AgentRuntime {
     this.health.stop()
   }
   private clearBookkeeping(): void {
+    this.catalogListeners.clear()
     this.promptQueues.clear()
     this.threadProviders.clear()
     this.activeMessageIds.clear()

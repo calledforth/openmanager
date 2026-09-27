@@ -22,6 +22,9 @@ it.each([
     delete env.OPENMANAGER_DATA_DIR
     delete env.OPENMANAGER_LOG_LEVEL
     delete env.OPENMANAGER_ALLOWED_ORIGINS
+    // A developer's own server may have handed this shell its workspaces, and
+    // a server with a workspace probes its providers, which is not under test.
+    delete env.OPENMANAGER_WORKSPACES
     const child = spawn(process.execPath, [executable, '--port=0', '--data-dir', directory], {
       env,
       stdio: ['ignore', 'pipe', 'pipe'],

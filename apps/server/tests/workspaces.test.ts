@@ -330,6 +330,32 @@ describe('workspace registry', () => {
     expect(open([roots.a]).list()[0]!.lastUsedAt).toBe('2026-09-13T12:01:00.000Z')
   })
 
+  it('names the folder most recently worked in that can still be opened', async () => {
+    const { roots, events, open, tick } = await fixture()
+    const registry = open([roots.a, roots.b])
+    const [alpha, beta] = registry.list()
+    // Nothing used yet: the first registered stands in.
+    expect(registry.mostRecent()?.root).toBe(alpha!.path)
+
+    tick(60_000)
+    registry.markUsed(beta!.workspaceId)
+    expect(registry.mostRecent()?.root).toBe(beta!.path)
+    tick(60_000)
+    registry.markUsed(alpha!.workspaceId)
+    expect(registry.mostRecent()?.root).toBe(alpha!.path)
+
+    // A folder that is gone is passed over, and asking announces nothing:
+    // it is asked from inside the registry's own announcements.
+    await rm(roots.a, { recursive: true })
+    events.length = 0
+    expect(registry.mostRecent()?.root).toBe(beta!.path)
+    expect(events).toEqual([])
+
+    await rm(roots.b, { recursive: true })
+    expect(registry.mostRecent()).toBeUndefined()
+    expect(open([]).mostRecent()).toBeUndefined()
+  })
+
   it('reports the latest session activity per workspace for ordering recents', async () => {
     const { dataDir, roots, open, tick } = await fixture()
     const registry = open([roots.a, roots.b])

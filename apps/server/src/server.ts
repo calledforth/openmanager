@@ -239,7 +239,17 @@ export async function startServer(config: ServerConfig) {
   const stopRetention = createEventRetention(eventDatabase).schedule({
     onError: (error) => log('error', 'event retention failed', { reason: String(error) }),
   })
-  emitWorkspaceEvent = (event) => eventService.append(event)
+  // Health probes spawn a provider's CLI, which needs a real directory. No
+  // client has to name one first: the registry already knows where the user
+  // last worked. Every registry change is announced, so following the
+  // announcements keeps this current as folders are added, used and removed.
+  const syncProbeDirectory = () => {
+    if (config.probeProviders) runtime.setDefaultProbeCwd(workspaces.mostRecent()?.root)
+  }
+  emitWorkspaceEvent = (event) => {
+    eventService.append(event)
+    syncProbeDirectory()
+  }
   let recordSessionMode: (sessionId: string, modeId: string) => void = () => undefined
   let launchPreference: (
     workspaceId: string,
@@ -306,6 +316,12 @@ export async function startServer(config: ServerConfig) {
     composerService.launchPreference(workspaceId, providerId, picks)
   seedSessionComposer = (sessionId, selection) => composerService.seedSession(sessionId, selection)
   observeProviderCatalog = (providerId, result) => composerService.observeProbe(providerId, result)
+  // Health probes answer to nobody, so nothing above would ever hear what
+  // they learn. They are also the only probes a provider no client has opened
+  // ever gets.
+  runtime.onProviderCatalog((providerId, catalog) =>
+    composerService.observeCatalog(providerId, catalog),
+  )
   const uploads = createUploadService({
     artifacts,
     dataDir: config.dataDir,
@@ -541,6 +557,7 @@ export async function startServer(config: ServerConfig) {
   }
   const address = server.address() as AddressInfo
   websocketUrl = `ws://127.0.0.1:${address.port}/ws`
+  syncProbeDirectory()
   providerService.start()
   let closePromise: Promise<void> | undefined
   return {
