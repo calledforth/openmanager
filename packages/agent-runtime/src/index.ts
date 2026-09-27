@@ -2,6 +2,7 @@ export { AgentRuntime } from './core/AgentRuntime.js'
 export type {
   AgentRuntimeOptions,
   ProviderBootstrap,
+  ProviderCatalog,
   RuntimeRoute,
   RuntimeSessionArgs,
 } from './core/AgentRuntime.js'
@@ -14,6 +15,8 @@ export type {
 } from './core/InteractionBroker.js'
 export { AuthRequiredError, CapabilityMissingError } from './core/errors.js'
 export {
+  PROVIDER_CATALOG_REFRESH_INTERVAL_MS,
+  PROVIDER_CATALOG_TIMEOUT_MS,
   PROVIDER_HEALTH_PROBE_TIMEOUT_MS,
   PROVIDER_HEALTH_REFRESH_INTERVAL_MS,
   ProbeTimeoutError,
@@ -112,12 +115,22 @@ export {
 export type {
   AcpProviderConfig,
   ClaudeProviderConfig,
+  ModelCatalogSource,
   ModelImageInputLookup,
+  ProviderCliDeps,
   ProviderConfig,
   ProviderConfigBase,
 } from './providers/index.js'
-export { createOpencodeModelImageInputLookup, jsonObjects } from './providers/opencode-models.js'
-export type { OpencodeModelLookupOptions } from './providers/opencode-models.js'
+export {
+  createOpencodeModelImageInputLookup,
+  jsonObjects,
+  listOpencodeModels,
+} from './providers/opencode-models.js'
+export type {
+  ExecFile,
+  OpencodeCatalogOptions,
+  OpencodeModelLookupOptions,
+} from './providers/opencode-models.js'
 export type { HostDeps, HostLogEntry } from './host.js'
 export { projectAgentEvent } from './protocol/projectAgentEvent.js'
 export type { ProtocolEventContext } from './protocol/projectAgentEvent.js'

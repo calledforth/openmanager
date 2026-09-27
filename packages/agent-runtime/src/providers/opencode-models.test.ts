@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createOpencodeModelImageInputLookup, jsonObjects, type ExecFile } from './opencode-models.js'
+import {
+  createOpencodeModelImageInputLookup,
+  jsonObjects,
+  listOpencodeModels,
+  type ExecFile,
+} from './opencode-models.js'
 
 const model = (providerID: string, id: string, image: boolean | 'missing') =>
   JSON.stringify({
@@ -44,6 +49,93 @@ describe('jsonObjects', () => {
       '\n',
     )
     expect(jsonObjects(output)).toEqual([{ a: 1 }, { b: '}' }, { c: { nested: true } }])
+  })
+})
+
+describe('OpenCode model catalog', () => {
+  /** The `--verbose` stream as the CLI prints it: a `provider/model` heading
+   * line, then that model as a pretty-printed object. */
+  const printed = (model: Record<string, unknown>) =>
+    [`${String(model.providerID)}/${String(model.id)}`, JSON.stringify(model, null, 2)].join('\n')
+  const LISTING = [
+    printed({
+      id: 'big-pickle',
+      providerID: 'opencode',
+      name: 'Big Pickle',
+      limit: { context: 200_000, output: 32_000 },
+      capabilities: { input: { text: true, image: false } },
+    }),
+    printed({
+      id: 'gpt-5.4',
+      providerID: 'openai',
+      name: 'GPT-5.4',
+      limit: { context: 400_000 },
+      capabilities: { input: { text: true, image: true } },
+    }),
+    printed({ id: 'gpt-5.4', providerID: 'github-copilot', name: 'GPT-5.4' }),
+  ].join('\n')
+
+  const list = (stdout: string | Error) => {
+    const execFile = vi.fn<ExecFile>(async () => {
+      if (stdout instanceof Error) throw stdout
+      return { stdout }
+    })
+    return { execFile, listing: listOpencodeModels({ command: 'opencode', execFile }) }
+  }
+
+  it('lists every model from one CLI call, under the ids a session accepts', async () => {
+    const { execFile, listing } = list(LISTING)
+    await expect(listing).resolves.toEqual({
+      availableModels: [
+        {
+          id: 'opencode/big-pickle',
+          displayName: 'opencode/Big Pickle',
+          contextWindowTokens: 200_000,
+          supportsImageInput: false,
+        },
+        {
+          id: 'openai/gpt-5.4',
+          displayName: 'openai/GPT-5.4',
+          contextWindowTokens: 400_000,
+          supportsImageInput: true,
+        },
+        // Two upstream providers offer a "GPT-5.4"; the label keeps them apart.
+        // Nothing is claimed about a model the CLI said nothing about.
+        { id: 'github-copilot/gpt-5.4', displayName: 'github-copilot/GPT-5.4' },
+      ],
+    })
+    expect(execFile).toHaveBeenCalledTimes(1)
+    expect(execFile).toHaveBeenCalledWith(
+      'opencode',
+      ['models', '--verbose', '--pure'],
+      expect.objectContaining({ windowsHide: true, timeout: 30_000 }),
+    )
+  })
+
+  it('skips what it cannot identify and lists a model once', async () => {
+    const { listing } = list(
+      [
+        'a banner line',
+        printed({ id: 'big-pickle', providerID: 'opencode', name: '  ' }),
+        printed({ id: 'big-pickle', providerID: 'opencode', name: 'Again' }),
+        JSON.stringify({ id: 'no-provider' }),
+        JSON.stringify({ providerID: 'openai' }),
+        JSON.stringify({ id: '', providerID: 'openai' }),
+        '{"id": "broken",',
+      ].join('\n'),
+    )
+    await expect(listing).resolves.toEqual({
+      // A blank name falls back to the model's own id.
+      availableModels: [{ id: 'opencode/big-pickle', displayName: 'opencode/big-pickle' }],
+    })
+  })
+
+  it('answers empty, not an empty catalog, when the CLI printed no models', async () => {
+    await expect(list('opencode 1.18.32\n').listing).resolves.toEqual({})
+  })
+
+  it('rejects when the CLI cannot be run', async () => {
+    await expect(list(new Error('spawn opencode ENOENT')).listing).rejects.toThrow('ENOENT')
   })
 })
 

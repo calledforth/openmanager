@@ -1,4 +1,5 @@
 import { execFile as nodeExecFile } from 'node:child_process'
+import type { ModelListing, ModelOption } from '@agentpack/contract'
 import type { HostDeps } from '../host.js'
 import type { ModelImageInputLookup } from './index.js'
 
@@ -17,7 +18,7 @@ import type { ModelImageInputLookup } from './index.js'
 export type ExecFile = (
   command: string,
   args: readonly string[],
-  options: { windowsHide: boolean; maxBuffer: number },
+  options: { windowsHide: boolean; maxBuffer: number; timeout?: number },
 ) => Promise<{ stdout: string }>
 
 export type OpencodeModelLookupOptions = {
@@ -93,6 +94,70 @@ function imageInputOf(model: Record<string, unknown>): boolean | null {
   if (!input || typeof input !== 'object') return null
   const image = (input as Record<string, unknown>).image
   return typeof image === 'boolean' ? image : null
+}
+
+export type OpencodeCatalogOptions = {
+  /** The `opencode` binary, already resolved through the env override. */
+  command: string
+  log?: HostDeps['log']
+  /** Injected by tests; defaults to `node:child_process`. */
+  execFile?: ExecFile
+  timeoutMs?: number
+}
+
+const CATALOG_TIMEOUT_MS = 30_000
+
+/** Every model OpenCode offers, from one `opencode models --verbose --pure`.
+ *
+ * The same ids a session's model control lists over ACP (compared on
+ * OpenCode 1.18.32: 61 of 61), read without opening a session. The CLI prints
+ * each model's own name but not its upstream provider's, so a row is labelled
+ * `<provider id>/<model name>` to keep two providers' "GPT-5.4" apart; a
+ * session later reports the agent's own label for it.
+ *
+ * The listing already says whether each model reads images, so the answer
+ * rides along and the per-provider lookup below is never spawned for a row
+ * that came from here.
+ *
+ * Rejects when the CLI cannot be run. Resolves empty when it ran and printed
+ * nothing usable, which a caller must read as "could not say". */
+export async function listOpencodeModels(options: OpencodeCatalogOptions): Promise<ModelListing> {
+  const execFile = options.execFile ?? defaultExecFile
+  const { stdout } = await execFile(options.command, ['models', '--verbose', '--pure'], {
+    windowsHide: true,
+    maxBuffer: MAX_OUTPUT_BYTES,
+    timeout: options.timeoutMs ?? CATALOG_TIMEOUT_MS,
+  })
+  const seen = new Set<string>()
+  const availableModels: ModelOption[] = []
+  for (const model of jsonObjects(stdout)) {
+    const providerId = model.providerID
+    const modelId = model.id
+    if (typeof providerId !== 'string' || typeof modelId !== 'string') continue
+    if (!providerId || !modelId) continue
+    const id = `${providerId}/${modelId}`
+    if (seen.has(id)) continue
+    seen.add(id)
+    const name = typeof model.name === 'string' && model.name.trim() ? model.name.trim() : modelId
+    const contextWindowTokens = contextWindowOf(model)
+    const image = imageInputOf(model)
+    availableModels.push({
+      id,
+      displayName: `${providerId}/${name}`,
+      ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
+      ...(image !== null ? { supportsImageInput: image } : {}),
+    })
+  }
+  return availableModels.length > 0 ? { availableModels } : {}
+}
+
+function contextWindowOf(model: Record<string, unknown>): number | undefined {
+  const limit = model.limit
+  if (!limit || typeof limit !== 'object') return undefined
+  const context = (limit as Record<string, unknown>).context
+  return typeof context === 'number' && Number.isInteger(context) && context > 0
+    ? context
+    : undefined
 }
 
 export function createOpencodeModelImageInputLookup(

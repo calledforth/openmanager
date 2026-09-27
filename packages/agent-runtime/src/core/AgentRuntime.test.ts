@@ -717,6 +717,113 @@ describe('AgentRuntime provider health', () => {
   })
 })
 
+describe('AgentRuntime provider catalogs', () => {
+  const HANDSHAKE = {
+    protocolVersion: 1,
+    agentInfo: { name: 'cursor-agent', version: '2026.07.23' },
+    agentCapabilities: { promptCapabilities: { image: true } },
+    authMethods: [],
+  }
+  const LISTING = { models: [{ value: 'composer-2.5', name: 'Composer 2.5' }] }
+  const CATALOG = { availableModels: [{ id: 'composer-2.5', displayName: 'Composer 2.5' }] }
+
+  /** Cursor only: the other two providers' probes are not what is under test,
+   * and OpenCode's would run its real CLI. */
+  function buildCursor(wire: FakeWire) {
+    const connections = new FakeConnectionFactory(wire)
+    const runtime = new AgentRuntime({ emitEvent: () => undefined, log: vi.fn() }, { cursor } as never, {
+      connections,
+    })
+    const heard: Array<{ providerId: string; catalog: unknown }> = []
+    runtime.onProviderCatalog((providerId, catalog) => heard.push({ providerId, catalog }))
+    return { runtime, connections, heard }
+  }
+
+  it('learns the models of a provider nobody has opened, from the health probe', async () => {
+    const newSession = vi.fn()
+    const { runtime, connections, heard } = buildCursor({
+      initialize: async () => HANDSHAKE,
+      request: async () => LISTING,
+      newSession,
+    })
+    runtime.setDefaultProbeCwd('C:/workspace')
+    runtime.health.start()
+
+    await vi.waitFor(() => expect(runtime.health.report('cursor').refreshing).toBe(false))
+    expect(runtime.providerModels()).toEqual({ cursor: CATALOG })
+    expect(runtime.health.health('cursor').models.models).toEqual(CATALOG.availableModels)
+    // The handshake's answer and the catalog arrive as they are learned.
+    expect(heard).toEqual([
+      {
+        providerId: 'cursor',
+        catalog: {
+          agentInfo: HANDSHAKE.agentInfo,
+          promptCapabilities: { image: true, audio: false, embeddedContext: false },
+        },
+      },
+      { providerId: 'cursor', catalog: { models: CATALOG } },
+    ])
+    // One process answered both questions, and it opened no session.
+    expect(connections.connections).toHaveLength(1)
+    expect(newSession).not.toHaveBeenCalled()
+    await runtime.shutdown()
+  })
+
+  it('probes as soon as the host learns a directory after boot', async () => {
+    const { runtime, connections } = buildCursor({
+      initialize: async () => HANDSHAKE,
+      request: async () => LISTING,
+    })
+    runtime.health.start()
+    expect(connections.connections).toHaveLength(0)
+
+    runtime.setDefaultProbeCwd('C:/workspace')
+    await vi.waitFor(() => expect(runtime.health.health('cursor').lastProbe?.outcome).toBe('ok'))
+    expect(connections.last.spec.cwd).toBe('C:/workspace')
+    await runtime.shutdown()
+  })
+
+  it('keeps a catalog it read when a later probe cannot say', async () => {
+    const request = vi.fn().mockResolvedValueOnce(LISTING).mockResolvedValue({ models: [] })
+    const { runtime, heard } = buildCursor({
+      initialize: async () => HANDSHAKE,
+      request,
+      newSession: async () => ({ sessionId: 'probe-session' }),
+    })
+    const first = runtime['probes'].create('cursor', 'C:/workspace')
+    await first.listModels('C:/workspace')
+    const second = runtime['probes'].create('cursor', 'C:/workspace')
+    await expect(second.listModels('C:/workspace')).resolves.toEqual({})
+
+    expect(runtime.providerModels()).toEqual({ cursor: CATALOG })
+    expect(heard.filter(({ catalog }) => 'models' in (catalog as object))).toHaveLength(1)
+    await runtime.shutdown()
+  })
+
+  it('does not let a listener that throws fail the probe that told it', async () => {
+    const { runtime } = buildCursor({ initialize: async () => HANDSHAKE, request: async () => LISTING })
+    runtime.onProviderCatalog(() => {
+      throw new Error('the host could not store it')
+    })
+    await expect(
+      runtime.probeProvider({ ...ROUTE, threadId: 'desktop-bootstrap:cursor' }),
+    ).resolves.toMatchObject({ result: { authenticated: true } })
+    await runtime.shutdown()
+  })
+
+  it('takes the probe it was holding down with it', async () => {
+    const { runtime, connections } = buildCursor({
+      initialize: () => new Promise<never>(() => undefined),
+    })
+    runtime.setDefaultProbeCwd('C:/workspace')
+    runtime.health.start()
+    await vi.waitFor(() => expect(connections.connections).toHaveLength(1))
+
+    await runtime.shutdown()
+    expect(connections.last.terminated).toEqual({ reason: 'disposed' })
+  })
+})
+
 describe('AgentRuntime lazy respawn and resume', () => {
   /** A Cursor-shaped process: one model option, read back from every write.
    * `sessions` records which session id each spawned process opened and how. */

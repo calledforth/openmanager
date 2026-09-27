@@ -3,6 +3,7 @@ import type { InteractionBroker } from '../core/InteractionBroker.js'
 import type { PermissionBroker } from '../core/PermissionBroker.js'
 import type { HostDeps } from '../host.js'
 import type { ProviderConfig } from '../providers/index.js'
+import type { ExecFile } from '../providers/opencode-models.js'
 import type { AcpConnectionFactory } from './AcpConnection.js'
 import { AcpProbeRuntimeFactoryImpl } from './AcpProbeRuntimeImpl.js'
 import {
@@ -53,6 +54,7 @@ export type ProviderProbeRuntimeFactoryDeps = {
   host: Pick<HostDeps, 'log'>
   connections: AcpTransport
   timeouts?: Partial<RuntimeTimeouts>
+  execFile?: ExecFile
 }
 
 export class ProviderSessionRuntimeFactory implements ManagedSessionRuntimeFactory {
@@ -130,6 +132,7 @@ export class ProviderProbeRuntimeFactory implements ProbeRuntimeFactory {
       host: this.deps.host,
       connections: this.deps.connections(),
       ...(this.deps.timeouts ? { timeouts: this.deps.timeouts } : {}),
+      ...(this.deps.execFile ? { execFile: this.deps.execFile } : {}),
     })
     return this.acp
   }

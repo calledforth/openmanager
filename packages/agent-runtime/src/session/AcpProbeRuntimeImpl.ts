@@ -7,8 +7,10 @@ import {
   acpCommandBin,
   requireAcpConfig,
   type AcpProviderConfig,
+  type ModelCatalogSource,
   type ProviderConfig,
 } from '../providers/index.js'
+import type { ExecFile } from '../providers/opencode-models.js'
 import type { AcpConnection, AcpConnectionFactory } from './AcpConnection.js'
 import type {
   ProbeResult,
@@ -48,6 +50,8 @@ export type AcpProbeDeps = {
   host: Pick<HostDeps, 'log'>
   connections: AcpConnectionFactory
   timeouts?: Partial<RuntimeTimeouts>
+  /** How a provider asked through its own CLI is run; tests inject a fake. */
+  execFile?: ExecFile
   /** When present the probe emits the same `process_spawned` / `initialized` /
    * `authenticated` / `auth_required` events the shared per-provider process
    * used to emit on `AgentRuntime.start`. The renderer learns agent info and
@@ -55,6 +59,8 @@ export type AcpProbeDeps = {
    * this; repeat metadata probes stay silent to avoid event spam. */
   onEvent?: (event: BackendEvent) => void
 }
+
+type ExtensionCatalogSource = Extract<ModelCatalogSource, { via: 'extension' }>
 
 /** A throwaway process for provider-level questions that must not touch a live
  * session: the handshake, `session/list`, model catalogs, and (Phase 3) health
@@ -163,8 +169,48 @@ export class AcpProbeRuntimeImpl implements ProbeRuntime {
     }
   }
 
+  /** The catalog, by whichever route the provider's config names.
+   *
+   * There is no default route. ACP's own answer is `session/new`, and whether
+   * that is harmless depends on the agent, so a provider that has not said
+   * how it may be asked is not asked: it answers empty, which every caller
+   * reads as "could not say". */
   async listModels(cwd: string): Promise<ModelListing> {
+    const source = this.deps.config.models?.catalog
+    if (!source) return {}
+    if (source.via === 'cli') {
+      // No connection needed, and none is opened for it.
+      return source.list({
+        command: acpCommandBin(this.deps.config.command),
+        log: this.deps.host.log,
+        ...(this.deps.execFile ? { execFile: this.deps.execFile } : {}),
+      })
+    }
     await this.probe()
+    return this.listModelsByExtension(source, cwd)
+  }
+
+  private async listModelsByExtension(
+    source: ExtensionCatalogSource,
+    cwd: string,
+  ): Promise<ModelListing> {
+    const ask = async (): Promise<ModelListing> =>
+      source.read(
+        await this.rpc(
+          source.method,
+          this.timeouts.controlRequestMs,
+          this.connection().request(source.method, {}),
+        ),
+      )
+    try {
+      const listing = await ask()
+      if (listing.availableModels?.length || !source.sessionFallback) return listing
+    } catch (error) {
+      if (isAuthRequired(error)) throw this.authRequired(undefined, errorMessage(error))
+      if (!source.sessionFallback) throw error
+    }
+    // Some agents only set up what the listing reads from once a session
+    // exists. The session is never prompted and dies with this process.
     const response = object(
       await this.rpc(
         'session/new',
@@ -172,6 +218,12 @@ export class AcpProbeRuntimeImpl implements ProbeRuntime {
         this.connection().newSession({ cwd, mcpServers: [] }),
       ),
     )
+    try {
+      const listing = await ask()
+      if (listing.availableModels?.length) return listing
+    } catch {
+      // The session's own listing below is the same catalog by another door.
+    }
     return initialState(response).models ?? {}
   }
 
@@ -219,9 +271,9 @@ export class AcpProbeRuntimeImpl implements ProbeRuntime {
     return this.transport.connection
   }
   /** Bound one RPC. The health monitor already caps a whole probe, but
-   * `listSessions`/`listModels` are also called straight from
-   * `AgentRuntime.listSessions`'s fallback path, where nothing else would stop
-   * a silent agent from pinning a throwaway process forever. */
+   * `listSessions` is also called straight from `AgentRuntime.listSessions`'s
+   * fallback path, where nothing else would stop a silent agent from pinning
+   * a throwaway process forever. */
   private rpc<T>(method: string, timeoutMs: number, work: Promise<T>): Promise<T> {
     return withTimeout(
       work,
@@ -270,6 +322,7 @@ export type AcpProbeRuntimeFactoryDeps = {
   host: Pick<HostDeps, 'log'>
   connections: AcpConnectionFactory
   timeouts?: Partial<RuntimeTimeouts>
+  execFile?: ExecFile
 }
 
 /** Every ACP probe, silent by default. The health monitor asks for nothing but
@@ -292,6 +345,7 @@ export class AcpProbeRuntimeFactoryImpl implements ProbeRuntimeFactory {
         host: this.deps.host,
         connections: this.deps.connections,
         ...(this.deps.timeouts ? { timeouts: this.deps.timeouts } : {}),
+        ...(this.deps.execFile ? { execFile: this.deps.execFile } : {}),
         ...(options.onEvent ? { onEvent: options.onEvent } : {}),
       },
     )
