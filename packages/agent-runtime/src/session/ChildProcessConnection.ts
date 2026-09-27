@@ -1,4 +1,8 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import {
+  spawn,
+  type ChildProcessWithoutNullStreams,
+  type SpawnOptionsWithoutStdio,
+} from 'node:child_process'
 import { Readable, Writable } from 'node:stream'
 import * as acp from '@agentclientprotocol/sdk'
 import type { HostDeps } from '../host.js'
@@ -163,15 +167,19 @@ export class ChildProcessConnectionFactory implements AcpConnectionFactory {
   constructor(private readonly log: HostDeps['log']) {}
 
   async connect(spec: AcpConnectionSpec): Promise<AcpConnection> {
-    const child = spawn(spec.command, [...spec.args], {
-      cwd: spec.cwd,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      // `shell: true` is what makes a `.cmd` shim launchable at all on
-      // Windows, and it is why `child.kill()` reaches anything there. It is
-      // also why the process that matters is a grandchild — see `killTree`.
-      shell: process.platform === 'win32',
-      env: { ...spec.env },
-    })
+    // `shell: true` is what makes a `.cmd` shim launchable at all on Windows,
+    // and it is why `child.kill()` reaches anything there. It is also why the
+    // process that matters is a grandchild — see `killTree`.
+    const shell = process.platform === 'win32'
+    const options: SpawnOptionsWithoutStdio = { cwd: spec.cwd, env: { ...spec.env } }
+    const child = shell
+      ? // Through a shell Node joins the arguments onto the command itself,
+        // unescaped, and warns on stderr that it did (DEP0190). Handing it
+        // the same line already joined runs the same command without the
+        // warning, which would otherwise greet every host that probes its
+        // providers at boot.
+        spawn([spec.command, ...spec.args].join(' '), { ...options, shell: true })
+      : spawn(spec.command, [...spec.args], options)
     await spawned(child, spec)
     return new ChildProcessConnection(
       child,
