@@ -21,7 +21,7 @@ import {
   resolveWorkspacePath,
   validateRegistrationPath,
 } from './workspace-paths.ts'
-import { resolveWorkspaceIconDataUrl } from './workspace-icons.ts'
+import { createWorkspaceIconCache } from './workspace-icons.ts'
 
 /**
  * The branch a checkout is on, from at most two small reads: `.git` (a
@@ -127,6 +127,7 @@ export function openWorkspaceRegistry(
   const clock = options.clock ?? Date.now
   const database = openEnvironmentDatabase(dataDir)
   const byId = new Map<string, RegisteredWorkspace>()
+  const icons = createWorkspaceIconCache()
   const statements = {
     availability: database.prepare(
       'UPDATE workspaces SET availability = ?, updated_at = ? WHERE workspace_id = ?',
@@ -401,8 +402,10 @@ export function openWorkspaceRegistry(
 
   /** Forget a workspace. Sessions recorded under it go with it (FK cascade). */
   const unregister = (workspaceId: string): boolean => {
-    if (!byId.has(workspaceId)) return false
+    const workspace = byId.get(workspaceId)
+    if (!workspace) return false
     options.onUnregister?.(workspaceId)
+    icons.invalidate(workspace.root)
     statements.remove.run(workspaceId)
     byId.delete(workspaceId)
     emit('workspace.removed', { workspaceId })
@@ -534,7 +537,7 @@ export function openWorkspaceRegistry(
       const workspace = this.resolve(workspaceId, context)
       if (!workspace) return null
       try {
-        return await resolveWorkspaceIconDataUrl(workspace.root)
+        return await icons.resolve(workspace.root)
       } catch {
         return null
       }
