@@ -267,6 +267,13 @@ describe('declared icons', () => {
     await writeWorkspaceFile(root, 'clone/.git/HEAD', 'ref: refs/heads/main\n')
     expect(await resolveWorkspaceIconDataUrl(root)).toBeNull()
 
+    // A folder whose `.git` links out of the root is still a repository.
+    const gitDir = await makeWorkspace()
+    await writeWorkspaceFile(root, 'linked/manifest.json', manifest)
+    await writeWorkspaceFile(root, 'linked/mark.svg', '<svg id="linked"></svg>')
+    await symlink(gitDir, join(root, 'linked', '.git'), linkKind)
+    expect(await resolveWorkspaceIconDataUrl(root)).toBeNull()
+
     // A plain top-level folder beside them is still read.
     await writeWorkspaceFile(root, 'extension/manifest.json', manifest)
     await writeWorkspaceFile(root, 'extension/mark.svg', '<svg id="extension"></svg>')
@@ -390,11 +397,26 @@ describe('declared icon parsing', () => {
   })
 
   it('extracts Next metadata icon paths in their common shapes', () => {
-    expect(extractNextMetadataIconHrefs("metadata = { icons: '/a.png' }")).toEqual(['/a.png'])
-    expect(extractNextMetadataIconHrefs('icons: { icon: "/b.svg?v=1", apple: "/c.png" }')).toEqual([
-      '/b.svg',
+    expect(extractNextMetadataIconHrefs("export const metadata = { icons: '/a.png' }")).toEqual([
+      '/a.png',
     ])
-    expect(extractNextMetadataIconHrefs("icons: { other: 'lucide' }")).toEqual([])
+    expect(
+      extractNextMetadataIconHrefs(
+        'export async function generateMetadata() { return { icons: { icon: "/b.svg?v=1", apple: "/c.png" } } }',
+      ),
+    ).toEqual(['/b.svg'])
+    expect(
+      extractNextMetadataIconHrefs("export const metadata = { icons: { other: 'lucide' } }"),
+    ).toEqual([])
+    // `icons` outside the metadata export is some other setting.
+    expect(extractNextMetadataIconHrefs("const theme = { icons: { menu: '/menu.svg' } }")).toEqual(
+      [],
+    )
+    expect(
+      extractNextMetadataIconHrefs(
+        "const theme = { icons: { menu: '/menu.svg' } }\nexport const metadata = { icons: '/real.png' }",
+      ),
+    ).toEqual(['/real.png'])
   })
 
   it('orders manifest icons by size, treating `any` as largest', () => {

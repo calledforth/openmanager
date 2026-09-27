@@ -1,5 +1,5 @@
 import { lstat, open, readdir } from 'node:fs/promises'
-import { extname, posix } from 'node:path'
+import { extname, join, posix } from 'node:path'
 import { canonicalizeRoot, resolveWorkspacePath } from './workspace-paths.ts'
 
 /**
@@ -286,6 +286,8 @@ const OBJECT_REL_RE = /\brel\s*:\s*["']([^"']*)["']/i
 const OBJECT_HREF_RE = /\bhref\s*:\s*["']([^"']+)["']/i
 // Next `metadata.icons`: the first quoted image path shortly after `icons:`,
 // which covers `icons: '/x.png'`, `{ icon: '/x.png' }`, and `{ icon: [{ url }] }`.
+const NEXT_METADATA_RE =
+  /\bexport\s+(?:const\s+metadata\b|(?:async\s+)?function\s+generateMetadata\b)/
 const NEXT_ICONS_KEY_RE = /\bicons\s*:/g
 const NEXT_ICON_URL_RE = /["']([^"'\s]+\.(?:svg|png|ico|jpe?g|webp|gif))(?:[?#][^"']*)?["']/i
 const NEXT_ICONS_WINDOW = 400
@@ -322,12 +324,19 @@ export function extractDeclaredIconHrefs(source: string): string[] {
   return ranked.sort((a, b) => a.rank - b.rank).map(({ href }) => href)
 }
 
-/** Icon paths a Next.js layout declares through `metadata.icons`. */
+/**
+ * Icon paths a Next.js layout declares through `metadata.icons`. Only `icons`
+ * keys after the `metadata` export (or `generateMetadata`) count, so an
+ * unrelated `icons:` setting earlier in the layout cannot stand in for it.
+ */
 export function extractNextMetadataIconHrefs(source: string): string[] {
   const hrefs: string[] = []
-  for (const match of source.matchAll(NEXT_ICONS_KEY_RE)) {
+  const metadataAt = source.search(NEXT_METADATA_RE)
+  if (metadataAt === -1) return hrefs
+  const declaration = source.slice(metadataAt)
+  for (const match of declaration.matchAll(NEXT_ICONS_KEY_RE)) {
     const start = match.index + match[0].length
-    const url = source.slice(start, start + NEXT_ICONS_WINDOW).match(NEXT_ICON_URL_RE)?.[1]
+    const url = declaration.slice(start, start + NEXT_ICONS_WINDOW).match(NEXT_ICON_URL_RE)?.[1]
     if (url) hrefs.push(url)
   }
   return hrefs
@@ -466,12 +475,16 @@ async function gitignoredTopLevelNames(root: string): Promise<Set<string>> {
   return names
 }
 
-/** Whether a folder carries its own `.git`: a clone or submodule, so a different project. */
+/**
+ * Whether a folder carries its own `.git` (a clone or submodule, so a
+ * different project). Nothing is read here, so the entry is checked where it
+ * sits with `lstat`: a `.git` that is itself a link out of the root still
+ * counts, where a containment check would have refused it and let the
+ * folder through.
+ */
 async function isOwnRepository(root: string, dir: string): Promise<boolean> {
-  const gitPath = containedPath(root, posix.join(dir, '.git'))
-  if (!gitPath) return false
   try {
-    await lstat(gitPath)
+    await lstat(join(root, dir, '.git'))
     return true
   } catch {
     return false
@@ -506,9 +519,11 @@ async function topLevelAppDirs(root: string): Promise<string[]> {
     )
     .map((entry) => entry.name)
     .sort()
-    .slice(0, WORKSPACE_ICON_MAX_TOP_LEVEL_DIRS)
+  // Clones are dropped before the cap, so they cannot use up the scan slots.
   const ownRepository = await Promise.all(names.map((name) => isOwnRepository(root, name)))
-  return names.filter((_, index) => !ownRepository[index])
+  return names
+    .filter((_, index) => !ownRepository[index])
+    .slice(0, WORKSPACE_ICON_MAX_TOP_LEVEL_DIRS)
 }
 
 // ---------------------------------------------------------------------------
