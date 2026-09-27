@@ -105,6 +105,33 @@ export function isPseudoThreadId(threadId: string): boolean {
   return PSEUDO_THREAD_PREFIXES.some((prefix) => threadId.startsWith(prefix))
 }
 
+function withoutMode(
+  desired: DesiredSessionConfig | undefined,
+): DesiredSessionConfig | undefined {
+  if (desired?.modeId === undefined) return desired
+  const { modeId: _modeId, ...rest } = desired
+  return Object.keys(rest).length > 0 ? rest : undefined
+}
+
+/** `override` laid over `base`: each field the caller names wins, the rest
+ * keep the durable value. Config values merge per key for the same reason. */
+function mergeDesired(
+  base: DesiredSessionConfig | undefined,
+  override: DesiredSessionConfig | undefined,
+): DesiredSessionConfig | undefined {
+  if (!base) return override
+  if (!override) return base
+  const modelId = override.modelId ?? base.modelId
+  const modeId = override.modeId ?? base.modeId
+  const values =
+    base.values || override.values ? { ...base.values, ...override.values } : undefined
+  return {
+    ...(modelId !== undefined ? { modelId } : {}),
+    ...(modeId !== undefined ? { modeId } : {}),
+    ...(values ? { values } : {}),
+  }
+}
+
 export type AgentRuntimeOptions = {
   /** Transport seam. Defaults to spawning the provider's CLI; tests inject a
    * fake so runtimes can be exercised without one. */
@@ -645,7 +672,7 @@ export class AgentRuntime {
     this.bindProvider(args.threadId, args.providerId)
     if (args.sessionId) this.require(args, 'canLoadSession', 'load session')
     const desired = this.desiredFor(args)
-    const result = await this.startOrRebind(args, desired)
+    const result = await this.startOrRebind(args, this.desiredFor(args, 'start'))
     this.remember(args, result.sessionId)
     // A runtime applies `desiredConfig` once at start; a *reused* one never
     // saw it. Reconciling here covers both, and the applied-state cache makes
@@ -656,15 +683,29 @@ export class AgentRuntime {
     return result
   }
 
-  /** The desired config to open this session with: the caller's, where it has
-   * an opinion (a job carrying a per-message override), and otherwise the
-   * host's durable preference for this workspace and provider.
+  /** The desired config to open this session with: the host's durable
+   * preference for this session, with the caller's opinion (a plan build's
+   * mode, a job's per-message override) laid over it field by field.
    *
    * Falling back to the host is what makes every entry point — a prompt, a
    * `set_model` respawn, `acp:load-session` — configure a fresh process the
-   * same way, without any of them having to remember to pass it. */
-  private desiredFor(args: RuntimeSessionArgs): DesiredSessionConfig | undefined {
-    const desired = args.desiredConfig ?? this.durableDesired(args)
+   * same way, without any of them having to remember to pass it. Merging
+   * rather than replacing is what keeps a caller that only has an opinion
+   * about the mode from cold-starting the process on the CLI's default model.
+   *
+   * The host's mode is for `'start'` only. It restores a new process to where
+   * the session was; a live process is already there, because it changes mode
+   * only through `setMode` and its own switches. Re-sending it before every
+   * prompt would cost a blind `session/set_mode` per message on agents with no
+   * mode option to read back, and could only ever reassert a stale answer. A
+   * caller's mode (a plan build) still rides every call it is passed to. */
+  private desiredFor(
+    args: RuntimeSessionArgs,
+    phase: 'start' | 'live' = 'live',
+  ): DesiredSessionConfig | undefined {
+    const durable = this.durableDesired(args)
+    const base = phase === 'start' ? durable : withoutMode(durable)
+    const desired = mergeDesired(base, args.desiredConfig)
     return desired ? this.supported(args.providerId, desired) : undefined
   }
 

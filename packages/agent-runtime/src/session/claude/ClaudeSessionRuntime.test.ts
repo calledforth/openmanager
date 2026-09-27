@@ -936,6 +936,73 @@ describe('ClaudeSessionRuntime plan review', () => {
   })
 })
 
+/** An approved `ExitPlanMode` moves the CLI out of plan on its own, and the
+ * CLI says so only on `system` frames (live-verified on 2.1.220: a `status`
+ * frame with `permissionMode: 'default'`, then the same on the next `init`).
+ * The session's remembered mode follows `current_mode_update`, and a restarted
+ * process launches in it, so a runtime that kept believing it was in plan
+ * would put a restarted session back into plan. */
+describe('ClaudeSessionRuntime mode reported by the CLI', () => {
+  const modeUpdates = (events: BackendEvent[]) =>
+    events
+      .filter((event) => event.event === 'current_mode_update')
+      .map((event) => (event.data as { currentModeId?: string }).currentModeId)
+
+  async function approvedPlan() {
+    const built = build({ desiredConfig: { modeId: 'plan' } })
+    await built.runtime.start()
+    const { result } = built.sdk.last.useTool('ExitPlanMode', { plan: '# Plan' })
+    await vi.waitFor(() => expect(names(built.events)).toContain('plan_review_request'))
+    built.runtime.respondPlan(requestIdOf(built.events, 'plan_review_request'), {
+      outcome: 'accepted',
+    })
+    await result
+    return built
+  }
+
+  it('follows the CLI out of plan after an approved plan', async () => {
+    const { runtime, events, sdk } = await approvedPlan()
+    sdk.last.emitSystem('status', runtime.sessionId!, { status: null, permissionMode: 'default' })
+
+    await vi.waitFor(() => expect(modeUpdates(events)).toEqual(['default']))
+    // Applied state moved too, so the next reconcile compares against the
+    // truth instead of skipping a write because it still thinks "plan".
+    await runtime.applyDesiredConfig({ modeId: 'plan' })
+    expect(sdk.last.modes).toEqual(['plan'])
+  })
+
+  it('ignores a stale plan frame and adopts the next real report', async () => {
+    const { runtime, events, sdk } = await approvedPlan()
+    sdk.last.emitSystem('status', runtime.sessionId!, { status: null, permissionMode: 'plan' })
+    sdk.last.emitSystem('init', runtime.sessionId!, { permissionMode: 'acceptEdits' })
+
+    await vi.waitFor(() => expect(modeUpdates(events)).toEqual(['acceptEdits']))
+  })
+
+  it('never lets a report override a mode the user picked', async () => {
+    // Without an approved plan there is nothing to follow: a frame still
+    // queued from before the user's switch would otherwise undo it.
+    const { runtime, events, sdk } = build()
+    await runtime.start()
+    await runtime.setMode('bypassPermissions')
+    sdk.last.emitSystem('status', runtime.sessionId!, { status: null, permissionMode: 'default' })
+    sdk.last.emitText('flush')
+
+    await vi.waitFor(() => expect(names(events)).toContain('agent_message_chunk'))
+    expect(modeUpdates(events)).toEqual(['bypassPermissions'])
+  })
+
+  it('lets the user switch after approving a plan the CLI has not reported leaving', async () => {
+    const { runtime, events, sdk } = await approvedPlan()
+    await runtime.setMode('bypassPermissions')
+    sdk.last.emitSystem('status', runtime.sessionId!, { status: null, permissionMode: 'default' })
+    sdk.last.emitText('flush')
+
+    await vi.waitFor(() => expect(names(events)).toContain('agent_message_chunk'))
+    expect(modeUpdates(events)).toEqual(['bypassPermissions'])
+  })
+})
+
 /** Results used to be correlated to nothing at all.
  *
  * `completeTurn` checked only "some turn is dispatched", and the outbound

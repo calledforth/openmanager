@@ -166,6 +166,62 @@ describe('per-session composer selection', () => {
     expect(service.sessionComposer('session-a').modelId).toBe('opus')
   })
 
+  it('restores a session to its own mode after its process restarts', async () => {
+    const { service } = await harness()
+    await service.dispatch({
+      type: 'command',
+      requestId: 'mode-a',
+      name: COMPOSER_MODE_SET_CAPABILITY,
+      payload: { sessionId: 'session-a', modeId: 'bypassPermissions' },
+    })
+    const mode = (id: string) => ({ id, displayName: id })
+    const modes = [mode('default'), mode('plan'), mode('bypassPermissions')]
+    const loaded = (currentModeId: string, availableModes = modes) =>
+      service.onRuntimeEvent({
+        ...runtimeEvent('thread-a'),
+        category: 'lifecycle',
+        event: 'session_loaded',
+        data: { modes: { currentModeId, availableModes } },
+      })
+
+    // A restarted process reports the provider's default before the session's
+    // mode is re-applied. That report must not overwrite what it will become.
+    loaded('default')
+    expect(service.sessionComposer('session-a').modeId).toBe('bypassPermissions')
+    expect(
+      service.desiredFor({ providerId: 'claude', workspacePath: 'workspace-1', threadId: 'thread-a' }),
+    ).toEqual({ modeId: 'bypassPermissions' })
+    // The sibling never picked a mode, so the workspace's last pick is not
+    // forced on it.
+    expect(
+      service.desiredFor({ providerId: 'claude', workspacePath: 'workspace-1', threadId: 'thread-b' }),
+    ).toBeUndefined()
+
+    // A mode the provider stopped offering gives way to what it reports.
+    loaded('default', [mode('default'), mode('plan')])
+    expect(service.sessionComposer('session-a').modeId).toBe('default')
+  })
+
+  it("follows the agent's own mode switch, so a restart restores where it went", async () => {
+    const { service } = await harness()
+    await service.dispatch({
+      type: 'command',
+      requestId: 'mode-a',
+      name: COMPOSER_MODE_SET_CAPABILITY,
+      payload: { sessionId: 'session-a', modeId: 'plan' },
+    })
+    // An approved plan: the agent leaves plan on its own.
+    service.onRuntimeEvent({
+      ...runtimeEvent('thread-a'),
+      category: 'session',
+      event: 'current_mode_update',
+      data: { currentModeId: 'default', availableModes: [] },
+    })
+    expect(
+      service.desiredFor({ providerId: 'claude', workspacePath: 'workspace-1', threadId: 'thread-a' }),
+    ).toEqual({ modeId: 'default' })
+  })
+
   it('keeps a launched session on the picks it launched with while a sibling launches', async () => {
     const { service, store } = await harness()
     // Draft A launches: its picks are filed and it keeps what came back.

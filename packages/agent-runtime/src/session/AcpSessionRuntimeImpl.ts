@@ -2,6 +2,7 @@ import type * as acp from '@agentclientprotocol/sdk'
 import type {
   AuthMethod,
   ExtensionOutcome,
+  ModeListing,
   PermissionOption,
   PermissionOutcome,
   PlanEntry,
@@ -153,6 +154,9 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
   private phaseValue: SessionRuntimePhase = 'created'
   private sessionIdValue: string | undefined
   private resumeCursorValue: string | undefined
+  /** The mode listing the agent last reported for this session, for agents
+   * with no mode config option to read it back from. */
+  private reportedModes: ModeListing | undefined
   private exitValue: SessionRuntimeExit | undefined
   private resolveExited!: (exit: SessionRuntimeExit) => void
 
@@ -323,8 +327,59 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
     // process, whose model/config state is process-global *and* restored from
     // disk: `session/new` can report a model left behind by an already-exited
     // process, and this is where that gets corrected.
-    if (this.spec.desiredConfig) await this.applyDesiredConfig(this.spec.desiredConfig)
+    const { modeId, ...rest } = this.spec.desiredConfig ?? {}
+    if (Object.keys(rest).length > 0) await this.applyDesiredConfig(rest)
+    if (modeId !== undefined) await this.restoreMode(modeId)
     return result
+  }
+
+  /** A mode the session was last in, put back on a fresh process.
+   *
+   * Best-effort, unlike model: an agent that has dropped the mode (or never
+   * lists modes, so the host cannot tell) would otherwise fail every start,
+   * and with it the `setMode` the user would reach for to get out, which also
+   * needs a started process. The agent's own mode stands, and its report
+   * corrects the composer. A mode a caller names for a prompt is re-applied
+   * with that prompt and still fails it loudly. */
+  private async restoreMode(modeId: string): Promise<void> {
+    try {
+      await this.applyDesiredConfig({ modeId })
+    } catch (error) {
+      this.host.log({
+        scope: 'acp',
+        level: 'warn',
+        message: "Could not restore the session's mode; keeping the agent's",
+        data: { providerId: this.providerId, modeId, error: String(error) },
+      })
+      // The composer still holds the mode it asked for. Tell it the one in
+      // force, when the agent has said which that is.
+      const actual = this.currentModes()?.currentModeId
+      if (actual !== undefined) this.reportMode(actual)
+      return
+    }
+    // Reported whether or not the write itself announced anything: a legacy
+    // `session/set_mode` reads nothing back, and a load that fell back to
+    // `session/new` has already told the composer the agent's default. The
+    // composer must end up holding the mode the process is really in: the
+    // agent's read-back when it has a mode option (it may have settled on
+    // another mode than the one asked for), what was sent when it has none.
+    this.reportMode(modeListingFromConfig(this.configOptions())?.currentModeId ?? modeId)
+  }
+
+  /** The agent's mode as last read back: its mode option when it has one,
+   * otherwise the listing its session response and notifications carried. */
+  private currentModes(): ModeListing | undefined {
+    return modeListingFromConfig(this.configOptions()) ?? this.reportedModes
+  }
+
+  private reportMode(modeId: string): void {
+    const sessionId = this.sessionIdValue
+    if (!sessionId) return
+    const available = this.currentModes()?.availableModes
+    this.reportedModes = { ...(available ? { availableModes: available } : {}), currentModeId: modeId }
+    this.emit(
+      routeEvent(this.route(), sessionId, 'session', 'current_mode_update', this.reportedModes),
+    )
   }
 
   private async connect(): Promise<void> {
@@ -461,6 +516,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
           ),
         )
         const state = initialState(response)
+        this.reportedModes = state.modes
         this.appliedCache.refresh(state.configOptions, 'session/load')
         this.emit(
           routeEvent(this.route(), this.spec.sessionId, 'lifecycle', 'session_loaded', state),
@@ -506,6 +562,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
       const sessionId = string(response.sessionId)
       if (!sessionId) throw new Error('ACP session/new returned no sessionId')
       const state = initialState(response)
+      this.reportedModes = state.modes
       this.sessionIdValue = sessionId
       this.resumeCursorValue = this.spec.resumeCursor
       this.appliedCache.refresh(state.configOptions, 'session/new')
@@ -1171,6 +1228,11 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
         },
       )
       this.noteExternalChange(this.appliedCache.modeConfigId, modes.currentModeId)
+      this.reportedModes = {
+        ...this.reportedModes,
+        ...(modes.availableModes ? { availableModes: modes.availableModes } : {}),
+        ...(modes.currentModeId !== undefined ? { currentModeId: modes.currentModeId } : {}),
+      }
       this.emit(routeEvent(this.route(), sessionId, 'session', 'current_mode_update', modes))
       return
     }

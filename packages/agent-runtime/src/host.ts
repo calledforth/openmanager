@@ -28,7 +28,13 @@ export type HostDeps = {
    *
    * `threadId` lets a host that keeps a selection per session answer for that
    * session, so two sessions in one workspace can run different models. A host
-   * that only remembers per workspace ignores it. */
+   * that only remembers per workspace ignores it.
+   *
+   * A `modeId` here is applied only when a process starts, to put a restarted
+   * session back in its mode; it is never re-sent to a live one. On an ACP
+   * agent a restored mode the agent refuses is logged and skipped rather than
+   * failing the start, since the user's next `setMode` needs a process to
+   * land on. */
   desiredSessionConfig?: (args: {
     providerId: ProviderId
     workspacePath: string

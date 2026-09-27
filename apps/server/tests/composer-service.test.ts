@@ -586,7 +586,9 @@ describe('what a provider and its models accept in a prompt', () => {
 })
 
 describe('durable runtime config mapping', () => {
-  it('maps configValues to runtime values without auto-enforcing the display mode', () => {
+  it('maps configValues to runtime values without enforcing the workspace mode', () => {
+    // The workspace's "last used" mode seeds drafts; forcing it on every
+    // session fought the provider's plan/build transitions.
     expect(
       desiredSessionConfig({
         modelId: 'opus',
@@ -598,5 +600,13 @@ describe('durable runtime config mapping', () => {
       values: { effort: 'high', fast: true },
     })
     expect(desiredSessionConfig({})).toBeUndefined()
+  })
+
+  it("restores the session's own mode", () => {
+    // A restarted process launches in the provider's default otherwise, and
+    // a session left in bypassPermissions quietly starts asking again.
+    expect(
+      desiredSessionConfig({ modeId: 'plan' }, { modeId: 'bypassPermissions' }),
+    ).toEqual({ modeId: 'bypassPermissions' })
   })
 })
