@@ -261,12 +261,39 @@ describe('session workspace', () => {
         Object.values(client.getState().workspaces).map((workspace) => workspace.path),
       ).toContain('C:/work/other'),
     )
-    // The sidebar lists sessions, not projects, so a project with none has no
-    // row there; the draft's project picker is where it shows up.
+    // Adding a project opens a new agent in it: the draft's project picker
+    // names it and the composer is ready.
     const picker = screen.getByText("Let's build in").parentElement!
-    await user.click(within(picker).getByRole('button'))
-    const projects = await screen.findByRole('listbox', { name: 'Choose a project' })
-    expect(within(projects).getByText('other')).toBeInTheDocument()
+    await waitFor(() => expect(within(picker).getByRole('button')).toHaveTextContent('other'))
+    await waitFor(() => expect(screen.getByRole('textbox')).toBeEnabled())
+  })
+
+  it('offers new agent, add project and settings in the command palette', async () => {
+    const user = userEvent.setup()
+    const { router } = renderConnected('/', {
+      ...SEED,
+      home: 'C:/work',
+      folders: { 'C:/work': [] },
+    })
+    await findInSidebar('Sidebar move')
+    const palette = async () => {
+      await user.keyboard('{Control>}k{/Control}')
+      return screen.findByRole('dialog', { name: 'Search and commands' })
+    }
+
+    await user.click(within(await palette()).getByRole('option', { name: /New agent/ }))
+    await waitFor(() => expect(screen.getByRole('textbox')).toBeEnabled())
+
+    await user.click(within(await palette()).getByRole('option', { name: /Add project/ }))
+    await screen.findByRole('dialog', { name: 'Add a project' })
+    await waitFor(() => expect(screen.getByLabelText('Folder path')).toHaveFocus())
+    await user.keyboard('{Escape}')
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Add a project' })).not.toBeInTheDocument()
+    })
+
+    await user.click(within(await palette()).getByRole('option', { name: /Open settings/ }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
   })
 
   it('marks sessions in a project whose folder is gone and starts new agents elsewhere', async () => {

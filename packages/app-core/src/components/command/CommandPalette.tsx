@@ -92,16 +92,26 @@ function CommandPaletteItem({ item }: { item: CommandPaletteItemData }) {
 const ThemeIcon = phosphorIcon(PaletteIcon)
 const FontIcon = phosphorIcon(TextTIcon)
 
+export interface CommandPaletteProps {
+  /**
+   * The host's own commands (new agent, add a project, settings…), listed
+   * above the themes and fonts.
+   */
+  commands?: readonly CommandPaletteItemData[]
+}
+
 /**
- * ⌘K / Ctrl+K from anywhere. For now it switches themes and fonts, the way
- * Tend's palette tries colour schemes: picking one leaves the palette open, so
- * you can step through them and watch the app change behind it.
+ * ⌘K / Ctrl+K from anywhere. The host's commands come first; after them it
+ * switches themes and fonts, the way Tend's palette tries colour schemes:
+ * picking one leaves the palette open, so you can step through them and watch
+ * the app change behind it.
  */
-export function CommandPalette() {
+export function CommandPalette({ commands }: CommandPaletteProps = {}) {
   const { theme, setTheme, font, setFont } = useTheme()
 
   const items = useMemo<CommandPaletteItemData[]>(
     () => [
+      ...(commands ?? []),
       ...THEME_OPTIONS.map((option) => ({
         value: `theme:${option.id}`,
         label: option.label,
@@ -126,7 +136,7 @@ export function CommandPalette() {
         onSelect: () => setFont(option.id),
       })),
     ],
-    [theme, setTheme, font, setFont],
+    [commands, theme, setTheme, font, setFont],
   )
 
   return <CommandPaletteView items={items} />

@@ -34,16 +34,18 @@ function clientRejectingWith(error: Error): EnvironmentClient {
 }
 
 describe('add workspace dialog without folder browsing', () => {
-  it('sends the typed path to the environment and closes on success', async () => {
+  it('sends the typed path to the environment, closes and hands on the project', async () => {
     const user = userEvent.setup()
     const client = createMockEnvironmentClient()
     const onClose = vi.fn()
-    render(<AddWorkspaceDialog client={client} open onClose={onClose} />)
+    const onAdded = vi.fn()
+    render(<AddWorkspaceDialog client={client} open onClose={onClose} onAdded={onAdded} />)
     await user.type(screen.getByLabelText('Folder path'), '  /home/me/project  ')
     await user.click(screen.getByRole('button', { name: 'Add project' }))
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
     expect(client.calls).toEqual([{ command: 'addWorkspace', input: { path: '/home/me/project' } }])
     expect(client.getState().workspaces['/home/me/project']).toMatchObject({ name: 'project' })
+    expect(onAdded).toHaveBeenCalledExactlyOnceWith('/home/me/project')
   })
 
   it('shows the environment refusal in place and keeps the typed path', async () => {
@@ -182,7 +184,8 @@ describe('add project folder browser', () => {
     const user = userEvent.setup()
     const client = browsingClient({ startsIn: 'C:\\Users\\you\\code' })
     const onClose = vi.fn()
-    render(<AddWorkspaceDialog client={client} open onClose={onClose} />)
+    const onAdded = vi.fn()
+    render(<AddWorkspaceDialog client={client} open onClose={onClose} onAdded={onAdded} />)
     await waitFor(() => expect(rows()).toHaveLength(3))
     // "openmanager" also prefixes "openmanager-web": the exact name wins.
     await user.type(field(), 'openmanager')
@@ -192,6 +195,7 @@ describe('add project folder browser', () => {
     expect(client.calls.filter((call) => call.command === 'addWorkspace')).toEqual([
       { command: 'addWorkspace', input: { path: 'C:\\Users\\you\\code\\openmanager' } },
     ])
+    expect(onAdded).toHaveBeenCalledExactlyOnceWith('C:\\Users\\you\\code\\openmanager')
   })
 
   it('adds the listed folder itself from the button', async () => {
