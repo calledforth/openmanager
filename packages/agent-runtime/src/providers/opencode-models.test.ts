@@ -75,12 +75,18 @@ describe('OpenCode model catalog', () => {
     printed({ id: 'gpt-5.4', providerID: 'github-copilot', name: 'GPT-5.4' }),
   ].join('\n')
 
-  const list = (stdout: string | Error) => {
+  const list = (
+    stdout: string | Error,
+    options: { cwd?: string; signal?: AbortSignal } = {},
+  ) => {
     const execFile = vi.fn<ExecFile>(async () => {
       if (stdout instanceof Error) throw stdout
       return { stdout }
     })
-    return { execFile, listing: listOpencodeModels({ command: 'opencode', execFile }) }
+    return {
+      execFile,
+      listing: listOpencodeModels({ command: 'opencode', execFile, ...options }),
+    }
   }
 
   it('lists every model from one CLI call, under the ids a session accepts', async () => {
@@ -136,6 +142,25 @@ describe('OpenCode model catalog', () => {
 
   it('rejects when the CLI cannot be run', async () => {
     await expect(list(new Error('spawn opencode ENOENT')).listing).rejects.toThrow('ENOENT')
+  })
+
+  it('runs in the folder it is asked about, under the control of whoever asked', async () => {
+    const { signal } = new AbortController()
+    const { execFile, listing } = list(LISTING, { cwd: 'C:/workspace', signal })
+    await listing
+    expect(execFile).toHaveBeenCalledWith(
+      'opencode',
+      ['models', '--verbose', '--pure'],
+      expect.objectContaining({ cwd: 'C:/workspace', signal }),
+    )
+  })
+
+  it('names no folder and no signal when it was given none', async () => {
+    const { execFile, listing } = list(LISTING)
+    await listing
+    const options = execFile.mock.calls[0]![2]
+    expect('cwd' in options).toBe(false)
+    expect('signal' in options).toBe(false)
   })
 })
 

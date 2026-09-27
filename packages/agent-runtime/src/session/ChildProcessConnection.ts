@@ -199,7 +199,7 @@ export class ChildProcessConnectionFactory implements AcpConnectionFactory {
  * signalling the shell. Exit code 128 is "no such process", which for our
  * purposes is success — the tree is gone, which is all that was being asked
  * for. */
-function treeKiller(graceMs: number): (pid: number) => Promise<boolean> {
+export function treeKiller(graceMs: number): (pid: number) => Promise<boolean> {
   return (pid) =>
     new Promise<boolean>((resolve) => {
       let settled = false

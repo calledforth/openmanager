@@ -48,6 +48,12 @@ export type ProviderCliDeps = {
   log: HostDeps['log']
   /** How the CLI is run. Absent outside tests, where it is `node:child_process`. */
   execFile?: ExecFile
+  /** Where to run it. A provider can be configured per folder, so a question
+   * about what it offers is asked where a session would be opened. */
+  cwd?: string
+  /** Aborted when whoever asked is torn down. The CLI is a child like any
+   * other and must not outlive the process that spawned it. */
+  signal?: AbortSignal
 }
 
 /** The binary an ACP provider is spawned as: the env override, its fallback,

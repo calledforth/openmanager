@@ -236,10 +236,40 @@ describe('AcpProbeRuntime model catalog', () => {
     )
 
     await expect(probe.listModels('C:/workspace')).resolves.toEqual(CATALOG)
-    expect(list).toHaveBeenCalledWith(expect.objectContaining({ command: 'opencode' }))
+    // Asked where a session would be opened: a provider can be configured
+    // per folder.
+    expect(list).toHaveBeenCalledWith(
+      expect.objectContaining({ command: 'opencode', cwd: 'C:/workspace' }),
+    )
     expect(newSession).not.toHaveBeenCalled()
     // The CLI answers on its own; no ACP process is spawned to ask it.
     expect(connections.connections).toHaveLength(0)
+  })
+
+  it('takes the CLI it was reading from down with it', async () => {
+    let exited = false
+    const list = vi.fn(
+      ({ signal }: { signal?: AbortSignal }) =>
+        new Promise<never>((_resolve, reject) => {
+          // The read rejects only once its process has exited.
+          signal?.addEventListener('abort', () =>
+            setTimeout(() => {
+              exited = true
+              reject(new Error('The operation was aborted'))
+            }, 5),
+          )
+        }),
+    )
+    const { probe } = build(HANDSHAKE, { ...opencode, models: { catalog: { via: 'cli', list } } })
+    const reading = probe.listModels('C:/workspace')
+    reading.catch(() => undefined)
+
+    await probe.dispose()
+    expect(exited).toBe(true)
+    await expect(reading).rejects.toThrow('aborted')
+    // And it starts nothing once it is gone.
+    await expect(probe.listModels('C:/workspace')).rejects.toThrow()
+    expect(list).toHaveBeenCalledTimes(1)
   })
 
   it('does not ask a provider that names no way of being asked', async () => {

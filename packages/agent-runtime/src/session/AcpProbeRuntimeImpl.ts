@@ -70,6 +70,11 @@ export class AcpProbeRuntimeImpl implements ProbeRuntime {
   readonly providerId: ProviderId
   private transport: AcpConnection | null = null
   private result: ProbeResult | undefined
+  /** Stops a catalog being read from the provider's CLI. That process is not
+   * the connection's, so terminating the connection would not reach it. */
+  private readonly cli = new AbortController()
+  /** CLI reads still running. `dispose()` waits for them to be gone. */
+  private readonly cliReads = new Set<Promise<unknown>>()
   private readonly timeouts: RuntimeTimeouts
 
   constructor(
@@ -180,11 +185,18 @@ export class AcpProbeRuntimeImpl implements ProbeRuntime {
     if (!source) return {}
     if (source.via === 'cli') {
       // No connection needed, and none is opened for it.
-      return source.list({
+      this.cli.signal.throwIfAborted()
+      const read = source.list({
         command: acpCommandBin(this.deps.config.command),
         log: this.deps.host.log,
+        cwd,
+        signal: this.cli.signal,
         ...(this.deps.execFile ? { execFile: this.deps.execFile } : {}),
       })
+      this.cliReads.add(read)
+      const forget = (): void => void this.cliReads.delete(read)
+      read.then(forget, forget)
+      return read
     }
     await this.probe()
     return this.listModelsByExtension(source, cwd)
@@ -227,11 +239,17 @@ export class AcpProbeRuntimeImpl implements ProbeRuntime {
     return initialState(response).models ?? {}
   }
 
+  /** Every child this probe started is gone when this resolves: the ACP
+   * process, and a CLI it was reading the catalog from. */
   async dispose(): Promise<void> {
+    this.cli.abort()
     const transport = this.transport
     this.transport = null
-    if (!transport) return
-    await transport.terminate({ reason: 'disposed' })
+    await Promise.all([
+      transport?.terminate({ reason: 'disposed' }),
+      // A read settles once its process has exited, however it ended.
+      ...[...this.cliReads].map((read) => read.catch(() => undefined)),
+    ])
   }
 
   private async connect(): Promise<void> {

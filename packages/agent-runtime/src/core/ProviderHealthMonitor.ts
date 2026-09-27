@@ -31,8 +31,9 @@ export const PROVIDER_HEALTH_PROBE_TIMEOUT_MS = 30_000
 /** How long a model catalog is trusted before a probe asks for it again. A
  * catalog changes when the provider ships a model or the account changes
  * plan, neither of which is a five-minute event, and asking costs more than
- * the handshake does. A live session refreshes the same timestamp for free,
- * so a provider in use is never asked at all. */
+ * the handshake does. A session stamps the catalog when it starts, so a
+ * provider whose sessions come and go is rarely asked; one whose session
+ * stays open is asked once the catalog that session listed has aged out. */
 export const PROVIDER_CATALOG_REFRESH_INTERVAL_MS = 30 * 60 * 1000
 
 /** Budget for reading the catalog, separate from the handshake's: the probe
@@ -90,6 +91,10 @@ type ProviderRecord = {
   install: ProviderInstallHealth
   auth: ProviderAuthHealth
   models: { models: readonly ProviderModelSummary[]; refreshedAt: string | null }
+  /** When a probe last tried to read the catalog, whether or not it could.
+   * Not part of the snapshot: it only decides whether a provider with a live
+   * session is worth a probe of its own. */
+  catalogAskedAt: number | null
   lastProbe: ProviderProbe | null
   /** Sequence number of the newest observation saying this provider works: a
    * successful probe, or a session runtime that reached `ready`. Deliberately
@@ -110,6 +115,7 @@ function emptyRecord(): ProviderRecord {
     install: { ...UNPROBED_PROVIDER_HEALTH.install },
     auth: { ...UNPROBED_PROVIDER_HEALTH.auth },
     models: { models: [], refreshedAt: null },
+    catalogAskedAt: null,
     lastProbe: null,
     healthySeq: 0,
     unhealthySeq: 0,
@@ -166,13 +172,6 @@ export class ProviderHealthMonitor {
   /** Strictly increasing, so two observations are always ordered. */
   private sequence = 0
   private stopped = false
-  /** Settles when the monitor is stopped, for the one wait `dispose()` cannot
-   * cut short: a catalog read from a provider's CLI rather than from the
-   * probe's own process. */
-  private halt: () => void = () => undefined
-  private readonly halted = new Promise<void>((resolve) => {
-    this.halt = resolve
-  })
   /** The probe process this monitor is holding right now, if any. The queue
    * has one slot, so there is never more than one. */
   private active: ProbeRuntime | undefined
@@ -299,8 +298,8 @@ export class ProviderHealthMonitor {
   }
 
   /** A `session/new` or `session/load` response carries the whole catalog for
-   * free, and stamps it fresh. That is why a provider with sessions running
-   * is never asked for its catalog by a probe: `catalogDue` finds it current. */
+   * free, and stamps it fresh. A probe only asks once that stamp has aged:
+   * `catalogDue` finds a catalog a session has just listed current. */
   observeModels(providerId: ProviderId, models: ModelListing | undefined): void {
     const record = this.records.get(providerId)
     if (!record) return
@@ -415,19 +414,20 @@ export class ProviderHealthMonitor {
    * A host can stop moments after it started, with the boot sweep's first CLI
    * still mid-handshake. Left alone that process would run out its whole
    * budget behind a monitor nobody is listening to, and hold the host open
-   * while it did. */
+   * while it did. Disposing the probe ends everything it started, a catalog
+   * read through the provider's CLI included. */
   stop(): void {
     this.stopped = true
     this.timer?.cancel()
     this.timer = undefined
     this.listeners.clear()
     this.awaitingCwd.clear()
-    this.halt()
     void this.active?.dispose().catch(() => undefined)
   }
 
   /** Resolves once no probe is running or queued. After `stop()` that is the
-   * moment every CLI this monitor spawned is gone. */
+   * moment every CLI this monitor spawned is gone: a probe leaves the queue
+   * only after its own `dispose()` has resolved. */
   drain(): Promise<void> {
     return this.queue
   }
@@ -437,7 +437,12 @@ export class ProviderHealthMonitor {
    * `'user'` always spends a probe: the user asked, and the answer they want
    * is a fresh one. `'boot'` and `'interval'` skip the spawn when a live
    * runtime already proves the same facts — spawning ~141 MB every 5 minutes
-   * to re-learn what an active session demonstrates is pure waste. */
+   * to re-learn what an active session demonstrates is pure waste.
+   *
+   * What a live runtime cannot prove is what the provider offers *now*: it
+   * listed its models once, when its session opened. So the shortcut holds
+   * only while that catalog is current, and a session that stays open costs
+   * one probe per catalog interval instead of none. */
   refresh(providerId: ProviderId, reason: ProviderHealthRefreshReason): Promise<ProviderHealth> {
     const record = this.records.get(providerId)
     if (!record) return Promise.resolve(UNPROBED_PROVIDER_HEALTH)
@@ -448,7 +453,11 @@ export class ProviderHealthMonitor {
     // answer the same question at another ~141 MB.
     if (this.external.has(providerId)) return Promise.resolve(this.health(providerId))
 
-    if (reason !== 'user' && this.derivableFromLiveRuntime(providerId, record)) {
+    if (
+      reason !== 'user' &&
+      this.derivableFromLiveRuntime(providerId, record) &&
+      !this.catalogWorthAProbe(record)
+    ) {
       record.lastProbe = {
         outcome: 'ok',
         at: new Date(this.now()).toISOString(),
@@ -580,9 +589,10 @@ export class ProviderHealthMonitor {
       return
     }
     if (!this.catalogDue(record)) return
+    record.catalogAskedAt = this.now()
     try {
       const listing = await withTimeout(
-        Promise.race([runtime.listModels(cwd), this.halted.then(() => undefined)]),
+        runtime.listModels(cwd),
         this.catalogTimeoutMs,
         () => new Error(`${providerId} did not list its models within ${this.catalogTimeoutMs}ms`),
       )
@@ -596,6 +606,17 @@ export class ProviderHealthMonitor {
         data: { providerId, error: message(error) },
       })
     }
+  }
+
+  /** Whether the catalog alone justifies spawning a probe nothing else
+   * calls for. Stricter than `catalogDue`: a provider that could not list its
+   * models a moment ago is asked again by the next probe that runs anyway,
+   * but is not given a process every five minutes to keep failing in. */
+  private catalogWorthAProbe(record: ProviderRecord): boolean {
+    if (!this.catalogDue(record)) return false
+    if (record.catalogAskedAt === null) return true
+    const sinceAsked = this.now() - record.catalogAskedAt
+    return sinceAsked < 0 || sinceAsked >= this.catalogRefreshIntervalMs
   }
 
   private catalogDue(record: ProviderRecord): boolean {

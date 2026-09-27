@@ -40,11 +40,22 @@ class FakeProbe implements ProbeRuntime {
   }
   listModels(): Promise<ModelListing> {
     this.listed += 1
-    return this.catalog()
+    // As the real probe does: disposing it ends a read still in flight.
+    return Promise.race([this.catalog(), this.gone])
   }
   async dispose(): Promise<void> {
     this.disposed += 1
+    this.leave(new Error('the probe was disposed'))
   }
+  private leave: (error: Error) => void = () => undefined
+  private readonly gone = (() => {
+    const gone = new Promise<never>((_resolve, reject) => {
+      this.leave = reject
+    })
+    // Most probes are disposed with no read in flight to hear about it.
+    gone.catch(() => undefined)
+    return gone
+  })()
 }
 
 class FakeProbeFactory implements ProbeRuntimeFactory {
@@ -560,8 +571,8 @@ describe('ProviderHealthMonitor model catalog', () => {
     expect(monitor.health('opencode').lastProbe?.outcome).toBe('ok')
   })
 
-  it('does not wait on a catalog still being read when it is stopped', async () => {
-    const { monitor, probes } = build()
+  it('ends a catalog read still in flight when it is stopped', async () => {
+    const { monitor, probes, log } = build()
     probes.catalogs.set('cursor', () => new Promise<ModelListing>(() => undefined))
     const refreshing = monitor.refresh('cursor', 'boot')
     await vi.waitFor(() => expect(probes.listedFor('cursor')).toBe(1))
@@ -571,6 +582,54 @@ describe('ProviderHealthMonitor model catalog', () => {
     await monitor.drain()
     expect(probes.created[0]?.disposed).toBeGreaterThan(0)
     expect(monitor.health('cursor').models.models).toHaveLength(0)
+    // Being stopped is not a provider failing to list its models.
+    expect(log).not.toHaveBeenCalledWith(expect.objectContaining({ level: 'warn' }))
+  })
+
+  it('re-reads the catalog of a provider whose session has stayed open', async () => {
+    const { monitor, probes, census, clock } = build()
+    census.cursor = { liveProcesses: 1, readyProcesses: 1, activeTurns: 0 }
+    await monitor.refresh('cursor', 'user')
+    monitor.observeRuntimeStarted('cursor')
+    // What the session listed when it opened.
+    monitor.observeModels('cursor', CATALOG)
+    expect(probes.countFor('cursor')).toBe(1)
+
+    // While that listing is current, the live session answers for everything.
+    await monitor.refresh('cursor', 'interval')
+    expect(probes.countFor('cursor')).toBe(1)
+
+    // Once it has aged the session cannot say what is offered now.
+    clock.value += 30 * 60 * 1000
+    probes.catalogs.set('cursor', async () => ({
+      availableModels: [...CATALOG.availableModels!, { id: 'gpt-5.4', displayName: 'GPT-5.4' }],
+    }))
+    await monitor.refresh('cursor', 'interval')
+    expect(probes.countFor('cursor')).toBe(2)
+    expect(monitor.health('cursor').models.models.map((model) => model.id)).toEqual([
+      'composer-2.5',
+      'gpt-5.4',
+    ])
+
+    await monitor.refresh('cursor', 'interval')
+    expect(probes.countFor('cursor')).toBe(2)
+  })
+
+  it('does not spend a probe every interval on a catalog that cannot be read', async () => {
+    const { monitor, probes, census, clock } = build()
+    census.cursor = { liveProcesses: 1, readyProcesses: 1, activeTurns: 0 }
+    await monitor.refresh('cursor', 'user')
+    monitor.observeRuntimeStarted('cursor')
+    expect(probes.listedFor('cursor')).toBe(1)
+
+    // Nothing was listed, but it was asked a moment ago.
+    await monitor.refresh('cursor', 'interval')
+    await monitor.refresh('cursor', 'interval')
+    expect(probes.countFor('cursor')).toBe(1)
+
+    clock.value += 30 * 60 * 1000
+    await monitor.refresh('cursor', 'interval')
+    expect(probes.countFor('cursor')).toBe(2)
   })
 
   it('says the provider is healthy before it spends time on the catalog', async () => {
