@@ -71,7 +71,7 @@ describe('resolveBrowsePath', () => {
   it('expands ~ to the home folder', () => {
     expect(resolveBrowsePath('~', home)).toBe(home)
     expect(resolveBrowsePath('~/code', home)).toBe(join(home, 'code'))
-    expect(resolveBrowsePath('~\\code', home, 'win32')).toBe(join(home, 'code'))
+    expect(resolveBrowsePath('~\\code', home)).toBe(join(home, 'code'))
   })
 
   it('refuses relative paths and parent segments', () => {

@@ -70,6 +70,58 @@ async function isFolder(parent: string, entry: Dirent): Promise<boolean> {
   }
 }
 
+/** Links followed at once while classifying a folder's children. */
+const LINK_STAT_CONCURRENCY = 32
+
+/**
+ * How long one scan of a folder answers further listings of it. Typing a
+ * prefix into a huge folder asks for it once per keystroke; they all share
+ * one read instead of each rescanning the whole folder.
+ */
+export const FOLDER_SCAN_REUSE_MS = 2_000
+
+const scans = new Map<string, Promise<string[] | null>>()
+
+/** A folder's child folder names, sorted; null when it may not be read. */
+function scanFolder(path: string): Promise<string[] | null> {
+  const shared = scans.get(path)
+  if (shared) return shared
+  const scan = readFolderNames(path)
+  scans.set(path, scan)
+  const forget = () => {
+    setTimeout(() => {
+      if (scans.get(path) === scan) scans.delete(path)
+    }, FOLDER_SCAN_REUSE_MS).unref()
+  }
+  scan.then(forget, () => scans.delete(path))
+  return scan
+}
+
+async function readFolderNames(path: string): Promise<string[] | null> {
+  let dirents: Dirent[]
+  try {
+    dirents = await readdir(path, { withFileTypes: true })
+  } catch (error) {
+    if (hasCode(error, 'EACCES', 'EPERM')) return null
+    throw error
+  }
+  const names: string[] = []
+  const links: Dirent[] = []
+  for (const entry of dirents) {
+    if (entry.isDirectory()) names.push(entry.name)
+    else if (entry.isSymbolicLink()) links.push(entry)
+  }
+  // Links need a stat each; a bounded few at a time, not one per link at once.
+  for (let start = 0; start < links.length; start += LINK_STAT_CONCURRENCY) {
+    const batch = links.slice(start, start + LINK_STAT_CONCURRENCY)
+    const results = await Promise.all(batch.map((entry) => isFolder(path, entry)))
+    batch.forEach((entry, index) => {
+      if (results[index]) names.push(entry.name)
+    })
+  }
+  return names.sort(byName.compare)
+}
+
 /**
  * Bytes of entries one listing may carry. A listing is one socket frame, and
  * a frame past the socket's 1 MiB slow-consumer budget costs the client its
@@ -100,21 +152,10 @@ export async function listFolder(
   }
   const parent = dirname(path)
   const parentPath = parent === path ? null : parent
-  let dirents: Dirent[]
-  try {
-    dirents = await readdir(path, { withFileTypes: true })
-  } catch (error) {
-    if (hasCode(error, 'EACCES', 'EPERM')) {
-      return { path, parentPath, entries: [], omitted: 0, readable: false }
-    }
-    throw error
-  }
+  const folders = await scanFolder(path)
+  if (folders === null) return { path, parentPath, entries: [], omitted: 0, readable: false }
   const prefix = options.prefix?.toLowerCase()
-  if (prefix) dirents = dirents.filter((entry) => entry.name.toLowerCase().startsWith(prefix))
-  const folders = await Promise.all(
-    dirents.map(async (entry) => ((await isFolder(path, entry)) ? entry.name : null)),
-  )
-  const names = folders.filter((name): name is string => name !== null).sort(byName.compare)
+  const names = prefix ? folders.filter((name) => name.toLowerCase().startsWith(prefix)) : folders
   const maxBytes = options.maxBytes ?? BROWSE_MAX_BYTES
   const entries: FilesystemEntry[] = []
   let bytes = 0
