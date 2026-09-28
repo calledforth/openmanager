@@ -1,0 +1,241 @@
+# Running the environment server in the background on Linux and WSL
+
+On Linux, and on WSL distros with systemd turned on, the environment server
+can install itself as a **systemd user unit**. After that the server runs in
+the background as you, starts on its own, restarts if it crashes, and keeps
+running when you close your terminals. No root and no system-wide unit are
+needed. The reasoning behind this shape is in
+[decisions/linux-systemd-user-unit.md](./decisions/linux-systemd-user-unit.md);
+native Windows uses a logon task instead ([windows-startup.md](./windows-startup.md)).
+The commands are the same on both.
+
+## When the server runs
+
+|                                 | Native Linux                                                 | WSL                                                                                                                |
+| ------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| Starts                          | At boot (linger on), or at your first login                  | Whenever the distro starts: opening a WSL terminal, or any `wsl.exe` command                                       |
+| Closing terminals / logging out | Keeps running (linger on)                                    | Keeps running only while the distro does; by default Windows stops the distro ~15 s after the last terminal closes |
+| Crash                           | Restarted after 10 s; gives up after 5 failures in 5 minutes | Same                                                                                                               |
+| Stops                           | `service stop`/`uninstall`, shutdown                         | `service stop`/`uninstall`, `wsl.exe --shutdown`/`--terminate`, the distro idling out, Windows shutdown            |
+
+`install` turns on **linger** for your user (`loginctl enable-linger <you>`),
+which is what lets the unit start at boot and outlive your login sessions on a
+normal Linux machine. On WSL the distro itself is the limit: see
+[Keep the WSL distro running](#keep-the-wsl-distro-running).
+
+## Prerequisites
+
+- systemd as the init system, with a user manager for your account
+  (`systemctl --user status` works). Most desktop and server distributions
+  have this; containers usually do not.
+- Node 24 LTS on disk. The unit records the absolute path of the `node` that
+  runs `service install`, so install with the Node you intend to keep. nvm
+  and fnm paths are fine as long as that version stays installed; after
+  `nvm uninstall` of that version, run `install` again.
+- A built server: the unit runs `apps/server/dist/main.js`.
+- Run the commands as yourself, from a normal login shell, not with `sudo`.
+  The service runs as whoever installs it, and provider CLI logins
+  (`~/.claude`, `~/.codex`, ...) are per user.
+
+### WSL: turn systemd on
+
+WSL starts distros without systemd unless it is asked for. Check with:
+
+```sh
+ps -p 1 -o comm=    # prints "systemd" when it is on
+```
+
+If it prints something else (`init`), add this to `/etc/wsl.conf` inside the
+distro (with `sudo`):
+
+```ini
+[boot]
+systemd=true
+```
+
+Then run `wsl.exe --shutdown` from Windows (this stops every running distro)
+and open the distro again. systemd support needs WSL 0.67.6 or later
+(`wsl.exe --version`); the Microsoft Store build of WSL has it.
+
+Without systemd, every `service` command stops before changing anything and
+prints these same steps. Nothing is half-installed.
+
+On WSL, keep the repository on the Linux filesystem (for example
+`~/src/openmanager`), not under `/mnt/c`: installs and the server's file
+access are far faster there, and Windows-side sync tools such as OneDrive do
+not interfere.
+
+## Install
+
+From the repository root, inside Linux or the WSL distro:
+
+```sh
+pnpm install
+pnpm --filter @openmanager/server build
+node apps/server/dist/main.js service install
+```
+
+`install` accepts the normal server flags and bakes the resolved values into
+the unit, exactly as on Windows:
+
+```sh
+node apps/server/dist/main.js service install --port 43120 --workspace ~/src/my-repo --log-level debug
+```
+
+| Flag                                 | Effect in the unit                                                                   |
+| ------------------------------------ | ------------------------------------------------------------------------------------ |
+| `--port`                             | Fixed listen port. Port `0` is refused because the service could not be found again. |
+| `--data-dir`                         | Identity, SQLite, the owner credential and logs. Also the unit's working directory.  |
+| `--log-level`                        | Server log level.                                                                    |
+| `--workspace` (repeatable)           | Folders registered on every start.                                                   |
+| `--allowed-origin`, `--allowed-host` | Browser origins and proxy hosts, as for a manual start.                              |
+| `--log-file`                         | Log destination. Defaults to `<data-dir>/logs/server.log`.                           |
+
+The environment variables behind these flags (`OPENMANAGER_PORT`,
+`OPENMANAGER_DATA_DIR`, `OPENMANAGER_LOG_LEVEL`, `OPENMANAGER_ALLOWED_ORIGINS`,
+`OPENMANAGER_ALLOWED_HOSTS`, `OPENMANAGER_WORKSPACES`, `OPENMANAGER_LOG_FILE`)
+are honoured the same way flags are, and likewise frozen into the unit as
+flags. No other variable of the installing shell is carried over apart from
+`PATH` (below): the service does not see `OPENMANAGER_LOCAL_OWNER_CLAIM_KEY`,
+so `/local-owner` stays hidden, nor provider settings you export in your
+shell. Put environment-only settings in a drop-in.
+
+What `install` does, in order:
+
+1. Refuses if you are root, if systemd is not running (with the WSL steps
+   above when it is WSL), or if `systemctl --user` cannot reach your user
+   manager (typically a shell entered through `sudo` or `su`).
+2. If the unit already exists, stops its server so the new one can bind.
+3. Refuses if another process still answers on the chosen port, such as a
+   `pnpm dev:web` server. Stop it or pick another `--port`.
+4. Writes `~/.config/systemd/user/openmanager-server.service`, runs
+   `systemctl --user daemon-reload`, checks that systemd loaded the file, and
+   runs `systemctl --user enable openmanager-server.service`. The directory
+   follows the user manager's `XDG_CONFIG_HOME` (from
+   `systemctl --user show-environment`), not your shell's, so a value set only
+   in a shell profile cannot hide the unit from systemd or from the other
+   `service` commands.
+5. Turns linger on if it is off. If your system's policy refuses that, install
+   still finishes and prints the `sudo loginctl enable-linger <you>` command to
+   run; until then the server stops when you log out.
+6. On WSL, reports whether the distro will stay running (below).
+7. Starts the unit and waits up to 20 seconds for `GET /health` to answer.
+
+### What the unit contains
+
+The unit runs `<node> <dist/main.js> <flags>` with `Type=exec`,
+`Restart=on-failure` after 10 seconds, at most 5 starts in 5 minutes,
+`KillMode=mixed` (the server gets SIGTERM and can end its provider processes
+itself; anything left after 15 seconds is killed) and `WantedBy=default.target`.
+
+It also sets **`PATH` to the installing shell's `PATH`**, with the Node
+directory first. systemd's own `PATH` for user services is minimal and would
+miss nvm, `~/.local/bin` and npm global folders, where Node and the provider
+CLIs usually live. Rerun `install` after installing a provider CLI somewhere
+new. On WSL this includes the Windows folders WSL appends to `PATH`, exactly
+as in your terminal.
+
+To add anything else, such as an environment variable a provider needs, use a
+drop-in rather than editing the unit, because `install` rewrites the unit file:
+
+```sh
+systemctl --user edit openmanager-server
+# [Service]
+# Environment=SOME_VARIABLE=value
+node apps/server/dist/main.js service stop && node apps/server/dist/main.js service start
+```
+
+Drop-ins live in `~/.config/systemd/user/openmanager-server.service.d/`,
+survive reinstalls, and are left in place by `uninstall`.
+
+## Keep the WSL distro running
+
+WSL shuts a distro down about 15 seconds after its last Windows-side process
+exits, however many systemd services are running inside it. Closing the last
+WSL terminal therefore stops the server shortly after. To keep the distro, and
+the server, running, set this in `%UserProfile%\.wslconfig` on Windows:
+
+```ini
+[general]
+instanceIdleTimeout=-1
+```
+
+and run `wsl.exe --shutdown` once so WSL picks it up. The setting applies to
+every distro and keeps the WSL VM's memory reserved while a distro runs. When
+you are done with the environment for the day, `wsl.exe --terminate <distro>`
+stops it.
+
+`install` and `status` read this file through WSL interop and say which case
+you are in; if interop is turned off they print the advice regardless.
+
+Nothing starts WSL when Windows boots or you sign in. With the setting above
+the server comes up as soon as anything starts the distro (opening a WSL
+terminal, or a `wsl.exe` command) and then stays up.
+
+Inside WSL there is exactly one login session per distro boot, shared by all
+terminals, so "logging out" of WSL means the distro stopping. Linger is still
+turned on so the unit behaves the same if that ever changes.
+
+## Check, start, stop, remove
+
+```sh
+node apps/server/dist/main.js service status
+node apps/server/dist/main.js service start
+node apps/server/dist/main.js service stop
+node apps/server/dist/main.js service uninstall
+```
+
+- `status` prints the unit state (for example `active, running; enabled`),
+  a warning if systemd cannot use the unit file, the last exit when it is not
+  running, the restart count after crashes,
+  linger, the WSL idle setting, whether `/health` answers (and whether the
+  answer comes from the unit or from some other server on the port), the data
+  directory and the log file. Exit code `0` means the unit is running and its
+  server answered.
+- `start` clears a previous crash-loop `failed` state and starts the unit. It
+  refuses while another server holds the port.
+- `stop` stops the server (SIGTERM, a clean shutdown) but leaves the unit
+  installed and enabled; the next boot, login or distro start brings it back.
+- `uninstall` stops the server, disables and deletes the unit and reloads
+  systemd. Linger stays on, since other user services may rely on it; turn it
+  off with `loginctl disable-linger <you>` if nothing else needs it. The data
+  directory is left alone; delete it by hand for a clean slate.
+
+`systemctl --user status openmanager-server` and
+`journalctl --user -u openmanager-server` work too; they show systemd's view
+(starts, stops, crashes).
+
+## Connecting a UI
+
+Clients authenticate exactly as with a manual start. The server publishes the
+owner credential to `<data-dir>/owner-credential` (mode `0600`) on first
+start. Paste the endpoint `http://127.0.0.1:<port>` and that credential into
+the web shell's connection form, or pass them to the desktop app as described
+in [windows-startup.md](./windows-startup.md#connecting-a-ui-to-the-background-server).
+
+On WSL with the default NAT networking, Windows reaches the server at
+`http://127.0.0.1:<port>` through localhost forwarding. The WSL server has its
+own data directory (`~/.openmanager` inside the distro) and so its own owner
+credential; read it with `cat ~/.openmanager/owner-credential` in WSL. If you
+also run the Windows logon task, give the two servers different ports so it
+is clear which one a Windows client reaches.
+
+## Logs
+
+The server writes one JSON record per line to the log file (default
+`<data-dir>/logs/server.log`), including startup failures. At 10 MiB the file
+is renamed to `server.log.1` at the next start. systemd's journal
+(`journalctl --user -u openmanager-server`) records the unit's own events:
+start, stop, exit status and restarts.
+
+## Limits and follow-ups
+
+- The logout and boot behaviour on native Linux is systemd's documented linger
+  behaviour; it was verified end to end on WSL (Ubuntu 24.04, systemd 255),
+  not yet on a native Linux machine.
+- Starting the WSL distro at Windows sign-in, so a WSL environment is ready
+  without opening a terminal, is separate work.
+- Moving Node or the repository breaks the recorded paths: `status` shows the
+  unit as failed and `install` again fixes it.
+- An update handoff and richer supervision (log viewer, restart command) are
+  tracked with the Windows equivalents.

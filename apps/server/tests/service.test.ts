@@ -6,10 +6,10 @@ import {
   type RunResult,
   type ServiceCommandDeps,
 } from '../src/service/cli.js'
+import { flagValue } from '../src/service/server-arguments.js'
 import {
   buildTaskXml,
   encodeTaskXml,
-  flagValue,
   parseTaskStatus,
   parseWindowsCommandLine,
   quoteWindowsArgument,
@@ -135,6 +135,8 @@ function fakeSystem(options: {
   otherServer?: boolean
   /** Task Scheduler itself is unreachable. */
   queryFails?: boolean
+  /** The PowerShell process lookup fails. */
+  processQueryFails?: boolean
 }) {
   const calls: string[][] = []
   const out: string[] = []
@@ -194,6 +196,9 @@ function fakeSystem(options: {
       }
     }
     if (file === 'powershell.exe') {
+      if (options.processQueryFails) {
+        return { code: 1, stdout: '', stderr: 'Get-CimInstance : Access denied' }
+      }
       const pids = (pidQueue.length > 1 ? pidQueue.shift() : pidQueue[0]) ?? []
       return { code: 0, stdout: pids.map(String).join('\r\n'), stderr: '' }
     }
@@ -238,11 +243,11 @@ function fakeSystem(options: {
 }
 
 describe('service commands', () => {
-  it('refuses to run anywhere but Windows, before touching the system', async () => {
+  it('refuses platforms without a supported supervisor, before touching the system', async () => {
     const system = fakeSystem({})
-    const code = await runServiceCommand(['install'], { ...system.deps, platform: 'linux' })
+    const code = await runServiceCommand(['install'], { ...system.deps, platform: 'darwin' })
     expect(code).toBe(1)
-    expect(system.err[0]).toContain('only run on Windows')
+    expect(system.err[0]).toContain('not darwin')
     expect(system.calls).toEqual([])
   })
 
@@ -446,9 +451,50 @@ describe('service commands', () => {
       'Log file:  C:\\logs\\server.log',
     ])
 
-    const up = fakeSystem({ registered: existing, healthy: () => true })
+    const up = fakeSystem({ registered: existing, healthy: () => true, pids: [[4242]] })
     expect(await runServiceCommand(['status'], up.deps)).toBe(0)
     expect(up.out[2]).toBe('Server:    http://127.0.0.1:43120 (answering /health)')
+
+    // Something else holds the port while the task's server is not running.
+    const foreign = fakeSystem({ registered: existing, healthy: () => true })
+    expect(await runServiceCommand(['status'], foreign.deps)).toBe(1)
+    expect(foreign.out[2]).toBe(
+      'Server:    http://127.0.0.1:43120 (answering /health, but not from the logon task)',
+    )
+  })
+
+  it('a failed process lookup falls back to /health instead of blaming another server', async () => {
+    const existing = buildTaskXml({
+      userId: 'MACHINE\\ada',
+      command: 'conhost.exe',
+      arguments: ['--headless', NODE, ENTRY, '--port', '43120'].map(quoteWindowsArgument).join(' '),
+      workingDirectory: DATA_DIR,
+    })
+    const system = fakeSystem({
+      registered: existing,
+      healthy: () => true,
+      processQueryFails: true,
+    })
+    expect(await runServiceCommand(['start'], system.deps)).toBe(0)
+    expect(system.out.at(-1)).toContain('already up')
+    expect(await runServiceCommand(['status'], system.deps)).toBe(0)
+    expect(system.out).toContain(
+      "Server:    http://127.0.0.1:43120 (answering /health; could not confirm it is the logon task's server)",
+    )
+    expect(system.err).toEqual([])
+  })
+
+  it('start refuses when another server answers on the task port', async () => {
+    const existing = buildTaskXml({
+      userId: 'MACHINE\\ada',
+      command: 'conhost.exe',
+      arguments: ['--headless', NODE, ENTRY, '--port', '43120'].map(quoteWindowsArgument).join(' '),
+      workingDirectory: DATA_DIR,
+    })
+    const system = fakeSystem({ registered: existing, healthy: () => true })
+    expect(await runServiceCommand(['start'], system.deps)).toBe(1)
+    expect(system.err[0]).toContain('Something other than the logon task answers')
+    expect(system.calls.map((call) => call[1])).not.toContain('/Run')
   })
 
   it('start and stop need a registered task; start is a no-op when already healthy', async () => {
@@ -463,7 +509,8 @@ describe('service commands', () => {
       arguments: ['--headless', NODE, ENTRY, '--port', '43120'].map(quoteWindowsArgument).join(' '),
       workingDirectory: DATA_DIR,
     })
-    const system = fakeSystem({ registered: existing, pids: [[4242], []] })
+    // Lookups: the second start sees the server, stop sees it once, then it is gone.
+    const system = fakeSystem({ registered: existing, pids: [[4242], [4242], []] })
     expect(await runServiceCommand(['start'], system.deps)).toBe(0)
     expect(system.out.at(-1)).toBe('Environment server is up at http://127.0.0.1:43120.')
     expect(await runServiceCommand(['start'], system.deps)).toBe(0)

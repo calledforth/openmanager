@@ -8,8 +8,8 @@ password are needed. The reasoning behind this shape (and why it is not a
 Windows service) is in
 [decisions/windows-startup-task.md](./decisions/windows-startup-task.md).
 
-Linux and WSL are handled separately with a systemd user unit; the `service`
-commands below refuse to run there.
+Linux and WSL use the same `service` commands, which install a systemd user
+unit there instead; see [linux-systemd.md](./linux-systemd.md).
 
 ## Prerequisites
 
@@ -47,8 +47,14 @@ node apps/server/dist/main.js service install --port 43120 --workspace C:\src\my
 | `--allowed-origin`, `--allowed-host` | Browser origins and proxy hosts, as for a manual start.                               |
 | `--log-file`                         | Log destination. Defaults to `<data-dir>\logs\server.log`.                            |
 
-The `OPENMANAGER_*` environment variables of the installing shell are honoured
-the same way flags are, and likewise frozen into the task.
+The environment variables behind these flags (`OPENMANAGER_PORT`,
+`OPENMANAGER_DATA_DIR`, `OPENMANAGER_LOG_LEVEL`, `OPENMANAGER_ALLOWED_ORIGINS`,
+`OPENMANAGER_ALLOWED_HOSTS`, `OPENMANAGER_WORKSPACES`, `OPENMANAGER_LOG_FILE`)
+are honoured the same way flags are, and likewise frozen into the task as
+flags. Anything else set only in the installing shell, such as
+`OPENMANAGER_LOCAL_OWNER_CLAIM_KEY`, is not: the task runs with your normal
+user environment. Set persistent variables as user environment variables in
+Windows instead.
 
 What `install` does, in order:
 
@@ -76,9 +82,11 @@ node apps/server/dist/main.js service uninstall
 ```
 
 - `status` prints the task state, the last run result, whether `/health`
-  answers, the data directory and the log file. Exit code `0` means the server
-  answered. Task Scheduler itself shows the same task under
-  `Task Scheduler Library › OpenManager`.
+  answers (and whether the answer comes from the task's server or from some
+  other server on the port), the data directory and the log file. Exit code
+  `0` means the task's server is running and answered. Task Scheduler itself
+  shows the same task under `Task Scheduler Library › OpenManager`.
+- `start` refuses while another server holds the task's port.
 - `stop` ends the running server but leaves the task registered; the next
   sign-in (or `start`) brings it back.
 - `uninstall` stops the server and removes the task. The data directory,

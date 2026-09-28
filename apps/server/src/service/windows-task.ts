@@ -1,4 +1,5 @@
 import type { ServerConfig } from '../config.ts'
+import { serverArguments } from './server-arguments.ts'
 
 /**
  * Pure helpers for the Windows logon task that keeps the environment server
@@ -98,24 +99,11 @@ export function escapeXml(text: string): string {
 }
 
 /**
- * The server flags baked into the task. Everything the installing shell
- * resolved (flags, environment variables, defaults) becomes explicit, so the
- * task does not depend on the environment Task Scheduler happens to provide.
+ * The server flags baked into the task: the shared service flags plus the
+ * marker, which also makes the server follow its console host.
  */
 export function serviceArguments(config: ServerConfig, logFile: string): string[] {
-  const args = [
-    '--port',
-    String(config.port),
-    '--data-dir',
-    config.dataDir,
-    '--log-level',
-    config.logLevel,
-  ]
-  for (const origin of config.allowedOrigins ?? []) args.push('--allowed-origin', origin)
-  for (const host of config.allowedHosts ?? []) args.push('--allowed-host', host)
-  for (const workspace of config.workspaces ?? []) args.push('--workspace', workspace)
-  args.push('--log-file', logFile, SERVICE_MARKER_FLAG)
-  return args
+  return [...serverArguments(config, logFile), SERVICE_MARKER_FLAG]
 }
 
 export interface TaskDefinition {
@@ -222,14 +210,6 @@ export function readTaskArguments(taskXml: string): string | undefined {
         return "'"
     }
   })
-}
-
-/** Value that follows `flag` in an argument list, or `undefined`. */
-export function flagValue(argv: readonly string[], flag: string): string | undefined {
-  const index = argv.indexOf(flag)
-  if (index === -1) return undefined
-  const value = argv[index + 1]
-  return value !== undefined && !value.startsWith('--') ? value : undefined
 }
 
 /** One quoted-CSV record as `schtasks /FO CSV` prints it. */

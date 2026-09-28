@@ -32,11 +32,12 @@ pnpm --filter @openmanager/server build
 pnpm --filter @openmanager/server start
 ```
 
-## Run at sign-in on Windows
+## Run in the background
 
-On native Windows the built server can register itself as a per-user logon
-task, so the environment is up after you sign in and stays up when the desktop
-app or a browser tab closes:
+The built server can install itself as a background service, so the
+environment is up without a terminal and stays up when the desktop app or a
+browser tab closes. On native Windows that is a per-user logon task; on Linux
+and WSL it is a systemd user unit. The commands are the same:
 
 ```sh
 pnpm --filter @openmanager/server build
@@ -46,9 +47,11 @@ node apps/server/dist/main.js service uninstall
 ```
 
 `install` accepts the same flags as the server (`--port`, `--data-dir`,
-`--workspace`, ...) and bakes them into the task. The walkthrough, what the
-task does, and its limits are in [docs/windows-startup.md](../../docs/windows-startup.md).
-Linux and WSL get a systemd user unit in separate work.
+`--workspace`, ...) and bakes them into the service. The walkthroughs, what
+each service does, and their limits are in
+[docs/windows-startup.md](../../docs/windows-startup.md) and
+[docs/linux-systemd.md](../../docs/linux-systemd.md). WSL needs systemd turned
+on in the distro.
 
 ## Configuration
 

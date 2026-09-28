@@ -1,169 +1,44 @@
-import { spawn } from 'node:child_process'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
-import { tmpdir, userInfo } from 'node:os'
-import { join, win32 } from 'node:path'
 import { loadConfig, type ServerConfig } from '../config.ts'
 import {
-  buildTaskXml,
-  encodeTaskXml,
-  flagValue,
-  parseCsvRecord,
-  parseTaskStatus,
-  parseWindowsCommandLine,
-  quoteWindowsArgument,
-  readTaskArguments,
-  SERVICE_MARKER_FLAG,
-  serviceArguments,
-  TASK_NAME,
-  type TaskStatus,
-} from './windows-task.ts'
+  defaultLogFile,
+  resolveDeps,
+  ServiceError,
+  type Context,
+  type ServiceBackend,
+  type ServiceCommandDeps,
+} from './context.ts'
+import { createSystemdBackend } from './systemd.ts'
+import { createWindowsBackend } from './windows.ts'
 
 /**
  * `openmanager-server service <install|uninstall|start|stop|status>`.
  *
- * Windows only for now: the server is registered as a per-user logon task
- * (docs/windows-startup.md). Linux and WSL get a systemd user unit in
- * separate work. Every system interaction goes through `deps` so the command
- * flow is testable without Task Scheduler.
+ * One command surface, two supervisors: a per-user logon task on Windows
+ * (docs/windows-startup.md) and a systemd user unit on Linux and WSL
+ * (docs/linux-systemd.md). This file owns the flow both share; the backends
+ * only talk to their own supervisor.
  */
 
-export interface RunResult {
-  code: number | null
-  stdout: string
-  stderr: string
-}
-
-export interface ServiceCommandDeps {
-  /** Absolute path of the server entry the task should run (normally `dist/main.js`). */
-  entry: string
-  platform?: NodeJS.Platform
-  env?: NodeJS.ProcessEnv
-  /** Node binary baked into the task. Defaults to the one running this command. */
-  execPath?: string
-  run?: (file: string, args: readonly string[]) => Promise<RunResult>
-  writeTempFile?: (name: string, data: Buffer) => Promise<string>
-  removeFile?: (path: string) => Promise<void>
-  ensureDir?: (path: string) => Promise<void>
-  fetch?: typeof fetch
-  sleep?: (ms: number) => Promise<void>
-  /** Clock for the health and stop deadlines; tests pair it with `sleep`. */
-  now?: () => number
-  stdout?: (line: string) => void
-  stderr?: (line: string) => void
-}
+export { defaultLogFile, type RunResult, type ServiceCommandDeps } from './context.ts'
 
 export const HEALTH_TIMEOUT_MS = 20_000
-export const STOP_TIMEOUT_MS = 10_000
 const POLL_INTERVAL_MS = 500
-
-/** Task Scheduler result codes a user is likely to see in `status`. */
-const LAST_RESULT_HINTS: Record<string, string> = {
-  '0': 'last run exited cleanly',
-  '1': 'last run failed; see the log file',
-  '267009': 'currently running',
-  '267011': 'has not run yet',
-  '267014': 'last run was stopped',
-  '2147942402': 'program not found; reinstall after moving Node or the repository',
-  '2147942667': 'working directory missing; reinstall',
-}
 
 export const SERVICE_USAGE = [
   'Usage: node dist/main.js service <command> [server flags]',
   '',
   'Commands:',
-  '  install [flags]  Register the Windows logon task with the given server flags and start it',
-  '  uninstall        Stop the server and remove the logon task',
-  '  start            Start the registered task now',
-  '  stop             Stop the running server (the task stays registered)',
-  '  status           Show task state and whether the server answers /health',
+  '  install [flags]  Install the background service with the given server flags and start it',
+  '                   (a logon task on Windows, a systemd user unit on Linux and WSL)',
+  '  uninstall        Stop the server and remove the service',
+  '  start            Start the installed service now',
+  '  stop             Stop the running server (the service stays installed)',
+  '  status           Show the service state and whether the server answers /health',
   '',
   'Server flags for install are the normal ones (--port, --data-dir, --log-level,',
   '--allowed-origin, --allowed-host, --workspace) plus --log-file. Values are baked',
-  'into the task; rerun install to change them.',
+  'into the service; rerun install to change them.',
 ]
-
-function defaultRun(file: string, args: readonly string[]): Promise<RunResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(file, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
-    let stdout = ''
-    let stderr = ''
-    child.stdout.on('data', (chunk) => {
-      stdout += String(chunk)
-    })
-    child.stderr.on('data', (chunk) => {
-      stderr += String(chunk)
-    })
-    child.once('error', reject)
-    child.once('close', (code) => resolve({ code, stdout, stderr }))
-  })
-}
-
-async function defaultWriteTempFile(name: string, data: Buffer): Promise<string> {
-  const path = join(tmpdir(), name)
-  await writeFile(path, data)
-  return path
-}
-
-interface Context extends Required<Omit<ServiceCommandDeps, 'env' | 'platform'>> {
-  env: NodeJS.ProcessEnv
-  platform: NodeJS.Platform
-}
-
-function resolveDeps(deps: ServiceCommandDeps): Context {
-  return {
-    entry: deps.entry,
-    platform: deps.platform ?? process.platform,
-    env: deps.env ?? process.env,
-    execPath: deps.execPath ?? process.execPath,
-    run: deps.run ?? defaultRun,
-    writeTempFile: deps.writeTempFile ?? defaultWriteTempFile,
-    removeFile: deps.removeFile ?? ((path) => rm(path, { force: true })),
-    ensureDir: deps.ensureDir ?? (async (path) => void (await mkdir(path, { recursive: true }))),
-    fetch: deps.fetch ?? fetch,
-    sleep: deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
-    now: deps.now ?? Date.now,
-    stdout: deps.stdout ?? ((line) => console.log(line)),
-    stderr: deps.stderr ?? ((line) => console.error(line)),
-  }
-}
-
-class ServiceError extends Error {}
-
-function schtasks(context: Context, args: readonly string[]): Promise<RunResult> {
-  return context.run('schtasks.exe', args)
-}
-
-function trimOutput(result: RunResult): string {
-  return `${result.stderr}${result.stdout}`.trim().replace(/\s+/g, ' ')
-}
-
-/**
- * Registered task XML, or `undefined` when Task Scheduler has no such task.
- * Absence is decided from the full task list (which succeeds whether or not
- * our task exists) rather than from a failed `/TN` query, whose error text is
- * locale-specific and also covers permission and service failures. Those are
- * surfaced instead of being mistaken for "not installed".
- */
-async function readTaskXml(context: Context): Promise<string | undefined> {
-  const listing = await schtasks(context, ['/Query', '/FO', 'CSV', '/NH'])
-  if (listing.code !== 0) {
-    throw new ServiceError(`Task Scheduler could not be queried: ${trimOutput(listing)}`)
-  }
-  const registered = listing.stdout
-    .split(/\r?\n/)
-    .some((line) => parseCsvRecord(line.trim())[0] === TASK_NAME)
-  if (!registered) return undefined
-  const result = await schtasks(context, ['/Query', '/TN', TASK_NAME, '/XML'])
-  if (result.code !== 0) {
-    throw new ServiceError(`Task Scheduler could not read ${TASK_NAME}: ${trimOutput(result)}`)
-  }
-  return result.stdout
-}
-
-async function readTaskStatus(context: Context): Promise<TaskStatus | undefined> {
-  const result = await schtasks(context, ['/Query', '/TN', TASK_NAME, '/FO', 'CSV', '/V', '/NH'])
-  return result.code === 0 ? parseTaskStatus(result.stdout) : undefined
-}
 
 async function isHealthy(context: Context, port: number): Promise<boolean> {
   try {
@@ -187,89 +62,25 @@ async function waitForHealth(context: Context, port: number): Promise<boolean> {
   return false
 }
 
-/**
- * PIDs of node processes started from this entry by the task. Task Scheduler
- * only knows the console host, so stopping goes through the command line: the
- * entry path plus the marker flag identify our server and nothing else.
- */
-async function findServerProcesses(context: Context): Promise<number[]> {
-  const needle = context.entry.replace(/'/g, "''")
-  const script = [
-    `$needle = '${needle}'`,
-    `$marker = '${SERVICE_MARKER_FLAG}'`,
-    'Get-CimInstance Win32_Process -Filter "Name = \'node.exe\'" |',
-    '  Where-Object { $_.CommandLine -and $_.CommandLine.Contains($needle) -and $_.CommandLine.Contains($marker) } |',
-    '  ForEach-Object { $_.ProcessId }',
-  ].join('\n')
-  const result = await context.run('powershell.exe', [
-    '-NoProfile',
-    '-NonInteractive',
-    '-ExecutionPolicy',
-    'Bypass',
-    '-EncodedCommand',
-    Buffer.from(script, 'utf16le').toString('base64'),
-  ])
-  if (result.code !== 0) return []
-  return result.stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => /^\d+$/.test(line))
-    .map(Number)
-}
-
-/**
- * Stop the running server. `/End` ends the console host; the server notices
- * its parent is gone and shuts itself down. Anything still alive after the
- * grace period is terminated outright.
- */
-async function stopServer(context: Context): Promise<'stopped' | 'not_running'> {
-  await schtasks(context, ['/End', '/TN', TASK_NAME])
-  let pids = await findServerProcesses(context)
-  if (pids.length === 0) return 'not_running'
-  const deadline = context.now() + STOP_TIMEOUT_MS
-  while (pids.length > 0 && context.now() < deadline) {
-    await context.sleep(POLL_INTERVAL_MS)
-    pids = await findServerProcesses(context)
+async function startAndWait(
+  context: Context,
+  backend: ServiceBackend,
+  port: number,
+  logFile: string | undefined,
+): Promise<void> {
+  await backend.start()
+  if (await waitForHealth(context, port)) {
+    context.stdout(`Environment server is up at http://127.0.0.1:${port}.`)
+    return
   }
-  for (const pid of pids) {
-    await context.run('taskkill.exe', ['/PID', String(pid), '/T', '/F'])
-  }
-  return 'stopped'
+  throw new ServiceError(
+    `The ${backend.kind} started but nothing answered on http://127.0.0.1:${port} within ${
+      HEALTH_TIMEOUT_MS / 1000
+    }s.${logFile ? ` Check ${logFile}.` : ''}`,
+  )
 }
 
-function currentUserId(context: Context): string {
-  const { USERDOMAIN, USERNAME } = context.env
-  if (USERDOMAIN && USERNAME) return `${USERDOMAIN}\\${USERNAME}`
-  return userInfo().username
-}
-
-function consoleHostPath(context: Context): string {
-  const root = context.env.SystemRoot ?? context.env.windir ?? 'C:\\Windows'
-  // A Windows path even when the tests run elsewhere.
-  return win32.join(root, 'System32', 'conhost.exe')
-}
-
-export function defaultLogFile(dataDir: string): string {
-  return join(dataDir, 'logs', 'server.log')
-}
-
-interface InstalledTask {
-  port: number | undefined
-  dataDir: string | undefined
-  logFile: string | undefined
-}
-
-function describeInstalled(taskXml: string): InstalledTask {
-  const argv = parseWindowsCommandLine(readTaskArguments(taskXml) ?? '')
-  const port = flagValue(argv, '--port')
-  return {
-    port: port !== undefined && /^\d+$/.test(port) ? Number(port) : undefined,
-    dataDir: flagValue(argv, '--data-dir'),
-    logFile: flagValue(argv, '--log-file'),
-  }
-}
-
-async function install(context: Context, flags: string[]): Promise<void> {
+async function install(context: Context, backend: ServiceBackend, flags: string[]): Promise<void> {
   let config: ServerConfig
   try {
     config = loadConfig(flags, context.env)
@@ -286,10 +97,11 @@ async function install(context: Context, flags: string[]): Promise<void> {
   }
   const logFile = config.logFile ?? defaultLogFile(config.dataDir)
 
-  const existing = await readTaskXml(context)
+  await backend.preflight()
+  const existing = await backend.read()
   if (existing) {
-    context.stdout('Replacing the existing logon task.')
-    await stopServer(context)
+    context.stdout(`Replacing the existing ${backend.kind}.`)
+    await backend.stop()
   }
   // Checked after the old server is gone, so a replacement cannot mistake an
   // unrelated server on the target port for its own successful start.
@@ -300,66 +112,28 @@ async function install(context: Context, flags: string[]): Promise<void> {
   }
 
   await context.ensureDir(config.dataDir)
-  const command = consoleHostPath(context)
-  const args = ['--headless', context.execPath, context.entry, ...serviceArguments(config, logFile)]
-  const xml = buildTaskXml({
-    userId: currentUserId(context),
-    command,
-    arguments: args.map(quoteWindowsArgument).join(' '),
-    workingDirectory: config.dataDir,
-  })
-  const xmlPath = await context.writeTempFile(
-    `openmanager-task-${process.pid}.xml`,
-    encodeTaskXml(xml),
-  )
-  try {
-    const created = await schtasks(context, ['/Create', '/TN', TASK_NAME, '/XML', xmlPath, '/F'])
-    if (created.code !== 0) {
-      throw new ServiceError(`Task Scheduler refused the task: ${trimOutput(created)}`)
-    }
-  } finally {
-    await context.removeFile(xmlPath)
-  }
-  context.stdout(`Registered logon task ${TASK_NAME} for ${currentUserId(context)}.`)
+  const notes = await backend.register(config, logFile)
   context.stdout(`  Node:      ${context.execPath}`)
   context.stdout(`  Entry:     ${context.entry}`)
   context.stdout(`  Data dir:  ${config.dataDir}`)
   context.stdout(`  Log file:  ${logFile}`)
-  await startTask(context, config.port, logFile)
+  for (const note of notes) context.stdout(note)
+  await startAndWait(context, backend, config.port, logFile)
 }
 
-async function startTask(context: Context, port: number, logFile: string | undefined) {
-  const started = await schtasks(context, ['/Run', '/TN', TASK_NAME])
-  if (started.code !== 0) {
-    throw new ServiceError(`Task Scheduler could not start the task: ${trimOutput(started)}`)
-  }
-  if (await waitForHealth(context, port)) {
-    context.stdout(`Environment server is up at http://127.0.0.1:${port}.`)
+async function uninstall(context: Context, backend: ServiceBackend): Promise<void> {
+  await backend.preflight()
+  const installed = await backend.read()
+  if (!installed) {
+    context.stdout(`No ${backend.label} is installed; nothing to remove.`)
     return
   }
-  throw new ServiceError(
-    `The task started but nothing answered on http://127.0.0.1:${port} within ${
-      HEALTH_TIMEOUT_MS / 1000
-    }s.${logFile ? ` Check ${logFile}.` : ''}`,
-  )
-}
-
-async function uninstall(context: Context): Promise<void> {
-  const existing = await readTaskXml(context)
-  if (!existing) {
-    context.stdout(`No logon task ${TASK_NAME} is registered; nothing to remove.`)
-    return
-  }
-  const outcome = await stopServer(context)
-  const deleted = await schtasks(context, ['/Delete', '/TN', TASK_NAME, '/F'])
-  if (deleted.code !== 0) {
-    throw new ServiceError(`Task Scheduler could not delete the task: ${trimOutput(deleted)}`)
-  }
-  const installed = describeInstalled(existing)
+  const outcome = await backend.stop()
+  await backend.remove()
   context.stdout(
     outcome === 'stopped'
-      ? `Stopped the environment server and removed ${TASK_NAME}.`
-      : `Removed ${TASK_NAME}; the server was not running.`,
+      ? `Stopped the environment server and removed the ${backend.label}.`
+      : `Removed the ${backend.label}; the server was not running.`,
   )
   if (installed.dataDir) {
     context.stdout(
@@ -368,62 +142,75 @@ async function uninstall(context: Context): Promise<void> {
   }
 }
 
-async function start(context: Context): Promise<void> {
-  const existing = await readTaskXml(context)
-  if (!existing)
-    throw new ServiceError(`No logon task ${TASK_NAME} is registered. Run "service install" first.`)
-  const installed = describeInstalled(existing)
+async function start(context: Context, backend: ServiceBackend): Promise<void> {
+  await backend.preflight()
+  const installed = await backend.read()
+  if (!installed) {
+    throw new ServiceError(`No ${backend.label} is installed. Run "service install" first.`)
+  }
   if (installed.port === undefined) {
     throw new ServiceError(
-      'The registered task has no --port; reinstall it with "service install".',
+      `The installed ${backend.kind} has no --port; reinstall it with "service install".`,
     )
   }
   if (await isHealthy(context, installed.port)) {
-    context.stdout(`Environment server is already up at http://127.0.0.1:${installed.port}.`)
-    return
+    // Only a definite "not running" blames another server; an unanswered
+    // lookup keeps the old behaviour of trusting /health.
+    if ((await backend.running()) !== false) {
+      context.stdout(`Environment server is already up at http://127.0.0.1:${installed.port}.`)
+      return
+    }
+    throw new ServiceError(
+      `Something other than the ${backend.kind} answers on http://127.0.0.1:${installed.port}, so the service cannot start there. Stop that server (for example a pnpm dev:web server) and run "service start" again.`,
+    )
   }
-  await startTask(context, installed.port, installed.logFile)
+  await startAndWait(context, backend, installed.port, installed.logFile)
 }
 
-async function stop(context: Context): Promise<void> {
-  const existing = await readTaskXml(context)
-  if (!existing) throw new ServiceError(`No logon task ${TASK_NAME} is registered.`)
-  const outcome = await stopServer(context)
+async function stop(context: Context, backend: ServiceBackend): Promise<void> {
+  await backend.preflight()
+  if (!(await backend.read())) throw new ServiceError(`No ${backend.label} is installed.`)
+  const outcome = await backend.stop()
   context.stdout(
     outcome === 'stopped'
-      ? 'Stopped the environment server. It starts again at your next sign-in or with "service start".'
+      ? `Stopped the environment server. ${backend.restartHint}`
       : 'The environment server was not running.',
   )
 }
 
-async function status(context: Context): Promise<number> {
-  const existing = await readTaskXml(context)
-  if (!existing) {
-    context.stdout(`Not installed: no logon task ${TASK_NAME}. Run "service install" to add one.`)
+async function status(context: Context, backend: ServiceBackend): Promise<number> {
+  await backend.preflight()
+  const installed = await backend.read()
+  if (!installed) {
+    context.stdout(`Not installed: no ${backend.label}. Run "service install" to add one.`)
     return 1
   }
-  const installed = describeInstalled(existing)
-  const taskStatus = await readTaskStatus(context)
-  const state = taskStatus?.state ?? 'unknown'
-  const hint = taskStatus ? LAST_RESULT_HINTS[taskStatus.lastResult] : undefined
-  context.stdout(`Task:      ${TASK_NAME} (${state})`)
-  if (taskStatus) {
-    context.stdout(
-      `Last run:  ${taskStatus.lastRunTime}, result ${taskStatus.lastResult}${hint ? ` (${hint})` : ''}`,
-    )
-  }
-  let healthy = false
+  for (const line of await backend.status()) context.stdout(line)
+  let up = false
   if (installed.port !== undefined) {
-    healthy = await isHealthy(context, installed.port)
-    context.stdout(
-      `Server:    http://127.0.0.1:${installed.port} (${healthy ? 'answering /health' : 'not answering'})`,
-    )
+    const healthy = await isHealthy(context, installed.port)
+    const running = healthy ? await backend.running() : false
+    up = healthy && running !== false
+    const answer = !healthy
+      ? 'not answering'
+      : running === false
+        ? `answering /health, but not from the ${backend.kind}`
+        : running === undefined
+          ? `answering /health; could not confirm it is the ${backend.kind}'s server`
+          : 'answering /health'
+    context.stdout(`Server:    http://127.0.0.1:${installed.port} (${answer})`)
   } else {
-    context.stdout('Server:    the task has no --port; reinstall it')
+    context.stdout(`Server:    the ${backend.kind} has no --port; reinstall it`)
   }
   if (installed.dataDir) context.stdout(`Data dir:  ${installed.dataDir}`)
   if (installed.logFile) context.stdout(`Log file:  ${installed.logFile}`)
-  return healthy ? 0 : 1
+  return up ? 0 : 1
+}
+
+function backendFor(context: Context): ServiceBackend | undefined {
+  if (context.platform === 'win32') return createWindowsBackend(context)
+  if (context.platform === 'linux') return createSystemdBackend(context)
+  return undefined
 }
 
 /** Returns the process exit code. */
@@ -443,9 +230,10 @@ export async function runServiceCommand(
     for (const line of SERVICE_USAGE) context.stderr(line)
     return 1
   }
-  if (context.platform !== 'win32') {
+  const backend = backendFor(context)
+  if (!backend) {
     context.stderr(
-      'The service commands manage a Windows logon task and only run on Windows. Linux and WSL use a systemd user unit, which is separate work.',
+      `The service commands support Windows (a logon task) and Linux or WSL (a systemd user unit), not ${context.platform}.`,
     )
     return 1
   }
@@ -456,19 +244,19 @@ export async function runServiceCommand(
   try {
     switch (command) {
       case 'install':
-        await install(context, rest)
+        await install(context, backend, rest)
         return 0
       case 'uninstall':
-        await uninstall(context)
+        await uninstall(context, backend)
         return 0
       case 'start':
-        await start(context)
+        await start(context, backend)
         return 0
       case 'stop':
-        await stop(context)
+        await stop(context, backend)
         return 0
       default:
-        return await status(context)
+        return await status(context, backend)
     }
   } catch (error) {
     if (error instanceof ServiceError) {
