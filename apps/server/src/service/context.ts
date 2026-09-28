@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir, userInfo } from 'node:os'
 import { join } from 'node:path'
+import { tailLogFile, type LogOptions } from './logs.ts'
 import type { ServerConfig } from '../config.ts'
 
 /**
@@ -39,6 +40,7 @@ export interface ServiceCommandDeps {
   writeFile?: (path: string, text: string) => Promise<void>
   removeFile?: (path: string) => Promise<void>
   ensureDir?: (path: string) => Promise<void>
+  tailLogs?: (path: string, options: LogOptions, output: (text: string) => void) => Promise<void>
   fetch?: typeof fetch
   sleep?: (ms: number) => Promise<void>
   /** Clock for the health and stop deadlines; tests pair it with `sleep`. */
@@ -126,6 +128,7 @@ export function resolveDeps(deps: ServiceCommandDeps): Context {
     writeFile: deps.writeFile ?? ((path, text) => writeFile(path, text, 'utf8')),
     removeFile: deps.removeFile ?? ((path) => rm(path, { force: true })),
     ensureDir: deps.ensureDir ?? (async (path) => void (await mkdir(path, { recursive: true }))),
+    tailLogs: deps.tailLogs ?? tailLogFile,
     fetch: deps.fetch ?? fetch,
     sleep: deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
     now: deps.now ?? Date.now,
@@ -180,5 +183,5 @@ export interface ServiceBackend {
   stop(): Promise<'stopped' | 'not_running'>
   remove(): Promise<void>
   /** Platform lines that open `status`, before the shared server lines. */
-  status(): Promise<string[]>
+  status(): Promise<{ state: 'running' | 'stopped' | 'failed' | 'unknown'; lines: string[] }>
 }

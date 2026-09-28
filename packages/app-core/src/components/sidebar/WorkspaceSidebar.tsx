@@ -1,6 +1,10 @@
-import { useContext, useEffect, useSyncExternalStore, type ReactNode } from 'react'
+import { useContext, useEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react'
 import { PlatformCapabilitiesContext } from '../../providers/platform-provider'
-import { useSidebarData } from '../../providers/sidebar-provider'
+import {
+  useSidebarData,
+  useSidebarSessions,
+  type SidebarSessionEntry,
+} from '../../providers/sidebar-provider'
 import { WorkspaceSidebarView } from './WorkspaceSidebarView'
 
 function subscribeVisibility(onChange: () => void) {
@@ -17,12 +21,13 @@ function useDocumentVisible(): boolean {
   )
 }
 
+const NO_SESSIONS: SidebarSessionEntry[] = []
+
 /** The view's props, read from the sidebar contract. */
 function useWorkspaceSidebarModel() {
   const {
     environment,
-    workspaces,
-    sessionsByWorkspace,
+    workspaces: catalog,
     activeWorkspacePath,
     activeSessionId,
     addWorkspace,
@@ -33,6 +38,7 @@ function useWorkspaceSidebarModel() {
     deleteSession,
     acknowledgeSessionDone,
   } = useSidebarData()
+  const sessionsByWorkspace = useSidebarSessions()
   const providerLabel = useContext(PlatformCapabilitiesContext)?.providerDisplayName
   const visible = useDocumentVisible()
 
@@ -51,16 +57,22 @@ function useWorkspaceSidebarModel() {
     )
   }, [acknowledgeSessionDone, activeSessionId, activeWorkspacePath, sessionsByWorkspace, visible])
 
+  const workspaces = useMemo(
+    () =>
+      catalog.map((workspace) => ({
+        path: workspace.path,
+        name: workspace.name,
+        missing: workspace.missing,
+        availability: workspace.availability,
+        ...(workspace.git ? { git: workspace.git } : {}),
+        sessions: sessionsByWorkspace[workspace.path] ?? NO_SESSIONS,
+      })),
+    [catalog, sessionsByWorkspace],
+  )
+
   return {
     environmentLabel: environment?.label,
-    workspaces: workspaces.map((workspace) => ({
-      path: workspace.path,
-      name: workspace.name,
-      missing: workspace.missing,
-      availability: workspace.availability,
-      ...(workspace.git ? { git: workspace.git } : {}),
-      sessions: sessionsByWorkspace[workspace.path] ?? [],
-    })),
+    workspaces,
     activeWorkspacePath,
     activeSessionId,
     onCreateSession: (workspacePath: string) => void createSession(workspacePath),
@@ -68,7 +80,7 @@ function useWorkspaceSidebarModel() {
     onRenameSession: renameSession
       ? (path: string, id: string, title: string | null) => void renameSession(path, id, title)
       : undefined,
-    // The view moves the row at once and puts it back if this rejects.
+    // The host shows the move at once and puts it back if this rejects.
     onSettleSession: settleSession
       ? (path: string, id: string, settled: boolean) => settleSession(path, id, settled)
       : undefined,

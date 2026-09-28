@@ -15,6 +15,10 @@ import { PlatformCapabilitiesContext } from '@openmanager/app-core/providers/pla
 import { SessionStateContext } from '@openmanager/app-core/providers/session-provider'
 import { AddProjectStartSetting } from '../components/add-project-start-setting'
 import {
+  NOTIFICATIONS_CHOICES,
+  NotificationsSettingControl,
+} from '../components/notifications-setting'
+import {
   TITLE_GENERATION_CHOICES,
   TitleGenerationSettingControl,
 } from '../components/title-generation-setting'
@@ -28,6 +32,7 @@ import { cn } from '../lib/utils'
 const SETTINGS_TABS = [
   { id: 'environments', label: 'Environments' },
   { id: 'appearance', label: 'Appearance' },
+  { id: 'notifications', label: 'Notifications' },
   { id: 'providers', label: 'Providers' },
 ] as const
 
@@ -326,9 +331,32 @@ function AppearancePanel() {
   )
 }
 
+function NotificationsPanel() {
+  return (
+    <SettingsSection
+      title="Session notifications"
+      description="A browser notification when a session finishes, needs your input, or stops with an error — unless it is the session you are looking at. Kept on this device only."
+    >
+      <NotificationsSettingControl
+        choices={(value, onChange, disabled) => (
+          <ChoiceGroup
+            name="notifications"
+            label="Session notifications"
+            value={value}
+            options={NOTIFICATIONS_CHOICES}
+            onChange={onChange}
+            disabled={disabled}
+          />
+        )}
+      />
+    </SettingsSection>
+  )
+}
+
 const PANELS: Record<SettingsTab, () => ReactNode> = {
   environments: EnvironmentsPanel,
   appearance: AppearancePanel,
+  notifications: NotificationsPanel,
   providers: () => (
     <>
       <ProvidersPanel />

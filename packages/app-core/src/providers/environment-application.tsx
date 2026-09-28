@@ -25,8 +25,10 @@ import {
 import type { InteractionResponse, Workspace } from '@openmanager/protocol'
 import {
   UPLOAD_TICKET_COMMAND,
+  selectActiveSession,
   selectProviderCatalog,
   shallowEqualArray,
+  type EnvironmentState,
   type PendingInteraction,
   type ProviderCatalogEntry,
   type ThreadTarget,
@@ -70,10 +72,12 @@ import {
 } from './environment-composer'
 import {
   SidebarDataContext,
+  SidebarSessionsContext,
   toggleCollapsedWorkspace,
   type SidebarDataValue,
   type SidebarEnvironment,
   type SidebarSessionEntry,
+  type SidebarSessionsByWorkspace,
   type WorkspaceEntry,
 } from './sidebar-provider'
 import {
@@ -348,6 +352,11 @@ function landingWorkspaceFor(workspaces: Workspace[], recent: Workspace[]): stri
   return (recent.find(canHostDraft) ?? workspaces.find(canHostDraft))?.workspaceId ?? null
 }
 
+const selectActiveSessionId = (state: EnvironmentState) =>
+  selectActiveSession(state)?.sessionId ?? null
+const selectActiveSessionWorkspaceId = (state: EnvironmentState) =>
+  selectActiveSession(state)?.workspaceId ?? null
+
 function EnvironmentSessionStateProvider({
   addWorkspace,
   navigateSession,
@@ -361,7 +370,11 @@ function EnvironmentSessionStateProvider({
 }) {
   const client = useEnvironmentClient()
   const { commands } = client
-  const activeSession = useActiveSession()
+  // Only which session is on screen, and where: its title, status or settle
+  // are the sidebar's and the thread's to show, and reading the whole session
+  // here would hand every reader of session state a new value on each.
+  const activeSessionId = useEnvironmentState(selectActiveSessionId)
+  const activeSessionWorkspaceId = useEnvironmentState(selectActiveSessionWorkspaceId)
   const activeTurn = useActiveTurn()
   const workspaces = useWorkspaces()
   const recentWorkspaces = useRecentWorkspaces()
@@ -386,7 +399,6 @@ function EnvironmentSessionStateProvider({
   // choice must not leave its session active after a later choice landed.
   const selectionRef = useRef<string | null>(null)
 
-  const activeSessionId = activeSession?.sessionId ?? null
   // The session the client has selected, whether or not its row has arrived.
   const selectedSessionId = useEnvironmentState((state) => state.activeSessionId)
 
@@ -410,7 +422,7 @@ function EnvironmentSessionStateProvider({
   const draftWorkspaceId = openedDraftWorkspaceId ?? landingWorkspaceId
 
   const isSessionDraftOpen = activeSessionId === null && draftWorkspaceId !== null
-  const activeWorkspacePath = activeSession?.workspaceId ?? draftWorkspaceId
+  const activeWorkspacePath = activeSessionWorkspaceId ?? draftWorkspaceId
 
   // A submitted prompt reads as running until the environment reports the
   // turn itself; from then on the turn is the truth.
@@ -442,8 +454,7 @@ function EnvironmentSessionStateProvider({
 
   const openDraft = useCallback(
     async (workspacePath: string) => {
-      const previousSessionId =
-        activeSession?.workspaceId === workspacePath ? activeSession.sessionId : null
+      const previousSessionId = activeSessionWorkspaceId === workspacePath ? activeSessionId : null
       draftGenerationRef.current += 1
       selectionRef.current = null
       setError(null)
@@ -462,7 +473,7 @@ function EnvironmentSessionStateProvider({
         revision: (prev?.revision ?? 0) + 1,
       }))
     },
-    [activeSession, client, navigateSession],
+    [activeSessionId, activeSessionWorkspaceId, client, navigateSession],
   )
 
   const selectSession = useCallback(
@@ -700,8 +711,10 @@ function EnvironmentSidebarDataProvider({
   }, [environmentState])
   const workspaceEntries = useMemo(() => workspaces.map(toWorkspaceEntry), [workspaces])
   const recentEntries = useMemo(() => recentWorkspaces.map(toWorkspaceEntry), [recentWorkspaces])
+  // What the sidebar was last handed, so an unchanged row stays the same object.
+  const shownSessions = useRef<SidebarSessionsByWorkspace | null>(null)
   const sessionsByWorkspace = useMemo(() => {
-    const grouped: Record<string, SidebarSessionEntry[]> = {}
+    const grouped: SidebarSessionsByWorkspace = {}
     const unavailableWorkspaces = new Set(
       workspaceEntries
         .filter((workspace) =>
@@ -730,7 +743,8 @@ function EnvironmentSidebarDataProvider({
       }
       ;(grouped[summary.workspaceId] ??= []).push(entry)
     }
-    return grouped
+    shownSessions.current = reuseUnchanged(shownSessions.current, grouped)
+    return shownSessions.current
   }, [session.defaultProviderId, sessions, workspaceEntries])
 
   // Offered only once the environment says it can keep the change.
@@ -760,7 +774,6 @@ function EnvironmentSidebarDataProvider({
       workspaces: workspaceEntries,
       recentWorkspaces: recentEntries,
       isWorkspacesLoading,
-      sessionsByWorkspace,
       activeWorkspacePath: session.activeWorkspacePath,
       activeSessionId: session.activeSessionId,
       collapsedWorkspacePaths,
@@ -796,12 +809,58 @@ function EnvironmentSidebarDataProvider({
       session.deleteSession,
       session.removeWorkspace,
       session.selectSession,
-      sessionsByWorkspace,
       toggleWorkspaceCollapsed,
       workspaceEntries,
     ],
   )
-  return <SidebarDataContext.Provider value={value}>{children}</SidebarDataContext.Provider>
+  return (
+    <SidebarDataContext.Provider value={value}>
+      <SidebarSessionsContext.Provider value={sessionsByWorkspace}>
+        {children}
+      </SidebarSessionsContext.Provider>
+    </SidebarDataContext.Provider>
+  )
+}
+
+/**
+ * The next grouping, keeping every row and group whose shown fields did not
+ * change as the object it was. Sessions carry more than the sidebar shows
+ * (the composer selection, thread ids) and a listing rebuilds them all; a
+ * change the sidebar does not show then leaves the whole value as it was.
+ */
+function reuseUnchanged(
+  previous: SidebarSessionsByWorkspace | null,
+  next: SidebarSessionsByWorkspace,
+): SidebarSessionsByWorkspace {
+  if (!previous) return next
+  const rows = new Map<string, SidebarSessionEntry>()
+  for (const group of Object.values(previous)) {
+    for (const row of group) rows.set(row.externalId, row)
+  }
+  let changed = Object.keys(previous).length !== Object.keys(next).length
+  const result: SidebarSessionsByWorkspace = {}
+  for (const [path, group] of Object.entries(next)) {
+    const kept = group.map((row) => {
+      const before = rows.get(row.externalId)
+      return before && sameEntry(before, row) ? before : row
+    })
+    const before = previous[path]
+    const same =
+      before !== undefined &&
+      before.length === kept.length &&
+      kept.every((row, index) => row === before[index])
+    result[path] = same ? before : kept
+    if (!same) changed = true
+  }
+  return changed ? result : previous
+}
+
+function sameEntry(left: SidebarSessionEntry, right: SidebarSessionEntry): boolean {
+  const keys = Object.keys(left) as (keyof SidebarSessionEntry)[]
+  return (
+    keys.length === Object.keys(right).length &&
+    keys.every((key) => Object.is(left[key], right[key]))
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -843,21 +902,25 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
   const stores = useMemo(() => createEnvironmentThreadStores(client), [client])
   const projection = useEnvironmentState(stores.select)
 
+  // Built from the fields it shows, so a settle or a composer pick on the
+  // session does not re-render the thread.
+  const listedSessionId = activeSession?.sessionId
+  const activeTitle = activeSession?.title ?? undefined
+  const activeStatus = activeSession?.status
+  const activeParentId = activeSession?.parentSessionId
   const activeThread = useMemo<ActiveThreadDetails | null>(
     () =>
-      activeSession
+      listedSessionId && activeStatus
         ? {
-            externalId: activeSession.sessionId,
-            title: activeSession.title ?? undefined,
-            status: activeSession.status,
-            ...(activeSession.parentSessionId
-              ? { parentExternalId: activeSession.parentSessionId }
-              : {}),
+            externalId: listedSessionId,
+            title: activeTitle,
+            status: activeStatus,
+            ...(activeParentId ? { parentExternalId: activeParentId } : {}),
             // Same shim as the sidebar: one projection, not owner-vs-observer.
             isDriven: true,
           }
         : null,
-    [activeSession],
+    [activeParentId, listedSessionId, activeStatus, activeTitle],
   )
 
   const target = thread?.thread ?? null

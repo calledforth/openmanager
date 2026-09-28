@@ -5,6 +5,7 @@ import { useSessionState } from '@openmanager/app-core/providers/session-provide
 import { usePlatformCapabilities } from '@openmanager/app-core/providers/platform-provider'
 import {
   SidebarDataContext,
+  SidebarSessionsContext,
   resolveInitialWorkspacePath,
   toggleCollapsedWorkspace,
   type SidebarDataValue,
@@ -73,7 +74,9 @@ export function SidebarDataProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
-  const acknowledgeSessionDone = useCallback<NonNullable<SidebarDataValue['acknowledgeSessionDone']>>(
+  const acknowledgeSessionDone = useCallback<
+    NonNullable<SidebarDataValue['acknowledgeSessionDone']>
+  >(
     async (workspacePath, externalId, providerId) => {
       await upsertSessionStatus({ workspacePath, externalId, status: 'idle', providerId })
     },
@@ -130,7 +133,6 @@ export function SidebarDataProvider({ children }: { children: ReactNode }) {
     () => ({
       workspaces,
       isWorkspacesLoading,
-      sessionsByWorkspace,
       activeWorkspacePath: ui.activeWorkspacePath,
       activeSessionId: ui.activeSessionId,
       collapsedWorkspacePaths,
@@ -145,7 +147,6 @@ export function SidebarDataProvider({ children }: { children: ReactNode }) {
     [
       workspaces,
       isWorkspacesLoading,
-      sessionsByWorkspace,
       ui.activeWorkspacePath,
       ui.activeSessionId,
       collapsedWorkspacePaths,
@@ -159,5 +160,11 @@ export function SidebarDataProvider({ children }: { children: ReactNode }) {
     ],
   )
 
-  return <SidebarDataContext.Provider value={value}>{children}</SidebarDataContext.Provider>
+  return (
+    <SidebarDataContext.Provider value={value}>
+      <SidebarSessionsContext.Provider value={sessionsByWorkspace}>
+        {children}
+      </SidebarSessionsContext.Provider>
+    </SidebarDataContext.Provider>
+  )
 }

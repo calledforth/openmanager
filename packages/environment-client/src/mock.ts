@@ -42,6 +42,7 @@ import {
   deriveSessionStatus,
   selectSessionList,
 } from './state'
+import { createSettleTracker } from './settle'
 import { createEnvironmentStore } from './store'
 import { pageSessionSummaries, pageThreadMessages } from './pagination'
 import type {
@@ -196,6 +197,7 @@ export function createMockEnvironmentClient(
     name: 'Mock environment',
   }
   const store = createEnvironmentStore(seedState(environment, options.seed, capabilities, uploads))
+  const settles = createSettleTracker(store, now)
   const calls: MockCommandCall[] = []
   let openGeneration = 0
   const timers = new Set<ReturnType<typeof setTimeout>>()
@@ -231,7 +233,8 @@ export function createMockEnvironmentClient(
   const emit = (event: ProofEvent) => {
     const schema = ProofEventSchemas[event.name] as { parse(input: unknown): ProofEvent }
     const parsed = schema.parse(event)
-    store.update((state) => applyEvent(state, parsed))
+    const folded = settles.mask(parsed)
+    store.update((state) => applyEvent(state, folded))
     // The mock plays the server as well as the client. Emit the authoritative
     // summary update explicitly; production reducers never derive it from history.
     if (
@@ -772,20 +775,24 @@ export function createMockEnvironmentClient(
         })
       }),
     settleSession: (sessionId, settled) =>
-      run('settleSession', { sessionId, settled }, () => {
-        const session = store.getState().sessions[sessionId]
-        if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
-        // Mirrors the environment: a live session would stay settled after it finishes.
-        if (settled && (session.status === 'running' || session.status === 'waiting')) {
-          throw new EnvironmentClientError('conflict', 'A live session cannot be settled.')
-        }
-        emit({
-          ...base(),
-          name: 'session.updated',
-          scope: envScope(),
-          payload: { sessionId, settledAt: settled ? now() : null },
-        })
-      }),
+      settles.settle(sessionId, settled, () =>
+        run('settleSession', { sessionId, settled }, () => {
+          const session = store.getState().sessions[sessionId]
+          if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
+          // Mirrors the environment: a live session would stay settled after it finishes.
+          if (settled && (session.status === 'running' || session.status === 'waiting')) {
+            throw new EnvironmentClientError('conflict', 'A live session cannot be settled.')
+          }
+          const settledAt = settled ? now() : null
+          emit({
+            ...base(),
+            name: 'session.updated',
+            scope: envScope(),
+            payload: { sessionId, settledAt },
+          })
+          return settledAt
+        }),
+      ),
     acknowledgeSession: (sessionId) =>
       run('acknowledgeSession', { sessionId }, () => {
         const session = store.getState().sessions[sessionId]

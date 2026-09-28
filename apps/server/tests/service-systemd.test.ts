@@ -484,6 +484,7 @@ describe('service commands on systemd', () => {
       'show-environment',
       `is-active ${UNIT_NAME}`,
       `stop ${UNIT_NAME}`,
+      `is-active ${UNIT_NAME}`,
       `reset-failed ${UNIT_NAME}`,
       `disable ${UNIT_NAME}`,
       'daemon-reload',
@@ -538,6 +539,47 @@ describe('service commands on systemd', () => {
       'Server:    http://127.0.0.1:43120 (not answering)',
       `Data dir:  ${DATA_DIR}`,
       'Log file:  /logs/server.log',
+      'State:     failed',
     ])
   })
+})
+
+describe('systemd maintenance', () => {
+  it('restart preserves the unit and data and waits for health after stopping', async () => {
+    const system = fakeSystemd({ unit: INSTALLED_UNIT, activeState: 'active', healthy: () => true })
+    const before = new Map(system.files)
+    expect(await runServiceCommand(['restart'], system.deps)).toBe(0)
+    const verbs = system.systemctlVerbs()
+    expect(verbs.indexOf(`stop ${UNIT_NAME}`)).toBeLessThan(verbs.indexOf(`start ${UNIT_NAME}`))
+    expect(system.files).toEqual(before)
+  })
+
+  it.each([
+    ['active', 'running', 0],
+    ['inactive', 'stopped', 1],
+    ['failed', 'failed', 1],
+  ] as const)('normalizes %s status', async (active, state, code) => {
+    const system = fakeSystemd({
+      unit: INSTALLED_UNIT,
+      activeState: active,
+      show: `ActiveState=${active}\n`,
+      healthy: () => active === 'active',
+    })
+    expect(await runServiceCommand(['status', '--json'], system.deps)).toBe(code)
+    expect(JSON.parse(system.out[0]!)).toMatchObject({ state, installed: true })
+  })
+
+  it.each(['restart', 'uninstall'])(
+    '%s retains registration when stop cannot be confirmed',
+    async (command) => {
+      const system = fakeSystemd({ unit: INSTALLED_UNIT, activeState: 'active' })
+      const run = system.deps.run!
+      system.deps.run = async (file, args) =>
+        args[1] === 'stop' ? { code: 1, stdout: '', stderr: 'Access denied' } : run(file, args)
+      expect(await runServiceCommand([command], system.deps)).toBe(1)
+      expect(system.files.get(UNIT_PATH)).toBe(INSTALLED_UNIT)
+      expect(system.systemctlVerbs()).not.toContain(`start ${UNIT_NAME}`)
+      expect(system.systemctlVerbs()).not.toContain(`disable ${UNIT_NAME}`)
+    },
+  )
 })
