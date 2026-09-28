@@ -122,6 +122,8 @@ export function NewSessionLandingView({
     )
   }
 
+  // With nothing open the first project is only what the picker shows, so
+  // choosing it must still open it (see `onSelect`).
   const activeWorkspace =
     workspaces.find((workspace) => workspace.path === activeWorkspacePath) ?? workspaces[0]!
   // Chips offer somewhere else to go; the active project is already chosen.
@@ -138,7 +140,7 @@ export function NewSessionLandingView({
             sections={sections}
             value={activeWorkspace.path}
             onSelect={(optionId) => {
-              if (optionId !== activeWorkspace.path) onSelectWorkspace(optionId)
+              if (optionId !== activeWorkspacePath) onSelectWorkspace(optionId)
             }}
             searchable
             searchPlaceholder="Search projects…"

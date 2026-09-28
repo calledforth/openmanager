@@ -10,6 +10,7 @@ import {
   type MockEnvironmentClient,
   type MockSeed,
 } from '@openmanager/environment-client'
+import type { Workspace } from '@openmanager/protocol'
 import { EnvironmentClientProvider } from '../src/providers/environment-client'
 import { EnvironmentApplicationProviders } from '../src/providers/environment-application'
 import {
@@ -1241,5 +1242,151 @@ describe('the shared application over the environment client', () => {
     await render(<App client={client} addWorkspace={addWorkspace} />)
     await act(() => headerRow('Add project')!.click())
     expect(addWorkspace).toHaveBeenCalledOnce()
+  })
+})
+
+describe('the new-session landing', () => {
+  const project = (name: string, extra: Partial<Workspace> = {}): Workspace => ({
+    ...WORKSPACE,
+    workspaceId: `C:/${name}`,
+    path: `C:/${name}`,
+    name,
+    ...extra,
+  })
+  const OLDER = project('older', { lastActivityAt: '2026-09-20T10:00:00.000Z' })
+  const RECENT = project('recent', { lastActivityAt: '2026-09-26T10:00:00.000Z' })
+  const UNUSED = project('unused')
+
+  const mount = async (client: MockEnvironmentClient, onLanding = true) => {
+    const seen: { session?: SessionStateValue } = {}
+    function Probe() {
+      seen.session = useSessionState()
+      return null
+    }
+    const tree = (landing: boolean) => (
+      <ThemeProvider>
+        <EnvironmentClientProvider client={client}>
+          <EnvironmentApplicationProviders collapsedWorkspaceStorage={null} onLanding={landing}>
+            <ChatWorkspace />
+            <Probe />
+          </EnvironmentApplicationProviders>
+        </EnvironmentClientProvider>
+      </ThemeProvider>
+    )
+    await render(tree(onLanding))
+    await settle(client)
+    return { seen, rerender: (landing: boolean) => render(tree(landing)) }
+  }
+  const composer = () => container.querySelector('textarea')
+
+  it('opens a draft in the most recently used project, ready to type into', async () => {
+    const client = createMockEnvironmentClient({
+      seed: { workspaces: [UNUSED, OLDER, RECENT] },
+      respond: () => null,
+    })
+    const { seen } = await mount(client)
+
+    expect(seen.session!.isSessionDraftOpen).toBe(true)
+    expect(seen.session!.activeWorkspacePath).toBe(RECENT.workspaceId)
+    expect(composer()?.disabled).toBe(false)
+
+    await type('hello')
+    await act(async () => {
+      composer()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    await settle(client)
+    expect(client.calls.find((call) => call.command === 'createSession')?.input).toMatchObject({
+      workspaceId: RECENT.workspaceId,
+      firstMessage: 'hello',
+    })
+  })
+
+  it('passes over a project that is not there to work in', async () => {
+    const client = createMockEnvironmentClient({
+      seed: {
+        workspaces: [UNUSED, project('gone', { exists: false, availability: 'missing' }), OLDER],
+      },
+    })
+    const { seen } = await mount(client)
+    expect(seen.session!.activeWorkspacePath).toBe(OLDER.workspaceId)
+  })
+
+  it('falls back to the first project listed when none has been used', async () => {
+    const client = createMockEnvironmentClient({
+      seed: { workspaces: [UNUSED, project('also-unused')] },
+    })
+    const { seen } = await mount(client)
+    expect(seen.session!.activeWorkspacePath).toBe(UNUSED.workspaceId)
+  })
+
+  it('keeps the draft where it is when another project sees activity', async () => {
+    const client = createMockEnvironmentClient({ seed: { workspaces: [OLDER, RECENT] } })
+    const { seen } = await mount(client)
+    expect(seen.session!.activeWorkspacePath).toBe(RECENT.workspaceId)
+
+    await act(() =>
+      client.emit({
+        type: 'event',
+        name: 'workspace.updated',
+        eventId: 'older-active',
+        timestamp: new Date().toISOString(),
+        scope: {
+          type: 'environment',
+          environmentId: client.getState().environment!.environmentId,
+        },
+        payload: { workspace: { ...OLDER, lastActivityAt: '2026-09-27T10:00:00.000Z' } },
+      }),
+    )
+    expect(seen.session!.activeWorkspacePath).toBe(RECENT.workspaceId)
+  })
+
+  it('keeps a draft in a project whose folder goes missing, like any open draft', async () => {
+    const client = createMockEnvironmentClient({ seed: { workspaces: [OLDER, RECENT] } })
+    const { seen } = await mount(client)
+    expect(seen.session!.activeWorkspacePath).toBe(RECENT.workspaceId)
+
+    await act(() =>
+      client.emit({
+        type: 'event',
+        name: 'workspace.updated',
+        eventId: 'recent-missing',
+        timestamp: new Date().toISOString(),
+        scope: {
+          type: 'environment',
+          environmentId: client.getState().environment!.environmentId,
+        },
+        payload: { workspace: { ...RECENT, exists: false, availability: 'missing' } },
+      }),
+    )
+    // Moving it would hide what was typed; the folder may come back.
+    expect(seen.session!.activeWorkspacePath).toBe(RECENT.workspaceId)
+  })
+
+  it('gives way to a project the user picks', async () => {
+    const client = createMockEnvironmentClient({ seed: { workspaces: [OLDER, RECENT] } })
+    const { seen } = await mount(client)
+    await act(() => seen.session!.createSession(OLDER.workspaceId))
+    expect(seen.session!.isSessionDraftOpen).toBe(true)
+    expect(seen.session!.activeWorkspacePath).toBe(OLDER.workspaceId)
+  })
+
+  it('opens nothing on its own off the landing', async () => {
+    const client = createMockEnvironmentClient({ seed: { workspaces: [RECENT] } })
+    const { seen, rerender } = await mount(client, false)
+    expect(seen.session!.isSessionDraftOpen).toBe(false)
+    expect(seen.session!.activeWorkspacePath).toBeNull()
+    expect(composer()?.disabled ?? true).toBe(true)
+
+    await rerender(true)
+    expect(seen.session!.activeWorkspacePath).toBe(RECENT.workspaceId)
+  })
+
+  it('opens no draft while a session is selected', async () => {
+    const client = createMockEnvironmentClient({
+      seed: { ...SEEDED_HISTORY, activeSessionId: SESSION.sessionId },
+    })
+    const { seen } = await mount(client)
+    expect(seen.session!.isSessionDraftOpen).toBe(false)
+    expect(seen.session!.activeSessionId).toBe(SESSION.sessionId)
   })
 })
