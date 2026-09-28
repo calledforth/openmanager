@@ -169,9 +169,10 @@ export interface ServiceBackend {
   /**
    * Whether this service's own server process is up, as its supervisor sees
    * it. `/health` alone cannot tell: another server (a `pnpm dev:web`, a
-   * stale manual start) may answer on the same port.
+   * stale manual start) may answer on the same port. `undefined` when the
+   * supervisor could not be asked; callers then fall back to `/health` alone.
    */
-  running(): Promise<boolean>
+  running(): Promise<boolean | undefined>
   read(): Promise<InstalledService | undefined>
   /** Write and register the definition. Returns notes printed before the first start. */
   register(config: ServerConfig, logFile: string): Promise<string[]>

@@ -78,8 +78,9 @@ async function readTaskStatus(context: Context): Promise<TaskStatus | undefined>
  * PIDs of node processes started from this entry by the task. Task Scheduler
  * only knows the console host, so stopping goes through the command line: the
  * entry path plus the marker flag identify our server and nothing else.
+ * `undefined` when the lookup itself failed, which says nothing either way.
  */
-async function findServerProcesses(context: Context): Promise<number[]> {
+async function findServerProcesses(context: Context): Promise<number[] | undefined> {
   const needle = context.entry.replace(/'/g, "''")
   const script = [
     `$needle = '${needle}'`,
@@ -88,15 +89,17 @@ async function findServerProcesses(context: Context): Promise<number[]> {
     '  Where-Object { $_.CommandLine -and $_.CommandLine.Contains($needle) -and $_.CommandLine.Contains($marker) } |',
     '  ForEach-Object { $_.ProcessId }',
   ].join('\n')
-  const result = await context.run('powershell.exe', [
-    '-NoProfile',
-    '-NonInteractive',
-    '-ExecutionPolicy',
-    'Bypass',
-    '-EncodedCommand',
-    Buffer.from(script, 'utf16le').toString('base64'),
-  ])
-  if (result.code !== 0) return []
+  const result = await context
+    .run('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-EncodedCommand',
+      Buffer.from(script, 'utf16le').toString('base64'),
+    ])
+    .catch(() => undefined)
+  if (result?.code !== 0) return undefined
   return result.stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -125,7 +128,8 @@ export function createWindowsBackend(context: Context): ServiceBackend {
     async preflight() {},
 
     async running() {
-      return (await findServerProcesses(context)).length > 0
+      const pids = await findServerProcesses(context)
+      return pids === undefined ? undefined : pids.length > 0
     },
 
     async read() {
@@ -186,12 +190,13 @@ export function createWindowsBackend(context: Context): ServiceBackend {
      */
     async stop() {
       await schtasks(context, ['/End', '/TN', TASK_NAME])
-      let pids = await findServerProcesses(context)
+      // As before: a failed lookup cannot confirm a straggler, so none is killed.
+      let pids = (await findServerProcesses(context)) ?? []
       if (pids.length === 0) return 'not_running'
       const deadline = context.now() + STOP_TIMEOUT_MS
       while (pids.length > 0 && context.now() < deadline) {
         await context.sleep(POLL_INTERVAL_MS)
-        pids = await findServerProcesses(context)
+        pids = (await findServerProcesses(context)) ?? []
       }
       for (const pid of pids) {
         await context.run('taskkill.exe', ['/PID', String(pid), '/T', '/F'])

@@ -205,7 +205,9 @@ export function createSystemdBackend(context: Context): ServiceBackend {
     },
 
     async running() {
-      return (await systemctl(context, ['is-active', UNIT_NAME])).stdout.trim() === 'active'
+      // is-active always prints a state; no output means systemd was not reached.
+      const state = (await systemctl(context, ['is-active', UNIT_NAME])).stdout.trim()
+      return state === '' ? undefined : state === 'active'
     },
 
     async read() {

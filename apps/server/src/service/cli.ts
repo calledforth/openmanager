@@ -154,7 +154,9 @@ async function start(context: Context, backend: ServiceBackend): Promise<void> {
     )
   }
   if (await isHealthy(context, installed.port)) {
-    if (await backend.running()) {
+    // Only a definite "not running" blames another server; an unanswered
+    // lookup keeps the old behaviour of trusting /health.
+    if ((await backend.running()) !== false) {
       context.stdout(`Environment server is already up at http://127.0.0.1:${installed.port}.`)
       return
     }
@@ -187,12 +189,15 @@ async function status(context: Context, backend: ServiceBackend): Promise<number
   let up = false
   if (installed.port !== undefined) {
     const healthy = await isHealthy(context, installed.port)
-    up = healthy && (await backend.running())
-    const answer = up
-      ? 'answering /health'
-      : healthy
+    const running = healthy ? await backend.running() : false
+    up = healthy && running !== false
+    const answer = !healthy
+      ? 'not answering'
+      : running === false
         ? `answering /health, but not from the ${backend.kind}`
-        : 'not answering'
+        : running === undefined
+          ? `answering /health; could not confirm it is the ${backend.kind}'s server`
+          : 'answering /health'
     context.stdout(`Server:    http://127.0.0.1:${installed.port} (${answer})`)
   } else {
     context.stdout(`Server:    the ${backend.kind} has no --port; reinstall it`)

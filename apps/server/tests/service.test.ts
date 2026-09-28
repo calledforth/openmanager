@@ -135,6 +135,8 @@ function fakeSystem(options: {
   otherServer?: boolean
   /** Task Scheduler itself is unreachable. */
   queryFails?: boolean
+  /** The PowerShell process lookup fails. */
+  processQueryFails?: boolean
 }) {
   const calls: string[][] = []
   const out: string[] = []
@@ -194,6 +196,9 @@ function fakeSystem(options: {
       }
     }
     if (file === 'powershell.exe') {
+      if (options.processQueryFails) {
+        return { code: 1, stdout: '', stderr: 'Get-CimInstance : Access denied' }
+      }
       const pids = (pidQueue.length > 1 ? pidQueue.shift() : pidQueue[0]) ?? []
       return { code: 0, stdout: pids.map(String).join('\r\n'), stderr: '' }
     }
@@ -456,6 +461,27 @@ describe('service commands', () => {
     expect(foreign.out[2]).toBe(
       'Server:    http://127.0.0.1:43120 (answering /health, but not from the logon task)',
     )
+  })
+
+  it('a failed process lookup falls back to /health instead of blaming another server', async () => {
+    const existing = buildTaskXml({
+      userId: 'MACHINE\\ada',
+      command: 'conhost.exe',
+      arguments: ['--headless', NODE, ENTRY, '--port', '43120'].map(quoteWindowsArgument).join(' '),
+      workingDirectory: DATA_DIR,
+    })
+    const system = fakeSystem({
+      registered: existing,
+      healthy: () => true,
+      processQueryFails: true,
+    })
+    expect(await runServiceCommand(['start'], system.deps)).toBe(0)
+    expect(system.out.at(-1)).toContain('already up')
+    expect(await runServiceCommand(['status'], system.deps)).toBe(0)
+    expect(system.out).toContain(
+      "Server:    http://127.0.0.1:43120 (answering /health; could not confirm it is the logon task's server)",
+    )
+    expect(system.err).toEqual([])
   })
 
   it('start refuses when another server answers on the task port', async () => {
