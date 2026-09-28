@@ -41,6 +41,16 @@ describe('service log tail', () => {
     expect(output).toEqual(['recent'])
   })
 
+  it('prints no phantom record for an empty log or a truncated initial line', async () => {
+    const path = await fixture()
+    const output: string[] = []
+    for (const contents of ['', 'x'.repeat(2 * 1024 * 1024)]) {
+      await writeFile(path, contents)
+      await tailLogFile(path, { lines: 100, follow: false }, (text) => output.push(text))
+    }
+    expect(output).toEqual([])
+  })
+
   it('explains missing logs', async () => {
     await expect(
       tailLogFile(await fixture(), { lines: 100, follow: false }, () => {}),

@@ -136,6 +136,7 @@ function fakeSystem(options: {
   /** Task Scheduler itself is unreachable. */
   queryFails?: boolean
   /** The PowerShell process lookup fails. */
+  endFails?: boolean
   killFails?: boolean
   lastResult?: string
   processQueryFails?: boolean
@@ -193,6 +194,7 @@ function fakeSystem(options: {
         return { code: 0, stdout: 'SUCCESS', stderr: '' }
       }
       if (verb === '/End') {
+        if (options.endFails) return { code: 1, stdout: '', stderr: 'Access denied' }
         if (!options.otherServer) health = () => false
         return { code: 0, stdout: 'SUCCESS', stderr: '' }
       }
@@ -626,5 +628,38 @@ describe('service maintenance', () => {
     expect(system.calls).toEqual([])
     expect(await runServiceCommand(['logs', '-f', '-n', '20'], deps)).toBe(0)
     expect(tails).toEqual([{ path: 'C:\\logs\\server.log', options: { follow: true, lines: 20 } }])
+  })
+})
+
+describe('shutdown confirmation regressions', () => {
+  it.each(['restart', 'uninstall'])(
+    '%s refuses a failed task end even before Node starts',
+    async (command) => {
+      const system = fakeSystem({ registered: LIFECYCLE_TASK, endFails: true, pids: [] })
+      expect(await runServiceCommand([command], system.deps)).toBe(1)
+      expect(system.err[0]).toContain('could not end the task')
+      expect(system.registered).toBe(LIFECYCLE_TASK)
+      expect(system.calls.map((call) => call[1])).not.toContain('/Run')
+      expect(system.calls.map((call) => call[1])).not.toContain('/Delete')
+    },
+  )
+
+  it('restart rejects a healthy occupied port even if a later ownership query would fail', async () => {
+    const system = fakeSystem({
+      registered: LIFECYCLE_TASK,
+      healthy: () => true,
+      otherServer: true,
+    })
+    let lookups = 0
+    const run = system.deps.run!
+    system.deps.run = async (file, args) => {
+      if (file === 'powershell.exe' && ++lookups > 1)
+        return { code: 1, stdout: '', stderr: 'Access denied' }
+      return run(file, args)
+    }
+    expect(await runServiceCommand(['restart'], system.deps)).toBe(1)
+    expect(system.err[0]).toContain('Something other than')
+    expect(system.calls.map((call) => call[1])).not.toContain('/Run')
+    expect(system.out.join(' ')).not.toContain('already up')
   })
 })

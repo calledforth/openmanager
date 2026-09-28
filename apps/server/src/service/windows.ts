@@ -229,7 +229,7 @@ export function createWindowsBackend(context: Context): ServiceBackend {
         return found
       }
       let pids = await lookup()
-      if (ended.code !== 0 && pids.length > 0) {
+      if (ended.code !== 0) {
         throw new ServiceError(`Task Scheduler could not end the task: ${trimOutput(ended)}`)
       }
       if (pids.length === 0) return 'not_running'

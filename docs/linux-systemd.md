@@ -254,7 +254,7 @@ node apps/server/dist/main.js service logs --lines 200 --follow
 
 `logs` reads the installed log path, including a custom `--log-file`, rather
 than guessing from the current shell. It prints the last 100 lines by default;
-`--lines` (or `-n`) accepts 0�10000. The initial tail examines at most the last
+`--lines` (or `-n`) accepts 0 to 10000. The initial tail examines at most the last
 1 MiB, so very large records may yield fewer lines. `--follow` (or `-f`) waits
 for a missing file, follows new records across restart/rotation and truncation,
 and stops with Ctrl+C. Without `--follow`, a missing file is an error. The

@@ -159,8 +159,11 @@ async function start(context: Context, backend: ServiceBackend, restart = false)
   if (restart) await backend.stop()
   if (await isHealthy(context, installed.port)) {
     // Only a definite "not running" blames another server; an unanswered
-    // lookup keeps the old behaviour of trusting /health.
-    if ((await backend.running()) !== false) {
+    // lookup keeps the old behaviour of trusting /health. A restart has just
+    // stopped the service, so anything still answering is someone else. After a confirmed
+    // restart stop, anything still answering cannot be the service. A restart has just
+    // stopped the service, so anything still answering is someone else.
+    if (!restart && (await backend.running()) !== false) {
       context.stdout(`Environment server is already up at http://127.0.0.1:${installed.port}.`)
       return
     }
