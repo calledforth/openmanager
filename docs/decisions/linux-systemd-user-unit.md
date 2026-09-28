@@ -67,6 +67,10 @@ WSL 2.7.13, Ubuntu 24.04, systemd 255, standard user, 2026-09-28:
   `/health` from Windows through localhost forwarding.
 - After `wsl.exe --terminate`, the next `wsl.exe` invocation booted the distro
   and the unit answered `/health` within 2 s, with no login shell involved.
+- `WorkingDirectory="/tmp/a b"` was rejected (`bad-setting`, "path is not
+  absolute"); the unquoted `WorkingDirectory=/tmp/a b` worked. Only
+  `ExecStart=` and `Environment=` are word-split, so the unit quotes those and
+  writes the working directory verbatim with `%` doubled.
 - `service stop` (SIGTERM) took ~0.4 s with exit status 0; a `SIGKILL` to the
   server was restarted by systemd after `RestartSec`, `NRestarts=1`.
 

@@ -34,9 +34,22 @@ describe('systemd unit helpers', () => {
     ['$HOME', '"$$HOME"'],
     ["it's", '"it\'s"'],
     ['', '""'],
+    ['/home/josé', '"/home/josé"'],
+    ['two\nlines\tand tab', '"two\\nlines\\tand tab"'],
+    ['~/-dash', '"~/-dash"'],
+    ['\\%$$', '"\\\\%%$$$$"'],
   ])('quotes %j so systemd passes it through unchanged', (argument, quoted) => {
     expect(quoteSystemdArgument(argument)).toBe(quoted)
     expect(parseSystemdCommandLine(quoted)).toEqual([argument])
+  })
+
+  it('writes WorkingDirectory unquoted, escaping only specifiers, because systemd takes it verbatim', () => {
+    const unit = buildUnitFile({
+      execStart: [NODE, ENTRY],
+      workingDirectory: '/home/josé/My Data $x 100%',
+      path: '/usr/bin',
+    })
+    expect(unit).toContain('WorkingDirectory=/home/josé/My Data $x 100%%\n')
   })
 
   it('reads single-quoted words and C escapes from a hand-edited line', () => {
@@ -106,6 +119,14 @@ describe('systemd unit helpers', () => {
   ])('reads whether .wslconfig %j keeps idle distros running', (text, keeps) => {
     expect(wslKeepsDistroRunning(text)).toBe(keeps)
   })
+
+  it('reads a UTF-16 .wslconfig that arrives as UTF-8 text', () => {
+    const utf16 = Buffer.concat([
+      Buffer.from([0xff, 0xfe]),
+      Buffer.from('[general]\r\ninstanceIdleTimeout=-1\r\n', 'utf16le'),
+    ])
+    expect(wslKeepsDistroRunning(utf16.toString('utf8'))).toBe(true)
+  })
 })
 
 interface FakeOptions {
@@ -127,6 +148,14 @@ interface FakeOptions {
   noSystemctl?: boolean
   activeState?: string
   show?: string
+  /** `LoadState` after `daemon-reload`; `loaded` by default. */
+  loadState?: string
+  /** `systemctl start` fails. */
+  startFails?: boolean
+  /** WSL interop is off: `cmd.exe` cannot be found. */
+  noInterop?: boolean
+  /** `loginctl` is not installed. */
+  noLoginctl?: boolean
 }
 
 /** A scripted systemd user manager, logind and WSL interop. */
@@ -158,18 +187,33 @@ function fakeSystemd(options: FakeOptions = {}) {
         return { code: 1, stdout: '', stderr: 'Failed to connect to bus: No medium found' }
       }
       const [verb] = args.slice(1)
+      const loaded = (options.loadState ?? 'loaded') === 'loaded'
       if (verb === 'start') {
+        if (options.startFails) {
+          return { code: 1, stdout: '', stderr: 'Job for openmanager-server.service failed.' }
+        }
         active = 'active'
         health = () => true
       }
       if (verb === 'stop') {
+        if (!loaded) {
+          return { code: 5, stdout: '', stderr: `Failed to stop ${UNIT_NAME}: Unit not loaded.` }
+        }
         active = 'inactive'
         health = () => false
       }
       if (verb === 'is-active')
         return { code: active === 'active' ? 0 : 3, stdout: `${active}\n`, stderr: '' }
+      if (verb === 'show' && args.includes('--property=LoadState'))
+        return ok(`${options.loadState ?? 'loaded'}\n`)
       if (verb === 'show' && args[2] === UNIT_NAME) return ok(options.show ?? '')
       return ok()
+    }
+    if (file === 'loginctl' && options.noLoginctl) {
+      throw Object.assign(new Error('spawn loginctl ENOENT'), { code: 'ENOENT' })
+    }
+    if (file === 'cmd.exe' && options.noInterop) {
+      throw Object.assign(new Error('spawn cmd.exe ENOENT'), { code: 'ENOENT' })
     }
     if (file === 'loginctl') {
       if (args[0] === 'enable-linger') {
@@ -234,6 +278,54 @@ const INSTALLED_UNIT = buildUnitFile({
 })
 
 describe('service commands on systemd', () => {
+  it('install stops before enabling when systemd does not see or rejects the written unit', async () => {
+    const unseen = fakeSystemd({ loadState: 'not-found' })
+    expect(await runServiceCommand(['install', '--port', '43121'], unseen.deps)).toBe(1)
+    expect(unseen.err[0]).toContain('does not see it')
+    expect(unseen.err[0]).toContain('XDG_CONFIG_HOME')
+    expect(unseen.systemctlVerbs()).not.toContain(`enable ${UNIT_NAME}`)
+
+    const rejected = fakeSystemd({ loadState: 'bad-setting' })
+    expect(await runServiceCommand(['install', '--port', '43121'], rejected.deps)).toBe(1)
+    expect(rejected.err[0]).toContain('rejected')
+    expect(rejected.err[0]).toContain('bad-setting')
+  })
+
+  it('a failed start points at the journal', async () => {
+    const system = fakeSystemd({ startFails: true, linger: true })
+    expect(await runServiceCommand(['install', '--port', '43121'], system.deps)).toBe(1)
+    expect(system.err[0]).toContain('systemd could not start')
+    expect(system.err[0]).toContain(`journalctl --user -u ${UNIT_NAME}`)
+  })
+
+  it('uninstall removes a unit systemd cannot load instead of failing on stop', async () => {
+    const system = fakeSystemd({ unit: INSTALLED_UNIT, loadState: 'not-found' })
+    expect(await runServiceCommand(['uninstall'], system.deps)).toBe(0)
+    expect(system.files.has(UNIT_PATH)).toBe(false)
+    expect(system.out[0]).toContain('the server was not running')
+  })
+
+  it('status flags a unit file systemd cannot use, and linger it cannot read', async () => {
+    const system = fakeSystemd({
+      unit: INSTALLED_UNIT,
+      noLoginctl: true,
+      show: 'LoadState=bad-setting\nActiveState=inactive\nSubState=dead\nUnitFileState=enabled\n',
+    })
+    expect(await runServiceCommand(['status'], system.deps)).toBe(1)
+    expect(system.out[1]).toContain('Unit file: bad-setting')
+    expect(system.out[2]).toBe(
+      'Linger:    unknown: loginctl could not report it (loginctl was not found); without linger the server stops when you log out',
+    )
+  })
+
+  it('WSL advice falls back to the generic .wslconfig path when interop is off', async () => {
+    const system = fakeSystemd({ wsl: true, noInterop: true })
+    expect(await runServiceCommand(['install', '--port', '43121'], system.deps)).toBe(0)
+    expect(system.out.find((line) => line.startsWith('  WSL:'))).toContain(
+      '%UserProfile%\\.wslconfig',
+    )
+  })
+
   it('install writes the unit, enables it, turns linger on, starts it and waits for /health', async () => {
     const system = fakeSystemd()
     const dataDir = resolve(DATA_DIR)
@@ -246,6 +338,7 @@ describe('service commands on systemd', () => {
     expect(system.systemctlVerbs()).toEqual([
       'show --property=Version',
       'daemon-reload',
+      `show ${UNIT_NAME} --property=LoadState --value`,
       `enable ${UNIT_NAME}`,
       `reset-failed ${UNIT_NAME}`,
       `start ${UNIT_NAME}`,

@@ -16,6 +16,11 @@ export interface RunResult {
   stderr: string
 }
 
+export interface RunOptions {
+  /** Kill the process and report `code: null` after this long. */
+  timeoutMs?: number
+}
+
 export interface ServiceCommandDeps {
   /** Absolute path of the server entry the service should run (normally `dist/main.js`). */
   entry: string
@@ -27,7 +32,7 @@ export interface ServiceCommandDeps {
   uid?: number | undefined
   username?: string
   homedir?: string
-  run?: (file: string, args: readonly string[]) => Promise<RunResult>
+  run?: (file: string, args: readonly string[], options?: RunOptions) => Promise<RunResult>
   writeTempFile?: (name: string, data: Buffer) => Promise<string>
   /** Text of a file, or `undefined` when it does not exist. */
   readFile?: (path: string) => Promise<string | undefined>
@@ -46,20 +51,48 @@ export interface Context extends Required<Omit<ServiceCommandDeps, 'uid'>> {
   uid: number | undefined
 }
 
-function defaultRun(file: string, args: readonly string[]): Promise<RunResult> {
+function defaultRun(
+  file: string,
+  args: readonly string[],
+  options: RunOptions = {},
+): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(file, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
     let stdout = ''
     let stderr = ''
+    let timedOut = false
+    const timer =
+      options.timeoutMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            timedOut = true
+            child.kill('SIGKILL')
+          }, options.timeoutMs)
     child.stdout.on('data', (chunk) => {
       stdout += String(chunk)
     })
     child.stderr.on('data', (chunk) => {
       stderr += String(chunk)
     })
-    child.once('error', reject)
-    child.once('close', (code) => resolve({ code, stdout, stderr }))
+    child.once('error', (error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    child.once('close', (code) => {
+      clearTimeout(timer)
+      if (timedOut) stderr += `${file} did not finish within ${options.timeoutMs} ms.`
+      resolve({ code: timedOut ? null : code, stdout, stderr })
+    })
   })
+}
+
+/** The account name, without failing for a uid that has no passwd entry (some containers). */
+function currentUsername(env: NodeJS.ProcessEnv): string {
+  try {
+    return userInfo().username
+  } catch {
+    return env.USER ?? env.LOGNAME ?? env.USERNAME ?? ''
+  }
 }
 
 async function defaultWriteTempFile(name: string, data: Buffer): Promise<string> {
@@ -78,13 +111,14 @@ async function defaultReadFile(path: string): Promise<string | undefined> {
 }
 
 export function resolveDeps(deps: ServiceCommandDeps): Context {
+  const env = deps.env ?? process.env
   return {
     entry: deps.entry,
     platform: deps.platform ?? process.platform,
-    env: deps.env ?? process.env,
+    env,
     execPath: deps.execPath ?? process.execPath,
     uid: 'uid' in deps ? deps.uid : process.getuid?.(),
-    username: deps.username ?? userInfo().username,
+    username: deps.username ?? currentUsername(env),
     homedir: deps.homedir ?? homedir(),
     run: deps.run ?? defaultRun,
     writeTempFile: deps.writeTempFile ?? defaultWriteTempFile,

@@ -37,7 +37,10 @@ const WSL_WITHOUT_SYSTEMD = [
 /** States in which stopping the unit ends a server process. */
 const RUNNING_STATES = new Set(['active', 'activating', 'deactivating', 'reloading', 'refreshing'])
 
-type Linger = 'on' | 'off'
+type Linger = 'on' | 'off' | 'unknown'
+
+/** WSL interop can wedge after a WSL update; the lookup is advice, not worth waiting on. */
+const INTEROP_TIMEOUT_MS = 5000
 
 interface WslConfig {
   /** Where the file is, as Windows names it. */
@@ -71,10 +74,43 @@ async function systemctlChecked(context: Context, args: readonly string[], actio
   return result
 }
 
+async function unitProperty(context: Context, property: string): Promise<string | undefined> {
+  const result = await systemctl(context, ['show', UNIT_NAME, `--property=${property}`, '--value'])
+  return result.code === 0 ? result.stdout.trim() : undefined
+}
+
 async function isWsl(context: Context): Promise<boolean> {
   if (context.env.WSL_DISTRO_NAME) return true
   const release = await context.readFile('/proc/sys/kernel/osrelease')
   return release !== undefined && /microsoft/i.test(release)
+}
+
+async function loginctl(context: Context, args: readonly string[]): Promise<RunResult> {
+  return context.run('loginctl', args).catch((error: unknown) => ({
+    code: 1,
+    stdout: '',
+    stderr:
+      (error as NodeJS.ErrnoException).code === 'ENOENT'
+        ? 'loginctl was not found'
+        : error instanceof Error
+          ? error.message
+          : String(error),
+  }))
+}
+
+async function lingerState(context: Context): Promise<{ linger: Linger; detail: string }> {
+  const result = await loginctl(context, [
+    'show-user',
+    context.username,
+    '--property=Linger',
+    '--value',
+  ])
+  if (result.code === 0) {
+    return { linger: result.stdout.trim() === 'yes' ? 'on' : 'off', detail: '' }
+  }
+  // logind has no record of a user without sessions or linger: that is "off".
+  if (/not logged in or lingering/i.test(result.stderr)) return { linger: 'off', detail: '' }
+  return { linger: 'unknown', detail: trimOutput(result) }
 }
 
 /**
@@ -82,30 +118,21 @@ async function isWsl(context: Context): Promise<boolean> {
  * `enable-linger` inside a WSL session prints "No such device or address"
  * and still exits 0, so the result is always read back rather than trusted.
  */
-async function lingerState(context: Context): Promise<Linger> {
-  const result = await context
-    .run('loginctl', ['show-user', context.username, '--property=Linger', '--value'])
-    .catch(() => undefined)
-  return result?.code === 0 && result.stdout.trim() === 'yes' ? 'on' : 'off'
-}
-
 async function ensureLinger(context: Context): Promise<{ linger: Linger; detail: string }> {
-  if ((await lingerState(context)) === 'on') return { linger: 'on', detail: '' }
-  const result = await context
-    .run('loginctl', ['enable-linger', context.username])
-    .catch((error: unknown) => ({
-      code: 1,
-      stdout: '',
-      stderr: error instanceof Error ? error.message : String(error),
-    }))
-  if ((await lingerState(context)) === 'on') return { linger: 'on', detail: '' }
-  return { linger: 'off', detail: trimOutput(result) }
+  const before = await lingerState(context)
+  if (before.linger === 'on') return before
+  const result = await loginctl(context, ['enable-linger', context.username])
+  const after = await lingerState(context)
+  if (after.linger === 'on') return after
+  return { linger: after.linger, detail: trimOutput(result) || after.detail }
 }
 
-function lingerText(context: Context, linger: Linger): string {
-  return linger === 'on'
-    ? 'on: the server starts at boot and keeps running after you log out'
-    : `off: the server stops when you log out; turn it on with "sudo loginctl enable-linger ${context.username}"`
+function lingerText(context: Context, { linger, detail }: { linger: Linger; detail: string }) {
+  const suffix = detail ? ` (${detail})` : ''
+  if (linger === 'on') return 'on: the server starts at boot and keeps running after you log out'
+  const fix = `turn it on with "sudo loginctl enable-linger ${context.username}"`
+  if (linger === 'off') return `off: the server stops when you log out; ${fix}${suffix}`
+  return `unknown: loginctl could not report it${suffix}; without linger the server stops when you log out`
 }
 
 /**
@@ -115,10 +142,11 @@ function lingerText(context: Context, linger: Linger): string {
  */
 async function readWslConfig(context: Context): Promise<WslConfig | undefined> {
   try {
-    const echoed = await context.run('cmd.exe', ['/d', '/c', 'echo', '%USERPROFILE%'])
+    const timeout = { timeoutMs: INTEROP_TIMEOUT_MS }
+    const echoed = await context.run('cmd.exe', ['/d', '/c', 'echo', '%USERPROFILE%'], timeout)
     const profile = echoed.stdout.trim()
     if (echoed.code !== 0 || !/^[A-Za-z]:\\/.test(profile)) return undefined
-    const translated = await context.run('wslpath', ['-u', profile])
+    const translated = await context.run('wslpath', ['-u', profile], timeout)
     const directory = translated.stdout.trim()
     if (translated.code !== 0 || !directory.startsWith('/')) return undefined
     const text = await context.readFile(posix.join(directory, '.wslconfig'))
@@ -176,6 +204,14 @@ export function createSystemdBackend(context: Context): ServiceBackend {
     },
 
     async register(config: ServerConfig, logFile: string) {
+      const lineBreak = [context.execPath, context.entry, config.dataDir, logFile].find((value) =>
+        /[\r\n]/.test(value),
+      )
+      if (lineBreak !== undefined) {
+        throw new ServiceError(
+          `A unit file cannot hold a path with a line break: ${JSON.stringify(lineBreak)}.`,
+        )
+      }
       const unit = buildUnitFile({
         execStart: [context.execPath, context.entry, ...serverArguments(config, logFile)],
         workingDirectory: config.dataDir,
@@ -184,10 +220,20 @@ export function createSystemdBackend(context: Context): ServiceBackend {
       await context.ensureDir(posix.dirname(unitPath))
       await context.writeFile(unitPath, unit)
       await systemctlChecked(context, ['daemon-reload'], 'reload its unit files')
+      const loadState = (await unitProperty(context, 'LoadState')) ?? 'unknown'
+      if (loadState === 'not-found') {
+        throw new ServiceError(
+          `Wrote ${unitPath}, but your user service manager does not see it. It looks for units under its own XDG_CONFIG_HOME, which differs from this shell's; unset XDG_CONFIG_HOME here or set it for the manager too, then run "service install" again.`,
+        )
+      }
+      if (loadState !== 'loaded') {
+        throw new ServiceError(
+          `systemd rejected ${unitPath} (${loadState}). See "systemctl --user status ${UNIT_NAME}".`,
+        )
+      }
       await systemctlChecked(context, ['enable', UNIT_NAME], `enable ${UNIT_NAME}`)
       context.stdout(`Installed systemd user unit ${UNIT_NAME} at ${unitPath}.`)
-      const { linger, detail } = await ensureLinger(context)
-      const notes = [`  Linger:    ${lingerText(context, linger)}${detail ? ` (${detail})` : ''}`]
+      const notes = [`  Linger:    ${lingerText(context, await ensureLinger(context))}`]
       if (await isWsl(context)) notes.push(`  WSL:       ${wslText(await readWslConfig(context))}`)
       return notes
     },
@@ -205,9 +251,16 @@ export function createSystemdBackend(context: Context): ServiceBackend {
 
     /** `systemctl stop` sends SIGTERM and returns once the server has exited (or been killed). */
     async stop() {
-      const state = (await systemctl(context, ['is-active', UNIT_NAME])).stdout.trim()
-      await systemctlChecked(context, ['stop', UNIT_NAME], `stop ${UNIT_NAME}`)
-      return RUNNING_STATES.has(state) ? 'stopped' : 'not_running'
+      const running = RUNNING_STATES.has(
+        (await systemctl(context, ['is-active', UNIT_NAME])).stdout.trim(),
+      )
+      const stopped = await systemctl(context, ['stop', UNIT_NAME])
+      // A unit systemd cannot load has nothing running; failing here would
+      // block the reinstall or uninstall that repairs it.
+      if (stopped.code !== 0 && running) {
+        throw new ServiceError(`systemd could not stop ${UNIT_NAME}: ${trimOutput(stopped)}`)
+      }
+      return running ? 'stopped' : 'not_running'
     },
 
     async remove() {
@@ -221,7 +274,7 @@ export function createSystemdBackend(context: Context): ServiceBackend {
       const shown = await systemctl(context, [
         'show',
         UNIT_NAME,
-        '--property=ActiveState,SubState,UnitFileState,Result,ExecMainStatus,ExecMainExitTimestamp,NRestarts',
+        '--property=LoadState,ActiveState,SubState,UnitFileState,Result,ExecMainStatus,ExecMainExitTimestamp,NRestarts',
       ])
       const unit = parseSystemctlShow(shown.code === 0 ? shown.stdout : '')
       const lines = [
@@ -229,6 +282,11 @@ export function createSystemdBackend(context: Context): ServiceBackend {
           unit.UnitFileState || 'unknown'
         })`,
       ]
+      if (unit.LoadState && unit.LoadState !== 'loaded') {
+        lines.push(
+          `Unit file: ${unit.LoadState}; systemd cannot use ${unitPath}. See "systemctl --user status ${UNIT_NAME}", then run "service install" again.`,
+        )
+      }
       if (unit.ExecMainExitTimestamp && unit.ActiveState !== 'active') {
         const result = unit.Result && unit.Result !== 'success' ? ` (${unit.Result})` : ''
         lines.push(

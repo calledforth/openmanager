@@ -48,6 +48,16 @@ export function quoteSystemdArgument(argument: string): string {
   return `"${escapeWord(argument, true)}"`
 }
 
+/**
+ * A single-path setting such as `WorkingDirectory=`. systemd expands `%`
+ * specifiers there but takes the rest verbatim: quotes would become part of
+ * the path (measured: `"/a b"` is rejected as not absolute), and so would
+ * backslash escapes. Spaces need no protection.
+ */
+export function escapeSystemdPath(path: string): string {
+  return path.replace(/%/g, '%%')
+}
+
 /** One `Environment=` assignment. systemd expands `%` there but not `$`. */
 export function quoteSystemdEnvironment(name: string, value: string): string {
   return `"${name}=${escapeWord(value, false)}"`
@@ -124,14 +134,14 @@ export function buildUnitFile(unit: UnitDefinition): string {
     '# Written by "openmanager-server service install". Rerun install to change it;',
     '# keep your own additions in a drop-in: systemctl --user edit openmanager-server',
     '[Unit]',
-    `Description=${escapeWord(description, false)}`,
+    `Description=${escapeSystemdPath(description)}`,
     'StartLimitIntervalSec=300',
     'StartLimitBurst=5',
     '',
     '[Service]',
     'Type=exec',
     `ExecStart=${unit.execStart.map(quoteSystemdArgument).join(' ')}`,
-    `WorkingDirectory=${quoteSystemdArgument(unit.workingDirectory)}`,
+    `WorkingDirectory=${escapeSystemdPath(unit.workingDirectory)}`,
     `Environment=${quoteSystemdEnvironment('PATH', unit.path)}`,
     'Restart=on-failure',
     'RestartSec=10',
@@ -179,6 +189,19 @@ export function parseSystemctlShow(output: string): Record<string, string> {
 }
 
 const BOM = new RegExp(`^${String.fromCharCode(0xfeff)}`)
+const REPLACEMENT_CHARACTERS = new RegExp(`^${String.fromCharCode(0xfffd)}+`)
+
+/**
+ * `.wslconfig` text read as UTF-8. Older Notepad saves it as UTF-16LE, which
+ * then arrives as NUL-interleaved text behind an undecodable byte order mark;
+ * dropping those leaves the ASCII settings readable.
+ */
+function normalizeWslConfig(text: string): string {
+  return text
+    .replaceAll(String.fromCharCode(0), '')
+    .replace(REPLACEMENT_CHARACTERS, '')
+    .replace(BOM, '')
+}
 
 /**
  * Whether a `.wslconfig` keeps idle distros running: `[general]
@@ -188,7 +211,7 @@ const BOM = new RegExp(`^${String.fromCharCode(0xfeff)}`)
  */
 export function wslKeepsDistroRunning(wslconfig: string): boolean {
   let section = ''
-  for (const raw of wslconfig.replace(BOM, '').split(/\r?\n/)) {
+  for (const raw of normalizeWslConfig(wslconfig).split(/\r?\n/)) {
     const line = raw.replace(/[#;].*$/, '').trim()
     const header = /^\[(.+)\]$/.exec(line)
     if (header) {

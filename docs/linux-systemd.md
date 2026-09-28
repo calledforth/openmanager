@@ -99,12 +99,16 @@ What `install` does, in order:
 1. Refuses if you are root, if systemd is not running (with the WSL steps
    above when it is WSL), or if `systemctl --user` cannot reach your user
    manager (typically a shell entered through `sudo` or `su`).
-2. Refuses if another process already answers on the chosen port, such as a
+2. If the unit already exists, stops its server so the new one can bind.
+3. Refuses if another process still answers on the chosen port, such as a
    `pnpm dev:web` server. Stop it or pick another `--port`.
-3. If the unit already exists, stops its server so the new one can bind.
 4. Writes `~/.config/systemd/user/openmanager-server.service` (under
-   `$XDG_CONFIG_HOME` if you set one), runs `systemctl --user daemon-reload`
-   and `systemctl --user enable openmanager-server.service`.
+   `$XDG_CONFIG_HOME` if you set one), runs `systemctl --user daemon-reload`,
+   checks that systemd loaded the file, and runs
+   `systemctl --user enable openmanager-server.service`. If you set
+   `XDG_CONFIG_HOME` only in your shell profile, the user manager does not
+   share it and would never see the unit; `install` detects that and stops
+   with an explanation.
 5. Turns linger on if it is off. If your system's policy refuses that, install
    still finishes and prints the `sudo loginctl enable-linger <you>` command to
    run; until then the server stops when you log out.
@@ -176,7 +180,8 @@ node apps/server/dist/main.js service uninstall
 ```
 
 - `status` prints the unit state (for example `active, running; enabled`),
-  the last exit when it is not running, the restart count after crashes,
+  a warning if systemd cannot use the unit file, the last exit when it is not
+  running, the restart count after crashes,
   linger, the WSL idle setting, whether `/health` answers, the data directory
   and the log file. Exit code `0` means the server answered.
 - `start` clears a previous crash-loop `failed` state and starts the unit.
