@@ -52,6 +52,19 @@ describe('notifications preference', () => {
     expect(readNotificationsEnabled(storage)).toBe(true)
   })
 
+  it('keeps a turned-off choice when storage refuses the write', () => {
+    const broken = {
+      getItem: () => 'on',
+      setItem: () => {
+        throw new Error('quota')
+      },
+    }
+    writeNotificationsEnabled(broken, false)
+    expect(readNotificationsEnabled(broken)).toBe(false)
+    writeNotificationsEnabled(broken, true)
+    expect(readNotificationsEnabled(broken)).toBe(true)
+  })
+
   it('treats unreadable storage as on', () => {
     expect(readNotificationsEnabled(undefined)).toBe(true)
     expect(

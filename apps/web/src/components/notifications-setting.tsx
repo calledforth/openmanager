@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import {
   browserStorage,
   notificationSupport,
@@ -42,6 +42,29 @@ export function NotificationsSettingControl({
   const [support, setSupport] = useState(notificationSupport)
   const [enabled, setEnabled] = useState(() => readNotificationsEnabled(browserStorage()))
   const [asking, setAsking] = useState(false)
+  // Permission can change outside the page, in the browser's site settings.
+  // Look again when it reports a change, or when the user comes back.
+  useEffect(() => {
+    const refresh = () => setSupport(notificationSupport())
+    window.addEventListener('focus', refresh)
+    document.addEventListener('visibilitychange', refresh)
+    let status: PermissionStatus | null = null
+    let live = true
+    navigator.permissions
+      ?.query({ name: 'notifications' })
+      .then((result) => {
+        if (!live) return
+        status = result
+        status.addEventListener('change', refresh)
+      })
+      .catch(() => undefined)
+    return () => {
+      live = false
+      window.removeEventListener('focus', refresh)
+      document.removeEventListener('visibilitychange', refresh)
+      status?.removeEventListener('change', refresh)
+    }
+  }, [])
   const blocked = blockedReason(support)
   const value: NotificationsChoice = enabled && support === 'granted' ? 'on' : 'off'
 

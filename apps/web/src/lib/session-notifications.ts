@@ -42,8 +42,13 @@ export function notificationSupport(): NotificationSupport {
   return window.Notification.permission
 }
 
+// The choice made on this page. It outranks storage, so turning notifications
+// off holds even where storage is unavailable or refuses the write.
+let chosenThisPage: boolean | null = null
+
 /** On unless turned off: the browser's own permission is the first gate. */
 export function readNotificationsEnabled(storage: Pick<Storage, 'getItem'> | undefined): boolean {
+  if (chosenThisPage !== null) return chosenThisPage
   try {
     return storage?.getItem(NOTIFICATIONS_STORAGE_KEY) !== 'off'
   } catch {
@@ -55,6 +60,7 @@ export function writeNotificationsEnabled(
   storage: Pick<Storage, 'setItem'> | undefined,
   enabled: boolean,
 ) {
+  chosenThisPage = enabled
   try {
     storage?.setItem(NOTIFICATIONS_STORAGE_KEY, enabled ? 'on' : 'off')
   } catch {
