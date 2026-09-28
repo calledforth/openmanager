@@ -31,6 +31,7 @@ import type { EnvironmentClient } from '@openmanager/environment-client'
 import { useConnection } from '../providers/connection-provider'
 import { AddWorkspaceDialog } from './add-workspace-dialog'
 import { ConnectionBanner, ConnectionScreen, ConnectionStatusChip } from './connection-surfaces'
+import { SessionNotifications } from './session-notifications'
 
 const NewAgentIcon = phosphorIcon(NotePencilIcon)
 const AddProjectIcon = phosphorIcon(FolderPlusIcon)
@@ -231,6 +232,10 @@ function ConnectedShell({
         : navigate({ to: '/' }),
     [navigate],
   )
+  const openSession = useCallback(
+    (sessionId: string) => void navigateSession(sessionId),
+    [navigateSession],
+  )
   const [addingWorkspace, setAddingWorkspace] = useState(false)
   const closeAddWorkspace = useCallback(() => setAddingWorkspace(false), [])
   // The dialog owns the round trip; the sidebar only needs to know it opened.
@@ -255,6 +260,7 @@ function ConnectedShell({
         addingWorkspace={addingWorkspace}
         closeAddWorkspace={closeAddWorkspace}
       />
+      <SessionNotifications openSession={openSession} />
     </EnvironmentApplicationProviders>
   )
 }
