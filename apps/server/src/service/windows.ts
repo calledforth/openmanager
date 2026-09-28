@@ -8,7 +8,7 @@ import {
   type RunResult,
   type ServiceBackend,
 } from './context.ts'
-import { describeArguments } from './server-arguments.ts'
+import { describeArguments, flagValue } from './server-arguments.ts'
 import {
   buildTaskXml,
   encodeTaskXml,
@@ -80,14 +80,17 @@ async function readTaskStatus(context: Context): Promise<TaskStatus | undefined>
  * entry path plus the marker flag identify our server and nothing else.
  * `undefined` when the lookup itself failed, which says nothing either way.
  */
-async function findServerProcesses(context: Context): Promise<number[] | undefined> {
-  const needle = context.entry.replace(/'/g, "''")
+async function findServerProcesses(
+  context: Context,
+  entry: string,
+  dataDir: string | undefined,
+): Promise<number[] | undefined> {
   const script = [
-    `$needle = '${needle}'`,
-    `$marker = '${SERVICE_MARKER_FLAG}'`,
+    "$ErrorActionPreference = 'Stop'",
+    '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()',
     'Get-CimInstance Win32_Process -Filter "Name = \'node.exe\'" |',
-    '  Where-Object { $_.CommandLine -and $_.CommandLine.Contains($needle) -and $_.CommandLine.Contains($marker) } |',
-    '  ForEach-Object { $_.ProcessId }',
+    '  Where-Object { $_.CommandLine } |',
+    '  Select-Object ProcessId, CommandLine | ConvertTo-Json -Compress',
   ].join('\n')
   const result = await context
     .run('powershell.exe', [
@@ -100,11 +103,31 @@ async function findServerProcesses(context: Context): Promise<number[] | undefin
     ])
     .catch(() => undefined)
   if (result?.code !== 0) return undefined
-  return result.stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => /^\d+$/.test(line))
-    .map(Number)
+  if (!result.stdout.trim()) return []
+  try {
+    const parsed: unknown = JSON.parse(result.stdout)
+    const processes = Array.isArray(parsed) ? parsed : [parsed]
+    return processes.flatMap((value: unknown) => {
+      if (!value || typeof value !== 'object') throw new Error('Invalid process record')
+      const record = value as { ProcessId?: unknown; CommandLine?: unknown }
+      if (
+        typeof record.ProcessId !== 'number' ||
+        !Number.isInteger(record.ProcessId) ||
+        record.ProcessId <= 0 ||
+        typeof record.CommandLine !== 'string'
+      )
+        throw new Error('Invalid process record')
+      const args = parseWindowsCommandLine(record.CommandLine)
+      return args[1]?.toLowerCase() === entry.toLowerCase() &&
+        args.includes(SERVICE_MARKER_FLAG) &&
+        (dataDir === undefined ||
+          flagValue(args, '--data-dir')?.toLowerCase() === dataDir.toLowerCase())
+        ? [record.ProcessId]
+        : []
+    })
+  } catch {
+    return undefined
+  }
 }
 
 function currentUserId(context: Context): string {
@@ -120,6 +143,8 @@ function consoleHostPath(context: Context): string {
 }
 
 export function createWindowsBackend(context: Context): ServiceBackend {
+  let installedEntry = context.entry
+  let installedDataDir: string | undefined
   return {
     kind: 'logon task',
     label: `logon task ${TASK_NAME}`,
@@ -128,15 +153,19 @@ export function createWindowsBackend(context: Context): ServiceBackend {
     async preflight() {},
 
     async running() {
-      const pids = await findServerProcesses(context)
+      const pids = await findServerProcesses(context, installedEntry, installedDataDir)
       return pids === undefined ? undefined : pids.length > 0
     },
 
     async read() {
       const xml = await readTaskXml(context)
-      return xml === undefined
-        ? undefined
-        : describeArguments(parseWindowsCommandLine(readTaskArguments(xml) ?? ''))
+      if (xml === undefined) return undefined
+      const args = parseWindowsCommandLine(readTaskArguments(xml) ?? '')
+      installedEntry =
+        args[0] === '--headless' ? (args[2] ?? context.entry) : (args[1] ?? context.entry)
+      const installed = describeArguments(args)
+      installedDataDir = installed.dataDir
+      return installed
     },
 
     async register(config: ServerConfig, logFile: string) {
@@ -189,17 +218,38 @@ export function createWindowsBackend(context: Context): ServiceBackend {
      * terminated outright.
      */
     async stop() {
-      await schtasks(context, ['/End', '/TN', TASK_NAME])
-      // As before: a failed lookup cannot confirm a straggler, so none is killed.
-      let pids = (await findServerProcesses(context)) ?? []
+      const ended = await schtasks(context, ['/End', '/TN', TASK_NAME])
+      const lookup = async () => {
+        const found = await findServerProcesses(context, installedEntry, installedDataDir)
+        if (found === undefined) {
+          throw new ServiceError(
+            'Cannot confirm the service stopped: process lookup failed. The service registration and credentials have been retained.',
+          )
+        }
+        return found
+      }
+      let pids = await lookup()
+      if (ended.code !== 0 && pids.length > 0) {
+        throw new ServiceError(`Task Scheduler could not end the task: ${trimOutput(ended)}`)
+      }
       if (pids.length === 0) return 'not_running'
       const deadline = context.now() + STOP_TIMEOUT_MS
       while (pids.length > 0 && context.now() < deadline) {
         await context.sleep(POLL_INTERVAL_MS)
-        pids = (await findServerProcesses(context)) ?? []
+        pids = await lookup()
       }
       for (const pid of pids) {
-        await context.run('taskkill.exe', ['/PID', String(pid), '/T', '/F'])
+        const killed = await context.run('taskkill.exe', ['/PID', String(pid), '/T', '/F'])
+        if (killed.code !== 0 && (await lookup()).includes(pid)) {
+          throw new ServiceError(
+            `Could not terminate service process ${pid}: ${trimOutput(killed)}`,
+          )
+        }
+      }
+      if ((await lookup()).length > 0) {
+        throw new ServiceError(
+          'Service processes are still running; the service registration and credentials have been retained.',
+        )
       }
       return 'stopped'
     },
@@ -220,7 +270,16 @@ export function createWindowsBackend(context: Context): ServiceBackend {
           `Last run:  ${taskStatus.lastRunTime}, result ${taskStatus.lastResult}${hint ? ` (${hint})` : ''}`,
         )
       }
-      return lines
+      const running = await findServerProcesses(context, installedEntry, installedDataDir)
+      const state =
+        running === undefined || !taskStatus
+          ? 'unknown'
+          : running.length > 0
+            ? 'running'
+            : ['0', '267011', '267014'].includes(taskStatus.lastResult)
+              ? 'stopped'
+              : 'failed'
+      return { state, lines }
     },
   }
 }

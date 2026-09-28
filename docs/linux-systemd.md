@@ -142,7 +142,7 @@ drop-in rather than editing the unit, because `install` rewrites the unit file:
 systemctl --user edit openmanager-server
 # [Service]
 # Environment=SOME_VARIABLE=value
-node apps/server/dist/main.js service stop && node apps/server/dist/main.js service start
+node apps/server/dist/main.js service restart
 ```
 
 Drop-ins live in `~/.config/systemd/user/openmanager-server.service.d/`,
@@ -176,12 +176,14 @@ Inside WSL there is exactly one login session per distro boot, shared by all
 terminals, so "logging out" of WSL means the distro stopping. Linger is still
 turned on so the unit behaves the same if that ever changes.
 
-## Check, start, stop, remove
+## Check, start, stop, restart, remove
 
 ```sh
 node apps/server/dist/main.js service status
+node apps/server/dist/main.js service status --json
 node apps/server/dist/main.js service start
 node apps/server/dist/main.js service stop
+node apps/server/dist/main.js service restart
 node apps/server/dist/main.js service uninstall
 ```
 
@@ -196,6 +198,9 @@ node apps/server/dist/main.js service uninstall
   refuses while another server holds the port.
 - `stop` stops the server (SIGTERM, a clean shutdown) but leaves the unit
   installed and enabled; the next boot, login or distro start brings it back.
+- `restart` stops the installed server, verifies shutdown, starts the same
+  service definition and waits up to 20 seconds for health. Its port, data
+  directory, identity, SQLite database and credentials remain unchanged.
 - `uninstall` stops the server, disables and deletes the unit and reloads
   systemd. Linger stays on, since other user services may rely on it; turn it
   off with `loginctl disable-linger <you>` if nothing else needs it. The data
@@ -204,6 +209,26 @@ node apps/server/dist/main.js service uninstall
 `systemctl --user status openmanager-server` and
 `journalctl --user -u openmanager-server` work too; they show systemd's view
 (starts, stops, crashes).
+
+### Scriptable status and retained data
+
+`status --json` prints one object with `installed`, `state`, `healthy`, `port`,
+`dataDir` and `logFile` (paths are omitted if unavailable). States are `running`,
+`stopped`, `failed`, `unknown` (the supervisor/process lookup cannot confirm a
+state), or `not-installed`. A running process can still be unhealthy. Exit
+code 0 requires both confirmed running state and a successful health response;
+all other states return 1. Credential values are never included.
+
+Restart and uninstall fail if shutdown cannot be confirmed, keeping the
+registration available for a retry. Uninstall intentionally retains the
+**whole data directory together**, including identity, SQLite authorization
+records and `owner-credential`; it prints that location. Reinstall with the
+same `--data-dir` reuses them. No credentials are copied into the service
+registration. For permanent removal, first complete uninstall successfully,
+then remove the reported data directory yourself (this also deletes stored
+sessions), any custom log location, and saved credentials in connected UIs.
+Deleting only `owner-credential` does not revoke the authorization records in
+SQLite. Provider CLI logins belong to the user and are not removed.
 
 ## Connecting a UI
 
@@ -221,6 +246,20 @@ also run the Windows logon task, give the two servers different ports so it
 is clear which one a Windows client reaches.
 
 ## Logs
+
+```sh
+node apps/server/dist/main.js service logs
+node apps/server/dist/main.js service logs --lines 200 --follow
+```
+
+`logs` reads the installed log path, including a custom `--log-file`, rather
+than guessing from the current shell. It prints the last 100 lines by default;
+`--lines` (or `-n`) accepts 0�10000. The initial tail examines at most the last
+1 MiB, so very large records may yield fewer lines. `--follow` (or `-f`) waits
+for a missing file, follows new records across restart/rotation and truncation,
+and stops with Ctrl+C. Without `--follow`, a missing file is an error. The
+location is printed to stderr and log records to stdout. These commands read
+application logs; supervisor diagnostics remain available in the tools below.
 
 The server writes one JSON record per line to the log file (default
 `<data-dir>/logs/server.log`), including startup failures. At 10 MiB the file

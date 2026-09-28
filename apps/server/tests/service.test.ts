@@ -136,6 +136,8 @@ function fakeSystem(options: {
   /** Task Scheduler itself is unreachable. */
   queryFails?: boolean
   /** The PowerShell process lookup fails. */
+  killFails?: boolean
+  lastResult?: string
   processQueryFails?: boolean
 }) {
   const calls: string[][] = []
@@ -173,7 +175,7 @@ function fakeSystem(options: {
       if (verb === '/Query') {
         return {
           code: 0,
-          stdout: `"HOST","${TASK_NAME}","N/A","Ready","Interactive only","N/A","267011","N/A","x"\r\n`,
+          stdout: `"HOST","${TASK_NAME}","N/A","Ready","Interactive only","N/A","${options.lastResult ?? '267011'}","N/A","x"\r\n`,
           stderr: '',
         }
       }
@@ -200,9 +202,24 @@ function fakeSystem(options: {
         return { code: 1, stdout: '', stderr: 'Get-CimInstance : Access denied' }
       }
       const pids = (pidQueue.length > 1 ? pidQueue.shift() : pidQueue[0]) ?? []
-      return { code: 0, stdout: pids.map(String).join('\r\n'), stderr: '' }
+      const taskArgs = parseWindowsCommandLine(readTaskArguments(registered!) ?? '').slice(1)
+      if (!taskArgs.includes('--exit-with-parent')) taskArgs.push('--exit-with-parent')
+      return {
+        code: 0,
+        stdout: JSON.stringify(
+          pids.map((ProcessId) => ({
+            ProcessId,
+            CommandLine: taskArgs.map(quoteWindowsArgument).join(' '),
+          })),
+        ),
+        stderr: '',
+      }
     }
-    if (file === 'taskkill.exe') return { code: 0, stdout: 'SUCCESS', stderr: '' }
+    if (file === 'taskkill.exe') {
+      if (options.killFails) return { code: 1, stdout: '', stderr: 'Access denied' }
+      pidQueue.splice(0, pidQueue.length, [])
+      return { code: 0, stdout: 'SUCCESS', stderr: '' }
+    }
     throw new Error(`unexpected command ${file} ${args.join(' ')}`)
   }
   const deps: ServiceCommandDeps = {
@@ -256,7 +273,7 @@ describe('service commands', () => {
     expect(await runServiceCommand([], system.deps)).toBe(1)
     expect(await runServiceCommand(['--help'], system.deps)).toBe(0)
     expect(system.out.filter((line) => line.startsWith('Usage:'))).toHaveLength(2)
-    expect(await runServiceCommand(['restart'], system.deps)).toBe(1)
+    expect(await runServiceCommand(['invalid'], system.deps)).toBe(1)
     expect(system.err[0]).toContain('Unknown service command')
     expect(system.calls).toEqual([])
   })
@@ -384,6 +401,7 @@ describe('service commands', () => {
       'schtasks.exe /End',
       'powershell.exe -NoProfile',
       'powershell.exe -NoProfile',
+      'powershell.exe -NoProfile',
       'schtasks.exe /Create',
       'schtasks.exe /Run',
     ])
@@ -449,6 +467,7 @@ describe('service commands', () => {
       'Server:    http://127.0.0.1:43120 (not answering)',
       `Data dir:  ${DATA_DIR}`,
       'Log file:  C:\\logs\\server.log',
+      'State:     stopped',
     ])
 
     const up = fakeSystem({ registered: existing, healthy: () => true, pids: [[4242]] })
@@ -477,7 +496,7 @@ describe('service commands', () => {
     })
     expect(await runServiceCommand(['start'], system.deps)).toBe(0)
     expect(system.out.at(-1)).toContain('already up')
-    expect(await runServiceCommand(['status'], system.deps)).toBe(0)
+    expect(await runServiceCommand(['status'], system.deps)).toBe(1)
     expect(system.out).toContain(
       "Server:    http://127.0.0.1:43120 (answering /health; could not confirm it is the logon task's server)",
     )
@@ -519,5 +538,93 @@ describe('service commands', () => {
     expect(system.out.at(-1)).toContain('Stopped the environment server')
     expect(await runServiceCommand(['stop', 'now'], system.deps)).toBe(1)
     expect(system.err.at(-1)).toContain('takes no arguments')
+  })
+})
+
+const LIFECYCLE_TASK = buildTaskXml({
+  userId: 'MACHINE\\ada',
+  command: 'conhost.exe',
+  arguments: [
+    '--headless',
+    NODE,
+    ENTRY,
+    '--port',
+    '43120',
+    '--data-dir',
+    DATA_DIR,
+    '--log-file',
+    'C:\\logs\\server.log',
+    '--exit-with-parent',
+  ]
+    .map(quoteWindowsArgument)
+    .join(' '),
+  workingDirectory: DATA_DIR,
+})
+
+describe('service maintenance', () => {
+  it('restart stops before starting and keeps the installed definition and credentials', async () => {
+    const system = fakeSystem({ registered: LIFECYCLE_TASK, healthy: () => true, pids: [[42], []] })
+    expect(await runServiceCommand(['restart'], system.deps)).toBe(0)
+    const verbs = system.calls.map((call) => call[1])
+    expect(verbs.indexOf('/End')).toBeLessThan(verbs.indexOf('/Run'))
+    expect(system.registered).toBe(LIFECYCLE_TASK)
+    expect(system.removed).toEqual([])
+    expect(system.written).toEqual([])
+  })
+
+  it.each(['restart', 'uninstall'])(
+    '%s refuses to continue after a failed process lookup or kill',
+    async (command) => {
+      for (const failure of [{ processQueryFails: true }, { killFails: true, pids: [[42]] }]) {
+        const system = fakeSystem({ registered: LIFECYCLE_TASK, ...failure })
+        expect(await runServiceCommand([command], system.deps)).toBe(1)
+        expect(system.registered).toBe(LIFECYCLE_TASK)
+        expect(system.calls.map((call) => call[1])).not.toContain('/Run')
+        expect(system.calls.map((call) => call[1])).not.toContain('/Delete')
+        expect(system.removed).toEqual([])
+      }
+    },
+  )
+
+  it('restart refuses a foreign server after stopping the task', async () => {
+    const system = fakeSystem({
+      registered: LIFECYCLE_TASK,
+      healthy: () => true,
+      otherServer: true,
+      pids: [[42], []],
+    })
+    expect(await runServiceCommand(['restart'], system.deps)).toBe(1)
+    expect(system.calls.map((call) => call[1])).not.toContain('/Run')
+  })
+
+  it.each([
+    { pids: [[42]], lastResult: '267009', healthy: () => true, state: 'running', code: 0 },
+    { pids: [], lastResult: '0', state: 'stopped', code: 1 },
+    { pids: [], lastResult: '1', state: 'failed', code: 1 },
+    { pids: [], processQueryFails: true, state: 'unknown', code: 1 },
+  ])('reports $state as JSON without credentials', async (options) => {
+    const system = fakeSystem({ registered: LIFECYCLE_TASK, ...options })
+    expect(await runServiceCommand(['status', '--json'], system.deps)).toBe(options.code)
+    expect(system.out).toHaveLength(1)
+    expect(JSON.parse(system.out[0]!)).toMatchObject({
+      installed: true,
+      state: options.state,
+      dataDir: DATA_DIR,
+    })
+  })
+
+  it('tails the installed path and validates options before querying the supervisor', async () => {
+    const system = fakeSystem({ registered: LIFECYCLE_TASK })
+    const tails: unknown[] = []
+    const deps = {
+      ...system.deps,
+      tailLogs: async (path: string, options: unknown) => {
+        tails.push({ path, options })
+      },
+    }
+    expect(await runServiceCommand(['logs', '--lines', '-1'], deps)).toBe(1)
+    expect(system.calls).toEqual([])
+    expect(await runServiceCommand(['logs', '-f', '-n', '20'], deps)).toBe(0)
+    expect(tails).toEqual([{ path: 'C:\\logs\\server.log', options: { follow: true, lines: 20 } }])
   })
 })
