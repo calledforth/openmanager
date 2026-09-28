@@ -6,10 +6,10 @@ import {
   type RunResult,
   type ServiceCommandDeps,
 } from '../src/service/cli.js'
+import { flagValue } from '../src/service/server-arguments.js'
 import {
   buildTaskXml,
   encodeTaskXml,
-  flagValue,
   parseTaskStatus,
   parseWindowsCommandLine,
   quoteWindowsArgument,
@@ -238,11 +238,11 @@ function fakeSystem(options: {
 }
 
 describe('service commands', () => {
-  it('refuses to run anywhere but Windows, before touching the system', async () => {
+  it('refuses platforms without a supported supervisor, before touching the system', async () => {
     const system = fakeSystem({})
-    const code = await runServiceCommand(['install'], { ...system.deps, platform: 'linux' })
+    const code = await runServiceCommand(['install'], { ...system.deps, platform: 'darwin' })
     expect(code).toBe(1)
-    expect(system.err[0]).toContain('only run on Windows')
+    expect(system.err[0]).toContain('not darwin')
     expect(system.calls).toEqual([])
   })
 
