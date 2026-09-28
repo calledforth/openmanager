@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { CommandEnvelopeSchema, ResponseEnvelopeSchema } from './envelopes.js'
 import { EntityIdSchema } from './domains.js'
 import { ProviderBootstrapSchema } from './providers.js'
-import { ComposerConfigValuesSchema } from './session-composer.js'
+import { ComposerConfigOptionSchema, ComposerConfigValuesSchema } from './session-composer.js'
 
 export * from './session-composer.js'
 
@@ -38,6 +38,12 @@ export const ComposerModelOptionSchema = z.strictObject({
    * the composer treats as "let it through"; `false` blocks the attach.
    */
   supportsImageInput: z.boolean().optional(),
+  /**
+   * The model's own settings (effort, context window, fast mode) as a session
+   * on it would list them, so a draft can offer them before any session
+   * exists. A live session's `configOptions` replace them once it reports.
+   */
+  configOptions: z.array(ComposerConfigOptionSchema).max(64).optional(),
 })
 
 export const ComposerModeOptionSchema = z.strictObject({

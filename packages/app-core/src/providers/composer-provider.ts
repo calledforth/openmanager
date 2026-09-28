@@ -68,8 +68,33 @@ export function toAcpModels(models: SessionModels): AcpSessionRuntimeState['mode
       ...(model.supportsImageInput !== undefined
         ? { supportsImageInput: model.supportsImageInput }
         : {}),
+      ...(model.configOptions ? { configOptions: model.configOptions } : {}),
     })),
   }
+}
+
+/** The settings a draft offers: the selected model's own, as its catalog row
+ * lists them, when the catalog could say.
+ *
+ * A borrowed listing (the newest session on the same provider) only fills in
+ * what no model row owns — Claude Code's output style, say. A setting some
+ * row does list is per model, and the borrowed session may be on a model that
+ * has it when the draft's does not (Cursor's `thinking`), or has it with
+ * other values (Cursor's `context`: 272k/1m on GPT, 300k/1m on Claude). */
+export function draftConfigOptions(
+  models: readonly AcpModelOption[] | undefined,
+  modelId: string | undefined,
+  borrowed: readonly SessionConfigOption[] | undefined,
+): SessionConfigOption[] | undefined {
+  const own = models?.find((model) => model.modelId === modelId)?.configOptions
+  const perModel = new Set(
+    (models ?? []).flatMap((model) => (model.configOptions ?? []).map((option) => option.id)),
+  )
+  // A row that lists no settings (the catalog could not say) still never
+  // takes another model's per-model ones: its session may not have them.
+  const shared = (borrowed ?? []).filter((option) => !perModel.has(option.id))
+  if (!own && !borrowed) return undefined
+  return [...(own ?? []), ...shared]
 }
 
 export function toAcpModes(modes: SessionModes): AcpSessionRuntimeState['modes'] {
@@ -118,7 +143,10 @@ export function resolveDraftComposerRuntime({
     [preference?.modeId, selection?.modeId, runtime?.modes?.currentModeId, profile?.defaultModeId],
     availableModes,
   )
-  const configOptions = applySessionConfigValues(runtime?.configOptions, preference?.configValues)
+  const configOptions = applySessionConfigValues(
+    draftConfigOptions(availableModels, currentModelId, runtime?.configOptions),
+    preference?.configValues,
+  )
 
   return {
     sessionId: `draft:${workspacePath}`,

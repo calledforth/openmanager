@@ -3,6 +3,8 @@ import type { SessionConfigOption } from '@agentpack/contract'
 import {
   applySessionConfigValues,
   configurableSessionOptions,
+  contextWindowConfigOption,
+  effortConfigOption,
   isBooleanSelect,
   sessionConfigSummary,
   updateSessionConfigOptions,
@@ -43,17 +45,66 @@ const options: SessionConfigOption[] = [
 ]
 
 describe('model configuration helpers', () => {
-  it('keeps model and mode controls out of the secondary settings menu', () => {
-    expect(configurableSessionOptions(options).map((option) => option.id)).toEqual([
-      'reasoning',
-      'fast',
-    ])
+  it('keeps model, mode and effort controls out of the secondary settings menu', () => {
+    // Effort has its own pill, whatever the provider calls it.
+    expect(configurableSessionOptions(options).map((option) => option.id)).toEqual(['fast'])
   })
 
   it('summarizes meaningful selections and hides disabled toggles', () => {
-    expect(sessionConfigSummary(options)).toEqual(['Medium'])
+    expect(sessionConfigSummary(options)).toEqual([])
     const fast = updateSessionConfigOptions(options, 'fast', 'true')
-    expect(sessionConfigSummary(fast)).toEqual(['Medium', 'Fast'])
+    expect(sessionConfigSummary(fast)).toEqual(['Fast'])
+  })
+
+  it('finds the effort control under every name the providers use', () => {
+    expect(effortConfigOption(options)?.id).toBe('reasoning')
+    // Cursor files a `thinking` on/off switch under the same category; it is
+    // never the effort control, and it stays in the settings menu.
+    const cursorOpus: SessionConfigOption[] = [
+      {
+        id: 'thinking',
+        name: 'Thinking',
+        category: 'thought_level',
+        type: 'select',
+        currentValue: 'true',
+        options: [
+          { value: 'false', name: 'Off' },
+          { value: 'true', name: 'On' },
+        ],
+      },
+      {
+        id: 'effort',
+        name: 'Effort',
+        category: 'thought_level',
+        type: 'select',
+        currentValue: 'high',
+        options: [
+          { value: 'low', name: 'Low' },
+          { value: 'high', name: 'High' },
+        ],
+      },
+    ]
+    expect(effortConfigOption(cursorOpus)?.id).toBe('effort')
+    expect(configurableSessionOptions(cursorOpus).map((option) => option.id)).toEqual(['thinking'])
+    expect(effortConfigOption([cursorOpus[0]])).toBeUndefined()
+  })
+
+  it('finds the context window control', () => {
+    const context: SessionConfigOption = {
+      id: 'context',
+      name: 'Context',
+      category: 'model_config',
+      type: 'select',
+      currentValue: '300k',
+      options: [
+        { value: '300k', name: '300K' },
+        { value: '1m', name: '1M' },
+      ],
+    }
+    expect(contextWindowConfigOption([...options, context])).toBe(context)
+    expect(contextWindowConfigOption(options)).toBeUndefined()
+    // It stays in the settings menu, and its choice shows in the summary.
+    expect(sessionConfigSummary([context])).toEqual(['300K'])
   })
 
   it('recognizes select controls that represent booleans', () => {

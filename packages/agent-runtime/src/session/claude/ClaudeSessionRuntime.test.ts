@@ -1194,7 +1194,8 @@ describe('ClaudeSessionRuntime usage', () => {
       used: 12_000,
       size: 200_000,
     })
-    expect(sdk.last.contextUsageCalls).toBe(1)
+    // Once at start, for the window in force, and once for the turn.
+    expect(sdk.last.contextUsageCalls).toBe(2)
   })
 
   it('still settles the turn when the context read fails', async () => {
@@ -1524,5 +1525,133 @@ describe('ClaudeSessionRuntime settings', () => {
     await runtime.setModel('haiku')
 
     expect(sdk.last.modes).toContain('default')
+  })
+})
+
+describe('ClaudeSessionRuntime context window', () => {
+  const MODELS = [
+    {
+      value: 'claude-opus-5-5',
+      displayName: 'Opus 5.5',
+      supportsEffort: true,
+      supportedEffortLevels: ['low', 'high'],
+    },
+    { value: 'haiku', displayName: 'Haiku', description: 'Haiku 4.5 · Fastest for quick answers' },
+  ]
+  const withModels = (spec: Partial<SessionRuntimeSpec> = {}) => {
+    const built = build(spec)
+    built.sdk.initialize = {
+      ...built.sdk.initialize,
+      models: MODELS,
+    } as typeof built.sdk.initialize
+    return built
+  }
+  const contextOption = (runtime: { applied?: { options: ReadonlyMap<string, unknown> } }) =>
+    runtime.applied?.options.get('context_window') as { currentValue: string } | undefined
+  const windowOf = (sdk: FakeClaudeSdk, tokens: number) => {
+    sdk.last.contextUsage = { ...sdk.last.contextUsage, maxTokens: tokens, rawMaxTokens: tokens }
+  }
+
+  it('offers the choice only on a model that has both windows', async () => {
+    const { runtime } = withModels({ desiredConfig: { modelId: 'claude-opus-5-5' } })
+    await runtime.start()
+    // The fake CLI reports 200K, and the option says what is in force.
+    expect(contextOption(runtime)?.currentValue).toBe('200k')
+
+    await runtime.setModel('haiku')
+    expect(contextOption(runtime)).toBeUndefined()
+  })
+
+  it('asks for 1M by suffix, clearing the 200K switch first', async () => {
+    const { runtime, sdk } = withModels({ desiredConfig: { modelId: 'claude-opus-5-5' } })
+    await runtime.start()
+    windowOf(sdk, 1_000_000)
+
+    await runtime.setConfigOption('context_window', '1m')
+
+    expect(sdk.last.flagSettings).toContainEqual({ env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: '0' } })
+    expect(sdk.last.models.at(-1)).toBe('claude-opus-5-5[1m]')
+    expect(contextOption(runtime)?.currentValue).toBe('1m')
+    // The composer's model stays the catalog id; only the CLI sees the suffix.
+    expect(runtime.applied?.options.get('model')).toMatchObject({ currentValue: 'claude-opus-5-5' })
+  })
+
+  it('holds a model to 200K through the CLI switch, dropping the suffix first', async () => {
+    const { runtime, sdk } = withModels({ desiredConfig: { modelId: 'claude-opus-5-5' } })
+    await runtime.start()
+    windowOf(sdk, 1_000_000)
+    await runtime.setConfigOption('context_window', '1m')
+    windowOf(sdk, 200_000)
+
+    await runtime.setConfigOption('context_window', '200k')
+
+    // The CLI refuses a `[1m]` id while the switch is on, so the order matters.
+    expect(sdk.last.models.at(-1)).toBe('claude-opus-5-5')
+    expect(sdk.last.flagSettings.at(-1)).toEqual({ env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: '1' } })
+    expect(contextOption(runtime)?.currentValue).toBe('200k')
+  })
+
+  it('reports the window in force when a change half lands', async () => {
+    const { runtime, sdk } = withModels({ desiredConfig: { modelId: 'claude-opus-5-5' } })
+    await runtime.start()
+    windowOf(sdk, 1_000_000)
+    await runtime.setConfigOption('context_window', '1m')
+    // The suffix comes off, then the 200K switch is refused.
+    sdk.last.flagSettingsError = new Error('settings refused')
+
+    await expect(runtime.setConfigOption('context_window', '200k')).rejects.toThrow(/refused/)
+
+    // The suffix stays off for later model writes: it went with the request.
+    expect(sdk.last.models.at(-1)).toBe('claude-opus-5-5')
+    sdk.last.flagSettingsError = undefined
+    await runtime.setModel('claude-opus-5-5')
+    expect(sdk.last.models.at(-1)).toBe('claude-opus-5-5')
+  })
+
+  it('keeps the chosen window across a model switch', async () => {
+    const { runtime, sdk } = withModels({ desiredConfig: { modelId: 'claude-opus-5-5' } })
+    await runtime.start()
+    await runtime.setConfigOption('context_window', '1m')
+
+    await runtime.setModel('haiku')
+    // Haiku has no 1M window, so it is never asked for one.
+    expect(sdk.last.models.at(-1)).toBe('haiku')
+    await runtime.setModel('claude-opus-5-5')
+    expect(sdk.last.models.at(-1)).toBe('claude-opus-5-5[1m]')
+  })
+
+  it('applies a remembered window at launch, before any turn', async () => {
+    const { runtime, sdk } = withModels({
+      desiredConfig: { modelId: 'claude-opus-5-5', values: { context_window: '1m' } },
+    })
+    await runtime.start()
+
+    expect(sdk.last.models).toContain('claude-opus-5-5[1m]')
+    expect(sdk.last.prompts).toHaveLength(0)
+  })
+
+  it('does not switch models again for a window already in force', async () => {
+    const { runtime, sdk } = withModels({ desiredConfig: { modelId: 'claude-opus-5-5' } })
+    await runtime.start()
+    windowOf(sdk, 1_000_000)
+    await runtime.setConfigOption('context_window', '1m')
+    const writes = sdk.last.models.length
+
+    // What happens before every prompt.
+    await runtime.applyDesiredConfig({ values: { context_window: '1m' } })
+
+    expect(sdk.last.models).toHaveLength(writes)
+  })
+
+  it('refuses a window the model does not have', async () => {
+    const { runtime } = withModels({ desiredConfig: { modelId: 'haiku' } })
+    await runtime.start()
+
+    await expect(runtime.setConfigOption('context_window', '1m')).rejects.toThrow(
+      /no context window choice/,
+    )
+    await expect(runtime.setConfigOption('context_window', '2m')).rejects.toThrow(
+      /no "2m" context window/,
+    )
   })
 })

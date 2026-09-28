@@ -312,6 +312,79 @@ describe('composer service commands', () => {
       expect(store.getProfile('cursor')?.defaultModelId).toBe('opus')
     })
 
+    it("keeps a model's window and settings when a session relists it without them", async () => {
+      const { service, store } = await harness()
+      const effort = {
+        type: 'select' as const,
+        id: 'effort',
+        name: 'Effort',
+        category: 'thought_level',
+        currentValue: 'none',
+        options: [
+          { value: 'none', name: 'None' },
+          { value: 'default', name: 'Default' },
+        ],
+      }
+      service.observeCatalog('cursor', {
+        models: {
+          availableModels: [
+            {
+              id: 'openai/gpt-5.4',
+              displayName: 'openai/GPT-5.4',
+              contextWindowTokens: 1_050_000,
+              configOptions: [effort],
+            },
+          ],
+        },
+      })
+
+      // An ACP session's model control lists ids and names, nothing else.
+      sessionListed(service, [{ id: 'openai/gpt-5.4', displayName: 'OpenAI/GPT-5.4' }])
+
+      expect(store.getProfile('cursor')?.availableModels).toEqual([
+        {
+          modelId: 'openai/gpt-5.4',
+          name: 'OpenAI/GPT-5.4',
+          contextWindowTokens: 1_050_000,
+          configOptions: [effort],
+        },
+      ])
+    })
+
+    it("takes a newer catalog's settings over the ones a held row had", async () => {
+      const { service, store } = await harness()
+      const context = (values: string[]) => ({
+        type: 'select' as const,
+        id: 'context',
+        name: 'Context',
+        currentValue: values[0]!,
+        options: values.map((value) => ({ value, name: value })),
+      })
+      service.observeCatalog('cursor', {
+        models: {
+          availableModels: [
+            { id: 'claude-opus-5-5', displayName: 'Claude Opus 5.5', configOptions: [context(['300k'])] },
+          ],
+        },
+      })
+      service.observeCatalog('cursor', {
+        models: {
+          availableModels: [
+            {
+              id: 'claude-opus-5-5',
+              displayName: 'Claude Opus 5.5 (renamed)',
+              configOptions: [context(['300k', '1m'])],
+            },
+          ],
+        },
+      })
+
+      expect(store.getProfile('cursor')?.availableModels).toEqual([
+        // Wording stays as held; the settings are the catalog's newest answer.
+        { modelId: 'claude-opus-5-5', name: 'Claude Opus 5.5', configOptions: [context(['300k', '1m'])] },
+      ])
+    })
+
     it('announces nothing when it says what is already known', async () => {
       const directory = await mkdtemp(join(tmpdir(), 'openmanager-composer-service-test-'))
       directories.push(directory)

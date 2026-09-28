@@ -34,6 +34,9 @@ export type ModelCatalogSource =
       /** Whether `session/new` may be spent when the request alone does not
        * answer. Only for an agent known to forget a session nobody prompted. */
       sessionFallback: boolean
+      /** Whether `session/new` may be spent to read the modes, which no
+       * extension lists. Same condition as `sessionFallback`. */
+      modesFromSession?: boolean
     }
   | {
       /** The provider's own CLI, outside ACP altogether. */

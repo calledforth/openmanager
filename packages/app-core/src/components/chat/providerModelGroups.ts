@@ -1,4 +1,4 @@
-import type { ProviderId, ProviderMetadata } from '@agentpack/contract'
+import type { ProviderId, ProviderMetadata, SessionConfigOption } from '@agentpack/contract'
 import type { ProviderComposerProfiles } from '@openmanager/shared/contracts/composer-profile'
 import type { ProviderModelGroup } from './ProviderModelPicker'
 
@@ -20,10 +20,25 @@ export type ComposerModelChoice = {
   /** Tri-state on purpose: `false` blocks an image attach, absent lets it
    * through, so the two must not be folded into one falsy value. */
   supportsImageInput?: boolean
+  /** A fixed window, when the catalog knows it (OpenCode's `limit.context`,
+   * Claude's Haiku). */
+  contextWindowTokens?: number
+  /** The model's own settings, which the picker's hover card describes:
+   * reasoning levels, context window choices, fast mode. */
+  configOptions?: SessionConfigOption[]
 }
 
 const imageInput = (model: { supportsImageInput?: boolean }) =>
   model.supportsImageInput !== undefined ? { supportsImageInput: model.supportsImageInput } : {}
+
+/** The window and settings, when a row has them. */
+export const modelFacts = (model: {
+  contextWindowTokens?: number
+  configOptions?: SessionConfigOption[]
+}) => ({
+  ...(model.contextWindowTokens ? { contextWindowTokens: model.contextWindowTokens } : {}),
+  ...(model.configOptions ? { configOptions: model.configOptions } : {}),
+})
 
 /** The catalog a provider reported at handshake time, before any session.
  *
@@ -45,6 +60,7 @@ export function metadataModelOptions(
     ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
     ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
     ...imageInput(model),
+    ...modelFacts(model),
   }))
 }
 
@@ -99,6 +115,7 @@ export function buildProviderModelGroups(args: {
       ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
       ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
       ...imageInput(model),
+      ...modelFacts(model),
     }))
     const rawModels: ComposerModelChoice[] =
       provider.id === args.currentProviderId
@@ -131,6 +148,10 @@ export function buildProviderModelGroups(args: {
         ...((model.supportsFastMode ?? meta.supportsFastMode) ? { supportsFastMode: true } : {}),
         ...((model.supportsAutoMode ?? meta.supportsAutoMode) ? { supportsAutoMode: true } : {}),
         ...imageInput({ supportsImageInput: model.supportsImageInput ?? meta.supportsImageInput }),
+        ...modelFacts({
+          contextWindowTokens: model.contextWindowTokens ?? meta.contextWindowTokens,
+          configOptions: model.configOptions ?? meta.configOptions,
+        }),
       }
     })
     const unavailableReason =

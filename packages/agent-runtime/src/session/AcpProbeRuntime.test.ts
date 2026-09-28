@@ -175,18 +175,51 @@ describe('AcpProbeRuntime model catalog', () => {
   const CATALOG = {
     availableModels: [
       { id: 'composer-2.5', displayName: 'Composer 2.5' },
-      { id: 'gpt-5.4', displayName: 'GPT-5.4' },
+      // Its one setting lists no values, so it cannot be offered.
+      { id: 'gpt-5.4', displayName: 'GPT-5.4', configOptions: [] },
     ],
   }
+  const MODES = {
+    currentModeId: 'agent',
+    availableModes: [
+      { id: 'agent', name: 'Agent', description: 'Full agent capabilities with tool access' },
+      { id: 'plan', name: 'Plan' },
+      { id: 'ask', name: 'Ask' },
+    ],
+  }
+  const withoutModes = { ...cursor, models: { catalog: { ...cursor.models!.catalog!, modesFromSession: false } } } as AcpProviderConfig
 
   it("reads Cursor's catalog from its own listing, without opening a session", async () => {
     const request = vi.fn(async () => LISTING)
     const newSession = vi.fn()
-    const { probe } = build({ ...HANDSHAKE, request, newSession })
+    const { probe } = build({ ...HANDSHAKE, request, newSession }, withoutModes)
 
     await expect(probe.listModels('C:/workspace')).resolves.toEqual(CATALOG)
     expect(request).toHaveBeenCalledWith('cursor/list_available_models', {})
     expect(newSession).not.toHaveBeenCalled()
+  })
+
+  it("reads Cursor's modes from one unprompted session, since no listing has them", async () => {
+    const request = vi.fn(async () => LISTING)
+    const newSession = vi.fn(async () => ({ sessionId: 'probe-session', modes: MODES }))
+    const { probe } = build({ ...HANDSHAKE, request, newSession })
+
+    const listing = await probe.listModels('C:/workspace')
+    expect(listing).toMatchObject(CATALOG)
+    expect(listing.modes?.currentModeId).toBe('agent')
+    expect(listing.modes?.availableModes?.map((mode) => mode.id)).toEqual(['agent', 'plan', 'ask'])
+    expect(newSession).toHaveBeenCalledTimes(1)
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the catalog when the session for the modes cannot open', async () => {
+    const request = vi.fn(async () => LISTING)
+    const newSession = vi.fn(async () => {
+      throw new Error('session/new failed')
+    })
+    const { probe } = build({ ...HANDSHAKE, request, newSession })
+
+    await expect(probe.listModels('C:/workspace')).resolves.toEqual(CATALOG)
   })
 
   it('opens a session only when the listing will not answer without one', async () => {

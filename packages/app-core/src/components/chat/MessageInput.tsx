@@ -19,8 +19,10 @@ import {
   buildProviderModelGroups,
   metadataModeOptions,
   metadataModelOptions,
+  modelFacts,
   type ComposerModelChoice,
 } from './providerModelGroups'
+import { effortConfigOption } from './modelConfig'
 import type { DraftImageAttachment, UploadedImageAttachment } from '../../lib/attachments'
 
 /**
@@ -106,6 +108,7 @@ export function MessageInput() {
     ...(model.supportsImageInput !== undefined
       ? { supportsImageInput: model.supportsImageInput }
       : {}),
+    ...modelFacts(model),
   }))
   // Provider metadata is the last resort behind runtime state and chrome, and
   // the only one that does not require the provider to have been used already.
@@ -187,17 +190,22 @@ export function MessageInput() {
     ? rawModeId
     : (modeOptions[0]?.id ?? '')
 
-  // The effort pill reads its levels off the selected model rather than off a
-  // config option, so it renders in a fresh draft too — config options only
-  // exist once a session has published them.
+  // The effort pill draws the provider's own effort setting when there is one
+  // (a live session's, or the selected model's catalog row in a draft), under
+  // whatever id the provider gives it. Claude's level list on the model row is
+  // the fallback, for a draft whose catalog carries no settings.
   const effortLevels = selectedModel?.effortLevels ?? []
-  const effortOption = (runtimeState?.configOptions ?? []).find(
-    (option) => option.id === 'effort' && option.type === 'select',
-  )
+  const effortOption = effortConfigOption(runtimeState?.configOptions)
+  const effortConfigId = effortOption?.id ?? 'effort'
+  const effortOptions = effortOption?.options.map((option) => ({
+    id: option.value,
+    name: option.name,
+    ...(option.description ? { description: option.description } : {}),
+  }))
   // Live session state first, then what the workspace remembers — a draft has
   // no published options yet, but the value it will launch with is already
   // decided and the pill has to show it.
-  const rememberedEffort = composerConfigValues['effort']
+  const rememberedEffort = composerConfigValues[effortConfigId]
   const currentEffort =
     typeof effortOption?.currentValue === 'string' && effortOption.currentValue
       ? effortOption.currentValue
@@ -359,6 +367,8 @@ export function MessageInput() {
           modeOptions={modeOptions}
           currentModeId={currentModeId}
           effortLevels={effortLevels}
+          {...(effortOptions ? { effortOptions } : {})}
+          effortConfigId={effortConfigId}
           currentEffort={currentEffort}
           canChangeSettings={canChangeSettings}
           canChangeProvider={isSessionDraftOpen && !activeSessionId}

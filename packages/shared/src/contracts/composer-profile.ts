@@ -3,6 +3,7 @@ import {
   type ModeListing,
   type ModelListing,
   type ProviderId,
+  type SessionConfigOption,
 } from '@agentpack/contract'
 
 export interface ComposerModelOption {
@@ -21,6 +22,9 @@ export interface ComposerModelOption {
   /** Whether the model can read an image in a prompt. Absent is "nobody could
    * say", which the composer lets through; `false` blocks the attach. */
   supportsImageInput?: boolean
+  /** The model's settings as a session on it would list them. What a draft
+   * shows before any session exists; a live session's own list wins. */
+  configOptions?: SessionConfigOption[]
 }
 
 export interface ComposerModeOption {

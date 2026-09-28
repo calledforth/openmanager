@@ -318,12 +318,16 @@ export class AgentRuntime {
           },
           listSessions: (dir) => probe.listSessions(dir),
           listModels: async (dir) => {
-            const models = await probe.listModels(dir)
+            const { modes, ...models } = await probe.listModels(dir)
             // An empty answer is "could not say", never "offers nothing": it
             // must not erase a catalog an earlier probe did read.
-            if (models.availableModels?.length) {
-              this.modelsByProvider.set(providerId, models)
-              this.announceCatalog(providerId, { models })
+            if (models.availableModels?.length) this.modelsByProvider.set(providerId, models)
+            if (modes?.availableModes?.length) this.modesByProvider.set(providerId, modes)
+            if (models.availableModels?.length || modes?.availableModes?.length) {
+              this.announceCatalog(providerId, {
+                ...(models.availableModels?.length ? { models } : {}),
+                ...(modes?.availableModes?.length ? { modes } : {}),
+              })
             }
             return models
           },

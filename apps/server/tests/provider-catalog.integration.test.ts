@@ -37,6 +37,8 @@ const OPENCODE_LISTING = [
     providerID: 'opencode',
     name: 'Big Pickle',
     capabilities: { input: { text: true, image: false } },
+    limit: { context: 200000 },
+    variants: { high: {}, max: {} },
   }),
 ].join('\n')
 
@@ -45,7 +47,18 @@ function providers() {
   // The runtime checks that the executable exists before the fake SDK takes
   // over, and the CI runners have no Claude Code. Any executable will do.
   vi.stubEnv('CLAUDE_CODE_BIN', process.execPath)
-  const newSession = vi.fn(async () => ({ sessionId: 'never-opened' }))
+  // Cursor lists its modes only on a session; one is opened, never prompted.
+  const newSession = vi.fn(async () => ({
+    sessionId: 'never-prompted',
+    modes: {
+      currentModeId: 'agent',
+      availableModes: [
+        { id: 'agent', name: 'Agent' },
+        { id: 'plan', name: 'Plan' },
+        { id: 'ask', name: 'Ask' },
+      ],
+    },
+  }))
   const connections = new FakeConnectionFactory({
     initialize: async () => ({
       protocolVersion: 1,
@@ -84,8 +97,32 @@ describe('a provider nobody has opened', () => {
         { modelId: 'gpt-5.4', name: 'GPT-5.4' },
       ])
       expect(models(host, 'opencode')).toEqual([
-        { modelId: 'opencode/big-pickle', name: 'opencode/Big Pickle', supportsImageInput: false },
+        {
+          modelId: 'opencode/big-pickle',
+          name: 'opencode/Big Pickle',
+          contextWindowTokens: 200000,
+          supportsImageInput: false,
+          // The effort control a session on it would list, before any session.
+          configOptions: [
+            {
+              type: 'select',
+              id: 'effort',
+              name: 'Effort',
+              description: 'Available effort levels for this model',
+              category: 'thought_level',
+              currentValue: 'high',
+              options: [
+                { value: 'high', name: 'High' },
+                { value: 'max', name: 'Max' },
+                { value: 'default', name: 'Default' },
+              ],
+            },
+          ],
+        },
       ])
+      expect(
+        host.server.composerStore.getProfile('cursor')?.availableModes?.map((mode) => mode.id),
+      ).toEqual(['agent', 'plan', 'ask'])
     })
     // No client named a folder, and nothing was opened to find any of it out.
     // The registry's own spelling of the root: a temp directory can reach the
@@ -93,7 +130,8 @@ describe('a provider nobody has opened', () => {
     const root = host.server.workspaces.get(host.workspaceId)?.root
     expect(root).toBeDefined()
     expect(spawnedIn(connections)).toEqual([`cursor@${root}`, `opencode@${root}`])
-    expect(newSession).not.toHaveBeenCalled()
+    // Only Cursor's, for its modes: it keeps no record of an unprompted one.
+    expect(newSession).toHaveBeenCalledTimes(1)
     // The listing already said whether each model reads images.
     expect(execFile).toHaveBeenCalledTimes(1)
     expect(host.server.composerStore.getProfile('cursor')?.promptCapabilities).toEqual({

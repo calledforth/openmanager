@@ -17,13 +17,17 @@ import type {
  * gets implemented as `as any`, and then the tests stop proving anything) and
  * makes the next SDK bump a compile error on the four members that matter
  * rather than a silent behaviour change across all of them. */
-/** The `Settings` keys this provider writes. Narrowed to three on purpose:
- * `Settings` has ~80, and naming only what is used keeps the fake honest and
- * makes an SDK rename a compile error here rather than a silent no-op. */
+/** The `Settings` keys this provider writes. Narrowed on purpose: `Settings`
+ * has ~80, and naming only what is used keeps the fake honest and makes an SDK
+ * rename a compile error here rather than a silent no-op. */
 export type ClaudeFlagSettings = {
   effortLevel?: EffortLevel | null
   fastMode?: boolean | null
   outputStyle?: string | null
+  /** Only ever `CLAUDE_CODE_DISABLE_1M_CONTEXT`, the one switch that holds a
+   * model to 200K. Verified on 2.1.283 to take effect mid-session both ways
+   * ("1" and "0"), unlike `autoCompactWindow`, which the flag layer ignores. */
+  env?: Record<string, string>
 }
 
 export interface ClaudeQuerySession extends AsyncIterable<SDKMessage> {

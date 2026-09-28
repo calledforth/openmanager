@@ -35,11 +35,15 @@ export interface ProbeRuntime {
    * behind: the handshake's own list, an extension request, the provider's
    * CLI. Empty means "could not say", never "offers no models", and a
    * provider with no such route always answers empty. Asked in this
-   * throwaway process, never in a live one. */
-  listModels(cwd: string): Promise<ModelListing>
+   * throwaway process, never in a live one. A provider whose route also
+   * reaches its modes answers those alongside. */
+  listModels(cwd: string): Promise<ModelCatalogListing>
   /** Always call; the process leaks otherwise. */
   dispose(): Promise<void>
 }
+
+/** A model catalog, plus the modes when the route that read it could see them. */
+export type ModelCatalogListing = ModelListing & { modes?: ModeListing }
 
 export type ProbeResult = {
   agentInfo?: AgentInfo

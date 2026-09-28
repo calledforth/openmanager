@@ -15,7 +15,13 @@ import type { ThreadId } from '../lifecycle.js'
 import type { ProbeResult, ProbeRuntime } from '../ProbeRuntime.js'
 import { RpcTimeoutError, withTimeout } from '../timeout.js'
 import { routeEvent } from '../wire.js'
-import { claudeModeListing, claudeModelCatalog } from './claude-catalog.js'
+import {
+  claudeContextWindow,
+  claudeContextWindowOf,
+  claudeModeListing,
+  claudeModelCatalog,
+  type ClaudeContextWindow,
+} from './claude-catalog.js'
 import { CLAUDE_PROMPT_CAPABILITIES } from './claude-prompt.js'
 import { resolveClaudeExecutable } from './executable.js'
 import { loadClaudeSdk, type ClaudeQuerySession, type ClaudeSdk } from './sdk.js'
@@ -137,7 +143,9 @@ export class ClaudeProbeRuntime implements ProbeRuntime {
       // row that covers it (`sonnet`), and nothing in openmanager ever learns
       // a wire id — the only Claude model ids it stores are ones this list
       // handed the picker. Carry it through the day something else does.
-      models: { availableModels: claudeModelCatalog(init.models) },
+      models: {
+        availableModels: claudeModelCatalog(init.models, await this.defaultContextWindow(query)),
+      },
       // Static, unlike `models` — the CLI has no handshake field for modes.
       // Reported from the probe anyway so the composer's mode picker renders
       // on the same terms as its model picker: before the first session, for a
@@ -168,6 +176,33 @@ export class ClaudeProbeRuntime implements ProbeRuntime {
     })
     this.result = result
     return result
+  }
+
+  /** The window this account starts a model with the choice on, so a draft
+   * shows what its first prompt will actually run with: an account whose
+   * default is 200K must not see 1M selected. Read from the probe's own
+   * process, which has not prompted, so it costs no tokens. Measured only
+   * when the probe's model has the choice itself; a fixed-window model says
+   * nothing about the others. */
+  private async defaultContextWindow(
+    query: ClaudeQuerySession,
+  ): Promise<ClaudeContextWindow | undefined> {
+    try {
+      const usage = await withTimeout(
+        query.getContextUsage(),
+        this.timeouts.controlRequestMs,
+        () =>
+          new RpcTimeoutError(this.providerId, 'getContextUsage', this.timeouts.controlRequestMs),
+      )
+      const tokens = usage?.rawMaxTokens || usage?.maxTokens
+      if (!tokens || !usage?.model) return undefined
+      if (claudeContextWindow({ id: usage.model, displayName: usage.model })?.choice !== true)
+        return undefined
+      return claudeContextWindowOf(tokens)
+    } catch {
+      // Cosmetic: the draft falls back to the usual default.
+      return undefined
+    }
   }
 
   listSessions(_cwd: string): Promise<ProviderSessionInfo[]> {

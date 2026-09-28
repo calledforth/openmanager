@@ -363,7 +363,10 @@ export class FakeClaudeQuery implements ClaudeQuerySession {
       throw new Error('Cannot set permission mode to auto: auto mode unavailable for this model')
     this.modes.push(mode)
   }
+  /** Set to make `applyFlagSettings()` reject, after nothing was written. */
+  flagSettingsError: Error | undefined
   async applyFlagSettings(settings: ClaudeFlagSettings): Promise<void> {
+    if (this.flagSettingsError) throw this.flagSettingsError
     this.flagSettings.push(settings)
   }
   async initializationResult(): Promise<SDKControlInitializeResponse> {

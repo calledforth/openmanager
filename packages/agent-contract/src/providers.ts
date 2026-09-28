@@ -1,4 +1,5 @@
 import type { ProviderCapabilities } from './capabilities.js'
+import type { SessionConfigOption } from './events.js'
 
 export const PROVIDER_IDS = ['opencode', 'cursor', 'claude'] as const
 
@@ -38,6 +39,15 @@ export type ModelOption = {
    * through", the same way it treats a provider it cannot ask at all. `false`
    * is a real answer and blocks the attach. */
   supportsImageInput?: boolean
+  /** The settings this model offers beyond model and mode (reasoning effort,
+   * context window, fast mode) in the shape a session on it would list them,
+   * with the provider's defaults as current values.
+   *
+   * Read from the catalog so a composer with no session yet can show them. A
+   * session's own `configOptions` are still the truth once one exists; these
+   * only stand in until then. Absent means the catalog could not say, not that
+   * the model has no settings. */
+  configOptions?: SessionConfigOption[]
 }
 
 export type ModelListing = {

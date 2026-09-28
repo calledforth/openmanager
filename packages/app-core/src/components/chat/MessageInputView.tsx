@@ -322,6 +322,8 @@ export function MessageInputView({
   modeOptions,
   currentModeId,
   effortLevels,
+  effortOptions,
+  effortConfigId = 'effort',
   currentEffort,
   canChangeSettings,
   canChangeProvider,
@@ -358,6 +360,13 @@ export function MessageInputView({
    * hides the pill entirely — a model with no effort control must not show
    * one, and which levels exist is per-model, not per-provider. */
   effortLevels: string[]
+  /** The effort control as the provider lists it, with its own labels. Takes
+   * over from `effortLevels` when given: OpenCode and Cursor name their
+   * levels ("Extra-high"), and only Claude's come as bare ids. */
+  effortOptions?: Array<{ id: string; name: string; description?: string }>
+  /** The setting the pill writes: `effort` for Claude and OpenCode, and
+   * whichever of `effort`/`reasoning`/`reasoning_effort` a Cursor model uses. */
+  effortConfigId?: string
   currentEffort: string
   currentModeId: string
   canChangeSettings: boolean
@@ -719,6 +728,7 @@ export function MessageInputView({
       !sending &&
       (attachments.length === 0 || imageUploadEnabled)
   const configSummary = sessionConfigSummary(configOptions)
+  const effortChoices = effortOptions ?? effortLevels.map((level) => ({ id: level, name: level }))
 
   return (
     // Attached under a question card or the todo list, the composer is part of
@@ -885,18 +895,26 @@ export function MessageInputView({
               )
             )}
 
-            {effortLevels.length > 0 && (
+            {effortChoices.length > 0 && (
               <PillSelect
                 variant="ghost"
                 // Blank until the session says otherwise: the CLI picks its own
                 // depth when nothing asked, and inventing "high" here would
                 // claim a setting we never sent.
                 value={currentEffort}
-                options={[
-                  { id: '', name: 'Auto effort', description: 'Let Claude choose the depth.' },
-                  ...effortLevels.map((level) => ({ id: level, name: level })),
-                ]}
-                onChange={(level) => onConfigOptionChange('effort', level)}
+                options={
+                  effortChoices.some((choice) => choice.id === currentEffort)
+                    ? effortChoices
+                    : [
+                        {
+                          id: currentEffort,
+                          name: 'Auto effort',
+                          description: 'Let the model choose the depth.',
+                        },
+                        ...effortChoices,
+                      ]
+                }
+                onChange={(level) => onConfigOptionChange(effortConfigId, level)}
                 disabled={!canChangeSettings}
                 describeOnHover
               />

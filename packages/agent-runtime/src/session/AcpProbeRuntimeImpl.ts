@@ -14,6 +14,7 @@ import type { ExecFile } from '../providers/opencode-models.js'
 import type { AcpConnection, AcpConnectionFactory } from './AcpConnection.js'
 import type {
   ProbeResult,
+  ModelCatalogListing,
   ProbeRuntime,
   ProbeRuntimeFactory,
   ProbeRuntimeOptions,
@@ -180,7 +181,7 @@ export class AcpProbeRuntimeImpl implements ProbeRuntime {
    * that is harmless depends on the agent, so a provider that has not said
    * how it may be asked is not asked: it answers empty, which every caller
    * reads as "could not say". */
-  async listModels(cwd: string): Promise<ModelListing> {
+  async listModels(cwd: string): Promise<ModelCatalogListing> {
     const source = this.deps.config.models?.catalog
     if (!source) return {}
     if (source.via === 'cli') {
@@ -205,7 +206,7 @@ export class AcpProbeRuntimeImpl implements ProbeRuntime {
   private async listModelsByExtension(
     source: ExtensionCatalogSource,
     cwd: string,
-  ): Promise<ModelListing> {
+  ): Promise<ModelCatalogListing> {
     const ask = async (): Promise<ModelListing> =>
       source.read(
         await this.rpc(
@@ -214,29 +215,50 @@ export class AcpProbeRuntimeImpl implements ProbeRuntime {
           this.connection().request(source.method, {}),
         ),
       )
+    // Some agents only set up what the listing reads from once a session
+    // exists, and only a session lists the modes. The session is never
+    // prompted and dies with this process.
+    const openSession = async () =>
+      initialState(
+        object(
+          await this.rpc(
+            'session/new',
+            this.timeouts.newSessionMs,
+            this.connection().newSession({ cwd, mcpServers: [] }),
+          ),
+        ),
+      )
+    let listing: ModelListing = {}
     try {
-      const listing = await ask()
-      if (listing.availableModels?.length || !source.sessionFallback) return listing
+      listing = await ask()
+      if (!listing.availableModels?.length && !source.sessionFallback) return listing
     } catch (error) {
       if (isAuthRequired(error)) throw this.authRequired(undefined, errorMessage(error))
       if (!source.sessionFallback) throw error
     }
-    // Some agents only set up what the listing reads from once a session
-    // exists. The session is never prompted and dies with this process.
-    const response = object(
-      await this.rpc(
-        'session/new',
-        this.timeouts.newSessionMs,
-        this.connection().newSession({ cwd, mcpServers: [] }),
-      ),
-    )
+    if (listing.availableModels?.length) {
+      if (!source.modesFromSession) return listing
+      // The models are already read; a session that cannot open only costs
+      // the modes, never the catalog.
+      try {
+        const { modes } = await openSession()
+        return { ...listing, ...(modes?.availableModes?.length ? { modes } : {}) }
+      } catch (error) {
+        if (isAuthRequired(error)) throw this.authRequired(undefined, errorMessage(error))
+        return listing
+      }
+    }
+    const state = await openSession()
+    const modes = source.modesFromSession && state.modes?.availableModes?.length
+      ? { modes: state.modes }
+      : {}
     try {
-      const listing = await ask()
-      if (listing.availableModels?.length) return listing
+      const retried = await ask()
+      if (retried.availableModels?.length) return { ...retried, ...modes }
     } catch {
       // The session's own listing below is the same catalog by another door.
     }
-    return initialState(response).models ?? {}
+    return { ...(state.models ?? {}), ...modes }
   }
 
   /** Every child this probe started is gone when this resolves: the ACP
