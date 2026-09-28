@@ -202,13 +202,17 @@ const ROOM = { ...spring.slow, bounce: 0 }
  * gone before the space is and nothing is seen squashing. Rows present when
  * the list first fills in appear as they are, so opening the app animates
  * nothing.
+ *
+ * Only height and opacity move. The rows around one close the gap in normal
+ * flow as its height changes, so they need no layout animation of their own;
+ * one would make Motion measure every row on each render of the list, right
+ * as a settle starts. A row that changes places (newer activity) moves at once.
  */
 function useRowMotion(armed: boolean): MotionProps {
   const reduceMotion = useReducedMotion() ?? false
   return useMemo(() => {
     const still = { duration: 0 }
     return {
-      layout: 'position',
       initial: armed ? { height: 0, opacity: 0 } : false,
       animate: {
         height: 'auto',
@@ -222,68 +226,8 @@ function useRowMotion(armed: boolean): MotionProps {
           ? still
           : { height: spring.slow.exit, opacity: spring.moderate.exit },
       },
-      transition: reduceMotion ? still : spring.moderate,
     }
   }, [armed, reduceMotion])
-}
-
-/**
- * Settling answers the click, not the environment. The row moves the moment
- * it is asked to, and the environment's own record takes over once the
- * command lands. A refused or failed command drops the stand-in, so the row
- * moves back.
- */
-function useOptimisticSettle(
-  workspaces: SidebarWorkspace[],
-  onSettleSession: WorkspaceSidebarViewProps['onSettleSession'],
-): [SidebarWorkspace[], WorkspaceSidebarViewProps['onSettleSession']] {
-  const [pending, setPending] = useState<ReadonlyMap<string, string | null>>(() => new Map())
-  const shown = useMemo(
-    () =>
-      pending.size === 0
-        ? workspaces
-        : workspaces.map((workspace) =>
-            workspace.sessions.some((session) => pending.has(session.externalId))
-              ? {
-                  ...workspace,
-                  sessions: workspace.sessions.map((session) =>
-                    pending.has(session.externalId)
-                      ? { ...session, settledAt: pending.get(session.externalId) ?? null }
-                      : session,
-                  ),
-                }
-              : workspace,
-          ),
-    [pending, workspaces],
-  )
-  // The host hands over a new callback on every render; the rows keep one.
-  const request = useRef(onSettleSession)
-  useLayoutEffect(() => {
-    request.current = onSettleSession
-  })
-  const canSettle = onSettleSession !== undefined
-  const settle = useMemo<WorkspaceSidebarViewProps['onSettleSession']>(
-    () =>
-      canSettle
-        ? (workspacePath, externalId, settled) => {
-            const settledAt = settled ? new Date().toISOString() : null
-            setPending((current) => new Map(current).set(externalId, settledAt))
-            const release = () =>
-              setPending((current) => {
-                // A later click on the same row owns the stand-in now.
-                if (current.get(externalId) !== settledAt) return current
-                const next = new Map(current)
-                next.delete(externalId)
-                return next
-              })
-            Promise.resolve()
-              .then(() => request.current?.(workspacePath, externalId, settled))
-              .then(release, release)
-          }
-        : undefined,
-    [canSettle],
-  )
-  return [shown, settle]
 }
 
 function writeSettledOpen(open: boolean) {
@@ -398,7 +342,8 @@ export interface WorkspaceSidebarViewProps {
    *  for now: settling is the one thing a row does besides opening. */
   onRenameSession?: (workspacePath: string, externalId: string, title: string | null) => void
   /** Absent when the host cannot keep a settled session; the action is hidden.
-   *  The row moves at once; a returned promise that rejects moves it back. */
+   *  The host shows the move at once (the environment client does), and a
+   *  refusal moves the row back through the same data. */
   onSettleSession?: (
     workspacePath: string,
     externalId: string,
@@ -422,7 +367,7 @@ export interface WorkspaceSidebarViewProps {
  */
 export function WorkspaceSidebarView({
   environmentLabel,
-  workspaces: listed,
+  workspaces,
   activeWorkspacePath,
   activeSessionId,
   onCreateSession,
@@ -433,15 +378,27 @@ export function WorkspaceSidebarView({
   titlebar,
   footer,
 }: WorkspaceSidebarViewProps) {
-  const [workspaces, onSettleSession] = useOptimisticSettle(listed, requestSettle)
-  // Rows are memoized, so they get one select callback for good.
+  // Rows are memoized, so they get one select and one settle callback for good.
   const selectRef = useRef(requestSelect)
+  const settleRef = useRef(requestSettle)
   useLayoutEffect(() => {
     selectRef.current = requestSelect
+    settleRef.current = requestSettle
   })
   const onSelectSession = useCallback<WorkspaceSidebarViewProps['onSelectSession']>(
     (...args) => selectRef.current(...args),
     [],
+  )
+  const canSettle = requestSettle !== undefined
+  const onSettleSession = useMemo<WorkspaceSidebarViewProps['onSettleSession']>(
+    () =>
+      canSettle
+        ? (...args) => {
+            // A refusal already moved the row back; there is nothing to add.
+            void Promise.resolve(settleRef.current?.(...args)).catch(() => undefined)
+          }
+        : undefined,
+    [canSettle],
   )
   const present = (path: string | null) =>
     path !== null && workspaces.some((workspace) => workspace.path === path && !workspace.missing)

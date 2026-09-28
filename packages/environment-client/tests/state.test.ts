@@ -6,7 +6,9 @@ import {
   applyInteractionResolved,
   applySessionAcknowledged,
   applySessionHistory,
+  applySessionList,
   applySessionOpen,
+  applySessionSettled,
   applySnapshot,
   applyTurnSendFailed,
   applyTurnSending,
@@ -157,6 +159,36 @@ describe('applyEvent', () => {
       updatedAt: state.sessions[SESSION.sessionId]?.updatedAt,
     })
     expect(finished?.status).toBe('idle')
+  })
+
+  it('keeps the state when an update restates what the session already holds', () => {
+    const settledAt = '2026-09-27T10:00:00.000Z'
+    const settled = applySessionSettled(seeded(), SESSION.sessionId, settledAt)
+    // The echo of a settle whose answer the client already applied.
+    const echo = event({
+      name: 'session.updated',
+      scope: environmentScope,
+      payload: { sessionId: SESSION.sessionId, settledAt },
+    })
+    expect(applyEvent(settled, echo)).toBe(settled)
+
+    // A status repeated at the same moment (a replayed tail) is no change either.
+    const status = event({
+      name: 'session.updated',
+      scope: environmentScope,
+      payload: { sessionId: SESSION.sessionId, status: 'running' },
+    })
+    const running = applyEvent(settled, status)
+    expect(running).not.toBe(settled)
+    expect(applyEvent(running, status)).toBe(running)
+  })
+
+  it('keeps the sessions a listing restates as they were', () => {
+    const summary = { ...SESSION, status: 'idle' as const, updatedAt: '2026-09-27T09:00:00.000Z' }
+    const listed = applySessionList(createInitialState(), [summary])
+    expect(applySessionList(listed, [{ ...summary }])).toBe(listed)
+    const renamed = applySessionList(listed, [{ ...summary, title: 'Renamed' }])
+    expect(renamed.sessions[SESSION.sessionId]?.title).toBe('Renamed')
   })
 
   it('fixtures are protocol-valid events', () => {

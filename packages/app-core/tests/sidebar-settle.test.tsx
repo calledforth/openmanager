@@ -1,11 +1,20 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, useState } from 'react'
+import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MotionGlobalConfig } from 'motion/react'
+import {
+  createMockEnvironmentClient,
+  type MockEnvironmentClient,
+} from '@openmanager/environment-client'
 import { SidebarProvider } from '../src/components/fluid/ui/sidebar'
-import { WorkspaceSidebarView } from '../src/components/sidebar/WorkspaceSidebarView'
-import type { SidebarWorkspace } from '../src/components/sidebar/sidebar-sessions'
+import { WorkspaceSidebar } from '../src/components/sidebar/WorkspaceSidebar'
+import { useActiveThreadState } from '../src/providers/active-thread-provider'
+import { useComposerState } from '../src/providers/composer-provider'
+import { EnvironmentApplicationProviders } from '../src/providers/environment-application'
+import { EnvironmentClientProvider } from '../src/providers/environment-client'
+import { useSessionState } from '../src/providers/session-provider'
+import { useSidebarData } from '../src/providers/sidebar-provider'
 import { ThemeProvider } from '../src/providers/theme-provider'
 
 let container: HTMLDivElement
@@ -34,83 +43,116 @@ afterEach(async () => {
   MotionGlobalConfig.skipAnimations = false
 })
 
-const WORKSPACE: SidebarWorkspace = {
-  path: '/repo',
+const WORKSPACE = {
+  workspaceId: 'C:/repo',
   name: 'repo',
-  sessions: [{ externalId: 's1', title: 'Finished work', status: 'idle' }],
+  path: 'C:/repo',
+  lastUsedAt: null,
+  lastActivityAt: null,
+  capabilities: { git: false, providers: ['opencode'] },
+  exists: true,
+}
+const SESSION = {
+  sessionId: 'session-1',
+  workspaceId: WORKSPACE.workspaceId,
+  title: 'Finished work',
+}
+const THREAD = { threadId: 'thread-1', sessionId: SESSION.sessionId }
+
+/** Counts renders of whatever reads each contract outside the sidebar. */
+const renders = { session: 0, catalog: 0, thread: 0, composer: 0 }
+function SessionReader() {
+  useSessionState()
+  renders.session += 1
+  return null
+}
+function CatalogReader() {
+  useSidebarData()
+  renders.catalog += 1
+  return null
+}
+function ThreadReader() {
+  useActiveThreadState()
+  renders.thread += 1
+  return null
+}
+function ComposerReader() {
+  useComposerState()
+  renders.composer += 1
+  return null
 }
 
-/** Stands in for the environment: the change lands once `settle` resolves. */
-function Host({ settle }: { settle: (settled: boolean) => Promise<void> }) {
-  const [workspaces, setWorkspaces] = useState([WORKSPACE])
+function App({ client }: { client: MockEnvironmentClient }) {
   return (
     <ThemeProvider>
-      <SidebarProvider persist={false}>
-        <WorkspaceSidebarView
-          workspaces={workspaces}
-          activeWorkspacePath="/repo"
-          activeSessionId={null}
-          onCreateSession={() => undefined}
-          onSelectSession={() => undefined}
-          onAddWorkspace={() => undefined}
-          onSettleSession={(_path, id, settled) =>
-            settle(settled).then(() =>
-              setWorkspaces((current) =>
-                current.map((workspace) => ({
-                  ...workspace,
-                  sessions: workspace.sessions.map((session) =>
-                    session.externalId === id
-                      ? { ...session, settledAt: settled ? new Date().toISOString() : null }
-                      : session,
-                  ),
-                })),
-              ),
-            )
-          }
-        />
-      </SidebarProvider>
+      <EnvironmentClientProvider client={client}>
+        <EnvironmentApplicationProviders collapsedWorkspaceStorage={null}>
+          <SidebarProvider persist={false}>
+            <WorkspaceSidebar />
+            <SessionReader />
+            <CatalogReader />
+            <ThreadReader />
+            <ComposerReader />
+          </SidebarProvider>
+        </EnvironmentApplicationProviders>
+      </EnvironmentClientProvider>
     </ThemeProvider>
   )
+}
+
+const drain = async (client: MockEnvironmentClient) => {
+  for (let round = 0; round < 4; round += 1) {
+    await act(() => client.settle())
+    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)))
+  }
 }
 
 const activeList = () => container.querySelector('[role="list"]')!
 const settledRow = () =>
   [...container.querySelectorAll('li')].find((row) => row.textContent?.includes('Finished work'))
 
-function deferred() {
-  let resolve!: () => void
-  let reject!: (error: Error) => void
-  const promise = new Promise<void>((res, rej) => {
-    resolve = res
-    reject = rej
+async function mount() {
+  const client = createMockEnvironmentClient({
+    seed: { workspaces: [WORKSPACE], sessions: [{ session: SESSION, threads: [THREAD] }] },
+    latencyMs: 20,
   })
-  return { promise, resolve, reject }
+  await act(() => root.render(<App client={client} />))
+  await drain(client)
+  return client
 }
 
 describe('settling from the sidebar', () => {
   it('moves the row on the click, before the environment answers', async () => {
-    const answer = deferred()
-    await act(() => root.render(<Host settle={() => answer.promise} />))
-    const settleButton = container.querySelector<HTMLButtonElement>('[aria-label="Settle"]')!
-
-    await act(() => settleButton.click())
-    expect(activeList().textContent).not.toContain('Finished work')
-    expect(settledRow()).toBeDefined()
-
-    await act(async () => answer.resolve())
-    expect(activeList().textContent).not.toContain('Finished work')
-    expect(settledRow()).toBeDefined()
-  })
-
-  it('moves the row back when the environment refuses', async () => {
-    const answer = deferred()
-    await act(() => root.render(<Host settle={() => answer.promise} />))
+    const client = await mount()
+    expect(activeList().textContent).toContain('Finished work')
 
     await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Settle"]')!.click())
+    expect(activeList().textContent).not.toContain('Finished work')
     expect(settledRow()).toBeDefined()
 
-    await act(async () => answer.reject(new Error('conflict')))
+    await drain(client)
+    expect(client.getState().sessions[SESSION.sessionId]?.settledAt).toEqual(expect.any(String))
+    expect(activeList().textContent).not.toContain('Finished work')
+    expect(settledRow()).toBeDefined()
+
+    await act(() =>
+      container.querySelector<HTMLButtonElement>('[aria-label="Move back to active"]')!.click(),
+    )
     expect(activeList().textContent).toContain('Finished work')
-    expect(settledRow()).toBeUndefined()
+    await drain(client)
+    expect(client.getState().sessions[SESSION.sessionId]?.settledAt).toBeNull()
+  })
+
+  it('renders nothing outside the sidebar, even for the session on screen', async () => {
+    const client = await mount()
+    await act(() => client.commands.openSession(SESSION.sessionId))
+    await drain(client)
+    expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
+
+    Object.assign(renders, { session: 0, catalog: 0, thread: 0, composer: 0 })
+    await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Settle"]')!.click())
+    await drain(client)
+    expect(settledRow()).toBeDefined()
+    expect(renders).toEqual({ session: 0, catalog: 0, thread: 0, composer: 0 })
   })
 })

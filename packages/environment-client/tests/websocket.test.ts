@@ -25,6 +25,7 @@ import {
   WORKSPACE,
   completed,
   delta,
+  environmentScope,
   event,
   permission,
   turnStarted,
@@ -235,11 +236,52 @@ describe('websocket environment client', () => {
     client.disconnect()
   })
 
+  it('settles at once, and neither the echo nor the answer renders again', async () => {
+    const { client, socket } = await connected([...FULL_CAPABILITIES, 'session.settle'])
+    socket.respond('subscription.subscribe', {
+      subscriptionId: 'sub-env',
+      scope: { type: 'environment', environmentId: ENV },
+    })
+    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
+    await flush()
+    let renders = 0
+    client.subscribe(() => renders++)
+
+    const settling = client.commands.settleSession(SESSION.sessionId, true)
+    expect(socket.last('session.settle').payload).toEqual({
+      sessionId: SESSION.sessionId,
+      settled: true,
+    })
+    const shown = client.getState().sessions[SESSION.sessionId]?.settledAt
+    expect(shown).toEqual(expect.any(String))
+    expect(renders).toBe(1)
+
+    // The environment announces the settle before it answers the command.
+    socket.receive({
+      type: 'event',
+      name: 'subscription.event',
+      payload: {
+        subscriptionId: 'sub-env',
+        record: {
+          cursor: { scope: { type: 'environment', environmentId: ENV }, epoch: 'e', sequence: 1 },
+          event: event({
+            name: 'session.updated',
+            scope: environmentScope,
+            payload: { sessionId: SESSION.sessionId, settledAt: shown! },
+          }),
+        },
+      },
+    })
+    expect(renders).toBe(1)
+    socket.respond('session.settle', { settledAt: shown! })
+    await settling
+    expect(client.getState().sessions[SESSION.sessionId]?.settledAt).toBe(shown)
+    expect(renders).toBe(1)
+    client.disconnect()
+  })
+
   it('regenerates a title and marks it generated', async () => {
-    const { client, socket } = await connected([
-      ...FULL_CAPABILITIES,
-      'session.title.regenerate',
-    ])
+    const { client, socket } = await connected([...FULL_CAPABILITIES, 'session.title.regenerate'])
     socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
     await flush()
     expect(client.supports('regenerateSessionTitle')).toBe(true)
@@ -261,12 +303,10 @@ describe('websocket environment client', () => {
   it('rejects regenerating a title on servers that cannot', async () => {
     const { client, socket } = await connected()
     expect(client.supports('regenerateSessionTitle')).toBe(false)
-    await expect(client.commands.regenerateSessionTitle(SESSION.sessionId)).rejects.toMatchObject(
-      { code: 'capability_missing' },
-    )
-    expect(socket.sent.some((message) => message.name === 'session.title.regenerate')).toBe(
-      false,
-    )
+    await expect(client.commands.regenerateSessionTitle(SESSION.sessionId)).rejects.toMatchObject({
+      code: 'capability_missing',
+    })
+    expect(socket.sent.some((message) => message.name === 'session.title.regenerate')).toBe(false)
     client.disconnect()
   })
 

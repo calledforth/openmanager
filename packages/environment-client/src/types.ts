@@ -339,7 +339,11 @@ export interface EnvironmentCommands {
    * when titles are turned off there or the model could not answer.
    */
   regenerateSessionTitle(sessionId: string): Promise<void>
-  /** Move a session out of the active list (`true`) or back into it (`false`). */
+  /**
+   * Move a session out of the active list (`true`) or back into it (`false`).
+   * The state shows the move at once; if the environment refuses, the session
+   * goes back to what it last confirmed and this rejects.
+   */
   settleSession(sessionId: string, settled: boolean): Promise<void>
   /** The user has looked at a finished session; every client stops showing it as done. */
   acknowledgeSession(sessionId: string): Promise<void>

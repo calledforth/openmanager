@@ -1,6 +1,9 @@
 import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import { Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
-import { useEnvironmentClientOptional } from '@openmanager/app-core/providers/environment-client'
+import {
+  useEnvironmentClientOptional,
+  useEnvironmentState,
+} from '@openmanager/app-core/providers/environment-client'
 import { EnvironmentApplicationProviders } from '@openmanager/app-core/providers/environment-application'
 import { useSidebarData } from '@openmanager/app-core/providers/sidebar-provider'
 import { ProjectIcon } from '@openmanager/app-core/components/sidebar/ProjectIcon'
@@ -27,7 +30,7 @@ import {
   SidebarWorkspaceHeader,
   WorkspaceTile,
 } from '@openmanager/app-core/components/fluid/sidebar-app/workspace-header'
-import type { EnvironmentClient } from '@openmanager/environment-client'
+import type { EnvironmentClient, EnvironmentState } from '@openmanager/environment-client'
 import { useConnection } from '../providers/connection-provider'
 import { AddWorkspaceDialog } from './add-workspace-dialog'
 import { ConnectionBanner, ConnectionScreen, ConnectionStatusChip } from './connection-surfaces'
@@ -189,15 +192,18 @@ function ConnectedOverlays({
   )
 }
 
+const selectActiveTitle = (state: EnvironmentState) =>
+  state.activeSessionId ? (state.sessions[state.activeSessionId]?.title ?? null) : null
+
 /** Project / session for the chat pane's topbar; reads the sidebar contract,
- *  so it only renders inside the environment providers. */
+ *  so it only renders inside the environment providers. The title is read on
+ *  its own: the session list changes far more often than the open session's
+ *  name, and the topbar has no business rendering for the rest. */
 function SessionTrail() {
-  const { workspaces, sessionsByWorkspace, activeWorkspacePath, activeSessionId } = useSidebarData()
+  const { workspaces, activeWorkspacePath, activeSessionId } = useSidebarData()
+  const sessionTitle = useEnvironmentState(selectActiveTitle)
   const project = workspaces.find((workspace) => workspace.path === activeWorkspacePath)
-  const session = activeWorkspacePath
-    ? sessionsByWorkspace[activeWorkspacePath]?.find((row) => row.externalId === activeSessionId)
-    : undefined
-  const title = (activeSessionId && session?.title) || 'New session'
+  const title = (activeSessionId && sessionTitle) || 'New session'
   return (
     <div
       className="flex min-w-0 items-center gap-1.5 text-[13px] text-muted-foreground"

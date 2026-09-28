@@ -51,8 +51,9 @@ export interface SidebarSessionEntry {
 
 /**
  * What the sidebar and the new-session landing read: the workspace catalog,
- * sessions grouped by workspace, which workspace rows are folded, and the
- * navigation commands (re-exposed from session state so views need one hook).
+ * which workspace rows are folded, and the navigation commands (re-exposed
+ * from session state so views need one hook). The sessions themselves are
+ * served on their own, by `useSidebarSessions`.
  */
 export interface SidebarDataValue {
   /**
@@ -68,7 +69,6 @@ export interface SidebarDataValue {
    */
   recentWorkspaces?: WorkspaceEntry[]
   isWorkspacesLoading: boolean
-  sessionsByWorkspace: Record<string, SidebarSessionEntry[]>
   activeWorkspacePath: string | null
   activeSessionId: string | null
   /** Workspace rows the user folded; persisted by the host. */
@@ -103,6 +103,27 @@ export const SidebarDataContext = createContext<SidebarDataValue | null>(null)
 export function useSidebarData(): SidebarDataValue {
   const ctx = useContext(SidebarDataContext)
   if (!ctx) throw new Error('useSidebarData must be used within SidebarDataProvider')
+  return ctx
+}
+
+/** Sessions grouped under their workspace's path, newest first. */
+export type SidebarSessionsByWorkspace = Record<string, SidebarSessionEntry[]>
+
+/**
+ * The sessions, served apart from the rest of the sidebar data.
+ *
+ * Sessions change all the time (a status, a title, a settle), while the
+ * catalog and the commands hardly do. Served together, every such change
+ * would re-render whatever reads the catalog, the new-session landing and the
+ * shell's overlays included, though they show no session. Hosts keep this
+ * value, and each group and row in it, the same object while nothing the
+ * sidebar shows has changed.
+ */
+export const SidebarSessionsContext = createContext<SidebarSessionsByWorkspace | null>(null)
+
+export function useSidebarSessions(): SidebarSessionsByWorkspace {
+  const ctx = useContext(SidebarSessionsContext)
+  if (!ctx) throw new Error('useSidebarSessions must be used within SidebarDataProvider')
   return ctx
 }
 

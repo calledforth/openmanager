@@ -162,11 +162,26 @@ function upsertSession(
       ? Array.from(new Set([...(existing?.threadIds ?? []), ...threadIds]))
       : (existing?.threadIds ?? []),
   }
+  // Listing again (a reconnect, the next page) restates most sessions as they
+  // are; keeping those objects keeps every reader of them still.
+  if (existing && sameSummary(existing, summary)) return state
   return {
     ...state,
     sessions: { ...state.sessions, [session.sessionId]: summary },
     sessionOrder: appendUnique(state.sessionOrder, session.sessionId),
   }
+}
+
+/** Field by field; thread lists by their members, since a listing rebuilds them. */
+function sameSummary(left: SessionSummary, right: SessionSummary): boolean {
+  const keys = Object.keys(left) as (keyof SessionSummary)[]
+  if (keys.length !== Object.keys(right).length) return false
+  return keys.every((key) =>
+    key === 'threadIds'
+      ? left.threadIds.length === right.threadIds.length &&
+        left.threadIds.every((id, index) => id === right.threadIds[index])
+      : Object.is(left[key], right[key]),
+  )
 }
 
 /** A listing that says nothing about settling (an older environment) keeps what is known. */
@@ -368,22 +383,22 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
       const session = state.sessions[event.payload.sessionId]
       if (!session) return state
       const { title, status, settledAt, doneAt } = event.payload
-      return {
-        ...state,
-        sessions: {
-          ...state.sessions,
-          [session.sessionId]: {
-            ...session,
-            ...(event.payload.titleSource ? { titleSource: event.payload.titleSource } : {}),
-            ...(title !== undefined ? { title } : {}),
-            ...(status !== undefined ? { status } : {}),
-            ...(settledAt !== undefined ? { settledAt } : {}),
-            ...(doneAt !== undefined ? { doneAt } : {}),
-            // Settling or acknowledging alone is not activity; the session keeps its place.
-            ...(title !== undefined || status !== undefined ? { updatedAt: event.timestamp } : {}),
-          },
-        },
+      const next: SessionSummary = {
+        ...session,
+        ...(event.payload.titleSource ? { titleSource: event.payload.titleSource } : {}),
+        ...(title !== undefined ? { title } : {}),
+        ...(status !== undefined ? { status } : {}),
+        ...(settledAt !== undefined ? { settledAt } : {}),
+        ...(doneAt !== undefined ? { doneAt } : {}),
+        // Settling or acknowledging alone is not activity; the session keeps its place.
+        ...(title !== undefined || status !== undefined ? { updatedAt: event.timestamp } : {}),
       }
+      // An event that restates what the client already holds (the echo of a
+      // command whose answer it applied) must not hand every reader a new
+      // session: the whole sidebar would render again for nothing.
+      return sameSummary(session, next)
+        ? state
+        : { ...state, sessions: { ...state.sessions, [session.sessionId]: next } }
     }
     case 'session.composer.updated': {
       // Announced only through the sidebar list: a session this client has
