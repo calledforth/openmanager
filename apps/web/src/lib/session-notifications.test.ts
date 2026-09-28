@@ -87,6 +87,21 @@ describe('notifications preference', () => {
     expect(readNotificationsEnabled(working)).toBe(false)
   })
 
+  it('keeps a saved Off when storage later cannot be read', () => {
+    const map = new Map<string, string>()
+    let readable = true
+    const storage = {
+      getItem: (key: string) => {
+        if (!readable) throw new Error('blocked')
+        return map.get(key) ?? null
+      },
+      setItem: (key: string, value: string) => void map.set(key, value),
+    }
+    writeNotificationsEnabled(storage, false)
+    readable = false
+    expect(readNotificationsEnabled(storage)).toBe(false)
+  })
+
   it('treats unreadable storage as on', () => {
     expect(readNotificationsEnabled(undefined)).toBe(true)
     expect(
