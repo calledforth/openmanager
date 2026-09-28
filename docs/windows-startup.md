@@ -8,8 +8,8 @@ password are needed. The reasoning behind this shape (and why it is not a
 Windows service) is in
 [decisions/windows-startup-task.md](./decisions/windows-startup-task.md).
 
-Linux and WSL are handled separately with a systemd user unit; the `service`
-commands below refuse to run there.
+Linux and WSL use the same `service` commands, which install a systemd user
+unit there instead; see [linux-systemd.md](./linux-systemd.md).
 
 ## Prerequisites
 
