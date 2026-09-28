@@ -1126,6 +1126,12 @@ export function createWebSocketEnvironmentClient(
       const payload = await request('session.rename', { sessionId, title })
       store.update((state) => applySessionTitle(state, sessionId, payload.session.title))
     },
+    async regenerateSessionTitle(sessionId) {
+      const payload = await request('session.title.regenerate', { sessionId })
+      store.update((state) =>
+        applySessionTitle(state, sessionId, payload.session.title, 'generated'),
+      )
+    },
     async settleSession(sessionId, settled) {
       const payload = await request('session.settle', { sessionId, settled })
       store.update((state) => applySessionSettled(state, sessionId, payload.settledAt))

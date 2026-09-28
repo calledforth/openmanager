@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { CommandEnvelopeSchema, ResponseEnvelopeSchema } from './envelopes.js'
+import { TitleGenerationSettingSchema } from './session-title.js'
 
 export const FILESYSTEM_BROWSE_CAPABILITY = 'filesystem.browse' as const
 export const ENVIRONMENT_SETTINGS_GET_CAPABILITY = 'environment.settings.get' as const
@@ -29,6 +30,12 @@ export const EnvironmentSettingsSchema = z.object({
    * allowed and stays unexpanded). Empty means the home folder.
    */
   addProjectStartsIn: z.string().max(4096),
+  /**
+   * Which CLI and model name sessions. A title is written from the first
+   * prompt, refined once after the first turn when that prompt was too vague
+   * to name, and rewritten on request from the conversation so far.
+   */
+  titleGeneration: TitleGenerationSettingSchema,
 })
 
 export const EnvironmentSettingsPatchSchema = EnvironmentSettingsSchema.partial()

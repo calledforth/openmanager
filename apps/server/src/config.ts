@@ -2,6 +2,7 @@ import { homedir } from 'node:os'
 import { delimiter, join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import type { AgentRuntimeOptions } from '@agentpack/runtime/node'
+import type { TitleGenerator } from './session-titles/generator.ts'
 import { LOCAL_OWNER_CLAIM_KEY_PATTERN } from './local-owner.ts'
 import type { WorkspaceRuntimeResolver } from './thread-service.ts'
 
@@ -29,6 +30,15 @@ export interface ServerConfig {
    * from code, a test for one, has to ask.
    */
   probeProviders?: boolean
+  /**
+   * Name sessions with the title model the environment settings choose.
+   * Each title spawns that model's CLI, so, like probing, the command line
+   * turns it on and a server started from code has to ask, or pass its own
+   * generator in `titleGenerator`.
+   */
+  generateTitles?: boolean
+  /** Test-only title model, used whether or not `generateTitles` is set. */
+  titleGenerator?: TitleGenerator
   /** Test-only runtime seams (fake ACP transport, fake Claude SDK, timers). */
   runtimeOptions?: AgentRuntimeOptions
   /** Test-only workspace → provider routing. Production resolves through the workspace registry. */
@@ -191,6 +201,7 @@ export function loadConfig(
     allowedHosts,
     workspaces,
     probeProviders: true,
+    generateTitles: true,
     remintOwner: values['remint-owner'] === true,
     ...(logFile !== undefined ? { logFile: resolve(logFile) } : {}),
     ...(values['exit-with-parent'] ? { exitWithParent: true } : {}),

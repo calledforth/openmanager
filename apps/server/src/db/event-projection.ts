@@ -35,12 +35,25 @@ export function createEventProjector(
     updateWorkspaceName: database.prepare(
       'UPDATE workspaces SET name = ?, updated_at = ? WHERE workspace_id = ?',
     ),
-    // Only another manual rename may replace a title the user set explicitly.
+    // Automatic titles never replace one the user set; a rename, or a title
+    // the user asked to have generated, may. A title the title model wrote is
+    // kept as 'provider' plus `title_generated` (see migration 15), and
+    // neither the agent's name for its session nor a first-prompt fallback
+    // replaces it. `IS` keeps a source-less update from reading as NULL.
+    // ?1 title, ?2 stored source, ?3 source as sent, ?4 time, ?5 session.
     updateSessionTitle: database.prepare(
       `UPDATE sessions
-          SET title = ?, title_source = COALESCE(?, title_source), updated_at = ?
-        WHERE session_id = ?
-          AND (? = 'user' OR title_source IS NULL OR title_source <> 'user')`,
+          SET title = ?1,
+              title_source = COALESCE(?2, title_source),
+              title_generated = CASE
+                WHEN ?3 IS NULL THEN title_generated
+                WHEN ?3 = 'generated' THEN 1
+                ELSE 0
+              END,
+              updated_at = ?4
+        WHERE session_id = ?5
+          AND (?3 IN ('user', 'generated') OR title_source IS NULL OR title_source <> 'user')
+          AND NOT ((?3 IS 'provider' OR ?3 IS 'fallback') AND title_generated = 1)`,
     ),
     updateSessionStatus: database.prepare(
       'UPDATE sessions SET status = ?, updated_at = ? WHERE session_id = ?',
@@ -382,10 +395,10 @@ export function createEventProjector(
           const titleSource = event.payload.titleSource ?? null
           s.updateSessionTitle.run(
             event.payload.title,
+            titleSource === 'generated' ? 'provider' : titleSource,
             titleSource,
             at,
             event.payload.sessionId,
-            titleSource,
           )
         }
         if (event.payload.settledAt !== undefined) {

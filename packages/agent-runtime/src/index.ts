@@ -112,6 +112,14 @@ export {
   providers,
   requireAcpConfig,
 } from './providers/index.js'
+// For running a provider's CLI outside any session, as the environment's
+// session titles do: the same binary a session would spawn, and the same way
+// of taking down everything it started.
+export {
+  ClaudeExecutableNotFoundError,
+  resolveClaudeExecutable,
+} from './session/claude/executable.js'
+export { treeKiller } from './session/ChildProcessConnection.js'
 export type {
   AcpProviderConfig,
   ClaudeProviderConfig,

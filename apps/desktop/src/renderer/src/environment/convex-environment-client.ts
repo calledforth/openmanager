@@ -107,6 +107,7 @@ const UNSUPPORTED: ReadonlySet<EnvironmentCommandName> = new Set([
   'setSessionMode',
   'setSessionConfigOption',
   'browseFolders',
+  'regenerateSessionTitle',
   'getEnvironmentSettings',
   'setEnvironmentSettings',
 ])
@@ -1045,6 +1046,7 @@ export function createConvexEnvironmentClient(
     },
     // Web only for now; the Convex host has no settled state to keep.
     settleSession: () => unsupported('settleSession'),
+    regenerateSessionTitle: () => unsupported('regenerateSessionTitle'),
     acknowledgeSession: () => unsupported('acknowledgeSession'),
     getProviderCatalog: () => unsupported('getProviderCatalog'),
     probeProvider: () => unsupported('probeProvider'),

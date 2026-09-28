@@ -235,6 +235,41 @@ describe('websocket environment client', () => {
     client.disconnect()
   })
 
+  it('regenerates a title and marks it generated', async () => {
+    const { client, socket } = await connected([
+      ...FULL_CAPABILITIES,
+      'session.title.regenerate',
+    ])
+    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
+    await flush()
+    expect(client.supports('regenerateSessionTitle')).toBe(true)
+    const regenerate = client.commands.regenerateSessionTitle(SESSION.sessionId)
+    expect(socket.last('session.title.regenerate').payload).toEqual({
+      sessionId: SESSION.sessionId,
+    })
+    socket.respond('session.title.regenerate', {
+      session: { ...SESSION, title: 'Fix Login Redirect' },
+    })
+    await regenerate
+    expect(client.getState().sessions[SESSION.sessionId]).toMatchObject({
+      title: 'Fix Login Redirect',
+      titleSource: 'generated',
+    })
+    client.disconnect()
+  })
+
+  it('rejects regenerating a title on servers that cannot', async () => {
+    const { client, socket } = await connected()
+    expect(client.supports('regenerateSessionTitle')).toBe(false)
+    await expect(client.commands.regenerateSessionTitle(SESSION.sessionId)).rejects.toMatchObject(
+      { code: 'capability_missing' },
+    )
+    expect(socket.sent.some((message) => message.name === 'session.title.regenerate')).toBe(
+      false,
+    )
+    client.disconnect()
+  })
+
   it('does not show a stale open failure after navigating away', async () => {
     const { client, socket } = await connected()
     const opened = client.commands.openSession(SESSION.sessionId)

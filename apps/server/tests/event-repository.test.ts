@@ -20,7 +20,11 @@ import {
   createStreamingEventBatcher,
 } from '../src/db/event-batcher.js'
 import { createEventRepository, type EventRepository } from '../src/db/event-repository.js'
-import { REASONING_TEXT_BUDGET_BYTES, listSessionHistory } from '../src/db/session-store.js'
+import {
+  REASONING_TEXT_BUDGET_BYTES,
+  getSessionSummary,
+  listSessionHistory,
+} from '../src/db/session-store.js'
 
 const directories: string[] = []
 const databases: DatabaseSync[] = []
@@ -247,6 +251,54 @@ describe('event repository transactions', () => {
         .prepare("SELECT count(*) AS n FROM event_log WHERE event_name = 'session.updated'")
         .get(),
     ).toEqual({ n: 4 })
+  })
+
+  it('ranks generated titles above the agent and below nothing the user asked for', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const environment = { type: 'environment', environmentId: 'environment-1' } as const
+    let sequence = 0
+    const title = (value: string, titleSource: 'fallback' | 'provider' | 'generated' | 'user') =>
+      repository.appendEvents(environment, [
+        ProofEventSchemas['session.updated'].parse({
+          type: 'event',
+          name: 'session.updated',
+          eventId: `title-${(sequence += 1)}`,
+          timestamp: '2026-09-10T09:00:00.000Z',
+          scope: environment,
+          payload: { sessionId: 'session-1', title: value, titleSource },
+        }),
+      ])
+    const row = () =>
+      database
+        .prepare('SELECT title, title_source, title_generated FROM sessions WHERE session_id = ?')
+        .get('session-1')
+    const summary = () => getSessionSummary(database, 'session-1')
+
+    title('fix the login redirect', 'fallback')
+    title('Fix Login Redirect', 'generated')
+    // Kept as 'provider' plus a flag: the column's CHECK predates the source.
+    expect(row()).toEqual({
+      title: 'Fix Login Redirect',
+      title_source: 'provider',
+      title_generated: 1,
+    })
+    expect(summary()).toMatchObject({ title: 'Fix Login Redirect', titleSource: 'generated' })
+
+    // Neither the agent renaming its own session afterwards nor a later
+    // prompt's fallback undoes it.
+    title('ACP Session 1234abcd', 'provider')
+    title('another prompt', 'fallback')
+    expect(summary()).toMatchObject({ title: 'Fix Login Redirect', titleSource: 'generated' })
+
+    title('Mine', 'user')
+    expect(row()).toEqual({ title: 'Mine', title_source: 'user', title_generated: 0 })
+    title('Agent title', 'provider')
+    expect(summary()).toMatchObject({ title: 'Mine', titleSource: 'user' })
+
+    // Regenerating is the user asking, so it may replace their own name.
+    title('Login Redirect Loop', 'generated')
+    expect(summary()).toMatchObject({ title: 'Login Redirect Loop', titleSource: 'generated' })
   })
 
   it('settles without reordering and unsettles on the next turn through the status broadcast', async () => {

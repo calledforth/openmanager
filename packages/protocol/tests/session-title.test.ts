@@ -28,6 +28,18 @@ describe('session title precedence', () => {
     expect(shouldReplaceSessionTitle('Old provider title', 'provider', 'provider')).toBe(true)
   })
 
+  it('keeps generated titles above the agent and below the user', () => {
+    expect(shouldReplaceSessionTitle('First prompt', 'fallback', 'generated')).toBe(true)
+    expect(shouldReplaceSessionTitle('Agent title', 'provider', 'generated')).toBe(true)
+    expect(shouldReplaceSessionTitle('Old generated', 'generated', 'generated')).toBe(true)
+    expect(shouldReplaceSessionTitle('Generated', 'generated', 'provider')).toBe(false)
+    expect(shouldReplaceSessionTitle('Generated', 'generated', 'fallback')).toBe(false)
+    // Written titles can look like placeholders; they still are not ones.
+    expect(shouldReplaceSessionTitle('Session Timeout', 'generated', 'fallback')).toBe(false)
+    expect(shouldReplaceSessionTitle('Custom name', 'user', 'generated')).toBe(false)
+    expect(shouldReplaceSessionTitle('Generated', 'generated', 'user')).toBe(true)
+  })
+
   it('keeps user titles above provider titles', () => {
     expect(shouldReplaceSessionTitle('Custom name', 'user', 'provider')).toBe(false)
     expect(shouldReplaceSessionTitle('Custom name', 'user', 'fallback')).toBe(false)

@@ -58,6 +58,12 @@ export const proofCommands = [
   },
   {
     type: 'command',
+    requestId: 'regenerate-title',
+    name: 'session.title.regenerate',
+    payload: { sessionId: 'session-1' },
+  },
+  {
+    type: 'command',
     requestId: 'settle',
     name: 'session.settle',
     payload: { sessionId: 'session-1', settled: true },
@@ -155,6 +161,11 @@ export const proofCommands = [
 export const proofResponses = {
   'session.rename': { type: 'response', requestId: 'rename', payload: { session } },
   'session.delete': { type: 'response', requestId: 'delete', payload: null },
+  'session.title.regenerate': {
+    type: 'response',
+    requestId: 'regenerate-title',
+    payload: { session },
+  },
   'session.settle': {
     type: 'response',
     requestId: 'settle',

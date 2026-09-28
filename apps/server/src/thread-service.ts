@@ -47,6 +47,14 @@ import {
 } from './db/session-store.ts'
 import type { ArtifactStore } from './artifacts.ts'
 import type { CommandContext } from './command-context.ts'
+import { formatTitleContext, type TitleContextMessage } from './session-titles/context.ts'
+import { TitleGenerationError, type TitleGenerator } from './session-titles/generator.ts'
+import type { GeneratedTitle, TitlePromptInput } from './session-titles/prompts.ts'
+import {
+  countUserMessages,
+  readTitleTranscript,
+  titleMessage,
+} from './session-titles/transcript.ts'
 
 type ProviderId = keyof typeof providers
 
@@ -317,6 +325,14 @@ export function createThreadService(
       sessionId: string,
       selection: Pick<WorkspaceComposerPreference, 'modelId' | 'configValues'>,
     ) => void
+    /**
+     * Names sessions with the environment's title model: from the first
+     * prompt, once more after the first turn when that prompt was too vague,
+     * and on request. Absent, sessions keep the fallback and agent titles.
+     */
+    titles?: TitleGenerator
+    /** A title pass that failed or was overtaken; nothing the user waits on. */
+    onTitleFailure?: (sessionId: string, error: unknown) => void
   } = {},
 ) {
   const sessions = new Map<string, ThreadRecord>()
@@ -409,6 +425,9 @@ export function createThreadService(
       if (record) {
         record.doneAt = event.name === 'turn.completed' ? Date.parse(event.timestamp) : undefined
       }
+      // Deferred until the caller has marked the turn completed, which it
+      // does right after announcing it.
+      if (record && event.name === 'turn.completed') queueMicrotask(() => refineTitle(record))
       for (const entry of record?.interactions.values() ?? []) {
         if (entry.turnId !== event.payload.turnId || entry.settled) continue
         entry.settled = true
@@ -556,6 +575,7 @@ export function createThreadService(
       if (seen.has(id)) continue
       seen.add(id)
       sessions.delete(id)
+      forgetTitleWork(id)
       for (const [threadId, item] of threads) {
         if (item.session.parentSessionId === id) pending.push(item.session.sessionId)
         if (item.session.sessionId !== id) continue
@@ -847,6 +867,182 @@ export function createThreadService(
     record.updatedAt = Date.now()
   }
 
+  /**
+   * Title model work per session. Every pass takes the next number and only
+   * the newest may save; `needsRefinement` is the first title's own verdict
+   * that the first prompt did not say what the session is about. `controller`
+   * stops the running pass's CLI once its answer can no longer be used.
+   */
+  type TitleWork = {
+    pass: number
+    running: boolean
+    needsRefinement: boolean
+    controller?: AbortController
+  }
+  const titleWork = new Map<string, TitleWork>()
+  /** Every pass still waiting on its CLI, so closing can wait for them all. */
+  const titlePasses = new Set<Promise<unknown>>()
+  let titlesStopped = false
+
+  /** The session no longer wants a title: stop its pass and forget it. */
+  const forgetTitleWork = (sessionId: string) => {
+    titleWork.get(sessionId)?.controller?.abort()
+    titleWork.delete(sessionId)
+  }
+
+  const currentTitleOf = (sessionId: string) => {
+    const record = sessions.get(sessionId)
+    if (record) return { title: record.session.title, source: record.titleSource }
+    const summary = options.database ? getSessionSummary(options.database, sessionId) : undefined
+    return summary ? { title: summary.title, source: summary.titleSource } : undefined
+  }
+
+  const titleTranscript = (
+    record: ThreadRecord | undefined,
+    threadId: string,
+  ): TitleContextMessage[] => {
+    if (options.database) {
+      options.flush?.()
+      return readTitleTranscript(options.database, threadId)
+    }
+    // The in-memory seam keeps only prompts; SQLite has the whole conversation.
+    return (record?.messages ?? []).map((message) => titleMessage(message.role, message.content))
+  }
+
+  const userPromptCount = (record: ThreadRecord): number => {
+    if (options.database) {
+      options.flush?.()
+      return countUserMessages(options.database, record.thread.threadId)
+    }
+    return record.messages.filter((message) => message.role === 'user').length
+  }
+
+  const reportTitleFailure = (sessionId: string) => (error: unknown) => {
+    // Turned off is a choice, and a stopped pass was not wanted; neither is
+    // worth a log line.
+    if (error instanceof TitleGenerationError && error.reason !== 'failed') return
+    options.onTitleFailure?.(sessionId, error)
+  }
+
+  /** Save a generated title on every open record of the session. */
+  const saveGeneratedTitle = (sessionId: string, title: string): boolean => {
+    try {
+      appendEvent(
+        ProofEventSchemas['session.updated'].parse({
+          type: 'event',
+          name: 'session.updated',
+          eventId: randomUUID(),
+          timestamp: new Date().toISOString(),
+          scope: { type: 'environment', environmentId },
+          payload: { sessionId, title, titleSource: 'generated' },
+        }),
+      )
+    } catch (error) {
+      options.onPersistenceError?.(error, 'session.updated')
+      return false
+    }
+    for (const item of threads.values()) {
+      if (item.session.sessionId !== sessionId) continue
+      item.session.title = title
+      item.titleSource = 'generated'
+      item.updatedAt = Date.now()
+    }
+    return true
+  }
+
+  /**
+   * Ask the title model, then save its answer unless it was overtaken: by a
+   * newer pass, or by the user renaming the session meanwhile. The agent
+   * naming its session in the meantime does not count; that is the title a
+   * generated one is meant to replace. Answers what was saved, or undefined.
+   */
+  const runTitlePass = async (
+    sessionId: string,
+    input: TitlePromptInput,
+  ): Promise<GeneratedTitle | undefined> => {
+    const titles = options.titles
+    if (!titles || titlesStopped)
+      throw new TitleGenerationError('off', 'This environment cannot generate titles.')
+    const before = currentTitleOf(sessionId)
+    const work = titleWork.get(sessionId) ?? { pass: 0, running: false, needsRefinement: false }
+    titleWork.set(sessionId, work)
+    // Only the newest pass may save, so an older one's CLI is working for nothing.
+    work.controller?.abort()
+    const controller = new AbortController()
+    work.controller = controller
+    const pass = ++work.pass
+    work.running = true
+    const answer = titles.generate(input, controller.signal)
+    titlePasses.add(answer)
+    try {
+      const generated = await answer
+      // A stopped pass may still have answered; the answer is not wanted.
+      if (controller.signal.aborted || work.pass !== pass) return undefined
+      const now = currentTitleOf(sessionId)
+      if (!before || !now) return undefined
+      const renamed =
+        now.source === 'user' && (before.source !== 'user' || now.title !== before.title)
+      if (renamed) return undefined
+      if (!saveGeneratedTitle(sessionId, generated.title)) return undefined
+      return generated
+    } finally {
+      titlePasses.delete(answer)
+      if (work.pass === pass) {
+        work.running = false
+        work.controller = undefined
+      }
+    }
+  }
+
+  /**
+   * Name a session from its first prompt, next to the fallback title the
+   * prompt already gave it. Runs beside the turn and never holds it up. A
+   * session the user named, or one already generated (a restored session
+   * sending again), is left alone.
+   */
+  const titleFromFirstPrompt = (record: ThreadRecord, message: Message) => {
+    if (!options.titles || record.session.parentSessionId) return
+    if (record.titleSource === 'user' || record.titleSource === 'generated') return
+    if (userPromptCount(record) !== 1) return
+    const { text, attachments } = titleMessage('user', message.content)
+    if (!text.trim() && !attachments?.length) return
+    const sessionId = record.session.sessionId
+    void runTitlePass(sessionId, { message: text, ...(attachments ? { attachments } : {}) })
+      .then((generated) => {
+        const work = titleWork.get(sessionId)
+        if (!generated?.needsRefinement || !work) return
+        work.needsRefinement = true
+        // The first turn may have finished before its title did.
+        refineTitle(record)
+      })
+      .catch(reportTitleFailure(sessionId))
+  }
+
+  /**
+   * Once, after the first turn: a first prompt too vague to name ("fix
+   * this", a bare link) is usually explained by the agent's first answer, so
+   * the title is written again from both.
+   */
+  const refineTitle = (record: ThreadRecord) => {
+    const sessionId = record.session.sessionId
+    const work = titleWork.get(sessionId)
+    if (!options.titles || !work?.needsRefinement || work.running) return
+    if (record.titleSource !== 'generated' || record.activeTurn) return
+    if (record.turns.at(-1)?.state !== 'completed') return
+    work.needsRefinement = false
+    // A second prompt says more than the first answer did; nothing to refine.
+    if (userPromptCount(record) !== 1) return
+    const { message, attachments } = formatTitleContext(
+      titleTranscript(record, record.thread.threadId),
+    )
+    if (!message) return
+    void runTitlePass(sessionId, {
+      message,
+      previousTitle: record.session.title ?? '',
+      ...(attachments.length > 0 ? { attachments } : {}),
+    }).catch(reportTitleFailure(sessionId))
+  }
+
   const emitStatus = (record: ThreadRecord, status: SessionStatus) => {
     // Mirrors the SQLite projection: running or asking brings a settled session back.
     const unsettle = record.settledAt !== undefined && (status === 'running' || status === 'waiting')
@@ -1074,6 +1270,7 @@ export function createThreadService(
     touch(record, 'running')
     const title = titleFromPrompt(input.text)
     if (title) applyTitle(record, title, 'fallback')
+    titleFromFirstPrompt(record, userMessage)
     const active: ActiveTurn = {
       turn,
       userMessage,
@@ -1138,6 +1335,17 @@ export function createThreadService(
   const service = {
     setEnvironmentId(id: string) {
       environmentId = id
+    },
+
+    /**
+     * Stop every title being written and start no more. Settles once each
+     * title CLI and everything it started has exited, so none outlives the
+     * server or writes into a database that is closing.
+     */
+    async stopTitles(): Promise<void> {
+      titlesStopped = true
+      for (const work of titleWork.values()) work.controller?.abort()
+      await Promise.allSettled([...titlePasses])
     },
 
     /**
@@ -1429,6 +1637,88 @@ export function createThreadService(
         })
       }
 
+      if (command.name === 'session.title.regenerate') {
+        const parsed = ProofCommandSchemas['session.title.regenerate'].safeParse(command)
+        if (!parsed.success)
+          return errorResult(command.requestId, 'validation', 'Invalid session request.')
+        options.flush?.()
+        const { sessionId } = parsed.data.payload
+        const record = sessions.get(sessionId)
+        const session =
+          record?.session ??
+          (options.database ? getSessionSummary(options.database, sessionId) : undefined)
+        if (!session) return errorResult(command.requestId, 'not_found', 'Session not found.')
+        if (!options.titles)
+          return errorResult(
+            command.requestId,
+            'unavailable',
+            'This environment cannot generate titles.',
+          )
+        const threadId =
+          record?.thread.threadId ??
+          (options.database
+            ? listThreadsForSession(options.database, sessionId)[0]?.threadId
+            : undefined)
+        const { message, attachments } = formatTitleContext(
+          threadId ? titleTranscript(record, threadId) : [],
+        )
+        if (!message)
+          return errorResult(
+            command.requestId,
+            'conflict',
+            'The session has no messages to name it from yet.',
+          )
+        const { requestId } = command
+        return runTitlePass(sessionId, {
+          message,
+          previousTitle: session.title ?? '',
+          ...(attachments.length > 0 ? { attachments } : {}),
+        })
+          .then((generated) => {
+            if (!generated)
+              return errorResult(
+                requestId,
+                'conflict',
+                'The session was renamed or asked for another title meanwhile.',
+              )
+            // Asked for by name: nothing is left to refine after it.
+            const work = titleWork.get(sessionId)
+            if (work) work.needsRefinement = false
+            return ProofResponseSchemas['session.title.regenerate'].parse({
+              type: 'response',
+              requestId,
+              // Built field by field: `session` may be a summary read before the
+              // title changed, and its provenance and times are stale now.
+              payload: {
+                session: {
+                  sessionId,
+                  workspaceId: session.workspaceId,
+                  title: generated.title,
+                  ...(session.parentSessionId
+                    ? { parentSessionId: session.parentSessionId }
+                    : {}),
+                },
+              },
+            })
+          })
+          .catch((error: unknown) => {
+            reportTitleFailure(sessionId)(error)
+            if (error instanceof TitleGenerationError && error.reason === 'aborted')
+              return errorResult(
+                requestId,
+                'conflict',
+                'The session was renamed or asked for another title meanwhile.',
+              )
+            return errorResult(
+              requestId,
+              'unavailable',
+              error instanceof TitleGenerationError
+                ? error.message
+                : 'The title could not be generated.',
+            )
+          })
+      }
+
       if (command.name === 'session.rename' || command.name === 'session.delete') {
         const parsed = ProofCommandSchemas[command.name].safeParse(command)
         if (!parsed.success)
@@ -1460,6 +1750,9 @@ export function createThreadService(
                 payload: { sessionId },
               })
         if (parsed.data.name === 'session.delete' && session.parentSessionId) forgetChild(sessionId)
+        // Deleted, or renamed: a title still being written is not wanted.
+        if (parsed.data.name === 'session.delete') forgetTitleWork(sessionId)
+        else titleWork.get(sessionId)?.controller?.abort()
         try {
           appendEvent(event)
         } catch (error) {

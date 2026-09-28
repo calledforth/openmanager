@@ -92,6 +92,12 @@ describe('mock environment client', () => {
     await client.commands.renameSession(created.session.sessionId, 'Renamed')
     expect(client.getState().sessions[created.session.sessionId]?.title).toBe('Renamed')
 
+    await client.commands.regenerateSessionTitle(created.session.sessionId)
+    expect(client.getState().sessions[created.session.sessionId]).toMatchObject({
+      title: 'Regenerated Renamed',
+      titleSource: 'generated',
+    })
+
     await client.commands.deleteSession(created.session.sessionId)
     expect(selectSessionList(client.getState())).toHaveLength(1)
     expect(client.getState().activeSessionId).toBeNull()

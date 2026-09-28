@@ -8,6 +8,9 @@ import { openEnvironmentDatabase } from './db/database.ts'
 /** What a setting is until someone changes it. */
 export const DEFAULT_ENVIRONMENT_SETTINGS: EnvironmentSettings = Object.freeze({
   addProjectStartsIn: '',
+  // Codex's small model, as T3 Code ships; the model stays empty so the
+  // default follows `DEFAULT_TITLE_GENERATION_MODELS` if that changes.
+  titleGeneration: Object.freeze({ provider: 'codex', model: '' }),
 })
 
 type SettingKey = keyof EnvironmentSettings

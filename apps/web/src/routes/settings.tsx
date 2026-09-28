@@ -14,6 +14,10 @@ import {
 import { PlatformCapabilitiesContext } from '@openmanager/app-core/providers/platform-provider'
 import { SessionStateContext } from '@openmanager/app-core/providers/session-provider'
 import { AddProjectStartSetting } from '../components/add-project-start-setting'
+import {
+  TITLE_GENERATION_CHOICES,
+  TitleGenerationSettingControl,
+} from '../components/title-generation-setting'
 import { EnvironmentConnectForm, EnvironmentList } from '../components/connection-surfaces'
 import { UI_FONTS } from '../lib/fonts'
 import { useConnection } from '../providers/connection-provider'
@@ -65,12 +69,14 @@ function ChoiceGroup<T extends string>({
   value,
   options,
   onChange,
+  disabled = false,
 }: {
   name: string
   label: string
   value: T
   options: ReadonlyArray<{ id: T; label: string }>
   onChange: (id: T) => void
+  disabled?: boolean
 }) {
   return (
     <div className="mt-2 flex flex-wrap gap-2" role="radiogroup" aria-label={label}>
@@ -94,6 +100,7 @@ function ChoiceGroup<T extends string>({
               name={name}
               value={option.id}
               checked={selected}
+              disabled={disabled}
               onChange={() => onChange(option.id)}
             />
             {option.label}
@@ -201,6 +208,32 @@ function ProvidersPanel() {
   )
 }
 
+/** The tool that names this environment's sessions, kept by the environment. */
+function SessionTitlesSetting() {
+  return (
+    <TitleGenerationSettingControl
+      section={(field) => (
+        <SettingsSection
+          title="Session titles"
+          description="Names each session from its first message, looks again after the first reply when that message was vague, and renames on request from ⌘K. Runs the tool's CLI on this environment, with the model below."
+        >
+          {field}
+        </SettingsSection>
+      )}
+      choices={(value, onChange, disabled) => (
+        <ChoiceGroup
+          name="title-generation"
+          label="Session titles"
+          value={value}
+          options={TITLE_GENERATION_CHOICES}
+          onChange={onChange}
+          disabled={disabled}
+        />
+      )}
+    />
+  )
+}
+
 function EnvironmentsPanel() {
   const {
     ui,
@@ -296,7 +329,12 @@ function AppearancePanel() {
 const PANELS: Record<SettingsTab, () => ReactNode> = {
   environments: EnvironmentsPanel,
   appearance: AppearancePanel,
-  providers: ProvidersPanel,
+  providers: () => (
+    <>
+      <ProvidersPanel />
+      <SessionTitlesSetting />
+    </>
+  ),
 }
 
 function SettingsPage() {

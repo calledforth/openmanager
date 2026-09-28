@@ -523,6 +523,10 @@ function EnvironmentSessionStateProvider({
         setError(null)
         await commands.renameSession(externalId, title).catch(fail)
       },
+      regenerateSessionTitle: async (externalId) => {
+        setError(null)
+        await commands.regenerateSessionTitle(externalId).catch(fail)
+      },
       deleteSession: async (_workspacePath, externalId) => {
         setError(null)
         await commands.deleteSession(externalId).catch(fail)
@@ -688,6 +692,8 @@ function EnvironmentSidebarDataProvider({
     [client],
   )
 
+  const canRegenerateTitle =
+    connection.phase === 'connected' && client.supports('regenerateSessionTitle')
   const canAcknowledge = connection.phase === 'connected' && client.supports('acknowledgeSession')
   const acknowledgeSessionDone = useCallback(
     (_workspacePath: string, externalId: string) => client.commands.acknowledgeSession(externalId),
@@ -715,6 +721,9 @@ function EnvironmentSidebarDataProvider({
       selectSession: session.selectSession,
       createSession: session.createSession,
       renameSession: session.renameSession,
+      ...(canRegenerateTitle && session.regenerateSessionTitle
+        ? { regenerateSessionTitle: session.regenerateSessionTitle }
+        : {}),
       ...(canSettle ? { settleSession } : {}),
       ...(canAcknowledge ? { acknowledgeSessionDone } : {}),
       deleteSession: session.deleteSession,
@@ -722,6 +731,8 @@ function EnvironmentSidebarDataProvider({
     [
       canSettle,
       settleSession,
+      canRegenerateTitle,
+      session.regenerateSessionTitle,
       canAcknowledge,
       acknowledgeSessionDone,
       collapsedWorkspacePaths,
