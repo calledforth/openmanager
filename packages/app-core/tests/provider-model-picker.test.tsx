@@ -172,6 +172,34 @@ describe('ProviderModelPicker', () => {
     expect(labels()).toEqual(['Composer 2.5', 'GPT-5.5'])
   })
 
+  it('matches a model id anywhere, not just from its start', () => {
+    render()
+    const input = openWithShortcut()
+    // Only the id `composer-2.5` holds "r-2"; the name reads "Composer 2.5".
+    type(input, 'r-2')
+    expect(labels()).toEqual(['Composer 2.5'])
+  })
+
+  it('lets Tab leave the field when there are no tabs', () => {
+    render({ canChangeProvider: false })
+    const input = openWithShortcut()
+    const event = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+    act(() => {
+      input.dispatchEvent(event)
+    })
+    expect(event.defaultPrevented).toBe(false)
+  })
+
+  it('stars a model whose provider is unavailable', () => {
+    render()
+    const input = openWithShortcut()
+    type(input, 'kimi')
+    act(() => document.querySelector<HTMLButtonElement>('[aria-label="Favorite Kimi K2"]')!.click())
+    expect(JSON.parse(localStorage.getItem(FAVORITE_MODELS_STORAGE_KEY)!)).toEqual([
+      'opencode:kimi',
+    ])
+  })
+
   it('lists an unavailable provider with its reason but will not pick it', () => {
     const { onChange } = render()
     const input = openWithShortcut()

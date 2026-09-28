@@ -211,7 +211,7 @@ export function ProjectPicker({
           ref={triggerRef}
           type="button"
           onClick={toggle}
-          aria-haspopup="listbox"
+          aria-haspopup="dialog"
           aria-expanded={open}
           aria-label={`Project: ${activeWorkspace.name}. Choose a project`}
           className={cn(

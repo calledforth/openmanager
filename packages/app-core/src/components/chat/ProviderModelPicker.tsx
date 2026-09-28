@@ -373,7 +373,8 @@ export function ProviderModelPicker({
   const onSearchKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (event.nativeEvent.isComposing) return
     const mod = event.metaKey || event.ctrlKey
-    if (event.key === 'Tab') {
+    // With no tabs, Tab leaves the field as usual.
+    if (event.key === 'Tab' && tabs.length > 0) {
       event.preventDefault()
       stepScope(event.shiftKey ? -1 : 1)
       return
@@ -452,6 +453,7 @@ export function ProviderModelPicker({
               setPreviewing(false)
             }}
             onSelect={(item) => pick(item.value)}
+            filter={modelMenuFilter}
             defaultHighlight={selectedKey}
             onHighlightChange={(item) =>
               setHighlighted(item ? (item.value as FavoriteModelKey) : null)
@@ -513,7 +515,7 @@ export function ProviderModelPicker({
             if (!disabled) toggle()
           }}
           disabled={disabled}
-          aria-haspopup="listbox"
+          aria-haspopup="dialog"
           aria-expanded={open}
           className={cn(
             composerChip,
@@ -533,6 +535,17 @@ export function ProviderModelPicker({
       {menu}
     </div>
   )
+}
+
+/** Like the menu's default filter, but a model's keywords (provider, id) are
+ *  its own rather than shared across a group, so they match anywhere: "gpt-5"
+ *  finds `openai/gpt-5`. */
+function modelMenuFilter(item: CommandMenuItemData, query: string): boolean {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean)
+  const text = [item.label, item.description ?? '', ...(item.keywords ?? [])]
+    .join(' ')
+    .toLowerCase()
+  return words.every((word) => text.includes(word))
 }
 
 function ShortcutTooltip({ label, shortcut }: { label: string; shortcut?: string }) {
@@ -590,10 +603,12 @@ function ModelRow({
           onToggleFavorite()
         }}
         className={cn(
-          'flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-[opacity,color] duration-100',
+          // pointer-events-auto: an unavailable row ignores the pointer, but
+          // its models can still be starred for later.
+          'pointer-events-auto flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-[opacity,color] duration-100',
           favorited
             ? 'text-[var(--basis-text)]'
-            : 'text-muted-foreground opacity-0 group-hover/row:opacity-100 group-aria-selected/row:opacity-100',
+            : 'text-muted-foreground opacity-0 hover:opacity-100 group-hover/row:opacity-100 group-aria-selected/row:opacity-100',
           'hover:text-foreground',
         )}
       >

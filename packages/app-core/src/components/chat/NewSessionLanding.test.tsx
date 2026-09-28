@@ -20,7 +20,7 @@ describe('NewSessionLandingView', () => {
 
     expect(html).toContain('Let&#x27;s build in')
     expect(html).toContain('openmanager')
-    expect(html).toContain('aria-haspopup="listbox"')
+    expect(html).toContain('aria-haspopup="dialog"')
     expect(html).not.toContain('Select or create a session')
   })
 
