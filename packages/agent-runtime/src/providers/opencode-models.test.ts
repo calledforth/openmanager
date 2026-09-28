@@ -164,6 +164,7 @@ describe('OpenCode model catalog', () => {
       name: 'GPT-5.4',
       limit: { context: 400_000 },
       capabilities: { input: { text: true, image: true } },
+      variants: { none: {}, low: {}, xhigh: {} },
     }),
     printed({ id: 'gpt-5.4', providerID: 'github-copilot', name: 'GPT-5.4' }),
   ].join('\n')
@@ -191,16 +192,36 @@ describe('OpenCode model catalog', () => {
           displayName: 'opencode/Big Pickle',
           contextWindowTokens: 200_000,
           supportsImageInput: false,
+          // No variants: the model has no effort control, which is an answer.
+          configOptions: [],
         },
         {
           id: 'openai/gpt-5.4',
           displayName: 'openai/GPT-5.4',
           contextWindowTokens: 400_000,
           supportsImageInput: true,
+          // The same control a session on it lists (OpenCode 1.18, 2026-09-28):
+          // one value per variant, then `default`, the first one current.
+          configOptions: [
+            {
+              type: 'select',
+              id: 'effort',
+              name: 'Effort',
+              description: 'Available effort levels for this model',
+              category: 'thought_level',
+              currentValue: 'none',
+              options: [
+                { value: 'none', name: 'None' },
+                { value: 'low', name: 'Low' },
+                { value: 'xhigh', name: 'Xhigh' },
+                { value: 'default', name: 'Default' },
+              ],
+            },
+          ],
         },
         // Two upstream providers offer a "GPT-5.4"; the label keeps them apart.
         // Nothing is claimed about a model the CLI said nothing about.
-        { id: 'github-copilot/gpt-5.4', displayName: 'github-copilot/GPT-5.4' },
+        { id: 'github-copilot/gpt-5.4', displayName: 'github-copilot/GPT-5.4', configOptions: [] },
       ],
     })
     expect(execFile).toHaveBeenCalledTimes(1)
@@ -225,7 +246,9 @@ describe('OpenCode model catalog', () => {
     )
     await expect(listing).resolves.toEqual({
       // A blank name falls back to the model's own id.
-      availableModels: [{ id: 'opencode/big-pickle', displayName: 'opencode/big-pickle' }],
+      availableModels: [
+        { id: 'opencode/big-pickle', displayName: 'opencode/big-pickle', configOptions: [] },
+      ],
     })
   })
 

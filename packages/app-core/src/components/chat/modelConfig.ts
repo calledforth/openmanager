@@ -2,26 +2,60 @@ import type { SessionConfigOption } from '@agentpack/contract'
 
 export type SessionConfigValue = string | boolean
 
+type SelectOption = Extract<SessionConfigOption, { type: 'select' }>
+
+/** Ids providers use for the reasoning-depth control, most specific first.
+ * Measured: Claude Code `effort`; OpenCode `effort`; Cursor `effort`,
+ * `reasoning` or `reasoning_effort` depending on the model. */
+const EFFORT_IDS = ['effort', 'reasoning_effort', 'reasoning']
+
+/** The option that sets how hard the model thinks, whatever the provider
+ * calls it. ACP's category for it is `thought_level`, but Cursor also files a
+ * `thinking` on/off switch there, so a true/false select never qualifies. */
+export function effortConfigOption(
+  options: readonly SessionConfigOption[] | undefined,
+): SelectOption | undefined {
+  const candidates = (options ?? []).filter(
+    (option): option is SelectOption =>
+      option.type === 'select' &&
+      !isBooleanSelect(option) &&
+      (option.category === 'effort' ||
+        option.category === 'thought_level' ||
+        EFFORT_IDS.includes(option.id.toLowerCase())),
+  )
+  for (const id of EFFORT_IDS) {
+    const match = candidates.find((option) => option.id.toLowerCase() === id)
+    if (match) return match
+  }
+  return candidates[0]
+}
+
+/** The option that picks the context window: Claude Code's `context_window`,
+ * Cursor's `context` (e.g. 300k / 1m). */
+export function contextWindowConfigOption(
+  options: readonly SessionConfigOption[] | undefined,
+): SelectOption | undefined {
+  return (options ?? []).find(
+    (option): option is SelectOption =>
+      option.type === 'select' &&
+      ['context', 'context_window', 'context_size'].includes(option.id.toLowerCase()),
+  )
+}
+
 /** Options the composer draws as their own control, so the "Model settings"
  * menu must not draw them a second time. Effort joined model and mode when it
  * got its own pill — it is per-model and changed often enough to deserve one. */
-function isPrimaryComposerOption(option: SessionConfigOption): boolean {
+function isSelectorOption(option: SessionConfigOption): boolean {
   const category = option.category?.toLowerCase()
   const id = option.id.toLowerCase()
-  return (
-    category === 'model' ||
-    category === 'mode' ||
-    category === 'effort' ||
-    id === 'model' ||
-    id === 'mode' ||
-    id === 'effort'
-  )
+  return category === 'model' || category === 'mode' || id === 'model' || id === 'mode'
 }
 
 export function configurableSessionOptions(
   options: readonly SessionConfigOption[] | undefined,
 ): SessionConfigOption[] {
-  return (options ?? []).filter((option) => !isPrimaryComposerOption(option))
+  const effort = effortConfigOption(options)
+  return (options ?? []).filter((option) => option !== effort && !isSelectorOption(option))
 }
 
 export function isBooleanSelect(option: SessionConfigOption): boolean {

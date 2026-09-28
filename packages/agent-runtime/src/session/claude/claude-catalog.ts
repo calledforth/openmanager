@@ -104,21 +104,118 @@ export function claudeModeListing(currentModeId?: string, model?: ModelOption): 
  * the second one to tell "Opus" from "Opus 5", and to explain what the
  * `default` row currently resolves to. */
 export function claudeModelCatalog(models: readonly ModelInfo[] | undefined): ModelOption[] {
-  return (models ?? []).map((model) => ({
-    id: model.value,
-    displayName: model.displayName,
-    ...(model.description ? { description: model.description } : {}),
-    ...(model.resolvedModel ? { resolvedModel: model.resolvedModel } : {}),
-    // `supportsEffort` and the level list disagree on older CLIs; the list is
-    // what the setter actually accepts, so it is the one carried. A model with
-    // no levels has no effort control, which is a real state — Haiku reports
-    // none at all.
-    ...(model.supportsEffort && model.supportedEffortLevels?.length
-      ? { effortLevels: [...model.supportedEffortLevels] }
-      : {}),
-    ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
-    ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
-  }))
+  return (models ?? []).map((model) => {
+    const row: ModelOption = {
+      id: model.value,
+      displayName: model.displayName,
+      ...(model.description ? { description: model.description } : {}),
+      ...(model.resolvedModel ? { resolvedModel: model.resolvedModel } : {}),
+      // `supportsEffort` and the level list disagree on older CLIs; the list is
+      // what the setter actually accepts, so it is the one carried. A model with
+      // no levels has no effort control, which is a real state — Haiku reports
+      // none at all.
+      ...(model.supportsEffort && model.supportedEffortLevels?.length
+        ? { effortLevels: [...model.supportedEffortLevels] }
+        : {}),
+      ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
+      ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
+    }
+    // Each row also carries the settings a session on it would list, so a
+    // draft can offer effort, fast mode and the context window before any
+    // session exists. Output style is left out: it is not per model, and the
+    // probe reading this catalog does not know which style a session starts in.
+    const fixedWindow = claudeContextWindow(row)?.fixedTokens
+    return {
+      ...row,
+      ...(fixedWindow ? { contextWindowTokens: fixedWindow } : {}),
+      configOptions: claudeConfigOptions({
+        model: row,
+        effort: undefined,
+        fastMode: false,
+        contextWindow: undefined,
+        outputStyle: undefined,
+        outputStyles: [],
+      }),
+    }
+  })
+}
+
+/** What Claude Code offers for a model's context window.
+ *
+ * Hand-maintained, like `MODE_DETAIL` above, because nothing on the wire says
+ * it: `ModelInfo` carries no window size and lists no `[1m]` variants. The
+ * CLI accepts a `[1m]` suffix on any model id and trusts it blindly (Haiku
+ * with `[1m]` reports a 1M window it does not have), so offering the choice
+ * only where the model really has it is this table's whole job. Measured on
+ * CLI 2.1.283, 2026-09-28:
+ *
+ * - `opus`, `sonnet`, `claude-fable-5-1`, `claude-opus-4-8` and `default`
+ *   already run at 1M with no suffix on a Max account; the suffix is what
+ *   asks for 1M where the account default is smaller.
+ * - 200K is only reachable through `CLAUDE_CODE_DISABLE_1M_CONTEXT`, which
+ *   `applyFlagSettings({env})` switches mid-session in either direction.
+ * - Haiku 4.5 is 200K and has no larger window.
+ *
+ * Keyed by family and version as the CLI names them in ids and labels
+ * (`claude-opus-5-5`, "Opus 5.5"). A model missing here gets no control: a
+ * new release shows up without one until it is added, which is the safe way
+ * round. */
+const CLAUDE_CONTEXT_WINDOWS: Record<string, { choice: true } | { fixedTokens: number }> = {
+  'fable-5-1': { choice: true },
+  'fable-5': { choice: true },
+  'opus-5-5': { choice: true },
+  'opus-5': { choice: true },
+  'opus-4-8': { choice: true },
+  'opus-4-7': { choice: true },
+  'opus-4-6': { choice: true },
+  'sonnet-5': { choice: true },
+  'sonnet-4-6': { choice: true },
+  'haiku-4-5': { fixedTokens: 200_000 },
+}
+
+export const CLAUDE_CONTEXT_WINDOW = {
+  standard: '200k',
+  extended: '1m',
+} as const
+export type ClaudeContextWindow =
+  (typeof CLAUDE_CONTEXT_WINDOW)[keyof typeof CLAUDE_CONTEXT_WINDOW]
+
+export function isClaudeContextWindow(value: unknown): value is ClaudeContextWindow {
+  return value === CLAUDE_CONTEXT_WINDOW.standard || value === CLAUDE_CONTEXT_WINDOW.extended
+}
+
+/** The family-version key a catalog row belongs to, e.g. `opus-5-5`.
+ *
+ * Alias rows (`default`, `opus`, `sonnet`) name no version in their id, so the
+ * resolved model and then the labels are read too: the CLI's own row for
+ * `default` says "Opus 5.5 · Best for everyday, complex tasks". */
+function claudeModelKey(model: Pick<ModelOption, 'id' | 'displayName' | 'description' | 'resolvedModel'>): string | undefined {
+  for (const text of [model.resolvedModel, model.id, model.displayName, model.description]) {
+    const match = /(opus|sonnet|fable|haiku)[\s-]+(\d+(?:[.-]\d+)?)/i.exec(text ?? '')
+    if (!match) continue
+    const key = `${match[1].toLowerCase()}-${match[2].replace('.', '-')}`
+    if (CLAUDE_CONTEXT_WINDOWS[key]) return key
+  }
+  return undefined
+}
+
+export function claudeContextWindow(
+  model: Pick<ModelOption, 'id' | 'displayName' | 'description' | 'resolvedModel'> | undefined,
+): { choice: boolean; fixedTokens?: number } | undefined {
+  const key = model ? claudeModelKey(model) : undefined
+  const entry = key ? CLAUDE_CONTEXT_WINDOWS[key] : undefined
+  if (!entry) return undefined
+  return 'choice' in entry ? { choice: true } : { choice: false, fixedTokens: entry.fixedTokens }
+}
+
+/** Whether the model offers both a 200K and a 1M window. */
+export function claudeSupportsContextChoice(model: ModelOption | undefined): boolean {
+  return claudeContextWindow(model)?.choice === true
+}
+
+/** The window a token count is, as a context-window value. */
+export function claudeContextWindowOf(tokens: number): ClaudeContextWindow {
+  return tokens >= 1_000_000 ? CLAUDE_CONTEXT_WINDOW.extended : CLAUDE_CONTEXT_WINDOW.standard
 }
 
 /** The modes this *model* can actually run in.
@@ -158,6 +255,7 @@ export const CLAUDE_DEFAULT_MODEL_ID = 'default'
  * enum because they cross an IPC boundary as opaque keys. */
 export const CLAUDE_CONFIG = {
   effort: 'effort',
+  contextWindow: 'context_window',
   fastMode: 'fast_mode',
   outputStyle: 'output_style',
 } as const
@@ -188,6 +286,9 @@ export function claudeConfigOptions(args: {
   model: ModelOption | undefined
   effort: string | undefined
   fastMode: boolean
+  /** The window in force, when known. A model that offers the choice runs at
+   * 1M by default on the accounts measured, so that is what an unknown shows. */
+  contextWindow: ClaudeContextWindow | undefined
   outputStyle: string | undefined
   outputStyles: readonly string[]
 }): SessionConfigOption[] {
@@ -206,6 +307,19 @@ export function claudeConfigOptions(args: {
         name: level,
         ...(EFFORT_DETAIL[level] ? { description: EFFORT_DETAIL[level] } : {}),
       })),
+    })
+  if (claudeSupportsContextChoice(args.model))
+    options.push({
+      type: 'select',
+      id: CLAUDE_CONFIG.contextWindow,
+      name: 'Context window',
+      category: 'model_config',
+      description: 'How much of the conversation Claude keeps before compacting.',
+      currentValue: args.contextWindow ?? CLAUDE_CONTEXT_WINDOW.extended,
+      options: [
+        { value: CLAUDE_CONTEXT_WINDOW.standard, name: '200K', description: '200,000 tokens' },
+        { value: CLAUDE_CONTEXT_WINDOW.extended, name: '1M', description: '1,000,000 tokens' },
+      ],
     })
   if (args.model?.supportsFastMode)
     options.push({

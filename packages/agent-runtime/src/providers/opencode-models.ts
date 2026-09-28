@@ -1,5 +1,5 @@
 import { execFile as nodeExecFile, type ChildProcess } from 'node:child_process'
-import type { ModelListing, ModelOption } from '@agentpack/contract'
+import type { ModelListing, ModelOption, SessionConfigOption } from '@agentpack/contract'
 import type { HostDeps } from '../host.js'
 import { treeKiller } from '../session/ChildProcessConnection.js'
 import type { ModelImageInputLookup } from './index.js'
@@ -204,9 +204,34 @@ export async function listOpencodeModels(options: OpencodeCatalogOptions): Promi
       displayName: `${providerId}/${name}`,
       ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
       ...(image !== null ? { supportsImageInput: image } : {}),
+      configOptions: effortOptionsOf(model),
     })
   }
   return availableModels.length > 0 ? { availableModels } : {}
+}
+
+/** The effort control a session on this model lists, rebuilt from the CLI's
+ * `variants`. Matches OpenCode 1.18's ACP option exactly (compared
+ * 2026-09-28 on `openai/gpt-5.4`): id `effort`, one value per variant in the
+ * CLI's order, then `default`; the first variant is what a fresh session
+ * reports as current. A model with no variants has no effort control. */
+function effortOptionsOf(model: Record<string, unknown>): SessionConfigOption[] {
+  const variants = model.variants
+  if (!variants || typeof variants !== 'object' || Array.isArray(variants)) return []
+  const levels = Object.keys(variants).filter((level) => level.trim() && level !== 'default')
+  if (levels.length === 0) return []
+  const label = (level: string) => level.charAt(0).toUpperCase() + level.slice(1)
+  return [
+    {
+      type: 'select',
+      id: 'effort',
+      name: 'Effort',
+      description: 'Available effort levels for this model',
+      category: 'thought_level',
+      currentValue: levels[0],
+      options: [...levels, 'default'].map((level) => ({ value: level, name: label(level) })),
+    },
+  ]
 }
 
 function contextWindowOf(model: Record<string, unknown>): number | undefined {

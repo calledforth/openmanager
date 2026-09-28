@@ -11,7 +11,7 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 import { CaretDownIcon, CheckIcon, SquaresFourIcon, StarIcon } from '@phosphor-icons/react'
-import type { ProviderId } from '@agentpack/contract'
+import type { ProviderId, SessionConfigOption } from '@agentpack/contract'
 import { cn } from '../../lib/utils'
 import {
   CommandMenu,
@@ -33,6 +33,7 @@ import { Tooltip } from '../ui/Tooltip'
 import { usePortaledMenu } from '../ui/usePortaledMenu'
 import { useHoldFocus, useRegisterPicker } from '../command/pickerRegistry'
 import { modelHint, modelLabel } from './modelLabel'
+import { contextWindowConfigOption, effortConfigOption } from './modelConfig'
 import {
   favoriteModelKey,
   readFavoriteModels,
@@ -50,6 +51,7 @@ export type ProviderModelOption = {
   supportsFastMode?: boolean
   supportsAutoMode?: boolean
   contextWindowTokens?: number
+  configOptions?: SessionConfigOption[]
 }
 
 export type ProviderModelGroup = {
@@ -83,6 +85,7 @@ type FlatModel = {
   effortLevels?: string[]
   supportsFastMode?: boolean
   contextWindowTokens?: number
+  configOptions?: SessionConfigOption[]
   unavailableReason?: string
 }
 
@@ -116,48 +119,58 @@ function formatContextShort(tokens: number): string {
   return String(tokens)
 }
 
-/** Claude Code is the only provider that ships rich model metadata today. */
-function claudeMetaRows(model: FlatModel): MetaRow[] {
+const range = (values: readonly string[]) => {
+  const first = values[0]
+  const last = values[values.length - 1]
+  return first === last ? first : `${first}–${last}`
+}
+
+/** What the hover card says about a model, from whatever its catalog row
+ * carries. Rows that know nothing about a setting leave it out rather than
+ * claim "not supported" for a provider that never said. */
+function metaRowsFor(model: FlatModel | undefined): MetaRow[] | null {
+  if (!model) return null
+  const options = model.configOptions
   const rows: MetaRow[] = [
     { label: 'Model', value: model.label },
     { label: 'Provider', value: model.providerName },
-    { label: 'Inputs', value: 'text' },
   ]
 
   if (model.resolvedModel) {
     rows.push({ label: 'Resolves to', value: model.resolvedModel })
   }
 
-  if (model.effortLevels?.length) {
-    const first = model.effortLevels[0]
-    const last = model.effortLevels[model.effortLevels.length - 1]
-    rows.push({
-      label: 'Reasoning',
-      value: first === last ? first : `${first}–${last}`,
-    })
-  } else {
+  const effort = effortConfigOption(options)
+  if (effort) {
+    rows.push({ label: 'Reasoning', value: range(effort.options.map((option) => option.name)) })
+  } else if (model.effortLevels?.length) {
+    rows.push({ label: 'Reasoning', value: range(model.effortLevels) })
+  } else if (options || model.providerId === 'claude') {
     rows.push({ label: 'Reasoning', value: 'No effort control' })
   }
 
-  rows.push({
-    label: 'Fast mode',
-    value: model.supportsFastMode ? 'Supported' : 'Not supported',
-  })
+  const context = contextWindowConfigOption(options)
+  if (context) {
+    rows.push({
+      label: 'Context',
+      value: context.options.map((option) => option.name.toUpperCase()).join(' or '),
+    })
+  } else if (model.contextWindowTokens) {
+    rows.push({ label: 'Context', value: formatContextShort(model.contextWindowTokens) })
+  }
 
-  if (model.contextWindowTokens) {
-    rows.push({ label: 'Context', value: model.contextWindowTokens.toLocaleString('en-US') })
+  const fast = options?.find((option) => /^fast(_mode)?$/i.test(option.id))
+  if (fast || model.supportsFastMode) {
+    rows.push({ label: 'Fast mode', value: 'Supported' })
+  } else if (options || model.providerId === 'claude') {
+    rows.push({ label: 'Fast mode', value: 'Not supported' })
   }
 
   if (model.description) {
     rows.push({ label: 'Notes', value: model.description })
   }
 
-  return rows
-}
-
-function metaRowsFor(model: FlatModel | undefined): MetaRow[] | null {
-  if (!model || model.providerId !== 'claude') return null
-  return claudeMetaRows(model)
+  return rows.length > 2 ? rows : null
 }
 
 /**
@@ -225,6 +238,7 @@ export function ProviderModelPicker({
             ...(model.contextWindowTokens
               ? { contextWindowTokens: model.contextWindowTokens }
               : {}),
+            ...(model.configOptions ? { configOptions: model.configOptions } : {}),
             ...(group.unavailableReason ? { unavailableReason: group.unavailableReason } : {}),
           }
         }),

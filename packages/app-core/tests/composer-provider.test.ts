@@ -23,6 +23,58 @@ const profile: ProviderComposerProfile = {
   updatedAt: 1,
 }
 
+describe('draft composer settings', () => {
+  const setting = (id: string, values: string[]) => ({
+    type: 'select' as const,
+    id,
+    name: id,
+    currentValue: values[0]!,
+    options: values.map((value) => ({ value, name: value })),
+  })
+  const catalog: ProviderComposerProfile = {
+    availableModels: [
+      {
+        modelId: 'claude-opus-5-5',
+        name: 'Claude Opus 5.5',
+        configOptions: [setting('context', ['300k', '1m']), setting('thinking', ['true', 'false'])],
+      },
+      { modelId: 'gpt-5.4', name: 'GPT-5.4', configOptions: [setting('reasoning', ['medium', 'high'])] },
+      { modelId: 'default', name: 'Auto', configOptions: [] },
+    ],
+    updatedAt: 1,
+  }
+  const draft = (modelId: string, borrowed?: ReturnType<typeof setting>[]) =>
+    resolveDraftComposerRuntime({
+      workspacePath: '/repos/alpha',
+      providerId: 'cursor',
+      preference: { modelId, configValues: { context: '1m' } },
+      profile: catalog,
+      ...(borrowed ? { runtime: { configOptions: borrowed } } : {}),
+    })
+
+  it("offers the selected model's own settings before any session exists", () => {
+    const options = draft('claude-opus-5-5').configOptions
+    expect(options?.map((option) => option.id)).toEqual(['context', 'thinking'])
+    // The remembered value is what the draft will launch with.
+    expect(options?.find((option) => option.id === 'context')?.currentValue).toBe('1m')
+  })
+
+  it("never borrows another model's per-model setting", () => {
+    // The newest session is on Opus; the draft is on GPT, which has no
+    // `thinking` and a different effort control.
+    const borrowed = [setting('thinking', ['true', 'false']), setting('output_style', ['default'])]
+    expect(draft('gpt-5.4', borrowed).configOptions?.map((option) => option.id)).toEqual([
+      'reasoning',
+      // No model lists it, so it is not per model and can be borrowed.
+      'output_style',
+    ])
+    // A model whose catalog says "no settings" gets none of the per-model ones.
+    expect(draft('default', borrowed).configOptions?.map((option) => option.id)).toEqual([
+      'output_style',
+    ])
+  })
+})
+
 describe('draft composer profiles', () => {
   it('combines the global provider catalog with a workspace-specific selection', () => {
     const alpha = resolveDraftComposerRuntime({

@@ -53,8 +53,21 @@ describe('ClaudeProbeRuntime models', () => {
         displayName: 'Sonnet',
         description: 'Balanced capability and speed',
         resolvedModel: 'claude-sonnet-5',
+        // Sonnet 5 has both windows, which nothing on the wire says; the
+        // hand-kept table does, so a draft can offer the choice.
+        configOptions: [
+          expect.objectContaining({
+            id: 'context_window',
+            currentValue: '1m',
+            options: [
+              expect.objectContaining({ value: '200k' }),
+              expect.objectContaining({ value: '1m' }),
+            ],
+          }),
+        ],
       },
-      { id: 'opus', displayName: 'Opus', description: 'Most capable' },
+      // A row the table cannot place gets no window choice rather than a guess.
+      { id: 'opus', displayName: 'Opus', description: 'Most capable', configOptions: [] },
     ])
     await probe.dispose()
   })
@@ -68,7 +81,7 @@ describe('ClaudeProbeRuntime models', () => {
     const listing = await probe.listModels(SPEC.cwd)
 
     expect(listing.availableModels).toEqual([
-      { id: 'haiku', displayName: 'Haiku', description: 'Fastest' },
+      { id: 'haiku', displayName: 'Haiku', description: 'Fastest', configOptions: [] },
     ])
     expect(sdk.queries).toHaveLength(1)
     await probe.dispose()

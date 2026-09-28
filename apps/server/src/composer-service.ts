@@ -127,10 +127,11 @@ export function createComposerService(
     const profile = store.upsertProfile(providerId, {
       ...patch,
       // A relisting replaces the rows but must not forget what was learned
-      // about them: image support describes the model, not the session that
-      // listed it, and no session listing ever carries it.
+      // about them: image support, the context window and the model's own
+      // settings describe the model, not the session that listed it, and an
+      // ACP session's listing carries none of them.
       ...(patch.availableModels
-        ? { availableModels: withKnownImageInput(patch.availableModels, before?.availableModels) }
+        ? { availableModels: withKnownModelFacts(patch.availableModels, before?.availableModels) }
         : {}),
     })
     if (profile.updatedAt !== before?.updatedAt) publish('provider.catalog.updated', { profile })
@@ -730,6 +731,7 @@ function modelPatch(models: {
     supportsFastMode?: boolean
     supportsAutoMode?: boolean
     supportsImageInput?: boolean
+    configOptions?: readonly unknown[]
   }>
 } | undefined) {
   const availableModels = models?.availableModels
@@ -748,6 +750,10 @@ function modelPatch(models: {
       // Tri-state, so `false` survives: it is the answer that blocks an attach.
       ...(model.supportsImageInput !== undefined
         ? { supportsImageInput: model.supportsImageInput }
+        : {}),
+      // Empty survives too: it is a catalog saying this model has no settings.
+      ...(model.configOptions !== undefined
+        ? { configOptions: configOptionsPatch(model.configOptions)!.slice(0, 64) }
         : {}),
     })),
   }
@@ -770,28 +776,47 @@ function relistedModels(
   const offered = new Map(listed.map((model) => [model.modelId, model]))
   const kept = held.flatMap((model) => {
     const relisted = offered.get(model.modelId)
-    return relisted ? [{ ...relisted, ...model }] : []
+    if (!relisted) return []
+    // Wording and order stay as held, but the window and the settings are
+    // facts only a catalog reports, so a newer catalog's answer replaces them.
+    return [
+      {
+        ...relisted,
+        ...model,
+        ...(relisted.contextWindowTokens !== undefined
+          ? { contextWindowTokens: relisted.contextWindowTokens }
+          : {}),
+        ...(relisted.configOptions !== undefined ? { configOptions: relisted.configOptions } : {}),
+      },
+    ]
   })
   const known = new Set(held.map((model) => model.modelId))
   return [...kept, ...listed.filter((model) => !known.has(model.modelId))]
 }
 
-/** Rows as relisted, each keeping the image answer its id already had. */
-function withKnownImageInput(
+/** Rows as relisted, each keeping the image answer, context window and
+ * settings its id already had when the relisting says nothing about them. */
+function withKnownModelFacts(
   next: ComposerModelOption[],
   previous: ComposerModelOption[] | undefined,
 ): ComposerModelOption[] {
   if (!previous?.length) return next
-  const known = new Map(
-    previous.flatMap((model) =>
-      model.supportsImageInput === undefined ? [] : [[model.modelId, model.supportsImageInput]],
-    ),
-  )
+  const known = new Map(previous.map((model) => [model.modelId, model]))
   return next.map((model) => {
-    const answer = known.get(model.modelId)
-    return model.supportsImageInput === undefined && answer !== undefined
-      ? { ...model, supportsImageInput: answer }
-      : model
+    const before = known.get(model.modelId)
+    if (!before) return model
+    const kept = {
+      ...(model.supportsImageInput === undefined && before.supportsImageInput !== undefined
+        ? { supportsImageInput: before.supportsImageInput }
+        : {}),
+      ...(model.contextWindowTokens === undefined && before.contextWindowTokens !== undefined
+        ? { contextWindowTokens: before.contextWindowTokens }
+        : {}),
+      ...(model.configOptions === undefined && before.configOptions !== undefined
+        ? { configOptions: before.configOptions }
+        : {}),
+    }
+    return Object.keys(kept).length > 0 ? { ...model, ...kept } : model
   })
 }
 

@@ -28,7 +28,9 @@ import {
 // Version 9 adds the `generated` title source, which a v8 client's enum
 // rejects along with the session summary or event carrying it, the
 // `titleGeneration` environment setting, and `session.title.regenerate`.
-export const PROTOCOL_VERSION = 9 as const
+// Version 10 adds `configOptions` to the provider composer profile's model
+// rows, which a v9 client's strict row schema rejects along with the catalog.
+export const PROTOCOL_VERSION = 10 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema

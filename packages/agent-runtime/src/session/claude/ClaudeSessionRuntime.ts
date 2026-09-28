@@ -57,12 +57,17 @@ import {
 } from './claude-interactions.js'
 import {
   CLAUDE_CONFIG,
+  CLAUDE_CONTEXT_WINDOW,
   CLAUDE_DEFAULT_MODE,
   CLAUDE_DEFAULT_MODEL_ID,
   claudeConfigOptions,
+  claudeContextWindowOf,
   claudeModeListing,
   claudeModelCatalog,
   claudePermissionMode,
+  claudeSupportsContextChoice,
+  isClaudeContextWindow,
+  type ClaudeContextWindow,
 } from './claude-catalog.js'
 import { claudePromptContent, CLAUDE_PROMPT_CAPABILITIES } from './claude-prompt.js'
 import { claudeToolKind } from './claude-tools.js'
@@ -200,6 +205,12 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
   private appliedEffort: string | undefined
   private appliedFastMode = false
   private appliedOutputStyle: string | undefined
+  /** The window the user asked for, if they did. What decides whether a model
+   * switch carries the `[1m]` suffix. */
+  private requestedContextWindow: ClaudeContextWindow | undefined
+  /** The window the CLI says is in force, read back after every change. The
+   * two differ when nothing was asked: the account's default decides. */
+  private observedContextWindow: ClaudeContextWindow | undefined
   private appliedModelId: string | undefined
   private appliedModeId: string | undefined
   /** Set when an `ExitPlanMode` review is approved, until the CLI reports the
@@ -513,6 +524,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       })
     // After `noteApplied`, so the model is known and can gate what applies.
     await this.applyLaunchSettings(desiredValues)
+    await this.readContextWindow()
 
     this.emit(
       routeEvent(this.route(), undefined, 'lifecycle', 'process_spawned', {
@@ -948,6 +960,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       // Both halves or nothing: a meter with a zero denominator renders as
       // either 0% or NaN%, and both are worse than no meter.
       if (!usage || !usage.maxTokens) return
+      this.observedContextWindow = claudeContextWindowOf(usage.rawMaxTokens || usage.maxTokens)
       this.emit(
         routeEvent(this.route(), sessionId, 'session', 'usage_update', {
           used: usage.totalTokens,
@@ -1069,9 +1082,64 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       model: this.currentModel(),
       effort: this.appliedEffort,
       fastMode: this.appliedFastMode,
+      contextWindow: this.observedContextWindow ?? this.requestedContextWindow,
       outputStyle: this.appliedOutputStyle,
       outputStyles: this.outputStylesValue,
     })
+  }
+
+  /** The id the CLI is sent for a catalog row: `[1m]` appended when the user
+   * asked for the 1M window on a model that has one. Without the suffix the
+   * account's default decides, which is 1M on some plans and 200K on others. */
+  private cliModelId(modelId: string): string {
+    const model = this.modelCatalogValue.find((row) => row.id === modelId)
+    return this.requestedContextWindow === CLAUDE_CONTEXT_WINDOW.extended &&
+      claudeSupportsContextChoice(model)
+      ? `${modelId}[1m]`
+      : modelId
+  }
+
+  /** Read the window in force back from the CLI. Best-effort: a CLI that
+   * cannot say leaves the last answer, and the composer shows what was asked. */
+  private async readContextWindow(): Promise<void> {
+    const query = this.query
+    if (!query) return
+    try {
+      const usage = await withTimeout(
+        query.getContextUsage(),
+        this.timeouts.controlRequestMs,
+        () =>
+          new RpcTimeoutError(this.providerId, 'getContextUsage', this.timeouts.controlRequestMs),
+      )
+      const tokens = usage?.rawMaxTokens || usage?.maxTokens
+      if (tokens) this.observedContextWindow = claudeContextWindowOf(tokens)
+    } catch {
+      // Cosmetic: the selection still says what was asked for.
+    }
+  }
+
+  /** Put the session on a 200K or 1M window, live.
+   *
+   * 200K has no model id: only `CLAUDE_CODE_DISABLE_1M_CONTEXT` holds a model
+   * to it, and while that is set the CLI refuses a `[1m]` id outright, so the
+   * suffix comes off first. 1M clears the switch, then asks by suffix, which
+   * is what gets 1M on an account whose default is 200K. */
+  private async applyContextWindow(window: ClaudeContextWindow): Promise<void> {
+    const query = this.queryOrThrow()
+    const modelId = this.appliedModelId ?? CLAUDE_DEFAULT_MODEL_ID
+    if (!claudeSupportsContextChoice(this.currentModel()))
+      throw new Error(`${this.providerId} has no context window choice on this model`)
+    const wasExtended = this.requestedContextWindow === CLAUDE_CONTEXT_WINDOW.extended
+    if (window === CLAUDE_CONTEXT_WINDOW.standard) {
+      if (wasExtended) await query.setModel(modelId)
+      await query.applyFlagSettings({ env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: '1' } })
+    } else {
+      await query.applyFlagSettings({ env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: '0' } })
+      await query.setModel(`${modelId}[1m]`)
+    }
+    this.requestedContextWindow = window
+    this.observedContextWindow = undefined
+    await this.readContextWindow()
   }
 
   /** Republish the settings block.
@@ -1090,10 +1158,14 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
 
   async setModel(modelId: string): Promise<void> {
     const sessionId = await this.ready()
-    await this.queryOrThrow().setModel(modelId)
+    await this.queryOrThrow().setModel(this.cliModelId(modelId))
     // Only after the control request resolves: emitting first would show the
     // composer a selection the session may have refused.
     this.noteApplied({ modelId })
+    // Each model has its own default window, and the new one may have none to
+    // choose.
+    this.observedContextWindow = undefined
+    await this.readContextWindow()
     // Catalog included for the same reason as `current_mode_update`: consumers
     // replace their listing wholesale, so a bare id blanks the picker.
     this.emit(
@@ -1180,6 +1252,15 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
         this.appliedOutputStyle = value
         break
       }
+      case CLAUDE_CONFIG.contextWindow: {
+        if (!isClaudeContextWindow(value))
+          throw new Error(`${this.providerId} has no "${String(value)}" context window`)
+        // Re-applied before every prompt, so an answer already in force costs
+        // nothing: a model switch per prompt would be the price otherwise.
+        if (value === this.requestedContextWindow && value === this.observedContextWindow) break
+        await this.applyContextWindow(value)
+        break
+      }
       default:
         throw new Error(`${this.providerId} has no "${configId}" config option`)
     }
@@ -1213,16 +1294,33 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     if (fastMode && model?.supportsFastMode) this.appliedFastMode = true
     if (typeof outputStyle === 'string' && this.outputStylesValue.includes(outputStyle))
       this.appliedOutputStyle = outputStyle
-    if (Object.keys(settings).length === 0) return
-    try {
-      await this.queryOrThrow().applyFlagSettings(settings)
-    } catch (error) {
-      this.host.log({
-        scope: 'claude',
-        level: 'warn',
-        message: 'Claude Code refused a remembered session setting',
-        data: { settings, error: String(error) },
-      })
+    if (Object.keys(settings).length > 0) {
+      try {
+        await this.queryOrThrow().applyFlagSettings(settings)
+      } catch (error) {
+        this.host.log({
+          scope: 'claude',
+          level: 'warn',
+          message: 'Claude Code refused a remembered session setting',
+          data: { settings, error: String(error) },
+        })
+      }
+    }
+    // The window goes through a model switch rather than a launch option: the
+    // catalog that says whether this model has a choice only arrives with
+    // `initialize`, and no turn has run yet, so switching now is free.
+    const window = values[CLAUDE_CONFIG.contextWindow]
+    if (isClaudeContextWindow(window) && claudeSupportsContextChoice(model)) {
+      try {
+        await this.applyContextWindow(window)
+      } catch (error) {
+        this.host.log({
+          scope: 'claude',
+          level: 'warn',
+          message: 'Claude Code refused a remembered context window',
+          data: { window, error: String(error) },
+        })
+      }
     }
   }
 

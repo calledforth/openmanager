@@ -918,7 +918,11 @@ describe('AgentRuntime provider catalogs', () => {
   }
 
   it('learns the models of a provider nobody has opened, from the health probe', async () => {
-    const newSession = vi.fn()
+    // Cursor names its modes only on a session, which it forgets unprompted.
+    const newSession = vi.fn(async () => ({
+      sessionId: 'never-prompted',
+      modes: { currentModeId: 'agent', availableModes: [{ id: 'agent', name: 'Agent' }] },
+    }))
     const { runtime, connections, heard } = buildCursor({
       initialize: async () => HANDSHAKE,
       request: async () => LISTING,
@@ -939,11 +943,20 @@ describe('AgentRuntime provider catalogs', () => {
           promptCapabilities: { image: true, audio: false, embeddedContext: false },
         },
       },
-      { providerId: 'cursor', catalog: { models: CATALOG } },
+      {
+        providerId: 'cursor',
+        catalog: {
+          models: CATALOG,
+          modes: expect.objectContaining({
+            currentModeId: 'agent',
+            availableModes: [expect.objectContaining({ id: 'agent' })],
+          }),
+        },
+      },
     ])
-    // One process answered both questions, and it opened no session.
+    // One process answered every question, with one session it never prompted.
     expect(connections.connections).toHaveLength(1)
-    expect(newSession).not.toHaveBeenCalled()
+    expect(newSession).toHaveBeenCalledTimes(1)
     await runtime.shutdown()
   })
 

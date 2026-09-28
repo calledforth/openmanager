@@ -8,6 +8,7 @@ import type {
   SubtaskUpdate,
 } from '@agentpack/contract'
 import { subtaskStatusFromTool } from '../backends/acp/extensions.js'
+import { catalogConfigOptions } from './catalog-options.js'
 import type { AcpProviderConfig } from './index.js'
 
 const str = (value: unknown): string => (typeof value === 'string' ? value : '')
@@ -143,8 +144,14 @@ function acknowledgeGeneratedImage(params: unknown): unknown {
 /** `cursor/list_available_models` answers `{ models: [{ value, name,
  * configOptions? }] }`. `value` is the id the session's own model control
  * accepts, which is what makes a row read here safe to offer before any
- * session exists. The per-model `configOptions` are left alone: a session
- * reports the ones that apply to the model it is actually on. */
+ * session exists.
+ *
+ * Each model's `configOptions` are the same settings a session on it lists
+ * (measured 2026-09-28, cursor-agent with `parameterizedModelPicker`): the
+ * ids, values and defaults match what `session/set_config_option` accepts,
+ * e.g. `context` 300k/1m, `effort` or `reasoning` or `reasoning_effort`,
+ * `fast` and `thinking` as "false"/"true" selects. They are kept so a draft can
+ * offer them; a live session's own list replaces them. */
 export function cursorModelListing(response: unknown): ModelListing {
   const models = (response as { models?: unknown } | null | undefined)?.models
   if (!Array.isArray(models)) return {}
@@ -155,7 +162,12 @@ export function cursorModelListing(response: unknown): ModelListing {
     const displayName = str(model.name).trim()
     if (!id || !displayName || seen.has(id)) return []
     seen.add(id)
-    return [{ id, displayName }]
+    // Kept even when empty: `[]` is Cursor saying this model has no settings
+    // (Auto, Gemini 3.1 Pro), which a draft must not fill from another model.
+    const configOptions = Array.isArray(model.configOptions)
+      ? catalogConfigOptions(model.configOptions)
+      : undefined
+    return [{ id, displayName, ...(configOptions ? { configOptions } : {}) }]
   })
   return availableModels.length > 0 ? { availableModels } : {}
 }
@@ -275,6 +287,9 @@ export const cursor: AcpProviderConfig = {
       // `session/load` on one answers "Session not found". So a session
       // opened only to ask leaves nothing in the user's history.
       sessionFallback: true,
+      // Agent, Plan and Ask are only listed by `session/new`; for the same
+      // reason, asking costs nothing the user can see.
+      modesFromSession: true,
     },
   },
 }
