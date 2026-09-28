@@ -46,7 +46,6 @@ import {
   applySessionList,
   applySessionOpen,
   applySessionRemoved,
-  applySessionSettled,
   applySessionAcknowledged,
   applySessionTitle,
   applySnapshot,
@@ -58,6 +57,7 @@ import {
   applyWorkspaceRemoved,
   selectSessionList,
 } from './state'
+import { createSettleTracker } from './settle'
 import { createEnvironmentStore } from './store'
 import type {
   ComposerPreferenceTarget,
@@ -266,6 +266,7 @@ export function createWebSocketEnvironmentClient(
   }
   const random = options.random ?? Math.random
   const store = createEnvironmentStore()
+  const settles = createSettleTracker(store)
 
   let socket: WebSocketLike | null = null
   let ready = false
@@ -527,7 +528,8 @@ export function createWebSocketEnvironmentClient(
     if (event.name === 'composer.preferences.updated') {
       appliedPreferenceWrites.set(preferenceKey(event.payload), ++preferenceTickets)
     }
-    store.update((state) => applyEvent(state, event))
+    const folded = settles.mask(event)
+    store.update((state) => applyEvent(state, folded))
   }
 
   const handleEvent = (raw: unknown) => {
@@ -1132,9 +1134,11 @@ export function createWebSocketEnvironmentClient(
         applySessionTitle(state, sessionId, payload.session.title, 'generated'),
       )
     },
-    async settleSession(sessionId, settled) {
-      const payload = await request('session.settle', { sessionId, settled })
-      store.update((state) => applySessionSettled(state, sessionId, payload.settledAt))
+    settleSession(sessionId, settled) {
+      return settles.settle(sessionId, settled, async () => {
+        const payload = await request('session.settle', { sessionId, settled })
+        return payload.settledAt
+      })
     },
     async acknowledgeSession(sessionId) {
       await request('session.acknowledge', { sessionId })
