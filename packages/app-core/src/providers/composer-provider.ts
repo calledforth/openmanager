@@ -87,12 +87,14 @@ export function draftConfigOptions(
   borrowed: readonly SessionConfigOption[] | undefined,
 ): SessionConfigOption[] | undefined {
   const own = models?.find((model) => model.modelId === modelId)?.configOptions
-  if (!own) return borrowed as SessionConfigOption[] | undefined
   const perModel = new Set(
     (models ?? []).flatMap((model) => (model.configOptions ?? []).map((option) => option.id)),
   )
+  // A row that lists no settings (the catalog could not say) still never
+  // takes another model's per-model ones: its session may not have them.
   const shared = (borrowed ?? []).filter((option) => !perModel.has(option.id))
-  return [...own, ...shared]
+  if (!own && !borrowed) return undefined
+  return [...(own ?? []), ...shared]
 }
 
 export function toAcpModes(modes: SessionModes): AcpSessionRuntimeState['modes'] {

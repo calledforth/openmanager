@@ -1591,6 +1591,23 @@ describe('ClaudeSessionRuntime context window', () => {
     expect(contextOption(runtime)?.currentValue).toBe('200k')
   })
 
+  it('reports the window in force when a change half lands', async () => {
+    const { runtime, sdk } = withModels({ desiredConfig: { modelId: 'claude-opus-5-5' } })
+    await runtime.start()
+    windowOf(sdk, 1_000_000)
+    await runtime.setConfigOption('context_window', '1m')
+    // The suffix comes off, then the 200K switch is refused.
+    sdk.last.flagSettingsError = new Error('settings refused')
+
+    await expect(runtime.setConfigOption('context_window', '200k')).rejects.toThrow(/refused/)
+
+    // The suffix stays off for later model writes: it went with the request.
+    expect(sdk.last.models.at(-1)).toBe('claude-opus-5-5')
+    sdk.last.flagSettingsError = undefined
+    await runtime.setModel('claude-opus-5-5')
+    expect(sdk.last.models.at(-1)).toBe('claude-opus-5-5')
+  })
+
   it('keeps the chosen window across a model switch', async () => {
     const { runtime, sdk } = withModels({ desiredConfig: { modelId: 'claude-opus-5-5' } })
     await runtime.start()

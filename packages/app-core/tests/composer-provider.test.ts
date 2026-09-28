@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  draftConfigOptions,
   resolveDraftComposerRuntime,
   resolveSessionComposerRuntime,
 } from '../src/providers/composer-provider'
@@ -68,6 +69,15 @@ describe('draft composer settings', () => {
       // No model lists it, so it is not per model and can be borrowed.
       'output_style',
     ])
+    // A model the catalog could not describe gets none of them either: its
+    // session may not have them.
+    expect(
+      draftConfigOptions(
+        [...catalog.availableModels!.map((model) => ({ ...model })), { modelId: 'new', name: 'New' }],
+        'new',
+        borrowed,
+      )?.map((option) => option.id),
+    ).toEqual(['output_style'])
     // A model whose catalog says "no settings" gets none of the per-model ones.
     expect(draft('default', borrowed).configOptions?.map((option) => option.id)).toEqual([
       'output_style',

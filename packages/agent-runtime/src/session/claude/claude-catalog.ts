@@ -103,7 +103,13 @@ export function claudeModeListing(currentModeId?: string, model?: ModelOption): 
  * tasks · ~2× usage vs Sonnet'}`. Both are carried through — the picker needs
  * the second one to tell "Opus" from "Opus 5", and to explain what the
  * `default` row currently resolves to. */
-export function claudeModelCatalog(models: readonly ModelInfo[] | undefined): ModelOption[] {
+export function claudeModelCatalog(
+  models: readonly ModelInfo[] | undefined,
+  /** The window a model with the choice starts on for this account, when the
+   * probe could measure it. Unknown falls back to 1M, the measured default on
+   * subscription accounts. */
+  defaultContextWindow?: ClaudeContextWindow,
+): ModelOption[] {
   return (models ?? []).map((model) => {
     const row: ModelOption = {
       id: model.value,
@@ -132,7 +138,7 @@ export function claudeModelCatalog(models: readonly ModelInfo[] | undefined): Mo
         model: row,
         effort: undefined,
         fastMode: false,
-        contextWindow: undefined,
+        contextWindow: defaultContextWindow,
         outputStyle: undefined,
         outputStyles: [],
       }),

@@ -29,7 +29,7 @@ function build(initialize?: Partial<SDKControlInitializeResponse>) {
 
 describe('ClaudeProbeRuntime models', () => {
   it('reports the catalog the handshake carried', async () => {
-    const { probe } = build({
+    const { probe, sdk } = build({
       models: [
         {
           value: 'sonnet',
@@ -40,6 +40,9 @@ describe('ClaudeProbeRuntime models', () => {
         { value: 'opus', displayName: 'Opus', description: 'Most capable' },
       ],
     } as Partial<SDKControlInitializeResponse>)
+    sdk.prepare = (query) => {
+      query.contextUsage = { ...query.contextUsage, maxTokens: 1_000_000, rawMaxTokens: 1_000_000 }
+    }
 
     const result = await probe.probe()
 
@@ -70,6 +73,46 @@ describe('ClaudeProbeRuntime models', () => {
       { id: 'opus', displayName: 'Opus', description: 'Most capable', configOptions: [] },
     ])
     await probe.dispose()
+  })
+
+  describe('the window a draft shows', () => {
+    const SONNET = {
+      models: [{ value: 'sonnet', resolvedModel: 'claude-sonnet-5', displayName: 'Sonnet' }],
+    } as Partial<SDKControlInitializeResponse>
+    const shown = async (prepare: (query: FakeClaudeSdk['last']) => void) => {
+      const { probe, sdk } = build(SONNET)
+      sdk.prepare = prepare
+      const result = await probe.probe()
+      await probe.dispose()
+      const option = result.models?.availableModels?.[0]?.configOptions?.find(
+        (candidate) => candidate.id === 'context_window',
+      )
+      return option?.type === 'select' ? option.currentValue : undefined
+    }
+
+    it("is the account's own default, measured without a prompt", async () => {
+      // An account that starts Opus 5 on 200K must not see 1M selected: its
+      // first prompt would run on 200K while the composer claimed 1M.
+      expect(await shown((query) => void (query.contextUsage.model = 'claude-opus-5'))).toBe('200k')
+      expect(
+        await shown((query) => {
+          query.contextUsage = { ...query.contextUsage, rawMaxTokens: 1_000_000 }
+        }),
+      ).toBe('1m')
+    })
+
+    it('says nothing from a model with a fixed window', async () => {
+      // Haiku is 200K on every account, which says nothing about Sonnet's.
+      expect(
+        await shown((query) => void (query.contextUsage.model = 'claude-haiku-4-5')),
+      ).toBe('1m')
+    })
+
+    it('falls back to the usual default when the CLI cannot say', async () => {
+      expect(
+        await shown((query) => void (query.contextUsageError = new Error('not supported'))),
+      ).toBe('1m')
+    })
   })
 
   it('answers listModels from the same handshake, without a second CLI', async () => {

@@ -1130,16 +1130,26 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     if (!claudeSupportsContextChoice(this.currentModel()))
       throw new Error(`${this.providerId} has no context window choice on this model`)
     const wasExtended = this.requestedContextWindow === CLAUDE_CONTEXT_WINDOW.extended
-    if (window === CLAUDE_CONTEXT_WINDOW.standard) {
-      if (wasExtended) await query.setModel(modelId)
-      await query.applyFlagSettings({ env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: '1' } })
-    } else {
-      await query.applyFlagSettings({ env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: '0' } })
-      await query.setModel(`${modelId}[1m]`)
+    try {
+      if (window === CLAUDE_CONTEXT_WINDOW.standard) {
+        if (wasExtended) {
+          await query.setModel(modelId)
+          // The suffix is gone even if the switch below fails: later model
+          // writes must not put it back on a request nobody holds any more.
+          this.requestedContextWindow = undefined
+        }
+        await query.applyFlagSettings({ env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: '1' } })
+      } else {
+        await query.applyFlagSettings({ env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: '0' } })
+        await query.setModel(`${modelId}[1m]`)
+      }
+      this.requestedContextWindow = window
+    } finally {
+      // Whatever landed, the option reports the window the CLI is on now, not
+      // the one asked for, so a half-done change never shows as done.
+      this.observedContextWindow = undefined
+      await this.readContextWindow()
     }
-    this.requestedContextWindow = window
-    this.observedContextWindow = undefined
-    await this.readContextWindow()
   }
 
   /** Republish the settings block.
