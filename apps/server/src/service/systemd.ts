@@ -270,7 +270,8 @@ export function createSystemdBackend(context: Context): ServiceBackend {
       const stopped = await systemctl(context, ['stop', UNIT_NAME])
       // A unit systemd cannot load has nothing running; failing here would
       // block the reinstall or uninstall that repairs it.
-      if (stopped.code !== 0 && running) {
+      const after = (await systemctl(context, ['is-active', UNIT_NAME])).stdout.trim()
+      if (!['inactive', 'failed', 'unknown'].includes(after) || (stopped.code !== 0 && running)) {
         throw new ServiceError(`systemd could not stop ${UNIT_NAME}: ${trimOutput(stopped)}`)
       }
       return running ? 'stopped' : 'not_running'
@@ -312,7 +313,17 @@ export function createSystemdBackend(context: Context): ServiceBackend {
       lines.push(`Linger:    ${lingerText(context, await lingerState(context))}`)
       if (await isWsl(context)) lines.push(`WSL:       ${wslText(await readWslConfig(context))}`)
       lines.push(`Journal:   ${JOURNAL_COMMAND}`)
-      return lines
+      const state =
+        shown.code !== 0
+          ? 'unknown'
+          : unit.ActiveState === 'failed'
+            ? 'failed'
+            : unit.ActiveState === 'active'
+              ? 'running'
+              : unit.ActiveState === 'inactive'
+                ? 'stopped'
+                : 'unknown'
+      return { state, lines }
     },
   }
 }

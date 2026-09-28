@@ -7,11 +7,12 @@ import {
   type ServiceBackend,
   type ServiceCommandDeps,
 } from './context.ts'
+import { parseLogOptions } from './logs.ts'
 import { createSystemdBackend } from './systemd.ts'
 import { createWindowsBackend } from './windows.ts'
 
 /**
- * `openmanager-server service <install|uninstall|start|stop|status>`.
+ * `openmanager-server service <install|uninstall|start|stop|restart|status|logs>`.
  *
  * One command surface, two supervisors: a per-user logon task on Windows
  * (docs/windows-startup.md) and a systemd user unit on Linux and WSL
@@ -33,7 +34,9 @@ export const SERVICE_USAGE = [
   '  uninstall        Stop the server and remove the service',
   '  start            Start the installed service now',
   '  stop             Stop the running server (the service stays installed)',
-  '  status           Show the service state and whether the server answers /health',
+  '  restart          Stop the installed service, then start it and wait for health',
+  '  status [--json]   Show running/stopped/failed state, health and installed paths',
+  '  logs [-f] [-n N]  Print the last N log lines (default 100); --follow tails updates',
   '',
   'Server flags for install are the normal ones (--port, --data-dir, --log-level,',
   '--allowed-origin, --allowed-host, --workspace) plus --log-file. Values are baked',
@@ -142,7 +145,7 @@ async function uninstall(context: Context, backend: ServiceBackend): Promise<voi
   }
 }
 
-async function start(context: Context, backend: ServiceBackend): Promise<void> {
+async function start(context: Context, backend: ServiceBackend, restart = false): Promise<void> {
   await backend.preflight()
   const installed = await backend.read()
   if (!installed) {
@@ -153,10 +156,12 @@ async function start(context: Context, backend: ServiceBackend): Promise<void> {
       `The installed ${backend.kind} has no --port; reinstall it with "service install".`,
     )
   }
+  if (restart) await backend.stop()
   if (await isHealthy(context, installed.port)) {
-    // Only a definite "not running" blames another server; an unanswered
-    // lookup keeps the old behaviour of trusting /health.
-    if ((await backend.running()) !== false) {
+    // For an ordinary start, only a definite "not running" blames another
+    // server; an unanswered lookup still trusts /health. After a restart has
+    // stopped the service, anything still answering cannot be the service.
+    if (!restart && (await backend.running()) !== false) {
       context.stdout(`Environment server is already up at http://127.0.0.1:${installed.port}.`)
       return
     }
@@ -178,14 +183,19 @@ async function stop(context: Context, backend: ServiceBackend): Promise<void> {
   )
 }
 
-async function status(context: Context, backend: ServiceBackend): Promise<number> {
+async function status(context: Context, backend: ServiceBackend, json: boolean): Promise<number> {
   await backend.preflight()
   const installed = await backend.read()
   if (!installed) {
-    context.stdout(`Not installed: no ${backend.label}. Run "service install" to add one.`)
+    context.stdout(
+      json
+        ? JSON.stringify({ installed: false, state: 'not-installed', healthy: false })
+        : `Not installed: no ${backend.label}. Run "service install" to add one.`,
+    )
     return 1
   }
-  for (const line of await backend.status()) context.stdout(line)
+  const snapshot = await backend.status()
+  const lines = [...snapshot.lines]
   let up = false
   if (installed.port !== undefined) {
     const healthy = await isHealthy(context, installed.port)
@@ -198,13 +208,21 @@ async function status(context: Context, backend: ServiceBackend): Promise<number
         : running === undefined
           ? `answering /health; could not confirm it is the ${backend.kind}'s server`
           : 'answering /health'
-    context.stdout(`Server:    http://127.0.0.1:${installed.port} (${answer})`)
+    lines.push(`Server:    http://127.0.0.1:${installed.port} (${answer})`)
   } else {
-    context.stdout(`Server:    the ${backend.kind} has no --port; reinstall it`)
+    lines.push(`Server:    the ${backend.kind} has no --port; reinstall it`)
   }
-  if (installed.dataDir) context.stdout(`Data dir:  ${installed.dataDir}`)
-  if (installed.logFile) context.stdout(`Log file:  ${installed.logFile}`)
-  return up ? 0 : 1
+  if (installed.dataDir) lines.push(`Data dir:  ${installed.dataDir}`)
+  if (installed.logFile) lines.push(`Log file:  ${installed.logFile}`)
+  if (json) {
+    context.stdout(
+      JSON.stringify({ installed: true, state: snapshot.state, healthy: up, ...installed }),
+    )
+  } else {
+    for (const line of lines) context.stdout(line)
+    context.stdout(`State:     ${snapshot.state}`)
+  }
+  return up && snapshot.state === 'running' ? 0 : 1
 }
 
 function backendFor(context: Context): ServiceBackend | undefined {
@@ -224,7 +242,7 @@ export async function runServiceCommand(
     for (const line of SERVICE_USAGE) context.stdout(line)
     return command === undefined ? 1 : 0
   }
-  const known = ['install', 'uninstall', 'start', 'stop', 'status']
+  const known = ['install', 'uninstall', 'start', 'stop', 'restart', 'status', 'logs']
   if (!known.includes(command)) {
     context.stderr(`Unknown service command "${command}".`)
     for (const line of SERVICE_USAGE) context.stderr(line)
@@ -237,7 +255,12 @@ export async function runServiceCommand(
     )
     return 1
   }
-  if (command !== 'install' && rest.length > 0) {
+  if (
+    command !== 'install' &&
+    command !== 'logs' &&
+    !(command === 'status' && rest.length === 1 && rest[0] === '--json') &&
+    rest.length > 0
+  ) {
     context.stderr(`"service ${command}" takes no arguments.`)
     return 1
   }
@@ -252,11 +275,27 @@ export async function runServiceCommand(
       case 'start':
         await start(context, backend)
         return 0
+      case 'restart':
+        await start(context, backend, true)
+        return 0
+      case 'logs': {
+        const options = parseLogOptions(rest)
+        await backend.preflight()
+        const installed = await backend.read()
+        if (!installed) throw new ServiceError(`No ${backend.label} is installed.`)
+        const path =
+          installed.logFile ?? (installed.dataDir ? defaultLogFile(installed.dataDir) : undefined)
+        if (!path)
+          throw new ServiceError('The installed service has no log location; reinstall it.')
+        context.stderr(`Log file: ${path}`)
+        await context.tailLogs(path, options, context.stdout)
+        return 0
+      }
       case 'stop':
         await stop(context, backend)
         return 0
       default:
-        return await status(context, backend)
+        return await status(context, backend, rest[0] === '--json')
     }
   } catch (error) {
     if (error instanceof ServiceError) {

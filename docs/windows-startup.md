@@ -72,12 +72,14 @@ The action is `conhost.exe --headless <node> <dist\main.js> <flags> --exit-with-
 The headless console host is what keeps a terminal window from appearing; the
 server watches that host and exits if Task Scheduler ends it.
 
-## Check, start, stop, remove
+## Check, start, stop, restart, remove
 
 ```sh
 node apps/server/dist/main.js service status
+node apps/server/dist/main.js service status --json
 node apps/server/dist/main.js service start
 node apps/server/dist/main.js service stop
+node apps/server/dist/main.js service restart
 node apps/server/dist/main.js service uninstall
 ```
 
@@ -89,6 +91,9 @@ node apps/server/dist/main.js service uninstall
 - `start` refuses while another server holds the task's port.
 - `stop` ends the running server but leaves the task registered; the next
   sign-in (or `start`) brings it back.
+- `restart` stops the installed server, verifies shutdown, starts the same
+  service definition and waits up to 20 seconds for health. Its port, data
+  directory, identity, SQLite database and credentials remain unchanged.
 - `uninstall` stops the server and removes the task. The data directory,
   including the owner credential, SQLite database and logs, is left alone;
   delete it by hand if you want a clean slate. The now-empty `OpenManager`
@@ -98,6 +103,26 @@ node apps/server/dist/main.js service uninstall
 Stopping is abrupt from the server's point of view (Windows has no signal to
 deliver to a windowless process), which is the same as `Ctrl+C` on Windows
 today. The database uses WAL and survives it; an in-flight agent turn is cut.
+
+### Scriptable status and retained data
+
+`status --json` prints one object with `installed`, `state`, `healthy`, `port`,
+`dataDir` and `logFile` (paths are omitted if unavailable). States are `running`,
+`stopped`, `failed`, `unknown` (the supervisor/process lookup cannot confirm a
+state), or `not-installed`. A running process can still be unhealthy. Exit
+code 0 requires both confirmed running state and a successful health response;
+all other states return 1. Credential values are never included.
+
+Restart and uninstall fail if shutdown cannot be confirmed, keeping the
+registration available for a retry. Uninstall intentionally retains the
+**whole data directory together**, including identity, SQLite authorization
+records and `owner-credential`; it prints that location. Reinstall with the
+same `--data-dir` reuses them. No credentials are copied into the service
+registration. For permanent removal, first complete uninstall successfully,
+then remove the reported data directory yourself (this also deletes stored
+sessions), any custom log location, and saved credentials in connected UIs.
+Deleting only `owner-credential` does not revoke the authorization records in
+SQLite. Provider CLI logins belong to the user and are not removed.
 
 ## Connecting a UI to the background server
 
@@ -126,6 +151,20 @@ crash-loop.
 
 ## Logs
 
+```sh
+node apps/server/dist/main.js service logs
+node apps/server/dist/main.js service logs --lines 200 --follow
+```
+
+`logs` reads the installed log path, including a custom `--log-file`, rather
+than guessing from the current shell. It prints the last 100 lines by default;
+`--lines` (or `-n`) accepts 0 to 10000. The initial tail examines at most the last
+1 MiB, so very large records may yield fewer lines. `--follow` (or `-f`) waits
+for a missing file, follows new records across restart/rotation and truncation,
+and stops with Ctrl+C. Without `--follow`, a missing file is an error. The
+location is printed to stderr and log records to stdout. These commands read
+application logs; supervisor diagnostics remain available in the tools below.
+
 The server writes one JSON record per line to the log file (default
 `<data-dir>\logs\server.log`). Startup failures land there too, since the task
 has no console. When the file reaches 10 MiB it is renamed to `server.log.1`
@@ -142,5 +181,4 @@ task history is enabled on the machine.
   and user-owned folders work without configuration.
 - Moving Node or the repository breaks the recorded paths; `status` shows the
   failure and `install` again fixes it.
-- A graceful update handoff and richer supervision (logs viewer, restart
-  command, crash reporting) are tracked as separate work in the same project.
+- A graceful update handoff and richer supervision (crash reporting) are tracked as separate work in the same project.

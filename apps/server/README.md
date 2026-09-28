@@ -42,7 +42,9 @@ and WSL it is a systemd user unit. The commands are the same:
 ```sh
 pnpm --filter @openmanager/server build
 node apps/server/dist/main.js service install
-node apps/server/dist/main.js service status
+node apps/server/dist/main.js service status --json
+node apps/server/dist/main.js service logs --follow
+node apps/server/dist/main.js service restart
 node apps/server/dist/main.js service uninstall
 ```
 
