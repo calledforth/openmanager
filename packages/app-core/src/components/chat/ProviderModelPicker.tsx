@@ -1,21 +1,37 @@
 import {
+  useCallback,
   useEffect,
-  useId,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
-  type KeyboardEvent,
-  type ReactNode,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type ReactElement,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { CaretDownIcon, MagnifyingGlassIcon, StarIcon } from '@phosphor-icons/react'
+import { CaretDownIcon, CheckIcon, SquaresFourIcon, StarIcon } from '@phosphor-icons/react'
 import type { ProviderId } from '@agentpack/contract'
 import { cn } from '../../lib/utils'
-import { composerChip, composerPopover } from './chatComposerStyles'
+import {
+  CommandMenu,
+  CommandMenuEmpty,
+  CommandMenuInput,
+  CommandMenuItem,
+  CommandMenuList,
+  CommandMenuShortcut,
+  CommandMenuTabs,
+  matchesShortcut,
+  parseShortcut,
+  type CommandMenuItemData,
+  type CommandMenuTab,
+} from '../fluid/ui/command-menu'
+import { phosphorIcon, type IconComponentProps } from '../fluid/lib/icon-context'
+import { composerChip } from './chatComposerStyles'
 import { ProviderIcon } from '../providers/ProviderIcon'
 import { Tooltip } from '../ui/Tooltip'
 import { usePortaledMenu } from '../ui/usePortaledMenu'
+import { useHoldFocus, useRegisterPicker } from '../command/pickerRegistry'
 import { modelHint, modelLabel } from './modelLabel'
 import {
   favoriteModelKey,
@@ -45,15 +61,16 @@ export type ProviderModelGroup = {
   unavailableReason?: string
 }
 
-/** Picker rail order — favorites sit above these. */
-const PROVIDER_RAIL_ORDER: readonly ProviderId[] = ['claude', 'cursor', 'opencode']
+/** Tab order after All and Favorites. */
+const PROVIDER_ORDER: readonly ProviderId[] = ['claude', 'cursor', 'opencode']
 
-const FAVORITES_PANE = '__favorites__' as const
-type PaneId = typeof FAVORITES_PANE | ProviderId
+const ALL_SCOPE = 'all'
+const FAVORITES_SCOPE = 'favorites'
+type Scope = typeof ALL_SCOPE | typeof FAVORITES_SCOPE | ProviderId
 
-const MENU_WIDTH = 400
-const MENU_MIN_HEIGHT = 320
-const MENU_MAX_HEIGHT = 360
+const MENU_WIDTH = 440
+/** Favorites past this many have no Alt+digit key. */
+const FAVORITE_KEYS = 9
 
 type FlatModel = {
   key: FavoriteModelKey
@@ -65,26 +82,38 @@ type FlatModel = {
   resolvedModel?: string
   effortLevels?: string[]
   supportsFastMode?: boolean
-  supportsAutoMode?: boolean
   contextWindowTokens?: number
   unavailableReason?: string
-  keywords: string
 }
 
 type MetaRow = { label: string; value: string }
 
+const AllIcon = phosphorIcon(SquaresFourIcon)
+const FavoritesIcon = phosphorIcon(StarIcon)
+
+/** One stable icon component per provider, for the tabs. */
+const providerTabIcons = new Map<ProviderId, (props: IconComponentProps) => ReactElement>()
+function providerTabIcon(providerId: ProviderId) {
+  let icon = providerTabIcons.get(providerId)
+  if (!icon) {
+    icon = function ProviderTabIcon({ className }: IconComponentProps) {
+      return <ProviderIcon providerId={providerId} className={cn('h-3.5 w-3.5', className)} />
+    }
+    providerTabIcons.set(providerId, icon)
+  }
+  return icon
+}
+
 function sortGroups(groups: ProviderModelGroup[]): ProviderModelGroup[] {
-  const rank = new Map(PROVIDER_RAIL_ORDER.map((id, index) => [id, index]))
+  const rank = new Map(PROVIDER_ORDER.map((id, index) => [id, index]))
   return [...groups].sort((a, b) => (rank.get(a.providerId) ?? 99) - (rank.get(b.providerId) ?? 99))
 }
 
-function matchesQuery(model: FlatModel, query: string) {
-  if (!query) return true
-  return model.keywords.toLowerCase().includes(query)
-}
-
-function formatContextTokens(tokens: number): string {
-  return tokens.toLocaleString('en-US')
+/** "1M", "200k": short enough to sit at a row's edge. */
+function formatContextShort(tokens: number): string {
+  if (tokens >= 1_000_000) return `${+(tokens / 1_000_000).toFixed(1)}M`
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`
+  return String(tokens)
 }
 
 /** Claude Code is the only provider that ships rich model metadata today. */
@@ -116,7 +145,7 @@ function claudeMetaRows(model: FlatModel): MetaRow[] {
   })
 
   if (model.contextWindowTokens) {
-    rows.push({ label: 'Context', value: formatContextTokens(model.contextWindowTokens) })
+    rows.push({ label: 'Context', value: model.contextWindowTokens.toLocaleString('en-US') })
   }
 
   if (model.description) {
@@ -131,7 +160,12 @@ function metaRowsFor(model: FlatModel | undefined): MetaRow[] | null {
   return claudeMetaRows(model)
 }
 
-/** Compact two-pane provider→model menu. Search collapses to a single list. */
+/**
+ * The composer's provider→model picker: a command menu anchored to its chip.
+ * Search on top, provider tabs under it (Tab and ← → step through them), the
+ * current model highlighted on open. ⌘S / Ctrl+S stars the highlighted
+ * model and Alt+1…9 picks a favorite outright.
+ */
 export function ProviderModelPicker({
   groups,
   currentProviderId,
@@ -140,6 +174,8 @@ export function ProviderModelPicker({
   disabled,
   canChangeProvider,
   configSummary,
+  shortcut,
+  onDone,
 }: {
   groups: ProviderModelGroup[]
   currentProviderId: ProviderId
@@ -148,18 +184,20 @@ export function ProviderModelPicker({
   disabled?: boolean
   canChangeProvider: boolean
   configSummary: string[]
+  /** Opens (and closes) the picker from anywhere, e.g. `"mod+shift+m"`. */
+  shortcut?: string
+  /** Runs when the picker closes from the keyboard or a pick, so the host can
+   *  hand focus back (the composer's textarea). Not on an outside click. */
+  onDone?: () => void
 }) {
-  const listId = useId()
-  const searchRef = useRef<HTMLInputElement>(null)
-  const rowRefs = useRef(new Map<string, HTMLDivElement>())
   const [query, setQuery] = useState('')
-  const [activeIndex, setActiveIndex] = useState(0)
+  const [scope, setScope] = useState<Scope>(ALL_SCOPE)
   const [favorites, setFavorites] = useState<FavoriteModelKey[]>(() => readFavoriteModels())
-  const [paneId, setPaneId] = useState<PaneId>(currentProviderId)
-  const [hoverCardTop, setHoverCardTop] = useState<number | null>(null)
-  // The meta card is a hover affordance: it only appears once the user actually
-  // points at (or keyboard-navigates to) a row, never on the default row 0.
+  const [highlighted, setHighlighted] = useState<FavoriteModelKey | null>(null)
+  // The detail card is a pointing/browsing affordance: it appears once the
+  // user points at or arrows to a row, never for the row highlighted on open.
   const [previewing, setPreviewing] = useState(false)
+  const [cardTop, setCardTop] = useState<number | null>(null)
 
   const visibleGroups = useMemo(() => {
     const filtered = canChangeProvider
@@ -184,24 +222,68 @@ export function ProviderModelPicker({
             ...(model.resolvedModel ? { resolvedModel: model.resolvedModel } : {}),
             ...(model.effortLevels?.length ? { effortLevels: model.effortLevels } : {}),
             ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
-            ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
             ...(model.contextWindowTokens
               ? { contextWindowTokens: model.contextWindowTokens }
               : {}),
             ...(group.unavailableReason ? { unavailableReason: group.unavailableReason } : {}),
-            keywords: `${group.providerName} ${model.id} ${model.name} ${model.description ?? ''} ${label}`,
           }
         }),
       ),
     [visibleGroups],
   )
+  const modelsByKey = useMemo(
+    () => new Map(allModels.map((model) => [model.key, model])),
+    [allModels],
+  )
 
-  const favoriteModels = useMemo(() => {
-    const byKey = new Map(allModels.map((model) => [model.key, model]))
-    return favorites
-      .map((key) => byKey.get(key))
-      .filter((model): model is FlatModel => model !== undefined)
-  }, [allModels, favorites])
+  const favoriteModels = useMemo(
+    () =>
+      favorites
+        .map((key) => modelsByKey.get(key))
+        .filter((model): model is FlatModel => model !== undefined),
+    [favorites, modelsByKey],
+  )
+  const favoriteNumber = useMemo(
+    () => new Map(favoriteModels.slice(0, FAVORITE_KEYS).map((model, i) => [model.key, i + 1])),
+    [favoriteModels],
+  )
+
+  // Tabs only earn their row when there is more than one place to go.
+  const tabs = useMemo<CommandMenuTab[]>(() => {
+    if (visibleGroups.length < 2) return []
+    return [
+      { value: ALL_SCOPE, label: 'All', icon: AllIcon },
+      { value: FAVORITES_SCOPE, label: 'Favorites', icon: FavoritesIcon },
+      ...visibleGroups.map((group) => ({
+        value: group.providerId,
+        label: group.providerName,
+        icon: providerTabIcon(group.providerId),
+      })),
+    ]
+  }, [visibleGroups])
+  const activeScope: Scope = tabs.some((tab) => tab.value === scope) ? scope : ALL_SCOPE
+
+  const items = useMemo<CommandMenuItemData[]>(() => {
+    const scoped =
+      activeScope === FAVORITES_SCOPE
+        ? favoriteModels
+        : activeScope === ALL_SCOPE
+          ? allModels
+          : allModels.filter((model) => model.providerId === activeScope)
+    // Headings only where rows from several providers share the list.
+    const grouped = activeScope === ALL_SCOPE && visibleGroups.length > 1
+    return scoped.map((model) => ({
+      value: model.key,
+      label: model.label,
+      // An unavailable provider's rows say why in place of their hint.
+      ...((model.unavailableReason ?? model.description)
+        ? { description: model.unavailableReason ?? model.description }
+        : {}),
+      keywords: [model.providerName, model.providerId, model.modelId],
+      ...(grouped ? { group: model.providerName } : {}),
+      ...(model.unavailableReason ? { disabled: true } : {}),
+    }))
+  }, [activeScope, allModels, favoriteModels, visibleGroups.length])
 
   const currentGroup = groups.find((group) => group.providerId === currentProviderId)
   const currentModel =
@@ -213,114 +295,138 @@ export function ProviderModelPicker({
     configSummary.length > 0 ? `${currentLabel} · ${configSummary.join(' · ')}` : currentLabel
   const selectedKey = favoriteModelKey(currentProviderId, currentModelId)
 
-  const searching = query.trim().length > 0
-  const normalizedQuery = query.trim().toLowerCase()
+  const { open, setOpen, toggle, close, menuCoords, wrapRef, triggerRef, menuRef } =
+    usePortaledMenu({
+      placement: 'above',
+      minWidth: MENU_WIDTH,
+      align: 'start',
+      deps: [visibleGroups.length, selectedKey],
+    })
 
-  const paneModels = useMemo(() => {
-    if (searching) return allModels.filter((model) => matchesQuery(model, normalizedQuery))
-    if (paneId === FAVORITES_PANE) return favoriteModels
-    return allModels.filter((model) => model.providerId === paneId)
-  }, [allModels, favoriteModels, normalizedQuery, paneId, searching])
+  const searchRef = useRef<HTMLInputElement>(null)
+  const releaseFocus = useHoldFocus(open, menuRef, searchRef)
 
-  const canShowRail = visibleGroups.length > 1 || favoriteModels.length > 0 || favorites.length > 0
-  const showRail = !searching && canShowRail
+  const finish = useCallback(() => {
+    releaseFocus()
+    close()
+    onDone?.()
+  }, [releaseFocus, close, onDone])
 
-  const activeModel = paneModels[activeIndex]
-  const metaRows = previewing ? metaRowsFor(activeModel) : null
-
-  const { open, toggle, close, menuCoords, wrapRef, triggerRef, menuRef } = usePortaledMenu({
-    placement: 'above',
-    minWidth: MENU_WIDTH,
-    align: 'start',
-    deps: [visibleGroups.length, selectedKey, showRail],
-  })
-
+  // Every open starts from All with nothing typed, on the current model.
   useEffect(() => {
-    if (!open) {
-      setQuery('')
-      setActiveIndex(0)
-      setHoverCardTop(null)
-      setPreviewing(false)
-      return
-    }
-    const preferred: PaneId = visibleGroups.some((group) => group.providerId === currentProviderId)
-      ? currentProviderId
-      : (visibleGroups[0]?.providerId ?? FAVORITES_PANE)
-    setPaneId(preferred)
-    setActiveIndex(0)
-    requestAnimationFrame(() => searchRef.current?.focus())
-  }, [open, currentProviderId, visibleGroups])
+    if (open) return
+    setQuery('')
+    setScope(ALL_SCOPE)
+    setPreviewing(false)
+    setHighlighted(null)
+  }, [open])
 
-  useEffect(() => {
-    if (activeIndex >= paneModels.length) {
-      setActiveIndex(Math.max(0, paneModels.length - 1))
-    }
-  }, [activeIndex, paneModels.length])
-
-  // Drop a pane that disappeared (e.g. last favorite removed).
-  useEffect(() => {
-    if (paneId === FAVORITES_PANE) return
-    if (!visibleGroups.some((group) => group.providerId === paneId)) {
-      setPaneId(visibleGroups[0]?.providerId ?? FAVORITES_PANE)
-    }
-  }, [paneId, visibleGroups])
-
+  // The field takes focus as the panel mounts, so typing searches at once.
   useLayoutEffect(() => {
-    if (!open || !metaRows || !activeModel) {
-      setHoverCardTop(null)
-      return
-    }
-    const row = rowRefs.current.get(activeModel.key)
-    const menu = menuRef.current
-    if (!row || !menu) {
-      setHoverCardTop(null)
-      return
-    }
-    const rowRect = row.getBoundingClientRect()
-    const menuRect = menu.getBoundingClientRect()
-    // Keep the card within the menu’s vertical bounds so it doesn’t float away.
-    const rawTop = rowRect.top - menuRect.top
-    const maxTop = Math.max(0, menuRect.height - 8)
-    setHoverCardTop(Math.min(Math.max(0, rawTop), maxTop))
-  }, [activeModel, metaRows, open, paneModels, menuRef])
+    if (open && menuCoords) searchRef.current?.focus()
+  }, [open, menuCoords])
 
-  const persistFavorites = (next: FavoriteModelKey[]) => {
+  const disabledRef = useRef(disabled)
+  disabledRef.current = disabled
+  const openRef = useRef(open)
+  openRef.current = open
+  const finishRef = useRef(finish)
+  finishRef.current = finish
+  useEffect(() => {
+    if (!shortcut) return
+    const parsed = parseShortcut(shortcut)
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat || event.defaultPrevented || !matchesShortcut(event, parsed)) return
+      if (disabledRef.current) return
+      event.preventDefault()
+      if (openRef.current) finishRef.current()
+      else setOpen(true)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [shortcut, setOpen])
+
+  // The command palette's "Switch model…".
+  useRegisterPicker('model', () => setOpen(true), !disabled)
+
+  const toggleFavorite = (key: FavoriteModelKey) => {
+    const next = toggleFavoriteModel(favorites, key)
     setFavorites(next)
     writeFavoriteModels(next)
   }
 
-  const onToggleFavorite = (key: FavoriteModelKey) => {
-    persistFavorites(toggleFavoriteModel(favorites, key))
-  }
-
-  const selectModel = (model: FlatModel) => {
-    if (model.unavailableReason) return
+  const pick = (key: string) => {
+    const model = modelsByKey.get(key as FavoriteModelKey)
+    if (!model || model.unavailableReason) return
     onChange(model.providerId, model.modelId)
-    close()
+    finish()
   }
 
-  const onMenuKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === 'ArrowDown') {
+  const stepScope = (step: 1 | -1) => {
+    if (tabs.length === 0) return
+    const index = tabs.findIndex((tab) => tab.value === activeScope)
+    const next = tabs[(index + step + tabs.length) % tabs.length]
+    if (next) setScope(next.value as Scope)
+    setPreviewing(false)
+  }
+
+  const onSearchKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing) return
+    const mod = event.metaKey || event.ctrlKey
+    if (event.key === 'Tab') {
       event.preventDefault()
-      setPreviewing(true)
-      setActiveIndex((index) => (paneModels.length === 0 ? 0 : (index + 1) % paneModels.length))
+      stepScope(event.shiftKey ? -1 : 1)
       return
     }
-    if (event.key === 'ArrowUp') {
+    if (event.key === 'Escape') {
+      // Escape closes outright, even with a query: it is a popover, not a field.
       event.preventDefault()
-      setPreviewing(true)
-      setActiveIndex((index) =>
-        paneModels.length === 0 ? 0 : (index - 1 + paneModels.length) % paneModels.length,
-      )
+      finish()
       return
     }
-    if (event.key === 'Enter') {
-      const model = paneModels[activeIndex]
-      if (!model) return
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      setPreviewing(true)
+      return
+    }
+    if (mod && !event.altKey && event.key.toLowerCase() === 's') {
       event.preventDefault()
-      selectModel(model)
+      if (highlighted) toggleFavorite(highlighted)
+      return
+    }
+    if (event.altKey && !mod && /^Digit[1-9]$/.test(event.code)) {
+      event.preventDefault()
+      const favorite = favoriteModels[Number(event.code.slice(5)) - 1]
+      if (favorite) pick(favorite.key)
     }
   }
+
+  const highlightedModel = highlighted ? modelsByKey.get(highlighted) : undefined
+  const metaRows = previewing ? metaRowsFor(highlightedModel) : null
+
+  // The card sits beside the highlighted row, kept inside the panel's height.
+  useLayoutEffect(() => {
+    const panel = menuRef.current
+    if (!open || !metaRows || !highlighted || !panel) {
+      setCardTop(null)
+      return
+    }
+    const row = [...panel.querySelectorAll<HTMLElement>('[data-value]')].find(
+      (el) => el.dataset.value === highlighted,
+    )
+    if (!row) {
+      setCardTop(null)
+      return
+    }
+    const rowTop = row.getBoundingClientRect().top - panel.getBoundingClientRect().top
+    setCardTop(Math.min(Math.max(0, rowTop - 8), Math.max(0, panel.offsetHeight - 8)))
+  }, [open, metaRows, highlighted, menuRef])
+
+  const emptyText =
+    activeScope === FAVORITES_SCOPE && query.trim() === ''
+      ? 'Star a model to pin it here'
+      : activeScope !== ALL_SCOPE && tabs.length > 0
+        ? 'No models here. Tab to look elsewhere'
+        : 'No models match'
 
   const menu =
     open &&
@@ -328,213 +434,198 @@ export function ProviderModelPicker({
     createPortal(
       <div
         ref={menuRef}
+        role="dialog"
+        aria-label="Select model"
         className="fixed z-[200]"
-        style={{
-          left: menuCoords.left,
-          top: menuCoords.top,
-          bottom: menuCoords.bottom,
-        }}
+        style={{ left: menuCoords.left, top: menuCoords.top, bottom: menuCoords.bottom }}
+        onMouseLeave={() => setPreviewing(false)}
       >
         <div
-          role="listbox"
-          id={listId}
-          aria-label="Select model"
-          onKeyDown={onMenuKeyDown}
-          className={cn('relative flex flex-col overflow-hidden', composerPopover)}
-          style={{
-            width: MENU_WIDTH,
-            minHeight: MENU_MIN_HEIGHT,
-            maxHeight: MENU_MAX_HEIGHT,
-          }}
+          className="flex max-h-[min(420px,70vh)] flex-col overflow-hidden rounded-float bg-float shadow-float"
+          style={{ width: MENU_WIDTH }}
         >
-          <div className="shrink-0 px-3 pb-1 pt-3">
-            <div className="flex items-center gap-2 rounded-md bg-hover px-2.5 py-2 text-[var(--basis-text-faint)]">
-              <MagnifyingGlassIcon weight="light" className="h-3.5 w-3.5 shrink-0" />
-              <input
-                ref={searchRef}
-                type="text"
-                value={query}
-                onChange={(event) => {
-                  setQuery(event.target.value)
-                  setActiveIndex(0)
+          <CommandMenu
+            items={items}
+            query={query}
+            onQueryChange={(next) => {
+              setQuery(next)
+              setPreviewing(false)
+            }}
+            onSelect={(item) => pick(item.value)}
+            defaultHighlight={selectedKey}
+            onHighlightChange={(item) =>
+              setHighlighted(item ? (item.value as FavoriteModelKey) : null)
+            }
+          >
+            <CommandMenuInput
+              ref={searchRef}
+              placeholder="Search models…"
+              onKeyDown={onSearchKeyDown}
+            />
+            {tabs.length > 0 && (
+              <CommandMenuTabs
+                tabs={tabs}
+                value={activeScope}
+                onValueChange={(value) => {
+                  setScope(value as Scope)
                   setPreviewing(false)
                 }}
-                placeholder="Search models…"
-                className="min-w-0 flex-1 bg-transparent text-[12px] font-normal leading-[var(--lh-default)] tracking-[var(--tracking-normal)] text-[var(--basis-text)] outline-none [font-variation-settings:'wght'_450] placeholder:text-[var(--basis-text-muted)]"
               />
-            </div>
-          </div>
-
-          <div
-            className={cn('flex min-h-0 flex-1', showRail ? 'gap-1.5 p-2 pt-1.5' : 'px-1.5 pb-2')}
-          >
-            {showRail && (
-              <div
-                role="tablist"
-                aria-label="Agent providers"
-                className="flex w-12 shrink-0 flex-col gap-0.5 overflow-y-auto rounded-md bg-hover py-1.5"
-              >
-                <RailButton
-                  selected={paneId === FAVORITES_PANE}
-                  label="Favorites"
-                  onSelect={() => {
-                    setPaneId(FAVORITES_PANE)
-                    setActiveIndex(0)
-                    setPreviewing(false)
-                  }}
-                >
-                  <StarIcon
-                    size={15}
-                    weight={paneId === FAVORITES_PANE ? 'fill' : 'regular'}
-                    className="text-current"
-                  />
-                </RailButton>
-
-                {visibleGroups.length > 0 && (
-                  <div className="mx-2.5 my-1 h-px bg-[var(--basis-border-muted)]/70" />
-                )}
-
-                {visibleGroups.map((group) => (
-                  <RailButton
-                    key={group.providerId}
-                    selected={paneId === group.providerId}
-                    label={group.providerName}
-                    onSelect={() => {
-                      setPaneId(group.providerId)
-                      setActiveIndex(0)
-                      setPreviewing(false)
-                    }}
-                  >
-                    <ProviderIcon providerId={group.providerId} className="h-4 w-4" />
-                  </RailButton>
-                ))}
-              </div>
             )}
-
-            <div className="flex min-w-0 flex-1 flex-col">
-              <div
-                className="min-h-0 flex-1 overflow-y-auto py-0.5"
-                onMouseLeave={() => setPreviewing(false)}
-              >
-                {paneModels.map((model, index) => {
-                  const selected = model.key === selectedKey
-                  const active = index === activeIndex
-                  const favorited = favorites.includes(model.key)
-                  return (
-                    <div
-                      key={model.key}
-                      ref={(node) => {
-                        if (node) rowRefs.current.set(model.key, node)
-                        else rowRefs.current.delete(model.key)
-                      }}
-                      className={cn(
-                        'group relative flex w-full items-center gap-1 rounded-md px-1.5',
-                        // Selection is a fill, never an outline or a bar.
-                        selected ? 'bg-active' : active ? 'bg-hover' : 'hover:bg-hover',
-                      )}
-                      onMouseEnter={() => {
-                        setActiveIndex(index)
-                        setPreviewing(true)
-                      }}
-                    >
-                      <button
-                        type="button"
-                        role="option"
-                        aria-selected={selected}
-                        aria-disabled={model.unavailableReason ? true : undefined}
-                        title={model.unavailableReason}
-                        onClick={() => selectModel(model)}
-                        className={cn(
-                          'flex min-w-0 flex-1 items-center gap-2 px-1.5 py-1.5 text-left text-11-regular leading-none transition-colors',
-                          model.unavailableReason && 'cursor-not-allowed opacity-40',
-                          selected
-                            ? 'text-[var(--basis-text-strong)]'
-                            : active
-                              ? 'text-[var(--basis-text)]'
-                              : 'text-[var(--basis-text-muted)] group-hover:text-[var(--basis-text)]',
-                        )}
-                      >
-                        <ProviderIcon providerId={model.providerId} className="h-3.5 w-3.5" />
-                        <span className="min-w-0 flex-1 truncate">{model.label}</span>
-                      </button>
-                      <Tooltip content={favorited ? 'Remove favorite' : 'Add favorite'} side="left">
-                        <button
-                          type="button"
-                          aria-label={
-                            favorited ? `Unfavorite ${model.label}` : `Favorite ${model.label}`
-                          }
-                          aria-pressed={favorited}
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            onToggleFavorite(model.key)
-                          }}
-                          className={cn(
-                            'flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors',
-                            favorited
-                              ? 'text-[var(--basis-text)]'
-                              : 'text-[var(--basis-text-faint)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
-                            'hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)]',
-                          )}
-                        >
-                          <StarIcon size={12} weight={favorited ? 'fill' : 'regular'} />
-                        </button>
-                      </Tooltip>
-                    </div>
-                  )
-                })}
-
-                {!searching && paneModels[0]?.unavailableReason && paneId !== FAVORITES_PANE && (
-                  <div
-                    className="px-3 pb-1 pt-2 text-11-regular text-[var(--basis-text-faint)]"
-                    role="note"
-                  >
-                    {paneModels[0].unavailableReason}
-                  </div>
-                )}
-
-                {paneModels.length === 0 && (
-                  <div className="px-3 py-3 text-11-regular text-[var(--basis-text-faint)]">
-                    {searching
-                      ? 'No models'
-                      : paneId === FAVORITES_PANE
-                        ? 'Star models to pin them here'
-                        : 'No models'}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
+            <CommandMenuList
+              className="gap-0 px-1.5 pb-1.5 pt-0.5"
+              // Capture: the list's own handlers drive the highlight fill.
+              onMouseMoveCapture={() => setPreviewing(true)}
+              renderItem={(item) => {
+                const model = modelsByKey.get(item.value as FavoriteModelKey)
+                if (!model) return null
+                return (
+                  <ModelRow
+                    model={model}
+                    current={model.key === selectedKey}
+                    favorited={favorites.includes(model.key)}
+                    favoriteNumber={
+                      activeScope === FAVORITES_SCOPE ? favoriteNumber.get(model.key) : undefined
+                    }
+                    onToggleFavorite={() => toggleFavorite(model.key)}
+                  />
+                )
+              }}
+            >
+              <CommandMenuEmpty>{emptyText}</CommandMenuEmpty>
+            </CommandMenuList>
+            <PickerFooter hasTabs={tabs.length > 0} hasFavorites={favoriteNumber.size > 0} />
+          </CommandMenu>
         </div>
 
-        {metaRows && hoverCardTop !== null && <ModelMetaCard rows={metaRows} top={hoverCardTop} />}
+        {metaRows && cardTop !== null && <ModelMetaCard rows={metaRows} top={cardTop} />}
       </div>,
       document.body,
     )
 
   return (
     <div ref={wrapRef} className="relative shrink-0">
+      <Tooltip content={<ShortcutTooltip label="Switch model" shortcut={shortcut} />} side="top">
+        <button
+          ref={triggerRef}
+          type="button"
+          onClick={() => {
+            if (!disabled) toggle()
+          }}
+          disabled={disabled}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          className={cn(
+            composerChip,
+            'max-w-[240px] gap-1.5',
+            open && 'bg-active text-[var(--basis-text-strong)]',
+          )}
+        >
+          <ProviderIcon providerId={currentProviderId} />
+          <span className="truncate">{displayLabel}</span>
+          <CaretDownIcon
+            size={9}
+            weight="light"
+            className="shrink-0 text-[var(--basis-text-faint)]"
+          />
+        </button>
+      </Tooltip>
+      {menu}
+    </div>
+  )
+}
+
+function ShortcutTooltip({ label, shortcut }: { label: string; shortcut?: string }) {
+  if (!shortcut) return <>{label}</>
+  return (
+    <span className="flex items-center gap-2">
+      {label}
+      <CommandMenuShortcut keys={shortcut} className="ml-0" />
+    </span>
+  )
+}
+
+function ModelRow({
+  model,
+  current,
+  favorited,
+  favoriteNumber,
+  onToggleFavorite,
+}: {
+  model: FlatModel
+  current: boolean
+  favorited: boolean
+  favoriteNumber?: number
+  onToggleFavorite: () => void
+}) {
+  const description = model.unavailableReason ?? model.description
+  return (
+    <CommandMenuItem
+      value={model.key}
+      className="group/row h-9 gap-2.5 px-2.5 text-[13px] text-foreground"
+    >
+      <ProviderIcon providerId={model.providerId} className="h-3.5 w-3.5 shrink-0" />
+      <span className="flex min-w-0 flex-1 items-baseline gap-2">
+        <span className="shrink-0 truncate">{model.label}</span>
+        {description && (
+          <span className="min-w-0 truncate text-muted-foreground/70">{description}</span>
+        )}
+      </span>
+      {model.contextWindowTokens && (
+        <span className="shrink-0 rounded-[4px] bg-hover px-1.5 py-px text-[10.5px] leading-4 text-muted-foreground">
+          {formatContextShort(model.contextWindowTokens)}
+        </span>
+      )}
+      {favoriteNumber !== undefined && (
+        <CommandMenuShortcut keys={`alt+${favoriteNumber}`} className="ml-0" />
+      )}
       <button
-        ref={triggerRef}
         type="button"
-        onClick={() => {
-          if (!disabled) toggle()
+        tabIndex={-1}
+        aria-label={favorited ? `Unfavorite ${model.label}` : `Favorite ${model.label}`}
+        aria-pressed={favorited}
+        onClick={(event: ReactMouseEvent) => {
+          // The row picks on click; the star only stars.
+          event.stopPropagation()
+          onToggleFavorite()
         }}
-        disabled={disabled}
         className={cn(
-          composerChip,
-          'max-w-[240px] gap-1.5',
-          open && 'bg-active text-[var(--basis-text-strong)]',
+          'flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-[opacity,color] duration-100',
+          favorited
+            ? 'text-[var(--basis-text)]'
+            : 'text-muted-foreground opacity-0 group-hover/row:opacity-100 group-aria-selected/row:opacity-100',
+          'hover:text-foreground',
         )}
       >
-        <ProviderIcon providerId={currentProviderId} />
-        <span className="truncate">{displayLabel}</span>
-        <CaretDownIcon
-          size={9}
-          weight="light"
-          className="shrink-0 text-[var(--basis-text-faint)]"
-        />
+        <StarIcon size={13} weight={favorited ? 'fill' : 'regular'} />
       </button>
-      {menu}
+      <span className="flex w-3.5 shrink-0 justify-center">
+        {current && <CheckIcon aria-label="Current model" size={14} className="text-foreground" />}
+      </span>
+    </CommandMenuItem>
+  )
+}
+
+/** Only the keys the menu adds; arrows and Enter go without saying. */
+function PickerFooter({ hasTabs, hasFavorites }: { hasTabs: boolean; hasFavorites: boolean }) {
+  return (
+    <div className="flex h-8 shrink-0 items-center gap-3 px-3 text-[11px] text-muted-foreground">
+      {hasTabs && (
+        <span className="flex items-center gap-1.5">
+          <CommandMenuShortcut keys="tab" className="ml-0" />
+          Provider
+        </span>
+      )}
+      <span className="flex items-center gap-1.5">
+        <CommandMenuShortcut keys="mod+s" className="ml-0" />
+        Favorite
+      </span>
+      {hasFavorites && (
+        <span className="ml-auto flex items-center gap-1.5">
+          <CommandMenuShortcut keys={['alt', '1–9']} className="ml-0" />
+          Favorites
+        </span>
+      )}
     </div>
   )
 }
@@ -542,20 +633,16 @@ export function ProviderModelPicker({
 function ModelMetaCard({ rows, top }: { rows: MetaRow[]; top: number }) {
   return (
     <div
-      className={cn(
-        'pointer-events-none absolute left-[calc(100%+10px)] z-[201] w-[220px]',
-        composerPopover,
-        'px-3 py-2.5',
-      )}
+      className="pointer-events-none absolute left-[calc(100%+8px)] z-[201] w-[232px] rounded-[10px] bg-float px-3 py-2.5 shadow-float"
       style={{ top }}
       role="tooltip"
     >
       <dl className="flex flex-col gap-1">
         {rows.map((row) => (
-          <div key={row.label} className="grid grid-cols-[72px_minmax(0,1fr)] items-start gap-2">
-            <dt className="text-[10px] leading-4 text-[var(--basis-text-faint)]">{row.label}</dt>
+          <div key={row.label} className="grid grid-cols-[76px_minmax(0,1fr)] items-start gap-2">
+            <dt className="text-[11px] leading-4 text-[var(--basis-text-faint)]">{row.label}</dt>
             <dd
-              className="truncate text-[10px] leading-4 text-[var(--basis-text)]"
+              className="truncate text-[11px] leading-4 text-[var(--basis-text)]"
               title={row.value}
             >
               {row.value}
@@ -564,38 +651,5 @@ function ModelMetaCard({ rows, top }: { rows: MetaRow[]; top: number }) {
         ))}
       </dl>
     </div>
-  )
-}
-
-function RailButton({
-  selected,
-  label,
-  onSelect,
-  children,
-}: {
-  selected: boolean
-  label: string
-  onSelect: () => void
-  children: ReactNode
-}) {
-  return (
-    <Tooltip content={label} side="right">
-      <button
-        type="button"
-        role="tab"
-        aria-selected={selected}
-        aria-label={label}
-        onClick={onSelect}
-        className={cn(
-          'relative mx-1 flex h-9 w-[calc(100%-0.5rem)] items-center justify-center rounded-md text-[var(--basis-text-muted)] transition-colors',
-          'hover:bg-hover hover:text-[var(--basis-text)]',
-          selected && 'bg-active text-[var(--basis-text-strong)]',
-        )}
-      >
-        <span className={cn('opacity-70 transition-opacity', selected && 'opacity-100')}>
-          {children}
-        </span>
-      </button>
-    </Tooltip>
   )
 }

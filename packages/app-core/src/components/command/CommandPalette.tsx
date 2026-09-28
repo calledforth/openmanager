@@ -1,5 +1,11 @@
 import { useMemo, type ReactNode } from 'react'
-import { CheckIcon, PaletteIcon, TextTIcon } from '@phosphor-icons/react'
+import {
+  CheckIcon,
+  CubeIcon,
+  FolderSimpleIcon,
+  PaletteIcon,
+  TextTIcon,
+} from '@phosphor-icons/react'
 import {
   CommandMenu,
   CommandMenuChip,
@@ -13,6 +19,7 @@ import {
 import { phosphorIcon } from '../fluid/lib/icon-context'
 import { UI_FONTS } from '../../lib/fonts'
 import { THEME_OPTIONS, useTheme } from '../../providers/theme-provider'
+import { requestPicker, useAvailablePickers } from './pickerRegistry'
 
 /** A palette row. `current` marks the option already in effect with a check
  *  at the trailing edge, where Linear keeps its key caps. */
@@ -90,6 +97,8 @@ function CommandPaletteItem({ item }: { item: CommandPaletteItemData }) {
 }
 
 const ThemeIcon = phosphorIcon(PaletteIcon)
+const ModelIcon = phosphorIcon(CubeIcon)
+const ProjectIcon = phosphorIcon(FolderSimpleIcon)
 const FontIcon = phosphorIcon(TextTIcon)
 
 export interface CommandPaletteProps {
@@ -101,17 +110,45 @@ export interface CommandPaletteProps {
 }
 
 /**
- * ⌘K / Ctrl+K from anywhere. The host's commands come first; after them it
+ * ⌘K / Ctrl+K from anywhere. The host's commands come first, then the
+ * pickers on screen (model, project) with their own shortcuts; after them it
  * switches themes and fonts, the way Tend's palette tries colour schemes:
  * picking one leaves the palette open, so you can step through them and watch
  * the app change behind it.
  */
 export function CommandPalette({ commands }: CommandPaletteProps = {}) {
   const { theme, setTheme, font, setFont } = useTheme()
+  const pickers = useAvailablePickers()
 
   const items = useMemo<CommandPaletteItemData[]>(
     () => [
       ...(commands ?? []),
+      ...(pickers.has('model')
+        ? [
+            {
+              value: 'picker:model',
+              label: 'Switch model…',
+              icon: ModelIcon,
+              group: 'Actions',
+              shortcut: 'mod+shift+m',
+              keywords: ['model', 'provider', 'claude', 'cursor', 'opencode', 'change'],
+              onSelect: () => void requestPicker('model'),
+            },
+          ]
+        : []),
+      ...(pickers.has('project')
+        ? [
+            {
+              value: 'picker:project',
+              label: 'Switch project…',
+              icon: ProjectIcon,
+              group: 'Actions',
+              shortcut: 'mod+shift+p',
+              keywords: ['project', 'workspace', 'folder', 'change'],
+              onSelect: () => void requestPicker('project'),
+            },
+          ]
+        : []),
       ...THEME_OPTIONS.map((option) => ({
         value: `theme:${option.id}`,
         label: option.label,
@@ -136,7 +173,7 @@ export function CommandPalette({ commands }: CommandPaletteProps = {}) {
         onSelect: () => setFont(option.id),
       })),
     ],
-    [commands, theme, setTheme, font, setFont],
+    [commands, pickers, theme, setTheme, font, setFont],
   )
 
   return <CommandPaletteView items={items} />

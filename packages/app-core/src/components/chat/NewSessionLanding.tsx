@@ -1,32 +1,12 @@
-import { useMemo } from 'react'
 import { useSessionState } from '../../providers/session-provider'
 import { useSidebarData, type WorkspaceEntry } from '../../providers/sidebar-provider'
-import {
-  CaretDownIcon,
-  ClockCounterClockwiseIcon,
-  FolderSimpleIcon,
-  FolderPlusIcon,
-  GitBranchIcon,
-} from '@phosphor-icons/react'
-import { cn } from '../../lib/utils'
+import { FolderSimpleIcon, FolderPlusIcon, GitBranchIcon } from '@phosphor-icons/react'
 import { EnvironmentLabel } from '../sidebar/EnvironmentLabel'
 import { ProjectIcon } from '../sidebar/ProjectIcon'
-import { SearchableMenu, type SearchableMenuSection } from '../ui/SearchableMenu'
+import { ProjectPicker, describeCapabilities } from './ProjectPicker'
 
 /** How many recent projects the landing offers as one-click chips. */
 const RECENT_CHIP_LIMIT = 4
-
-/** "git · 2 providers", or nothing when the host reports no capabilities. */
-function describeCapabilities(entry: WorkspaceEntry): string | null {
-  const capabilities = entry.capabilities
-  if (!capabilities) return null
-  const parts: string[] = []
-  if (capabilities.git) parts.push('git')
-  const count = capabilities.providers.length
-  if (count === 1) parts.push(capabilities.providers[0]!)
-  else if (count > 1) parts.push(`${count} providers`)
-  return parts.length > 0 ? parts.join(' · ') : null
-}
 
 export function NewSessionLandingView({
   environmentLabel,
@@ -49,42 +29,6 @@ export function NewSessionLandingView({
   onSelectWorkspace: (workspacePath: string) => void
   onAddWorkspace: () => void
 }) {
-  const sections = useMemo<SearchableMenuSection[]>(() => {
-    const option = (workspace: WorkspaceEntry) => ({
-      id: workspace.path,
-      label: workspace.name,
-      description: describeCapabilities(workspace) ?? undefined,
-      icon: (
-        <ProjectIcon
-          workspacePath={workspace.path}
-          fallbackIcon={FolderSimpleIcon}
-          className="h-3.5 w-3.5 text-[var(--basis-text-muted)]"
-        />
-      ),
-      keywords: `${workspace.name} ${workspace.path}`,
-    })
-    const recent = recentWorkspaces.filter((workspace) => !workspace.missing)
-    const recentPaths = new Set(recent.map((workspace) => workspace.path))
-    const rest = workspaces.filter((workspace) => !recentPaths.has(workspace.path))
-    const result: SearchableMenuSection[] = []
-    if (recent.length > 0) {
-      result.push({
-        id: 'recent',
-        label: 'Recent',
-        icon: <ClockCounterClockwiseIcon weight="light" className="h-3 w-3" />,
-        options: recent.map(option),
-      })
-    }
-    if (rest.length > 0) {
-      result.push({
-        id: 'projects',
-        label: recent.length > 0 ? 'All projects' : undefined,
-        options: rest.map(option),
-      })
-    }
-    return result
-  }, [recentWorkspaces, workspaces])
-
   if (isWorkspacesLoading) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center">
@@ -122,8 +66,6 @@ export function NewSessionLandingView({
     )
   }
 
-  // With nothing open the first project is only what the picker shows, so
-  // choosing it must still open it (see `onSelect`).
   const activeWorkspace =
     workspaces.find((workspace) => workspace.path === activeWorkspacePath) ?? workspaces[0]!
   // Chips offer somewhere else to go; the active project is already chosen.
@@ -136,70 +78,17 @@ export function NewSessionLandingView({
       <div className="chat-animate-fade-in -mt-14 text-center">
         <div className="inline-flex max-w-[min(520px,86vw)] flex-wrap items-center justify-center gap-x-1.5 gap-y-1 text-16-medium text-[var(--basis-text)]">
           <span>Let&apos;s build in</span>
-          <SearchableMenu
-            sections={sections}
-            value={activeWorkspace.path}
-            onSelect={(optionId) => {
-              if (optionId !== activeWorkspacePath) onSelectWorkspace(optionId)
+          <ProjectPicker
+            workspaces={workspaces}
+            recentWorkspaces={recentWorkspaces}
+            activeWorkspace={activeWorkspace}
+            environmentLabel={environmentLabel}
+            onSelect={(workspacePath) => {
+              // With nothing open the first project is only what the picker
+              // shows, so choosing it must still open it.
+              if (workspacePath !== activeWorkspacePath) onSelectWorkspace(workspacePath)
             }}
-            searchable
-            searchPlaceholder="Search projects…"
-            emptyText="No projects"
-            placement="below"
-            align="center"
-            minWidth={300}
-            maxHeight={360}
-            variant="island"
-            aria-label="Choose a project"
-            footer={({ close }) => (
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    close()
-                    onAddWorkspace()
-                  }}
-                  className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1 text-left text-[11px] text-[var(--basis-text-faint)] transition-colors hover:bg-[var(--basis-surface)]/70 hover:text-[var(--basis-text-muted)]"
-                >
-                  <FolderPlusIcon weight="light" className="h-3 w-3" />
-                  Add project
-                </button>
-                {environmentLabel && (
-                  <EnvironmentLabel
-                    label={environmentLabel}
-                    className="max-w-[50%] shrink-0 pr-2 text-[10px]"
-                  />
-                )}
-              </div>
-            )}
-            trigger={({ ref, open, toggle }) => (
-              <button
-                ref={ref}
-                type="button"
-                onClick={toggle}
-                aria-haspopup="listbox"
-                aria-expanded={open}
-                className={cn(
-                  'inline-flex min-w-0 max-w-full items-center gap-1.5 border-0 bg-transparent p-0 text-16-medium text-[var(--basis-text-strong)] transition-colors',
-                  'hover:text-[var(--basis-text)]',
-                  open && 'text-[var(--basis-text)]',
-                )}
-              >
-                <ProjectIcon
-                  workspacePath={activeWorkspace.path}
-                  fallbackIcon={FolderSimpleIcon}
-                  className="h-4 w-4 text-[var(--basis-text-muted)]"
-                />
-                <span className="truncate">{activeWorkspace.name}</span>
-                <CaretDownIcon
-                  weight="light"
-                  className={cn(
-                    'h-3.5 w-3.5 shrink-0 text-[var(--basis-text-faint)] transition-transform',
-                    open && 'rotate-180',
-                  )}
-                />
-              </button>
-            )}
+            onAddWorkspace={onAddWorkspace}
           />
         </div>
 

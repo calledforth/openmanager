@@ -278,7 +278,7 @@ describe('the shared application over the environment client', () => {
       container.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]')!.click(),
     )
     // The picker menu portals to the body; its footer names the environment too.
-    const menu = document.body.querySelector('[role="listbox"][aria-label="Choose a project"]')
+    const menu = document.body.querySelector('[role="dialog"][aria-label="Choose a project"]')
     expect(menu?.textContent).toContain('Sessions run on devbox')
   })
 
