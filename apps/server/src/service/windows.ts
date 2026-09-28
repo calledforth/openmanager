@@ -124,6 +124,10 @@ export function createWindowsBackend(context: Context): ServiceBackend {
 
     async preflight() {},
 
+    async running() {
+      return (await findServerProcesses(context)).length > 0
+    },
+
     async read() {
       const xml = await readTaskXml(context)
       return xml === undefined

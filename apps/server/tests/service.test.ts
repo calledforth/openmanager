@@ -446,9 +446,29 @@ describe('service commands', () => {
       'Log file:  C:\\logs\\server.log',
     ])
 
-    const up = fakeSystem({ registered: existing, healthy: () => true })
+    const up = fakeSystem({ registered: existing, healthy: () => true, pids: [[4242]] })
     expect(await runServiceCommand(['status'], up.deps)).toBe(0)
     expect(up.out[2]).toBe('Server:    http://127.0.0.1:43120 (answering /health)')
+
+    // Something else holds the port while the task's server is not running.
+    const foreign = fakeSystem({ registered: existing, healthy: () => true })
+    expect(await runServiceCommand(['status'], foreign.deps)).toBe(1)
+    expect(foreign.out[2]).toBe(
+      'Server:    http://127.0.0.1:43120 (answering /health, but not from the logon task)',
+    )
+  })
+
+  it('start refuses when another server answers on the task port', async () => {
+    const existing = buildTaskXml({
+      userId: 'MACHINE\\ada',
+      command: 'conhost.exe',
+      arguments: ['--headless', NODE, ENTRY, '--port', '43120'].map(quoteWindowsArgument).join(' '),
+      workingDirectory: DATA_DIR,
+    })
+    const system = fakeSystem({ registered: existing, healthy: () => true })
+    expect(await runServiceCommand(['start'], system.deps)).toBe(1)
+    expect(system.err[0]).toContain('Something other than the logon task answers')
+    expect(system.calls.map((call) => call[1])).not.toContain('/Run')
   })
 
   it('start and stop need a registered task; start is a no-op when already healthy', async () => {
@@ -463,7 +483,8 @@ describe('service commands', () => {
       arguments: ['--headless', NODE, ENTRY, '--port', '43120'].map(quoteWindowsArgument).join(' '),
       workingDirectory: DATA_DIR,
     })
-    const system = fakeSystem({ registered: existing, pids: [[4242], []] })
+    // Lookups: the second start sees the server, stop sees it once, then it is gone.
+    const system = fakeSystem({ registered: existing, pids: [[4242], [4242], []] })
     expect(await runServiceCommand(['start'], system.deps)).toBe(0)
     expect(system.out.at(-1)).toBe('Environment server is up at http://127.0.0.1:43120.')
     expect(await runServiceCommand(['start'], system.deps)).toBe(0)

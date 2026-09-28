@@ -166,6 +166,12 @@ export interface ServiceBackend {
   readonly restartHint: string
   /** Throws a {@link ServiceError} when this machine cannot host the service at all. */
   preflight(): Promise<void>
+  /**
+   * Whether this service's own server process is up, as its supervisor sees
+   * it. `/health` alone cannot tell: another server (a `pnpm dev:web`, a
+   * stale manual start) may answer on the same port.
+   */
+  running(): Promise<boolean>
   read(): Promise<InstalledService | undefined>
   /** Write and register the definition. Returns notes printed before the first start. */
   register(config: ServerConfig, logFile: string): Promise<string[]>

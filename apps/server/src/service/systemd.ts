@@ -168,7 +168,10 @@ function wslText(config: WslConfig | undefined): string {
 }
 
 export function createSystemdBackend(context: Context): ServiceBackend {
-  const unitPath = unitFilePath(context.env, context.homedir)
+  // Settled in preflight from the user manager's own environment: the shell's
+  // XDG_CONFIG_HOME (say, from .bashrc) need not match the directory systemd
+  // actually searches, and every command must agree on one file.
+  let unitPath = unitFilePath({}, context.homedir)
 
   return {
     kind: 'systemd user unit',
@@ -195,6 +198,14 @@ export function createSystemdBackend(context: Context): ServiceBackend {
           `systemctl --user could not reach your user service manager: ${trimOutput(probe)}. Run this as yourself from a normal login shell (not through sudo or su), so XDG_RUNTIME_DIR and the user bus are set.`,
         )
       }
+      const manager = await systemctl(context, ['show-environment'])
+      if (manager.code === 0) {
+        unitPath = unitFilePath(parseSystemctlShow(manager.stdout), context.homedir)
+      }
+    },
+
+    async running() {
+      return (await systemctl(context, ['is-active', UNIT_NAME])).stdout.trim() === 'active'
     },
 
     async read() {
@@ -223,7 +234,7 @@ export function createSystemdBackend(context: Context): ServiceBackend {
       const loadState = (await unitProperty(context, 'LoadState')) ?? 'unknown'
       if (loadState === 'not-found') {
         throw new ServiceError(
-          `Wrote ${unitPath}, but your user service manager does not see it. It looks for units under its own XDG_CONFIG_HOME, which differs from this shell's; unset XDG_CONFIG_HOME here or set it for the manager too, then run "service install" again.`,
+          `Wrote ${unitPath}, but your user service manager does not see it after a reload. See "systemctl --user status ${UNIT_NAME}" and "systemctl --user show-environment".`,
         )
       }
       if (loadState !== 'loaded') {

@@ -91,8 +91,14 @@ node apps/server/dist/main.js service install --port 43120 --workspace ~/src/my-
 | `--allowed-origin`, `--allowed-host` | Browser origins and proxy hosts, as for a manual start.                              |
 | `--log-file`                         | Log destination. Defaults to `<data-dir>/logs/server.log`.                           |
 
-The `OPENMANAGER_*` environment variables of the installing shell are honoured
-the same way flags are, and likewise frozen into the unit.
+The environment variables behind these flags (`OPENMANAGER_PORT`,
+`OPENMANAGER_DATA_DIR`, `OPENMANAGER_LOG_LEVEL`, `OPENMANAGER_ALLOWED_ORIGINS`,
+`OPENMANAGER_ALLOWED_HOSTS`, `OPENMANAGER_WORKSPACES`, `OPENMANAGER_LOG_FILE`)
+are honoured the same way flags are, and likewise frozen into the unit as
+flags. No other variable of the installing shell is carried over apart from
+`PATH` (below): the service does not see `OPENMANAGER_LOCAL_OWNER_CLAIM_KEY`,
+so `/local-owner` stays hidden, nor provider settings you export in your
+shell. Put environment-only settings in a drop-in.
 
 What `install` does, in order:
 
@@ -102,13 +108,13 @@ What `install` does, in order:
 2. If the unit already exists, stops its server so the new one can bind.
 3. Refuses if another process still answers on the chosen port, such as a
    `pnpm dev:web` server. Stop it or pick another `--port`.
-4. Writes `~/.config/systemd/user/openmanager-server.service` (under
-   `$XDG_CONFIG_HOME` if you set one), runs `systemctl --user daemon-reload`,
-   checks that systemd loaded the file, and runs
-   `systemctl --user enable openmanager-server.service`. If you set
-   `XDG_CONFIG_HOME` only in your shell profile, the user manager does not
-   share it and would never see the unit; `install` detects that and stops
-   with an explanation.
+4. Writes `~/.config/systemd/user/openmanager-server.service`, runs
+   `systemctl --user daemon-reload`, checks that systemd loaded the file, and
+   runs `systemctl --user enable openmanager-server.service`. The directory
+   follows the user manager's `XDG_CONFIG_HOME` (from
+   `systemctl --user show-environment`), not your shell's, so a value set only
+   in a shell profile cannot hide the unit from systemd or from the other
+   `service` commands.
 5. Turns linger on if it is off. If your system's policy refuses that, install
    still finishes and prints the `sudo loginctl enable-linger <you>` command to
    run; until then the server stops when you log out.
@@ -182,9 +188,12 @@ node apps/server/dist/main.js service uninstall
 - `status` prints the unit state (for example `active, running; enabled`),
   a warning if systemd cannot use the unit file, the last exit when it is not
   running, the restart count after crashes,
-  linger, the WSL idle setting, whether `/health` answers, the data directory
-  and the log file. Exit code `0` means the server answered.
-- `start` clears a previous crash-loop `failed` state and starts the unit.
+  linger, the WSL idle setting, whether `/health` answers (and whether the
+  answer comes from the unit or from some other server on the port), the data
+  directory and the log file. Exit code `0` means the unit is running and its
+  server answered.
+- `start` clears a previous crash-loop `failed` state and starts the unit. It
+  refuses while another server holds the port.
 - `stop` stops the server (SIGTERM, a clean shutdown) but leaves the unit
   installed and enabled; the next boot, login or distro start brings it back.
 - `uninstall` stops the server, disables and deletes the unit and reloads

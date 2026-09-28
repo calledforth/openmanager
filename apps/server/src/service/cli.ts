@@ -154,8 +154,13 @@ async function start(context: Context, backend: ServiceBackend): Promise<void> {
     )
   }
   if (await isHealthy(context, installed.port)) {
-    context.stdout(`Environment server is already up at http://127.0.0.1:${installed.port}.`)
-    return
+    if (await backend.running()) {
+      context.stdout(`Environment server is already up at http://127.0.0.1:${installed.port}.`)
+      return
+    }
+    throw new ServiceError(
+      `Something other than the ${backend.kind} answers on http://127.0.0.1:${installed.port}, so the service cannot start there. Stop that server (for example a pnpm dev:web server) and run "service start" again.`,
+    )
   }
   await startAndWait(context, backend, installed.port, installed.logFile)
 }
@@ -179,18 +184,22 @@ async function status(context: Context, backend: ServiceBackend): Promise<number
     return 1
   }
   for (const line of await backend.status()) context.stdout(line)
-  let healthy = false
+  let up = false
   if (installed.port !== undefined) {
-    healthy = await isHealthy(context, installed.port)
-    context.stdout(
-      `Server:    http://127.0.0.1:${installed.port} (${healthy ? 'answering /health' : 'not answering'})`,
-    )
+    const healthy = await isHealthy(context, installed.port)
+    up = healthy && (await backend.running())
+    const answer = up
+      ? 'answering /health'
+      : healthy
+        ? `answering /health, but not from the ${backend.kind}`
+        : 'not answering'
+    context.stdout(`Server:    http://127.0.0.1:${installed.port} (${answer})`)
   } else {
     context.stdout(`Server:    the ${backend.kind} has no --port; reinstall it`)
   }
   if (installed.dataDir) context.stdout(`Data dir:  ${installed.dataDir}`)
   if (installed.logFile) context.stdout(`Log file:  ${installed.logFile}`)
-  return healthy ? 0 : 1
+  return up ? 0 : 1
 }
 
 function backendFor(context: Context): ServiceBackend | undefined {

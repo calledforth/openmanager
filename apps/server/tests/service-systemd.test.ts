@@ -150,6 +150,8 @@ interface FakeOptions {
   show?: string
   /** `LoadState` after `daemon-reload`; `loaded` by default. */
   loadState?: string
+  /** What `systemctl --user show-environment` prints. */
+  managerEnvironment?: string
   /** `systemctl start` fails. */
   startFails?: boolean
   /** WSL interop is off: `cmd.exe` cannot be found. */
@@ -202,6 +204,7 @@ function fakeSystemd(options: FakeOptions = {}) {
         active = 'inactive'
         health = () => false
       }
+      if (verb === 'show-environment') return ok(options.managerEnvironment ?? `HOME=${HOME}\n`)
       if (verb === 'is-active')
         return { code: active === 'active' ? 0 : 3, stdout: `${active}\n`, stderr: '' }
       if (verb === 'show' && args.includes('--property=LoadState'))
@@ -282,13 +285,39 @@ describe('service commands on systemd', () => {
     const unseen = fakeSystemd({ loadState: 'not-found' })
     expect(await runServiceCommand(['install', '--port', '43121'], unseen.deps)).toBe(1)
     expect(unseen.err[0]).toContain('does not see it')
-    expect(unseen.err[0]).toContain('XDG_CONFIG_HOME')
     expect(unseen.systemctlVerbs()).not.toContain(`enable ${UNIT_NAME}`)
 
     const rejected = fakeSystemd({ loadState: 'bad-setting' })
     expect(await runServiceCommand(['install', '--port', '43121'], rejected.deps)).toBe(1)
     expect(rejected.err[0]).toContain('rejected')
     expect(rejected.err[0]).toContain('bad-setting')
+  })
+
+  it("puts the unit where the user manager looks, whatever the shell's XDG_CONFIG_HOME says", async () => {
+    const managerPath = `${HOME}/.cfg/systemd/user/${UNIT_NAME}`
+    const system = fakeSystemd({
+      managerEnvironment: `HOME=${HOME}\nXDG_CONFIG_HOME=${HOME}/.cfg\n`,
+    })
+    system.deps.env = { ...system.deps.env, XDG_CONFIG_HOME: '/somewhere/else' }
+    expect(await runServiceCommand(['install', '--port', '43121'], system.deps)).toBe(0)
+    expect(system.files.has(managerPath)).toBe(true)
+    expect(system.files.has(UNIT_PATH)).toBe(false)
+    expect(system.out[0]).toBe(`Installed systemd user unit ${UNIT_NAME} at ${managerPath}.`)
+    // The other commands find the same file.
+    expect(await runServiceCommand(['uninstall'], system.deps)).toBe(0)
+    expect(system.files.has(managerPath)).toBe(false)
+  })
+
+  it('start and status do not mistake another server on the port for the unit', async () => {
+    const system = fakeSystemd({ unit: INSTALLED_UNIT, healthy: () => true })
+    expect(await runServiceCommand(['start'], system.deps)).toBe(1)
+    expect(system.err[0]).toContain('Something other than the systemd user unit answers')
+    expect(system.systemctlVerbs()).not.toContain(`start ${UNIT_NAME}`)
+
+    expect(await runServiceCommand(['status'], system.deps)).toBe(1)
+    expect(system.out).toContain(
+      'Server:    http://127.0.0.1:43120 (answering /health, but not from the systemd user unit)',
+    )
   })
 
   it('a failed start points at the journal', async () => {
@@ -337,6 +366,7 @@ describe('service commands on systemd', () => {
     expect(code).toBe(0)
     expect(system.systemctlVerbs()).toEqual([
       'show --property=Version',
+      'show-environment',
       'daemon-reload',
       `show ${UNIT_NAME} --property=LoadState --value`,
       `enable ${UNIT_NAME}`,
@@ -437,8 +467,9 @@ describe('service commands on systemd', () => {
     })
     expect(await runServiceCommand(['install', '--port', '43120'], system.deps)).toBe(0)
     expect(system.out[0]).toBe('Replacing the existing systemd user unit.')
-    expect(system.systemctlVerbs().slice(0, 3)).toEqual([
+    expect(system.systemctlVerbs().slice(0, 4)).toEqual([
       'show --property=Version',
+      'show-environment',
       `is-active ${UNIT_NAME}`,
       `stop ${UNIT_NAME}`,
     ])
@@ -450,6 +481,7 @@ describe('service commands on systemd', () => {
     expect(await runServiceCommand(['uninstall'], system.deps)).toBe(0)
     expect(system.systemctlVerbs()).toEqual([
       'show --property=Version',
+      'show-environment',
       `is-active ${UNIT_NAME}`,
       `stop ${UNIT_NAME}`,
       `reset-failed ${UNIT_NAME}`,
