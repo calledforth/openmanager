@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import {
+  forgetUnsavedNotificationsChoice,
   NOTIFICATIONS_STORAGE_KEY,
   readNotificationsEnabled,
   sessionNotice,
@@ -38,6 +39,8 @@ describe('sessionNotice', () => {
 })
 
 describe('notifications preference', () => {
+  beforeEach(() => forgetUnsavedNotificationsChoice())
+
   it('defaults on and round-trips off', () => {
     const map = new Map<string, string>()
     const storage = {
@@ -63,6 +66,25 @@ describe('notifications preference', () => {
     expect(readNotificationsEnabled(broken)).toBe(false)
     writeNotificationsEnabled(broken, true)
     expect(readNotificationsEnabled(broken)).toBe(true)
+  })
+
+  it('follows storage once a write lands, so other tabs are heard', () => {
+    const map = new Map<string, string>()
+    const working = {
+      getItem: (key: string) => map.get(key) ?? null,
+      setItem: (key: string, value: string) => void map.set(key, value),
+    }
+    const broken = {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error('quota')
+      },
+    }
+    writeNotificationsEnabled(broken, false)
+    writeNotificationsEnabled(working, true)
+    // Another tab turns them off.
+    map.set(NOTIFICATIONS_STORAGE_KEY, 'off')
+    expect(readNotificationsEnabled(working)).toBe(false)
   })
 
   it('treats unreadable storage as on', () => {

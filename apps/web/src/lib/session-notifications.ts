@@ -42,13 +42,14 @@ export function notificationSupport(): NotificationSupport {
   return window.Notification.permission
 }
 
-// The choice made on this page. It outranks storage, so turning notifications
-// off holds even where storage is unavailable or refuses the write.
-let chosenThisPage: boolean | null = null
+// A choice storage would not keep. Storage is the device's shared record, so
+// every open tab follows it; this only stands in on the page where the write
+// failed, so turning notifications off still holds there.
+let unsavedChoice: boolean | null = null
 
 /** On unless turned off: the browser's own permission is the first gate. */
 export function readNotificationsEnabled(storage: Pick<Storage, 'getItem'> | undefined): boolean {
-  if (chosenThisPage !== null) return chosenThisPage
+  if (unsavedChoice !== null) return unsavedChoice
   try {
     return storage?.getItem(NOTIFICATIONS_STORAGE_KEY) !== 'off'
   } catch {
@@ -60,12 +61,18 @@ export function writeNotificationsEnabled(
   storage: Pick<Storage, 'setItem'> | undefined,
   enabled: boolean,
 ) {
-  chosenThisPage = enabled
   try {
-    storage?.setItem(NOTIFICATIONS_STORAGE_KEY, enabled ? 'on' : 'off')
+    if (!storage) throw new Error('no storage')
+    storage.setItem(NOTIFICATIONS_STORAGE_KEY, enabled ? 'on' : 'off')
+    unsavedChoice = null
   } catch {
-    /* best effort */
+    unsavedChoice = enabled
   }
+}
+
+/** Tests only: drop a choice held in memory. */
+export function forgetUnsavedNotificationsChoice() {
+  unsavedChoice = null
 }
 
 export function browserStorage(): Storage | undefined {
