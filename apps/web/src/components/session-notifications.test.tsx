@@ -12,6 +12,7 @@ const sidebar = vi.hoisted(() => ({
 
 vi.mock('@openmanager/app-core/providers/sidebar-provider', () => ({
   useSidebarData: () => sidebar.value,
+  useSidebarSessions: () => sidebar.value.sessionsByWorkspace,
 }))
 
 import { SessionNotifications } from './session-notifications'
