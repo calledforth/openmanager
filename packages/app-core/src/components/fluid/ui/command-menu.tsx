@@ -466,6 +466,13 @@ export interface CommandMenuProps
   /** Pins field and rows to one step of the size ladder (default 36px rows,
    *  compact 28px). Omitted, both follow the surrounding SizeProvider. */
   size?: SizeVariant;
+  /** OpenManager: while nothing is typed, a change of rows highlights this
+   *  value (if listed and enabled) instead of the first row, centred in
+   *  view, so a picker opens on the current choice. */
+  defaultHighlight?: string;
+  /** OpenManager: the highlighted row after each change, from the pointer,
+   *  the keyboard or a change of rows; null when nothing is highlighted. */
+  onHighlightChange?: (item: CommandMenuItemData | null) => void;
   children: ReactNode;
 }
 
@@ -482,6 +489,8 @@ const CommandMenu = forwardRef<HTMLDivElement, CommandMenuProps>(
       suggestionsLabel = "Suggestions",
       closeOnSelect = true,
       size,
+      defaultHighlight,
+      onHighlightChange,
       className,
       children,
       ...props
@@ -575,7 +584,7 @@ const CommandMenu = forwardRef<HTMLDivElement, CommandMenuProps>(
     const reduceMotion = useReducedMotion() ?? false;
     const scrollAnimationRef = useRef<{ stop: () => void } | null>(null);
     const scrollToRow = useCallback(
-      (index: number, mode: "center" | "top") => {
+      (index: number, mode: "center" | "top", instant = false) => {
         const list = listRef.current;
         const viewport = list?.closest<HTMLElement>('[data-slot="scroll-area-viewport"]');
         if (!list || !viewport) return;
@@ -595,7 +604,7 @@ const CommandMenu = forwardRef<HTMLDivElement, CommandMenuProps>(
             viewport.scrollHeight - viewport.clientHeight
           )
         );
-        if (reduceMotion) {
+        if (reduceMotion || instant) {
           viewport.scrollTop = target;
           return;
         }
@@ -614,11 +623,30 @@ const CommandMenu = forwardRef<HTMLDivElement, CommandMenuProps>(
     // Enter always has a target and it follows the query as it filters.
     const rowsRef = useRef(rows);
     rowsRef.current = rows;
+    const preferredRef = useRef<string | undefined>(undefined);
+    preferredRef.current = query === "" ? defaultHighlight : undefined;
     useEffect(() => {
+      const preferred = preferredRef.current;
+      const target =
+        preferred === undefined
+          ? -1
+          : rowsRef.current.findIndex((row) => row.value === preferred && !row.disabled);
+      if (target !== -1) {
+        setActiveIndex(target);
+        scrollToRow(target, "center", true);
+        return;
+      }
       const first = rowsRef.current.findIndex((row) => !row.disabled);
       setActiveIndex(first === -1 ? null : first);
       scrollToRow(0, "top");
     }, [rowsKey, setActiveIndex, scrollToRow]);
+
+    const onHighlightChangeRef = useRef(onHighlightChange);
+    onHighlightChangeRef.current = onHighlightChange;
+    useEffect(() => {
+      const row = activeIndex === null ? undefined : rowsRef.current[activeIndex];
+      onHighlightChangeRef.current?.(row ?? null);
+    }, [activeIndex, rowsKey]);
 
     const move = useCallback(
       (to: 1 | -1 | "first" | "last") => {

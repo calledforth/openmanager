@@ -29,7 +29,13 @@ These are Tend's edits, kept so the look matches Tend:
   (`[scroll-timeline-name:--sf-scroller]` instead of
   `[--scroll-fade-size:32px] scroll-fade`).
 
-OpenManager's own edit:
+OpenManager's own edits:
+
+- `ui/command-menu.tsx`: the root takes `defaultHighlight` (while nothing is
+  typed, a change of rows highlights that value instead of the first row, so
+  the model and project pickers open on the current choice) and
+  `onHighlightChange` (the model picker's detail card follows the highlight).
+  `scrollToRow` gained an `instant` flag for that first centring.
 
 - `lib/icon-context.tsx`: the default icons are Phosphor, not lucide
   (Phosphor is the app's only icon library). `phosphorIcon()` wraps each glyph

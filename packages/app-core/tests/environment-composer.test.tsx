@@ -652,12 +652,15 @@ describe('the composer over the environment client', () => {
       node.textContent?.includes('Sonnet'),
     )!
     await act(() => trigger.click())
-    await act(() =>
-      document.body
-        .querySelector<HTMLButtonElement>('[role="tab"][aria-label="Claude Code"]')!
-        .click(),
-    )
-    const option = [...document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(
+    // The provider tabs are Radix tabs, which switch on mouse-down.
+    const claudeTab = [...document.body.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(
+      (node) => node.textContent?.includes('Claude Code'),
+    )!
+    await act(() => {
+      claudeTab.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }))
+    })
+    expect(claudeTab.getAttribute('aria-selected')).toBe('true')
+    const option = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')].find(
       (node) => node.textContent?.includes('Default'),
     )!
     expect(option.getAttribute('aria-disabled')).toBe('true')

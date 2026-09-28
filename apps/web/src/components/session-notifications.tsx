@@ -1,5 +1,8 @@
 import { useEffect, useRef } from 'react'
-import { useSidebarData } from '@openmanager/app-core/providers/sidebar-provider'
+import {
+  useSidebarData,
+  useSidebarSessions,
+} from '@openmanager/app-core/providers/sidebar-provider'
 import {
   browserStorage,
   noticeBody,
@@ -18,7 +21,8 @@ export function SessionNotifications({
 }: {
   openSession: (sessionId: string) => void
 }) {
-  const { sessionsByWorkspace, activeSessionId } = useSidebarData()
+  const sessionsByWorkspace = useSidebarSessions()
+  const { activeSessionId } = useSidebarData()
   // null until the first look: sessions already done or waiting when the
   // page loads are not news.
   const seen = useRef<Map<string, string> | null>(null)

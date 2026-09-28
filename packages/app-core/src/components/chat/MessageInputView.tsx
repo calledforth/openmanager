@@ -507,6 +507,8 @@ export function MessageInputView({
     [updateDraft],
   )
 
+  const focusTextarea = useCallback(() => textareaRef.current?.focus(), [])
+
   const planOption = modeOptions.find((m) => m.id === 'plan')
   const nonPlanModes = modeOptions.filter((m) => m.id !== 'plan')
   const buildPlanToggle =
@@ -847,6 +849,8 @@ export function MessageInputView({
                 disabled={!canChangeSettings}
                 canChangeProvider={canChangeProvider}
                 configSummary={configSummary}
+                shortcut="mod+shift+m"
+                onDone={focusTextarea}
               />
             )}
 
