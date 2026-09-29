@@ -1,5 +1,6 @@
 import type { ServerConfig } from '../config.ts'
 import { serverArguments } from './server-arguments.ts'
+import { SUPERVISOR_FLAG } from './supervisor.ts'
 
 /**
  * Pure helpers for the Windows logon task that keeps the environment server
@@ -100,10 +101,10 @@ export function escapeXml(text: string): string {
 
 /**
  * The server flags baked into the task: the shared service flags plus the
- * marker, which also makes the server follow its console host.
+ * launcher and marker, which make the processes follow their parents.
  */
 export function serviceArguments(config: ServerConfig, logFile: string): string[] {
-  return [...serverArguments(config, logFile), SERVICE_MARKER_FLAG]
+  return [SUPERVISOR_FLAG, ...serverArguments(config, logFile), SERVICE_MARKER_FLAG]
 }
 
 export interface TaskDefinition {

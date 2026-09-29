@@ -54,6 +54,7 @@ describe('task definition', () => {
 
   it('bakes every resolved server setting into explicit flags plus the marker', () => {
     expect(serviceArguments(config, 'C:\\logs\\server.log')).toEqual([
+      '--supervise',
       '--port',
       '43120',
       '--data-dir',
@@ -318,6 +319,7 @@ describe('service commands', () => {
       '--headless',
       NODE,
       ENTRY,
+      '--supervise',
       '--port',
       '43121',
       '--data-dir',
@@ -564,6 +566,58 @@ const LIFECYCLE_TASK = buildTaskXml({
 })
 
 describe('service maintenance', () => {
+  it('updates to a new build after shutdown without changing installed settings', async () => {
+    const original = LIFECYCLE_TASK.replace(
+      '--exit-with-parent',
+      '--allowed-origin https://example.com --log-level debug --workspace C:\\repo --exit-with-parent',
+    )
+    const system = fakeSystem({ registered: original, healthy: () => true, pids: [[42], []] })
+    system.deps.entry = 'C:\\new build & release\\main.js'
+    system.deps.execPath = 'C:\\new node\\node.exe'
+    system.deps.env = { OPENMANAGER_DATA_DIR: 'C:\\wrong', OPENMANAGER_PORT: '9999' }
+    expect(await runServiceCommand(['update'], system.deps)).toBe(0)
+    const before = parseWindowsCommandLine(readTaskArguments(original)!)
+    const after = parseWindowsCommandLine(readTaskArguments(system.registered!)!)
+    expect(after).toEqual([
+      '--headless',
+      system.deps.execPath,
+      system.deps.entry,
+      '--supervise',
+      ...before.slice(3),
+    ])
+    expect(system.registered!.replace(/<Arguments>[\s\S]*?<\/Arguments>/, '')).toBe(
+      original.replace(/<Arguments>[\s\S]*?<\/Arguments>/, ''),
+    )
+    const verbs = system.calls.map((call) => call[1])
+    expect(verbs.indexOf('/End')).toBeLessThan(verbs.indexOf('/Create'))
+    expect(verbs.indexOf('/Create')).toBeLessThan(verbs.indexOf('/Run'))
+    expect(system.calls.some((call) => call[0] === 'taskkill.exe')).toBe(false)
+    expect(system.dirs).toEqual([])
+  })
+
+  it.each([
+    { endFails: true },
+    { processQueryFails: true },
+    { killFails: true, pids: [[42]] },
+    { otherServer: true, healthy: () => true },
+  ])('retains the old build when update cannot confirm shutdown: %j', async (failure) => {
+    const system = fakeSystem({ registered: LIFECYCLE_TASK, ...failure })
+    expect(await runServiceCommand(['update'], system.deps)).toBe(1)
+    expect(system.registered).toBe(LIFECYCLE_TASK)
+    expect(system.written).toEqual([])
+    expect(system.calls.some((call) => call[1] === '/Run')).toBe(false)
+  })
+
+  it('rejects an unsupported update before stopping and rejects configuration overrides', async () => {
+    const system = fakeSystem({ registered: LIFECYCLE_TASK.replace('--headless', '--unknown') })
+    expect(await runServiceCommand(['update'], system.deps)).toBe(1)
+    expect(system.calls.some((call) => call[1] === '/End')).toBe(false)
+    expect(await runServiceCommand(['update', '--data-dir', 'elsewhere'], system.deps)).toBe(1)
+    const missing = fakeSystem({})
+    expect(await runServiceCommand(['update'], missing.deps)).toBe(1)
+    expect(missing.err[0]).toContain('install')
+  })
+
   it('restart stops before starting and keeps the installed definition and credentials', async () => {
     const system = fakeSystem({ registered: LIFECYCLE_TASK, healthy: () => true, pids: [[42], []] })
     expect(await runServiceCommand(['restart'], system.deps)).toBe(0)

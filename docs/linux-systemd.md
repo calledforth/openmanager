@@ -176,6 +176,49 @@ Inside WSL there is exactly one login session per distro boot, shared by all
 terminals, so "logging out" of WSL means the distro stopping. Linger is still
 turned on so the unit behaves the same if that ever changes.
 
+## Upgrade without losing the environment
+
+Build or unpack the new release into a **separate directory**, then run its entry
+with the Node binary you want the service to use:
+
+```sh
+node /path/to/new-release/apps/server/dist/main.js service update
+```
+
+On Windows, use the corresponding Windows path. `update` takes no server flags:
+it reads the installed definition, prepares the replacement, stops the old
+process and waits for shutdown, switches the Node/entry paths, then starts the
+new build and waits up to 20 seconds for health. No manual process kill is needed.
+Keep the old release in place until the command finishes; do not overwrite a
+running release's files or Node executable.
+
+The stored port, data directory, workspaces, origins, hosts, logging settings and
+supervisor settings stay unchanged. Identity, owner credentials and SQLite stay
+in the existing data directory; the invoking shell's server settings are ignored.
+Use `service install` when you intend to change configuration, and `service
+restart` to restart the same build. On Windows, updating an older task also adds
+the crash launcher. On Linux, the stored PATH and systemd drop-ins are retained;
+keep executable overrides out of drop-ins so the unit owns the entry path.
+
+An unconfirmed stop prevents the definition from being replaced. If registration
+or startup fails, the command exits unsuccessfully: inspect `service status` and
+`service logs`, correct the problem and retry `update` or `start`. Data is never
+removed. There is no automatic binary rollback, since startup may already have
+migrated SQLite; downgrading requires a release-compatible database backup.
+
+### In-flight work and crash recovery
+
+Updates and intentional stops use the server-core shutdown policy: close client
+sockets with `server_shutdown`, settle pending interactions, terminate in-flight
+provider runtimes and wait for cleanup before closing the database. They do not
+wait for a turn to finish or automatically replay a prompt. The supervisor allows
+15 seconds before forced termination. A forced exit falls back to startup recovery.
+
+On restart, any durable running/waiting turn left unfinished becomes interrupted,
+its session is marked as an error, partial messages are finalized, and pending
+interactions are cancelled. Completed history remains available; clients reconnect
+with the same credential and the user can explicitly start another turn.
+
 ## Check, start, stop, restart, remove
 
 ```sh
@@ -276,5 +319,4 @@ start, stop, exit status and restarts.
   without opening a terminal, is separate work.
 - Moving Node or the repository breaks the recorded paths: `status` shows the
   unit as failed and `install` again fixes it.
-- An update handoff and richer supervision (log viewer, restart command) are
-  tracked with the Windows equivalents.
+- Packaging and downloading new releases are separate from the `service update` handoff.

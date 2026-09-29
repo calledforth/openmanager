@@ -9,9 +9,11 @@ import {
   type ServiceBackend,
 } from './context.ts'
 import { describeArguments, flagValue } from './server-arguments.ts'
+import { SUPERVISOR_FLAG } from './supervisor.ts'
 import {
   buildTaskXml,
   encodeTaskXml,
+  escapeXml,
   parseCsvRecord,
   parseTaskStatus,
   parseWindowsCommandLine,
@@ -28,7 +30,8 @@ import {
  * `schtasks.exe`.
  */
 
-export const STOP_TIMEOUT_MS = 10_000
+// Leave room for parent detection (2s), runtime shutdown (8s), and DB/socket cleanup.
+export const STOP_TIMEOUT_MS = 15_000
 const POLL_INTERVAL_MS = 500
 
 /** Task Scheduler result codes a user is likely to see in `status`. */
@@ -209,6 +212,43 @@ export function createWindowsBackend(context: Context): ServiceBackend {
       const started = await schtasks(context, ['/Run', '/TN', TASK_NAME])
       if (started.code !== 0) {
         throw new ServiceError(`Task Scheduler could not start the task: ${trimOutput(started)}`)
+      }
+    },
+
+    async prepareUpdate() {
+      const xml = await readTaskXml(context)
+      const args = parseWindowsCommandLine(readTaskArguments(xml ?? '') ?? '')
+      if (
+        !xml ||
+        args[0] !== '--headless' ||
+        !args[2] ||
+        !args.includes(SERVICE_MARKER_FLAG) ||
+        (xml.match(/<Exec>/g)?.length ?? 0) !== 1
+      ) {
+        throw new ServiceError(
+          'Cannot update this task: expected a headless server task. Reinstall it first.',
+        )
+      }
+      args[1] = context.execPath
+      args[2] = context.entry
+      if (!args.includes(SUPERVISOR_FLAG)) args.splice(3, 0, SUPERVISOR_FLAG)
+      const updated = xml.replace(
+        /<Arguments>[\s\S]*?<\/Arguments>/,
+        () => `<Arguments>${escapeXml(args.map(quoteWindowsArgument).join(' '))}</Arguments>`,
+      )
+      return async () => {
+        const path = await context.writeTempFile(
+          `openmanager-update-${process.pid}.xml`,
+          encodeTaskXml(updated),
+        )
+        try {
+          const result = await schtasks(context, ['/Create', '/TN', TASK_NAME, '/XML', path, '/F'])
+          if (result.code !== 0)
+            throw new ServiceError(`Task Scheduler refused the update: ${trimOutput(result)}`)
+        } finally {
+          await context.removeFile(path)
+        }
+        installedEntry = context.entry
       }
     },
 

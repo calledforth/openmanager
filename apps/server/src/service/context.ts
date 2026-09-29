@@ -179,6 +179,8 @@ export interface ServiceBackend {
   read(): Promise<InstalledService | undefined>
   /** Write and register the definition. Returns notes printed before the first start. */
   register(config: ServerConfig, logFile: string): Promise<string[]>
+  /** Prepare a binary handoff without changing stored settings or stopping the old process. */
+  prepareUpdate(): Promise<() => Promise<void>>
   start(): Promise<void>
   stop(): Promise<'stopped' | 'not_running'>
   remove(): Promise<void>

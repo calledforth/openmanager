@@ -11,6 +11,7 @@ import { describeArguments, serverArguments } from './server-arguments.ts'
 import {
   buildUnitFile,
   parseSystemctlShow,
+  quoteSystemdArgument,
   readUnitExecStart,
   servicePath,
   UNIT_NAME,
@@ -259,6 +260,29 @@ export function createSystemdBackend(context: Context): ServiceBackend {
         throw new ServiceError(
           `systemd could not start ${UNIT_NAME}: ${trimOutput(started)} See "${JOURNAL_COMMAND}".`,
         )
+      }
+    },
+
+    async prepareUpdate() {
+      const text = await context.readFile(unitPath)
+      const args = text === undefined ? undefined : readUnitExecStart(text)
+      if (!text || !args || args.length < 2 || (text.match(/^ExecStart=/gm)?.length ?? 0) !== 1) {
+        throw new ServiceError(
+          'Cannot update this unit: expected one server ExecStart. Reinstall it first.',
+        )
+      }
+      const command = [context.execPath, context.entry, ...args.slice(2)]
+        .map(quoteSystemdArgument)
+        .join(' ')
+      const updated = text.replace(/^ExecStart=.*$/m, () => `ExecStart=${command}`)
+      return async () => {
+        await context.writeFile(unitPath, updated)
+        await systemctlChecked(context, ['daemon-reload'], 'reload the updated unit')
+        if ((await unitProperty(context, 'LoadState')) !== 'loaded') {
+          throw new ServiceError(
+            'systemd rejected the updated unit; inspect service status before retrying.',
+          )
+        }
       }
     },
 

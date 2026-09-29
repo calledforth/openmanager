@@ -3,6 +3,7 @@ import { loadConfig } from './config.ts'
 import { consoleSink, createLogger, resolveLogSink, type LogSink } from './logger.ts'
 import { runServiceCommand } from './service/cli.ts'
 import { startServer } from './server.ts'
+import { supervise, SUPERVISOR_FLAG } from './service/supervisor.ts'
 
 /** How often the server checks that the process that launched it is still alive. */
 export const PARENT_WATCH_INTERVAL_MS = 2000
@@ -25,18 +26,27 @@ async function serve(): Promise<void> {
     sink = resolveLogSink(config.logFile)
     const log = createLogger(config.logLevel, sink)
     const server = await startServer(config)
-    log('info', `Environment server listening on ${server.url}`)
+    log('info', `Environment server listening on ${server.url}`, { pid: process.pid })
     let stopping = false
     const stop = () => {
       if (stopping) return
       stopping = true
-      void server.close().catch((error: unknown) => {
-        sink(error instanceof Error ? error.message : 'Server shutdown failed.', 'stderr')
-        process.exitCode = 1
-      })
+      void server
+        .close()
+        .catch((error: unknown) => {
+          sink(error instanceof Error ? error.message : 'Server shutdown failed.', 'stderr')
+          process.exitCode = 1
+        })
+        .finally(() => {
+          if (process.connected) process.disconnect()
+        })
     }
     process.once('SIGINT', stop)
     process.once('SIGTERM', stop)
+    if (process.connected)
+      process.on('message', (message) => {
+        if (message === 'shutdown') stop()
+      })
     if (config.exitWithParent) {
       const parent = process.ppid
       const watch = setInterval(() => {
@@ -50,12 +60,25 @@ async function serve(): Promise<void> {
   } catch (error: unknown) {
     sink(error instanceof Error ? error.message : 'Server startup failed.', 'stderr')
     process.exitCode = 1
+    if (process.connected) process.disconnect()
   }
 }
 
 const [command, ...rest] = process.argv.slice(2)
 if (command === 'service') {
   process.exitCode = await runServiceCommand(rest, { entry: fileURLToPath(import.meta.url) })
+} else if (process.argv.slice(2).includes(SUPERVISOR_FLAG)) {
+  try {
+    process.exitCode = await supervise(
+      fileURLToPath(import.meta.url),
+      process.argv.slice(2).filter((arg) => arg !== SUPERVISOR_FLAG),
+    )
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : 'Supervisor startup failed.')
+    process.exitCode = 1
+  } finally {
+    if (process.connected) process.disconnect()
+  }
 } else {
   await serve()
 }
