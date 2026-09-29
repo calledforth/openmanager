@@ -12,7 +12,7 @@ import { createSystemdBackend } from './systemd.ts'
 import { createWindowsBackend } from './windows.ts'
 
 /**
- * `openmanager-server service <install|uninstall|start|stop|restart|status|logs>`.
+ * `openmanager-server service <install|uninstall|start|stop|restart|update|status|logs>`.
  *
  * One command surface, two supervisors: a per-user logon task on Windows
  * (docs/windows-startup.md) and a systemd user unit on Linux and WSL
@@ -35,6 +35,7 @@ export const SERVICE_USAGE = [
   '  start            Start the installed service now',
   '  stop             Stop the running server (the service stays installed)',
   '  restart          Stop the installed service, then start it and wait for health',
+  '  update           Switch the installed service to this build, keeping its settings and data',
   '  status [--json]   Show running/stopped/failed state, health and installed paths',
   '  logs [-f] [-n N]  Print the last N log lines (default 100); --follow tails updates',
   '',
@@ -145,6 +146,34 @@ async function uninstall(context: Context, backend: ServiceBackend): Promise<voi
   }
 }
 
+async function update(context: Context, backend: ServiceBackend): Promise<void> {
+  await backend.preflight()
+  const installed = await backend.read()
+  if (!installed) {
+    throw new ServiceError(`No ${backend.label} is installed. Run "service install" first.`)
+  }
+  if (!installed.dataDir || !installed.port || installed.port > 65535) {
+    throw new ServiceError(
+      'The installed service needs an explicit data directory and fixed port before updating.',
+    )
+  }
+  // Prepare first: an unsupported definition must not take a working server down.
+  const apply = await backend.prepareUpdate()
+  await backend.stop()
+  if (await isHealthy(context, installed.port)) {
+    throw new ServiceError(
+      `Another server still answers on port ${installed.port}; the service definition was retained.`,
+    )
+  }
+  await apply()
+  // Do not automatically downgrade after a failed start: the new build may
+  // already have migrated SQLite. Keep the registration and data for a retry.
+  await startAndWait(context, backend, installed.port, installed.logFile)
+  context.stdout(
+    `Updated to ${context.entry}. Identity, credentials and SQLite stay in ${installed.dataDir}.`,
+  )
+}
+
 async function start(context: Context, backend: ServiceBackend, restart = false): Promise<void> {
   await backend.preflight()
   const installed = await backend.read()
@@ -242,7 +271,7 @@ export async function runServiceCommand(
     for (const line of SERVICE_USAGE) context.stdout(line)
     return command === undefined ? 1 : 0
   }
-  const known = ['install', 'uninstall', 'start', 'stop', 'restart', 'status', 'logs']
+  const known = ['install', 'uninstall', 'start', 'stop', 'restart', 'update', 'status', 'logs']
   if (!known.includes(command)) {
     context.stderr(`Unknown service command "${command}".`)
     for (const line of SERVICE_USAGE) context.stderr(line)
@@ -271,6 +300,9 @@ export async function runServiceCommand(
         return 0
       case 'uninstall':
         await uninstall(context, backend)
+        return 0
+      case 'update':
+        await update(context, backend)
         return 0
       case 'start':
         await start(context, backend)

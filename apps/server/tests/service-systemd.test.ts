@@ -281,6 +281,51 @@ const INSTALLED_UNIT = buildUnitFile({
 })
 
 describe('service commands on systemd', () => {
+  it('updates only the executable and entry while retaining installed settings and environment', async () => {
+    const original = INSTALLED_UNIT.replace(
+      '--port 43120',
+      '--allowed-origin https://example.com --workspace /repo --log-level debug --port 43120',
+    )
+    const system = fakeSystemd({ unit: original, healthy: () => true, activeState: 'active' })
+    system.deps.entry = '/new build/$release/main.js'
+    system.deps.execPath = '/new node/bin/node'
+    system.deps.env = { OPENMANAGER_DATA_DIR: '/wrong', OPENMANAGER_PORT: '9999' }
+    expect(await runServiceCommand(['update'], system.deps)).toBe(0)
+    const updated = system.files.get(UNIT_PATH)!
+    expect(readUnitExecStart(updated)).toEqual([
+      system.deps.execPath,
+      system.deps.entry,
+      ...readUnitExecStart(original)!.slice(2),
+    ])
+    expect(updated.replace(/^ExecStart=.*$/m, '')).toBe(original.replace(/^ExecStart=.*$/m, ''))
+    const verbs = system.systemctlVerbs()
+    expect(verbs.indexOf(`stop ${UNIT_NAME}`)).toBeLessThan(verbs.indexOf('daemon-reload'))
+    expect(verbs.indexOf('daemon-reload')).toBeLessThan(verbs.indexOf(`start ${UNIT_NAME}`))
+    expect(system.dirs).toEqual([])
+  })
+
+  it('keeps the updated registration and data when the new binary fails to start', async () => {
+    const system = fakeSystemd({ unit: INSTALLED_UNIT, startFails: true })
+    system.deps.entry = '/new/main.js'
+    expect(await runServiceCommand(['update'], system.deps)).toBe(1)
+    expect(readUnitExecStart(system.files.get(UNIT_PATH)!)![1]).toBe('/new/main.js')
+    expect(system.err[0]).toContain('could not start')
+    expect(system.dirs).toEqual([])
+  })
+
+  it('refuses missing data paths or ambiguous definitions before stopping', async () => {
+    for (const unit of [
+      INSTALLED_UNIT.replace(`--data-dir ${DATA_DIR}`, ''),
+      `${INSTALLED_UNIT}\nExecStart=/other\n`,
+      INSTALLED_UNIT.replace(/^(ExecStart=.*)$/m, '$1 \\\n  --allowed-origin https://example.com'),
+    ]) {
+      const system = fakeSystemd({ unit })
+      expect(await runServiceCommand(['update'], system.deps)).toBe(1)
+      expect(system.systemctlVerbs()).not.toContain(`stop ${UNIT_NAME}`)
+      expect(system.files.get(UNIT_PATH)).toBe(unit)
+    }
+  })
+
   it('install stops before enabling when systemd does not see or rejects the written unit', async () => {
     const unseen = fakeSystemd({ loadState: 'not-found' })
     expect(await runServiceCommand(['install', '--port', '43121'], unseen.deps)).toBe(1)

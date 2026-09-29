@@ -64,13 +64,62 @@ What `install` does, in order:
 3. Writes a task definition and registers it with `schtasks /Create`. The task
    is `\OpenManager\Environment Server` in Task Scheduler; it triggers at your
    logon, runs with your interactive token at least privilege, never times
-   out, is not stopped on battery, and is restarted up to three times a minute
-   apart if the server exits with an error.
+   out, and is not stopped on battery. A launcher restarts a crashed server
+   after 10 seconds, at most three times in a rolling five-minute window.
 4. Starts the task and waits up to 20 seconds for `GET /health` to answer.
 
-The action is `conhost.exe --headless <node> <dist\main.js> <flags> --exit-with-parent`.
-The headless console host is what keeps a terminal window from appearing; the
-server watches that host and exits if Task Scheduler ends it.
+The action is `conhost.exe --headless <node> <dist\main.js> --supervise <flags> --exit-with-parent`.
+The headless console host keeps a terminal window from appearing. It can report
+exit code 0 even when its child crashes, so the launcher observes server exits
+directly instead of relying on Task Scheduler's restart-on-failure setting. The
+server runs detached from the host, watches the launcher and exits gracefully
+when its parent disappears. The launcher also follows its console host and uses
+IPC to request normal server shutdown. A clean exit or intentional stop is not
+restarted. After the crash limit, inspect the log and run `service start`; Task
+Scheduler's last result may still be 0 because of conhost.
+
+## Upgrade without losing the environment
+
+Build or unpack the new release into a **separate directory**, then run its entry
+with the Node binary you want the service to use:
+
+```sh
+node /path/to/new-release/apps/server/dist/main.js service update
+```
+
+On Windows, use the corresponding Windows path. `update` takes no server flags:
+it reads the installed definition, prepares the replacement, stops the old
+process and waits for shutdown, switches the Node/entry paths, then starts the
+new build and waits up to 20 seconds for health. No manual process kill is needed.
+Keep the old release in place until the command finishes; do not overwrite a
+running release's files or Node executable.
+
+The stored port, data directory, workspaces, origins, hosts, logging settings and
+supervisor settings stay unchanged. Identity, owner credentials and SQLite stay
+in the existing data directory; the invoking shell's server settings are ignored.
+Use `service install` when you intend to change configuration, and `service
+restart` to restart the same build. On Windows, updating an older task also adds
+the crash launcher. On Linux, the stored PATH and systemd drop-ins are retained;
+keep executable overrides out of drop-ins so the unit owns the entry path.
+
+An unconfirmed stop prevents the definition from being replaced. If registration
+or startup fails, the command exits unsuccessfully: inspect `service status` and
+`service logs`, correct the problem and retry `update` or `start`. Data is never
+removed. There is no automatic binary rollback, since startup may already have
+migrated SQLite; downgrading requires a release-compatible database backup.
+
+### In-flight work and crash recovery
+
+Updates and intentional stops use the server-core shutdown policy: close client
+sockets with `server_shutdown`, settle pending interactions, terminate in-flight
+provider runtimes and wait for cleanup before closing the database. They do not
+wait for a turn to finish or automatically replay a prompt. The supervisor allows
+15 seconds before forced termination. A forced exit falls back to startup recovery.
+
+On restart, any durable running/waiting turn left unfinished becomes interrupted,
+its session is marked as an error, partial messages are finalized, and pending
+interactions are cancelled. Completed history remains available; clients reconnect
+with the same credential and the user can explicitly start another turn.
 
 ## Check, start, stop, restart, remove
 
@@ -139,7 +188,7 @@ every UI presents that credential:
   and `OPENMANAGER_CLIENT_TOKEN=<contents of owner-credential>`.
 
 Closing either UI does not affect the server; only `service stop`, `service
-uninstall`, signing out, or a crash does.
+uninstall`, signing out, or exhausting the crash-restart limit does.
 
 ## Development alongside the task
 
@@ -181,4 +230,4 @@ task history is enabled on the machine.
   and user-owned folders work without configuration.
 - Moving Node or the repository breaks the recorded paths; `status` shows the
   failure and `install` again fixes it.
-- A graceful update handoff and richer supervision (crash reporting) are tracked as separate work in the same project.
+- The launcher records crash/retry details in the server log; Task Scheduler only sees the console host.
