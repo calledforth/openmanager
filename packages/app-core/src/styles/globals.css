@@ -129,6 +129,16 @@
   --basis-status-needs: #f4b942;
   --basis-status-done: #5ed8a4;
   --basis-status-error: #ff6f6f;
+  /* Status surfaces. On dark they are the ink, made translucent; light themes
+   * swap in opaque pastels, since a translucent mid-tone greys out white. */
+  --basis-status-done-wash: color-mix(in srgb, var(--basis-status-done) 13%, transparent);
+  --basis-status-error-wash: color-mix(in srgb, var(--basis-status-error) 12%, transparent);
+  --basis-status-done-flash: color-mix(in srgb, var(--basis-status-done) 26%, transparent);
+  --basis-status-error-flash: color-mix(in srgb, var(--basis-status-error) 24%, transparent);
+  --basis-status-done-hover: var(--hover);
+  --basis-status-error-hover: var(--hover);
+  --basis-status-done-active: var(--active);
+  --basis-status-error-active: var(--active);
   --basis-scrollbar-track: transparent;
   --basis-scrollbar-thumb: color-mix(in srgb, var(--basis-text-muted) 28%, transparent);
   --basis-scrollbar-thumb-hover: color-mix(in srgb, var(--basis-text-muted) 48%, transparent);
@@ -253,8 +263,16 @@ html[data-theme='light'] {
   --basis-session-cube-ready: #2f8f45;
   --basis-status-working: #6b56e0;
   --basis-status-needs: #b7791f;
-  --basis-status-done: #1f9d6b;
-  --basis-status-error: #d64545;
+  --basis-status-done: #12805a;
+  --basis-status-error: #c73b3b;
+  --basis-status-done-wash: #e3f6ec;
+  --basis-status-error-wash: #fde7e7;
+  --basis-status-done-flash: #d5f0e2;
+  --basis-status-error-flash: #fbdcdc;
+  --basis-status-done-hover: #effaf5;
+  --basis-status-error-hover: #fef2f2;
+  --basis-status-done-active: #e3f6ec;
+  --basis-status-error-active: #fde7e7;
   --basis-scrollbar-thumb: #d9d9d9;
   --basis-scrollbar-thumb-hover: #c4c4c4;
 }
@@ -694,6 +712,33 @@ textarea,
   }
   .md a:hover {
     text-decoration-color: currentColor;
+  }
+  /* Web links: favicon inline before the text, otherwise a normal link. */
+  .md a.md-link {
+    text-decoration: none;
+  }
+  .md a.md-link .md-link-text {
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--basis-text-strong) 35%, transparent);
+    text-underline-offset: 2px;
+  }
+  .md a.md-link:hover .md-link-text {
+    text-decoration-color: currentColor;
+  }
+  /* Beats `.md img` (chat images get margins, a border, auto height). */
+  .md .md-link-icon {
+    display: inline-block;
+    width: 1em;
+    height: 1em;
+    margin: 0 0.3em 0 0;
+    border: 0;
+    border-radius: 3px;
+    vertical-align: -0.15em;
+    color: var(--basis-text-faint);
+  }
+  .md .md-link-icon-github,
+  .md .md-link-icon-linear {
+    color: var(--basis-text-strong);
   }
 
   /* ── Inline code ────────────────────────────────────── */
@@ -1195,7 +1240,7 @@ textarea,
 .session-card-flash--done {
   background: radial-gradient(
     140% 160% at 100% 0%,
-    color-mix(in srgb, var(--basis-status-done) 26%, transparent),
+    var(--basis-status-done-flash),
     transparent 70%
   );
   animation: session-card-flash 1.5s ease-out;
@@ -1203,7 +1248,7 @@ textarea,
 .session-card-flash--error {
   background: radial-gradient(
     140% 160% at 100% 0%,
-    color-mix(in srgb, var(--basis-status-error) 24%, transparent),
+    var(--basis-status-error-flash),
     transparent 70%
   );
   animation: session-card-flash 1.1s ease-out;
@@ -1219,16 +1264,12 @@ textarea,
   animation: session-card-wash-in 600ms ease-out;
 }
 .session-card-wash--done {
-  background: radial-gradient(
-    130% 150% at 100% 0%,
-    color-mix(in srgb, var(--basis-status-done) 13%, transparent),
-    transparent 65%
-  );
+  background: radial-gradient(130% 150% at 100% 0%, var(--basis-status-done-wash), transparent 65%);
 }
 .session-card-wash--error {
   background: radial-gradient(
     130% 150% at 100% 0%,
-    color-mix(in srgb, var(--basis-status-error) 12%, transparent),
+    var(--basis-status-error-wash),
     transparent 65%
   );
 }
