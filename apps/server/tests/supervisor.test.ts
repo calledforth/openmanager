@@ -6,6 +6,7 @@ import {
   MAX_RESTARTS,
   RESTART_DELAY_MS,
   RESTART_WINDOW_MS,
+  SHUTDOWN_TIMEOUT_MS,
 } from '../src/service/supervisor.js'
 
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }))
@@ -99,7 +100,9 @@ describe('Windows crash supervision', () => {
     const result = run()
     children[0]!.send.mockImplementation(() => {})
     process.emit('message', 'shutdown', undefined)
-    await vi.advanceTimersByTimeAsync(12_000)
+    await vi.advanceTimersByTimeAsync(SHUTDOWN_TIMEOUT_MS - 1)
+    expect(children[0]!.kill).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
     expect(await result).toBe(0)
     expect(children[0]!.kill).toHaveBeenCalledWith('SIGKILL')
     expect(children).toHaveLength(1)

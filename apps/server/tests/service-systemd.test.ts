@@ -317,6 +317,7 @@ describe('service commands on systemd', () => {
     for (const unit of [
       INSTALLED_UNIT.replace(`--data-dir ${DATA_DIR}`, ''),
       `${INSTALLED_UNIT}\nExecStart=/other\n`,
+      INSTALLED_UNIT.replace(/^(ExecStart=.*)$/m, '$1 \\\n  --allowed-origin https://example.com'),
     ]) {
       const system = fakeSystemd({ unit })
       expect(await runServiceCommand(['update'], system.deps)).toBe(1)

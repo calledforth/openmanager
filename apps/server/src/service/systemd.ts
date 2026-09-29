@@ -266,9 +266,15 @@ export function createSystemdBackend(context: Context): ServiceBackend {
     async prepareUpdate() {
       const text = await context.readFile(unitPath)
       const args = text === undefined ? undefined : readUnitExecStart(text)
-      if (!text || !args || args.length < 2 || (text.match(/^ExecStart=/gm)?.length ?? 0) !== 1) {
+      if (
+        !text ||
+        !args ||
+        args.length < 2 ||
+        (text.match(/^ExecStart=/gm)?.length ?? 0) !== 1 ||
+        /^ExecStart=.*\\[ \t]*\r?$/m.test(text)
+      ) {
         throw new ServiceError(
-          'Cannot update this unit: expected one server ExecStart. Reinstall it first.',
+          'Cannot update this unit: expected one single-line server ExecStart. Reinstall it first.',
         )
       }
       const command = [context.execPath, context.entry, ...args.slice(2)]

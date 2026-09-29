@@ -9,7 +9,7 @@ import {
   type ServiceBackend,
 } from './context.ts'
 import { describeArguments, flagValue } from './server-arguments.ts'
-import { SUPERVISOR_FLAG } from './supervisor.ts'
+import { SHUTDOWN_TIMEOUT_MS, SUPERVISOR_FLAG } from './supervisor.ts'
 import {
   buildTaskXml,
   encodeTaskXml,
@@ -30,8 +30,8 @@ import {
  * `schtasks.exe`.
  */
 
-// Leave room for parent detection (2s), runtime shutdown (8s), and DB/socket cleanup.
-export const STOP_TIMEOUT_MS = 15_000
+// Let the launcher finish its whole grace window, including parent detection.
+export const STOP_TIMEOUT_MS = SHUTDOWN_TIMEOUT_MS + 2_000
 const POLL_INTERVAL_MS = 500
 
 /** Task Scheduler result codes a user is likely to see in `status`. */

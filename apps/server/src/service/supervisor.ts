@@ -6,6 +6,7 @@ export const SUPERVISOR_FLAG = '--supervise'
 export const RESTART_DELAY_MS = 10_000
 export const RESTART_WINDOW_MS = 300_000
 export const MAX_RESTARTS = 3
+export const SHUTDOWN_TIMEOUT_MS = 15_000
 
 /** conhost discards the child's exit code, so Windows needs a launcher that
  * observes failures itself. systemd already provides this supervision. */
@@ -25,7 +26,7 @@ export async function supervise(entry: string, args: string[]): Promise<number> 
     if (child && child.exitCode === null && child.signalCode === null) {
       // Windows signals terminate abruptly; IPC reaches the normal close path.
       if (child.connected) child.send('shutdown', () => {})
-      killTimer = setTimeout(() => child?.kill('SIGKILL'), 12_000)
+      killTimer = setTimeout(() => child?.kill('SIGKILL'), SHUTDOWN_TIMEOUT_MS)
       killTimer.unref()
     }
   }
