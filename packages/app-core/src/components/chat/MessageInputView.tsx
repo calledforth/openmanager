@@ -423,10 +423,12 @@ export function MessageInputView({
   const attachments = draft.attachments
   // A preview belongs to the list it was opened on: once a send clears it or
   // another draft swaps it in, an index left behind would reopen the viewer on
-  // whatever image lands there next.
-  const [previewedList, setPreviewedList] = useState(attachments)
-  if (previewedList !== attachments) {
-    setPreviewedList(attachments)
+  // whatever image lands there next. Compared by ids, not identity: a draft
+  // with no entry yields a fresh empty array on every render.
+  const attachmentIds = attachments.map((attachment) => attachment.id).join('\n')
+  const [previewedIds, setPreviewedIds] = useState(attachmentIds)
+  if (previewedIds !== attachmentIds) {
+    setPreviewedIds(attachmentIds)
     setViewingAttachment(null)
   }
 
