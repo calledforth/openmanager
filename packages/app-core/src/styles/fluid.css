@@ -460,8 +460,16 @@
   --basis-session-cube-ready: #2f8f45;
   --basis-status-working: #6b56e0;
   --basis-status-needs: #b7791f;
-  --basis-status-done: #1f9d6b;
-  --basis-status-error: #d64545;
+  --basis-status-done: #12805a;
+  --basis-status-error: #c73b3b;
+  --basis-status-done-wash: #e3f6ec;
+  --basis-status-error-wash: #fde7e7;
+  --basis-status-done-flash: #d5f0e2;
+  --basis-status-error-flash: #fbdcdc;
+  --basis-status-done-hover: #effaf5;
+  --basis-status-error-hover: #fef2f2;
+  --basis-status-done-active: #e3f6ec;
+  --basis-status-error-active: #fde7e7;
 }
 
 :root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='lovable'], [data-theme='claudeish'], [data-theme='carbon'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light']) {

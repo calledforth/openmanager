@@ -11,6 +11,7 @@ import {
 import { createPortal } from 'react-dom'
 import {
   ArrowUpIcon,
+  ArrowsOutIcon,
   PlusIcon,
   CaretDownIcon,
   SquareIcon,
@@ -20,6 +21,7 @@ import {
 } from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
 import type { ProviderId, SessionConfigOption } from '@agentpack/contract'
+import { ImageViewer } from '../parts/GeneratedImagePart'
 import { SearchableMenu, type SearchableMenuSection } from '../ui/SearchableMenu'
 import { Tooltip } from '../ui/Tooltip'
 import { usePortaledMenu } from '../ui/usePortaledMenu'
@@ -405,6 +407,7 @@ export function MessageInputView({
   const persistedRef = useRef<Record<string, PersistedDraft>>(initialStoredDrafts)
   const [sending, setSending] = useState(false)
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
+  const [viewingAttachment, setViewingAttachment] = useState<number | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [slashDismissed, setSlashDismissed] = useState(false)
   const [slashActiveIndex, setSlashActiveIndex] = useState(0)
@@ -418,6 +421,16 @@ export function MessageInputView({
   // underneath is left untouched so it comes back intact afterwards.
   const text = textOverride ? textOverride.value : draft.text
   const attachments = draft.attachments
+  // A preview belongs to the list it was opened on: once a send clears it or
+  // another draft swaps it in, an index left behind would reopen the viewer on
+  // whatever image lands there next. Compared by ids, not identity: a draft
+  // with no entry yields a fresh empty array on every render.
+  const attachmentIds = attachments.map((attachment) => attachment.id).join('\n')
+  const [previewedIds, setPreviewedIds] = useState(attachmentIds)
+  if (previewedIds !== attachmentIds) {
+    setPreviewedIds(attachmentIds)
+    setViewingAttachment(null)
+  }
 
   useEffect(() => {
     draftsRef.current = drafts
@@ -744,6 +757,18 @@ export function MessageInputView({
           onDismiss={() => setSlashDismissed(true)}
         />
       )}
+      {viewingAttachment !== null && viewingAttachment < attachments.length && (
+        <ImageViewer
+          images={attachments.map((attachment) => ({
+            id: attachment.id,
+            url: attachment.previewUrl,
+            name: attachment.file.name,
+          }))}
+          index={viewingAttachment}
+          onIndexChange={setViewingAttachment}
+          onClose={() => setViewingAttachment(null)}
+        />
+      )}
       <div
         ref={shellRef}
         className={cn(
@@ -777,16 +802,26 @@ export function MessageInputView({
         />
         {attachments.length > 0 && (
           <div className="flex gap-2 overflow-x-auto px-2 pt-1.5 pb-0.5 scrollbar-hide">
-            {attachments.map((attachment) => (
+            {attachments.map((attachment, index) => (
               <div
                 key={attachment.id}
                 className="group relative h-16 w-16 shrink-0 overflow-hidden rounded-lg border border-[var(--basis-border)] bg-[var(--basis-surface)] shadow-sm"
               >
-                <img
-                  src={attachment.previewUrl}
-                  alt={attachment.file.name}
-                  className="h-full w-full object-cover"
-                />
+                <button
+                  type="button"
+                  onClick={() => setViewingAttachment(index)}
+                  aria-label={`Preview ${attachment.file.name}`}
+                  className="block h-full w-full cursor-zoom-in focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--basis-text-muted)]"
+                >
+                  <img
+                    src={attachment.previewUrl}
+                    alt={attachment.file.name}
+                    className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.03]"
+                  />
+                  <span className="pointer-events-none absolute bottom-1 right-1 flex h-4 w-4 items-center justify-center rounded border border-white/15 bg-black/55 text-white/75 opacity-0 shadow-sm backdrop-blur-sm transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                    <ArrowsOutIcon className="h-2.5 w-2.5" />
+                  </span>
+                </button>
                 <button
                   type="button"
                   onClick={() => removeAttachment(attachment.id)}

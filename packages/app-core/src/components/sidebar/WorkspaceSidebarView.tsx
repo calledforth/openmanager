@@ -60,6 +60,18 @@ const SETTLED_OPEN_KEY = 'openmanager.sidebar.settled-open'
 const SETTLED_SHARE = 0.3
 const DEFAULT_PROVIDER_ID: ProviderId = 'opencode'
 // Positioned so the card's status washes and dither paint beneath its text.
+// Done and failed cards take their hover and selection fills from the status
+// palette, so on light themes the tint deepens instead of greying over.
+function cardFillClass(tone: SessionBusyTone | null, isActive: boolean): string {
+  if (tone === 'done') {
+    return isActive ? 'bg-(--basis-status-done-active)' : 'hover:bg-(--basis-status-done-hover)'
+  }
+  if (tone === 'error') {
+    return isActive ? 'bg-(--basis-status-error-active)' : 'hover:bg-(--basis-status-error-hover)'
+  }
+  return isActive ? 'bg-active' : 'hover:bg-hover'
+}
+
 const cardBodyClass =
   'relative flex w-full min-w-0 flex-col gap-1 rounded-[10px] px-3 py-2.5 text-left'
 
@@ -630,6 +642,8 @@ function SessionCard({
   const providerName = providerLabel?.(providerId) ?? providerId
   const tone = sessionBusyTone(session.status)
   const moment = useStatusMoment(tone)
+  // Live work cannot be settled, so its status has nothing to make room for.
+  const hasActions = Boolean(onSettleSession) && tone !== 'working' && tone !== 'needs'
   const reduceMotion = useReducedMotion() ?? false
   const cardRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -655,8 +669,16 @@ function SessionCard({
           {unavailable.badge}
         </span>
       ) : null}
-      {/* Gives way to the hover actions, which sit over this corner. */}
-      <span className="ml-auto flex shrink-0 items-center pl-2 transition-opacity duration-80 group-focus-within/card:opacity-0 group-hover/card:opacity-0 pointer-coarse:opacity-0">
+      {/* Gives way to the hover actions, which sit over this corner. Keyed to
+          keyboard focus, not focus-within: a clicked card keeps focus, and
+          the selected card should keep showing its status. */}
+      <span
+        className={cn(
+          'ml-auto flex shrink-0 items-center pl-2 transition-opacity duration-80',
+          hasActions &&
+            'group-has-[:focus-visible]/card:opacity-0 group-hover/card:opacity-0 pointer-coarse:opacity-0',
+        )}
+      >
         <StatusOrAge tone={tone} iso={session.updatedAt} now={now} moment={moment} />
       </span>
     </span>
@@ -694,7 +716,7 @@ function SessionCard({
           className={cn(
             // Selection is a fill, never an outline, on every scheme.
             'relative rounded-[10px] transition-colors duration-100',
-            isActive ? 'bg-active' : 'hover:bg-hover',
+            cardFillClass(tone, isActive),
           )}
         >
           {tone === 'needs' ? (
@@ -746,8 +768,8 @@ function SessionCard({
         </div>
         {/* Live work cannot be settled: the environment refuses it, since
             nothing would bring the card back once the turn finished. */}
-        {onSettleSession && tone !== 'working' && tone !== 'needs' ? (
-          <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5 opacity-0 transition-opacity duration-80 group-focus-within/card:opacity-100 group-hover/card:opacity-100 pointer-coarse:opacity-100">
+        {onSettleSession && hasActions ? (
+          <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5 opacity-0 transition-opacity duration-80 group-has-[:focus-visible]/card:opacity-100 group-hover/card:opacity-100 pointer-coarse:opacity-100">
             <CardAction
               label="Settle"
               onClick={() => onSettleSession(workspace.path, session.externalId, true)}

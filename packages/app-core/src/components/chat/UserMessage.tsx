@@ -1,20 +1,14 @@
-import { useEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
-import { ArrowsOutIcon, CheckIcon, ImageBrokenIcon, XIcon } from '@phosphor-icons/react'
+import { useEffect, useState } from 'react'
+import { ArrowsOutIcon, CheckIcon, ImageBrokenIcon } from '@phosphor-icons/react'
 import type { StreamMessagePart } from '@openmanager/shared/lib/remote-stream-parts'
 import { cn } from '../../lib/utils'
 import type { ArtifactSource, OptimisticImage } from '../../lib/attachments'
 import { partArtifact, useArtifactPreview } from '../../lib/artifact-preview'
+import { ImageViewer } from '../parts/GeneratedImagePart'
 import { Tooltip } from '../ui/Tooltip'
 import { chatUserInner, chatUserMessageShell } from './userMessageStyles'
 
 type MessagePart = StreamMessagePart
-
-type PreviewImage = {
-  id: string
-  url: string
-  name: string
-}
 
 /** An image of the bubble: a URL the row already holds, or stored bytes to read. */
 type BubbleImage = {
@@ -27,13 +21,7 @@ type BubbleImage = {
 const thumbnailShell =
   'group relative h-14 w-14 shrink-0 overflow-hidden rounded-md border border-[var(--basis-border-muted)] bg-[var(--basis-surface)]'
 
-function ImageThumbnail({
-  image,
-  onPreview,
-}: {
-  image: BubbleImage
-  onPreview: (image: PreviewImage) => void
-}) {
+function ImageThumbnail({ image, onPreview }: { image: BubbleImage; onPreview: () => void }) {
   const preview = useArtifactPreview(image.url ? undefined : image.artifact)
   const url = image.url ?? preview.url
   if (!url) {
@@ -54,7 +42,7 @@ function ImageThumbnail({
   return (
     <button
       type="button"
-      onClick={() => onPreview({ id: image.id, url, name: image.name })}
+      onClick={onPreview}
       className={thumbnailShell}
       aria-label={`Preview ${image.name}`}
     >
@@ -67,55 +55,6 @@ function ImageThumbnail({
         <ArrowsOutIcon className="h-2.5 w-2.5" />
       </span>
     </button>
-  )
-}
-
-function ImagePreviewDialog({ image, onClose }: { image: PreviewImage; onClose: () => void }) {
-  const closeButtonRef = useRef<HTMLButtonElement>(null)
-
-  useEffect(() => {
-    const previousActiveElement = document.activeElement as HTMLElement | null
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    document.addEventListener('keydown', handleKeyDown)
-    closeButtonRef.current?.focus()
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown)
-      previousActiveElement?.focus()
-    }
-  }, [onClose])
-
-  return createPortal(
-    <div
-      className="chat-animate-fade-in fixed inset-0 z-[500] flex items-center justify-center bg-black/70 p-6"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose()
-      }}
-    >
-      <button
-        ref={closeButtonRef}
-        type="button"
-        onClick={onClose}
-        aria-label="Close image preview"
-        className="absolute right-4 top-4 flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white/80 transition-colors hover:bg-white/20 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
-      >
-        <XIcon className="h-4 w-4" />
-      </button>
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Preview ${image.name}`}
-        className="flex max-h-full max-w-full items-center justify-center"
-      >
-        <img
-          src={image.url}
-          alt={image.name}
-          className="max-h-[min(88vh,900px)] max-w-[min(92vw,1100px)] rounded-lg object-contain"
-        />
-      </div>
-    </div>,
-    document.body,
   )
 }
 
@@ -183,7 +122,7 @@ export function UserMessage({
   /** Send this message again. Omitted when the host cannot retry it. */
   onRetry?: () => void
 }) {
-  const [previewImage, setPreviewImage] = useState<PreviewImage | null>(null)
+  const [viewing, setViewing] = useState<number | null>(null)
   const persistedImages = (parts ?? []).flatMap((part): BubbleImage[] => {
     if (part.type !== 'image') return []
     const url = typeof part.url === 'string' ? part.url : undefined
@@ -207,8 +146,8 @@ export function UserMessage({
         <div className={chatUserInner}>
           {images.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-1.5">
-              {images.map((image) => (
-                <ImageThumbnail key={image.id} image={image} onPreview={setPreviewImage} />
+              {images.map((image, index) => (
+                <ImageThumbnail key={image.id} image={image} onPreview={() => setViewing(index)} />
               ))}
             </div>
           )}
@@ -237,8 +176,13 @@ export function UserMessage({
       ) : (
         <div className="h-2" />
       )}
-      {previewImage && (
-        <ImagePreviewDialog image={previewImage} onClose={() => setPreviewImage(null)} />
+      {viewing !== null && viewing < images.length && (
+        <ImageViewer
+          images={images}
+          index={viewing}
+          onIndexChange={setViewing}
+          onClose={() => setViewing(null)}
+        />
       )}
     </div>
   )

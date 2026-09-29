@@ -10,7 +10,7 @@ import {
 import { cn } from '../../lib/utils'
 import { partArtifact, useArtifactPreview } from '../../lib/artifact-preview'
 
-type GeneratedImage = {
+export type GeneratedImage = {
   id: string
   url?: string
   /** Stored bytes to read through the environment when the part carries no URL. */
@@ -56,9 +56,9 @@ function ViewerImage({ part }: { part: GeneratedImage }) {
 /**
  * Full-screen viewer over a set of images. Left and right arrow keys (and
  * the side buttons) step through the set; Escape or a click on the backdrop
- * closes it.
+ * closes it. Shared by agent images, the user bubble and the composer.
  */
-function ImageViewer({
+export function ImageViewer({
   images,
   index,
   onIndexChange,
