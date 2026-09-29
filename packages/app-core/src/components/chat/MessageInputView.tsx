@@ -421,6 +421,14 @@ export function MessageInputView({
   // underneath is left untouched so it comes back intact afterwards.
   const text = textOverride ? textOverride.value : draft.text
   const attachments = draft.attachments
+  // A preview belongs to the list it was opened on: once a send clears it or
+  // another draft swaps it in, an index left behind would reopen the viewer on
+  // whatever image lands there next.
+  const [previewedList, setPreviewedList] = useState(attachments)
+  if (previewedList !== attachments) {
+    setPreviewedList(attachments)
+    setViewingAttachment(null)
+  }
 
   useEffect(() => {
     draftsRef.current = drafts

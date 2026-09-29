@@ -7,7 +7,8 @@ ask — read the workflow guide before touching code:
 
 - Claude Code: the `linear` skill
 - Everyone else (Codex, Cursor, ...): read
-  `C:\Users\rajku\.claude\skills\linear\SKILL.md` directly
+  `~/.claude/skills/linear/SKILL.md` directly (on Windows,
+  `%USERPROFILE%\.claude\skills\linear\SKILL.md`)
 
 Otherwise treat the task as ordinary work and ignore this section; do not go
 looking for a matching Linear issue on your own.

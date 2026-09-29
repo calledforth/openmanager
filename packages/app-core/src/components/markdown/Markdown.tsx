@@ -219,6 +219,31 @@ function LinearLogo() {
   )
 }
 
+/** Suffixes that only resolve on a private network, plus the reserved test ones. */
+const PRIVATE_SUFFIXES = [
+  '.local',
+  '.localhost',
+  '.internal',
+  '.intranet',
+  '.lan',
+  '.home',
+  '.corp',
+  '.private',
+  '.test',
+  '.example',
+  '.invalid',
+]
+
+/** Whether a link's host may go to the public favicon service. Rendering a
+ * reply must not tell a third party about an intranet host, a bare machine
+ * name or an IP address the agent happened to mention; those get the globe. */
+function isPublicHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/\.$/, '')
+  if (!host.includes('.')) return false
+  if (host.startsWith('[') || /^[\d.]+$/.test(host)) return false
+  return !PRIVATE_SUFFIXES.some((suffix) => host.endsWith(suffix))
+}
+
 /** Site favicon, falling back to a globe glyph when the icon can't load. */
 function Favicon({ url }: { url: URL }) {
   const [failed, setFailed] = useState(false)
@@ -228,7 +253,8 @@ function Favicon({ url }: { url: URL }) {
     return <GithubLogoIcon weight="fill" className="md-link-icon md-link-icon-github" aria-hidden="true" />
   }
   if (isLinear(url)) return <LinearLogo />
-  if (failed) return <GlobeSimpleIcon className="md-link-icon" aria-hidden="true" />
+  if (failed || !isPublicHost(url.hostname))
+    return <GlobeSimpleIcon className="md-link-icon" aria-hidden="true" />
   return (
     <img
       className="md-link-icon"
