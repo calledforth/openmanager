@@ -1,5 +1,6 @@
 import {
   PLAN_BUILD_CAPABILITY,
+  PAGE_LIMIT_MAX,
   ErrorEnvelopeSchema,
   PROTOCOL_VERSION,
   SESSION_CREATE_EXPLICIT_CAPABILITY,
@@ -16,6 +17,7 @@ import {
   respondToHeartbeat,
   type ClientHeartbeatState,
   type Cursor,
+  type SessionListCursor,
   type DurableEvent,
   type ErrorCode,
   type ProofEvent,
@@ -287,7 +289,6 @@ export function createWebSocketEnvironmentClient(
     },
   }
   if (options.store) store.update(applyComposerPreferencesReset)
-  let refreshSessionOrder = options.store !== undefined
   store.update((state) =>
     applyConnection(state, {
       phase: 'idle',
@@ -903,7 +904,33 @@ export function createWebSocketEnvironmentClient(
     const reads: Promise<unknown>[] = []
     if (supports('getEnvironment')) reads.push(commands.getEnvironment().catch(() => undefined))
     if (supports('listWorkspaces')) reads.push(commands.listWorkspaces().catch(() => undefined))
-    if (supports('listSessions')) reads.push(commands.listSessions().catch(() => undefined))
+    if (supports('listSessions'))
+      reads.push(
+        (async () => {
+          if (!options.store) return commands.listSessions()
+          // Membership is authoritative only after all pages have answered.
+          // Keep older cached sessions visible while the catalog is refreshed.
+          const cached = new Set(Object.keys(store.getState().sessions))
+          const listed = new Set<string>()
+          let cursor: SessionListCursor | null = null
+          do {
+            const page = await commands.listSessions({
+              limit: PAGE_LIMIT_MAX,
+              ...(cursor ? { cursor } : {}),
+            })
+            if (generation !== connectionGeneration || !ready) return
+            for (const session of page.sessions) listed.add(session.sessionId)
+            cursor = page.nextCursor
+          } while (cursor)
+          store.update((state) => {
+            let next = state
+            for (const sessionId of cached) {
+              if (!listed.has(sessionId)) next = applySessionRemoved(next, sessionId)
+            }
+            return next
+          })
+        })().catch(() => undefined),
+      )
     if (supports('getProviderCatalog'))
       reads.push(commands.getProviderCatalog().catch(() => undefined))
     await Promise.all(reads)
@@ -1032,14 +1059,7 @@ export function createWebSocketEnvironmentClient(
     async listSessions(input = {}) {
       const query = typeof input === 'string' ? { workspaceId: input } : input
       const payload = await request('session.list', query)
-      const refresh = refreshSessionOrder && !query.cursor && !query.workspaceId
-      if (refresh) refreshSessionOrder = false
-      store.update((state) => {
-        const next = applySessionList(state, payload.sessions)
-        return refresh
-          ? { ...next, sessionOrder: payload.sessions.map((session) => session.sessionId) }
-          : next
-      })
+      store.update((state) => applySessionList(state, payload.sessions))
       const listed = store.getState().sessions
       return {
         sessions: payload.sessions

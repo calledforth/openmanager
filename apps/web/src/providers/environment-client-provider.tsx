@@ -70,6 +70,7 @@ export function WebEnvironmentClientProvider({
   // StrictMode's setup → cleanup → setup replay (and any real remount) gets a
   // fresh instance; a disposed client ignores connect() for good.
   const [client, setClient] = useState<EnvironmentClient | null>(null)
+  const transport = useRef<EnvironmentClient | null>(null)
   const cache = useRef<ReturnType<typeof createEnvironmentCache> | null>(null)
   if (!cache.current) cache.current = createEnvironmentCache()
   useEffect(() => {
@@ -87,7 +88,15 @@ export function WebEnvironmentClientProvider({
         environmentId,
         store,
       })
-      setClient(next)
+      transport.current = next
+      let authorized = false
+      const publishAuthorizedClient = () => {
+        const { connection } = next.getState()
+        if (connection.phase === 'connected') authorized = true
+        if (connection.failure?.code === 'auth') authorized = false
+        if (authorized) setClient(next)
+        else setClient((current) => (current === next ? null : current))
+      }
       let saveTimer: ReturnType<typeof setTimeout> | undefined
       const save = () => {
         saveTimer = undefined
@@ -101,6 +110,7 @@ export function WebEnvironmentClientProvider({
       // is worth reading.
       let seen: unknown
       const unsubscribe = next.subscribe(() => {
+        publishAuthorizedClient()
         const { connection } = next.getState()
         if (connection === seen) return
         seen = connection
@@ -108,9 +118,11 @@ export function WebEnvironmentClientProvider({
         if (report) reportRouteHealth(environmentId, endpoint, report)
       })
       next.connect()
+      publishAuthorizedClient()
       release = () => {
         unsubscribe()
         next.dispose()
+        if (transport.current === next) transport.current = null
         unsubscribeCache()
         if (saveTimer !== undefined) clearTimeout(saveTimer)
         save()
@@ -127,8 +139,9 @@ export function WebEnvironmentClientProvider({
   // the end of the current backoff window. connect() on a live client is a
   // no-op, so this is safe to run on every change.
   useEffect(() => {
-    if (!client || retryNonce === 0) return
-    client.connect()
+    if (retryNonce === 0) return
+    const current = client ?? transport.current
+    current?.connect()
   }, [client, retryNonce])
 
   return <EnvironmentClientProvider client={client}>{children}</EnvironmentClientProvider>

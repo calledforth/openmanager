@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { PROTOCOL_VERSION } from '@openmanager/protocol'
+import { PROTOCOL_VERSION, ProofCommandSchemas } from '@openmanager/protocol'
 import {
   DEFAULT_RECONNECT,
   createWebSocketEnvironmentClient,
@@ -289,9 +289,11 @@ describe('websocket environment client', () => {
     )
     expect(client.getState().composerPreferences).toEqual({})
     socket.respond('workspace.list', { workspaces: [WORKSPACE] })
-    socket.respond('session.list', { sessions: [], nextCursor: null })
+    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
     await flush()
-    expect(selectSessionList(client.getState())).toEqual([])
+    expect(selectSessionList(client.getState()).map((session) => session.sessionId)).toEqual([
+      SESSION.sessionId,
+    ])
     expect(client.getState().threads[THREAD.threadId]).toBe(state.threads[THREAD.threadId])
     const refresh = client.commands.listWorkspaces()
     socket.respond('workspace.list', { workspaces: [] })
@@ -325,6 +327,32 @@ describe('websocket environment client', () => {
     await added
     expect(client.getState().workspaceOrder).toEqual([WORKSPACE.workspaceId, '/other'])
     expect(client.getState().threads[THREAD.threadId]).toBe(state.threads[THREAD.threadId])
+    client.dispose()
+  })
+
+  it('keeps older cached sessions visible until all catalog pages reconcile deletions', async () => {
+    const older = { ...SESSION_SUMMARY, sessionId: 'older' }
+    const state = createInitialState()
+    state.sessions = {
+      [SESSION.sessionId]: { ...SESSION_SUMMARY, threadIds: [] },
+      older: { ...older, threadIds: [] },
+      deleted: { ...older, sessionId: 'deleted', threadIds: [] },
+    }
+    state.sessionOrder = [SESSION.sessionId, 'older', 'deleted']
+    const store = createEnvironmentStore(state)
+    const { client, socket } = await connected(['session.list'], {}, { environmentId: ENV, store })
+    const cursor = { updatedAt: SESSION_SUMMARY.updatedAt, sessionId: SESSION.sessionId }
+    expect(ProofCommandSchemas['session.list'].safeParse(socket.last('session.list')).success).toBe(
+      true,
+    )
+    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: cursor })
+    await flush()
+    expect(client.getState().sessionOrder).toContain('older')
+    expect(socket.last('session.list').payload).toMatchObject({ cursor })
+    socket.respond('session.list', { sessions: [older], nextCursor: null })
+    await flush()
+    expect(client.getState().sessionOrder).toEqual([SESSION.sessionId, 'older'])
+    expect(client.getState().sessions.deleted).toBeUndefined()
     client.dispose()
   })
 

@@ -7,6 +7,7 @@ import {
 
 const CACHE_VERSION = 1
 const STATE_STORE = 'state'
+const writes = new Map<string, Promise<void>>()
 
 /** URLs and credentials never participate in the cache namespace or payload. */
 export function environmentCacheName(environmentId: string): string {
@@ -59,6 +60,7 @@ function openCache(environmentId: string): Promise<IDBDatabase | null> {
 export async function readEnvironmentCache(
   environmentId: string,
 ): Promise<EnvironmentState | null> {
+  await writes.get(environmentId)
   const database = await openCache(environmentId)
   if (!database) return null
   try {
@@ -96,7 +98,7 @@ export async function readEnvironmentCache(
   }
 }
 
-export async function writeEnvironmentCache(
+async function persistEnvironmentCache(
   environmentId: string,
   state: EnvironmentState,
 ): Promise<void> {
@@ -116,6 +118,21 @@ export async function writeEnvironmentCache(
   } finally {
     database.close()
   }
+}
+
+/** Serialize snapshots per identity, including writes from transport cleanup. */
+export function writeEnvironmentCache(
+  environmentId: string,
+  state: EnvironmentState,
+): Promise<void> {
+  if (state.environment?.environmentId !== environmentId) return Promise.resolve()
+  const previous = writes.get(environmentId) ?? Promise.resolve()
+  const next = previous.then(() => persistEnvironmentCache(environmentId, state))
+  writes.set(environmentId, next)
+  void next.finally(() => {
+    if (writes.get(environmentId) === next) writes.delete(environmentId)
+  })
+  return next
 }
 
 /** One store per identity, including while its route is being verified. */

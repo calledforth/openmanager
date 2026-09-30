@@ -109,12 +109,16 @@ subscriptions and refreshes authoritative data from the server.
 
 IndexedDB persists a snapshot in `openmanager-environment:<environmentId>`
 (database version 1, `state` object store). Neither URLs nor credentials are
-part of that cache. A fresh client loads the snapshot only after verifying the
-route's environment identity. Live connection state, pending sends, and
-in-flight hydration are not restored. Storage failures fall back to memory. The first fresh sidebar page replaces
-list membership without dropping cached transcripts; workspace membership and
-composer preferences are refreshed from the server. Deleted active sessions
-are removed when the environment reports them missing.
+part of that cache. A fresh client loads the snapshot after verifying the
+route's environment identity and exposes it only after the WebSocket
+authenticates. Live connection state, pending sends, and in-flight hydration
+are not restored. Storage failures fall back to memory.
+
+All session catalog pages are refreshed before deleted cached sessions are
+removed, keeping older sessions navigable. Workspace membership and composer
+preferences are refreshed from the server. Snapshot writes are serialized per
+environment so cleanup cannot overwrite newer data with an older snapshot.
+Deleted active sessions are removed when the environment reports them missing.
 There was no previous IndexedDB cache to migrate.
 
 ## Route type

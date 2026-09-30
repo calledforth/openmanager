@@ -116,7 +116,10 @@ function storedRoutes() {
 function createFakeClient() {
   const client = {
     commands: {} as EnvironmentClient['commands'],
-    getState: vi.fn(),
+    getState: vi.fn<EnvironmentClient['getState']>(() => ({
+      ...createInitialState(),
+      connection: { ...createInitialState().connection, phase: 'connected' as const },
+    })),
     subscribe: vi.fn(() => () => undefined),
     supports: vi.fn(() => false),
     setActiveSession: vi.fn(),
@@ -242,9 +245,12 @@ describe('WebEnvironmentClientProvider', () => {
       vi.fn(async () => bootstrapAnswer()),
     )
     let notify = () => {}
-    let connection: unknown = { phase: 'connecting', failure: null }
+    let connection: unknown = { phase: 'connected', failure: null }
     const client = createFakeClient()
-    client.getState.mockImplementation(() => ({ connection }))
+    client.getState.mockImplementation(() => ({
+      ...createInitialState(),
+      connection: connection as ReturnType<EnvironmentClient['getState']>['connection'],
+    }))
     client.subscribe.mockImplementation(((listener: () => void) => {
       notify = listener
       return () => undefined
@@ -275,6 +281,35 @@ describe('WebEnvironmentClientProvider', () => {
     act(() => notify())
     expect(storedRoutes()[0]!.health).toMatchObject({ status: 'available' })
     expect(storedRoutes()[1]!.health).toEqual({ status: 'unknown' })
+  })
+
+  it('withholds cached data until authentication and hides it on authorization failure', async () => {
+    seedEnvironment()
+    let notify = () => {}
+    const initial = createInitialState()
+    let connection: ReturnType<EnvironmentClient['getState']>['connection'] = {
+      ...initial.connection,
+      phase: 'connecting' as 'connecting' | 'connected' | 'closed',
+    }
+    const client = createFakeClient()
+    client.getState.mockImplementation(() => ({ ...initial, connection }))
+    client.subscribe.mockImplementation(((listener: () => void) => {
+      notify = listener
+      return () => undefined
+    }) as never)
+    renderProvider(() => client)
+    await waitFor(() => expect(client.connect).toHaveBeenCalled())
+    expect(screen.getByText('ready:none')).toBeInTheDocument()
+    act(() => {
+      connection = { ...connection, phase: 'connected' }
+      notify()
+    })
+    expect(screen.getByText('ready:client')).toBeInTheDocument()
+    act(() => {
+      connection = { ...connection, phase: 'closed', failure: { code: 'auth', message: 'Revoked' } }
+      notify()
+    })
+    expect(screen.getByText('ready:none')).toBeInTheDocument()
   })
 
   it('records a route that does not answer and stays on it', async () => {

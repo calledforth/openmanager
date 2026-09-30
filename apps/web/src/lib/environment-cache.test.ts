@@ -86,6 +86,17 @@ describe('environment identity cache', () => {
     expect(state.threads.thread!.outbox).toHaveLength(1)
   })
 
+  it('serializes overlapping writes and waits for the newest snapshot on reload', async () => {
+    const older = seed()
+    const newer = seed()
+    newer.sessions.session!.title = 'Latest session'
+    const first = writeEnvironmentCache('env-one', older)
+    const second = writeEnvironmentCache('env-one', newer)
+    const restored = await readEnvironmentCache('env-one')
+    await Promise.all([first, second])
+    expect(restored!.sessions.session!.title).toBe('Latest session')
+  })
+
   it('continues with memory when IndexedDB is unavailable or throws', async () => {
     vi.stubGlobal('indexedDB', undefined)
     const cache = createEnvironmentCache()
