@@ -15,6 +15,8 @@ import {
   selectSessionList,
 } from '../src/state'
 import type { EnvironmentClient } from '../src/types'
+import { createEnvironmentStore } from '../src/store'
+import { createInitialState, createThreadState } from '../src/state'
 import {
   BARE_PROVIDER,
   ENV,
@@ -188,6 +190,180 @@ async function connected(
 }
 
 describe('websocket environment client', () => {
+  it('retains environment data and opens restored session scopes on a new replay-capable transport', async () => {
+    const state = createInitialState()
+    state.environment = { environmentId: ENV, name: 'Local' }
+    state.sessions = { [SESSION.sessionId]: { ...SESSION_SUMMARY, threadIds: [THREAD.threadId] } }
+    state.sessionOrder = [SESSION.sessionId]
+    state.threads = { [THREAD.threadId]: createThreadState(THREAD, 'ready') }
+    state.activeSessionId = SESSION.sessionId
+    state.activeThreadId = THREAD.threadId
+    const store = createEnvironmentStore(state)
+    const first = createWebSocketEnvironmentClient({
+      url: 'ws://localhost/ws',
+      environmentId: ENV,
+      store,
+      WebSocket: FakeSocket,
+    })
+    first.dispose()
+    const { client, socket } = await connected(
+      ['subscription.subscribe', 'subscription.replay', 'session.open', 'session.history'],
+      {},
+      { environmentId: ENV, store },
+    )
+    expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
+    expect(client.getState().threads[THREAD.threadId]!.messages).toBe(
+      state.threads[THREAD.threadId]!.messages,
+    )
+    expect(socket.last('session.open').payload).toEqual({ sessionId: SESSION.sessionId })
+    socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
+    await flush()
+    expect(socket.last('subscription.replay').payload).toMatchObject({
+      scope: { type: 'thread', threadId: THREAD.threadId },
+      cursor: null,
+    })
+    client.dispose()
+  })
+
+  it('prevents a disposed pending open from changing its replacement selection', async () => {
+    const store = createEnvironmentStore()
+    const { client } = await connected(['session.open'], {}, { environmentId: ENV, store })
+    const pending = client.commands.openSession('old-session').catch(() => undefined)
+    client.dispose()
+    const replacement = createWebSocketEnvironmentClient({
+      url: 'wss://new-route/ws',
+      environmentId: ENV,
+      store,
+      WebSocket: FakeSocket,
+    })
+    store.update((state) => ({
+      ...state,
+      sessions: {
+        ...state.sessions,
+        'new-session': { ...SESSION_SUMMARY, sessionId: 'new-session', threadIds: [] },
+      },
+    }))
+    replacement.setActiveSession('new-session')
+    await pending
+    expect(store.getState().activeSessionId).toBe('new-session')
+    expect(store.getState().sessionOpenFailure).toBeNull()
+    replacement.dispose()
+  })
+
+  it('preserves a valid non-first thread when reopening the active session', async () => {
+    const second = { ...THREAD, threadId: 'second-thread' }
+    const store = createEnvironmentStore({
+      ...createInitialState(),
+      environment: { environmentId: ENV, name: 'Local' },
+      sessions: {
+        [SESSION.sessionId]: { ...SESSION_SUMMARY, threadIds: [THREAD.threadId, second.threadId] },
+      },
+      threads: {
+        [THREAD.threadId]: createThreadState(THREAD),
+        [second.threadId]: createThreadState(second),
+      },
+      activeSessionId: SESSION.sessionId,
+      activeThreadId: second.threadId,
+    })
+    const { client, socket } = await connected(['session.open'], {}, { environmentId: ENV, store })
+    socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD, second] })
+    await flush()
+    expect(client.getState().activeThreadId).toBe(second.threadId)
+    client.dispose()
+  })
+
+  it('refreshes sidebar membership and preferences without dropping cached transcripts', async () => {
+    const state = createInitialState()
+    state.environment = { environmentId: ENV, name: 'Local' }
+    state.workspaces = { [WORKSPACE.workspaceId]: WORKSPACE }
+    state.workspaceOrder = [WORKSPACE.workspaceId]
+    state.sessions = { [SESSION.sessionId]: { ...SESSION_SUMMARY, threadIds: [THREAD.threadId] } }
+    state.sessionOrder = [SESSION.sessionId]
+    state.threads = { [THREAD.threadId]: createThreadState(THREAD, 'ready') }
+    state.composerPreferences = { [WORKSPACE.workspaceId]: { opencode: { modelId: 'old-model' } } }
+    const store = createEnvironmentStore(state)
+    const { client, socket } = await connected(
+      ['workspace.list', 'session.list'],
+      {},
+      { environmentId: ENV, store },
+    )
+    expect(client.getState().composerPreferences).toEqual({})
+    socket.respond('workspace.list', { workspaces: [WORKSPACE] })
+    socket.respond('session.list', { sessions: [], nextCursor: null })
+    await flush()
+    expect(selectSessionList(client.getState())).toEqual([])
+    expect(client.getState().threads[THREAD.threadId]).toBe(state.threads[THREAD.threadId])
+    const refresh = client.commands.listWorkspaces()
+    socket.respond('workspace.list', { workspaces: [] })
+    await refresh
+    expect(client.getState().workspaces).toEqual({})
+    expect(client.getState().sessions).toEqual({})
+    expect(client.getState().threads).toEqual({})
+    client.dispose()
+  })
+
+  it('keeps unchanged cached sessions listed and adding a workspace keeps existing data', async () => {
+    const state = createInitialState()
+    state.workspaces = { [WORKSPACE.workspaceId]: WORKSPACE }
+    state.workspaceOrder = [WORKSPACE.workspaceId]
+    state.sessions = { [SESSION.sessionId]: { ...SESSION_SUMMARY, threadIds: [THREAD.threadId] } }
+    state.sessionOrder = [SESSION.sessionId]
+    state.threads = { [THREAD.threadId]: createThreadState(THREAD, 'ready') }
+    const store = createEnvironmentStore(state)
+    const { client, socket } = await connected(
+      ['session.list', 'workspace.add'],
+      {},
+      { environmentId: ENV, store },
+    )
+    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
+    await flush()
+    expect(client.getState().sessionOrder).toEqual([SESSION.sessionId])
+    const added = client.commands.addWorkspace({ path: '/other' })
+    socket.respond('workspace.add', {
+      workspace: { ...WORKSPACE, workspaceId: '/other', path: '/other' },
+    })
+    await added
+    expect(client.getState().workspaceOrder).toEqual([WORKSPACE.workspaceId, '/other'])
+    expect(client.getState().threads[THREAD.threadId]).toBe(state.threads[THREAD.threadId])
+    client.dispose()
+  })
+
+  it('removes a restored session that the environment says was deleted', async () => {
+    const state = createInitialState()
+    state.sessions = { [SESSION.sessionId]: { ...SESSION_SUMMARY, threadIds: [THREAD.threadId] } }
+    state.sessionOrder = [SESSION.sessionId]
+    state.activeSessionId = SESSION.sessionId
+    const store = createEnvironmentStore(state)
+    const { client, socket } = await connected(['session.open'], {}, { environmentId: ENV, store })
+    socket.receive({
+      type: 'error',
+      requestId: socket.last('session.open').requestId,
+      error: { code: 'not_found', message: 'Session not found.' },
+    })
+    await flush()
+    expect(client.getState().sessions[SESSION.sessionId]).toBeUndefined()
+    expect(client.getState().activeSessionId).toBeNull()
+    client.dispose()
+  })
+
+  it('rejects a shared store without an identity or with a different identity', () => {
+    const store = createEnvironmentStore({
+      ...createInitialState(),
+      environment: { environmentId: ENV, name: 'Local' },
+    })
+    expect(() =>
+      createWebSocketEnvironmentClient({ url: 'ws://localhost/ws', store, WebSocket: FakeSocket }),
+    ).toThrow('requires an environment ID')
+    expect(() =>
+      createWebSocketEnvironmentClient({
+        url: 'ws://localhost/ws',
+        environmentId: 'other',
+        store,
+        WebSocket: FakeSocket,
+      }),
+    ).toThrow('different environment')
+  })
+
   it('rejects rename on older servers without sending the command', async () => {
     const { client, socket } = await connected()
     await expect(client.commands.renameSession(SESSION.sessionId, 'Name')).rejects.toMatchObject({

@@ -2,7 +2,12 @@ import { PROTOCOL_VERSION } from '@openmanager/protocol'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { EnvironmentClient } from '@openmanager/environment-client'
+import {
+  createInitialState,
+  type EnvironmentClient,
+  type EnvironmentStore,
+  type WebSocketEnvironmentClientOptions,
+} from '@openmanager/environment-client'
 import { useEnvironmentClientOptional } from '@openmanager/app-core/providers/environment-client'
 import { ENVIRONMENT_STORAGE_KEY } from '../lib/environment-store'
 import { WRONG_ENVIRONMENT_MESSAGE } from '../lib/route-health'
@@ -150,7 +155,9 @@ function Probe() {
   )
 }
 
-function renderProvider(createClient: () => EnvironmentClient) {
+function renderProvider(
+  createClient: (options: WebSocketEnvironmentClientOptions) => EnvironmentClient,
+) {
   return render(
     <QueryClientProvider client={createQueryClient()}>
       <ConnectionProvider>
@@ -194,7 +201,9 @@ describe('WebEnvironmentClientProvider', () => {
       vi.fn(async () => bootstrapAnswer()),
     )
     const clients: Array<ReturnType<typeof createFakeClient>> = []
-    const createClient = vi.fn(() => {
+    const stores: EnvironmentStore[] = []
+    const createClient = vi.fn((options: WebSocketEnvironmentClientOptions) => {
+      stores.push(options.store!)
       const client = createFakeClient()
       clients.push(client)
       return client as EnvironmentClient
@@ -206,17 +215,22 @@ describe('WebEnvironmentClientProvider', () => {
       url: 'ws://127.0.0.1:43120/ws',
       credential: 'client-token',
       environmentId: 'env-local',
+      store: expect.any(Object),
     })
 
+    stores[0]!.update(() => ({ ...createInitialState(), activeSessionId: 'cached-session' }))
     act(() => screen.getByRole('button', { name: 'use tunnel' }).click())
     await waitFor(() =>
       expect(createClient).toHaveBeenLastCalledWith({
         url: 'wss://tunnel.example/ws',
         credential: 'client-token',
         environmentId: 'env-local',
+        store: expect.any(Object),
       }),
     )
     // The old socket is gone, and the environment is still one record.
+    expect(stores[1]).toBe(stores[0])
+    expect(stores[1]!.getState().activeSessionId).toBe('cached-session')
     expect(clients[0]!.dispose).toHaveBeenCalled()
     expect(storedRoutes().map((route) => route.endpoint)).toEqual([TUNNEL, ENDPOINT])
   })

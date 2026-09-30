@@ -96,6 +96,27 @@ address is always its own record with its own token, and a saved route that
 starts answering as another environment is reported, not adopted
 (see [Health](#health)).
 
+## Credentials and client cache
+
+The registry stores the credential on the record selected by `environmentId`.
+Changing a route keeps that credential; an address is never used to look up a
+token.
+
+The web client also keeps one in-memory store per environment ID. A route or
+credential change replaces the transport while retaining sessions, messages,
+and the active selection. Each new transport reopens the active session's
+subscriptions and refreshes authoritative data from the server.
+
+IndexedDB persists a snapshot in `openmanager-environment:<environmentId>`
+(database version 1, `state` object store). Neither URLs nor credentials are
+part of that cache. A fresh client loads the snapshot only after verifying the
+route's environment identity. Live connection state, pending sends, and
+in-flight hydration are not restored. Storage failures fall back to memory. The first fresh sidebar page replaces
+list membership without dropping cached transcripts; workspace membership and
+composer preferences are refreshed from the server. Deleted active sessions
+are removed when the environment reports them missing.
+There was no previous IndexedDB cache to migrate.
+
 ## Route type
 
 The client assigns `local` to a loopback address and `remote` to everything

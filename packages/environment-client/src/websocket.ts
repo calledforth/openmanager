@@ -58,7 +58,7 @@ import {
   selectSessionList,
 } from './state'
 import { createSettleTracker } from './settle'
-import { createEnvironmentStore } from './store'
+import { createEnvironmentStore, type EnvironmentStore } from './store'
 import type {
   ComposerPreferenceTarget,
   ConnectionFailure,
@@ -109,6 +109,8 @@ export interface WebSocketEnvironmentClientOptions {
   credential?: string
   /** When set, a handshake that reports a different environment is refused. */
   environmentId?: string
+  /** Environment-owned data survives transport replacement. Requires its identity. */
+  store?: EnvironmentStore
   WebSocket?: WebSocketConstructor
   /** Used for artifact reads; defaults to the global `fetch`. */
   fetch?: typeof globalThis.fetch
@@ -265,12 +267,40 @@ export function createWebSocketEnvironmentClient(
     jitter: options.reconnect?.jitter ?? DEFAULT_RECONNECT.jitter,
   }
   const random = options.random ?? Math.random
-  const store = createEnvironmentStore()
+  if (options.store && !options.environmentId) {
+    throw new Error('A shared store requires an environment ID.')
+  }
+  if (
+    options.store?.getState().environment &&
+    options.store.getState().environment?.environmentId !== options.environmentId
+  ) {
+    throw new Error('The store belongs to a different environment.')
+  }
+  const backingStore = options.store ?? createEnvironmentStore()
+  let disposed = false
+  // A disposed transport can still finish async command continuations. Those
+  // continuations must not modify data now owned by its replacement.
+  const store: EnvironmentStore = {
+    ...backingStore,
+    update(reducer) {
+      if (!disposed) backingStore.update(reducer)
+    },
+  }
+  if (options.store) store.update(applyComposerPreferencesReset)
+  let refreshSessionOrder = options.store !== undefined
+  store.update((state) =>
+    applyConnection(state, {
+      phase: 'idle',
+      failure: null,
+      capabilities: [],
+      attempt: 0,
+      retriesExhausted: false,
+    }),
+  )
   const settles = createSettleTracker(store)
 
   let socket: WebSocketLike | null = null
   let ready = false
-  let disposed = false
   let manualClose = false
   let attempts = 0
   let reconnectTimer: unknown = null
@@ -882,7 +912,10 @@ export function createWebSocketEnvironmentClient(
     if (
       activeSessionId &&
       supports('openSession') &&
-      (!capabilities.has(REPLAY_NAME) ||
+      (!subscriptions.has(
+        scopeKey({ type: 'session', environmentId, sessionId: activeSessionId }),
+      ) ||
+        !capabilities.has(REPLAY_NAME) ||
         store.getState().sessions[activeSessionId]?.threadIds.length === 0)
     ) {
       await commands.openSession(activeSessionId).catch(() => undefined)
@@ -970,7 +1003,14 @@ export function createWebSocketEnvironmentClient(
     },
     async listWorkspaces() {
       const payload = await request('workspace.list', null)
-      store.update((state) => applyWorkspaceList(state, payload.workspaces))
+      store.update((state) => {
+        let next = state
+        const known = new Set(payload.workspaces.map((workspace) => workspace.workspaceId))
+        for (const workspaceId of state.workspaceOrder) {
+          if (!known.has(workspaceId)) next = applyWorkspaceRemoved(next, workspaceId)
+        }
+        return applyWorkspaceList(next, payload.workspaces)
+      })
       return payload.workspaces
     },
     async addWorkspace(input) {
@@ -992,7 +1032,14 @@ export function createWebSocketEnvironmentClient(
     async listSessions(input = {}) {
       const query = typeof input === 'string' ? { workspaceId: input } : input
       const payload = await request('session.list', query)
-      store.update((state) => applySessionList(state, payload.sessions))
+      const refresh = refreshSessionOrder && !query.cursor && !query.workspaceId
+      if (refresh) refreshSessionOrder = false
+      store.update((state) => {
+        const next = applySessionList(state, payload.sessions)
+        return refresh
+          ? { ...next, sessionOrder: payload.sessions.map((session) => session.sessionId) }
+          : next
+      })
       const listed = store.getState().sessions
       return {
         sessions: payload.sessions
@@ -1048,6 +1095,10 @@ export function createWebSocketEnvironmentClient(
         payload = await request('session.open', { sessionId })
       } catch (error) {
         if (generation !== openGeneration) throw error
+        if (isEnvironmentClientError(error) && error.code === 'not_found') {
+          store.update((state) => applySessionRemoved(state, sessionId))
+          throw error
+        }
         store.update((state) => {
           let next = state
           for (const threadId of state.sessions[sessionId]?.threadIds ?? []) {
@@ -1067,7 +1118,13 @@ export function createWebSocketEnvironmentClient(
         throw error
       }
       if (generation !== openGeneration) return
-      store.update((state) => applyActiveSession(applySessionOpen(state, payload), sessionId))
+      store.update((state) => {
+        const next = applyActiveSession(applySessionOpen(state, payload), sessionId)
+        return state.activeSessionId === sessionId &&
+          payload.threads.some((thread) => thread.threadId === state.activeThreadId)
+          ? applyActiveThread(next, state.activeThreadId)
+          : next
+      })
       if (previous && previous !== sessionId) {
         for (const scope of sessionScopes(previous)) unsubscribe(scope)
       }
@@ -1368,6 +1425,8 @@ export function createWebSocketEnvironmentClient(
     dispose() {
       if (disposed) return
       disposed = true
+      connectionGeneration += 1
+      openGeneration += 1
       clearReconnect()
       stopHeartbeat()
       const current = socket
@@ -1375,7 +1434,24 @@ export function createWebSocketEnvironmentClient(
       ready = false
       rejectAllPending(new EnvironmentClientError('unavailable', 'Client is disposed.'))
       current?.close(1000, 'client_disposed')
-      patchConnection({ phase: 'closed' })
+      backingStore.update((state) => {
+        let next = state
+        for (const thread of Object.values(state.threads)) {
+          for (const entry of thread.outbox) {
+            if (entry.status === 'pending') {
+              next = applyTurnSendFailed(
+                next,
+                thread.thread,
+                entry.commandId,
+                'Connection closed before the send was confirmed.',
+              )
+            }
+          }
+          if (thread.hydration === 'loading')
+            next = applyThreadHydration(next, thread.thread.threadId, 'idle')
+        }
+        return applyConnection(next, { phase: 'closed' })
+      })
     },
   }
 }
