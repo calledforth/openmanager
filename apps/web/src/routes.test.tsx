@@ -504,7 +504,12 @@ describe('web routes', () => {
     await screen.findByText(/Connected · Local environment/)
     const routes = () => within(screen.getByRole('list', { name: 'Routes to Local environment' }))
     // The tunnel is checked because the list is on screen; it is not in use.
-    expect(await routes().findByText('Unavailable')).toBeInTheDocument()
+    // Only its row is read: the route in use reports on its own socket.
+    const tunnelRow = () =>
+      routes()
+        .getAllByRole('listitem')
+        .find((row) => row.textContent?.includes('https://tunnel.example'))!
+    await waitFor(() => expect(within(tunnelRow()).getByText('Unavailable')).toBeInTheDocument())
     expect(storedRegistry().environments[0]?.routes[1]).toMatchObject({
       endpoint: 'https://tunnel.example',
       health: { status: 'unreachable' },

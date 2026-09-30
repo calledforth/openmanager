@@ -419,9 +419,15 @@ export function ConnectionProvider({
         setBootstrapNonce((value) => value + 1)
       }
       // A connect to the forgotten address must not bring the route back when
-      // its answer arrives.
-      setPending((current) => (current?.endpoint === routeEndpoint ? null : current))
-      if (claimingEndpoint.current === routeEndpoint) claimGeneration.current += 1
+      // its answer arrives. An address another environment still has is left
+      // alone: the connect in flight may be to that one.
+      const stillSaved = next.environments.some((item) =>
+        item.routes.some((route) => route.endpoint === routeEndpoint),
+      )
+      if (!stillSaved) {
+        setPending((current) => (current?.endpoint === routeEndpoint ? null : current))
+        if (claimingEndpoint.current === routeEndpoint) claimGeneration.current += 1
+      }
       update(() => next)
     },
     [abandonPendingConnect, update],
