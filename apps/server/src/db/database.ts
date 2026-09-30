@@ -44,18 +44,6 @@ export function recoverInterruptedTurns(database: DatabaseSync, now = Date.now()
 
   database.exec('BEGIN IMMEDIATE')
   try {
-    // Background tasks are children of the provider processes, which did not
-    // survive the server. A session held at `running` only by them is simply
-    // idle now; one with an open turn is handled below. Guarded because a
-    // database opened at an older schema has no such column yet.
-    if (columnExists(database, 'sessions', 'background_tasks_json')) {
-      database.exec(
-        `UPDATE sessions
-         SET background_tasks_json = NULL,
-             status = CASE WHEN status = 'running' THEN 'idle' ELSE status END
-         WHERE background_tasks_json IS NOT NULL`,
-      )
-    }
     database
       .prepare(
         `UPDATE sessions
@@ -114,12 +102,6 @@ export function recoverInterruptedTurns(database: DatabaseSync, now = Date.now()
     }
     throw error
   }
-}
-
-function columnExists(database: DatabaseSync, table: string, column: string): boolean {
-  return (database.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some(
-    (row) => row.name === column,
-  )
 }
 
 function tableExists(database: DatabaseSync, name: string): boolean {

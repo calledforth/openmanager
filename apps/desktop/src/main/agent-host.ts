@@ -338,11 +338,8 @@ export class AgentHost {
     if (event.event === 'plan_review_resolved') {
       this.pendingPlans.delete(event.data.requestId)
     }
-    // The renderer still hears it, so whatever it showed live can settle.
-    if (!this.endsUnshownTurn(event)) {
-      this.projector.consume(event)
-      this.options.notifier?.handle(event)
-    }
+    this.projector.consume(event)
+    if (!this.endsUnshownTurn(event)) this.options.notifier?.handle(event)
     if (event.event === 'prompt_completed' && event.workspaceId) {
       void this.refreshSessionTitles(event.providerId, event.workspaceId)
     }

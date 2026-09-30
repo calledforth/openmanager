@@ -57,16 +57,20 @@ turn like any other: its output is filed under it, it can be interrupted, and
 completing it sets `doneAt`. A send is refused while it runs, exactly as during
 a turn the user started.
 
-`session.background.stop` ends the tasks it names, or all of them. It settles
+`session.background.stop` ends the tasks it names, or all of them. "All" is
+every task the provider has, which can be more than the 64 a summary lists. It settles
 once the provider has been asked; the tasks leave `backgroundTasks` when the
 provider reports them gone. Interrupting a turn does not stop background tasks,
 and stopping a task does not wake the model.
 
 Background tasks are children of the provider process. The environment never
 stops a process for being idle while it has any, and clears the roster when the
-process exits. A restarted environment forgets them on startup and rests their
-sessions at `idle`. A client that reconnects takes the listing as the whole
-truth: a summary that names no background work has none.
+process exits, and closes the process of a session that is deleted while it
+has any. A restarted environment forgets them on startup with a `session.updated
+{ backgroundTasks: [] }` per session, carrying `status: idle` for one that was
+only running because of them, so a client replaying from a saved cursor hears
+it. A listing is also the whole truth: a summary that names no background work
+has none.
 
 Today only Claude Code reports background work. The Claude runtime emits an
 emptied roster a few seconds late when no turn is in flight, so the session

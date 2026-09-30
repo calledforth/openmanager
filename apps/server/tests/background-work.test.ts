@@ -35,11 +35,13 @@ type RuntimeEvent = Parameters<ReturnType<typeof createThreadService>['onRuntime
  * user sent already open. The provider is driven by hand, in the order Claude
  * Code emits (live-verified on 2.1.285).
  */
-async function setup(durable = true) {
+async function setup(durable = true, onPersistenceError?: (error: unknown) => void) {
   const database = durable
     ? new DatabaseSync(':memory:', { enableForeignKeyConstraints: true })
     : undefined
   const published: EventEnvelope[] = []
+  /** Set to make the next event write report a failure. */
+  const failure = { next: false }
   let events: ReturnType<typeof createPersistentEventService> | undefined
   if (database) {
     runMigrations(database, MIGRATIONS)
@@ -60,14 +62,33 @@ async function setup(durable = true) {
     prompt: vi.fn().mockReturnValue(new Promise(() => undefined)),
     cancel: vi.fn().mockResolvedValue(undefined),
     stopBackgroundTasks: vi.fn().mockResolvedValue(undefined),
+    closeThread: vi.fn().mockResolvedValue(undefined),
   }
   const service = createThreadService(
     runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
     { rejection: () => undefined },
-    events ? events.append : (event) => published.push(event),
+    events
+      ? (event) => {
+          const record = events!.append(event)
+          // The write is queued and then reported as failed, as a busy disk
+          // does it: the batch commits with the next append.
+          if (failure.next) {
+            failure.next = false
+            throw new Error('disk busy')
+          }
+          return record
+        }
+      : (event) => published.push(event),
     undefined,
     registered,
-    database ? { database, flush: events!.flush, appendAtomic: events!.appendAtomic } : {},
+    database
+      ? {
+          database,
+          flush: events!.flush,
+          appendAtomic: events!.appendAtomic,
+          ...(onPersistenceError ? { onPersistenceError } : {}),
+        }
+      : {},
   )
   service.setEnvironmentId('environment-1')
   const dispatch = (name: string, payload: CommandEnvelope['payload']) =>
@@ -169,6 +190,7 @@ async function setup(durable = true) {
     summary,
     statuses,
     published,
+    failure,
   }
 }
 
@@ -297,13 +319,15 @@ describe('background work', () => {
       expect.objectContaining({ threadId: h.created.thread.threadId, taskIds: ['provider-a'] }),
     )
 
+    // Stopping everything names nothing: the provider may be running more
+    // than the roster this host is allowed to list.
     expect(await h.dispatch('session.background.stop', { sessionId: h.sessionId })).toMatchObject({
       type: 'response',
       payload: null,
     })
-    expect(h.runtime.stopBackgroundTasks).toHaveBeenLastCalledWith(
-      expect.objectContaining({ taskIds: ['provider-a', 'provider-b'] }),
-    )
+    const everything = h.runtime.stopBackgroundTasks.mock.lastCall![0]
+    expect(everything).toMatchObject({ threadId: h.created.thread.threadId })
+    expect(everything).not.toHaveProperty('taskIds')
   })
 
   it('treats a task that already ended, or an unknown session, as nothing to stop', async () => {
@@ -343,6 +367,51 @@ describe('background work', () => {
     expect(tasks[0]!.taskId).toBe(before)
   })
 
+  it('ends the background work of a session that is deleted', async () => {
+    const h = await setup()
+    await h.userTurn('provider-a')
+
+    expect(h.dispatch('session.delete', { sessionId: h.sessionId })).toMatchObject({
+      type: 'response',
+    })
+    // Nothing can reach the session to stop it now, and a process with
+    // background work is never stopped for being idle.
+    expect(h.runtime.closeThread).toHaveBeenCalledWith({
+      providerId: 'claude',
+      threadId: h.created.thread.threadId,
+    })
+  })
+
+  it('leaves the process of a deleted session with no background work alone', async () => {
+    const h = await setup()
+    await h.userTurn()
+
+    h.dispatch('session.delete', { sessionId: h.sessionId })
+
+    expect(h.runtime.closeThread).not.toHaveBeenCalled()
+  })
+
+  it('keeps a roster whose write had to be retried, so its tasks can still be stopped', async () => {
+    const failures: unknown[] = []
+    const h = await setup(true, (error) => failures.push(error))
+    await h.userTurn()
+
+    h.failure.next = true
+    h.roster('provider-a')
+    expect(failures).toHaveLength(1)
+
+    const tasks = h.summary().backgroundTasks!
+    expect(tasks).toHaveLength(1)
+    expect(h.summary().status).toBe('running')
+    await h.dispatch('session.background.stop', {
+      sessionId: h.sessionId,
+      taskIds: [tasks[0]!.taskId],
+    })
+    expect(h.runtime.stopBackgroundTasks).toHaveBeenLastCalledWith(
+      expect.objectContaining({ taskIds: ['provider-a'] }),
+    )
+  })
+
   it('mirrors the same lifecycle without a database', async () => {
     const h = await setup(false)
     await h.userTurn('provider-task')
@@ -360,7 +429,8 @@ describe('background work', () => {
 })
 
 describe('background work across a restart', () => {
-  it('forgets tasks that died with the server and rests their session', async () => {
+  /** A database the previous process left behind, with work it was running. */
+  async function reopened(status: string) {
     const directory = await mkdtemp(join(tmpdir(), 'openmanager-background-test-'))
     directories.push(directory)
     const first = openEnvironmentDatabase(directory)
@@ -371,17 +441,65 @@ describe('background work across a restart', () => {
         session_id, workspace_id, provider_id, title, status, background_tasks_json,
         created_at, updated_at
       ) VALUES (
-        'session-1', 'workspace-1', 'claude', 'Build', 'running',
+        'session-1', 'workspace-1', 'claude', 'Build', '${status}',
         '[{"taskId":"task-1","kind":"shell","description":"Run the build"}]', 1, 1
       );
     `)
     first.close()
 
-    const reopened = openEnvironmentDatabase(directory)
-    closers.push(() => reopened.close())
+    const database = openEnvironmentDatabase(directory)
+    const published: EventEnvelope[] = []
+    const events = createPersistentEventService(
+      database,
+      (record) => published.push(record.event),
+      { sessionProviderId: () => 'claude' },
+    )
+    closers.push(() => {
+      events.close()
+      database.close()
+    })
+    const service = createThreadService(
+      { ensureSession: vi.fn(), prompt: vi.fn(), cancel: vi.fn() } as unknown as Pick<
+        AgentRuntime,
+        'ensureSession' | 'prompt' | 'cancel'
+      >,
+      { rejection: () => undefined },
+      events.append,
+      undefined,
+      registered,
+      { database, flush: events.flush, appendAtomic: events.appendAtomic },
+    )
+    service.setEnvironmentId('environment-1')
+    return { database, events, published, service }
+  }
 
-    const session = getSessionSummary(reopened, 'session-1')!
+  it('forgets tasks that died with the server, in a way a reconnecting client replays', async () => {
+    const h = await reopened('running')
+    // Opening the database alone says nothing: a client with a saved cursor
+    // would replay no change and go on showing the dead task.
+    expect(getSessionSummary(h.database, 'session-1')!.backgroundTasks).toHaveLength(1)
+
+    expect(h.service.forgetStaleBackgroundWork()).toBe(1)
+    h.events.flush()
+
+    const session = getSessionSummary(h.database, 'session-1')!
     expect(session.status).toBe('idle')
+    expect(session.backgroundTasks).toBeUndefined()
+    expect(h.published.map((event) => [event.name, event.payload])).toEqual([
+      ['session.updated', { sessionId: 'session-1', backgroundTasks: [], status: 'idle' }],
+    ])
+    // Nothing left to say the second time.
+    expect(h.service.forgetStaleBackgroundWork()).toBe(0)
+  })
+
+  it('leaves a session the restart already marked failed as failed', async () => {
+    const h = await reopened('error')
+
+    h.service.forgetStaleBackgroundWork()
+    h.events.flush()
+
+    const session = getSessionSummary(h.database, 'session-1')!
+    expect(session.status).toBe('error')
     expect(session.backgroundTasks).toBeUndefined()
   })
 })

@@ -352,6 +352,12 @@ export async function startServer(config: ServerConfig) {
     resolveWorkspace,
   })
   threadService.setEnvironmentId(identity.environmentId)
+  try {
+    threadService.forgetStaleBackgroundWork()
+  } catch (error) {
+    // Left for the next start; a stale "running" is wrong but harmless.
+    log('error', 'stale background work was not cleared', { reason: String(error) })
+  }
   onRuntimeEvent = (event) => {
     composerService.onRuntimeEvent(event)
     threadService.onRuntimeEvent(event)

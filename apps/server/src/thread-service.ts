@@ -190,7 +190,11 @@ type InteractionRuntime = Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cance
   Partial<
     Pick<
       AgentRuntime,
-      'respondPermission' | 'respondQuestion' | 'respondPlan' | 'stopBackgroundTasks'
+      | 'respondPermission'
+      | 'respondQuestion'
+      | 'respondPlan'
+      | 'stopBackgroundTasks'
+      | 'closeThread'
     >
   >
 type ThreadRecord = {
@@ -623,6 +627,26 @@ export function createThreadService(
   }
 
   /**
+   * End the background work of a dropped record. Nothing can reach it any
+   * more to stop it, and a provider process with background work is never
+   * stopped for being idle, so it would run on until the server exits.
+   */
+  const abandonBackgroundWork = (item: ThreadRecord) => {
+    if (!item.backgroundTasks?.length) return
+    item.backgroundTasks = undefined
+    item.backgroundTaskIds = undefined
+    void runtime.closeThread
+      ?.({ providerId: item.providerId, threadId: item.thread.threadId })
+      .catch(() => undefined)
+  }
+
+  /** Let go of a record nothing points at any more, and whatever it was running. */
+  const abandon = (item: ThreadRecord) => {
+    abandonTurn(item)
+    abandonBackgroundWork(item)
+  }
+
+  /**
    * Rebuild in-memory records for a session that only exists in SQLite, so the
    * runtime loads the stored provider thread instead of creating a second one.
    * A failed load drops the records again, keeping durable history and letting
@@ -864,6 +888,8 @@ export function createThreadService(
       return { taskId, kind: task.kind, description: task.description.slice(0, 1000) }
     })
     const rests = !record.activeTurn && (record.status === 'idle' || record.status === 'running')
+    // Restated even when it matches what this process believes: the row is
+    // what clients read, and an earlier write may not have reached it yet.
     const status = rests ? (tasks.length ? 'running' : 'idle') : undefined
     try {
       appendEvent(
@@ -876,14 +902,15 @@ export function createThreadService(
           payload: {
             sessionId: record.session.sessionId,
             backgroundTasks: tasks,
-            ...(status && status !== record.status ? { status } : {}),
+            ...(status ? { status } : {}),
           },
         }),
       )
     } catch (error) {
+      // Reported, not dropped: the batch stays queued and commits with the
+      // next append, so memory still has to match what it will say.
       if (!options.onPersistenceError) throw error
       options.onPersistenceError(error, 'session.updated')
-      return
     }
     record.backgroundTasks = tasks
     record.backgroundTaskIds = ids
@@ -1449,6 +1476,43 @@ export function createThreadService(
     },
 
     /**
+     * Forget background work left over from the process that ran before this
+     * one. The tasks were children of provider processes that did not survive
+     * it, so every session still listing some has none, and one held at
+     * `running` only by them is idle. Said through the event log rather than
+     * by editing rows, so a client that reconnects with a saved cursor hears
+     * it too. Call once, before any session can run.
+     */
+    forgetStaleBackgroundWork(): number {
+      const database = options.database
+      if (!database) return 0
+      options.flush?.()
+      const stale = database
+        .prepare('SELECT session_id, status FROM sessions WHERE background_tasks_json IS NOT NULL')
+        .all() as { session_id: string; status: string }[]
+      if (stale.length === 0) return 0
+      const timestamp = new Date().toISOString()
+      const events = stale.map((row) =>
+        ProofEventSchemas['session.updated'].parse({
+          type: 'event',
+          name: 'session.updated',
+          eventId: randomUUID(),
+          timestamp,
+          scope: { type: 'environment', environmentId },
+          payload: {
+            sessionId: row.session_id,
+            backgroundTasks: [],
+            // A turn cut off by the restart already reads as failed.
+            ...(row.status === 'running' ? { status: 'idle' } : {}),
+          },
+        }),
+      )
+      if (options.appendAtomic) options.appendAtomic(events)
+      else for (const event of events) appendEvent(event)
+      return stale.length
+    },
+
+    /**
      * Stop every title being written and start no more. Settles once each
      * title CLI and everything it started has exited, so none outlives the
      * server or writes into a database that is closing.
@@ -1470,7 +1534,7 @@ export function createThreadService(
         if (record.session.workspaceId !== workspaceId) continue
         // A child already went with its parent earlier in this pass.
         if (!sessions.has(record.session.sessionId)) continue
-        for (const item of dropSessionRecords(record.session.sessionId)) abandonTurn(item)
+        for (const item of dropSessionRecords(record.session.sessionId)) abandon(item)
         closed += 1
       }
       return closed
@@ -1887,7 +1951,7 @@ export function createThreadService(
             payload: { session: { ...session, title: parsed.data.payload.title } },
           })
         }
-        for (const item of dropSessionRecords(sessionId)) abandonTurn(item)
+        for (const item of dropSessionRecords(sessionId)) abandon(item)
         return ProofResponseSchemas['session.delete'].parse({
           type: 'response',
           requestId: command.requestId,
@@ -2009,12 +2073,19 @@ export function createThreadService(
         })
         const stops: Promise<void>[] = []
         for (const record of records) {
+          if (!runtime.stopBackgroundTasks) continue
+          if (!taskIds) {
+            // Every task the provider has, not only the ones this host lists:
+            // the roster it announces is capped, the work is not.
+            stops.push(runtime.stopBackgroundTasks(route(record)))
+            continue
+          }
           // Clients name tasks by host id; the provider knows its own.
           const providerTaskIds = [...(record.backgroundTaskIds ?? [])]
-            .filter(([, hostTaskId]) => !taskIds || taskIds.includes(hostTaskId))
+            .filter(([, hostTaskId]) => taskIds.includes(hostTaskId))
             .map(([providerTaskId]) => providerTaskId)
-          // A task that already ended, or a session with none, has nothing to stop.
-          if (providerTaskIds.length === 0 || !runtime.stopBackgroundTasks) continue
+          // A task that already ended has nothing to stop.
+          if (providerTaskIds.length === 0) continue
           stops.push(runtime.stopBackgroundTasks({ ...route(record), taskIds: providerTaskIds }))
         }
         if (stops.length === 0) return stopped
