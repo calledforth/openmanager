@@ -1,7 +1,8 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { deriveConnectionUi } from '../lib/connection-state'
+import { routeTypeForEndpoint, type EnvironmentRoute } from '../lib/environment-store'
 import { CONNECTION_STORIES } from '../stories/connection-states'
 import {
   ConnectionBanner,
@@ -13,6 +14,14 @@ import {
 afterEach(() => {
   cleanup()
 })
+
+function route(
+  endpoint: string,
+  priority = 0,
+  health: EnvironmentRoute['health'] = { status: 'unknown' },
+): EnvironmentRoute {
+  return { type: routeTypeForEndpoint(endpoint), endpoint, priority, health }
+}
 
 describe('connection surfaces', () => {
   it('renders a distinct product surface for every story', () => {
@@ -103,13 +112,13 @@ describe('connection surfaces', () => {
           {
             environmentId: 'env-a',
             label: 'Home',
-            endpoints: ['http://127.0.0.1:43120'],
+            routes: [route('http://127.0.0.1:43120')],
             credential: 'token',
           },
           {
             environmentId: 'env-b',
             label: 'Lab',
-            endpoints: ['https://tunnel.example'],
+            routes: [route('https://tunnel.example')],
             credential: '',
           },
         ]}
@@ -123,5 +132,76 @@ describe('connection surfaces', () => {
     expect(onSelect).toHaveBeenCalledWith('env-b')
     await user.click(screen.getAllByRole('button', { name: 'Remove' })[1]!)
     expect(onRemove).toHaveBeenCalledWith('env-b')
+  })
+
+  it('lists every route with its type and health, and marks the one in use', async () => {
+    const user = userEvent.setup()
+    const onChooseRoute = vi.fn()
+    const onRemoveRoute = vi.fn()
+    const onCheckRoutes = vi.fn()
+    render(
+      <EnvironmentList
+        selectedId="env-a"
+        onChooseRoute={onChooseRoute}
+        onRemoveRoute={onRemoveRoute}
+        onCheckRoutes={onCheckRoutes}
+        environments={[
+          {
+            environmentId: 'env-a',
+            label: 'Home',
+            routes: [
+              route('http://127.0.0.1:43120', 0, { status: 'available' }),
+              route('https://tunnel.example', 1, {
+                status: 'unreachable',
+                message: 'Could not reach https://tunnel.example.',
+              }),
+              route('https://gated.example', 2, { status: 'unauthorized' }),
+            ],
+            credential: 'token',
+          },
+        ]}
+      />,
+    )
+
+    expect(onCheckRoutes).toHaveBeenCalledTimes(1)
+    const rows = within(screen.getByRole('list', { name: 'Routes to Home' })).getAllByRole(
+      'listitem',
+    )
+    expect(rows.map((row) => row.textContent)).toEqual([
+      'http://127.0.0.1:43120Local · Available · In use' + 'Forget',
+      'https://tunnel.exampleRemote · Unavailable' + 'Use' + 'Forget',
+      'https://gated.exampleRemote · Not authorized' + 'Use' + 'Forget',
+    ])
+    expect(screen.getByText('Unavailable')).toHaveAttribute(
+      'title',
+      'Could not reach https://tunnel.example.',
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Use https://tunnel.example' }))
+    expect(onChooseRoute).toHaveBeenCalledWith('env-a', 'https://tunnel.example')
+    await user.click(screen.getByRole('button', { name: 'Forget https://gated.example' }))
+    expect(onRemoveRoute).toHaveBeenCalledWith('env-a', 'https://gated.example')
+  })
+
+  it('offers nothing to choose or forget for the only route of an environment', () => {
+    render(
+      <EnvironmentList
+        selectedId={null}
+        onChooseRoute={vi.fn()}
+        onRemoveRoute={vi.fn()}
+        environments={[
+          {
+            environmentId: 'env-a',
+            label: 'Home',
+            routes: [route('http://127.0.0.1:43120')],
+            credential: '',
+          },
+        ]}
+      />,
+    )
+    expect(screen.getByText('Not checked')).toBeInTheDocument()
+    // Selecting the environment already uses its first route.
+    expect(screen.queryByRole('button', { name: /^Use/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Forget/ })).not.toBeInTheDocument()
   })
 })

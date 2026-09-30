@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Button } from '@openmanager/app-core/components/fluid/ui/button'
 import {
   connectionActionLabel,
@@ -8,8 +8,12 @@ import {
 import {
   parseEnvironmentCredential,
   parseEnvironmentEndpoint,
+  routeTypeLabel,
+  type EnvironmentRoute,
+  type RouteHealthStatus,
   type StoredEnvironment,
 } from '../lib/environment-store'
+import { routeHealthLabel } from '../lib/route-health'
 import { cn } from '../lib/utils'
 
 // Tend's connect field: borderless, sits on the hover tint and darkens on focus.
@@ -22,6 +26,9 @@ export type ConnectionHandlers = {
   onChangeEnvironment?: () => void
   onSelectEnvironment?: (environmentId: string) => void
   onRemoveEnvironment?: (environmentId: string) => void
+  onChooseRoute?: (environmentId: string, endpoint: string) => void
+  onRemoveRoute?: (environmentId: string, endpoint: string) => void
+  onCheckRoutes?: () => void
 }
 
 function runAction(action: ConnectionAction, handlers: ConnectionHandlers, endpoint?: string) {
@@ -138,17 +145,92 @@ export function EnvironmentConnectForm({
   )
 }
 
+const HEALTH_TONES: Record<RouteHealthStatus, string> = {
+  unknown: 'text-faint',
+  available: 'text-[var(--basis-session-cube-ready)]',
+  unreachable: 'text-[var(--basis-session-cube-needs)]',
+  unauthorized: 'text-[var(--basis-session-cube-needs)]',
+}
+
+/**
+ * One way to reach an environment: where it points, whether it answers, and
+ * the choice to use it. The environment's first route needs no such choice:
+ * it is the one in use, or the one selecting the environment will use.
+ */
+function RouteRow({
+  route,
+  inUse,
+  onUse,
+  onForget,
+}: {
+  route: EnvironmentRoute
+  inUse: boolean
+  onUse?: () => void
+  onForget?: () => void
+}) {
+  return (
+    <li className="flex items-center justify-between gap-2">
+      <div className="min-w-0">
+        <p className="truncate font-mono text-[12px] text-muted-foreground">{route.endpoint}</p>
+        <p className="text-[12px] text-faint">
+          {routeTypeLabel(route.type)}
+          {' · '}
+          <span className={HEALTH_TONES[route.health.status]} title={route.health.message}>
+            {routeHealthLabel(route.health.status)}
+          </span>
+          {inUse ? ' · In use' : ''}
+        </p>
+      </div>
+      <div className="flex shrink-0 gap-1">
+        {onUse ? (
+          <Button
+            type="button"
+            variant="secondary"
+            size="compact"
+            aria-label={`Use ${route.endpoint}`}
+            onClick={onUse}
+          >
+            Use
+          </Button>
+        ) : null}
+        {onForget ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="compact"
+            aria-label={`Forget ${route.endpoint}`}
+            onClick={onForget}
+          >
+            Forget
+          </Button>
+        ) : null}
+      </div>
+    </li>
+  )
+}
+
 export function EnvironmentList({
   environments,
   selectedId,
   onSelect,
   onRemove,
+  onChooseRoute,
+  onRemoveRoute,
+  onCheckRoutes,
 }: {
   environments: StoredEnvironment[]
   selectedId: string | null
   onSelect?: (environmentId: string) => void
   onRemove?: (environmentId: string) => void
+  onChooseRoute?: (environmentId: string, endpoint: string) => void
+  onRemoveRoute?: (environmentId: string, endpoint: string) => void
+  /** Called when the list appears, so the health it shows is current. */
+  onCheckRoutes?: () => void
 }) {
+  useEffect(() => {
+    onCheckRoutes?.()
+  }, [onCheckRoutes])
+
   if (environments.length === 0) return null
 
   return (
@@ -168,9 +250,6 @@ export function EnvironmentList({
                 </p>
                 <p className="mt-0.5 font-mono text-[12px] text-faint">
                   {environment.environmentId}
-                </p>
-                <p className="mt-1 font-mono text-[12px] text-muted-foreground">
-                  {environment.endpoints.join(' · ')}
                 </p>
                 <p className="mt-1 text-[12px] text-muted-foreground">
                   {environment.credential ? 'Client token saved' : 'No client token'}
@@ -197,6 +276,28 @@ export function EnvironmentList({
                 ) : null}
               </div>
             </div>
+            <ul
+              className="mt-2.5 flex flex-col gap-2"
+              aria-label={`Routes to ${environment.label}`}
+            >
+              {environment.routes.map((route, index) => (
+                <RouteRow
+                  key={route.endpoint}
+                  route={route}
+                  inUse={selected && index === 0}
+                  onUse={
+                    onChooseRoute && index > 0
+                      ? () => onChooseRoute(environment.environmentId, route.endpoint)
+                      : undefined
+                  }
+                  onForget={
+                    onRemoveRoute && environment.routes.length > 1
+                      ? () => onRemoveRoute(environment.environmentId, route.endpoint)
+                      : undefined
+                  }
+                />
+              ))}
+            </ul>
           </li>
         )
       })}
@@ -218,7 +319,7 @@ export function ConnectionScreen({
   const choosingSaved = state.kind === 'no_environment' && environments.length > 0
   const title = choosingSaved ? 'Select an environment' : state.title
   const description = choosingSaved
-    ? 'Choose a saved environment or add another endpoint. A second URL for the same environment ID updates the existing record.'
+    ? 'Choose a saved environment and the route to reach it by, or add another endpoint. A second URL for an environment you already have is added to it as another route.'
     : state.description
 
   // Tend's connect page: a narrow column, vertically centred and lifted a
@@ -235,6 +336,9 @@ export function ConnectionScreen({
               selectedId={selectedId}
               onSelect={handlers.onSelectEnvironment}
               onRemove={handlers.onRemoveEnvironment}
+              onChooseRoute={handlers.onChooseRoute}
+              onRemoveRoute={handlers.onRemoveRoute}
+              onCheckRoutes={handlers.onCheckRoutes}
             />
             <EnvironmentConnectForm
               className={choosingSaved ? 'mt-4' : 'mt-7'}

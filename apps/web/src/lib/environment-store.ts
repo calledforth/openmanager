@@ -2,13 +2,54 @@ export const ENVIRONMENT_STORAGE_KEY = 'openmanager-environments'
 export const LEGACY_ENVIRONMENT_STORAGE_KEY = 'openmanager-environment'
 export const DEFAULT_ENVIRONMENT_LABEL = 'Unnamed environment'
 
-const REGISTRY_VERSION = 1
+const REGISTRY_VERSION = 2
 const MAX_CREDENTIAL_LENGTH = 1024
+const MAX_HEALTH_MESSAGE_LENGTH = 300
+
+/**
+ * How a route reaches the environment. `local` and `remote` are what this
+ * client can tell on its own; the field is an open string so a type the
+ * environment reports later (`cloudflare`, `tailscale`, `lan`, `ssh`) is kept
+ * as written, without another storage version.
+ */
+export type RouteType = string
+
+export const ROUTE_HEALTH_STATUSES = [
+  'unknown',
+  'available',
+  'unreachable',
+  'unauthorized',
+] as const
+export type RouteHealthStatus = (typeof ROUTE_HEALTH_STATUSES)[number]
+
+/** The last thing this client learned about a route, and when that changed. */
+export type RouteHealth = {
+  status: RouteHealthStatus
+  /** ISO time the status last changed. Absent while the route is unchecked. */
+  changedAt?: string
+  message?: string
+}
+
+export type RouteHealthReport = { status: RouteHealthStatus; message?: string }
+
+/**
+ * One way to reach an environment. The endpoint is a replaceable network
+ * detail: identity, the credential and every session belong to the
+ * environment, never to a route.
+ */
+export type EnvironmentRoute = {
+  type: RouteType
+  endpoint: string
+  /** Order of preference, `0` first. The route in use is the lowest one. */
+  priority: number
+  health: RouteHealth
+}
 
 export type StoredEnvironment = {
   environmentId: string
   label: string
-  endpoints: string[]
+  /** Never empty, sorted by priority. */
+  routes: EnvironmentRoute[]
   credential: string
 }
 
@@ -100,37 +141,160 @@ function parseLabel(raw: unknown): string {
   return label || DEFAULT_ENVIRONMENT_LABEL
 }
 
-function parseEndpoints(raw: unknown): string[] {
-  if (!Array.isArray(raw)) return []
-  const endpoints: string[] = []
-  for (const item of raw) {
-    if (typeof item !== 'string') continue
-    const endpoint = parseEnvironmentEndpoint(item)
-    if (endpoint && !endpoints.includes(endpoint)) endpoints.push(endpoint)
+const ROUTE_TYPE_PATTERN = /^[a-z][a-z0-9-]{0,31}$/
+const UNKNOWN_HEALTH: RouteHealth = { status: 'unknown' }
+
+/** A loopback address is this machine; anything else is reached over a network. */
+export function routeTypeForEndpoint(endpoint: string): RouteType {
+  return isLoopbackEnvironmentEndpoint(endpoint) ? 'local' : 'remote'
+}
+
+const ROUTE_TYPE_LABELS: Record<string, string> = {
+  local: 'Local',
+  remote: 'Remote',
+  cloudflare: 'Cloudflare',
+  tailscale: 'Tailscale',
+  lan: 'LAN',
+  ssh: 'SSH',
+}
+
+export function routeTypeLabel(type: RouteType): string {
+  return ROUTE_TYPE_LABELS[type] ?? type
+}
+
+function parseRouteType(raw: unknown, endpoint: string): RouteType {
+  return typeof raw === 'string' && ROUTE_TYPE_PATTERN.test(raw)
+    ? raw
+    : routeTypeForEndpoint(endpoint)
+}
+
+function parseHealthMessage(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined
+  return raw.trim().slice(0, MAX_HEALTH_MESSAGE_LENGTH) || undefined
+}
+
+function parseRouteHealth(raw: unknown): RouteHealth {
+  if (!raw || typeof raw !== 'object') return UNKNOWN_HEALTH
+  const record = raw as Record<string, unknown>
+  const status = ROUTE_HEALTH_STATUSES.find((item) => item === record.status)
+  if (!status || status === 'unknown') return UNKNOWN_HEALTH
+  const health: RouteHealth = { status }
+  if (typeof record.changedAt === 'string' && !Number.isNaN(Date.parse(record.changedAt))) {
+    health.changedAt = record.changedAt
   }
-  return endpoints
+  const message = parseHealthMessage(record.message)
+  if (message) health.message = message
+  return health
+}
+
+/** One route per endpoint, in priority order, renumbered from zero. */
+function orderRoutes(routes: readonly EnvironmentRoute[]): EnvironmentRoute[] {
+  const unique: EnvironmentRoute[] = []
+  for (const route of routes) {
+    if (!unique.some((item) => item.endpoint === route.endpoint)) unique.push(route)
+  }
+  return unique
+    .map((route, index) => ({ route, index }))
+    .sort((left, right) => left.route.priority - right.route.priority || left.index - right.index)
+    .map(({ route }, priority) => (route.priority === priority ? route : { ...route, priority }))
+}
+
+function parseRoutes(raw: unknown): EnvironmentRoute[] {
+  if (!Array.isArray(raw)) return []
+  const routes: EnvironmentRoute[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const record = item as Record<string, unknown>
+    const endpoint =
+      typeof record.endpoint === 'string' ? parseEnvironmentEndpoint(record.endpoint) : null
+    if (!endpoint) continue
+    routes.push({
+      type: parseRouteType(record.type, endpoint),
+      endpoint,
+      priority:
+        typeof record.priority === 'number' && Number.isFinite(record.priority)
+          ? record.priority
+          : Number.MAX_SAFE_INTEGER,
+      health: parseRouteHealth(record.health),
+    })
+  }
+  return orderRoutes(routes)
+}
+
+/** Version 1 kept a bare endpoint list, most recently used first. */
+function routesFromEndpoints(raw: unknown): EnvironmentRoute[] {
+  if (!Array.isArray(raw)) return []
+  return parseRoutes(
+    raw
+      .filter((item): item is string => typeof item === 'string')
+      .map((endpoint, priority) => ({ endpoint, priority })),
+  )
 }
 
 export function parseStoredEnvironment(input: unknown): StoredEnvironment | null {
   if (!input || typeof input !== 'object') return null
   const record = input as Record<string, unknown>
   const environmentId = parseEnvironmentId(record.environmentId)
-  const endpoints = parseEndpoints(record.endpoints)
-  if (!environmentId || endpoints.length === 0) return null
+  const routes =
+    record.routes !== undefined ? parseRoutes(record.routes) : routesFromEndpoints(record.endpoints)
+  if (!environmentId || routes.length === 0) return null
   const credential =
     typeof record.credential === 'string' ? parseEnvironmentCredential(record.credential) : ''
   return {
     environmentId,
     label: parseLabel(record.label),
-    endpoints,
+    routes,
     credential,
   }
 }
 
-function rememberEndpoint(endpoints: readonly string[], endpoint: string): string[] {
-  return [endpoint, ...endpoints.filter((item) => item !== endpoint)]
+/** The route this client uses for the environment: the lowest priority. */
+export function preferredRoute(environment: StoredEnvironment): EnvironmentRoute {
+  return environment.routes[0]!
 }
 
+function applyHealth(current: RouteHealth, report: RouteHealthReport, now: Date): RouteHealth {
+  const message = report.status === 'unknown' ? undefined : parseHealthMessage(report.message)
+  if (current.status === report.status && current.message === message) return current
+  if (report.status === 'unknown') return UNKNOWN_HEALTH
+  return { status: report.status, changedAt: now.toISOString(), ...(message ? { message } : {}) }
+}
+
+/** Put `endpoint` first, adding it when the environment has not seen it yet. */
+function preferRoute(
+  routes: readonly EnvironmentRoute[],
+  endpoint: string,
+  report?: RouteHealthReport,
+  now: Date = new Date(),
+): EnvironmentRoute[] {
+  const known = routes.find((item) => item.endpoint === endpoint)
+  const base: EnvironmentRoute = known ?? {
+    type: routeTypeForEndpoint(endpoint),
+    endpoint,
+    priority: 0,
+    health: UNKNOWN_HEALTH,
+  }
+  const health = report ? applyHealth(base.health, report, now) : base.health
+  return orderRoutes([
+    { ...base, health, priority: -1 },
+    ...routes.filter((item) => item.endpoint !== endpoint),
+  ])
+}
+
+function replaceEnvironment(
+  registry: EnvironmentRegistry,
+  record: StoredEnvironment,
+): StoredEnvironment[] {
+  return registry.environments.map((item) =>
+    item.environmentId === record.environmentId ? record : item,
+  )
+}
+
+/**
+ * Add or update an environment by its ID and make `endpoint` the route in
+ * use. A URL the environment has not seen becomes another route to the same
+ * record; it never creates a second environment.
+ */
 export function upsertStoredEnvironment(
   registry: EnvironmentRegistry,
   input: {
@@ -138,7 +302,10 @@ export function upsertStoredEnvironment(
     endpoint: string
     label?: string
     credential?: string
+    /** What reaching the endpoint just showed. Omitted leaves its health alone. */
+    health?: RouteHealthReport
   },
+  now: Date = new Date(),
 ): EnvironmentRegistry | null {
   const environmentId = parseEnvironmentId(input.environmentId)
   const endpoint = parseEnvironmentEndpoint(input.endpoint)
@@ -150,21 +317,82 @@ export function upsertStoredEnvironment(
     ? {
         environmentId,
         label: input.label !== undefined ? parseLabel(input.label) : existing.label,
-        endpoints: rememberEndpoint(existing.endpoints, endpoint),
+        routes: preferRoute(existing.routes, endpoint, input.health, now),
         credential: credential || existing.credential,
       }
     : {
         environmentId,
         label: parseLabel(input.label),
-        endpoints: [endpoint],
+        routes: preferRoute([], endpoint, input.health, now),
         credential,
       }
 
   const environments = existing
-    ? registry.environments.map((item) => (item.environmentId === environmentId ? record : item))
+    ? replaceEnvironment(registry, record)
     : [...registry.environments, record]
 
   return { selectedId: environmentId, environments }
+}
+
+/**
+ * Make `endpoint` the route in use for its environment and select that
+ * environment. Returns the same registry when that is already the case, or
+ * when the environment has no such route.
+ */
+export function preferStoredRoute(
+  registry: EnvironmentRegistry,
+  environmentId: string,
+  endpoint: string,
+): EnvironmentRegistry {
+  const existing = findStoredEnvironment(registry.environments, environmentId)
+  if (!existing || !existing.routes.some((item) => item.endpoint === endpoint)) return registry
+  if (registry.selectedId === environmentId && preferredRoute(existing).endpoint === endpoint) {
+    return registry
+  }
+  const record = { ...existing, routes: preferRoute(existing.routes, endpoint) }
+  return { selectedId: environmentId, environments: replaceEnvironment(registry, record) }
+}
+
+/**
+ * Forget one route. The last route stays: an environment with no way to reach
+ * it is removed as a whole instead.
+ */
+export function removeStoredRoute(
+  registry: EnvironmentRegistry,
+  environmentId: string,
+  endpoint: string,
+): EnvironmentRegistry {
+  const existing = findStoredEnvironment(registry.environments, environmentId)
+  if (!existing || existing.routes.length < 2) return registry
+  if (!existing.routes.some((item) => item.endpoint === endpoint)) return registry
+  const record = {
+    ...existing,
+    routes: orderRoutes(existing.routes.filter((item) => item.endpoint !== endpoint)),
+  }
+  return { ...registry, environments: replaceEnvironment(registry, record) }
+}
+
+/**
+ * Record what reaching a route showed. Returns the same registry when nothing
+ * changed, so a repeated report is not a write.
+ */
+export function setStoredRouteHealth(
+  registry: EnvironmentRegistry,
+  environmentId: string,
+  endpoint: string,
+  report: RouteHealthReport,
+  now: Date = new Date(),
+): EnvironmentRegistry {
+  const existing = findStoredEnvironment(registry.environments, environmentId)
+  const route = existing?.routes.find((item) => item.endpoint === endpoint)
+  if (!existing || !route) return registry
+  const health = applyHealth(route.health, report, now)
+  if (health === route.health) return registry
+  const record = {
+    ...existing,
+    routes: existing.routes.map((item) => (item === route ? { ...item, health } : item)),
+  }
+  return { ...registry, environments: replaceEnvironment(registry, record) }
 }
 
 export function removeStoredEnvironment(
@@ -216,7 +444,10 @@ export function environmentRegistriesEqual(
 function parseRegistryDocument(parsed: unknown): EnvironmentRegistry | null {
   if (!parsed || typeof parsed !== 'object') return null
   const document = parsed as Record<string, unknown>
-  if (document.version !== REGISTRY_VERSION || !Array.isArray(document.environments)) return null
+  // Version 1 differs only in each record's route list, which
+  // `parseStoredEnvironment` reads in either shape.
+  const known = document.version === REGISTRY_VERSION || document.version === 1
+  if (!known || !Array.isArray(document.environments)) return null
   const environments: StoredEnvironment[] = []
   for (const item of document.environments) {
     const record = parseStoredEnvironment(item)
@@ -245,7 +476,7 @@ function migrateLegacyRecord(parsed: unknown): EnvironmentRegistry | null {
       {
         environmentId,
         label: parseLabel(record.label),
-        endpoints: [endpoint],
+        routes: preferRoute([], endpoint),
         credential: '',
       },
     ],
@@ -266,7 +497,19 @@ export function readEnvironmentRegistry(
   try {
     const store = storage ?? window.localStorage
     const raw = store.getItem(ENVIRONMENT_STORAGE_KEY)
-    if (raw) return parseRegistryDocument(JSON.parse(raw)) ?? EMPTY_REGISTRY
+    if (raw) {
+      const document: unknown = JSON.parse(raw)
+      const registry = parseRegistryDocument(document)
+      if (!registry) return EMPTY_REGISTRY
+      if ((document as { version?: unknown }).version !== REGISTRY_VERSION) {
+        try {
+          store.setItem?.(ENVIRONMENT_STORAGE_KEY, serializeRegistry(registry))
+        } catch {
+          /* keep the in-memory upgrade even if persist fails */
+        }
+      }
+      return registry
+    }
 
     const legacy = store.getItem(LEGACY_ENVIRONMENT_STORAGE_KEY)
     if (!legacy) return EMPTY_REGISTRY

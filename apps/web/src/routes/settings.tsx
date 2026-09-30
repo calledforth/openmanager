@@ -247,6 +247,9 @@ function EnvironmentsPanel() {
     connect,
     selectEnvironment,
     removeEnvironment,
+    chooseRoute,
+    removeRoute,
+    checkRoutes,
     changeEnvironment,
   } = useConnection()
   const status = `${ui.title}${ui.environmentLabel ? ` · ${ui.environmentLabel}` : ''}`
@@ -257,8 +260,8 @@ function EnvironmentsPanel() {
         title="Saved environments"
         description={
           <>
-            {status}. Environments are keyed by their bootstrap ID; each keeps its endpoints and an
-            optional client token.
+            {status}. Each environment keeps one client token and every route that reaches it. You
+            choose the route; it is never switched for you.
           </>
         }
       >
@@ -271,6 +274,9 @@ function EnvironmentsPanel() {
               selectedId={selectedId}
               onSelect={selectEnvironment}
               onRemove={removeEnvironment}
+              onChooseRoute={chooseRoute}
+              onRemoveRoute={removeRoute}
+              onCheckRoutes={checkRoutes}
             />
             {selectedId ? (
               <Button type="button" variant="tertiary" className="mt-3" onClick={changeEnvironment}>
@@ -283,7 +289,7 @@ function EnvironmentsPanel() {
       <ConnectedEnvironmentSettings />
       <SettingsSection
         title="Add environment"
-        description="A second URL for the same environment ID updates the existing record."
+        description="A second URL for an environment you already have is added to it as another route."
       >
         <EnvironmentConnectForm
           className="mt-3"

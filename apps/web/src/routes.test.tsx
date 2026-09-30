@@ -1,5 +1,5 @@
 import { PROTOCOL_VERSION } from '@openmanager/protocol'
-import { act, cleanup, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createMockEnvironmentClient } from '@openmanager/environment-client'
@@ -65,7 +65,12 @@ function storedRegistry() {
     environments: Array<{
       environmentId: string
       label: string
-      endpoints: string[]
+      routes: Array<{
+        type: string
+        endpoint: string
+        priority: number
+        health: { status: string; changedAt?: string; message?: string }
+      }>
       credential: string
     }>
   }
@@ -277,7 +282,7 @@ describe('web routes', () => {
         {
           environmentId: 'env-local',
           label: 'Local environment',
-          endpoints: ['http://127.0.0.1:43120'],
+          routes: [{ type: 'local', endpoint: 'http://127.0.0.1:43120', priority: 0 }],
           credential: ownerCredential,
         },
       ],
@@ -343,7 +348,7 @@ describe('web routes', () => {
         {
           environmentId: 'env-local',
           label: 'Local environment',
-          endpoints: ['http://127.0.0.1:43120'],
+          routes: [{ type: 'local', endpoint: 'http://127.0.0.1:43120', priority: 0 }],
           credential: 'client-token',
         },
       ],
@@ -372,14 +377,20 @@ describe('web routes', () => {
     expect(storedRegistry().environments).toEqual([
       expect.objectContaining({
         environmentId: 'env-remote',
-        endpoints: ['https://tunnel.example'],
+        routes: [
+          expect.objectContaining({
+            type: 'remote',
+            endpoint: 'https://tunnel.example',
+            priority: 0,
+          }),
+        ],
         credential: '',
       }),
     ])
     expect(JSON.stringify(fetchMock.mock.calls)).not.toContain('local-owner')
   })
 
-  it('merges a second URL for the same environment ID', async () => {
+  it('adds a second URL for the same environment ID as another route', async () => {
     const user = userEvent.setup()
     seedRegistry([
       {
@@ -404,10 +415,109 @@ describe('web routes', () => {
       {
         environmentId: 'env-local',
         label: 'Home lab',
-        endpoints: ['https://tunnel.example', 'http://127.0.0.1:43120'],
+        routes: [
+          expect.objectContaining({
+            type: 'remote',
+            endpoint: 'https://tunnel.example',
+            priority: 0,
+          }),
+          expect.objectContaining({
+            type: 'local',
+            endpoint: 'http://127.0.0.1:43120',
+            priority: 1,
+          }),
+        ],
         credential: 'client-token',
       },
     ])
+    // One environment, reachable two ways: the new route is the one in use.
+    const routes = within(screen.getByRole('list', { name: 'Routes to Home lab' }))
+    expect(routes.getAllByRole('listitem')).toHaveLength(2)
+    expect(routes.getByText('https://tunnel.example')).toBeInTheDocument()
+    expect(routes.getByRole('button', { name: 'Use http://127.0.0.1:43120' })).toBeInTheDocument()
+    expect(
+      routes.queryByRole('button', { name: 'Use https://tunnel.example' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('switches route only when asked, keeping the environment, its token and the other route', async () => {
+    const user = userEvent.setup()
+    seedRegistry([
+      {
+        environmentId: 'env-local',
+        endpoints: ['http://127.0.0.1:43120', 'https://tunnel.example'],
+        credential: 'client-token',
+      },
+    ])
+    mockBootstrap({
+      'http://127.0.0.1:43120': { environmentId: 'env-local' },
+      'https://tunnel.example': { environmentId: 'env-local' },
+    })
+
+    renderWebApp('/settings')
+    await screen.findByText(/Connected · Local environment/)
+    await user.click(await screen.findByRole('button', { name: 'Use https://tunnel.example' }))
+
+    await waitFor(() =>
+      expect(storedRegistry().environments[0]?.routes.map((route) => route.endpoint)).toEqual([
+        'https://tunnel.example',
+        'http://127.0.0.1:43120',
+      ]),
+    )
+    expect(storedRegistry()).toMatchObject({
+      selectedId: 'env-local',
+      environments: [{ environmentId: 'env-local', credential: 'client-token' }],
+    })
+    expect(storedRegistry().environments).toHaveLength(1)
+    expect(
+      await screen.findByRole('button', { name: 'Use http://127.0.0.1:43120' }),
+    ).toBeInTheDocument()
+  })
+
+  it('shows which saved routes answer and forgets one on request', async () => {
+    const user = userEvent.setup()
+    seedRegistry([
+      {
+        environmentId: 'env-local',
+        endpoints: ['http://127.0.0.1:43120', 'https://tunnel.example'],
+      },
+    ])
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).startsWith('https://tunnel.example/'))
+          throw new TypeError('Failed to fetch')
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            protocolVersion: PROTOCOL_VERSION,
+            capabilities: ['connection.heartbeat'],
+            environmentId: 'env-local',
+            label: 'Local environment',
+          }),
+        }
+      }),
+    )
+
+    renderWebApp('/settings')
+    await screen.findByText(/Connected · Local environment/)
+    const routes = () => within(screen.getByRole('list', { name: 'Routes to Local environment' }))
+    // The tunnel is checked because the list is on screen; it is not in use.
+    expect(await routes().findByText('Unavailable')).toBeInTheDocument()
+    expect(storedRegistry().environments[0]?.routes[1]).toMatchObject({
+      endpoint: 'https://tunnel.example',
+      health: { status: 'unreachable' },
+    })
+    // A failing route is reported, never swapped: localhost is still the one in use.
+    expect(storedRegistry().environments[0]?.routes[0]?.endpoint).toBe('http://127.0.0.1:43120')
+
+    await user.click(routes().getByRole('button', { name: 'Forget https://tunnel.example' }))
+    expect(storedRegistry().environments[0]?.routes.map((route) => route.endpoint)).toEqual([
+      'http://127.0.0.1:43120',
+    ])
+    // The last route cannot be forgotten; removing the environment is the way out.
+    expect(routes().queryByRole('button', { name: /^Forget/ })).not.toBeInTheDocument()
   })
 
   it('selects and removes saved environments without wiping the other records', async () => {

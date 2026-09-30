@@ -6,13 +6,16 @@ import {
 import { EnvironmentClientProvider } from '@openmanager/app-core/providers/environment-client'
 import { environmentSocketUrl } from '../lib/environment-socket'
 import { findStoredEnvironment } from '../lib/environment-store'
+import { routeHealthFromConnection } from '../lib/route-health'
 import { useConnection } from './connection-provider'
 
 /**
  * Owns the WebSocket client for the selected environment. The client exists
  * only once bootstrap has proven the endpoint is compatible and the selection
  * carries an environment ID; it is replaced whenever the endpoint, credential,
- * or environment identity changes.
+ * or environment identity changes. Identity never changes with the endpoint:
+ * a different route to the same environment gets a new socket and the same
+ * environment ID, so sessions and the credential carry over.
  */
 export function WebEnvironmentClientProvider({
   children,
@@ -21,7 +24,7 @@ export function WebEnvironmentClientProvider({
   children: ReactNode
   createClient?: typeof createWebSocketEnvironmentClient
 }) {
-  const { ui, environment, environments, retryNonce } = useConnection()
+  const { ui, environment, environments, retryNonce, reportRouteHealth } = useConnection()
   const endpoint = environment.status === 'selected' ? environment.endpoint : null
   // Identity comes only from the selection's environment ID (filled from the
   // registry once bootstrap has answered). An endpoint can belong to several
@@ -47,12 +50,24 @@ export function WebEnvironmentClientProvider({
     }
     const next = createClient({ url: environmentSocketUrl(endpoint), credential, environmentId })
     setClient(next)
+    // What the socket learns is about the route it dialled, so it is filed on
+    // that route. The store notifies on every event; only a changed connection
+    // is worth reading.
+    let seen: unknown
+    const unsubscribe = next.subscribe(() => {
+      const { connection } = next.getState()
+      if (connection === seen) return
+      seen = connection
+      const report = routeHealthFromConnection(connection)
+      if (report) reportRouteHealth(environmentId, endpoint, report)
+    })
     next.connect()
     return () => {
+      unsubscribe()
       next.dispose()
       setClient((current) => (current === next ? null : current))
     }
-  }, [createClient, credential, endpoint, environmentId, alive])
+  }, [createClient, credential, endpoint, environmentId, alive, reportRouteHealth])
 
   // A manual retry, or the network coming back, should dial now rather than at
   // the end of the current backoff window. connect() on a live client is a

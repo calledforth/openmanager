@@ -24,19 +24,30 @@ import {
 import {
   EMPTY_REGISTRY,
   environmentRegistriesEqual,
+  findStoredEnvironment,
   isLoopbackEnvironmentEndpoint,
   parseEnvironmentCredential,
   parseEnvironmentEndpoint,
+  preferredRoute,
+  preferStoredRoute,
   readEnvironmentRegistry,
   removeStoredEnvironment,
+  removeStoredRoute,
   selectedStoredEnvironment,
   selectStoredEnvironment,
+  setStoredRouteHealth,
   upsertStoredEnvironment,
   writeEnvironmentRegistry,
   type EnvironmentRegistry,
+  type RouteHealthReport,
   type StoredEnvironment,
 } from '../lib/environment-store'
 import { fetchLocalOwner } from '../lib/local-owner'
+import {
+  probeRouteHealth,
+  routeHealthFromBootstrap,
+  WRONG_ENVIRONMENT_MESSAGE,
+} from '../lib/route-health'
 
 type PendingConnect = {
   endpoint: string
@@ -57,6 +68,18 @@ type ConnectionValue = {
   connect: (endpoint: string, credential?: string) => void
   selectEnvironment: (environmentId: string) => void
   removeEnvironment: (environmentId: string) => void
+  /**
+   * Reach the environment through this route from now on, selecting the
+   * environment if it is not the one in use. The choice is the user's: a route
+   * that stops answering is reported, never swapped for another.
+   */
+  chooseRoute: (environmentId: string, endpoint: string) => void
+  /** Forget one route. The last route of an environment cannot be forgotten. */
+  removeRoute: (environmentId: string, endpoint: string) => void
+  /** Record what the live connection learned about the route it is using. */
+  reportRouteHealth: (environmentId: string, endpoint: string, report: RouteHealthReport) => void
+  /** Ask every saved route that is not in use whether it still answers. */
+  checkRoutes: () => void
   retry: () => void
   changeEnvironment: () => void
   /**
@@ -76,7 +99,9 @@ function toSelection(
   pending: PendingConnect | null,
 ): EnvironmentSelection {
   if (pending) {
-    const known = registry.environments.find((item) => item.endpoints.includes(pending.endpoint))
+    const known = registry.environments.find((item) =>
+      item.routes.some((route) => route.endpoint === pending.endpoint),
+    )
     return {
       status: 'selected',
       endpoint: pending.endpoint,
@@ -88,7 +113,7 @@ function toSelection(
   if (!selected) return { status: 'none' }
   return {
     status: 'selected',
-    endpoint: selected.endpoints[0]!,
+    endpoint: preferredRoute(selected).endpoint,
     environmentId: selected.environmentId,
     label: selected.label,
   }
@@ -140,17 +165,38 @@ export function ConnectionProvider({
   const online = useSyncExternalStore(subscribeToNetworkStatus, isBrowserOnline, onlineOnServer)
   const wasOffline = useRef(false)
 
-  const persist = useCallback((next: EnvironmentRegistry) => {
-    setRegistry(next)
-    try {
-      writeEnvironmentRegistry(next)
-    } catch {
-      return
+  // Route probes and socket reports land between renders, so every change is
+  // computed from the latest registry rather than the one a render captured.
+  const registryRef = useRef(registry)
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
     }
   }, [])
 
+  /** Apply a change and persist it. Returns null when the change was refused. */
+  const update = useCallback(
+    (change: (current: EnvironmentRegistry) => EnvironmentRegistry | null) => {
+      const current = registryRef.current
+      const next = change(current)
+      if (!next) return null
+      if (next === current || environmentRegistriesEqual(next, current)) return current
+      registryRef.current = next
+      setRegistry(next)
+      writeEnvironmentRegistry(next)
+      return next
+    },
+    [],
+  )
+
   const environment = preview?.environment ?? toSelection(registry, pending)
   const endpoint = environment.status === 'selected' ? environment.endpoint : null
+  // Identity for a health report comes from the stored selection only. While a
+  // connect is pending, the endpoint has not yet proven which environment it is.
+  const storedId =
+    !pending && environment.status === 'selected' ? environment.environmentId : undefined
 
   const bootstrapQuery = useQuery({
     queryKey: ['environment-bootstrap', endpoint, bootstrapNonce],
@@ -169,14 +215,27 @@ export function ConnectionProvider({
     [bootstrapQuery.data, endpoint],
   )
 
+  // A bootstrap answer becomes route health once, when it arrives. The socket
+  // reports on the same route afterwards and must not be overwritten by an
+  // answer that is already on record.
+  const recordedBootstrap = useRef<BootstrapOutcome | null>(null)
+
   useEffect(() => {
-    if (preview) return
+    if (preview || !endpoint) return
+    const fresh = recordedBootstrap.current !== liveBootstrap
+    if (liveBootstrap.status === 'unreachable' || liveBootstrap.status === 'unauthorized') {
+      if (!fresh) return
+      recordedBootstrap.current = liveBootstrap
+      const report = storedId ? routeHealthFromBootstrap(liveBootstrap, storedId) : null
+      if (storedId && report) {
+        update((current) => setStoredRouteHealth(current, storedId, endpoint, report))
+      }
+      return
+    }
     if (liveBootstrap.status !== 'ready' && liveBootstrap.status !== 'incompatible_protocol') return
-    if (!liveBootstrap.environmentId || !endpoint) return
-    if (
-      pending?.claimedEnvironmentId &&
-      pending.claimedEnvironmentId !== liveBootstrap.environmentId
-    ) {
+    const answeredId = liveBootstrap.environmentId
+    if (!answeredId) return
+    if (pending?.claimedEnvironmentId && pending.claimedEnvironmentId !== answeredId) {
       setHasConnected(false)
       if (localOwnerClaimFailure?.endpoint !== endpoint) {
         setLocalOwnerClaimFailure({
@@ -187,19 +246,29 @@ export function ConnectionProvider({
       }
       return
     }
-    const next = upsertStoredEnvironment(registry, {
-      environmentId: liveBootstrap.environmentId,
-      endpoint,
-      label: liveBootstrap.label,
-      credential: pending?.credential,
+    recordedBootstrap.current = liveBootstrap
+    const stored = update((current) => {
+      // The selected environment's route now leads somewhere else. Say so on
+      // that record before the answering environment takes the endpoint.
+      const base =
+        fresh && storedId && storedId !== answeredId
+          ? setStoredRouteHealth(current, storedId, endpoint, {
+              status: 'unreachable',
+              message: WRONG_ENVIRONMENT_MESSAGE,
+            })
+          : current
+      return upsertStoredEnvironment(base, {
+        environmentId: answeredId,
+        endpoint,
+        label: liveBootstrap.label,
+        credential: pending?.credential,
+        health: fresh ? { status: 'available' } : undefined,
+      })
     })
-    if (!next) return
+    if (!stored) return
     if (liveBootstrap.status === 'ready') setHasConnected(true)
-    const unchanged = environmentRegistriesEqual(next, registry)
-    if (unchanged && pending === null) return
-    persist(next)
     if (pending) setPending(null)
-  }, [preview, liveBootstrap, endpoint, persist, registry, pending, localOwnerClaimFailure])
+  }, [preview, liveBootstrap, endpoint, update, pending, localOwnerClaimFailure, storedId])
 
   const effectiveBootstrap: BootstrapOutcome =
     localOwnerClaimFailure?.endpoint === endpoint
@@ -257,35 +326,96 @@ export function ConnectionProvider({
     })
   }, [])
 
+  /** Drop what belonged to a connect that is being replaced or abandoned. */
+  const abandonPendingConnect = useCallback(() => {
+    setPending(null)
+    setLocalOwnerClaimFailure(null)
+    claimGeneration.current += 1
+  }, [])
+
   const selectEnvironment = useCallback(
     (environmentId: string) => {
-      const next = selectStoredEnvironment(registry, environmentId)
-      if (next.selectedId !== environmentId) return
+      if (!findStoredEnvironment(registryRef.current.environments, environmentId)) return
       setHasConnected(false)
-      setPending(null)
-      setLocalOwnerClaimFailure(null)
-      claimGeneration.current += 1
-      persist(next)
+      abandonPendingConnect()
+      update((current) => selectStoredEnvironment(current, environmentId))
       setBootstrapNonce((value) => value + 1)
     },
-    [persist, registry],
+    [abandonPendingConnect, update],
   )
 
   const removeEnvironment = useCallback(
     (environmentId: string) => {
-      const selected = selectedStoredEnvironment(registry)
-      const next = removeStoredEnvironment(registry, environmentId)
-      if (selected?.environmentId === environmentId) {
-        setHasConnected(false)
-      }
-      setPending(null)
-      setLocalOwnerClaimFailure(null)
-      claimGeneration.current += 1
-      persist(next)
+      if (registryRef.current.selectedId === environmentId) setHasConnected(false)
+      abandonPendingConnect()
+      update((current) => removeStoredEnvironment(current, environmentId))
       setBootstrapNonce((value) => value + 1)
     },
-    [persist, registry],
+    [abandonPendingConnect, update],
   )
+
+  const chooseRoute = useCallback(
+    (environmentId: string, routeEndpoint: string) => {
+      const current = registryRef.current
+      const next = preferStoredRoute(current, environmentId, routeEndpoint)
+      if (next === current) return
+      setHasConnected(false)
+      abandonPendingConnect()
+      update(() => next)
+      setBootstrapNonce((value) => value + 1)
+    },
+    [abandonPendingConnect, update],
+  )
+
+  const removeRoute = useCallback(
+    (environmentId: string, routeEndpoint: string) => {
+      const current = registryRef.current
+      const next = removeStoredRoute(current, environmentId, routeEndpoint)
+      if (next === current) return
+      const before = selectedStoredEnvironment(current)
+      const after = selectedStoredEnvironment(next)
+      // Forgetting the route in use moves the connection to the next one.
+      if (before && after && preferredRoute(before).endpoint !== preferredRoute(after).endpoint) {
+        setHasConnected(false)
+        abandonPendingConnect()
+        setBootstrapNonce((value) => value + 1)
+      }
+      update(() => next)
+    },
+    [abandonPendingConnect, update],
+  )
+
+  const reportRouteHealth = useCallback(
+    (environmentId: string, routeEndpoint: string, report: RouteHealthReport) => {
+      update((current) => setStoredRouteHealth(current, environmentId, routeEndpoint, report))
+    },
+    [update],
+  )
+
+  const checkRoutes = useCallback(() => {
+    if (preview) return
+    const isInUse = (registry: EnvironmentRegistry, environmentId: string, route: string) => {
+      const selected = selectedStoredEnvironment(registry)
+      return (
+        selected?.environmentId === environmentId && preferredRoute(selected).endpoint === route
+      )
+    }
+    const current = registryRef.current
+    for (const item of current.environments) {
+      for (const route of item.routes) {
+        // The route in use is reported by the live bootstrap and the socket.
+        if (isInUse(current, item.environmentId, route.endpoint)) continue
+        void probeRouteHealth(item.environmentId, route.endpoint).then((report) => {
+          if (!mounted.current) return
+          update((latest) =>
+            isInUse(latest, item.environmentId, route.endpoint)
+              ? latest
+              : setStoredRouteHealth(latest, item.environmentId, route.endpoint, report),
+          )
+        })
+      }
+    }
+  }, [preview, update])
 
   const retry = useCallback(() => {
     setBootstrapNonce((value) => value + 1)
@@ -293,12 +423,10 @@ export function ConnectionProvider({
 
   const changeEnvironment = useCallback(() => {
     setHasConnected(false)
-    setPending(null)
-    setLocalOwnerClaimFailure(null)
-    claimGeneration.current += 1
-    persist({ ...registry, selectedId: null })
+    abandonPendingConnect()
+    update((current) => ({ ...current, selectedId: null }))
     setBootstrapNonce((value) => value + 1)
-  }, [persist, registry])
+  }, [abandonPendingConnect, update])
 
   const value = useMemo(
     () => ({
@@ -309,6 +437,10 @@ export function ConnectionProvider({
       connect,
       selectEnvironment,
       removeEnvironment,
+      chooseRoute,
+      removeRoute,
+      reportRouteHealth,
+      checkRoutes,
       retry,
       changeEnvironment,
       retryNonce: bootstrapNonce,
@@ -321,6 +453,10 @@ export function ConnectionProvider({
       connect,
       selectEnvironment,
       removeEnvironment,
+      chooseRoute,
+      removeRoute,
+      reportRouteHealth,
+      checkRoutes,
       retry,
       changeEnvironment,
       bootstrapNonce,
