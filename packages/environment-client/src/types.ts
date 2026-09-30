@@ -1,4 +1,5 @@
 import type {
+  BackgroundTask,
   Environment,
   EnvironmentSettings,
   EnvironmentSettingsPatch,
@@ -38,6 +39,7 @@ export type {
 } from '@agentpack/view/protocol'
 
 export type {
+  BackgroundTask,
   EnvironmentSettings,
   EnvironmentSettingsPatch,
   FilesystemListing,
@@ -61,6 +63,11 @@ export interface SessionSummary extends Session {
    * Null or absent means there is nothing unseen.
    */
   doneAt?: string | null
+  /**
+   * Work the session still has running in the background, between turns as
+   * well as during one. Absent when there is none.
+   */
+  backgroundTasks?: BackgroundTask[]
   /**
    * The session's own model, mode and config selection, kept current by
    * `session.composer.updated`. Absent until the environment reports one.
@@ -347,6 +354,12 @@ export interface EnvironmentCommands {
   settleSession(sessionId: string, settled: boolean): Promise<void>
   /** The user has looked at a finished session; every client stops showing it as done. */
   acknowledgeSession(sessionId: string): Promise<void>
+  /**
+   * Stop background work the session still has running: the tasks named, or
+   * all of them. Settles once the environment has asked the provider; the
+   * tasks leave `backgroundTasks` when the provider reports them gone.
+   */
+  stopBackgroundTasks(input: StopBackgroundTasksInput): Promise<void>
   deleteSession(sessionId: string): Promise<void>
   sendTurn(input: SendTurnInput): Promise<{ turn: Turn; userMessage: Message }>
   interruptTurn(input: InterruptTurnInput): Promise<void>
@@ -374,6 +387,12 @@ export interface EnvironmentCommands {
   getEnvironmentSettings(): Promise<EnvironmentSettings>
   /** A patch: settings left out keep their value. Resolves with all of them. */
   setEnvironmentSettings(patch: EnvironmentSettingsPatch): Promise<EnvironmentSettings>
+}
+
+export interface StopBackgroundTasksInput {
+  sessionId: string
+  /** Omit to stop every task. */
+  taskIds?: string[]
 }
 
 export type EnvironmentCommandName = keyof EnvironmentCommands

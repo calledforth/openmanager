@@ -97,6 +97,19 @@ export const SessionSchema = z.object({
 })
 /** Server-owned lifecycle, persisted in sessions.status; see docs/session-status.md. */
 export const SessionStatusSchema = z.enum(['idle', 'running', 'waiting', 'error'])
+/** The most background tasks one session reports at a time. */
+export const BACKGROUND_TASKS_MAX = 64
+/**
+ * Work the provider keeps running after the turn that started it has ended: a
+ * backgrounded command, a subagent, a watch loop. `taskId` is the host's own
+ * id for it and is what `session.background.stop` names.
+ */
+export const BackgroundTaskSchema = z.object({
+  taskId: EntityIdSchema,
+  kind: z.enum(['agent', 'shell', 'monitor', 'workflow', 'other']),
+  description: z.string().max(1000),
+})
+export const BackgroundTaskListSchema = z.array(BackgroundTaskSchema).max(BACKGROUND_TASKS_MAX)
 /**
  * Sidebar row. Deliberately excludes threads and messages so a list or
  * environment snapshot cannot pull a transcript across the wire.
@@ -119,6 +132,12 @@ export const SessionSummarySchema = SessionSchema.extend({
    * it on `session.acknowledge` and whenever the next turn starts.
    */
   doneAt: TimestampSchema.nullable().optional(),
+  /**
+   * Background work still running in this session. A session with any reads
+   * as `running` even between turns. Absent when there is none, and on older
+   * environments.
+   */
+  backgroundTasks: BackgroundTaskListSchema.optional(),
   /** Absent until the session has a selection, and on older environments. */
   composer: SessionComposerStateSchema.optional(),
 })
@@ -154,6 +173,12 @@ export const TurnSchema = z.object({
    */
   startedAt: TimestampSchema.optional(),
   finishedAt: TimestampSchema.optional(),
+  /**
+   * Who began the turn. `background` is a turn the provider started by itself:
+   * a background task finished and the agent is acting on the result. Absent
+   * on a turn the user sent, and on older environments.
+   */
+  origin: z.enum(['background']).optional(),
 })
 export const ArtifactReferenceSchema = z.object({
   type: z.literal('artifact'),
@@ -242,6 +267,15 @@ export const TurnStartSchema = z.object({
   userMessage: MessageSchema,
   commandId: EntityIdSchema.optional(),
 })
+/**
+ * A turn as the environment announces it. Usually the user's, carrying the
+ * message that asked for it. A `background` turn has no `userMessage`: nobody
+ * sent one.
+ */
+export const TurnStartedSchema = TurnStartSchema.partial({ userMessage: true }).refine(
+  (started) => (started.userMessage === undefined) === (started.turn.origin === 'background'),
+  { message: 'Only a background turn starts without a user message.', path: ['userMessage'] },
+)
 
 const CancellationReasonSchema = z.enum([
   'user',
@@ -390,6 +424,8 @@ export type ReasoningBlock = z.infer<typeof ReasoningBlockSchema>
 export type ToolCallState = z.infer<typeof ToolCallStateSchema>
 export type ActivityRef = z.infer<typeof ActivityRefSchema>
 export type TurnStart = z.infer<typeof TurnStartSchema>
+export type TurnStarted = z.infer<typeof TurnStartedSchema>
+export type BackgroundTask = z.infer<typeof BackgroundTaskSchema>
 export type ContentBlock = z.infer<typeof ContentBlockSchema>
 export type Interaction = z.infer<typeof InteractionSchema>
 export type InteractionResponse = z.infer<typeof InteractionResponseSchema>

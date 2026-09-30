@@ -43,6 +43,8 @@ export class FakeClaudeQuery implements ClaudeQuerySession {
    * support, so the mode-filtering path is exercised rather than assumed. */
   autoModeUnavailable = false
   interrupts = 0
+  /** Every `stopTask` id, in order. */
+  readonly stoppedTasks: string[] = []
   closed = false
   returned = false
 
@@ -119,6 +121,9 @@ export class FakeClaudeQuery implements ClaudeQuerySession {
       /** `SDKResultSuccess.user_message_uuid` — the correlation the runtime
        * matches a result against the dispatch that produced it. */
       userMessageUuid?: string
+      /** `origin.kind`, present on a turn the CLI ran by itself: the result of
+       * a background task waking the model carries `task-notification`. */
+      origin?: string
     } = {},
   ): void {
     this.emit({
@@ -139,6 +144,7 @@ export class FakeClaudeQuery implements ClaudeQuerySession {
       session_id: overrides.sessionId ?? this.sessionId,
       ...(overrides.terminalReason ? { terminal_reason: overrides.terminalReason } : {}),
       ...(overrides.userMessageUuid ? { user_message_uuid: overrides.userMessageUuid } : {}),
+      ...(overrides.origin ? { origin: { kind: overrides.origin } } : {}),
       ...(overrides.parentToolUseId ? { parent_tool_use_id: overrides.parentToolUseId } : {}),
     } as unknown as SDKMessage)
   }
@@ -173,6 +179,14 @@ export class FakeClaudeQuery implements ClaudeQuerySession {
       session_id: sessionId,
       ...extra,
     } as unknown as SDKMessage)
+  }
+
+  /** The CLI's roster of live background tasks, as `background_tasks_changed`
+   * reports it: every task still running, replacing whatever came before. */
+  emitBackgroundTasks(
+    tasks: { task_id: string; task_type: string; description: string }[],
+  ): void {
+    this.emitSystem('background_tasks_changed', this.sessionId, { tasks })
   }
 
   // ------------------------------------------------------- streaming frames
@@ -377,6 +391,9 @@ export class FakeClaudeQuery implements ClaudeQuerySession {
     this.contextUsageCalls += 1
     if (this.contextUsageError) throw this.contextUsageError
     return this.contextUsage
+  }
+  async stopTask(taskId: string): Promise<void> {
+    this.stoppedTasks.push(taskId)
   }
   close(): void {
     this.closed = true

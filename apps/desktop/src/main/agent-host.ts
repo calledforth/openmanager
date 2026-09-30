@@ -16,6 +16,7 @@ import { AgentRuntime, type DesiredSessionConfig, type HostLogEntry } from '@age
 import type { BrowserWindow } from 'electron'
 import type { ProviderHealthReport } from '@openmanager/shared/contracts/provider-health'
 import type { SidecarHandshake } from '@openmanager/shared/contracts/sidecar'
+import { createBackgroundTurnFilter } from './background-turns'
 import { ConvexProjector } from './convex-projector'
 import { toProviderHealthCache, type ProviderHealthCache } from './provider-health-cache'
 import type { SessionNotifier } from './session-notifications'
@@ -57,6 +58,7 @@ export class AgentHost {
   private readonly pendingQuestions = new Map<string, QuestionRequest>()
   private readonly pendingPlans = new Map<string, PlanDocument>()
   private readonly titleRefreshes = new Map<string, Promise<void>>()
+  private readonly unrecordedTurn = createBackgroundTurnFilter()
 
   constructor(
     readonly projector: ConvexProjector,
@@ -336,8 +338,17 @@ export class AgentHost {
     if (event.event === 'plan_review_resolved') {
       this.pendingPlans.delete(event.data.requestId)
     }
-    this.projector.consume(event)
-    this.options.notifier?.handle(event)
+    // A turn the provider began by itself has no row here: its bookends are
+    // neither persisted nor announced. If it asked the user something, the
+    // request left the session at waiting and only its end can put that back.
+    // A failure is the exception: the session failed whether or not the turn
+    // has a row, so it is recorded as one.
+    const unrecorded = this.unrecordedTurn(event)
+    if (unrecorded === 'ended_waiting') this.projector.restSession(event)
+    if (!unrecorded || unrecorded === 'failed') {
+      this.projector.consume(event)
+      this.options.notifier?.handle(event)
+    }
     if (event.event === 'prompt_completed' && event.workspaceId) {
       void this.refreshSessionTitles(event.providerId, event.workspaceId)
     }

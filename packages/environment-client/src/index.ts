@@ -1,6 +1,7 @@
 export type {
   AddWorkspaceInput,
   ArtifactTarget,
+  BackgroundTask,
   ComposerPreferenceTarget,
   ConnectionFailure,
   ConnectionPhase,
@@ -31,6 +32,7 @@ export type {
   SetSessionConfigOptionInput,
   SetSessionModeInput,
   SetSessionModelInput,
+  StopBackgroundTasksInput,
   SessionStatus,
   SessionComposerState,
   SessionSummary,

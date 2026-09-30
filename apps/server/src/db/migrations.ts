@@ -589,6 +589,41 @@ export const MIGRATIONS: readonly Migration[] = [
       }
     },
   },
+  {
+    version: 16,
+    name: 'session_background_tasks',
+    up(database) {
+      const columns = new Set(
+        (database.prepare('PRAGMA table_info(sessions)').all() as { name: string }[]).map(
+          (column) => column.name,
+        ),
+      )
+      if (!columns.has('background_tasks_json')) {
+        // The background tasks a session still has running, as the provider
+        // last reported them; NULL when there are none. Kept on the row so the
+        // projection can rest a finished turn at `running` in the same
+        // transaction, and so a client that connects later sees the work.
+        database.exec(`
+          ALTER TABLE sessions ADD COLUMN background_tasks_json TEXT
+            CHECK (background_tasks_json IS NULL OR json_valid(background_tasks_json))
+        `)
+      }
+      const turnColumns = new Set(
+        (database.prepare('PRAGMA table_info(turns)').all() as { name: string }[]).map(
+          (column) => column.name,
+        ),
+      )
+      if (!turnColumns.has('origin')) {
+        // Set on a turn the provider began by itself after a background task
+        // finished; NULL on every turn a user sent. A history page says so,
+        // because such a turn has no user message to be introduced by.
+        database.exec(`
+          ALTER TABLE turns ADD COLUMN origin TEXT
+            CHECK (origin IS NULL OR origin = 'background')
+        `)
+      }
+    },
+  },
 ]
 
 type RetainedActivityRow = {

@@ -255,7 +255,7 @@ export class SessionRuntimeRegistryImpl implements SessionRuntimeRegistry {
   private idleEntries(idleMs: number, now: number): MutableEntry[] {
     return [...this.byThread.values()].filter(
       (entry) =>
-        entry.activeTurn === null &&
+        !isWorking(entry) &&
         !isStarting(entry) &&
         now - entry.lastActivityAt >= idleMs,
     )
@@ -277,7 +277,7 @@ export class SessionRuntimeRegistryImpl implements SessionRuntimeRegistry {
       const current = this.byThread.get(candidate.entry.threadId)
       if (!current || current !== candidate.entry) continue
       // Invariant 10, re-proved at the moment of the kill.
-      if (current.activeTurn !== null) continue
+      if (isWorking(current)) continue
       if (isStarting(current)) continue
       if (current.activitySeq !== candidate.activitySeq) continue
       await this.remove(current.threadId, { reason: 'reaped' })
@@ -339,7 +339,7 @@ export class SessionRuntimeRegistryImpl implements SessionRuntimeRegistry {
   private evictionCandidate(exempt: ThreadId): MutableEntry | undefined {
     let oldest: MutableEntry | undefined
     for (const entry of this.byThread.values()) {
-      if (entry.threadId === exempt || entry.activeTurn !== null) continue
+      if (entry.threadId === exempt || isWorking(entry)) continue
       // A runtime mid-`start()` looks maximally idle — `lastActivityAt` only
       // advances on events, and the authenticate step is a silent multi-second
       // gap — so it is the *first* thing an LRU scan picks. Killing it fails
@@ -431,6 +431,14 @@ const noop = (): void => undefined
  * `createOrReuse` already does. */
 function sharesProcess(a: SessionRuntimeSpec, b: SessionRuntimeSpec): boolean {
   return a.providerId === b.providerId && a.cwd === b.cwd
+}
+
+/** A runtime that must not be stopped for being idle: a prompt is in flight,
+ * or the provider has work of its own under way (background tasks, a turn it
+ * began by itself). That work has no `activeTurn` here because nobody prompted
+ * it, and it lives in the process, so stopping the process ends it silently. */
+function isWorking(entry: SessionRuntimeEntry): boolean {
+  return entry.activeTurn !== null || entry.runtime.busy === true
 }
 
 /** A runtime whose `start()` has not finished. Neither the reaper nor LRU

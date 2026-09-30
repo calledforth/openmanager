@@ -58,6 +58,9 @@ export interface ClaudeQuerySession extends AsyncIterable<SDKMessage> {
    * *counts* for a turn (`TokenUsage`), a different contract entirely, and
    * publishing one as the other draws the meter at an invented percentage. */
   getContextUsage(): Promise<SDKControlGetContextUsageResponse>
+  /** Stop one background task by the id `background_tasks_changed` lists it
+   * under. The CLI answers with a roster that no longer has it. */
+  stopTask(taskId: string): Promise<void>
   /** Synchronous and fire-and-forget: it *starts* the SDK's cleanup and
    * returns without awaiting it. See `ClaudeSessionRuntime.settleExit`. */
   close(): void

@@ -62,4 +62,12 @@ describe('settled turn work grouping', () => {
     ).toBe('Stopped')
     expect(settledTurnLabel({ finishReason: 'error' })).toBe('Stopped')
   })
+
+  it('introduces a turn nobody prompted in place of the usual label', () => {
+    expect(settledTurnLabel({ unprompted: true })).toBe('Resumed after background work')
+    expect(settledTurnLabel({ startedAt: 1_000, completedAt: 3_000, unprompted: true })).toBe(
+      'Resumed after background work · 2s',
+    )
+    expect(settledTurnLabel({ finishReason: 'cancelled', unprompted: true })).toBe('Stopped')
+  })
 })

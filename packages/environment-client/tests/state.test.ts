@@ -1155,6 +1155,91 @@ describe('snapshots', () => {
   })
 })
 
+describe('background work', () => {
+  const TASK = { taskId: 'task-1', kind: 'shell' as const, description: 'Run the build' }
+  const roster = (...tasks: (typeof TASK)[]) =>
+    event({
+      name: 'session.updated',
+      scope: environmentScope,
+      payload: { sessionId: SESSION.sessionId, backgroundTasks: tasks },
+    })
+
+  it('holds the roster an update reports until another update replaces it', () => {
+    let state = applyEvent(seeded(), roster(TASK))
+    expect(state.sessions[SESSION.sessionId]?.backgroundTasks).toEqual([TASK])
+
+    // An update about something else says nothing about background work.
+    state = applyEvent(
+      state,
+      event({
+        name: 'session.updated',
+        scope: environmentScope,
+        payload: { sessionId: SESSION.sessionId, title: 'Renamed' },
+      }),
+    )
+    expect(state.sessions[SESSION.sessionId]?.backgroundTasks).toEqual([TASK])
+
+    // The same roster restated (a replayed tail) is no change at all.
+    expect(applyEvent(state, roster({ ...TASK }))).toBe(state)
+
+    const emptied = applyEvent(state, roster())
+    expect(emptied.sessions[SESSION.sessionId]).not.toHaveProperty('backgroundTasks')
+  })
+
+  it('takes a full listing as the whole truth, and a bare session as saying nothing', () => {
+    const working = applyEvent(seeded(), roster(TASK))
+
+    // A `session.created` replay carries no summary fields.
+    const replayed = applyEvent(
+      working,
+      event({ name: 'session.created', scope: environmentScope, payload: { session: SESSION } }),
+    )
+    expect(replayed.sessions[SESSION.sessionId]?.backgroundTasks).toEqual([TASK])
+
+    // A listing after the environment restarted: the tasks died with it.
+    const relisted = applySessionList(working, [
+      { ...SESSION, status: 'idle', providerId: 'claude', updatedAt: '2026-09-30T10:00:00.000Z' },
+    ])
+    expect(relisted.sessions[SESSION.sessionId]).not.toHaveProperty('backgroundTasks')
+  })
+
+  it('starts a turn nobody prompted: running, with no user message', () => {
+    let state = applyEvent(seeded(), turnStarted())
+    state = applyEvent(state, completed())
+    const before = selectActiveThread(state)!.messages.length
+
+    state = applyEvent(
+      state,
+      event({
+        name: 'turn.started',
+        scope: threadScope,
+        payload: {
+          turn: {
+            turnId: 'turn-2',
+            threadId: THREAD.threadId,
+            state: 'running',
+            origin: 'background',
+          },
+        },
+      }),
+    )
+    expect(selectActiveTurn(state)).toMatchObject({
+      turnId: 'turn-2',
+      state: 'running',
+      origin: 'background',
+    })
+    expect(selectActiveThread(state)!.messages).toHaveLength(before)
+
+    state = applyEvent(state, delta('turn-2', 'assistant-2', 'The build passed.'))
+    state = applyEvent(state, completed('turn-2'))
+    const thread = selectActiveThread(state)!
+    expect(thread.messages.filter((message) => message.turnId === 'turn-2')).toMatchObject([
+      { role: 'assistant', content: [{ type: 'text', text: 'The build passed.' }] },
+    ])
+    expect(selectActiveTurn(state)).toBeNull()
+  })
+})
+
 describe('protocol turn finalization', () => {
   it.each(['turn.completed', 'turn.interrupted', 'turn.failed'] as const)(
     'settles %s, preserves partial text, closes reasoning and rejects late parts',

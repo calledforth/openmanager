@@ -1214,6 +1214,201 @@ describe('ClaudeSessionRuntime usage', () => {
   })
 })
 
+describe('ClaudeSessionRuntime background work', () => {
+  const SHELL = { task_id: 'b8pm99wi8', task_type: 'local_bash', description: 'Run the build' }
+  const tasksOf = (event: BackendEvent | undefined) =>
+    (event?.data as { tasks: { taskId: string; kind: string; description: string }[] }).tasks
+  const rosters = (events: BackendEvent[]) =>
+    events.filter((event) => event.event === 'background_tasks_update').map(tasksOf)
+
+  /** A started runtime whose user turn has ended with a task still running,
+   * which is the state every case below begins from. */
+  async function withBackgroundTask(timeouts?: Partial<RuntimeTimeouts>) {
+    const built = build({}, timeouts)
+    const { runtime, sdk } = built
+    await runtime.start()
+    const turn = runtime.prompt({ prompt: { text: 'build it', blocks: [] } })
+    await vi.waitFor(() => expect(sdk.last.prompts).toHaveLength(1))
+    sdk.last.emitBackgroundTasks([SHELL])
+    sdk.last.emitResult({ userMessageUuid: (sdk.last.prompts[0] as { uuid?: string }).uuid })
+    await turn
+    built.events.length = 0
+    return built
+  }
+
+  it('reports the roster and stays busy after the turn that started it', async () => {
+    const { runtime, events, sdk } = build()
+    await runtime.start()
+    expect(runtime.busy).toBe(false)
+
+    sdk.last.emitBackgroundTasks([
+      SHELL,
+      { task_id: 'a59', task_type: 'local_agent', description: 'Review the diff' },
+      // Housekeeping the user never started and cannot stop.
+      { task_id: 'd1', task_type: 'dream', description: 'Consolidating memory' },
+    ])
+
+    await vi.waitFor(() => expect(rosters(events)).toHaveLength(1))
+    expect(rosters(events)[0]).toEqual([
+      { taskId: 'b8pm99wi8', kind: 'shell', description: 'Run the build' },
+      { taskId: 'a59', kind: 'agent', description: 'Review the diff' },
+    ])
+    expect(runtime.busy).toBe(true)
+  })
+
+  it('runs the turn the CLI starts when a background task settles', async () => {
+    const { runtime, events, sdk } = await withBackgroundTask()
+
+    // Live order, claude 2.1.285: the roster empties, then the CLI wakes the
+    // model by itself. Nothing was prompted, so no turn is awaiting any of it.
+    sdk.last.emitBackgroundTasks([])
+    sdk.last.emitSystem('task_notification', sdk.last.sessionId, { task_id: SHELL.task_id })
+    sdk.last.emitSystem('init', sdk.last.sessionId)
+    sdk.last.emitMessageStart()
+    sdk.last.emitTextBlock(0, ['The build passed.'])
+    sdk.last.emitResult({ origin: 'task-notification' })
+
+    await vi.waitFor(() => expect(names(events)).toContain('prompt_completed'))
+    // The turn is announced before the emptied roster, so the session never
+    // reads as finished in between.
+    expect(names(events).filter((name) => name !== 'usage_update')).toEqual([
+      'background_turn_started',
+      'background_tasks_update',
+      'agent_message_chunk',
+      'prompt_completed',
+    ])
+    expect(rosters(events)).toEqual([[]])
+    expect(runtime.busy).toBe(false)
+  })
+
+  it('holds an emptied roster back only until it is clear no turn is coming', async () => {
+    const { runtime, events, sdk } = await withBackgroundTask({ backgroundSettleMs: 20 })
+
+    sdk.last.emitBackgroundTasks([])
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(rosters(events)).toEqual([])
+    expect(runtime.busy).toBe(true)
+
+    await vi.waitFor(() => expect(rosters(events)).toEqual([[]]))
+    expect(runtime.busy).toBe(false)
+  })
+
+  it('reports a roster emptied by a stop at once, since nothing follows a stop', async () => {
+    const { runtime, events, sdk } = await withBackgroundTask({ backgroundSettleMs: 60_000 })
+
+    await runtime.stopBackgroundTasks()
+    sdk.last.emitBackgroundTasks([])
+
+    await vi.waitFor(() => expect(rosters(events)).toEqual([[]]))
+    expect(runtime.busy).toBe(false)
+  })
+
+  it('never lets an unprompted result end the turn the user sent', async () => {
+    const { runtime, events, sdk } = build()
+    await runtime.start()
+    const turn = runtime.prompt({ prompt: { text: 'hi', blocks: [] } })
+    await vi.waitFor(() => expect(sdk.last.prompts).toHaveLength(1))
+    let settled = false
+    void turn.then(() => (settled = true))
+
+    // It carries no `user_message_uuid` to mismatch, which is how it used to
+    // pass for the user's own result.
+    sdk.last.emitMessageDelta({ input_tokens: 900, output_tokens: 90 })
+    sdk.last.emitResult({ origin: 'task-notification' })
+    sdk.last.emitMessageDelta({ input_tokens: 10, output_tokens: 2 })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(settled).toBe(false)
+    expect(names(events)).not.toContain('prompt_completed')
+
+    sdk.last.emitResult({ userMessageUuid: (sdk.last.prompts[0] as { uuid?: string }).uuid })
+    await turn
+    // The unprompted turn's tokens closed with it rather than being billed to
+    // the user's turn.
+    expect(
+      (events.find((event) => event.event === 'prompt_completed')?.data as {
+        usage?: { inputTokens: number }
+      }).usage,
+    ).toMatchObject({ inputTokens: 10 })
+  })
+
+  it('closes a background turn when the user sends a prompt', async () => {
+    const { runtime, events, sdk } = await withBackgroundTask()
+    sdk.last.emitBackgroundTasks([])
+    sdk.last.emitMessageStart()
+    await vi.waitFor(() => expect(names(events)).toContain('background_turn_started'))
+
+    const turn = runtime.prompt({ prompt: { text: 'and now this', blocks: [] } })
+    await vi.waitFor(() => expect(sdk.last.prompts).toHaveLength(2))
+    // The CLI still finishes what it was doing before it reaches the prompt.
+    sdk.last.emitResult({ origin: 'task-notification' })
+    sdk.last.emitResult({ userMessageUuid: (sdk.last.prompts[1] as { uuid?: string }).uuid })
+    await turn
+
+    const turns = names(events).filter(
+      (name) => name.startsWith('prompt_') || name === 'background_turn_started',
+    )
+    expect(turns).toEqual([
+      'background_turn_started',
+      'prompt_completed',
+      'prompt_started',
+      'prompt_completed',
+    ])
+  })
+
+  it('reports a background turn that failed', async () => {
+    const { events, sdk } = await withBackgroundTask()
+    sdk.last.emitBackgroundTasks([])
+    sdk.last.emitMessageStart()
+    sdk.last.emitResult({
+      origin: 'task-notification',
+      subtype: 'error_during_execution',
+      errors: ['overloaded'],
+    })
+
+    await vi.waitFor(() => expect(names(events)).toContain('runtime_error'))
+    expect(names(events)).not.toContain('prompt_completed')
+  })
+
+  it('does not open a turn for a background subagent still streaming', async () => {
+    const { events, sdk } = await withBackgroundTask()
+
+    sdk.last.emitStream({ type: 'message_start', message: { role: 'assistant' } }, 'toolu_agent')
+    sdk.last.emitAssistantBlocks([{ type: 'text', text: 'working' }], 'toolu_agent')
+    sdk.last.emitSystem('status', sdk.last.sessionId)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(names(events)).not.toContain('background_turn_started')
+  })
+
+  it('stops the tasks named, or every live one', async () => {
+    const { runtime, sdk } = build()
+    await runtime.start()
+    sdk.last.emitBackgroundTasks([
+      SHELL,
+      { task_id: 'a59', task_type: 'local_agent', description: 'Review the diff' },
+    ])
+    await vi.waitFor(() => expect(runtime.busy).toBe(true))
+
+    // An id the CLI no longer lists already ended; there is nothing to send.
+    await runtime.stopBackgroundTasks(['a59', 'long-gone'])
+    expect(sdk.last.stoppedTasks).toEqual(['a59'])
+
+    await runtime.stopBackgroundTasks()
+    expect(sdk.last.stoppedTasks).toEqual(['a59', 'b8pm99wi8', 'a59'])
+  })
+
+  it('clears the roster when the process goes, because the tasks went with it', async () => {
+    const { runtime, events, sdk } = await withBackgroundTask()
+
+    sdk.last.crash(new Error('killed'))
+    await runtime.exited
+
+    expect(names(events)).toEqual(['background_tasks_update', 'process_exited'])
+    expect(rosters(events)).toEqual([[]])
+    expect(runtime.busy).toBe(false)
+  })
+})
+
 describe('ClaudeSessionRuntime prompt content', () => {
   it('sends an image attachment as a base64 content block', async () => {
     const { runtime, sdk } = build()

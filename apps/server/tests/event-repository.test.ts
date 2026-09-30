@@ -54,8 +54,8 @@ async function createDatabase(): Promise<{ database: DatabaseSync; directory: st
   return { database, directory }
 }
 
-const started = (eventId = 'event-started') =>
-  ProofEventSchemas['turn.started'].parse({
+const started = (eventId = 'event-started') => {
+  const event = ProofEventSchemas['turn.started'].parse({
     type: 'event',
     name: 'turn.started',
     eventId,
@@ -72,6 +72,9 @@ const started = (eventId = 'event-started') =>
       },
     },
   })
+  // A turn the user sent, so its message is there to edit below.
+  return { ...event, payload: { ...event.payload, userMessage: event.payload.userMessage! } }
+}
 
 const delta = (text: string, eventId: string) =>
   ProofEventSchemas['message.delta'].parse({

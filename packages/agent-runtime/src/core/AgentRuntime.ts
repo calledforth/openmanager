@@ -509,7 +509,9 @@ export class AgentRuntime {
     const seq = (this.sequences.get(event.threadId) ?? 0) + 1
     this.sequences.set(event.threadId, seq)
     const id = crypto.randomUUID()
-    if (event.event === 'prompt_started') {
+    // A turn the provider began by itself needs a message to file its output
+    // under exactly as a prompted one does.
+    if (event.event === 'prompt_started' || event.event === 'background_turn_started') {
       this.activeMessageIds.set(event.threadId, `agent_asst_${id}`)
     }
     const messageId = this.activeMessageIds.get(event.threadId)
@@ -1022,6 +1024,18 @@ export class AgentRuntime {
   }
   cancelPrompt(args: RuntimeRoute & { sessionId: string }): Promise<void> {
     return this.cancel(args)
+  }
+
+  /** Stop background tasks on a thread: the ones named, or every live one.
+   *
+   * Like `cancel`, this never respawns a missing runtime. Background tasks are
+   * children of the provider process, so a thread with no live process has
+   * none left to stop. */
+  async stopBackgroundTasks(args: RuntimeRoute & { taskIds?: readonly string[] }): Promise<void> {
+    const entry = this.registry.get(args.threadId)
+    if (!entry || entry.providerId !== args.providerId || !isRuntimeAlive(entry.runtime.phase))
+      return
+    await entry.runtime.stopBackgroundTasks?.(args.taskIds)
   }
 
   /** The thread is gone for good — the user deleted the session.

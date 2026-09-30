@@ -11,7 +11,8 @@ import {
   SessionSchema,
   SessionStatusSchema,
   ThreadSchema,
-  TurnStartSchema,
+  TurnStartedSchema,
+  BackgroundTaskListSchema,
   ContentBlockSchema,
   ToolCallStateSchema,
   InteractionSchema,
@@ -74,6 +75,8 @@ export const ProofEventSchemas = {
       settledAt: TimestampSchema.nullable().optional(),
       /** Present only when a turn completed (a time) or the user acknowledged it (null). */
       doneAt: TimestampSchema.nullable().optional(),
+      /** Present only when the session's background work changed: every task still running. */
+      backgroundTasks: BackgroundTaskListSchema.optional(),
     }),
   ),
   'session.deleted': event(
@@ -104,7 +107,7 @@ export const ProofEventSchemas = {
     z.object({ profile: ProviderComposerProfileSchema }),
   ),
   'thread.created': event('thread.created', SessionScopeSchema, z.object({ thread: ThreadSchema })),
-  'turn.started': event('turn.started', ThreadScopeSchema, TurnStartSchema),
+  'turn.started': event('turn.started', ThreadScopeSchema, TurnStartedSchema),
   'turn.completed': event(
     'turn.completed',
     ThreadScopeSchema,

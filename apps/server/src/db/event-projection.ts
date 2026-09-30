@@ -71,6 +71,13 @@ export function createEventProjector(
     clearSessionDone: database.prepare(
       'UPDATE sessions SET done_at = NULL WHERE session_id = ? AND done_at IS NOT NULL',
     ),
+    // Background work is not activity the user did; `updated_at` stays put.
+    updateSessionBackground: database.prepare(
+      'UPDATE sessions SET background_tasks_json = ? WHERE session_id = ?',
+    ),
+    hasBackgroundTasks: database.prepare(
+      'SELECT 1 FROM sessions WHERE session_id = ? AND background_tasks_json IS NOT NULL',
+    ),
     // Not a sidebar-ordering change, so `updated_at` stays put.
     updateSessionComposer: database.prepare(
       'UPDATE sessions SET composer_json = ? WHERE session_id = ?',
@@ -87,8 +94,8 @@ export function createEventProjector(
     selectThreadWorkspace: database.prepare('SELECT workspace_id FROM threads WHERE thread_id = ?'),
     insertTurn: database.prepare(
       `INSERT INTO turns (
-         turn_id, thread_id, workspace_id, state, command_id, started_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         turn_id, thread_id, workspace_id, state, command_id, origin, started_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     selectTurnWorkspace: database.prepare(
       'SELECT workspace_id FROM turns WHERE turn_id = ? AND thread_id = ?',
@@ -171,7 +178,7 @@ export function createEventProjector(
   }
 
   function insertMessage(
-    message: TurnStarted['payload']['userMessage'],
+    message: NonNullable<TurnStarted['payload']['userMessage']>,
     workspaceId: string,
     isFinal: boolean,
     at: number,
@@ -228,10 +235,14 @@ export function createEventProjector(
       event.payload.turn.state,
       // Unique per thread, so a replayed send cannot project a second turn.
       event.payload.commandId ?? null,
+      event.payload.turn.origin ?? null,
       at,
       at,
     )
-    insertMessage(event.payload.userMessage, thread.workspace_id, true, at)
+    // A turn the provider began by itself has no prompt to record.
+    if (event.payload.userMessage) {
+      insertMessage(event.payload.userMessage, thread.workspace_id, true, at)
+    }
     s.updateSessionStatus.run('running', at, event.scope.sessionId)
     s.unsettleSession.run(event.scope.sessionId)
     // The earlier result is superseded by the turn now running.
@@ -414,6 +425,16 @@ export function createEventProjector(
             throw new Error(`Cannot acknowledge missing session ${event.payload.sessionId}`)
           }
         }
+        if (event.payload.backgroundTasks !== undefined) {
+          // A roster reported while its session is being deleted has no row
+          // left to describe; that is not worth rolling the batch back for.
+          s.updateSessionBackground.run(
+            event.payload.backgroundTasks.length > 0
+              ? JSON.stringify(event.payload.backgroundTasks)
+              : null,
+            event.payload.sessionId,
+          )
+        }
         return
       case 'session.composer.updated':
         // A selection reported while its session is being deleted has no row
@@ -519,18 +540,24 @@ export function createEventProjector(
         }
         s.finalizeTurnMessages.run(at, turnId)
         s.cancelPendingInteractions.run(at, at, turnId)
+        // The turn is over but the session is not resting while work it
+        // started is still running in the background.
+        const working = !!s.hasBackgroundTasks.get(event.scope.sessionId)
         const session = s.updateSessionStatus.run(
-          event.name === 'turn.failed' ? 'error' : 'idle',
+          event.name === 'turn.failed' ? 'error' : working ? 'running' : 'idle',
           at,
           event.scope.sessionId,
         )
         if (session.changes !== 1) {
           throw new Error(`Cannot finalize turn for missing session ${event.scope.sessionId}`)
         }
-        // Only a completed turn is news. An interrupt was the user's own doing,
-        // and a failure shows as the error status instead.
-        if (event.name === 'turn.completed') s.updateSessionDone.run(at, event.scope.sessionId)
-        else s.clearSessionDone.run(event.scope.sessionId)
+        // Only a completed turn is news, and only once nothing is left running:
+        // the turn that reports the background result is the one that is done.
+        // An interrupt was the user's own doing, and a failure shows as the
+        // error status instead.
+        if (event.name === 'turn.completed' && !working) {
+          s.updateSessionDone.run(at, event.scope.sessionId)
+        } else s.clearSessionDone.run(event.scope.sessionId)
         return
       }
       case 'message.reasoning':

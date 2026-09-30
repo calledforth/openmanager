@@ -6,9 +6,11 @@ import {
   ProofResponseSchemas,
   pageSessionSummaries,
   pageThreadMessages,
+  BACKGROUND_TASKS_MAX,
   shouldReplaceSessionTitle,
   titleFromPrompt,
   WorkspaceUnavailableDetailsSchema,
+  type BackgroundTask,
   type CommandEnvelope,
   type ErrorCode,
   type EventEnvelope,
@@ -87,13 +89,21 @@ export type WorkspaceRuntimeResolver = (
 ) => WorkspaceRuntimeRoute | undefined
 type ActiveTurn = {
   turn: Turn
-  userMessage: Message
+  /** Absent on a turn the provider began by itself; nobody prompted it. */
+  userMessage?: Message
   interruptRequested: boolean
   promptStarted?: boolean
   /** Includes host terminal bookkeeping, not just the provider completion event. */
   completion?: Promise<void>
   promptFailed?: boolean
   runtimeMessageId?: string
+  /**
+   * The message id of a turn the provider began by itself just before this
+   * turn's prompt reached it. The provider finishes that turn first, so what
+   * it says and asks meanwhile is filed under this one: otherwise a permission
+   * request raised there would reach nobody and hold this prompt up behind it.
+   */
+  foldedMessageId?: string
   /**
    * The open text and reasoning runs of the turn, as host message ids. A run
    * is a maximal stretch of one kind of stream event: the next event of any
@@ -184,7 +194,16 @@ type InteractionAnswer = {
 
 type InteractionRuntime = Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'> &
   // Optional so a host without interactive providers still assembles.
-  Partial<Pick<AgentRuntime, 'respondPermission' | 'respondQuestion' | 'respondPlan'>>
+  Partial<
+    Pick<
+      AgentRuntime,
+      | 'respondPermission'
+      | 'respondQuestion'
+      | 'respondPlan'
+      | 'stopBackgroundTasks'
+      | 'closeThread'
+    >
+  >
 type ThreadRecord = {
   session: Session
   /** Provenance of `session.title`, so a rename outranks later automatic titles. */
@@ -206,6 +225,18 @@ type ThreadRecord = {
   /** In-memory mode only: when the last turn completed, until acknowledged. */
   doneAt?: number
   activeTurn?: ActiveTurn
+  /**
+   * Work the provider still has running between turns, under host ids. While
+   * there is any, the session rests at `running` rather than `idle`.
+   */
+  backgroundTasks?: BackgroundTask[]
+  /** The host id of each live background task, by the provider's own id. */
+  backgroundTaskIds?: Map<string, string>
+  /**
+   * The start of a turn the provider began by itself that could not be
+   * written. Kept so the turn's next event can try again.
+   */
+  unrecordedBackgroundTurn?: RuntimeEvent
   /** A session-scoped cancel must drain before another prompt can start. */
   cancellation?: Promise<void>
   pendingBuild?: boolean
@@ -421,9 +452,13 @@ export function createThreadService(
       event.name === 'turn.failed'
     ) {
       const record = threads.get(event.scope.threadId)
-      // Mirrors the SQLite projection: only a completed turn leaves news behind.
+      // Mirrors the SQLite projection: only a completed turn leaves news
+      // behind, and not while background work is still running.
       if (record) {
-        record.doneAt = event.name === 'turn.completed' ? Date.parse(event.timestamp) : undefined
+        record.doneAt =
+          event.name === 'turn.completed' && !record.backgroundTasks?.length
+            ? Date.parse(event.timestamp)
+            : undefined
       }
       // Deferred until the caller has marked the turn completed, which it
       // does right after announcing it.
@@ -604,6 +639,26 @@ export function createThreadService(
   }
 
   /**
+   * End the background work of a dropped record. Nothing can reach it any
+   * more to stop it, and a provider process with background work is never
+   * stopped for being idle, so it would run on until the server exits.
+   */
+  const abandonBackgroundWork = (item: ThreadRecord) => {
+    if (!item.backgroundTasks?.length) return
+    item.backgroundTasks = undefined
+    item.backgroundTaskIds = undefined
+    void runtime.closeThread
+      ?.({ providerId: item.providerId, threadId: item.thread.threadId })
+      .catch(() => undefined)
+  }
+
+  /** Let go of a record nothing points at any more, and whatever it was running. */
+  const abandon = (item: ThreadRecord) => {
+    abandonTurn(item)
+    abandonBackgroundWork(item)
+  }
+
+  /**
    * Rebuild in-memory records for a session that only exists in SQLite, so the
    * runtime loads the stored provider thread instead of creating a second one.
    * A failed load drops the records again, keeping durable history and letting
@@ -736,7 +791,7 @@ export function createThreadService(
         : undefined
     const messageId =
       event.event === 'prompt_started' || event.event === 'user_message_chunk'
-        ? active?.userMessage.messageId
+        ? active?.userMessage?.messageId
         : active
           ? runMessageId(active, event)
           : undefined
@@ -819,6 +874,119 @@ export function createThreadService(
       }
       active.pendingInteractions.delete(projected.payload.response.interactionId)
       touch(record, active.pendingInteractions.size > 0 ? 'waiting' : 'running')
+    }
+  }
+
+  /** Where a session rests once a turn has ended without failing. */
+  const resting = (record: ThreadRecord): SessionStatus =>
+    record.backgroundTasks?.length ? 'running' : 'idle'
+
+  /**
+   * Record the provider's live background tasks and tell every client. The
+   * roster is the whole truth each time: a task missing from it has ended.
+   * Between turns it is also the only thing saying whether the session is
+   * working, so the same event carries the status that follows from it.
+   */
+  const applyBackgroundTasks = (
+    record: ThreadRecord,
+    reported: readonly { taskId: string; kind: BackgroundTask['kind']; description: string }[],
+  ) => {
+    // A task keeps its host id for as long as the provider lists it; one
+    // that left the roster is forgotten, so a stop can no longer name it.
+    const ids = new Map<string, string>()
+    const tasks = reported.slice(0, BACKGROUND_TASKS_MAX).map((task) => {
+      const taskId = record.backgroundTaskIds?.get(task.taskId) ?? randomUUID()
+      ids.set(task.taskId, taskId)
+      return { taskId, kind: task.kind, description: task.description.slice(0, 1000) }
+    })
+    const rests = !record.activeTurn && (record.status === 'idle' || record.status === 'running')
+    // Restated even when it matches what this process believes: the row is
+    // what clients read, and an earlier write may not have reached it yet.
+    const status = rests ? (tasks.length ? 'running' : 'idle') : undefined
+    const updated = ProofEventSchemas['session.updated'].parse({
+      type: 'event',
+      name: 'session.updated',
+      eventId: randomUUID(),
+      timestamp: new Date().toISOString(),
+      scope: { type: 'environment', environmentId },
+      payload: {
+        sessionId: record.session.sessionId,
+        backgroundTasks: tasks,
+        ...(status ? { status } : {}),
+      },
+    })
+    try {
+      if (options.appendAtomic) options.appendAtomic([updated])
+      else appendEvent(updated)
+    } catch (error) {
+      // Memory follows the provider even when the write did not land: the
+      // tasks are real and must stay stoppable, and every roster event
+      // restates the whole roster and status, so the next one repairs the row.
+      if (!options.onPersistenceError) throw error
+      options.onPersistenceError(error, 'session.updated')
+    }
+    record.backgroundTasks = tasks
+    record.backgroundTaskIds = ids
+    if (status && status !== record.status) {
+      record.status = status
+      record.updatedAt = Date.now()
+    }
+  }
+
+  /**
+   * Open the turn a provider began by itself: a background task finished and
+   * the agent is acting on the result. It has no user message and no command
+   * behind it, and from here on it is a turn like any other: its output is
+   * filed under it, it can be interrupted, and the provider ends it.
+   */
+  const startBackgroundTurn = (record: ThreadRecord, event: RuntimeEvent) => {
+    record.unrecordedBackgroundTurn = undefined
+    const sent = record.activeTurn
+    if (sent) {
+      // A turn the user sent owns the session already. If its prompt has not
+      // reached the provider yet, what the provider says first is filed here.
+      if (!sent.runtimeMessageId) sent.foldedMessageId = event.messageId
+      return
+    }
+    if (record.cancellation || record.pendingBuild) return
+    const turn: Turn = {
+      turnId: randomUUID(),
+      threadId: record.thread.threadId,
+      state: 'running',
+      origin: 'background',
+    }
+    const started = ProofEventSchemas['turn.started'].parse({
+      type: 'event',
+      name: 'turn.started',
+      eventId: randomUUID(),
+      timestamp: event.timestamp,
+      scope: threadScope(record),
+      payload: { turn },
+    })
+    try {
+      // Written before anything is filed under it, as a sent turn is: output
+      // for a turn the log never recorded would fail every write after it.
+      if (options.appendAtomic) options.appendAtomic([started])
+      else appendEvent(started)
+    } catch (error) {
+      if (!options.onPersistenceError) throw error
+      options.onPersistenceError(error, 'turn.started')
+      // Not given up on: the provider goes on with the turn either way, so the
+      // next thing it says for it tries the start again. Only what arrived
+      // while the log could not be written is lost, not the whole follow-up.
+      record.unrecordedBackgroundTurn = event
+      return
+    }
+    record.turns.push(turn)
+    touch(record, 'running')
+    record.activeTurn = {
+      turn,
+      interruptRequested: false,
+      promptStarted: true,
+      runtimeMessageId: event.messageId,
+      toolIds: new Map(),
+      interactionIds: new Map(),
+      pendingInteractions: new Set(),
     }
   }
 
@@ -1168,6 +1336,7 @@ export function createThreadService(
     updatedAt: new Date(record.updatedAt).toISOString(),
     settledAt: record.settledAt === undefined ? null : new Date(record.settledAt).toISOString(),
     doneAt: record.doneAt === undefined ? null : new Date(record.doneAt).toISOString(),
+    ...(record.backgroundTasks?.length ? { backgroundTasks: record.backgroundTasks } : {}),
   })
 
   const sendTurn = (command: CommandEnvelope, context?: CommandContext, modeId?: string) => {
@@ -1315,7 +1484,7 @@ export function createThreadService(
           else emitCompleted(record, turn.turnId)
           turn.state = active.interruptRequested ? 'interrupted' : 'completed'
           record.activeTurn = undefined
-          touch(record, 'idle')
+          touch(record, resting(record))
         }
       })
       .catch(() => {
@@ -1326,7 +1495,7 @@ export function createThreadService(
           else emitFailed(record, turn.turnId)
           turn.state = active.interruptRequested ? 'interrupted' : 'failed'
           record.activeTurn = undefined
-          touch(record, active.interruptRequested ? 'idle' : 'error')
+          touch(record, active.interruptRequested ? resting(record) : 'error')
         }
       })
     return turnSendResult(command.requestId, started)
@@ -1335,6 +1504,43 @@ export function createThreadService(
   const service = {
     setEnvironmentId(id: string) {
       environmentId = id
+    },
+
+    /**
+     * Forget background work left over from the process that ran before this
+     * one. The tasks were children of provider processes that did not survive
+     * it, so every session still listing some has none, and one held at
+     * `running` only by them is idle. Said through the event log rather than
+     * by editing rows, so a client that reconnects with a saved cursor hears
+     * it too. Call once, before any session can run.
+     */
+    forgetStaleBackgroundWork(): number {
+      const database = options.database
+      if (!database) return 0
+      options.flush?.()
+      const stale = database
+        .prepare('SELECT session_id, status FROM sessions WHERE background_tasks_json IS NOT NULL')
+        .all() as { session_id: string; status: string }[]
+      if (stale.length === 0) return 0
+      const timestamp = new Date().toISOString()
+      const events = stale.map((row) =>
+        ProofEventSchemas['session.updated'].parse({
+          type: 'event',
+          name: 'session.updated',
+          eventId: randomUUID(),
+          timestamp,
+          scope: { type: 'environment', environmentId },
+          payload: {
+            sessionId: row.session_id,
+            backgroundTasks: [],
+            // A turn cut off by the restart already reads as failed.
+            ...(row.status === 'running' ? { status: 'idle' } : {}),
+          },
+        }),
+      )
+      if (options.appendAtomic) options.appendAtomic(events)
+      else for (const event of events) appendEvent(event)
+      return stale.length
     },
 
     /**
@@ -1359,7 +1565,7 @@ export function createThreadService(
         if (record.session.workspaceId !== workspaceId) continue
         // A child already went with its parent earlier in this pass.
         if (!sessions.has(record.session.sessionId)) continue
-        for (const item of dropSessionRecords(record.session.sessionId)) abandonTurn(item)
+        for (const item of dropSessionRecords(record.session.sessionId)) abandon(item)
         closed += 1
       }
       return closed
@@ -1776,7 +1982,7 @@ export function createThreadService(
             payload: { session: { ...session, title: parsed.data.payload.title } },
           })
         }
-        for (const item of dropSessionRecords(sessionId)) abandonTurn(item)
+        for (const item of dropSessionRecords(sessionId)) abandon(item)
         return ProofResponseSchemas['session.delete'].parse({
           type: 'response',
           requestId: command.requestId,
@@ -1875,6 +2081,55 @@ export function createThreadService(
           requestId: command.requestId,
           payload: null,
         })
+      }
+
+      if (command.name === 'session.background.stop') {
+        const parsed = ProofCommandSchemas['session.background.stop'].safeParse(command)
+        if (!parsed.success)
+          return errorResult(command.requestId, 'validation', 'Invalid session request.')
+        options.flush?.()
+        const { sessionId, taskIds } = parsed.data.payload
+        const records = [...threads.values()].filter(
+          (item) => item.session.sessionId === sessionId,
+        )
+        const known = records.length
+          ? true
+          : !!options.database && !!getSessionSummary(options.database, sessionId)
+        if (!known) return errorResult(command.requestId, 'not_found', 'Session not found.')
+        const { requestId } = command
+        const stopped = ProofResponseSchemas['session.background.stop'].parse({
+          type: 'response',
+          requestId,
+          payload: null,
+        })
+        const stops: Promise<void>[] = []
+        for (const record of records) {
+          if (!runtime.stopBackgroundTasks) continue
+          if (!taskIds) {
+            // Every task the provider has, not only the ones this host lists:
+            // the roster it announces is capped, the work is not.
+            stops.push(runtime.stopBackgroundTasks(route(record)))
+            continue
+          }
+          // Clients name tasks by host id; the provider knows its own.
+          const providerTaskIds = [...(record.backgroundTaskIds ?? [])]
+            .filter(([, hostTaskId]) => taskIds.includes(hostTaskId))
+            .map(([providerTaskId]) => providerTaskId)
+          // A task that already ended has nothing to stop.
+          if (providerTaskIds.length === 0) continue
+          stops.push(runtime.stopBackgroundTasks({ ...route(record), taskIds: providerTaskIds }))
+        }
+        if (stops.length === 0) return stopped
+        // The roster is not touched here: the provider reports what is left.
+        return Promise.all(stops).then(
+          () => stopped,
+          () =>
+            errorResult(
+              requestId,
+              'unavailable',
+              'The background work could not be stopped. Try again.',
+            ),
+        )
       }
 
       if (command.name === 'session.open') {
@@ -2044,7 +2299,7 @@ export function createThreadService(
               if (record.activeTurn?.turn.turnId !== active.turn.turnId) return
               active.turn.state = 'interrupted'
               record.activeTurn = undefined
-              touch(record, 'idle')
+              touch(record, resting(record))
               emitInterrupted(record, active.turn.turnId)
             })
             .catch(() => {
@@ -2054,7 +2309,7 @@ export function createThreadService(
                 emitInterrupted(record, active.turn.turnId)
                 active.turn.state = 'interrupted'
                 record.activeTurn = undefined
-                touch(record, 'idle')
+                touch(record, resting(record))
                 return
               }
               // A running prompt remains active so cancellation can be retried.
@@ -2228,9 +2483,22 @@ export function createThreadService(
       const record = threads.get(event.threadId)
       if (!record) return
 
+      if (event.event === 'background_tasks_update') {
+        applyBackgroundTasks(record, event.data.tasks)
+        return
+      }
+      if (event.event === 'background_turn_started') {
+        startBackgroundTurn(record, event)
+        return
+      }
+      const unrecorded = record.unrecordedBackgroundTurn
+      if (unrecorded && event.messageId !== undefined && event.messageId === unrecorded.messageId) {
+        startBackgroundTurn(record, unrecorded)
+      }
+
       if (event.event === 'prompt_started') {
         const active = record.activeTurn
-        if (!active || event.data.userMessageId !== active.userMessage.messageId) return
+        if (!active || event.data.userMessageId !== active.userMessage?.messageId) return
         active.runtimeMessageId = event.messageId
         // Only now has the provider opened the session and accepted the mode.
         // A launch that fails before this leaves every composer where it was.
@@ -2266,7 +2534,22 @@ export function createThreadService(
         event.event === 'subtask_update' ||
         event.category === 'error' ||
         event.event === 'process_exited'
-      if (
+      // Output of a turn the provider began by itself just before this one's
+      // prompt reached it; see `foldedMessageId`.
+      const folded =
+        !!active?.foldedMessageId &&
+        event.messageId === active.foldedMessageId &&
+        event.event !== 'process_exited'
+      if (folded) {
+        // That turn's own ending is not this turn's: the prompt is still queued.
+        const ends =
+          event.event === 'prompt_completed' ||
+          event.event === 'auth_required' ||
+          event.event === 'capability_missing' ||
+          ((event.event === 'rpc_error' || event.event === 'runtime_error') &&
+            event.data.recoverable !== true)
+        if (ends) return
+      } else if (
         turnScoped &&
         (!active ||
           (!active.runtimeMessageId && event.event !== 'process_exited') ||
@@ -2299,7 +2582,7 @@ export function createThreadService(
         projectRuntimeEvent(record, event, active, interrupted ? 'interrupted' : 'completed')
         active.turn.state = interrupted ? 'interrupted' : 'completed'
         record.activeTurn = undefined
-        touch(record, 'idle')
+        touch(record, resting(record))
         return
       }
 
@@ -2312,7 +2595,7 @@ export function createThreadService(
         projectRuntimeEvent(record, event, active, interrupted ? 'interrupted' : 'failed', reason)
         active.turn.state = interrupted ? 'interrupted' : 'failed'
         record.activeTurn = undefined
-        touch(record, interrupted ? 'idle' : 'error')
+        touch(record, interrupted ? resting(record) : 'error')
         return
       }
 
@@ -2327,7 +2610,7 @@ export function createThreadService(
         else projectRuntimeEvent(record, event, active, 'failed')
         active.turn.state = interrupted ? 'interrupted' : 'failed'
         record.activeTurn = undefined
-        touch(record, interrupted ? 'idle' : 'error')
+        touch(record, interrupted ? resting(record) : 'error')
         return
       }
 

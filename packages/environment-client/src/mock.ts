@@ -250,20 +250,27 @@ export function createMockEnvironmentClient(
       const state = store.getState()
       const session = state.sessions[parsed.scope.sessionId]
       if (session) {
-        const status = deriveSessionStatus(session.threadIds.map((id) => state.threads[id]!))
+        const working = !!session.backgroundTasks?.length
+        const derived = deriveSessionStatus(session.threadIds.map((id) => state.threads[id]!))
+        // Like the environment, a session with background work still running
+        // rests at running rather than idle.
+        const status = derived === 'idle' && working ? 'running' : derived
         // Like the environment, a turn or a question brings a settled session back.
         const unsettle =
           !!session.settledAt &&
           (parsed.name === 'turn.started' || parsed.name === 'interaction.requested')
-        // Only a completed turn leaves news; any other ending or a new turn clears it.
+        // Only a completed turn leaves news, and only once nothing is left
+        // running; any other ending or a new turn clears it.
         const doneAt =
-          parsed.name === 'turn.completed'
+          parsed.name === 'turn.completed' && !working
             ? parsed.timestamp
-            : parsed.name === 'turn.started' ||
-                parsed.name === 'turn.interrupted' ||
-                parsed.name === 'turn.failed'
+            : parsed.name === 'turn.completed'
               ? null
-              : undefined
+              : parsed.name === 'turn.started' ||
+                  parsed.name === 'turn.interrupted' ||
+                  parsed.name === 'turn.failed'
+                ? null
+                : undefined
         const doneChanged = doneAt !== undefined && doneAt !== (session.doneAt ?? null)
         if (status !== session.status || unsettle || doneChanged)
           emit({
@@ -793,6 +800,32 @@ export function createMockEnvironmentClient(
           return settledAt
         }),
       ),
+    stopBackgroundTasks: (input) =>
+      run('stopBackgroundTasks', input, () => {
+        const session = store.getState().sessions[input.sessionId]
+        if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
+        const live = session.backgroundTasks ?? []
+        const left = input.taskIds
+          ? live.filter((task) => !input.taskIds!.includes(task.taskId))
+          : []
+        if (left.length === live.length) return
+        emit({
+          ...base(),
+          name: 'session.updated',
+          scope: envScope(),
+          payload: {
+            sessionId: input.sessionId,
+            backgroundTasks: left,
+            // Between turns the roster is all that holds a session at running.
+            ...(left.length === 0 &&
+            session.status === 'running' &&
+            deriveSessionStatus(session.threadIds.map((id) => store.getState().threads[id]!)) ===
+              'idle'
+              ? { status: 'idle' as const }
+              : {}),
+          },
+        })
+      }),
     acknowledgeSession: (sessionId) =>
       run('acknowledgeSession', { sessionId }, () => {
         const session = store.getState().sessions[sessionId]

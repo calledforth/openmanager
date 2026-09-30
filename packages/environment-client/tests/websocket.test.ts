@@ -300,6 +300,30 @@ describe('websocket environment client', () => {
     client.disconnect()
   })
 
+  it('stops background work by session, naming the tasks when given', async () => {
+    const { client, socket } = await connected([...FULL_CAPABILITIES, 'session.background.stop'])
+    expect(client.supports('stopBackgroundTasks')).toBe(true)
+
+    const one = client.commands.stopBackgroundTasks({
+      sessionId: SESSION.sessionId,
+      taskIds: ['task-1'],
+    })
+    expect(socket.last('session.background.stop').payload).toEqual({
+      sessionId: SESSION.sessionId,
+      taskIds: ['task-1'],
+    })
+    socket.respond('session.background.stop', null)
+    await one
+
+    const all = client.commands.stopBackgroundTasks({ sessionId: SESSION.sessionId })
+    expect(socket.last('session.background.stop').payload).toEqual({
+      sessionId: SESSION.sessionId,
+    })
+    socket.respond('session.background.stop', null)
+    await all
+    client.disconnect()
+  })
+
   it('rejects regenerating a title on servers that cannot', async () => {
     const { client, socket } = await connected()
     expect(client.supports('regenerateSessionTitle')).toBe(false)

@@ -3,6 +3,7 @@ import { useActiveThreadState } from '../../providers/active-thread-provider'
 import { ChatView } from './ChatView'
 import { FloatingChatComposer } from './FloatingChatComposer'
 import { MessageInput } from './MessageInput'
+import { SessionBackgroundTasks } from './BackgroundTasksPill'
 import { useState, type ReactNode } from 'react'
 import { cn } from '../../lib/utils'
 import { describeUnavailableWorkspace } from '../../lib/workspace-availability'
@@ -170,6 +171,7 @@ function ChatWorkspaceContent() {
         <ChildSessionBanner onBack={() => closeChildSession(parentExternalId)} />
       ) : (
         <FloatingChatComposer>
+          <SessionBackgroundTasks />
           <MessageInput />
         </FloatingChatComposer>
       )}

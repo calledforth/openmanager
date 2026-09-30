@@ -906,7 +906,13 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
   // session does not re-render the thread.
   const listedSessionId = activeSession?.sessionId
   const activeTitle = activeSession?.title ?? undefined
-  const activeStatus = activeSession?.status
+  // A session held at running only by background work has no turn to wait
+  // for or to stop: the composer is free, and the pill above it says what is
+  // still running and stops it.
+  const activeStatus =
+    activeSession?.status === 'running' && !activeTurn && activeSession.backgroundTasks?.length
+      ? 'idle'
+      : activeSession?.status
   const activeParentId = activeSession?.parentSessionId
   const activeThread = useMemo<ActiveThreadDetails | null>(
     () =>

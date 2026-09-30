@@ -89,6 +89,7 @@ type SessionRow = {
   title: string | null
   status: string
   composer_json?: string | null
+  background_tasks_json?: string | null
   settled_at?: number | null
   done_at?: number | null
   updated_at: number
@@ -99,6 +100,7 @@ type TurnRow = {
   turn_id: string
   thread_id: string
   state: string
+  origin?: string | null
   started_at: number
   finished_at: number | null
 }
@@ -158,6 +160,9 @@ export function sessionRowToSummary(row: SessionRow): SessionSummary {
     updatedAt: new Date(row.updated_at).toISOString(),
     settledAt: row.settled_at ? new Date(row.settled_at).toISOString() : null,
     doneAt: row.done_at ? new Date(row.done_at).toISOString() : null,
+    ...(row.background_tasks_json
+      ? { backgroundTasks: JSON.parse(row.background_tasks_json) }
+      : {}),
     ...(row.composer_json ? { composer: JSON.parse(row.composer_json) } : {}),
   })
 }
@@ -204,7 +209,7 @@ export function getSessionSummary(
   const row = database
     .prepare(
       `SELECT session_id, workspace_id, parent_session_id, provider_id, title, title_source, title_generated, status,
-              composer_json, settled_at, done_at, updated_at
+              composer_json, background_tasks_json, settled_at, done_at, updated_at
        FROM sessions WHERE session_id = ?`,
     )
     .get(sessionId) as SessionRow | undefined
@@ -275,6 +280,7 @@ export function listSessionHistory(
         ...(row.finished_at === null
           ? {}
           : { finishedAt: new Date(row.finished_at).toISOString() }),
+        ...(row.origin ? { origin: row.origin } : {}),
       }),
   )
   // The reasoning and tool calls that belong to this page: everything after

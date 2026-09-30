@@ -1144,6 +1144,9 @@ export function createWebSocketEnvironmentClient(
       await request('session.acknowledge', { sessionId })
       store.update((state) => applySessionAcknowledged(state, sessionId))
     },
+    async stopBackgroundTasks(input) {
+      await request('session.background.stop', input)
+    },
     async deleteSession(sessionId) {
       await request('session.delete', { sessionId })
       for (const scope of sessionScopes(sessionId)) unsubscribe(scope)
