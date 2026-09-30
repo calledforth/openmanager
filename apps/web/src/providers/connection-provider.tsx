@@ -162,6 +162,8 @@ export function ConnectionProvider({
   const [localOwnerClaimFailure, setLocalOwnerClaimFailure] =
     useState<LocalOwnerClaimFailure | null>(null)
   const claimGeneration = useRef(0)
+  /** The address of the owner claim in flight, so forgetting it can cancel the claim. */
+  const claimingEndpoint = useRef<string | null>(null)
   const online = useSyncExternalStore(subscribeToNetworkStatus, isBrowserOnline, onlineOnServer)
   const wasOffline = useRef(false)
 
@@ -197,6 +199,15 @@ export function ConnectionProvider({
   // connect is pending, the endpoint has not yet proven which environment it is.
   const storedId =
     !pending && environment.status === 'selected' ? environment.environmentId : undefined
+  // A failed connect still says something about a saved route when the address
+  // is one the selected environment already has: reconnecting to it, or
+  // re-entering it with a new token.
+  const selectedRecord = selectedStoredEnvironment(registry)
+  const failureId =
+    storedId ??
+    (pending && selectedRecord?.routes.some((route) => route.endpoint === pending.endpoint)
+      ? selectedRecord.environmentId
+      : undefined)
 
   const bootstrapQuery = useQuery({
     queryKey: ['environment-bootstrap', endpoint, bootstrapNonce],
@@ -226,9 +237,9 @@ export function ConnectionProvider({
     if (liveBootstrap.status === 'unreachable' || liveBootstrap.status === 'unauthorized') {
       if (!fresh) return
       recordedBootstrap.current = liveBootstrap
-      const report = storedId ? routeHealthFromBootstrap(liveBootstrap, storedId) : null
-      if (storedId && report) {
-        update((current) => setStoredRouteHealth(current, storedId, endpoint, report))
+      const report = failureId ? routeHealthFromBootstrap(liveBootstrap, failureId) : null
+      if (failureId && report) {
+        update((current) => setStoredRouteHealth(current, failureId, endpoint, report))
       }
       return
     }
@@ -247,33 +258,59 @@ export function ConnectionProvider({
       return
     }
     recordedBootstrap.current = liveBootstrap
-    const stored = update((current) => {
-      // The selected environment's route now leads somewhere else. Say so on
-      // that record before the answering environment takes the endpoint.
-      const base =
-        fresh && storedId && storedId !== answeredId
-          ? setStoredRouteHealth(current, storedId, endpoint, {
-              status: 'unreachable',
-              message: WRONG_ENVIRONMENT_MESSAGE,
-            })
-          : current
-      return upsertStoredEnvironment(base, {
+    if (storedId && storedId !== answeredId) {
+      // The selected environment's route now leads somewhere else: a reused
+      // localhost port, a tunnel handed to another machine. Say so on the
+      // route and stay put. Only a person connecting to the address adopts
+      // whatever answers there.
+      setHasConnected(false)
+      if (fresh) {
+        update((current) =>
+          setStoredRouteHealth(current, storedId, endpoint, {
+            status: 'unreachable',
+            message: WRONG_ENVIRONMENT_MESSAGE,
+          }),
+        )
+      }
+      return
+    }
+    const stored = update((current) =>
+      upsertStoredEnvironment(current, {
         environmentId: answeredId,
         endpoint,
         label: liveBootstrap.label,
         credential: pending?.credential,
         health: fresh ? { status: 'available' } : undefined,
-      })
-    })
+      }),
+    )
     if (!stored) return
     if (liveBootstrap.status === 'ready') setHasConnected(true)
     if (pending) setPending(null)
-  }, [preview, liveBootstrap, endpoint, update, pending, localOwnerClaimFailure, storedId])
+  }, [
+    preview,
+    liveBootstrap,
+    endpoint,
+    update,
+    pending,
+    localOwnerClaimFailure,
+    storedId,
+    failureId,
+  ])
 
+  const answeredByAnother =
+    storedId !== undefined &&
+    (liveBootstrap.status === 'ready' || liveBootstrap.status === 'incompatible_protocol') &&
+    liveBootstrap.environmentId !== undefined &&
+    liveBootstrap.environmentId !== storedId
   const effectiveBootstrap: BootstrapOutcome =
     localOwnerClaimFailure?.endpoint === endpoint
       ? { status: 'unauthorized', message: localOwnerClaimFailure.message }
-      : liveBootstrap
+      : answeredByAnother
+        ? {
+            status: 'unreachable',
+            message: `${WRONG_ENVIRONMENT_MESSAGE} Use another route to this environment, or connect to the address again to add what answers there.`,
+          }
+        : liveBootstrap
 
   const input: DeriveConnectionInput = preview ?? {
     environment,
@@ -320,6 +357,7 @@ export function ConnectionProvider({
       return
     }
     const requestId = ++claimGeneration.current
+    claimingEndpoint.current = endpoint
     void fetchLocalOwner(endpoint).then((claim) => {
       if (requestId !== claimGeneration.current) return
       begin(claim?.credential ?? '', claim?.environmentId)
@@ -380,6 +418,10 @@ export function ConnectionProvider({
         abandonPendingConnect()
         setBootstrapNonce((value) => value + 1)
       }
+      // A connect to the forgotten address must not bring the route back when
+      // its answer arrives.
+      setPending((current) => (current?.endpoint === routeEndpoint ? null : current))
+      if (claimingEndpoint.current === routeEndpoint) claimGeneration.current += 1
       update(() => next)
     },
     [abandonPendingConnect, update],
@@ -391,6 +433,10 @@ export function ConnectionProvider({
     },
     [update],
   )
+
+  // One check per route at a time, so a slow answer cannot land after, and
+  // overwrite, a newer one for the same route.
+  const probing = useRef(new Set<string>())
 
   const checkRoutes = useCallback(() => {
     if (preview) return
@@ -405,7 +451,11 @@ export function ConnectionProvider({
       for (const route of item.routes) {
         // The route in use is reported by the live bootstrap and the socket.
         if (isInUse(current, item.environmentId, route.endpoint)) continue
+        const key = JSON.stringify([item.environmentId, route.endpoint])
+        if (probing.current.has(key)) continue
+        probing.current.add(key)
         void probeRouteHealth(item.environmentId, route.endpoint).then((report) => {
+          probing.current.delete(key)
           if (!mounted.current) return
           update((latest) =>
             isInUse(latest, item.environmentId, route.endpoint)

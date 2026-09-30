@@ -79,7 +79,10 @@ survives a reload. It is written only when the status or its message changes.
 
 A route counts as `available` only if the answer comes from the environment it
 belongs to. An answer carrying another `environmentId` is recorded as
-`unreachable` with "A different environment answers at this address."
+`unreachable` with "A different environment answers at this address." When
+that happens on the route in use, the selection does not move: the client stays
+on the environment the user chose and opens no socket, so its token is never
+sent to whatever answered. Only connecting to the address by hand adopts it.
 
 A protocol mismatch is still `available`: the route reached the environment.
 `unreachable` and `unauthorized` stay separate so the interface can tell a

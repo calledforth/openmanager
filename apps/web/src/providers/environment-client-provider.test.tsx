@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { EnvironmentClient } from '@openmanager/environment-client'
 import { useEnvironmentClientOptional } from '@openmanager/app-core/providers/environment-client'
 import { ENVIRONMENT_STORAGE_KEY } from '../lib/environment-store'
+import { WRONG_ENVIRONMENT_MESSAGE } from '../lib/route-health'
 import { createQueryClient } from '../query-client'
 import { ConnectionProvider, useConnection } from './connection-provider'
 import { WebEnvironmentClientProvider } from './environment-client-provider'
@@ -124,7 +125,7 @@ function createFakeClient() {
 
 function Probe() {
   const client = useEnvironmentClientOptional()
-  const { ui, chooseRoute, checkRoutes } = useConnection()
+  const { ui, chooseRoute, checkRoutes, connect, removeRoute } = useConnection()
   return (
     <>
       <p>
@@ -135,6 +136,15 @@ function Probe() {
       </button>
       <button type="button" onClick={checkRoutes}>
         check routes
+      </button>
+      <button type="button" onClick={() => connect(ENDPOINT, 'new-token')}>
+        reconnect local
+      </button>
+      <button type="button" onClick={() => connect(TUNNEL, 'new-token')}>
+        connect tunnel
+      </button>
+      <button type="button" onClick={() => removeRoute('env-local', TUNNEL)}>
+        forget tunnel
       </button>
     </>
   )
@@ -268,6 +278,89 @@ describe('WebEnvironmentClientProvider', () => {
     await waitFor(() => expect(storedRoutes()[0]!.health.status).toBe('unreachable'))
     expect(storedRoutes().map((route) => route.endpoint)).toEqual([ENDPOINT, TUNNEL])
     expect(createClient).not.toHaveBeenCalled()
+  })
+
+  it('stays on the selected environment when its route answers as another one', async () => {
+    seedTwoRoutes()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          protocolVersion: PROTOCOL_VERSION,
+          environmentId: 'env-other',
+          label: 'Someone else',
+          capabilities: ['connection.heartbeat'],
+        }),
+      })),
+    )
+    const createClient = vi.fn(() => createFakeClient() as EnvironmentClient)
+    renderProvider(createClient)
+
+    await waitFor(() => expect(screen.getByText('unreachable:none')).toBeInTheDocument())
+    await waitFor(() =>
+      expect(storedRoutes()[0]).toMatchObject({
+        endpoint: ENDPOINT,
+        health: { status: 'unreachable', message: WRONG_ENVIRONMENT_MESSAGE },
+      }),
+    )
+    // Nothing was adopted: still one record, still selected, and no socket
+    // carried its token to whatever answered.
+    const registry = JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY) ?? '{}')
+    expect(registry.selectedId).toBe('env-local')
+    expect(
+      registry.environments.map((item: { environmentId: string }) => item.environmentId),
+    ).toEqual(['env-local'])
+    expect(createClient).not.toHaveBeenCalled()
+  })
+
+  it('records a failed reconnect to the route in use', async () => {
+    seedTwoRoutes()
+    let up = true
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        if (!up) throw new TypeError('Failed to fetch')
+        return bootstrapAnswer()
+      }),
+    )
+    renderProvider(() => createFakeClient())
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+    expect(storedRoutes()[0]!.health.status).toBe('available')
+
+    up = false
+    act(() => screen.getByRole('button', { name: 'reconnect local' }).click())
+    await waitFor(() => expect(storedRoutes()[0]!.health.status).toBe('unreachable'))
+    expect(storedRoutes().map((route) => route.endpoint)).toEqual([ENDPOINT, TUNNEL])
+  })
+
+  it('does not bring back a route forgotten while a connect to it was in flight', async () => {
+    seedTwoRoutes()
+    let answerTunnel = (): void => undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).startsWith(TUNNEL)) {
+          await new Promise<void>((resolve) => {
+            answerTunnel = resolve
+          })
+        }
+        return bootstrapAnswer()
+      }),
+    )
+    renderProvider(() => createFakeClient())
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+
+    act(() => screen.getByRole('button', { name: 'connect tunnel' }).click())
+    act(() => screen.getByRole('button', { name: 'forget tunnel' }).click())
+    await act(async () => {
+      answerTunnel()
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+    expect(storedRoutes().map((route) => route.endpoint)).toEqual([ENDPOINT])
   })
 
   it('checks the routes that are not in use and leaves the live one alone', async () => {
