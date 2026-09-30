@@ -99,6 +99,7 @@ export interface ConvexEnvironmentClientOptions {
 const UNSUPPORTED: ReadonlySet<EnvironmentCommandName> = new Set([
   'settleSession',
   'acknowledgeSession',
+  'stopBackgroundTasks',
   'getProviderCatalog',
   'probeProvider',
   'getComposerPreference',
@@ -273,9 +274,10 @@ export function createConvexEnvironmentClient(
     if (event.event === 'prompt_started') {
       const waiter = turnWaiters.get(event.data.userMessageId)
       const started = events.find((proof) => proof.name === 'turn.started')
-      if (waiter && started?.name === 'turn.started') {
+      const userMessage = started?.name === 'turn.started' ? started.payload.userMessage : undefined
+      if (waiter && started?.name === 'turn.started' && userMessage) {
         turnWaiters.delete(event.data.userMessageId)
-        waiter.resolve(started.payload)
+        waiter.resolve({ ...started.payload, userMessage })
       }
     }
   }
@@ -1048,6 +1050,7 @@ export function createConvexEnvironmentClient(
     settleSession: () => unsupported('settleSession'),
     regenerateSessionTitle: () => unsupported('regenerateSessionTitle'),
     acknowledgeSession: () => unsupported('acknowledgeSession'),
+    stopBackgroundTasks: () => unsupported('stopBackgroundTasks'),
     getProviderCatalog: () => unsupported('getProviderCatalog'),
     probeProvider: () => unsupported('probeProvider'),
     getComposerPreference: () => unsupported('getComposerPreference'),

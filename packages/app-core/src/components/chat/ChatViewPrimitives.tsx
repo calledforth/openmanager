@@ -4,6 +4,7 @@ import { TurnWorkGroup } from '../parts/TurnWorkGroup'
 import {
   partitionSettledTurnParts,
   settledTurnLabel,
+  UNPROMPTED_TURN_LABEL,
   type TurnRuntimeMetadata,
 } from '../parts/turn-work-group'
 import { TextPart } from '../parts/TextPart'
@@ -57,6 +58,12 @@ export function AssistantMessage({
   return (
     <div className="py-1">
       <div className={cn(chatStreamInner, isStreaming ? 'opacity-90' : 'opacity-100')}>
+        {/* The work group's own label says it once the turn has one. */}
+        {runtime?.unprompted && !hasWorkGroup ? (
+          <div className="py-px text-ui-base leading-snug text-[var(--basis-text-muted)]">
+            {UNPROMPTED_TURN_LABEL}
+          </div>
+        ) : null}
         {hasWorkGroup ? (
           <>
             <TurnWorkGroup label={settledTurnLabel(runtime)} parts={workParts} />

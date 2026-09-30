@@ -245,8 +245,10 @@ function projectTurn(
 function turnRuntime(turn: Turn): TurnRuntimeMetadata | undefined {
   const startedAt = turn.startedAt ? Date.parse(turn.startedAt) : Number.NaN
   const completedAt = turn.finishedAt ? Date.parse(turn.finishedAt) : Number.NaN
-  if (!Number.isFinite(startedAt) || !Number.isFinite(completedAt)) return undefined
-  return { startedAt, completedAt }
+  const timed = Number.isFinite(startedAt) && Number.isFinite(completedAt)
+  const unprompted = turn.origin === 'background'
+  if (!timed && !unprompted) return undefined
+  return { ...(timed ? { startedAt, completedAt } : {}), ...(unprompted ? { unprompted } : {}) }
 }
 
 /** Project `thread`, reusing rows from `previous` whose inputs are unchanged. */

@@ -74,6 +74,12 @@ export const proofCommands = [
     name: 'session.acknowledge',
     payload: { sessionId: 'session-1' },
   },
+  {
+    type: 'command',
+    requestId: 'stop-background',
+    name: 'session.background.stop',
+    payload: { sessionId: 'session-1', taskIds: ['task-1'] },
+  },
   { type: 'command', requestId: 'r-1', name: 'environment.get', payload: null },
   { type: 'command', requestId: 'r-2', name: 'workspace.list', payload: null },
   {
@@ -172,6 +178,7 @@ export const proofResponses = {
     payload: { settledAt: '2026-09-24T10:00:00.000Z' },
   },
   'session.acknowledge': { type: 'response', requestId: 'acknowledge', payload: null },
+  'session.background.stop': { type: 'response', requestId: 'stop-background', payload: null },
   'environment.get': {
     type: 'response',
     requestId: 'r-1',

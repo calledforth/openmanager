@@ -123,6 +123,42 @@ describe('projectThread', () => {
     expect(settledAt({ startedAt: '2026-09-24T10:00:00.000Z' })).toBeUndefined()
   })
 
+  it('marks a turn the provider began by itself, by its origin and nothing else', () => {
+    const answer = (messageId: string, turnId: string) => ({
+      messageId,
+      threadId: THREAD.threadId,
+      turnId,
+      role: 'assistant' as const,
+      content: [{ type: 'text' as const, text: 'done' }],
+    })
+    const state = thread({
+      turns: [
+        { turnId: 't1', threadId: THREAD.threadId, state: 'completed' },
+        {
+          turnId: 't2',
+          threadId: THREAD.threadId,
+          state: 'completed',
+          origin: 'background',
+          startedAt: '2026-09-30T10:00:00.000Z',
+          finishedAt: '2026-09-30T10:00:02.000Z',
+        },
+        { turnId: 't3', threadId: THREAD.threadId, state: 'running', origin: 'background' },
+      ],
+      // No turn here has a user message loaded. For t1 that proves nothing:
+      // its prompt may be on an older history page that was never fetched.
+      messages: [answer('a1', 't1'), answer('a2', 't2')],
+    })
+    const projection = projectThread(state)
+    expect(projection.byId.get('a1')?.content?.runtime).toBeUndefined()
+    expect(projection.byId.get('a2')?.content?.runtime).toEqual({
+      startedAt: Date.parse('2026-09-30T10:00:00.000Z'),
+      completedAt: Date.parse('2026-09-30T10:00:02.000Z'),
+      unprompted: true,
+    })
+    // Still streaming, so untimed, and already introduced as unprompted.
+    expect(projection.byId.get('turn:t3:assistant')?.content?.runtime).toEqual({ unprompted: true })
+  })
+
   it('orders an unplaced assistant row as reasoning, tools, then text and maps tool status', () => {
     const state = thread({
       turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'running' }],

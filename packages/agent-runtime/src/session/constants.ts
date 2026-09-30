@@ -34,6 +34,10 @@ export type RuntimeTimeouts = {
    * cannot rescue it — it skips threads with an active turn, which is exactly
    * what this is. */
   interruptGraceMs: number
+  /** How long an emptied background-task roster is held back while the turn
+   * that reports the result is on its way. Measured at ~1.5s on Claude Code
+   * between a task settling and the first frame of that turn. */
+  backgroundSettleMs: number
 }
 
 /** Budgets sized off the measured latencies quoted in `RuntimeTimeouts`.
@@ -61,6 +65,7 @@ export const DEFAULT_RUNTIME_TIMEOUTS: RuntimeTimeouts = {
   // it was inside, and killing a process that was about to answer costs the
   // user a respawn plus a resume for nothing.
   interruptGraceMs: 15_000,
+  backgroundSettleMs: 5_000,
 }
 
 /** There is deliberately no prompt timeout: a turn legitimately runs for

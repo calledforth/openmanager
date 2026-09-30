@@ -1,4 +1,9 @@
-import type { Interaction, ProofEvent, ProviderCatalogEntry } from '@openmanager/protocol'
+import type {
+  Interaction,
+  ProofEvent,
+  ProviderCatalogEntry,
+  TurnStart,
+} from '@openmanager/protocol'
 
 export const ENV = 'env-1'
 export const WORKSPACE = {
@@ -43,22 +48,28 @@ export const event = <E extends ProofEvent>(
     ...partial,
   }) as E
 
-export const turnStarted = (turnId = 'turn-1', text = 'hello', commandId?: string) =>
-  event<Extract<ProofEvent, { name: 'turn.started' }>>({
-    name: 'turn.started',
-    scope: threadScope,
-    payload: {
-      turn: { turnId, threadId: THREAD.threadId, state: 'running' },
-      userMessage: {
-        messageId: `${turnId}-user`,
-        threadId: THREAD.threadId,
-        turnId,
-        role: 'user',
-        content: [{ type: 'text', text }],
-      },
-      ...(commandId ? { commandId } : {}),
+/** A turn the user sent, so its payload also stands in for a `turn.send` response. */
+export const turnStarted = (turnId = 'turn-1', text = 'hello', commandId?: string) => {
+  const payload: TurnStart = {
+    turn: { turnId, threadId: THREAD.threadId, state: 'running' },
+    userMessage: {
+      messageId: `${turnId}-user`,
+      threadId: THREAD.threadId,
+      turnId,
+      role: 'user',
+      content: [{ type: 'text', text }],
     },
-  })
+    ...(commandId ? { commandId } : {}),
+  }
+  return {
+    ...event<Extract<ProofEvent, { name: 'turn.started' }>>({
+      name: 'turn.started',
+      scope: threadScope,
+      payload,
+    }),
+    payload,
+  }
+}
 
 export const delta = (turnId: string, messageId: string, text: string) =>
   event({

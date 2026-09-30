@@ -10,6 +10,9 @@ include it in `SessionSummary`. A newly created session starts `idle`.
 | Permission, question, or plan review request    | `waiting` |
 | Last pending interaction resolved or expired    | `running` |
 | Completed or interrupted turn                   | `idle`    |
+| The same, with background work still running    | `running` |
+| Last background task ended, no turn in flight   | `idle`    |
+| Turn the provider starts by itself              | `running` |
 | Failed turn or unexpected provider process exit | `error`   |
 | New prompt after an error                       | `running` |
 
@@ -32,6 +35,43 @@ do not require opening sessions or downloading their transcripts. Clients take
 status from summaries and these events; thread events, optimistic commands,
 history pages, and thread snapshots never infer or overwrite it. The mock server
 emits the same explicit status updates for tests and stories.
+
+## Background work
+
+A provider can keep working after its turn has ended: Claude Code runs a
+command, a subagent or a watch loop in the background, and when one settles it
+wakes the model by itself. The environment reports both halves.
+
+`SessionSummary.backgroundTasks` is every task still running, under host ids.
+The provider reports the whole roster each time it changes; the environment
+stores it on the session row and announces it as `session.updated {
+backgroundTasks }`. While the roster is not empty a finished turn rests the
+session at `running` rather than `idle`, and sets no `doneAt`: the turn ended,
+but nothing is finished. When the roster empties between turns the same event
+carries `status: idle`. The roster is never what decides status during a turn.
+
+The turn the provider then starts by itself is announced as a `turn.started`
+whose turn has `origin: 'background'` and which carries no `userMessage`. The
+origin is stored on the turn row, so history names it too. From there it is a
+turn like any other: its output is filed under it, it can be interrupted, and
+completing it sets `doneAt`. A send is refused while it runs, exactly as during
+a turn the user started.
+
+`session.background.stop` ends the tasks it names, or all of them. It settles
+once the provider has been asked; the tasks leave `backgroundTasks` when the
+provider reports them gone. Interrupting a turn does not stop background tasks,
+and stopping a task does not wake the model.
+
+Background tasks are children of the provider process. The environment never
+stops a process for being idle while it has any, and clears the roster when the
+process exits. A restarted environment forgets them on startup and rests their
+sessions at `idle`. A client that reconnects takes the listing as the whole
+truth: a summary that names no background work has none.
+
+Today only Claude Code reports background work. The Claude runtime emits an
+emptied roster a few seconds late when no turn is in flight, so the session
+does not read as finished in the gap before the provider's own turn begins; a
+roster emptied by a stop is reported at once.
 
 ## Done (unseen completions)
 

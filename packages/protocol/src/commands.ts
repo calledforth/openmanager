@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { CommandEnvelopeSchema, ErrorEnvelopeSchema, ResponseEnvelopeSchema } from './envelopes.js'
 import {
+  BACKGROUND_TASKS_MAX,
   EntityIdSchema,
   EnvironmentSchema,
   WorkspaceSchema,
@@ -117,6 +118,15 @@ export const ProofCommandSchemas = {
   // Clears `doneAt` once the user has looked at a finished session, so every
   // client stops showing it as done. A session that is not done is a no-op.
   'session.acknowledge': command('session.acknowledge', SessionTargetSchema),
+  // Stops background work the session still has running: the tasks named, or
+  // all of them. A task that already ended is not an error, and neither is a
+  // session with none. The change reaches every client as `session.updated`.
+  'session.background.stop': command(
+    'session.background.stop',
+    SessionTargetSchema.extend({
+      taskIds: z.array(EntityIdSchema).min(1).max(BACKGROUND_TASKS_MAX).optional(),
+    }),
+  ),
   'session.history': command(
     'session.history',
     ThreadTargetSchema.extend({
@@ -182,6 +192,7 @@ export const ProofCommandSchema = z.discriminatedUnion('name', [
   ProofCommandSchemas['session.title.regenerate'],
   ProofCommandSchemas['session.settle'],
   ProofCommandSchemas['session.acknowledge'],
+  ProofCommandSchemas['session.background.stop'],
   ProofCommandSchemas['session.history'],
   ProofCommandSchemas['turn.send'],
   ProofCommandSchemas['turn.interrupt'],
@@ -224,6 +235,7 @@ export const ProofResponseSchemas = {
   'session.title.regenerate': response(z.object({ session: SessionSchema })),
   'session.settle': response(z.object({ settledAt: TimestampSchema.nullable() })),
   'session.acknowledge': response(z.null()),
+  'session.background.stop': response(z.null()),
   'session.history': response(
     z.object({
       messages: z.array(MessageSchema),

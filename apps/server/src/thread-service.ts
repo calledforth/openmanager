@@ -6,9 +6,11 @@ import {
   ProofResponseSchemas,
   pageSessionSummaries,
   pageThreadMessages,
+  BACKGROUND_TASKS_MAX,
   shouldReplaceSessionTitle,
   titleFromPrompt,
   WorkspaceUnavailableDetailsSchema,
+  type BackgroundTask,
   type CommandEnvelope,
   type ErrorCode,
   type EventEnvelope,
@@ -87,7 +89,8 @@ export type WorkspaceRuntimeResolver = (
 ) => WorkspaceRuntimeRoute | undefined
 type ActiveTurn = {
   turn: Turn
-  userMessage: Message
+  /** Absent on a turn the provider began by itself; nobody prompted it. */
+  userMessage?: Message
   interruptRequested: boolean
   promptStarted?: boolean
   /** Includes host terminal bookkeeping, not just the provider completion event. */
@@ -184,7 +187,12 @@ type InteractionAnswer = {
 
 type InteractionRuntime = Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'> &
   // Optional so a host without interactive providers still assembles.
-  Partial<Pick<AgentRuntime, 'respondPermission' | 'respondQuestion' | 'respondPlan'>>
+  Partial<
+    Pick<
+      AgentRuntime,
+      'respondPermission' | 'respondQuestion' | 'respondPlan' | 'stopBackgroundTasks'
+    >
+  >
 type ThreadRecord = {
   session: Session
   /** Provenance of `session.title`, so a rename outranks later automatic titles. */
@@ -206,6 +214,13 @@ type ThreadRecord = {
   /** In-memory mode only: when the last turn completed, until acknowledged. */
   doneAt?: number
   activeTurn?: ActiveTurn
+  /**
+   * Work the provider still has running between turns, under host ids. While
+   * there is any, the session rests at `running` rather than `idle`.
+   */
+  backgroundTasks?: BackgroundTask[]
+  /** The host id of each live background task, by the provider's own id. */
+  backgroundTaskIds?: Map<string, string>
   /** A session-scoped cancel must drain before another prompt can start. */
   cancellation?: Promise<void>
   pendingBuild?: boolean
@@ -421,9 +436,13 @@ export function createThreadService(
       event.name === 'turn.failed'
     ) {
       const record = threads.get(event.scope.threadId)
-      // Mirrors the SQLite projection: only a completed turn leaves news behind.
+      // Mirrors the SQLite projection: only a completed turn leaves news
+      // behind, and not while background work is still running.
       if (record) {
-        record.doneAt = event.name === 'turn.completed' ? Date.parse(event.timestamp) : undefined
+        record.doneAt =
+          event.name === 'turn.completed' && !record.backgroundTasks?.length
+            ? Date.parse(event.timestamp)
+            : undefined
       }
       // Deferred until the caller has marked the turn completed, which it
       // does right after announcing it.
@@ -736,7 +755,7 @@ export function createThreadService(
         : undefined
     const messageId =
       event.event === 'prompt_started' || event.event === 'user_message_chunk'
-        ? active?.userMessage.messageId
+        ? active?.userMessage?.messageId
         : active
           ? runMessageId(active, event)
           : undefined
@@ -819,6 +838,97 @@ export function createThreadService(
       }
       active.pendingInteractions.delete(projected.payload.response.interactionId)
       touch(record, active.pendingInteractions.size > 0 ? 'waiting' : 'running')
+    }
+  }
+
+  /** Where a session rests once a turn has ended without failing. */
+  const resting = (record: ThreadRecord): SessionStatus =>
+    record.backgroundTasks?.length ? 'running' : 'idle'
+
+  /**
+   * Record the provider's live background tasks and tell every client. The
+   * roster is the whole truth each time: a task missing from it has ended.
+   * Between turns it is also the only thing saying whether the session is
+   * working, so the same event carries the status that follows from it.
+   */
+  const applyBackgroundTasks = (
+    record: ThreadRecord,
+    reported: readonly { taskId: string; kind: BackgroundTask['kind']; description: string }[],
+  ) => {
+    // A task keeps its host id for as long as the provider lists it; one
+    // that left the roster is forgotten, so a stop can no longer name it.
+    const ids = new Map<string, string>()
+    const tasks = reported.slice(0, BACKGROUND_TASKS_MAX).map((task) => {
+      const taskId = record.backgroundTaskIds?.get(task.taskId) ?? randomUUID()
+      ids.set(task.taskId, taskId)
+      return { taskId, kind: task.kind, description: task.description.slice(0, 1000) }
+    })
+    const rests = !record.activeTurn && (record.status === 'idle' || record.status === 'running')
+    const status = rests ? (tasks.length ? 'running' : 'idle') : undefined
+    try {
+      appendEvent(
+        ProofEventSchemas['session.updated'].parse({
+          type: 'event',
+          name: 'session.updated',
+          eventId: randomUUID(),
+          timestamp: new Date().toISOString(),
+          scope: { type: 'environment', environmentId },
+          payload: {
+            sessionId: record.session.sessionId,
+            backgroundTasks: tasks,
+            ...(status && status !== record.status ? { status } : {}),
+          },
+        }),
+      )
+    } catch (error) {
+      if (!options.onPersistenceError) throw error
+      options.onPersistenceError(error, 'session.updated')
+      return
+    }
+    record.backgroundTasks = tasks
+    record.backgroundTaskIds = ids
+    if (status && status !== record.status) {
+      record.status = status
+      record.updatedAt = Date.now()
+    }
+  }
+
+  /**
+   * Open the turn a provider began by itself: a background task finished and
+   * the agent is acting on the result. It has no user message and no command
+   * behind it, and from here on it is a turn like any other: its output is
+   * filed under it, it can be interrupted, and the provider ends it.
+   */
+  const startBackgroundTurn = (record: ThreadRecord, event: RuntimeEvent) => {
+    // A turn the user sent owns the session already; what the provider says
+    // meanwhile is filed under that turn once its prompt starts.
+    if (record.activeTurn || record.cancellation || record.pendingBuild) return
+    const turn: Turn = {
+      turnId: randomUUID(),
+      threadId: record.thread.threadId,
+      state: 'running',
+      origin: 'background',
+    }
+    appendRuntimeEvent(
+      ProofEventSchemas['turn.started'].parse({
+        type: 'event',
+        name: 'turn.started',
+        eventId: randomUUID(),
+        timestamp: event.timestamp,
+        scope: threadScope(record),
+        payload: { turn },
+      }),
+    )
+    record.turns.push(turn)
+    touch(record, 'running')
+    record.activeTurn = {
+      turn,
+      interruptRequested: false,
+      promptStarted: true,
+      runtimeMessageId: event.messageId,
+      toolIds: new Map(),
+      interactionIds: new Map(),
+      pendingInteractions: new Set(),
     }
   }
 
@@ -1168,6 +1278,7 @@ export function createThreadService(
     updatedAt: new Date(record.updatedAt).toISOString(),
     settledAt: record.settledAt === undefined ? null : new Date(record.settledAt).toISOString(),
     doneAt: record.doneAt === undefined ? null : new Date(record.doneAt).toISOString(),
+    ...(record.backgroundTasks?.length ? { backgroundTasks: record.backgroundTasks } : {}),
   })
 
   const sendTurn = (command: CommandEnvelope, context?: CommandContext, modeId?: string) => {
@@ -1315,7 +1426,7 @@ export function createThreadService(
           else emitCompleted(record, turn.turnId)
           turn.state = active.interruptRequested ? 'interrupted' : 'completed'
           record.activeTurn = undefined
-          touch(record, 'idle')
+          touch(record, resting(record))
         }
       })
       .catch(() => {
@@ -1326,7 +1437,7 @@ export function createThreadService(
           else emitFailed(record, turn.turnId)
           turn.state = active.interruptRequested ? 'interrupted' : 'failed'
           record.activeTurn = undefined
-          touch(record, active.interruptRequested ? 'idle' : 'error')
+          touch(record, active.interruptRequested ? resting(record) : 'error')
         }
       })
     return turnSendResult(command.requestId, started)
@@ -1877,6 +1988,48 @@ export function createThreadService(
         })
       }
 
+      if (command.name === 'session.background.stop') {
+        const parsed = ProofCommandSchemas['session.background.stop'].safeParse(command)
+        if (!parsed.success)
+          return errorResult(command.requestId, 'validation', 'Invalid session request.')
+        options.flush?.()
+        const { sessionId, taskIds } = parsed.data.payload
+        const records = [...threads.values()].filter(
+          (item) => item.session.sessionId === sessionId,
+        )
+        const known = records.length
+          ? true
+          : !!options.database && !!getSessionSummary(options.database, sessionId)
+        if (!known) return errorResult(command.requestId, 'not_found', 'Session not found.')
+        const { requestId } = command
+        const stopped = ProofResponseSchemas['session.background.stop'].parse({
+          type: 'response',
+          requestId,
+          payload: null,
+        })
+        const stops: Promise<void>[] = []
+        for (const record of records) {
+          // Clients name tasks by host id; the provider knows its own.
+          const providerTaskIds = [...(record.backgroundTaskIds ?? [])]
+            .filter(([, hostTaskId]) => !taskIds || taskIds.includes(hostTaskId))
+            .map(([providerTaskId]) => providerTaskId)
+          // A task that already ended, or a session with none, has nothing to stop.
+          if (providerTaskIds.length === 0 || !runtime.stopBackgroundTasks) continue
+          stops.push(runtime.stopBackgroundTasks({ ...route(record), taskIds: providerTaskIds }))
+        }
+        if (stops.length === 0) return stopped
+        // The roster is not touched here: the provider reports what is left.
+        return Promise.all(stops).then(
+          () => stopped,
+          () =>
+            errorResult(
+              requestId,
+              'unavailable',
+              'The background work could not be stopped. Try again.',
+            ),
+        )
+      }
+
       if (command.name === 'session.open') {
         const parsed = ProofCommandSchemas['session.open'].safeParse(command)
         if (!parsed.success) {
@@ -2044,7 +2197,7 @@ export function createThreadService(
               if (record.activeTurn?.turn.turnId !== active.turn.turnId) return
               active.turn.state = 'interrupted'
               record.activeTurn = undefined
-              touch(record, 'idle')
+              touch(record, resting(record))
               emitInterrupted(record, active.turn.turnId)
             })
             .catch(() => {
@@ -2054,7 +2207,7 @@ export function createThreadService(
                 emitInterrupted(record, active.turn.turnId)
                 active.turn.state = 'interrupted'
                 record.activeTurn = undefined
-                touch(record, 'idle')
+                touch(record, resting(record))
                 return
               }
               // A running prompt remains active so cancellation can be retried.
@@ -2228,9 +2381,18 @@ export function createThreadService(
       const record = threads.get(event.threadId)
       if (!record) return
 
+      if (event.event === 'background_tasks_update') {
+        applyBackgroundTasks(record, event.data.tasks)
+        return
+      }
+      if (event.event === 'background_turn_started') {
+        startBackgroundTurn(record, event)
+        return
+      }
+
       if (event.event === 'prompt_started') {
         const active = record.activeTurn
-        if (!active || event.data.userMessageId !== active.userMessage.messageId) return
+        if (!active || event.data.userMessageId !== active.userMessage?.messageId) return
         active.runtimeMessageId = event.messageId
         // Only now has the provider opened the session and accepted the mode.
         // A launch that fails before this leaves every composer where it was.
@@ -2299,7 +2461,7 @@ export function createThreadService(
         projectRuntimeEvent(record, event, active, interrupted ? 'interrupted' : 'completed')
         active.turn.state = interrupted ? 'interrupted' : 'completed'
         record.activeTurn = undefined
-        touch(record, 'idle')
+        touch(record, resting(record))
         return
       }
 
@@ -2312,7 +2474,7 @@ export function createThreadService(
         projectRuntimeEvent(record, event, active, interrupted ? 'interrupted' : 'failed', reason)
         active.turn.state = interrupted ? 'interrupted' : 'failed'
         record.activeTurn = undefined
-        touch(record, interrupted ? 'idle' : 'error')
+        touch(record, interrupted ? resting(record) : 'error')
         return
       }
 
@@ -2327,7 +2489,7 @@ export function createThreadService(
         else projectRuntimeEvent(record, event, active, 'failed')
         active.turn.state = interrupted ? 'interrupted' : 'failed'
         record.activeTurn = undefined
-        touch(record, interrupted ? 'idle' : 'error')
+        touch(record, interrupted ? resting(record) : 'error')
         return
       }
 

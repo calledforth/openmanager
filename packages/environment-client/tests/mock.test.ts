@@ -153,6 +153,42 @@ describe('mock environment client', () => {
     expect(client.getState().sessions[SESSION.sessionId]?.settledAt).toBeNull()
   })
 
+  it('rests a session at running while background work is live, then idle once it is stopped', async () => {
+    const client = createMockEnvironmentClient({ seed, respond: () => null })
+    const { turn } = await client.commands.sendTurn({ ...THREAD, text: 'build it' })
+    const tasks = [
+      { taskId: 'task-1', kind: 'shell' as const, description: 'Run the build' },
+      { taskId: 'task-2', kind: 'agent' as const, description: 'Review the diff' },
+    ]
+    client.emit({
+      type: 'event',
+      eventId: 'roster',
+      timestamp: '2026-09-30T10:00:00.000Z',
+      name: 'session.updated',
+      scope: { type: 'environment', environmentId: client.getState().environment!.environmentId },
+      payload: { sessionId: SESSION.sessionId, backgroundTasks: tasks },
+    })
+    client.completeTurn({ ...THREAD, turnId: turn.turnId })
+
+    // The turn is over and nothing is finished: still working, nothing unseen.
+    expect(client.getState().sessions[SESSION.sessionId]).toMatchObject({
+      status: 'running',
+      backgroundTasks: tasks,
+    })
+    expect(client.getState().sessions[SESSION.sessionId]?.doneAt ?? null).toBeNull()
+
+    await client.commands.stopBackgroundTasks({ sessionId: SESSION.sessionId, taskIds: ['task-1'] })
+    expect(client.getState().sessions[SESSION.sessionId]).toMatchObject({
+      status: 'running',
+      backgroundTasks: [tasks[1]],
+    })
+
+    await client.commands.stopBackgroundTasks({ sessionId: SESSION.sessionId })
+    const stopped = client.getState().sessions[SESSION.sessionId]
+    expect(stopped?.status).toBe('idle')
+    expect(stopped).not.toHaveProperty('backgroundTasks')
+  })
+
   it('interrupts a scripted reply before it completes', async () => {
     const client = createMockEnvironmentClient({ seed, chunkDelayMs: 50 })
     const { turn } = await client.commands.sendTurn({ ...THREAD, text: 'long' })

@@ -132,6 +132,16 @@ export function projectAgentEvent(
         },
       })
     }
+    case 'background_turn_started':
+      // No user message: nobody prompted this turn.
+      return emit('turn.started', threadScope, {
+        turn: {
+          turnId: required('turnId'),
+          threadId: context.threadId,
+          state: 'running',
+          origin: 'background',
+        },
+      })
     case 'prompt_completed': {
       const state = required('completionState')
       return emit(
@@ -228,6 +238,8 @@ export function projectAgentEvent(
     case 'config_option_update':
     case 'usage_update':
     case 'available_commands_update':
+    // Task ids are the provider's; the host announces the roster under its own.
+    case 'background_tasks_update':
     case 'extension_request':
     case 'extension_resolved':
     case 'extension_notification':

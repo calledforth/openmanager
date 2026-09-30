@@ -16,6 +16,7 @@ import { AgentRuntime, type DesiredSessionConfig, type HostLogEntry } from '@age
 import type { BrowserWindow } from 'electron'
 import type { ProviderHealthReport } from '@openmanager/shared/contracts/provider-health'
 import type { SidecarHandshake } from '@openmanager/shared/contracts/sidecar'
+import { createBackgroundTurnFilter } from './background-turns'
 import { ConvexProjector } from './convex-projector'
 import { toProviderHealthCache, type ProviderHealthCache } from './provider-health-cache'
 import type { SessionNotifier } from './session-notifications'
@@ -57,6 +58,7 @@ export class AgentHost {
   private readonly pendingQuestions = new Map<string, QuestionRequest>()
   private readonly pendingPlans = new Map<string, PlanDocument>()
   private readonly titleRefreshes = new Map<string, Promise<void>>()
+  private readonly endsUnshownTurn = createBackgroundTurnFilter()
 
   constructor(
     readonly projector: ConvexProjector,
@@ -336,8 +338,11 @@ export class AgentHost {
     if (event.event === 'plan_review_resolved') {
       this.pendingPlans.delete(event.data.requestId)
     }
-    this.projector.consume(event)
-    this.options.notifier?.handle(event)
+    // The renderer still hears it, so whatever it showed live can settle.
+    if (!this.endsUnshownTurn(event)) {
+      this.projector.consume(event)
+      this.options.notifier?.handle(event)
+    }
     if (event.event === 'prompt_completed' && event.workspaceId) {
       void this.refreshSessionTitles(event.providerId, event.workspaceId)
     }

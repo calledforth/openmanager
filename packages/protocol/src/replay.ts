@@ -54,8 +54,9 @@ function payloadMatchesScope(event: ProofEvent): boolean {
       return (
         scope.type === 'thread' &&
         event.payload.turn.threadId === scope.threadId &&
-        event.payload.userMessage.threadId === scope.threadId &&
-        event.payload.userMessage.turnId === event.payload.turn.turnId
+        (event.payload.userMessage === undefined ||
+          (event.payload.userMessage.threadId === scope.threadId &&
+            event.payload.userMessage.turnId === event.payload.turn.turnId))
       )
     default:
       return true

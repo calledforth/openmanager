@@ -20,6 +20,10 @@ export type AgentEventName =
   | 'session_loaded'
   | 'session_deleted'
   | 'prompt_started'
+  /** A turn the provider began by itself, with no user prompt behind it: a
+   * background task finished and the agent woke to act on the result. It ends
+   * with the same `prompt_completed` (or terminal error) a prompted turn does. */
+  | 'background_turn_started'
   | 'prompt_completed'
   | 'user_message_chunk'
   | 'agent_message_chunk'
@@ -49,6 +53,7 @@ export type AgentEventName =
   | 'session_info_update'
   | 'usage_update'
   | 'available_commands_update'
+  | 'background_tasks_update'
   | 'extension_request'
   | 'extension_resolved'
   | 'extension_notification'
@@ -248,6 +253,19 @@ export type SubtaskUpdate = {
   toolCallCount?: number
 }
 
+/** What a background task is, in terms a client can label. Provider task types
+ * drift between releases, so each provider maps its own onto these. */
+export type BackgroundTaskKind = 'agent' | 'shell' | 'monitor' | 'workflow' | 'other'
+
+/** Work the provider keeps running after the turn that started it has ended:
+ * a backgrounded shell command, a subagent, a watch loop. */
+export type BackgroundTask = {
+  /** Provider-stable identity, and what a stop request names. */
+  taskId: string
+  kind: BackgroundTaskKind
+  description: string
+}
+
 export type AvailableCommandInput = {
   type: 'unstructured'
   placeholder?: string
@@ -404,6 +422,12 @@ export type AgentEvent = AgentEventBase &
       }
     | {
         category: 'lifecycle'
+        event: 'background_turn_started'
+        sessionId: string
+        data: Record<string, never>
+      }
+    | {
+        category: 'lifecycle'
         event: 'prompt_completed'
         sessionId: string
         data: { stopReason?: string; usage?: TokenUsage }
@@ -527,6 +551,14 @@ export type AgentEvent = AgentEventBase &
         event: 'available_commands_update'
         sessionId: string
         data: { availableCommands: AvailableCommand[] }
+      }
+    | {
+        /** Every live background task, whenever the set changes. REPLACE
+         * semantics: an empty list means nothing is running any more. */
+        category: 'session'
+        event: 'background_tasks_update'
+        sessionId: string
+        data: { tasks: BackgroundTask[] }
       }
     | {
         category: 'extension'

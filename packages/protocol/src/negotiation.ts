@@ -30,7 +30,12 @@ import {
 // `titleGeneration` environment setting, and `session.title.regenerate`.
 // Version 10 adds `configOptions` to the provider composer profile's model
 // rows, which a v9 client's strict row schema rejects along with the catalog.
-export const PROTOCOL_VERSION = 10 as const
+// Version 11 adds background work: a turn the provider began by itself, whose
+// `turn.started` names `origin: 'background'` and carries no `userMessage`,
+// which a v10 client's schema rejects and its fold cannot place;
+// `backgroundTasks` on the session summary and on `session.updated`; and
+// `session.background.stop`.
+export const PROTOCOL_VERSION = 11 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema

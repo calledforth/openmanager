@@ -1,6 +1,7 @@
 import { foldProtocolEvent, placeActivity } from '@agentpack/view/protocol'
 import { sessionListCursorOf } from '@openmanager/protocol'
 import type {
+  BackgroundTask,
   Message,
   ProofEvent,
   ProofResponse,
@@ -13,6 +14,7 @@ import type {
   Thread,
   Turn,
   TurnStart,
+  TurnStarted,
   Workspace,
   WorkspaceComposerPreference,
 } from '@openmanager/protocol'
@@ -157,6 +159,13 @@ function upsertSession(
     updatedAt: listed.updatedAt ?? existing?.updatedAt ?? at,
     ...settledOf(listed.settledAt, existing?.settledAt),
     ...doneOf(listed.doneAt, existing?.doneAt),
+    // A full summary is the whole truth: naming no background work means
+    // there is none, which is how work that died with a restarted environment
+    // is cleared. A bare `Session` says nothing either way.
+    ...backgroundOf(
+      listed.status === undefined ? undefined : (listed.backgroundTasks ?? []),
+      existing?.backgroundTasks,
+    ),
     ...composerOf(listed.composer, existing?.composer),
     threadIds: threadIds
       ? Array.from(new Set([...(existing?.threadIds ?? []), ...threadIds]))
@@ -200,6 +209,20 @@ function doneOf(
 ): Pick<SessionSummary, 'doneAt'> {
   const doneAt = listed !== undefined ? listed : existing
   return doneAt !== undefined ? { doneAt } : {}
+}
+
+/**
+ * A session's background work after a report of it: the reported roster, or
+ * the held one when nothing was said. No work is no key at all, and the held
+ * list is kept when nothing changed, so selectors stay stable.
+ */
+function backgroundOf(
+  reported: BackgroundTask[] | undefined,
+  held: BackgroundTask[] | undefined,
+): Pick<SessionSummary, 'backgroundTasks'> {
+  const tasks = reported ?? held
+  if (!tasks?.length) return {}
+  return { backgroundTasks: held && sameJson(tasks, held) ? held : tasks }
 }
 
 /**
@@ -382,9 +405,11 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
     case 'session.updated': {
       const session = state.sessions[event.payload.sessionId]
       if (!session) return state
-      const { title, status, settledAt, doneAt } = event.payload
+      const { title, status, settledAt, doneAt, backgroundTasks } = event.payload
+      const { backgroundTasks: heldTasks, ...held } = session
       const next: SessionSummary = {
-        ...session,
+        ...held,
+        ...backgroundOf(backgroundTasks, heldTasks),
         ...(event.payload.titleSource ? { titleSource: event.payload.titleSource } : {}),
         ...(title !== undefined ? { title } : {}),
         ...(status !== undefined ? { status } : {}),
@@ -726,7 +751,7 @@ function reconcileOutbox(current: ThreadState, incoming: readonly Message[]): Ou
  */
 function confirmTurnStart(
   current: ThreadState,
-  payload: TurnStart,
+  payload: TurnStarted,
   startedAt?: string,
 ): ThreadState {
   const outbox = payload.commandId
@@ -741,13 +766,18 @@ function confirmTurnStart(
       ? existing
       : { ...existing, startedAt }
     : { ...payload.turn, ...(startedAt && !payload.turn.startedAt ? { startedAt } : {}) }
+  const turns = upsertById(current.turns, (item) => item.turnId, turn)
+  // A turn the provider began by itself has no prompt: a background task
+  // finished and the agent is acting on the result.
+  const { userMessage } = payload
+  if (!userMessage) return turns === current.turns ? current : { ...current, turns }
   return {
     ...current,
-    turns: upsertById(current.turns, (item) => item.turnId, turn),
-    messages: upsertById(current.messages, (message) => message.messageId, payload.userMessage),
+    turns,
+    messages: upsertById(current.messages, (message) => message.messageId, userMessage),
     order: placeActivity(current.order, {
       kind: 'message',
-      id: payload.userMessage.messageId,
+      id: userMessage.messageId,
       turnId: payload.turn.turnId,
     }),
     outbox: outbox.length === current.outbox.length ? current.outbox : outbox,

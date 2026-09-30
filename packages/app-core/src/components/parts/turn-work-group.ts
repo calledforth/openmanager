@@ -4,7 +4,16 @@ export interface TurnRuntimeMetadata {
   startedAt?: number
   completedAt?: number
   finishReason?: string
+  /**
+   * Nobody prompted this turn: a background task finished and the agent woke
+   * to act on the result. The transcript says so, since otherwise the agent
+   * appears to answer a message that is not there.
+   */
+  unprompted?: boolean
 }
+
+/** What an unprompted turn is introduced with, in place of a user message. */
+export const UNPROMPTED_TURN_LABEL = 'Resumed after background work'
 
 export interface TurnPartPartition {
   workParts: StreamMessagePart[]
@@ -63,8 +72,9 @@ export function settledTurnLabel(runtime?: TurnRuntimeMetadata): string {
     !Number.isFinite(startedAt) ||
     !Number.isFinite(completedAt)
   ) {
-    return 'Worked'
+    return runtime?.unprompted ? UNPROMPTED_TURN_LABEL : 'Worked'
   }
 
-  return `Worked for ${formatDuration(Math.max(0, completedAt - startedAt))}`
+  const duration = formatDuration(Math.max(0, completedAt - startedAt))
+  return runtime?.unprompted ? `${UNPROMPTED_TURN_LABEL} · ${duration}` : `Worked for ${duration}`
 }

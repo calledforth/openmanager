@@ -35,6 +35,7 @@ class FakeRuntime implements ManagedSessionRuntime {
   exit: SessionRuntimeExit | undefined
   applied: AppliedSessionState | undefined
   listSessionsAdvertised = false
+  busy = false
   starts = 0
   stopped: TerminationRequest | undefined
 
@@ -284,6 +285,18 @@ describe('SessionRuntimeRegistry', () => {
     expect(registry.idleSince(0, Date.now() + 1_000)).toHaveLength(1)
   })
 
+  it('never reports a runtime with background work as idle', async () => {
+    // No turn is in flight — nobody prompted this work — but it lives in the
+    // process, so reaping the process would end it without a word.
+    const { registry, created } = build()
+    await registry.ensure(spec())
+    created[0]!.busy = true
+    expect(registry.idleSince(0, Date.now() + 1_000)).toHaveLength(0)
+    expect(await registry.reapIdle(0, Date.now() + 1_000)).toEqual([])
+    created[0]!.busy = false
+    expect(registry.idleSince(0, Date.now() + 1_000)).toHaveLength(1)
+  })
+
   it('does not reap a runtime while start is in flight', async () => {
     let releaseStart: (() => void) | undefined
     const gate = new Promise<void>((resolve) => {
@@ -409,6 +422,17 @@ describe('SessionRuntimeRegistry', () => {
 
     expect(created.map((runtime) => runtime.stopped)).toEqual([undefined, undefined, undefined])
     expect(registry.entries()).toHaveLength(3)
+  })
+
+  it('exceeds the cap rather than evicting a runtime with background work', async () => {
+    const { registry, created } = build({ limit: 1 })
+    await registry.ensure(spec({ threadId: 'thread-1' }))
+    created[0]!.busy = true
+
+    await registry.ensure(spec({ threadId: 'thread-2' }))
+
+    expect(created.map((runtime) => runtime.stopped)).toEqual([undefined, undefined])
+    expect(registry.entries()).toHaveLength(2)
   })
 
   it('waits for every child to be gone on shutdown, including mid-turn ones', async () => {

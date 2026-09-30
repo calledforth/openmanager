@@ -97,6 +97,8 @@ export const COMMAND_ACCESS = Object.freeze({
   [ENVIRONMENT_SETTINGS_SET_CAPABILITY]: 'operate',
   'turn.send': 'agent',
   'turn.interrupt': 'agent',
+  // Ends work the agent is doing, exactly as an interrupt does.
+  'session.background.stop': 'agent',
   'interaction.respond': 'agent',
   'composer.model.set': 'agent',
   'composer.mode.set': 'agent',

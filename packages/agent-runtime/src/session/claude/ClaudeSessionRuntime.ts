@@ -8,6 +8,7 @@ import type {
   SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk'
 import type {
+  BackgroundTask,
   ModelListing,
   ModelOption,
   PermissionOption,
@@ -49,6 +50,12 @@ import type { SessionRuntimeSpec } from '../SessionRuntime.js'
 import { RpcTimeoutError, withTimeout } from '../timeout.js'
 import { errorMessage, PLAN_REVIEW_TIMEOUT_MS, routeEvent } from '../wire.js'
 import { ClaudeMessageTranslator, type TranslatedMessage } from './ClaudeMessageTranslator.js'
+import {
+  claudeBackgroundTasks,
+  isUnpromptedResult,
+  sameBackgroundTasks,
+  startsAssistantOutput,
+} from './claude-background.js'
 import {
   claudeQuestionAnswers,
   parseAskUserQuestion,
@@ -148,6 +155,11 @@ type ActiveTurn = {
    * this is the only way to know a result belongs to *this* dispatch rather
    * than to a turn that has already been settled or cancelled. */
   id: string
+  /** Who began it. A `background` turn is one the CLI started by itself after
+   * a background task settled: nobody awaits it, so it opens on the first
+   * assistant frame that arrives with no turn in flight and closes on the
+   * result that ends it. See `claude-background.ts`. */
+  kind: 'user' | 'background'
   sessionId: string
   state: 'dispatched' | 'completing'
   settle: (error?: unknown) => void
@@ -186,6 +198,16 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
   private exitSettlement: Promise<SessionRuntimeExit> | undefined
   private spawned = false
   private turn: ActiveTurn | undefined
+  /** Every background task the CLI last reported as live. */
+  private backgroundTasks: BackgroundTask[] = []
+  /** The roster as this runtime last announced it, which lags the one above
+   * only while an emptied roster is being held back. See `noteBackgroundTasks`. */
+  private announcedBackgroundTasks: BackgroundTask[] = []
+  private backgroundSettle: ReturnType<typeof setTimeout> | undefined
+  /** Tasks this runtime asked the CLI to stop. One that ends because it was
+   * stopped wakes nobody (live-verified on 2.1.285), so there is no turn to
+   * hold its departure back for. */
+  private readonly stoppedBackgroundTasks = new Set<string>()
   /** The model catalog this session's own CLI reported at `initialize`.
    *
    * Kept because every `ModelListing` this runtime emits has to carry the
@@ -344,6 +366,17 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
   }
   get exit(): SessionRuntimeExit | undefined {
     return this.exitValue
+  }
+  /** Work is under way that no caller is awaiting: background tasks, the turn
+   * the CLI runs when one settles, or the pause between the two. All of it
+   * lives in this process and dies with it, so nothing may stop the process
+   * for being idle while this holds. */
+  get busy(): boolean {
+    return (
+      this.turn?.kind === 'background' ||
+      this.backgroundTasks.length > 0 ||
+      this.announcedBackgroundTasks.length > 0
+    )
   }
 
   rebindThread(threadId: ThreadId, workspaceId: string | undefined): void {
@@ -662,6 +695,11 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       void this.settleExit(unobservedExit())
       return
     }
+    const backgroundTasks = claudeBackgroundTasks(message)
+    if (backgroundTasks) {
+      this.noteBackgroundTasks(message.session_id, backgroundTasks)
+      return
+    }
     // Ownership is decided BEFORE the translator sees the frame, not after.
     // `result` is the one message type with turn-scoped side effects —
     // `settleTurnUsage` zeroes the accumulated token counters and the
@@ -669,7 +707,16 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     // discard must not take the next turn's books with it. Translating first
     // and deciding second meant a stray result corrupted a turn it had no
     // business touching even when it was correctly refused.
-    if (message.type === 'result' && !this.ownsResult(message)) return
+    if (message.type === 'result' && !this.ownsResult(message)) {
+      // The one discarded result that does close books: an unprompted turn
+      // whose output was folded into a turn the user sent meanwhile. The CLI
+      // runs turns one at a time, so the counters hold only that unprompted
+      // turn's tokens and none of the turn still waiting behind it.
+      if (this.turn && isUnpromptedResult(message)) this.translator.translate(message)
+      return
+    }
+    if (!this.turn && this.phaseValue === 'ready' && startsAssistantOutput(message))
+      this.openBackgroundTurn(message.session_id)
     this.noteReportedMode(message)
     const translated = this.translator.translate(message)
     for (const event of translated.events) this.emit(event)
@@ -737,6 +784,13 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       })
       return false
     }
+    // A turn the CLI ran by itself never ends the user's. Its result carries
+    // no `user_message_uuid` to mismatch, so without this it settled whichever
+    // turn the user had sent in the meantime, before that turn had even begun.
+    if (isUnpromptedResult(message)) return turn.kind === 'background'
+    // The only result a background turn can be waiting for is its own: a
+    // prompt closes it before opening the user's turn.
+    if (turn.kind === 'background') return true
     const correlation = (message as { user_message_uuid?: unknown }).user_message_uuid
     if (typeof correlation === 'string' && correlation && correlation !== turn.id) {
       this.host.log({
@@ -780,7 +834,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     desiredConfig?: DesiredSessionConfig
   }): Promise<void> {
     const sessionId = await this.ready()
-    if (this.turn)
+    if (this.turn?.kind === 'user')
       throw new Error(
         `${this.providerId} already has a turn in flight on thread ${this.threadIdValue}`,
       )
@@ -802,6 +856,9 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     // `AgentRuntime.promptQueues` for the life of the app, with `SessionReaper`
     // declining to rescue it because a thread with an active turn looks busy.
     const input = this.usableInput()
+    // After the last await, for the same reason: a background turn can open
+    // during any of them.
+    this.supersedeBackgroundTurn()
     this.emit(
       routeEvent(this.route(), sessionId, 'lifecycle', 'prompt_started', {
         prompt: args.prompt.text,
@@ -809,7 +866,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
         ...(args.prompt.attachments ? { attachments: args.prompt.attachments } : {}),
       }),
     )
-    const turn = this.openTurn(sessionId)
+    const turn = this.openTurn(sessionId, 'user')
     try {
       input.push({
         type: 'user',
@@ -856,7 +913,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
   /** Move `idle -> dispatched`. The returned promise is what `prompt()` hands
    * its caller, and only `completeTurn` (with a matching terminal result) or
    * an exit may settle it. */
-  private openTurn(sessionId: string): ActiveTurn {
+  private openTurn(sessionId: string, kind: ActiveTurn['kind']): ActiveTurn {
     let settle!: (error?: unknown) => void
     const done = new Promise<void>((resolve, reject) => {
       settle = (error?: unknown) => (error === undefined ? resolve() : reject(error))
@@ -866,6 +923,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     done.catch(() => undefined)
     const turn: ActiveTurn = {
       id: crypto.randomUUID(),
+      kind,
       sessionId,
       state: 'dispatched',
       settle,
@@ -873,6 +931,112 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     }
     this.turn = turn
     return turn
+  }
+
+  /** Open the turn the CLI began by itself.
+   *
+   * Announced so everything downstream has a turn to file the output under;
+   * without one, each frame arrives with no message id and is dropped, which
+   * is how a finished background task used to produce nothing at all. */
+  private openBackgroundTurn(reported: string | undefined): void {
+    const sessionId = reported ?? this.sessionIdValue ?? ''
+    this.openTurn(sessionId, 'background')
+    this.emit(routeEvent(this.route(), sessionId, 'lifecycle', 'background_turn_started', {}))
+    // The turn now says the session is working, so an emptied roster that was
+    // being held back for it can go out.
+    this.announceBackgroundTasks(sessionId)
+  }
+
+  /** End a background turn because the user has sent a prompt.
+   *
+   * The CLI queues that prompt behind whatever it is doing, so the rest of the
+   * background turn's output still arrives — and is filed under the user's
+   * turn, which is the only one open by then. Its result is recognised by
+   * `ownsResult` and ends nothing. */
+  private supersedeBackgroundTurn(): void {
+    const turn = this.turn
+    if (!turn || turn.kind !== 'background') return
+    this.turn = undefined
+    this.emit(routeEvent(this.route(), turn.sessionId, 'lifecycle', 'prompt_completed', {}))
+    turn.settle()
+  }
+
+  /** Take the CLI's roster, and decide when to say so.
+   *
+   * A roster with tasks in it is announced at once. An emptied one is held
+   * back for a moment when no turn is in flight: the CLI is about to wake the
+   * model with the result, and saying "nothing is running" for the second or
+   * two before that turn's first frame makes the session read as finished and
+   * then working again. Whichever comes first releases it — the turn opening,
+   * or the grace running out because no turn is coming. A roster emptied only
+   * by tasks the user stopped is not held at all: nothing follows a stop. */
+  private noteBackgroundTasks(sessionId: string | undefined, tasks: BackgroundTask[]): void {
+    const ended = this.backgroundTasks.filter(
+      (task) => !tasks.some((live) => live.taskId === task.taskId),
+    )
+    const settled = ended.some((task) => !this.stoppedBackgroundTasks.has(task.taskId))
+    for (const task of ended) this.stoppedBackgroundTasks.delete(task.taskId)
+    this.backgroundTasks = tasks
+    // A task that settled by itself earlier may still be holding the roster.
+    const turnExpected = settled || this.backgroundSettle !== undefined
+    if (
+      tasks.length > 0 ||
+      this.turn ||
+      !turnExpected ||
+      this.announcedBackgroundTasks.length === 0
+    ) {
+      this.announceBackgroundTasks(sessionId)
+      return
+    }
+    if (this.backgroundSettle) return
+    this.backgroundSettle = setTimeout(() => {
+      this.backgroundSettle = undefined
+      this.announceBackgroundTasks(sessionId)
+    }, this.timeouts.backgroundSettleMs)
+    this.backgroundSettle.unref?.()
+  }
+
+  private announceBackgroundTasks(sessionId: string | undefined): void {
+    if (this.backgroundSettle) clearTimeout(this.backgroundSettle)
+    this.backgroundSettle = undefined
+    if (sameBackgroundTasks(this.announcedBackgroundTasks, this.backgroundTasks)) return
+    this.announcedBackgroundTasks = this.backgroundTasks
+    this.emit(
+      routeEvent(this.route(), sessionId, 'session', 'background_tasks_update', {
+        tasks: this.backgroundTasks,
+      }),
+    )
+  }
+
+  /** Stop background tasks: the ones named, or every live one.
+   *
+   * Ids the CLI no longer lists are skipped rather than sent, because a task
+   * that settled between the click and the request is already stopped. The
+   * roster is not touched here — the CLI reports the change itself. */
+  async stopBackgroundTasks(taskIds?: readonly string[]): Promise<void> {
+    if (this.exitSettlement) return
+    await this.ready()
+    const query = this.query
+    if (!query) return
+    const live = this.backgroundTasks.map((task) => task.taskId)
+    const targets = taskIds ? live.filter((taskId) => taskIds.includes(taskId)) : live
+    for (const taskId of targets) this.stoppedBackgroundTasks.add(taskId)
+    try {
+      await Promise.all(
+        targets.map((taskId) =>
+          withTimeout(
+            query.stopTask(taskId),
+            this.timeouts.controlRequestMs,
+            () => new RpcTimeoutError(this.providerId, 'stopTask', this.timeouts.controlRequestMs),
+          ),
+        ),
+      )
+    } catch (error) {
+      // Not stopped as far as anyone knows: if one of these ends later, it
+      // ended by itself and the model will be woken for it.
+      for (const taskId of targets) this.stoppedBackgroundTasks.delete(taskId)
+      throw error
+    }
   }
 
   /** `dispatched -> completing -> idle`, for a result `ownsResult` has already
@@ -1774,6 +1938,10 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     const expected = this.stopRequest !== undefined
     this.phaseValue = 'exited'
     this.failActiveTurn(cause ?? new Error(`${this.providerId} exited before the turn completed`))
+    // Background tasks are children of this process and went with it.
+    this.stoppedBackgroundTasks.clear()
+    this.backgroundTasks = []
+    this.announceBackgroundTasks(this.sessionIdValue)
     this.permissions.settleThread(this.providerId, this.threadIdValue)
     this.interactions.settleThread(this.providerId, this.threadIdValue)
     this.input?.close()

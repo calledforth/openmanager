@@ -91,6 +91,15 @@ export interface SessionRuntime {
   }): Promise<void>
   cancel(): Promise<void>
 
+  /** True while the provider has work of its own under way that no caller is
+   * awaiting: background tasks, or a turn it began by itself. Such work lives
+   * in the process, so the reaper and LRU eviction treat the runtime as they
+   * treat one with a turn in flight. Absent on providers with no such work. */
+  readonly busy?: boolean
+  /** Stop the named background tasks, or every live one. Absent on providers
+   * that run nothing in the background. */
+  stopBackgroundTasks?(taskIds?: readonly string[]): Promise<void>
+
   /** Paginated `session/list` for this runtime's own `cwd`, on this runtime's
    * own connection. ~55ms once the process is up, and it reads no model or
    * config state, so borrowing a live process for it cannot perturb a turn —

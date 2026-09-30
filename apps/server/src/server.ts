@@ -83,6 +83,7 @@ export const SERVER_CAPABILITIES = [
   'session.title.regenerate',
   'session.settle',
   'session.acknowledge',
+  'session.background.stop',
   'session.history',
   'turn.send',
   'turn.interrupt',
