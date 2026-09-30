@@ -922,13 +922,23 @@ export function createWebSocketEnvironmentClient(
             for (const session of page.sessions) listed.add(session.sessionId)
             cursor = page.nextCursor
           } while (cursor)
-          store.update((state) => {
-            let next = state
-            for (const sessionId of cached) {
-              if (!listed.has(sessionId)) next = applySessionRemoved(next, sessionId)
+          // Keyset pages are not one snapshot: an updated session can move
+          // ahead of a cursor while we read. Absence is never proof of deletion.
+          if (!supports('openSession')) return
+          for (const sessionId of cached) {
+            if (listed.has(sessionId)) continue
+            if (generation !== connectionGeneration || !ready) return
+            try {
+              const payload = await request('session.open', { sessionId })
+              if (generation !== connectionGeneration || !ready) return
+              store.update((state) => applySessionList(state, [payload.session]))
+            } catch (error) {
+              if (generation !== connectionGeneration || !ready) return
+              if (isEnvironmentClientError(error) && error.code === 'not_found') {
+                store.update((state) => applySessionRemoved(state, sessionId))
+              }
             }
-            return next
-          })
+          }
         })().catch(() => undefined),
       )
     if (supports('getProviderCatalog'))

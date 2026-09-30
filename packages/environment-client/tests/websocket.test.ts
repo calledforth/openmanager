@@ -340,7 +340,11 @@ describe('websocket environment client', () => {
     }
     state.sessionOrder = [SESSION.sessionId, 'older', 'deleted']
     const store = createEnvironmentStore(state)
-    const { client, socket } = await connected(['session.list'], {}, { environmentId: ENV, store })
+    const { client, socket } = await connected(
+      ['session.list', 'session.open'],
+      {},
+      { environmentId: ENV, store },
+    )
     const cursor = { updatedAt: SESSION_SUMMARY.updatedAt, sessionId: SESSION.sessionId }
     expect(ProofCommandSchemas['session.list'].safeParse(socket.last('session.list')).success).toBe(
       true,
@@ -351,8 +355,44 @@ describe('websocket environment client', () => {
     expect(socket.last('session.list').payload).toMatchObject({ cursor })
     socket.respond('session.list', { sessions: [older], nextCursor: null })
     await flush()
+    expect(socket.last('session.open').payload).toEqual({ sessionId: 'deleted' })
+    socket.receive({
+      type: 'error',
+      requestId: socket.last('session.open').requestId,
+      error: { code: 'not_found', message: 'Deleted' },
+    })
+    await flush()
     expect(client.getState().sessionOrder).toEqual([SESSION.sessionId, 'older'])
     expect(client.getState().sessions.deleted).toBeUndefined()
+    client.dispose()
+  })
+
+  it('keeps a cached session that moves ahead of a catalog cursor during pagination', async () => {
+    const moved = { ...SESSION_SUMMARY, sessionId: 'moved' }
+    const thread = { ...THREAD, sessionId: moved.sessionId }
+    const state = createInitialState()
+    state.sessions = { moved: { ...moved, threadIds: [THREAD.threadId] } }
+    state.sessionOrder = ['moved']
+    state.threads = { [THREAD.threadId]: createThreadState(thread, 'ready') }
+    const store = createEnvironmentStore(state)
+    const { client, socket } = await connected(
+      ['session.list', 'session.open'],
+      {},
+      { environmentId: ENV, store },
+    )
+    const cursor = { updatedAt: SESSION_SUMMARY.updatedAt, sessionId: SESSION.sessionId }
+    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: cursor })
+    await flush()
+    // The moved session was updated into the already-read first page, so
+    // neither page names it even though it still exists on the server.
+    socket.respond('session.list', { sessions: [], nextCursor: null })
+    await flush()
+    expect(client.getState().sessions.moved).toBeDefined()
+    expect(socket.last('session.open').payload).toEqual({ sessionId: 'moved' })
+    socket.respond('session.open', { session: moved, threads: [thread] })
+    await flush()
+    expect(client.getState().sessionOrder).toContain('moved')
+    expect(client.getState().threads[THREAD.threadId]).toBe(state.threads[THREAD.threadId])
     client.dispose()
   })
 

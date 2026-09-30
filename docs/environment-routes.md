@@ -114,8 +114,10 @@ route's environment identity and exposes it only after the WebSocket
 authenticates. Live connection state, pending sends, and in-flight hydration
 are not restored. Storage failures fall back to memory.
 
-All session catalog pages are refreshed before deleted cached sessions are
-removed, keeping older sessions navigable. Workspace membership and composer
+All session catalog pages are refreshed, keeping older sessions navigable.
+A cached session missing from the pages is checked individually and removed
+only on an explicit `not_found`: a concurrent update can move it ahead of a
+pagination cursor without deleting it. Workspace membership and composer
 preferences are refreshed from the server. Snapshot writes are serialized per
 environment so cleanup cannot overwrite newer data with an older snapshot.
 Deleted active sessions are removed when the environment reports them missing.
