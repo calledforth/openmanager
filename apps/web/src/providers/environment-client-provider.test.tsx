@@ -313,6 +313,13 @@ describe('WebEnvironmentClientProvider', () => {
       registry.environments.map((item: { environmentId: string }) => item.environmentId),
     ).toEqual(['env-local'])
     expect(createClient).not.toHaveBeenCalled()
+
+    // Offline outranks unreachable in the interface. It must not reopen the
+    // door: the address still belongs to someone else.
+    transition('offline')
+    expect(screen.getByText('offline:none')).toBeInTheDocument()
+    expect(createClient).not.toHaveBeenCalled()
+    transition('online')
   })
 
   it('records a failed reconnect to the route in use', async () => {

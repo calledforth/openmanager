@@ -83,6 +83,12 @@ type ConnectionValue = {
   retry: () => void
   changeEnvironment: () => void
   /**
+   * The route in use answered as a different environment. No socket may be
+   * opened on it, whatever else the connection state says: the socket would
+   * carry this environment's token to whatever answered.
+   */
+  wrongEnvironment: boolean
+  /**
    * Increments on every explicit retry and on every return from offline. The
    * socket provider dials immediately instead of waiting out its backoff.
    */
@@ -90,6 +96,10 @@ type ConnectionValue = {
 }
 
 const ConnectionContext = createContext<ConnectionValue | null>(null)
+
+function routeKey(environmentId: string, endpoint: string): string {
+  return JSON.stringify([environmentId, endpoint])
+}
 
 /** Server rendering has no network events; assume a network until told otherwise. */
 const onlineOnServer = () => true
@@ -230,6 +240,13 @@ export function ConnectionProvider({
   // reports on the same route afterwards and must not be overwritten by an
   // answer that is already on record.
   const recordedBootstrap = useRef<BootstrapOutcome | null>(null)
+  // Counts what the live connection has said about each route, so a probe that
+  // started before such a report can tell its answer is the older one.
+  const liveReports = useRef(new Map<string, number>())
+  const noteLiveReport = useCallback((environmentId: string, routeEndpoint: string) => {
+    const key = routeKey(environmentId, routeEndpoint)
+    liveReports.current.set(key, (liveReports.current.get(key) ?? 0) + 1)
+  }, [])
 
   useEffect(() => {
     if (preview || !endpoint) return
@@ -239,6 +256,7 @@ export function ConnectionProvider({
       recordedBootstrap.current = liveBootstrap
       const report = failureId ? routeHealthFromBootstrap(liveBootstrap, failureId) : null
       if (failureId && report) {
+        noteLiveReport(failureId, endpoint)
         update((current) => setStoredRouteHealth(current, failureId, endpoint, report))
       }
       return
@@ -265,6 +283,7 @@ export function ConnectionProvider({
       // whatever answers there.
       setHasConnected(false)
       if (fresh) {
+        noteLiveReport(storedId, endpoint)
         update((current) =>
           setStoredRouteHealth(current, storedId, endpoint, {
             status: 'unreachable',
@@ -274,6 +293,7 @@ export function ConnectionProvider({
       }
       return
     }
+    if (fresh) noteLiveReport(answeredId, endpoint)
     const stored = update((current) =>
       upsertStoredEnvironment(current, {
         environmentId: answeredId,
@@ -295,6 +315,7 @@ export function ConnectionProvider({
     localOwnerClaimFailure,
     storedId,
     failureId,
+    noteLiveReport,
   ])
 
   const answeredByAnother =
@@ -415,7 +436,6 @@ export function ConnectionProvider({
       // Forgetting the route in use moves the connection to the next one.
       if (before && after && preferredRoute(before).endpoint !== preferredRoute(after).endpoint) {
         setHasConnected(false)
-        abandonPendingConnect()
         setBootstrapNonce((value) => value + 1)
       }
       // A connect to the forgotten address must not bring the route back when
@@ -430,14 +450,15 @@ export function ConnectionProvider({
       }
       update(() => next)
     },
-    [abandonPendingConnect, update],
+    [update],
   )
 
   const reportRouteHealth = useCallback(
     (environmentId: string, routeEndpoint: string, report: RouteHealthReport) => {
+      noteLiveReport(environmentId, routeEndpoint)
       update((current) => setStoredRouteHealth(current, environmentId, routeEndpoint, report))
     },
-    [update],
+    [noteLiveReport, update],
   )
 
   // One check per route at a time, so a slow answer cannot land after, and
@@ -457,12 +478,16 @@ export function ConnectionProvider({
       for (const route of item.routes) {
         // The route in use is reported by the live bootstrap and the socket.
         if (isInUse(current, item.environmentId, route.endpoint)) continue
-        const key = JSON.stringify([item.environmentId, route.endpoint])
+        const key = routeKey(item.environmentId, route.endpoint)
         if (probing.current.has(key)) continue
         probing.current.add(key)
+        const reportsAtStart = liveReports.current.get(key) ?? 0
         void probeRouteHealth(item.environmentId, route.endpoint).then((report) => {
           probing.current.delete(key)
           if (!mounted.current) return
+          // The route was used while the probe was out: what the connection
+          // said about it is newer than this answer.
+          if ((liveReports.current.get(key) ?? 0) !== reportsAtStart) return
           update((latest) =>
             isInUse(latest, item.environmentId, route.endpoint)
               ? latest
@@ -499,6 +524,7 @@ export function ConnectionProvider({
       checkRoutes,
       retry,
       changeEnvironment,
+      wrongEnvironment: answeredByAnother,
       retryNonce: bootstrapNonce,
     }),
     [
@@ -515,6 +541,7 @@ export function ConnectionProvider({
       checkRoutes,
       retry,
       changeEnvironment,
+      answeredByAnother,
       bootstrapNonce,
     ],
   )

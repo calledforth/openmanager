@@ -24,7 +24,8 @@ export function WebEnvironmentClientProvider({
   children: ReactNode
   createClient?: typeof createWebSocketEnvironmentClient
 }) {
-  const { ui, environment, environments, retryNonce, reportRouteHealth } = useConnection()
+  const { ui, environment, environments, retryNonce, reportRouteHealth, wrongEnvironment } =
+    useConnection()
   const endpoint = environment.status === 'selected' ? environment.endpoint : null
   // Identity comes only from the selection's environment ID (filled from the
   // registry once bootstrap has answered). An endpoint can belong to several
@@ -37,7 +38,10 @@ export function WebEnvironmentClientProvider({
   // loop is what recovers the session, and disposing would drop the store with
   // it. Only a different environment, or a failure that needs a person,
   // replaces the client.
-  const alive = ui.kind === 'ready' || ui.kind === 'offline'
+  // A route that answered as another environment never gets a socket, even
+  // when the device being offline outranks that in the interface: the socket
+  // would hand this environment's token to whatever answered.
+  const alive = (ui.kind === 'ready' || ui.kind === 'offline') && !wrongEnvironment
 
   // The client is created inside the effect rather than memoized so that
   // StrictMode's setup → cleanup → setup replay (and any real remount) gets a
