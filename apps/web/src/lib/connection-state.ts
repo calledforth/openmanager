@@ -5,6 +5,7 @@
 
 export const CONNECTION_KINDS = [
   'no_environment',
+  'confirm_route',
   'connecting',
   'reconnecting',
   'offline',
@@ -16,7 +17,12 @@ export const CONNECTION_KINDS = [
 
 export type ConnectionKind = (typeof CONNECTION_KINDS)[number]
 export type ConnectionSurface = 'screen' | 'banner' | 'none'
-export type ConnectionAction = 'connect' | 'retry' | 'change_environment'
+export type ConnectionAction =
+  | 'connect'
+  | 'retry'
+  | 'change_environment'
+  | 'confirm_route'
+  | 'decline_route'
 
 export type EnvironmentSelection =
   | { status: 'none' }
@@ -78,6 +84,18 @@ export type DeriveConnectionInput = {
   transport: TransportStatus
   /** Omitted means "assume a network"; only an explicit offline reads as offline. */
   network?: NetworkStatus
+  /** A connect that is waiting for consent before it becomes a route. */
+  routeOffer?: RouteOffer
+}
+
+/**
+ * An address that answered as an environment this client already has, but is
+ * not yet one of its routes. Using it would send the saved client token there.
+ */
+export type RouteOffer = {
+  endpoint: string
+  /** The saved environment's own label, not the one the address answered with. */
+  label: string
 }
 
 /** Keep a cached bootstrap while a later fetch is in flight. */
@@ -94,6 +112,8 @@ const ACTION_LABELS: Record<ConnectionAction, string> = {
   connect: 'Connect',
   retry: 'Retry',
   change_environment: 'Change environment',
+  confirm_route: 'Add route',
+  decline_route: 'Cancel',
 }
 
 export function connectionActionLabel(action: ConnectionAction): string {
@@ -121,6 +141,21 @@ export function deriveConnectionUi(input: DeriveConnectionInput): ConnectionUiSt
       description:
         'OpenManager needs an environment server before it can open sessions. Add an endpoint to continue.',
       action: 'connect',
+    }
+  }
+
+  // Waiting on a person outranks everything the address itself reports:
+  // nothing is sent to it, and nothing is saved, until they answer.
+  if (input.routeOffer) {
+    const offer = input.routeOffer
+    return {
+      kind: 'confirm_route',
+      surface: 'screen',
+      title: `Add a route to ${offer.label}?`,
+      description: `${offer.endpoint} says it is ${offer.label}, an environment you already have. Adding it sends the saved client token to that address, so only add an address you trust.`,
+      action: 'confirm_route',
+      secondaryAction: 'decline_route',
+      endpoint: offer.endpoint,
     }
   }
 

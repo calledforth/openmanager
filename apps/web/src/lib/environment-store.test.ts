@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  classifyDiscoveredRoute,
   findStoredEnvironment,
   DEFAULT_ENVIRONMENT_LABEL,
   EMPTY_REGISTRY,
@@ -233,6 +234,56 @@ describe('upsertStoredEnvironment', () => {
     })
     expect(second?.environments.map((item) => item.environmentId)).toEqual(['env-a', 'env-b'])
     expect(second?.selectedId).toBe('env-b')
+  })
+})
+
+describe('classifyDiscoveredRoute', () => {
+  const OTHER = 'https://other.example'
+
+  it('calls an unknown environment ID a new environment, whatever the address', () => {
+    expect(
+      classifyDiscoveredRoute(twoRoutes(), { environmentId: 'env-other', endpoint: LOCAL }),
+    ).toEqual({ kind: 'new_environment' })
+  })
+
+  it('recognises an address the environment already has, however it is written', () => {
+    expect(
+      classifyDiscoveredRoute(twoRoutes(), {
+        environmentId: 'env-local',
+        endpoint: `${TUNNEL}/`,
+      }),
+    ).toMatchObject({ kind: 'known_route', environment: { environmentId: 'env-local' } })
+  })
+
+  it('says a new address would be sent the saved token when the connect brings none', () => {
+    expect(
+      classifyDiscoveredRoute(twoRoutes(), { environmentId: 'env-local', endpoint: OTHER }),
+    ).toMatchObject({ kind: 'new_route', sendsSavedCredential: true })
+    // A value that is not a usable token is no token.
+    expect(
+      classifyDiscoveredRoute(twoRoutes(), {
+        environmentId: 'env-local',
+        endpoint: OTHER,
+        credential: 'not a token',
+      }),
+    ).toMatchObject({ kind: 'new_route', sendsSavedCredential: true })
+  })
+
+  it('has no saved token to send when the connect brings its own, or none is saved', () => {
+    expect(
+      classifyDiscoveredRoute(twoRoutes(), {
+        environmentId: 'env-local',
+        endpoint: OTHER,
+        credential: 'token-2',
+      }),
+    ).toMatchObject({ kind: 'new_route', sendsSavedCredential: false })
+    const tokenless: EnvironmentRegistry = {
+      selectedId: 'env-local',
+      environments: [environment('env-local', [route(LOCAL)])],
+    }
+    expect(
+      classifyDiscoveredRoute(tokenless, { environmentId: 'env-local', endpoint: OTHER }),
+    ).toMatchObject({ kind: 'new_route', sendsSavedCredential: false })
   })
 })
 

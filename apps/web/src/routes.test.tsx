@@ -3,9 +3,14 @@ import { act, cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createMockEnvironmentClient } from '@openmanager/environment-client'
+import type { ComponentProps } from 'react'
+import type { WebApp } from './app'
+import { environmentSocketUrl } from './lib/environment-socket'
 import { ENVIRONMENT_STORAGE_KEY } from './lib/environment-store'
 import { CONNECTION_STORIES } from './stories/connection-states'
 import { renderWebApp } from './test-utils'
+
+type WebAppProps = ComponentProps<typeof WebApp>
 
 afterEach(() => {
   cleanup()
@@ -57,6 +62,25 @@ function mockBootstrap(byEndpoint: Record<string, { environmentId: string; label
       }
     }),
   )
+}
+
+const TUNNEL_SOCKET = environmentSocketUrl('https://tunnel.example')
+
+/** Stand-in sockets that record where each was dialled and with which token. */
+function trackSockets() {
+  const dialled: Array<{ url: string; credential: string | undefined }> = []
+  const create: WebAppProps['createEnvironmentClient'] = (options) => {
+    dialled.push({ url: options.url, credential: options.credential })
+    return createMockEnvironmentClient({
+      seed: {
+        environment: {
+          environmentId: options.environmentId ?? 'env-local',
+          name: 'Environment',
+        },
+      },
+    })
+  }
+  return { dialled: () => dialled, create }
 }
 
 function storedRegistry() {
@@ -390,7 +414,7 @@ describe('web routes', () => {
     expect(JSON.stringify(fetchMock.mock.calls)).not.toContain('local-owner')
   })
 
-  it('adds a second URL for the same environment ID as another route', async () => {
+  it('adds a second URL for the same environment ID as another route, once agreed to', async () => {
     const user = userEvent.setup()
     seedRegistry([
       {
@@ -403,14 +427,28 @@ describe('web routes', () => {
       'http://127.0.0.1:43120': { environmentId: 'env-local', label: 'Local environment' },
       'https://tunnel.example': { environmentId: 'env-local', label: 'Home lab' },
     })
+    const sockets = trackSockets()
 
-    renderWebApp('/settings')
+    renderWebApp('/settings', { createEnvironmentClient: sockets.create })
     // The shell swaps to the shared sidebar once the client exists; type after that.
     await screen.findByText(/Connected · Local environment/)
     await user.type(screen.getByLabelText('Environment endpoint'), 'https://tunnel.example')
     await user.click(screen.getByRole('button', { name: 'Add environment' }))
 
+    // The address only claims to be the saved environment. Until someone
+    // agrees, it is not a route and the saved token has not gone to it.
+    const prompt = await screen.findByRole('alert')
+    expect(prompt).toHaveTextContent('Add a route to Local environment?')
+    expect(prompt).toHaveTextContent('https://tunnel.example')
+    expect(storedRegistry().environments[0]?.routes.map((route) => route.endpoint)).toEqual([
+      'http://127.0.0.1:43120',
+    ])
+    expect(sockets.dialled().map((socket) => socket.url)).not.toContain(TUNNEL_SOCKET)
+
+    await user.click(within(prompt).getByRole('button', { name: 'Add route' }))
+
     expect(await screen.findByText('Home lab · Selected')).toBeInTheDocument()
+    expect(sockets.dialled().at(-1)).toEqual({ url: TUNNEL_SOCKET, credential: 'client-token' })
     expect(storedRegistry().environments).toEqual([
       {
         environmentId: 'env-local',
@@ -438,6 +476,118 @@ describe('web routes', () => {
     expect(
       routes.queryByRole('button', { name: 'Use https://tunnel.example' }),
     ).not.toBeInTheDocument()
+  })
+
+  it('leaves a saved environment as it was when the new address is turned down', async () => {
+    const user = userEvent.setup()
+    seedRegistry([
+      {
+        environmentId: 'env-local',
+        endpoints: ['http://127.0.0.1:43120'],
+        credential: 'client-token',
+      },
+    ])
+    mockBootstrap({
+      'http://127.0.0.1:43120': { environmentId: 'env-local', label: 'Local environment' },
+      'https://tunnel.example': { environmentId: 'env-local', label: 'Local environment' },
+    })
+    const sockets = trackSockets()
+
+    renderWebApp('/settings', { createEnvironmentClient: sockets.create })
+    await screen.findByText(/Connected · Local environment/)
+    await user.type(screen.getByLabelText('Environment endpoint'), 'https://tunnel.example')
+    await user.click(screen.getByRole('button', { name: 'Add environment' }))
+    await user.click(
+      within(await screen.findByRole('alert')).getByRole('button', { name: 'Cancel' }),
+    )
+
+    // Back on the saved route, with the form there to try another address.
+    await screen.findByText(/Connected · Local environment/)
+    expect(await screen.findByLabelText('Environment endpoint')).toHaveValue('')
+    expect(storedRegistry()).toMatchObject({
+      selectedId: 'env-local',
+      environments: [
+        {
+          environmentId: 'env-local',
+          routes: [{ endpoint: 'http://127.0.0.1:43120', priority: 0 }],
+          credential: 'client-token',
+        },
+      ],
+    })
+    expect(storedRegistry().environments).toHaveLength(1)
+    expect(storedRegistry().environments[0]?.routes).toHaveLength(1)
+    expect(sockets.dialled().map((socket) => socket.url)).not.toContain(TUNNEL_SOCKET)
+  })
+
+  it('merges a new address without asking when the connect brings its own token', async () => {
+    const user = userEvent.setup()
+    seedRegistry([
+      {
+        environmentId: 'env-local',
+        endpoints: ['http://127.0.0.1:43120'],
+        credential: 'client-token',
+      },
+    ])
+    mockBootstrap({
+      'http://127.0.0.1:43120': { environmentId: 'env-local', label: 'Local environment' },
+      'https://tunnel.example': { environmentId: 'env-local', label: 'Local environment' },
+    })
+    const sockets = trackSockets()
+
+    renderWebApp('/settings', { createEnvironmentClient: sockets.create })
+    await screen.findByText(/Connected · Local environment/)
+    await user.type(screen.getByLabelText('Environment endpoint'), 'https://tunnel.example')
+    await user.type(screen.getByLabelText('Client token'), 'new-token')
+    await user.click(screen.getByRole('button', { name: 'Add environment' }))
+
+    await waitFor(() =>
+      expect(storedRegistry().environments[0]?.routes.map((route) => route.endpoint)).toEqual([
+        'https://tunnel.example',
+        'http://127.0.0.1:43120',
+      ]),
+    )
+    // Still one environment, and the old token never went to the new address.
+    expect(storedRegistry().environments).toHaveLength(1)
+    expect(storedRegistry().environments[0]?.credential).toBe('new-token')
+    await waitFor(() =>
+      expect(sockets.dialled().at(-1)).toEqual({ url: TUNNEL_SOCKET, credential: 'new-token' }),
+    )
+    expect(sockets.dialled()).not.toContainEqual({
+      url: TUNNEL_SOCKET,
+      credential: 'client-token',
+    })
+    expect(screen.queryByRole('button', { name: 'Add route' })).not.toBeInTheDocument()
+  })
+
+  it('keeps a different environment ID at a new address as its own environment', async () => {
+    const user = userEvent.setup()
+    seedRegistry([
+      {
+        environmentId: 'env-local',
+        endpoints: ['http://127.0.0.1:43120'],
+        credential: 'client-token',
+      },
+    ])
+    mockBootstrap({
+      'http://127.0.0.1:43120': { environmentId: 'env-local', label: 'Local environment' },
+      'https://tunnel.example': { environmentId: 'env-lab', label: 'Lab' },
+    })
+    const sockets = trackSockets()
+
+    renderWebApp('/settings', { createEnvironmentClient: sockets.create })
+    await screen.findByText(/Connected · Local environment/)
+    await user.type(screen.getByLabelText('Environment endpoint'), 'https://tunnel.example')
+    await user.click(screen.getByRole('button', { name: 'Add environment' }))
+
+    expect(await screen.findByText('Lab · Selected')).toBeInTheDocument()
+    expect(
+      storedRegistry().environments.map((item) => [item.environmentId, item.credential]),
+    ).toEqual([
+      ['env-local', 'client-token'],
+      ['env-lab', ''],
+    ])
+    // A second record, and the first one's token stays with the first one.
+    expect(sockets.dialled().at(-1)).toEqual({ url: TUNNEL_SOCKET, credential: undefined })
   })
 
   it('switches route only when asked, keeping the environment, its token and the other route', async () => {

@@ -36,10 +36,58 @@ Identity rules:
   URL. The socket client is keyed by `environmentId`; a different route gives
   it a new socket URL and nothing else.
 - Connecting to a URL whose bootstrap answers with a known `environmentId`
-  adds that URL as a route to the existing record and keeps its token.
+  adds that URL as a route to the existing record and keeps its token. See
+  [Merging a discovered route](#merging-a-discovered-route).
 
 Version 1 stored `endpoints: string[]`, most recently used first. It is read
 as routes in the same order and rewritten as version 2 on first load.
+
+## Merging a discovered route
+
+A connect is a person entering an address. What the address is to this client
+depends on the `environmentId` its bootstrap answers with
+(`classifyDiscoveredRoute`):
+
+| The answer's ID | The address | What connecting does |
+| --- | --- | --- |
+| Not saved | any | Adds a new environment with this one route. |
+| Saved | already a route of it | Makes the route the one in use and updates its health. |
+| Saved | new to it | Adds the address to that record as the route in use. Never a second record. |
+
+In every case the record is found by `environmentId`, so the label, the token,
+the other routes and everything the environment minted stay where they were. A
+tunnel whose address changed is the third row: the new address joins the
+record and the old one stays listed, reported as unavailable, until it is
+forgotten.
+
+The third row has one condition. `/bootstrap` is unauthenticated, so the ID in
+an answer is a claim anyone can make, and the token is sent on the socket
+upgrade that follows. Merging on the claim alone would hand a saved token to
+whatever answered. So:
+
+- If the connect brings its own token (typed, or claimed from a loopback
+  address's `/local-owner`), the address is merged straight away. The saved
+  token is replaced by the one given and is never sent to the new address.
+- If the connect brings no token and the record has one, the client stops and
+  asks: "Add a route to *label*?", naming the address and saying the saved
+  token will be sent to it. Until the person agrees the address is not saved
+  and no socket is opened on it. **Cancel** drops it and returns to the saved
+  selection.
+- If the record has no token there is nothing to send, and the address is
+  merged straight away.
+
+The question shows the label the record already has, not the one the address
+answered with, which is also only a claim.
+
+This is consent, not proof: a person who agrees to a hostile address still
+sends it the token. Proof needs the environment to show it holds the
+credential before the client reveals it, which is a server and protocol change
+(see [Server-reported routes](#server-reported-routes)).
+
+Two environments stay two environments. A different `environmentId` at a new
+address is always its own record with its own token, and a saved route that
+starts answering as another environment is reported, not adopted
+(see [Health](#health)).
 
 ## Route type
 
@@ -100,11 +148,13 @@ Cloudflare tunnel lands:
 - The server lists what it knows first-hand: its loopback listener as `local`,
   and a tunnel it started itself as `cloudflare`.
 - The client merges that list into the record for the answering
-  `environmentId` (CAL-99): unknown endpoints are appended after the existing
-  ones, and a known endpoint takes the reported `type`.
+  `environmentId`: unknown endpoints are appended after the existing ones, and
+  a known endpoint takes the reported `type`.
 
 Routes must only be merged from an answer the client can trust. `/bootstrap`
 is unauthenticated, so a list taken from it could point a trusted environment
 at someone else's address and send the token there on the next connect. The
 merge belongs on the authenticated handshake, or behind a check that the
-advertised route answers with a proof only that environment can give.
+advertised route answers with a proof only that environment can give. A person
+is not there to ask when a list arrives on its own, so the consent step used
+for a typed address does not carry over.

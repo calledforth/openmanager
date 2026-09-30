@@ -22,7 +22,11 @@ import {
   TITLE_GENERATION_CHOICES,
   TitleGenerationSettingControl,
 } from '../components/title-generation-setting'
-import { EnvironmentConnectForm, EnvironmentList } from '../components/connection-surfaces'
+import {
+  EnvironmentConnectForm,
+  EnvironmentList,
+  RouteOfferPrompt,
+} from '../components/connection-surfaces'
 import { UI_FONTS } from '../lib/fonts'
 import { useConnection } from '../providers/connection-provider'
 import { THEME_OPTIONS } from '@openmanager/app-core/providers/theme-provider'
@@ -251,8 +255,14 @@ function EnvironmentsPanel() {
     removeRoute,
     checkRoutes,
     changeEnvironment,
+    confirmRoute,
+    declineRoute,
   } = useConnection()
-  const status = `${ui.title}${ui.environmentLabel ? ` · ${ui.environmentLabel}` : ''}`
+  // The question itself is asked below, next to where the address was entered.
+  const status =
+    ui.kind === 'confirm_route'
+      ? 'A new route is waiting for your answer'
+      : `${ui.title}${ui.environmentLabel ? ` · ${ui.environmentLabel}` : ''}`
 
   return (
     <>
@@ -291,11 +301,19 @@ function EnvironmentsPanel() {
         title="Add environment"
         description="A second URL for an environment you already have is added to it as another route."
       >
-        <EnvironmentConnectForm
-          className="mt-3"
-          onConnect={connect}
-          submitLabel="Add environment"
-        />
+        {ui.kind === 'confirm_route' ? (
+          <RouteOfferPrompt
+            className="mt-3"
+            state={ui}
+            handlers={{ onConfirmRoute: confirmRoute, onDeclineRoute: declineRoute }}
+          />
+        ) : (
+          <EnvironmentConnectForm
+            className="mt-3"
+            onConnect={connect}
+            submitLabel="Add environment"
+          />
+        )}
       </SettingsSection>
     </>
   )

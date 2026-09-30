@@ -335,6 +335,47 @@ export function upsertStoredEnvironment(
 }
 
 /**
+ * What an address that answered with `environmentId` is to this client.
+ *
+ * - `new_environment`: no record has that ID; connecting adds one.
+ * - `known_route`: the record already has the address; connecting updates it.
+ * - `new_route`: the record exists and the address is new to it; connecting
+ *   merges the address into the record rather than adding a second one.
+ */
+export type DiscoveredRoute =
+  | { kind: 'new_environment' }
+  | { kind: 'known_route'; environment: StoredEnvironment }
+  | {
+      kind: 'new_route'
+      environment: StoredEnvironment
+      /**
+       * The connect brought no token of its own, so reaching the environment
+       * this way would send the saved one to an address that has never had it.
+       * The ID came from an unauthenticated answer, which anyone can give, so
+       * that needs a person's consent first.
+       */
+      sendsSavedCredential: boolean
+    }
+
+export function classifyDiscoveredRoute(
+  registry: EnvironmentRegistry,
+  input: { environmentId: string; endpoint: string; credential?: string },
+): DiscoveredRoute {
+  const environment = findStoredEnvironment(registry.environments, input.environmentId)
+  if (!environment) return { kind: 'new_environment' }
+  const endpoint = parseEnvironmentEndpoint(input.endpoint)
+  if (environment.routes.some((route) => route.endpoint === endpoint)) {
+    return { kind: 'known_route', environment }
+  }
+  return {
+    kind: 'new_route',
+    environment,
+    sendsSavedCredential:
+      environment.credential !== '' && parseEnvironmentCredential(input.credential ?? '') === '',
+  }
+}
+
+/**
  * Make `endpoint` the route in use for its environment and select that
  * environment. Returns the same registry when that is already the case, or
  * when the environment has no such route.
