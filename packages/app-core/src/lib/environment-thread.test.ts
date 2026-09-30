@@ -262,6 +262,89 @@ describe('projectThread', () => {
     expect(projectThread(null, second).messages).toEqual([])
   })
 
+  it('keeps the message list and untouched parts of a live turn across a streamed event', () => {
+    const before = thread({
+      turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'running' }],
+      messages: [
+        {
+          messageId: 'a1',
+          threadId: THREAD.threadId,
+          turnId: 't1',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Look' }],
+        },
+      ],
+      reasoning: [
+        { messageId: 'r1', turnId: 't1', phase: 'stop', content: [{ type: 'text', text: 'plan' }] },
+      ],
+      tools: [
+        { toolCallId: 'tool-1', turnId: 't1', title: 'Read', status: 'completed' },
+        { toolCallId: 'tool-2', turnId: 't1', title: 'Grep', status: 'in_progress' },
+      ],
+      order: [
+        { kind: 'reasoning', id: 'r1', turnId: 't1' },
+        { kind: 'tool', id: 'tool-1', turnId: 't1' },
+        { kind: 'tool', id: 'tool-2', turnId: 't1' },
+        { kind: 'message', id: 'a1', turnId: 't1' },
+      ],
+    })
+    const first = projectThread(before)
+    // What one `tool.updated` does to the store: the touched tool is replaced,
+    // everything else is the object it was.
+    const after = thread({
+      ...before,
+      tools: [before.tools[0]!, { ...before.tools[1]!, status: 'completed' }],
+    })
+    const second = projectThread(after, first)
+
+    // The timeline lists the same rows, so nothing that reads the list renders.
+    expect(second.messages).toBe(first.messages)
+    const partsOf = (projection: typeof first) => projection.byId.get('a1')!.streaming.parts
+    const [thought, readTool, grepTool, text] = partsOf(first)
+    const [nextThought, nextReadTool, nextGrepTool, nextText] = partsOf(second)
+    expect(nextThought).toBe(thought)
+    expect(nextReadTool).toBe(readTool)
+    expect(nextText).toBe(text)
+    expect(nextGrepTool).not.toBe(grepTool)
+    expect(nextGrepTool).toMatchObject({ id: 'tool-2', state: { status: 'completed' } })
+  })
+
+  it('gives the row a new identity when the turn settles', () => {
+    const running = thread({
+      turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'running' }],
+      messages: [
+        {
+          messageId: 'a1',
+          threadId: THREAD.threadId,
+          turnId: 't1',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'done' }],
+        },
+      ],
+      reasoning: [
+        { messageId: 'r1', turnId: 't1', phase: 'delta', content: [{ type: 'text', text: 'hm' }] },
+      ],
+    })
+    const first = projectThread(running)
+    const settled = thread({
+      ...running,
+      turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'completed' }],
+    })
+    const second = projectThread(settled, first)
+    expect(second.messages).not.toBe(first.messages)
+    expect(second.messages[0]).toMatchObject({ externalId: 'a1', isFinal: true })
+    // The same thought, still open when the turn ended, now reads as finished.
+    expect(first.byId.get('a1')!.streaming.parts[0]).not.toHaveProperty('time')
+    expect(second.byId.get('a1')!.streaming.parts[0]).toHaveProperty('time')
+  })
+
+  it('keeps the row of an unconfirmed send while it waits', () => {
+    const waiting = thread({ outbox: [{ commandId: 'c1', text: 'hi', status: 'pending' }] })
+    const first = projectThread(waiting)
+    const second = projectThread(thread({ ...waiting, notices: [] }), first)
+    expect(second.messages).toBe(first.messages)
+  })
+
   it('surfaces a failed turn on its assistant row', () => {
     const state = thread({
       turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'failed' }],
