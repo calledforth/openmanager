@@ -72,7 +72,10 @@ function readOptionalLabel(bootstrap: BootstrapResponse): string | undefined {
   return typeof bootstrap.label === 'string' && bootstrap.label.trim() ? bootstrap.label : undefined
 }
 
-export async function fetchBootstrap(endpoint: string): Promise<BootstrapOutcome> {
+export async function fetchBootstrap(
+  endpoint: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<BootstrapOutcome> {
   let response: Response
   try {
     // Discovery is unauthenticated. Do not send the stored client token here:
@@ -80,6 +83,7 @@ export async function fetchBootstrap(endpoint: string): Promise<BootstrapOutcome
     // require a credential (the token is for the later WebSocket upgrade).
     response = await fetch(bootstrapUrl(endpoint), {
       headers: { accept: 'application/json' },
+      signal: options.signal,
     })
   } catch {
     return {

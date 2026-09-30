@@ -11,12 +11,26 @@ import {
   parseEnvironmentCredential,
   parseEnvironmentEndpoint,
   parseStoredEnvironment,
+  preferredRoute,
+  preferStoredRoute,
   readEnvironmentRegistry,
   removeStoredEnvironment,
+  removeStoredRoute,
+  routeTypeForEndpoint,
+  routeTypeLabel,
   selectStoredEnvironment,
+  setStoredRouteHealth,
   upsertStoredEnvironment,
   writeEnvironmentRegistry,
+  type EnvironmentRegistry,
+  type EnvironmentRoute,
+  type StoredEnvironment,
 } from './environment-store'
+
+const LOCAL = 'http://127.0.0.1:43120'
+const TUNNEL = 'https://tunnel.example'
+const NOW = new Date('2026-09-30T10:00:00.000Z')
+const LATER = new Date('2026-09-30T11:00:00.000Z')
 
 function memoryStorage(initial: Record<string, string> = {}) {
   const data = new Map(Object.entries(initial))
@@ -25,6 +39,38 @@ function memoryStorage(initial: Record<string, string> = {}) {
     setItem: (key: string, value: string) => void data.set(key, value),
     removeItem: (key: string) => void data.delete(key),
     data,
+  }
+}
+
+function route(
+  endpoint: string,
+  priority = 0,
+  overrides: Partial<EnvironmentRoute> = {},
+): EnvironmentRoute {
+  return {
+    type: routeTypeForEndpoint(endpoint),
+    endpoint,
+    priority,
+    health: { status: 'unknown' },
+    ...overrides,
+  }
+}
+
+function environment(
+  environmentId: string,
+  routes: EnvironmentRoute[],
+  overrides: Partial<StoredEnvironment> = {},
+): StoredEnvironment {
+  return { environmentId, label: 'Local', routes, credential: '', ...overrides }
+}
+
+/** One environment reachable on localhost and through a tunnel, localhost in use. */
+function twoRoutes(): EnvironmentRegistry {
+  return {
+    selectedId: 'env-local',
+    environments: [
+      environment('env-local', [route(LOCAL, 0), route(TUNNEL, 1)], { credential: 'token-1' }),
+    ],
   }
 }
 
@@ -71,8 +117,23 @@ describe('parseEnvironmentCredential', () => {
   })
 })
 
+describe('route types', () => {
+  it('calls a loopback endpoint local and everything else remote', () => {
+    expect(routeTypeForEndpoint('http://127.0.0.1:43120')).toBe('local')
+    expect(routeTypeForEndpoint('http://localhost:43120')).toBe('local')
+    expect(routeTypeForEndpoint('https://tunnel.example')).toBe('remote')
+    expect(routeTypeForEndpoint('http://192.168.1.20:43120')).toBe('remote')
+  })
+
+  it('names the types it knows and shows any other as written', () => {
+    expect(routeTypeLabel('local')).toBe('Local')
+    expect(routeTypeLabel('cloudflare')).toBe('Cloudflare')
+    expect(routeTypeLabel('wireguard')).toBe('wireguard')
+  })
+})
+
 describe('upsertStoredEnvironment', () => {
-  it('inserts a new record keyed by environment ID', () => {
+  it('inserts a new record keyed by environment ID, with one route', () => {
     const next = upsertStoredEnvironment(EMPTY_REGISTRY, {
       environmentId: 'env-local',
       endpoint: 'http://127.0.0.1:43120/',
@@ -81,40 +142,82 @@ describe('upsertStoredEnvironment', () => {
     })
     expect(next).toEqual({
       selectedId: 'env-local',
-      environments: [
-        {
-          environmentId: 'env-local',
-          label: 'Local',
-          endpoints: ['http://127.0.0.1:43120'],
-          credential: 'token-1',
-        },
-      ],
+      environments: [environment('env-local', [route(LOCAL)], { credential: 'token-1' })],
     })
   })
 
-  it('merges a second URL into the existing record instead of duplicating', () => {
+  it('adds a second URL as another route to the same record instead of duplicating it', () => {
     const first = upsertStoredEnvironment(EMPTY_REGISTRY, {
       environmentId: 'env-local',
-      endpoint: 'http://127.0.0.1:43120',
+      endpoint: LOCAL,
       label: 'Local',
       credential: 'token-1',
     })!
     const second = upsertStoredEnvironment(first, {
       environmentId: 'env-local',
-      endpoint: 'https://tunnel.example',
+      endpoint: TUNNEL,
       label: 'Home lab',
     })
-    expect(second?.environments).toHaveLength(1)
     expect(second).toEqual({
       selectedId: 'env-local',
       environments: [
-        {
-          environmentId: 'env-local',
+        environment('env-local', [route(TUNNEL, 0), route(LOCAL, 1)], {
           label: 'Home lab',
-          endpoints: ['https://tunnel.example', 'http://127.0.0.1:43120'],
           credential: 'token-1',
-        },
+        }),
       ],
+    })
+  })
+
+  it('adding the same environment twice by the same URL changes nothing', () => {
+    const input = { environmentId: 'env-local', endpoint: LOCAL, label: 'Local' }
+    const first = upsertStoredEnvironment(EMPTY_REGISTRY, input)!
+    expect(upsertStoredEnvironment(first, input)).toEqual(first)
+  })
+
+  it('keeps identity and the credential when only the endpoint changes', () => {
+    const moved = upsertStoredEnvironment(twoRoutes(), {
+      environmentId: 'env-local',
+      endpoint: 'https://new-tunnel.example',
+    })!
+    expect(moved.environments).toHaveLength(1)
+    expect(moved.environments[0]).toMatchObject({
+      environmentId: 'env-local',
+      credential: 'token-1',
+    })
+    expect(moved.environments[0]!.routes.map((item) => item.endpoint)).toEqual([
+      'https://new-tunnel.example',
+      LOCAL,
+      TUNNEL,
+    ])
+  })
+
+  it('keeps what is known about a route when it is used again', () => {
+    const known = setStoredRouteHealth(
+      twoRoutes(),
+      'env-local',
+      TUNNEL,
+      { status: 'unreachable', message: 'Tunnel down.' },
+      NOW,
+    )
+    const next = upsertStoredEnvironment(known, { environmentId: 'env-local', endpoint: TUNNEL })!
+    expect(next.environments[0]!.routes).toEqual([
+      route(TUNNEL, 0, {
+        health: { status: 'unreachable', changedAt: NOW.toISOString(), message: 'Tunnel down.' },
+      }),
+      route(LOCAL, 1),
+    ])
+  })
+
+  it('records the health that reaching the endpoint showed', () => {
+    const next = upsertStoredEnvironment(
+      EMPTY_REGISTRY,
+      { environmentId: 'env-local', endpoint: LOCAL, health: { status: 'available' } },
+      NOW,
+    )!
+    expect(preferredRoute(next.environments[0]!).health).toEqual({
+      status: 'available',
+      changedAt: NOW.toISOString(),
     })
   })
 
@@ -133,22 +236,86 @@ describe('upsertStoredEnvironment', () => {
   })
 })
 
+describe('preferStoredRoute', () => {
+  it('moves the chosen route to the front and renumbers the rest', () => {
+    const next = preferStoredRoute(twoRoutes(), 'env-local', TUNNEL)
+    expect(next.environments[0]!.routes).toEqual([route(TUNNEL, 0), route(LOCAL, 1)])
+    expect(preferredRoute(next.environments[0]!).endpoint).toBe(TUNNEL)
+  })
+
+  it('selects the environment the route belongs to', () => {
+    const registry = { ...twoRoutes(), selectedId: null }
+    expect(preferStoredRoute(registry, 'env-local', LOCAL).selectedId).toBe('env-local')
+  })
+
+  it('returns the same registry for the route already in use or one it does not have', () => {
+    const registry = twoRoutes()
+    expect(preferStoredRoute(registry, 'env-local', LOCAL)).toBe(registry)
+    expect(preferStoredRoute(registry, 'env-local', 'https://elsewhere.example')).toBe(registry)
+    expect(preferStoredRoute(registry, 'env-missing', LOCAL)).toBe(registry)
+  })
+})
+
+describe('removeStoredRoute', () => {
+  it('forgets one route and lets the next take its place', () => {
+    const next = removeStoredRoute(twoRoutes(), 'env-local', LOCAL)
+    expect(next.environments[0]!.routes).toEqual([route(TUNNEL, 0)])
+    expect(next.environments[0]!.credential).toBe('token-1')
+    expect(next.selectedId).toBe('env-local')
+  })
+
+  it('never forgets the last route of an environment', () => {
+    const single = removeStoredRoute(twoRoutes(), 'env-local', LOCAL)
+    expect(removeStoredRoute(single, 'env-local', TUNNEL)).toBe(single)
+  })
+})
+
+describe('setStoredRouteHealth', () => {
+  it('records a status with the time it changed', () => {
+    const next = setStoredRouteHealth(
+      twoRoutes(),
+      'env-local',
+      TUNNEL,
+      { status: 'unauthorized', message: 'Access denied.' },
+      NOW,
+    )
+    expect(next.environments[0]!.routes[1]!.health).toEqual({
+      status: 'unauthorized',
+      changedAt: NOW.toISOString(),
+      message: 'Access denied.',
+    })
+    expect(next.environments[0]!.routes[0]!.health).toEqual({ status: 'unknown' })
+  })
+
+  it('treats a repeated report as no change, keeping the first time', () => {
+    const first = setStoredRouteHealth(
+      twoRoutes(),
+      'env-local',
+      LOCAL,
+      { status: 'available' },
+      NOW,
+    )
+    expect(setStoredRouteHealth(first, 'env-local', LOCAL, { status: 'available' }, LATER)).toBe(
+      first,
+    )
+  })
+
+  it('ignores a report for a route or an environment it does not have', () => {
+    const registry = twoRoutes()
+    const report = { status: 'unreachable' } as const
+    expect(setStoredRouteHealth(registry, 'env-local', 'https://elsewhere.example', report)).toBe(
+      registry,
+    )
+    expect(setStoredRouteHealth(registry, 'env-missing', LOCAL, report)).toBe(registry)
+  })
+})
+
 describe('removeStoredEnvironment and selectStoredEnvironment', () => {
   const populated = {
     selectedId: 'env-a',
     environments: [
-      {
-        environmentId: 'env-a',
-        label: 'A',
-        endpoints: ['http://127.0.0.1:43120'],
-        credential: '',
-      },
-      {
-        environmentId: 'env-b',
-        label: 'B',
-        endpoints: ['http://127.0.0.1:43121'],
-        credential: '',
-      },
+      environment('env-a', [route('http://127.0.0.1:43120')], { label: 'A' }),
+      environment('env-b', [route('http://127.0.0.1:43121')], { label: 'B' }),
     ],
   }
 
@@ -166,34 +333,58 @@ describe('removeStoredEnvironment and selectStoredEnvironment', () => {
 })
 
 describe('readEnvironmentRegistry', () => {
-  it('round-trips a versioned registry and ignores corrupt records', () => {
+  it('round-trips routes, their order and their health, and ignores corrupt records', () => {
     const storage = memoryStorage()
-    writeEnvironmentRegistry(
-      {
-        selectedId: 'env-1',
+    const registry = setStoredRouteHealth(
+      twoRoutes(),
+      'env-local',
+      TUNNEL,
+      { status: 'unreachable', message: 'Tunnel down.' },
+      NOW,
+    )
+    writeEnvironmentRegistry(registry, storage)
+    expect(JSON.parse(storage.getItem(ENVIRONMENT_STORAGE_KEY) ?? '{}')).toMatchObject({
+      version: 2,
+    })
+    expect(readEnvironmentRegistry(storage)).toEqual(registry)
+    expect(readEnvironmentRegistry({ getItem: () => 'not-json' })).toEqual(EMPTY_REGISTRY)
+  })
+
+  it('upgrades a version 1 endpoint list into routes, keeping order, selection and token', () => {
+    const storage = memoryStorage({
+      [ENVIRONMENT_STORAGE_KEY]: JSON.stringify({
+        version: 1,
+        selectedId: 'env-local',
         environments: [
           {
-            environmentId: 'env-1',
+            environmentId: 'env-local',
             label: 'Local',
-            endpoints: ['http://127.0.0.1:43120'],
+            endpoints: [TUNNEL, LOCAL],
             credential: 'token-1',
           },
         ],
-      },
-      storage,
-    )
-    expect(readEnvironmentRegistry(storage)).toEqual({
-      selectedId: 'env-1',
-      environments: [
-        {
-          environmentId: 'env-1',
-          label: 'Local',
-          endpoints: ['http://127.0.0.1:43120'],
-          credential: 'token-1',
-        },
-      ],
+      }),
     })
-    expect(readEnvironmentRegistry({ getItem: () => 'not-json' })).toEqual(EMPTY_REGISTRY)
+    const upgraded = {
+      selectedId: 'env-local',
+      environments: [
+        environment('env-local', [route(TUNNEL, 0), route(LOCAL, 1)], { credential: 'token-1' }),
+      ],
+    }
+    expect(readEnvironmentRegistry(storage)).toEqual(upgraded)
+    const written = JSON.parse(storage.getItem(ENVIRONMENT_STORAGE_KEY) ?? '{}')
+    expect(written).toEqual({ version: 2, ...upgraded })
+  })
+
+  it('ignores a registry from a version it does not know', () => {
+    const storage = memoryStorage({
+      [ENVIRONMENT_STORAGE_KEY]: JSON.stringify({
+        version: 99,
+        selectedId: null,
+        environments: [],
+      }),
+    })
+    expect(readEnvironmentRegistry(storage)).toEqual(EMPTY_REGISTRY)
   })
 
   it('migrates the CAL-21 single-endpoint record into an ID-keyed registry', () => {
@@ -206,18 +397,11 @@ describe('readEnvironmentRegistry', () => {
     })
     expect(readEnvironmentRegistry(storage)).toEqual({
       selectedId: 'env-local',
-      environments: [
-        {
-          environmentId: 'env-local',
-          label: 'Local',
-          endpoints: ['http://127.0.0.1:43120'],
-          credential: '',
-        },
-      ],
+      environments: [environment('env-local', [route(LOCAL)])],
     })
     expect(storage.getItem(LEGACY_ENVIRONMENT_STORAGE_KEY)).toBeNull()
     expect(JSON.parse(storage.getItem(ENVIRONMENT_STORAGE_KEY) ?? '{}')).toMatchObject({
-      version: 1,
+      version: 2,
       selectedId: 'env-local',
     })
   })
@@ -239,39 +423,58 @@ describe('readEnvironmentRegistry', () => {
 })
 
 describe('parseStoredEnvironment', () => {
-  it('requires an ID and at least one valid endpoint', () => {
+  it('requires an ID and at least one valid route', () => {
     expect(
       parseStoredEnvironment({
         environmentId: 'env-1',
         label: 'Local',
-        endpoints: ['http://127.0.0.1:43120'],
+        routes: [route(LOCAL)],
         credential: '',
       }),
-    ).toEqual({
-      environmentId: 'env-1',
-      label: 'Local',
-      endpoints: ['http://127.0.0.1:43120'],
-      credential: '',
-    })
-    expect(parseStoredEnvironment({ environmentId: 'env-1', endpoints: [] })).toBeNull()
+    ).toEqual(environment('env-1', [route(LOCAL)]))
+    expect(parseStoredEnvironment({ environmentId: 'env-1', routes: [] })).toBeNull()
     expect(
-      parseStoredEnvironment({ environmentId: 'env-1', endpoints: ['ftp://x'] }),
+      parseStoredEnvironment({ environmentId: 'env-1', routes: [{ endpoint: 'ftp://x' }] }),
     ).toBeNull()
-    expect(parseStoredEnvironment({ endpoints: ['http://127.0.0.1:43120'] })).toBeNull()
+    expect(parseStoredEnvironment({ routes: [route(LOCAL)] })).toBeNull()
     expect(
-      parseStoredEnvironment({
-        environmentId: 'env-1',
-        endpoints: ['http://127.0.0.1:43120'],
-        label: '   ',
-      }),
+      parseStoredEnvironment({ environmentId: 'env-1', routes: [route(LOCAL)], label: '   ' }),
     ).toMatchObject({ label: DEFAULT_ENVIRONMENT_LABEL })
+  })
+
+  it('orders routes by priority, drops a repeated endpoint and renumbers from zero', () => {
+    const parsed = parseStoredEnvironment({
+      environmentId: 'env-1',
+      routes: [
+        route(TUNNEL, 7),
+        route(LOCAL, 3),
+        route(TUNNEL, 1),
+        { endpoint: 'https://b.example' },
+      ],
+    })
+    expect(parsed?.routes.map((item) => [item.endpoint, item.priority])).toEqual([
+      [LOCAL, 0],
+      [TUNNEL, 1],
+      ['https://b.example', 2],
+    ])
+  })
+
+  it('keeps a route type it does not know and repairs one it cannot read', () => {
+    const parsed = parseStoredEnvironment({
+      environmentId: 'env-1',
+      routes: [
+        route(TUNNEL, 0, { type: 'cloudflare' }),
+        { endpoint: LOCAL, priority: 1, type: 'Not A Type', health: { status: 'melting' } },
+      ],
+    })
+    expect(parsed?.routes).toEqual([route(TUNNEL, 0, { type: 'cloudflare' }), route(LOCAL, 1)])
   })
 })
 
 describe('findStoredEnvironment', () => {
   const shared = 'http://127.0.0.1:4321'
-  const a = { environmentId: 'env-a', label: 'A', endpoints: [shared], credential: 'a'.repeat(64) }
-  const b = { environmentId: 'env-b', label: 'B', endpoints: [shared], credential: 'b'.repeat(64) }
+  const a = environment('env-a', [route(shared)], { label: 'A', credential: 'a'.repeat(64) })
+  const b = environment('env-b', [route(shared)], { label: 'B', credential: 'b'.repeat(64) })
 
   it('matches by environment ID even when several records share an endpoint', () => {
     expect(findStoredEnvironment([a, b], 'env-b')).toBe(b)
@@ -281,6 +484,6 @@ describe('findStoredEnvironment', () => {
     expect(findStoredEnvironment([a, b], undefined)).toBeUndefined()
     expect(findStoredEnvironment([a, b], null)).toBeUndefined()
     expect(findStoredEnvironment([a, b], 'env-unknown')).toBeUndefined()
-    expect(shared).toBe(a.endpoints[0])
+    expect(shared).toBe(preferredRoute(a).endpoint)
   })
 })

@@ -281,6 +281,9 @@ export function AppShell() {
     changeEnvironment,
     selectEnvironment,
     removeEnvironment,
+    chooseRoute,
+    removeRoute,
+    checkRoutes,
     environments,
     selectedId,
   } = useConnection()
@@ -291,6 +294,9 @@ export function AppShell() {
     onChangeEnvironment: changeEnvironment,
     onSelectEnvironment: selectEnvironment,
     onRemoveEnvironment: removeEnvironment,
+    onChooseRoute: chooseRoute,
+    onRemoveRoute: removeRoute,
+    onCheckRoutes: checkRoutes,
   }
   const showScreen = !ungated && ui.surface === 'screen'
   const showBanner = !ungated && ui.surface === 'banner'
