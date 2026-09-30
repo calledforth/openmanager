@@ -174,6 +174,13 @@ export function ConnectionProvider({
   const claimGeneration = useRef(0)
   /** The address of the owner claim in flight, so forgetting it can cancel the claim. */
   const claimingEndpoint = useRef<string | null>(null)
+  /**
+   * Routes forgotten since the last connect began. A connect in flight to a
+   * shared address cannot be cancelled outright, since it may be to the other
+   * environment; its answer is checked against this instead, so it cannot
+   * bring a forgotten route back.
+   */
+  const forgottenRoutes = useRef(new Set<string>())
   const online = useSyncExternalStore(subscribeToNetworkStatus, isBrowserOnline, onlineOnServer)
   const wasOffline = useRef(false)
 
@@ -276,6 +283,10 @@ export function ConnectionProvider({
       return
     }
     recordedBootstrap.current = liveBootstrap
+    if (pending && forgottenRoutes.current.has(routeKey(answeredId, endpoint))) {
+      setPending(null)
+      return
+    }
     if (storedId && storedId !== answeredId) {
       // The selected environment's route now leads somewhere else: a reused
       // localhost port, a tunnel handed to another machine. Say so on the
@@ -362,6 +373,7 @@ export function ConnectionProvider({
     const endpoint = parseEnvironmentEndpoint(nextEndpoint)
     if (!endpoint) return
     const parsed = parseEnvironmentCredential(credential)
+    forgottenRoutes.current.clear()
     setHasConnected(false)
     setLocalOwnerClaimFailure(null)
     const begin = (nextCredential: string, claimedEnvironmentId?: string) => {
@@ -439,8 +451,10 @@ export function ConnectionProvider({
         setBootstrapNonce((value) => value + 1)
       }
       // A connect to the forgotten address must not bring the route back when
-      // its answer arrives. An address another environment still has is left
-      // alone: the connect in flight may be to that one.
+      // its answer arrives. When another environment still has the address the
+      // connect may be to that one, so it runs on and its answer is checked
+      // against the forgotten routes instead.
+      forgottenRoutes.current.add(routeKey(environmentId, routeEndpoint))
       const stillSaved = next.environments.some((item) =>
         item.routes.some((route) => route.endpoint === routeEndpoint),
       )

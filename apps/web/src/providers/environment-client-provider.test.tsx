@@ -370,6 +370,64 @@ describe('WebEnvironmentClientProvider', () => {
     expect(storedRoutes().map((route) => route.endpoint)).toEqual([ENDPOINT])
   })
 
+  it('does not bring a forgotten route back through an address another environment shares', async () => {
+    // Two environments saved the tunnel address; env-local is selected on localhost.
+    localStorage.setItem(
+      ENVIRONMENT_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        selectedId: 'env-local',
+        environments: [
+          {
+            environmentId: 'env-local',
+            label: 'Local environment',
+            endpoints: [ENDPOINT, TUNNEL],
+            credential: 'client-token',
+          },
+          { environmentId: 'env-other', label: 'Other', endpoints: [TUNNEL], credential: '' },
+        ],
+      }),
+    )
+    let answerTunnel = (): void => undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).startsWith(TUNNEL)) {
+          await new Promise<void>((resolve) => {
+            answerTunnel = resolve
+          })
+        }
+        // The tunnel answers as env-local: the one whose route is forgotten.
+        return bootstrapAnswer()
+      }),
+    )
+    renderProvider(() => createFakeClient())
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+
+    act(() => screen.getByRole('button', { name: 'connect tunnel' }).click())
+    act(() => screen.getByRole('button', { name: 'forget tunnel' }).click())
+    await act(async () => {
+      answerTunnel()
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+    const registry = JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY) ?? '{}') as {
+      selectedId: string
+      environments: Array<{ environmentId: string; routes: Array<{ endpoint: string }> }>
+    }
+    expect(registry.selectedId).toBe('env-local')
+    expect(
+      registry.environments.map((item) => [
+        item.environmentId,
+        item.routes.map((route) => route.endpoint),
+      ]),
+    ).toEqual([
+      ['env-local', [ENDPOINT]],
+      ['env-other', [TUNNEL]],
+    ])
+  })
+
   it('checks the routes that are not in use and leaves the live one alone', async () => {
     seedTwoRoutes()
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
