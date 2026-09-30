@@ -19,9 +19,11 @@ import {
   type ConnectionUiState,
   type DeriveConnectionInput,
   type EnvironmentSelection,
+  type RouteOffer,
   type TransportStatus,
 } from '../lib/connection-state'
 import {
+  classifyDiscoveredRoute,
   EMPTY_REGISTRY,
   environmentRegistriesEqual,
   findStoredEnvironment,
@@ -53,6 +55,8 @@ type PendingConnect = {
   endpoint: string
   credential: string
   claimedEnvironmentId?: string
+  /** The person agreed to add this address to an environment already saved. */
+  confirmed?: boolean
 }
 
 type LocalOwnerClaimFailure = {
@@ -83,11 +87,25 @@ type ConnectionValue = {
   retry: () => void
   changeEnvironment: () => void
   /**
+   * Add the address that is waiting for consent (`ui.kind === 'confirm_route'`)
+   * to the environment it answered as, and reach the environment through it.
+   */
+  confirmRoute: () => void
+  /** Drop that address. Nothing is saved and the saved token is not sent. */
+  declineRoute: () => void
+  /**
    * The route in use answered as a different environment. No socket may be
    * opened on it, whatever else the connection state says: the socket would
    * carry this environment's token to whatever answered.
    */
   wrongEnvironment: boolean
+  /**
+   * The route in use has answered, on this connection attempt, as the saved
+   * environment it belongs to. A new socket may only be opened on a route that
+   * has: before that, nothing says the address still leads to the environment
+   * whose token the socket would carry.
+   */
+  routeVerified: boolean
   /**
    * Increments on every explicit retry and on every return from offline. The
    * socket provider dials immediately instead of waiting out its backoff.
@@ -109,13 +127,26 @@ function toSelection(
   pending: PendingConnect | null,
 ): EnvironmentSelection {
   if (pending) {
-    const known = registry.environments.find((item) =>
-      item.routes.some((route) => route.endpoint === pending.endpoint),
-    )
+    // No identity until the address has answered for itself. A record that
+    // has this address only says what used to be there; lending its ID to the
+    // connect would let a socket carry that record's token to the address
+    // before anything has said which environment is behind it.
+    //
+    // The one exception is the route already in use: entering it again is
+    // asking the same connection to try again, so the live client, and the
+    // session it holds, stays while the answer is out.
+    const selected = selectedStoredEnvironment(registry)
+    const inUse =
+      selected && preferredRoute(selected).endpoint === pending.endpoint ? selected : undefined
+    const known =
+      inUse ??
+      registry.environments.find((item) =>
+        item.routes.some((route) => route.endpoint === pending.endpoint),
+      )
     return {
       status: 'selected',
       endpoint: pending.endpoint,
-      environmentId: known?.environmentId,
+      environmentId: inUse?.environmentId,
       label: known?.label,
     }
   }
@@ -243,6 +274,30 @@ export function ConnectionProvider({
     [bootstrapQuery.data, endpoint],
   )
 
+  // `/bootstrap` is unauthenticated, so the environment ID in an answer is a
+  // claim, not a proof. A new address claiming a saved environment would be
+  // merged into that record and handed its token on the next socket upgrade.
+  // When the connect brought no token of its own, that merge waits for a
+  // person to agree; until then the address is neither saved nor dialled.
+  const routeOffer = useMemo<RouteOffer | undefined>(() => {
+    if (!pending || pending.confirmed || pending.endpoint !== endpoint) return undefined
+    if (liveBootstrap.status !== 'ready' && liveBootstrap.status !== 'incompatible_protocol') {
+      return undefined
+    }
+    const answeredId = liveBootstrap.environmentId
+    if (!answeredId) return undefined
+    if (pending.claimedEnvironmentId && pending.claimedEnvironmentId !== answeredId) {
+      return undefined
+    }
+    const found = classifyDiscoveredRoute(registry, {
+      environmentId: answeredId,
+      endpoint: pending.endpoint,
+      credential: pending.credential,
+    })
+    if (found.kind !== 'new_route' || !found.sendsSavedCredential) return undefined
+    return { endpoint: pending.endpoint, label: found.environment.label }
+  }, [pending, endpoint, liveBootstrap, registry])
+
   // A bootstrap answer becomes route health once, when it arrives. The socket
   // reports on the same route afterwards and must not be overwritten by an
   // answer that is already on record.
@@ -288,6 +343,9 @@ export function ConnectionProvider({
       setPending(null)
       return
     }
+    // Not put on record either: once the person agrees, this same answer is
+    // what makes the address a route, and it must still count as fresh.
+    if (routeOffer) return
     recordedBootstrap.current = liveBootstrap
     if (storedId && storedId !== answeredId) {
       // The selected environment's route now leads somewhere else: a reused
@@ -329,6 +387,7 @@ export function ConnectionProvider({
     storedId,
     failureId,
     noteLiveReport,
+    routeOffer,
   ])
 
   const answeredByAnother =
@@ -336,6 +395,10 @@ export function ConnectionProvider({
     (liveBootstrap.status === 'ready' || liveBootstrap.status === 'incompatible_protocol') &&
     liveBootstrap.environmentId !== undefined &&
     liveBootstrap.environmentId !== storedId
+  const routeVerified =
+    storedId !== undefined &&
+    liveBootstrap.status === 'ready' &&
+    liveBootstrap.environmentId === storedId
   const effectiveBootstrap: BootstrapOutcome =
     localOwnerClaimFailure?.endpoint === endpoint
       ? { status: 'unauthorized', message: localOwnerClaimFailure.message }
@@ -354,6 +417,7 @@ export function ConnectionProvider({
       hasConnected || effectiveBootstrap.status === 'ready',
     ),
     network: { online },
+    routeOffer,
   }
 
   // Returning from offline is the one event worth acting on: the bootstrap
@@ -405,6 +469,16 @@ export function ConnectionProvider({
     setLocalOwnerClaimFailure(null)
     claimGeneration.current += 1
   }, [])
+
+  const confirmRoute = useCallback(() => {
+    setPending((current) => (current ? { ...current, confirmed: true } : current))
+  }, [])
+
+  const declineRoute = useCallback(() => {
+    abandonPendingConnect()
+    // Back to the saved selection, asked afresh rather than read from a cache.
+    setBootstrapNonce((value) => value + 1)
+  }, [abandonPendingConnect])
 
   const selectEnvironment = useCallback(
     (environmentId: string) => {
@@ -540,7 +614,10 @@ export function ConnectionProvider({
       checkRoutes,
       retry,
       changeEnvironment,
+      confirmRoute,
+      declineRoute,
       wrongEnvironment: answeredByAnother,
+      routeVerified,
       retryNonce: bootstrapNonce,
     }),
     [
@@ -557,7 +634,10 @@ export function ConnectionProvider({
       checkRoutes,
       retry,
       changeEnvironment,
+      confirmRoute,
+      declineRoute,
       answeredByAnother,
+      routeVerified,
       bootstrapNonce,
     ],
   )

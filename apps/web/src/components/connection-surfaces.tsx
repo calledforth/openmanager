@@ -24,6 +24,8 @@ export type ConnectionHandlers = {
   onConnect?: (endpoint: string, credential?: string) => void
   onRetry?: () => void
   onChangeEnvironment?: () => void
+  onConfirmRoute?: () => void
+  onDeclineRoute?: () => void
   onSelectEnvironment?: (environmentId: string) => void
   onRemoveEnvironment?: (environmentId: string) => void
   onChooseRoute?: (environmentId: string, endpoint: string) => void
@@ -34,6 +36,8 @@ export type ConnectionHandlers = {
 function runAction(action: ConnectionAction, handlers: ConnectionHandlers, endpoint?: string) {
   if (action === 'retry') handlers.onRetry?.()
   if (action === 'change_environment') handlers.onChangeEnvironment?.()
+  if (action === 'confirm_route') handlers.onConfirmRoute?.()
+  if (action === 'decline_route') handlers.onDeclineRoute?.()
   if (action === 'connect' && endpoint) handlers.onConnect?.(endpoint)
 }
 
@@ -69,6 +73,28 @@ function ActionButtons({
           {connectionActionLabel(state.secondaryAction)}
         </Button>
       ) : null}
+    </div>
+  )
+}
+
+/**
+ * The question a new address for a saved environment raises, for places that
+ * are not behind the full connection screen. `state.kind` is `confirm_route`.
+ */
+export function RouteOfferPrompt({
+  state,
+  handlers,
+  className,
+}: {
+  state: ConnectionUiState
+  handlers: ConnectionHandlers
+  className?: string
+}) {
+  return (
+    <div className={cn('rounded-lg bg-hover/70 px-3 py-2.5', className)} role="alert">
+      <p className="text-[13px] font-medium text-foreground">{state.title}</p>
+      <p className="mt-1 text-[13px] text-muted-foreground">{state.description}</p>
+      <ActionButtons className="mt-3" state={state} handlers={handlers} />
     </div>
   )
 }
@@ -396,6 +422,7 @@ export function ConnectionStatusChip({ state }: { state: ConnectionUiState }) {
   }
 
   const needsAttention =
+    state.kind === 'confirm_route' ||
     state.kind === 'unauthorized' ||
     state.kind === 'incompatible_protocol' ||
     (state.kind === 'offline' && !!state.action)

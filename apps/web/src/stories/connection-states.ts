@@ -27,6 +27,23 @@ export const CONNECTION_STORIES: ConnectionStory[] = [
     },
   },
   {
+    id: 'confirm_route',
+    name: 'Confirm a new route',
+    summary:
+      'A new address answered as a saved environment. The saved token is not sent until a person agrees.',
+    input: {
+      environment: { status: 'selected', endpoint: 'https://tunnel.example' },
+      bootstrap: {
+        status: 'ready',
+        environmentId: 'env-local',
+        label: 'Local environment',
+        protocolVersion: PROTOCOL_VERSION,
+      },
+      transport: { phase: 'connected', hasConnected: false, failure: null },
+      routeOffer: { endpoint: 'https://tunnel.example', label: 'Local environment' },
+    },
+  },
+  {
     id: 'connecting',
     name: 'Connecting',
     summary: 'First bootstrap after an endpoint is chosen. Shell stays mounted.',

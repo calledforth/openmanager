@@ -148,6 +148,52 @@ describe('deriveConnectionUi', () => {
     ).toBe('unauthorized')
   })
 
+  it('asks before a new address joins a saved environment, ahead of anything it reports', () => {
+    const routeOffer = { endpoint: 'https://tunnel.example', label: 'Home lab' }
+    const environment = { status: 'selected' as const, endpoint: routeOffer.endpoint }
+    const ui = deriveConnectionUi({
+      environment,
+      bootstrap: {
+        status: 'ready',
+        environmentId: 'env-local',
+        label: 'Renamed',
+        protocolVersion: 1,
+      },
+      transport: { phase: 'connected', hasConnected: true, failure: null },
+      routeOffer,
+    })
+    expect(ui).toMatchObject({
+      kind: 'confirm_route',
+      surface: 'screen',
+      title: 'Add a route to Home lab?',
+      action: 'confirm_route',
+      secondaryAction: 'decline_route',
+    })
+    expect(ui.description).toContain('https://tunnel.example')
+    expect(ui.description).toContain('saved client token')
+
+    for (const input of [
+      { network: { online: false } },
+      {
+        bootstrap: {
+          status: 'incompatible_protocol' as const,
+          clientProtocolVersion: 1,
+          serverProtocolVersion: 2,
+        },
+      },
+    ]) {
+      expect(
+        deriveConnectionUi({
+          environment,
+          bootstrap: { status: 'loading' },
+          transport: { phase: 'connecting', hasConnected: false, failure: null },
+          routeOffer,
+          ...input,
+        }).kind,
+      ).toBe('confirm_route')
+    }
+  })
+
   it('keeps a cached bootstrap while a later fetch is in flight', () => {
     const ready = {
       status: 'ready' as const,
