@@ -232,6 +232,11 @@ type ThreadRecord = {
   backgroundTasks?: BackgroundTask[]
   /** The host id of each live background task, by the provider's own id. */
   backgroundTaskIds?: Map<string, string>
+  /**
+   * The start of a turn the provider began by itself that could not be
+   * written. Kept so the turn's next event can try again.
+   */
+  unrecordedBackgroundTurn?: RuntimeEvent
   /** A session-scoped cancel must drain before another prompt can start. */
   cancellation?: Promise<void>
   pendingBuild?: boolean
@@ -935,6 +940,7 @@ export function createThreadService(
    * filed under it, it can be interrupted, and the provider ends it.
    */
   const startBackgroundTurn = (record: ThreadRecord, event: RuntimeEvent) => {
+    record.unrecordedBackgroundTurn = undefined
     const sent = record.activeTurn
     if (sent) {
       // A turn the user sent owns the session already. If its prompt has not
@@ -965,6 +971,10 @@ export function createThreadService(
     } catch (error) {
       if (!options.onPersistenceError) throw error
       options.onPersistenceError(error, 'turn.started')
+      // Not given up on: the provider goes on with the turn either way, so the
+      // next thing it says for it tries the start again. Only what arrived
+      // while the log could not be written is lost, not the whole follow-up.
+      record.unrecordedBackgroundTurn = event
       return
     }
     record.turns.push(turn)
@@ -2480,6 +2490,10 @@ export function createThreadService(
       if (event.event === 'background_turn_started') {
         startBackgroundTurn(record, event)
         return
+      }
+      const unrecorded = record.unrecordedBackgroundTurn
+      if (unrecorded && event.messageId !== undefined && event.messageId === unrecorded.messageId) {
+        startBackgroundTurn(record, unrecorded)
       }
 
       if (event.event === 'prompt_started') {

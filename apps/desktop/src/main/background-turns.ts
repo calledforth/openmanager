@@ -4,10 +4,12 @@ import { isRecoverableError, type AgentEvent } from '@agentpack/contract'
  *
  * - `started` / `ended`: the turn's own bookends. Neither is persisted or
  *   announced, because there is no turn here to start, finish or point at.
+ * - `failed`: it ended in an error the provider will not retry. That is a
+ *   fact about the session, turn or no turn, and is recorded like any other.
  * - `ended_waiting`: it ended after asking the user something. The request
  *   itself was recorded (it has to reach the user), and left the session at
  *   waiting, so the session has to be put back at rest. */
-export type UnrecordedTurnEvent = 'started' | 'ended' | 'ended_waiting'
+export type UnrecordedTurnEvent = 'started' | 'ended' | 'ended_waiting' | 'failed'
 
 /**
  * Recognises the bookends of a turn the provider began by itself.
@@ -15,8 +17,9 @@ export type UnrecordedTurnEvent = 'started' | 'ended' | 'ended_waiting'
  * A provider can start a turn when a background task finishes. The environment
  * server files that turn in its transcript; this host's Convex projection has
  * no such turn, so the turn's output is dropped for want of one. Its ending is
- * what would still get through: marking the session done, or failed, and
- * notifying "Turn finished" for work the transcript does not hold.
+ * what would still get through: marking the session done and notifying "Turn
+ * finished" for work the transcript does not hold. A failure is let through:
+ * the session did fail, and saying nothing would hide that.
  *
  * Everything inside such a turn is left alone and answers `undefined`, a
  * permission request in particular, which still has to reach the user or the
@@ -49,12 +52,11 @@ export function createBackgroundTurnFilter(): (
       turn.asked = true
       return undefined
     }
-    const ends =
-      event.event === 'prompt_completed' ||
-      ((event.event === 'rpc_error' || event.event === 'runtime_error') &&
-        !isRecoverableError(event))
-    if (!ends) return undefined
+    const failed =
+      (event.event === 'rpc_error' || event.event === 'runtime_error') && !isRecoverableError(event)
+    if (!failed && event.event !== 'prompt_completed') return undefined
     open.delete(event.threadId)
+    if (failed) return 'failed'
     return turn.asked ? 'ended_waiting' : 'ended'
   }
 }

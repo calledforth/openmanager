@@ -341,9 +341,11 @@ export class AgentHost {
     // A turn the provider began by itself has no row here: its bookends are
     // neither persisted nor announced. If it asked the user something, the
     // request left the session at waiting and only its end can put that back.
+    // A failure is the exception: the session failed whether or not the turn
+    // has a row, so it is recorded as one.
     const unrecorded = this.unrecordedTurn(event)
     if (unrecorded === 'ended_waiting') this.projector.restSession(event)
-    if (!unrecorded) {
+    if (!unrecorded || unrecorded === 'failed') {
       this.projector.consume(event)
       this.options.notifier?.handle(event)
     }

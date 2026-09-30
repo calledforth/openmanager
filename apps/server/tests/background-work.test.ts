@@ -305,7 +305,7 @@ describe('background work', () => {
     expect(h.summary().status).toBe('waiting')
   })
 
-  it('does not open a background turn it could not record', async () => {
+  it('records a background turn on its next event when its start could not be written', async () => {
     const failures: unknown[] = []
     const h = await setup(true, (error) => failures.push(error))
     await h.userTurn('provider-task')
@@ -320,8 +320,34 @@ describe('background work', () => {
     h.events!.flush()
 
     expect(failures).toHaveLength(1)
-    // Nothing was filed under a turn the log never heard of, so later writes
-    // are not poisoned by it.
+    // The start was written before anything was filed under it, so no write
+    // was poisoned, and the follow-up is in the transcript with its ending.
+    const history = listSessionHistory(h.database!, { ...h.created.thread })!
+    expect(history.turns).toHaveLength(2)
+    expect(history.turns.find((turn) => turn.origin === 'background')).toMatchObject({
+      state: 'completed',
+    })
+    expect(JSON.stringify(history.messages)).toContain('The build passed.')
+    h.roster()
+    expect(h.summary().status).toBe('idle')
+  })
+
+  it('keeps trying while the start of a background turn cannot be written', async () => {
+    const failures: unknown[] = []
+    const h = await setup(true, (error) => failures.push(error))
+    await h.userTurn('provider-task')
+    const spy = vi.spyOn(h.events!, 'appendAtomic').mockImplementation(() => {
+      throw new Error('disk busy')
+    })
+
+    h.emit({ category: 'lifecycle', event: 'background_turn_started', data: {} }, 'assistant-2')
+    h.text('assistant-2', 'The build passed.')
+    h.completed('assistant-2')
+    spy.mockRestore()
+    h.events!.flush()
+
+    // Nothing was filed under a turn the log never heard of.
+    expect(failures.length).toBeGreaterThan(1)
     expect(listSessionHistory(h.database!, { ...h.created.thread })!.turns).toHaveLength(1)
     h.roster()
     expect(h.summary().status).toBe('idle')

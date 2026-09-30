@@ -50,7 +50,7 @@ describe('background turn filter', () => {
     expect(classify({ ...retry, messageId: 'assistant-2' } as AgentEvent)).toBeUndefined()
     expect(
       classify(event('runtime_error', { kind: 'provider', message: 'overloaded' }, 'assistant-2')),
-    ).toBe('ended')
+    ).toBe('failed')
   })
 
   it('lets a prompt or an exit take over without claiming its events', () => {
