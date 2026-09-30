@@ -84,6 +84,13 @@ sends it the token. Proof needs the environment to show it holds the
 credential before the client reveals it, which is a server and protocol change
 (see [Server-reported routes](#server-reported-routes)).
 
+The same rule holds outside a merge: a socket is only opened on a route that
+has answered, on this attempt, as the environment whose token the socket would
+carry. A connect that is still waiting for its answer has no identity and gets
+no socket, and being offline is not an answer. A client that already exists
+is kept through an offline gap, and through a connect that re-enters the route
+in use, so the session it holds is not dropped.
+
 Two environments stay two environments. A different `environmentId` at a new
 address is always its own record with its own token, and a saved route that
 starts answering as another environment is reported, not adopted

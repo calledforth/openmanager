@@ -1,4 +1,5 @@
 import { PROTOCOL_VERSION } from '@openmanager/protocol'
+import { onlineManager } from '@tanstack/react-query'
 import { act, cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -17,6 +18,8 @@ afterEach(() => {
   localStorage.clear()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
+  // A test that went offline must not leave the next one's queries paused.
+  onlineManager.setOnline(true)
 })
 
 function seedRegistry(
@@ -70,9 +73,10 @@ const TUNNEL_SOCKET = environmentSocketUrl('https://tunnel.example')
 /** Stand-in sockets that record where each was dialled and with which token. */
 function trackSockets() {
   const dialled: Array<{ url: string; credential: string | undefined }> = []
+  const live = new Set<object>()
   const create: WebAppProps['createEnvironmentClient'] = (options) => {
     dialled.push({ url: options.url, credential: options.credential })
-    return createMockEnvironmentClient({
+    const client = createMockEnvironmentClient({
       seed: {
         environment: {
           environmentId: options.environmentId ?? 'env-local',
@@ -80,8 +84,16 @@ function trackSockets() {
         },
       },
     })
+    live.add(client)
+    const dispose = client.dispose.bind(client)
+    client.dispose = () => {
+      live.delete(client)
+      dispose()
+    }
+    return client
   }
-  return { dialled: () => dialled, create }
+  /** `clients` are the ones not yet disposed. */
+  return { dialled: () => dialled, clients: () => [...live], create }
 }
 
 function storedRegistry() {
@@ -647,6 +659,94 @@ describe('web routes', () => {
       url: TUNNEL_SOCKET,
       credential: 'client-token',
     })
+  })
+
+  it('opens no socket on a saved route until it has answered, even offline', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    seedRegistry([
+      {
+        environmentId: 'env-local',
+        endpoints: ['https://tunnel.example'],
+        credential: 'client-token',
+      },
+    ])
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        await gate
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            protocolVersion: PROTOCOL_VERSION,
+            capabilities: ['connection.heartbeat'],
+            environmentId: 'env-local',
+            label: 'Local environment',
+          }),
+        }
+      }),
+    )
+    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false)
+    const sockets = trackSockets()
+
+    renderWebApp('/settings', { createEnvironmentClient: sockets.create })
+    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalled())
+    // Offline is not an answer: the tunnel may have been handed to someone else.
+    expect(sockets.dialled()).toEqual([])
+
+    release()
+    await waitFor(() =>
+      expect(sockets.dialled()).toEqual([{ url: TUNNEL_SOCKET, credential: 'client-token' }]),
+    )
+  })
+
+  it('keeps the live client when the route in use is entered again while offline', async () => {
+    const user = userEvent.setup()
+    let answered = 0
+    const gate = new Promise<void>(() => {})
+    seedRegistry([
+      {
+        environmentId: 'env-local',
+        endpoints: ['https://tunnel.example'],
+        credential: 'client-token',
+      },
+    ])
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        // The first answer arrives; every later one is lost to the network.
+        if (answered++ > 0) await gate
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            protocolVersion: PROTOCOL_VERSION,
+            capabilities: ['connection.heartbeat'],
+            environmentId: 'env-local',
+            label: 'Local environment',
+          }),
+        }
+      }),
+    )
+    const online = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(true)
+    const sockets = trackSockets()
+
+    renderWebApp('/settings', { createEnvironmentClient: sockets.create })
+    await screen.findByText(/Connected · Local environment/)
+    expect(sockets.clients()).toHaveLength(1)
+
+    online.mockReturnValue(false)
+    act(() => void window.dispatchEvent(new Event('offline')))
+    await user.type(screen.getByLabelText('Environment endpoint'), 'https://tunnel.example')
+    await user.click(screen.getByRole('button', { name: 'Add environment' }))
+    await act(async () => {})
+
+    // Same environment, same route, same token: the session it holds stays.
+    expect(sockets.clients()).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'New agent' })).toBeInTheDocument()
   })
 
   it('switches route only when asked, keeping the environment, its token and the other route', async () => {

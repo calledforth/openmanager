@@ -100,6 +100,13 @@ type ConnectionValue = {
    */
   wrongEnvironment: boolean
   /**
+   * The route in use has answered, on this connection attempt, as the saved
+   * environment it belongs to. A new socket may only be opened on a route that
+   * has: before that, nothing says the address still leads to the environment
+   * whose token the socket would carry.
+   */
+  routeVerified: boolean
+  /**
    * Increments on every explicit retry and on every return from offline. The
    * socket provider dials immediately instead of waiting out its backoff.
    */
@@ -124,10 +131,24 @@ function toSelection(
     // has this address only says what used to be there; lending its ID to the
     // connect would let a socket carry that record's token to the address
     // before anything has said which environment is behind it.
-    const known = registry.environments.find((item) =>
-      item.routes.some((route) => route.endpoint === pending.endpoint),
-    )
-    return { status: 'selected', endpoint: pending.endpoint, label: known?.label }
+    //
+    // The one exception is the route already in use: entering it again is
+    // asking the same connection to try again, so the live client, and the
+    // session it holds, stays while the answer is out.
+    const selected = selectedStoredEnvironment(registry)
+    const inUse =
+      selected && preferredRoute(selected).endpoint === pending.endpoint ? selected : undefined
+    const known =
+      inUse ??
+      registry.environments.find((item) =>
+        item.routes.some((route) => route.endpoint === pending.endpoint),
+      )
+    return {
+      status: 'selected',
+      endpoint: pending.endpoint,
+      environmentId: inUse?.environmentId,
+      label: known?.label,
+    }
   }
   const selected = selectedStoredEnvironment(registry)
   if (!selected) return { status: 'none' }
@@ -374,6 +395,10 @@ export function ConnectionProvider({
     (liveBootstrap.status === 'ready' || liveBootstrap.status === 'incompatible_protocol') &&
     liveBootstrap.environmentId !== undefined &&
     liveBootstrap.environmentId !== storedId
+  const routeVerified =
+    storedId !== undefined &&
+    liveBootstrap.status === 'ready' &&
+    liveBootstrap.environmentId === storedId
   const effectiveBootstrap: BootstrapOutcome =
     localOwnerClaimFailure?.endpoint === endpoint
       ? { status: 'unauthorized', message: localOwnerClaimFailure.message }
@@ -592,6 +617,7 @@ export function ConnectionProvider({
       confirmRoute,
       declineRoute,
       wrongEnvironment: answeredByAnother,
+      routeVerified,
       retryNonce: bootstrapNonce,
     }),
     [
@@ -611,6 +637,7 @@ export function ConnectionProvider({
       confirmRoute,
       declineRoute,
       answeredByAnother,
+      routeVerified,
       bootstrapNonce,
     ],
   )

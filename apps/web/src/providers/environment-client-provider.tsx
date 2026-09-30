@@ -24,8 +24,15 @@ export function WebEnvironmentClientProvider({
   children: ReactNode
   createClient?: typeof createWebSocketEnvironmentClient
 }) {
-  const { ui, environment, environments, retryNonce, reportRouteHealth, wrongEnvironment } =
-    useConnection()
+  const {
+    ui,
+    environment,
+    environments,
+    retryNonce,
+    reportRouteHealth,
+    wrongEnvironment,
+    routeVerified,
+  } = useConnection()
   const endpoint = environment.status === 'selected' ? environment.endpoint : null
   // Identity comes only from the selection's environment ID (filled from the
   // registry once bootstrap has answered). An endpoint can belong to several
@@ -43,12 +50,27 @@ export function WebEnvironmentClientProvider({
   // would hand this environment's token to whatever answered.
   const alive = (ui.kind === 'ready' || ui.kind === 'offline') && !wrongEnvironment
 
+  // Staying alive and being opened are different permissions. A client that
+  // exists rides out an offline gap, but a new one is only opened on a route
+  // that has answered as this environment: offline says nothing about what is
+  // at the address, and the socket upgrade carries the environment's token.
+  const connectionKey = endpoint && environmentId ? JSON.stringify([endpoint, environmentId]) : null
+  const [verifiedKey, setVerifiedKey] = useState<string | null>(null)
+  const nextVerifiedKey =
+    !alive || !connectionKey
+      ? null
+      : routeVerified || verifiedKey === connectionKey
+        ? connectionKey
+        : null
+  if (nextVerifiedKey !== verifiedKey) setVerifiedKey(nextVerifiedKey)
+  const open = nextVerifiedKey !== null
+
   // The client is created inside the effect rather than memoized so that
   // StrictMode's setup → cleanup → setup replay (and any real remount) gets a
   // fresh instance; a disposed client ignores connect() for good.
   const [client, setClient] = useState<EnvironmentClient | null>(null)
   useEffect(() => {
-    if (!endpoint || !environmentId || !alive) {
+    if (!endpoint || !environmentId || !open) {
       setClient(null)
       return
     }
@@ -71,7 +93,7 @@ export function WebEnvironmentClientProvider({
       next.dispose()
       setClient((current) => (current === next ? null : current))
     }
-  }, [createClient, credential, endpoint, environmentId, alive, reportRouteHealth])
+  }, [createClient, credential, endpoint, environmentId, open, reportRouteHealth])
 
   // A manual retry, or the network coming back, should dial now rather than at
   // the end of the current backoff window. connect() on a live client is a
