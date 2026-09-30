@@ -16,6 +16,7 @@ afterEach(() => {
   cleanup()
   localStorage.clear()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 function seedRegistry(
@@ -588,6 +589,64 @@ describe('web routes', () => {
     ])
     // A second record, and the first one's token stays with the first one.
     expect(sockets.dialled().at(-1)).toEqual({ url: TUNNEL_SOCKET, credential: undefined })
+  })
+
+  it('sends no saved token to an address before it has answered, even offline', async () => {
+    const user = userEvent.setup()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    // The tunnel is on record for env-local, but something else answers there now.
+    seedRegistry([
+      {
+        environmentId: 'env-local',
+        endpoints: ['http://127.0.0.1:43120', 'https://tunnel.example'],
+        credential: 'client-token',
+      },
+    ])
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const tunnel = String(input).startsWith('https://tunnel.example/')
+        if (tunnel) await gate
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            protocolVersion: PROTOCOL_VERSION,
+            capabilities: ['connection.heartbeat'],
+            environmentId: tunnel ? 'env-lab' : 'env-local',
+            label: tunnel ? 'Lab' : 'Local environment',
+          }),
+        }
+      }),
+    )
+    // Offline keeps the socket provider dialling whatever is selected.
+    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false)
+    const sockets = trackSockets()
+
+    renderWebApp('/settings', { createEnvironmentClient: sockets.create })
+    await waitFor(() => expect(sockets.dialled()).toHaveLength(1))
+    await user.type(
+      await screen.findByLabelText('Environment endpoint'),
+      'https://tunnel.example',
+    )
+    await user.click(screen.getByRole('button', { name: 'Add environment' }))
+    await waitFor(() =>
+      expect(JSON.stringify(vi.mocked(fetch).mock.calls)).toContain('tunnel.example'),
+    )
+    expect(sockets.dialled().map((socket) => socket.url)).not.toContain(TUNNEL_SOCKET)
+
+    release()
+    await waitFor(() => expect(storedRegistry().selectedId).toBe('env-lab'))
+    await waitFor(() =>
+      expect(sockets.dialled().at(-1)).toEqual({ url: TUNNEL_SOCKET, credential: undefined }),
+    )
+    expect(sockets.dialled()).not.toContainEqual({
+      url: TUNNEL_SOCKET,
+      credential: 'client-token',
+    })
   })
 
   it('switches route only when asked, keeping the environment, its token and the other route', async () => {

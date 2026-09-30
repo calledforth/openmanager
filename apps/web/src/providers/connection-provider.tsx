@@ -120,15 +120,14 @@ function toSelection(
   pending: PendingConnect | null,
 ): EnvironmentSelection {
   if (pending) {
+    // No identity until the address has answered for itself. A record that
+    // has this address only says what used to be there; lending its ID to the
+    // connect would let a socket carry that record's token to the address
+    // before anything has said which environment is behind it.
     const known = registry.environments.find((item) =>
       item.routes.some((route) => route.endpoint === pending.endpoint),
     )
-    return {
-      status: 'selected',
-      endpoint: pending.endpoint,
-      environmentId: known?.environmentId,
-      label: known?.label,
-    }
+    return { status: 'selected', endpoint: pending.endpoint, label: known?.label }
   }
   const selected = selectedStoredEnvironment(registry)
   if (!selected) return { status: 'none' }

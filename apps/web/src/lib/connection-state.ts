@@ -152,7 +152,7 @@ export function deriveConnectionUi(input: DeriveConnectionInput): ConnectionUiSt
       kind: 'confirm_route',
       surface: 'screen',
       title: `Add a route to ${offer.label}?`,
-      description: `${offer.endpoint} says it is ${offer.label}, an environment you already have. Adding it sends the saved client token to that address, so only add an address you trust.`,
+      description: `${offer.endpoint} claims to be a route to ${offer.label}, an environment you already have. Adding it sends the saved client token to that address, so only add an address you trust.`,
       action: 'confirm_route',
       secondaryAction: 'decline_route',
       endpoint: offer.endpoint,
