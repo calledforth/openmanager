@@ -282,11 +282,13 @@ export function ConnectionProvider({
       }
       return
     }
-    recordedBootstrap.current = liveBootstrap
     if (pending && forgottenRoutes.current.has(routeKey(answeredId, endpoint))) {
+      // Not put on record: if the selection falls back to this same address,
+      // the answer still has to be read as that environment's route health.
       setPending(null)
       return
     }
+    recordedBootstrap.current = liveBootstrap
     if (storedId && storedId !== answeredId) {
       // The selected environment's route now leads somewhere else: a reused
       // localhost port, a tunnel handed to another machine. Say so on the
