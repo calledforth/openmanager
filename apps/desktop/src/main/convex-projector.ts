@@ -220,6 +220,18 @@ export class ConvexProjector {
     this.enqueue(event.threadId, () => this.project(event))
   }
 
+  /**
+   * Put a session back at rest without finishing a turn. For work this
+   * projection never recorded as one, where the usual completion would mark
+   * the session done for a transcript that does not hold it.
+   */
+  restSession(event: AgentEvent): void {
+    this.enqueue(event.threadId, async () => {
+      if (!event.sessionId || !event.workspaceId) return
+      await this.upsertSession(event.workspaceId, event.sessionId, 'idle', event.providerId)
+    })
+  }
+
   waitForThread(threadId: string): Promise<void> {
     return this.queues.get(threadId) ?? Promise.resolve()
   }

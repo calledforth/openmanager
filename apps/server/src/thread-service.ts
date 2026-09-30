@@ -98,6 +98,13 @@ type ActiveTurn = {
   promptFailed?: boolean
   runtimeMessageId?: string
   /**
+   * The message id of a turn the provider began by itself just before this
+   * turn's prompt reached it. The provider finishes that turn first, so what
+   * it says and asks meanwhile is filed under this one: otherwise a permission
+   * request raised there would reach nobody and hold this prompt up behind it.
+   */
+  foldedMessageId?: string
+  /**
    * The open text and reasoning runs of the turn, as host message ids. A run
    * is a maximal stretch of one kind of stream event: the next event of any
    * other kind (a thought after text, a tool call, the end of a block) closes
@@ -891,24 +898,25 @@ export function createThreadService(
     // Restated even when it matches what this process believes: the row is
     // what clients read, and an earlier write may not have reached it yet.
     const status = rests ? (tasks.length ? 'running' : 'idle') : undefined
+    const updated = ProofEventSchemas['session.updated'].parse({
+      type: 'event',
+      name: 'session.updated',
+      eventId: randomUUID(),
+      timestamp: new Date().toISOString(),
+      scope: { type: 'environment', environmentId },
+      payload: {
+        sessionId: record.session.sessionId,
+        backgroundTasks: tasks,
+        ...(status ? { status } : {}),
+      },
+    })
     try {
-      appendEvent(
-        ProofEventSchemas['session.updated'].parse({
-          type: 'event',
-          name: 'session.updated',
-          eventId: randomUUID(),
-          timestamp: new Date().toISOString(),
-          scope: { type: 'environment', environmentId },
-          payload: {
-            sessionId: record.session.sessionId,
-            backgroundTasks: tasks,
-            ...(status ? { status } : {}),
-          },
-        }),
-      )
+      if (options.appendAtomic) options.appendAtomic([updated])
+      else appendEvent(updated)
     } catch (error) {
-      // Reported, not dropped: the batch stays queued and commits with the
-      // next append, so memory still has to match what it will say.
+      // Memory follows the provider even when the write did not land: the
+      // tasks are real and must stay stoppable, and every roster event
+      // restates the whole roster and status, so the next one repairs the row.
       if (!options.onPersistenceError) throw error
       options.onPersistenceError(error, 'session.updated')
     }
@@ -927,25 +935,38 @@ export function createThreadService(
    * filed under it, it can be interrupted, and the provider ends it.
    */
   const startBackgroundTurn = (record: ThreadRecord, event: RuntimeEvent) => {
-    // A turn the user sent owns the session already; what the provider says
-    // meanwhile is filed under that turn once its prompt starts.
-    if (record.activeTurn || record.cancellation || record.pendingBuild) return
+    const sent = record.activeTurn
+    if (sent) {
+      // A turn the user sent owns the session already. If its prompt has not
+      // reached the provider yet, what the provider says first is filed here.
+      if (!sent.runtimeMessageId) sent.foldedMessageId = event.messageId
+      return
+    }
+    if (record.cancellation || record.pendingBuild) return
     const turn: Turn = {
       turnId: randomUUID(),
       threadId: record.thread.threadId,
       state: 'running',
       origin: 'background',
     }
-    appendRuntimeEvent(
-      ProofEventSchemas['turn.started'].parse({
-        type: 'event',
-        name: 'turn.started',
-        eventId: randomUUID(),
-        timestamp: event.timestamp,
-        scope: threadScope(record),
-        payload: { turn },
-      }),
-    )
+    const started = ProofEventSchemas['turn.started'].parse({
+      type: 'event',
+      name: 'turn.started',
+      eventId: randomUUID(),
+      timestamp: event.timestamp,
+      scope: threadScope(record),
+      payload: { turn },
+    })
+    try {
+      // Written before anything is filed under it, as a sent turn is: output
+      // for a turn the log never recorded would fail every write after it.
+      if (options.appendAtomic) options.appendAtomic([started])
+      else appendEvent(started)
+    } catch (error) {
+      if (!options.onPersistenceError) throw error
+      options.onPersistenceError(error, 'turn.started')
+      return
+    }
     record.turns.push(turn)
     touch(record, 'running')
     record.activeTurn = {
@@ -2499,7 +2520,22 @@ export function createThreadService(
         event.event === 'subtask_update' ||
         event.category === 'error' ||
         event.event === 'process_exited'
-      if (
+      // Output of a turn the provider began by itself just before this one's
+      // prompt reached it; see `foldedMessageId`.
+      const folded =
+        !!active?.foldedMessageId &&
+        event.messageId === active.foldedMessageId &&
+        event.event !== 'process_exited'
+      if (folded) {
+        // That turn's own ending is not this turn's: the prompt is still queued.
+        const ends =
+          event.event === 'prompt_completed' ||
+          event.event === 'auth_required' ||
+          event.event === 'capability_missing' ||
+          ((event.event === 'rpc_error' || event.event === 'runtime_error') &&
+            event.data.recoverable !== true)
+        if (ends) return
+      } else if (
         turnScoped &&
         (!active ||
           (!active.runtimeMessageId && event.event !== 'process_exited') ||

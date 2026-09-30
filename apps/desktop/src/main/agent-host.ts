@@ -58,7 +58,7 @@ export class AgentHost {
   private readonly pendingQuestions = new Map<string, QuestionRequest>()
   private readonly pendingPlans = new Map<string, PlanDocument>()
   private readonly titleRefreshes = new Map<string, Promise<void>>()
-  private readonly endsUnshownTurn = createBackgroundTurnFilter()
+  private readonly unrecordedTurn = createBackgroundTurnFilter()
 
   constructor(
     readonly projector: ConvexProjector,
@@ -338,8 +338,15 @@ export class AgentHost {
     if (event.event === 'plan_review_resolved') {
       this.pendingPlans.delete(event.data.requestId)
     }
-    this.projector.consume(event)
-    if (!this.endsUnshownTurn(event)) this.options.notifier?.handle(event)
+    // A turn the provider began by itself has no row here: its bookends are
+    // neither persisted nor announced. If it asked the user something, the
+    // request left the session at waiting and only its end can put that back.
+    const unrecorded = this.unrecordedTurn(event)
+    if (unrecorded === 'ended_waiting') this.projector.restSession(event)
+    if (!unrecorded) {
+      this.projector.consume(event)
+      this.options.notifier?.handle(event)
+    }
     if (event.event === 'prompt_completed' && event.workspaceId) {
       void this.refreshSessionTitles(event.providerId, event.workspaceId)
     }

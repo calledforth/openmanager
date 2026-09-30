@@ -85,7 +85,13 @@ async function setup(durable = true, onPersistenceError?: (error: unknown) => vo
       ? {
           database,
           flush: events!.flush,
-          appendAtomic: events!.appendAtomic,
+          appendAtomic: (batch) => {
+            if (failure.next) {
+              failure.next = false
+              throw new Error('disk busy')
+            }
+            events!.appendAtomic(batch)
+          },
           ...(onPersistenceError ? { onPersistenceError } : {}),
         }
       : {},
@@ -264,17 +270,61 @@ describe('background work', () => {
     expect(session.backgroundTasks).toBeUndefined()
   })
 
-  it('leaves a turn the user sent in charge when the provider speaks up during it', async () => {
+  it('files what the provider says first under a turn the user sent meanwhile', async () => {
     const h = await setup()
     const sent = ProofResponseSchemas['turn.send'].parse(
       h.dispatch('turn.send', { ...h.created.thread, text: 'Build it' }),
     ).payload
 
+    // The provider began a turn of its own just before the prompt reached it,
+    // and asks for permission there. The prompt is queued behind that answer.
     h.emit({ category: 'lifecycle', event: 'background_turn_started', data: {} }, 'assistant-0')
+    h.emit(
+      {
+        category: 'permission',
+        event: 'permission_request',
+        data: {
+          requestId: 'provider-permission',
+          sessionId: 'provider-session',
+          toolCall: { toolCallId: 'tool-1', title: 'Run tests' },
+          options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+        },
+      },
+      'assistant-0',
+    )
+    h.text('assistant-0', 'Checking the result.')
+    // The provider's own turn ending is not the end of the one the user sent.
+    h.completed('assistant-0')
     h.events!.flush()
 
     const history = listSessionHistory(h.database!, { ...h.created.thread })!
-    expect(history.turns.map((turn) => turn.turnId)).toEqual([sent.turn.turnId])
+    expect(history.turns.map((turn) => [turn.turnId, turn.state])).toEqual([
+      [sent.turn.turnId, 'waiting'],
+    ])
+    expect(history.interactions).toHaveLength(1)
+    expect(h.summary().status).toBe('waiting')
+  })
+
+  it('does not open a background turn it could not record', async () => {
+    const failures: unknown[] = []
+    const h = await setup(true, (error) => failures.push(error))
+    await h.userTurn('provider-task')
+    const spy = vi.spyOn(h.events!, 'appendAtomic').mockImplementationOnce(() => {
+      throw new Error('disk busy')
+    })
+
+    h.emit({ category: 'lifecycle', event: 'background_turn_started', data: {} }, 'assistant-2')
+    h.text('assistant-2', 'The build passed.')
+    h.completed('assistant-2')
+    spy.mockRestore()
+    h.events!.flush()
+
+    expect(failures).toHaveLength(1)
+    // Nothing was filed under a turn the log never heard of, so later writes
+    // are not poisoned by it.
+    expect(listSessionHistory(h.database!, { ...h.created.thread })!.turns).toHaveLength(1)
+    h.roster()
+    expect(h.summary().status).toBe('idle')
   })
 
   it('refuses a send while a background turn is running, and lets it be interrupted', async () => {
@@ -399,9 +449,12 @@ describe('background work', () => {
     h.failure.next = true
     h.roster('provider-a')
     expect(failures).toHaveLength(1)
+    // The row never heard of it; the next roster restates everything.
+    expect(h.summary().backgroundTasks).toBeUndefined()
+    h.roster('provider-a', 'provider-b')
 
     const tasks = h.summary().backgroundTasks!
-    expect(tasks).toHaveLength(1)
+    expect(tasks).toHaveLength(2)
     expect(h.summary().status).toBe('running')
     await h.dispatch('session.background.stop', {
       sessionId: h.sessionId,
