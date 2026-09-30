@@ -330,7 +330,7 @@ describe('websocket environment client', () => {
     client.dispose()
   })
 
-  it('keeps older cached sessions visible until all catalog pages reconcile deletions', async () => {
+  it('keeps omitted cached sessions until an intentional open confirms deletion', async () => {
     const older = { ...SESSION_SUMMARY, sessionId: 'older' }
     const state = createInitialState()
     state.sessions = {
@@ -355,15 +355,40 @@ describe('websocket environment client', () => {
     expect(socket.last('session.list').payload).toMatchObject({ cursor })
     socket.respond('session.list', { sessions: [older], nextCursor: null })
     await flush()
+    expect(socket.sent.some((message) => message.name === 'session.open')).toBe(false)
+    const opened = client.commands.openSession('deleted').catch(() => undefined)
     expect(socket.last('session.open').payload).toEqual({ sessionId: 'deleted' })
     socket.receive({
       type: 'error',
       requestId: socket.last('session.open').requestId,
       error: { code: 'not_found', message: 'Deleted' },
     })
-    await flush()
+    await opened
     expect(client.getState().sessionOrder).toEqual([SESSION.sessionId, 'older'])
     expect(client.getState().sessions.deleted).toBeUndefined()
+    client.dispose()
+  })
+
+  it('recovers only the active runtime while older catalog pages are still loading', async () => {
+    const state = createInitialState()
+    state.sessions = { [SESSION.sessionId]: { ...SESSION_SUMMARY, threadIds: [] } }
+    state.sessionOrder = [SESSION.sessionId]
+    state.activeSessionId = SESSION.sessionId
+    const store = createEnvironmentStore(state)
+    const { client, socket } = await connected(
+      ['session.list', 'session.open'],
+      {},
+      { environmentId: ENV, store },
+    )
+    const cursor = { updatedAt: SESSION_SUMMARY.updatedAt, sessionId: SESSION.sessionId }
+    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: cursor })
+    await flush()
+    expect(socket.last('session.list').payload).toMatchObject({ cursor })
+    expect(
+      socket.sent
+        .filter((message) => message.name === 'session.open')
+        .map((message) => message.payload),
+    ).toEqual([{ sessionId: SESSION.sessionId }])
     client.dispose()
   })
 
@@ -388,9 +413,7 @@ describe('websocket environment client', () => {
     socket.respond('session.list', { sessions: [], nextCursor: null })
     await flush()
     expect(client.getState().sessions.moved).toBeDefined()
-    expect(socket.last('session.open').payload).toEqual({ sessionId: 'moved' })
-    socket.respond('session.open', { session: moved, threads: [thread] })
-    await flush()
+    expect(socket.sent.some((message) => message.name === 'session.open')).toBe(false)
     expect(client.getState().sessionOrder).toContain('moved')
     expect(client.getState().threads[THREAD.threadId]).toBe(state.threads[THREAD.threadId])
     client.dispose()

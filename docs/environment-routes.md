@@ -115,9 +115,11 @@ authenticates. Live connection state, pending sends, and in-flight hydration
 are not restored. Storage failures fall back to memory.
 
 All session catalog pages are refreshed, keeping older sessions navigable.
-A cached session missing from the pages is checked individually and removed
-only on an explicit `not_found`: a concurrent update can move it ahead of a
-pagination cursor without deleting it. Workspace membership and composer
+A cached session missing from the pages stays until a deletion event or an
+intentional open reports `not_found`: a concurrent update can move it ahead
+of a pagination cursor without deleting it. Older catalog pages refresh in
+the background so the active session recovers after the first page. Inactive
+agent runtimes are never opened to check cache membership. Workspace membership and composer
 preferences are refreshed from the server. Snapshot writes are serialized per
 environment so cleanup cannot overwrite newer data with an older snapshot.
 Deleted active sessions are removed when the environment reports them missing.

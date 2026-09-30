@@ -908,37 +908,19 @@ export function createWebSocketEnvironmentClient(
       reads.push(
         (async () => {
           if (!options.store) return commands.listSessions()
-          // Membership is authoritative only after all pages have answered.
-          // Keep older cached sessions visible while the catalog is refreshed.
-          const cached = new Set(Object.keys(store.getState().sessions))
-          const listed = new Set<string>()
-          let cursor: SessionListCursor | null = null
-          do {
-            const page = await commands.listSessions({
-              limit: PAGE_LIMIT_MAX,
-              ...(cursor ? { cursor } : {}),
-            })
-            if (generation !== connectionGeneration || !ready) return
-            for (const session of page.sessions) listed.add(session.sessionId)
-            cursor = page.nextCursor
-          } while (cursor)
-          // Keyset pages are not one snapshot: an updated session can move
-          // ahead of a cursor while we read. Absence is never proof of deletion.
-          if (!supports('openSession')) return
-          for (const sessionId of cached) {
-            if (listed.has(sessionId)) continue
-            if (generation !== connectionGeneration || !ready) return
-            try {
-              const payload = await request('session.open', { sessionId })
-              if (generation !== connectionGeneration || !ready) return
-              store.update((state) => applySessionList(state, [payload.session]))
-            } catch (error) {
-              if (generation !== connectionGeneration || !ready) return
-              if (isEnvironmentClientError(error) && error.code === 'not_found') {
-                store.update((state) => applySessionRemoved(state, sessionId))
-              }
+          // Recover the active session after the first page; older catalog
+          // pages continue in the background and never open inactive runtimes.
+          const first = await commands.listSessions({ limit: PAGE_LIMIT_MAX })
+          if (generation !== connectionGeneration || !ready) return
+          void (async () => {
+            let cursor: SessionListCursor | null = first.nextCursor
+            while (cursor && generation === connectionGeneration && ready) {
+              const page = await commands.listSessions({ limit: PAGE_LIMIT_MAX, cursor })
+              cursor = page.nextCursor
             }
-          }
+            // Keyset pages are not one snapshot. Keep omitted cached metadata
+            // until a deletion event or an intentional open reports not_found.
+          })().catch(() => undefined)
         })().catch(() => undefined),
       )
     if (supports('getProviderCatalog'))
