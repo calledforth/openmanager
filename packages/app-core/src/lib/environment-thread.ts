@@ -6,6 +6,7 @@ import {
   shallowEqualArray,
   type EnvironmentClient,
   type EnvironmentState,
+  type OutboxEntry,
   type ReasoningEntry,
   type ThreadState,
   type ToolState,
@@ -103,7 +104,27 @@ function imageParts(message: Message, sessionId: string): MessagePart[] {
   })
 }
 
+/**
+ * Parts by the state object they were built from. The store replaces only the
+ * entry an event touched, so every other thought, tool and message of a live
+ * turn is the object it was on the last event, and gets the part it had: a row
+ * that compares parts by identity then skips everything that did not change.
+ */
+const reasoningParts = new WeakMap<ReasoningEntry, { settled: boolean; part: MessagePart }>()
+const toolParts = new WeakMap<ToolState, MessagePart>()
+const textPartsByMessage = new WeakMap<Message, MessagePart[]>()
+/** The row of a send still waiting on the environment, kept while it stays where it is. */
+const outboxRows = new WeakMap<OutboxEntry, UIMessage>()
+
 function reasoningPart(entry: ReasoningEntry, settled: boolean): MessagePart {
+  const cached = reasoningParts.get(entry)
+  if (cached && cached.settled === settled) return cached.part
+  const part = buildReasoningPart(entry, settled)
+  reasoningParts.set(entry, { settled, part })
+  return part
+}
+
+function buildReasoningPart(entry: ReasoningEntry, settled: boolean): MessagePart {
   const text = contentText(entry.content)
   return {
     type: 'reasoning',
@@ -123,14 +144,69 @@ function toolStatus(status: ToolState['status']): string {
 }
 
 function toolPart(tool: ToolState): MessagePart {
-  return {
-    type: 'tool',
-    id: tool.toolCallId,
-    callID: tool.toolCallId,
-    tool: tool.title ?? tool.kind ?? 'tool',
-    ...(tool.kind ? { kind: tool.kind } : {}),
-    state: { status: toolStatus(tool.status) },
+  let part = toolParts.get(tool)
+  if (!part) {
+    part = {
+      type: 'tool',
+      id: tool.toolCallId,
+      callID: tool.toolCallId,
+      tool: tool.title ?? tool.kind ?? 'tool',
+      ...(tool.kind ? { kind: tool.kind } : {}),
+      state: { status: toolStatus(tool.status) },
+    }
+    toolParts.set(tool, part)
   }
+  return part
+}
+
+/** A message belongs to one thread for good, so its session never changes under it. */
+function textParts(message: Message, sessionId: string): MessagePart[] {
+  let parts = textPartsByMessage.get(message)
+  if (!parts) {
+    parts = [
+      { type: 'text', id: message.messageId, text: contentText(message.content) },
+      ...imageParts(message, sessionId),
+    ]
+    textPartsByMessage.set(message, parts)
+  }
+  return parts
+}
+
+const EMPTY: readonly never[] = []
+
+/**
+ * One of a thread's lists, split by turn. The store keeps each list whole, and
+ * an event replaces only the list it touches, so the split is kept per list:
+ * a streamed token re-splits the messages and leaves the tools, thoughts and
+ * order as they were, where filtering per turn walked all four for every turn.
+ */
+const byTurnCache = new WeakMap<readonly { turnId: string }[], Map<string, unknown[]>>()
+
+function byTurn<T extends { turnId: string }>(items: readonly T[], turnId: string): readonly T[] {
+  let split = byTurnCache.get(items) as Map<string, T[]> | undefined
+  if (!split) {
+    split = new Map()
+    for (const item of items) {
+      const bucket = split.get(item.turnId)
+      if (bucket) bucket.push(item)
+      else split.set(item.turnId, [item])
+    }
+    byTurnCache.set(items, split)
+  }
+  return split.get(turnId) ?? EMPTY
+}
+
+/** The row's identity is what the timeline lists; keep it while it says the same thing. */
+function rowMessage(previous: TurnProjection | undefined, next: UIMessage): UIMessage {
+  const held = previous?.entries.find(
+    (entry) => entry.message.externalId === next.externalId,
+  )?.message
+  return held &&
+    held.role === next.role &&
+    held.isFinal === next.isFinal &&
+    held.sequenceNum === next.sequenceNum
+    ? held
+    : next
 }
 
 function projectTurn(
@@ -139,10 +215,10 @@ function projectTurn(
   sequenceStart: number,
   previous: TurnProjection | undefined,
 ): TurnProjection {
-  const messages = thread.messages.filter((message) => message.turnId === turn.turnId)
-  const reasoning = thread.reasoning.filter((entry) => entry.turnId === turn.turnId)
-  const tools = thread.tools.filter((tool) => tool.turnId === turn.turnId)
-  const order = thread.order.filter((ref) => ref.turnId === turn.turnId)
+  const messages = byTurn(thread.messages, turn.turnId)
+  const reasoning = byTurn(thread.reasoning, turn.turnId)
+  const tools = byTurn(thread.tools, turn.turnId)
+  const order = byTurn(thread.order, turn.turnId)
   const failure = thread.failures.find((item) => item.turnId === turn.turnId)
   const deps = [turn, sequenceStart, failure, ...messages, ...reasoning, ...tools, ...order]
   if (previous && shallowEqualArray(previous.deps, deps)) return previous
@@ -176,10 +252,12 @@ function projectTurn(
   }
 
   const assistantMessages = messages.filter((message) => message.role === 'assistant')
-  const textParts = (message: Message): MessagePart[] => [
-    { type: 'text', id: message.messageId, text: contentText(message.content) },
-    ...imageParts(message, thread.thread.sessionId),
-  ]
+  const sessionId = thread.thread.sessionId
+  // A long turn places hundreds of entries; looking each one up by scanning
+  // would make every streamed event quadratic in the turn's length.
+  const reasoningById = new Map(reasoning.map((entry) => [entry.messageId, entry]))
+  const toolsById = new Map(tools.map((tool) => [tool.toolCallId, tool]))
+  const assistantById = new Map(assistantMessages.map((message) => [message.messageId, message]))
   // The transcript follows the order things happened in: a thought, the tools
   // it led to, the text that followed. Anything the order does not place (a
   // page from an environment that keeps no order) falls back to the grouped
@@ -191,14 +269,14 @@ function projectTurn(
     if (placed.has(key)) continue
     let placedParts: MessagePart[] | undefined
     if (ref.kind === 'reasoning') {
-      const entry = reasoning.find((item) => item.messageId === ref.id)
+      const entry = reasoningById.get(ref.id)
       placedParts = entry ? [reasoningPart(entry, settled)] : undefined
     } else if (ref.kind === 'tool') {
-      const tool = tools.find((item) => item.toolCallId === ref.id)
+      const tool = toolsById.get(ref.id)
       placedParts = tool ? [toolPart(tool)] : undefined
     } else {
-      const message = assistantMessages.find((item) => item.messageId === ref.id)
-      placedParts = message ? textParts(message) : undefined
+      const message = assistantById.get(ref.id)
+      placedParts = message ? textParts(message, sessionId) : undefined
     }
     if (!placedParts) continue
     placed.add(key)
@@ -211,7 +289,7 @@ function projectTurn(
     ...tools.filter((tool) => !placed.has(`tool:${tool.toolCallId}`)).map(toolPart),
     ...assistantMessages
       .filter((message) => !placed.has(`message:${message.messageId}`))
-      .flatMap(textParts),
+      .flatMap((message) => textParts(message, sessionId)),
     ...(failure
       ? [{ type: 'text', id: `failure:${turn.turnId}`, text: `Turn failed: ${failure.message}` }]
       : []),
@@ -224,12 +302,14 @@ function projectTurn(
       .join('\n\n')
     const runtime = turnRuntime(turn)
     entries.push({
-      message: {
+      // Tokens change the row's body, which it reads from the stores; the row
+      // the timeline lists is the same row, so the list does not change.
+      message: rowMessage(previous, {
         externalId: assistantMessages[0]?.messageId ?? `turn:${turn.turnId}:assistant`,
         role: 'assistant',
         isFinal: settled,
         sequenceNum,
-      },
+      }),
       content: { content, parts, ...(runtime ? { runtime } : {}) },
       streaming: { content, parts, hasCompleteHistory: true },
     })
@@ -276,25 +356,32 @@ export function projectThread(
   // Sends the environment has not confirmed yet close the timeline: they are
   // always newer than every turn it told us about.
   for (const entry of thread.outbox) {
-    messages.push({
-      externalId: `send:${entry.commandId}`,
-      role: 'user',
-      isFinal: true,
-      sequenceNum: sequence,
-      optimisticContent: entry.text,
-      ...(entry.artifactIds?.length
-        ? {
-            optimisticAttachments: entry.artifactIds.map((artifactId, index) => ({
-              id: artifactId,
-              name: `image-${index + 1}`,
-              artifact: { sessionId: thread.thread.sessionId, artifactId },
-            })),
-          }
-        : {}),
-      isOptimistic: true,
-      commandId: entry.commandId,
-      ...(entry.error ? { sendError: entry.error } : {}),
-    })
+    const held = outboxRows.get(entry)
+    if (held?.sequenceNum === sequence) {
+      messages.push(held)
+    } else {
+      const row: UIMessage = {
+        externalId: `send:${entry.commandId}`,
+        role: 'user',
+        isFinal: true,
+        sequenceNum: sequence,
+        optimisticContent: entry.text,
+        ...(entry.artifactIds?.length
+          ? {
+              optimisticAttachments: entry.artifactIds.map((artifactId, index) => ({
+                id: artifactId,
+                name: `image-${index + 1}`,
+                artifact: { sessionId: thread.thread.sessionId, artifactId },
+              })),
+            }
+          : {}),
+        isOptimistic: true,
+        commandId: entry.commandId,
+        ...(entry.error ? { sendError: entry.error } : {}),
+      }
+      outboxRows.set(entry, row)
+      messages.push(row)
+    }
     sequence += 1
   }
 

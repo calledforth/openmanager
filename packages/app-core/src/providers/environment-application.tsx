@@ -26,6 +26,7 @@ import type { InteractionResponse, Workspace } from '@openmanager/protocol'
 import {
   UPLOAD_TICKET_COMMAND,
   selectActiveSession,
+  selectActiveThread,
   selectProviderCatalog,
   shallowEqualArray,
   type EnvironmentState,
@@ -356,6 +357,8 @@ const selectActiveSessionId = (state: EnvironmentState) =>
   selectActiveSession(state)?.sessionId ?? null
 const selectActiveSessionWorkspaceId = (state: EnvironmentState) =>
   selectActiveSession(state)?.workspaceId ?? null
+const selectActiveThreadId = (state: EnvironmentState) =>
+  selectActiveThread(state)?.thread.threadId ?? null
 
 function EnvironmentSessionStateProvider({
   addWorkspace,
@@ -1240,8 +1243,9 @@ function toPlanRow(pending: PendingInteraction, at: number): PlanRow | null {
  * nothing to answer: the unscoped selector would otherwise surface another
  * session's request over the draft composer. */
 function useInteractionsByKind() {
-  const thread = useActiveThread()
-  const threadId = thread?.thread.threadId ?? null
+  // Only the id: the thread itself is a new object on every streamed event,
+  // and reading it here would render the interaction providers for each.
+  const threadId = useEnvironmentState(selectActiveThreadId)
   const scoped = usePendingInteractions(threadId)
   const interactions = threadId ? scoped : EMPTY_LIST
   const cache = useRef(new WeakMap<PendingInteraction, { at: number }>())

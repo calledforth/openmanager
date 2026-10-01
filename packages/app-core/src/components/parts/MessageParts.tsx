@@ -1,5 +1,5 @@
-import { Fragment, useMemo, type ReactNode } from 'react'
-import { groupActivityParts } from '@openmanager/shared/lib/activity-groups'
+import { Fragment, memo, useMemo, type ReactNode } from 'react'
+import { groupActivityParts, type ActivitySummary } from '@openmanager/shared/lib/activity-groups'
 import { TextPart } from './TextPart'
 import { ToolCallPermission } from '../permissions/InlinePermissionPrompt'
 import { usePermissionStateOptional } from '../../providers/permission-provider'
@@ -134,6 +134,67 @@ function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode
   }
 }
 
+/**
+ * One part of a turn. A live turn is rendered again for every event it
+ * receives, and each event changes one part; the rest are the objects they
+ * were, so they skip here instead of rebuilding their rows.
+ */
+const PartNode = memo(function PartNode({
+  part,
+  index,
+  isStreaming,
+}: {
+  part: Part
+  index: number
+  isStreaming?: boolean
+}) {
+  return renderPart(part, index, isStreaming)
+})
+
+const SUMMARY_FIELDS = [
+  'text',
+  'runningText',
+  'diffAdded',
+  'diffRemoved',
+  'isRunning',
+  'toolCount',
+] as const satisfies readonly (keyof ActivitySummary)[]
+
+/**
+ * A run of tool calls under its summary line. Grouping builds the run and its
+ * summary anew on every render, so they are compared by what they hold: a run
+ * whose calls and counts are unchanged is left alone, along with its rows.
+ */
+const ActivityGroupNode = memo(
+  function ActivityGroupNode({
+    items,
+    summary,
+    isStreaming,
+  }: {
+    items: Part[]
+    summary: ActivitySummary
+    isStreaming?: boolean
+  }) {
+    return (
+      <ActivityGroup summary={summary}>
+        {items.map((item, index) => (
+          <PartNode
+            key={getPartKey(item, index)}
+            part={item}
+            index={index}
+            isStreaming={isStreaming}
+          />
+        ))}
+      </ActivityGroup>
+    )
+  },
+  (previous, next) =>
+    previous.isStreaming === next.isStreaming &&
+    previous.items.length === next.items.length &&
+    previous.items.every((item, index) => item === next.items[index]) &&
+    SUMMARY_FIELDS.every((field) => previous.summary[field] === next.summary[field]),
+)
+
 export function MessageParts({ parts, isStreaming }: { parts: Part[]; isStreaming?: boolean }) {
   const safeParts = parts ?? []
   const pendingPermissionCallId =
@@ -182,11 +243,19 @@ export function MessageParts({ parts, isStreaming }: { parts: Part[]; isStreamin
     }
     rendered.push(
       node.kind === 'part' ? (
-        renderPart(node.part, idx, isStreaming)
+        <PartNode
+          key={getPartKey(node.part, idx)}
+          part={node.part}
+          index={idx}
+          isStreaming={isStreaming}
+        />
       ) : (
-        <ActivityGroup key={node.id} summary={node.summary}>
-          {node.items.map((item, itemIdx) => renderPart(item, itemIdx, isStreaming))}
-        </ActivityGroup>
+        <ActivityGroupNode
+          key={node.id}
+          items={node.items}
+          summary={node.summary}
+          isStreaming={isStreaming}
+        />
       ),
     )
   }

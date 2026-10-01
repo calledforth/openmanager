@@ -57,6 +57,8 @@ const COMPOSER_CLEARANCE_PX = 176
  * a streaming row's growth keep the view pinned; anywhere above, it stays put.
  */
 const END_THRESHOLD_PX = 1
+/** Rounding room when the scroller's own position is checked against the list's numbers. */
+const FOLLOW_SLACK_PX = 2
 
 type TimelineMessage = Pick<
   UIMessage,
@@ -152,9 +154,20 @@ export function ChatView() {
 
   return (
     <ChatViewPanel>
+      {/* While the list follows the bottom it manages the scroll offset
+          itself, and the browser's own scroll anchoring only fights it: it
+          moves the scroller whenever content above the viewport inside the
+          streaming row shrinks (a tool group settling), and that stray scroll
+          reads as the reader leaving the bottom, after which the list stops
+          following. A reader who has scrolled up gets anchoring back, so what
+          they are reading holds still when something above it in the same
+          row changes height. */}
       <div
         ref={setScrollElement}
-        className="custom-scrollbar flex-1 min-h-0 overflow-x-hidden overflow-y-auto"
+        className={cn(
+          'custom-scrollbar flex-1 min-h-0 overflow-x-hidden overflow-y-auto',
+          endState.sessionId === activeSessionId && endState.atEnd && '[overflow-anchor:none]',
+        )}
       >
         <ConversationTimeline
           sessionId={activeSessionId}
@@ -346,6 +359,42 @@ function MessageTimeline({
   useLayoutEffect(() => {
     reportAtEndRef.current = reportAtEnd
   })
+  // A follow moves the scroller now, but the virtualizer learns its new
+  // offset from the scroll event a frame later. Rows appended or re-measured
+  // in between (a sent message and the reply's row, or a tab in the
+  // background, which gets no scroll events at all) would read as arriving
+  // above the end; while a follow is pending and the scroller has not moved
+  // up since, the reader is still at the end.
+  const followPendingRef = useRef(false)
+  const followTopRef = useRef(0)
+  const followHolds = useCallback(
+    () =>
+      followPendingRef.current &&
+      !!scrollElement &&
+      scrollElement.scrollTop + FOLLOW_SLACK_PX >= followTopRef.current,
+    [scrollElement],
+  )
+  // Whether the reader is at the bottom as this render begins, by the
+  // virtualizer's own numbers (its offset against its total), before the
+  // options below hand it any new rows. The virtualizer's own append follow
+  // (followOnAppend, off below) judges the same thing against the DOM, where
+  // the streaming row may have grown by a few pixels the ResizeObserver has
+  // not reported yet; that unmeasured growth reads as the reader sitting
+  // above the end, the append is not followed, and every resize after that
+  // finds the end further away still.
+  // Read once per row count: StrictMode renders twice, and the second render
+  // would read a total that already counts the new rows.
+  const virtualizerRef = useRef<Virtualizer<HTMLDivElement, Element> | null>(null)
+  const atEndByCountRef = useRef({ count: messages.length, atEnd: true, bottom: 0 })
+  if (atEndByCountRef.current.count !== messages.length) {
+    const instance = virtualizerRef.current
+    atEndByCountRef.current = {
+      count: messages.length,
+      atEnd: instance ? isVirtualizerAtEnd(instance) : true,
+      bottom: instance ? instance.getTotalSize() - (instance.scrollRect?.height ?? 0) : 0,
+    }
+  }
+  const { atEnd: atEndBeforeRender, bottom: bottomBeforeRender } = atEndByCountRef.current
   const rowVirtualizer = useVirtualizer({
     count: messages.length,
     getScrollElement: () => scrollElement,
@@ -362,36 +411,56 @@ function MessageTimeline({
     paddingEnd,
     rangeExtractor,
     // Chat semantics: rows added or removed at either edge leave the rows on
-    // screen where they are, and at the bottom, new and growing rows keep the
-    // view pinned there.
+    // screen where they are, and at the bottom, growing rows keep the view
+    // pinned there. Appended rows are followed by the effect below instead:
+    // the virtualizer's own follow reads a stale offset (see
+    // atEndBeforeRender) and would drag a reader who has just scrolled up.
     anchorTo: 'end',
-    followOnAppend: true,
+    followOnAppend: false,
     scrollEndThreshold: END_THRESHOLD_PX,
+    observeElementOffset: observeScrollerOffset,
     // Attaching to the scroller otherwise jumps to offset 0 (the top).
     initialOffset: () => scrollElement?.scrollTop ?? 0,
     initialMeasurementsCache: initialMeasurements,
     onChange: (instance) => {
       // A row just resized. When the reader was at the bottom the virtualizer
       // has already moved its offset to follow, so "at the end" below is
-      // judged after the follow. But React applies the list's new height a
-      // render later, and until then the bottom padding is missing from the
-      // page, so the real scroll lands short and a frame paints off the
-      // bottom. Apply the height now and finish the follow before paint.
+      // judged after the follow (or a follow is still pending and the
+      // virtualizer has not learned its offset yet; then the scroller is the
+      // judge). But React applies the list's new height a render later, and
+      // until then the bottom padding is missing from the page, so the real
+      // scroll lands short and a frame paints off the bottom. Apply the
+      // height now and finish the follow before paint.
       const totalSize = instance.getTotalSize()
       const resized = lastTotalSizeRef.current !== null && lastTotalSizeRef.current !== totalSize
       lastTotalSizeRef.current = totalSize
-      const atEnd = isVirtualizerAtEnd(instance)
+      const atEnd = isVirtualizerAtEnd(instance) || followHolds()
       if (resized && !hiddenRef.current && listRef.current) {
         listRef.current.style.height = `${totalSize}px`
         if (atEnd && positionedRef.current && scrollElement) {
           scrollElement.scrollTop = scrollElement.scrollHeight - scrollElement.clientHeight
+          if (followPendingRef.current) followTopRef.current = scrollElement.scrollTop
         }
       }
       reportAtEnd(atEnd)
     },
   })
   // Set on the instance (it is not an option); an idempotent assignment.
-  rowVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = shouldCompensateResize
+  // While a follow is pending the virtualizer's offset is stale, so a row
+  // judged "above the reader" by it may not be, and compensating would move
+  // the reader back to the pre-follow position; onChange re-snaps instead.
+  rowVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, delta, instance) =>
+    !followHolds() && shouldCompensateResize(item, delta, instance)
+  virtualizerRef.current = rowVirtualizer
+  // Report the end now rather than from the scroll event a frame later: the
+  // scroller's anchoring class follows the report, and a frame with
+  // anchoring back on is a frame where the browser may move the reader.
+  const followToEnd = useCallback(() => {
+    followPendingRef.current = true
+    rowVirtualizer.scrollToEnd()
+    followTopRef.current = scrollElement?.scrollTop ?? 0
+    reportAtEndRef.current(true)
+  }, [rowVirtualizer, scrollElement])
   const visibleRows = rowVirtualizer.getVirtualItems()
   // Until the scroller has been measured the virtualizer reports no range at
   // all, and never consults rangeExtractor. The pinned rows still belong on
@@ -416,6 +485,7 @@ function MessageTimeline({
   useEffect(() => {
     if (!scrollElement) return
     const update = () => {
+      followPendingRef.current = false
       if (positionedRef.current) reportAtEndRef.current(isVirtualizerAtEnd(rowVirtualizer))
     }
     scrollElement.addEventListener('scroll', update, { passive: true })
@@ -440,9 +510,18 @@ function MessageTimeline({
       rowVirtualizer.scrollToOffset(anchor.start + remembered.offsetWithinAnchor)
     } else {
       atEndRef.current = true
-      rowVirtualizer.scrollToEnd()
+      followToEnd()
     }
-  }, [headerHeight, hidden, messages, paddingStart, remembered, rowVirtualizer, scrollElement])
+  }, [
+    followToEnd,
+    headerHeight,
+    hidden,
+    messages,
+    paddingStart,
+    remembered,
+    rowVirtualizer,
+    scrollElement,
+  ])
 
   // Remember where the reader leaves this session.
   useLayoutEffect(() => {
@@ -466,15 +545,31 @@ function MessageTimeline({
     }
   }, [rowVirtualizer, sessionId])
 
+  // Rows appended while the reader is at the bottom keep them there (the
+  // virtualizer's own follow is off; see atEndBeforeRender for why).
+  const rowCountRef = useRef(messages.length)
+  useLayoutEffect(() => {
+    const grew = messages.length > rowCountRef.current
+    rowCountRef.current = messages.length
+    if (!grew || !positionedRef.current || !scrollElement) return
+    // The virtualizer's numbers are a frame behind the scroller: the reader
+    // may have scrolled up since. The scroller itself has the last word.
+    const top = scrollElement.scrollTop + FOLLOW_SLACK_PX
+    const stillAtEnd = atEndBeforeRender
+      ? top >= bottomBeforeRender
+      : followPendingRef.current && top >= followTopRef.current
+    if (stillAtEnd) followToEnd()
+  }, [atEndBeforeRender, bottomBeforeRender, followToEnd, messages.length, scrollElement])
+
   // Sending is a request to watch the conversation continue, wherever the
-  // reader was. (At the bottom, followOnAppend already does this.)
+  // reader was.
   const lastMessage = messages[messages.length - 1]
   const lastMessageIdRef = useRef(lastMessage?.externalId)
   useLayoutEffect(() => {
     if (lastMessage?.externalId === lastMessageIdRef.current) return
     lastMessageIdRef.current = lastMessage?.externalId
-    if (positionedRef.current && lastMessage?.isOptimistic) rowVirtualizer.scrollToEnd()
-  }, [lastMessage, rowVirtualizer])
+    if (positionedRef.current && lastMessage?.isOptimistic) followToEnd()
+  }, [followToEnd, lastMessage])
 
   // The header sits above the first row. When it grows or shrinks (older
   // pages run out, a history error appears), move with it so rows stay put.
@@ -491,9 +586,9 @@ function MessageTimeline({
     const growth = paddingEnd - previousPaddingEndRef.current
     if (growth === 0) return
     previousPaddingEndRef.current = paddingEnd
-    const wasAtEnd = isVirtualizerAtEnd(rowVirtualizer, Math.max(growth, 0))
-    if (positionedRef.current && wasAtEnd) rowVirtualizer.scrollToEnd()
-  }, [paddingEnd, rowVirtualizer])
+    const wasAtEnd = isVirtualizerAtEnd(rowVirtualizer, Math.max(growth, 0)) || followHolds()
+    if (positionedRef.current && wasAtEnd) followToEnd()
+  }, [followHolds, followToEnd, paddingEnd, rowVirtualizer])
 
   // The scroll-to-latest button. The browser's smooth scroll rather than the
   // virtualizer's: the virtualizer keeps re-aiming at a streaming bottom for
@@ -508,7 +603,7 @@ function MessageTimeline({
         cancelPending?.()
         const land = () => {
           cancelPending?.()
-          rowVirtualizer.scrollToEnd()
+          followToEnd()
         }
         const fallback = window.setTimeout(land, SMOOTH_SCROLL_FALLBACK_MS)
         cancelPending = () => {
@@ -533,7 +628,7 @@ function MessageTimeline({
       cancelPending?.()
       timelineRef.current = null
     }
-  }, [rowVirtualizer, scrollElement, timelineRef])
+  }, [followToEnd, scrollElement, timelineRef])
 
   const hydrationTargetIds = useMemo(
     () => messages.slice(firstPinnedIndex).map((message) => message.externalId),
@@ -626,6 +721,39 @@ function shouldCompensateResize(
   const whollyAbove = item.end <= (instance.scrollOffset ?? 0)
   const firstMeasurement = !instance.itemSizeCache.has(item.key)
   return whollyAbove && (firstMeasurement || instance.scrollDirection !== 'backward')
+}
+
+/**
+ * The virtualizer's own offset observer, except that the "scrolling stopped"
+ * timer reads the scroller. The original replays the offset captured at the
+ * last scroll event, and scroll events are a frame behind the scroller (a
+ * second behind in a tab the browser has stopped painting), so the replay
+ * can overwrite an offset the virtualizer has moved itself since (a resize
+ * adjustment) with an older one, and the next appended row then reads as
+ * arriving above the end. Same timing as the original otherwise.
+ */
+function observeScrollerOffset(
+  instance: Virtualizer<HTMLDivElement, Element>,
+  callback: (offset: number, isScrolling: boolean) => void,
+): (() => void) | undefined {
+  const element = instance.scrollElement
+  const targetWindow = instance.targetWindow
+  if (!element || !targetWindow) return
+  let timer: number | undefined
+  const settle = () => {
+    timer = undefined
+    callback(element.scrollTop, false)
+  }
+  const onScroll = () => {
+    targetWindow.clearTimeout(timer)
+    timer = targetWindow.setTimeout(settle, instance.options.isScrollingResetDelay)
+    callback(element.scrollTop, true)
+  }
+  element.addEventListener('scroll', onScroll, { passive: true })
+  return () => {
+    targetWindow.clearTimeout(timer)
+    element.removeEventListener('scroll', onScroll)
+  }
 }
 
 /**
