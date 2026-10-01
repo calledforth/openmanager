@@ -17,8 +17,12 @@ const response = <P extends z.ZodType>(payload: P) => ResponseEnvelopeSchema.ext
  * kept on the device that has it until it is short enough to save.
  */
 export const DRAFT_SAVE_MAX_BYTES = 60_000
-/** A draft's text never exceeds what fits in one save. */
-export const DRAFT_TEXT_MAX_LENGTH = DRAFT_SAVE_MAX_BYTES
+/**
+ * A draft's text: anything one message to the environment can carry, so a
+ * failed send's first message is always put back whole. Clients still only
+ * save what fits in `DRAFT_SAVE_MAX_BYTES`.
+ */
+export const DRAFT_TEXT_MAX_LENGTH = 65_536
 export const DRAFT_ARTIFACTS_MAX = 10
 
 /** UTF-8 length of `text`, counted by hand so every runtime (and lib) can use it. */

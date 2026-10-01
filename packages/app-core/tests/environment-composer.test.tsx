@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act } from 'react'
+import { act, useContext, type ContextType } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import {
   EnvironmentClientError,
@@ -17,6 +17,11 @@ import { useActiveThreadState } from '../src/providers/active-thread-provider'
 import { useComposerState, type ComposerStateValue } from '../src/providers/composer-provider'
 import { useSessionState, type SessionStateValue } from '../src/providers/session-provider'
 import { MockEnvironmentApp } from '../src/testing/mock-environment-app'
+import { DraftLaunchContext } from '../src/providers/environment-composer'
+import {
+  useComposerDraftStore,
+  type ComposerDraftStore,
+} from '../src/components/chat/composerDraftStore'
 
 const WORKSPACE = {
   workspaceId: 'C:/repo',
@@ -155,12 +160,16 @@ const settle = async (client: MockEnvironmentClient) => {
 }
 
 type Probe = {
+  launch: NonNullable<ContextType<typeof DraftLaunchContext>>
+  drafts: ComposerDraftStore
   composer: ComposerStateValue
   session: SessionStateValue
   thread: ReturnType<typeof useActiveThreadState>
 }
 const probe = {} as Probe
 function Capture() {
+  probe.launch = useContext(DraftLaunchContext)!
+  probe.drafts = useComposerDraftStore()
   probe.composer = useComposerState()
   probe.session = useSessionState()
   probe.thread = useActiveThreadState()
@@ -298,6 +307,28 @@ describe('the composer over the environment client', () => {
     // A pick made here outranks it.
     await act(() => probe.composer.setDraftProvider('opencode'))
     expect(probe.composer.draftSessionState?.providerId).toBe('opencode')
+  })
+
+  it('launches an images-only send with no picks, even if a draft arrives meanwhile', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client)
+    await openDraft(client)
+    const key = `draft:${WORKSPACE.workspaceId}`
+    let release: (() => void) | undefined
+    act(() => {
+      release = probe.drafts.beginSend!(key)
+    })
+    // Another device starts a draft with its own picks while the images upload.
+    act(() =>
+      client.drafts!.edit(
+        'from-phone',
+        { type: 'new_session', workspaceId: WORKSPACE.workspaceId, sessionId: 'phone-session' },
+        { text: 'not this send', providerId: 'cursor', preference: { modelId: 'composer' } },
+      ),
+    )
+    const launch = probe.launch.draftLaunch(WORKSPACE.workspaceId)
+    expect(launch).toEqual({ providerId: 'opencode' })
+    act(() => release!())
   })
 
   it('holds draft picks locally and launches the session with them', async () => {

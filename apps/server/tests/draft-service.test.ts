@@ -29,19 +29,20 @@ function setup() {
     )
     .run()
   const projection = prepareDraftProjection(database)
+  const apply = (events: readonly ProofEvent[]) => {
+    for (const event of events) {
+      if (event.name === 'draft.saved') projection.saved(event.payload.draft)
+      if (event.name === 'draft.deleted') {
+        projection.deleted(event.payload, Date.parse(event.timestamp))
+      }
+    }
+  }
   let clock = 1_000_000
   const service = createDraftService({
     database,
     environmentId: () => 'env',
     now: () => clock,
-    appendAtomic: (events: readonly ProofEvent[]) => {
-      for (const event of events) {
-        if (event.name === 'draft.saved') projection.saved(event.payload.draft)
-        if (event.name === 'draft.deleted') {
-          projection.deleted(event.payload, Date.parse(event.timestamp))
-        }
-      }
-    },
+    appendAtomic: (events: readonly ProofEvent[]) => apply(events),
   })
   let request = 0
   const call = (name: string, payload: unknown) =>
@@ -54,6 +55,7 @@ function setup() {
   return {
     service,
     call,
+    append: (events: readonly ProofEvent[]) => apply(events),
     advance: (ms: number) => {
       clock += ms
     },
@@ -92,6 +94,21 @@ describe('draft service', () => {
       content: { text: 'b' },
     })
     expect(next.payload.draft.revision).toBe(3)
+  })
+
+  it('puts back a rolled-back first message whole, however long', () => {
+    const database = setup()
+    const text = 'x'.repeat(62_000)
+    const launch = database.service.launch('long', {
+      workspaceId: 'ws',
+      sessionId: 'minted',
+      content: { text },
+    })
+    if ('error' in launch) throw new Error(launch.error)
+    database.append([launch.event])
+    launch.restore()
+    const [draft] = database.call('draft.list', null).payload.drafts
+    expect(draft.content.text).toHaveLength(62_000)
   })
 
   it('refuses to send a draft as another session, or into another project', () => {

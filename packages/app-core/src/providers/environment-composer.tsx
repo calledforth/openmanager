@@ -441,16 +441,21 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
   const liveRef = useRef(live)
   liveRef.current = live
 
-  /** A project's draft as it would launch: its current one, or `draftId` when it is being sent. */
+  /**
+   * A project's draft as it would launch: its current one, the one being
+   * sent (`draftId`), or none (`null`: a send that has no draft, so no picks).
+   */
   const draftFor = useCallback(
-    (workspaceId: string, draftId?: string) => {
+    (workspaceId: string, draftId?: string | null) => {
       const state = client.getState()
       const { catalog, agentUiStatusByProvider, defaultProviderId, localSelections } =
         liveRef.current
       const selection = sync
-        ? selectionOf(
-            draftId ? selectDraftContent(state, draftId) : newSessionContent(state, workspaceId),
-          )
+        ? draftId === null
+          ? undefined
+          : selectionOf(
+              draftId ? selectDraftContent(state, draftId) : newSessionContent(state, workspaceId),
+            )
         : localSelections[workspaceId]
       const providerId = draftProviderFor(
         selection?.providerId ?? lastProviderIn(state, workspaceId) ?? defaultProviderId,
@@ -592,7 +597,12 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
           kept = { draftId, sessionId: target.sessionId }
         }
       }
-      const { providerId, held, profile, resolved } = draftFor(workspaceId, kept?.draftId)
+      // A send set aside with no draft has no picks either: a draft that
+      // arrived from another device meanwhile lends it none.
+      const { providerId, held, profile, resolved } = draftFor(
+        workspaceId,
+        slot ? (slot.draft?.draftId ?? null) : kept?.draftId,
+      )
       // Only what was picked here: filing resolved defaults as "last used"
       // would pin the workspace to them.
       const picks = withHeldPicks(null, held)
