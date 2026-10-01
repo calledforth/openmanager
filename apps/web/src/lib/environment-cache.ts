@@ -19,6 +19,13 @@ function cacheState(state: EnvironmentState): EnvironmentState {
     ...state,
     connection: createInitialState().connection,
     sessionOpenFailure: null,
+    // A send cut off by the reload has an outcome this page never learns, and
+    // its edit holds the cleared composer, not what was sent. Dropped, so the
+    // environment's copy stands: gone with the session if the send happened,
+    // listed again if it did not.
+    draftEdits: Object.fromEntries(
+      Object.entries(state.draftEdits).filter(([, edit]) => !edit.launching),
+    ),
     threads: Object.fromEntries(
       Object.entries(state.threads).map(([id, thread]) => [
         id,

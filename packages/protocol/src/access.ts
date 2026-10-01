@@ -13,6 +13,12 @@ import {
   FILESYSTEM_BROWSE_CAPABILITY,
   FilesystemCommandSchemas,
 } from './filesystem.js'
+import {
+  DRAFT_DELETE_CAPABILITY,
+  DRAFT_LIST_CAPABILITY,
+  DRAFT_SAVE_CAPABILITY,
+  DraftCommandSchemas,
+} from './drafts.js'
 
 /**
  * Access capabilities are what a client's credential grants. They are distinct
@@ -54,6 +60,7 @@ export type CommandName =
   | keyof typeof ComposerCommandSchemas
   | keyof typeof UploadCommandSchemas
   | keyof typeof FilesystemCommandSchemas
+  | keyof typeof DraftCommandSchemas
   | ReplayCommand['name']
 
 /**
@@ -80,6 +87,7 @@ export const COMMAND_ACCESS = Object.freeze({
   [PROVIDER_PROBE_CAPABILITY]: 'read',
   'composer.preferences.get': 'read',
   [ENVIRONMENT_SETTINGS_GET_CAPABILITY]: 'read',
+  [DRAFT_LIST_CAPABILITY]: 'read',
   'session.create': 'operate',
   'session.rename': 'operate',
   'session.delete': 'operate',
@@ -95,6 +103,10 @@ export const COMMAND_ACCESS = Object.freeze({
   // registers one; `read` alone must not reveal the machine's directory tree.
   [FILESYSTEM_BROWSE_CAPABILITY]: 'operate',
   [ENVIRONMENT_SETTINGS_SET_CAPABILITY]: 'operate',
+  // Typing is not running the agent: a draft only reaches it when it is sent,
+  // and sending needs `agent` on its own.
+  [DRAFT_SAVE_CAPABILITY]: 'operate',
+  [DRAFT_DELETE_CAPABILITY]: 'operate',
   'turn.send': 'agent',
   'turn.interrupt': 'agent',
   // Ends work the agent is doing, exactly as an interrupt does.

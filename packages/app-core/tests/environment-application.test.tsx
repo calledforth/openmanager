@@ -464,7 +464,12 @@ describe('the shared application over the environment client', () => {
       workspaceId: WORKSPACE.workspaceId,
       providerId: 'opencode',
       firstMessage: 'hello there',
+      draftId: expect.any(String),
+      sessionId: expect.any(String),
     })
+    // Sent, so no longer a draft anywhere.
+    expect(client.getState().drafts).toEqual({})
+    expect(client.getState().draftEdits).toEqual({})
     expect(client.getState().activeSessionId).not.toBeNull()
     expect(container.textContent).toContain('hello there')
     expect(container.textContent).toContain('You said: hello there')

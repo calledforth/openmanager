@@ -111,6 +111,9 @@ const UNSUPPORTED: ReadonlySet<EnvironmentCommandName> = new Set([
   'regenerateSessionTitle',
   'getEnvironmentSettings',
   'setEnvironmentSettings',
+  'listDrafts',
+  'saveDraft',
+  'deleteDraft',
 ])
 const ALL_CAPABILITIES = (Object.keys(WIRE_COMMANDS) as EnvironmentCommandName[])
   .filter((command) => !UNSUPPORTED.has(command))
@@ -1061,6 +1064,9 @@ export function createConvexEnvironmentClient(
     browseFolders: () => unsupported('browseFolders'),
     getEnvironmentSettings: () => unsupported('getEnvironmentSettings'),
     setEnvironmentSettings: () => unsupported('setEnvironmentSettings'),
+    listDrafts: () => unsupported('listDrafts'),
+    saveDraft: () => unsupported('saveDraft'),
+    deleteDraft: () => unsupported('deleteDraft'),
   }
 
   // -------------------------------------------------------------------------

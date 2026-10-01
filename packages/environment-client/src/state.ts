@@ -29,6 +29,12 @@ import type {
   SessionSummary,
   ThreadState,
 } from './types'
+import {
+  applyDraftDeleted,
+  applyDraftSaved,
+  detachWorkspaceDrafts,
+  removeSessionDrafts,
+} from './draft-state'
 
 export const INITIAL_CONNECTION: ConnectionState = {
   phase: 'idle',
@@ -50,6 +56,10 @@ export function createInitialState(): EnvironmentState {
     providers: {},
     providerOrder: [],
     composerPreferences: {},
+    drafts: {},
+    draftTombstones: {},
+    draftEdits: {},
+    draftsListed: false,
     activeSessionId: null,
     activeThreadId: null,
     connection: INITIAL_CONNECTION,
@@ -358,7 +368,7 @@ function removeSession(state: EnvironmentState, sessionId: string): EnvironmentS
       if (session.parentSessionId === id) pending.push(session.sessionId)
     }
   }
-  if (![...removed].some((id) => id in state.sessions)) return state
+  if (![...removed].some((id) => id in state.sessions)) return removeSessionDrafts(state, removed)
   const sessions = { ...state.sessions }
   const threads = { ...state.threads }
   for (const id of removed) {
@@ -367,7 +377,7 @@ function removeSession(state: EnvironmentState, sessionId: string): EnvironmentS
   }
   const clearActive = state.activeSessionId !== null && removed.has(state.activeSessionId)
   return {
-    ...state,
+    ...removeSessionDrafts(state, removed),
     sessions,
     sessionOrder: state.sessionOrder.filter((id) => !removed.has(id)),
     threads,
@@ -392,7 +402,10 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
     case 'workspace.updated':
       return upsertWorkspace(state, event.payload.workspace)
     case 'workspace.removed':
-      return applyWorkspaceRemoved(state, event.payload.workspaceId)
+      return detachWorkspaceDrafts(
+        applyWorkspaceRemoved(state, event.payload.workspaceId),
+        event.payload.workspaceId,
+      )
     case 'session.created':
       // The announced session carries no `updatedAt`; without the event time
       // it would sort as the epoch and a brand-new session would open at the
@@ -458,6 +471,10 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
     }
     case 'session.deleted':
       return removeSession(state, event.payload.sessionId)
+    case 'draft.saved':
+      return applyDraftSaved(state, event.payload.draft)
+    case 'draft.deleted':
+      return applyDraftDeleted(state, event.payload)
     case 'thread.created':
       return ensureThread(state, event.payload.thread)
     default:

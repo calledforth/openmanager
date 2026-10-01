@@ -74,9 +74,9 @@ describe('schema migrations', () => {
   it('initializes a fresh database to the latest numbered version', async () => {
     const database = openEnvironmentDatabase(await dataDir())
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(16)
+    expect(readSchemaVersion(database)).toBe(17)
     expect(database.prepare('PRAGMA user_version').get() as { user_version: number }).toEqual({
-      user_version: 16,
+      user_version: 17,
     })
     expect(database.prepare('PRAGMA journal_mode').get() as { journal_mode: string }).toEqual({
       journal_mode: 'wal',
@@ -113,7 +113,7 @@ describe('schema migrations', () => {
       'workspace_composer_preferences',
       'workspaces',
     ])
-    expect(runMigrations(database, MIGRATIONS)).toBe(16)
+    expect(runMigrations(database, MIGRATIONS)).toBe(17)
   })
 
   it('upgrades sequentially across restarts and leaves already-applied versions untouched', async () => {
@@ -200,7 +200,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(16)
+    expect(readSchemaVersion(database)).toBe(17)
     expect(database.prepare('SELECT provider_id FROM provider_profiles').all()).toEqual([
       { provider_id: 'cursor' },
     ])
@@ -320,7 +320,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(16)
+    expect(readSchemaVersion(database)).toBe(17)
     expect(
       database
         .prepare('SELECT client_id, kind, expires_at FROM authorized_clients ORDER BY client_id')
@@ -357,7 +357,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(16)
+    expect(readSchemaVersion(database)).toBe(17)
     expect(tableNames(database)).toContain('audit_events')
     expect(
       database.prepare('SELECT client_id FROM authorized_clients').all(),
@@ -445,8 +445,9 @@ describe('schema migrations', () => {
       ) VALUES ('interaction-1', 'turn-1', 'question', 'pending',
                 '{"questions":[]}', 1, 1);
       INSERT INTO drafts (
-        session_id, content_json, updated_by_client_id, created_at, updated_at
-      ) VALUES ('session-1', '{"text":"unfinished"}', 'client-1', 1, 1);
+        draft_id, session_id, content_json, revision, updated_by_client_id, created_at,
+        updated_at
+      ) VALUES ('session-1', 'session-1', '{"text":"unfinished"}', 1, 'client-1', 1, 1);
       INSERT INTO stash_items (
         stash_item_id, workspace_id, source_session_id, content_json,
         created_by_client_id, created_at, updated_at

@@ -320,6 +320,32 @@ export const proofEvents = [
   },
   {
     ...base,
+    name: 'draft.saved',
+    scope: environmentScope,
+    payload: {
+      draft: {
+        draftId: 'draft-1',
+        target: { type: 'new_session', workspaceId: 'workspace-1', sessionId: 'session-9' },
+        content: {
+          text: 'Draft the release notes',
+          providerId: 'claude-code',
+          preference: { modelId: 'claude-opus' },
+        },
+        revision: 3,
+        createdAt: '2026-10-01T10:00:00.000Z',
+        updatedAt: '2026-10-01T10:00:05.000Z',
+        updatedByClientId: 'client-1',
+      },
+    },
+  },
+  {
+    ...base,
+    name: 'draft.deleted',
+    scope: environmentScope,
+    payload: { draftId: 'session-1', revision: 4, sessionId: 'session-1' },
+  },
+  {
+    ...base,
     name: 'provider.catalog.updated',
     scope: environmentScope,
     payload: {

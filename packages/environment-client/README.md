@@ -88,6 +88,15 @@ client, or by the agent, shows up without a refetch. A pushed preference
 outranks the answer to a read issued before it. After a reconnect that could
 not replay the gap, held preferences go back to "not loaded".
 
+Composer drafts are kept by the environment (`listDrafts`, `saveDraft`,
+`deleteDraft` over `draft.list`/`.save`/`.delete`). Views do not call those:
+they edit through `client.drafts`, which puts the edit in
+`state.draftEdits` at once and saves it after a pause in typing, one request
+per draft at a time. `state.drafts` holds the environment's copies, kept
+current by `draft.saved` and `draft.deleted`; read a draft with
+`selectDraftContent`, which prefers the waiting edit. After a snapshot the
+drafts are listed again. See `docs/decisions/composer-drafts.md`.
+
 ## Browser safety
 
 The package depends only on `@openmanager/protocol` and `zod`. ESLint applies

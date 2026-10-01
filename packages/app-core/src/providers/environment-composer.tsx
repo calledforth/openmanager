@@ -14,8 +14,12 @@ import type {
   ProviderComposerProfiles,
   WorkspaceComposerPreference,
 } from '@openmanager/shared/contracts/composer-profile'
+import type { DraftContent } from '@openmanager/protocol'
 import {
   selectComposerPreference,
+  selectDraftContent,
+  selectDraftTarget,
+  selectNewSessionDraftId,
   selectProviderCatalog,
   shallowEqualArray,
   type EnvironmentState,
@@ -37,6 +41,7 @@ import {
   type AcpSessionRuntimeState,
   type ComposerStateValue,
 } from './composer-provider'
+import { newSessionDraftFor, sendingNewSessionDraft } from './environment-drafts'
 import {
   PlatformCapabilitiesContext,
   providerBlocksComposer,
@@ -50,12 +55,41 @@ const noop = () => undefined
 
 /** What the user picked in a draft and has not launched yet. Each pick is
  * also filed as the workspace preference as it is made; it stays held so the
- * draft shows it at once and launches with it whatever was filed since. */
+ * draft shows it at once and launches with it whatever was filed since.
+ * Where the environment keeps drafts the picks live in the project's
+ * new-session draft, so they survive a reload and follow it to other
+ * devices; otherwise they are held for this page. */
 interface DraftSelection {
   providerId: ProviderId
   modelId?: string
   modeId?: string
   configValues?: Record<string, SessionConfigValue>
+}
+
+/** The picks a draft holds; a pick belongs to the provider it was made for. */
+function selectionOf(content: DraftContent | undefined): DraftSelection | undefined {
+  if (!content?.providerId || !isProviderId(content.providerId)) return undefined
+  return { ...content.preference, providerId: content.providerId }
+}
+
+/** The draft with `selection` as its picks, keeping what was typed and attached. */
+function withSelection(content: DraftContent | undefined, selection: DraftSelection): DraftContent {
+  const { providerId, ...picks } = selection
+  const preference = Object.fromEntries(
+    Object.entries(picks).filter(([, value]) => value !== undefined),
+  ) as WorkspaceComposerPreference
+  return {
+    text: content?.text ?? '',
+    ...(content?.artifactIds ? { artifactIds: content.artifactIds } : {}),
+    providerId,
+    ...(Object.keys(preference).length > 0 ? { preference } : {}),
+  }
+}
+
+/** The content of a project's current new-session draft. */
+function newSessionContent(state: EnvironmentState, workspaceId: string) {
+  const draftId = selectNewSessionDraftId(state, workspaceId)
+  return draftId ? selectDraftContent(state, draftId) : undefined
 }
 
 /** What a draft hands to `session.create` when its first prompt is sent. */
@@ -69,6 +103,9 @@ export interface DraftLaunch {
    * a remembered mode on its own, so the create names it and the first
    * message runs in it. */
   modeId?: string
+  /** The draft being sent, where the environment keeps drafts: it is deleted
+   * with the session's creation, and the session takes the id it minted. */
+  draft?: { draftId: string; sessionId: string }
 }
 
 /** Internal to the environment providers: what the open draft launches with. */
@@ -220,7 +257,8 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
     [client, connection.capabilities],
   )
   const activeSession = useActiveSession()
-  const [draftSelections, setDraftSelections] = useState<Record<string, DraftSelection>>({})
+  const sync = client.drafts
+  const [localSelections, setLocalSelections] = useState<Record<string, DraftSelection>>({})
   const [error, setError] = useState<string | null>(null)
 
   const providerComposerProfiles = useMemo(() => {
@@ -237,6 +275,27 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
   const sessionProviderId = isProviderId(listedProviderId) ? listedProviderId : defaultProviderId
 
   const draftWorkspaceId = isSessionDraftOpen ? activeWorkspacePath : null
+  // Two selectors, so typing (which replaces the draft's content but not its
+  // picks) does not hand the composer a new selection on every key.
+  const syncedProviderId = useEnvironmentState((state) =>
+    sync && draftWorkspaceId ? newSessionContent(state, draftWorkspaceId)?.providerId : undefined,
+  )
+  const syncedPreference = useEnvironmentState((state) =>
+    sync && draftWorkspaceId ? newSessionContent(state, draftWorkspaceId)?.preference : undefined,
+  )
+  const currentSelection = useMemo(
+    () =>
+      sync
+        ? selectionOf(
+            syncedProviderId
+              ? { text: '', providerId: syncedProviderId, preference: syncedPreference }
+              : undefined,
+          )
+        : draftWorkspaceId
+          ? localSelections[draftWorkspaceId]
+          : undefined,
+    [draftWorkspaceId, localSelections, sync, syncedPreference, syncedProviderId],
+  )
   const offeredProviders = useEnvironmentState((state) =>
     draftWorkspaceId ? state.workspaces[draftWorkspaceId]?.capabilities.providers : undefined,
   )
@@ -244,18 +303,13 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
     draftWorkspaceId ? lastProviderIn(state, draftWorkspaceId) : undefined,
   )
   const draftProviderId = draftProviderFor(
-    (draftWorkspaceId ? draftSelections[draftWorkspaceId]?.providerId : undefined) ??
-      lastProviderId ??
-      defaultProviderId,
+    currentSelection?.providerId ?? lastProviderId ?? defaultProviderId,
     catalog,
     offeredProviders,
     agentUiStatusByProvider,
   )
   // Picks belong to the provider they were made for.
-  const held =
-    draftWorkspaceId && draftSelections[draftWorkspaceId]?.providerId === draftProviderId
-      ? draftSelections[draftWorkspaceId]
-      : undefined
+  const held = currentSelection?.providerId === draftProviderId ? currentSelection : undefined
 
   // A failure describes the composer it happened in, not the next one opened.
   useEffect(() => setError(null), [activeSessionId, draftWorkspaceId])
@@ -383,16 +437,26 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
 
   // Setters and launch readers run outside render; they read the latest here
   // rather than being rebuilt (and re-rendering the composer) on every change.
-  const live = { catalog, agentUiStatusByProvider, defaultProviderId, draftSelections }
+  const live = { catalog, agentUiStatusByProvider, defaultProviderId, localSelections }
   const liveRef = useRef(live)
   liveRef.current = live
 
+  /**
+   * A project's draft as it would launch: its current one, the one being
+   * sent (`draftId`), or none (`null`: a send that has no draft, so no picks).
+   */
   const draftFor = useCallback(
-    (workspaceId: string) => {
+    (workspaceId: string, draftId?: string | null) => {
       const state = client.getState()
-      const { catalog, agentUiStatusByProvider, defaultProviderId, draftSelections } =
+      const { catalog, agentUiStatusByProvider, defaultProviderId, localSelections } =
         liveRef.current
-      const selection = draftSelections[workspaceId]
+      const selection = sync
+        ? draftId === null
+          ? undefined
+          : selectionOf(
+              draftId ? selectDraftContent(state, draftId) : newSessionContent(state, workspaceId),
+            )
+        : localSelections[workspaceId]
       const providerId = draftProviderFor(
         selection?.providerId ?? lastProviderIn(state, workspaceId) ?? defaultProviderId,
         catalog,
@@ -414,7 +478,20 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
       })
       return { providerId, held, profile, preference, resolved }
     },
-    [client],
+    [client, sync],
+  )
+
+  /** Change a project's draft picks: in its new-session draft, or held here. */
+  const updateSelection = useCallback(
+    (workspaceId: string, update: (current: DraftSelection | undefined) => DraftSelection) => {
+      if (sync) {
+        const { draftId, target, content } = newSessionDraftFor(client.getState(), workspaceId)
+        sync.edit(draftId, target, withSelection(content, update(selectionOf(content))))
+        return
+      }
+      setLocalSelections((prev) => ({ ...prev, [workspaceId]: update(prev[workspaceId]) }))
+    },
+    [client, sync],
   )
 
   // Filed as it is made, so the workspace remembers a pick whether or not the
@@ -442,18 +519,12 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
         return
       }
       setError(null)
-      setDraftSelections((prev) => {
-        const current = prev[draftWorkspaceId]
-        return {
-          ...prev,
-          [draftWorkspaceId]: pick(
-            current?.providerId === draftProviderId ? current : { providerId: draftProviderId },
-          ),
-        }
-      })
+      updateSelection(draftWorkspaceId, (current) =>
+        pick(current?.providerId === draftProviderId ? current : { providerId: draftProviderId }),
+      )
       if (canFilePicks) filePick(draftWorkspaceId, draftProviderId, filed)
     },
-    [canFilePicks, draftProviderId, draftWorkspaceId, filePick],
+    [canFilePicks, draftProviderId, draftWorkspaceId, filePick, updateSelection],
   )
 
   const setDraftProvider = useCallback(
@@ -467,13 +538,20 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
       setError(modelId && !canFilePicks ? UNSUPPORTED_PICK : null)
       // New drafts elsewhere follow the last provider picked, as on desktop.
       setDefaultProviderId(providerId)
-      setDraftSelections((prev) => ({
-        ...prev,
-        [draftWorkspaceId]: { providerId, ...(modelId && canFilePicks ? { modelId } : {}) },
+      updateSelection(draftWorkspaceId, () => ({
+        providerId,
+        ...(modelId && canFilePicks ? { modelId } : {}),
       }))
       if (modelId && canFilePicks) filePick(draftWorkspaceId, providerId, { modelId })
     },
-    [canFilePicks, draftWorkspaceId, filePick, providerDisplayName, setDefaultProviderId],
+    [
+      canFilePicks,
+      draftWorkspaceId,
+      filePick,
+      providerDisplayName,
+      setDefaultProviderId,
+      updateSelection,
+    ],
   )
 
   // The picks each launch was built from. Every pick replaces the workspace's
@@ -481,8 +559,11 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
   // a newer draft opened in the same workspace while the launch was running.
   const launchedPicks = useRef(new WeakMap<DraftLaunch, DraftSelection>())
   const draftLaunched = useCallback((workspaceId: string, launch: DraftLaunch) => {
+    // A kept draft went with the session it became; the project's next one
+    // starts from what the workspace remembers.
+    if (launch.draft) return
     const launched = launchedPicks.current.get(launch)
-    setDraftSelections((prev) => {
+    setLocalSelections((prev) => {
       const current = prev[workspaceId]
       if (!current || current !== launched) return prev
       // The provider is not part of the preference, so the workspace keeps it.
@@ -503,7 +584,25 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
 
   const draftLaunch = useCallback(
     (workspaceId: string): DraftLaunch => {
-      const { providerId, held, profile, resolved } = draftFor(workspaceId)
+      // The draft the composer set aside when send was pressed; text typed
+      // since (while images uploaded) is the project's next draft.
+      const slot = sync ? sendingNewSessionDraft(sync, workspaceId) : undefined
+      let kept = slot?.draft ?? undefined
+      if (sync && !slot) {
+        // Not sent from the composer. Only a draft that exists is named.
+        const state = client.getState()
+        const draftId = selectNewSessionDraftId(state, workspaceId)
+        const target = draftId ? selectDraftTarget(state, draftId) : undefined
+        if (draftId && target?.type === 'new_session') {
+          kept = { draftId, sessionId: target.sessionId }
+        }
+      }
+      // A send set aside with no draft has no picks either: a draft that
+      // arrived from another device meanwhile lends it none.
+      const { providerId, held, profile, resolved } = draftFor(
+        workspaceId,
+        slot ? (slot.draft?.draftId ?? null) : kept?.draftId,
+      )
       // Only what was picked here: filing resolved defaults as "last used"
       // would pin the workspace to them.
       const picks = withHeldPicks(null, held)
@@ -512,11 +611,12 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
         providerId,
         ...(Object.keys(picks).length > 0 ? { preference: picks } : {}),
         ...(modeId && modeId !== profile?.defaultModeId ? { modeId } : {}),
+        ...(kept ? { draft: kept } : {}),
       }
       if (held) launchedPicks.current.set(launch, held)
       return launch
     },
-    [draftFor],
+    [client, draftFor, sync],
   )
 
   const launchInternals = useMemo<DraftLaunchInternals>(

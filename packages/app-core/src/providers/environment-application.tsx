@@ -71,6 +71,7 @@ import {
   EnvironmentComposerStateProvider,
   type DraftLaunch,
 } from './environment-composer'
+import { EnvironmentComposerDraftProvider } from './environment-drafts'
 import {
   SidebarDataContext,
   SidebarSessionsContext,
@@ -140,15 +141,17 @@ export function EnvironmentApplicationProviders({
         onLanding={options.onLanding ?? false}
       >
         <EnvironmentComposerStateProvider>
-          <EnvironmentSidebarDataProvider storage={options.collapsedWorkspaceStorage}>
-            <EnvironmentActiveThreadProvider>
-              <EnvironmentInteractionProviders>
-                <EnvironmentViewActions actions={options.viewActions}>
-                  {children}
-                </EnvironmentViewActions>
-              </EnvironmentInteractionProviders>
-            </EnvironmentActiveThreadProvider>
-          </EnvironmentSidebarDataProvider>
+          <EnvironmentComposerDraftProvider>
+            <EnvironmentSidebarDataProvider storage={options.collapsedWorkspaceStorage}>
+              <EnvironmentActiveThreadProvider>
+                <EnvironmentInteractionProviders>
+                  <EnvironmentViewActions actions={options.viewActions}>
+                    {children}
+                  </EnvironmentViewActions>
+                </EnvironmentInteractionProviders>
+              </EnvironmentActiveThreadProvider>
+            </EnvironmentSidebarDataProvider>
+          </EnvironmentComposerDraftProvider>
         </EnvironmentComposerStateProvider>
       </EnvironmentSessionStateProvider>
     </EnvironmentPlatformCapabilitiesProvider>
@@ -501,21 +504,32 @@ function EnvironmentSessionStateProvider({
       const generation = draftGenerationRef.current
       const environmentId = client.getState().environment?.environmentId
       if (!environmentId) throw new Error('No environment is connected')
-      const { providerId, preference, modeId } = launch
+      const { providerId, preference, modeId, draft } = launch
       // One command, as the draft shows it: the environment files the picks
       // the new session is seeded from, claims the images the draft uploaded,
-      // starts the provider, and runs the first message in the picked mode.
-      // It refuses rather than launch on anything less, so the draft stays
-      // open with what was typed and attached.
-      const { session, thread } = await commands.createSession({
-        environmentId,
-        workspaceId: draftWorkspaceId,
-        providerId,
-        firstMessage: text,
-        ...(preference ? { preference } : {}),
-        ...(modeId !== undefined ? { modeId } : {}),
-        ...(artifactIds?.length ? { artifactIds } : {}),
-      })
+      // starts the provider, runs the first message in the picked mode, and
+      // deletes the draft in the same write that announces the session. It
+      // refuses rather than launch on anything less, so the draft stays open
+      // with what was typed and attached.
+      if (draft) client.drafts?.beginLaunch(draft.draftId)
+      let created: Awaited<ReturnType<typeof commands.createSession>>
+      try {
+        created = await commands.createSession({
+          environmentId,
+          workspaceId: draftWorkspaceId,
+          providerId,
+          firstMessage: text,
+          ...(preference ? { preference } : {}),
+          ...(modeId !== undefined ? { modeId } : {}),
+          ...(artifactIds?.length ? { artifactIds } : {}),
+          ...(draft ? { draftId: draft.draftId, sessionId: draft.sessionId } : {}),
+        })
+      } catch (error) {
+        if (draft) client.drafts?.endLaunch(draft.draftId, 'refused')
+        throw error
+      }
+      if (draft) client.drafts?.endLaunch(draft.draftId, 'sent')
+      const { session, thread } = created
       // The user moved on while the session was being created: do not pull
       // the view back to it. Its first turn continues in the sidebar.
       if (draftGenerationRef.current !== generation) return null

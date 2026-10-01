@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act } from 'react'
+import { act, useContext, type ContextType } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import {
   EnvironmentClientError,
@@ -17,6 +17,11 @@ import { useActiveThreadState } from '../src/providers/active-thread-provider'
 import { useComposerState, type ComposerStateValue } from '../src/providers/composer-provider'
 import { useSessionState, type SessionStateValue } from '../src/providers/session-provider'
 import { MockEnvironmentApp } from '../src/testing/mock-environment-app'
+import { DraftLaunchContext } from '../src/providers/environment-composer'
+import {
+  useComposerDraftStore,
+  type ComposerDraftStore,
+} from '../src/components/chat/composerDraftStore'
 
 const WORKSPACE = {
   workspaceId: 'C:/repo',
@@ -155,12 +160,16 @@ const settle = async (client: MockEnvironmentClient) => {
 }
 
 type Probe = {
+  launch: NonNullable<ContextType<typeof DraftLaunchContext>>
+  drafts: ComposerDraftStore
   composer: ComposerStateValue
   session: SessionStateValue
   thread: ReturnType<typeof useActiveThreadState>
 }
 const probe = {} as Probe
 function Capture() {
+  probe.launch = useContext(DraftLaunchContext)!
+  probe.drafts = useComposerDraftStore()
   probe.composer = useComposerState()
   probe.session = useSessionState()
   probe.thread = useActiveThreadState()
@@ -300,6 +309,28 @@ describe('the composer over the environment client', () => {
     expect(probe.composer.draftSessionState?.providerId).toBe('opencode')
   })
 
+  it('launches an images-only send with no picks, even if a draft arrives meanwhile', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client)
+    await openDraft(client)
+    const key = `draft:${WORKSPACE.workspaceId}`
+    let release: (() => void) | undefined
+    act(() => {
+      release = probe.drafts.beginSend!(key)
+    })
+    // Another device starts a draft with its own picks while the images upload.
+    act(() =>
+      client.drafts!.edit(
+        'from-phone',
+        { type: 'new_session', workspaceId: WORKSPACE.workspaceId, sessionId: 'phone-session' },
+        { text: 'not this send', providerId: 'cursor', preference: { modelId: 'composer' } },
+      ),
+    )
+    const launch = probe.launch.draftLaunch(WORKSPACE.workspaceId)
+    expect(launch).toEqual({ providerId: 'opencode' })
+    act(() => release!())
+  })
+
   it('holds draft picks locally and launches the session with them', async () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     await mount(client)
@@ -322,19 +353,43 @@ describe('the composer over the environment client', () => {
       preferredConfigValues: { effort: 'high' },
     })
 
+    // The picks are kept in the project's draft, so a reload keeps them.
+    act(() => client.drafts!.flush())
+    await settle(client)
+    const [draft] = Object.values(client.getState().drafts)
+    expect(draft).toMatchObject({
+      target: { type: 'new_session', workspaceId: WORKSPACE.workspaceId },
+      content: {
+        providerId: 'opencode',
+        preference: { modelId: 'opus', configValues: { effort: 'high' } },
+      },
+    })
+    const launchId = draft!.target.sessionId
+
     const filedBeforeLaunch = commandsOf(client).length
     await act(() => probe.thread.sendMessage('hello'))
     await settle(client)
     // One command: the create carries the picks, whole, for the environment
-    // to file before it starts the provider. The view then opens the session.
-    expect(commandsOf(client).slice(filedBeforeLaunch)).toEqual(['createSession', 'openSession'])
+    // to file before it starts the provider, and names the draft it sends.
+    // The view then opens the session.
+    expect(
+      commandsOf(client)
+        .slice(filedBeforeLaunch)
+        .filter((command) => command !== 'saveDraft'),
+    ).toEqual(['createSession', 'openSession'])
     expect(inputOf(client, 'createSession')).toEqual({
       environmentId: 'mock-environment',
       workspaceId: WORKSPACE.workspaceId,
       providerId: 'opencode',
       firstMessage: 'hello',
       preference: { modelId: 'opus', configValues: { effort: 'high' } },
+      draftId: draft!.draftId,
+      sessionId: launchId,
     })
+    // The session took the draft's id, and the draft went with the send.
+    expect(client.getState().sessions[launchId]).toBeDefined()
+    expect(client.getState().drafts).toEqual({})
+    expect(client.getState().draftEdits).toEqual({})
 
     // The picks are filed now. A later draft follows what the workspace
     // remembers by then, not what this one held.

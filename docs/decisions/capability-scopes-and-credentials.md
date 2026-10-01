@@ -95,11 +95,13 @@ test that the map's key set equals the schema's key set.
 | `provider.health`             | `read`     |                                                            |
 | `provider.probe`              | `read`     | Read-only status of an installed CLI.                      |
 | `composer.preferences.get`    | `read`     |                                                            |
+| `draft.list`                  | `read`     |                                                            |
 | `session.create`              | `operate`  |                                                            |
 | `workspace.add`               | `operate`  | Registers a folder by an environment-local path (CAL-50).  |
 | `workspace.remove`            | `operate`  |                                                            |
 | `composer.preferences.set`    | `operate`  |                                                            |
 | `upload.ticket.create`        | `operate`  | The `PUT /uploads/<ticket>` it authorizes re-checks `operate`. |
+| `draft.save`, `draft.delete`  | `operate`  | Typing is not running the agent; sending needs `agent`.    |
 | `turn.send`                   | `agent`    |                                                            |
 | `turn.interrupt`              | `agent`    |                                                            |
 | `interaction.respond`         | `agent`    | Approvals and questions; see D5.                           |

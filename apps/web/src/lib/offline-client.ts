@@ -37,6 +37,9 @@ const commands: EnvironmentCommands = {
   browseFolders: reject('browseFolders'),
   getEnvironmentSettings: reject('getEnvironmentSettings'),
   setEnvironmentSettings: reject('setEnvironmentSettings'),
+  listDrafts: reject('listDrafts'),
+  saveDraft: reject('saveDraft'),
+  deleteDraft: reject('deleteDraft'),
 }
 
 /**

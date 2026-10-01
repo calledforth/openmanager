@@ -12,6 +12,7 @@ import {
   WorkspaceUnavailableDetailsSchema,
   type BackgroundTask,
   type CommandEnvelope,
+  type DraftContent,
   type ErrorCode,
   type EventEnvelope,
   type Interaction,
@@ -357,6 +358,17 @@ export function createThreadService(
       selection: Pick<WorkspaceComposerPreference, 'modelId' | 'configValues'>,
     ) => void
     /**
+     * The draft a create sends: its deletion commits with the session, and is
+     * undone if the session is rolled back. Absent, a create naming a draft
+     * is refused rather than leaving the draft behind.
+     */
+    drafts?: {
+      launch(
+        draftId: string,
+        sent: { workspaceId: string; sessionId: string; content: DraftContent },
+      ): { event: ProofEvent; restore: () => void } | { error: string }
+    }
+    /**
      * Names sessions with the environment's title model: from the first
      * prompt, once more after the first turn when that prompt was too vague,
      * and on request. Absent, sessions keep the fallback and agent titles.
@@ -560,7 +572,12 @@ export function createThreadService(
    * answers while the row is projected; the caller clears it once the record
    * holds it, so a session never has two sources of truth.
    */
-  const persistCreatedThread = (session: Session, thread: Thread, providerId: ProviderId) => {
+  const persistCreatedThread = (
+    session: Session,
+    thread: Thread,
+    providerId: ProviderId,
+    alongside: readonly ProofEvent[] = [],
+  ) => {
     const timestamp = new Date().toISOString()
     const created = ProofEventSchemas['session.created'].parse({
       type: 'event',
@@ -581,11 +598,12 @@ export function createThreadService(
     announcedProviders.set(session.sessionId, providerId)
     try {
       if (options.appendAtomic) {
-        options.appendAtomic([created, threadCreated])
+        options.appendAtomic([created, threadCreated, ...alongside])
         return
       }
       appendEvent(created)
       appendEvent(threadCreated)
+      alongside.forEach(appendEvent)
     } catch (error) {
       // No record follows a failed announcement, so nothing else clears it.
       announcedProviders.delete(session.sessionId)
@@ -709,6 +727,9 @@ export function createThreadService(
     if (records[0]) sessions.set(session.sessionId, records[0])
   }
 
+  /** How to put back the draft each just-created session was sent from, until it starts. */
+  const sentDrafts = new Map<string, () => void>()
+
   const rollbackSession = (record: ThreadRecord) => {
     if (sessions.get(record.session.sessionId) !== record) return
     sessions.delete(record.session.sessionId)
@@ -723,6 +744,15 @@ export function createThreadService(
         payload: { sessionId: record.session.sessionId },
       }),
     )
+    // The send never happened as far as anyone can see, so neither did the
+    // draft's deletion: the retry starts from what the user wrote.
+    const restoreDraft = sentDrafts.get(record.session.sessionId)
+    sentDrafts.delete(record.session.sessionId)
+    try {
+      restoreDraft?.()
+    } catch (error) {
+      options.onPersistenceError?.(error, 'draft.saved')
+    }
   }
 
   const stableId = (ids: Map<string, string>, providerId: string | undefined) => {
@@ -1704,17 +1734,55 @@ export function createThreadService(
           }
           // Nothing was picked: the provider's own seeding still applies.
         }
+        // A draft names the id its session gets, so a retried send lands on the
+        // same session id. An id that is already taken is not reused.
+        const sessionId = input.sessionId ?? randomUUID()
+        if (
+          input.sessionId !== undefined &&
+          (sessions.has(sessionId) ||
+            (options.database !== undefined && getSessionSummary(options.database, sessionId)))
+        ) {
+          return errorResult(command.requestId, 'conflict', 'A session with this id already exists.')
+        }
+        let draft: { event: ProofEvent; restore: () => void } | undefined
+        if (input.draftId !== undefined) {
+          if (!options.drafts) {
+            return errorResult(
+              command.requestId,
+              'capability_missing',
+              'This environment does not keep drafts.',
+            )
+          }
+          // Put back as sent if the session is rolled back: text, provider and picks.
+          const picks = {
+            ...input.preference,
+            ...(input.modeId !== undefined ? { modeId: input.modeId } : {}),
+          }
+          const launch = options.drafts.launch(input.draftId, {
+            workspaceId: input.workspaceId,
+            sessionId,
+            content: {
+              text: input.firstMessage ?? '',
+              providerId,
+              ...(Object.keys(picks).length > 0 ? { preference: picks } : {}),
+            },
+          })
+          if ('error' in launch) return errorResult(command.requestId, 'validation', launch.error)
+          draft = launch
+        }
         const session: Session = {
-          sessionId: randomUUID(),
+          sessionId,
           workspaceId: parsed.data.payload.workspaceId,
           title: parsed.data.payload.title ?? null,
         }
         const thread: Thread = { threadId: randomUUID(), sessionId: session.sessionId }
         // Announced and durable before it is exposed or started: a failed write
         // means no client learns of a session the host could not serve after a
-        // restart, and every connected client sees the session at once.
+        // restart, and every connected client sees the session at once. The
+        // sent draft goes in the same write, so no save still in flight can
+        // bring it back.
         try {
-          persistCreatedThread(session, thread, providerId)
+          persistCreatedThread(session, thread, providerId, draft ? [draft.event] : [])
         } catch (error) {
           options.onPersistenceError?.(error, 'session.created')
           return errorResult(
@@ -1757,7 +1825,16 @@ export function createThreadService(
         sessions.set(session.sessionId, record)
         threads.set(thread.threadId, record)
         announcedProviders.delete(session.sessionId)
-        void record.runtimeSession.catch(() => rollbackSession(record))
+        if (draft) sentDrafts.set(session.sessionId, draft.restore)
+        void record.runtimeSession.then(
+          () => {
+            // Started: the session stands, and so does the send.
+            if (sentDrafts.get(session.sessionId) === draft?.restore) {
+              sentDrafts.delete(session.sessionId)
+            }
+          },
+          () => rollbackSession(record),
+        )
         // Before the provider starts, which is a microtask away: once the
         // session has a selection of its own, a later launch in the workspace
         // can only move the shared preference, not this session.
