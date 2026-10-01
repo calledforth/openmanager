@@ -148,7 +148,7 @@ describe('composer drafts over the environment', () => {
     act(() => {
       release = store.beginSend!(key)
     })
-    expect(sendingNewSessionDraft(client.drafts!, WORKSPACE.workspaceId)?.draftId).toBe(sent)
+    expect(sendingNewSessionDraft(client.drafts!, WORKSPACE.workspaceId)?.draft?.draftId).toBe(sent)
     act(() => store.setText(key, 'and another thing'))
     const next = selectNewSessionDraftId(client.getState(), WORKSPACE.workspaceId)!
     expect(next).not.toBe(sent)
@@ -159,6 +159,19 @@ describe('composer drafts over the environment', () => {
     expect(sendingNewSessionDraft(client.drafts!, WORKSPACE.workspaceId)).toBeUndefined()
     expect(client.getState().draftEdits[sent]?.launching).toBeUndefined()
     expect(store.getText(key)).toBe('and another thing')
+  })
+
+  it('holds an images-only send to no draft, so one arriving meanwhile is not taken', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client)
+    const key = `draft:${WORKSPACE.workspaceId}`
+    let release: (() => void) | undefined
+    act(() => {
+      release = store.beginSend!(key)
+    })
+    expect(sendingNewSessionDraft(client.drafts!, WORKSPACE.workspaceId)).toEqual({ draft: null })
+    act(() => release!())
+    expect(sendingNewSessionDraft(client.drafts!, WORKSPACE.workspaceId)).toBeUndefined()
   })
 
   it('holds text for a key with no project on this page only', async () => {

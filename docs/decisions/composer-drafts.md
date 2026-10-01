@@ -25,7 +25,9 @@ lived in the open tab.
   the composer seeds from the project's "last used" is resolved again each
   time the draft is shown.
 - When its project is removed, a new-session draft is kept with no project
-  (`workspace_id` is `SET NULL`), and the user picks another.
+  (`workspace_id` is `SET NULL`), so nothing typed is lost. The composer only
+  shows a project's drafts, so such a draft is not reachable from the UI until
+  draft pages land (CAL-213), where the user picks another project for it.
 
 Today a project has one current new-session draft: the composer on the new-session
 page writes to the newest one. Draft pages, any number of drafts and sidebar cards
@@ -74,9 +76,12 @@ A save names the revision it was edited from (`baseRevision`). The rules:
 client knows what to save on top of. Tombstones of new-session drafts are
 never listed. One comes back only through a save based on its deletion or
 later: a failed send's restore, or text put back by the client that sent it.
-They are pruned 30 days after deletion. A client offline for longer than that
-could bring one back. Clients forget a new-session tombstone at the next
-listing once no edit of theirs needs it.
+Tombstones of both kinds are pruned 30 days after deletion (at start, then at
+most hourly from `draft.list`), so the listing holds recent activity, not every
+session ever sent from. A client offline for longer than that could bring a
+draft back. A save on top of a pruned tombstone continues from the base it
+names, so no client sees a revision go backwards. Clients forget a
+new-session tombstone at the next listing once no edit of theirs needs it.
 
 ## Sending
 
@@ -87,7 +92,9 @@ provider fails to start, or the first message is refused), the environment
 saves the draft again at the next revision, as it was sent: the first message,
 the provider and the picks. The send may have beaten the draft's last
 autosave, so the saved row is not used. The retry then starts from what was
-written. An id that is already taken is refused with `conflict`.
+written. An id that is already taken is refused with `conflict`, and a draft
+can only be sent as the session it was minted for, in its own project (or any
+project once its own was removed).
 
 A session draft is cleared, not consumed: sending empties the composer, and
 the emptied draft is deleted like any other.
@@ -128,7 +135,11 @@ the emptied draft is deleted like any other.
   Text typed while this client's own delete is on the wire is kept through
   that announcement and saved as the draft's next text.
 - **Offline.** Edits wait in the state while offline, and are saved once the
-  client is connected and has listed the drafts.
+  client is connected and has listed the drafts. A listing that fails on a
+  live connection is retried, backing off up to 30 s.
+- **Size.** A save must fit in one message to the environment (64 KiB), so a
+  draft over `DRAFT_SAVE_MAX_BYTES` encoded is kept on the device that has it,
+  and saved once it is short enough again.
 
 `ComposerDraftStore` is the composer's view of this: synchronous text by draft
 key, so a restored draft is on screen at first paint. Hosts without an

@@ -1,5 +1,7 @@
 import {
+  DRAFT_SAVE_MAX_BYTES,
   DraftDeletedDetailsSchema,
+  draftSaveBytes,
   type DraftContent,
   type DraftTarget,
 } from '@openmanager/protocol'
@@ -32,6 +34,9 @@ import type {
  * the composer or hiding the page saves without waiting.
  */
 export const DRAFT_SAVE_DEBOUNCE_MS = 1_000
+
+const LIST_RETRY_MIN_MS = 1_000
+const LIST_RETRY_MAX_MS = 30_000
 
 export interface DraftSyncOptions {
   store: EnvironmentStore
@@ -111,6 +116,15 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
     const state = store.getState()
     const edit = state.draftEdits[draftId]
     if (!edit || edit.launching || !ready(state)) return
+    const input = {
+      draftId,
+      baseRevision: edit.baseRevision,
+      target: edit.target,
+      content: edit.content,
+    }
+    // Too big for one message to the environment: kept here, in the state
+    // and the host's cache, and saved once it is short enough again.
+    if (draftSaveBytes(input) > DRAFT_SAVE_MAX_BYTES) return
     inFlight.add(draftId)
     try {
       if (isEmptyDraftContent(edit.content)) {
@@ -131,12 +145,7 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
           applyDraftDeleted(settle(draftId, edit, tombstone.revision)(current), tombstone),
         )
       } else {
-        const draft = await commands.saveDraft({
-          draftId,
-          baseRevision: edit.baseRevision,
-          target: edit.target,
-          content: edit.content,
-        })
+        const draft = await commands.saveDraft(input)
         store.update((current) =>
           settle(draftId, edit, draft.revision)(applyDraftSaved(current, draft)),
         )
@@ -175,12 +184,31 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
     }
   }
 
+  // A listing that failed on a live connection is tried again, backing off,
+  // since no state change may come along to prompt it.
+  let listRetry: ReturnType<typeof setTimeout> | undefined
+  let listRetryMs = LIST_RETRY_MIN_MS
   const list = () => {
     if (listing) return
     listing = true
+    if (listRetry !== undefined) clearTimeout(listRetry)
+    listRetry = undefined
     commands
       .listDrafts()
-      .then(flush, () => undefined)
+      .then(
+        () => {
+          listRetryMs = LIST_RETRY_MIN_MS
+          flush()
+        },
+        () => {
+          if (disposed) return
+          listRetry = setTimeout(() => {
+            listRetry = undefined
+            check()
+          }, listRetryMs)
+          listRetryMs = Math.min(listRetryMs * 2, LIST_RETRY_MAX_MS)
+        },
+      )
       .finally(() => {
         listing = false
       })
@@ -281,6 +309,7 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
 
     dispose() {
       disposed = true
+      if (listRetry !== undefined) clearTimeout(listRetry)
       unsubscribe()
       for (const timer of timers.values()) clearTimeout(timer)
       timers.clear()

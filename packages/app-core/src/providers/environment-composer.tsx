@@ -581,9 +581,10 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
     (workspaceId: string): DraftLaunch => {
       // The draft the composer set aside when send was pressed; text typed
       // since (while images uploaded) is the project's next draft.
-      let kept = sync ? sendingNewSessionDraft(sync, workspaceId) : undefined
-      if (sync && !kept) {
-        // Only a draft that exists: an images-only send never made one.
+      const slot = sync ? sendingNewSessionDraft(sync, workspaceId) : undefined
+      let kept = slot?.draft ?? undefined
+      if (sync && !slot) {
+        // Not sent from the composer. Only a draft that exists is named.
         const state = client.getState()
         const draftId = selectNewSessionDraftId(state, workspaceId)
         const target = draftId ? selectDraftTarget(state, draftId) : undefined

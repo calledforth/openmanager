@@ -30,14 +30,19 @@ export interface SendingDraft {
   sessionId: string
 }
 
-// Per sync, by project: the draft each composer's send in flight set aside.
-const sendingDrafts = new WeakMap<DraftSync, Map<string, SendingDraft>>()
+/** What a send in flight set aside: its draft, or none when it had none (images only). */
+export interface SendingSlot {
+  draft: SendingDraft | null
+}
 
-/** The draft a send in this project set aside, if one is in flight. */
+// Per sync, by project: what each composer's send in flight set aside.
+const sendingDrafts = new WeakMap<DraftSync, Map<string, SendingSlot>>()
+
+/** What a send in this project set aside, if one is in flight. */
 export function sendingNewSessionDraft(
   sync: DraftSync,
   workspaceId: string,
-): SendingDraft | undefined {
+): SendingSlot | undefined {
   return sendingDrafts.get(sync)?.get(workspaceId)
 }
 
@@ -123,19 +128,25 @@ export function createEnvironmentComposerDraftStore(
       const state = client.getState()
       const draftId = selectNewSessionDraftId(state, workspaceId)
       const target = draftId ? selectDraftTarget(state, draftId) : undefined
-      if (!draftId || target?.type !== 'new_session') return undefined
       // Held from here, not from `session.create`: images upload first, and
-      // what is typed meanwhile must go to the next draft, not this one.
-      const sending: SendingDraft = { draftId, sessionId: target.sessionId }
+      // what is typed meanwhile must go to the next draft, not this one. A
+      // send with no draft holds that too, so it never takes one that turns
+      // up (from another device) while its images upload.
+      const slot: SendingSlot = {
+        draft:
+          draftId && target?.type === 'new_session'
+            ? { draftId, sessionId: target.sessionId }
+            : null,
+      }
       let byProject = sendingDrafts.get(sync)
       if (!byProject) sendingDrafts.set(sync, (byProject = new Map()))
-      byProject.set(workspaceId, sending)
-      sync.beginLaunch(draftId)
+      byProject.set(workspaceId, slot)
+      if (slot.draft) sync.beginLaunch(slot.draft.draftId)
       return () => {
-        if (byProject.get(workspaceId) === sending) byProject.delete(workspaceId)
+        if (byProject.get(workspaceId) === slot) byProject.delete(workspaceId)
         // A launch that ran has already settled the draft; this only puts
         // back one whose send stopped before it (a failed upload).
-        sync.endLaunch(draftId, 'aborted')
+        if (slot.draft) sync.endLaunch(slot.draft.draftId, 'aborted')
       }
     },
   }

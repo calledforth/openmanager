@@ -11,8 +11,38 @@ const command = <N extends string, P extends z.ZodType>(name: N, payload: P) =>
   CommandEnvelopeSchema.extend({ name: z.literal(name), payload })
 const response = <P extends z.ZodType>(payload: P) => ResponseEnvelopeSchema.extend({ payload })
 
-export const DRAFT_TEXT_MAX_LENGTH = 100_000
+/**
+ * The largest `draft.save` a client sends, encoded, leaving room for the
+ * envelope under the environment's 64 KiB message limit. A bigger draft is
+ * kept on the device that has it until it is short enough to save.
+ */
+export const DRAFT_SAVE_MAX_BYTES = 60_000
+/** A draft's text never exceeds what fits in one save. */
+export const DRAFT_TEXT_MAX_LENGTH = DRAFT_SAVE_MAX_BYTES
 export const DRAFT_ARTIFACTS_MAX = 10
+
+/** UTF-8 length of `text`, counted by hand so every runtime (and lib) can use it. */
+function utf8Length(text: string): number {
+  let bytes = 0
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i)
+    if (code < 0x80) bytes += 1
+    else if (code < 0x800) bytes += 2
+    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length) {
+      const next = text.charCodeAt(i + 1)
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4
+        i += 1
+      } else {
+        bytes += 3
+      }
+    } else bytes += 3
+  }
+  return bytes
+}
+
+/** The encoded size of a `draft.save` payload, to check against `DRAFT_SAVE_MAX_BYTES`. */
+export const draftSaveBytes = (input: unknown): number => utf8Length(JSON.stringify(input))
 
 /**
  * What a draft holds. Only what the user did: picks the composer seeded from

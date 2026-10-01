@@ -256,6 +256,31 @@ describe('draft sync', () => {
     sync.dispose()
   })
 
+  it('keeps a draft too big for one message here, and saves it once it fits', async () => {
+    const { store, sync, saves } = setup()
+    await vi.advanceTimersByTimeAsync(0)
+    sync.edit('d', NEW, { text: 'x'.repeat(70_000) })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(saves).toHaveLength(0)
+    expect(selectDraftContent(store.getState(), 'd')?.text).toHaveLength(70_000)
+
+    sync.edit('d', NEW, { text: 'x'.repeat(100) })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(saves.map((save) => save.content.text.length)).toEqual([100])
+    sync.dispose()
+  })
+
+  it('lists again, backing off, when a listing fails on a live connection', async () => {
+    const { store, sync, commands } = setup()
+    commands.listDrafts.mockRejectedValueOnce(new Error('busy'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.getState().draftsListed).toBe(false)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(commands.listDrafts).toHaveBeenCalledTimes(2)
+    expect(store.getState().draftsListed).toBe(true)
+    sync.dispose()
+  })
+
   it('waits while offline and saves what is waiting on connect', async () => {
     const { store, sync, saves } = setup(createInitialState())
     sync.edit('d', NEW, { text: 'offline words' })

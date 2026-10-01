@@ -22,9 +22,10 @@ import {
 import type { CommandContext } from './command-context.ts'
 
 /**
- * How long a sent or discarded new-session draft is remembered. A save from
- * before the send is refused for as long as the row is there; a client that
- * was offline for longer than this could bring the draft back.
+ * How long a sent or discarded draft is remembered. A save from before the
+ * send is refused for as long as the row is there; a client that was offline
+ * for longer than this could bring the draft back. Bounds what `draft.list`
+ * returns to recent activity.
  */
 export const DRAFT_TOMBSTONE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 
@@ -112,9 +113,20 @@ export function createDraftService(options: DraftServiceOptions) {
   const selectWorkspace = database.prepare('SELECT 1 FROM workspaces WHERE workspace_id = ?')
   const selectClient = database.prepare('SELECT 1 FROM authorized_clients WHERE client_id = ?')
   const pruneTombstones = database.prepare(`
-    DELETE FROM drafts
-    WHERE session_id IS NULL AND deleted_at IS NOT NULL AND deleted_at < ?
+    DELETE FROM drafts WHERE deleted_at IS NOT NULL AND deleted_at < ?
   `)
+  const prune = () => Number(pruneTombstones.run(now() - DRAFT_TOMBSTONE_RETENTION_MS).changes)
+  let prunedAt = now()
+  /** At most hourly, from the listing, so a server that runs for months stays bounded too. */
+  const pruneIfDue = () => {
+    if (now() - prunedAt < 60 * 60 * 1000) return
+    prunedAt = now()
+    try {
+      prune()
+    } catch {
+      // Tried again within the hour; an old tombstone only refuses a stale save.
+    }
+  }
 
   const read = (draftId: string) => selectDraft.get(draftId) as DraftRow | undefined
 
@@ -230,7 +242,9 @@ export function createDraftService(options: DraftServiceOptions) {
       draftId,
       target,
       content,
-      revision: (row?.revision ?? 0) + 1,
+      // Past the base too: a client may hold a revision of a tombstone that
+      // has since been pruned, and must never see the draft go backwards.
+      revision: Math.max(row?.revision ?? 0, baseRevision) + 1,
       // A revived tombstone is a new draft as far as anyone can tell.
       createdAt: iso(row && row.deleted_at === null ? row.created_at : at),
       updatedAt: iso(at),
@@ -282,6 +296,7 @@ export function createDraftService(options: DraftServiceOptions) {
     if (!parsed.success) {
       return errorResult(command.requestId, 'validation', 'Invalid draft list request.')
     }
+    pruneIfDue()
     const drafts: Draft[] = []
     const tombstones: DraftTombstone[] = []
     for (const row of selectAll.all() as DraftRow[]) {
@@ -318,6 +333,15 @@ export function createDraftService(options: DraftServiceOptions) {
     launch(draftId: string, sent: SentDraft): DraftLaunch | { error: string } {
       const row = read(draftId)
       if (row?.session_id) return { error: "A session's draft cannot start another session." }
+      // Only the session the draft was minted for, in its project (or any
+      // project once its own was removed): a send must not consume another draft.
+      if (
+        row &&
+        ((row.launch_session_id !== null && row.launch_session_id !== sent.sessionId) ||
+          (row.workspace_id !== null && row.workspace_id !== sent.workspaceId))
+      ) {
+        return { error: 'The draft belongs to another session.' }
+      }
       const { tombstone, event } = deletionEvent(draftId, row, now())
       return {
         event,
@@ -350,9 +374,10 @@ export function createDraftService(options: DraftServiceOptions) {
       }
     },
 
-    /** Forgets sent and discarded new-session drafts older than the retention. */
+    /** Forgets sent and discarded drafts older than the retention. */
     pruneTombstones(): number {
-      return Number(pruneTombstones.run(now() - DRAFT_TOMBSTONE_RETENTION_MS).changes)
+      prunedAt = now()
+      return prune()
     },
   }
 }
