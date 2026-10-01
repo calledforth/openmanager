@@ -516,6 +516,55 @@ describe('WebEnvironmentClientProvider', () => {
     expect(createClient).toHaveBeenCalledTimes(1)
   })
 
+  it('does not send a refused token through another route on its own', async () => {
+    seedTwoRoutes()
+    let localUp = true
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).startsWith(ENDPOINT) && !localUp) throw new TypeError('Failed to fetch')
+        return bootstrapAnswer()
+      }),
+    )
+    let notify = () => {}
+    let connection: unknown = { phase: 'connected', failure: null }
+    const client = createFakeClient()
+    client.getState.mockImplementation(() => ({
+      ...createInitialState(),
+      connection: connection as ReturnType<EnvironmentClient['getState']>['connection'],
+    }))
+    client.subscribe.mockImplementation(((listener: () => void) => {
+      notify = listener
+      return () => undefined
+    }) as never)
+    const createClient = vi.fn(() => client as EnvironmentClient)
+    renderProvider(createClient, { retryDelaysMs: [10] })
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+
+    connection = { phase: 'closed', failure: { code: 'auth', message: 'Token revoked.' } }
+    act(() => notify())
+    expect(screen.getByText('reason: credential_rejected')).toBeInTheDocument()
+
+    // Localhost goes away while offline; the tunnel would still answer.
+    transition('offline')
+    localUp = false
+    transition('online')
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+    expect(screen.getByText('reason: credential_rejected')).toBeInTheDocument()
+    expect(screen.getByText(`in use: ${ENDPOINT}`)).toBeInTheDocument()
+
+    // Forgetting a route is not asking to try the token again either.
+    localUp = true
+    act(() => screen.getByRole('button', { name: 'forget tunnel' }).click())
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+    expect(screen.getByText('reason: credential_rejected')).toBeInTheDocument()
+    expect(createClient).toHaveBeenCalledTimes(1)
+  })
+
   it('does not let a search outlive a socket that came back on its own', async () => {
     seedTwoRoutes()
     let localUp = true

@@ -279,13 +279,30 @@ export function ConnectionProvider({
   const searchGeneration = useRef(0)
   const searching = useRef(false)
   const retryAttempt = useRef(0)
-  const stopRouteSearch = useCallback(() => {
-    searchGeneration.current += 1
-    searching.current = false
-    retryAttempt.current = 0
-    setRouteSearch(null)
-    setRouteFailure(null)
-  }, [setRouteFailure])
+  /**
+   * Cancel any search and drop the reason on screen. A token the environment
+   * refused is the exception unless a person asked (`reset`): only their
+   * action, or the socket getting through, may send that token again.
+   * Anything automatic (the network returning, a route being forgotten)
+   * leaves it refused.
+   */
+  const stopRouteSearch = useCallback(
+    (reset = false) => {
+      searchGeneration.current += 1
+      searching.current = false
+      retryAttempt.current = 0
+      setRouteSearch(null)
+      if (reset || routeFailureRef.current?.reason !== 'credential_rejected') setRouteFailure(null)
+    },
+    [setRouteFailure],
+  )
+  /** The environment refused its token: nothing may be retried on its own. */
+  const tokenRefused = useCallback(
+    (environmentId: string) =>
+      routeFailureRef.current?.environmentId === environmentId &&
+      routeFailureRef.current.reason === 'credential_rejected',
+    [],
+  )
 
   // Socket reports arrive outside render and need what the latest render saw.
   const pendingRef = useRef(pending)
@@ -411,7 +428,7 @@ export function ConnectionProvider({
       known?: { endpoint: string; outcome: BootstrapOutcome },
     ) => {
       const record = findStoredEnvironment(registryRef.current.environments, environmentId)
-      if (!record) return
+      if (!record || tokenRefused(environmentId)) return
       const generation = ++searchGeneration.current
       searching.current = true
       const from = inUseFor(record, activeRoutesRef.current)!
@@ -445,7 +462,7 @@ export function ConnectionProvider({
         setBootstrapNonce((value) => value + 1)
       })
     },
-    [noteLiveReport, setActiveRoute, setRouteFailure, update],
+    [noteLiveReport, setActiveRoute, setRouteFailure, tokenRefused, update],
   )
 
   useEffect(() => {
@@ -590,7 +607,7 @@ export function ConnectionProvider({
     if (!wasOffline.current) return
     wasOffline.current = false
     // A refused token is still refused after the network comes back.
-    if (routeFailureRef.current?.reason !== 'credential_rejected') stopRouteSearch()
+    stopRouteSearch()
     setBootstrapNonce((value) => value + 1)
   }, [online, preview, stopRouteSearch])
 
@@ -615,7 +632,7 @@ export function ConnectionProvider({
       if (!endpoint) return
       const parsed = parseEnvironmentCredential(credential)
       forgottenRoutes.current.clear()
-      stopRouteSearch()
+      stopRouteSearch(true)
       setHasConnected(false)
       setLocalOwnerClaimFailure(null)
       const begin = (nextCredential: string, claimedEnvironmentId?: string) => {
@@ -649,7 +666,7 @@ export function ConnectionProvider({
     setPending(null)
     setLocalOwnerClaimFailure(null)
     claimGeneration.current += 1
-    stopRouteSearch()
+    stopRouteSearch(true)
   }, [stopRouteSearch])
 
   const confirmRoute = useCallback(() => {
@@ -721,7 +738,10 @@ export function ConnectionProvider({
         stopRouteSearch()
         setHasConnected(false)
         setBootstrapNonce((value) => value + 1)
-      } else if (routeFailureRef.current?.environmentId === environmentId) {
+      } else if (
+        routeFailureRef.current?.environmentId === environmentId &&
+        !tokenRefused(environmentId)
+      ) {
         // The reason on screen was worked out from routes that included this
         // one. Ask again without it.
         stopRouteSearch()
@@ -741,7 +761,7 @@ export function ConnectionProvider({
       }
       update(() => next)
     },
-    [setActiveRoute, stopRouteSearch, update],
+    [setActiveRoute, stopRouteSearch, tokenRefused, update],
   )
 
   const reportRouteHealth = useCallback(
@@ -830,7 +850,7 @@ export function ConnectionProvider({
   }, [preview, update])
 
   const retry = useCallback(() => {
-    stopRouteSearch()
+    stopRouteSearch(true)
     setBootstrapNonce((value) => value + 1)
   }, [stopRouteSearch])
 
