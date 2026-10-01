@@ -359,13 +359,29 @@ function MessageTimeline({
   useLayoutEffect(() => {
     reportAtEndRef.current = reportAtEnd
   })
+  // A follow moves the scroller now, but the virtualizer learns its new
+  // offset from the scroll event a frame later. Rows appended or re-measured
+  // in between (a sent message and the reply's row, or a tab in the
+  // background, which gets no scroll events at all) would read as arriving
+  // above the end; while a follow is pending and the scroller has not moved
+  // up since, the reader is still at the end.
+  const followPendingRef = useRef(false)
+  const followTopRef = useRef(0)
+  const followHolds = useCallback(
+    () =>
+      followPendingRef.current &&
+      !!scrollElement &&
+      scrollElement.scrollTop + FOLLOW_SLACK_PX >= followTopRef.current,
+    [scrollElement],
+  )
   // Whether the reader is at the bottom as this render begins, by the
   // virtualizer's own numbers (its offset against its total), before the
-  // options below hand it any new rows. Its followOnAppend judges the same
-  // thing against the DOM, where the streaming row may have grown by a few
-  // pixels the ResizeObserver has not reported yet; that unmeasured growth
-  // reads as the reader sitting above the end, the append is not followed,
-  // and every resize after that finds the end further away still.
+  // options below hand it any new rows. The virtualizer's own append follow
+  // (followOnAppend, off below) judges the same thing against the DOM, where
+  // the streaming row may have grown by a few pixels the ResizeObserver has
+  // not reported yet; that unmeasured growth reads as the reader sitting
+  // above the end, the append is not followed, and every resize after that
+  // finds the end further away still.
   // Read once per row count: StrictMode renders twice, and the second render
   // would read a total that already counts the new rows.
   const virtualizerRef = useRef<Virtualizer<HTMLDivElement, Element> | null>(null)
@@ -395,48 +411,61 @@ function MessageTimeline({
     paddingEnd,
     rangeExtractor,
     // Chat semantics: rows added or removed at either edge leave the rows on
-    // screen where they are, and at the bottom, new and growing rows keep the
-    // view pinned there.
+    // screen where they are, and at the bottom, growing rows keep the view
+    // pinned there. Appended rows are followed by the effect below instead:
+    // the virtualizer's own follow reads a stale offset (see
+    // atEndBeforeRender) and would drag a reader who has just scrolled up.
     anchorTo: 'end',
-    followOnAppend: true,
+    followOnAppend: false,
     scrollEndThreshold: END_THRESHOLD_PX,
+    // Without this, "scrolling stopped" is a 150 ms timer that replays the
+    // offset captured at the last scroll event. In a tab the browser has
+    // stopped painting (hidden, or behind another), scroll events are rare,
+    // so the replay overwrites the offset with a value from before the
+    // virtualizer's own resize adjustments, and the next append reads as
+    // arriving above the end. The scrollend handler reads the live offset.
+    useScrollendEvent: true,
     // Attaching to the scroller otherwise jumps to offset 0 (the top).
     initialOffset: () => scrollElement?.scrollTop ?? 0,
     initialMeasurementsCache: initialMeasurements,
     onChange: (instance) => {
       // A row just resized. When the reader was at the bottom the virtualizer
       // has already moved its offset to follow, so "at the end" below is
-      // judged after the follow. But React applies the list's new height a
-      // render later, and until then the bottom padding is missing from the
-      // page, so the real scroll lands short and a frame paints off the
-      // bottom. Apply the height now and finish the follow before paint.
+      // judged after the follow (or a follow is still pending and the
+      // virtualizer has not learned its offset yet; then the scroller is the
+      // judge). But React applies the list's new height a render later, and
+      // until then the bottom padding is missing from the page, so the real
+      // scroll lands short and a frame paints off the bottom. Apply the
+      // height now and finish the follow before paint.
       const totalSize = instance.getTotalSize()
       const resized = lastTotalSizeRef.current !== null && lastTotalSizeRef.current !== totalSize
       lastTotalSizeRef.current = totalSize
-      const atEnd = isVirtualizerAtEnd(instance)
+      const atEnd = isVirtualizerAtEnd(instance) || followHolds()
       if (resized && !hiddenRef.current && listRef.current) {
         listRef.current.style.height = `${totalSize}px`
         if (atEnd && positionedRef.current && scrollElement) {
           scrollElement.scrollTop = scrollElement.scrollHeight - scrollElement.clientHeight
+          if (followPendingRef.current) followTopRef.current = scrollElement.scrollTop
         }
       }
       reportAtEnd(atEnd)
     },
   })
   // Set on the instance (it is not an option); an idempotent assignment.
-  rowVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = shouldCompensateResize
+  // While a follow is pending the virtualizer's offset is stale, so a row
+  // judged "above the reader" by it may not be, and compensating would move
+  // the reader back to the pre-follow position; onChange re-snaps instead.
+  rowVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, delta, instance) =>
+    !followHolds() && shouldCompensateResize(item, delta, instance)
   virtualizerRef.current = rowVirtualizer
-  // A follow moves the scroller now, but the virtualizer learns its new
-  // offset from the scroll event a frame later. Rows appended in between (a
-  // sent message and the reply's row, or a tab in the background, which
-  // gets no scroll events at all) would read as arriving above the end;
-  // while a follow is pending, the next append is followed too.
-  const followPendingRef = useRef(false)
-  const followTopRef = useRef(0)
+  // Report the end now rather than from the scroll event a frame later: the
+  // scroller's anchoring class follows the report, and a frame with
+  // anchoring back on is a frame where the browser may move the reader.
   const followToEnd = useCallback(() => {
     followPendingRef.current = true
     rowVirtualizer.scrollToEnd()
     followTopRef.current = scrollElement?.scrollTop ?? 0
+    reportAtEndRef.current(true)
   }, [rowVirtualizer, scrollElement])
   const visibleRows = rowVirtualizer.getVirtualItems()
   // Until the scroller has been measured the virtualizer reports no range at
@@ -522,8 +551,8 @@ function MessageTimeline({
     }
   }, [rowVirtualizer, sessionId])
 
-  // Rows appended while the reader is at the bottom keep them there (see
-  // atEndBeforeRender for why the virtualizer's own follow is not enough).
+  // Rows appended while the reader is at the bottom keep them there (the
+  // virtualizer's own follow is off; see atEndBeforeRender for why).
   const rowCountRef = useRef(messages.length)
   useLayoutEffect(() => {
     const grew = messages.length > rowCountRef.current
@@ -563,9 +592,9 @@ function MessageTimeline({
     const growth = paddingEnd - previousPaddingEndRef.current
     if (growth === 0) return
     previousPaddingEndRef.current = paddingEnd
-    const wasAtEnd = isVirtualizerAtEnd(rowVirtualizer, Math.max(growth, 0))
+    const wasAtEnd = isVirtualizerAtEnd(rowVirtualizer, Math.max(growth, 0)) || followHolds()
     if (positionedRef.current && wasAtEnd) followToEnd()
-  }, [followToEnd, paddingEnd, rowVirtualizer])
+  }, [followHolds, followToEnd, paddingEnd, rowVirtualizer])
 
   // The scroll-to-latest button. The browser's smooth scroll rather than the
   // virtualizer's: the virtualizer keeps re-aiming at a streaming bottom for
