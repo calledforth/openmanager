@@ -17,6 +17,8 @@ import {
   readEnvironmentRegistry,
   removeStoredEnvironment,
   removeStoredRoute,
+  routeInUse,
+  routeSearchOrder,
   routeTypeForEndpoint,
   routeTypeLabel,
   selectStoredEnvironment,
@@ -134,6 +136,25 @@ describe('route types', () => {
 })
 
 describe('upsertStoredEnvironment', () => {
+  it('records an answer on a route the client picked without reordering', () => {
+    const next = upsertStoredEnvironment(
+      twoRoutes(),
+      {
+        environmentId: 'env-local',
+        endpoint: TUNNEL,
+        label: 'Studio',
+        health: { status: 'available' },
+        keepOrder: true,
+      },
+      NOW,
+    )!
+    expect(next.environments[0]!.routes).toEqual([
+      route(LOCAL, 0),
+      route(TUNNEL, 1, { health: { status: 'available', changedAt: NOW.toISOString() } }),
+    ])
+    expect(next.environments[0]!.label).toBe('Studio')
+  })
+
   it('inserts a new record keyed by environment ID, with one route', () => {
     const next = upsertStoredEnvironment(EMPTY_REGISTRY, {
       environmentId: 'env-local',
@@ -304,6 +325,27 @@ describe('preferStoredRoute', () => {
     expect(preferStoredRoute(registry, 'env-local', LOCAL)).toBe(registry)
     expect(preferStoredRoute(registry, 'env-local', 'https://elsewhere.example')).toBe(registry)
     expect(preferStoredRoute(registry, 'env-missing', LOCAL)).toBe(registry)
+  })
+})
+
+describe('routeSearchOrder and routeInUse', () => {
+  const LAN = 'http://box.lan:43120'
+
+  it("tries local routes first and keeps the person's order within each group", () => {
+    const record = environment('env-local', [route(TUNNEL, 0), route(LAN, 1), route(LOCAL, 2)])
+    expect(routeSearchOrder(record).map((item) => item.endpoint)).toEqual([LOCAL, TUNNEL, LAN])
+  })
+
+  it('leaves the order alone when every route is of one kind', () => {
+    const record = environment('env-local', [route(TUNNEL, 0), route(LAN, 1)])
+    expect(routeSearchOrder(record)).toBe(record.routes)
+  })
+
+  it('uses the route the client switched to while it is still saved', () => {
+    const record = environment('env-local', [route(TUNNEL, 0), route(LOCAL, 1)])
+    expect(routeInUse(record).endpoint).toBe(LOCAL)
+    expect(routeInUse(record, TUNNEL).endpoint).toBe(TUNNEL)
+    expect(routeInUse(record, 'https://forgotten.example').endpoint).toBe(LOCAL)
   })
 })
 

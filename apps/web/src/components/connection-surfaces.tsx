@@ -8,6 +8,7 @@ import {
 import {
   parseEnvironmentCredential,
   parseEnvironmentEndpoint,
+  routeSearchOrder,
   routeTypeLabel,
   type EnvironmentRoute,
   type RouteHealthStatus,
@@ -180,8 +181,8 @@ const HEALTH_TONES: Record<RouteHealthStatus, string> = {
 
 /**
  * One way to reach an environment: where it points, whether it answers, and
- * the choice to use it. The environment's first route needs no such choice:
- * it is the one in use, or the one selecting the environment will use.
+ * the choice to use it. The route in use needs no such choice, and neither
+ * does the one selecting the environment would start with.
  */
 function RouteRow({
   route,
@@ -238,6 +239,7 @@ function RouteRow({
 export function EnvironmentList({
   environments,
   selectedId,
+  inUseEndpoint,
   onSelect,
   onRemove,
   onChooseRoute,
@@ -246,6 +248,11 @@ export function EnvironmentList({
 }: {
   environments: StoredEnvironment[]
   selectedId: string | null
+  /**
+   * The route the selected environment is reached through. Omitted, it is the
+   * first route in search order, which is where a connection starts.
+   */
+  inUseEndpoint?: string | null
   onSelect?: (environmentId: string) => void
   onRemove?: (environmentId: string) => void
   onChooseRoute?: (environmentId: string, endpoint: string) => void
@@ -263,6 +270,9 @@ export function EnvironmentList({
     <ul className="mt-4 flex w-full flex-col gap-2 text-left" aria-label="Saved environments">
       {environments.map((environment) => {
         const selected = environment.environmentId === selectedId
+        // Where this environment's connection is, or would start.
+        const current =
+          (selected ? inUseEndpoint : undefined) ?? routeSearchOrder(environment)[0]!.endpoint
         return (
           <li
             key={environment.environmentId}
@@ -306,13 +316,13 @@ export function EnvironmentList({
               className="mt-2.5 flex flex-col gap-2"
               aria-label={`Routes to ${environment.label}`}
             >
-              {environment.routes.map((route, index) => (
+              {environment.routes.map((route) => (
                 <RouteRow
                   key={route.endpoint}
                   route={route}
-                  inUse={selected && index === 0}
+                  inUse={selected && route.endpoint === current}
                   onUse={
-                    onChooseRoute && index > 0
+                    onChooseRoute && route.endpoint !== current
                       ? () => onChooseRoute(environment.environmentId, route.endpoint)
                       : undefined
                   }
@@ -336,11 +346,13 @@ export function ConnectionScreen({
   handlers = {},
   environments = [],
   selectedId = null,
+  inUseEndpoint,
 }: {
   state: ConnectionUiState
   handlers?: ConnectionHandlers
   environments?: StoredEnvironment[]
   selectedId?: string | null
+  inUseEndpoint?: string | null
 }) {
   const choosingSaved = state.kind === 'no_environment' && environments.length > 0
   const title = choosingSaved ? 'Select an environment' : state.title
@@ -360,6 +372,7 @@ export function ConnectionScreen({
             <EnvironmentList
               environments={environments}
               selectedId={selectedId}
+              inUseEndpoint={inUseEndpoint}
               onSelect={handlers.onSelectEnvironment}
               onRemove={handlers.onRemoveEnvironment}
               onChooseRoute={handlers.onChooseRoute}

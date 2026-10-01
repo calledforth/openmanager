@@ -1,7 +1,16 @@
 import { PROTOCOL_VERSION } from '@openmanager/protocol'
 import { describe, expect, it } from 'vitest'
-import { CONNECTION_STORIES, READY_CONNECTION_INPUT } from '../stories/connection-states'
-import { bootstrapOutcomeFromQuery, deriveConnectionUi } from './connection-state'
+import {
+  CONNECTION_STORIES,
+  READY_CONNECTION_INPUT,
+  ROUTE_FAILURE_STORIES,
+} from '../stories/connection-states'
+import {
+  bootstrapOutcomeFromQuery,
+  deriveConnectionUi,
+  type DeriveConnectionInput,
+  type RouteFailure,
+} from './connection-state'
 
 /** Kinds that keep the shell mounted instead of replacing it. */
 const BANNER_KINDS = new Set(['connecting', 'reconnecting', 'offline', 'unreachable'])
@@ -204,6 +213,103 @@ describe('deriveConnectionUi', () => {
     expect(bootstrapOutcomeFromQuery(false, ready)).toEqual({ status: 'idle' })
     expect(bootstrapOutcomeFromQuery(true, undefined)).toEqual({ status: 'loading' })
     expect(bootstrapOutcomeFromQuery(true, ready)).toEqual(ready)
+  })
+
+  describe('route failures', () => {
+    const failed = (failure: Partial<RouteFailure>, extra: Partial<DeriveConnectionInput> = {}) =>
+      deriveConnectionUi({
+        ...READY_CONNECTION_INPUT,
+        routeFailure: {
+          reason: 'route_down',
+          endpoint: 'https://studio.example.com',
+          local: false,
+          tried: 1,
+          ...failure,
+        },
+        ...extra,
+      })
+
+    it('gives every reason its own wording and the reason itself', () => {
+      const titles = new Set<string>()
+      const descriptions = new Set<string>()
+      for (const story of ROUTE_FAILURE_STORIES) {
+        const ui = deriveConnectionUi(story.input)
+        if (story.id !== 'route_search') expect(ui.reason, story.id).toBe(story.id)
+        titles.add(ui.title)
+        descriptions.add(ui.description)
+      }
+      expect(descriptions.size).toBe(ROUTE_FAILURE_STORIES.length)
+      expect(titles.size).toBeGreaterThanOrEqual(5)
+    })
+
+    it('tells a tunnel that is down from an environment that is stopped', () => {
+      const down = failed({ reason: 'route_down' })
+      expect(down).toMatchObject({
+        kind: 'unreachable',
+        surface: 'banner',
+        title: 'Route unavailable',
+      })
+      expect(down.description).toContain('studio.example.com is not answering')
+      expect(down.description).toContain('may still be running')
+
+      const stoppedHere = failed({
+        reason: 'environment_offline',
+        endpoint: 'http://127.0.0.1:43120',
+        local: true,
+      })
+      expect(stoppedHere).toMatchObject({ kind: 'unreachable', title: 'Environment offline' })
+      expect(stoppedHere.description).toContain('127.0.0.1:43120 on this device')
+
+      const stoppedBehindTunnel = failed({ reason: 'environment_offline' })
+      expect(stoppedBehindTunnel.description).toContain('studio.example.com answers')
+    })
+
+    it('tells a refused route from a refused token', () => {
+      const refused = failed({ reason: 'route_refused', message: 'Forbidden.' })
+      expect(refused).toMatchObject({
+        kind: 'unauthorized',
+        title: 'Route refused access',
+        action: 'retry',
+      })
+      expect(refused.description).toContain('(Forbidden)')
+
+      const rejected = failed({ reason: 'credential_rejected', message: 'Token revoked.' })
+      expect(rejected).toMatchObject({
+        kind: 'unauthorized',
+        title: 'Not authorized',
+        action: 'change_environment',
+      })
+      expect(rejected.description).toContain('another route will not help')
+      expect(rejected.description).toContain('(Token revoked)')
+    })
+
+    it('says when the other routes failed too', () => {
+      expect(failed({ tried: 2 }).description).toContain('No other saved route answers either.')
+      expect(failed({ tried: 1 }).description).not.toContain('No other saved route')
+    })
+
+    it('outranks a stale ready bootstrap, and is outranked by no network', () => {
+      expect(failed({}).kind).toBe('unreachable')
+      expect(failed({}, { network: { online: false } }).kind).toBe('offline')
+      // A refused token still needs a person with no network.
+      expect(failed({ reason: 'credential_rejected' }, { network: { online: false } }).kind).toBe(
+        'unauthorized',
+      )
+    })
+
+    it('shows a search for another route as a connection in progress', () => {
+      const ui = deriveConnectionUi({
+        ...READY_CONNECTION_INPUT,
+        bootstrap: { status: 'unauthorized' },
+        transport: { phase: 'closed', hasConnected: true, failure: null },
+        routeSearch: { from: 'http://127.0.0.1:43120' },
+      })
+      expect(ui).toMatchObject({
+        kind: 'reconnecting',
+        surface: 'banner',
+        title: 'Trying another route',
+      })
+    })
   })
 
   it('does not invent a failure from idle transport without an environment', () => {

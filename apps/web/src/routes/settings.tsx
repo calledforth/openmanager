@@ -248,6 +248,7 @@ function EnvironmentsPanel() {
     ui,
     environments,
     selectedId,
+    inUseEndpoint,
     connect,
     selectEnvironment,
     removeEnvironment,
@@ -270,8 +271,9 @@ function EnvironmentsPanel() {
         title="Saved environments"
         description={
           <>
-            {status}. Each environment keeps one client token and every route that reaches it. You
-            choose the route; it is never switched for you.
+            {status}. Each environment keeps one client token and every route that reaches it.
+            Routes on this device are tried first, then the rest in your order; when the route in
+            use stops answering, the next one that answers takes over.
           </>
         }
       >
@@ -282,6 +284,7 @@ function EnvironmentsPanel() {
             <EnvironmentList
               environments={environments}
               selectedId={selectedId}
+              inUseEndpoint={inUseEndpoint}
               onSelect={selectEnvironment}
               onRemove={removeEnvironment}
               onChooseRoute={chooseRoute}

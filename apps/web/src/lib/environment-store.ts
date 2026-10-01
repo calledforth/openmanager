@@ -40,7 +40,10 @@ export type RouteHealthReport = { status: RouteHealthStatus; message?: string }
 export type EnvironmentRoute = {
   type: RouteType
   endpoint: string
-  /** Order of preference, `0` first. The route in use is the lowest one. */
+  /**
+   * The person's order of preference, `0` first. The route in use is picked
+   * from it at connect time (`routeInUse`), local routes first.
+   */
   priority: number
   health: RouteHealth
 }
@@ -248,9 +251,37 @@ export function parseStoredEnvironment(input: unknown): StoredEnvironment | null
   }
 }
 
-/** The route this client uses for the environment: the lowest priority. */
+/** The person's first choice of route: the lowest priority. */
 export function preferredRoute(environment: StoredEnvironment): EnvironmentRoute {
   return environment.routes[0]!
+}
+
+/**
+ * The order routes are tried in when the client picks one by itself: every
+ * local route first, then the rest, each group in the person's order. A
+ * loopback route is this device talking to itself, so when it answers no
+ * tunnel or network path is needed.
+ */
+export function routeSearchOrder(environment: StoredEnvironment): EnvironmentRoute[] {
+  const local = environment.routes.filter((route) => isLoopbackEnvironmentEndpoint(route.endpoint))
+  if (local.length === 0 || local.length === environment.routes.length) return environment.routes
+  return [...local, ...environment.routes.filter((route) => !local.includes(route))]
+}
+
+/**
+ * The route the client is using for the environment: the one it last
+ * switched to, while that is still a saved route, otherwise the first in
+ * search order.
+ */
+export function routeInUse(
+  environment: StoredEnvironment,
+  activeEndpoint?: string | null,
+): EnvironmentRoute {
+  return (
+    (activeEndpoint
+      ? environment.routes.find((route) => route.endpoint === activeEndpoint)
+      : undefined) ?? routeSearchOrder(environment)[0]!
+  )
 }
 
 function applyHealth(current: RouteHealth, report: RouteHealthReport, now: Date): RouteHealth {
@@ -304,6 +335,11 @@ export function upsertStoredEnvironment(
     credential?: string
     /** What reaching the endpoint just showed. Omitted leaves its health alone. */
     health?: RouteHealthReport
+    /**
+     * Leave a known route where it is in the person's order. For an answer
+     * on a route the client picked by itself, which is not a choice.
+     */
+    keepOrder?: boolean
   },
   now: Date = new Date(),
 ): EnvironmentRegistry | null {
@@ -313,11 +349,19 @@ export function upsertStoredEnvironment(
 
   const credential = parseEnvironmentCredential(input.credential ?? '')
   const existing = registry.environments.find((item) => item.environmentId === environmentId)
+  const known = existing?.routes.find((item) => item.endpoint === endpoint)
   const record: StoredEnvironment = existing
     ? {
         environmentId,
         label: input.label !== undefined ? parseLabel(input.label) : existing.label,
-        routes: preferRoute(existing.routes, endpoint, input.health, now),
+        routes:
+          input.keepOrder && known
+            ? existing.routes.map((item) =>
+                item === known && input.health
+                  ? { ...item, health: applyHealth(item.health, input.health, now) }
+                  : item,
+              )
+            : preferRoute(existing.routes, endpoint, input.health, now),
         credential: credential || existing.credential,
       }
     : {

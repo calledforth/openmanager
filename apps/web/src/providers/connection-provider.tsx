@@ -19,7 +19,9 @@ import {
   type ConnectionUiState,
   type DeriveConnectionInput,
   type EnvironmentSelection,
+  type RouteFailure,
   type RouteOffer,
+  type RouteSearch,
   type TransportStatus,
 } from '../lib/connection-state'
 import {
@@ -30,11 +32,11 @@ import {
   isLoopbackEnvironmentEndpoint,
   parseEnvironmentCredential,
   parseEnvironmentEndpoint,
-  preferredRoute,
   preferStoredRoute,
   readEnvironmentRegistry,
   removeStoredEnvironment,
   removeStoredRoute,
+  routeInUse,
   selectedStoredEnvironment,
   selectStoredEnvironment,
   setStoredRouteHealth,
@@ -45,11 +47,25 @@ import {
   type StoredEnvironment,
 } from '../lib/environment-store'
 import { fetchLocalOwner } from '../lib/local-owner'
+import { searchRoutes } from '../lib/route-fallback'
 import {
   probeRouteHealth,
   routeHealthFromBootstrap,
   WRONG_ENVIRONMENT_MESSAGE,
 } from '../lib/route-health'
+
+/**
+ * How long to wait before asking every saved route again while none reaches
+ * the environment. Grows so a long outage is not a stream of requests, and
+ * stops growing so a server that comes back is found within half a minute.
+ */
+const ROUTE_RETRY_DELAYS_MS: readonly number[] = [2000, 4000, 8000, 15000, 30000]
+
+/** The route the client switched to for each environment, by environment ID. */
+type ActiveRoutes = Readonly<Record<string, string>>
+
+type TrackedFailure = RouteFailure & { environmentId: string }
+type TrackedSearch = RouteSearch & { environmentId: string }
 
 type PendingConnect = {
   endpoint: string
@@ -69,13 +85,19 @@ type ConnectionValue = {
   environment: EnvironmentSelection
   environments: StoredEnvironment[]
   selectedId: string | null
+  /**
+   * The route the selected environment is reached through. Not always the
+   * person's first choice: a local route is tried first, and a route that
+   * fails is replaced by the next one that answers.
+   */
+  inUseEndpoint: string | null
   connect: (endpoint: string, credential?: string) => void
   selectEnvironment: (environmentId: string) => void
   removeEnvironment: (environmentId: string) => void
   /**
-   * Reach the environment through this route from now on, selecting the
-   * environment if it is not the one in use. The choice is the user's: a route
-   * that stops answering is reported, never swapped for another.
+   * Make this route the person's first choice and reach the environment
+   * through it now, selecting the environment if it is not the one in use. If
+   * it stops answering, the next route that answers takes over.
    */
   chooseRoute: (environmentId: string, endpoint: string) => void
   /** Forget one route. The last route of an environment cannot be forgotten. */
@@ -122,9 +144,19 @@ function routeKey(environmentId: string, endpoint: string): string {
 /** Server rendering has no network events; assume a network until told otherwise. */
 const onlineOnServer = () => true
 
+function inUseFor(
+  environment: StoredEnvironment | null | undefined,
+  activeRoutes: ActiveRoutes,
+): string | null {
+  return environment
+    ? routeInUse(environment, activeRoutes[environment.environmentId]).endpoint
+    : null
+}
+
 function toSelection(
   registry: EnvironmentRegistry,
   pending: PendingConnect | null,
+  activeRoutes: ActiveRoutes,
 ): EnvironmentSelection {
   if (pending) {
     // No identity until the address has answered for itself. A record that
@@ -137,7 +169,7 @@ function toSelection(
     // session it holds, stays while the answer is out.
     const selected = selectedStoredEnvironment(registry)
     const inUse =
-      selected && preferredRoute(selected).endpoint === pending.endpoint ? selected : undefined
+      selected && inUseFor(selected, activeRoutes) === pending.endpoint ? selected : undefined
     const known =
       inUse ??
       registry.environments.find((item) =>
@@ -154,7 +186,7 @@ function toSelection(
   if (!selected) return { status: 'none' }
   return {
     status: 'selected',
-    endpoint: preferredRoute(selected).endpoint,
+    endpoint: inUseFor(selected, activeRoutes)!,
     environmentId: selected.environmentId,
     label: selected.label,
   }
@@ -190,9 +222,12 @@ function transportFromBootstrap(
 export function ConnectionProvider({
   children,
   preview,
+  retryDelaysMs = ROUTE_RETRY_DELAYS_MS,
 }: {
   children: ReactNode
   preview?: DeriveConnectionInput
+  /** Delays between asking every route again while none answers. For tests. */
+  retryDelaysMs?: readonly number[]
 }) {
   const [registry, setRegistry] = useState<EnvironmentRegistry>(() =>
     preview ? EMPTY_REGISTRY : readEnvironmentRegistry(),
@@ -214,6 +249,51 @@ export function ConnectionProvider({
   const forgottenRoutes = useRef(new Set<string>())
   const online = useSyncExternalStore(subscribeToNetworkStatus, isBrowserOnline, onlineOnServer)
   const wasOffline = useRef(false)
+
+  // The route in use is the client's pick, not the person's order: it starts
+  // at the first route in search order and moves when that route fails. Kept
+  // for this page only, so a reload starts again from a local route.
+  const [activeRoutes, setActiveRoutes] = useState<ActiveRoutes>({})
+  const activeRoutesRef = useRef(activeRoutes)
+  const setActiveRoute = useCallback((environmentId: string, routeEndpoint: string | null) => {
+    const current = activeRoutesRef.current
+    if ((current[environmentId] ?? null) === routeEndpoint) return
+    const next = { ...current }
+    if (routeEndpoint) next[environmentId] = routeEndpoint
+    else delete next[environmentId]
+    activeRoutesRef.current = next
+    setActiveRoutes(next)
+  }, [])
+
+  // Why no route reaches the selected environment, and whether its other
+  // routes are being tried right now. A search is identified by its
+  // generation; anything that changes what is being reached bumps it, so a
+  // late answer cannot move a selection that has moved on.
+  const [routeFailure, setRouteFailureState] = useState<TrackedFailure | null>(null)
+  const routeFailureRef = useRef<TrackedFailure | null>(null)
+  const setRouteFailure = useCallback((failure: TrackedFailure | null) => {
+    routeFailureRef.current = failure
+    setRouteFailureState(failure)
+  }, [])
+  const [routeSearch, setRouteSearch] = useState<TrackedSearch | null>(null)
+  const searchGeneration = useRef(0)
+  const searching = useRef(false)
+  const retryAttempt = useRef(0)
+  const stopRouteSearch = useCallback(() => {
+    searchGeneration.current += 1
+    searching.current = false
+    retryAttempt.current = 0
+    setRouteSearch(null)
+    setRouteFailure(null)
+  }, [setRouteFailure])
+
+  // Socket reports arrive outside render and need what the latest render saw.
+  const pendingRef = useRef(pending)
+  const onlineRef = useRef(online)
+  useEffect(() => {
+    pendingRef.current = pending
+    onlineRef.current = online
+  }, [pending, online])
 
   // Route probes and socket reports land between renders, so every change is
   // computed from the latest registry rather than the one a render captured.
@@ -241,7 +321,7 @@ export function ConnectionProvider({
     [],
   )
 
-  const environment = preview?.environment ?? toSelection(registry, pending)
+  const environment = preview?.environment ?? toSelection(registry, pending, activeRoutes)
   const endpoint = environment.status === 'selected' ? environment.endpoint : null
   // Identity for a health report comes from the stored selection only. While a
   // connect is pending, the endpoint has not yet proven which environment it is.
@@ -310,6 +390,61 @@ export function ConnectionProvider({
     liveReports.current.set(key, (liveReports.current.get(key) ?? 0) + 1)
   }, [])
 
+  /**
+   * Ask the environment's saved routes, local first, for one that reaches it.
+   *
+   * - `bootstrap`: the route in use just failed its bootstrap (`known`). The
+   *   interface says another route is being tried.
+   * - `socket`: the live socket dropped. If its route still answers this is a
+   *   blip, left to the socket's own backoff; otherwise the next route that
+   *   answers takes over.
+   * - `retry`: no route answered last time. Asked again quietly, keeping the
+   *   reason on screen until something answers.
+   *
+   * A route that answers is only made the route in use; the main bootstrap
+   * query then verifies it, as for any route, before a socket is opened.
+   */
+  const startRouteSearch = useCallback(
+    (
+      environmentId: string,
+      origin: 'bootstrap' | 'socket' | 'retry',
+      known?: { endpoint: string; outcome: BootstrapOutcome },
+    ) => {
+      const record = findStoredEnvironment(registryRef.current.environments, environmentId)
+      if (!record) return
+      const generation = ++searchGeneration.current
+      searching.current = true
+      const from = inUseFor(record, activeRoutesRef.current)!
+      if (origin === 'bootstrap') setRouteSearch({ environmentId, from })
+      void searchRoutes(record, {
+        known,
+        first: origin === 'socket' ? from : undefined,
+      }).then((result) => {
+        if (generation !== searchGeneration.current || !mounted.current) return
+        searching.current = false
+        setRouteSearch(null)
+        for (const probe of result.probes) {
+          if (probe.known) continue
+          const report = routeHealthFromBootstrap(probe.outcome, environmentId)
+          if (!report) continue
+          noteLiveReport(environmentId, probe.endpoint)
+          update((current) => setStoredRouteHealth(current, environmentId, probe.endpoint, report))
+        }
+        if (result.found === null) {
+          setRouteFailure({ ...result.failure, environmentId })
+          return
+        }
+        setRouteFailure(null)
+        const latest = findStoredEnvironment(registryRef.current.environments, environmentId)
+        const inUse = inUseFor(latest, activeRoutesRef.current)
+        if (origin === 'socket' && result.found === inUse) return
+        setActiveRoute(environmentId, result.found)
+        setBootstrapNonce((value) => value + 1)
+      })
+    },
+    [noteLiveReport, setActiveRoute, setRouteFailure, update],
+  )
+
   useEffect(() => {
     if (preview || !endpoint) return
     const fresh = recordedBootstrap.current !== liveBootstrap
@@ -320,6 +455,12 @@ export function ConnectionProvider({
       if (failureId && report) {
         noteLiveReport(failureId, endpoint)
         update((current) => setStoredRouteHealth(current, failureId, endpoint, report))
+      }
+      // The route in use of a saved selection failed: try the others. A
+      // connect a person started is to the address they typed, and offline
+      // nothing would answer; returning online asks again.
+      if (storedId && online) {
+        startRouteSearch(storedId, 'bootstrap', { endpoint, outcome: liveBootstrap })
       }
       return
     }
@@ -361,6 +502,8 @@ export function ConnectionProvider({
             message: WRONG_ENVIRONMENT_MESSAGE,
           }),
         )
+        // Another of the environment's routes may still lead to it.
+        if (online) startRouteSearch(storedId, 'bootstrap', { endpoint, outcome: liveBootstrap })
       }
       return
     }
@@ -372,10 +515,17 @@ export function ConnectionProvider({
         label: liveBootstrap.label,
         credential: pending?.credential,
         health: fresh ? { status: 'available' } : undefined,
+        // A typed address is the person's choice and goes first. A saved
+        // route the client picked by itself is not, so the order stays.
+        keepOrder: !pending,
       }),
     )
     if (!stored) return
-    if (liveBootstrap.status === 'ready') setHasConnected(true)
+    if (pending) setActiveRoute(answeredId, endpoint)
+    if (liveBootstrap.status === 'ready') {
+      setHasConnected(true)
+      retryAttempt.current = 0
+    }
     if (pending) setPending(null)
   }, [
     preview,
@@ -388,6 +538,9 @@ export function ConnectionProvider({
     failureId,
     noteLiveReport,
     routeOffer,
+    online,
+    startRouteSearch,
+    setActiveRoute,
   ])
 
   const answeredByAnother =
@@ -418,10 +571,13 @@ export function ConnectionProvider({
     ),
     network: { online },
     routeOffer,
+    routeFailure: storedId && routeFailure?.environmentId === storedId ? routeFailure : undefined,
+    routeSearch: storedId && routeSearch?.environmentId === storedId ? routeSearch : undefined,
   }
 
   // Returning from offline is the one event worth acting on: the bootstrap
-  // query and the socket both get to try again straight away.
+  // query and the socket both get to try again straight away. What the routes
+  // said while there was no network says nothing, so it is dropped.
   useEffect(() => {
     if (preview) return
     if (!online) {
@@ -430,45 +586,67 @@ export function ConnectionProvider({
     }
     if (!wasOffline.current) return
     wasOffline.current = false
+    stopRouteSearch()
     setBootstrapNonce((value) => value + 1)
-  }, [online, preview])
+  }, [online, preview, stopRouteSearch])
+
+  // While no route answers, ask them all again with a growing delay. A token
+  // the environment refused is not retried: it needs a person.
+  useEffect(() => {
+    if (preview || !online || !routeFailure) return
+    if (routeFailure.reason === 'credential_rejected') return
+    const delay = retryDelaysMs[Math.min(retryAttempt.current, retryDelaysMs.length - 1)]
+    const timer = setTimeout(() => {
+      retryAttempt.current += 1
+      startRouteSearch(routeFailure.environmentId, 'retry')
+    }, delay)
+    return () => clearTimeout(timer)
+  }, [preview, online, routeFailure, startRouteSearch, retryDelaysMs])
 
   const ui = deriveConnectionUi(input)
 
-  const connect = useCallback((nextEndpoint: string, credential = '') => {
-    const endpoint = parseEnvironmentEndpoint(nextEndpoint)
-    if (!endpoint) return
-    const parsed = parseEnvironmentCredential(credential)
-    forgottenRoutes.current.clear()
-    setHasConnected(false)
-    setLocalOwnerClaimFailure(null)
-    const begin = (nextCredential: string, claimedEnvironmentId?: string) => {
-      setPending({ endpoint, credential: nextCredential, claimedEnvironmentId })
-      setBootstrapNonce((value) => value + 1)
-    }
-    // A pasted token always wins. Remote endpoints are never asked for an
-    // owner credential (pairing is how those clients enroll). On loopback a
-    // blank token claims the process-minted owner credential before persist
-    // so the registry is keyed to the environment ID with that token.
-    if (parsed || !isLoopbackEnvironmentEndpoint(endpoint)) {
-      claimGeneration.current += 1
-      begin(parsed)
-      return
-    }
-    const requestId = ++claimGeneration.current
-    claimingEndpoint.current = endpoint
-    void fetchLocalOwner(endpoint).then((claim) => {
-      if (requestId !== claimGeneration.current) return
-      begin(claim?.credential ?? '', claim?.environmentId)
-    })
-  }, [])
+  const connect = useCallback(
+    (nextEndpoint: string, credential = '') => {
+      const endpoint = parseEnvironmentEndpoint(nextEndpoint)
+      if (!endpoint) return
+      const parsed = parseEnvironmentCredential(credential)
+      forgottenRoutes.current.clear()
+      stopRouteSearch()
+      setHasConnected(false)
+      setLocalOwnerClaimFailure(null)
+      const begin = (nextCredential: string, claimedEnvironmentId?: string) => {
+        setPending({ endpoint, credential: nextCredential, claimedEnvironmentId })
+        setBootstrapNonce((value) => value + 1)
+      }
+      // A pasted token always wins. Remote endpoints are never asked for an
+      // owner credential (pairing is how those clients enroll). On loopback a
+      // blank token claims the process-minted owner credential before persist
+      // so the registry is keyed to the environment ID with that token.
+      if (parsed || !isLoopbackEnvironmentEndpoint(endpoint)) {
+        claimGeneration.current += 1
+        begin(parsed)
+        return
+      }
+      const requestId = ++claimGeneration.current
+      claimingEndpoint.current = endpoint
+      void fetchLocalOwner(endpoint).then((claim) => {
+        if (requestId !== claimGeneration.current) return
+        begin(claim?.credential ?? '', claim?.environmentId)
+      })
+    },
+    [stopRouteSearch],
+  )
 
-  /** Drop what belonged to a connect that is being replaced or abandoned. */
+  /**
+   * Drop what belonged to a connect, or a route search, that is being
+   * replaced or abandoned.
+   */
   const abandonPendingConnect = useCallback(() => {
     setPending(null)
     setLocalOwnerClaimFailure(null)
     claimGeneration.current += 1
-  }, [])
+    stopRouteSearch()
+  }, [stopRouteSearch])
 
   const confirmRoute = useCallback(() => {
     setPending((current) => (current ? { ...current, confirmed: true } : current))
@@ -485,33 +663,43 @@ export function ConnectionProvider({
       if (!findStoredEnvironment(registryRef.current.environments, environmentId)) return
       setHasConnected(false)
       abandonPendingConnect()
+      // Selecting an environment starts again from its first route in search
+      // order, a local one when it has one.
+      setActiveRoute(environmentId, null)
       update((current) => selectStoredEnvironment(current, environmentId))
       setBootstrapNonce((value) => value + 1)
     },
-    [abandonPendingConnect, update],
+    [abandonPendingConnect, setActiveRoute, update],
   )
 
   const removeEnvironment = useCallback(
     (environmentId: string) => {
       if (registryRef.current.selectedId === environmentId) setHasConnected(false)
       abandonPendingConnect()
+      setActiveRoute(environmentId, null)
       update((current) => removeStoredEnvironment(current, environmentId))
       setBootstrapNonce((value) => value + 1)
     },
-    [abandonPendingConnect, update],
+    [abandonPendingConnect, setActiveRoute, update],
   )
 
   const chooseRoute = useCallback(
     (environmentId: string, routeEndpoint: string) => {
       const current = registryRef.current
+      const record = findStoredEnvironment(current.environments, environmentId)
+      if (!record?.routes.some((route) => route.endpoint === routeEndpoint)) return
       const next = preferStoredRoute(current, environmentId, routeEndpoint)
-      if (next === current) return
+      const alreadyInUse =
+        current.selectedId === environmentId &&
+        inUseFor(record, activeRoutesRef.current) === routeEndpoint
+      if (next === current && alreadyInUse) return
       setHasConnected(false)
       abandonPendingConnect()
+      setActiveRoute(environmentId, routeEndpoint)
       update(() => next)
       setBootstrapNonce((value) => value + 1)
     },
-    [abandonPendingConnect, update],
+    [abandonPendingConnect, setActiveRoute, update],
   )
 
   const removeRoute = useCallback(
@@ -519,10 +707,14 @@ export function ConnectionProvider({
       const current = registryRef.current
       const next = removeStoredRoute(current, environmentId, routeEndpoint)
       if (next === current) return
-      const before = selectedStoredEnvironment(current)
-      const after = selectedStoredEnvironment(next)
+      const before = inUseFor(selectedStoredEnvironment(current), activeRoutesRef.current)
+      if (activeRoutesRef.current[environmentId] === routeEndpoint) {
+        setActiveRoute(environmentId, null)
+      }
+      const after = inUseFor(selectedStoredEnvironment(next), activeRoutesRef.current)
       // Forgetting the route in use moves the connection to the next one.
-      if (before && after && preferredRoute(before).endpoint !== preferredRoute(after).endpoint) {
+      if (before && after && before !== after) {
+        stopRouteSearch()
         setHasConnected(false)
         setBootstrapNonce((value) => value + 1)
       }
@@ -540,15 +732,49 @@ export function ConnectionProvider({
       }
       update(() => next)
     },
-    [update],
+    [setActiveRoute, stopRouteSearch, update],
   )
 
   const reportRouteHealth = useCallback(
     (environmentId: string, routeEndpoint: string, report: RouteHealthReport) => {
       noteLiveReport(environmentId, routeEndpoint)
       update((current) => setStoredRouteHealth(current, environmentId, routeEndpoint, report))
+      // Only the socket on the selected environment's route in use drives the
+      // connection. A connect a person started settles on its own.
+      const selected = selectedStoredEnvironment(registryRef.current)
+      if (pendingRef.current || selected?.environmentId !== environmentId) return
+      if (inUseFor(selected, activeRoutesRef.current) !== routeEndpoint) return
+      if (report.status === 'available') {
+        retryAttempt.current = 0
+        if (routeFailureRef.current) setRouteFailure(null)
+        return
+      }
+      if (report.status === 'unauthorized') {
+        // The environment itself refused the token, and every route carries
+        // the same one: nothing to search for.
+        searchGeneration.current += 1
+        searching.current = false
+        setRouteSearch(null)
+        setRouteFailure({
+          environmentId,
+          reason: 'credential_rejected',
+          endpoint: routeEndpoint,
+          local: isLoopbackEnvironmentEndpoint(routeEndpoint),
+          tried: 1,
+          ...(report.message ? { message: report.message } : {}),
+        })
+        return
+      }
+      if (
+        report.status === 'unreachable' &&
+        onlineRef.current &&
+        !searching.current &&
+        !routeFailureRef.current
+      ) {
+        startRouteSearch(environmentId, 'socket')
+      }
     },
-    [noteLiveReport, update],
+    [noteLiveReport, setRouteFailure, startRouteSearch, update],
   )
 
   // One check per route at a time, so a slow answer cannot land after, and
@@ -560,7 +786,8 @@ export function ConnectionProvider({
     const isInUse = (registry: EnvironmentRegistry, environmentId: string, route: string) => {
       const selected = selectedStoredEnvironment(registry)
       return (
-        selected?.environmentId === environmentId && preferredRoute(selected).endpoint === route
+        selected?.environmentId === environmentId &&
+        inUseFor(selected, activeRoutesRef.current) === route
       )
     }
     const current = registryRef.current
@@ -589,8 +816,9 @@ export function ConnectionProvider({
   }, [preview, update])
 
   const retry = useCallback(() => {
+    stopRouteSearch()
     setBootstrapNonce((value) => value + 1)
-  }, [])
+  }, [stopRouteSearch])
 
   const changeEnvironment = useCallback(() => {
     setHasConnected(false)
@@ -599,12 +827,15 @@ export function ConnectionProvider({
     setBootstrapNonce((value) => value + 1)
   }, [abandonPendingConnect, update])
 
+  const inUseEndpoint = inUseFor(selectedRecord, activeRoutes)
+
   const value = useMemo(
     () => ({
       ui,
       environment,
       environments: registry.environments,
       selectedId: registry.selectedId,
+      inUseEndpoint,
       connect,
       selectEnvironment,
       removeEnvironment,
@@ -625,6 +856,7 @@ export function ConnectionProvider({
       environment,
       registry.environments,
       registry.selectedId,
+      inUseEndpoint,
       connect,
       selectEnvironment,
       removeEnvironment,

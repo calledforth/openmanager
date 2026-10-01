@@ -76,12 +76,15 @@ describe('interpretBootstrapResponse', () => {
     ).toEqual({
       status: 'unreachable',
       message: 'The environment server responded with HTTP 502.',
+      cause: 'http',
+      httpStatus: 502,
     })
     expect(
       interpretBootstrapResponse({ ok: true, status: 200, body: { hello: true } }),
     ).toEqual({
       status: 'unreachable',
       message: 'The environment responded, but the bootstrap payload was not valid.',
+      cause: 'invalid',
     })
   })
 })

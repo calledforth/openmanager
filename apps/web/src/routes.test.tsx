@@ -885,7 +885,8 @@ describe('web routes', () => {
     )
 
     renderWebApp('/')
-    expect(await screen.findByRole('heading', { name: 'Not authorized' })).toBeInTheDocument()
+    // /bootstrap takes no token, so a refusal there is the route's, not the token's.
+    expect(await screen.findByRole('heading', { name: 'Route refused access' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Change environment' }))
     expect(
       await screen.findByRole('heading', { name: 'Select an environment' }),
@@ -958,7 +959,8 @@ describe('web routes', () => {
     )
 
     renderWebApp('/')
-    expect(await screen.findByRole('alert')).toHaveTextContent('Environment unreachable')
+    // Nothing answers on this device's own address: the server is not running.
+    expect(await screen.findByRole('alert')).toHaveTextContent('Environment offline')
     expect(
       screen.getByText('Connect to an environment to see your sessions here.'),
     ).toBeInTheDocument()

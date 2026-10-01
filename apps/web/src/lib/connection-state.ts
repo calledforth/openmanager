@@ -50,7 +50,17 @@ export type BootstrapOutcome =
       label?: string
     }
   | { status: 'unauthorized'; message?: string }
-  | { status: 'unreachable'; message?: string }
+  | {
+      status: 'unreachable'
+      message?: string
+      /**
+       * `network`: nothing answered. `http`: something answered with an error
+       * status, often a gateway in front of the environment. `invalid`: what
+       * answered is not an environment. Absent on outcomes built elsewhere.
+       */
+      cause?: 'network' | 'http' | 'invalid'
+      httpStatus?: number
+    }
 
 export type TransportFailureCode = 'auth' | 'protocol_incompatible' | 'unreachable'
 
@@ -76,7 +86,47 @@ export type ConnectionUiState = {
   endpoint?: string
   clientProtocolVersion?: number
   serverProtocolVersion?: number
+  /** Why the environment cannot be reached, when a route failure is the cause. */
+  reason?: RouteFailureReason
 }
+
+/**
+ * Why no saved route reaches the environment, in terms a person can act on.
+ *
+ * - `route_down`: the route itself does not answer. A tunnel or network path
+ *   is down; the environment behind it may well be running.
+ * - `environment_offline`: the environment server is not running. Nothing
+ *   listens on this device's loopback address, or a gateway answered for an
+ *   environment that did not.
+ * - `route_refused`: `/bootstrap`, which takes no token, was refused: a
+ *   tunnel's access gate, a proxy, or the environment's origin check.
+ * - `credential_rejected`: the environment itself refused this client's token.
+ *   Every route carries the same token, so no other route is tried.
+ * - `wrong_environment`: a different environment answers at the address.
+ */
+export const ROUTE_FAILURE_REASONS = [
+  'route_down',
+  'environment_offline',
+  'route_refused',
+  'credential_rejected',
+  'wrong_environment',
+] as const
+export type RouteFailureReason = (typeof ROUTE_FAILURE_REASONS)[number]
+
+export type RouteFailure = {
+  reason: RouteFailureReason
+  /** The route the reason was learned on. */
+  endpoint: string
+  /** The route is this device's loopback address. */
+  local: boolean
+  /** How many saved routes were tried. */
+  tried: number
+  /** What the environment said, when it said something. */
+  message?: string
+}
+
+/** The route in use failed and the environment's other routes are being tried. */
+export type RouteSearch = { from: string }
 
 export type DeriveConnectionInput = {
   environment: EnvironmentSelection
@@ -86,6 +136,10 @@ export type DeriveConnectionInput = {
   network?: NetworkStatus
   /** A connect that is waiting for consent before it becomes a route. */
   routeOffer?: RouteOffer
+  /** No saved route reaches the selected environment, and why. */
+  routeFailure?: RouteFailure
+  /** The other saved routes are being tried after the route in use failed. */
+  routeSearch?: RouteSearch
 }
 
 /**
@@ -130,8 +184,101 @@ function environmentContext(input: DeriveConnectionInput) {
   return { endpoint, label, named: label ?? endpoint ?? 'this environment' }
 }
 
+const RETRYING = 'OpenManager keeps trying every saved route and reconnects on its own.'
+
+/** `host:port` reads better in a sentence than the full URL. */
+function hostOf(endpoint: string): string {
+  try {
+    return new URL(endpoint).host || endpoint
+  } catch {
+    return endpoint
+  }
+}
+
+type Context = { named: string; label?: string; endpoint?: string }
+
+function routeFailureUi(failure: RouteFailure, { named, label }: Context): ConnectionUiState {
+  const host = hostOf(failure.endpoint)
+  const others = failure.tried > 1 ? ' No other saved route answers either.' : ''
+  const base = { environmentLabel: label, endpoint: failure.endpoint, reason: failure.reason }
+  switch (failure.reason) {
+    case 'credential_rejected': {
+      const said = failure.message?.trim().replace(/\.$/, '')
+      return {
+        ...base,
+        kind: 'unauthorized',
+        surface: 'screen',
+        title: 'Not authorized',
+        description: `${named} rejected this client's token${said ? ` (${said})` : ''}. Every route sends the same token, so another route will not help. Connect again with a valid token, or pair this device again.`,
+        action: 'change_environment',
+      }
+    }
+    case 'route_refused': {
+      const said = failure.message?.trim().replace(/\.$/, '')
+      return {
+        ...base,
+        kind: 'unauthorized',
+        surface: 'screen',
+        title: 'Route refused access',
+        description: `${host} refused this browser${said ? ` (${said})` : ''}, so ${named} cannot be reached through it.${others} If the address sits behind a sign-in, open it in a tab and sign in, then retry. ${RETRYING}`,
+        action: 'retry',
+        secondaryAction: 'change_environment',
+      }
+    }
+    case 'environment_offline':
+      return {
+        ...base,
+        kind: 'unreachable',
+        surface: 'banner',
+        title: 'Environment offline',
+        description: failure.local
+          ? `Nothing is answering at ${host} on this device, so ${named} looks stopped. Start the environment server. ${RETRYING}`
+          : `${host} answers, but ${named} is not running behind it. Start the environment server. ${RETRYING}`,
+        action: 'retry',
+        secondaryAction: 'change_environment',
+      }
+    case 'wrong_environment':
+      return {
+        ...base,
+        kind: 'unreachable',
+        surface: 'banner',
+        title: 'Environment unreachable',
+        description: `A different environment now answers at ${host}.${others} Connect to the address again to add what answers there, or add another route to ${named}. ${RETRYING}`,
+        action: 'retry',
+        secondaryAction: 'change_environment',
+      }
+    case 'route_down':
+      return {
+        ...base,
+        kind: 'unreachable',
+        surface: 'banner',
+        title: 'Route unavailable',
+        description: `${host} is not answering. The tunnel or network path to ${named} may be down; the environment itself may still be running.${others} ${RETRYING}`,
+        action: 'retry',
+        secondaryAction: 'change_environment',
+      }
+  }
+}
+
+function offlineUi(input: DeriveConnectionInput, { named, label, endpoint }: Context) {
+  const deviceOffline = input.network?.online === false
+  return {
+    kind: 'offline',
+    surface: 'banner',
+    title: deviceOffline ? 'No network' : 'Not connected',
+    description: deviceOffline
+      ? `This device is offline. OpenManager reconnects to ${named} as soon as the network is back. Your session stays here.`
+      : `Retries to reach ${named} have stopped. Your session stays here until you retry.`,
+    action: deviceOffline ? undefined : 'retry',
+    secondaryAction: deviceOffline ? undefined : 'change_environment',
+    environmentLabel: label,
+    endpoint,
+  } satisfies ConnectionUiState
+}
+
 export function deriveConnectionUi(input: DeriveConnectionInput): ConnectionUiState {
-  const { named, label, endpoint } = environmentContext(input)
+  const context = environmentContext(input)
+  const { named, label, endpoint } = context
 
   if (input.environment.status === 'none') {
     return {
@@ -189,6 +336,26 @@ export function deriveConnectionUi(input: DeriveConnectionInput): ConnectionUiSt
     }
   }
 
+  // A route failure is worked out from every saved route, so it says more
+  // than the single bootstrap answer read below. A token the environment
+  // refused needs a person whatever the network does; the rest wait it out.
+  const failure = input.routeFailure
+  if (failure?.reason === 'credential_rejected') return routeFailureUi(failure, context)
+  if (failure || input.routeSearch) {
+    if (input.network?.online === false) return offlineUi(input, context)
+    if (input.routeSearch) {
+      return {
+        kind: input.transport.hasConnected ? 'reconnecting' : 'connecting',
+        surface: 'banner',
+        title: 'Trying another route',
+        description: `${hostOf(input.routeSearch.from)} is not answering. Trying the other saved routes to ${named}.`,
+        environmentLabel: label,
+        endpoint: input.routeSearch.from,
+      }
+    }
+    return routeFailureUi(failure!, context)
+  }
+
   const unauthorized =
     input.bootstrap.status === 'unauthorized' || input.transport.failure?.code === 'auth'
   if (unauthorized) {
@@ -215,20 +382,7 @@ export function deriveConnectionUi(input: DeriveConnectionInput): ConnectionUiSt
   // away; the socket behind it cannot still be alive.
   const deviceOffline = input.network?.online === false
   const stoppedRetrying = input.transport.retriesExhausted === true
-  if (deviceOffline || stoppedRetrying) {
-    return {
-      kind: 'offline',
-      surface: 'banner',
-      title: deviceOffline ? 'No network' : 'Not connected',
-      description: deviceOffline
-        ? `This device is offline. OpenManager reconnects to ${named} as soon as the network is back. Your session stays here.`
-        : `Retries to reach ${named} have stopped. Your session stays here until you retry.`,
-      action: deviceOffline ? undefined : 'retry',
-      secondaryAction: deviceOffline ? undefined : 'change_environment',
-      environmentLabel: label,
-      endpoint,
-    }
-  }
+  if (deviceOffline || stoppedRetrying) return offlineUi(input, context)
 
   if (input.transport.phase === 'connected' && input.bootstrap.status === 'ready') {
     return {
