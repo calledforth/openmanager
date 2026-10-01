@@ -452,6 +452,8 @@ describe('WebEnvironmentClientProvider', () => {
     expect(createClient).toHaveBeenCalledTimes(1)
     expect(client.dispose).not.toHaveBeenCalled()
     expect(screen.getByText(`in use: ${ENDPOINT}`)).toBeInTheDocument()
+    // The bootstrap answering does not paper over the socket that is still down.
+    expect(storedRoutes()[0]!.health).toMatchObject({ status: 'unreachable', message: 'Closed.' })
   })
 
   it('stops on a refused token without trying the other routes', async () => {
@@ -478,6 +480,96 @@ describe('WebEnvironmentClientProvider', () => {
     expect(screen.getByText('unauthorized:none')).toBeInTheDocument()
     expect(screen.getByText('reason: credential_rejected')).toBeInTheDocument()
     expect(fetchMock.mock.calls.length).toBe(before)
+  })
+
+  it('keeps a refused token refused when the network comes back', async () => {
+    seedTwoRoutes()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: RequestInfo | URL) => bootstrapAnswer()),
+    )
+    let notify = () => {}
+    let connection: unknown = { phase: 'connected', failure: null }
+    const client = createFakeClient()
+    client.getState.mockImplementation(() => ({
+      ...createInitialState(),
+      connection: connection as ReturnType<EnvironmentClient['getState']>['connection'],
+    }))
+    client.subscribe.mockImplementation(((listener: () => void) => {
+      notify = listener
+      return () => undefined
+    }) as never)
+    const createClient = vi.fn(() => client as EnvironmentClient)
+    renderProvider(createClient)
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+
+    connection = { phase: 'closed', failure: { code: 'auth', message: 'Token revoked.' } }
+    act(() => notify())
+    expect(screen.getByText('unauthorized:none')).toBeInTheDocument()
+
+    transition('offline')
+    transition('online')
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    expect(screen.getByText('reason: credential_rejected')).toBeInTheDocument()
+    expect(createClient).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not let a search outlive a socket that came back on its own', async () => {
+    seedTwoRoutes()
+    let localUp = true
+    let answerTunnel = (): void => undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.startsWith(ENDPOINT) && !localUp) throw new TypeError('Failed to fetch')
+        if (url.startsWith(TUNNEL)) {
+          await new Promise<void>((resolve) => {
+            answerTunnel = resolve
+          })
+          throw new TypeError('Failed to fetch')
+        }
+        return bootstrapAnswer()
+      }),
+    )
+    let notify = () => {}
+    let connection: unknown = { phase: 'connected', failure: null }
+    const client = createFakeClient()
+    client.getState.mockImplementation(() => ({
+      ...createInitialState(),
+      connection: connection as ReturnType<EnvironmentClient['getState']>['connection'],
+    }))
+    client.subscribe.mockImplementation(((listener: () => void) => {
+      notify = listener
+      return () => undefined
+    }) as never)
+    const createClient = vi.fn(() => client as EnvironmentClient)
+    renderProvider(createClient)
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+
+    // The socket drops and localhost fails its check, so the tunnel is asked.
+    localUp = false
+    connection = { phase: 'reconnecting', failure: { code: 'unavailable', message: 'Closed.' } }
+    act(() => notify())
+    await waitFor(() =>
+      expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).startsWith(TUNNEL))).toBe(
+        true,
+      ),
+    )
+
+    // The socket reconnects by itself before the tunnel answers.
+    connection = { phase: 'connected', failure: null }
+    act(() => notify())
+    await act(async () => {
+      answerTunnel()
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+
+    expect(screen.getByText('ready:client')).toBeInTheDocument()
+    expect(client.dispose).not.toHaveBeenCalled()
+    expect(createClient).toHaveBeenCalledTimes(1)
   })
 
   it('says why no route answers and reconnects once one does', async () => {

@@ -271,7 +271,7 @@ describe('deriveConnectionUi', () => {
         title: 'Route refused access',
         action: 'retry',
       })
-      expect(refused.description).toContain('(Forbidden)')
+      expect(refused.description).toContain('(forbidden)')
 
       const rejected = failed({ reason: 'credential_rejected', message: 'Token revoked.' })
       expect(rejected).toMatchObject({
@@ -280,7 +280,7 @@ describe('deriveConnectionUi', () => {
         action: 'change_environment',
       })
       expect(rejected.description).toContain('another route will not help')
-      expect(rejected.description).toContain('(Token revoked)')
+      expect(rejected.description).toContain('(token revoked)')
     })
 
     it('says when the other routes failed too', () => {

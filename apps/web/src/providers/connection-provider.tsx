@@ -423,8 +423,11 @@ export function ConnectionProvider({
         if (generation !== searchGeneration.current || !mounted.current) return
         searching.current = false
         setRouteSearch(null)
+        // A blip check that found the route answering says nothing about the
+        // socket, which is still failing: its own report stays on record.
+        const blip = origin === 'socket' && result.found === from
         for (const probe of result.probes) {
-          if (probe.known) continue
+          if (probe.known || (blip && probe.endpoint === from)) continue
           const report = routeHealthFromBootstrap(probe.outcome, environmentId)
           if (!report) continue
           noteLiveReport(environmentId, probe.endpoint)
@@ -586,7 +589,8 @@ export function ConnectionProvider({
     }
     if (!wasOffline.current) return
     wasOffline.current = false
-    stopRouteSearch()
+    // A refused token is still refused after the network comes back.
+    if (routeFailureRef.current?.reason !== 'credential_rejected') stopRouteSearch()
     setBootstrapNonce((value) => value + 1)
   }, [online, preview, stopRouteSearch])
 
@@ -717,6 +721,11 @@ export function ConnectionProvider({
         stopRouteSearch()
         setHasConnected(false)
         setBootstrapNonce((value) => value + 1)
+      } else if (routeFailureRef.current?.environmentId === environmentId) {
+        // The reason on screen was worked out from routes that included this
+        // one. Ask again without it.
+        stopRouteSearch()
+        setBootstrapNonce((value) => value + 1)
       }
       // A connect to the forgotten address must not bring the route back when
       // its answer arrives. When another environment still has the address the
@@ -745,7 +754,12 @@ export function ConnectionProvider({
       if (pendingRef.current || selected?.environmentId !== environmentId) return
       if (inUseFor(selected, activeRoutesRef.current) !== routeEndpoint) return
       if (report.status === 'available') {
+        // The socket is back: a search still out for it would only find, too
+        // late, that nothing answered while the socket was down.
+        searchGeneration.current += 1
+        searching.current = false
         retryAttempt.current = 0
+        setRouteSearch(null)
         if (routeFailureRef.current) setRouteFailure(null)
         return
       }

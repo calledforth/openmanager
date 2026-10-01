@@ -208,6 +208,13 @@ out from every route it asked (`route-fallback.ts`):
 | `wrong_environment` | The address answers as another environment | Environment unreachable |
 | `credential_rejected` | The socket is refused with `auth` | Not authorized |
 
+A browser only sees a refusal it is allowed to read. The environment's own
+origin check answers `403` before it adds CORS headers, so from another origin
+that refusal arrives as a network failure and is reported as the route being
+down, or, on a loopback route, as the environment being offline; the
+offline wording mentions the page's address for that reason. A gateway that
+refuses without CORS headers looks the same.
+
 The first four are ranked in that order when routes disagree: a sign that the
 server is down explains every other failure, and a refusal is something a
 person can act on. Over a network, silence cannot tell a tunnel that is down

@@ -197,13 +197,24 @@ function hostOf(endpoint: string): string {
 
 type Context = { named: string; label?: string; endpoint?: string }
 
+/**
+ * What the environment said, shaped to sit in parentheses mid-sentence:
+ * "Client token revoked." becomes "client token revoked". Acronyms and
+ * proper nouns that open the message keep their capitals.
+ */
+function aside(message: string | undefined): string | undefined {
+  const trimmed = message?.trim().replace(/\.$/, '')
+  if (!trimmed) return undefined
+  return /^[A-Z][a-z]/.test(trimmed) ? trimmed[0]!.toLowerCase() + trimmed.slice(1) : trimmed
+}
+
 function routeFailureUi(failure: RouteFailure, { named, label }: Context): ConnectionUiState {
   const host = hostOf(failure.endpoint)
   const others = failure.tried > 1 ? ' No other saved route answers either.' : ''
   const base = { environmentLabel: label, endpoint: failure.endpoint, reason: failure.reason }
   switch (failure.reason) {
     case 'credential_rejected': {
-      const said = failure.message?.trim().replace(/\.$/, '')
+      const said = aside(failure.message)
       return {
         ...base,
         kind: 'unauthorized',
@@ -214,7 +225,7 @@ function routeFailureUi(failure: RouteFailure, { named, label }: Context): Conne
       }
     }
     case 'route_refused': {
-      const said = failure.message?.trim().replace(/\.$/, '')
+      const said = aside(failure.message)
       return {
         ...base,
         kind: 'unauthorized',
@@ -232,7 +243,7 @@ function routeFailureUi(failure: RouteFailure, { named, label }: Context): Conne
         surface: 'banner',
         title: 'Environment offline',
         description: failure.local
-          ? `Nothing is answering at ${host} on this device, so ${named} looks stopped. Start the environment server. ${RETRYING}`
+          ? `Nothing is answering at ${host} on this device, so ${named} looks stopped. Start the environment server; if it is already running, check that it allows this page's address. ${RETRYING}`
           : `${host} answers, but ${named} is not running behind it. Start the environment server. ${RETRYING}`,
         action: 'retry',
         secondaryAction: 'change_environment',
@@ -348,7 +359,7 @@ export function deriveConnectionUi(input: DeriveConnectionInput): ConnectionUiSt
         kind: input.transport.hasConnected ? 'reconnecting' : 'connecting',
         surface: 'banner',
         title: 'Trying another route',
-        description: `${hostOf(input.routeSearch.from)} is not answering. Trying the other saved routes to ${named}.`,
+        description: `${named} cannot be reached through ${hostOf(input.routeSearch.from)}. Trying its other saved routes.`,
         environmentLabel: label,
         endpoint: input.routeSearch.from,
       }
