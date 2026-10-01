@@ -418,13 +418,7 @@ function MessageTimeline({
     anchorTo: 'end',
     followOnAppend: false,
     scrollEndThreshold: END_THRESHOLD_PX,
-    // Without this, "scrolling stopped" is a 150 ms timer that replays the
-    // offset captured at the last scroll event. In a tab the browser has
-    // stopped painting (hidden, or behind another), scroll events are rare,
-    // so the replay overwrites the offset with a value from before the
-    // virtualizer's own resize adjustments, and the next append reads as
-    // arriving above the end. The scrollend handler reads the live offset.
-    useScrollendEvent: true,
+    observeElementOffset: observeScrollerOffset,
     // Attaching to the scroller otherwise jumps to offset 0 (the top).
     initialOffset: () => scrollElement?.scrollTop ?? 0,
     initialMeasurementsCache: initialMeasurements,
@@ -727,6 +721,39 @@ function shouldCompensateResize(
   const whollyAbove = item.end <= (instance.scrollOffset ?? 0)
   const firstMeasurement = !instance.itemSizeCache.has(item.key)
   return whollyAbove && (firstMeasurement || instance.scrollDirection !== 'backward')
+}
+
+/**
+ * The virtualizer's own offset observer, except that the "scrolling stopped"
+ * timer reads the scroller. The original replays the offset captured at the
+ * last scroll event, and scroll events are a frame behind the scroller (a
+ * second behind in a tab the browser has stopped painting), so the replay
+ * can overwrite an offset the virtualizer has moved itself since (a resize
+ * adjustment) with an older one, and the next appended row then reads as
+ * arriving above the end. Same timing as the original otherwise.
+ */
+function observeScrollerOffset(
+  instance: Virtualizer<HTMLDivElement, Element>,
+  callback: (offset: number, isScrolling: boolean) => void,
+): (() => void) | undefined {
+  const element = instance.scrollElement
+  const targetWindow = instance.targetWindow
+  if (!element || !targetWindow) return
+  let timer: number | undefined
+  const settle = () => {
+    timer = undefined
+    callback(element.scrollTop, false)
+  }
+  const onScroll = () => {
+    targetWindow.clearTimeout(timer)
+    timer = targetWindow.setTimeout(settle, instance.options.isScrollingResetDelay)
+    callback(element.scrollTop, true)
+  }
+  element.addEventListener('scroll', onScroll, { passive: true })
+  return () => {
+    targetWindow.clearTimeout(timer)
+    element.removeEventListener('scroll', onScroll)
+  }
 }
 
 /**
