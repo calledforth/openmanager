@@ -133,7 +133,8 @@ function createFakeClient() {
 
 function Probe() {
   const client = useEnvironmentClientOptional()
-  const { ui, chooseRoute, checkRoutes, connect, removeRoute, inUseEndpoint } = useConnection()
+  const { ui, chooseRoute, checkRoutes, connect, removeRoute, removeEnvironment, inUseEndpoint } =
+    useConnection()
   return (
     <>
       <p>
@@ -155,6 +156,9 @@ function Probe() {
       </button>
       <button type="button" onClick={() => removeRoute('env-local', TUNNEL)}>
         forget tunnel
+      </button>
+      <button type="button" onClick={() => removeEnvironment('env-other')}>
+        remove other
       </button>
     </>
   )
@@ -563,6 +567,88 @@ describe('WebEnvironmentClientProvider', () => {
     })
     expect(screen.getByText('reason: credential_rejected')).toBeInTheDocument()
     expect(createClient).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a refused token refused when another environment is removed', async () => {
+    localStorage.setItem(
+      ENVIRONMENT_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        selectedId: 'env-local',
+        environments: [
+          {
+            environmentId: 'env-local',
+            label: 'Local environment',
+            endpoints: [ENDPOINT],
+            credential: 'client-token',
+          },
+          { environmentId: 'env-other', label: 'Other', endpoints: [TUNNEL], credential: '' },
+        ],
+      }),
+    )
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: RequestInfo | URL) => bootstrapAnswer()),
+    )
+    let notify = () => {}
+    let connection: unknown = { phase: 'connected', failure: null }
+    const client = createFakeClient()
+    client.getState.mockImplementation(() => ({
+      ...createInitialState(),
+      connection: connection as ReturnType<EnvironmentClient['getState']>['connection'],
+    }))
+    client.subscribe.mockImplementation(((listener: () => void) => {
+      notify = listener
+      return () => undefined
+    }) as never)
+    const createClient = vi.fn(() => client as EnvironmentClient)
+    renderProvider(createClient)
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+
+    connection = { phase: 'closed', failure: { code: 'auth', message: 'Token revoked.' } }
+    act(() => notify())
+    act(() => screen.getByRole('button', { name: 'remove other' }).click())
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+    expect(screen.getByText('reason: credential_rejected')).toBeInTheDocument()
+    expect(createClient).toHaveBeenCalledTimes(1)
+  })
+
+  it('lets a typed connect with a new token through after a refusal', async () => {
+    seedTwoRoutes()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: RequestInfo | URL) => bootstrapAnswer()),
+    )
+    let notify = () => {}
+    let connection: unknown = { phase: 'connected', failure: null }
+    const createClient = vi.fn((_options: WebSocketEnvironmentClientOptions) => {
+      const client = createFakeClient()
+      client.getState.mockImplementation(() => ({
+        ...createInitialState(),
+        connection: connection as ReturnType<EnvironmentClient['getState']>['connection'],
+      }))
+      client.subscribe.mockImplementation(((listener: () => void) => {
+        notify = listener
+        return () => undefined
+      }) as never)
+      return client as EnvironmentClient
+    })
+    renderProvider(createClient)
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+
+    connection = { phase: 'closed', failure: { code: 'auth', message: 'Token revoked.' } }
+    act(() => notify())
+    expect(screen.getByText('unauthorized:none')).toBeInTheDocument()
+
+    connection = { phase: 'connected', failure: null }
+    act(() => screen.getByRole('button', { name: 'reconnect local' }).click())
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+    expect(createClient).toHaveBeenCalledTimes(2)
+    expect(createClient).toHaveBeenLastCalledWith(
+      expect.objectContaining({ url: 'ws://127.0.0.1:43120/ws', credential: 'new-token' }),
+    )
   })
 
   it('does not let a search outlive a socket that came back on its own', async () => {

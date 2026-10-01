@@ -632,10 +632,14 @@ export function ConnectionProvider({
       if (!endpoint) return
       const parsed = parseEnvironmentCredential(credential)
       forgottenRoutes.current.clear()
-      stopRouteSearch(true)
+      // A refused token stays refused until the typed connect exists: cleared
+      // any earlier, the old selection would be dialled again with it while a
+      // local owner claim is still out.
+      stopRouteSearch()
       setHasConnected(false)
       setLocalOwnerClaimFailure(null)
       const begin = (nextCredential: string, claimedEnvironmentId?: string) => {
+        stopRouteSearch(true)
         setPending({ endpoint, credential: nextCredential, claimedEnvironmentId })
         setBootstrapNonce((value) => value + 1)
       }
@@ -662,12 +666,15 @@ export function ConnectionProvider({
    * Drop what belonged to a connect, or a route search, that is being
    * replaced or abandoned.
    */
-  const abandonPendingConnect = useCallback(() => {
-    setPending(null)
-    setLocalOwnerClaimFailure(null)
-    claimGeneration.current += 1
-    stopRouteSearch(true)
-  }, [stopRouteSearch])
+  const abandonPendingConnect = useCallback(
+    (reset = true) => {
+      setPending(null)
+      setLocalOwnerClaimFailure(null)
+      claimGeneration.current += 1
+      stopRouteSearch(reset)
+    },
+    [stopRouteSearch],
+  )
 
   const confirmRoute = useCallback(() => {
     setPending((current) => (current ? { ...current, confirmed: true } : current))
@@ -695,8 +702,11 @@ export function ConnectionProvider({
 
   const removeEnvironment = useCallback(
     (environmentId: string) => {
-      if (registryRef.current.selectedId === environmentId) setHasConnected(false)
-      abandonPendingConnect()
+      const selected = registryRef.current.selectedId === environmentId
+      if (selected) setHasConnected(false)
+      // Removing another environment is no answer to the selected one's
+      // refused token.
+      abandonPendingConnect(selected)
       setActiveRoute(environmentId, null)
       update((current) => removeStoredEnvironment(current, environmentId))
       setBootstrapNonce((value) => value + 1)
