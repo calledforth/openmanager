@@ -152,9 +152,14 @@ export function ChatView() {
 
   return (
     <ChatViewPanel>
+      {/* The list positions its rows and keeps the reader at the bottom
+          itself. The browser's own scroll anchoring would move the scroller
+          on its own whenever content above the viewport inside the streaming
+          row shrinks (a tool group settling), and that stray scroll reads as
+          the reader leaving the bottom, after which the list stops following. */}
       <div
         ref={setScrollElement}
-        className="custom-scrollbar flex-1 min-h-0 overflow-x-hidden overflow-y-auto"
+        className="custom-scrollbar flex-1 min-h-0 overflow-x-hidden overflow-y-auto [overflow-anchor:none]"
       >
         <ConversationTimeline
           sessionId={activeSessionId}
@@ -346,6 +351,17 @@ function MessageTimeline({
   useLayoutEffect(() => {
     reportAtEndRef.current = reportAtEnd
   })
+  // Whether the reader is at the bottom as this render begins, by the
+  // virtualizer's own numbers (its offset against its total), before the
+  // options below hand it any new rows. Its followOnAppend judges the same
+  // thing against the DOM, where the streaming row may have grown by a few
+  // pixels the ResizeObserver has not reported yet; that unmeasured growth
+  // reads as the reader sitting above the end, the append is not followed,
+  // and every resize after that finds the end further away still.
+  const virtualizerRef = useRef<Virtualizer<HTMLDivElement, Element> | null>(null)
+  const atEndBeforeRender = virtualizerRef.current
+    ? isVirtualizerAtEnd(virtualizerRef.current)
+    : true
   const rowVirtualizer = useVirtualizer({
     count: messages.length,
     getScrollElement: () => scrollElement,
@@ -392,6 +408,7 @@ function MessageTimeline({
   })
   // Set on the instance (it is not an option); an idempotent assignment.
   rowVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = shouldCompensateResize
+  virtualizerRef.current = rowVirtualizer
   const visibleRows = rowVirtualizer.getVirtualItems()
   // Until the scroller has been measured the virtualizer reports no range at
   // all, and never consults rangeExtractor. The pinned rows still belong on
@@ -466,8 +483,17 @@ function MessageTimeline({
     }
   }, [rowVirtualizer, sessionId])
 
+  // Rows appended while the reader is at the bottom keep them there (see
+  // atEndBeforeRender for why the virtualizer's own follow is not enough).
+  const rowCountRef = useRef(messages.length)
+  useLayoutEffect(() => {
+    const grew = messages.length > rowCountRef.current
+    rowCountRef.current = messages.length
+    if (grew && atEndBeforeRender && positionedRef.current) rowVirtualizer.scrollToEnd()
+  }, [atEndBeforeRender, messages.length, rowVirtualizer])
+
   // Sending is a request to watch the conversation continue, wherever the
-  // reader was. (At the bottom, followOnAppend already does this.)
+  // reader was.
   const lastMessage = messages[messages.length - 1]
   const lastMessageIdRef = useRef(lastMessage?.externalId)
   useLayoutEffect(() => {
