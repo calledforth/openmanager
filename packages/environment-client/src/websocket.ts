@@ -163,6 +163,8 @@ const HANDSHAKE_NAME = 'protocol.handshake'
 const SUBSCRIBE_NAME = 'subscription.subscribe'
 const UNSUBSCRIBE_NAME = 'subscription.unsubscribe'
 const REPLAY_NAME = 'subscription.replay'
+/** Catalog re-reads before a refresh gives up on dropping omitted sessions. */
+const RECONCILE_PASSES = 3
 
 const SubscribeResponseSchema = z.object({
   payload: z.object({ subscriptionId: z.string(), scope: z.any() }),
@@ -888,19 +890,24 @@ export function createWebSocketEnvironmentClient(
    * Drops cached sessions a full catalog walk did not return, e.g. sessions
    * deleted while this client was offline, whose deletion event is gone.
    *
-   * Keyset pages are not one snapshot: an update during the walk moves a
-   * session ahead of the cursor, so it is absent without being deleted. Such
-   * a session's `updatedAt` is now at least the walk's newest, so the newest
-   * pages are read again down to that point before anything is dropped. A
-   * session live data touched since the walk began, the active session
-   * (its `session.open` is authoritative), and an ancestor of a listed session
-   * are always kept.
+   * Keyset pages are not one snapshot: an update during a multi-page read
+   * moves a session ahead of the cursor, so it is absent without being
+   * deleted. Such a session's `updatedAt` is now at least the newest one that
+   * read started from, so the newest pages are read again down to that point.
+   * A re-read that spans pages can miss a session the same way, so it repeats
+   * from its own newest until one pass fits in a single page, which the
+   * environment answers from one query; a walk that was one page needs no
+   * re-read. Nothing is dropped if no pass settles. A session live data
+   * touched since the walk began, the active session (its `session.open` is
+   * authoritative), and an ancestor of a listed session are always kept.
    */
   const reconcileCachedSessions = async (
     generation: number,
     cached: EnvironmentState['sessions'],
     listed: Set<string>,
     newestUpdatedAt: string | undefined,
+    /** The walk was one page, so one query: it already proves absence. */
+    atomic: boolean,
   ) => {
     const missing = () => {
       const state = store.getState()
@@ -921,20 +928,30 @@ export function createWebSocketEnvironmentClient(
           !parents.has(id),
       )
     }
-    if (missing().length === 0) return
-    const floor = newestUpdatedAt ? Date.parse(newestUpdatedAt) : Number.NEGATIVE_INFINITY
-    let cursor: SessionListCursor | null | undefined
-    do {
-      if (generation !== connectionGeneration || !ready) return
-      const page = await commands.listSessions({
-        limit: PAGE_LIMIT_MAX,
-        ...(cursor ? { cursor } : {}),
-      })
-      for (const session of page.sessions) listed.add(session.sessionId)
-      const oldest = page.sessions.at(-1)?.updatedAt
-      cursor = oldest !== undefined && Date.parse(oldest) < floor ? null : page.nextCursor
-    } while (cursor)
-    if (generation !== connectionGeneration || !ready) return
+    const floorOf = (updatedAt: string | undefined) =>
+      updatedAt ? Date.parse(updatedAt) : Number.NEGATIVE_INFINITY
+    let floor = floorOf(newestUpdatedAt)
+    let settled = atomic
+    for (let pass = 0; pass < RECONCILE_PASSES && !settled; pass++) {
+      if (missing().length === 0) return
+      let cursor: SessionListCursor | null | undefined
+      let pages = 0
+      let nextFloor = floor
+      do {
+        if (generation !== connectionGeneration || !ready) return
+        const page = await commands.listSessions({
+          limit: PAGE_LIMIT_MAX,
+          ...(cursor ? { cursor } : {}),
+        })
+        if (pages++ === 0) nextFloor = floorOf(page.sessions[0]?.updatedAt)
+        for (const session of page.sessions) listed.add(session.sessionId)
+        const oldest = page.sessions.at(-1)?.updatedAt
+        cursor = oldest !== undefined && Date.parse(oldest) < floor ? null : page.nextCursor
+      } while (cursor)
+      settled = pages === 1
+      floor = nextFloor
+    }
+    if (!settled || generation !== connectionGeneration || !ready) return
     const removed = missing()
     if (removed.length === 0) return
     store.update((state) => {
@@ -984,7 +1001,13 @@ export function createWebSocketEnvironmentClient(
               cursor = page.nextCursor
             }
             if (generation !== connectionGeneration || !ready) return
-            await reconcileCachedSessions(generation, cached, listed, first.sessions[0]?.updatedAt)
+            await reconcileCachedSessions(
+              generation,
+              cached,
+              listed,
+              first.sessions[0]?.updatedAt,
+              first.nextCursor === null,
+            )
           })().catch(() => undefined)
         })().catch(() => undefined),
       )

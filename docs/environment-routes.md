@@ -120,9 +120,12 @@ after the first page. Inactive agent runtimes are never opened to check cache
 membership. Once every page has answered, a cached session missing from all
 of them is removed, which covers sessions deleted while the client was
 offline. Keyset pages are not one snapshot, so a concurrent update can move a
-session ahead of the cursor without deleting it. Before removing anything,
-the client therefore re-reads the newest pages down to the walk's newest
-session. It keeps any session that live events touched during the refresh,
+session ahead of the cursor without deleting it. A catalog that fits in one
+page is one query and needs no more checks. Otherwise, before removing
+anything, the client re-reads the newest pages down to the walk's newest
+session. It repeats that from each re-read's own newest session until one
+pass fits in a single page, and removes nothing if three passes never do.
+It keeps any session that live events touched during the refresh,
 the active session (its `session.open` decides), and parents of listed
 sessions. Workspace membership and composer preferences are refreshed from
 the server. Snapshot writes are serialized per

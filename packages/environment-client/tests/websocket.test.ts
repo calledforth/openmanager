@@ -369,6 +369,87 @@ describe('websocket environment client', () => {
     client.dispose()
   })
 
+  it('drops omitted cached sessions at once when the catalog answers in one page', async () => {
+    const state = createInitialState()
+    state.sessions = {
+      [SESSION.sessionId]: { ...SESSION_SUMMARY, threadIds: [] },
+      deleted: { ...SESSION_SUMMARY, sessionId: 'deleted', threadIds: [] },
+    }
+    state.sessionOrder = [SESSION.sessionId, 'deleted']
+    const store = createEnvironmentStore(state)
+    const { client, socket } = await connected(['session.list'], {}, { environmentId: ENV, store })
+    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
+    await flush()
+    expect(socket.sent.filter((message) => message.name === 'session.list')).toHaveLength(1)
+    expect(client.getState().sessionOrder).toEqual([SESSION.sessionId])
+    client.dispose()
+  })
+
+  describe('when the head re-read spans pages', () => {
+    const cursor = { updatedAt: SESSION_SUMMARY.updatedAt, sessionId: SESSION.sessionId }
+    const start = async () => {
+      const state = createInitialState()
+      state.sessions = {
+        [SESSION.sessionId]: { ...SESSION_SUMMARY, threadIds: [] },
+        deleted: { ...SESSION_SUMMARY, sessionId: 'deleted', threadIds: [] },
+      }
+      state.sessionOrder = [SESSION.sessionId, 'deleted']
+      const store = createEnvironmentStore(state)
+      const connection = await connected(['session.list'], {}, { environmentId: ENV, store })
+      // A two-page walk, then a two-page re-read: neither is one query.
+      for (let page = 0; page < 2; page++) {
+        connection.socket.respond('session.list', {
+          sessions: [SESSION_SUMMARY],
+          nextCursor: cursor,
+        })
+        await flush()
+        connection.socket.respond('session.list', { sessions: [], nextCursor: null })
+        await flush()
+      }
+      return connection
+    }
+    const lists = (socket: FakeSocket) =>
+      socket.sent.filter((message) => message.name === 'session.list').length
+
+    it('reads again until one page answers, then drops what is still missing', async () => {
+      const { client, socket } = await start()
+      expect(client.getState().sessions.deleted).toBeDefined()
+      expect(socket.last('session.list').payload).not.toHaveProperty('cursor')
+      socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
+      await flush()
+      expect(lists(socket)).toBe(5)
+      expect(client.getState().sessionOrder).toEqual([SESSION.sessionId])
+      client.dispose()
+    })
+
+    it('keeps a session that moved during a re-read and turns up in the next', async () => {
+      const { client, socket } = await start()
+      const moved = {
+        ...SESSION_SUMMARY,
+        sessionId: 'deleted',
+        updatedAt: '2026-09-12T00:00:00.000Z',
+      }
+      socket.respond('session.list', { sessions: [moved, SESSION_SUMMARY], nextCursor: null })
+      await flush()
+      expect(lists(socket)).toBe(5)
+      expect(client.getState().sessions.deleted).toBeDefined()
+      client.dispose()
+    })
+
+    it('keeps everything when no re-read settles in one page', async () => {
+      const { client, socket } = await start()
+      for (let pass = 0; pass < 2; pass++) {
+        socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: cursor })
+        await flush()
+        socket.respond('session.list', { sessions: [], nextCursor: null })
+        await flush()
+      }
+      expect(lists(socket)).toBe(8)
+      expect(client.getState().sessions.deleted).toBeDefined()
+      client.dispose()
+    })
+  })
+
   it('keeps the active session and parents of listed sessions during catalog reconciliation', async () => {
     const child = { ...SESSION_SUMMARY, sessionId: 'child', parentSessionId: 'parent' }
     const state = createInitialState()
@@ -382,8 +463,6 @@ describe('websocket environment client', () => {
     state.activeSessionId = 'active'
     const store = createEnvironmentStore(state)
     const { client, socket } = await connected(['session.list'], {}, { environmentId: ENV, store })
-    socket.respond('session.list', { sessions: [child], nextCursor: null })
-    await flush()
     socket.respond('session.list', { sessions: [child], nextCursor: null })
     await flush()
     expect(Object.keys(client.getState().sessions).sort()).toEqual(['active', 'child', 'parent'])
