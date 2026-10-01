@@ -330,8 +330,8 @@ describe('websocket environment client', () => {
     client.dispose()
   })
 
-  it('keeps omitted cached sessions until an intentional open confirms deletion', async () => {
-    const older = { ...SESSION_SUMMARY, sessionId: 'older' }
+  it('drops cached sessions that the full catalog and a head re-read both omit', async () => {
+    const older = { ...SESSION_SUMMARY, sessionId: 'older', updatedAt: '2026-09-09T00:00:00.000Z' }
     const state = createInitialState()
     state.sessions = {
       [SESSION.sessionId]: { ...SESSION_SUMMARY, threadIds: [] },
@@ -355,17 +355,78 @@ describe('websocket environment client', () => {
     expect(socket.last('session.list').payload).toMatchObject({ cursor })
     socket.respond('session.list', { sessions: [older], nextCursor: null })
     await flush()
+    // Absence from the walk alone is not proof: the newest pages are re-read.
+    expect(client.getState().sessions.deleted).toBeDefined()
+    expect(socket.last('session.list').payload).not.toHaveProperty('cursor')
+    const olderCursor = { updatedAt: older.updatedAt, sessionId: older.sessionId }
+    socket.respond('session.list', { sessions: [SESSION_SUMMARY, older], nextCursor: olderCursor })
+    await flush()
+    // The re-read stops once it is older than the walk's newest session.
+    expect(socket.sent.filter((message) => message.name === 'session.list')).toHaveLength(3)
     expect(socket.sent.some((message) => message.name === 'session.open')).toBe(false)
-    const opened = client.commands.openSession('deleted').catch(() => undefined)
-    expect(socket.last('session.open').payload).toEqual({ sessionId: 'deleted' })
-    socket.receive({
-      type: 'error',
-      requestId: socket.last('session.open').requestId,
-      error: { code: 'not_found', message: 'Deleted' },
-    })
-    await opened
     expect(client.getState().sessionOrder).toEqual([SESSION.sessionId, 'older'])
     expect(client.getState().sessions.deleted).toBeUndefined()
+    client.dispose()
+  })
+
+  it('keeps the active session and parents of listed sessions during catalog reconciliation', async () => {
+    const child = { ...SESSION_SUMMARY, sessionId: 'child', parentSessionId: 'parent' }
+    const state = createInitialState()
+    state.sessions = {
+      active: { ...SESSION_SUMMARY, sessionId: 'active', threadIds: [] },
+      parent: { ...SESSION_SUMMARY, sessionId: 'parent', threadIds: [] },
+      child: { ...child, threadIds: [] },
+      gone: { ...SESSION_SUMMARY, sessionId: 'gone', threadIds: [] },
+    }
+    state.sessionOrder = ['active', 'parent', 'child', 'gone']
+    state.activeSessionId = 'active'
+    const store = createEnvironmentStore(state)
+    const { client, socket } = await connected(['session.list'], {}, { environmentId: ENV, store })
+    socket.respond('session.list', { sessions: [child], nextCursor: null })
+    await flush()
+    socket.respond('session.list', { sessions: [child], nextCursor: null })
+    await flush()
+    expect(Object.keys(client.getState().sessions).sort()).toEqual(['active', 'child', 'parent'])
+    client.dispose()
+  })
+
+  it('keeps an omitted cached session that live events touched during the refresh', async () => {
+    const state = createInitialState()
+    state.sessions = { touched: { ...SESSION_SUMMARY, sessionId: 'touched', threadIds: [] } }
+    state.sessionOrder = ['touched']
+    const store = createEnvironmentStore(state)
+    const { client, socket } = await connected(
+      ['session.list', 'subscription.subscribe'],
+      {},
+      { environmentId: ENV, store },
+    )
+    socket.respond('subscription.subscribe', {
+      subscriptionId: 'sub-env',
+      scope: { type: 'environment', environmentId: ENV },
+    })
+    const cursor = { updatedAt: SESSION_SUMMARY.updatedAt, sessionId: SESSION.sessionId }
+    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: cursor })
+    await flush()
+    socket.receive({
+      type: 'event',
+      name: 'subscription.event',
+      payload: {
+        subscriptionId: 'sub-env',
+        record: {
+          cursor: { scope: { type: 'environment', environmentId: ENV }, epoch: 'e', sequence: 1 },
+          event: event({
+            name: 'session.updated',
+            scope: environmentScope,
+            payload: { sessionId: 'touched', settledAt: '2026-09-12T00:00:00.000Z' },
+          }),
+        },
+      },
+    })
+    socket.respond('session.list', { sessions: [], nextCursor: null })
+    await flush()
+    // Its only candidate was touched, so there is nothing to re-read or drop.
+    expect(socket.sent.filter((message) => message.name === 'session.list')).toHaveLength(2)
+    expect(client.getState().sessions.touched).toBeDefined()
     client.dispose()
   })
 
@@ -411,6 +472,11 @@ describe('websocket environment client', () => {
     // The moved session was updated into the already-read first page, so
     // neither page names it even though it still exists on the server.
     socket.respond('session.list', { sessions: [], nextCursor: null })
+    await flush()
+    expect(client.getState().sessions.moved).toBeDefined()
+    // The head re-read finds it at the top of the catalog.
+    const updated = { ...moved, updatedAt: '2026-09-11T00:00:00.000Z' }
+    socket.respond('session.list', { sessions: [updated, SESSION_SUMMARY], nextCursor: null })
     await flush()
     expect(client.getState().sessions.moved).toBeDefined()
     expect(socket.sent.some((message) => message.name === 'session.open')).toBe(false)

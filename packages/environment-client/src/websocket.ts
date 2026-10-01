@@ -67,6 +67,7 @@ import type {
   EnvironmentClient,
   EnvironmentCommandName,
   EnvironmentCommands,
+  EnvironmentState,
   WorkspaceComposerPreference,
 } from './types'
 import {
@@ -884,6 +885,66 @@ export function createWebSocketEnvironmentClient(
   }
 
   /**
+   * Drops cached sessions a full catalog walk did not return, e.g. sessions
+   * deleted while this client was offline, whose deletion event is gone.
+   *
+   * Keyset pages are not one snapshot: an update during the walk moves a
+   * session ahead of the cursor, so it is absent without being deleted. Such
+   * a session's `updatedAt` is now at least the walk's newest, so the newest
+   * pages are read again down to that point before anything is dropped. A
+   * session live data touched since the walk began, the active session
+   * (its `session.open` is authoritative), and an ancestor of a listed session
+   * are always kept.
+   */
+  const reconcileCachedSessions = async (
+    generation: number,
+    cached: EnvironmentState['sessions'],
+    listed: Set<string>,
+    newestUpdatedAt: string | undefined,
+  ) => {
+    const missing = () => {
+      const state = store.getState()
+      // Removal cascades to descendants, so every ancestor of a listed session stays.
+      const parents = new Set<string>()
+      for (const id of listed) {
+        let parent = state.sessions[id]?.parentSessionId
+        while (parent && !parents.has(parent)) {
+          parents.add(parent)
+          parent = state.sessions[parent]?.parentSessionId
+        }
+      }
+      return Object.keys(cached).filter(
+        (id) =>
+          !listed.has(id) &&
+          state.sessions[id] === cached[id] &&
+          state.activeSessionId !== id &&
+          !parents.has(id),
+      )
+    }
+    if (missing().length === 0) return
+    const floor = newestUpdatedAt ? Date.parse(newestUpdatedAt) : Number.NEGATIVE_INFINITY
+    let cursor: SessionListCursor | null | undefined
+    do {
+      if (generation !== connectionGeneration || !ready) return
+      const page = await commands.listSessions({
+        limit: PAGE_LIMIT_MAX,
+        ...(cursor ? { cursor } : {}),
+      })
+      for (const session of page.sessions) listed.add(session.sessionId)
+      const oldest = page.sessions.at(-1)?.updatedAt
+      cursor = oldest !== undefined && Date.parse(oldest) < floor ? null : page.nextCursor
+    } while (cursor)
+    if (generation !== connectionGeneration || !ready) return
+    const removed = missing()
+    if (removed.length === 0) return
+    store.update((state) => {
+      let next = state
+      for (const id of removed) next = applySessionRemoved(next, id)
+      return next
+    })
+  }
+
+  /**
    * After every handshake: environment scope, catalog reads, and the active
    * session. If the connection drops or re-handshakes while the catalog reads
    * are in flight, this run stops so it cannot queue a second `session.open`
@@ -908,18 +969,22 @@ export function createWebSocketEnvironmentClient(
       reads.push(
         (async () => {
           if (!options.store) return commands.listSessions()
+          const cached = store.getState().sessions
           // Recover the active session after the first page; older catalog
           // pages continue in the background and never open inactive runtimes.
           const first = await commands.listSessions({ limit: PAGE_LIMIT_MAX })
           if (generation !== connectionGeneration || !ready) return
           void (async () => {
+            const listed = new Set(first.sessions.map((session) => session.sessionId))
             let cursor: SessionListCursor | null = first.nextCursor
-            while (cursor && generation === connectionGeneration && ready) {
+            while (cursor) {
+              if (generation !== connectionGeneration || !ready) return
               const page = await commands.listSessions({ limit: PAGE_LIMIT_MAX, cursor })
+              for (const session of page.sessions) listed.add(session.sessionId)
               cursor = page.nextCursor
             }
-            // Keyset pages are not one snapshot. Keep omitted cached metadata
-            // until a deletion event or an intentional open reports not_found.
+            if (generation !== connectionGeneration || !ready) return
+            await reconcileCachedSessions(generation, cached, listed, first.sessions[0]?.updatedAt)
           })().catch(() => undefined)
         })().catch(() => undefined),
       )
