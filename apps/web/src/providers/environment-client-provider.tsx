@@ -105,6 +105,14 @@ export function WebEnvironmentClientProvider({
       const unsubscribeCache = store.subscribe(() => {
         if (saveTimer === undefined) saveTimer = setTimeout(save, 250)
       })
+      // A reload inside the pause would lose the last keystrokes of a draft
+      // that has not reached the environment yet.
+      const saveNow = () => {
+        if (saveTimer === undefined) return
+        clearTimeout(saveTimer)
+        save()
+      }
+      window.addEventListener('pagehide', saveNow)
       // What the socket learns is about the route it dialled, so it is filed on
       // that route. The store notifies on every event; only a changed connection
       // is worth reading.
@@ -124,6 +132,7 @@ export function WebEnvironmentClientProvider({
         next.dispose()
         if (transport.current === next) transport.current = null
         unsubscribeCache()
+        window.removeEventListener('pagehide', saveNow)
         if (saveTimer !== undefined) clearTimeout(saveTimer)
         save()
         setClient((current) => (current === next ? null : current))

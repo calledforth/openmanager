@@ -322,19 +322,43 @@ describe('the composer over the environment client', () => {
       preferredConfigValues: { effort: 'high' },
     })
 
+    // The picks are kept in the project's draft, so a reload keeps them.
+    act(() => client.drafts!.flush())
+    await settle(client)
+    const [draft] = Object.values(client.getState().drafts)
+    expect(draft).toMatchObject({
+      target: { type: 'new_session', workspaceId: WORKSPACE.workspaceId },
+      content: {
+        providerId: 'opencode',
+        preference: { modelId: 'opus', configValues: { effort: 'high' } },
+      },
+    })
+    const launchId = draft!.target.sessionId
+
     const filedBeforeLaunch = commandsOf(client).length
     await act(() => probe.thread.sendMessage('hello'))
     await settle(client)
     // One command: the create carries the picks, whole, for the environment
-    // to file before it starts the provider. The view then opens the session.
-    expect(commandsOf(client).slice(filedBeforeLaunch)).toEqual(['createSession', 'openSession'])
+    // to file before it starts the provider, and names the draft it sends.
+    // The view then opens the session.
+    expect(
+      commandsOf(client)
+        .slice(filedBeforeLaunch)
+        .filter((command) => command !== 'saveDraft'),
+    ).toEqual(['createSession', 'openSession'])
     expect(inputOf(client, 'createSession')).toEqual({
       environmentId: 'mock-environment',
       workspaceId: WORKSPACE.workspaceId,
       providerId: 'opencode',
       firstMessage: 'hello',
       preference: { modelId: 'opus', configValues: { effort: 'high' } },
+      draftId: draft!.draftId,
+      sessionId: launchId,
     })
+    // The session took the draft's id, and the draft went with the send.
+    expect(client.getState().sessions[launchId]).toBeDefined()
+    expect(client.getState().drafts).toEqual({})
+    expect(client.getState().draftEdits).toEqual({})
 
     // The picks are filed now. A later draft follows what the workspace
     // remembers by then, not what this one held.

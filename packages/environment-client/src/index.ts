@@ -7,6 +7,9 @@ export type {
   ConnectionPhase,
   ConnectionState,
   CreateSessionInput,
+  DraftEdit,
+  DraftLaunchOutcome,
+  DraftSync,
   EnvironmentClient,
   EnvironmentCommandName,
   EnvironmentCommands,
@@ -91,6 +94,20 @@ export {
   shallowEqualArray,
 } from './state'
 export { createEnvironmentStore, type EnvironmentStore } from './store'
+export {
+  applyDraftDeleted,
+  applyDraftEdit,
+  applyDraftList,
+  applyDraftSaved,
+  applyDraftsUnlisted,
+  draftBaseRevision,
+  isEmptyDraftContent,
+  removeDraftEdit,
+  selectDraftContent,
+  selectDraftTarget,
+  selectNewSessionDraftId,
+} from './draft-state'
+export { createDraftSync, DRAFT_SAVE_DEBOUNCE_MS, type DraftSyncOptions } from './draft-sync'
 export {
   pageSessionSummaries,
   pageThreadMessages,

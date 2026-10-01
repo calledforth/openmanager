@@ -624,6 +624,54 @@ export const MIGRATIONS: readonly Migration[] = [
       }
     },
   },
+  {
+    version: 17,
+    name: 'composer_drafts',
+    up(database) {
+      const columns = new Set(
+        (database.prepare('PRAGMA table_info(drafts)').all() as { name: string }[]).map(
+          (column) => column.name,
+        ),
+      )
+      if (columns.has('draft_id')) return
+      // The v2 table was keyed by an existing session, so it could not hold a
+      // draft for a session not created yet. Nothing ever wrote to it, and no
+      // table references it, so it is replaced rather than migrated.
+      database.exec(`
+        DROP TABLE IF EXISTS drafts;
+
+        CREATE TABLE drafts (
+          draft_id TEXT PRIMARY KEY NOT NULL,
+          -- A session's own composer. The draft id is the session id, so the
+          -- session has one draft whichever device writes it, and the draft
+          -- goes with the session.
+          session_id TEXT UNIQUE REFERENCES sessions(session_id) ON DELETE CASCADE,
+          -- A new-session draft's project. Kept when the project is removed:
+          -- the user picks another one rather than losing what they typed.
+          workspace_id TEXT REFERENCES workspaces(workspace_id) ON DELETE SET NULL,
+          -- The id a new-session draft's session gets when it is sent.
+          launch_session_id TEXT,
+          content_json TEXT NOT NULL CHECK (json_valid(content_json)),
+          revision INTEGER NOT NULL CHECK (revision > 0),
+          updated_by_client_id TEXT REFERENCES authorized_clients(client_id) ON DELETE SET NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          -- Set when the draft was sent or discarded. The row stays so a save
+          -- based on an older revision is refused instead of bringing it back.
+          deleted_at INTEGER,
+          -- The revision of the draft's last deletion, kept after the draft is
+          -- written again: a save from before it is still refused then.
+          deleted_revision INTEGER NOT NULL DEFAULT 0,
+          CHECK (session_id IS NULL OR draft_id = session_id),
+          CHECK (session_id IS NULL OR (workspace_id IS NULL AND launch_session_id IS NULL))
+        ) STRICT;
+
+        CREATE INDEX drafts_updated_by_client_id_idx ON drafts(updated_by_client_id);
+        CREATE INDEX drafts_workspace_id_idx ON drafts(workspace_id);
+        CREATE INDEX drafts_deleted_at_idx ON drafts(deleted_at) WHERE deleted_at IS NOT NULL;
+      `)
+    },
+  },
 ]
 
 type RetainedActivityRow = {

@@ -6,6 +6,7 @@ import {
   AccessGrantSchema,
   COMMAND_ACCESS,
   ComposerCommandSchemas,
+  DraftCommandSchemas,
   ERROR_RETRY_POLICY,
   FilesystemCommandSchemas,
   HEARTBEAT_CAPABILITY,
@@ -29,6 +30,7 @@ describe('command access mapping', () => {
       ...Object.keys(ComposerCommandSchemas),
       ...Object.keys(UploadCommandSchemas),
       ...Object.keys(FilesystemCommandSchemas),
+      ...Object.keys(DraftCommandSchemas),
     ].sort()
     expect(Object.keys(COMMAND_ACCESS).sort()).toEqual(commandNames)
   })
@@ -60,6 +62,9 @@ describe('command access mapping', () => {
       'workspace.remove': 'operate',
       'composer.preferences.set': 'operate',
       'upload.ticket.create': 'operate',
+      'draft.list': 'read',
+      'draft.save': 'operate',
+      'draft.delete': 'operate',
       'turn.send': 'agent',
       'turn.interrupt': 'agent',
       'interaction.respond': 'agent',

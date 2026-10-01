@@ -35,6 +35,7 @@
     "./components/chat/ChatWorkspace": "./src/components/chat/ChatWorkspace.tsx",
     "./components/chat/composer-toolbar": "./src/components/chat/composer-toolbar.tsx",
     "./components/chat/composerDrafts": "./src/components/chat/composerDrafts.ts",
+    "./components/chat/composerDraftStore": "./src/components/chat/composerDraftStore.ts",
     "./components/chat/ContextMeter": "./src/components/chat/ContextMeter.tsx",
     "./components/chat/favoriteModels": "./src/components/chat/favoriteModels.ts",
     "./components/chat/FloatingChatComposer": "./src/components/chat/FloatingChatComposer.tsx",

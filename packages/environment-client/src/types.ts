@@ -1,5 +1,12 @@
 import type {
   BackgroundTask,
+  Draft,
+  DraftContent,
+  DraftList,
+  DraftDeleteInput,
+  DraftSaveInput,
+  DraftTarget,
+  DraftTombstone,
   Environment,
   EnvironmentSettings,
   EnvironmentSettingsPatch,
@@ -192,6 +199,23 @@ export interface EnvironmentState {
    * a missing entry means "not loaded", never "no preference".
    */
   composerPreferences: Record<string, Record<string, WorkspaceComposerPreference>>
+  /**
+   * Composer drafts as the environment last reported them, by draft id.
+   * Displayed through `draftEdits` first: an edit not saved yet is newer.
+   */
+  drafts: Record<string, Draft>
+  /**
+   * Drafts known to be sent or deleted, with the revision of that deletion.
+   * A session's next draft is saved on top of it; anything older is refused.
+   */
+  draftTombstones: Record<string, number>
+  /**
+   * Edits this client has not saved to the environment yet. Part of the
+   * state so a host that caches it keeps them across a reload.
+   */
+  draftEdits: Record<string, DraftEdit>
+  /** Whether `drafts` was listed since the client last caught up with the environment. */
+  draftsListed: boolean
   activeSessionId: string | null
   activeThreadId: string | null
   /**
@@ -211,6 +235,30 @@ export interface EnvironmentState {
   connection: ConnectionState
 }
 
+/** A local change to a draft, waiting to be saved. */
+export interface DraftEdit {
+  target: DraftTarget
+  content: DraftContent
+  /** The revision the edit was made on top of; 0 for a draft never saved. */
+  baseRevision: number
+  /** When it was last changed, on this client's clock. */
+  editedAt: number
+  /**
+   * Set while `session.create` sends this draft. Nothing is saved meanwhile:
+   * the environment deletes the draft with the session it creates.
+   */
+  launching?: true
+  /**
+   * Made after a deletion this client asked for: put back after a failed
+   * send, or typed while a clear was being deleted. The environment's
+   * announcement of that deletion (and of a failed send's restore) rebases
+   * it instead of dropping it, and it is saved on top. Cleared once a write
+   * of the draft has been answered, by which time those announcements have
+   * arrived.
+   */
+  outlivesDeletion?: true
+}
+
 export interface CreateSessionInput {
   environmentId: string
   workspaceId: string
@@ -223,6 +271,10 @@ export interface CreateSessionInput {
   modeId?: string
   /** Images the draft uploaded for this workspace; they ride the first message. */
   artifactIds?: string[]
+  /** The id the session gets: the one minted with the draft. */
+  sessionId?: string
+  /** The draft this sends; the environment deletes it with the session's creation. */
+  draftId?: string
 }
 
 export interface AddWorkspaceInput {
@@ -387,6 +439,16 @@ export interface EnvironmentCommands {
   getEnvironmentSettings(): Promise<EnvironmentSettings>
   /** A patch: settings left out keep their value. Resolves with all of them. */
   setEnvironmentSettings(patch: EnvironmentSettingsPatch): Promise<EnvironmentSettings>
+  /** Every draft the environment keeps; replaces the held ones. */
+  listDrafts(): Promise<DraftList>
+  /**
+   * Save a draft. The newest save wins, except that one based on a revision
+   * from before a send or delete is refused with `conflict`, its details
+   * naming the deletion's revision. Views edit through `EnvironmentClient.drafts`.
+   */
+  saveDraft(input: DraftSaveInput): Promise<Draft>
+  /** Delete a draft, refused like a save when its base is from before the last deletion. */
+  deleteDraft(input: DraftDeleteInput): Promise<DraftTombstone>
 }
 
 export interface StopBackgroundTasksInput {
@@ -426,6 +488,11 @@ export interface EnvironmentClient {
     input: UploadArtifactInput,
     init?: { signal?: AbortSignal },
   ): Promise<UploadedArtifact>
+  /**
+   * Composer drafts kept by the environment: edits land in the state at once
+   * and are saved after a pause. Absent where the client keeps no drafts.
+   */
+  readonly drafts?: DraftSync
   /** Local selection; does not hydrate. Use `commands.openSession` for that. */
   setActiveSession(sessionId: string | null): void
   setActiveThread(threadId: string | null): void
@@ -433,4 +500,33 @@ export interface EnvironmentClient {
   disconnect(): void
   /** Releases timers and sockets. The client is unusable afterwards. */
   dispose(): void
+}
+
+/** Keeps a client's draft edits and the environment's drafts in step. */
+/** How a draft's send ended; see `DraftSync.endLaunch`. */
+export type DraftLaunchOutcome = 'sent' | 'refused' | 'aborted'
+
+export interface DraftSync {
+  /**
+   * Record an edit now and save it after a pause. Content with nothing in it
+   * deletes the draft. While the environment cannot be reached, edits wait.
+   */
+  edit(draftId: string, target: DraftTarget, content: DraftContent): void
+  /** Delete a draft now, as discarding it does. */
+  discard(draftId: string): void
+  /** Hold the draft's saves while a `session.create` sends it. */
+  beginLaunch(draftId: string): void
+  /**
+   * The send finished:
+   * - `sent`: the session was created, and the environment deleted the draft
+   *   with it. Anything typed meanwhile already went to the project's next draft.
+   * - `refused`: `session.create` failed. Saving resumes, and the edit
+   *   outlives the deletion and restore the environment may still announce.
+   * - `aborted`: it stopped before `session.create` was asked (an upload or
+   *   a provider check failed). Saving resumes as if nothing happened.
+   * Does nothing once the launch has ended.
+   */
+  endLaunch(draftId: string, outcome: DraftLaunchOutcome): void
+  /** Save every waiting edit now, as when the page is hidden. */
+  flush(): void
 }

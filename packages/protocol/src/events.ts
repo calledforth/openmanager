@@ -24,6 +24,7 @@ import {
   SessionComposerStateSchema,
   WorkspaceComposerPreferenceSchema,
 } from './composer.js'
+import { DraftSchema, DraftTombstoneSchema } from './drafts.js'
 
 const event = <N extends string, S extends z.ZodType, P extends z.ZodType>(
   name: N,
@@ -99,6 +100,20 @@ export const ProofEventSchemas = {
     'composer.preferences.updated',
     EnvironmentScopeSchema,
     ComposerPreferenceTargetSchema.extend({ preference: WorkspaceComposerPreferenceSchema }),
+  ),
+  /**
+   * A composer draft as last saved, by any paired client. The whole draft, so
+   * applying one twice is safe and the newest revision wins.
+   */
+  'draft.saved': event('draft.saved', EnvironmentScopeSchema, z.object({ draft: DraftSchema })),
+  /**
+   * A draft was sent or discarded. `sessionId` names the session whose draft
+   * was cleared; it is null for a new-session draft, which is gone for good.
+   */
+  'draft.deleted': event(
+    'draft.deleted',
+    EnvironmentScopeSchema,
+    DraftTombstoneSchema.extend({ sessionId: EntityIdSchema.nullable() }),
   ),
   /** A provider's models, modes or defaults as the environment last learned them. */
   'provider.catalog.updated': event(
@@ -191,6 +206,8 @@ export const ProofEventSchema = z.discriminatedUnion('name', [
   ProofEventSchemas['session.composer.updated'],
   ProofEventSchemas['composer.preferences.updated'],
   ProofEventSchemas['provider.catalog.updated'],
+  ProofEventSchemas['draft.saved'],
+  ProofEventSchemas['draft.deleted'],
   ProofEventSchemas['thread.created'],
   ProofEventSchemas['turn.started'],
   ProofEventSchemas['turn.completed'],

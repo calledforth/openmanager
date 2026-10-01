@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import type { ProofEvent } from '@openmanager/protocol/node'
 import type { DurableProofEvent } from './event-repository.ts'
+import { prepareDraftProjection } from './draft-projection.ts'
 
 type SessionSummary = Extract<ProofEvent, { name: 'session.created' }>['payload']['session']
 type TurnStarted = Extract<ProofEvent, { name: 'turn.started' }>
@@ -25,6 +26,7 @@ export function createEventProjector(
   database: DatabaseSync,
   options: EventProjectionOptions,
 ): (event: DurableProofEvent) => void {
+  const drafts = prepareDraftProjection(database)
   const s = {
     insertSession: database.prepare(
       `INSERT INTO sessions (
@@ -443,6 +445,12 @@ export function createEventProjector(
           JSON.stringify(event.payload.composer),
           event.payload.sessionId,
         )
+        return
+      case 'draft.saved':
+        drafts.saved(event.payload.draft)
+        return
+      case 'draft.deleted':
+        drafts.deleted(event.payload, at)
         return
       case 'composer.preferences.updated':
       case 'provider.catalog.updated':

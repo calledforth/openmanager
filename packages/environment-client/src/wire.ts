@@ -1,5 +1,6 @@
 import {
   ComposerResponseSchemas,
+  DraftResponseSchemas,
   FilesystemResponseSchemas,
   ProofResponseSchemas,
   ProviderProbeResponseSchema,
@@ -45,6 +46,9 @@ export const WIRE_COMMANDS = {
   browseFolders: 'filesystem.browse',
   getEnvironmentSettings: 'environment.settings.get',
   setEnvironmentSettings: 'environment.settings.set',
+  listDrafts: 'draft.list',
+  saveDraft: 'draft.save',
+  deleteDraft: 'draft.delete',
 } as const satisfies Record<EnvironmentCommandName, string>
 
 /**
@@ -98,6 +102,9 @@ export const WIRE_RESPONSES = {
   'environment.settings.set': payload(
     FilesystemResponseSchemas['environment.settings.set'].shape.payload,
   ),
+  'draft.list': payload(DraftResponseSchemas['draft.list'].shape.payload),
+  'draft.save': payload(DraftResponseSchemas['draft.save'].shape.payload),
+  'draft.delete': payload(DraftResponseSchemas['draft.delete'].shape.payload),
   [UPLOAD_TICKET_COMMAND]: payload(UploadResponseSchemas[UPLOAD_TICKET_COMMAND].shape.payload),
 } as const satisfies Record<WireCommandName, z.ZodType>
 

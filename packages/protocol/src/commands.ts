@@ -83,6 +83,17 @@ export const ProofCommandSchemas = {
         modeId: z.string().min(1).max(1_024).optional(),
         /** Images the draft uploaded for its workspace, claimed by the new session. */
         artifactIds: z.array(EntityIdSchema).min(1).max(10).optional(),
+        /**
+         * The id the session gets, minted with the draft (its target's
+         * `sessionId`). Refused when a session already has it.
+         */
+        sessionId: EntityIdSchema.optional(),
+        /**
+         * The new-session draft this sends. It is deleted in the same write
+         * that announces the session, and restored if the session is rolled
+         * back, so no save that was still in flight can bring it back.
+         */
+        draftId: EntityIdSchema.optional(),
       })
       .refine(
         (create) =>

@@ -30,6 +30,8 @@ import {
 } from '@openmanager/protocol'
 import { z } from 'zod'
 import { EnvironmentClientError, isEnvironmentClientError } from './errors'
+import { applyDraftList, applyDraftsUnlisted } from './draft-state'
+import { createDraftSync } from './draft-sync'
 import {
   applyActiveSession,
   applyActiveThread,
@@ -291,7 +293,11 @@ export function createWebSocketEnvironmentClient(
       if (!disposed) backingStore.update(reducer)
     },
   }
-  if (options.store) store.update(applyComposerPreferencesReset)
+  if (options.store) {
+    store.update(applyComposerPreferencesReset)
+    // Held drafts stay on screen; the listing replaces them once connected.
+    store.update(applyDraftsUnlisted)
+  }
   store.update((state) =>
     applyConnection(state, {
       phase: 'idle',
@@ -837,6 +843,8 @@ export function createWebSocketEnvironmentClient(
             if (subscription.scope.type === 'environment' && payload.reason !== 'initial') {
               store.update(applyComposerPreferencesReset)
             }
+            // Drafts are not in the snapshot either; they are listed again.
+            if (subscription.scope.type === 'environment') store.update(applyDraftsUnlisted)
           }
           const buffered = subscription.buffered ?? []
           subscription.buffered = undefined
@@ -1423,10 +1431,28 @@ export function createWebSocketEnvironmentClient(
     async setEnvironmentSettings(patch) {
       return (await request('environment.settings.set', { settings: patch })).settings
     },
+    async listDrafts() {
+      const payload = await request('draft.list', null)
+      store.update((state) => applyDraftList(state, payload))
+      return payload
+    },
+    // The draft sync folds these answers itself: it alone knows which of its
+    // edits each one settles.
+    async saveDraft(input) {
+      return (await request('draft.save', input)).draft
+    },
+    deleteDraft: (input) => request('draft.delete', input),
   }
+
+  const drafts = createDraftSync({
+    store,
+    commands,
+    supported: () => capabilities.has(WIRE_COMMANDS.saveDraft),
+  })
 
   return {
     commands,
+    drafts,
     getState: store.getState,
     subscribe: store.subscribe,
     supports,
@@ -1528,6 +1554,8 @@ export function createWebSocketEnvironmentClient(
     dispose() {
       if (disposed) return
       disposed = true
+      // Waiting edits stay in the store for the client that takes it over.
+      drafts.dispose()
       connectionGeneration += 1
       openGeneration += 1
       clearReconnect()

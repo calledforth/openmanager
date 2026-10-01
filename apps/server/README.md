@@ -202,9 +202,9 @@ command's capability before any service sees it:
 
 The mapping for today's commands: `read` covers subscriptions, `session.list`,
 `session.open`, `session.history`, provider catalog, discovery, health and
-probe, and `composer.preferences.get`;
-`operate` covers `session.create`, `composer.preferences.set` and
-`upload.ticket.create`; `agent`
+probe, `composer.preferences.get` and `draft.list`;
+`operate` covers `session.create`, `composer.preferences.set`,
+`upload.ticket.create`, `draft.save` and `draft.delete`; `agent`
 covers `turn.send`, `turn.interrupt`, `interaction.respond` and the composer
 model, mode and config-option setters. The owner grant holds all five.
 
@@ -486,6 +486,16 @@ draft. Every change is pushed to all clients as a durable environment event
 the agent switched by itself, and session summaries carry the current
 selection, so a reconnect restores it from replay or from the snapshot. See
 `docs/decisions/live-composer-state.md`.
+
+Composer drafts are kept here too, so a draft survives a reload and reaches
+every paired device. `draft.list`, `draft.save` and `draft.delete` read and
+write them, and `draft.saved` and `draft.deleted` push every change to every
+client. Writes are last-write-wins, except that a save based on a revision from
+before a send or a discard is refused, so a late autosave never brings a sent
+draft back. `session.create` takes the sent draft's `draftId` and the
+`sessionId` it minted: the draft is deleted in the same write that announces
+the session, and restored if the session is rolled back. See
+`docs/decisions/composer-drafts.md`.
 
 `session.list` returns lightweight summaries with cursor pagination.
 `session.open` returns the summary and thread identities only;

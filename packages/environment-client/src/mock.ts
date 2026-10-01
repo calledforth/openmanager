@@ -1,9 +1,13 @@
 import {
   ComposerCommandSchemas,
+  DRAFT_DELETED_MESSAGE,
+  DraftCommandSchemas,
   ProofEventSchemas,
   ProofCommandSchemas,
   ProviderCatalogEntrySchema,
   WorkspaceComposerPreferenceSchema,
+  type Draft,
+  type DraftTombstone,
   type Environment,
   type EnvironmentSettings,
   type Interaction,
@@ -43,6 +47,8 @@ import {
   selectSessionList,
 } from './state'
 import { createSettleTracker } from './settle'
+import { applyDraftList } from './draft-state'
+import { createDraftSync } from './draft-sync'
 import { createEnvironmentStore } from './store'
 import { pageSessionSummaries, pageThreadMessages } from './pagination'
 import type {
@@ -111,6 +117,8 @@ export interface MockEnvironmentClientOptions {
    * to following `sendTurn`.
    */
   uploads?: boolean
+  /** Pause before a draft edit is saved; defaults to `latencyMs`. */
+  draftSaveDebounceMs?: number
   /**
    * Chunks streamed as the assistant reply after `sendTurn`. Return `null` to
    * leave the turn running so a test can script it by hand. Defaults to an echo.
@@ -536,6 +544,48 @@ export function createMockEnvironmentClient(
     return started
   }
 
+  /** The environment's draft rows; a deleted one keeps its revision as a tombstone. */
+  const draftRows = new Map<
+    string,
+    { draft: Draft | null; revision: number; sessionId: string | null; deletedRevision: number }
+  >()
+  const listDraftRows = () => {
+    const drafts: Draft[] = []
+    const tombstones: DraftTombstone[] = []
+    for (const [draftId, row] of draftRows) {
+      if (row.draft) drafts.push(row.draft)
+      else if (row.sessionId) tombstones.push({ draftId, revision: row.revision })
+    }
+    const list = { drafts, tombstones }
+    store.update((state) => applyDraftList(state, list))
+    return list
+  }
+  const deleteDraftRow = (draftId: string, baseRevision?: number): DraftTombstone => {
+    const row = draftRows.get(draftId)
+    if (row && !row.draft) return { draftId, revision: row.revision }
+    if (row && baseRevision !== undefined && baseRevision < row.deletedRevision) {
+      throw new EnvironmentClientError('conflict', DRAFT_DELETED_MESSAGE, {
+        draftId,
+        revision: row.deletedRevision,
+      })
+    }
+    const sessionId = row?.sessionId ?? (store.getState().sessions[draftId] ? draftId : null)
+    const tombstone = { draftId, revision: (row?.revision ?? 0) + 1 }
+    draftRows.set(draftId, {
+      draft: null,
+      revision: tombstone.revision,
+      sessionId,
+      deletedRevision: tombstone.revision,
+    })
+    emit({
+      ...base(),
+      name: 'draft.deleted',
+      scope: envScope(),
+      payload: { ...tombstone, sessionId },
+    })
+    return tombstone
+  }
+
   const commands: EnvironmentCommands = {
     getEnvironment: () =>
       run('getEnvironment', null, () => {
@@ -625,13 +675,24 @@ export function createMockEnvironmentClient(
         const launched = input.preference
           ? writePreference(target, input.preference)
           : preferences.get(preferenceKey(target))
+        if (input.sessionId !== undefined && store.getState().sessions[input.sessionId]) {
+          throw new EnvironmentClientError('conflict', 'A session with this id already exists.')
+        }
+        if (input.draftId !== undefined && draftRows.get(input.draftId)?.sessionId) {
+          throw new EnvironmentClientError(
+            'validation',
+            "A session's draft cannot start another session.",
+          )
+        }
         const session: Session = {
-          sessionId: nextId(),
+          sessionId: input.sessionId ?? nextId(),
           workspaceId: input.workspaceId,
           title: input.title ?? null,
         }
         const thread: Thread = { threadId: nextId(), sessionId: session.sessionId }
         emit({ ...base(), name: 'session.created', scope: envScope(), payload: { session } })
+        // Like the environment: the sent draft goes in the same write.
+        if (input.draftId !== undefined) deleteDraftRow(input.draftId)
         emit({
           ...base(),
           name: 'thread.created',
@@ -985,6 +1046,43 @@ export function createMockEnvironmentClient(
           readable: true,
         }
       }),
+    listDrafts: () => run('listDrafts', null, listDraftRows),
+    saveDraft: (input) =>
+      run('saveDraft', input, () => {
+        const parsed = DraftCommandSchemas['draft.save'].shape.payload.safeParse(input)
+        if (!parsed.success) throw new EnvironmentClientError('validation', 'Invalid draft.')
+        const { draftId, baseRevision, target, content } = parsed.data
+        if (target.type === 'session' && target.sessionId !== draftId) {
+          throw new EnvironmentClientError('validation', "A session's draft is named by its id.")
+        }
+        const row = draftRows.get(draftId)
+        if (row && baseRevision < row.deletedRevision) {
+          throw new EnvironmentClientError('conflict', DRAFT_DELETED_MESSAGE, {
+            draftId,
+            revision: row.deletedRevision,
+          })
+        }
+        const at = now()
+        const draft: Draft = {
+          draftId,
+          target,
+          content,
+          revision: (row?.revision ?? 0) + 1,
+          createdAt: row?.draft?.createdAt ?? at,
+          updatedAt: at,
+          updatedByClientId: null,
+        }
+        draftRows.set(draftId, {
+          draft,
+          revision: draft.revision,
+          sessionId: target.type === 'session' ? target.sessionId : null,
+          deletedRevision: row?.deletedRevision ?? 0,
+        })
+        emit({ ...base(), name: 'draft.saved', scope: envScope(), payload: { draft } })
+        return draft
+      }),
+    deleteDraft: (input) =>
+      run('deleteDraft', input, () => deleteDraftRow(input.draftId, input.baseRevision)),
     getEnvironmentSettings: () =>
       run('getEnvironmentSettings', null, () => ({ ...environmentSettings })),
     setEnvironmentSettings: (patch) =>
@@ -997,8 +1095,18 @@ export function createMockEnvironmentClient(
       }),
   }
 
+  const drafts = createDraftSync({
+    store,
+    // Listing on connect is housekeeping, kept out of `calls` like the
+    // handshake; the saves and deletes an edit causes are recorded.
+    commands: { ...commands, listDrafts: async () => listDraftRows() },
+    supported: () => capabilities.has('saveDraft'),
+    debounceMs: options.draftSaveDebounceMs ?? latencyMs,
+  })
+
   return {
     commands,
+    drafts,
     calls,
     getState: store.getState,
     subscribe: store.subscribe,
@@ -1053,6 +1161,7 @@ export function createMockEnvironmentClient(
       store.update((state) => applyConnection(state, { phase: 'closed', failure: null })),
     dispose: () => {
       disposed = true
+      drafts.dispose()
       for (const timer of timers) clearTimeout(timer)
       timers.clear()
       scriptedReplies.clear()

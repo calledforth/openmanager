@@ -12,6 +12,9 @@ import {
   COMPOSER_PREFERENCES_SET_CAPABILITY,
   ENVIRONMENT_SETTINGS_GET_CAPABILITY,
   ENVIRONMENT_SETTINGS_SET_CAPABILITY,
+  DRAFT_DELETE_CAPABILITY,
+  DRAFT_LIST_CAPABILITY,
+  DRAFT_SAVE_CAPABILITY,
   FILESYSTEM_BROWSE_CAPABILITY,
   PROTOCOL_VERSION,
   SESSION_CREATE_EXPLICIT_CAPABILITY,
@@ -32,6 +35,7 @@ import {
 } from '@agentpack/runtime/node'
 import { mountAgentRuntime } from './agent-runtime.ts'
 import { createComposerService, desiredSessionConfig } from './composer-service.ts'
+import { createDraftService } from './draft-service.ts'
 import { openComposerStore } from './composer-store.ts'
 import { openEnvironmentSettings } from './environment-settings.ts'
 import { createTitleGenerator } from './session-titles/generator.ts'
@@ -97,6 +101,9 @@ export const SERVER_CAPABILITIES = [
   FILESYSTEM_BROWSE_CAPABILITY,
   ENVIRONMENT_SETTINGS_GET_CAPABILITY,
   ENVIRONMENT_SETTINGS_SET_CAPABILITY,
+  DRAFT_LIST_CAPABILITY,
+  DRAFT_SAVE_CAPABILITY,
+  DRAFT_DELETE_CAPABILITY,
 ]
 
 /** A loopback-only listener exposing public liveness and connection discovery. */
@@ -266,6 +273,17 @@ export async function startServer(config: ServerConfig) {
     selection: Pick<WorkspaceComposerPreference, 'modelId' | 'configValues'>,
   ) => void = () => undefined
   const artifacts = createArtifactStore(eventDatabase, config.dataDir)
+  const drafts = createDraftService({
+    database: eventDatabase,
+    environmentId: () => identity.environmentId,
+    appendAtomic: (events) => eventService.appendAtomic(events),
+  })
+  try {
+    drafts.pruneTombstones()
+  } catch (error) {
+    // Left for the next start; an old tombstone only refuses a stale save.
+    log('error', 'old draft tombstones were not pruned', { reason: String(error) })
+  }
   const titles =
     config.titleGenerator ??
     (config.generateTitles
@@ -292,6 +310,7 @@ export async function startServer(config: ServerConfig) {
       launchPreference: (workspaceId, providerId, picks) =>
         launchPreference(workspaceId, providerId, picks),
       seedSessionComposer: (sessionId, selection) => seedSessionComposer(sessionId, selection),
+      drafts,
       ...(titles ? { titles } : {}),
       onTitleFailure: (sessionId, error) =>
         log('warn', 'session title was not generated', { sessionId, reason: String(error) }),
@@ -545,6 +564,7 @@ export async function startServer(config: ServerConfig) {
       providerService.dispatch(command, context) ??
       uploads.dispatch(command, context) ??
       filesystem.dispatch(command, context) ??
+      drafts.dispatch(command, context) ??
       composerService.dispatch(command),
   })
   publishDurableEvent = (record) => sockets.publish(record)

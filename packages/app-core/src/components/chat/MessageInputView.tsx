@@ -4,6 +4,7 @@ import {
   useEffect,
   useCallback,
   useMemo,
+  useSyncExternalStore,
   type KeyboardEvent,
   type ClipboardEvent,
   type DragEvent,
@@ -40,12 +41,7 @@ import {
   MAX_IMAGE_BYTES,
   type DraftImageAttachment,
 } from '../../lib/attachments'
-import {
-  pruneComposerDrafts,
-  readComposerDrafts,
-  writeComposerDrafts,
-  type PersistedDraft,
-} from './composerDrafts'
+import { useComposerDraftStore } from './composerDraftStore'
 import {
   configurableSessionOptions,
   isBooleanSelect,
@@ -295,20 +291,7 @@ function ModelConfigMenu({
 
 type ComposerDraft = { text: string; attachments: DraftImageAttachment[] }
 
-/** Long enough that typing doesn't hit storage on every keystroke, short enough
- * that a crash costs at most a word. Exit handlers cover the rest. */
-const DRAFT_PERSIST_DEBOUNCE_MS = 400
-
-/** Attachments are `File` objects with `blob:` previews and are only uploaded at
- * send time, so an unsent draft's images have nothing durable to restore from.
- * Text comes back; images start empty. */
-function hydrateDrafts(stored: Record<string, PersistedDraft>): Record<string, ComposerDraft> {
-  const drafts: Record<string, ComposerDraft> = {}
-  for (const [key, draft] of Object.entries(stored)) {
-    drafts[key] = { text: draft.text, attachments: [] }
-  }
-  return drafts
-}
+const NO_ATTACHMENTS: DraftImageAttachment[] = []
 
 export function MessageInputView({
   disabled,
@@ -396,15 +379,17 @@ export function MessageInputView({
   onSend: (text: string, attachments: DraftImageAttachment[]) => Promise<void>
   onAbort: () => void
 }) {
-  // Reading localStorage is synchronous, so a restored draft is on screen at
-  // first paint — no frame of empty box before it appears.
-  const [initialStoredDrafts] = useState(readComposerDrafts)
-  const [drafts, setDrafts] = useState<Record<string, ComposerDraft>>(() =>
-    hydrateDrafts(initialStoredDrafts),
+  // Text lives in the host's draft store, which reads synchronously, so a
+  // restored draft is on screen at first paint — no frame of empty box.
+  const draftStore = useComposerDraftStore()
+  const readText = useCallback(() => draftStore.getText(draftKey), [draftKey, draftStore])
+  const storedText = useSyncExternalStore(draftStore.subscribe, readText, readText)
+  // Attachments are `File` objects with `blob:` previews and are only uploaded
+  // at send time, so they stay with this composer: an unsent draft's images
+  // have nothing durable to restore from after a reload.
+  const [attachmentsByKey, setAttachmentsByKey] = useState<Record<string, DraftImageAttachment[]>>(
+    {},
   )
-  // Last snapshot written to storage, so an unchanged draft keeps its original
-  // `updatedAt` and the eviction order stays a real recency order.
-  const persistedRef = useRef<Record<string, PersistedDraft>>(initialStoredDrafts)
   const [sending, setSending] = useState(false)
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [viewingAttachment, setViewingAttachment] = useState<number | null>(null)
@@ -415,8 +400,11 @@ export function MessageInputView({
   const lastHeightRef = useRef<number | null>(null)
   const shellRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const draftsRef = useRef(drafts)
-  const draft = drafts[draftKey] ?? { text: '', attachments: [] }
+  const attachmentsRef = useRef(attachmentsByKey)
+  const draft: ComposerDraft = {
+    text: storedText,
+    attachments: attachmentsByKey[draftKey] ?? NO_ATTACHMENTS,
+  }
   // While borrowed, the visible text belongs to the caller — the session draft
   // underneath is left untouched so it comes back intact afterwards.
   const text = textOverride ? textOverride.value : draft.text
@@ -433,46 +421,27 @@ export function MessageInputView({
   }
 
   useEffect(() => {
-    draftsRef.current = drafts
-  }, [drafts])
+    attachmentsRef.current = attachmentsByKey
+  }, [attachmentsByKey])
 
   useEffect(
     () => () => {
-      for (const item of Object.values(draftsRef.current)) {
-        for (const attachment of item.attachments) URL.revokeObjectURL(attachment.previewUrl)
+      for (const item of Object.values(attachmentsRef.current)) {
+        for (const attachment of item) URL.revokeObjectURL(attachment.previewUrl)
       }
     },
     [],
   )
 
-  // A borrowed composer never writes to `drafts` — its text belongs to the
-  // caller — so nothing here can leak a question answer into a session draft.
-  const persistDrafts = useCallback((current: Record<string, ComposerDraft>) => {
-    const now = Date.now()
-    const next: Record<string, PersistedDraft> = {}
-    for (const [key, item] of Object.entries(current)) {
-      if (!item.text.trim()) continue
-      const previous = persistedRef.current[key]
-      next[key] = {
-        text: item.text,
-        updatedAt: previous?.text === item.text ? previous.updatedAt : now,
-      }
-    }
-    const pruned = pruneComposerDrafts(next)
-    persistedRef.current = pruned
-    writeComposerDrafts(pruned)
-  }, [])
-
-  useEffect(() => {
-    const timer = setTimeout(() => persistDrafts(drafts), DRAFT_PERSIST_DEBOUNCE_MS)
-    return () => clearTimeout(timer)
-  }, [drafts, persistDrafts])
-
-  // The debounce is what makes the exit paths necessary: a quit or crash landing
-  // between keystrokes would otherwise drop the last few. The cleanup flush also
+  // A borrowed composer never writes a draft — its text belongs to the caller
+  // — so nothing here can leak a question answer into a session draft.
+  //
+  // The store saves after a pause, which is what makes the exit paths
+  // necessary: a quit, a hidden tab or leaving this draft landing between
+  // keystrokes would otherwise wait out the pause. The cleanup flush also
   // covers the unmount when a subagent transcript replaces the composer.
   useEffect(() => {
-    const flush = () => persistDrafts(draftsRef.current)
+    const flush = () => draftStore.flush()
     const onVisibilityChange = () => {
       if (document.visibilityState === 'hidden') flush()
     }
@@ -483,7 +452,7 @@ export function MessageInputView({
       document.removeEventListener('visibilitychange', onVisibilityChange)
       flush()
     }
-  }, [persistDrafts])
+  }, [draftKey, draftStore])
 
   const updateDraft = useCallback(
     (
@@ -492,12 +461,19 @@ export function MessageInputView({
         attachments: DraftImageAttachment[]
       },
     ) => {
-      setDrafts((current) => {
-        const active = current[draftKey] ?? { text: '', attachments: [] }
-        return { ...current, [draftKey]: update(active) }
-      })
+      const current: ComposerDraft = {
+        text: draftStore.getText(draftKey),
+        attachments: attachmentsRef.current[draftKey] ?? NO_ATTACHMENTS,
+      }
+      const next = update(current)
+      if (next.attachments !== current.attachments) {
+        // Kept current here as well, so two updates in one event both apply.
+        attachmentsRef.current = { ...attachmentsRef.current, [draftKey]: next.attachments }
+        setAttachmentsByKey(attachmentsRef.current)
+      }
+      if (next.text !== current.text) draftStore.setText(draftKey, next.text)
     },
-    [draftKey],
+    [draftKey, draftStore],
   )
 
   const slashQuery = useMemo(() => slashQueryFromText(text), [text])
@@ -650,29 +626,25 @@ export function MessageInputView({
     // session, where the send waits on a provider handshake before the job is
     // even submitted. Restored verbatim if the send fails, so nothing is lost.
     const restore = draft
-    setDrafts((current) => {
-      const next = { ...current }
-      delete next[draftKey]
-      return next
-    })
+    updateDraft(() => ({ text: '', attachments: NO_ATTACHMENTS }))
+    const release = draftStore.beginSend?.(draftKey)
     try {
       await onSend(trimmed, attachments)
+      release?.()
     } catch (error) {
-      setDrafts((current) => {
-        // The composer stays live during an in-flight send, so anything typed
-        // since must survive the rollback: the failed text goes back in front
-        // of it rather than over it. Normally the box is still empty and this
-        // restores the message verbatim.
-        const active = current[draftKey]
-        if (!active) return { ...current, [draftKey]: restore }
-        return {
-          ...current,
-          [draftKey]: {
-            text: active.text ? `${restore.text}\n${active.text}` : restore.text,
-            attachments: [...restore.attachments, ...active.attachments],
-          },
-        }
-      })
+      release?.()
+      // The composer stays live during an in-flight send, so anything typed
+      // since must survive the rollback: the failed text goes back in front
+      // of it rather than over it. Normally the box is still empty and this
+      // restores the message verbatim.
+      updateDraft((active) =>
+        !active.text && active.attachments.length === 0
+          ? restore
+          : {
+              text: active.text ? `${restore.text}\n${active.text}` : restore.text,
+              attachments: [...restore.attachments, ...active.attachments],
+            },
+      )
       setAttachmentError(error instanceof Error ? error.message : 'Failed to send message')
     } finally {
       setSending(false)

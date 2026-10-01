@@ -35,7 +35,11 @@ import {
 // which a v10 client's schema rejects and its fold cannot place;
 // `backgroundTasks` on the session summary and on `session.updated`; and
 // `session.background.stop`.
-export const PROTOCOL_VERSION = 11 as const
+// Version 12 adds composer drafts the environment keeps (`draft.list`,
+// `draft.save`, `draft.delete`, and the `draft.saved`/`draft.deleted` events),
+// and `sessionId`/`draftId` on `session.create`, which a v11 environment would
+// drop, leaving the sent draft behind and the session under another id.
+export const PROTOCOL_VERSION = 12 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema
