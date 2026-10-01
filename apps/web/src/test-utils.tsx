@@ -1,11 +1,23 @@
 import { createMemoryHistory } from '@tanstack/react-router'
 import { render, type RenderOptions } from '@testing-library/react'
+import {
+  createMockEnvironmentClient,
+  type WebSocketEnvironmentClientOptions,
+} from '@openmanager/environment-client'
 import type { ComponentProps, ReactElement, ReactNode } from 'react'
 import { WebApp } from './app'
 import { ErrorBoundary } from './components/error-boundary'
 import { ThemeProvider } from './providers/theme-provider'
 import { createQueryClient } from './query-client'
 import { createWebRouter } from './router'
+
+function createTestEnvironmentClient(options: WebSocketEnvironmentClientOptions) {
+  return createMockEnvironmentClient({
+    seed: {
+      environment: { environmentId: options.environmentId ?? 'env-local', name: 'Environment' },
+    },
+  })
+}
 
 export function renderWebApp(
   path = '/',
@@ -21,7 +33,7 @@ export function renderWebApp(
     <WebApp
       router={router}
       queryClient={queryClient}
-      createEnvironmentClient={createEnvironmentClient}
+      createEnvironmentClient={createEnvironmentClient ?? createTestEnvironmentClient}
     />,
     renderOptions,
   )

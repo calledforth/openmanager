@@ -1,5 +1,6 @@
 import {
   PLAN_BUILD_CAPABILITY,
+  PAGE_LIMIT_MAX,
   ErrorEnvelopeSchema,
   PROTOCOL_VERSION,
   SESSION_CREATE_EXPLICIT_CAPABILITY,
@@ -16,6 +17,7 @@ import {
   respondToHeartbeat,
   type ClientHeartbeatState,
   type Cursor,
+  type SessionListCursor,
   type DurableEvent,
   type ErrorCode,
   type ProofEvent,
@@ -58,13 +60,14 @@ import {
   selectSessionList,
 } from './state'
 import { createSettleTracker } from './settle'
-import { createEnvironmentStore } from './store'
+import { createEnvironmentStore, type EnvironmentStore } from './store'
 import type {
   ComposerPreferenceTarget,
   ConnectionFailure,
   EnvironmentClient,
   EnvironmentCommandName,
   EnvironmentCommands,
+  EnvironmentState,
   WorkspaceComposerPreference,
 } from './types'
 import {
@@ -109,6 +112,8 @@ export interface WebSocketEnvironmentClientOptions {
   credential?: string
   /** When set, a handshake that reports a different environment is refused. */
   environmentId?: string
+  /** Environment-owned data survives transport replacement. Requires its identity. */
+  store?: EnvironmentStore
   WebSocket?: WebSocketConstructor
   /** Used for artifact reads; defaults to the global `fetch`. */
   fetch?: typeof globalThis.fetch
@@ -158,6 +163,8 @@ const HANDSHAKE_NAME = 'protocol.handshake'
 const SUBSCRIBE_NAME = 'subscription.subscribe'
 const UNSUBSCRIBE_NAME = 'subscription.unsubscribe'
 const REPLAY_NAME = 'subscription.replay'
+/** Catalog re-reads before a refresh gives up on dropping omitted sessions. */
+const RECONCILE_PASSES = 3
 
 const SubscribeResponseSchema = z.object({
   payload: z.object({ subscriptionId: z.string(), scope: z.any() }),
@@ -265,12 +272,39 @@ export function createWebSocketEnvironmentClient(
     jitter: options.reconnect?.jitter ?? DEFAULT_RECONNECT.jitter,
   }
   const random = options.random ?? Math.random
-  const store = createEnvironmentStore()
+  if (options.store && !options.environmentId) {
+    throw new Error('A shared store requires an environment ID.')
+  }
+  if (
+    options.store?.getState().environment &&
+    options.store.getState().environment?.environmentId !== options.environmentId
+  ) {
+    throw new Error('The store belongs to a different environment.')
+  }
+  const backingStore = options.store ?? createEnvironmentStore()
+  let disposed = false
+  // A disposed transport can still finish async command continuations. Those
+  // continuations must not modify data now owned by its replacement.
+  const store: EnvironmentStore = {
+    ...backingStore,
+    update(reducer) {
+      if (!disposed) backingStore.update(reducer)
+    },
+  }
+  if (options.store) store.update(applyComposerPreferencesReset)
+  store.update((state) =>
+    applyConnection(state, {
+      phase: 'idle',
+      failure: null,
+      capabilities: [],
+      attempt: 0,
+      retriesExhausted: false,
+    }),
+  )
   const settles = createSettleTracker(store)
 
   let socket: WebSocketLike | null = null
   let ready = false
-  let disposed = false
   let manualClose = false
   let attempts = 0
   let reconnectTimer: unknown = null
@@ -853,6 +887,81 @@ export function createWebSocketEnvironmentClient(
   }
 
   /**
+   * Drops cached sessions a full catalog walk did not return, e.g. sessions
+   * deleted while this client was offline, whose deletion event is gone.
+   *
+   * Keyset pages are not one snapshot: an update during a multi-page read
+   * moves a session ahead of the cursor, so it is absent without being
+   * deleted. Such a session's `updatedAt` is now at least the newest one that
+   * read started from, so the newest pages are read again down to that point.
+   * A re-read that spans pages can miss a session the same way, so it repeats
+   * from its own newest until one pass fits in a single page, which the
+   * environment answers from one query; a walk that was one page needs no
+   * re-read. Nothing is dropped if no pass settles. A session live data
+   * touched since the walk began, the active session (its `session.open` is
+   * authoritative), and an ancestor of a listed session are always kept.
+   */
+  const reconcileCachedSessions = async (
+    generation: number,
+    cached: EnvironmentState['sessions'],
+    listed: Set<string>,
+    newestUpdatedAt: string | undefined,
+    /** The walk was one page, so one query: it already proves absence. */
+    atomic: boolean,
+  ) => {
+    const missing = () => {
+      const state = store.getState()
+      // Removal cascades to descendants, so every ancestor of a listed session stays.
+      const parents = new Set<string>()
+      for (const id of listed) {
+        let parent = state.sessions[id]?.parentSessionId
+        while (parent && !parents.has(parent)) {
+          parents.add(parent)
+          parent = state.sessions[parent]?.parentSessionId
+        }
+      }
+      return Object.keys(cached).filter(
+        (id) =>
+          !listed.has(id) &&
+          state.sessions[id] === cached[id] &&
+          state.activeSessionId !== id &&
+          !parents.has(id),
+      )
+    }
+    const floorOf = (updatedAt: string | undefined) =>
+      updatedAt ? Date.parse(updatedAt) : Number.NEGATIVE_INFINITY
+    let floor = floorOf(newestUpdatedAt)
+    let settled = atomic
+    for (let pass = 0; pass < RECONCILE_PASSES && !settled; pass++) {
+      if (missing().length === 0) return
+      let cursor: SessionListCursor | null | undefined
+      let pages = 0
+      let nextFloor = floor
+      do {
+        if (generation !== connectionGeneration || !ready) return
+        const page = await commands.listSessions({
+          limit: PAGE_LIMIT_MAX,
+          ...(cursor ? { cursor } : {}),
+        })
+        if (pages++ === 0) nextFloor = floorOf(page.sessions[0]?.updatedAt)
+        for (const session of page.sessions) listed.add(session.sessionId)
+        const oldest = page.sessions.at(-1)?.updatedAt
+        cursor = oldest !== undefined && Date.parse(oldest) < floor ? null : page.nextCursor
+      } while (cursor)
+      settled = pages === 1
+      floor = nextFloor
+    }
+    if (!settled || generation !== connectionGeneration || !ready) return
+    const removed = missing()
+    if (removed.length === 0) return
+    store.update((state) => {
+      let next = state
+      for (const id of removed) next = applySessionRemoved(next, id)
+      return next
+    })
+  }
+
+  /**
    * After every handshake: environment scope, catalog reads, and the active
    * session. If the connection drops or re-handshakes while the catalog reads
    * are in flight, this run stops so it cannot queue a second `session.open`
@@ -873,7 +982,35 @@ export function createWebSocketEnvironmentClient(
     const reads: Promise<unknown>[] = []
     if (supports('getEnvironment')) reads.push(commands.getEnvironment().catch(() => undefined))
     if (supports('listWorkspaces')) reads.push(commands.listWorkspaces().catch(() => undefined))
-    if (supports('listSessions')) reads.push(commands.listSessions().catch(() => undefined))
+    if (supports('listSessions'))
+      reads.push(
+        (async () => {
+          if (!options.store) return commands.listSessions()
+          const cached = store.getState().sessions
+          // Recover the active session after the first page; older catalog
+          // pages continue in the background and never open inactive runtimes.
+          const first = await commands.listSessions({ limit: PAGE_LIMIT_MAX })
+          if (generation !== connectionGeneration || !ready) return
+          void (async () => {
+            const listed = new Set(first.sessions.map((session) => session.sessionId))
+            let cursor: SessionListCursor | null = first.nextCursor
+            while (cursor) {
+              if (generation !== connectionGeneration || !ready) return
+              const page = await commands.listSessions({ limit: PAGE_LIMIT_MAX, cursor })
+              for (const session of page.sessions) listed.add(session.sessionId)
+              cursor = page.nextCursor
+            }
+            if (generation !== connectionGeneration || !ready) return
+            await reconcileCachedSessions(
+              generation,
+              cached,
+              listed,
+              first.sessions[0]?.updatedAt,
+              first.nextCursor === null,
+            )
+          })().catch(() => undefined)
+        })().catch(() => undefined),
+      )
     if (supports('getProviderCatalog'))
       reads.push(commands.getProviderCatalog().catch(() => undefined))
     await Promise.all(reads)
@@ -882,7 +1019,10 @@ export function createWebSocketEnvironmentClient(
     if (
       activeSessionId &&
       supports('openSession') &&
-      (!capabilities.has(REPLAY_NAME) ||
+      (!subscriptions.has(
+        scopeKey({ type: 'session', environmentId, sessionId: activeSessionId }),
+      ) ||
+        !capabilities.has(REPLAY_NAME) ||
         store.getState().sessions[activeSessionId]?.threadIds.length === 0)
     ) {
       await commands.openSession(activeSessionId).catch(() => undefined)
@@ -970,7 +1110,14 @@ export function createWebSocketEnvironmentClient(
     },
     async listWorkspaces() {
       const payload = await request('workspace.list', null)
-      store.update((state) => applyWorkspaceList(state, payload.workspaces))
+      store.update((state) => {
+        let next = state
+        const known = new Set(payload.workspaces.map((workspace) => workspace.workspaceId))
+        for (const workspaceId of state.workspaceOrder) {
+          if (!known.has(workspaceId)) next = applyWorkspaceRemoved(next, workspaceId)
+        }
+        return applyWorkspaceList(next, payload.workspaces)
+      })
       return payload.workspaces
     },
     async addWorkspace(input) {
@@ -1048,6 +1195,10 @@ export function createWebSocketEnvironmentClient(
         payload = await request('session.open', { sessionId })
       } catch (error) {
         if (generation !== openGeneration) throw error
+        if (isEnvironmentClientError(error) && error.code === 'not_found') {
+          store.update((state) => applySessionRemoved(state, sessionId))
+          throw error
+        }
         store.update((state) => {
           let next = state
           for (const threadId of state.sessions[sessionId]?.threadIds ?? []) {
@@ -1067,7 +1218,13 @@ export function createWebSocketEnvironmentClient(
         throw error
       }
       if (generation !== openGeneration) return
-      store.update((state) => applyActiveSession(applySessionOpen(state, payload), sessionId))
+      store.update((state) => {
+        const next = applyActiveSession(applySessionOpen(state, payload), sessionId)
+        return state.activeSessionId === sessionId &&
+          payload.threads.some((thread) => thread.threadId === state.activeThreadId)
+          ? applyActiveThread(next, state.activeThreadId)
+          : next
+      })
       if (previous && previous !== sessionId) {
         for (const scope of sessionScopes(previous)) unsubscribe(scope)
       }
@@ -1371,6 +1528,8 @@ export function createWebSocketEnvironmentClient(
     dispose() {
       if (disposed) return
       disposed = true
+      connectionGeneration += 1
+      openGeneration += 1
       clearReconnect()
       stopHeartbeat()
       const current = socket
@@ -1378,7 +1537,24 @@ export function createWebSocketEnvironmentClient(
       ready = false
       rejectAllPending(new EnvironmentClientError('unavailable', 'Client is disposed.'))
       current?.close(1000, 'client_disposed')
-      patchConnection({ phase: 'closed' })
+      backingStore.update((state) => {
+        let next = state
+        for (const thread of Object.values(state.threads)) {
+          for (const entry of thread.outbox) {
+            if (entry.status === 'pending') {
+              next = applyTurnSendFailed(
+                next,
+                thread.thread,
+                entry.commandId,
+                'Connection closed before the send was confirmed.',
+              )
+            }
+          }
+          if (thread.hydration === 'loading')
+            next = applyThreadHydration(next, thread.thread.threadId, 'idle')
+        }
+        return applyConnection(next, { phase: 'closed' })
+      })
     },
   }
 }

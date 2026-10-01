@@ -2,7 +2,12 @@ import { PROTOCOL_VERSION } from '@openmanager/protocol'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { EnvironmentClient } from '@openmanager/environment-client'
+import {
+  createInitialState,
+  type EnvironmentClient,
+  type EnvironmentStore,
+  type WebSocketEnvironmentClientOptions,
+} from '@openmanager/environment-client'
 import { useEnvironmentClientOptional } from '@openmanager/app-core/providers/environment-client'
 import { ENVIRONMENT_STORAGE_KEY } from '../lib/environment-store'
 import { WRONG_ENVIRONMENT_MESSAGE } from '../lib/route-health'
@@ -111,7 +116,10 @@ function storedRoutes() {
 function createFakeClient() {
   const client = {
     commands: {} as EnvironmentClient['commands'],
-    getState: vi.fn(),
+    getState: vi.fn<EnvironmentClient['getState']>(() => ({
+      ...createInitialState(),
+      connection: { ...createInitialState().connection, phase: 'connected' as const },
+    })),
     subscribe: vi.fn(() => () => undefined),
     supports: vi.fn(() => false),
     setActiveSession: vi.fn(),
@@ -150,7 +158,9 @@ function Probe() {
   )
 }
 
-function renderProvider(createClient: () => EnvironmentClient) {
+function renderProvider(
+  createClient: (options: WebSocketEnvironmentClientOptions) => EnvironmentClient,
+) {
   return render(
     <QueryClientProvider client={createQueryClient()}>
       <ConnectionProvider>
@@ -194,7 +204,9 @@ describe('WebEnvironmentClientProvider', () => {
       vi.fn(async () => bootstrapAnswer()),
     )
     const clients: Array<ReturnType<typeof createFakeClient>> = []
-    const createClient = vi.fn(() => {
+    const stores: EnvironmentStore[] = []
+    const createClient = vi.fn((options: WebSocketEnvironmentClientOptions) => {
+      stores.push(options.store!)
       const client = createFakeClient()
       clients.push(client)
       return client as EnvironmentClient
@@ -206,17 +218,22 @@ describe('WebEnvironmentClientProvider', () => {
       url: 'ws://127.0.0.1:43120/ws',
       credential: 'client-token',
       environmentId: 'env-local',
+      store: expect.any(Object),
     })
 
+    stores[0]!.update(() => ({ ...createInitialState(), activeSessionId: 'cached-session' }))
     act(() => screen.getByRole('button', { name: 'use tunnel' }).click())
     await waitFor(() =>
       expect(createClient).toHaveBeenLastCalledWith({
         url: 'wss://tunnel.example/ws',
         credential: 'client-token',
         environmentId: 'env-local',
+        store: expect.any(Object),
       }),
     )
     // The old socket is gone, and the environment is still one record.
+    expect(stores[1]).toBe(stores[0])
+    expect(stores[1]!.getState().activeSessionId).toBe('cached-session')
     expect(clients[0]!.dispose).toHaveBeenCalled()
     expect(storedRoutes().map((route) => route.endpoint)).toEqual([TUNNEL, ENDPOINT])
   })
@@ -228,9 +245,12 @@ describe('WebEnvironmentClientProvider', () => {
       vi.fn(async () => bootstrapAnswer()),
     )
     let notify = () => {}
-    let connection: unknown = { phase: 'connecting', failure: null }
+    let connection: unknown = { phase: 'connected', failure: null }
     const client = createFakeClient()
-    client.getState.mockImplementation(() => ({ connection }))
+    client.getState.mockImplementation(() => ({
+      ...createInitialState(),
+      connection: connection as ReturnType<EnvironmentClient['getState']>['connection'],
+    }))
     client.subscribe.mockImplementation(((listener: () => void) => {
       notify = listener
       return () => undefined
@@ -261,6 +281,35 @@ describe('WebEnvironmentClientProvider', () => {
     act(() => notify())
     expect(storedRoutes()[0]!.health).toMatchObject({ status: 'available' })
     expect(storedRoutes()[1]!.health).toEqual({ status: 'unknown' })
+  })
+
+  it('withholds cached data until authentication and hides it on authorization failure', async () => {
+    seedEnvironment()
+    let notify = () => {}
+    const initial = createInitialState()
+    let connection: ReturnType<EnvironmentClient['getState']>['connection'] = {
+      ...initial.connection,
+      phase: 'connecting' as 'connecting' | 'connected' | 'closed',
+    }
+    const client = createFakeClient()
+    client.getState.mockImplementation(() => ({ ...initial, connection }))
+    client.subscribe.mockImplementation(((listener: () => void) => {
+      notify = listener
+      return () => undefined
+    }) as never)
+    renderProvider(() => client)
+    await waitFor(() => expect(client.connect).toHaveBeenCalled())
+    expect(screen.getByText('ready:none')).toBeInTheDocument()
+    act(() => {
+      connection = { ...connection, phase: 'connected' }
+      notify()
+    })
+    expect(screen.getByText('ready:client')).toBeInTheDocument()
+    act(() => {
+      connection = { ...connection, phase: 'closed', failure: { code: 'auth', message: 'Revoked' } }
+      notify()
+    })
+    expect(screen.getByText('ready:none')).toBeInTheDocument()
   })
 
   it('records a route that does not answer and stays on it', async () => {

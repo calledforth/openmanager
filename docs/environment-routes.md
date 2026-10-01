@@ -96,6 +96,43 @@ address is always its own record with its own token, and a saved route that
 starts answering as another environment is reported, not adopted
 (see [Health](#health)).
 
+## Credentials and client cache
+
+The registry stores the credential on the record selected by `environmentId`.
+Changing a route keeps that credential; an address is never used to look up a
+token.
+
+The web client also keeps one in-memory store per environment ID. A route or
+credential change replaces the transport while retaining sessions, messages,
+and the active selection. Each new transport reopens the active session's
+subscriptions and refreshes authoritative data from the server.
+
+IndexedDB persists a snapshot in `openmanager-environment:<environmentId>`
+(database version 1, `state` object store). Neither URLs nor credentials are
+part of that cache. A fresh client loads the snapshot after verifying the
+route's environment identity and exposes it only after the WebSocket
+authenticates. Live connection state, pending sends, and in-flight hydration
+are not restored. Storage failures fall back to memory.
+
+All session catalog pages are refreshed, keeping older sessions navigable.
+Older catalog pages refresh in the background so the active session recovers
+after the first page. Inactive agent runtimes are never opened to check cache
+membership. Once every page has answered, a cached session missing from all
+of them is removed, which covers sessions deleted while the client was
+offline. Keyset pages are not one snapshot, so a concurrent update can move a
+session ahead of the cursor without deleting it. A catalog that fits in one
+page is one query and needs no more checks. Otherwise, before removing
+anything, the client re-reads the newest pages down to the walk's newest
+session. It repeats that from each re-read's own newest session until one
+pass fits in a single page, and removes nothing if three passes never do.
+It keeps any session that live events touched during the refresh,
+the active session (its `session.open` decides), and parents of listed
+sessions. Workspace membership and composer preferences are refreshed from
+the server. Snapshot writes are serialized per
+environment so cleanup cannot overwrite newer data with an older snapshot.
+Deleted active sessions are removed when the environment reports them missing.
+There was no previous IndexedDB cache to migrate.
+
 ## Route type
 
 The client assigns `local` to a loopback address and `remote` to everything
