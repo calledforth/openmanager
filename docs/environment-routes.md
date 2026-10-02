@@ -151,6 +151,8 @@ Priority is the user's order of preference, `0` first.
 - Connecting by a URL makes that route the first choice and the one in use.
 - **Use** on a route in the environment list makes it the first choice and
   the one in use, and reconnects.
+- **Make first** on a route that took over makes it the first choice without
+  touching the connection, which is already on it.
 - **Forget** drops a route. The last route cannot be forgotten; remove the
   environment instead.
 
@@ -204,8 +206,8 @@ out from every route it asked (`route-fallback.ts`):
 | --- | --- | --- |
 | `environment_offline` | Nothing answers on a loopback route (nothing listens on this device), or a gateway answers `502`/`503`/`504` (Cloudflare, Tailscale and ngrok all do this when their tunnel is up and the origin is not) | Environment offline |
 | `route_refused` | `401`/`403` on `/bootstrap`: a tunnel's access gate, or the environment refusing this browser's origin | Route refused access |
-| `route_down` | Nothing answers over a network, another HTTP error (Cloudflare's `530` is its tunnel being down), or something that is not an environment | Route unavailable |
 | `wrong_environment` | The address answers as another environment | Environment unreachable |
+| `route_down` | Nothing answers over a network, another HTTP error (Cloudflare's `530` is its tunnel being down), or something that is not an environment | Route unavailable |
 | `credential_rejected` | The socket is refused with `auth` | Not authorized |
 
 A browser only sees a refusal it is allowed to read. The environment's own
@@ -215,9 +217,10 @@ down, or, on a loopback route, as the environment being offline; the
 offline wording mentions the page's address for that reason. A gateway that
 refuses without CORS headers looks the same.
 
-The first four are ranked in that order when routes disagree: a sign that the
-server is down explains every other failure, and a refusal is something a
-person can act on. Over a network, silence cannot tell a tunnel that is down
+When routes disagree the client shows, in order: offline, refused, another
+environment, down. A sign that the server is down explains every other
+failure, a refusal is something a person can act on, and an address that now
+leads to another environment says what changed where silence says nothing. Over a network, silence cannot tell a tunnel that is down
 from a machine that is off, and the wording says so ("the environment itself
 may still be running"). `/playground/connection` shows each one.
 

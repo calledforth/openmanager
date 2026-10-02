@@ -103,6 +103,15 @@ describe('summarizeRouteFailures', () => {
     ).toMatchObject({ reason: 'route_refused', endpoint: LAN, local: false, message: 'Sign in.' })
   })
 
+  it('says an address leads to another environment over a route that is down', () => {
+    expect(
+      summarizeRouteFailures([
+        { endpoint: LOCAL, outcome: ready('env-b'), reason: 'wrong_environment', known: false },
+        { endpoint: TUNNEL, outcome: nothing, reason: 'route_down', known: false },
+      ]),
+    ).toMatchObject({ reason: 'wrong_environment', endpoint: LOCAL, tried: 2 })
+  })
+
   it('has nothing to say when a route answered', () => {
     expect(
       summarizeRouteFailures([{ endpoint: LOCAL, outcome: ready(), reason: null, known: false }]),

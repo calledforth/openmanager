@@ -188,11 +188,14 @@ function RouteRow({
   route,
   inUse,
   onUse,
+  onMakeFirst,
   onForget,
 }: {
   route: EnvironmentRoute
   inUse: boolean
   onUse?: () => void
+  /** Keep the route in use as the first choice, for a route that took over. */
+  onMakeFirst?: () => void
   onForget?: () => void
 }) {
   return (
@@ -218,6 +221,17 @@ function RouteRow({
             onClick={onUse}
           >
             Use
+          </Button>
+        ) : null}
+        {onMakeFirst ? (
+          <Button
+            type="button"
+            variant="secondary"
+            size="compact"
+            aria-label={`Make ${route.endpoint} the first choice`}
+            onClick={onMakeFirst}
+          >
+            Make first
           </Button>
         ) : null}
         {onForget ? (
@@ -323,6 +337,15 @@ export function EnvironmentList({
                   inUse={selected && route.endpoint === current}
                   onUse={
                     onChooseRoute && route.endpoint !== current
+                      ? () => onChooseRoute(environment.environmentId, route.endpoint)
+                      : undefined
+                  }
+                  // A route that took over from the first choice can become it.
+                  onMakeFirst={
+                    onChooseRoute &&
+                    selected &&
+                    route.endpoint === current &&
+                    route.endpoint !== environment.routes[0]!.endpoint
                       ? () => onChooseRoute(environment.environmentId, route.endpoint)
                       : undefined
                   }

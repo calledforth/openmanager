@@ -183,6 +183,41 @@ describe('connection surfaces', () => {
     expect(onRemoveRoute).toHaveBeenCalledWith('env-a', 'https://gated.example')
   })
 
+  it('offers to make a route that took over the first choice', async () => {
+    const user = userEvent.setup()
+    const onChooseRoute = vi.fn()
+    render(
+      <EnvironmentList
+        selectedId="env-a"
+        inUseEndpoint="https://tunnel.example"
+        onChooseRoute={onChooseRoute}
+        environments={[
+          {
+            environmentId: 'env-a',
+            label: 'Home',
+            routes: [
+              route('https://first.example', 0, { status: 'unreachable' }),
+              route('https://tunnel.example', 1, { status: 'available' }),
+            ],
+            credential: 'token',
+          },
+        ]}
+      />,
+    )
+
+    const rows = within(screen.getByRole('list', { name: 'Routes to Home' })).getAllByRole(
+      'listitem',
+    )
+    expect(rows.map((row) => row.textContent)).toEqual([
+      'https://first.exampleRemote · Unavailable' + 'Use',
+      'https://tunnel.exampleRemote · Available · In use' + 'Make first',
+    ])
+    await user.click(
+      screen.getByRole('button', { name: 'Make https://tunnel.example the first choice' }),
+    )
+    expect(onChooseRoute).toHaveBeenCalledWith('env-a', 'https://tunnel.example')
+  })
+
   it('offers nothing to choose or forget for the only route of an environment', () => {
     render(
       <EnvironmentList

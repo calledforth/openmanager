@@ -723,7 +723,11 @@ export function ConnectionProvider({
       const alreadyInUse =
         current.selectedId === environmentId &&
         inUseFor(record, activeRoutesRef.current) === routeEndpoint
-      if (next === current && alreadyInUse) return
+      if (alreadyInUse) {
+        // Only the saved order changes; the working connection stays as it is.
+        if (next !== current) update(() => next)
+        return
+      }
       setHasConnected(false)
       abandonPendingConnect()
       setActiveRoute(environmentId, routeEndpoint)

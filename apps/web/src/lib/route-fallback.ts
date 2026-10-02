@@ -46,15 +46,16 @@ export function routeFailureReason(
 /**
  * Which reason to show when several routes failed. A sign that the server
  * itself is down explains every other failure, so it wins; a refusal is next,
- * since a person can act on it; a route that is simply down is the least
- * specific.
+ * since a person can act on it; then an address that now leads to another
+ * environment, which says what changed; a route that is simply down is the
+ * least specific.
  */
 const REASON_RANK: readonly RouteFailureReason[] = [
   'credential_rejected',
   'environment_offline',
   'route_refused',
-  'route_down',
   'wrong_environment',
+  'route_down',
 ]
 
 export type RouteProbe = {

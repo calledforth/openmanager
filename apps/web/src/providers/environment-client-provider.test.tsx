@@ -342,6 +342,16 @@ describe('WebEnvironmentClientProvider', () => {
       [TUNNEL, 'available'],
     ])
     expect(screen.getByText(`in use: ${TUNNEL}`)).toBeInTheDocument()
+
+    // Making the route that took over the first choice reorders and nothing
+    // else: the working socket stays.
+    act(() => screen.getByRole('button', { name: 'use tunnel' }).click())
+    await waitFor(() =>
+      expect(storedRoutes().map((route) => route.endpoint)).toEqual([TUNNEL, ENDPOINT]),
+    )
+    expect(createClient).toHaveBeenCalledTimes(1)
+    expect(screen.getByText('ready:client')).toBeInTheDocument()
+    expect(screen.getByText(`in use: ${TUNNEL}`)).toBeInTheDocument()
   })
 
   it('prefers a local route that answers over a first choice that is not local', async () => {
