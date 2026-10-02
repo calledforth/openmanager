@@ -261,10 +261,11 @@ still holds.
   once the answer has been sent, so they reconnect under the new grant. The owner and account-enrolled devices are
   refused with `conflict` (`already_authorized`) and the link stays usable.
 
-Refusals carry `error.details.reason`: `malformed` (400), `invalid` (401, an
-unknown or withdrawn token), `expired` (401), `used` (401), `creator_revoked`
-(401), `grant_exceeds_link` (400, asked for more than the link offers; the link
-is not used up) and `already_authorized` (409, socket only). Failed attempts
+Refusals carry `error.details.reason`: `malformed` (400, or 413 for a body over
+4 KiB), `invalid` (401, an unknown or withdrawn token), `expired` (401), `used`
+(401), `creator_revoked` (401), `grant_exceeds_link` (400, asked for more than
+the link offers; the link is not used up) and `already_authorized` (409, socket
+only). Failed attempts
 count against the `pairing` rate limit, keyed by remote address for
 `POST /pair` and by client for `pairing.redeem`; successful ones do not, so
 several devices pairing from one network do not lock each other out.

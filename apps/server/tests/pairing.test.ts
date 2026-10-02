@@ -522,11 +522,28 @@ describe('exchanging a pairing link at POST /pair', () => {
       body: 'x'.repeat(PAIRING_EXCHANGE_MAX_BYTES + 1),
     })
     expect(oversized.status).toBe(413)
+    expect(reasonOf({ body: (await oversized.json()) as Record<string, unknown> })).toBe(
+      'malformed',
+    )
     const get = await fetch(`${h.url}${PAIRING_EXCHANGE_PATH}`)
     expect(get.status).toBe(405)
     const preflight = await fetch(`${h.url}${PAIRING_EXCHANGE_PATH}`, { method: 'OPTIONS' })
     expect(preflight.status).toBe(204)
     expect(preflight.headers.get('access-control-allow-methods')).toBe('POST')
+  })
+
+  it('counts oversized requests against the limit like any other refusal', async () => {
+    const h = await harness()
+    const oversized = () =>
+      fetch(`${h.url}${PAIRING_EXCHANGE_PATH}`, {
+        method: 'POST',
+        body: 'x'.repeat(PAIRING_EXCHANGE_MAX_BYTES + 1),
+      })
+    for (let i = 0; i < RATE_LIMITS.pairing.limit; i++) {
+      expect((await oversized()).status).toBe(413)
+    }
+    expect((await oversized()).status).toBe(429)
+    expect((await h.exchange({ token: tokenOf(h.create(['read'])) })).status).toBe(429)
   })
 
   it('limits failed attempts per address; successful ones do not count', async () => {

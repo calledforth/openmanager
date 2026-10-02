@@ -654,9 +654,15 @@ export function createPairingService(options: {
     }
     const text = await readBody(request)
     if (text === undefined) {
-      send(response, 413, errorResult(null, 'validation', 'Pairing request is too large.'), {
-        connection: 'close',
-      })
+      // A refused attempt like any other: it counts against the budget.
+      const error = new Rejection(413, 'validation', 'malformed', 'Pairing request is too large.')
+      rejected(error, remoteAddress, command, who, request.headers.origin)
+      send(
+        response,
+        error.status,
+        errorResult(null, error.code, error.message, { reason: error.reason }),
+        { connection: 'close' },
+      )
       return
     }
     // Checked again now the body is in: requests held open together all
