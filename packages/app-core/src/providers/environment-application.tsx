@@ -63,6 +63,7 @@ import {
 import {
   SessionStateContext,
   type DraftRequest,
+  type LaunchingMessage,
   type LocalSessionStatus,
   type SessionStateValue,
 } from './session-provider'
@@ -88,6 +89,7 @@ import {
   type ActiveThreadDetails,
   type ActiveThreadStateValue,
   type ActiveThreadStores,
+  type UIMessage,
 } from './active-thread-provider'
 import {
   PermissionStateProvider,
@@ -391,6 +393,7 @@ function EnvironmentSessionStateProvider({
   // the user may already be typing into.
   const [heldLandingWorkspaceId, setHeldLandingWorkspaceId] = useState<string | null>(null)
   const [pendingDraftSessionStart, setPendingDraftSessionStart] = useState(false)
+  const [launchingMessage, setLaunchingMessage] = useState<LaunchingMessage | null>(null)
   const [turnPending, setTurnPending] = useState(false)
   const [adoptedDraftSessionId, setAdoptedDraftSessionId] = useState<string | null>(null)
   const [defaultProviderId, setDefaultProviderIdState] = useState<ProviderId>(DEFAULT_PROVIDER_ID)
@@ -466,6 +469,7 @@ function EnvironmentSessionStateProvider({
       setError(null)
       setDraftWorkspaceId(workspacePath)
       setPendingDraftSessionStart(false)
+      setLaunchingMessage(null)
       setTurnPending(false)
       setAdoptedDraftSessionId(null)
       const generation = draftGenerationRef.current
@@ -487,6 +491,10 @@ function EnvironmentSessionStateProvider({
       draftGenerationRef.current += 1
       setError(null)
       setDraftWorkspaceId(null)
+      // A launch still in flight continues in the sidebar; it no longer
+      // holds this composer.
+      setPendingDraftSessionStart(false)
+      setLaunchingMessage(null)
       setTurnPending(false)
       setAdoptedDraftSessionId(null)
       void openSessionLatest(externalId).catch(fail)
@@ -533,12 +541,19 @@ function EnvironmentSessionStateProvider({
       // The user moved on while the session was being created: do not pull
       // the view back to it. Its first turn continues in the sidebar.
       if (draftGenerationRef.current !== generation) return null
-      await openSessionLatest(session.sessionId)
+      // The client already holds the session, its thread and the first
+      // message, so it goes on screen now, in one step. Waiting for the route
+      // (and the session.open it triggers) left a gap where neither the draft
+      // nor the session was showing, and the landing came back.
+      selectionRef.current = session.sessionId
+      client.setActiveSession(session.sessionId)
       setAdoptedDraftSessionId(session.sessionId)
       setPendingDraftSessionStart(false)
+      setLaunchingMessage(null)
       setDraftWorkspaceId(null)
       // Creation already returned the first turn; its state now drives the composer.
       setTurnPending(false)
+      await openSessionLatest(session.sessionId)
       return { sessionId: session.sessionId, threadId: thread.threadId }
     },
     [client, commands, draftWorkspaceId, openSessionLatest],
@@ -550,6 +565,7 @@ function EnvironmentSessionStateProvider({
       activeSessionId,
       isSessionDraftOpen,
       pendingDraftSessionStart,
+      launchingMessage,
       localSessionStatus,
       adoptedDraftSessionId,
       defaultProviderId,
@@ -581,6 +597,7 @@ function EnvironmentSessionStateProvider({
           draftGenerationRef.current += 1
           setDraftWorkspaceId(null)
           setPendingDraftSessionStart(false)
+          setLaunchingMessage(null)
           setTurnPending(false)
           setDraftRequest(null)
         }
@@ -608,9 +625,10 @@ function EnvironmentSessionStateProvider({
         setError(null)
         await commands.deleteSession(externalId).catch(fail)
       },
-      beginDraftTurn: () => {
+      beginDraftTurn: (message) => {
         setError(null)
         setPendingDraftSessionStart(true)
+        if (message) setLaunchingMessage(message)
       },
       beginSessionTurn: () => {
         setError(null)
@@ -619,6 +637,8 @@ function EnvironmentSessionStateProvider({
       attachTurnJob: () => undefined,
       failTurn: (message) => {
         setPendingDraftSessionStart(false)
+        // The composer puts the text back; the transcript lets it go.
+        setLaunchingMessage(null)
         setTurnPending(false)
         if (message) setError(message)
       },
@@ -636,6 +656,7 @@ function EnvironmentSessionStateProvider({
       error,
       fail,
       isSessionDraftOpen,
+      launchingMessage,
       localSessionStatus,
       openDraft,
       openSessionLatest,
@@ -951,7 +972,33 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
   targetRef.current = target
 
   const { beginDraftTurn, beginSessionTurn, failTurn, isSessionDraftOpen } = session
-  const { activeWorkspacePath } = session
+  const { activeWorkspacePath, launchingMessage } = session
+
+  // A draft's first message is on screen from the moment it is sent, not from
+  // when its session exists: the transcript shows it while the session is
+  // created, and the session's own copy takes its place in the same frame
+  // the session does.
+  const launchRow = useMemo<UIMessage | null>(
+    () =>
+      launchingMessage
+        ? {
+            externalId: 'launch',
+            role: 'user',
+            isFinal: true,
+            sequenceNum: 0,
+            optimisticContent: launchingMessage.text,
+            ...(launchingMessage.images.length
+              ? { optimisticAttachments: launchingMessage.images }
+              : {}),
+            isOptimistic: true,
+          }
+        : null,
+    [launchingMessage],
+  )
+  const messages = useMemo(
+    () => (!target && launchRow ? [launchRow] : projection.messages),
+    [launchRow, projection.messages, target],
+  )
 
   const sendMessage = useCallback(
     async (content: string, attachments?: UploadedImageAttachment[]) => {
@@ -1125,7 +1172,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
         isLoading: loadingHistory === thread?.thread.threadId,
         loadMore: loadMoreHistory,
       },
-      messages: projection.messages,
+      messages,
       streamingStore: stores.streamingStore,
       messageContentStore: stores.messageContentStore,
       error,
@@ -1171,7 +1218,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       commands,
       error,
       findInteraction,
-      projection.messages,
+      messages,
       respond,
       retrySend,
       sendMessage,

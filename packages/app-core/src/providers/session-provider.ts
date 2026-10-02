@@ -1,5 +1,12 @@
 import { createContext, useContext } from 'react'
 import type { ProviderId } from '@agentpack/contract'
+import type { OptimisticImage } from '../lib/attachments'
+
+/** A draft's first message while its session is being created. */
+export interface LaunchingMessage {
+  text: string
+  images: OptimisticImage[]
+}
 
 /** Where the composer sits in a turn: waiting for a draft's session to be
  * created, or watching a prompt run. `null` between turns. */
@@ -28,6 +35,9 @@ export interface SessionStateValue {
   isSessionDraftOpen: boolean
   /** The draft's first prompt was submitted and its session is being created. */
   pendingDraftSessionStart: boolean
+  /** What that first prompt said, for the transcript to show until the new
+   * session's own copy is on screen. Hosts that do not track it leave it out. */
+  launchingMessage?: LaunchingMessage | null
   localSessionStatus: LocalSessionStatus | null
   /** The session created from this client's draft; stays set until the user
    * navigates so optimistic messages survive the handoff. */
@@ -59,7 +69,9 @@ export interface SessionStateValue {
     providerId?: ProviderId,
   ) => Promise<void>
   /** Turn lifecycle, driven by the provider that submits prompts. */
-  beginDraftTurn: () => void
+  /** A draft's first prompt was submitted. `message` is what it said, given
+   * once by the composer before any image uploads. */
+  beginDraftTurn: (message?: LaunchingMessage) => void
   beginSessionTurn: () => void
   /** Track the job running the current turn so its terminal status can
    * unlock the composer. */

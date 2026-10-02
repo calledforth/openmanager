@@ -340,4 +340,33 @@ describe('session workspace', () => {
     expect(await screen.findByText('You said: hello web')).toBeInTheDocument()
     expect(client.calls.map((call) => call.command)).toContain('sendTurn')
   })
+
+  // `/` and `/sessions/$sessionId` share one chat pane, so sending a draft's
+  // first message moves the URL without rebuilding the pane mid-launch.
+  it('launches a draft into its session route with the same composer and no landing in between', async () => {
+    const user = userEvent.setup()
+    const { client, router } = renderConnected('/', {
+      environment: SEED.environment,
+      workspaces: [{ ...WORKSPACE, capabilities: { git: false, providers: ['opencode'] } }],
+    })
+    await waitFor(() => expect(screen.getByText('Start with a message below')).toBeInTheDocument())
+    const textbox = await screen.findByRole('textbox')
+    await waitFor(() => expect(textbox).toBeEnabled())
+    await user.type(textbox, 'first words')
+
+    let landingReturned = false
+    const observer = new MutationObserver(() => {
+      if (document.body.textContent?.includes('Start with a message below')) landingReturned = true
+    })
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true })
+
+    expect(await screen.findByText('You said: first words')).toBeInTheDocument()
+    const sessionId = client.getState().activeSessionId
+    expect(sessionId).not.toBeNull()
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/sessions/${sessionId}`))
+    observer.disconnect()
+    expect(screen.getByRole('textbox')).toBe(textbox)
+    expect(landingReturned).toBe(false)
+  })
 })

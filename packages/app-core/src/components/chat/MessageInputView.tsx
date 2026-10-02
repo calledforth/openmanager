@@ -609,7 +609,8 @@ export function MessageInputView({
       return
     }
     const trimmed = text.trim()
-    if ((!trimmed && attachments.length === 0) || disabled || sending) return
+    if ((!trimmed && attachments.length === 0) || disabled || sending || pendingDraftSessionStart)
+      return
     if (isAwaitingPlanReview && attachments.length > 0) {
       setAttachmentError('Remove image attachments before requesting plan changes.')
       return
@@ -693,17 +694,17 @@ export function MessageInputView({
     ? textOverride.placeholder
     : !activeWorkspacePath
       ? 'Select a workspace...'
-      : pendingDraftSessionStart
-        ? 'Starting session...'
-        : !activeSessionId && isSessionDraftOpen
-          ? 'Ask anything, @ to mention, / for workflows'
-          : !activeSessionId
-            ? 'Select a session...'
-            : !providerReady
-              ? `Connecting to ${currentProviderName}...`
-              : isAwaitingPlanReview
-                ? 'Describe what should change in the plan…'
-                : 'Ask anything, @ to mention, / for workflows'
+      : // A launching draft keeps its placeholder; the pill above says what
+        // is happening, so the box does not change twice in a second.
+        !activeSessionId && isSessionDraftOpen
+        ? 'Ask anything, @ to mention, / for workflows'
+        : !activeSessionId
+          ? 'Select a session...'
+          : !providerReady
+            ? `Connecting to ${currentProviderName}...`
+            : isAwaitingPlanReview
+              ? 'Describe what should change in the plan…'
+              : 'Ask anything, @ to mention, / for workflows'
 
   const isPlan = currentModeId === 'plan'
   const sendActive = textOverride
@@ -711,6 +712,7 @@ export function MessageInputView({
     : (isAwaitingPlanReview ? text.trim().length > 0 && attachments.length === 0 : hasContent) &&
       !disabled &&
       !sending &&
+      !pendingDraftSessionStart &&
       (attachments.length === 0 || imageUploadEnabled)
   const configSummary = sessionConfigSummary(configOptions)
   const effortChoices = effortOptions ?? effortLevels.map((level) => ({ id: level, name: level }))
@@ -818,7 +820,9 @@ export function MessageInputView({
           onPaste={onPaste}
           placeholder={placeholder}
           disabled={disabled}
-          readOnly={textOverride?.readOnly}
+          // Held, not disabled, while a draft launches: what it said is
+          // already in the transcript, and dimming the box would flicker.
+          readOnly={textOverride?.readOnly || pendingDraftSessionStart}
           rows={1}
           className={cn(chatComposerTextarea, 'max-h-[156px] overflow-y-auto')}
         />
@@ -846,7 +850,13 @@ export function MessageInputView({
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={disabled || !imageUploadEnabled || sending || isAwaitingPlanReview}
+                disabled={
+                  disabled ||
+                  !imageUploadEnabled ||
+                  sending ||
+                  pendingDraftSessionStart ||
+                  isAwaitingPlanReview
+                }
                 aria-label="Attach images"
                 className={cn(
                   composerChip,
