@@ -562,7 +562,10 @@ describe('exchanging a pairing link at POST /pair', () => {
     expect((await h.exchange({ token })).status).toBe(200)
   })
 
-  it('counts failures among requests held open together before redeeming any', async () => {
+  it.each([
+    ['bad tokens', '"ABCDEFGHJKLM"}', 401],
+    ['oversized bodies', 'x'.repeat(PAIRING_EXCHANGE_MAX_BYTES), 413],
+  ])('counts failures among requests held open together: %s', async (_, rest, refused) => {
     const h = await harness()
     const { limit } = RATE_LIMITS.pairing
     const held = Array.from({ length: 2 * limit }, () => {
@@ -582,9 +585,9 @@ describe('exchanging a pairing link at POST /pair', () => {
     })
     // Every request is past the first check before any body completes.
     await new Promise((resolve) => setTimeout(resolve, 100))
-    for (const { request } of held) request.end('"ABCDEFGHJKLM"}')
+    for (const { request } of held) request.end(rest)
     const statuses = await Promise.all(held.map(({ status }) => status))
-    expect(statuses.filter((status) => status === 401)).toHaveLength(limit)
+    expect(statuses.filter((status) => status === refused)).toHaveLength(limit)
     expect(statuses.filter((status) => status === 429)).toHaveLength(limit)
   })
 })

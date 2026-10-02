@@ -642,9 +642,10 @@ export function createPairingService(options: {
     const remoteAddress = request.socket.remoteAddress ?? 'unknown'
     const command = `POST ${PAIRING_EXCHANGE_PATH}`
     const who = { remoteAddress }
-    const tooMany = (retryAfterMs: number) =>
+    const tooMany = (retryAfterMs: number, headers: Record<string, string> = {}) =>
       send(response, 429, errorResult(null, 'unavailable', 'Too many pairing attempts.'), {
         'retry-after': String(Math.ceil(retryAfterMs / 1000)),
+        ...headers,
       })
     const retryAfterMs = limited(remoteAddress, command, who)
     if (retryAfterMs !== undefined) {
@@ -653,6 +654,15 @@ export function createPairingService(options: {
       return
     }
     const text = await readBody(request)
+    // Checked again now the body is in, before anything else is done with
+    // it: requests held open together all passed the first check, and the
+    // failures among them since count here. Nothing yields between this
+    // check and the redeem.
+    const retryAfterBody = limited(remoteAddress, command, who)
+    if (retryAfterBody !== undefined) {
+      tooMany(retryAfterBody, text === undefined ? { connection: 'close' } : {})
+      return
+    }
     if (text === undefined) {
       // A refused attempt like any other: it counts against the budget.
       const error = new Rejection(413, 'validation', 'malformed', 'Pairing request is too large.')
@@ -663,14 +673,6 @@ export function createPairingService(options: {
         errorResult(null, error.code, error.message, { reason: error.reason }),
         { connection: 'close' },
       )
-      return
-    }
-    // Checked again now the body is in: requests held open together all
-    // passed the first check, and the failures among them since count here.
-    // Nothing yields between this check and the redeem.
-    const retryAfterBody = limited(remoteAddress, command, who)
-    if (retryAfterBody !== undefined) {
-      tooMany(retryAfterBody)
       return
     }
     try {
