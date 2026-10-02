@@ -340,4 +340,52 @@ describe('session workspace', () => {
     expect(await screen.findByText('You said: hello web')).toBeInTheDocument()
     expect(client.calls.map((call) => call.command)).toContain('sendTurn')
   })
+
+  // `/` and `/sessions/$sessionId` share one chat pane, so sending a draft's
+  // first message moves the URL without rebuilding the pane mid-launch.
+  it('launches a draft into its session route with the same composer and no landing in between', async () => {
+    const user = userEvent.setup()
+    const { client, router } = renderConnected('/', {
+      environment: SEED.environment,
+      workspaces: [{ ...WORKSPACE, capabilities: { git: false, providers: ['opencode'] } }],
+    })
+    await waitFor(() => expect(screen.getByText('Start with a message below')).toBeInTheDocument())
+    const textbox = await screen.findByRole('textbox')
+    await waitFor(() => expect(textbox).toBeEnabled())
+    await user.type(textbox, 'first words')
+
+    // Held until the transcript has taken over, so the whole launch is watched.
+    const create = client.commands.createSession.bind(client.commands)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    vi.spyOn(client.commands, 'createSession').mockImplementation(async (input) => {
+      await gate
+      return create(input)
+    })
+    // The landing may only leave once: gone, then back, is the flicker.
+    let landingLeft = false
+    let landingReturned = false
+    const observer = new MutationObserver(() => {
+      const landing = document.body.textContent?.includes('Start with a message below')
+      if (!landing) landingLeft = true
+      else if (landingLeft) landingReturned = true
+    })
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true })
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+
+    // Creating: the message is already in the transcript, the URL is still `/`.
+    expect(await screen.findByText('Creating session…')).toBeInTheDocument()
+    expect(screen.getByText('first words')).toBeInTheDocument()
+    expect(router.state.location.pathname).toBe('/')
+    expect(landingLeft).toBe(true)
+
+    await act(async () => release())
+    expect(await screen.findByText('You said: first words')).toBeInTheDocument()
+    const sessionId = client.getState().activeSessionId
+    expect(sessionId).not.toBeNull()
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/sessions/${sessionId}`))
+    observer.disconnect()
+    expect(screen.getByRole('textbox')).toBe(textbox)
+    expect(landingReturned).toBe(false)
+  })
 })

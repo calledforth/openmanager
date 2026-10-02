@@ -40,6 +40,9 @@ export function MessageInput() {
     pendingDraftSessionStart,
     localSessionStatus,
     defaultProviderId,
+    launchingMessage,
+    beginDraftTurn,
+    failTurn,
   } = useSessionState()
   const {
     acpSessionState,
@@ -77,8 +80,10 @@ export function MessageInput() {
     undefined,
   )
 
-  const disabled =
-    !activeWorkspacePath || pendingDraftSessionStart || (!activeSessionId && !isSessionDraftOpen)
+  // A launching draft is not disabled: the view holds it still (no edits, no
+  // second send) without dimming it, so the box does not flicker while the
+  // session is created.
+  const disabled = !activeWorkspacePath || (!activeSessionId && !isSessionDraftOpen)
   const runtimeState = activeSessionId || !isSessionDraftOpen ? acpSessionState : draftSessionState
   const chrome = deriveSessionChrome(agentEvents, {
     providers,
@@ -294,10 +299,29 @@ export function MessageInput() {
       await planState.resolvePlan({ outcome: 'rejected', reason: text.trim() })
       return
     }
+    // A draft's first message is in the transcript from here, ahead of its
+    // image uploads and the session's creation, with the local previews. Only
+    // a host that shows the launching message is told this early.
+    const launching = !activeSessionId && isSessionDraftOpen && launchingMessage !== undefined
+    if (launching) {
+      beginDraftTurn({
+        text: text.trim(),
+        images: drafts.map((draft) => ({
+          id: draft.id,
+          name: draft.file.name,
+          previewUrl: draft.previewUrl,
+        })),
+      })
+    }
     let uploaded: UploadedImageAttachment[] = []
     if (drafts.length > 0) {
-      if (!uploadAttachments) throw new Error('This host cannot upload images')
-      uploaded = await uploadAttachments(drafts)
+      try {
+        if (!uploadAttachments) throw new Error('This host cannot upload images')
+        uploaded = await uploadAttachments(drafts)
+      } catch (error) {
+        if (launching) failTurn()
+        throw error
+      }
     }
     try {
       await sendMessage(text, uploaded)

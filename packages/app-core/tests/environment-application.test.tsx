@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, type ReactNode } from 'react'
+import { MotionGlobalConfig } from 'motion/react'
 import { createRoot, type Root } from 'react-dom/client'
 import {
   createMockEnvironmentClient,
@@ -22,6 +23,7 @@ import { ThemeProvider } from '../src/providers/theme-provider'
 import { useViewActions, type ViewActions } from '../src/providers/view-actions'
 import { ChatWorkspace } from '../src/components/chat/ChatWorkspace'
 import { MockEnvironmentApp } from '../src/testing/mock-environment-app'
+import { LAUNCH_PILL_MIN_VISIBLE_MS } from '../src/components/chat/SessionLaunchPill'
 
 const WORKSPACE = {
   workspaceId: 'C:/repo',
@@ -474,6 +476,160 @@ describe('the shared application over the environment client', () => {
     expect(container.textContent).toContain('hello there')
     expect(container.textContent).toContain('You said: hello there')
     expect(button('Stop')).toBeNull()
+  })
+
+  it('shows a draft’s first message in the transcript while its session is created, never the landing again', async () => {
+    const client = createMockEnvironmentClient({
+      seed: { workspaces: [WORKSPACE] },
+      respond: () => null,
+    })
+    const create = client.commands.createSession.bind(client.commands)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    vi.spyOn(client.commands, 'createSession').mockImplementation(async (input) => {
+      await gate
+      return create(input)
+    })
+    await render(<App client={client} />)
+    await act(() => headerRow('New agent')!.click())
+    await type('hello there')
+
+    // The landing must not come back at any point after the send.
+    let landingReturned = false
+    const observer = new MutationObserver(() => {
+      if (container.textContent?.includes('Start with a message below')) landingReturned = true
+    })
+    await act(() => button('Send')!.click())
+    observer.observe(container, { childList: true, subtree: true, characterData: true })
+    await settle(client)
+
+    // Creating: the message is in the transcript, the pill says so, and the
+    // composer is held (not dimmed or swapped for another placeholder).
+    expect(client.getState().activeSessionId).toBeNull()
+    expect(container.textContent).not.toContain('Start with a message below')
+    expect(occurrences('hello there')).toBe(1)
+    expect(container.textContent).toContain('Creating session…')
+    const textarea = container.querySelector('textarea')!
+    expect(textarea.value).toBe('')
+    expect(textarea.disabled).toBe(false)
+    expect(textarea.readOnly).toBe(true)
+    expect(textarea.placeholder).not.toContain('Starting session')
+
+    await act(async () => release())
+    await settle(client)
+    observer.disconnect()
+
+    // Created: the session's own copy replaced the echo in one step.
+    expect(client.getState().activeSessionId).not.toBeNull()
+    expect(occurrences('hello there')).toBe(1)
+    expect(container.querySelector('textarea')!.readOnly).toBe(false)
+    expect(landingReturned).toBe(false)
+  })
+
+  it('puts a refused first message back in the composer and takes it out of the transcript', async () => {
+    const client = createMockEnvironmentClient({ seed: { workspaces: [WORKSPACE] } })
+    vi.spyOn(client.commands, 'createSession').mockRejectedValue(
+      new Error('The project folder is unavailable.'),
+    )
+    await render(<App client={client} />)
+    await act(() => headerRow('New agent')!.click())
+    await type('hello there')
+    await act(() => button('Send')!.click())
+    await settle(client)
+
+    expect(client.getState().activeSessionId).toBeNull()
+    expect(container.textContent).toContain('Start with a message below')
+    expect(container.querySelector('textarea')!.value).toBe('hello there')
+    expect(container.querySelector('textarea')!.readOnly).toBe(false)
+    // Only the composer holds it now.
+    const outsideComposer = [...container.querySelectorAll('*')]
+      .filter((node) => node.childElementCount === 0 && !node.closest('textarea'))
+      .map((node) => node.textContent ?? '')
+      .join('\n')
+    expect(outsideComposer).not.toContain('hello there')
+    expect(container.textContent).toContain('The project folder is unavailable.')
+    // A refused launch does not wait out the pill's hold beside its reason.
+    expect(container.textContent).not.toContain('Creating session…')
+  })
+
+  it('keeps the first message on screen when the reply leaves the first turn out, until the history has it', async () => {
+    const client = createMockEnvironmentClient({
+      seed: { workspaces: [WORKSPACE] },
+      respond: () => null,
+    })
+    // The environment runs the message but answers without it: the session
+    // arrives empty, and only its history (on open) carries the message.
+    const create = client.commands.createSession.bind(client.commands)
+    let sent: { sessionId: string; threadId: string; text: string } | undefined
+    vi.spyOn(client.commands, 'createSession').mockImplementation(async (input) => {
+      const { session, thread } = await create({ ...input, firstMessage: undefined })
+      sent = { sessionId: session.sessionId, threadId: thread.threadId, text: input.firstMessage! }
+      return { session, thread }
+    })
+    const open = client.commands.openSession.bind(client.commands)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    vi.spyOn(client.commands, 'openSession').mockImplementation(async (sessionId) => {
+      await gate
+      if (sent?.sessionId === sessionId) await client.commands.sendTurn(sent)
+      return open(sessionId)
+    })
+    await render(<App client={client} />)
+    await act(() => headerRow('New agent')!.click())
+    await type('hello there')
+    await act(() => button('Send')!.click())
+    await settle(client)
+
+    // Selected, its thread still empty: the message stays where it was.
+    expect(client.getState().activeSessionId).toBe(sent!.sessionId)
+    expect(occurrences('hello there')).toBe(1)
+
+    await act(async () => release())
+    await settle(client)
+    // The history's copy took its place, once.
+    expect(occurrences('hello there')).toBe(1)
+  })
+
+  it('drops the launch pill at once when another session is opened during its hold', async () => {
+    // The pill's hold never runs out on its own here, however slow the
+    // machine: its timer is kept, not scheduled. Animations are skipped so
+    // the pill's exit takes no timer of its own.
+    MotionGlobalConfig.skipAnimations = true
+    const schedule = globalThis.setTimeout
+    const holds: Array<() => void> = []
+    const timers = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+      callback: () => void,
+      ms?: number,
+      ...rest: unknown[]
+    ) => {
+      if (ms !== undefined && ms > 100 && ms <= LAUNCH_PILL_MIN_VISIBLE_MS) {
+        holds.push(callback)
+        return 0
+      }
+      return schedule(callback, ms, ...rest)
+    }) as typeof setTimeout)
+    try {
+      const client = createMockEnvironmentClient({ seed: SEEDED_HISTORY, respond: () => null })
+      await render(<App client={client} />)
+      await act(() => headerRow('New agent')!.click())
+      await type('hello there')
+      await act(() => button('Send')!.click())
+      await settle(client)
+      const launched = client.getState().activeSessionId
+      expect(launched).not.toBeNull()
+      expect(launched).not.toBe(SESSION.sessionId)
+      // Created, and still inside the pill's shortest showing.
+      expect(holds.length).toBeGreaterThan(0)
+      expect(container.textContent).toContain('Creating session…')
+
+      await act(() => buttonWithText('First')!.click())
+      await settle(client)
+      expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
+      expect(container.textContent).not.toContain('Creating session…')
+    } finally {
+      timers.mockRestore()
+      MotionGlobalConfig.skipAnimations = false
+    }
   })
 
   it('shows Stop while a turn runs and interrupts it through the client', async () => {
