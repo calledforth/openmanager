@@ -121,7 +121,7 @@ discovery endpoints return JSON with `Cache-Control: no-store`:
 - `PUT /uploads/<ticket>` receives the bytes of one prompt attachment; see
   [Attachment uploads](#attachment-uploads).
 - `POST /pair` trades a single-use pairing token for a `paired` client
-  credential; see [Pairing](#pairing).
+  credential, for a device that has none; see [Pairing](#pairing).
 
 Neither `/health` nor `/bootstrap` includes paths, session data or credentials. Other methods
 and paths return 404. Request Host and forwarding headers never determine
@@ -209,50 +209,75 @@ probe, `composer.preferences.get` and `draft.list`;
 `upload.ticket.create`, `draft.save` and `draft.delete`; `agent`
 covers `turn.send`, `turn.interrupt`, `interaction.respond` and the composer
 model, mode and config-option setters; `admin` covers `pairing.create`,
-`pairing.list` and `pairing.revoke`. The owner grant holds all five.
+`pairing.list` and `pairing.revoke`, while `pairing.redeem` needs only `read`.
+The owner grant holds all five.
 
 ### Pairing
 
-A device with no credential is authorized by a pairing link, following the
-"Pairing link" section of the
+A device is authorized by a pairing link, following the "Pairing link"
+section of the
 [decision record](../../docs/decisions/capability-scopes-and-credentials.md):
 
 - An `admin` client sends `pairing.create` with the capabilities to offer and an
   optional label for the new device. Every capability must be in the creator's
-  own grant (`capability_missing` otherwise), and at most 32 links wait at once.
-  The response carries the token, the only time it is ever sent; the server
+  own grant (`capability_missing` otherwise), and at most 32 links wait at once;
+  links whose creator has since been revoked or expired do not hold a place.
+  The response carries the token, the only time it is ever sent. The server
   keeps its SHA-256, the grant, the label and an expiry five minutes out in
-  `pairing_links`. `pairing.list` shows the links still waiting (never their
-  tokens) and `pairing.revoke` withdraws one.
+  `pairing_links`.
+- `pairing.list` returns every waiting link plus those that stopped waiting in
+  the last hour, each with a `status` (`waiting`, `used`, `expired`, `revoked`,
+  or `void` when its creator lost access) and, once used, `usedByClientId` and
+  `usedAt`. That is how the client showing a QR code learns it was used, and by
+  which device. Tokens are never listed. `pairing.revoke` withdraws a waiting
+  link.
 - The token is 12 symbols from a 32-symbol alphabet with no look-alikes (about
-  60 bits). Clients build the link or QR code from it with
-  `encodePairingLink` in `@openmanager/environment-client`: the web app's
-  `/pair` page with the route, environment ID and token in the URL fragment.
-  The route is whatever address the device should use; nothing in the payload
-  is LAN- or tunnel-specific.
-- The device posts `{ token, capabilities?, label?, credential? }` as JSON to
-  `POST /pair` on that route. In one transaction the server checks the link,
-  checks that its creator is still live and narrows the grant to what the
-  creator holds now, mints the `paired` row and marks the link used, so a token
-  never yields two credentials even when two exchanges race. The response is
-  `{ environmentId, label, kind, clientId, clientLabel, grant, credential, repaired }`.
-- A device that is already paired sends its current credential as
-  `credential`. It keeps its client ID, label and credential, takes the new
-  link's grant, and its open sockets close with `4403 grant_changed` if the
-  grant changed so they reconnect under it; `repaired` is `true`. An owner or
-  cloud credential is refused with `409` (`already_authorized`) and the link
-  stays usable. An unknown, revoked or expired credential is ignored and the
-  device pairs as a new client.
-- Refusals carry `error.details.reason`: `malformed` (400), `invalid` (401, an
-  unknown or withdrawn token), `expired` (401), `used` (401),
-  `creator_revoked` (401), `grant_exceeds_link` (400, asked for more than the
-  link offers; the link is not used up) and `already_authorized` (409).
-- Every attempt, good or bad, counts against the `pairing` rate limit for the
-  remote address. The endpoint is under the same Host and Origin policy as
-  every other route, and answers CORS preflight for `POST`.
+  60 bits). Clients build the link or QR code with `encodePairingLink` in
+  `@openmanager/environment-client`: the web app's `/pair` page with the route,
+  environment ID and token in the URL fragment. The route is whatever address
+  the device should use; nothing in the payload is LAN- or tunnel-specific.
 
-Used and withdrawn links stay for 90 days for the audit trail, then are
-deleted the next time a link is created.
+A link is redeemed one of two ways. Both use the link and write the client in
+one transaction, so a token is redeemed at most once even when two attempts
+race, and both check the creator again at that moment: a revoked or expired
+creator voids its links, and one that lost a capability hands out only what it
+still holds.
+
+- **A device with no credential** posts `{ token, capabilities?, label? }` as
+  JSON to `POST /pair` on the link's route and gets
+  `{ environmentId, label, kind: 'paired', clientId, clientLabel, grant, credential }`,
+  the same shape `/local-owner` answers with. The body never carries a
+  credential, and one that tries is refused as `malformed`: everything in a
+  link can be forged, including a route that answers `/bootstrap` with the
+  right environment ID, so a device must not send a credential to the route a
+  link names.
+- **A device that is already paired** sends `pairing.redeem { token, capabilities? }`
+  over the socket it already has (`read` is enough; the token is the
+  authority). It keeps its client ID, label and credential and takes the link's
+  grant, replacing the old one; the answer is
+  `{ clientId, clientLabel, grant, grantChanged }`. When the grant changed, the
+  device's sockets close with `4403 grant_changed` after the answer has been
+  sent, so they reconnect under it. The owner and account-enrolled devices are
+  refused with `conflict` (`already_authorized`) and the link stays usable.
+
+Refusals carry `error.details.reason`: `malformed` (400), `invalid` (401, an
+unknown or withdrawn token), `expired` (401), `used` (401), `creator_revoked`
+(401), `grant_exceeds_link` (400, asked for more than the link offers; the link
+is not used up) and `already_authorized` (409, socket only). Failed attempts
+count against the `pairing` rate limit, keyed by remote address for
+`POST /pair` and by client for `pairing.redeem`; successful ones do not, so
+several devices pairing from one network do not lock each other out.
+`POST /pair` is under the same Host and Origin policy as every other route and
+answers CORS preflight for `POST`.
+
+Behind a tunnel every request arrives from the tunnel's local address, so the
+`/pair` budget is shared by everyone reaching that hostname: someone sending
+bad tokens can hold off pairing through the tunnel for a minute at a time,
+though never guess a token. Trusting the tunnel's client-address header on a
+tunnel listener is left to the Cloudflare work.
+
+Used and withdrawn links stay 90 days for the audit trail, then are deleted the
+next time a link is created.
 
 ## Attachment uploads
 
@@ -376,7 +401,7 @@ Fixed windows, defined in [`src/rate-limit.ts`](src/rate-limit.ts) as
 | Policy         | Key            | Limit          | Applies to                                                             |
 | -------------- | -------------- | -------------- | ---------------------------------------------------------------------- |
 | `auth_failure` | remote address | 10 per minute  | Failed credential checks on WebSocket upgrade.                         |
-| `pairing`      | remote address | 5 per minute   | `POST /pair` attempts, accepted or refused.                            |
+| `pairing`      | remote address, or client | 5 per minute | Refused `POST /pair` attempts (by address) and refused `pairing.redeem` (by client). |
 | `local_owner`  | remote address | 10 per minute  | `GET /local-owner` issuance attempts.                                      |
 | `prompt`       | client         | 30 per minute  | `turn.send`.                                                           |
 | `mutation`     | client         | 120 per minute | Every other `operate`, `agent`, `terminal` or `admin` command.         |
@@ -473,7 +498,7 @@ Types written today:
 | `token.issued`        | A credential is minted (owner, paired or cloud).                     |
 | `token.revoked`       | A credential is revoked, including owner rotation.                   |
 | `pairing.issued`      | A pairing link is created; `details` name the link and its grant.    |
-| `pairing.exchanged`   | A pairing link is exchanged for a credential; `repaired` says whether the device kept its identity. |
+| `pairing.exchanged`   | A pairing link is used; `existingClient` says whether a paired device redeemed it for itself. |
 | `pairing.rejected`    | A pairing exchange is refused; `details.reason` says why.            |
 | `pairing.revoked`     | A waiting pairing link is withdrawn.                                 |
 | `upload.rejected`     | A ticket request or `PUT /uploads/<ticket>` is refused; `details.reason` says why. |

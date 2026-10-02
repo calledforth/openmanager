@@ -6,7 +6,7 @@
 export const RATE_LIMITS = Object.freeze({
   /** Failed credential checks per remote address, on WebSocket upgrade and HTTP. */
   auth_failure: { limit: 10, windowMs: 60_000 },
-  /** Pairing-link exchange attempts per remote address; the pairing endpoint (CAL-102) consumes it. */
+  /** Refused pairing attempts: per remote address at `POST /pair`, per client for `pairing.redeem`. */
   pairing: { limit: 5, windowMs: 60_000 },
   /** Local-owner issuance attempts per remote address (`GET /local-owner`). */
   local_owner: { limit: 10, windowMs: 60_000 },

@@ -19,8 +19,8 @@ describe('pairing links', () => {
     expect(url.origin + url.pathname).toBe('https://app.example/pair')
     expect(url.search).toBe('')
     expect(url.hash).toContain('token=ABCDEFGHJKMN')
-    expect(parsePairingLink(link)).toEqual(payload)
-    expect(parsePairingLink(url.hash)).toEqual(payload)
+    expect(parsePairingLink(link)).toEqual({ ok: true, payload })
+    expect(parsePairingLink(url.hash)).toEqual({ ok: true, payload })
   })
 
   it('keep an app served under a path', () => {
@@ -35,16 +35,28 @@ describe('pairing links', () => {
       'https://x.trycloudflare.com',
     ]) {
       const link = encodePairingLink('https://app.example', { ...payload, route })
-      expect(parsePairingLink(link)?.route).toBe(route)
+      expect(parsePairingLink(link)).toMatchObject({ ok: true, payload: { route } })
     }
   })
 
   it('reject links that are not version 1 or are missing a part', () => {
     const link = encodePairingLink('https://app.example', payload)
-    expect(parsePairingLink(link.replace('v=1', 'v=2'))).toBeUndefined()
-    expect(parsePairingLink(link.replace(/&token=[^&]+/, ''))).toBeUndefined()
-    expect(parsePairingLink(link.replace('ABCDEFGHJKMN', 'ABCDEFGHJKM0'))).toBeUndefined()
-    expect(parsePairingLink('https://app.example/pair')).toBeUndefined()
+    expect(parsePairingLink(link.replace('v=1', 'v=2'))).toEqual({
+      ok: false,
+      reason: 'unsupported_version',
+    })
+    expect(parsePairingLink(link.replace(/&token=[^&]+/, ''))).toEqual({
+      ok: false,
+      reason: 'malformed',
+    })
+    expect(parsePairingLink(link.replace('ABCDEFGHJKMN', 'ABCDEFGHJKM0'))).toEqual({
+      ok: false,
+      reason: 'malformed',
+    })
+    expect(parsePairingLink('https://app.example/pair')).toEqual({
+      ok: false,
+      reason: 'not_a_link',
+    })
   })
 
   it('normalize the token as typed', () => {
@@ -52,7 +64,7 @@ describe('pairing links', () => {
       'ABCDEFGHJKMN',
       'abcd-efgh-jkmn',
     )
-    expect(parsePairingLink(link)?.token).toBe('ABCDEFGHJKMN')
+    expect(parsePairingLink(link)).toMatchObject({ ok: true, payload: { token: 'ABCDEFGHJKMN' } })
   })
 })
 

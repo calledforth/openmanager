@@ -139,5 +139,6 @@ export {
   PAIRING_LINK_VERSION,
   PairingPayloadSchema,
   parsePairingLink,
+  type PairingLinkResult,
   type PairingPayload,
 } from './pairing-link'

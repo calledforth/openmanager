@@ -8,7 +8,9 @@ import {
   PAIRING_EXCHANGE_PATH,
   PAIRING_LINK_LIFETIME_MS,
   PAIRING_LIST_CAPABILITY,
+  PAIRING_LIST_HISTORY_MS,
   PAIRING_PENDING_LINKS_MAX,
+  PAIRING_REDEEM_CAPABILITY,
   PAIRING_REVOKE_CAPABILITY,
   PAIRING_TOKEN_ALPHABET,
   PAIRING_TOKEN_LENGTH,
@@ -22,28 +24,28 @@ import {
   type ErrorCode,
   type PairingExchangeResponse,
   type PairingLink,
+  type PairingLinkStatus,
+  type PairingRedeemResponse,
   type PairingRejectionReason,
 } from '@openmanager/protocol/node'
 import { auditValue, type AuditLog } from './audit.ts'
-import {
-  insertClientRow,
-  type AuthenticatedClient,
-  type AuthorizedClients,
-} from './authorized-clients.ts'
+import { insertClientRow } from './authorized-clients.ts'
 import type { CommandContext } from './command-context.ts'
 import { openEnvironmentDatabase } from './db/database.ts'
 import type { RateLimiter } from './rate-limit.ts'
 
 /** The label a paired device gets when neither the link nor the device names it. */
 export const DEFAULT_PAIRED_LABEL = 'Paired device'
-/** Exchanged and withdrawn links are kept this long for the audit trail, then deleted. */
+/** Used and withdrawn links are kept this long for the audit trail, then deleted. */
 export const PAIRING_LINK_RETENTION_MS = 90 * 24 * 60 * 60 * 1000
 /** `POST /pair` bodies are a token and a label; anything bigger is not one. */
 export const PAIRING_EXCHANGE_MAX_BYTES = 4096
+/** At most this many links come back from `pairing.list`. */
+export const PAIRING_LIST_MAX = 200
 /**
- * Close code for a paired device's sockets when re-pairing changed its grant.
- * The device reconnects with the same credential and gets the new grant; the
- * old sockets would otherwise keep the grant they were opened with.
+ * Close code for a paired device's sockets when redeeming a link changed its
+ * grant. The device reconnects with the same credential and gets the new
+ * grant; the old sockets would otherwise keep the grant they opened with.
  */
 export const GRANT_CHANGED_CLOSE_CODE = 4403 as const
 export const GRANT_CHANGED_CLOSE_REASON = 'grant_changed' as const
@@ -56,15 +58,37 @@ type LinkRow = {
   created_at: number
   expires_at: number
   consumed_at: number | null
+  consumed_by_client_id: string | null
   revoked_at: number | null
 }
 
-type CreatorRow = { scopes_json: string; expires_at: number; revoked_at: number | null }
+type ListedLinkRow = LinkRow & {
+  creator_revoked_at: number | null
+  creator_expires_at: number | null
+}
 
-const errorResult = (requestId: string | null, code: ErrorCode, message: string) => ({
+type ClientRow = {
+  kind: string
+  label: string
+  scopes_json: string
+  expires_at: number
+  revoked_at: number | null
+}
+
+const LINK_COLUMNS = `
+  l.link_id, l.label, l.scopes_json, l.created_by_client_id, l.created_at, l.expires_at,
+  l.consumed_at, l.consumed_by_client_id, l.revoked_at
+`
+
+const errorResult = (
+  requestId: string | null,
+  code: ErrorCode,
+  message: string,
+  details?: Record<string, unknown>,
+) => ({
   type: 'error' as const,
   requestId,
-  error: { code, message },
+  error: details ? { code, message, details } : { code, message },
 })
 
 const hashToken = (token: string) => createHash('sha256').update(token, 'utf8').digest()
@@ -92,7 +116,23 @@ const canonical = (grant: Iterable<AccessCapability>) => {
   return ACCESS_CAPABILITIES.filter((capability) => set.has(capability))
 }
 
-const toLink = (row: LinkRow): PairingLink | undefined => {
+const isLive = (row: { revoked_at: number | null; expires_at: number } | undefined, now: number) =>
+  row !== undefined && row.revoked_at === null && row.expires_at > now
+
+const iso = (time: number | null) => (time === null ? null : new Date(time).toISOString())
+
+function statusOf(row: ListedLinkRow, now: number): PairingLinkStatus {
+  if (row.consumed_at !== null) return 'used'
+  if (row.revoked_at !== null) return 'revoked'
+  if (row.expires_at <= now) return 'expired'
+  const creatorLive =
+    row.creator_expires_at !== null &&
+    row.creator_revoked_at === null &&
+    row.creator_expires_at > now
+  return creatorLive ? 'waiting' : 'void'
+}
+
+const toLink = (row: LinkRow, status: PairingLinkStatus): PairingLink | undefined => {
   const capabilities = parseGrant(row.scopes_json)
   if (!capabilities) return undefined
   return {
@@ -102,6 +142,9 @@ const toLink = (row: LinkRow): PairingLink | undefined => {
     createdByClientId: row.created_by_client_id,
     createdAt: new Date(row.created_at).toISOString(),
     expiresAt: new Date(row.expires_at).toISOString(),
+    status,
+    usedByClientId: row.consumed_by_client_id,
+    usedAt: iso(row.consumed_at),
   }
 }
 
@@ -126,25 +169,50 @@ class Rejection extends Error {
   }
 }
 
+const usedRejection = (linkId: string) =>
+  new Rejection(401, 'auth', 'used', 'This pairing link was already used.', linkId)
+const creatorRejection = (linkId: string) =>
+  new Rejection(
+    401,
+    'auth',
+    'creator_revoked',
+    'The device that created this pairing link no longer has access.',
+    linkId,
+  )
+
 type CreateOutcome =
-  { denied: AccessCapability } | { full: true } | { link: PairingLink; token: string }
+  | { gone: true }
+  | { denied: AccessCapability }
+  | { full: true }
+  | { link: PairingLink; token: string }
+
+/** Who a link is being redeemed for: a device with no credential, or one already paired. */
+type RedeemTarget =
+  { kind: 'new'; label: string | undefined } | { kind: 'existing'; clientId: string }
+
+type RedeemOutcome =
+  | { kind: 'new'; linkId: string; response: PairingExchangeResponse }
+  | { kind: 'existing'; linkId: string; response: PairingRedeemResponse }
 
 /**
- * Pairing links and their exchange (CAL-102, CAL-103, CAL-106).
+ * Pairing links and their redemption (CAL-102, CAL-103, CAL-106).
  *
- * An `admin` client creates a link over the socket; the device being paired
- * trades the link's token for a `paired` credential at `POST /pair`. The link
- * is consumed and the client row minted in one transaction, so a token can
- * never produce two credentials, and the creator is checked again at that
- * moment: a revoked creator's links are void.
+ * An `admin` client creates a link over the socket. A device with no
+ * credential trades its token for a `paired` credential at `POST /pair`; a
+ * device that is already paired redeems it over its own socket and keeps its
+ * identity. Either way the link is used and the client written in one
+ * transaction, so a token is redeemed once, and the creator is checked again
+ * at that moment: a revoked creator's links are void, a narrowed one's narrow.
  */
 export function createPairingService(options: {
   dataDir: string
-  clients: Pick<AuthorizedClients, 'authenticate'>
   audit: AuditLog
   rateLimiter: RateLimiter
   environment: () => { environmentId: string; label: string }
-  /** A paired device re-paired with a different grant; its open sockets must reconnect. */
+  /**
+   * A device's grant changed by redeeming a link; its open sockets must
+   * reconnect. Called after the redeem's response has been sent.
+   */
   onGrantChanged?: (clientId: string) => void
   onError?: (error: unknown) => void
   clock?: () => number
@@ -156,21 +224,25 @@ export function createPairingService(options: {
       link_id, token_hash, label, scopes_json, created_by_client_id, created_at, expires_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?)
   `)
-  const pendingLinks = database.prepare(`
-    SELECT link_id, label, scopes_json, created_by_client_id, created_at, expires_at,
-      consumed_at, revoked_at
-    FROM pairing_links
-    WHERE consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ?
-    ORDER BY created_at, link_id
+  const listedLinks = database.prepare(`
+    SELECT ${LINK_COLUMNS}, c.revoked_at AS creator_revoked_at, c.expires_at AS creator_expires_at
+    FROM pairing_links l
+    LEFT JOIN authorized_clients c ON c.client_id = l.created_by_client_id
+    WHERE COALESCE(l.consumed_at, l.revoked_at, l.expires_at) > ?
+    ORDER BY l.created_at DESC, l.link_id
+    LIMIT ${PAIRING_LIST_MAX}
   `)
-  const pendingCount = database.prepare(`
-    SELECT count(*) AS count FROM pairing_links
-    WHERE consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ?
+  // A link whose creator lost access can never be used, so it does not hold
+  // a place: revoking a lost phone must not lock the owner out of pairing.
+  const waitingCount = database.prepare(`
+    SELECT count(*) AS count
+    FROM pairing_links l
+    JOIN authorized_clients c ON c.client_id = l.created_by_client_id
+    WHERE l.consumed_at IS NULL AND l.revoked_at IS NULL AND l.expires_at > ?
+      AND c.revoked_at IS NULL AND c.expires_at > ?
   `)
   const linkByHash = database.prepare(`
-    SELECT link_id, label, scopes_json, created_by_client_id, created_at, expires_at,
-      consumed_at, revoked_at
-    FROM pairing_links WHERE token_hash = ?
+    SELECT ${LINK_COLUMNS} FROM pairing_links l WHERE l.token_hash = ?
   `)
   const revokeLink = database.prepare(`
     UPDATE pairing_links SET revoked_at = ?
@@ -183,19 +255,19 @@ export function createPairingService(options: {
   const pruneLinks = database.prepare(`
     DELETE FROM pairing_links WHERE expires_at < ?
   `)
-  const creatorRow = database.prepare(`
-    SELECT scopes_json, expires_at, revoked_at FROM authorized_clients WHERE client_id = ?
+  const clientRow = database.prepare(`
+    SELECT kind, label, scopes_json, expires_at, revoked_at
+    FROM authorized_clients WHERE client_id = ?
   `)
   const regrant = database.prepare(`
     UPDATE authorized_clients SET scopes_json = ?
     WHERE client_id = ? AND kind = 'paired' AND revoked_at IS NULL
   `)
 
-  /** The caller's grant as stored now, or undefined when the row is no longer live. */
+  /** A client's grant as stored now, or undefined when its row is no longer live. */
   const liveGrant = (clientId: string, now: number) => {
-    const row = creatorRow.get(clientId) as CreatorRow | undefined
-    if (!row || row.revoked_at !== null || row.expires_at <= now) return undefined
-    return parseGrant(row.scopes_json)
+    const row = clientRow.get(clientId) as ClientRow | undefined
+    return isLive(row, now) ? parseGrant(row!.scopes_json) : undefined
   }
 
   const transaction = <T>(body: () => T): T => {
@@ -224,10 +296,10 @@ export function createPairingService(options: {
     const result = transaction((): CreateOutcome => {
       // A client never hands out more than it holds (delegation cap).
       const held = liveGrant(context.clientId, now)
-      if (!held) return { denied: 'read' }
+      if (!held) return { gone: true }
       const missing = capabilities.find((capability) => !held.includes(capability))
       if (missing) return { denied: missing }
-      const { count } = pendingCount.get(now) as { count: number }
+      const { count } = waitingCount.get(now, now) as { count: number }
       if (count >= PAIRING_PENDING_LINKS_MAX) return { full: true }
       pruneLinks.run(now - PAIRING_LINK_RETENTION_MS)
       const token = mintPairingToken()
@@ -239,6 +311,7 @@ export function createPairingService(options: {
         created_at: now,
         expires_at: now + PAIRING_LINK_LIFETIME_MS,
         consumed_at: null,
+        consumed_by_client_id: null,
         revoked_at: null,
       }
       insertLink.run(
@@ -250,8 +323,13 @@ export function createPairingService(options: {
         row.created_at,
         row.expires_at,
       )
-      return { link: toLink(row)!, token }
+      return { link: toLink(row, 'waiting')!, token }
     })
+    if ('gone' in result) {
+      // Revoked or idle-expired since this socket opened. Its next connect
+      // will be refused; this command already is.
+      return errorResult(command.requestId, 'auth', 'This client no longer has access.')
+    }
     if ('denied' in result) {
       options.audit.record({
         type: 'capability.denied',
@@ -290,8 +368,9 @@ export function createPairingService(options: {
     if (!parsed.success) {
       return errorResult(command.requestId, 'validation', 'Invalid pairing list request.')
     }
-    const links = (pendingLinks.all(clock()) as LinkRow[])
-      .map(toLink)
+    const now = clock()
+    const links = (listedLinks.all(now - PAIRING_LIST_HISTORY_MS) as ListedLinkRow[])
+      .map((row) => toLink(row, statusOf(row, now)))
       .filter((link): link is PairingLink => link !== undefined)
     return PairingResponseSchemas[PAIRING_LIST_CAPABILITY].parse({
       type: 'response',
@@ -302,16 +381,17 @@ export function createPairingService(options: {
 
   const revoke = (command: CommandEnvelope, context: CommandContext | undefined) => {
     const parsed = PairingCommandSchemas[PAIRING_REVOKE_CAPABILITY].safeParse(command)
-    if (!parsed.success) {
+    if (!parsed.success || !context) {
       return errorResult(command.requestId, 'validation', 'Invalid pairing revoke request.')
     }
     const { linkId } = parsed.data.payload
-    if (revokeLink.run(clock(), linkId, clock()).changes === 0) {
+    const now = clock()
+    if (revokeLink.run(now, linkId, now).changes === 0) {
       return errorResult(command.requestId, 'not_found', 'No pairing link is waiting with that id.')
     }
     options.audit.record({
       type: 'pairing.revoked',
-      clientId: context?.clientId,
+      clientId: context.clientId,
       command: PAIRING_REVOKE_CAPABILITY,
       details: { linkId },
     })
@@ -323,66 +403,49 @@ export function createPairingService(options: {
   }
 
   /**
-   * Trade a token for a credential. Reasons are checked in an order that
-   * tells a person what to do: a withdrawn link reads like one that never
-   * existed, an expired one says so, a used one says so.
+   * Redeem a token for `target`. Reasons are checked in an order that tells a
+   * person what to do: a withdrawn link reads like one that never existed, an
+   * expired one says so, a used one says so. Responses are built and checked
+   * inside the transaction, so one that could not be sent leaves nothing used.
    */
-  const exchange = (
-    body: unknown,
-  ): { response: PairingExchangeResponse; linkId: string; created: boolean } => {
-    const parsed = PairingExchangeRequestSchema.safeParse(body)
-    if (!parsed.success) {
-      throw new Rejection(400, 'validation', 'malformed', 'Invalid pairing request.')
-    }
-    const request = parsed.data
-    // Authenticating the device's current credential moves its last-seen
-    // forward; an unknown, revoked or expired one is simply not a re-pair.
-    const current: AuthenticatedClient | undefined =
-      request.credential === undefined
-        ? undefined
-        : options.clients.authenticate(request.credential)
+  const redeem = (
+    token: string,
+    requested: readonly AccessCapability[] | undefined,
+    target: RedeemTarget,
+  ): RedeemOutcome & { grantChanged: boolean } => {
     const now = clock()
-    const outcome = transaction(() => {
-      const link = linkByHash.get(hashToken(request.token)) as LinkRow | undefined
+    return transaction(() => {
+      const link = linkByHash.get(hashToken(token)) as LinkRow | undefined
       if (!link || link.revoked_at !== null) {
         throw new Rejection(401, 'auth', 'invalid', 'This pairing link is not valid.')
       }
-      if (link.consumed_at !== null) {
-        throw new Rejection(
-          401,
-          'auth',
-          'used',
-          'This pairing link was already used.',
-          link.link_id,
-        )
-      }
+      if (link.consumed_at !== null) throw usedRejection(link.link_id)
       if (link.expires_at <= now) {
         throw new Rejection(401, 'auth', 'expired', 'This pairing link has expired.', link.link_id)
       }
-      if (current && current.kind !== 'paired') {
-        // The owner (or an account-enrolled device) needs no link, and turning
-        // it into a paired client would demote it. The link stays usable.
-        throw new Rejection(
-          409,
-          'conflict',
-          'already_authorized',
-          'This device is already authorized for this environment.',
-          link.link_id,
-        )
+      let existing: ClientRow | undefined
+      if (target.kind === 'existing') {
+        existing = clientRow.get(target.clientId) as ClientRow | undefined
+        if (!isLive(existing, now)) {
+          throw new Rejection(401, 'auth', 'invalid', 'This device no longer has access.')
+        }
+        if (existing!.kind !== 'paired') {
+          // The owner (or an account-enrolled device) needs no link, and
+          // turning it into a paired client would demote it.
+          throw new Rejection(
+            409,
+            'conflict',
+            'already_authorized',
+            'This device is already authorized for this environment.',
+            link.link_id,
+          )
+        }
       }
       const offered = parseGrant(link.scopes_json)
       const creatorGrant = liveGrant(link.created_by_client_id, now)
-      if (!offered || !creatorGrant) {
-        throw new Rejection(
-          401,
-          'auth',
-          'creator_revoked',
-          'The device that created this pairing link no longer has access.',
-          link.link_id,
-        )
-      }
-      const requested = request.capabilities ?? offered
-      if (requested.some((capability) => !offered.includes(capability))) {
+      if (!offered || !creatorGrant) throw creatorRejection(link.link_id)
+      const asked = requested ?? offered
+      if (asked.some((capability) => !offered.includes(capability))) {
         throw new Rejection(
           400,
           'validation',
@@ -392,76 +455,144 @@ export function createPairingService(options: {
         )
       }
       // The creator is checked again now: narrowing it narrows its links.
-      const grant = canonical(requested.filter((capability) => creatorGrant.includes(capability)))
-      if (!grant.includes('read')) {
-        throw new Rejection(
-          401,
-          'auth',
-          'creator_revoked',
-          'The device that created this pairing link no longer has access.',
-          link.link_id,
-        )
-      }
-      const scopes = JSON.stringify(grant)
-      if (current && regrant.run(scopes, current.clientId).changes > 0) {
-        if (consumeLink.run(now, current.clientId, link.link_id, now).changes === 0) {
-          throw new Rejection(
-            401,
-            'auth',
-            'used',
-            'This pairing link was already used.',
-            link.link_id,
-          )
+      const grant = canonical(asked.filter((capability) => creatorGrant.includes(capability)))
+      if (!grant.includes('read')) throw creatorRejection(link.link_id)
+
+      if (target.kind === 'existing') {
+        const previous = canonical(parseGrant(existing!.scopes_json) ?? [])
+        if (regrant.run(JSON.stringify(grant), target.clientId).changes === 0) {
+          throw new Rejection(401, 'auth', 'invalid', 'This device no longer has access.')
         }
+        if (consumeLink.run(now, target.clientId, link.link_id, now).changes === 0) {
+          throw usedRejection(link.link_id)
+        }
+        const grantChanged = previous.join(' ') !== grant.join(' ')
         return {
+          kind: 'existing',
           linkId: link.link_id,
-          created: false,
-          grantChanged: canonical(current.capabilities).join(' ') !== grant.join(' '),
-          client: { ...current, capabilities: grant },
-          credential: request.credential!,
+          grantChanged,
+          response: PairingResponseSchemas[PAIRING_REDEEM_CAPABILITY].shape.payload.parse({
+            clientId: target.clientId,
+            clientLabel: existing!.label,
+            grant,
+            grantChanged,
+          }),
         }
       }
       const minted = insertClientRow(
         database,
         {
-          label: link.label ?? request.label ?? DEFAULT_PAIRED_LABEL,
+          label: link.label ?? target.label ?? DEFAULT_PAIRED_LABEL,
           kind: 'paired',
           capabilities: grant,
         },
         now,
       )
       if (consumeLink.run(now, minted.client.clientId, link.link_id, now).changes === 0) {
-        throw new Rejection(
-          401,
-          'auth',
-          'used',
-          'This pairing link was already used.',
-          link.link_id,
-        )
+        throw usedRejection(link.link_id)
       }
+      const environment = options.environment()
       return {
+        kind: 'new',
         linkId: link.link_id,
-        created: true,
         grantChanged: false,
-        client: minted.client,
-        credential: minted.credential,
+        response: PairingExchangeResponseSchema.parse({
+          environmentId: environment.environmentId,
+          label: environment.label,
+          kind: 'paired',
+          clientId: minted.client.clientId,
+          clientLabel: minted.client.label,
+          grant: [...minted.client.capabilities],
+          credential: minted.credential,
+        }),
       }
     })
-    if (outcome.grantChanged) options.onGrantChanged?.(outcome.client.clientId)
-    const environment = options.environment()
-    return {
-      linkId: outcome.linkId,
-      created: outcome.created,
-      response: PairingExchangeResponseSchema.parse({
-        environmentId: environment.environmentId,
-        label: environment.label,
-        kind: 'paired',
-        clientId: outcome.client.clientId,
-        clientLabel: outcome.client.label,
-        grant: [...outcome.client.capabilities],
-        credential: outcome.credential,
-        repaired: !outcome.created,
-      }),
+  }
+
+  /**
+   * Failed attempts count against the `pairing` limit for `key` (a remote
+   * address, or a client for socket redeems). Successful ones do not: they
+   * needed a token an admin handed out, and several devices pairing from one
+   * network in the same minute must not lock each other out.
+   */
+  const limited = (
+    key: string,
+    command: string,
+    who: { remoteAddress?: string; clientId?: string },
+  ) => {
+    const lockout = options.rateLimiter.blocked('pairing', key)
+    if (lockout.allowed) return undefined
+    options.audit.record({
+      type: 'rate_limited',
+      ...who,
+      command,
+      details: { policy: 'pairing', retryAfterMs: lockout.retryAfterMs },
+    })
+    return lockout.retryAfterMs
+  }
+
+  const rejected = (
+    error: Rejection,
+    key: string,
+    command: string,
+    who: { remoteAddress?: string; clientId?: string },
+    origin?: string,
+  ) => {
+    options.rateLimiter.consume('pairing', key)
+    options.audit.record({
+      type: 'pairing.rejected',
+      ...who,
+      command,
+      details: {
+        reason: error.reason,
+        linkId: error.linkId ?? null,
+        ...(origin !== undefined ? { origin: auditValue(origin) } : {}),
+      },
+    })
+  }
+
+  const redeemCommand = (command: CommandEnvelope, context: CommandContext | undefined) => {
+    const parsed = PairingCommandSchemas[PAIRING_REDEEM_CAPABILITY].safeParse(command)
+    if (!context) return errorResult(command.requestId, 'validation', 'Invalid redeem request.')
+    const key = `client:${context.clientId}`
+    const who = { clientId: context.clientId }
+    const retryAfterMs = limited(key, PAIRING_REDEEM_CAPABILITY, who)
+    if (retryAfterMs !== undefined) {
+      return errorResult(command.requestId, 'unavailable', 'Too many pairing attempts.', {
+        policy: 'pairing',
+        retryAfterMs,
+      })
+    }
+    try {
+      if (!parsed.success) {
+        throw new Rejection(400, 'validation', 'malformed', 'Invalid redeem request.')
+      }
+      const { token, capabilities } = parsed.data.payload
+      const outcome = redeem(token, capabilities, { kind: 'existing', clientId: context.clientId })
+      if (outcome.kind !== 'existing') throw new Error('Redeem minted a client for a socket.')
+      options.audit.record({
+        type: 'pairing.exchanged',
+        clientId: context.clientId,
+        command: PAIRING_REDEEM_CAPABILITY,
+        details: {
+          linkId: outcome.linkId,
+          existingClient: true,
+          capabilities: outcome.response.grant.join(' '),
+        },
+      })
+      // After the response below has gone out on this very socket.
+      if (outcome.grantChanged) {
+        setImmediate(() => options.onGrantChanged?.(context.clientId))
+      }
+      return PairingResponseSchemas[PAIRING_REDEEM_CAPABILITY].parse({
+        type: 'response',
+        requestId: command.requestId,
+        payload: outcome.response,
+      })
+    } catch (error) {
+      if (!(error instanceof Rejection)) throw error
+      rejected(error, key, PAIRING_REDEEM_CAPABILITY, who)
+      return errorResult(command.requestId, error.code, error.message, { reason: error.reason })
     }
   }
 
@@ -500,6 +631,72 @@ export function createPairingService(options: {
       request.on('error', reject)
     })
 
+  const exchangeHttp = async (request: IncomingMessage, response: ServerResponse) => {
+    const remoteAddress = request.socket.remoteAddress ?? 'unknown'
+    const command = `POST ${PAIRING_EXCHANGE_PATH}`
+    const who = { remoteAddress }
+    const retryAfterMs = limited(remoteAddress, command, who)
+    if (retryAfterMs !== undefined) {
+      request.resume()
+      send(response, 429, errorResult(null, 'unavailable', 'Too many pairing attempts.'), {
+        'retry-after': String(Math.ceil(retryAfterMs / 1000)),
+      })
+      return
+    }
+    const text = await readBody(request)
+    if (text === undefined) {
+      send(response, 413, errorResult(null, 'validation', 'Pairing request is too large.'), {
+        connection: 'close',
+      })
+      return
+    }
+    try {
+      let body: unknown
+      try {
+        body = JSON.parse(text)
+      } catch {
+        throw new Rejection(400, 'validation', 'malformed', 'Pairing request must be JSON.')
+      }
+      const parsed = PairingExchangeRequestSchema.safeParse(body)
+      if (!parsed.success) {
+        throw new Rejection(400, 'validation', 'malformed', 'Invalid pairing request.')
+      }
+      const { token, capabilities, label } = parsed.data
+      const outcome = redeem(token, capabilities, { kind: 'new', label })
+      if (outcome.kind !== 'new') throw new Error('Exchange redeemed for an existing client.')
+      options.audit.record({
+        type: 'pairing.exchanged',
+        clientId: outcome.response.clientId,
+        remoteAddress,
+        command,
+        details: {
+          linkId: outcome.linkId,
+          existingClient: false,
+          capabilities: outcome.response.grant.join(' '),
+        },
+      })
+      options.audit.record({
+        type: 'token.issued',
+        clientId: outcome.response.clientId,
+        command,
+        details: { kind: 'paired', label: outcome.response.clientLabel },
+      })
+      send(response, 200, outcome.response)
+    } catch (error) {
+      if (!(error instanceof Rejection)) {
+        options.onError?.(error)
+        send(response, 500, errorResult(null, 'internal', 'Pairing failed.'))
+        return
+      }
+      rejected(error, remoteAddress, command, who, request.headers.origin)
+      send(
+        response,
+        error.status,
+        errorResult(null, error.code, error.message, { reason: error.reason }),
+      )
+    }
+  }
+
   return {
     dispatch(command: CommandEnvelope, context?: CommandContext): unknown | undefined {
       switch (command.name) {
@@ -509,6 +706,8 @@ export function createPairingService(options: {
           return list(command)
         case PAIRING_REVOKE_CAPABILITY:
           return revoke(command, context)
+        case PAIRING_REDEEM_CAPABILITY:
+          return redeemCommand(command, context)
         default:
           return undefined
       }
@@ -528,93 +727,20 @@ export function createPairingService(options: {
         return true
       }
       if (request.method !== 'POST') {
+        request.resume()
         send(response, 405, errorResult(null, 'validation', 'Pairing uses POST.'), {
           allow: 'POST',
         })
         return true
       }
-      const remoteAddress = request.socket.remoteAddress ?? 'unknown'
-      const command = `POST ${PAIRING_EXCHANGE_PATH}`
-      // Every attempt counts, good or bad: 5 a minute leaves a 60-bit token
-      // out of reach and is plenty for a person pairing a phone.
-      const decision = options.rateLimiter.consume('pairing', remoteAddress)
-      if (!decision.allowed) {
-        options.audit.record({
-          type: 'rate_limited',
-          remoteAddress,
-          command,
-          details: { policy: 'pairing', retryAfterMs: decision.retryAfterMs },
-        })
-        request.resume()
-        send(response, 429, errorResult(null, 'unavailable', 'Too many pairing attempts.'), {
-          'retry-after': String(Math.ceil(decision.retryAfterMs / 1000)),
-        })
-        return true
-      }
-      void (async () => {
-        let text: string | undefined
-        try {
-          text = await readBody(request)
-        } catch {
-          return
+      exchangeHttp(request, response).catch((error: unknown) => {
+        options.onError?.(error)
+        if (!response.headersSent) {
+          send(response, 500, errorResult(null, 'internal', 'Pairing failed.'))
+        } else {
+          response.destroy()
         }
-        if (text === undefined) {
-          send(response, 413, errorResult(null, 'validation', 'Pairing request is too large.'), {
-            connection: 'close',
-          })
-          return
-        }
-        try {
-          let body: unknown
-          try {
-            body = JSON.parse(text)
-          } catch {
-            throw new Rejection(400, 'validation', 'malformed', 'Pairing request must be JSON.')
-          }
-          const result = exchange(body)
-          options.audit.record({
-            type: 'pairing.exchanged',
-            clientId: result.response.clientId,
-            remoteAddress,
-            command,
-            details: {
-              linkId: result.linkId,
-              repaired: !result.created,
-              capabilities: result.response.grant.join(' '),
-            },
-          })
-          if (result.created) {
-            options.audit.record({
-              type: 'token.issued',
-              clientId: result.response.clientId,
-              command,
-              details: { kind: 'paired', label: result.response.clientLabel },
-            })
-          }
-          send(response, 200, result.response)
-        } catch (error) {
-          if (!(error instanceof Rejection)) {
-            options.onError?.(error)
-            send(response, 500, errorResult(null, 'internal', 'Pairing failed.'))
-            return
-          }
-          options.audit.record({
-            type: 'pairing.rejected',
-            remoteAddress,
-            command,
-            details: {
-              reason: error.reason,
-              linkId: error.linkId ?? null,
-              origin: auditValue(request.headers.origin),
-            },
-          })
-          send(response, error.status, {
-            type: 'error',
-            requestId: null,
-            error: { code: error.code, message: error.message, details: { reason: error.reason } },
-          })
-        }
-      })().catch(() => undefined)
+      })
       return true
     },
 

@@ -7,9 +7,15 @@ import { EntityIdSchema, PairingTokenSchema } from '@openmanager/protocol'
  * is any http(s) address the environment answers on (loopback, LAN, a
  * tunnel); the payload neither knows nor cares which kind it is.
  *
- * The token is the only secret, and it is not a credential: the device trades
- * it at `POST {route}/pair` for one. A pairing client should check that the
- * route's `/bootstrap` answers with `environmentId` before it does.
+ * The token is the only secret, and it is not a credential. Everything in a
+ * link can be forged, including a route that answers `/bootstrap` with the
+ * right `environmentId`, so a pairing client must never send a credential
+ * to the route a link names:
+ *
+ * - With no credential for `environmentId`, trade the token at
+ *   `POST {route}/pair`.
+ * - With one, redeem it with `pairing.redeem` over the socket the client
+ *   already trusts for that environment, not over the link's route.
  */
 export const PairingPayloadSchema = z.strictObject({
   route: z
@@ -58,11 +64,17 @@ export function encodePairingLink(appUrl: string, payload: PairingPayload): stri
   return page.href
 }
 
-/**
- * Read the payload back from a pairing link, or from its fragment alone.
- * `undefined` for anything that is not a well-formed version 1 link.
- */
-export function parsePairingLink(link: string): PairingPayload | undefined {
+export type PairingLinkResult =
+  | { ok: true; payload: PairingPayload }
+  /**
+   * `not_a_link`: no version marker at all. `unsupported_version`: a link
+   * from a newer app, so this one should be updated rather than blamed.
+   * `malformed`: a version 1 link with a part missing or wrong.
+   */
+  | { ok: false; reason: 'not_a_link' | 'unsupported_version' | 'malformed' }
+
+/** Read the payload back from a pairing link, or from its fragment alone. */
+export function parsePairingLink(link: string): PairingLinkResult {
   let fragment = link
   try {
     fragment = new URL(link).hash
@@ -70,11 +82,13 @@ export function parsePairingLink(link: string): PairingPayload | undefined {
     // Not a URL: treat the input as the fragment itself.
   }
   const params = new URLSearchParams(fragment.replace(/^#/, ''))
-  if (params.get('v') !== PAIRING_LINK_VERSION) return undefined
+  const version = params.get('v')
+  if (version === null) return { ok: false, reason: 'not_a_link' }
+  if (version !== PAIRING_LINK_VERSION) return { ok: false, reason: 'unsupported_version' }
   const parsed = PairingPayloadSchema.safeParse({
     route: params.get('route') ?? undefined,
     environmentId: params.get('environment') ?? undefined,
     token: params.get('token') ?? undefined,
   })
-  return parsed.success ? parsed.data : undefined
+  return parsed.success ? { ok: true, payload: parsed.data } : { ok: false, reason: 'malformed' }
 }

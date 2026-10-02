@@ -26,6 +26,7 @@ import {
   PAIRING_CREATE_CAPABILITY,
   PAIRING_EXCHANGE_CAPABILITY,
   PAIRING_LIST_CAPABILITY,
+  PAIRING_REDEEM_CAPABILITY,
   PAIRING_REVOKE_CAPABILITY,
   type DurableEvent,
   type EventEnvelope,
@@ -116,6 +117,7 @@ export const SERVER_CAPABILITIES = [
   PAIRING_CREATE_CAPABILITY,
   PAIRING_LIST_CAPABILITY,
   PAIRING_REVOKE_CAPABILITY,
+  PAIRING_REDEEM_CAPABILITY,
   PAIRING_EXCHANGE_CAPABILITY,
 ]
 
@@ -386,7 +388,6 @@ export async function startServer(config: ServerConfig) {
   let closeClientSockets: (clientId: string) => void = () => undefined
   const pairing = createPairingService({
     dataDir: config.dataDir,
-    clients,
     audit,
     rateLimiter,
     environment: () => ({ environmentId: identity.environmentId, label: identity.label }),
@@ -594,8 +595,14 @@ export async function startServer(config: ServerConfig) {
   })
   publishDurableEvent = (record) => sockets.publish(record)
   publishThreadEvent = (event) => sockets.publishEvent(event)
-  closeClientSockets = (clientId) =>
-    sockets.disconnectClient(clientId, GRANT_CHANGED_CLOSE_CODE, GRANT_CHANGED_CLOSE_REASON)
+  closeClientSockets = (clientId) => {
+    const close = () =>
+      sockets.disconnectClient(clientId, GRANT_CHANGED_CLOSE_CODE, GRANT_CHANGED_CLOSE_REASON)
+    close()
+    // A socket that authenticated just before the grant changed may not be in
+    // the map yet; a second pass after the upgrade handler yields closes it too.
+    setImmediate(close)
+  }
   const stopHealthEvents = providerService.onHealthChanged((event) => sockets.publishEvent(event))
   try {
     await new Promise<void>((resolve, reject) => {

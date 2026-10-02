@@ -123,6 +123,9 @@ export const COMMAND_ACCESS = Object.freeze({
   'pairing.create': 'admin',
   'pairing.list': 'admin',
   'pairing.revoke': 'admin',
+  // A device redeems a link for itself. The token is the authority, exactly
+  // as at `POST /pair`, so any authenticated client may present one.
+  'pairing.redeem': 'read',
 } as const satisfies Record<CommandName, AccessCapability | null>)
 
 /**

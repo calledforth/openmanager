@@ -33,11 +33,12 @@ describe('pairing tokens', () => {
 })
 
 describe('pairing commands', () => {
-  it('need admin', () => {
+  it('need admin to hand out access, and only read to redeem a link for oneself', () => {
     expect(COMMAND_ACCESS).toMatchObject({
       'pairing.create': 'admin',
       'pairing.list': 'admin',
       'pairing.revoke': 'admin',
+      'pairing.redeem': 'read',
     })
   })
 
@@ -61,10 +62,18 @@ describe('pairing commands', () => {
       PairingExchangeRequestSchema.parse({ token: 'abcd-efgh-jkmn', label: '  Phone ' }),
     ).toEqual({ token: 'ABCDEFGHJKMN', label: 'Phone' })
     expect(PairingExchangeRequestSchema.safeParse({ token: 'nope' }).success).toBe(false)
+    // The exchange never carries a credential: the route came from a link.
+    expect(
+      PairingExchangeRequestSchema.safeParse({ token: 'ABCDEFGHJKMN', credential: 'omc1.x' })
+        .success,
+    ).toBe(false)
   })
 
-  it('refuse control characters in labels', () => {
+  it('refuse control and format characters in labels', () => {
     expect(ClientLabelSchema.safeParse('Phone\u0007').success).toBe(false)
+    expect(ClientLabelSchema.safeParse('Phone‮enod').success).toBe(false)
+    expect(ClientLabelSchema.safeParse('Lap‍top').success).toBe(false)
+    expect(ClientLabelSchema.safeParse('Pixel 9 — Chrome').success).toBe(true)
     expect(ClientLabelSchema.safeParse('x'.repeat(129)).success).toBe(false)
   })
 })
