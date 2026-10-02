@@ -595,14 +595,8 @@ export async function startServer(config: ServerConfig) {
   })
   publishDurableEvent = (record) => sockets.publish(record)
   publishThreadEvent = (event) => sockets.publishEvent(event)
-  closeClientSockets = (clientId) => {
-    const close = () =>
-      sockets.disconnectClient(clientId, GRANT_CHANGED_CLOSE_CODE, GRANT_CHANGED_CLOSE_REASON)
-    close()
-    // A socket that authenticated just before the grant changed may not be in
-    // the map yet; a second pass after the upgrade handler yields closes it too.
-    setImmediate(close)
-  }
+  closeClientSockets = (clientId) =>
+    sockets.retireClient(clientId, GRANT_CHANGED_CLOSE_CODE, GRANT_CHANGED_CLOSE_REASON)
   const stopHealthEvents = providerService.onHealthChanged((event) => sockets.publishEvent(event))
   try {
     await new Promise<void>((resolve, reject) => {

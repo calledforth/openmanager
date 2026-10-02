@@ -210,8 +210,9 @@ export function createPairingService(options: {
   rateLimiter: RateLimiter
   environment: () => { environmentId: string; label: string }
   /**
-   * A device's grant changed by redeeming a link; its open sockets must
-   * reconnect. Called after the redeem's response has been sent.
+   * A device's grant changed by redeeming a link. Called as the redeem
+   * commits, before its response is sent: the device's sockets must stop
+   * serving the old grant at once and close once that response is out.
    */
   onGrantChanged?: (clientId: string) => void
   onError?: (error: unknown) => void
@@ -224,12 +225,19 @@ export function createPairingService(options: {
       link_id, token_hash, label, scopes_json, created_by_client_id, created_at, expires_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?)
   `)
+  // Every link that can still be redeemed (at most 32) is listed, however much history
+  // came after it, so a client can always find and withdraw it; settled
+  // links fill the rest of the page, newest first.
   const listedLinks = database.prepare(`
     SELECT ${LINK_COLUMNS}, c.revoked_at AS creator_revoked_at, c.expires_at AS creator_expires_at
     FROM pairing_links l
     LEFT JOIN authorized_clients c ON c.client_id = l.created_by_client_id
     WHERE COALESCE(l.consumed_at, l.revoked_at, l.expires_at) > ?
-    ORDER BY l.created_at DESC, l.link_id
+    ORDER BY (
+        l.consumed_at IS NULL AND l.revoked_at IS NULL AND l.expires_at > ?
+        AND c.revoked_at IS NULL AND c.expires_at > ?
+      ) DESC,
+      l.created_at DESC, l.link_id
     LIMIT ${PAIRING_LIST_MAX}
   `)
   // A link whose creator lost access can never be used, so it does not hold
@@ -369,7 +377,7 @@ export function createPairingService(options: {
       return errorResult(command.requestId, 'validation', 'Invalid pairing list request.')
     }
     const now = clock()
-    const links = (listedLinks.all(now - PAIRING_LIST_HISTORY_MS) as ListedLinkRow[])
+    const links = (listedLinks.all(now - PAIRING_LIST_HISTORY_MS, now, now) as ListedLinkRow[])
       .map((row) => toLink(row, statusOf(row, now)))
       .filter((link): link is PairingLink => link !== undefined)
     return PairingResponseSchemas[PAIRING_LIST_CAPABILITY].parse({
@@ -580,10 +588,9 @@ export function createPairingService(options: {
           capabilities: outcome.response.grant.join(' '),
         },
       })
-      // After the response below has gone out on this very socket.
-      if (outcome.grantChanged) {
-        setImmediate(() => options.onGrantChanged?.(context.clientId))
-      }
+      // Before the response goes out, so a frame batched behind this one is
+      // not served under the old grant; the sockets close after the response.
+      if (outcome.grantChanged) options.onGrantChanged?.(context.clientId)
       return PairingResponseSchemas[PAIRING_REDEEM_CAPABILITY].parse({
         type: 'response',
         requestId: command.requestId,
@@ -635,12 +642,14 @@ export function createPairingService(options: {
     const remoteAddress = request.socket.remoteAddress ?? 'unknown'
     const command = `POST ${PAIRING_EXCHANGE_PATH}`
     const who = { remoteAddress }
-    const retryAfterMs = limited(remoteAddress, command, who)
-    if (retryAfterMs !== undefined) {
-      request.resume()
+    const tooMany = (retryAfterMs: number) =>
       send(response, 429, errorResult(null, 'unavailable', 'Too many pairing attempts.'), {
         'retry-after': String(Math.ceil(retryAfterMs / 1000)),
       })
+    const retryAfterMs = limited(remoteAddress, command, who)
+    if (retryAfterMs !== undefined) {
+      request.resume()
+      tooMany(retryAfterMs)
       return
     }
     const text = await readBody(request)
@@ -648,6 +657,14 @@ export function createPairingService(options: {
       send(response, 413, errorResult(null, 'validation', 'Pairing request is too large.'), {
         connection: 'close',
       })
+      return
+    }
+    // Checked again now the body is in: requests held open together all
+    // passed the first check, and the failures among them since count here.
+    // Nothing yields between this check and the redeem.
+    const retryAfterBody = limited(remoteAddress, command, who)
+    if (retryAfterBody !== undefined) {
+      tooMany(retryAfterBody)
       return
     }
     try {

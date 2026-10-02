@@ -256,8 +256,9 @@ still holds.
   authority). It keeps its client ID, label and credential and takes the link's
   grant, replacing the old one; the answer is
   `{ clientId, clientLabel, grant, grantChanged }`. When the grant changed, the
-  device's sockets close with `4403 grant_changed` after the answer has been
-  sent, so they reconnect under it. The owner and account-enrolled devices are
+  device's sockets stop serving the moment the redeem commits (anything they
+  receive after it is refused with `auth`) and close with `4403 grant_changed`
+  once the answer has been sent, so they reconnect under the new grant. The owner and account-enrolled devices are
   refused with `conflict` (`already_authorized`) and the link stays usable.
 
 Refusals carry `error.details.reason`: `malformed` (400), `invalid` (401, an

@@ -1,11 +1,11 @@
 import { once } from 'node:events'
 import { mkdtemp, rm } from 'node:fs/promises'
-import { createServer, type Server } from 'node:http'
-import type { AddressInfo } from 'node:net'
+import { createServer, request as httpRequest, type Server } from 'node:http'
+import type { AddressInfo, Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   PAIRING_EXCHANGE_CAPABILITY,
   PAIRING_EXCHANGE_PATH,
@@ -298,6 +298,20 @@ describe('listing and withdrawing links', () => {
     expect(h.list()).toEqual([])
   })
 
+  it('always lists a link that can still be used, however much history follows it', async () => {
+    const h = await harness()
+    const waiting = PairingResponseSchemas['pairing.create'].parse(h.create(['read']).body).payload
+    for (let i = 0; i < 200; i++) {
+      h.clock.now += 1
+      const later = PairingResponseSchemas['pairing.create'].parse(h.create(['read']).body).payload
+      h.revoke(later.link.linkId)
+    }
+    const links = h.list()
+    expect(links).toHaveLength(200)
+    expect(links[0]).toMatchObject({ linkId: waiting.link.linkId, status: 'waiting' })
+    expect(links.slice(1).every((link) => link.status === 'revoked')).toBe(true)
+  })
+
   it('withdraws a waiting link once, and only a waiting one', async () => {
     const h = await harness()
     const first = PairingResponseSchemas['pairing.create'].parse(h.create(['read']).body).payload
@@ -530,6 +544,32 @@ describe('exchanging a pairing link at POST /pair', () => {
     h.clock.now += RATE_LIMITS.pairing.windowMs
     expect((await h.exchange({ token })).status).toBe(200)
   })
+
+  it('counts failures among requests held open together before redeeming any', async () => {
+    const h = await harness()
+    const { limit } = RATE_LIMITS.pairing
+    const held = Array.from({ length: 2 * limit }, () => {
+      const request = httpRequest(`${h.url}${PAIRING_EXCHANGE_PATH}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+      })
+      const status = new Promise<number>((resolve, reject) => {
+        request.on('response', (response) => {
+          response.resume()
+          resolve(response.statusCode ?? 0)
+        })
+        request.on('error', reject)
+      })
+      request.write('{"token":')
+      return { request, status }
+    })
+    // Every request is past the first check before any body completes.
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    for (const { request } of held) request.end('"ABCDEFGHJKLM"}')
+    const statuses = await Promise.all(held.map(({ status }) => status))
+    expect(statuses.filter((status) => status === 401)).toHaveLength(limit)
+    expect(statuses.filter((status) => status === 429)).toHaveLength(limit)
+  })
 })
 
 describe('redeeming a link as a device that is already paired', () => {
@@ -544,9 +584,8 @@ describe('redeeming a link as a device that is already paired', () => {
       grant: ['read'],
       grantChanged: true,
     })
-    // Its sockets reconnect after the response has gone out, not before.
-    expect(h.regranted).toEqual([])
-    await tick()
+    // Its sockets are told as the redeem commits, before the response is
+    // sent, so nothing batched behind the redeem runs under the old grant.
     expect(h.regranted).toEqual([device.clientId])
     expect(h.clients.authenticate(device.credential)?.capabilities).toEqual(['read'])
     expect(h.audit.query({ type: 'token.issued', clientId: device.clientId })).toHaveLength(1)
@@ -686,6 +725,45 @@ describe('pairing through the environment server', () => {
     expect(await nextResponse(again, browse)).not.toMatchObject({
       error: { code: 'capability_missing' },
     })
+
+    // A downgrade with a privileged frame right behind it, in one write: the
+    // second frame is refused, not served under the grant the redeem replaced.
+    const narrower = owner.command('pairing.create', { capabilities: ['read'] })
+    const third = PairingResponseSchemas['pairing.create'].parse(
+      await nextResponse(owner, narrower),
+    ).payload.token
+    const socket = (again.ws as unknown as { _socket: Socket })._socket
+    const reclosed = once(again.ws, 'close')
+    socket.cork()
+    const downgradeId = again.command('pairing.redeem', { token: third })
+    const behindId = again.command('workspace.remove', { workspaceId: 'any' })
+    socket.uncork()
+    expect(await nextResponse(again, downgradeId)).toMatchObject({
+      type: 'response',
+      payload: { grant: ['read'], grantChanged: true },
+    })
+    expect(await nextResponse(again, behindId)).toMatchObject({
+      type: 'error',
+      error: { code: 'auth' },
+    })
+    expect(((await reclosed) as [number])[0]).toBe(GRANT_CHANGED_CLOSE_CODE)
+  })
+
+  it('answers a command whose service throws and keeps serving the socket', async () => {
+    const host = await startProtocolHost()
+    const owner = await connectProtocol(host)
+    await handshake(owner)
+    const spy = vi.spyOn(host.server.pairing, 'dispatch').mockImplementationOnce(() => {
+      throw new Error('database is locked')
+    })
+    const failing = owner.command('pairing.list', null)
+    expect(await nextResponse(owner, failing)).toMatchObject({
+      type: 'error',
+      error: { code: 'internal' },
+    })
+    spy.mockRestore()
+    const listed = owner.command('pairing.list', null)
+    expect(await nextResponse(owner, listed)).toMatchObject({ type: 'response' })
   })
 
   it('refuses the exchange from an origin that is not allowed', async () => {
