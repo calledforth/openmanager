@@ -549,11 +549,22 @@ function EnvironmentSessionStateProvider({
       client.setActiveSession(session.sessionId)
       setAdoptedDraftSessionId(session.sessionId)
       setPendingDraftSessionStart(false)
-      setLaunchingMessage(null)
       setDraftWorkspaceId(null)
       // Creation already returned the first turn; its state now drives the composer.
       setTurnPending(false)
-      await openSessionLatest(session.sessionId)
+      // The session's own copy of the message came with it, so the echo goes in
+      // the same step. Without one (an environment that leaves the first turn
+      // out of its reply) the echo stays until the session's history has it.
+      if (created.firstTurn) {
+        setLaunchingMessage(null)
+        await openSessionLatest(session.sessionId)
+      } else {
+        try {
+          await openSessionLatest(session.sessionId)
+        } finally {
+          setLaunchingMessage(null)
+        }
+      }
       return { sessionId: session.sessionId, threadId: thread.threadId }
     },
     [client, commands, draftWorkspaceId, openSessionLatest],
@@ -996,7 +1007,10 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
     [launchingMessage],
   )
   const messages = useMemo(
-    () => (!target && launchRow ? [launchRow] : projection.messages),
+    () =>
+      launchRow && (!target || projection.messages.length === 0)
+        ? [launchRow]
+        : projection.messages,
     [launchRow, projection.messages, target],
   )
 

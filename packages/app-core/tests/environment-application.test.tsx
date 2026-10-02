@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, type ReactNode } from 'react'
+import { MotionGlobalConfig } from 'motion/react'
 import { createRoot, type Root } from 'react-dom/client'
 import {
   createMockEnvironmentClient,
@@ -22,6 +23,7 @@ import { ThemeProvider } from '../src/providers/theme-provider'
 import { useViewActions, type ViewActions } from '../src/providers/view-actions'
 import { ChatWorkspace } from '../src/components/chat/ChatWorkspace'
 import { MockEnvironmentApp } from '../src/testing/mock-environment-app'
+import { LAUNCH_PILL_MIN_VISIBLE_MS } from '../src/components/chat/SessionLaunchPill'
 
 const WORKSPACE = {
   workspaceId: 'C:/repo',
@@ -548,6 +550,86 @@ describe('the shared application over the environment client', () => {
     expect(container.textContent).toContain('The project folder is unavailable.')
     // A refused launch does not wait out the pill's hold beside its reason.
     expect(container.textContent).not.toContain('Creating session…')
+  })
+
+  it('keeps the first message on screen when the reply leaves the first turn out, until the history has it', async () => {
+    const client = createMockEnvironmentClient({
+      seed: { workspaces: [WORKSPACE] },
+      respond: () => null,
+    })
+    // The environment runs the message but answers without it: the session
+    // arrives empty, and only its history (on open) carries the message.
+    const create = client.commands.createSession.bind(client.commands)
+    let sent: { sessionId: string; threadId: string; text: string } | undefined
+    vi.spyOn(client.commands, 'createSession').mockImplementation(async (input) => {
+      const { session, thread } = await create({ ...input, firstMessage: undefined })
+      sent = { sessionId: session.sessionId, threadId: thread.threadId, text: input.firstMessage! }
+      return { session, thread }
+    })
+    const open = client.commands.openSession.bind(client.commands)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    vi.spyOn(client.commands, 'openSession').mockImplementation(async (sessionId) => {
+      await gate
+      if (sent?.sessionId === sessionId) await client.commands.sendTurn(sent)
+      return open(sessionId)
+    })
+    await render(<App client={client} />)
+    await act(() => headerRow('New agent')!.click())
+    await type('hello there')
+    await act(() => button('Send')!.click())
+    await settle(client)
+
+    // Selected, its thread still empty: the message stays where it was.
+    expect(client.getState().activeSessionId).toBe(sent!.sessionId)
+    expect(occurrences('hello there')).toBe(1)
+
+    await act(async () => release())
+    await settle(client)
+    // The history's copy took its place, once.
+    expect(occurrences('hello there')).toBe(1)
+  })
+
+  it('drops the launch pill at once when another session is opened during its hold', async () => {
+    // The pill's hold never runs out on its own here, however slow the
+    // machine: its timer is kept, not scheduled. Animations are skipped so
+    // the pill's exit takes no timer of its own.
+    MotionGlobalConfig.skipAnimations = true
+    const schedule = globalThis.setTimeout
+    const holds: Array<() => void> = []
+    const timers = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+      callback: () => void,
+      ms?: number,
+      ...rest: unknown[]
+    ) => {
+      if (ms !== undefined && ms > 100 && ms <= LAUNCH_PILL_MIN_VISIBLE_MS) {
+        holds.push(callback)
+        return 0
+      }
+      return schedule(callback, ms, ...rest)
+    }) as typeof setTimeout)
+    try {
+      const client = createMockEnvironmentClient({ seed: SEEDED_HISTORY, respond: () => null })
+      await render(<App client={client} />)
+      await act(() => headerRow('New agent')!.click())
+      await type('hello there')
+      await act(() => button('Send')!.click())
+      await settle(client)
+      const launched = client.getState().activeSessionId
+      expect(launched).not.toBeNull()
+      expect(launched).not.toBe(SESSION.sessionId)
+      // Created, and still inside the pill's shortest showing.
+      expect(holds.length).toBeGreaterThan(0)
+      expect(container.textContent).toContain('Creating session…')
+
+      await act(() => buttonWithText('First')!.click())
+      await settle(client)
+      expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
+      expect(container.textContent).not.toContain('Creating session…')
+    } finally {
+      timers.mockRestore()
+      MotionGlobalConfig.skipAnimations = false
+    }
   })
 
   it('shows Stop while a turn runs and interrupts it through the client', async () => {

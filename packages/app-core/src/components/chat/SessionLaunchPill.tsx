@@ -49,27 +49,37 @@ export function SessionLaunchPillView({ visible }: { visible: boolean }) {
  */
 export function SessionLaunchPill() {
   const { pendingDraftSessionStart, launchingMessage, activeSessionId } = useSessionState()
-  // Only a launch that landed is held: a refused one goes at once, so the pill
-  // never reads "Creating session…" beside the reason it was not created.
-  const visible = useHeldVisible(pendingDraftSessionStart, activeSessionId !== null)
+  // Only a launch that landed is held, and only while its session is the one
+  // on screen: a refused launch goes at once, so the pill never reads
+  // "Creating session…" beside the reason it was not created, and it does not
+  // linger over another session the user opens straight after.
+  const visible = useHeldVisible(pendingDraftSessionStart, activeSessionId)
   if (launchingMessage === undefined) return null
   return <SessionLaunchPillView visible={visible} />
 }
 
-/** `active`, held true for at least the minimum once it turns true, if `hold`. */
-function useHeldVisible(active: boolean, hold: boolean) {
+/**
+ * `active`, held true for at least the minimum once it turns true, while
+ * `holdFor` stays what it was when `active` turned false. Null holds nothing.
+ */
+function useHeldVisible(active: boolean, holdFor: string | null) {
   const [held, setHeld] = useState(false)
   const shownAtRef = useRef<number | null>(null)
+  const heldForRef = useRef<string | null | undefined>(undefined)
   useEffect(() => {
     if (active) {
       shownAtRef.current ??= Date.now()
+      heldForRef.current = undefined
       setHeld(true)
       return
     }
     if (shownAtRef.current === null) return
-    const remaining = hold ? shownAtRef.current + LAUNCH_PILL_MIN_VISIBLE_MS - Date.now() : 0
+    if (heldForRef.current === undefined) heldForRef.current = holdFor
+    const holding = holdFor !== null && holdFor === heldForRef.current
+    const remaining = holding ? shownAtRef.current + LAUNCH_PILL_MIN_VISIBLE_MS - Date.now() : 0
     const hide = () => {
       shownAtRef.current = null
+      heldForRef.current = undefined
       setHeld(false)
     }
     if (remaining <= 0) {
@@ -78,6 +88,6 @@ function useHeldVisible(active: boolean, hold: boolean) {
     }
     const timer = setTimeout(hide, remaining)
     return () => clearTimeout(timer)
-  }, [active, hold])
+  }, [active, holdFor])
   return active || held
 }
