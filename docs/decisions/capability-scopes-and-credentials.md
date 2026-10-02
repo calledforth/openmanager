@@ -198,9 +198,11 @@ client.
 ### Rotation
 
 None is automatic in Wave 2. The owner credential is re-minted by the local
-process, which revokes the previous owner row. A paired or cloud client that
-wants a fresh credential re-pairs or re-enrolls, which creates a new row; the
-old row is revoked once the new one is confirmed. The format's version prefix
+process, which revokes the previous owner row. A cloud client that wants a
+fresh credential re-enrolls, which creates a new row; the old row is revoked
+once the new one is confirmed. A paired device that re-pairs while presenting
+its credential keeps its row and credential (see "Pairing link" below); one
+that wants a fresh credential is revoked and paired again. The format's version prefix
 is what allows a future rotation scheme (for example refresh-on-connect) to be
 introduced without breaking stored credentials.
 
@@ -251,6 +253,28 @@ Owned by CAL-102; recorded here because the shape follows from D7.
   memory instead.
 - The row carries the grant, label and expiry; the token is only the lookup
   key.
+
+As built (CAL-102, CAL-103, CAL-106; details in `apps/server/README.md`,
+"Pairing"):
+
+- The fragment is `#v=1&route=…&environment=…&token=…`. `route` is any http(s)
+  address the environment answers on, so a link is not LAN- or
+  Cloudflare-shaped. `environment` lets the device check that the route's
+  `/bootstrap` answers as the environment it expects before it sends the token.
+- Creating a link needs `admin` (`pairing.create`, `pairing.list`,
+  `pairing.revoke`); the exchange is `POST /pair` with no credential.
+- The delegation cap is applied as an intersection at exchange time: a
+  creator that lost a capability since hands out the rest, and a revoked or
+  expired creator voids its links.
+- **Re-pairing keeps the identity.** A device that presents its current
+  `paired` credential with the exchange keeps its client ID, label and
+  credential; only the grant changes, to the new link's, and its live sockets
+  reconnect if it did. This is the documented exception to "a re-pair creates
+  a new row" under Rotation: re-pairing an existing device is the common case
+  (a link sent to a phone that was already paired) and should not leave a
+  second entry in the client list. Rotating a credential stays a matter of
+  revoking and pairing again. Owner and cloud credentials are not turned into
+  paired ones; the exchange refuses them and leaves the link usable.
 
 ## Storage on each client
 

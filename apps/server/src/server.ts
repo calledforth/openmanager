@@ -23,6 +23,10 @@ import {
   PROVIDER_DISCOVERY_CAPABILITY,
   PROVIDER_HEALTH_CAPABILITY,
   PROVIDER_PROBE_CAPABILITY,
+  PAIRING_CREATE_CAPABILITY,
+  PAIRING_EXCHANGE_CAPABILITY,
+  PAIRING_LIST_CAPABILITY,
+  PAIRING_REVOKE_CAPABILITY,
   type DurableEvent,
   type EventEnvelope,
   type ProofEvent,
@@ -44,6 +48,11 @@ import { auditValue, createAuditLog } from './audit.ts'
 import type { ServerConfig } from './config.ts'
 import { validateHosts, validateOrigins, validateWorkspaceRoots } from './config.ts'
 import { openAuthorizedClients } from './authorized-clients.ts'
+import {
+  createPairingService,
+  GRANT_CHANGED_CLOSE_CODE,
+  GRANT_CHANGED_CLOSE_REASON,
+} from './pairing.ts'
 import { loadEnvironmentIdentity } from './identity.ts'
 import {
   evaluateLocalOwnerAccess,
@@ -104,6 +113,10 @@ export const SERVER_CAPABILITIES = [
   DRAFT_LIST_CAPABILITY,
   DRAFT_SAVE_CAPABILITY,
   DRAFT_DELETE_CAPABILITY,
+  PAIRING_CREATE_CAPABILITY,
+  PAIRING_LIST_CAPABILITY,
+  PAIRING_REVOKE_CAPABILITY,
+  PAIRING_EXCHANGE_CAPABILITY,
 ]
 
 /** A loopback-only listener exposing public liveness and connection discovery. */
@@ -370,6 +383,16 @@ export async function startServer(config: ServerConfig) {
     },
     resolveWorkspace,
   })
+  let closeClientSockets: (clientId: string) => void = () => undefined
+  const pairing = createPairingService({
+    dataDir: config.dataDir,
+    clients,
+    audit,
+    rateLimiter,
+    environment: () => ({ environmentId: identity.environmentId, label: identity.label }),
+    onGrantChanged: (clientId) => closeClientSockets(clientId),
+    onError: (error) => log('error', 'pairing exchange failed', { reason: String(error) }),
+  })
   threadService.setEnvironmentId(identity.environmentId)
   try {
     threadService.forgetStaleBackgroundWork()
@@ -443,6 +466,7 @@ export async function startServer(config: ServerConfig) {
       return
     }
     if (uploads.handle(request, response)) return
+    if (pairing.handle(request, response)) return
     if (request.method === 'GET' && (path === '/health' || path === '/bootstrap')) {
       response.writeHead(200, {
         'content-type': 'application/json; charset=utf-8',
@@ -565,10 +589,13 @@ export async function startServer(config: ServerConfig) {
       uploads.dispatch(command, context) ??
       filesystem.dispatch(command, context) ??
       drafts.dispatch(command, context) ??
+      pairing.dispatch(command, context) ??
       composerService.dispatch(command),
   })
   publishDurableEvent = (record) => sockets.publish(record)
   publishThreadEvent = (event) => sockets.publishEvent(event)
+  closeClientSockets = (clientId) =>
+    sockets.disconnectClient(clientId, GRANT_CHANGED_CLOSE_CODE, GRANT_CHANGED_CLOSE_REASON)
   const stopHealthEvents = providerService.onHealthChanged((event) => sockets.publishEvent(event))
   try {
     await new Promise<void>((resolve, reject) => {
@@ -586,6 +613,7 @@ export async function startServer(config: ServerConfig) {
     await runtime.shutdown()
     stopRetention()
     uploads.close()
+    pairing.close()
     eventService.close()
     eventDatabase.close()
     composerStore.close()
@@ -615,6 +643,7 @@ export async function startServer(config: ServerConfig) {
     composerStore,
     environmentSettings,
     uploads,
+    pairing,
     sockets,
     port: address.port,
     url: `http://127.0.0.1:${address.port}`,
@@ -666,6 +695,7 @@ export async function startServer(config: ServerConfig) {
           threadService.stopTitles(),
         ]).then(() => {
           stopRetention()
+          pairing.close()
           eventService.close()
           eventDatabase.close()
           composerStore.close()

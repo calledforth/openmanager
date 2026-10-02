@@ -672,6 +672,43 @@ export const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    version: 18,
+    name: 'pairing_links',
+    up(database) {
+      database.exec(`
+        -- Single-use pairing links (CAL-102). The token is a lookup key kept
+        -- only as its SHA-256; the grant and label live on the row. A link is
+        -- used at most once: exchanging it sets consumed_at in the same
+        -- statement that checks it is still unset.
+        CREATE TABLE IF NOT EXISTS pairing_links (
+          link_id TEXT PRIMARY KEY NOT NULL,
+          token_hash BLOB NOT NULL UNIQUE,
+          -- The name the paired device gets; NULL lets the device suggest one.
+          label TEXT,
+          scopes_json TEXT NOT NULL CHECK (json_valid(scopes_json)),
+          -- A link is only as good as its creator: revoking the creator voids
+          -- the links it made, and deleting it takes them along.
+          created_by_client_id TEXT NOT NULL
+            REFERENCES authorized_clients(client_id) ON DELETE CASCADE,
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL,
+          consumed_at INTEGER,
+          consumed_by_client_id TEXT REFERENCES authorized_clients(client_id) ON DELETE SET NULL,
+          revoked_at INTEGER,
+          CHECK (consumed_at IS NULL OR revoked_at IS NULL)
+        ) STRICT;
+
+        CREATE INDEX IF NOT EXISTS pairing_links_created_by_client_id_idx
+          ON pairing_links(created_by_client_id);
+        CREATE INDEX IF NOT EXISTS pairing_links_consumed_by_client_id_idx
+          ON pairing_links(consumed_by_client_id);
+        -- Pending links, for the list and the outstanding-link cap.
+        CREATE INDEX IF NOT EXISTS pairing_links_pending_idx
+          ON pairing_links(expires_at) WHERE consumed_at IS NULL AND revoked_at IS NULL;
+      `)
+    },
+  },
 ]
 
 type RetainedActivityRow = {
