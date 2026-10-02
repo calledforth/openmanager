@@ -1,4 +1,5 @@
 import { createContext, useContext, useRef } from 'react'
+import type { DraftSyncStatus } from '@openmanager/environment-client'
 import {
   pruneComposerDrafts,
   readComposerDrafts,
@@ -26,6 +27,12 @@ export interface ComposerDraftStore {
    * settles, before putting back the text of a failed one.
    */
   beginSend?(key: string): (() => void) | undefined
+  /**
+   * Whether the draft behind `key` has reached where drafts are kept, for
+   * stores that sync them; read again whenever `subscribe` fires. A store
+   * without it keeps every draft where it is written.
+   */
+  getSyncStatus?(key: string): DraftSyncStatus
 }
 
 /** Supplied by hosts that keep drafts somewhere better than this browser. */

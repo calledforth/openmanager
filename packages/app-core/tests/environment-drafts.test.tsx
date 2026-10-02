@@ -19,6 +19,7 @@ import {
   type ComposerDraftStore,
 } from '../src/components/chat/composerDraftStore'
 import { COMPOSER_DRAFTS_STORAGE_KEY } from '../src/components/chat/composerDrafts'
+import { DraftSyncIndicator } from '../src/components/chat/DraftSyncIndicator'
 
 const WORKSPACE = {
   workspaceId: 'C:/repo',
@@ -65,6 +66,7 @@ beforeEach(() => {
   root = createRoot(container)
 })
 afterEach(async () => {
+  indicatorKey = null
   await act(() => root.unmount())
   container.remove()
   vi.unstubAllGlobals()
@@ -78,9 +80,10 @@ const settle = async (client: MockEnvironmentClient) => {
 }
 
 let store: ComposerDraftStore
+let indicatorKey: string | null = null
 function Capture() {
   store = useComposerDraftStore()
-  return null
+  return indicatorKey ? <DraftSyncIndicator store={store} draftKey={indicatorKey} /> : null
 }
 
 async function mount(client: MockEnvironmentClient) {
@@ -207,5 +210,33 @@ describe('composer drafts over the environment', () => {
     expect(JSON.parse(localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)!)).toEqual({
       'session:elsewhere': { text: 'not ours', updatedAt: 3 },
     })
+  })
+
+  it('shows drafts edited or started offline as not synced until the environment has them', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    const sessionKey = 'session:session-1'
+    const newKey = `draft:${WORKSPACE.workspaceId}`
+    indicatorKey = sessionKey
+    await mount(client)
+    act(() => client.disconnect())
+    act(() => store.setText(sessionKey, 'typed offline'))
+    act(() => store.setText(newKey, 'a new chat, offline'))
+    expect(store.getSyncStatus?.(sessionKey)).toBe('offline')
+    expect(store.getSyncStatus?.(newKey)).toBe('offline')
+    expect(container.textContent).toContain('Not synced')
+    act(() => store.flush())
+    await settle(client)
+    // Nothing reached the environment, and nothing was dropped.
+    expect(client.getState().drafts).toEqual({})
+    expect(store.getText(sessionKey)).toBe('typed offline')
+    expect(store.getText(newKey)).toBe('a new chat, offline')
+
+    act(() => client.connect())
+    await settle(client)
+    expect(store.getSyncStatus?.(sessionKey)).toBe('synced')
+    expect(store.getSyncStatus?.(newKey)).toBe('synced')
+    expect(container.textContent).not.toContain('Not synced')
+    const texts = Object.values(client.getState().drafts).map((draft) => draft.content.text)
+    expect(texts.sort()).toEqual(['a new chat, offline', 'typed offline'])
   })
 })

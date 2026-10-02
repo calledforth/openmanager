@@ -42,6 +42,7 @@ import {
   type DraftImageAttachment,
 } from '../../lib/attachments'
 import { useComposerDraftStore } from './composerDraftStore'
+import { DraftSyncIndicator } from './DraftSyncIndicator'
 import {
   configurableSessionOptions,
   isBooleanSelect,
@@ -935,6 +936,8 @@ export function MessageInputView({
           </div>
 
           <div className="flex shrink-0 items-center gap-1">
+            {/* A borrowed composer's text is the caller's, not the draft's. */}
+            {!textOverride && <DraftSyncIndicator store={draftStore} draftKey={draftKey} />}
             {isAwaitingPlanReview ? (
               <>
                 <Tooltip content="Cancel planning">

@@ -257,7 +257,27 @@ export interface DraftEdit {
    * arrived.
    */
   outlivesDeletion?: true
+  /**
+   * Why the last attempt to save it did not reach the environment. Kept
+   * across later edits of the draft and cleared once a write is answered, so
+   * an unsynced draft stays marked until the environment has its latest text.
+   */
+  stalled?: DraftStall
 }
+
+/**
+ * Why an edit has not reached the environment: it cannot be reached, it is
+ * reached but does not keep drafts, the draft is too big for one message, or
+ * the save failed and is being tried again.
+ */
+export type DraftStall = 'offline' | 'unsupported' | 'too_large' | 'failed'
+
+/**
+ * Where a draft stands against the environment: `synced` when the
+ * environment has its latest edit (or a send has it), `saving` while an edit
+ * waits out the pause in typing or is on the wire, otherwise why it is stuck.
+ */
+export type DraftSyncStatus = 'synced' | 'saving' | DraftStall
 
 export interface CreateSessionInput {
   environmentId: string

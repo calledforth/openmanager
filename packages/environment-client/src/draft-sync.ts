@@ -21,6 +21,7 @@ import type { EnvironmentStore } from './store'
 import type {
   DraftEdit,
   DraftLaunchOutcome,
+  DraftStall,
   DraftSync,
   EnvironmentCommands,
   EnvironmentState,
@@ -37,6 +38,9 @@ export const DRAFT_SAVE_DEBOUNCE_MS = 1_000
 
 const LIST_RETRY_MIN_MS = 1_000
 const LIST_RETRY_MAX_MS = 30_000
+// A save that failed on a live connection is tried again on these terms.
+const SAVE_RETRY_MIN_MS = 1_000
+const SAVE_RETRY_MAX_MS = 30_000
 
 export interface DraftSyncOptions {
   store: EnvironmentStore
@@ -63,6 +67,8 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
   // Drafts whose delete this client has sent and not yet seen answered.
   const deleting = new Set<string>()
   const again = new Set<string>()
+  // The wait before trying a failed save again, by draft.
+  const saveRetryMs = new Map<string, number>()
   let listing = false
   let wasConnected = false
   let disposed = false
@@ -88,6 +94,15 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
     )
   }
 
+  /** Say why the draft's waiting edit has not reached the environment. */
+  const stall = (draftId: string, reason: DraftStall) => {
+    store.update((state) => {
+      const current = state.draftEdits[draftId]
+      if (!current || current.launching || current.stalled === reason) return state
+      return applyDraftEdit(state, draftId, { ...current, stalled: reason })
+    })
+  }
+
   /**
    * After a write: forget the edit it carried, or rebase what was typed
    * meanwhile on it. The environment announces a write before it answers it,
@@ -103,6 +118,8 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
         baseRevision: Math.max(current.baseRevision, revision),
       }
       delete rebased.outlivesDeletion
+      // Saved on time so far: what was typed meanwhile is simply next.
+      delete rebased.stalled
       return applyDraftEdit(state, draftId, rebased)
     }
 
@@ -115,7 +132,20 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
     }
     const state = store.getState()
     const edit = state.draftEdits[draftId]
-    if (!edit || edit.launching || !ready(state)) return
+    if (!edit || edit.launching) return
+    if (isEmptyDraftContent(edit.content) && edit.baseRevision === 0 && !state.drafts[draftId]) {
+      // Never reached the environment, and nothing is on its way there: there
+      // is nothing to delete, connected or not.
+      store.update((current) => removeDraftEdit(current, draftId, edit))
+      return
+    }
+    if (!ready(state)) {
+      // Kept for the flush that follows the next connect and listing. A
+      // listing under way is a moment's wait, not an unreachable environment.
+      if (state.connection.phase !== 'connected') stall(draftId, 'offline')
+      else if (!options.supported()) stall(draftId, 'unsupported')
+      return
+    }
     const input = {
       draftId,
       baseRevision: edit.baseRevision,
@@ -124,15 +154,13 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
     }
     // Too big for one message to the environment: kept here, in the state
     // and the host's cache, and saved once it is short enough again.
-    if (draftSaveBytes(input) > DRAFT_SAVE_MAX_BYTES) return
+    if (draftSaveBytes(input) > DRAFT_SAVE_MAX_BYTES) {
+      stall(draftId, 'too_large')
+      return
+    }
     inFlight.add(draftId)
     try {
       if (isEmptyDraftContent(edit.content)) {
-        if (edit.baseRevision === 0 && !state.drafts[draftId]) {
-          // Never reached the environment, and nothing is on its way there.
-          store.update((current) => removeDraftEdit(current, draftId, edit))
-          return
-        }
         deleting.add(draftId)
         const tombstone = await commands
           .deleteDraft({ draftId, baseRevision: edit.baseRevision })
@@ -151,37 +179,54 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
         )
       }
     } catch (error) {
-      if (!isEnvironmentClientError(error)) return
-      const deleted = DraftDeletedDetailsSchema.safeParse(error.details)
-      if (error.code === 'conflict' && deleted.success) {
-        // Sent or discarded elsewhere since this was typed: it stays gone,
-        // unless this is what a failed send put back, which is saved again
-        // on top of the deletion.
-        const retry = store.getState().draftEdits[draftId]?.outlivesDeletion === true
-        // The deletion may be older than a draft saved on top of it since,
-        // so the edit is settled against it whatever the draft's state.
-        store.update((current) => {
-          const next = applyDraftDeleted(current, deleted.data)
-          const draftEdits = settleEditOnDeletion(next.draftEdits, draftId, deleted.data.revision)
-          return draftEdits === next.draftEdits ? next : { ...next, draftEdits }
-        })
-        if (retry) again.add(draftId)
-      } else if (error.code === 'validation' || error.code === 'not_found') {
-        // Saving it again cannot work: its session is gone, or it was never valid.
-        store.update((current) => removeDraftEdit(current, draftId, edit))
+      if (isEnvironmentClientError(error)) {
+        const deleted = DraftDeletedDetailsSchema.safeParse(error.details)
+        if (error.code === 'conflict' && deleted.success) {
+          // Sent or discarded elsewhere since this was typed: it stays gone,
+          // unless this is what a failed send put back, which is saved again
+          // on top of the deletion.
+          const retry = store.getState().draftEdits[draftId]?.outlivesDeletion === true
+          // The deletion may be older than a draft saved on top of it since,
+          // so the edit is settled against it whatever the draft's state.
+          store.update((current) => {
+            const next = applyDraftDeleted(current, deleted.data)
+            const draftEdits = settleEditOnDeletion(next.draftEdits, draftId, deleted.data.revision)
+            return draftEdits === next.draftEdits ? next : { ...next, draftEdits }
+          })
+          if (retry) again.add(draftId)
+          return
+        }
+        if (error.code === 'validation' || error.code === 'not_found') {
+          // Saving it again cannot work: its session is gone, or it was never valid.
+          store.update((current) => removeDraftEdit(current, draftId, edit))
+          return
+        }
       }
-      // Anything else (no connection, a busy environment) is retried on the
-      // next edit or the next connect.
+      // Anything else (no connection, a busy environment) stays marked until
+      // a save gets through: tried again after a wait while connected, else
+      // by the flush that follows the next connect. Never dropped.
+      if (store.getState().connection.phase !== 'connected') {
+        stall(draftId, 'offline')
+      } else if (!disposed) {
+        stall(draftId, 'failed')
+        const delay = saveRetryMs.get(draftId) ?? SAVE_RETRY_MIN_MS
+        saveRetryMs.set(draftId, Math.min(delay * 2, SAVE_RETRY_MAX_MS))
+        schedule(draftId, delay)
+      }
     } finally {
       inFlight.delete(draftId)
+      // Nothing left to try again: saved, refused, or forgotten meanwhile.
+      if (!store.getState().draftEdits[draftId]) saveRetryMs.delete(draftId)
       if (again.delete(draftId)) void write(draftId)
     }
   }
 
+  /** Save every waiting edit now, the least recently edited draft first. */
   const flush = () => {
-    for (const [draftId, edit] of Object.entries(store.getState().draftEdits)) {
-      if (!edit.launching) void write(draftId)
-    }
+    const waiting = Object.entries(store.getState().draftEdits)
+      .filter(([, edit]) => !edit.launching)
+      .sort(([, left], [, right]) => left.editedAt - right.editedAt)
+    for (const [draftId] of waiting) void write(draftId)
   }
 
   // A listing that failed on a live connection is tried again, backing off,
@@ -202,6 +247,12 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
         },
         () => {
           if (disposed) return
+          // Nothing is saved before the listing, so every waiting edit is
+          // stuck with it until a retry gets through. A save already on the
+          // wire is left alone: its own answer settles it.
+          for (const [draftId, edit] of Object.entries(store.getState().draftEdits)) {
+            if (!edit.launching && !inFlight.has(draftId)) stall(draftId, 'failed')
+          }
           listRetry = setTimeout(() => {
             listRetry = undefined
             check()
@@ -246,6 +297,8 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
         baseRevision: held?.baseRevision ?? draftBaseRevision(state, draftId),
         editedAt: now(),
         ...(held?.launching ? { launching: true as const } : {}),
+        // Still not in the environment: the mark stays until a save lands.
+        ...(held?.stalled ? { stalled: held.stalled } : {}),
         // Typed while this client's delete of the draft is on the wire: the
         // draft's next text, which that deletion must not take with it.
         ...(held?.outlivesDeletion || deleting.has(draftId)
