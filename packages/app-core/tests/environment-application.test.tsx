@@ -546,6 +546,8 @@ describe('the shared application over the environment client', () => {
       .join('\n')
     expect(outsideComposer).not.toContain('hello there')
     expect(container.textContent).toContain('The project folder is unavailable.')
+    // A refused launch does not wait out the pill's hold beside its reason.
+    expect(container.textContent).not.toContain('Creating session…')
   })
 
   it('shows Stop while a turn runs and interrupts it through the client', async () => {

@@ -42,14 +42,22 @@ export function SessionLaunchPillView({ visible }: { visible: boolean }) {
   )
 }
 
-/** The pill bound to session state. */
+/**
+ * The pill bound to session state, for hosts that show the launching message
+ * in the transcript. A host that keeps its landing up while the session is
+ * created (desktop) says so there, and a second status would only repeat it.
+ */
 export function SessionLaunchPill() {
-  const { pendingDraftSessionStart } = useSessionState()
-  return <SessionLaunchPillView visible={useHeldVisible(pendingDraftSessionStart)} />
+  const { pendingDraftSessionStart, launchingMessage, activeSessionId } = useSessionState()
+  // Only a launch that landed is held: a refused one goes at once, so the pill
+  // never reads "Creating session…" beside the reason it was not created.
+  const visible = useHeldVisible(pendingDraftSessionStart, activeSessionId !== null)
+  if (launchingMessage === undefined) return null
+  return <SessionLaunchPillView visible={visible} />
 }
 
-/** `active`, held true for at least the minimum once it turns true. */
-function useHeldVisible(active: boolean) {
+/** `active`, held true for at least the minimum once it turns true, if `hold`. */
+function useHeldVisible(active: boolean, hold: boolean) {
   const [held, setHeld] = useState(false)
   const shownAtRef = useRef<number | null>(null)
   useEffect(() => {
@@ -59,7 +67,7 @@ function useHeldVisible(active: boolean) {
       return
     }
     if (shownAtRef.current === null) return
-    const remaining = shownAtRef.current + LAUNCH_PILL_MIN_VISIBLE_MS - Date.now()
+    const remaining = hold ? shownAtRef.current + LAUNCH_PILL_MIN_VISIBLE_MS - Date.now() : 0
     const hide = () => {
       shownAtRef.current = null
       setHeld(false)
@@ -70,6 +78,6 @@ function useHeldVisible(active: boolean) {
     }
     const timer = setTimeout(hide, remaining)
     return () => clearTimeout(timer)
-  }, [active])
+  }, [active, hold])
   return active || held
 }

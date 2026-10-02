@@ -354,13 +354,32 @@ describe('session workspace', () => {
     await waitFor(() => expect(textbox).toBeEnabled())
     await user.type(textbox, 'first words')
 
+    // Held until the transcript has taken over, so the whole launch is watched.
+    const create = client.commands.createSession.bind(client.commands)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    vi.spyOn(client.commands, 'createSession').mockImplementation(async (input) => {
+      await gate
+      return create(input)
+    })
+    // The landing may only leave once: gone, then back, is the flicker.
+    let landingLeft = false
     let landingReturned = false
     const observer = new MutationObserver(() => {
-      if (document.body.textContent?.includes('Start with a message below')) landingReturned = true
+      const landing = document.body.textContent?.includes('Start with a message below')
+      if (!landing) landingLeft = true
+      else if (landingLeft) landingReturned = true
     })
-    await user.click(screen.getByRole('button', { name: 'Send' }))
     observer.observe(document.body, { childList: true, subtree: true, characterData: true })
+    await user.click(screen.getByRole('button', { name: 'Send' }))
 
+    // Creating: the message is already in the transcript, the URL is still `/`.
+    expect(await screen.findByText('Creating session…')).toBeInTheDocument()
+    expect(screen.getByText('first words')).toBeInTheDocument()
+    expect(router.state.location.pathname).toBe('/')
+    expect(landingLeft).toBe(true)
+
+    await act(async () => release())
     expect(await screen.findByText('You said: first words')).toBeInTheDocument()
     const sessionId = client.getState().activeSessionId
     expect(sessionId).not.toBeNull()

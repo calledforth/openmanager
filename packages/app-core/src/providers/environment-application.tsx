@@ -1004,7 +1004,12 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
     async (content: string, attachments?: UploadedImageAttachment[]) => {
       const text = content.trim()
       // An image with no caption is still a turn.
-      if (!text && !attachments?.length) return
+      if (!text && !attachments?.length) {
+        // The composer may already have announced a launch; nothing to send
+        // must not leave it held.
+        if (!targetRef.current && isSessionDraftOpen) failTurn()
+        return
+      }
       setError(null)
       try {
         // An upload is bound to the session it was stored under or, from a

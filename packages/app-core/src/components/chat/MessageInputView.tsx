@@ -547,6 +547,9 @@ export function MessageInputView({
 
   const addFiles = useCallback(
     (files: File[]) => {
+      // Paste and drop still reach a held (read-only) box; a launching draft
+      // takes nothing more, or it would land in a draft the user has left.
+      if (pendingDraftSessionStart) return
       if (!imageUploadEnabled) {
         setAttachmentError(imageSupportMessage ?? 'Image uploads are unavailable.')
         return
@@ -573,7 +576,7 @@ export function MessageInputView({
       })
       setAttachmentError(error)
     },
-    [imageSupportMessage, imageUploadEnabled, updateDraft],
+    [imageSupportMessage, imageUploadEnabled, pendingDraftSessionStart, updateDraft],
   )
 
   const removeAttachment = (id: string) => {

@@ -12,6 +12,8 @@ export const Route = createFileRoute('/_chat')({
   component: ChatLayout,
 })
 
+// No <Outlet />: the child routes only name URLs. A component given to one of
+// them would never render; put what it needs in the pane instead.
 function ChatLayout() {
   const { sessionId } = useParams({ strict: false })
   return <SessionWorkspace sessionId={sessionId} />
