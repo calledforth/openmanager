@@ -1,5 +1,5 @@
 import type { Draft, DraftContent, DraftList, DraftTarget } from '@openmanager/protocol'
-import type { DraftEdit, EnvironmentState } from './types'
+import type { DraftEdit, DraftSyncStatus, EnvironmentState } from './types'
 
 const sameJson = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)
 
@@ -19,6 +19,20 @@ export function selectDraftContent(
   draftId: string,
 ): DraftContent | undefined {
   return state.draftEdits[draftId]?.content ?? state.drafts[draftId]?.content
+}
+
+/**
+ * Whether the environment has a draft's latest edit, and if not, why. An edit
+ * made while the environment cannot be reached reads as offline at once, not
+ * after the pause in typing; one that stalled stays marked until its save is
+ * answered, including the moments between reconnecting and that answer.
+ */
+export function selectDraftSyncStatus(state: EnvironmentState, draftId: string): DraftSyncStatus {
+  const edit = state.draftEdits[draftId]
+  // A draft being sent is the send's: it is deleted with the session it starts.
+  if (!edit || edit.launching) return 'synced'
+  if (state.connection.phase !== 'connected') return 'offline'
+  return edit.stalled ?? 'saving'
 }
 
 /** The draft's composer, wherever the draft is known from. */

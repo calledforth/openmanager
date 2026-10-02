@@ -9,6 +9,8 @@ export type {
   CreateSessionInput,
   DraftEdit,
   DraftLaunchOutcome,
+  DraftStall,
+  DraftSyncStatus,
   DraftSync,
   EnvironmentClient,
   EnvironmentCommandName,
@@ -104,6 +106,7 @@ export {
   isEmptyDraftContent,
   removeDraftEdit,
   selectDraftContent,
+  selectDraftSyncStatus,
   selectDraftTarget,
   selectNewSessionDraftId,
 } from './draft-state'

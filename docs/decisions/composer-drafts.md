@@ -135,8 +135,24 @@ the emptied draft is deleted like any other.
   Text typed while this client's own delete is on the wire is kept through
   that announcement and saved as the draft's next text.
 - **Offline.** Edits wait in the state while offline, and are saved once the
-  client is connected and has listed the drafts. A listing that fails on a
-  live connection is retried, backing off up to 30 s.
+  client is connected and has listed the drafts, the least recently
+  edited draft first. That
+  includes new drafts started offline: a draft id is minted on the client, so
+  nothing needs the environment to begin one. A listing that fails on a live
+  connection is retried, backing off up to 30 s.
+- **Unsynced.** `selectDraftSyncStatus` says whether the environment has a
+  draft's latest edit: `synced`, `saving` (waiting out the pause in typing,
+  or on the wire), or why not: `offline`, `unsupported`, `too_large` or `failed`. An edit
+  made while the environment cannot be reached reads as `offline` at once. A
+  save that could not go marks the edit (`DraftEdit.stalled`); the mark is
+  kept through later typing, including typing during the save that
+  reconnects it, and cleared only when a write carrying that edit is
+  answered, so a reconnect does not clear it before the environment has the
+  text. A save that fails on a live connection is tried again, backing off up
+  to 30 s; one cut off by a dropped connection waits for the reconnect. The
+  composer shows "Not synced" for the stuck states and nothing while an
+  edit is merely saving. Only a refusal drops an edit: a deletion it is older
+  than (the rules above), or a session that no longer exists.
 - **Size.** A save must fit in one message to the environment (64 KiB), so a
   draft over `DRAFT_SAVE_MAX_BYTES` encoded is kept on the device that has it,
   and saved once it is short enough again.
@@ -151,7 +167,8 @@ then removed.
 
 - Images still upload at send time and are not kept with a draft (CAL-215).
   `artifactIds` is already part of the content.
-- No offline or unsynced indicator (CAL-85).
+- Sidebar draft cards (CAL-214) are not built yet; they should read
+  `selectDraftSyncStatus` and mark an unsynced draft the way the composer does.
 - If a send's response is lost after the session was created, the restored
   draft can come back next to the new session. Sending it again is refused,
   because the session id is taken.

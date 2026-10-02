@@ -1,6 +1,7 @@
 import { useEffect, useMemo, type ReactNode } from 'react'
 import {
   selectDraftContent,
+  selectDraftSyncStatus,
   selectDraftTarget,
   selectNewSessionDraftId,
   type DraftSync,
@@ -122,6 +123,18 @@ export function createEnvironmentComposerDraftStore(
       }
     },
     flush: () => sync.flush(),
+    getSyncStatus(key) {
+      const state = client.getState()
+      if (key.startsWith(SESSION_KEY)) {
+        return selectDraftSyncStatus(state, key.slice(SESSION_KEY.length))
+      }
+      if (key.startsWith(NEW_SESSION_KEY)) {
+        const draftId = selectNewSessionDraftId(state, key.slice(NEW_SESSION_KEY.length))
+        return draftId ? selectDraftSyncStatus(state, draftId) : 'synced'
+      }
+      // Held for this page only, with nothing to sync it to.
+      return 'synced'
+    },
     beginSend(key) {
       if (!key.startsWith(NEW_SESSION_KEY)) return undefined
       const workspaceId = key.slice(NEW_SESSION_KEY.length)
