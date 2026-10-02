@@ -18,7 +18,7 @@ sessions, token and sidebar entry.
   routes: Array<{
     type: string              // 'local' | 'remote' today; open for later types
     endpoint: string          // http(s) URL
-    priority: number          // 0 is the route in use
+    priority: number          // the person's order, 0 first
     health: {
       status: 'unknown' | 'available' | 'unreachable' | 'unauthorized'
       changedAt?: string      // ISO time the status last changed
@@ -146,17 +146,94 @@ change. See [Server-reported routes](#server-reported-routes).
 
 ## Priority: the user chooses
 
-Priority is the user's order of preference and `0` is the route in use.
+Priority is the user's order of preference, `0` first.
 
-- Connecting by a URL makes that route the one in use.
-- **Use** on a route in the environment list moves it to `0` and reconnects.
+- Connecting by a URL makes that route the first choice and the one in use.
+- **Use** on a route in the environment list makes it the first choice and
+  the one in use, and reconnects.
+- **Make first** on a route that took over makes it the first choice without
+  touching the connection, which is already on it.
 - **Forget** drops a route. The last route cannot be forgotten; remove the
   environment instead.
 
-Nothing changes priority on its own. A route that stops answering is reported
-and the connection keeps retrying it; the client does not move a live session
-to another route by itself. Automatic fallback is a separate decision
-(CAL-101) and would read this same order.
+Nothing else changes priority. Falling back to another route changes which
+route is in use, not the order, so a tunnel that is down for an hour does not
+lose its place for good.
+
+## The route in use, fallback and reconnect
+
+The route in use is the client's pick for this page, kept in memory beside
+the registry. It starts at the first route in search order and moves when that
+route fails. A reload, or selecting the environment again, starts over from the
+top.
+
+**Search order** is every local (loopback) route first, then the rest, each
+group in the person's order. A loopback route is this device talking to
+itself, so when it answers no tunnel or network path is needed. A person who
+chooses a remote route with **Use** while a local one answers keeps it until
+the next reload or reselection.
+
+**What starts a search** (`startRouteSearch` in `connection-provider.tsx`):
+
+| Trigger | What is asked |
+| --- | --- |
+| The bootstrap on the route in use fails, is refused, or answers as another environment | Every other route, all at once. The interface says it is trying another route. |
+| The live socket drops | The route in use on its own first. If it still answers, the drop is a blip left to the socket's own backoff. If not, every other route. |
+| No route answered last time | Every route again, quietly, after 2 s, 4 s, 8 s, 15 s, then every 30 s. |
+
+Routes are asked at once but chosen in search order: a route is only taken
+once every route ahead of it has failed, so a slow local answer still beats a
+fast tunnel. A route that answers is made the route in use, and the ordinary
+bootstrap then verifies it before a socket is opened on it, as for any route.
+The environment, its token and its sessions never change; only the socket URL
+does.
+
+Nothing is searched while a typed connect is in flight (the person chose that
+address), while the device is offline (nothing would answer; coming back
+online asks again), or after the environment refused the token.
+
+**A refused token is not a route failure.** When the socket is refused with
+`auth`, the environment itself rejected the token, and every route carries the
+same one, so no other route is tried and nothing is retried. A `401`/`403` on
+`/bootstrap` is different: that endpoint takes no token, so the refusal is about
+the route or the browser (a tunnel's access gate, or the environment's origin
+check), not the token, and the next route is tried.
+
+**Why it failed.** When no route answers, the client shows one reason, worked
+out from every route it asked (`route-fallback.ts`):
+
+| Reason | Learned from | Shown as |
+| --- | --- | --- |
+| `environment_offline` | Nothing answers on a loopback route (nothing listens on this device), or a gateway answers `502`/`503`/`504` (Cloudflare, Tailscale and ngrok all do this when their tunnel is up and the origin is not) | Environment offline |
+| `route_refused` | `401`/`403` on `/bootstrap`: a tunnel's access gate, or the environment refusing this browser's origin | Route refused access |
+| `wrong_environment` | The address answers as another environment | Environment unreachable |
+| `route_down` | Nothing answers over a network, another HTTP error (Cloudflare's `530` is its tunnel being down), or something that is not an environment | Route unavailable |
+| `credential_rejected` | The socket is refused with `auth` | Not authorized |
+
+A browser only sees a refusal it is allowed to read. The environment's own
+origin check answers `403` before it adds CORS headers, so from another origin
+that refusal arrives as a network failure and is reported as the route being
+down, or, on a loopback route, as the environment being offline; the
+offline wording mentions the page's address for that reason. A gateway that
+refuses without CORS headers looks the same.
+
+When routes disagree the client shows, in order: offline, refused, another
+environment, down. A sign that the server is down explains every other
+failure, a refusal is something a person can act on, and an address that now
+leads to another environment says what changed where silence says nothing. Over a network, silence cannot tell a tunnel that is down
+from a machine that is off, and the wording says so ("the environment itself
+may still be running"). `/playground/connection` shows each one.
+
+While no route answers, the socket is closed and the reason stays on screen
+until a route answers again, at which point the client reconnects on its own.
+**Retry** asks again straight away.
+
+**Known gaps.** A route whose bootstrap answers but whose socket can never
+connect (a proxy that does not pass WebSocket upgrades) is treated as a blip
+and retried by the socket indefinitely; it is not given up on. Being on a
+fallback route does not switch back when a route ahead of it recovers: moving
+a working connection is a disruption, so it waits for the next reload,
+reselection or failure.
 
 ## Health
 
@@ -174,11 +251,15 @@ belongs to. An answer carrying another `environmentId` is recorded as
 `unreachable` with "A different environment answers at this address." When
 that happens on the route in use, the selection does not move: the client stays
 on the environment the user chose and opens no socket, so its token is never
-sent to whatever answered. Only connecting to the address by hand adopts it.
+sent to whatever answered, and tries the environment's other routes. Only
+connecting to the address by hand adopts it.
 
 A protocol mismatch is still `available`: the route reached the environment.
 `unreachable` and `unauthorized` stay separate so the interface can tell a
 tunnel that is down from one that refuses this client.
+
+A route search records what it learned on every route it asked, the same as a
+probe does.
 
 ## Server-reported routes
 

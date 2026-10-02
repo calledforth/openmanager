@@ -1,5 +1,9 @@
 import { PROTOCOL_VERSION } from '@openmanager/protocol'
-import type { ConnectionKind, DeriveConnectionInput } from '../lib/connection-state'
+import type {
+  ConnectionKind,
+  DeriveConnectionInput,
+  RouteFailureReason,
+} from '../lib/connection-state'
 
 export type ConnectionStory = {
   id: Exclude<ConnectionKind, 'ready'>
@@ -123,6 +127,127 @@ export const CONNECTION_STORIES: ConnectionStory[] = [
         message: 'Origin is not allowed.',
       },
       transport: { phase: 'closed', hasConnected: false, failure: { code: 'auth' } },
+    },
+  },
+]
+
+export type RouteFailureStory = {
+  id: RouteFailureReason | 'route_search'
+  name: string
+  summary: string
+  input: DeriveConnectionInput
+}
+
+const studio = {
+  status: 'selected' as const,
+  endpoint: 'https://studio.example.com',
+  environmentId: 'env-studio',
+  label: 'Studio',
+}
+const failedTransport = { phase: 'closed' as const, hasConnected: true, failure: null }
+
+/** Why no saved route reaches an environment, one story per reason. */
+export const ROUTE_FAILURE_STORIES: RouteFailureStory[] = [
+  {
+    id: 'route_search',
+    name: 'Trying another route',
+    summary: 'The route in use failed; the other saved routes are being asked, local first.',
+    input: {
+      environment: studio,
+      bootstrap: { status: 'unreachable', cause: 'network' },
+      transport: { phase: 'reconnecting', hasConnected: true, failure: null },
+      routeSearch: { from: 'https://studio.example.com' },
+    },
+  },
+  {
+    id: 'route_down',
+    name: 'Route unavailable',
+    summary: 'Nothing answers at the tunnel. The environment behind it may still be running.',
+    input: {
+      environment: studio,
+      bootstrap: { status: 'unreachable', cause: 'network' },
+      transport: failedTransport,
+      routeFailure: {
+        reason: 'route_down',
+        endpoint: 'https://studio.example.com',
+        local: false,
+        tried: 2,
+      },
+    },
+  },
+  {
+    id: 'environment_offline',
+    name: 'Environment offline',
+    summary: 'Nothing listens on this device, or a tunnel answered 502 for it.',
+    input: {
+      environment: { ...studio, endpoint: 'http://127.0.0.1:43120' },
+      bootstrap: { status: 'unreachable', cause: 'network' },
+      transport: failedTransport,
+      routeFailure: {
+        reason: 'environment_offline',
+        endpoint: 'http://127.0.0.1:43120',
+        local: true,
+        tried: 2,
+      },
+    },
+  },
+  {
+    id: 'route_refused',
+    name: 'Route refused access',
+    summary: 'The bootstrap was refused: a tunnel sign-in, or the environment origin check.',
+    input: {
+      environment: studio,
+      bootstrap: { status: 'unauthorized', message: 'Forbidden.' },
+      transport: failedTransport,
+      routeFailure: {
+        reason: 'route_refused',
+        endpoint: 'https://studio.example.com',
+        local: false,
+        tried: 1,
+        message: 'Forbidden.',
+      },
+    },
+  },
+  {
+    id: 'credential_rejected',
+    name: 'Token rejected',
+    summary: 'The environment refused the client token. No other route is tried.',
+    input: {
+      environment: studio,
+      bootstrap: {
+        status: 'ready',
+        environmentId: 'env-studio',
+        label: 'Studio',
+        protocolVersion: PROTOCOL_VERSION,
+      },
+      transport: failedTransport,
+      routeFailure: {
+        reason: 'credential_rejected',
+        endpoint: 'https://studio.example.com',
+        local: false,
+        tried: 1,
+        message: 'Client token revoked.',
+      },
+    },
+  },
+  {
+    id: 'wrong_environment',
+    name: 'Different environment',
+    summary: 'The address now answers as another environment, and no other route reaches this one.',
+    input: {
+      environment: studio,
+      bootstrap: {
+        status: 'ready',
+        environmentId: 'env-other',
+        protocolVersion: PROTOCOL_VERSION,
+      },
+      transport: failedTransport,
+      routeFailure: {
+        reason: 'wrong_environment',
+        endpoint: 'https://studio.example.com',
+        local: false,
+        tried: 1,
+      },
     },
   },
 ]

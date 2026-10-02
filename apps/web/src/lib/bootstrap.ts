@@ -40,6 +40,8 @@ export function interpretBootstrapResponse(input: {
     return {
       status: 'unreachable',
       message: `The environment server responded with HTTP ${input.status}.`,
+      cause: 'http',
+      httpStatus: input.status,
     }
   }
 
@@ -64,6 +66,7 @@ export function interpretBootstrapResponse(input: {
     return {
       status: 'unreachable',
       message: 'The environment responded, but the bootstrap payload was not valid.',
+      cause: 'invalid',
     }
   }
 }
@@ -89,6 +92,7 @@ export async function fetchBootstrap(
     return {
       status: 'unreachable',
       message: `Could not reach ${endpoint}. Check that the environment server is running, then retry.`,
+      cause: 'network',
     }
   }
 
@@ -96,12 +100,15 @@ export async function fetchBootstrap(
   try {
     body = await response.json()
   } catch {
-    if (response.status === 401 || response.status === 403) {
+    // A gateway in front of the environment (a tunnel, a proxy) answers its
+    // own errors as HTML. The status is what says which side failed.
+    if (!response.ok) {
       return interpretBootstrapResponse({ ok: false, status: response.status, body: null })
     }
     return {
       status: 'unreachable',
       message: 'The environment responded, but the bootstrap payload was not valid.',
+      cause: 'invalid',
     }
   }
 

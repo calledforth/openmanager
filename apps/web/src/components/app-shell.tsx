@@ -288,6 +288,7 @@ export function AppShell() {
     checkRoutes,
     environments,
     selectedId,
+    inUseEndpoint,
   } = useConnection()
   const ungated = pathname.startsWith('/playground/') || pathname === '/settings'
   const handlers = {
@@ -317,6 +318,7 @@ export function AppShell() {
           handlers={handlers}
           environments={environments}
           selectedId={selectedId}
+          inUseEndpoint={inUseEndpoint}
         />
       ) : (
         <Outlet />
