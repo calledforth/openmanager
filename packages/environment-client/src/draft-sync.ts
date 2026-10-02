@@ -118,8 +118,8 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
         baseRevision: Math.max(current.baseRevision, revision),
       }
       delete rebased.outlivesDeletion
-      // Saved on time so far: what was typed meanwhile is simply next.
-      delete rebased.stalled
+      // A stall mark stays: what was typed meanwhile is still not in the
+      // environment, and the mark only goes with the write that carries it.
       return applyDraftEdit(state, draftId, rebased)
     }
 
@@ -178,6 +178,8 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
           settle(draftId, edit, draft.revision)(applyDraftSaved(current, draft)),
         )
       }
+      // Got through: the next failure starts over from the shortest wait.
+      saveRetryMs.delete(draftId)
     } catch (error) {
       if (isEnvironmentClientError(error)) {
         const deleted = DraftDeletedDetailsSchema.safeParse(error.details)

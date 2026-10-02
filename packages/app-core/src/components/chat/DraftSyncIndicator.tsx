@@ -36,8 +36,10 @@ export function DraftSyncIndicator({
     <Tooltip content={explanation}>
       <span
         role="status"
+        // Focusable, so the reason in the tooltip is reachable by keyboard.
+        tabIndex={0}
         aria-label={`Draft not synced. ${explanation}`}
-        className="inline-flex h-6 shrink-0 cursor-default items-center gap-1 rounded-full px-1.5 text-[11px] leading-none text-[var(--basis-text-muted)]"
+        className="inline-flex h-6 shrink-0 cursor-default items-center gap-1 rounded-full px-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--basis-text-muted)] text-[11px] leading-none text-[var(--basis-text-muted)]"
       >
         <CloudSlashIcon size={12} aria-hidden />
         Not synced

@@ -347,4 +347,26 @@ describe('offline and unsynced drafts', () => {
     expect(selectDraftSyncStatus(store.getState(), 'a')).toBe('unsupported')
     sync.dispose()
   })
+
+  it('keeps the mark on text typed while the reconnecting save is on the wire, until that text lands', async () => {
+    const env = environment()
+    const here = env.client('closed')
+    here.sync.edit('a', FIRST, { text: 'offline' })
+    await vi.advanceTimersByTimeAsync(1000)
+    const release = env.hold()
+    here.setPhase('connected')
+    await vi.advanceTimersByTimeAsync(0)
+    here.sync.edit('a', FIRST, { text: 'offline, and more' })
+    release()
+    await vi.advanceTimersByTimeAsync(0)
+    // The first save landed, but not the newer text.
+    expect(env.saves.map((save) => save.content.text)).toEqual(['offline'])
+    expect(here.status('a')).not.toBe('saving')
+    expect(here.status('a')).not.toBe('synced')
+
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(env.saves.map((save) => save.content.text)).toEqual(['offline', 'offline, and more'])
+    expect(here.status('a')).toBe('synced')
+    here.sync.dispose()
+  })
 })

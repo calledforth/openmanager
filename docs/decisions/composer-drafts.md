@@ -145,7 +145,8 @@ the emptied draft is deleted like any other.
   or on the wire), or why not: `offline`, `unsupported`, `too_large` or `failed`. An edit
   made while the environment cannot be reached reads as `offline` at once. A
   save that could not go marks the edit (`DraftEdit.stalled`); the mark is
-  kept through later typing and cleared only when a write of the draft is
+  kept through later typing, including typing during the save that
+  reconnects it, and cleared only when a write carrying that edit is
   answered, so a reconnect does not clear it before the environment has the
   text. A save that fails on a live connection is tried again, backing off up
   to 30 s; one cut off by a dropped connection waits for the reconnect. The
