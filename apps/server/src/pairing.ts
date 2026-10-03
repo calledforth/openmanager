@@ -215,6 +215,11 @@ export function createPairingService(options: {
    * serving the old grant at once and close once that response is out.
    */
   onGrantChanged?: (clientId: string) => void
+  /**
+   * A redeem committed a new paired client or a changed grant, so device
+   * lists that are open should be told. Called after the commit.
+   */
+  onClientsChanged?: () => void
   onError?: (error: unknown) => void
   clock?: () => number
 }) {
@@ -422,7 +427,7 @@ export function createPairingService(options: {
     target: RedeemTarget,
   ): RedeemOutcome & { grantChanged: boolean } => {
     const now = clock()
-    return transaction(() => {
+    const outcome = transaction((): RedeemOutcome & { grantChanged: boolean } => {
       const link = linkByHash.get(hashToken(token)) as LinkRow | undefined
       if (!link || link.revoked_at !== null) {
         throw new Rejection(401, 'auth', 'invalid', 'This pairing link is not valid.')
@@ -515,6 +520,15 @@ export function createPairingService(options: {
         }),
       }
     })
+    if (outcome.kind === 'new' || outcome.grantChanged) {
+      try {
+        options.onClientsChanged?.()
+      } catch (error) {
+        // The redeem has committed; a failed announcement must not undo its answer.
+        options.onError?.(error)
+      }
+    }
+    return outcome
   }
 
   /**

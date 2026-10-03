@@ -39,6 +39,9 @@ import {
   routeInUse,
   selectedStoredEnvironment,
   selectStoredEnvironment,
+  adoptPersistedCredentials,
+  ENVIRONMENT_STORAGE_KEY,
+  setStoredCredential,
   setStoredRouteHealth,
   upsertStoredEnvironment,
   writeEnvironmentRegistry,
@@ -103,7 +106,17 @@ type ConnectionValue = {
   /** Forget one route. The last route of an environment cannot be forgotten. */
   removeRoute: (environmentId: string, endpoint: string) => void
   /** Record what the live connection learned about the route it is using. */
-  reportRouteHealth: (environmentId: string, endpoint: string, report: RouteHealthReport) => void
+  /**
+   * `credential` is the token the reporting socket dialled with. A report from
+   * a socket whose token has since been replaced (the owner rotated it) is
+   * about a token nobody uses any more, and is dropped.
+   */
+  reportRouteHealth: (
+    environmentId: string,
+    endpoint: string,
+    report: RouteHealthReport,
+    credential?: string,
+  ) => void
   /** Ask every saved route that is not in use whether it still answers. */
   checkRoutes: () => void
   retry: () => void
@@ -115,6 +128,11 @@ type ConnectionValue = {
   confirmRoute: () => void
   /** Drop that address. Nothing is saved and the saved token is not sent. */
   declineRoute: () => void
+  /**
+   * Save a new client token for an environment, as the owner gets one back
+   * when it rotates its credential. The connection redials with it.
+   */
+  replaceCredential: (environmentId: string, credential: string) => void
   /**
    * The route in use answered as a different environment. No socket may be
    * opened on it, whatever else the connection state says: the socket would
@@ -324,18 +342,37 @@ export function ConnectionProvider({
   }, [])
 
   /** Apply a change and persist it. Returns null when the change was refused. */
+  // The registry as this tab last read or wrote it, to tell what other tabs
+  // have saved since.
+  const persistedRef = useRef(registry)
   const update = useCallback(
     (change: (current: EnvironmentRegistry) => EnvironmentRegistry | null) => {
       const current = registryRef.current
-      const next = change(current)
-      if (!next) return null
-      if (next === current || environmentRegistriesEqual(next, current)) return current
+      const changed = change(current)
+      if (!changed) return null
+      if (changed === current || environmentRegistriesEqual(changed, current)) return current
+      const next = preview
+        ? changed
+        : adoptPersistedCredentials(changed, persistedRef.current, readEnvironmentRegistry())
       registryRef.current = next
+      persistedRef.current = next
       setRegistry(next)
       writeEnvironmentRegistry(next)
+      // A token taken from another tab is not the one that was refused.
+      if (next !== changed) {
+        for (const environment of next.environments) {
+          const before = findStoredEnvironment(changed.environments, environment.environmentId)
+          if (
+            before?.credential !== environment.credential &&
+            tokenRefused(environment.environmentId)
+          ) {
+            stopRouteSearch(true)
+          }
+        }
+      }
       return next
     },
-    [],
+    [preview, stopRouteSearch, tokenRefused],
   )
 
   const environment = preview?.environment ?? toSelection(registry, pending, activeRoutes)
@@ -779,7 +816,30 @@ export function ConnectionProvider({
   )
 
   const reportRouteHealth = useCallback(
-    (environmentId: string, routeEndpoint: string, report: RouteHealthReport) => {
+    (
+      environmentId: string,
+      routeEndpoint: string,
+      report: RouteHealthReport,
+      credential?: string,
+    ) => {
+      if (credential !== undefined) {
+        // A report from a socket whose token has been replaced, here or by
+        // another tab, is about a token nobody uses any more.
+        if (
+          findStoredEnvironment(registryRef.current.environments, environmentId)?.credential !==
+          credential
+        ) {
+          return
+        }
+        const saved = preview
+          ? undefined
+          : findStoredEnvironment(readEnvironmentRegistry().environments, environmentId)?.credential
+        if (saved && saved !== credential) {
+          update((current) => setStoredCredential(current, environmentId, saved))
+          if (tokenRefused(environmentId)) stopRouteSearch(true)
+          return
+        }
+      }
       noteLiveReport(environmentId, routeEndpoint)
       update((current) => setStoredRouteHealth(current, environmentId, routeEndpoint, report))
       // Only the socket on the selected environment's route in use drives the
@@ -822,7 +882,15 @@ export function ConnectionProvider({
         startRouteSearch(environmentId, 'socket')
       }
     },
-    [noteLiveReport, setRouteFailure, startRouteSearch, update],
+    [
+      noteLiveReport,
+      preview,
+      setRouteFailure,
+      startRouteSearch,
+      stopRouteSearch,
+      tokenRefused,
+      update,
+    ],
   )
 
   // One check per route at a time, so a slow answer cannot land after, and
@@ -877,6 +945,40 @@ export function ConnectionProvider({
 
   const inUseEndpoint = inUseFor(selectedRecord, activeRoutes)
 
+  const replaceCredential = useCallback(
+    (environmentId: string, credential: string) => {
+      const before = registryRef.current
+      const next = update((current) => setStoredCredential(current, environmentId, credential))
+      // The old token's refusal, if its socket reported one first, is not a
+      // refusal of the new one.
+      if (next && next !== before && tokenRefused(environmentId)) stopRouteSearch(true)
+    },
+    [stopRouteSearch, tokenRefused, update],
+  )
+
+  // Another tab rotated a token (or connected again with a new one): this tab
+  // switches to it rather than redialing, or being refused, with the old one.
+  useEffect(() => {
+    if (preview) return
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== ENVIRONMENT_STORAGE_KEY) return
+      // The token is already saved, so this tab takes it without writing
+      // its own copy of everything else back over the other tab's.
+      for (const saved of readEnvironmentRegistry().environments) {
+        const id = saved.environmentId
+        const mine = findStoredEnvironment(registryRef.current.environments, id)
+        if (!mine || !saved.credential || saved.credential === mine.credential) continue
+        const next = setStoredCredential(registryRef.current, id, saved.credential)
+        registryRef.current = next
+        persistedRef.current = setStoredCredential(persistedRef.current, id, saved.credential)
+        setRegistry(next)
+        if (tokenRefused(id)) stopRouteSearch(true)
+      }
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [preview, stopRouteSearch, tokenRefused])
+
   const value = useMemo(
     () => ({
       ui,
@@ -895,6 +997,7 @@ export function ConnectionProvider({
       changeEnvironment,
       confirmRoute,
       declineRoute,
+      replaceCredential,
       wrongEnvironment: answeredByAnother,
       routeVerified,
       retryNonce: bootstrapNonce,
@@ -916,6 +1019,7 @@ export function ConnectionProvider({
       changeEnvironment,
       confirmRoute,
       declineRoute,
+      replaceCredential,
       answeredByAnother,
       routeVerified,
       bootstrapNonce,

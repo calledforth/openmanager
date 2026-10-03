@@ -1,4 +1,5 @@
 import {
+  ClientLabelSchema,
   ComposerCommandSchemas,
   DRAFT_DELETED_MESSAGE,
   DraftCommandSchemas,
@@ -6,6 +7,8 @@ import {
   ProofCommandSchemas,
   ProviderCatalogEntrySchema,
   WorkspaceComposerPreferenceSchema,
+  type AuthorizedClient,
+  type AuthorizedClientList,
   type Draft,
   type DraftTombstone,
   type Environment,
@@ -99,6 +102,12 @@ export interface MockSeed {
   /** What `~` means, and where browsing starts with no setting. Defaults to the first folder. */
   home?: string
   environmentSettings?: Partial<EnvironmentSettings>
+  /**
+   * The device list. Defaults to a single connected owner, which is this
+   * client; `currentClientId` names this client when the list is seeded.
+   */
+  authorizedClients?: readonly AuthorizedClient[]
+  currentClientId?: string
 }
 
 export interface MockTurnContext extends ThreadTarget {
@@ -422,6 +431,51 @@ export function createMockEnvironmentClient(
     titleGeneration: { provider: 'codex', model: '' },
     ...options.seed?.environmentSettings,
   }
+  // The device list, as the environment keeps it for admin holders.
+  const seededAt = now()
+  let authorizedClients: AuthorizedClient[] = [
+    ...(options.seed?.authorizedClients ?? [
+      {
+        clientId: 'client-owner',
+        label: 'Local owner',
+        kind: 'owner',
+        capabilities: ['read', 'operate', 'agent', 'terminal', 'admin'],
+        createdAt: seededAt,
+        lastSeenAt: seededAt,
+        expiresAt: new Date(Date.parse(seededAt) + 30 * 86_400_000).toISOString(),
+        connected: true,
+      } satisfies AuthorizedClient,
+    ]),
+  ]
+  let currentClientId =
+    options.seed?.currentClientId ?? authorizedClients[0]?.clientId ?? 'client-owner'
+  const clientListListeners = new Set<(list: AuthorizedClientList) => void>()
+  const clientList = (): AuthorizedClientList => ({
+    clients: authorizedClients.map((client) => ({ ...client })),
+    currentClientId,
+    omitted: 0,
+  })
+  /** The environment's own checks, so a view cannot do here what it could not do there. */
+  const requireAdmin = () => {
+    const caller = authorizedClients.find((item) => item.clientId === currentClientId)
+    if (!caller?.capabilities.includes('admin')) {
+      throw new EnvironmentClientError(
+        'capability_missing',
+        'This command requires the admin capability.',
+      )
+    }
+    return caller
+  }
+  const announceClients = () => {
+    const list = clientList()
+    for (const listener of [...clientListListeners]) listener(list)
+  }
+  const liveClient = (clientId: string) => {
+    const client = authorizedClients.find((item) => item.clientId === clientId)
+    if (!client) throw new EnvironmentClientError('not_found', 'That client is not authorized.')
+    return client
+  }
+
   const preferenceKey = (target: ComposerPreferenceTarget) =>
     JSON.stringify([target.workspaceId, target.providerId])
   for (const [workspaceId, byProvider] of Object.entries(options.seed?.composerPreferences ?? {})) {
@@ -1083,6 +1137,76 @@ export function createMockEnvironmentClient(
       }),
     deleteDraft: (input) =>
       run('deleteDraft', input, () => deleteDraftRow(input.draftId, input.baseRevision)),
+    listAuthorizedClients: () =>
+      run('listAuthorizedClients', null, () => {
+        requireAdmin()
+        return clientList()
+      }),
+    renameAuthorizedClient: (clientId, label) =>
+      run('renameAuthorizedClient', { clientId, label }, () => {
+        const caller = requireAdmin()
+        if (liveClient(clientId).kind === 'owner' && caller.kind !== 'owner') {
+          throw new EnvironmentClientError(
+            'capability_missing',
+            'Only the owner can rename itself.',
+          )
+        }
+        const parsed = ClientLabelSchema.safeParse(label)
+        if (!parsed.success) {
+          throw new EnvironmentClientError('validation', parsed.error.issues[0]!.message)
+        }
+        const renamed = { ...liveClient(clientId), label: parsed.data }
+        authorizedClients = authorizedClients.map((item) =>
+          item.clientId === clientId ? renamed : item,
+        )
+        announceClients()
+        return { ...renamed }
+      }),
+    revokeAuthorizedClient: (clientId) =>
+      run('revokeAuthorizedClient', { clientId }, () => {
+        requireAdmin()
+        if (clientId === currentClientId) {
+          throw new EnvironmentClientError('validation', 'A device cannot revoke itself.')
+        }
+        if (liveClient(clientId).kind === 'owner') {
+          throw new EnvironmentClientError('validation', 'The owner cannot be revoked.')
+        }
+        authorizedClients = authorizedClients.filter((item) => item.clientId !== clientId)
+        announceClients()
+      }),
+    revokeOtherAuthorizedClients: () =>
+      run('revokeOtherAuthorizedClients', null, () => {
+        requireAdmin()
+        const revoked = authorizedClients
+          .filter((item) => item.clientId !== currentClientId && item.kind !== 'owner')
+          .map((item) => item.clientId)
+        authorizedClients = authorizedClients.filter((item) => !revoked.includes(item.clientId))
+        if (revoked.length > 0) announceClients()
+        return revoked
+      }),
+    rotateOwnerCredential: () =>
+      run('rotateOwnerCredential', null, () => {
+        const previous = requireAdmin()
+        if (previous.kind !== 'owner') {
+          throw new EnvironmentClientError(
+            'capability_missing',
+            'Only the owner can rotate the owner credential.',
+          )
+        }
+        const client: AuthorizedClient = {
+          ...previous,
+          clientId: nextId(),
+          createdAt: now(),
+          lastSeenAt: null,
+          connected: false,
+        }
+        authorizedClients = authorizedClients.map((item) =>
+          item.clientId === previous.clientId ? client : item,
+        )
+        currentClientId = client.clientId
+        announceClients()
+        return { client: { ...client }, credential: `omc1.${'m'.repeat(43)}` }
+      }),
     getEnvironmentSettings: () =>
       run('getEnvironmentSettings', null, () => ({ ...environmentSettings })),
     setEnvironmentSettings: (patch) =>
@@ -1111,6 +1235,12 @@ export function createMockEnvironmentClient(
     getState: store.getState,
     subscribe: store.subscribe,
     supports: (command) => capabilities.has(command),
+    onAuthorizedClientsChanged(listener) {
+      clientListListeners.add(listener)
+      return () => {
+        clientListListeners.delete(listener)
+      }
+    },
     fetchArtifact: async (input) => {
       await new Promise<void>((resolve) => schedule(resolve, latencyMs))
       const blob = artifacts[input.artifactId]

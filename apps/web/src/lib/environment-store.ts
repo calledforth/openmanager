@@ -480,6 +480,48 @@ export function setStoredRouteHealth(
   return { ...registry, environments: replaceEnvironment(registry, record) }
 }
 
+/**
+ * Replace a saved environment's client token, as after the environment
+ * rotated it. Routes, label and selection are untouched. Returns the registry
+ * unchanged for an unknown environment or a token that cannot be sent.
+ */
+export function setStoredCredential(
+  registry: EnvironmentRegistry,
+  environmentId: string,
+  credential: string,
+): EnvironmentRegistry {
+  const existing = findStoredEnvironment(registry.environments, environmentId)
+  const parsed = parseEnvironmentCredential(credential)
+  if (!existing || !parsed || parsed === existing.credential) return registry
+  return {
+    ...registry,
+    environments: replaceEnvironment(registry, { ...existing, credential: parsed }),
+  }
+}
+
+/**
+ * Keep client tokens another tab saved since this tab last read or wrote the
+ * registry (`base`). Each tab holds the registry in memory and writes all of
+ * it, so a tab that only recorded route health would otherwise put back a
+ * token the owner just rotated. A token this tab changed itself still wins.
+ */
+export function adoptPersistedCredentials(
+  next: EnvironmentRegistry,
+  base: EnvironmentRegistry,
+  persisted: EnvironmentRegistry,
+): EnvironmentRegistry {
+  let changed = false
+  const environments = next.environments.map((environment) => {
+    const id = environment.environmentId
+    const saved = findStoredEnvironment(persisted.environments, id)?.credential
+    const known = findStoredEnvironment(base.environments, id)?.credential
+    if (!saved || saved === known || environment.credential !== known) return environment
+    changed = true
+    return { ...environment, credential: saved }
+  })
+  return changed ? { ...next, environments } : next
+}
+
 export function removeStoredEnvironment(
   registry: EnvironmentRegistry,
   environmentId: string,

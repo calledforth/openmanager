@@ -42,7 +42,11 @@ import {
 // Version 13 adds pairing: `pairing.create`, `pairing.list` and
 // `pairing.revoke` for admin clients, and the `POST /pair` exchange behind the
 // `pairing.exchange` bootstrap capability.
-export const PROTOCOL_VERSION = 13 as const
+// Version 14 adds the device list (`client.list`, `client.rename`,
+// `client.revoke`, `client.revoke_others`, `client.owner.rotate` and the
+// `client.list.changed` event), and a revoked client's socket now closes with
+// 4401 `revoked`, which a client must treat as terminal rather than redial.
+export const PROTOCOL_VERSION = 14 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema

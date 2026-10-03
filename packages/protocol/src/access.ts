@@ -1,4 +1,13 @@
 import { z } from 'zod'
+import { AccessCapabilitySchema, type AccessCapability } from './access-grant.js'
+import {
+  CLIENT_LIST_CAPABILITY,
+  CLIENT_OWNER_ROTATE_CAPABILITY,
+  CLIENT_RENAME_CAPABILITY,
+  CLIENT_REVOKE_CAPABILITY,
+  CLIENT_REVOKE_OTHERS_CAPABILITY,
+  ClientCommandSchemas,
+} from './clients.js'
 import { ProofCommandSchemas } from './commands.js'
 import { ComposerCommandSchemas } from './composer.js'
 import { ErrorEnvelopeSchema } from './envelopes.js'
@@ -22,31 +31,13 @@ import {
 // Type-only: pairing.ts imports AccessGrantSchema from here.
 import type { PairingCommandSchemas } from './pairing.js'
 
-/**
- * Access capabilities are what a client's credential grants. They are distinct
- * from the protocol feature capabilities advertised by `/bootstrap` and checked
- * by the handshake, which describe what the server implements.
- *
- * The set and the command mapping are fixed by
- * `docs/decisions/capability-scopes-and-credentials.md`.
- */
-export const ACCESS_CAPABILITIES = ['read', 'operate', 'agent', 'terminal', 'admin'] as const
-export const AccessCapabilitySchema = z.enum(ACCESS_CAPABILITIES)
-export type AccessCapability = z.infer<typeof AccessCapabilitySchema>
-
-/** A grant is a set of capabilities. `read` is required for a connection to be useful at all. */
-export const AccessGrantSchema = z
-  .array(AccessCapabilitySchema)
-  .max(ACCESS_CAPABILITIES.length)
-  .superRefine((items, ctx) => {
-    if (new Set(items).size !== items.length) {
-      ctx.addIssue({ code: 'custom', message: 'Capabilities must be unique' })
-    }
-    if (!items.includes('read')) {
-      ctx.addIssue({ code: 'custom', message: 'A grant must include read' })
-    }
-  })
-export type AccessGrant = z.infer<typeof AccessGrantSchema>
+export {
+  ACCESS_CAPABILITIES,
+  AccessCapabilitySchema,
+  AccessGrantSchema,
+  type AccessCapability,
+  type AccessGrant,
+} from './access-grant.js'
 
 export const ACCESS_PRESETS = Object.freeze({
   read_only: ['read'],
@@ -64,6 +55,7 @@ export type CommandName =
   | keyof typeof FilesystemCommandSchemas
   | keyof typeof DraftCommandSchemas
   | keyof typeof PairingCommandSchemas
+  | keyof typeof ClientCommandSchemas
   | ReplayCommand['name']
 
 /**
@@ -126,6 +118,14 @@ export const COMMAND_ACCESS = Object.freeze({
   // A device redeems a link for itself. The token is the authority, exactly
   // as at `POST /pair`, so any authenticated client may present one.
   'pairing.redeem': 'read',
+  // The device list names the owner's devices and when they were last used,
+  // so reading it is administrative too, not only changing it.
+  [CLIENT_LIST_CAPABILITY]: 'admin',
+  [CLIENT_RENAME_CAPABILITY]: 'admin',
+  [CLIENT_REVOKE_CAPABILITY]: 'admin',
+  [CLIENT_REVOKE_OTHERS_CAPABILITY]: 'admin',
+  // The service also requires the caller to be the owner itself.
+  [CLIENT_OWNER_ROTATE_CAPABILITY]: 'admin',
 } as const satisfies Record<CommandName, AccessCapability | null>)
 
 /**

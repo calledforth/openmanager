@@ -108,6 +108,9 @@ test that the map's key set equals the schema's key set.
 | `composer.model.set`          | `agent`    |                                                            |
 | `composer.mode.set`           | `agent`    |                                                            |
 | `composer.config_option.set`  | `agent`    |                                                            |
+| `client.list`, `client.rename` | `admin`   | The device list; listing also follows `client.list.changed`. |
+| `client.revoke`, `client.revoke_others` | `admin` | Self and owner refused, per Revocation below.        |
+| `client.owner.rotate`         | `admin`    | The service also requires the caller to be the owner.      |
 
 ### Planned commands and routes
 
@@ -123,7 +126,6 @@ decision.
 | `git.stage`, `git.commit`, `git.checkout`, `git.branch.create`    | `operate`  | CAL-122, CAL-125   |
 | Attachment download (HTTP)                                       | `read`     | CAL-89             |
 | `terminal.*`                                                     | `terminal` | CAL-127, CAL-128   |
-| Client list, revoke client, revoke other clients (HTTP)          | `admin`    | CAL-104, CAL-105   |
 | Mint pairing link, revoke pairing link (HTTP)                    | `admin`    | CAL-102, CAL-103   |
 | Account link and unlink, tunnel and route configuration (HTTP)   | `admin`    | Cloud and tunnel   |
 | `/health`, `/bootstrap`, pairing exchange (HTTP)                 | none       | D11, CAL-102       |
@@ -198,7 +200,12 @@ client.
 ### Rotation
 
 None is automatic in Wave 2. The owner credential is re-minted by the local
-process, which revokes the previous owner row. A cloud client that wants a
+process, which revokes the previous owner row. The owner can ask for that from
+any of its connected clients with `client.owner.rotate`: the new credential is
+answered once on that socket (and published to the data directory), then
+every socket that used the old one is closed. Only an `owner` caller may ask;
+a paired client holding `admin` cannot replace the owner. A name the owner
+gave its row carries over to the new one. A cloud client that wants a
 fresh credential re-enrolls, which creates a new row; the old row is revoked
 once the new one is confirmed. A paired device that redeems a new link over
 its own socket keeps its row and credential (see "Pairing link" below); one
@@ -210,7 +217,10 @@ introduced without breaking stored credentials.
 
 - Revoking sets `revoked_at`, and the server then closes every WebSocket
   authenticated by that row with close code `4401` and reason `revoked`, and
-  publishes a client-list event to `admin` holders. T3 Code leaves live sockets
+  publishes a client-list event to `admin` holders that have the list open
+  (connections that called `client.list`). A client treats `4401` as
+  terminal: redialing with a dead credential would only spend the address's
+  failed-credential budget, which every device behind one tunnel shares. T3 Code leaves live sockets
   open after revocation; OpenManager does not.
 - The `owner` row cannot be revoked by any other client. It is replaced only
   by the local process re-minting it.

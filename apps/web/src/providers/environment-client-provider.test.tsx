@@ -133,8 +133,16 @@ function createFakeClient() {
 
 function Probe() {
   const client = useEnvironmentClientOptional()
-  const { ui, chooseRoute, checkRoutes, connect, removeRoute, removeEnvironment, inUseEndpoint } =
-    useConnection()
+  const {
+    ui,
+    chooseRoute,
+    checkRoutes,
+    connect,
+    removeRoute,
+    removeEnvironment,
+    replaceCredential,
+    inUseEndpoint,
+  } = useConnection()
   return (
     <>
       <p>
@@ -159,6 +167,9 @@ function Probe() {
       </button>
       <button type="button" onClick={() => removeEnvironment('env-other')}>
         remove other
+      </button>
+      <button type="button" onClick={() => replaceCredential('env-local', 'rotated-token')}>
+        rotate token
       </button>
     </>
   )
@@ -494,6 +505,143 @@ describe('WebEnvironmentClientProvider', () => {
     expect(screen.getByText('unauthorized:none')).toBeInTheDocument()
     expect(screen.getByText('reason: credential_rejected')).toBeInTheDocument()
     expect(fetchMock.mock.calls.length).toBe(before)
+  })
+
+  it('redials with a rotated token, and the old socket being cut does not refuse it', async () => {
+    seedTwoRoutes()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => bootstrapAnswer()),
+    )
+    const clients: Array<{ client: ReturnType<typeof createFakeClient>; notify: () => void }> = []
+    const createClient = vi.fn((options: WebSocketEnvironmentClientOptions) => {
+      const client = createFakeClient()
+      const entry = { client, notify: () => {}, credential: options.credential }
+      let connection: unknown = { phase: 'connected', failure: null }
+      client.getState.mockImplementation(() => ({
+        ...createInitialState(),
+        connection: connection as ReturnType<EnvironmentClient['getState']>['connection'],
+      }))
+      client.subscribe.mockImplementation(((listener: () => void) => {
+        entry.notify = () => {
+          connection = { phase: 'closed', failure: { code: 'auth', message: 'Revoked.' } }
+          listener()
+        }
+        return () => undefined
+      }) as never)
+      clients.push(entry)
+      return client as EnvironmentClient
+    })
+    renderProvider(createClient)
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+
+    // The rotation answer is saved first; the old socket's 4401 lands after.
+    act(() => screen.getByRole('button', { name: 'rotate token' }).click())
+    act(() => clients[0]!.notify())
+    await waitFor(() =>
+      expect(createClient).toHaveBeenLastCalledWith(
+        expect.objectContaining({ credential: 'rotated-token' }),
+      ),
+    )
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+    expect(screen.queryByText('reason: credential_rejected')).toBeNull()
+    expect(storedRoutes()[0]!.health.status).not.toBe('unauthorized')
+  })
+
+  it('takes a token another tab rotated, and its stale socket does not undo the rotation', async () => {
+    seedTwoRoutes()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => bootstrapAnswer()),
+    )
+    const notifiers: Array<() => void> = []
+    const createClient = vi.fn((_options: WebSocketEnvironmentClientOptions) => {
+      const client = createFakeClient()
+      let connection: unknown = { phase: 'connected', failure: null }
+      client.getState.mockImplementation(() => ({
+        ...createInitialState(),
+        connection: connection as ReturnType<EnvironmentClient['getState']>['connection'],
+      }))
+      client.subscribe.mockImplementation(((listener: () => void) => {
+        notifiers.push(() => {
+          connection = { phase: 'closed', failure: { code: 'auth', message: 'Revoked.' } }
+          listener()
+        })
+        return () => undefined
+      }) as never)
+      return client as EnvironmentClient
+    })
+    renderProvider(createClient)
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+
+    // Another tab rotates and saves the new token before this tab hears of it.
+    const registry = JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY)!) as {
+      environments: Array<{ credential: string }>
+    }
+    registry.environments[0]!.credential = 'rotated-elsewhere'
+    localStorage.setItem(ENVIRONMENT_STORAGE_KEY, JSON.stringify(registry))
+    // This tab's old socket is cut first: its report must not write the old token back.
+    act(() => notifiers[0]!())
+    const saved = () =>
+      (JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY)!) as typeof registry)
+        .environments[0]!.credential
+    expect(saved()).toBe('rotated-elsewhere')
+
+    act(() => {
+      window.dispatchEvent(new StorageEvent('storage', { key: ENVIRONMENT_STORAGE_KEY }))
+    })
+    await waitFor(() =>
+      expect(createClient).toHaveBeenLastCalledWith(
+        expect.objectContaining({ credential: 'rotated-elsewhere' }),
+      ),
+    )
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+    expect(saved()).toBe('rotated-elsewhere')
+  })
+
+  it('lifts a refusal when an unrelated write picks up a token another tab rotated', async () => {
+    seedTwoRoutes()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => bootstrapAnswer()),
+    )
+    const notifiers: Array<() => void> = []
+    const createClient = vi.fn((_options: WebSocketEnvironmentClientOptions) => {
+      const client = createFakeClient()
+      let connection: unknown = { phase: 'connected', failure: null }
+      client.getState.mockImplementation(() => ({
+        ...createInitialState(),
+        connection: connection as ReturnType<EnvironmentClient['getState']>['connection'],
+      }))
+      client.subscribe.mockImplementation(((listener: () => void) => {
+        notifiers.push(() => {
+          connection = { phase: 'closed', failure: { code: 'auth', message: 'Revoked.' } }
+          listener()
+        })
+        return () => undefined
+      }) as never)
+      return client as EnvironmentClient
+    })
+    renderProvider(createClient)
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+
+    // The old socket is cut before the other tab has saved the new token.
+    act(() => notifiers[0]!())
+    expect(screen.getByText('reason: credential_rejected')).toBeInTheDocument()
+    const registry = JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY)!) as {
+      environments: Array<{ credential: string }>
+    }
+    registry.environments[0]!.credential = 'rotated-elsewhere'
+    localStorage.setItem(ENVIRONMENT_STORAGE_KEY, JSON.stringify(registry))
+    // A route check lands before the storage event does, and its write takes the new token.
+    act(() => screen.getByRole('button', { name: 'check routes' }).click())
+    await waitFor(() =>
+      expect(createClient).toHaveBeenLastCalledWith(
+        expect.objectContaining({ credential: 'rotated-elsewhere' }),
+      ),
+    )
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+    expect(screen.queryByText('reason: credential_rejected')).toBeNull()
   })
 
   it('keeps a refused token refused when the network comes back', async () => {
