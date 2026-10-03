@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  adoptPersistedCredentials,
   classifyDiscoveredRoute,
   findStoredEnvironment,
   DEFAULT_ENVIRONMENT_LABEL,
@@ -22,6 +23,7 @@ import {
   routeTypeForEndpoint,
   routeTypeLabel,
   selectStoredEnvironment,
+  setStoredCredential,
   setStoredRouteHealth,
   upsertStoredEnvironment,
   writeEnvironmentRegistry,
@@ -400,6 +402,42 @@ describe('setStoredRouteHealth', () => {
       registry,
     )
     expect(setStoredRouteHealth(registry, 'env-missing', LOCAL, report)).toBe(registry)
+  })
+})
+
+describe('setStoredCredential', () => {
+  it('replaces only the token, and refuses unknown environments and unsendable tokens', () => {
+    const registry = twoRoutes()
+    const next = setStoredCredential(registry, 'env-local', 'token-2')
+    expect(next.environments[0]).toEqual({ ...registry.environments[0], credential: 'token-2' })
+    expect(setStoredCredential(registry, 'env-other', 'token-2')).toBe(registry)
+    expect(setStoredCredential(registry, 'env-local', 'has space')).toBe(registry)
+    expect(setStoredCredential(registry, 'env-local', 'token-1')).toBe(registry)
+  })
+})
+
+describe('adoptPersistedCredentials', () => {
+  it('keeps a token another tab saved unless this tab changed the token itself', () => {
+    const base = twoRoutes()
+    const rotatedElsewhere = setStoredCredential(base, 'env-local', 'token-rotated')
+    // This tab only recorded health; the other tab's rotation must survive.
+    const healthOnly = setStoredRouteHealth(
+      base,
+      'env-local',
+      LOCAL,
+      { status: 'unauthorized' },
+      NOW,
+    )
+    const merged = adoptPersistedCredentials(healthOnly, base, rotatedElsewhere)
+    expect(merged.environments[0]!.credential).toBe('token-rotated')
+    expect(merged.environments[0]!.routes[0]!.health.status).toBe('unauthorized')
+    // Nothing changed elsewhere: the registry is returned as is.
+    expect(adoptPersistedCredentials(healthOnly, base, base)).toBe(healthOnly)
+    // This tab's own new token wins.
+    const mine = setStoredCredential(base, 'env-local', 'token-mine')
+    expect(
+      adoptPersistedCredentials(mine, base, rotatedElsewhere).environments[0]!.credential,
+    ).toBe('token-mine')
   })
 })
 

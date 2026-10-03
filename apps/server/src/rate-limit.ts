@@ -12,7 +12,7 @@ export const RATE_LIMITS = Object.freeze({
   local_owner: { limit: 10, windowMs: 60_000 },
   /** `turn.send` per client. */
   prompt: { limit: 30, windowMs: 60_000 },
-  /** Every other mutating command (`operate`, `agent`, `terminal`, `admin`) per client. */
+  /** Every other mutating command (`operate`, `agent`, `terminal`, `admin`; not `client.list`) per client. */
   mutation: { limit: 120, windowMs: 60_000 },
 } as const satisfies Record<string, { limit: number; windowMs: number }>)
 

@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { AccessGrantSchema } from './access.js'
+import { ClientLabelSchema } from './clients.js'
 import { EntityIdSchema, TimestampSchema } from './domains.js'
 import { CommandEnvelopeSchema, ResponseEnvelopeSchema } from './envelopes.js'
 
@@ -65,18 +66,6 @@ export const PairingTokenSchema = z
     }
     return token
   })
-
-/**
- * A device's name as a person sets it. Control and format characters are
- * refused: a bidi override or a zero-width joiner could make one device's
- * entry read as another's in the client list.
- */
-export const ClientLabelSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .max(128)
-  .regex(/^[^\p{Cc}\p{Cf}]*$/u, 'Labels cannot contain control or format characters')
 
 /**
  * A label the environment already holds. Looser than `ClientLabelSchema`:

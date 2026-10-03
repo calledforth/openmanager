@@ -1,6 +1,8 @@
 import {
   PLAN_BUILD_CAPABILITY,
   PAGE_LIMIT_MAX,
+  CLIENT_REVOKED_CLOSE_CODE,
+  ClientListChangedEventSchema,
   ErrorEnvelopeSchema,
   PROTOCOL_VERSION,
   SESSION_CREATE_EXPLICIT_CAPABILITY,
@@ -15,6 +17,7 @@ import {
   parseProtocolHandshakeResult,
   parseReplayResult,
   respondToHeartbeat,
+  type AuthorizedClientList,
   type ClientHeartbeatState,
   type Cursor,
   type SessionListCursor,
@@ -323,6 +326,7 @@ export function createWebSocketEnvironmentClient(
   /** Bumped on every handshake and close so a stale resync stops after its awaits. */
   let connectionGeneration = 0
   const pending = new Map<string, Pending>()
+  const clientListListeners = new Set<(list: AuthorizedClientList) => void>()
   const queued: Array<() => void> = []
   const subscriptions = new Map<string, Subscription>()
   const transientIds = new Set<string>()
@@ -419,6 +423,17 @@ export function createWebSocketEnvironmentClient(
     if (disposed || manualClose) {
       // A deliberate close is not a failed retry, so it must not read as offline.
       patchConnection({ phase: 'closed', failure: null, attempt: 0, retriesExhausted: false })
+      return
+    }
+    // A revoked credential never works again. Redialing would only spend the
+    // address's failed-credential budget, which other devices behind the same
+    // tunnel share.
+    if (code === CLIENT_REVOKED_CLOSE_CODE) {
+      patchConnection({
+        phase: 'closed',
+        failure: { code: 'auth', message: "This device's access was revoked." },
+        retriesExhausted: true,
+      })
       return
     }
     const current = store.getState().connection
@@ -583,6 +598,12 @@ export function createWebSocketEnvironmentClient(
         return
       }
       applyRecord(record)
+      return
+    }
+    // The device list goes to admin holders as a whole current reading.
+    const clientList = ClientListChangedEventSchema.safeParse(raw)
+    if (clientList.success) {
+      for (const listener of [...clientListListeners]) listener(clientList.data.payload)
       return
     }
     // Health is broadcast to every socket outside any scope: it is a current
@@ -1442,6 +1463,17 @@ export function createWebSocketEnvironmentClient(
       return (await request('draft.save', input)).draft
     },
     deleteDraft: (input) => request('draft.delete', input),
+    listAuthorizedClients: () => request('client.list', null),
+    async renameAuthorizedClient(clientId, label) {
+      return (await request('client.rename', { clientId, label })).client
+    },
+    async revokeAuthorizedClient(clientId) {
+      await request('client.revoke', { clientId })
+    },
+    async revokeOtherAuthorizedClients() {
+      return (await request('client.revoke_others', null)).revokedClientIds
+    },
+    rotateOwnerCredential: () => request('client.owner.rotate', null),
   }
 
   const drafts = createDraftSync({
@@ -1456,6 +1488,12 @@ export function createWebSocketEnvironmentClient(
     getState: store.getState,
     subscribe: store.subscribe,
     supports,
+    onAuthorizedClientsChanged(listener) {
+      clientListListeners.add(listener)
+      return () => {
+        clientListListeners.delete(listener)
+      }
+    },
     async fetchArtifact(input, init) {
       const fetchBytes = options.fetch ?? globalThis.fetch
       let response: Response
@@ -1554,6 +1592,7 @@ export function createWebSocketEnvironmentClient(
     dispose() {
       if (disposed) return
       disposed = true
+      clientListListeners.clear()
       // Waiting edits stay in the store for the client that takes it over.
       drafts.dispose()
       connectionGeneration += 1

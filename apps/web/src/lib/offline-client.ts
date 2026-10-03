@@ -40,6 +40,11 @@ const commands: EnvironmentCommands = {
   listDrafts: reject('listDrafts'),
   saveDraft: reject('saveDraft'),
   deleteDraft: reject('deleteDraft'),
+  listAuthorizedClients: reject('listAuthorizedClients'),
+  renameAuthorizedClient: reject('renameAuthorizedClient'),
+  revokeAuthorizedClient: reject('revokeAuthorizedClient'),
+  revokeOtherAuthorizedClients: reject('revokeOtherAuthorizedClients'),
+  rotateOwnerCredential: reject('rotateOwnerCredential'),
 }
 
 /**

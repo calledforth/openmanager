@@ -12,7 +12,11 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
-import { AccessGrantSchema, type AccessCapability } from '@openmanager/protocol/node'
+import {
+  AccessGrantSchema,
+  CLIENT_LIST_MAX,
+  type AccessCapability,
+} from '@openmanager/protocol/node'
 import type { AuditLog } from './audit.ts'
 import { openEnvironmentDatabase } from './db/database.ts'
 import { ACTIVE_OWNER_CLIENT_SQL, AUTHORIZED_CLIENT_BY_HASH_SQL } from './db/queries.ts'
@@ -62,6 +66,22 @@ type ClientRow = {
   expires_at: number
   revoked_at: number | null
 }
+
+/** A live client as the device list shows it. Never carries the credential or its hash. */
+export interface ClientRecord extends AuthenticatedClient {
+  readonly createdAt: number
+  readonly lastSeenAt: number | null
+  readonly expiresAt: number
+}
+
+type ClientRecordRow = Pick<ClientRow, 'client_id' | 'label' | 'kind' | 'scopes_json'> & {
+  created_at: number
+  last_seen_at: number | null
+  expires_at: number
+}
+
+/** The most rows a device list returns; far more than one owner has devices. */
+export const CLIENT_LIST_LIMIT = CLIENT_LIST_MAX
 
 export function mintCredential(): string {
   return `${CREDENTIAL_PREFIX}${randomBytes(32).toString('base64url')}`
@@ -180,6 +200,8 @@ export function openAuthorizedClients(
   dataDir: string,
   clock: () => number = Date.now,
   audit?: Pick<AuditLog, 'record'>,
+  /** Told after a client is minted, so the device list can be announced. */
+  onIssued?: () => void,
 ) {
   const database = openEnvironmentDatabase(dataDir)
   const ownerPath = join(dataDir, OWNER_CREDENTIAL_FILENAME)
@@ -197,6 +219,38 @@ export function openAuthorizedClients(
     UPDATE authorized_clients SET revoked_at = ? WHERE kind = 'owner' AND revoked_at IS NULL
   `)
 
+  // Device list (owner management). A client is listed while it is not
+  // revoked and either unexpired or still connected: expiry is checked at
+  // authentication only, so a socket opened before it passed stays usable and
+  // must stay visible and revocable. Everything else is kept for audit only.
+  // The connected IDs arrive as a JSON array.
+  const LIVE_CLIENT_COLUMNS = `client_id, label, kind, scopes_json, created_at, last_seen_at, expires_at`
+  const LISTED = `revoked_at IS NULL AND (expires_at > ? OR client_id IN (SELECT value FROM json_each(?)))`
+  const listLive = database.prepare(`
+    SELECT ${LIVE_CLIENT_COLUMNS}
+    FROM authorized_clients
+    WHERE ${LISTED}
+    ORDER BY kind = 'owner' DESC, COALESCE(last_seen_at, created_at) DESC, client_id
+    LIMIT ${CLIENT_LIST_LIMIT}
+  `)
+  const countListed = database.prepare(`
+    SELECT COUNT(*) AS count FROM authorized_clients WHERE ${LISTED}
+  `)
+  const getLive = database.prepare(`
+    SELECT ${LIVE_CLIENT_COLUMNS}
+    FROM authorized_clients
+    WHERE client_id = ? AND ${LISTED}
+  `)
+  const relabel = database.prepare(`
+    UPDATE authorized_clients SET label = ?
+    WHERE client_id = ? AND ${LISTED}
+  `)
+  const liveOtherIds = database.prepare(`
+    SELECT client_id FROM authorized_clients
+    WHERE ${LISTED} AND kind != 'owner' AND client_id != ?
+  `)
+  const connectedJson = (connected: Iterable<string> = []) => JSON.stringify([...connected])
+
   const toClient = (row: Pick<ClientRow, 'client_id' | 'label' | 'kind' | 'scopes_json'>) => {
     const capabilities = parseGrant(row.scopes_json)
     if (!capabilities) return undefined
@@ -206,6 +260,23 @@ export function openAuthorizedClients(
       kind: row.kind,
       capabilities,
     }) satisfies AuthenticatedClient
+  }
+
+  const toRecord = (row: ClientRecordRow): ClientRecord | undefined => {
+    const client = toClient(row)
+    if (!client) return undefined
+    return Object.freeze({
+      ...client,
+      createdAt: row.created_at,
+      lastSeenAt: row.last_seen_at,
+      expiresAt: row.expires_at,
+    })
+  }
+
+  const getRecord = (clientId: string, connected?: Iterable<string>) => {
+    const row = getLive.get(clientId, clock(), connectedJson(connected)) as
+      ClientRecordRow | undefined
+    return row ? toRecord(row) : undefined
   }
 
   const issue = (request: ClientGrantRequest, now: number, recordAudit = true) => {
@@ -222,10 +293,11 @@ export function openAuthorizedClients(
   }
 
   const rotateOwner = (now: number) => {
-    const previous = activeOwner.get() as Pick<ClientRow, 'client_id'> | undefined
+    const previous = activeOwner.get() as Pick<ClientRow, 'client_id' | 'label'> | undefined
     revokeOwners.run(now)
+    // A name the owner gave this machine survives a new credential.
     const minted = issue(
-      { label: OWNER_LABEL, kind: 'owner', capabilities: OWNER_GRANT },
+      { label: previous?.label ?? OWNER_LABEL, kind: 'owner', capabilities: OWNER_GRANT },
       now,
       false,
     )
@@ -280,7 +352,9 @@ export function openAuthorizedClients(
   return {
     /** Mint a credential for a new client. The raw credential is returned once and never stored. */
     issue(request: ClientGrantRequest) {
-      return issue(request, clock())
+      const issued = issue(request, clock())
+      onIssued?.()
+      return issued
     },
 
     /**
@@ -305,15 +379,18 @@ export function openAuthorizedClients(
       return client
     },
 
-    /** Mark a client revoked. Returns false when it was unknown or already revoked. */
-    revoke(clientId: string): boolean {
+    /**
+     * Mark a client revoked. Returns false when it was unknown or already
+     * revoked. `revokedBy` names the client that asked, for the audit record.
+     */
+    revoke(clientId: string, revokedBy?: string): boolean {
       const revoked = revokeOne.run(clock(), clientId).changes > 0
       if (revoked) {
         audit?.record({
           type: 'token.revoked',
           clientId,
           command: 'client.revoke',
-          details: {},
+          details: revokedBy ? { revokedBy } : {},
         })
       }
       return revoked
@@ -364,6 +441,77 @@ export function openAuthorizedClients(
       const rotated = withOwnerWrite(() => rotateOwner(clock()))
       recordOwnerRotation(rotated)
       return { client: rotated.client, credential: rotated.credential }
+    },
+
+    /**
+     * Listed clients (live, or expired but in `connected`), owner first and
+     * then most recently seen. Rows that fail to parse are left out.
+     */
+    list(connected?: Iterable<string>): ClientRecord[] {
+      const rows = listLive.all(clock(), connectedJson(connected)) as ClientRecordRow[]
+      return rows.flatMap((row) => {
+        const record = toRecord(row)
+        return record ? [record] : []
+      })
+    },
+
+    /** How many clients are listed, including any past the list's limit. */
+    countListed(connected?: Iterable<string>): number {
+      const row = countListed.get(clock(), connectedJson(connected)) as { count: number }
+      return Number(row.count)
+    },
+
+    /** One listed client, or `undefined` when it is unknown, revoked, or expired and not connected. */
+    get(clientId: string, connected?: Iterable<string>): ClientRecord | undefined {
+      return getRecord(clientId, connected)
+    },
+
+    /** Name a live client. The label is validated by the caller's schema; this re-checks the bound. */
+    rename(
+      clientId: string,
+      label: string,
+      connected?: Iterable<string>,
+    ): ClientRecord | undefined {
+      const trimmed = label.trim()
+      if (trimmed.length === 0 || trimmed.length > 128) {
+        throw new Error('Client label must be 1 to 128 characters.')
+      }
+      const json = connectedJson(connected)
+      if (relabel.run(trimmed, clientId, clock(), json).changes === 0) return undefined
+      return getRecord(clientId, connected)
+    },
+
+    /**
+     * Revoke every listed client except `keepClientId` and the owner, in one
+     * transaction. Returns the revoked IDs; each gets its own audit record.
+     */
+    revokeAllExcept(keepClientId: string, connected?: Iterable<string>): string[] {
+      const now = clock()
+      database.exec('BEGIN IMMEDIATE')
+      let revoked: string[]
+      try {
+        const ids = (
+          liveOtherIds.all(now, connectedJson(connected), keepClientId) as { client_id: string }[]
+        ).map((row) => row.client_id)
+        revoked = ids.filter((id) => revokeOne.run(now, id).changes > 0)
+        database.exec('COMMIT')
+      } catch (error) {
+        try {
+          database.exec('ROLLBACK')
+        } catch {
+          /* The failed statement may already have aborted the transaction. */
+        }
+        throw error
+      }
+      for (const clientId of revoked) {
+        audit?.record({
+          type: 'token.revoked',
+          clientId,
+          command: 'client.revoke_others',
+          details: { revokedBy: keepClientId },
+        })
+      }
+      return revoked
     },
 
     close(): void {

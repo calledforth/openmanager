@@ -1,4 +1,6 @@
 import type {
+  AuthorizedClient,
+  AuthorizedClientList,
   BackgroundTask,
   Draft,
   DraftContent,
@@ -46,6 +48,8 @@ export type {
 } from '@agentpack/view/protocol'
 
 export type {
+  AuthorizedClient,
+  AuthorizedClientList,
   BackgroundTask,
   EnvironmentSettings,
   EnvironmentSettingsPatch,
@@ -469,6 +473,23 @@ export interface EnvironmentCommands {
   saveDraft(input: DraftSaveInput): Promise<Draft>
   /** Delete a draft, refused like a save when its base is from before the last deletion. */
   deleteDraft(input: DraftDeleteInput): Promise<DraftTombstone>
+  /**
+   * The clients authorized to reach the environment, and which one this is.
+   * Needs `admin`; without it this rejects with `capability_missing`.
+   */
+  listAuthorizedClients(): Promise<AuthorizedClientList>
+  /** Name a client. The environment trims the name and refuses a blank one. */
+  renameAuthorizedClient(clientId: string, label: string): Promise<AuthorizedClient>
+  /** Revoke a client: its credential stops working and its connections close. */
+  revokeAuthorizedClient(clientId: string): Promise<void>
+  /** Revoke every client but this one and the owner. Resolves with the revoked IDs. */
+  revokeOtherAuthorizedClients(): Promise<string[]>
+  /**
+   * Replace the owner credential (only the owner may ask). Resolves with the
+   * new credential, which must be saved before reconnecting: this connection
+   * closes once it has been sent, and the old credential no longer works.
+   */
+  rotateOwnerCredential(): Promise<{ client: AuthorizedClient; credential: string }>
 }
 
 export interface StopBackgroundTasksInput {
@@ -513,6 +534,11 @@ export interface EnvironmentClient {
    * and are saved after a pause. Absent where the client keeps no drafts.
    */
   readonly drafts?: DraftSync
+  /**
+   * Hear the device list whenever the environment says it changed. Only
+   * clients holding `admin` are told. Absent where the client cannot listen.
+   */
+  onAuthorizedClientsChanged?(listener: (list: AuthorizedClientList) => void): Unsubscribe
   /** Local selection; does not hydrate. Use `commands.openSession` for that. */
   setActiveSession(sessionId: string | null): void
   setActiveThread(threadId: string | null): void

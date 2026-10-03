@@ -114,6 +114,11 @@ const UNSUPPORTED: ReadonlySet<EnvironmentCommandName> = new Set([
   'listDrafts',
   'saveDraft',
   'deleteDraft',
+  'listAuthorizedClients',
+  'renameAuthorizedClient',
+  'revokeAuthorizedClient',
+  'revokeOtherAuthorizedClients',
+  'rotateOwnerCredential',
 ])
 const ALL_CAPABILITIES = (Object.keys(WIRE_COMMANDS) as EnvironmentCommandName[])
   .filter((command) => !UNSUPPORTED.has(command))
@@ -1067,6 +1072,11 @@ export function createConvexEnvironmentClient(
     listDrafts: () => unsupported('listDrafts'),
     saveDraft: () => unsupported('saveDraft'),
     deleteDraft: () => unsupported('deleteDraft'),
+    listAuthorizedClients: () => unsupported('listAuthorizedClients'),
+    renameAuthorizedClient: () => unsupported('renameAuthorizedClient'),
+    revokeAuthorizedClient: () => unsupported('revokeAuthorizedClient'),
+    revokeOtherAuthorizedClients: () => unsupported('revokeOtherAuthorizedClients'),
+    rotateOwnerCredential: () => unsupported('rotateOwnerCredential'),
   }
 
   // -------------------------------------------------------------------------

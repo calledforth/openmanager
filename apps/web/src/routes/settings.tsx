@@ -14,6 +14,7 @@ import {
 import { PlatformCapabilitiesContext } from '@openmanager/app-core/providers/platform-provider'
 import { SessionStateContext } from '@openmanager/app-core/providers/session-provider'
 import { AddProjectStartSetting } from '../components/add-project-start-setting'
+import { DevicesSettingControl } from '../components/devices-settings'
 import {
   NOTIFICATIONS_CHOICES,
   NotificationsSettingControl,
@@ -35,6 +36,7 @@ import { cn } from '../lib/utils'
 
 const SETTINGS_TABS = [
   { id: 'environments', label: 'Environments' },
+  { id: 'devices', label: 'Devices' },
   { id: 'appearance', label: 'Appearance' },
   { id: 'notifications', label: 'Notifications' },
   { id: 'providers', label: 'Providers' },
@@ -338,6 +340,27 @@ function ConnectedEnvironmentSettings() {
   )
 }
 
+/** Who can reach the connected environment, kept by the environment itself. */
+function DevicesPanel() {
+  const { environment, replaceCredential } = useConnection()
+  const environmentId = environment.status === 'selected' ? environment.environmentId : undefined
+  return (
+    <DevicesSettingControl
+      section={(body) => (
+        <SettingsSection
+          title="Devices"
+          description="Every device that can reach this environment. Revoking one disconnects it at once; to use it again, pair it with a new link."
+        >
+          {body}
+        </SettingsSection>
+      )}
+      onCredentialRotated={
+        environmentId ? (credential) => replaceCredential(environmentId, credential) : undefined
+      }
+    />
+  )
+}
+
 function AppearancePanel() {
   const { theme, setTheme, font, setFont } = useTheme()
   return (
@@ -382,6 +405,7 @@ function NotificationsPanel() {
 
 const PANELS: Record<SettingsTab, () => ReactNode> = {
   environments: EnvironmentsPanel,
+  devices: DevicesPanel,
   appearance: AppearancePanel,
   notifications: NotificationsPanel,
   providers: () => (

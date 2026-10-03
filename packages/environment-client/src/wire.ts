@@ -1,4 +1,5 @@
 import {
+  ClientResponseSchemas,
   ComposerResponseSchemas,
   DraftResponseSchemas,
   FilesystemResponseSchemas,
@@ -49,6 +50,11 @@ export const WIRE_COMMANDS = {
   listDrafts: 'draft.list',
   saveDraft: 'draft.save',
   deleteDraft: 'draft.delete',
+  listAuthorizedClients: 'client.list',
+  renameAuthorizedClient: 'client.rename',
+  revokeAuthorizedClient: 'client.revoke',
+  revokeOtherAuthorizedClients: 'client.revoke_others',
+  rotateOwnerCredential: 'client.owner.rotate',
 } as const satisfies Record<EnvironmentCommandName, string>
 
 /**
@@ -105,6 +111,11 @@ export const WIRE_RESPONSES = {
   'draft.list': payload(DraftResponseSchemas['draft.list'].shape.payload),
   'draft.save': payload(DraftResponseSchemas['draft.save'].shape.payload),
   'draft.delete': payload(DraftResponseSchemas['draft.delete'].shape.payload),
+  'client.list': payload(ClientResponseSchemas['client.list'].shape.payload),
+  'client.rename': payload(ClientResponseSchemas['client.rename'].shape.payload),
+  'client.revoke': payload(ClientResponseSchemas['client.revoke'].shape.payload),
+  'client.revoke_others': payload(ClientResponseSchemas['client.revoke_others'].shape.payload),
+  'client.owner.rotate': payload(ClientResponseSchemas['client.owner.rotate'].shape.payload),
   [UPLOAD_TICKET_COMMAND]: payload(UploadResponseSchemas[UPLOAD_TICKET_COMMAND].shape.payload),
 } as const satisfies Record<WireCommandName, z.ZodType>
 

@@ -147,11 +147,35 @@ position grants nothing (threat model D2). Credentials and their grants follow
   `paired` or `cloud`), capability grant, last-seen time and idle expiry.
 - A credential stops working 30 days after its last accepted connection; every
   accepted upgrade moves that window forward. There is no absolute expiry.
-- Revoking a row (`server.revokeClient`) closes that client's live sockets with
-  close code `4401` and reason `revoked`, and its next upgrade is rejected. The
-  owner row cannot be revoked this way; `server.remintOwner()` (or
-  `--remint-owner` at startup) is the explicit replacement, and it disconnects
-  the previous owner's live sockets.
+- Revoking a row (`client.revoke`, or `server.revokeClient` in process)
+  closes that client's live sockets with close code `4401` and reason
+  `revoked`, drops its upload tickets and cuts its transfers, and its next
+  upgrade or HTTP request is rejected. A client treats `4401` as terminal and
+  does not redial. The owner row cannot be revoked this way;
+  `client.owner.rotate`, `server.remintOwner()` or `--remint-owner` at startup
+  replaces it, and disconnects the previous owner's live sockets.
+
+### Device list
+
+The owner manages who can reach the environment with five `admin` commands.
+Revoked and expired rows are kept for audit and never listed.
+
+| Command                | Does                                                                                                                                                  |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `client.list`          | Live clients (owner first, then most recently seen), each with label, kind, grant, created, last-seen and expiry times and whether a socket is open, plus `currentClientId` and `omitted`, the count left out past 1,024 (least recently seen first). |
+| `client.rename`        | Names a live client. The label is trimmed and must be 1 to 128 characters with no control characters.                                                |
+| `client.revoke`        | Revokes one client. Refused (`validation`) for the caller itself and for the owner.                                                                   |
+| `client.revoke_others` | Revokes every live client except the caller and the owner, in one transaction; answers the revoked IDs.                                              |
+| `client.owner.rotate`  | Owner only (`capability_missing` for any other caller). Mints a new owner credential, publishes it to `owner-credential`, answers it once on the socket, then closes every socket that used the old one. |
+
+A connection that has called `client.list` receives `client.list.changed`
+(the whole list again, with its own `currentClientId`) whenever a client is
+named, revoked, minted or rotated, or connects or disconnects. It is a current
+reading, not history: it has no cursor and is not replayed, so a client lists
+again after reconnecting. Sockets that never listed are not told. Last-seen
+moves on every accepted upgrade and HTTP request. Revokes and rotations are
+audited (`token.revoked`, `owner.reminted`); a rename is not, since a label
+grants nothing.
 
 **Local first run needs no pairing UI.** On startup the process makes sure a
 live `owner` row exists and that its credential is published in
@@ -209,8 +233,8 @@ probe, `composer.preferences.get` and `draft.list`;
 `upload.ticket.create`, `draft.save` and `draft.delete`; `agent`
 covers `turn.send`, `turn.interrupt`, `interaction.respond` and the composer
 model, mode and config-option setters; `admin` covers `pairing.create`,
-`pairing.list` and `pairing.revoke`, while `pairing.redeem` needs only `read`.
-The owner grant holds all five.
+`pairing.list`, `pairing.revoke` and the `client.*` device list commands, while
+`pairing.redeem` needs only `read`. The owner grant holds all five.
 
 ### Pairing
 
@@ -406,7 +430,7 @@ Fixed windows, defined in [`src/rate-limit.ts`](src/rate-limit.ts) as
 | `pairing`      | remote address, or client | 5 per minute | Refused `POST /pair` attempts (by address) and refused `pairing.redeem` (by client). |
 | `local_owner`  | remote address | 10 per minute  | `GET /local-owner` issuance attempts.                                      |
 | `prompt`       | client         | 30 per minute  | `turn.send`.                                                           |
-| `mutation`     | client         | 120 per minute | Every other `operate`, `agent`, `terminal` or `admin` command.         |
+| `mutation`     | client         | 120 per minute | Every other `operate`, `agent`, `terminal` or `admin` command, except `client.list`, which changes nothing. |
 
 An address over its `auth_failure` budget receives `429` with a `Retry-After`
 header and the `unavailable` error code, and no credential it presents is
@@ -498,7 +522,8 @@ Types written today:
 | `path.rejected`       | A relative path that escapes a registered workspace.                 |
 | `capability.denied`   | Authenticated command whose grant lacks the required capability.     |
 | `token.issued`        | A credential is minted (owner, paired or cloud).                     |
-| `token.revoked`       | A credential is revoked, including owner rotation.                   |
+| `token.revoked`       | A credential is revoked, including owner rotation. `details.revokedBy` names the client that asked. |
+| `owner.reminted`      | The owner credential was replaced; `details.requestedBy` names the owner that asked over the socket. |
 | `pairing.issued`      | A pairing link is created; `details` name the link and its grant.    |
 | `pairing.exchanged`   | A pairing link is used; `existingClient` says whether a paired device redeemed it for itself. |
 | `pairing.rejected`    | A pairing exchange is refused; `details.reason` says why.            |

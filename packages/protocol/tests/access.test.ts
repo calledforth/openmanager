@@ -4,6 +4,7 @@ import {
   ACCESS_PRESETS,
   AccessDeniedErrorSchema,
   AccessGrantSchema,
+  ClientCommandSchemas,
   COMMAND_ACCESS,
   ComposerCommandSchemas,
   DraftCommandSchemas,
@@ -33,6 +34,7 @@ describe('command access mapping', () => {
       ...Object.keys(FilesystemCommandSchemas),
       ...Object.keys(DraftCommandSchemas),
       ...Object.keys(PairingCommandSchemas),
+      ...Object.keys(ClientCommandSchemas),
     ].sort()
     expect(Object.keys(COMMAND_ACCESS).sort()).toEqual(commandNames)
   })
@@ -73,6 +75,11 @@ describe('command access mapping', () => {
       'composer.model.set': 'agent',
       'composer.mode.set': 'agent',
       'composer.config_option.set': 'agent',
+      'client.list': 'admin',
+      'client.rename': 'admin',
+      'client.revoke': 'admin',
+      'client.revoke_others': 'admin',
+      'client.owner.rotate': 'admin',
     })
   })
 

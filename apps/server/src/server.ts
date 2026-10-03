@@ -15,6 +15,11 @@ import {
   DRAFT_DELETE_CAPABILITY,
   DRAFT_LIST_CAPABILITY,
   DRAFT_SAVE_CAPABILITY,
+  CLIENT_LIST_CAPABILITY,
+  CLIENT_OWNER_ROTATE_CAPABILITY,
+  CLIENT_RENAME_CAPABILITY,
+  CLIENT_REVOKE_CAPABILITY,
+  CLIENT_REVOKE_OTHERS_CAPABILITY,
   FILESYSTEM_BROWSE_CAPABILITY,
   PROTOCOL_VERSION,
   SESSION_CREATE_EXPLICIT_CAPABILITY,
@@ -54,6 +59,7 @@ import {
   GRANT_CHANGED_CLOSE_CODE,
   GRANT_CHANGED_CLOSE_REASON,
 } from './pairing.ts'
+import { createClientService, type ClientSockets } from './client-service.ts'
 import { loadEnvironmentIdentity } from './identity.ts'
 import {
   evaluateLocalOwnerAccess,
@@ -119,6 +125,11 @@ export const SERVER_CAPABILITIES = [
   PAIRING_REVOKE_CAPABILITY,
   PAIRING_REDEEM_CAPABILITY,
   PAIRING_EXCHANGE_CAPABILITY,
+  CLIENT_LIST_CAPABILITY,
+  CLIENT_RENAME_CAPABILITY,
+  CLIENT_REVOKE_CAPABILITY,
+  CLIENT_REVOKE_OTHERS_CAPABILITY,
+  CLIENT_OWNER_ROTATE_CAPABILITY,
 ]
 
 /** A loopback-only listener exposing public liveness and connection discovery. */
@@ -133,7 +144,8 @@ export async function startServer(config: ServerConfig) {
   const composerStore = openComposerStore(config.dataDir)
   const environmentSettings = openEnvironmentSettings(config.dataDir)
   const filesystem = createFilesystemService({ settings: environmentSettings })
-  const clients = openAuthorizedClients(config.dataDir, Date.now, audit)
+  let announceClients: () => void = () => undefined
+  const clients = openAuthorizedClients(config.dataDir, Date.now, audit, () => announceClients())
   // Local first run needs no pairing UI: the process mints the owner credential.
   // Reminting is explicit (`--remint-owner` or `remintOwner()`), not a restart side effect.
   let owner = clients.ensureOwner()
@@ -392,6 +404,7 @@ export async function startServer(config: ServerConfig) {
     rateLimiter,
     environment: () => ({ environmentId: identity.environmentId, label: identity.label }),
     onGrantChanged: (clientId) => closeClientSockets(clientId),
+    onClientsChanged: () => announceClients(),
     onError: (error) => log('error', 'pairing exchange failed', { reason: String(error) }),
   })
   threadService.setEnvironmentId(identity.environmentId)
@@ -576,6 +589,36 @@ export async function startServer(config: ServerConfig) {
     response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
     response.end('Not found\n')
   })
+  let clientSockets: ClientSockets | undefined
+  const clientService = createClientService({
+    clients,
+    sockets: () => {
+      if (!clientSockets) throw new Error('The socket server is not ready.')
+      return clientSockets
+    },
+    uploads,
+    rotateOwner: (requestedBy) => {
+      const previousId = owner.clientId
+      const minted = clients.remintOwner()
+      owner = minted.client
+      // The rotation has committed: nothing after this may stop the caller
+      // from cutting the old credential's sockets.
+      try {
+        audit.record({
+          type: 'owner.reminted',
+          clientId: minted.client.clientId,
+          details: requestedBy
+            ? { previousClientId: previousId, requestedBy }
+            : { previousClientId: previousId },
+        })
+      } catch (error) {
+        log('error', 'owner rotation was not audited', { reason: String(error) })
+      }
+      return { client: minted.client, credential: minted.credential, previousId }
+    },
+    log,
+  })
+  announceClients = () => clientService.announce()
   const sockets = attachWebSocket(server, {
     authenticate: (credential) => clients.authenticate(credential),
     guard,
@@ -591,8 +634,11 @@ export async function startServer(config: ServerConfig) {
       filesystem.dispatch(command, context) ??
       drafts.dispatch(command, context) ??
       pairing.dispatch(command, context) ??
+      clientService.dispatch(command, context) ??
       composerService.dispatch(command),
+    onConnectionsChanged: () => clientService.announce(),
   })
+  clientSockets = sockets
   publishDurableEvent = (record) => sockets.publish(record)
   publishThreadEvent = (event) => sockets.publishEvent(event)
   closeClientSockets = (clientId) =>
@@ -607,6 +653,7 @@ export async function startServer(config: ServerConfig) {
       })
     })
   } catch (error) {
+    clientService.stop()
     await sockets.close()
     stopHealthEvents()
     providerService.stop()
@@ -651,35 +698,19 @@ export async function startServer(config: ServerConfig) {
     /** Revoke a client's credential and cut its live sockets in one step. */
     revokeClient(clientId: string): boolean {
       if (clientId === owner.clientId) return false
-      const revoked = clients.revoke(clientId)
-      if (revoked) {
-        sockets.disconnectClient(clientId)
-        uploads.revokeClient(clientId)
-      }
-      return revoked
+      return clientService.revoke(clientId)
     },
     /**
      * Replace the owner credential. The previous owner row is revoked and its
      * live sockets close; the new credential is published in the data directory.
      */
     remintOwner() {
-      const previousId = owner.clientId
-      const minted = clients.remintOwner()
-      owner = minted.client
-      sockets.disconnectClient(previousId)
-      uploads.revokeClient(previousId)
-      // A socket that authenticated just before remint may not be in the map
-      // yet; a second pass after the upgrade handler yields closes it too.
-      setImmediate(() => sockets.disconnectClient(previousId))
-      audit.record({
-        type: 'owner.reminted',
-        clientId: minted.client.clientId,
-        details: { previousClientId: previousId },
-      })
-      return minted
+      const { client, credential } = clientService.rotateOwner()
+      return { client, credential }
     },
     close: () => {
       if (!closePromise) {
+        clientService.stop()
         const socketClose = sockets.close()
         // Before the listener: an in-flight PUT is cut and its partial file removed.
         uploads.close()

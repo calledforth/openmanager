@@ -884,6 +884,96 @@ describe('websocket environment client', () => {
     expect(client.getState()).toBe(before)
   })
 
+  it('manages the device list and hears it change', async () => {
+    const clientCommands = [
+      'client.list',
+      'client.rename',
+      'client.revoke',
+      'client.revoke_others',
+      'client.owner.rotate',
+    ]
+    const { client, socket } = await connected([...FULL_CAPABILITIES, ...clientCommands])
+    const owner = {
+      clientId: 'client-owner',
+      label: 'Desk',
+      kind: 'owner',
+      capabilities: ['read', 'operate', 'agent', 'terminal', 'admin'],
+      createdAt: '2026-10-01T10:00:00.000Z',
+      lastSeenAt: '2026-10-02T10:00:00.000Z',
+      expiresAt: '2026-11-01T10:00:00.000Z',
+      connected: true,
+    }
+    const phone = {
+      ...owner,
+      clientId: 'client-phone',
+      label: 'Phone',
+      kind: 'paired',
+      capabilities: ['read'],
+      connected: false,
+    }
+    const heard: unknown[] = []
+    const stop = client.onAuthorizedClientsChanged!((list) => heard.push(list))
+
+    const listed = client.commands.listAuthorizedClients()
+    socket.respond('client.list', {
+      clients: [owner, phone],
+      currentClientId: 'client-owner',
+      omitted: 0,
+    })
+    await expect(listed).resolves.toEqual({
+      clients: [owner, phone],
+      currentClientId: 'client-owner',
+      omitted: 0,
+    })
+
+    const renamed = client.commands.renameAuthorizedClient('client-phone', 'Pixel')
+    expect(socket.last('client.rename').payload).toEqual({
+      clientId: 'client-phone',
+      label: 'Pixel',
+    })
+    socket.respond('client.rename', { client: { ...phone, label: 'Pixel' } })
+    await expect(renamed).resolves.toMatchObject({ label: 'Pixel' })
+
+    const revoked = client.commands.revokeAuthorizedClient('client-phone')
+    socket.respond('client.revoke', { clientId: 'client-phone' })
+    await expect(revoked).resolves.toBeUndefined()
+
+    const others = client.commands.revokeOtherAuthorizedClients()
+    socket.respond('client.revoke_others', { revokedClientIds: ['a', 'b'] })
+    await expect(others).resolves.toEqual(['a', 'b'])
+
+    const rotated = client.commands.rotateOwnerCredential()
+    const credential = `omc1.${'z'.repeat(43)}`
+    socket.respond('client.owner.rotate', { client: owner, credential })
+    await expect(rotated).resolves.toEqual({ client: owner, credential })
+
+    socket.receive({
+      type: 'event',
+      name: 'client.list.changed',
+      payload: { clients: [owner], currentClientId: 'client-owner', omitted: 0 },
+    })
+    expect(heard).toEqual([{ clients: [owner], currentClientId: 'client-owner', omitted: 0 }])
+    stop()
+    socket.receive({
+      type: 'event',
+      name: 'client.list.changed',
+      payload: { clients: [], currentClientId: 'client-owner', omitted: 0 },
+    })
+    expect(heard).toHaveLength(1)
+  })
+
+  it('stops for good when its credential is revoked instead of redialing', async () => {
+    const { client, socket, timers } = await connected()
+    socket.drop(4401, 'revoked')
+    expect(client.getState().connection).toMatchObject({
+      phase: 'closed',
+      failure: { code: 'auth' },
+      retriesExhausted: true,
+    })
+    timers.advance(60_000)
+    expect(FakeSocket.instances).toHaveLength(1)
+  })
+
   it('probes a provider only when the environment advertises it', async () => {
     const older = await connected(FULL_CAPABILITIES, { providers: [BARE_PROVIDER] })
     expect(older.client.supports('probeProvider')).toBe(false)

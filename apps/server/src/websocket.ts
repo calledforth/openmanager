@@ -16,6 +16,9 @@ import {
   ReplayResponseSchema,
   RequestIdSchema,
   accessDenied,
+  CLIENT_LIST_CAPABILITY,
+  CLIENT_REVOKED_CLOSE_CODE,
+  CLIENT_REVOKED_CLOSE_REASON,
   requiredAccess,
   sameScope,
   SubscriptionEventSchema,
@@ -67,8 +70,14 @@ const rateLimited = (requestId: string, policy: RateLimitPolicy, retryAfterMs: n
   },
 })
 
-export const REVOKED_CLOSE_CODE = 4401 as const
-export const REVOKED_CLOSE_REASON = 'revoked' as const
+/**
+ * Reads that need more than `read` (the device list needs `admin`) but change
+ * nothing, so they are not counted against the mutation budget.
+ */
+const UNBUDGETED_READS: ReadonlySet<string> = new Set([CLIENT_LIST_CAPABILITY])
+
+export const REVOKED_CLOSE_CODE = CLIENT_REVOKED_CLOSE_CODE
+export const REVOKED_CLOSE_REASON = CLIENT_REVOKED_CLOSE_REASON
 
 /** Transport owns only live connection state. Durable event records come from the host. */
 export function attachWebSocket(
@@ -91,6 +100,8 @@ export function attachWebSocket(
       command: CommandEnvelope,
       context: CommandContext,
     ) => unknown | Promise<unknown> | undefined
+    /** Called after a socket completes its handshake or closes, so the device list can say who is connected. */
+    onConnectionsChanged?: () => void
   },
 ) {
   const wss = new WebSocketServer({
@@ -102,6 +113,8 @@ export function attachWebSocket(
   type Connection = {
     client: AuthenticatedClient
     subscriptions: Map<string, SubscriptionScope>
+    /** Live readings this connection asked to follow, such as the device list. */
+    follows: Set<string>
     ready: boolean
     /** The client's grant changed: answer nothing more, close after the replies already sent. */
     retired: boolean
@@ -184,13 +197,15 @@ export function attachWebSocket(
       let timer: ReturnType<typeof setTimeout>
       let termination: ReturnType<typeof setTimeout> | undefined
       const subscriptions = new Map<string, SubscriptionScope>()
+      const follows = new Set<string>()
       const results = new Map<string, { command: CommandEnvelope; result: Promise<unknown> }>()
       const cleanup = () => {
         active = false
         clearTimeout(timer)
         subscriptions.clear()
+        follows.clear()
         results.clear()
-        connections.delete(ws)
+        if (connections.delete(ws)) options.onConnectionsChanged?.()
       }
       const close = (code: number, reason: string) => {
         if (!active) return
@@ -232,6 +247,7 @@ export function attachWebSocket(
       const connection: Connection = {
         client,
         subscriptions,
+        follows,
         ready: false,
         retired: retiring.has(client.clientId),
         send,
@@ -311,6 +327,12 @@ export function attachWebSocket(
           close(1008, 'command_limit')
           return
         }
+        // Work a command asks to run once its answer is on the wire, such as
+        // closing the caller's own socket after handing it a new credential.
+        const afterReply: Array<() => void> = []
+        const runAfterReply = () => {
+          for (const task of afterReply.splice(0)) task()
+        }
         const reply = (result: unknown | Promise<unknown>) => {
           const asynchronous =
             typeof result === 'object' &&
@@ -322,9 +344,10 @@ export function attachWebSocket(
           )
           results.set(message.requestId, { command: message, result: settled })
           if (asynchronous) {
-            void settled.then(send)
+            void settled.then(send).then(runAfterReply)
           } else {
             send(result)
+            runAfterReply()
           }
         }
         if (!ready) {
@@ -347,6 +370,7 @@ export function attachWebSocket(
           }
           ready = true
           connection.ready = true
+          options.onConnectionsChanged?.()
           clearTimeout(timer)
           heartbeat = createServerHeartbeatState(now())
           tick()
@@ -382,7 +406,7 @@ export function attachWebSocket(
         const policy: RateLimitPolicy | undefined =
           message.name === 'turn.send' || createsFirstTurn
             ? 'prompt'
-            : required !== null && required !== 'read'
+            : required !== null && required !== 'read' && !UNBUDGETED_READS.has(message.name)
               ? 'mutation'
               : undefined
         if (policy) {
@@ -507,12 +531,17 @@ export function attachWebSocket(
           dispatched = options.dispatchCommand?.(message, {
             clientId: client.clientId,
             command: message.name,
+            afterReply: (task) => afterReply.push(task),
+            follow: (topic) => {
+              if (active) follows.add(topic)
+            },
           })
         } catch {
-          // A service that throws (a busy or failing database, say) answers
-          // this request and leaves the socket and the process standing.
-          reply(errorResult(message.requestId, 'internal', 'Command failed.'))
-          return
+          // A service that throws before answering fails its command, not the
+          // process every other client and agent depends on. Work it queued
+          // for after the answer still runs: it may be closing sockets whose
+          // credential the service already revoked.
+          dispatched = errorResult(message.requestId, 'internal', 'Command failed.')
         }
         reply(dispatched ?? errorResult(message.requestId, 'validation', 'Unsupported command.'))
       })
@@ -551,6 +580,32 @@ export function attachWebSocket(
       for (const connection of connections.values()) {
         if (connection.ready) connection.send(event)
       }
+    },
+    /**
+     * Send an event to the connections following `topic`, built per
+     * connection so it can say which client that connection is.
+     */
+    publishToFollowers(topic: string, build: (client: AuthenticatedClient) => EventEnvelope) {
+      for (const connection of connections.values()) {
+        if (connection.ready && !connection.retired && connection.follows.has(topic)) {
+          connection.send(build(connection.client))
+        }
+      }
+    },
+    /** Whether any open connection follows `topic`. */
+    hasFollowers(topic: string): boolean {
+      for (const connection of connections.values()) {
+        if (connection.ready && !connection.retired && connection.follows.has(topic)) return true
+      }
+      return false
+    },
+    /** The clients with at least one handshaken socket open. */
+    connectedClientIds(): ReadonlySet<string> {
+      const ids = new Set<string>()
+      for (const connection of connections.values()) {
+        if (connection.ready) ids.add(connection.client.clientId)
+      }
+      return ids
     },
     /** Cut every socket authenticated by one client, e.g. after its credential is revoked. */
     disconnectClient(

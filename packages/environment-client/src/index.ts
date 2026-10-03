@@ -1,5 +1,7 @@
 export type {
   AddWorkspaceInput,
+  AuthorizedClient,
+  AuthorizedClientList,
   ArtifactTarget,
   BackgroundTask,
   ComposerPreferenceTarget,

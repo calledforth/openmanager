@@ -97,6 +97,15 @@ current by `draft.saved` and `draft.deleted`; read a draft with
 `selectDraftContent`, which prefers the waiting edit. After a snapshot the
 drafts are listed again. See `docs/decisions/composer-drafts.md`.
 
+The device list (`listAuthorizedClients`, `renameAuthorizedClient`,
+`revokeAuthorizedClient`, `revokeOtherAuthorizedClients`,
+`rotateOwnerCredential` over `client.*`) needs `admin`. It is not part of the
+state: `onAuthorizedClientsChanged` hands each `client.list.changed` to its
+listeners, which the environment sends only to a connection that has listed
+the clients. `rotateOwnerCredential` resolves with the new owner credential;
+the caller saves it, and the old socket then closes with `4401`, which is
+terminal.
+
 ## Browser safety
 
 The package depends only on `@openmanager/protocol` and `zod`. ESLint applies

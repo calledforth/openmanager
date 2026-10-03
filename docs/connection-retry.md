@@ -52,6 +52,11 @@ Retries stop, and `connection.retriesExhausted` becomes `true`, when:
 - the handshake fails terminally — `auth`, `protocol_incompatible` or
   `capability_missing`. Retrying an environment that refused the credential or
   cannot speak the protocol is pointless and, for `auth`, rude.
+- the environment closes the socket with `4401` (`revoked`): the client's
+  credential was revoked, or the owner credential it used was rotated. It is
+  reported as an `auth` failure. A browser cannot see why a later upgrade is
+  refused, so without this every redial would also count against the
+  address's failed-credential limit.
 - `maxAttempts` is set and exhausted. It is unset by default, so the shipped
   client retries a reachable-but-down environment forever.
 

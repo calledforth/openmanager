@@ -123,7 +123,7 @@ export function WebEnvironmentClientProvider({
         if (connection === seen) return
         seen = connection
         const report = routeHealthFromConnection(connection)
-        if (report) reportRouteHealth(environmentId, endpoint, report)
+        if (report) reportRouteHealth(environmentId, endpoint, report, credential ?? '')
       })
       next.connect()
       publishAuthorizedClient()
