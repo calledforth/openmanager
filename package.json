@@ -3,7 +3,7 @@
   "version": "0.2.1-alpha.1",
   "private": true,
   "description": "Desktop GUI for managing OpenCode agent sessions",
-  "packageManager": "pnpm@10.30.3+sha512.c961d1e0a2d8e354ecaa5166b822516668b7f44cb5bd95122d590dd81922f606f5473b6d23ec4a5be05e7fcd18e8488d47d978bbe981872f1145d06e9a740017",
+  "packageManager": "pnpm@12.5.1",
   "scripts": {
     "dev": "pnpm --filter @openmanager/desktop dev",
     "dev:web": "node scripts/dev-web.mjs",
@@ -30,13 +30,6 @@
     "release:prepare": "node scripts/prepare-release.mjs",
     "ci:environment-client": "pnpm --filter @openmanager/environment-client typecheck && pnpm --filter @openmanager/environment-client lint && pnpm --filter @openmanager/environment-client test",
     "ci:app-core": "pnpm --filter @openmanager/app-core typecheck && pnpm --filter @openmanager/app-core lint && pnpm --filter @openmanager/app-core test && pnpm --filter @openmanager/app-core build && pnpm --filter @openmanager/app-core storybook:build"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "electron",
-      "electron-winstaller",
-      "esbuild"
-    ]
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
