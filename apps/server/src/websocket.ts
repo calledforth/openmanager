@@ -563,6 +563,8 @@ export function attachWebSocket(
         throw new Error('Cannot publish an event from another environment.')
       }
       for (const connection of connections.values()) {
+        // A retired socket was authorized under a grant that no longer holds.
+        if (connection.retired) continue
         for (const [subscriptionId, scope] of connection.subscriptions) {
           if (sameScope(scope, record.cursor.scope)) {
             connection.send(
@@ -578,7 +580,7 @@ export function attachWebSocket(
     },
     publishEvent(event: EventEnvelope) {
       for (const connection of connections.values()) {
-        if (connection.ready) connection.send(event)
+        if (connection.ready && !connection.retired) connection.send(event)
       }
     },
     /**

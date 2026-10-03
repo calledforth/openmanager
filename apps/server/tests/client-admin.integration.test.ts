@@ -9,6 +9,7 @@ import {
   ClientResponseSchemas,
   PAIRING_EXCHANGE_PATH,
   PairingResponseSchemas,
+  UploadResponseSchemas,
   type AccessCapability,
   type ServerMessage,
 } from '@openmanager/protocol/node'
@@ -542,6 +543,52 @@ describe('clients the list must not lose', () => {
           client.clientId === phone.client.clientId && client.capabilities.includes('operate'),
       ),
     )
+  })
+
+  it('drops upload tickets when a link changes a device grant', async () => {
+    const host = await startProtocolHost()
+    const owner = await connectAs(host, host.token)
+    const phone = pair(host, 'Phone', ['read', 'operate'])
+    const phoneSocket = await connectAs(host, phone.credential)
+    const ticket = await call(phoneSocket, 'upload.ticket.create', {
+      workspaceId: host.workspaceId,
+      name: 'shot.png',
+      mimeType: 'image/png',
+      sizeBytes: 4,
+    })
+    const { uploadPath } = UploadResponseSchemas['upload.ticket.create'].parse(ticket).payload
+
+    const narrower = PairingResponseSchemas['pairing.create'].parse(
+      await call(owner, 'pairing.create', { capabilities: ['read'] }),
+    ).payload.token
+    expect(await call(phoneSocket, 'pairing.redeem', { token: narrower })).toMatchObject({
+      type: 'response',
+      payload: { grantChanged: true },
+    })
+    // The ticket was issued under `operate`, which the device no longer holds.
+    const put = await fetch(`${host.server.url}${uploadPath}`, {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${phone.credential}`, 'content-type': 'image/png' },
+      body: new Uint8Array([1, 2, 3, 4]),
+    })
+    expect(put.status).toBe(404)
+  })
+
+  it('sends nothing to a retired socket while it waits to close', async () => {
+    const host = await startProtocolHost()
+    const phone = pair(host, 'Phone', ['read'])
+    const phoneSocket = await connectAs(host, phone.credential)
+    const seen: string[] = []
+    phoneSocket.ws.on('message', (data) => seen.push(String(data)))
+    const closed = once(phoneSocket.ws, 'close')
+    host.server.sockets.retireClient(phone.client.clientId, 4403, 'grant_changed')
+    host.server.sockets.publishEvent({
+      type: 'event',
+      name: 'provider_health_changed',
+      payload: { providerId: 'opencode' },
+    })
+    expect((await closed)[0]).toBe(4403)
+    expect(seen.filter((message) => message.includes('provider_health_changed'))).toEqual([])
   })
 
   it('announces a newly minted client to connections that listed', async () => {

@@ -641,8 +641,12 @@ export async function startServer(config: ServerConfig) {
   clientSockets = sockets
   publishDurableEvent = (record) => sockets.publish(record)
   publishThreadEvent = (event) => sockets.publishEvent(event)
-  closeClientSockets = (clientId) =>
+  closeClientSockets = (clientId) => {
     sockets.retireClient(clientId, GRANT_CHANGED_CLOSE_CODE, GRANT_CHANGED_CLOSE_REASON)
+    // A ticket or transfer was authorized under the old grant; the device asks
+    // again under the new one.
+    uploads.revokeClient(clientId)
+  }
   const stopHealthEvents = providerService.onHealthChanged((event) => sockets.publishEvent(event))
   try {
     await new Promise<void>((resolve, reject) => {
