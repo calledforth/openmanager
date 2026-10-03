@@ -103,10 +103,15 @@ export function attachWebSocket(
     client: AuthenticatedClient
     subscriptions: Map<string, SubscriptionScope>
     ready: boolean
+    /** The client's grant changed: answer nothing more, close after the replies already sent. */
+    retired: boolean
     send: (message: unknown) => void
     close: (code: number, reason: string) => void
   }
   const connections = new Map<WebSocket, Connection>()
+  // Clients being retired: a socket that authenticated under the old grant
+  // and registers before the close pass is retired as well.
+  const retiring = new Set<string>()
   let closing = false
   let closePromise: Promise<void> | undefined
 
@@ -224,7 +229,14 @@ export function attachWebSocket(
         }
       }
       timer = setTimeout(() => close(1008, 'handshake_timeout'), SOCKET_LIMITS.handshakeTimeoutMs)
-      const connection: Connection = { client, subscriptions, ready: false, send, close }
+      const connection: Connection = {
+        client,
+        subscriptions,
+        ready: false,
+        retired: retiring.has(client.clientId),
+        send,
+        close,
+      }
       connections.set(ws, connection)
       ws.on('close', () => {
         cleanup()
@@ -264,6 +276,14 @@ export function attachWebSocket(
           return
         }
         const message = parsed.data
+        if (connection.retired) {
+          // Authorized under a grant that no longer holds; the socket closes
+          // once the current replies are out and reconnects under the new one.
+          if (message.type === 'command') {
+            send(errorResult(message.requestId, 'auth', 'Access changed; reconnect.'))
+          }
+          return
+        }
         if (message.type === 'pong') {
           if (!ready || !heartbeat) {
             close(1008, 'handshake_required')
@@ -482,10 +502,18 @@ export function attachWebSocket(
           reply({ type: 'response', requestId: message.requestId, payload: null })
           return
         }
-        const dispatched = options.dispatchCommand?.(message, {
-          clientId: client.clientId,
-          command: message.name,
-        })
+        let dispatched: unknown
+        try {
+          dispatched = options.dispatchCommand?.(message, {
+            clientId: client.clientId,
+            command: message.name,
+          })
+        } catch {
+          // A service that throws (a busy or failing database, say) answers
+          // this request and leaves the socket and the process standing.
+          reply(errorResult(message.requestId, 'internal', 'Command failed.'))
+          return
+        }
         reply(dispatched ?? errorResult(message.requestId, 'validation', 'Unsupported command.'))
       })
     })
@@ -537,6 +565,24 @@ export function attachWebSocket(
         count += 1
       }
       return count
+    },
+    /**
+     * Stop serving a client's sockets at once, because its grant changed, and
+     * close them with `code` after the replies already queued have gone out.
+     */
+    retireClient(clientId: string, code: number, reason: string) {
+      retiring.add(clientId)
+      for (const connection of connections.values()) {
+        if (connection.client.clientId === clientId) connection.retired = true
+      }
+      setImmediate(() => {
+        retiring.delete(clientId)
+        for (const connection of [...connections.values()]) {
+          if (connection.client.clientId === clientId && connection.retired) {
+            connection.close(code, reason)
+          }
+        }
+      })
     },
     close() {
       if (!closePromise) {

@@ -198,9 +198,11 @@ client.
 ### Rotation
 
 None is automatic in Wave 2. The owner credential is re-minted by the local
-process, which revokes the previous owner row. A paired or cloud client that
-wants a fresh credential re-pairs or re-enrolls, which creates a new row; the
-old row is revoked once the new one is confirmed. The format's version prefix
+process, which revokes the previous owner row. A cloud client that wants a
+fresh credential re-enrolls, which creates a new row; the old row is revoked
+once the new one is confirmed. A paired device that redeems a new link over
+its own socket keeps its row and credential (see "Pairing link" below); one
+that wants a fresh credential is revoked and paired again. The format's version prefix
 is what allows a future rotation scheme (for example refresh-on-connect) to be
 introduced without breaking stored credentials.
 
@@ -244,13 +246,44 @@ Owned by CAL-102; recorded here because the shape follows from D7.
 - It travels in the URL fragment (`https://app.example/pair#token=…`) so the
   hosted app's server never sees it, and the client strips it from history
   after the exchange.
-- The server stores the token hashed. Single use is enforced in one atomic
-  `UPDATE … WHERE consumed_at IS NULL … RETURNING` so two concurrent
-  exchanges cannot both succeed. T3 Code stores the token in clear to
+- The server stores the token hashed. Single use is enforced by one
+  conditional `UPDATE … WHERE consumed_at IS NULL …` inside a write
+  transaction, so two concurrent exchanges cannot both succeed. T3 Code stores the token in clear to
   re-render the QR code; OpenManager re-renders from the minting client's
   memory instead.
 - The row carries the grant, label and expiry; the token is only the lookup
   key.
+
+As built (CAL-102, CAL-103, CAL-106; details in `apps/server/README.md`,
+"Pairing"):
+
+- The fragment is `#v=1&route=…&environment=…&token=…`. `route` is any http(s)
+  address the environment answers on, so a link is not LAN- or
+  Cloudflare-shaped. Everything in it can be forged, including a route whose
+  `/bootstrap` claims the right environment ID, so **a credential is never sent
+  to a link's route**. A device with no credential trades the token at
+  `POST /pair` there. A device that already has one redeems the token with
+  `pairing.redeem` over the socket it already trusts for that environment; a
+  socket only opens if the environment accepted its credential, which is the
+  proof the route is genuine.
+- Creating, listing and withdrawing links needs `admin` (`pairing.create`,
+  `pairing.list`, `pairing.revoke`). Redeeming needs only `read`: the token is
+  the authority, exactly as at `POST /pair`.
+- The delegation cap is applied as an intersection at redeem time: a creator
+  that lost a capability since hands out the rest, and a revoked or expired
+  creator voids its links. Void links do not count toward the 32 waiting links,
+  so revoking a lost phone never locks the owner out of pairing.
+- **Re-pairing keeps the identity.** A paired device that redeems a link keeps
+  its client ID, label and credential; only the grant changes, to the new
+  link's, and its sockets reconnect if it did. This is the documented exception
+  to "a re-pair creates a new row" under Rotation: a link sent to a phone that
+  is already paired is the common case and should not leave a second entry in
+  the client list. Rotating a credential stays a matter of revoking and pairing
+  again. Owner and cloud clients are not turned into paired ones; the redeem
+  refuses them and leaves the link usable.
+- `pairing.list` reports each recent link's status (`waiting`, `used`,
+  `expired`, `revoked`, `void`) and which device used it, so the client that
+  showed the QR code can tell what happened.
 
 ## Storage on each client
 

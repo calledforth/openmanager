@@ -11,6 +11,7 @@ import {
   writeSync,
 } from 'node:fs'
 import { join } from 'node:path'
+import type { DatabaseSync } from 'node:sqlite'
 import { AccessGrantSchema, type AccessCapability } from '@openmanager/protocol/node'
 import type { AuditLog } from './audit.ts'
 import { openEnvironmentDatabase } from './db/database.ts'
@@ -130,6 +131,48 @@ function restoreOwnerFile(path: string, credential: string | undefined): void {
   writeOwnerFile(path, credential)
 }
 
+const INSERT_CLIENT_SQL = `
+  INSERT INTO authorized_clients (
+    client_id, label, kind, credential_hash, scopes_json, created_at, last_seen_at, expires_at
+  ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
+`
+
+/**
+ * Validate a grant request and insert its row on `database`, returning the
+ * raw credential once. Exported so a caller that must mint inside its own
+ * transaction (pairing exchanges a link and mints in one) uses the same rules.
+ * Records no audit event; the caller does.
+ */
+export function insertClientRow(database: DatabaseSync, request: ClientGrantRequest, now: number) {
+  const capabilities = AccessGrantSchema.parse([...request.capabilities])
+  if (request.kind === 'cloud' && capabilities.includes('admin')) {
+    throw new Error('Cloud-enrolled clients cannot hold the admin capability.')
+  }
+  const label = request.label.trim()
+  if (label.length === 0 || label.length > 128) {
+    throw new Error('Client label must be 1 to 128 characters.')
+  }
+  const credential = mintCredential()
+  const client: AuthenticatedClient = Object.freeze({
+    clientId: randomUUID(),
+    label,
+    kind: request.kind,
+    capabilities: Object.freeze(capabilities),
+  })
+  database
+    .prepare(INSERT_CLIENT_SQL)
+    .run(
+      client.clientId,
+      client.label,
+      client.kind,
+      hashCredential(credential),
+      JSON.stringify(capabilities),
+      now,
+      now + IDLE_EXPIRY_MS,
+    )
+  return { client, credential }
+}
+
 export type AuthorizedClients = ReturnType<typeof openAuthorizedClients>
 
 /** Open the credential store on the environment database. All operations are synchronous point reads and writes. */
@@ -142,11 +185,6 @@ export function openAuthorizedClients(
   const ownerPath = join(dataDir, OWNER_CREDENTIAL_FILENAME)
   const byHash = database.prepare(AUTHORIZED_CLIENT_BY_HASH_SQL)
   const activeOwner = database.prepare(ACTIVE_OWNER_CLIENT_SQL)
-  const insert = database.prepare(`
-    INSERT INTO authorized_clients (
-      client_id, label, kind, credential_hash, scopes_json, created_at, last_seen_at, expires_at
-    ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
-  `)
   const touch = database.prepare(`
     UPDATE authorized_clients
     SET last_seen_at = ?, expires_at = ?
@@ -171,30 +209,7 @@ export function openAuthorizedClients(
   }
 
   const issue = (request: ClientGrantRequest, now: number, recordAudit = true) => {
-    const capabilities = AccessGrantSchema.parse([...request.capabilities])
-    if (request.kind === 'cloud' && capabilities.includes('admin')) {
-      throw new Error('Cloud-enrolled clients cannot hold the admin capability.')
-    }
-    const label = request.label.trim()
-    if (label.length === 0 || label.length > 128) {
-      throw new Error('Client label must be 1 to 128 characters.')
-    }
-    const credential = mintCredential()
-    const client: AuthenticatedClient = Object.freeze({
-      clientId: randomUUID(),
-      label,
-      kind: request.kind,
-      capabilities: Object.freeze(capabilities),
-    })
-    insert.run(
-      client.clientId,
-      client.label,
-      client.kind,
-      hashCredential(credential),
-      JSON.stringify(capabilities),
-      now,
-      now + IDLE_EXPIRY_MS,
-    )
+    const { client, credential } = insertClientRow(database, request, now)
     if (recordAudit) {
       audit?.record({
         type: 'token.issued',

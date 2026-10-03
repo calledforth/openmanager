@@ -39,7 +39,10 @@ import {
 // `draft.save`, `draft.delete`, and the `draft.saved`/`draft.deleted` events),
 // and `sessionId`/`draftId` on `session.create`, which a v11 environment would
 // drop, leaving the sent draft behind and the session under another id.
-export const PROTOCOL_VERSION = 12 as const
+// Version 13 adds pairing: `pairing.create`, `pairing.list` and
+// `pairing.revoke` for admin clients, and the `POST /pair` exchange behind the
+// `pairing.exchange` bootstrap capability.
+export const PROTOCOL_VERSION = 13 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema

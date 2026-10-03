@@ -19,6 +19,8 @@ import {
   DRAFT_SAVE_CAPABILITY,
   DraftCommandSchemas,
 } from './drafts.js'
+// Type-only: pairing.ts imports AccessGrantSchema from here.
+import type { PairingCommandSchemas } from './pairing.js'
 
 /**
  * Access capabilities are what a client's credential grants. They are distinct
@@ -61,6 +63,7 @@ export type CommandName =
   | keyof typeof UploadCommandSchemas
   | keyof typeof FilesystemCommandSchemas
   | keyof typeof DraftCommandSchemas
+  | keyof typeof PairingCommandSchemas
   | ReplayCommand['name']
 
 /**
@@ -115,6 +118,14 @@ export const COMMAND_ACCESS = Object.freeze({
   'composer.model.set': 'agent',
   'composer.mode.set': 'agent',
   'composer.config_option.set': 'agent',
+  // Handing out access is access management: a link can carry any capability
+  // its creator holds, so creating, listing and withdrawing links need admin.
+  'pairing.create': 'admin',
+  'pairing.list': 'admin',
+  'pairing.revoke': 'admin',
+  // A device redeems a link for itself. The token is the authority, exactly
+  // as at `POST /pair`, so any authenticated client may present one.
+  'pairing.redeem': 'read',
 } as const satisfies Record<CommandName, AccessCapability | null>)
 
 /**
