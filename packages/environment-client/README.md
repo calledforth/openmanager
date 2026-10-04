@@ -106,6 +106,15 @@ the clients. `rotateOwnerCredential` resolves with the new owner credential;
 the caller saves it, and the old socket then closes with `4401`, which is
 terminal.
 
+Pairing links (`createPairingLink`, `listPairingLinks`, `revokePairingLink`
+over `pairing.*`) need `admin` too; `createPairingLink` answers the token once,
+and `encodePairingLink` turns it into the link or QR code. A device that
+already has a credential redeems a link with `redeemPairingLink`
+(`pairing.redeem`, which needs only `read`) over the socket it trusts, never
+at the link's route; one with no credential trades the token at `POST /pair`
+itself, outside this client. The mock's `pairDevice(token)` stands in for that
+exchange.
+
 ## Browser safety
 
 The package depends only on `@openmanager/protocol` and `zod`. ESLint applies

@@ -1,4 +1,5 @@
 import type {
+  AccessCapability,
   AuthorizedClient,
   AuthorizedClientList,
   BackgroundTask,
@@ -18,6 +19,8 @@ import type {
   Interaction,
   InteractionResponse,
   Message,
+  PairingLink,
+  PairingRedeemResponse,
   PlanHistoryEntry,
   ProviderBootstrap,
   ProviderCatalogEntry,
@@ -52,6 +55,8 @@ export type {
   AuthorizedClientList,
   BackgroundTask,
   EnvironmentSettings,
+  PairingLink,
+  PairingRedeemResponse,
   EnvironmentSettingsPatch,
   FilesystemListing,
   ProviderCatalogEntry,
@@ -490,6 +495,35 @@ export interface EnvironmentCommands {
    * closes once it has been sent, and the old credential no longer works.
    */
   rotateOwnerCredential(): Promise<{ client: AuthorizedClient; credential: string }>
+  /**
+   * Create a single-use pairing link offering `capabilities`, each of which
+   * this client must hold. The token is answered once, here; build the link
+   * or QR code from it with `encodePairingLink`. Needs `admin`.
+   */
+  createPairingLink(input: CreatePairingLinkInput): Promise<{ link: PairingLink; token: string }>
+  /** Links still waiting, and those that stopped within the last hour. Needs `admin`. */
+  listPairingLinks(): Promise<PairingLink[]>
+  /** Withdraw a link before it is used. Needs `admin`. */
+  revokePairingLink(linkId: string): Promise<void>
+  /**
+   * Redeem a pairing link as this device, over the socket the device already
+   * trusts. It keeps its identity and credential and takes the link's grant;
+   * when the grant changed, the connection closes and redials under it.
+   * Refusals carry `details.reason` (see `PAIRING_REJECTION_REASONS`).
+   */
+  redeemPairingLink(input: RedeemPairingLinkInput): Promise<PairingRedeemResponse>
+}
+
+export interface CreatePairingLinkInput {
+  capabilities: AccessCapability[]
+  /** The name the paired device gets. Omitted lets the device suggest one. */
+  label?: string | null
+}
+
+export interface RedeemPairingLinkInput {
+  token: string
+  /** A subset of the link's capabilities; omitted takes all of them. */
+  capabilities?: AccessCapability[]
 }
 
 export interface StopBackgroundTasksInput {

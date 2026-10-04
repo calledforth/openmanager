@@ -45,6 +45,10 @@ const commands: EnvironmentCommands = {
   revokeAuthorizedClient: reject('revokeAuthorizedClient'),
   revokeOtherAuthorizedClients: reject('revokeOtherAuthorizedClients'),
   rotateOwnerCredential: reject('rotateOwnerCredential'),
+  createPairingLink: reject('createPairingLink'),
+  listPairingLinks: reject('listPairingLinks'),
+  revokePairingLink: reject('revokePairingLink'),
+  redeemPairingLink: reject('redeemPairingLink'),
 }
 
 /**

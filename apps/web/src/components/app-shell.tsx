@@ -290,7 +290,10 @@ export function AppShell() {
     selectedId,
     inUseEndpoint,
   } = useConnection()
-  const ungated = pathname.startsWith('/playground/') || pathname === '/settings'
+  // Pairing is how a browser with no environment gets one, so it never waits
+  // behind the connect screen.
+  const ungated =
+    pathname.startsWith('/playground/') || pathname === '/settings' || pathname === '/pair'
   const handlers = {
     onConnect: connect,
     onRetry: retry,

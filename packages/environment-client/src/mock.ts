@@ -3,12 +3,17 @@ import {
   ComposerCommandSchemas,
   DRAFT_DELETED_MESSAGE,
   DraftCommandSchemas,
+  PAIRING_LINK_LIFETIME_MS,
+  PAIRING_TOKEN_ALPHABET,
+  PAIRING_TOKEN_LENGTH,
+  PairingTokenSchema,
   ProofEventSchemas,
   ProofCommandSchemas,
   ProviderCatalogEntrySchema,
   WorkspaceComposerPreferenceSchema,
   type AuthorizedClient,
   type AuthorizedClientList,
+  type AccessCapability,
   type Draft,
   type DraftTombstone,
   type Environment,
@@ -16,6 +21,8 @@ import {
   type Interaction,
   type InteractionResponse,
   type Message,
+  type PairingLink,
+  type PairingRejectionReason,
   type ProofEvent,
   type ProviderCatalogEntry,
   type Session,
@@ -108,6 +115,8 @@ export interface MockSeed {
    */
   authorizedClients?: readonly AuthorizedClient[]
   currentClientId?: string
+  /** Pairing links, each with the token that opens it, as if another device had made them. */
+  pairingLinks?: ReadonlyArray<{ link: PairingLink; token: string }>
 }
 
 export interface MockTurnContext extends ThreadTarget {
@@ -173,6 +182,12 @@ export interface MockEnvironmentClient extends EnvironmentClient {
   reconnect(): void
   /** Resolves once all scheduled streaming has drained. */
   settle(): Promise<void>
+  /**
+   * Another device trading a pairing token at `POST /pair`: the link is used
+   * and a `paired` client joins the device list. Throws with the refusal's
+   * reason in `details.reason`, as the environment would answer.
+   */
+  pairDevice(token: string, label?: string): AuthorizedClient
 }
 
 const ALL_COMMANDS = Object.keys(WIRE_COMMANDS) as EnvironmentCommandName[]
@@ -470,6 +485,64 @@ export function createMockEnvironmentClient(
     const list = clientList()
     for (const listener of [...clientListListeners]) listener(list)
   }
+  // Pairing links, with the token each was created with; the environment
+  // keeps only a hash, but the mock has nothing to protect.
+  let pairingLinks: Array<{ link: PairingLink; token: string }> = [
+    ...(options.seed?.pairingLinks ?? []),
+  ]
+  const pairingToken = () => {
+    let token = ''
+    for (let index = 0; index < PAIRING_TOKEN_LENGTH; index += 1) {
+      token += PAIRING_TOKEN_ALPHABET[Math.floor(Math.random() * PAIRING_TOKEN_ALPHABET.length)]
+    }
+    return token
+  }
+  const linkStatus = (link: PairingLink): PairingLink =>
+    link.status === 'waiting' && Date.parse(link.expiresAt) <= Date.parse(now())
+      ? { ...link, status: 'expired' }
+      : link
+  const refusePairing = (reason: PairingRejectionReason, message: string) =>
+    new EnvironmentClientError(
+      reason === 'already_authorized'
+        ? 'conflict'
+        : reason === 'grant_exceeds_link' || reason === 'malformed'
+          ? 'validation'
+          : 'auth',
+      message,
+      { reason },
+    )
+  /** The waiting link a token opens, or the refusal the environment would give. */
+  const waitingLink = (raw: string, capabilities?: readonly AccessCapability[]) => {
+    const token = PairingTokenSchema.safeParse(raw)
+    if (!token.success) throw refusePairing('malformed', 'Not a pairing token.')
+    const entry = pairingLinks.find((item) => item.token === token.data)
+    if (!entry || entry.link.status === 'revoked') {
+      throw refusePairing('invalid', 'That pairing link is not valid.')
+    }
+    const link = linkStatus(entry.link)
+    if (link.status === 'expired') throw refusePairing('expired', 'That pairing link expired.')
+    if (link.status === 'used') throw refusePairing('used', 'That pairing link was already used.')
+    if (capabilities?.some((capability) => !link.capabilities.includes(capability))) {
+      throw refusePairing('grant_exceeds_link', 'That asks for more than the link offers.')
+    }
+    return entry
+  }
+  const consumeLink = (
+    entry: { link: PairingLink; token: string },
+    clientId: string,
+  ): PairingLink => {
+    const used: PairingLink = {
+      ...entry.link,
+      status: 'used',
+      usedByClientId: clientId,
+      usedAt: now(),
+    }
+    pairingLinks = pairingLinks.map((item) =>
+      item === entry ? { link: used, token: item.token } : item,
+    )
+    return used
+  }
+
   const liveClient = (clientId: string) => {
     const client = authorizedClients.find((item) => item.clientId === clientId)
     if (!client) throw new EnvironmentClientError('not_found', 'That client is not authorized.')
@@ -1207,6 +1280,68 @@ export function createMockEnvironmentClient(
         announceClients()
         return { client: { ...client }, credential: `omc1.${'m'.repeat(43)}` }
       }),
+    createPairingLink: (input) =>
+      run('createPairingLink', input, () => {
+        const caller = requireAdmin()
+        const missing = input.capabilities.find(
+          (capability) => !caller.capabilities.includes(capability),
+        )
+        if (missing) {
+          throw new EnvironmentClientError(
+            'capability_missing',
+            `This device cannot offer ${missing}.`,
+          )
+        }
+        const createdAt = now()
+        const link: PairingLink = {
+          linkId: nextId(),
+          label: input.label ?? null,
+          capabilities: [...input.capabilities],
+          createdByClientId: caller.clientId,
+          createdAt,
+          expiresAt: new Date(Date.parse(createdAt) + PAIRING_LINK_LIFETIME_MS).toISOString(),
+          status: 'waiting',
+          usedByClientId: null,
+          usedAt: null,
+        }
+        const token = pairingToken()
+        pairingLinks = [...pairingLinks, { link, token }]
+        return { link: { ...link }, token }
+      }),
+    listPairingLinks: () =>
+      run('listPairingLinks', null, () => {
+        requireAdmin()
+        return pairingLinks.map((item) => linkStatus(item.link))
+      }),
+    revokePairingLink: (linkId) =>
+      run('revokePairingLink', { linkId }, () => {
+        requireAdmin()
+        const entry = pairingLinks.find((item) => item.link.linkId === linkId)
+        if (!entry || linkStatus(entry.link).status !== 'waiting') {
+          throw new EnvironmentClientError('not_found', 'That link is not waiting.')
+        }
+        pairingLinks = pairingLinks.map((item) =>
+          item === entry ? { ...item, link: { ...item.link, status: 'revoked' } } : item,
+        )
+      }),
+    redeemPairingLink: (input) =>
+      run('redeemPairingLink', input, () => {
+        const entry = waitingLink(input.token, input.capabilities)
+        const caller = liveClient(currentClientId)
+        if (caller.kind !== 'paired') {
+          throw refusePairing('already_authorized', 'This device is already authorized.')
+        }
+        const grant = [...(input.capabilities ?? entry.link.capabilities)]
+        const grantChanged =
+          grant.length !== caller.capabilities.length ||
+          grant.some((capability) => !caller.capabilities.includes(capability))
+        consumeLink(entry, caller.clientId)
+        authorizedClients = authorizedClients.map((item) =>
+          item.clientId === caller.clientId ? { ...item, capabilities: grant } : item,
+        )
+        announceClients()
+        return { clientId: caller.clientId, clientLabel: caller.label, grant, grantChanged }
+      }),
     getEnvironmentSettings: () =>
       run('getEnvironmentSettings', null, () => ({ ...environmentSettings })),
     setEnvironmentSettings: (patch) =>
@@ -1235,6 +1370,24 @@ export function createMockEnvironmentClient(
     getState: store.getState,
     subscribe: store.subscribe,
     supports: (command) => capabilities.has(command),
+    pairDevice(token, label) {
+      const entry = waitingLink(token)
+      const createdAt = now()
+      const client: AuthorizedClient = {
+        clientId: nextId(),
+        label: entry.link.label ?? label ?? 'Paired device',
+        kind: 'paired',
+        capabilities: [...entry.link.capabilities],
+        createdAt,
+        lastSeenAt: null,
+        expiresAt: new Date(Date.parse(createdAt) + 30 * 86_400_000).toISOString(),
+        connected: false,
+      }
+      consumeLink(entry, client.clientId)
+      authorizedClients = [...authorizedClients, client]
+      announceClients()
+      return { ...client }
+    },
     onAuthorizedClientsChanged(listener) {
       clientListListeners.add(listener)
       return () => {

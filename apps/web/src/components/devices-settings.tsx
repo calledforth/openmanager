@@ -25,7 +25,9 @@ import {
   useConnectionState,
   useEnvironmentClientOptional,
 } from '@openmanager/app-core/providers/environment-client'
+import type { EnvironmentRoute } from '../lib/environment-store'
 import { cn } from '../lib/utils'
+import { PairDeviceDialog } from './pair-device-dialog'
 
 const KIND_ICONS: Record<AuthorizedClient['kind'], IconComponent> = {
   owner: phosphorIcon(DesktopIcon),
@@ -78,6 +80,15 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 const fieldClass =
   'h-7 min-w-0 flex-1 rounded-md bg-hover px-2 text-[13px] text-foreground outline-none transition-colors duration-100 placeholder:text-faint focus:bg-active disabled:opacity-60'
 
+/** What a pairing link needs to know about the environment it opens. */
+export type PairingTarget = {
+  environmentId: string
+  routes: readonly EnvironmentRoute[]
+  inUseEndpoint: string | null
+  /** Where this web app is served: the page a link opens. */
+  appUrl: string
+}
+
 type Confirm =
   | { kind: 'revoke'; client: AuthorizedClient }
   | { kind: 'revoke_others'; count: number }
@@ -91,6 +102,7 @@ type Confirm =
 export function DevicesSettingControl({
   section,
   onCredentialRotated,
+  pairing,
 }: {
   /** The settings section around the control, given its description. */
   section: (body: ReactNode) => ReactNode
@@ -99,13 +111,20 @@ export function DevicesSettingControl({
    * one there is nowhere to keep a new credential, so rotating is not offered.
    */
   onCredentialRotated?: (credential: string) => void
+  /** Where a pairing link sends a new device. Without it, pairing is not offered. */
+  pairing?: PairingTarget
 }) {
   const client = useEnvironmentClientOptional()
   if (!client) {
     return section(<Note>Connect to an environment to see the devices that can reach it.</Note>)
   }
   return (
-    <ConnectedDevices client={client} section={section} onCredentialRotated={onCredentialRotated} />
+    <ConnectedDevices
+      client={client}
+      section={section}
+      onCredentialRotated={onCredentialRotated}
+      pairing={pairing}
+    />
   )
 }
 
@@ -113,10 +132,12 @@ function ConnectedDevices({
   client,
   section,
   onCredentialRotated,
+  pairing,
 }: {
   client: EnvironmentClient
   section: (body: ReactNode) => ReactNode
   onCredentialRotated?: (credential: string) => void
+  pairing?: PairingTarget
 }) {
   const connection = useConnectionState()
   return section(
@@ -124,6 +145,7 @@ function ConnectedDevices({
       client={client}
       connected={connection.phase === 'connected'}
       onCredentialRotated={onCredentialRotated}
+      pairing={pairing}
     />,
   )
 }
@@ -143,10 +165,12 @@ function DeviceList({
   client,
   connected,
   onCredentialRotated,
+  pairing,
 }: {
   client: EnvironmentClient
   connected: boolean
   onCredentialRotated?: (credential: string) => void
+  pairing?: PairingTarget
 }) {
   const [list, setList] = useState<AuthorizedClientList | null>(null)
   const [loadError, setLoadError] = useState<{ denied: boolean; message: string } | null>(null)
@@ -156,6 +180,7 @@ function DeviceList({
   // The confirm stays set while its dialog animates out, so its copy does too.
   const [confirm, setConfirm] = useState<Confirm | null>(null)
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const [pairingOpen, setPairingOpen] = useState(false)
   const ask = (next: Confirm) => {
     setActionError(null)
     setConfirm(next)
@@ -195,6 +220,7 @@ function DeviceList({
     setActionError(null)
     setRenaming(null)
     setConfirmOpen(false)
+    setPairingOpen(false)
     return client.onAuthorizedClientsChanged?.((next) => {
       generation.current += 1
       setList(next)
@@ -321,16 +347,45 @@ function DeviceList({
       </ul>
       {list.omitted > 0 ? <Note>{omittedNote(list.omitted, current === undefined)}</Note> : null}
       {actionError && !confirmOpen ? <Note role="alert">{actionError}</Note> : null}
-      {revocableOthers > 0 ? (
-        <Button
-          type="button"
-          variant="tertiary"
-          className="mt-3"
-          disabled={busy}
-          onClick={() => ask({ kind: 'revoke_others', count: revocableOthers })}
-        >
-          Revoke all other devices
-        </Button>
+      {(pairing && current) || revocableOthers > 0 ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {pairing && current ? (
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={busy}
+              onClick={() => {
+                setActionError(null)
+                setPairingOpen(true)
+              }}
+            >
+              Pair a device
+            </Button>
+          ) : null}
+          {revocableOthers > 0 ? (
+            <Button
+              type="button"
+              variant="tertiary"
+              disabled={busy}
+              onClick={() => ask({ kind: 'revoke_others', count: revocableOthers })}
+            >
+              Revoke all other devices
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+      {pairing && current ? (
+        <PairDeviceDialog
+          client={client}
+          open={pairingOpen}
+          onOpenChange={setPairingOpen}
+          grant={current.capabilities}
+          environmentId={pairing.environmentId}
+          routes={pairing.routes}
+          inUseEndpoint={pairing.inUseEndpoint}
+          appUrl={pairing.appUrl}
+          deviceLabel={(clientId) => list.clients.find((item) => item.clientId === clientId)?.label}
+        />
       ) : null}
       <ConfirmDialog
         confirm={confirm}

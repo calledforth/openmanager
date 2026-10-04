@@ -119,6 +119,10 @@ const UNSUPPORTED: ReadonlySet<EnvironmentCommandName> = new Set([
   'revokeAuthorizedClient',
   'revokeOtherAuthorizedClients',
   'rotateOwnerCredential',
+  'createPairingLink',
+  'listPairingLinks',
+  'revokePairingLink',
+  'redeemPairingLink',
 ])
 const ALL_CAPABILITIES = (Object.keys(WIRE_COMMANDS) as EnvironmentCommandName[])
   .filter((command) => !UNSUPPORTED.has(command))
@@ -1077,6 +1081,10 @@ export function createConvexEnvironmentClient(
     revokeAuthorizedClient: () => unsupported('revokeAuthorizedClient'),
     revokeOtherAuthorizedClients: () => unsupported('revokeOtherAuthorizedClients'),
     rotateOwnerCredential: () => unsupported('rotateOwnerCredential'),
+    createPairingLink: () => unsupported('createPairingLink'),
+    listPairingLinks: () => unsupported('listPairingLinks'),
+    revokePairingLink: () => unsupported('revokePairingLink'),
+    redeemPairingLink: () => unsupported('redeemPairingLink'),
   }
 
   // -------------------------------------------------------------------------

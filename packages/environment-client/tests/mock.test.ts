@@ -472,3 +472,39 @@ it('validates explicit mock creation and returns its first turn', async () => {
   })
   expect(client.calls.some((call) => call.command === 'sendTurn')).toBe(false)
 })
+
+it('pairs a device through a link once, and redeems as an already paired device', async () => {
+  const client = createMockEnvironmentClient()
+  const { link, token } = await client.commands.createPairingLink({ capabilities: ['read'] })
+  expect(link).toMatchObject({ status: 'waiting', capabilities: ['read'] })
+
+  const phone = client.pairDevice(token, 'Phone')
+  expect(phone).toMatchObject({ label: 'Phone', kind: 'paired', capabilities: ['read'] })
+  expect(await client.commands.listPairingLinks()).toEqual([
+    expect.objectContaining({
+      linkId: link.linkId,
+      status: 'used',
+      usedByClientId: phone.clientId,
+    }),
+  ])
+  expect(() => client.pairDevice(token)).toThrow(
+    expect.objectContaining({ code: 'auth', details: { reason: 'used' } }),
+  )
+
+  // The owner is already authorized; a link changes nothing for it.
+  const second = await client.commands.createPairingLink({ capabilities: ['read', 'operate'] })
+  await expect(client.commands.redeemPairingLink({ token: second.token })).rejects.toMatchObject({
+    code: 'conflict',
+    details: { reason: 'already_authorized' },
+  })
+
+  const paired = createMockEnvironmentClient({
+    seed: {
+      authorizedClients: [{ ...phone, connected: true }],
+      currentClientId: phone.clientId,
+    },
+  })
+  await expect(paired.commands.createPairingLink({ capabilities: ['read'] })).rejects.toMatchObject(
+    { code: 'capability_missing' },
+  )
+})

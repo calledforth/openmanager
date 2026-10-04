@@ -1474,6 +1474,14 @@ export function createWebSocketEnvironmentClient(
       return (await request('client.revoke_others', null)).revokedClientIds
     },
     rotateOwnerCredential: () => request('client.owner.rotate', null),
+    createPairingLink: (input) => request('pairing.create', input),
+    async listPairingLinks() {
+      return (await request('pairing.list', null)).links
+    },
+    async revokePairingLink(linkId) {
+      await request('pairing.revoke', { linkId })
+    },
+    redeemPairingLink: (input) => request('pairing.redeem', input),
   }
 
   const drafts = createDraftSync({
