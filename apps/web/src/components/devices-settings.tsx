@@ -352,7 +352,7 @@ function DeviceList({
           {pairing && current ? (
             <Button
               type="button"
-              variant="secondary"
+              variant="primary"
               disabled={busy}
               onClick={() => {
                 setActionError(null)

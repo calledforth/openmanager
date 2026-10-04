@@ -30,6 +30,13 @@ export const Route = createFileRoute('/pair')({ component: PairPage })
  * loses them, and the person opens the link again.
  */
 let held: { payload: PairingPayload; redeeming: boolean } | null = null
+/**
+ * When this tab last finished pairing. The connection it opens can remount
+ * the page before the session list has loaded, and that page must not ask
+ * for a link it has just used.
+ */
+let pairedAt: number | null = null
+const PAIRED_GRACE_MS = 10_000
 
 type Step =
   | { kind: 'confirm' }
@@ -57,10 +64,14 @@ function PairPage() {
     if (hash) {
       const parsed = parsePairingLink(`#${hash}`)
       held = parsed.ok ? { payload: parsed.payload, redeeming: false } : null
+      pairedAt = null
       return parsed
     }
     return held ? { ok: true as const, payload: held.payload } : null
   })
+  const [justPaired] = useState(
+    () => !link && pairedAt !== null && Date.now() - pairedAt < PAIRED_GRACE_MS,
+  )
 
   // The token is a secret until it is used: it leaves the address bar and the
   // history entry straight away.
@@ -68,6 +79,17 @@ function PairPage() {
     if (hash) void navigate({ to: '/pair', replace: true })
   }, [hash, navigate])
 
+  useEffect(() => {
+    if (justPaired) void navigate({ to: '/', replace: true })
+  }, [justPaired, navigate])
+
+  if (justPaired) {
+    return (
+      <PairLayout title="Paired">
+        <Text>Opening your sessions…</Text>
+      </PairLayout>
+    )
+  }
   if (!link) {
     return (
       <PairLayout title="Pair this browser">
@@ -112,9 +134,13 @@ function PairWithLink({ payload }: { payload: PairingPayload }) {
     suggestDeviceLabel(typeof navigator === 'undefined' ? '' : navigator.userAgent),
   )
 
-  const finish = () => {
+  const leave = () => {
     held = null
     void navigate({ to: '/', replace: true })
+  }
+  const finish = () => {
+    pairedAt = Date.now()
+    leave()
   }
 
   const exchange = async () => {
@@ -160,7 +186,6 @@ function PairWithLink({ payload }: { payload: PairingPayload }) {
     }
     setStep({ kind: 'redeeming' })
   }
-
 
   const busy = step.kind === 'pairing' || step.kind === 'redeeming'
   const host = routeHost(payload.route)
@@ -220,10 +245,10 @@ function PairWithLink({ payload }: { payload: PairingPayload }) {
             The device that made the link may have named it already; then that name is used.
           </p>
           <StepMessage step={step} />
-          <Button type="submit" variant="secondary" className="mt-2" disabled={busy}>
+          <Button type="submit" variant="primary" className="mt-2" disabled={busy}>
             {step.kind === 'pairing' ? 'Pairing…' : 'Pair this browser'}
           </Button>
-          <Button type="button" variant="ghost" disabled={busy} onClick={finish}>
+          <Button type="button" variant="ghost" disabled={busy} onClick={leave}>
             Cancel
           </Button>
         </form>
@@ -231,10 +256,10 @@ function PairWithLink({ payload }: { payload: PairingPayload }) {
       {alreadySaved ? (
         <div className="mt-7 flex flex-col gap-2.5">
           <StepMessage step={step} />
-          <Button type="button" variant="secondary" disabled={busy} onClick={redeem}>
+          <Button type="button" variant="primary" disabled={busy} onClick={redeem}>
             {step.kind === 'redeeming' ? 'Connecting…' : 'Update access'}
           </Button>
-          <Button type="button" variant="ghost" onClick={finish}>
+          <Button type="button" variant="ghost" onClick={leave}>
             Cancel
           </Button>
         </div>

@@ -372,7 +372,7 @@ function Choice({
       <label
         className={cn(
           // Selection is a fill, never an outline.
-          'flex cursor-pointer items-baseline gap-2 rounded-md px-2.5 py-1.5 transition-colors duration-100',
+          'flex cursor-pointer items-start gap-2.5 rounded-md px-2.5 py-1.5 transition-colors duration-100',
           'has-[:focus-visible]:ring-1 has-[:focus-visible]:ring-focus-ring',
           checked ? 'bg-active' : 'hover:bg-hover',
           disabled && 'cursor-default',
@@ -380,13 +380,15 @@ function Choice({
       >
         <input
           type="checkbox"
-          className="translate-y-px accent-current"
+          className="mt-[3px] shrink-0 accent-current"
           checked={checked}
           disabled={disabled}
           onChange={onChange}
         />
-        <span className="text-[13px] text-foreground">{label}</span>
-        <span className="min-w-0 truncate text-[12px] text-muted-foreground">{detail}</span>
+        <span className="flex min-w-0 flex-col">
+          <span className="text-[13px] text-foreground">{label}</span>
+          <span className="text-[12px] text-muted-foreground">{detail}</span>
+        </span>
       </label>
     </li>
   )
@@ -486,7 +488,7 @@ function LinkView({
               <QRCodeSVG
                 value={created.url}
                 size={184}
-                level="M"
+                level="L"
                 bgColor="#ffffff"
                 fgColor="#000000"
                 role="img"
