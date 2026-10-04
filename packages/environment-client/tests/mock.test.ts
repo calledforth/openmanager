@@ -508,3 +508,39 @@ it('pairs a device through a link once, and redeems as an already paired device'
     { code: 'capability_missing' },
   )
 })
+
+it('voids the links of a revoked creator and narrows those of a narrowed one', async () => {
+  const laptop = {
+    clientId: 'client-laptop',
+    label: 'Laptop',
+    kind: 'paired' as const,
+    capabilities: ['read' as const, 'operate' as const, 'admin' as const],
+    createdAt: '2026-10-01T10:00:00.000Z',
+    lastSeenAt: null,
+    expiresAt: '2099-11-01T10:00:00.000Z',
+    connected: true,
+  }
+  const maker = createMockEnvironmentClient({
+    seed: { authorizedClients: [laptop], currentClientId: laptop.clientId },
+  })
+  const offered = await maker.commands.createPairingLink({ capabilities: ['read', 'operate'] })
+
+  // The laptop lost Edit after making the link: the link gives no more than it holds now.
+  const narrowed = createMockEnvironmentClient({
+    seed: {
+      authorizedClients: [{ ...laptop, capabilities: ['read', 'admin'] }],
+      currentClientId: laptop.clientId,
+      pairingLinks: [offered],
+    },
+  })
+  expect(narrowed.pairDevice(offered.token)).toMatchObject({ capabilities: ['read'] })
+
+  // The laptop was revoked: its link is void and pairs nobody.
+  const revoked = createMockEnvironmentClient({ seed: { pairingLinks: [offered] } })
+  expect(await revoked.commands.listPairingLinks()).toEqual([
+    expect.objectContaining({ linkId: offered.link.linkId, status: 'void' }),
+  ])
+  expect(() => revoked.pairDevice(offered.token)).toThrow(
+    expect.objectContaining({ code: 'auth', details: { reason: 'creator_revoked' } }),
+  )
+})

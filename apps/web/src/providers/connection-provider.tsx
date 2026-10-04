@@ -973,13 +973,13 @@ export function ConnectionProvider({
     (input: { environmentId: string; endpoint: string; label: string; credential: string }) => {
       const endpoint = parseEnvironmentEndpoint(input.endpoint)
       if (!endpoint || !parseEnvironmentCredential(input.credential)) return false
-      // Another tab may have saved one since this tab last read the registry.
-      const saved =
-        findStoredEnvironment(registryRef.current.environments, input.environmentId) ??
-        (preview
-          ? undefined
-          : findStoredEnvironment(readEnvironmentRegistry().environments, input.environmentId))
-      if (saved?.credential) return false
+      // Another tab may have saved one since this tab last read the registry,
+      // so both copies are checked even when this tab has a record already.
+      const inMemory = findStoredEnvironment(registryRef.current.environments, input.environmentId)
+      const persisted = preview
+        ? undefined
+        : findStoredEnvironment(readEnvironmentRegistry().environments, input.environmentId)
+      if (inMemory?.credential || persisted?.credential) return false
       const next = update((current) => upsertStoredEnvironment(current, { ...input, endpoint }))
       if (!next) return false
       setHasConnected(false)

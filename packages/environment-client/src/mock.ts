@@ -1,4 +1,5 @@
 import {
+  ACCESS_CAPABILITIES,
   ClientLabelSchema,
   ComposerCommandSchemas,
   DRAFT_DELETED_MESSAGE,
@@ -497,10 +498,18 @@ export function createMockEnvironmentClient(
     }
     return token
   }
-  const linkStatus = (link: PairingLink): PairingLink =>
-    link.status === 'waiting' && Date.parse(link.expiresAt) <= Date.parse(now())
-      ? { ...link, status: 'expired' }
-      : link
+  /** What a link's creator holds now; nothing once it was revoked or expired. */
+  const creatorGrant = (link: PairingLink) => {
+    const creator = authorizedClients.find((item) => item.clientId === link.createdByClientId)
+    return creator && Date.parse(creator.expiresAt) > Date.parse(now())
+      ? creator.capabilities
+      : undefined
+  }
+  const linkStatus = (link: PairingLink): PairingLink => {
+    if (link.status !== 'waiting') return link
+    if (Date.parse(link.expiresAt) <= Date.parse(now())) return { ...link, status: 'expired' }
+    return creatorGrant(link) ? link : { ...link, status: 'void' }
+  }
   const refusePairing = (reason: PairingRejectionReason, message: string) =>
     new EnvironmentClientError(
       reason === 'already_authorized'
@@ -511,7 +520,11 @@ export function createMockEnvironmentClient(
       message,
       { reason },
     )
-  /** The waiting link a token opens, or the refusal the environment would give. */
+  /**
+   * The waiting link a token opens and what redeeming it grants, or the
+   * refusal the environment would give. The creator is checked again now: a
+   * revoked creator's links are void, a narrowed one's narrow.
+   */
   const waitingLink = (raw: string, capabilities?: readonly AccessCapability[]) => {
     const token = PairingTokenSchema.safeParse(raw)
     if (!token.success) throw refusePairing('malformed', 'Not a pairing token.')
@@ -522,10 +535,21 @@ export function createMockEnvironmentClient(
     const link = linkStatus(entry.link)
     if (link.status === 'expired') throw refusePairing('expired', 'That pairing link expired.')
     if (link.status === 'used') throw refusePairing('used', 'That pairing link was already used.')
+    if (link.status === 'void') {
+      throw refusePairing('creator_revoked', 'The device that made this link no longer has access.')
+    }
     if (capabilities?.some((capability) => !link.capabilities.includes(capability))) {
       throw refusePairing('grant_exceeds_link', 'That asks for more than the link offers.')
     }
-    return entry
+    const asked = capabilities ?? link.capabilities
+    const creator = creatorGrant(link) ?? []
+    const grant = ACCESS_CAPABILITIES.filter(
+      (capability) => asked.includes(capability) && creator.includes(capability),
+    )
+    if (!grant.includes('read')) {
+      throw refusePairing('creator_revoked', 'The device that made this link no longer has access.')
+    }
+    return { entry, grant }
   }
   const consumeLink = (
     entry: { link: PairingLink; token: string },
@@ -1326,12 +1350,11 @@ export function createMockEnvironmentClient(
       }),
     redeemPairingLink: (input) =>
       run('redeemPairingLink', input, () => {
-        const entry = waitingLink(input.token, input.capabilities)
+        const { entry, grant } = waitingLink(input.token, input.capabilities)
         const caller = liveClient(currentClientId)
         if (caller.kind !== 'paired') {
           throw refusePairing('already_authorized', 'This device is already authorized.')
         }
-        const grant = [...(input.capabilities ?? entry.link.capabilities)]
         const grantChanged =
           grant.length !== caller.capabilities.length ||
           grant.some((capability) => !caller.capabilities.includes(capability))
@@ -1371,13 +1394,13 @@ export function createMockEnvironmentClient(
     subscribe: store.subscribe,
     supports: (command) => capabilities.has(command),
     pairDevice(token, label) {
-      const entry = waitingLink(token)
+      const { entry, grant } = waitingLink(token)
       const createdAt = now()
       const client: AuthorizedClient = {
         clientId: nextId(),
         label: entry.link.label ?? label ?? 'Paired device',
         kind: 'paired',
-        capabilities: [...entry.link.capabilities],
+        capabilities: grant,
         createdAt,
         lastSeenAt: null,
         expiresAt: new Date(Date.parse(createdAt) + 30 * 86_400_000).toISOString(),

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import {
   encodePairingLink,
@@ -17,6 +17,7 @@ import {
   DialogTitle,
 } from '@openmanager/app-core/components/fluid/ui/dialog'
 import { useNow } from '@openmanager/app-core/lib/relative-time'
+import { useConnectionState } from '@openmanager/app-core/providers/environment-client'
 import { isLoopbackEnvironmentEndpoint, type EnvironmentRoute } from '../lib/environment-store'
 import { isLoopbackAppUrl } from '../lib/pairing'
 import { cn } from '../lib/utils'
@@ -422,26 +423,31 @@ function LinkView({
 
   // The device list hears a device pair; that is the moment to ask what
   // became of this link. Reading the link list again is cheap and says which
-  // device used it.
+  // device used it. A device can pair while the connection is down, and the
+  // environment does not replay that, so every (re)connect reads it too.
   const linkId = created.link.linkId
+  const connected = useConnectionState().phase === 'connected'
   const generation = useRef(0)
+  const refresh = useCallback(() => {
+    const current = ++generation.current
+    client.commands.listPairingLinks().then(
+      (links) => {
+        const found = links.find((item) => item.linkId === linkId)
+        if (found && current === generation.current) setLink(found)
+      },
+      () => undefined,
+    )
+  }, [client, linkId])
   useEffect(() => {
-    const refresh = () => {
-      const current = ++generation.current
-      client.commands.listPairingLinks().then(
-        (links) => {
-          const found = links.find((item) => item.linkId === linkId)
-          if (found && current === generation.current) setLink(found)
-        },
-        () => undefined,
-      )
-    }
     const stop = client.onAuthorizedClientsChanged?.(refresh)
     return () => {
       generation.current += 1
       stop?.()
     }
-  }, [client, linkId])
+  }, [client, refresh])
+  useEffect(() => {
+    if (connected) refresh()
+  }, [connected, refresh])
 
   const copy = async () => {
     try {

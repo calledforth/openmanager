@@ -86,6 +86,16 @@ const pairedPhone = (environmentId: string) =>
       environment: { environmentId, name: 'Desk' },
       authorizedClients: [
         {
+          clientId: 'client-owner',
+          label: 'Local owner',
+          kind: 'owner',
+          capabilities: ['read', 'operate', 'agent', 'terminal', 'admin'],
+          createdAt: '2026-10-01T10:00:00.000Z',
+          lastSeenAt: null,
+          expiresAt: '2099-11-01T10:00:00.000Z',
+          connected: true,
+        },
+        {
           clientId: 'client-phone',
           label: 'Pixel',
           kind: 'paired',
@@ -186,6 +196,48 @@ describe('pairing a browser from a link', () => {
         credential: CREDENTIAL,
       }),
     )
+  })
+
+  it('keeps a credential another tab saved while this one held a record without one', async () => {
+    const user = userEvent.setup()
+    const registry = (credential?: string) =>
+      JSON.stringify({
+        version: 2,
+        selectedId: 'env-desk',
+        environments: [
+          {
+            environmentId: 'env-desk',
+            label: 'Desk',
+            ...(credential ? { credential } : {}),
+            routes: [{ type: 'remote', endpoint: LAN, priority: 0 }],
+          },
+        ],
+      })
+    localStorage.setItem(ENVIRONMENT_STORAGE_KEY, registry())
+    mockEnvironment({
+      status: 200,
+      body: {
+        environmentId: 'env-desk',
+        label: 'Desk',
+        kind: 'paired',
+        clientId: 'client-phone',
+        clientLabel: 'Pixel',
+        grant: ['read'],
+        credential: CREDENTIAL,
+      },
+    })
+    renderWebApp(pairPath())
+    await screen.findByRole('heading', { name: 'Pair this browser' })
+    await connectedShell()
+
+    const theirs = `omc1.${'t'.repeat(43)}`
+    localStorage.setItem(ENVIRONMENT_STORAGE_KEY, registry(theirs))
+    await user.click(screen.getByRole('button', { name: 'Pair this browser' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /paired with the environment from another tab/,
+    )
+    expect(stored().environments[0]!.credential).toBe(theirs)
   })
 
   it('says why a link was refused and saves nothing', async () => {
