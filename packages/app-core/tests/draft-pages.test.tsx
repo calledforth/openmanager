@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, useState } from 'react'
+import { act, useContext, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import {
   createMockEnvironmentClient,
@@ -19,6 +19,14 @@ import { useComposerState, type ComposerStateValue } from '../src/providers/comp
 import { useSessionState, type SessionStateValue } from '../src/providers/session-provider'
 import { ThemeProvider } from '../src/providers/theme-provider'
 import { rememberSentDraft } from '../src/providers/draft-pages'
+import {
+  DraftLaunchContext,
+  type DraftLaunchInternals,
+} from '../src/providers/environment-composer'
+import {
+  useComposerDraftStore,
+  type ComposerDraftStore,
+} from '../src/components/chat/composerDraftStore'
 import { ChatWorkspace } from '../src/components/chat/ChatWorkspace'
 
 const project = (name: string, extra: Partial<Workspace> = {}): Workspace => ({
@@ -114,6 +122,8 @@ beforeEach(() => {
   root = createRoot(container)
 })
 afterEach(async () => {
+  heldNavigations = null
+  probe.onRender = undefined
   await act(() => root.unmount())
   container.remove()
   globalThis.localStorage?.clear()
@@ -142,7 +152,15 @@ const probe = {} as {
   thread: ReturnType<typeof useActiveThreadState>
   route: Route
   go: (route: Route) => void
+  drafts: ComposerDraftStore
+  launch: DraftLaunchInternals
+  onRender?: () => void
 }
+/** Navigations held until the test lets each through, as a router that
+ * resolves after the click does; null lets them through at once. */
+let heldNavigations: Array<() => void> | null = null
+const arrive = () =>
+  heldNavigations ? new Promise<void>((resolve) => heldNavigations!.push(resolve)) : undefined
 /** Every navigation the providers asked for, as `push /path` or `replace /path`. */
 let navigations: string[] = []
 
@@ -150,6 +168,9 @@ function Capture() {
   probe.session = useSessionState()
   probe.composer = useComposerState()
   probe.thread = useActiveThreadState()
+  probe.drafts = useComposerDraftStore()
+  probe.launch = useContext(DraftLaunchContext)!
+  probe.onRender?.()
   return null
 }
 
@@ -171,10 +192,12 @@ function Host({ client, initial }: { client: MockEnvironmentClient; initial: Rou
       navigateSession={async (sessionId, options) => {
         const next: Route = sessionId ? { sessionId } : { draftId: null }
         navigations.push(`${options?.replace ? 'replace' : 'push'} ${pathOf(next)}`)
+        if (heldNavigations) await arrive()
         go(next)
       }}
       navigateDraft={async (draftId, options) => {
         navigations.push(`${options?.replace ? 'replace' : 'push'} /drafts/${draftId}`)
+        if (heldNavigations) await arrive()
         go({ draftId })
       }}
     >
@@ -418,6 +441,12 @@ describe('draft pages', () => {
     expect(probe.session.isSessionDraftOpen).toBe(true)
     expect(probe.session.newSessionDraftId).not.toBe('never-heard-of')
     expect(composer().value).toBe('')
+
+    // Back to it later: led to `/` again, not left waiting.
+    await act(() => probe.go({ draftId: 'never-heard-of' }))
+    await settle(client)
+    expect(navigations).toEqual(['replace /', 'replace /'])
+    expect(probe.session.isDraftLoading).toBe(false)
   })
 
   it('leads the address of a draft sent from here to its session', async () => {
@@ -487,5 +516,202 @@ describe('draft pages', () => {
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!.disabled).toBe(
       true,
     )
+  })
+  describe('review regressions', () => {
+    /** On a draft with text and an explicit pick, press Send: the composer
+     * clears and sets the draft aside, and its images start uploading. */
+    const startUpload = async () => {
+      await act(() => probe.composer.setDraftModel('sonnet'))
+      await type('with a big screenshot')
+      const draftId = probe.session.newSessionDraftId!
+      const key = `new:${draftId}`
+      let release!: () => void
+      act(() => {
+        probe.drafts.setText(key, '')
+        release = probe.drafts.beginSend!(key)!
+      })
+      return { draftId, release }
+    }
+
+    it('keeps the explicit picks of a draft whose send is under way when New agent is pressed', async () => {
+      const client = createMockEnvironmentClient({ seed: SEED })
+      await mount(client)
+      const { draftId, release } = await startUpload()
+
+      await act(() => probe.session.createSession(BETA.workspaceId))
+      await settle(client)
+      expect(probe.session.newSessionDraftId).not.toBe(draftId)
+      // Not discarded: the send still has its picks.
+      expect(client.getState().draftEdits[draftId]).toMatchObject({
+        launching: true,
+        content: { providerId: 'opencode', preference: { modelId: 'sonnet' } },
+      })
+      expect(probe.launch.draftLaunch(BETA.workspaceId)).toMatchObject({
+        preference: { modelId: 'sonnet' },
+        workspaceId: ALPHA.workspaceId,
+        draft: { draftId },
+      })
+      act(() => release())
+    })
+
+    it('does not take the page opened while an earlier draft was being sent', async () => {
+      const client = createMockEnvironmentClient({ seed: SEED })
+      await mount(client)
+      const { draftId, release } = await startUpload()
+
+      await act(() => probe.session.createSession(BETA.workspaceId))
+      await settle(client)
+      await type('the next idea')
+      const next = probe.session.newSessionDraftId!
+      expect(pathOf(probe.route)).toBe(`/drafts/${next}`)
+      const before = navigations.length
+
+      // The upload finishes: the first draft becomes its session, out of view.
+      await act(() => probe.thread.sendMessage('with a big screenshot'))
+      act(() => release())
+      await settle(client)
+      const created = client.calls.find((call) => call.command === 'createSession')?.input as {
+        draftId: string
+        sessionId: string
+        workspaceId: string
+        preference?: unknown
+      }
+      expect(created).toMatchObject({
+        draftId,
+        workspaceId: ALPHA.workspaceId,
+        preference: { modelId: 'sonnet' },
+      })
+      expect(client.getState().sessions[created.sessionId]).toBeDefined()
+      expect(navigations.slice(before)).toEqual([])
+      expect(client.getState().activeSessionId).toBeNull()
+      expect(pathOf(probe.route)).toBe(`/drafts/${next}`)
+      expect(probe.session.newSessionDraftId).toBe(next)
+      // Still free to type in.
+      expect(probe.session.pendingDraftSessionStart).toBe(false)
+      expect(composer().readOnly).toBe(false)
+      expect(composer().value).toBe('the next idea')
+      // Its old address leads to the session it became.
+      await act(() => probe.go({ draftId }))
+      await settle(client)
+      expect(pathOf(probe.route)).toBe(`/sessions/${created.sessionId}`)
+    })
+
+    it('keeps the project another device moved the draft to after its text is cleared', async () => {
+      const client = createMockEnvironmentClient({ seed: SEED })
+      await mount(client)
+      await type('moved elsewhere')
+      const draftId = probe.session.newSessionDraftId!
+      act(() => client.drafts!.flush())
+      await settle(client)
+      const saved = client.getState().drafts[draftId]!
+      expect(saved.target).toMatchObject({ workspaceId: ALPHA.workspaceId })
+
+      // Another device moves it to BETA.
+      await act(() =>
+        client.commands.saveDraft({
+          draftId,
+          baseRevision: saved.revision,
+          target: { ...saved.target, workspaceId: BETA.workspaceId } as typeof saved.target,
+          content: saved.content,
+        }),
+      )
+      await settle(client)
+      expect(probe.session.activeWorkspacePath).toBe(BETA.workspaceId)
+
+      // Cleared here: the environment's copy goes, the project stays.
+      await type('')
+      act(() => client.drafts!.flush())
+      await settle(client)
+      expect(client.getState().drafts[draftId]).toBeUndefined()
+      expect(probe.session.activeWorkspacePath).toBe(BETA.workspaceId)
+      await type('second go')
+      act(() => client.drafts!.flush())
+      await settle(client)
+      expect(selectDraftTarget(client.getState(), draftId)).toMatchObject({
+        workspaceId: BETA.workspaceId,
+      })
+    })
+
+    it('leaves a draft that another device sent for the session it became', async () => {
+      const client = createMockEnvironmentClient({ seed: SEED })
+      await mount(client)
+      await type('sent from the phone')
+      const draftId = probe.session.newSessionDraftId!
+      act(() => client.drafts!.flush())
+      await settle(client)
+      const { sessionId } = client.getState().drafts[draftId]!.target as { sessionId: string }
+
+      // Another device sends it.
+      await act(() =>
+        client.commands.createSession({
+          environmentId: client.getState().environment!.environmentId,
+          workspaceId: ALPHA.workspaceId,
+          providerId: 'opencode',
+          firstMessage: 'sent from the phone',
+          draftId,
+          sessionId,
+        }),
+      )
+      await settle(client)
+      expect(navigations.at(-1)).toBe(`replace /sessions/${sessionId}`)
+      expect(client.getState().activeSessionId).toBe(sessionId)
+      expect(client.getState().draftEdits[draftId]).toBeUndefined()
+    })
+
+    it('waits for the session list before giving up on a sent draft’s session', async () => {
+      const client = createMockEnvironmentClient({ seed: SEED })
+      rememberSentDraft('sent-late', 'session-late')
+      // Drafts listed, sessions not yet: the session may still arrive.
+      act(() => client.setConnection({ sessionsListed: false }))
+      await mount(client, { draftId: 'sent-late' })
+      expect(client.getState().draftsListed).toBe(true)
+      expect(navigations).toEqual([])
+      expect(probe.session.isDraftLoading).toBe(true)
+
+      await act(() =>
+        client.commands.createSession({
+          environmentId: client.getState().environment!.environmentId,
+          workspaceId: ALPHA.workspaceId,
+          providerId: 'opencode',
+          sessionId: 'session-late',
+        }),
+      )
+      act(() => client.setConnection({ sessionsListed: true }))
+      await settle(client)
+      expect(navigations).toEqual(['replace /sessions/session-late'])
+    })
+
+    it('opens New agent cleanly while the first character’s address is still on its way', async () => {
+      const client = createMockEnvironmentClient({ seed: SEED })
+      await mount(client)
+      heldNavigations = []
+      const seen: Array<string | null | undefined> = []
+      probe.onRender = () => seen.push(probe.session.newSessionDraftId)
+      await type('h')
+      const first = probe.session.newSessionDraftId!
+      // Before `/drafts/<first>` has arrived.
+      await act(() => {
+        void probe.session.createSession(BETA.workspaceId)
+      })
+      const blank = probe.session.newSessionDraftId!
+      expect(blank).not.toBe(first)
+      expect(navigations).toEqual([`replace /drafts/${first}`, 'push /'])
+      seen.length = 0
+
+      // The first character's address lands, then New agent's.
+      const [toFirst, toBlank] = heldNavigations
+      await act(async () => toFirst!())
+      expect(pathOf(probe.route)).toBe(`/drafts/${first}`)
+      await act(async () => toBlank!())
+      await settle(client)
+      // The address went through the first draft's on the way, but the page
+      // never went back to it.
+      expect(pathOf(probe.route)).toBe('/')
+      expect(seen.length).toBeGreaterThan(0)
+      expect(seen.every((id) => id === blank)).toBe(true)
+      expect(probe.session.activeWorkspacePath).toBe(BETA.workspaceId)
+      expect(composer().value).toBe('')
+      expect(contentOf(client, first)?.text).toBe('h')
+    })
   })
 })

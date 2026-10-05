@@ -55,9 +55,19 @@ needed no schema or protocol change.
   showing a blank composer that the draft would replace. A draft sent from
   this browser leads to its session (the browser remembers which session a
   sent draft became). Anything else replaces the address with `/`.
+  A sent draft's session may only not be listed yet (drafts are listed as
+  soon as the client connects, sessions a moment later), so that fallback
+  waits for the connection's first session list (`sessionsListed`).
 - **Sending** uses the session id minted with the draft. The session's
   address replaces the draft's in the history, since the draft is gone; a
-  failed send leaves the draft and its address as they were.
+  failed send leaves the draft and its address as they were. A draft being
+  sent is the send's: it is never discarded meanwhile, and if the user opened
+  another page while its images uploaded, the session is created without
+  taking that page or the view.
+- **Other devices.** The page follows the environment's copy of its draft,
+  so a move made elsewhere stands even after the text is cleared here. A
+  draft sent elsewhere (its minted session exists, and this client is not
+  sending it) retires its page, which leads to that session.
 
 ## Picks
 

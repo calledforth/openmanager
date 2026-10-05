@@ -75,7 +75,7 @@ import {
   EnvironmentComposerStateProvider,
   type DraftLaunch,
 } from './environment-composer'
-import { EnvironmentComposerDraftProvider } from './environment-drafts'
+import { EnvironmentComposerDraftProvider, sendingNewSessionDraft } from './environment-drafts'
 import {
   DraftPageContext,
   rememberSentDraft,
@@ -405,13 +405,13 @@ const mintPage = (workspaceId: string | null): DraftPage => ({
 })
 
 /**
- * A navigation this provider started, until the address reaches it: `to` is
- * a draft's id, or null for the blank page. While the address still reads
- * `from`, it is catching up, and the page this provider opened stands.
+ * Navigations this provider started and that have not settled: `expected`
+ * is every address they can pass through on the way, the one they started
+ * from first. While the address reads one of them it is catching up, and the
+ * page this provider opened stands. Any other address is the user's own move.
  */
 interface RouteAhead {
-  to: string | null
-  from: string | null | undefined
+  expected: Array<string | null | undefined>
 }
 
 const selectActiveSessionId = (state: EnvironmentState) =>
@@ -469,7 +469,8 @@ function EnvironmentSessionStateProvider({
   // Drafts this page gave an address, and where they go: the address of one
   // the environment does not have (an image alone, or text since deleted)
   // still opens it, and a sent one's leads to its session.
-  const claimedRef = useRef(new Map<string, { workspaceId: string; sessionId: string }>())
+  const claimedRef = useRef(new Map<string, { workspaceId: string | null; sessionId: string }>())
+  const aheadRef = useRef<RouteAhead | null>(null)
 
   // The session the client has selected, whether or not its row has arrived.
   const selectedSessionId = useEnvironmentState((state) => state.activeSessionId)
@@ -486,9 +487,12 @@ function EnvironmentSessionStateProvider({
   // an effect would show the previous page for a frame, and one that
   // navigated would race the sidebar's clicks.
   let shown = page
-  const arrived = ahead !== null && (routeDraft === ahead.to || routeDraft !== ahead.from)
-  if (arrived) setAhead(null)
-  const catchingUp = ahead !== null && !arrived
+  const strayed = ahead !== null && !ahead.expected.includes(routeDraft)
+  if (strayed) {
+    aheadRef.current = null
+    setAhead(null)
+  }
+  const catchingUp = ahead !== null && !strayed
   if (!catchingUp && onLanding && selectedSessionId === null) {
     if (!routed) {
       shown ??= mintPage(null)
@@ -535,11 +539,17 @@ function EnvironmentSessionStateProvider({
     pageEnvironmentTarget?.type === 'new_session' ? pageEnvironmentTarget : undefined
   const pageSessionId = environmentTarget?.sessionId ?? shown?.sessionId ?? null
   const pagePending = shown !== null && pageSessionId === null
-  // A draft opened by its address keeps what it was found as, so clearing
-  // its text (which deletes the environment's copy) leaves the page as it is.
-  if (shown && shown.sessionId === null && environmentTarget) {
+  // The page keeps the environment's latest word on where its draft goes,
+  // whoever moved it, so clearing the text (which deletes the environment's
+  // copy) leaves the page, its project and its session id as they were.
+  if (
+    shown?.claimed &&
+    environmentTarget &&
+    (shown.sessionId !== environmentTarget.sessionId ||
+      shown.workspaceId !== environmentTarget.workspaceId)
+  ) {
     const { sessionId, workspaceId } = environmentTarget
-    if (workspaceId) claimedRef.current.set(shown.draftId, { workspaceId, sessionId })
+    claimedRef.current.set(shown.draftId, { workspaceId, sessionId })
     setPage({ ...shown, sessionId, workspaceId })
   }
   // The environment's copy says where a draft is; a page's own pick stands
@@ -548,7 +558,21 @@ function EnvironmentSessionStateProvider({
   const pickedWorkspaceId = environmentTarget
     ? environmentTarget.workspaceId
     : (shown?.workspaceId ?? null)
-  const draftWorkspaceId = pagePending
+  // Sent elsewhere: the session minted with the draft exists, and this
+  // client is not the one sending it. Typing on would revive a draft whose
+  // session id is taken, so the page goes the way its address does.
+  const consumedSessionId = useEnvironmentState((state) =>
+    shown?.claimed &&
+    pageSessionId &&
+    state.sessions[pageSessionId] !== undefined &&
+    !state.draftEdits[shown.draftId]?.launching
+      ? pageSessionId
+      : null,
+  )
+  const pageConsumed =
+    consumedSessionId !== null && !(sync && shown && sendingNewSessionDraft(sync, shown.draftId))
+  const pageUnusable = pagePending || pageConsumed
+  const draftWorkspaceId = pageUnusable
     ? null
     : isListed(pickedWorkspaceId)
       ? pickedWorkspaceId
@@ -556,9 +580,9 @@ function EnvironmentSessionStateProvider({
         ? landingWorkspaceId
         : null
 
-  const isSessionDraftOpen = activeSessionId === null && shown !== null && !pagePending
+  const isSessionDraftOpen = activeSessionId === null && shown !== null && !pageUnusable
   const activeWorkspacePath = activeSessionWorkspaceId ?? draftWorkspaceId
-  const isDraftLoading = activeSessionId === null && selectedSessionId === null && pagePending
+  const isDraftLoading = activeSessionId === null && selectedSessionId === null && pageUnusable
   const isDraftProjectRemoved = isSessionDraftOpen && !!shown?.claimed && draftWorkspaceId === null
 
   // Read by callbacks that run outside render.
@@ -581,31 +605,74 @@ function EnvironmentSessionStateProvider({
   )
   const sessionDraftOf = pageEnvironmentTarget?.type === 'session' ? pageDraftId : null
   const canList = !!sync && (connection.phase !== 'connected' || client.supports('saveDraft'))
+  // A sent draft's session may only not be listed yet: drafts are listed as
+  // soon as the client connects, sessions a moment later.
+  const sessionsListed = connection.sessionsListed
+  // Once per address: a router that settles a moment later must not be sent
+  // the same way twice.
+  const redirectedRef = useRef<string | null>(null)
   useEffect(() => {
-    if (!routed || !navigateSession || !pagePending || !pageDraftId) return
-    if (routeDraft !== pageDraftId || selectedSessionId !== null) return
-    const redirect = sessionDraftOf
-      ? sessionDraftOf
-      : sentSessionId && sentSessionKnown
-        ? sentSessionId
-        : draftsListed || !canList
-          ? null
-          : undefined
-    if (redirect === undefined) return
+    // Back at that address later, it is followed again.
+    if (redirectedRef.current !== routeDraft) redirectedRef.current = null
+    if (!pageUnusable || !pageDraftId || selectedSessionId !== null) return
+    if (pageConsumed && consumedSessionId) rememberSentDraft(pageDraftId, consumedSessionId)
+    if (!routed || !navigateSession) {
+      // No address to follow: a blank page takes its place, in its project.
+      if (!pageConsumed) return
+      const next = mintPage(pageRef.current?.workspaceId ?? null)
+      pageRef.current = next
+      setPage(next)
+      return
+    }
+    if (routeDraft !== pageDraftId) return
+    const redirect = pageConsumed
+      ? consumedSessionId
+      : sessionDraftOf
+        ? sessionDraftOf
+        : sentSessionId && sentSessionKnown
+          ? sentSessionId
+          : sentSessionId && !sessionsListed
+            ? undefined
+            : draftsListed || !canList
+              ? null
+              : undefined
+    if (redirect === undefined || redirectedRef.current === pageDraftId) return
+    redirectedRef.current = pageDraftId
     void navigateSession(redirect, { replace: true }).catch(noop)
   }, [
     canList,
+    consumedSessionId,
     draftsListed,
     navigateSession,
+    pageConsumed,
     pageDraftId,
-    pagePending,
+    pageUnusable,
     routeDraft,
     routed,
     selectedSessionId,
     sentSessionId,
     sentSessionKnown,
     sessionDraftOf,
+    sessionsListed,
   ])
+
+  /**
+   * Navigate, holding the page this provider opened until every navigation
+   * it started has settled: the address passes through each of them on the
+   * way, and none of those is a move of the user's.
+   */
+  const followNavigation = useCallback((to: string | null, navigation: () => Promise<unknown>) => {
+    const next: RouteAhead = {
+      expected: [...(aheadRef.current?.expected ?? [routeRef.current]), to],
+    }
+    aheadRef.current = next
+    setAhead(next)
+    return navigation().finally(() => {
+      if (aheadRef.current !== next) return
+      aheadRef.current = null
+      setAhead(null)
+    })
+  }, [])
 
   // A submitted prompt reads as running until the environment reports the
   // turn itself; from then on the turn is the truth.
@@ -648,10 +715,9 @@ function EnvironmentSessionStateProvider({
       setPage(claimed)
       if (!navigateDraft) return
       // Replaced, not pushed: the blank page it was is gone, not a step back.
-      setAhead((prev) => ({ to: draftId, from: prev ? prev.from : routeRef.current }))
-      void navigateDraft(draftId, { replace: true }).catch(noop)
+      void followNavigation(draftId, () => navigateDraft(draftId, { replace: true })).catch(noop)
     },
-    [navigateDraft],
+    [followNavigation, navigateDraft],
   )
 
   const pageTarget = useCallback((draftId: string): DraftPageTarget | undefined => {
@@ -697,10 +763,14 @@ function EnvironmentSessionStateProvider({
       // when the open one is still empty. One that was written in stays a
       // draft, reachable by its address. Emptied again but holding picks,
       // it would linger as a draft nobody sees, so it goes.
+      // One being sent is the send's, picks and all, whatever the composer
+      // shows meanwhile.
       const current = pageRef.current
-      if (sync && current?.claimed) {
-        const content = selectDraftContent(client.getState(), current.draftId)
-        if (content && !hasDraftContent(content)) sync.discard(current.draftId)
+      if (sync && current?.claimed && !sendingNewSessionDraft(sync, current.draftId)) {
+        const state = client.getState()
+        const content = selectDraftContent(state, current.draftId)
+        const sending = state.draftEdits[current.draftId]?.launching
+        if (content && !hasDraftContent(content) && !sending) sync.discard(current.draftId)
       }
       const next = mintPage(workspacePath)
       pageRef.current = next
@@ -711,8 +781,7 @@ function EnvironmentSessionStateProvider({
       setAdoptedDraftSessionId(null)
       const generation = draftGenerationRef.current
       if (navigateSession) {
-        if (routed) setAhead({ to: null, from: routeRef.current })
-        await navigateSession(null)
+        await (routed ? followNavigation(null, () => navigateSession(null)) : navigateSession(null))
       }
       // A later selection or draft landed while the navigation settled.
       if (draftGenerationRef.current !== generation) return
@@ -723,7 +792,15 @@ function EnvironmentSessionStateProvider({
         revision: (prev?.revision ?? 0) + 1,
       }))
     },
-    [activeSessionId, activeSessionWorkspaceId, client, navigateSession, routed, sync],
+    [
+      activeSessionId,
+      activeSessionWorkspaceId,
+      client,
+      followNavigation,
+      navigateSession,
+      routed,
+      sync,
+    ],
   )
 
   const selectSession = useCallback(
@@ -732,6 +809,7 @@ function EnvironmentSessionStateProvider({
       setError(null)
       pageRef.current = null
       setPage(null)
+      aheadRef.current = null
       setAhead(null)
       // A launch still in flight continues in the sidebar; it no longer
       // holds this composer.
@@ -787,9 +865,18 @@ function EnvironmentSessionStateProvider({
         claimedRef.current.delete(draft.draftId)
         rememberSentDraft(draft.draftId, session.sessionId)
       }
-      // The user moved on while the session was being created: do not pull
-      // the view back to it. Its first turn continues in the sidebar.
-      if (draftGenerationRef.current !== generation) return null
+      // The user moved on, while its images uploaded or the session was
+      // being created: do not pull the view back to it, nor take the page
+      // that is open now. Its first turn continues in the sidebar.
+      const open = pageRef.current
+      if (draftGenerationRef.current !== generation || (draft && open?.draftId !== draft.draftId)) {
+        // The send that held the composer was this one, unless the page open
+        // now is being sent itself.
+        const sendingOpen =
+          open && client.drafts && sendingNewSessionDraft(client.drafts, open.draftId)
+        if (!sendingOpen) setPendingDraftSessionStart(false)
+        return null
+      }
       // The client already holds the session, its thread and the first
       // message, so it goes on screen now, in one step. Waiting for the route
       // (and the session.open it triggers) left a gap where neither the draft
@@ -800,6 +887,7 @@ function EnvironmentSessionStateProvider({
       setPendingDraftSessionStart(false)
       pageRef.current = null
       setPage(null)
+      aheadRef.current = null
       setAhead(null)
       // Creation already returned the first turn; its state now drives the composer.
       setTurnPending(false)
