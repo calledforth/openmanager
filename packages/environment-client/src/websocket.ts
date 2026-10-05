@@ -516,6 +516,8 @@ export function createWebSocketEnvironmentClient(
       capabilities: [...capabilities],
       attempt: 0,
       retriesExhausted: false,
+      // Listed again on every connection, by the resync below.
+      sessionsListed: !supports('listSessions'),
     })
     for (const flush of queued.splice(0)) flush()
     void resync()
@@ -1039,7 +1041,12 @@ export function createWebSocketEnvironmentClient(
               first.nextCursor === null,
             )
           })().catch(() => undefined)
-        })().catch(() => undefined),
+        })()
+          .catch(() => undefined)
+          // Failed or not, nothing more will come of waiting on it.
+          .finally(() => {
+            if (generation === connectionGeneration) patchConnection({ sessionsListed: true })
+          }),
       )
     if (supports('getProviderCatalog'))
       reads.push(commands.getProviderCatalog().catch(() => undefined))

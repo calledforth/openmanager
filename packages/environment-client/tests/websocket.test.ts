@@ -272,6 +272,19 @@ describe('websocket environment client', () => {
     client.dispose()
   })
 
+  it('says when the sessions have been listed on this connection', async () => {
+    const { client, socket } = await connected(['workspace.list', 'session.list'])
+    expect(client.getState().connection.sessionsListed).toBe(false)
+    socket.respond('workspace.list', { workspaces: [WORKSPACE] })
+    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
+    await flush()
+    expect(client.getState().connection.sessionsListed).toBe(true)
+
+    // An environment that lists no sessions has none to wait for.
+    const other = await connected(['workspace.list'])
+    expect(other.client.getState().connection.sessionsListed).toBe(true)
+  })
+
   it('refreshes sidebar membership and preferences without dropping cached transcripts', async () => {
     const state = createInitialState()
     state.environment = { environmentId: ENV, name: 'Local' }

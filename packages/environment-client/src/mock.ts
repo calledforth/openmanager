@@ -1464,6 +1464,7 @@ export function createMockEnvironmentClient(
           hasConnected: true,
           failure: null,
           capabilities: wireCapabilities(capabilities, uploads),
+          sessionsListed: true,
         }),
       ),
     disconnect: () =>
@@ -1567,6 +1568,7 @@ export function createMockEnvironmentClient(
           hasConnected: true,
           failure: null,
           capabilities: wireCapabilities(capabilities, uploads),
+          sessionsListed: true,
         }),
       )
     },
@@ -1585,6 +1587,7 @@ function seedState(
     phase: 'connected',
     hasConnected: true,
     capabilities: wireCapabilities(capabilities, uploads),
+    sessionsListed: true,
   })
   state = applyWorkspaceList(state, seed?.workspaces ?? [])
   if (capabilities.has('getProviderCatalog')) {

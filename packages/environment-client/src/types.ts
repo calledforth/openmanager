@@ -185,6 +185,12 @@ export interface ConnectionState {
    * brings it back. See `docs/connection-retry.md`.
    */
   retriesExhausted: boolean
+  /**
+   * The first page of sessions has been listed on this connection (or the
+   * environment lists none). Until then a session missing from the state may
+   * only not be loaded yet.
+   */
+  sessionsListed: boolean
 }
 
 /** Normalized, immutable. Every update produces a new root object. */
@@ -592,7 +598,7 @@ export interface DraftSync {
    * deletes the draft. While the environment cannot be reached, edits wait.
    */
   edit(draftId: string, target: DraftTarget, content: DraftContent): void
-  /** Delete a draft now, as discarding it does. */
+  /** Delete a draft now, as discarding it does. Does nothing to a draft being sent. */
   discard(draftId: string): void
   /** Hold the draft's saves while a `session.create` sends it. */
   beginLaunch(draftId: string): void

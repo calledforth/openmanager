@@ -314,7 +314,9 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
     discard(draftId: string) {
       const state = store.getState()
       const target = selectDraftTarget(state, draftId)
-      if (!target) return
+      // A draft being sent is the send's: it goes with the session, or comes
+      // back whole if the send fails.
+      if (!target || state.draftEdits[draftId]?.launching) return
       this.edit(draftId, target, { text: '' })
       void write(draftId)
     },

@@ -435,6 +435,23 @@ describe('draft sync', () => {
     sync.dispose()
   })
 
+  it('never discards a draft that is being sent', async () => {
+    const { store, sync, saves } = setup()
+    await vi.advanceTimersByTimeAsync(0)
+    sync.edit('d', NEW, { text: 'Ship it', providerId: 'cursor', preference: { modelId: 'm' } })
+    // The composer clears for the send, keeping the picks it is sent with.
+    sync.edit('d', NEW, { text: '', providerId: 'cursor', preference: { modelId: 'm' } })
+    sync.beginLaunch('d')
+    sync.discard('d')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(store.getState().draftEdits.d).toMatchObject({
+      launching: true,
+      content: { providerId: 'cursor', preference: { modelId: 'm' } },
+    })
+    expect(saves).toHaveLength(0)
+    sync.dispose()
+  })
+
   it('lets another device take a draft whose send stopped before it asked', async () => {
     const { store, sync } = setup()
     await vi.advanceTimersByTimeAsync(0)
