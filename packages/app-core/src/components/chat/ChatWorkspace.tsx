@@ -172,9 +172,13 @@ function ChatWorkspaceContent() {
         <ChildSessionBanner onBack={() => closeChildSession(parentExternalId)} />
       ) : (
         <FloatingChatComposer>
-          <SessionLaunchPill />
-          <SessionBackgroundTasks />
-          <MessageInput />
+          {/* Marked so a notice (a discarded draft's undo) can sit above it;
+              see CHAT_COMPOSER_ATTRIBUTE. */}
+          <div data-chat-composer="">
+            <SessionLaunchPill />
+            <SessionBackgroundTasks />
+            <MessageInput />
+          </div>
         </FloatingChatComposer>
       )}
     </>

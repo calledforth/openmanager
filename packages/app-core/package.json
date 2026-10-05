@@ -89,6 +89,7 @@
     "./components/questions/ComposerQuestionPrompt": "./src/components/questions/ComposerQuestionPrompt.tsx",
     "./components/questions/questionFlow": "./src/components/questions/questionFlow.ts",
     "./components/questions/useQuestionFlow": "./src/components/questions/useQuestionFlow.ts",
+    "./components/sidebar/DraftDiscardToast": "./src/components/sidebar/DraftDiscardToast.tsx",
     "./components/sidebar/ProjectIcon": "./src/components/sidebar/ProjectIcon.tsx",
     "./components/sidebar/SessionBusyLoader": "./src/components/sidebar/SessionBusyLoader.tsx",
     "./components/sidebar/WorkspaceSidebar": "./src/components/sidebar/WorkspaceSidebar.tsx",

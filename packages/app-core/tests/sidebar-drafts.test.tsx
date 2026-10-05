@@ -14,10 +14,12 @@ import type { Workspace } from '@openmanager/protocol'
 import { SidebarProvider } from '../src/components/fluid/ui/sidebar'
 import { ChatWorkspace } from '../src/components/chat/ChatWorkspace'
 import { WorkspaceSidebar } from '../src/components/sidebar/WorkspaceSidebar'
+import { DraftDiscardNotice } from '../src/components/sidebar/DraftDiscardToast'
 import { EnvironmentApplicationProviders } from '../src/providers/environment-application'
 import { EnvironmentClientProvider } from '../src/providers/environment-client'
 import { DRAFT_DISCARD_UNDO_MS } from '../src/providers/environment-sidebar-drafts'
 import { useSessionState, type SessionStateValue } from '../src/providers/session-provider'
+import { useSidebarDrafts, type SidebarDraftsValue } from '../src/providers/sidebar-provider'
 import { ThemeProvider } from '../src/providers/theme-provider'
 
 const project = (name: string, extra: Partial<Workspace> = {}): Workspace => ({
@@ -90,19 +92,25 @@ const probe = {} as {
   session: SessionStateValue
   route: Route
   go: (route: Route) => void
+  /** Show or drop the sidebar, as a phone's sheet closing does. */
+  showSidebar: (shown: boolean) => void
+  drafts: SidebarDraftsValue | null
 }
 let navigations: string[] = []
 let sidebarRenders = 0
 
 function Capture() {
   probe.session = useSessionState()
+  probe.drafts = useSidebarDrafts()
   return null
 }
 
 /** The web's shell over an in-memory address: the sidebar beside the chat pane. */
 function Host({ client, initial }: { client: MockEnvironmentClient; initial: Route }) {
   const [route, setRoute] = useState<Route>(initial)
+  const [sidebarShown, showSidebar] = useState(true)
   probe.route = route
+  probe.showSidebar = showSidebar
   const go = (next: Route) => {
     setRoute(next)
     if ('sessionId' in next) void client.commands.openSession(next.sessionId).catch(() => undefined)
@@ -125,10 +133,14 @@ function Host({ client, initial }: { client: MockEnvironmentClient; initial: Rou
       }}
     >
       <SidebarProvider persist={false}>
-        <Profiler id="sidebar" onRender={() => (sidebarRenders += 1)}>
-          <WorkspaceSidebar />
-        </Profiler>
+        {sidebarShown ? (
+          <Profiler id="sidebar" onRender={() => (sidebarRenders += 1)}>
+            <WorkspaceSidebar />
+          </Profiler>
+        ) : null}
         <ChatWorkspace />
+        {/* At the shell, beside the sidebar, as the web mounts it. */}
+        <DraftDiscardNotice />
       </SidebarProvider>
       <Capture />
     </EnvironmentApplicationProviders>
@@ -172,7 +184,16 @@ const openCard = async (client: MockEnvironmentClient, text: string) => {
   await act(() => cardFor(text)!.querySelector('button')!.click())
   await settle(client)
 }
+/** ✕ clicked with a pointer behind it, as a mouse or a tap makes. */
 const discard = async (text: string) => {
+  await act(() =>
+    cardFor(text)!
+      .querySelector<HTMLButtonElement>('[aria-label="Discard draft"]')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 })),
+  )
+}
+/** ✕ pressed from the keyboard: a click with no pointer behind it. */
+const keyboardDiscard = async (text: string) => {
   await act(() =>
     cardFor(text)!.querySelector<HTMLButtonElement>('[aria-label="Discard draft"]')!.click(),
   )
@@ -444,5 +465,265 @@ describe('unsent session drafts', () => {
     await act(() => probe.go({ draftId: null }))
     await settle(client)
     expect(marked()).toEqual([])
+  })
+})
+
+describe('review regressions', () => {
+  const idOf = (client: MockEnvironmentClient, text: string) =>
+    Object.values(client.getState().drafts).find((draft) => draft.content.text === text)!.draftId
+  /** The live region the notice is swapped in and out of. */
+  const region = () => document.querySelector<HTMLElement>('body > [role="status"]')
+  const key = (target: Element, name: string, extra: KeyboardEventInit = {}) =>
+    act(() => {
+      target.dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true, ...extra }))
+    })
+  const wait = (ms: number) => act(() => new Promise<void>((resolve) => setTimeout(resolve, ms)))
+
+  it('keeps the undo, and lets a tap reach it, when the sidebar goes away', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await parkThree(client)
+    await discard('third idea')
+    // A phone's sheet closes on the tap that reaches for Undo.
+    await act(() => probe.showSidebar(false))
+    expect(toast()).toBeDefined()
+    expect(region()!.firstElementChild!.className).toContain('pointer-events-auto')
+    await act(() => button(toast()!, 'Undo').click())
+    await act(() => probe.showSidebar(true))
+    expect(draftCards()).toEqual(['third idea', 'second idea', 'first idea'])
+  })
+
+  it('announces through a live region that was there before the notice', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await parkThree(client)
+    const live = region()
+    expect(live).not.toBeNull()
+    expect(live!.getAttribute('aria-live')).toBe('polite')
+    expect(live!.textContent).toBe('')
+    await discard('third idea')
+    expect(region()).toBe(live)
+    expect(live!.textContent).toContain('Draft discarded')
+  })
+
+  it('puts focus on Undo after a keyboard discard, and lets Escape go', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await parkThree(client)
+    const third = idOf(client, 'third idea')
+    await keyboardDiscard('third idea')
+    expect(document.activeElement).toBe(button(toast()!, 'Undo'))
+    await key(document.activeElement!, 'Escape')
+    expect(toast()).toBeUndefined()
+    await settle(client)
+    expect(client.getState().drafts[third]).toBeUndefined()
+
+    // From the pointer, focus stays where it was.
+    await discard('second idea')
+    expect(document.activeElement).not.toBe(button(toast()!, 'Undo'))
+  })
+
+  it('holds the notice while either the pointer or focus is in it', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await parkThree(client)
+    const third = idOf(client, 'third idea')
+    vi.useFakeTimers()
+    await keyboardDiscard('third idea')
+    const notice = region()!.firstElementChild!
+    // Focus is on Undo; the pointer comes and goes.
+    await act(() => {
+      notice.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }))
+    })
+    await act(() => {
+      notice.dispatchEvent(
+        new MouseEvent('pointerout', { bubbles: true, relatedTarget: document.body }),
+      )
+    })
+    await act(() => vi.advanceTimersByTime(DRAFT_DISCARD_UNDO_MS * 2))
+    expect(toast()).toBeDefined()
+    // Focus leaves too: the window runs again.
+    await act(() => (document.activeElement as HTMLElement).blur())
+    await act(() => vi.advanceTimersByTime(DRAFT_DISCARD_UNDO_MS + 10))
+    vi.useRealTimers()
+    await settle(client)
+    expect(toast()).toBeUndefined()
+    expect(client.getState().drafts[third]).toBeUndefined()
+  })
+
+  it('drops the open draft’s card once that draft is deleted elsewhere', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await parkThree(client)
+    await openCard(client, 'second idea')
+    const second = probe.session.newSessionDraftId!
+    const saved = client.getState().drafts[second]!
+    await act(() => client.commands.deleteDraft({ draftId: second, baseRevision: saved.revision }))
+    await settle(client)
+    expect(draftCards()).toEqual(['third idea', 'first idea'])
+    // Written in again: a card once it is left, not the old one now.
+    await type('a fresh start')
+    await flushDrafts(client)
+    expect(draftCards()).toEqual(['third idea', 'first idea'])
+    await openCard(client, 'first idea')
+    expect(draftCards()).toEqual(['a fresh start', 'third idea', 'first idea'])
+  })
+
+  it('offers no discard for a draft being sent', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await parkThree(client)
+    const first = idOf(client, 'first idea')
+    act(() => client.drafts!.beginLaunch(first))
+    const card = cardFor('first idea')!
+    expect(card.querySelector('[aria-label="Discard draft"]')).toBeNull()
+    await act(() => {
+      card.firstElementChild!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))
+    })
+    await wait(50)
+    expect(document.querySelector('[role="menu"]')).toBeNull()
+    act(() => probe.drafts!.discardDraft(first))
+    expect(probe.drafts!.pendingDiscard).toBeNull()
+    act(() => client.drafts!.endLaunch(first, 'aborted'))
+    expect(cardFor('first idea')!.querySelector('[aria-label="Discard draft"]')).not.toBeNull()
+  })
+
+  it('calls the discard off when the draft is written to on another device meanwhile', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await parkThree(client)
+    const third = idOf(client, 'third idea')
+    const saved = client.getState().drafts[third]!
+    await discard('third idea')
+    await act(() =>
+      client.commands.saveDraft({
+        draftId: third,
+        baseRevision: saved.revision,
+        target: saved.target,
+        content: { text: 'third idea, and more from the phone' },
+      }),
+    )
+    await settle(client)
+    expect(toast()).toBeUndefined()
+    expect(draftCards()[0]).toBe('third idea, and more from the phone')
+    await act(() => window.dispatchEvent(new Event('pagehide')))
+    await settle(client)
+    expect(client.getState().drafts[third]?.content.text).toBe(
+      'third idea, and more from the phone',
+    )
+  })
+
+  it('calls the discard off on a later revision, even one with the same text', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await parkThree(client)
+    const third = idOf(client, 'third idea')
+    const saved = client.getState().drafts[third]!
+    await discard('third idea')
+    // Another device's copy, saved over this one: a restore after its failed
+    // send reads the same. Not what was discarded here, whatever its text.
+    await act(() =>
+      client.commands.saveDraft({
+        draftId: third,
+        baseRevision: saved.revision,
+        target: saved.target,
+        content: saved.content,
+      }),
+    )
+    await settle(client)
+    expect(client.getState().drafts[third]!.revision).toBeGreaterThan(saved.revision)
+    expect(toast()).toBeUndefined()
+    expect(draftCards()).toContain('third idea')
+    await act(() => window.dispatchEvent(new Event('pagehide')))
+    await settle(client)
+    expect(client.getState().drafts[third]?.content.text).toBe('third idea')
+  })
+
+  it('keeps a draft that another device sent and got back during the window', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await parkThree(client)
+    const third = idOf(client, 'third idea')
+    const saved = client.getState().drafts[third]!
+    const { sessionId } = saved.target as { sessionId: string }
+    await discard('third idea')
+    // Sent elsewhere; its provider fails to start, and the draft is put back.
+    await act(() =>
+      client.commands.createSession({
+        environmentId: client.getState().environment!.environmentId,
+        workspaceId: ALPHA.workspaceId,
+        providerId: 'opencode',
+        firstMessage: 'third idea',
+        draftId: third,
+        sessionId,
+      }),
+    )
+    await settle(client)
+    expect(toast()).toBeUndefined()
+    await act(() => client.commands.deleteSession(sessionId))
+    await act(() =>
+      client.commands.saveDraft({
+        draftId: third,
+        baseRevision: saved.revision + 1,
+        target: saved.target,
+        content: { text: 'third idea', providerId: 'opencode' },
+      }),
+    )
+    await act(() => window.dispatchEvent(new Event('pagehide')))
+    await settle(client)
+    expect(client.getState().drafts[third]?.content.text).toBe('third idea')
+    expect(draftCards()).toContain('third idea')
+  })
+
+  it('still deletes a draft whose own last keystrokes are saved during the window', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await parkThree(client)
+    await openCard(client, 'first idea')
+    const first = probe.session.newSessionDraftId!
+    // Typed, not saved yet; discarding leaves the page, which saves it.
+    await type('first idea, edited')
+    await discard('first idea')
+    await settle(client)
+    expect(client.getState().drafts[first]?.content.text).toBe('first idea, edited')
+    expect(toast()).toBeDefined()
+    await act(() => window.dispatchEvent(new Event('pagehide')))
+    await settle(client)
+    expect(client.getState().drafts[first]).toBeUndefined()
+  })
+
+  it('deletes before the host files its state away on pagehide, and not on a tab switch', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    let seenByHost: string | undefined
+    let third = ''
+    // Registered first, as the web's cache is, and not captured.
+    const hostSave = () => {
+      seenByHost = selectDraftContent(client.getState(), third)?.text
+    }
+    window.addEventListener('pagehide', hostSave)
+    try {
+      await parkThree(client)
+      third = idOf(client, 'third idea')
+      await discard('third idea')
+      const hidden = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+      await act(() => document.dispatchEvent(new Event('visibilitychange')))
+      hidden.mockRestore()
+      expect(toast()).toBeDefined()
+      expect(selectDraftContent(client.getState(), third)?.text).toBe('third idea')
+
+      await act(() => window.dispatchEvent(new Event('pagehide')))
+      expect(seenByHost).toBe('')
+    } finally {
+      window.removeEventListener('pagehide', hostSave)
+    }
+  })
+
+  it('marks a settled session that holds unsent text', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client)
+    await act(() => client.commands.settleSession(SESSION.sessionId, true))
+    await act(() =>
+      client.commands.saveDraft({
+        draftId: SESSION.sessionId,
+        baseRevision: 0,
+        target: { type: 'session', sessionId: SESSION.sessionId },
+        content: { text: 'one more thing' },
+      }),
+    )
+    await settle(client)
+    const row = [...container.querySelectorAll('li')].find((item) =>
+      item.textContent?.includes('First'),
+    )
+    expect(row?.textContent).toContain('Has an unsent draft')
   })
 })

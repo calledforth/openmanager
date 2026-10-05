@@ -281,8 +281,13 @@ describe('draft cards', () => {
     ).toBe(false)
   })
 
-  it('keeps the open draft’s frozen card in its place, and drops it once sent or discarded', () => {
-    const facts = { cards: [card('c', 3), card('a', 1)], openSent: false }
+  it('keeps the open draft’s frozen card in its place, and drops it once sent, gone or discarded', () => {
+    const facts = {
+      cards: [card('c', 3), card('a', 1)],
+      openSent: false,
+      openGone: false,
+      openSending: false,
+    }
     const frozen = card('b', 2)
     const ids = (cards: SidebarDraft[]) => cards.map((shown) => shown.draftId)
     expect(ids(arrangeSidebarDrafts({ facts, frozen, hidden: null }))).toEqual(['c', 'b', 'a'])
@@ -291,8 +296,35 @@ describe('draft cards', () => {
     expect(
       ids(arrangeSidebarDrafts({ facts: { ...facts, openSent: true }, frozen, hidden: null })),
     ).toEqual(['c', 'a'])
+    // Deleted elsewhere, or emptied here: the snapshot's text is stale.
+    expect(
+      ids(arrangeSidebarDrafts({ facts: { ...facts, openGone: true }, frozen, hidden: null })),
+    ).toEqual(['c', 'a'])
     expect(ids(arrangeSidebarDrafts({ facts, frozen, hidden: 'b' }))).toEqual(['c', 'a'])
     expect(ids(arrangeSidebarDrafts({ facts, frozen, hidden: 'c' }))).toEqual(['b', 'a'])
+    // Being sent from its page: still frozen, but no longer discardable.
+    const sending = arrangeSidebarDrafts({
+      facts: { ...facts, openSending: true },
+      frozen,
+      hidden: null,
+    })
+    expect(sending.find((shown) => shown.draftId === 'b')).toMatchObject({ sending: true })
+  })
+
+  it('says which draft is being sent, and when the one on screen is gone', () => {
+    const state = draftState({
+      saved: [{ draftId: 'sending', target: newDraft('alpha', 's1'), content: { text: 'go' } }],
+      edits: {
+        sending: edit(newDraft('alpha', 's1'), { text: '' }, 5, { launching: true }),
+        open: edit(newDraft('alpha', 's2'), { text: 'typing' }, 6, { launching: true }),
+      },
+    })
+    expect(sidebarDraftCard(state, 'sending', 'opencode')).toMatchObject({ sending: true })
+    expect(selectSidebarDrafts(state, 'open', 's2', 'opencode')).toMatchObject({
+      openSending: true,
+      openGone: false,
+    })
+    expect(selectSidebarDrafts(state, 'deleted', null, 'opencode').openGone).toBe(true)
   })
 
   it('previews the first written line, trimmed and capped', () => {

@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react'
 import type { EnvironmentState } from '@openmanager/environment-client'
+import type { DraftContent, DraftTarget } from '@openmanager/protocol'
 import {
   NO_DRAFT_FACTS,
   arrangeSidebarDrafts,
@@ -27,6 +28,49 @@ import {
 
 /** How long a discarded draft can still be brought back. */
 export const DRAFT_DISCARD_UNDO_MS = 6_000
+
+/** A discard waiting out its window, and the draft it was made on. */
+interface WatchedDiscard {
+  /**
+   * The environment's revision of the draft the user discarded; 0 when it had
+   * none. Moves only with this client's own save of what it held.
+   */
+  revision: number
+  /** What this client last held unsaved for it, whose save is no change. */
+  own: string | null
+}
+
+/** What a user would recognise a draft by: its text, its images, its project. */
+function fingerprint(content: DraftContent, target: DraftTarget) {
+  return JSON.stringify([
+    content.text ?? '',
+    content.artifactIds ?? [],
+    target.type === 'new_session' ? target.workspaceId : null,
+  ])
+}
+
+/**
+ * Whether a pending discard still deletes what the user discarded. It does
+ * not once the environment has a later revision than the one discarded,
+ * unless that revision is this client's own late save of what it held (the
+ * last keystrokes, saved as the page closed): the draft was written to or
+ * restored elsewhere meanwhile. Nor once the draft is gone (sent, or deleted
+ * elsewhere): there is nothing left to delete. Notes this client's own
+ * unsaved text as it goes, so call it on every change.
+ */
+function discardStands(state: EnvironmentState, draftId: string, watched: WatchedDiscard) {
+  const saved = state.drafts[draftId]
+  const edit = state.draftEdits[draftId]
+  if (edit?.launching) return false
+  if (edit) watched.own = fingerprint(edit.content, edit.target)
+  if (!saved) return edit !== undefined
+  if (saved.revision <= watched.revision) return true
+  if (watched.own !== null && fingerprint(saved.content, saved.target) === watched.own) {
+    watched.revision = saved.revision
+    return true
+  }
+  return false
+}
 
 /** The open draft's card, as it was when the draft was opened. */
 interface FrozenCard {
@@ -77,11 +121,22 @@ export function EnvironmentSidebarDraftsProvider({ children }: { children: React
     ),
     sameSidebarDraftFacts,
   )
+  // The draft on screen went (deleted elsewhere, or emptied here): its
+  // snapshot is let go for good, so text typed next does not bring the old
+  // card back. Like a draft first written here, it has a card once left.
+  if (facts.openGone && shownFrozen.card && shownFrozen.draftId === openDraftId) {
+    shownFrozen = { draftId: openDraftId, card: null }
+    setFrozen(shownFrozen)
+  }
 
   // One discard waits out its undo window at a time; its card is hidden
   // meanwhile, and nothing is deleted until the window closes.
   const [pending, setPending] = useState<PendingDraftDiscard | null>(null)
   const pendingRef = useRef<PendingDraftDiscard | null>(null)
+  // The draft the discard was made on, to tell a change made elsewhere from
+  // this client's own late save; watched through the store while it waits.
+  const watchRef = useRef<WatchedDiscard | null>(null)
+  const unwatchRef = useRef<(() => void) | undefined>(undefined)
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const keyRef = useRef(0)
 
@@ -103,11 +158,18 @@ export function EnvironmentSidebarDraftsProvider({ children }: { children: React
       const current = pendingRef.current
       if (!current) return
       stopClock()
+      const watched = watchRef.current
       pendingRef.current = null
+      watchRef.current = null
+      unwatchRef.current?.()
+      unwatchRef.current = undefined
       setPending(null)
-      if (commit) releaseDraft(current.draftId)
+      // Changed elsewhere since it was discarded: the card comes back instead.
+      if (commit && watched && discardStands(client.getState(), current.draftId, watched)) {
+        releaseDraft(current.draftId)
+      }
     },
-    [releaseDraft, stopClock],
+    [client, releaseDraft, stopClock],
   )
 
   const startClock = useCallback(() => {
@@ -116,19 +178,34 @@ export function EnvironmentSidebarDraftsProvider({ children }: { children: React
   }, [settleDiscard, stopClock])
 
   const discardDraft = useCallback(
-    (draftId: string) => {
+    (draftId: string, options?: { fromKeyboard?: boolean }) => {
       if (!navigation || pendingRef.current?.draftId === draftId) return
+      // A draft being sent is the send's: it becomes a session, or comes back.
+      if (client.getState().draftEdits[draftId]?.launching) return
       // Only one waits: an earlier discard goes now.
       settleDiscard(true)
+      const state = client.getState()
       keyRef.current += 1
-      const next = { draftId, key: keyRef.current }
+      const next = { draftId, key: keyRef.current, fromKeyboard: options?.fromKeyboard ?? false }
+      const watched: WatchedDiscard = { revision: state.drafts[draftId]?.revision ?? 0, own: null }
+      discardStands(state, draftId, watched)
       pendingRef.current = next
+      watchRef.current = watched
+      // Watched from now, not from the next render, so the composer's own
+      // last keystrokes (written as its page closes, below) are known as ours.
+      // Changed elsewhere meanwhile, the discard is called off at once and the
+      // card comes back.
+      unwatchRef.current = client.subscribe(() => {
+        if (pendingRef.current !== next) return
+        if (!discardStands(client.getState(), draftId, watched)) settleDiscard(false)
+      })
       setPending(next)
       startClock()
       navigation.closeDraftPage(draftId)
     },
-    [navigation, settleDiscard, startClock],
+    [client, navigation, settleDiscard, startClock],
   )
+
   const undoDiscard = useCallback(() => settleDiscard(false), [settleDiscard])
   const confirmDiscard = useCallback(() => settleDiscard(true), [settleDiscard])
   const holdDiscard = useCallback(
@@ -140,18 +217,18 @@ export function EnvironmentSidebarDraftsProvider({ children }: { children: React
     [startClock, stopClock],
   )
 
-  // A discard is let go, not kept waiting, when the page may not come back:
-  // hidden (a phone may close the tab without another word) or unloading.
+  // A discard is let go, not kept waiting, when the page is going: unloaded,
+  // or frozen (which may end in a discard of the tab). Not when it is only
+  // hidden: switching tabs and back within the window keeps the undo, and its
+  // timer runs on meanwhile. Captured, so the deletion lands before the
+  // host's own `pagehide` files the state away for the next load.
   useEffect(() => {
     const flush = () => settleDiscard(true)
-    const onVisibility = () => {
-      if (document.visibilityState === 'hidden') flush()
-    }
-    window.addEventListener('pagehide', flush)
-    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('pagehide', flush, { capture: true })
+    document.addEventListener('freeze', flush, { capture: true })
     return () => {
-      window.removeEventListener('pagehide', flush)
-      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('pagehide', flush, { capture: true })
+      document.removeEventListener('freeze', flush, { capture: true })
       // Leaving this environment: the discard stands.
       flush()
     }

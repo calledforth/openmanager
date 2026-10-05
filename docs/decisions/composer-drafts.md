@@ -249,23 +249,60 @@ localStorage fallback) `useSidebarDrafts` is null and nothing shows.
   it, selected, as a snapshot taken at that moment: typing does not repaint
   or reorder it, and it updates (and moves to the top) when the draft is
   left. A draft first written on this page has no card until it is left.
-  Clicking a card therefore never makes it vanish.
+  Clicking a card therefore never makes it vanish. Once the draft on screen
+  is a session, or is gone (deleted on another device, or emptied here), the
+  snapshot is dropped: typing there again starts a draft that gets a card
+  when it is left.
+- **Order** compares an edit waiting on this client (its clock) with saved
+  copies (the environment's clock). A skewed clock can misorder two drafts
+  edited moments apart on different devices; nothing worse, so no shared
+  clock is kept for it.
 - **Opening** a card goes to `/drafts/<id>` through the host, everything as
   it was left, as picking a session does.
 - **Sending** swaps the card for the session's. Cards are keyed by the session
   id minted with the draft, and a draft is no card from the update that lists
   its session, so the same row turns from draft to session in one frame,
   with nothing folding away or growing in. A draft being sent keeps its card
-  meanwhile, showing the environment's last copy (the composer empties it).
-- **Discarding** (✕ on hover, or the card's menu, by right click or the menu
-  key) hides the card at once and shows an undo notice. The draft is deleted
-  only when the notice goes (6 s, held while the pointer or focus is on it),
-  is dismissed, another draft is discarded, or the page is hidden or
-  unloaded. Undo just shows the card again. Discarding the draft on screen
-  takes the page to a blank `/` (replacing its address); going back to the
+  meanwhile, showing the environment's last copy (the composer empties it),
+  and offers no discard: no ✕, no menu, and `discardDraft` does nothing. It
+  becomes a session or comes back whole.
+- **Discarding** (✕ on hover and always on touch, or the card's menu, by
+  right click or the menu key) hides the card at once and shows an undo
+  notice. The draft is deleted only when the notice goes (6 s, held while the
+  pointer or focus is on it, each counted apart), is dismissed (✕ or Escape),
+  another draft is discarded, or the page goes (`pagehide`, or `freeze`).
+  Hiding the page is not going: a tab switch keeps the undo, and the 6 s run
+  on meanwhile. The flush listens in the capture phase, so the deletion is in
+  the state before the host's own `pagehide` files it away for the next
+  load. Undo just shows the card again. Discarding the draft on screen takes
+  the page to a blank `/` (replacing its address); going back to the
   draft's address before the deletion cancels it. The one place a discard is
   let go (`releaseDraft` in `environment-sidebar-drafts.tsx`) is where images
   kept with a draft (CAL-215) are to be released.
+- **A discard is of what the user saw.** It keeps the revision it was made
+  on. If the environment has a later one by the time it would delete (written
+  to on another device, or sent there and put back by a failed send), the
+  discard is called off: no deletion, the notice goes, the card comes back.
+  It is called off the moment the change arrives, and checked again before
+  deleting. The one later revision that counts as no change is this client's
+  own save of what it held (the last keystrokes, saved as the discarded page
+  closed). A draft gone meanwhile (sent, or deleted elsewhere) has nothing
+  left to delete, so the discard simply ends. An offline client cannot see a
+  later revision; its delete reaches the environment on reconnect and is
+  refused only if the draft was deleted (sent) since.
+- **The undo notice** is mounted by the host at the shell, beside the sidebar
+  rather than in it: on a phone the sidebar is a modal sheet that closes, and
+  would unmount the notice, on the very tap that reaches for Undo. The
+  notice's own root takes the pointer through the sheet's inert page. With
+  the sidebar open on a wide screen it rests on the sidebar's foot; on a
+  phone, or with the sidebar folded away, it floats just above the composer
+  (`data-chat-composer`), clear of its corners. Its `role="status"` region
+  is always mounted and the notice is swapped inside it, so each discard is
+  announced. A discard made from the keyboard puts focus on Undo; one made
+  with the pointer leaves focus alone.
+- **The card's menu** hangs from a hidden point, so on close focus goes back
+  to the card, not to that point (where Enter would reopen the menu). The
+  card does not claim `aria-haspopup`: its own action is opening the draft.
 - **A removed project** (`workspaceId` null, or no longer listed) shows "No
   project"; a missing or inaccessible folder is struck through with its badge,
   as on session cards. Both open normally, and the page offers another
@@ -274,7 +311,8 @@ localStorage fallback) `useSidebarDrafts` is null and nothing shows.
   hover (`selectDraftSyncStatus`; nothing while merely saving).
 
 A session whose composer holds unsent text or an image gets a quieter step of
-the same tint and a pen beside its provider, on every device. Sending or
+the same tint (5 % of the accent against the draft cards' 6.5 %) and a pen
+beside its provider, on every device, settled rows included. Sending or
 clearing the text removes it. The session on screen never shows it: its
 composer is the one being typed in, and a mark that came and went with each
 emptied line would flicker, just as the open draft's card stays frozen.

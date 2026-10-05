@@ -8,6 +8,7 @@ import { EnvironmentApplicationProviders } from '@openmanager/app-core/providers
 import { useSidebarData } from '@openmanager/app-core/providers/sidebar-provider'
 import { ProjectIcon } from '@openmanager/app-core/components/sidebar/ProjectIcon'
 import { WorkspaceSidebar } from '@openmanager/app-core/components/sidebar/WorkspaceSidebar'
+import { DraftDiscardNotice } from '@openmanager/app-core/components/sidebar/DraftDiscardToast'
 import { phosphorIcon, useIcon } from '@openmanager/app-core/components/fluid/lib/icon-context'
 import {
   CommandPalette,
@@ -290,6 +291,9 @@ function ConnectedShell({
         closeAddWorkspace={closeAddWorkspace}
       />
       <SessionNotifications openSession={openSession} />
+      {/* Beside the sidebar, not in it: on a phone the sidebar is a modal
+          sheet that closes on the tap that reaches for Undo. */}
+      <DraftDiscardNotice />
     </EnvironmentApplicationProviders>
   )
 }

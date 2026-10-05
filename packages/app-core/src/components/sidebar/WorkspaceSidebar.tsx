@@ -6,7 +6,6 @@ import {
   useSidebarSessions,
   type SidebarSessionEntry,
 } from '../../providers/sidebar-provider'
-import { DraftDiscardToast } from './DraftDiscardToast'
 import { WorkspaceSidebarView } from './WorkspaceSidebarView'
 
 function subscribeVisibility(onChange: () => void) {
@@ -101,23 +100,11 @@ function useWorkspaceSidebarModel() {
   }
 }
 
-/** The undo for a discarded draft card, on hosts that have draft cards. */
-function DraftDiscardNotice() {
-  const drafts = useSidebarDrafts()
-  if (!drafts) return null
-  return (
-    <DraftDiscardToast
-      pending={drafts.pendingDiscard}
-      onUndo={drafts.undoDiscard}
-      onDismiss={drafts.confirmDiscard}
-      onHold={drafts.holdDiscard}
-    />
-  )
-}
-
 /**
  * The session sidebar bound to `useSidebarData`; render inside a Fluid
- * `SidebarProvider`. Hosts add their own rows through the slots.
+ * `SidebarProvider`. Hosts add their own rows through the slots. Hosts with
+ * draft cards also mount `DraftDiscardNotice` (`DraftDiscardToast.tsx`)
+ * beside it, outside the sidebar, for the undo of a discarded draft.
  */
 export function WorkspaceSidebar({
   titlebar,
@@ -127,10 +114,5 @@ export function WorkspaceSidebar({
   footer?: ReactNode
 }) {
   const model = useWorkspaceSidebarModel()
-  return (
-    <>
-      <WorkspaceSidebarView {...model} titlebar={titlebar} footer={footer} />
-      <DraftDiscardNotice />
-    </>
-  )
+  return <WorkspaceSidebarView {...model} titlebar={titlebar} footer={footer} />
 }

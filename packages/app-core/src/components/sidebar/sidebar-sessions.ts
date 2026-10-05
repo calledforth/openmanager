@@ -44,10 +44,17 @@ export interface SidebarDraft {
   /** The first line written, or empty for a draft of images alone. */
   preview: string
   imageCount: number
-  /** When it was last edited, in ms; orders the cards, newest first. */
+  /**
+   * When it was last edited, in ms; orders the cards, newest first. An edit
+   * waiting here is on this client's clock and a saved copy on the
+   * environment's, so a skewed clock can misorder two drafts edited moments
+   * apart on different devices; nothing worse.
+   */
   editedAt: number
   /** Why the environment does not have its latest edit. Absent while it is synced or only saving. */
   unsynced?: DraftStall
+  /** A send has it: it is the session's now, and cannot be discarded. */
+  sending?: true
 }
 
 /** Long enough for any card width; the rest is never shown. */
@@ -119,6 +126,7 @@ export function sidebarDraftCard(
     imageCount: content.artifactIds?.length ?? 0,
     editedAt: edit ? edit.editedAt : saved ? Date.parse(saved.updatedAt) || 0 : 0,
     ...(status !== 'synced' && status !== 'saving' ? { unsynced: status } : {}),
+    ...(edit?.launching ? { sending: true as const } : {}),
   }
 }
 
@@ -128,9 +136,21 @@ export interface SidebarDraftFacts {
   cards: SidebarDraft[]
   /** The draft on screen has become its session (sent here or elsewhere). */
   openSent: boolean
+  /**
+   * The draft on screen is gone: deleted on another device, or emptied here
+   * and deleted. Its snapshot would show text the composer no longer has.
+   */
+  openGone: boolean
+  /** The draft on screen is being sent. */
+  openSending: boolean
 }
 
-export const NO_DRAFT_FACTS: SidebarDraftFacts = { cards: [], openSent: false }
+export const NO_DRAFT_FACTS: SidebarDraftFacts = {
+  cards: [],
+  openSent: false,
+  openGone: false,
+  openSending: false,
+}
 
 /**
  * The draft cards, read live. The draft on screen is left out: its card is
@@ -155,6 +175,8 @@ export function selectSidebarDrafts(
   return {
     cards: cards.sort(newestDraftFirst),
     openSent: openSessionId !== null && state.sessions[openSessionId] !== undefined,
+    openGone: openDraftId !== null && !state.drafts[openDraftId] && !state.draftEdits[openDraftId],
+    openSending: openDraftId !== null && state.draftEdits[openDraftId]?.launching === true,
   }
 }
 
@@ -172,7 +194,8 @@ function sameDraft(left: SidebarDraft, right: SidebarDraft) {
       left.preview === right.preview &&
       left.imageCount === right.imageCount &&
       left.editedAt === right.editedAt &&
-      left.unsynced === right.unsynced)
+      left.unsynced === right.unsynced &&
+      left.sending === right.sending)
   )
 }
 
@@ -180,6 +203,8 @@ function sameDraft(left: SidebarDraft, right: SidebarDraft) {
 export function sameSidebarDraftFacts(left: SidebarDraftFacts, right: SidebarDraftFacts) {
   return (
     left.openSent === right.openSent &&
+    left.openGone === right.openGone &&
+    left.openSending === right.openSending &&
     left.cards.length === right.cards.length &&
     left.cards.every((card, index) => sameDraft(card, right.cards[index]!))
   )
@@ -189,7 +214,8 @@ export function sameSidebarDraftFacts(left: SidebarDraftFacts, right: SidebarDra
  * The cards to show: the live ones, plus the open draft's frozen card where
  * it had one when it was opened, less any discard waiting out its undo. The
  * frozen card keeps its place: it was taken before the typing that would
- * move it, and moves when the draft is left.
+ * move it, and moves when the draft is left. It goes once its draft is a
+ * session or is gone, and says so while it is being sent.
  */
 export function arrangeSidebarDrafts({
   facts,
@@ -200,10 +226,16 @@ export function arrangeSidebarDrafts({
   frozen: SidebarDraft | null
   hidden: string | null
 }): SidebarDraft[] {
-  const cards =
-    frozen && !facts.openSent && !facts.cards.some((card) => card.draftId === frozen.draftId)
-      ? [...facts.cards, frozen].sort(newestDraftFirst)
-      : facts.cards
+  const shown =
+    frozen &&
+    !facts.openSent &&
+    !facts.openGone &&
+    !facts.cards.some((card) => card.draftId === frozen.draftId)
+      ? facts.openSending
+        ? { ...frozen, sending: true as const }
+        : frozen
+      : null
+  const cards = shown ? [...facts.cards, shown].sort(newestDraftFirst) : facts.cards
   return hidden === null ? cards : cards.filter((card) => card.draftId !== hidden)
 }
 

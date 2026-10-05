@@ -6,11 +6,13 @@ import {
   useMemo,
   useRef,
   useState,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from 'react'
 import { AnimatePresence, motion, useReducedMotion, type MotionProps } from 'motion/react'
 import {
   ArrowUUpLeftIcon,
+  ArrowUpRightIcon,
   CaretDownIcon,
   CheckIcon,
   CloudSlashIcon,
@@ -102,7 +104,7 @@ const NewAgentIcon = phosphorIcon(NotePencilIcon)
 const AddProjectIcon = phosphorIcon(FolderPlusIcon)
 const ShowMoreIcon = phosphorIcon(CaretDownIcon)
 const ChildSessionIcon = phosphorIcon(GitBranchIcon)
-const OpenDraftIcon = phosphorIcon(PencilSimpleLineIcon)
+const OpenDraftIcon = phosphorIcon(ArrowUpRightIcon)
 const DiscardDraftIcon = phosphorIcon(TrashIcon)
 
 // Provider marks need their id bound in.
@@ -376,7 +378,7 @@ function CardAction({
   children,
 }: {
   label: string
-  onClick: () => void
+  onClick: (event: ReactMouseEvent) => void
   children: ReactNode
 }) {
   return (
@@ -421,7 +423,7 @@ export interface WorkspaceSidebarViewProps {
   activeDraftId?: string | null
   onOpenDraft?: (draftId: string) => void
   /** Absent when drafts cannot be discarded here; the card offers no discard. */
-  onDiscardDraft?: (draftId: string) => void
+  onDiscardDraft?: (draftId: string, options?: { fromKeyboard?: boolean }) => void
   onAddWorkspace: () => void
   /** The name a provider goes by; the raw id when the host has no catalog. */
   providerLabel?: (providerId: ProviderId) => string
@@ -472,7 +474,11 @@ export function WorkspaceSidebarView({
   const onOpenDraft = useCallback((draftId: string) => openDraftRef.current?.(draftId), [])
   const canDiscardDraft = requestDiscardDraft !== undefined
   const onDiscardDraft = useMemo(
-    () => (canDiscardDraft ? (draftId: string) => discardDraftRef.current?.(draftId) : undefined),
+    () =>
+      canDiscardDraft
+        ? (draftId: string, options?: { fromKeyboard?: boolean }) =>
+            discardDraftRef.current?.(draftId, options)
+        : undefined,
     [canDiscardDraft],
   )
   const canSettle = requestSettle !== undefined
@@ -710,7 +716,7 @@ interface RowHandlers {
   onSelectSession: WorkspaceSidebarViewProps['onSelectSession']
   onSettleSession?: WorkspaceSidebarViewProps['onSettleSession']
   onOpenDraft?: (draftId: string) => void
-  onDiscardDraft?: (draftId: string) => void
+  onDiscardDraft?: (draftId: string, options?: { fromKeyboard?: boolean }) => void
   providerLabel?: WorkspaceSidebarViewProps['providerLabel']
   rowMotion: MotionProps
 }
@@ -959,7 +965,14 @@ function DraftCardBody({
   const preview = draft.preview || imagesLabel(draft.imageCount)
   const unsynced = draft.unsynced ? DRAFT_SYNC_EXPLANATION[draft.unsynced] : undefined
   const open = () => onOpenDraft?.(draft.draftId)
-  const discard = onDiscardDraft ? () => onDiscardDraft(draft.draftId) : undefined
+  // A draft being sent is the send's: nothing here discards it. A click
+  // with no pointer behind it (detail 0) came from the keyboard, and the
+  // undo notice then takes focus.
+  const discard =
+    onDiscardDraft && !draft.sending
+      ? (event: { detail: number }) =>
+          onDiscardDraft(draft.draftId, { fromKeyboard: event.detail === 0 })
+      : undefined
 
   const cardRef = useRef<HTMLButtonElement>(null)
   const anchorRef = useRef<HTMLButtonElement>(null)
@@ -971,7 +984,13 @@ function DraftCardBody({
   }
 
   const projectLine = (
-    <span className="flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-muted-foreground">
+    <span
+      className={cn(
+        'flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-muted-foreground',
+        // Touch has no hover: ✕ stays out, beside the label rather than over it.
+        discard && 'pointer-coarse:pr-7',
+      )}
+    >
       {workspace ? (
         <>
           <ProjectIcon workspacePath={workspace.path} className="opacity-80" />
@@ -999,12 +1018,12 @@ function DraftCardBody({
         </span>
       )}
       {/* Where a session shows its status. Gives way to ✕ on hover, as the
-          status gives way to Settle. */}
+          status gives way to Settle; on touch the two sit side by side. */}
       <span
         className={cn(
           'ml-auto flex shrink-0 items-center gap-1 pl-2 text-[color:var(--basis-draft)] transition-opacity duration-80',
           discard &&
-            'group-has-[:focus-visible]/card:opacity-0 group-hover/card:opacity-0 pointer-coarse:opacity-0',
+            'pointer-fine:group-has-[:focus-visible]/card:opacity-0 pointer-fine:group-hover/card:opacity-0',
         )}
       >
         <PencilSimpleLineIcon className="h-3 w-3" aria-hidden />
@@ -1066,7 +1085,6 @@ function DraftCardBody({
           ref={cardRef}
           type="button"
           aria-current={isActive ? 'page' : undefined}
-          aria-haspopup={discard ? 'menu' : undefined}
           onClick={open}
           onKeyDown={(event) => {
             if (!discard) return
@@ -1097,18 +1115,7 @@ function DraftCardBody({
       ) : null}
       {/* Mounted on first use, then kept, so closing plays its exit. */}
       {discard && menuAt ? (
-        <DropdownMenu
-          open={menuOpen}
-          onOpenChange={(next) => {
-            setMenuOpen(next)
-            if (next) return
-            // The menu hands focus back to its anchor, which is no place to
-            // leave it: back to the card, unless the user has moved on.
-            requestAnimationFrame(() => {
-              if (document.activeElement === anchorRef.current) cardRef.current?.focus()
-            })
-          }}
-        >
+        <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
           <DropdownTrigger
             ref={anchorRef}
             render={
@@ -1120,9 +1127,21 @@ function DraftCardBody({
               />
             }
           />
-          <DropdownContent className={cn('w-52', SIDEBAR_MENU_GRID)} sideOffset={2}>
+          <DropdownContent
+            className={cn('w-52', SIDEBAR_MENU_GRID)}
+            sideOffset={2}
+            // The anchor is a hidden point, no place to leave focus: back to
+            // the card, unless the user has put focus somewhere else.
+            onCloseAutoFocus={(event) => {
+              event.preventDefault()
+              const active = document.activeElement
+              if (!active || active === document.body || active === anchorRef.current) {
+                cardRef.current?.focus()
+              }
+            }}
+          >
             <MenuItem index={0} icon={OpenDraftIcon} label="Open draft" onSelect={open} />
-            <MenuItem index={1} icon={DiscardDraftIcon} label="Discard draft" onSelect={discard} />
+            <MenuItem index={1} icon={DiscardDraftIcon} label="Discard draft" onClick={discard} />
           </DropdownContent>
         </DropdownMenu>
       ) : null}
@@ -1183,16 +1202,21 @@ function SettledRow({
   const { session, workspace, depth } = row
   const providerId = session.providerId ?? DEFAULT_PROVIDER_ID
   const tone = sessionBusyTone(session.status)
+  const isActive = session.externalId === activeSessionId
+  // Settled work can still hold a reply the user started: the active cards'
+  // mark and tint, under the row's own hover.
+  const unsent = Boolean(session.hasUnsentDraft) && !isActive
   return (
     <MotionMenuItem className="overflow-hidden" {...rowMotion}>
       <SidebarMenuButton
         icon={depth > 0 ? ChildSessionIcon : providerIcon(providerId)}
-        isActive={session.externalId === activeSessionId}
-        className="text-muted-foreground"
+        isActive={isActive}
+        className={cn('text-muted-foreground', unsent && 'bg-(--basis-draft-unsent)')}
         style={depth > 0 ? { paddingLeft: 8 + Math.min(depth, 4) * 12 } : undefined}
         onClick={() => onSelectSession(workspace.path, session.externalId, providerId)}
       >
         <span className="truncate">{session.title || 'New session'}</span>
+        {unsent ? <UnsentMark /> : null}
         <span className="sr-only">
           {' '}
           in {workspace.name}

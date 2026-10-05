@@ -1296,8 +1296,8 @@ textarea,
   --basis-draft-fill: color-mix(in oklab, var(--basis-draft) 6.5%, transparent);
   --basis-draft-hover: color-mix(in oklab, var(--basis-draft) 10%, transparent);
   --basis-draft-active: color-mix(in oklab, var(--basis-draft) 14%, transparent);
-  --basis-draft-unsent: color-mix(in oklab, var(--basis-draft) 3.5%, transparent);
-  --basis-draft-unsent-hover: color-mix(in oklab, var(--basis-draft) 6.5%, transparent);
+  --basis-draft-unsent: color-mix(in oklab, var(--basis-draft) 5%, transparent);
+  --basis-draft-unsent-hover: color-mix(in oklab, var(--basis-draft) 8%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {

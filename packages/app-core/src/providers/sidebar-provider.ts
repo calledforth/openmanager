@@ -136,6 +136,8 @@ export interface PendingDraftDiscard {
   draftId: string
   /** Tells one discard from the next, so a second one restarts the notice. */
   key: number
+  /** Made from the keyboard: the notice takes focus, so Undo is a keypress away. */
+  fromKeyboard: boolean
 }
 
 /**
@@ -156,9 +158,11 @@ export interface SidebarDraftsValue {
   openDraft: (draftId: string) => void
   /**
    * Hide the draft's card, and delete the draft once the undo window closes
-   * or the page is hidden. The draft on screen leaves for a blank page.
+   * or the page goes. The draft on screen leaves for a blank page. Does
+   * nothing to a draft being sent; called off if the draft changes elsewhere
+   * during the window.
    */
-  discardDraft: (draftId: string) => void
+  discardDraft: (draftId: string, options?: { fromKeyboard?: boolean }) => void
   pendingDiscard: PendingDraftDiscard | null
   /** Bring the pending discard's card back; nothing was deleted. */
   undoDiscard: () => void

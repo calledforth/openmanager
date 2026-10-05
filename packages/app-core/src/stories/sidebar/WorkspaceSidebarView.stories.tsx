@@ -185,9 +185,9 @@ function Demo({
     clearTimeout(timer.current)
     timer.current = setTimeout(() => settle(false), 6_000)
   }
-  const discard = (draftId: string) => {
+  const discard = (draftId: string, options?: { fromKeyboard?: boolean }) => {
     settle(false)
-    const next = { draftId, key: Date.now() }
+    const next = { draftId, key: Date.now(), fromKeyboard: options?.fromKeyboard ?? false }
     pendingRef.current = next
     setPending(next)
     if (draftId === activeDraftId) setActiveDraftId(null)
