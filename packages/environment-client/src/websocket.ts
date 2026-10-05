@@ -52,6 +52,7 @@ import {
   applySessionHistory,
   applySessionList,
   applySessionOpen,
+  applySessionOpening,
   applySessionRemoved,
   applySessionAcknowledged,
   applySessionTitle,
@@ -1208,17 +1209,15 @@ export function createWebSocketEnvironmentClient(
     async openSession(sessionId) {
       const generation = ++openGeneration
       const previous = store.getState().activeSessionId
-      store.update((state) => {
-        let next = state
-        for (const threadId of state.sessions[sessionId]?.threadIds ?? []) {
-          next = applyThreadHydration(next, threadId, 'loading')
-        }
-        return {
-          ...next,
-          sessionOpenFailure:
-            state.sessionOpenFailure?.sessionId === sessionId ? state.sessionOpenFailure : null,
-        }
-      })
+      store.update((state) => applySessionOpening(state, sessionId))
+      // Selected already, so the session left behind is released now, as
+      // `setActiveSession` does. Waiting for the reply would leak it: a later
+      // open, overtaking this one, would see this session as the previous.
+      const left =
+        previous && previous !== sessionId && store.getState().activeSessionId === sessionId
+          ? previous
+          : null
+      if (left) for (const scope of sessionScopes(left)) unsubscribe(scope)
       let payload: WireResponsePayload<'session.open'>
       try {
         payload = await request('session.open', { sessionId })
@@ -1254,7 +1253,8 @@ export function createWebSocketEnvironmentClient(
           ? applyActiveThread(next, state.activeThreadId)
           : next
       })
-      if (previous && previous !== sessionId) {
+      // A session not yet listed is selected only by the reply.
+      if (!left && previous && previous !== sessionId) {
         for (const scope of sessionScopes(previous)) unsubscribe(scope)
       }
       if (capabilities.has(REPLAY_NAME) && environmentId) {

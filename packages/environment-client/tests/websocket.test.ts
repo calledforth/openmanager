@@ -609,6 +609,87 @@ describe('websocket environment client', () => {
     client.disconnect()
   })
 
+  // Switching is on screen from the click. Until the reply the next session
+  // is selected with nothing known about its threads, which reads as loading;
+  // clearing the selection instead read as the new-session landing.
+  it('selects a listed session as soon as it is opened, before the environment answers', async () => {
+    const { client, socket } = await connected()
+    const OTHER = { ...SESSION_SUMMARY, sessionId: 'session-2' }
+    const OTHER_THREAD = { threadId: 'thread-2', sessionId: OTHER.sessionId }
+    socket.respond('session.list', { sessions: [SESSION_SUMMARY, OTHER], nextCursor: null })
+    await flush()
+    const first = client.commands.openSession(SESSION.sessionId)
+    await answerOpen(socket)
+    await first
+    expect(client.getState().activeThreadId).toBe(THREAD.threadId)
+
+    client.setActiveSession(null)
+    const switched = client.commands.openSession(OTHER.sessionId)
+    expect(client.getState().activeSessionId).toBe(OTHER.sessionId)
+    expect(client.getState().activeThreadId).toBeNull()
+
+    await answerOpen(socket, OTHER, [OTHER_THREAD])
+    await switched
+    expect(client.getState().activeSessionId).toBe(OTHER.sessionId)
+    expect(client.getState().activeThreadId).toBe(OTHER_THREAD.threadId)
+    expect(client.getState().threads[OTHER_THREAD.threadId]?.hydration).toBe('ready')
+
+    // Back to a session whose thread is known: it is selected loading, on its thread.
+    client.setActiveSession(null)
+    const back = client.commands.openSession(SESSION.sessionId)
+    expect(client.getState().activeThreadId).toBe(THREAD.threadId)
+    expect(client.getState().threads[THREAD.threadId]?.hydration).toBe('loading')
+    await answerOpen(socket)
+    await back
+    expect(client.getState().threads[THREAD.threadId]?.hydration).toBe('ready')
+    client.disconnect()
+  })
+
+  // Opens that overtake each other must still release the session they left:
+  // B is selected the moment it is opened, so C's open sees B, not A, as the
+  // previous session, and A has to have gone when B was picked.
+  it('releases the session left behind when an open overtakes another', async () => {
+    const { client, socket } = await connected()
+    const listed = ['session-2', 'session-3'].map((sessionId) => ({
+      ...SESSION_SUMMARY,
+      sessionId,
+    }))
+    socket.respond('session.list', { sessions: [SESSION_SUMMARY, ...listed], nextCursor: null })
+    await flush()
+    const first = client.commands.openSession(SESSION.sessionId)
+    await answerOpen(socket)
+    await first
+    const subscribes = socket.sent.filter((message) => message.name === 'subscription.subscribe')
+    const sessionScoped = subscribes.filter(
+      (message) =>
+        (message.payload as { scope: { sessionId?: string } }).scope.sessionId ===
+        SESSION.sessionId,
+    )
+    expect(sessionScoped.length).toBeGreaterThan(0)
+    sessionScoped.forEach((message, index) =>
+      socket.receive({
+        type: 'response',
+        requestId: message.requestId,
+        payload: {
+          subscriptionId: `sub-a-${index}`,
+          scope: (message.payload as { scope: unknown }).scope,
+        },
+      }),
+    )
+
+    // B's open is overtaken before it is answered.
+    void client.commands.openSession('session-2').catch(() => undefined)
+    const toC = client.commands.openSession('session-3')
+    await answerOpen(socket, listed[1]!, [{ threadId: 'thread-3', sessionId: 'session-3' }])
+    await toC
+    const released = socket.sent
+      .filter((message) => message.name === 'subscription.unsubscribe')
+      .map((message) => (message.payload as { subscriptionId: string }).subscriptionId)
+    expect(released).toEqual(sessionScoped.map((_, index) => `sub-a-${index}`))
+    expect(client.getState().activeSessionId).toBe('session-3')
+    client.disconnect()
+  })
+
   it('keeps the persisted status while opening and hydrating an empty transcript', async () => {
     const { client, socket } = await connected()
     const opened = client.commands.openSession(SESSION.sessionId)

@@ -235,7 +235,7 @@ describe('web routes', () => {
     // Leave for a draft while the open for B is still in flight.
     await user.click(screen.getByRole('button', { name: /Chat B/ }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/sessions/b'))
-    expect(client.getState().activeSessionId).not.toBe('b')
+    expect(client.getState().threads['thread-b']?.hydration).toBe('loading')
     await user.click(screen.getByRole('button', { name: 'New agent' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/'))
     await act(() => client.settle())

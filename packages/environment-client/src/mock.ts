@@ -47,6 +47,7 @@ import {
   applySessionCreated,
   applySessionHistory,
   applySessionOpen,
+  applySessionOpening,
   applyTurnSendFailed,
   applyTurnSending,
   applyTurnStarted,
@@ -897,6 +898,8 @@ export function createMockEnvironmentClient(
       }),
     openSession: (sessionId) => {
       const generation = ++openGeneration
+      // On screen, loading, from the request on, as the wire client shows it.
+      store.update((state) => applySessionOpening(state, sessionId))
       return run('openSession', sessionId, () => {
         // Like the wire client, an open overtaken by a later selection lands nowhere.
         if (generation !== openGeneration) return

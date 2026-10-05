@@ -232,6 +232,56 @@ describe('session workspace', () => {
     expect(screen.getByRole('textbox')).toBeEnabled()
   })
 
+  // Switching sessions waits on `session.open`. The wait belongs to the next
+  // session, not to the new-session landing standing in until the reply.
+  it('shows the next session, never the landing, while it opens', async () => {
+    const user = userEvent.setup()
+    const OTHER_THREAD = { threadId: 'thread-2', sessionId: 'session-2' }
+    connectedEnvironment()
+    // Every command takes a while, so the open is in flight long enough to see.
+    const client = createMockEnvironmentClient({
+      latencyMs: 250,
+      seed: {
+        ...SEED,
+        sessions: [
+          ...SEED.sessions!,
+          {
+            session: { sessionId: 'session-2', workspaceId: WORKSPACE.workspaceId, title: 'Other' },
+            threads: [OTHER_THREAD],
+            turns: [{ turnId: 'turn-2', threadId: OTHER_THREAD.threadId, state: 'completed' }],
+            messages: [
+              {
+                messageId: 'user-2',
+                threadId: OTHER_THREAD.threadId,
+                turnId: 'turn-2',
+                role: 'user',
+                content: [{ type: 'text', text: 'What did the other session do?' }],
+              },
+            ],
+          },
+        ],
+      },
+    })
+    const { router } = renderWebApp('/sessions/session-1', {
+      createEnvironmentClient: () => client,
+    })
+    expect(await screen.findByText('In the shared application package.')).toBeInTheDocument()
+
+    let landingShown = false
+    const observer = new MutationObserver(() => {
+      if (document.body.textContent?.includes('Start with a message below')) landingShown = true
+    })
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true })
+
+    await user.click(within(sidebar()).getByText('Other'))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/sessions/session-2'))
+    // Picked at once, so the sidebar and the pane agree while it loads.
+    expect(client.getState().activeSessionId).toBe('session-2')
+    expect(await screen.findByText('What did the other session do?')).toBeInTheDocument()
+    observer.disconnect()
+    expect(landingShown).toBe(false)
+  })
+
   it('opens the session named by the URL', async () => {
     const { client } = renderConnected('/sessions/session-1')
     expect(await screen.findByText('In the shared application package.')).toBeInTheDocument()

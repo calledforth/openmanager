@@ -1085,6 +1085,28 @@ export function applyActiveSession(
   }
 }
 
+/**
+ * A session being opened. It goes on screen now rather than when
+ * `session.open` answers: the threads already known read as loading, and
+ * with none known yet the view waits for the first. Leaving the selection
+ * empty in between showed the new-session landing for as long as the open
+ * took. Opening the session already shown keeps its thread, and a failure
+ * stays up while that same session is retried.
+ */
+export function applySessionOpening(state: EnvironmentState, sessionId: string): EnvironmentState {
+  const session = state.sessions[sessionId]
+  let next = state
+  for (const threadId of session?.threadIds ?? []) {
+    next = applyThreadHydration(next, threadId, 'loading')
+  }
+  if (session && next.activeSessionId !== sessionId) next = applyActiveSession(next, sessionId)
+  const failure =
+    state.sessionOpenFailure?.sessionId === sessionId ? state.sessionOpenFailure : null
+  return (next.sessionOpenFailure ?? null) === failure
+    ? next
+    : { ...next, sessionOpenFailure: failure }
+}
+
 export function applyActiveThread(
   state: EnvironmentState,
   threadId: string | null,

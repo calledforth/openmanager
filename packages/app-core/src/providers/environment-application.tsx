@@ -1063,7 +1063,9 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
           return
         }
         const current = targetRef.current
-        if (!current) return
+        // A session still opening has no thread to send to yet. Refused
+        // rather than dropped, so the composer puts the text back.
+        if (!current) throw new Error('This session is still opening. Send again once it loads.')
         beginSessionTurn()
         // A rejected send keeps its own row on screen with the reason and a
         // retry, so it is neither an error banner nor a composer rollback.
@@ -1169,6 +1171,10 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
     }
   }, [client, commands])
 
+  // A session picked before its threads are known is still opening: they
+  // arrive with `session.open`, and until then it loads like any thread.
+  const hydration = thread ? thread.hydration : session.activeSessionId ? 'loading' : null
+
   const value = useMemo<ActiveThreadStateValue>(
     () => ({
       activeSessionId: session.activeSessionId,
@@ -1176,9 +1182,9 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       // Compatibility shim so ChatView reads `streamingStore`. There is no
       // `remoteStreamingStore` on this path (that would be Convex stream_chunks).
       activeThreadDriven: true,
-      isMessagesLoading: thread?.hydration === 'loading',
+      isMessagesLoading: hydration === 'loading',
       history: {
-        failed: thread?.hydration === 'failed',
+        failed: hydration === 'failed',
         retry: async () => {
           if (session.activeSessionId)
             await commands
@@ -1243,7 +1249,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       sendMessage,
       session.activeSessionId,
       stores,
-      thread?.hydration,
+      hydration,
       thread?.historyCursor,
       thread?.thread.threadId,
       loadingHistory,
