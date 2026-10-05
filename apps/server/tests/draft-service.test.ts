@@ -111,7 +111,7 @@ describe('draft service', () => {
     expect(draft.content.text).toHaveLength(62_000)
   })
 
-  it('refuses to send a draft as another session, or into another project', () => {
+  it('refuses to send a draft as another session, wherever it is sent from', () => {
     const { service, call } = setup()
     const target: DraftTarget = { type: 'new_session', workspaceId: 'ws', sessionId: 'minted' }
     call('draft.save', { draftId: 'd', baseRevision: 0, target, content: { text: 'mine' } })
@@ -119,7 +119,9 @@ describe('draft service', () => {
       service.launch('d', { workspaceId, sessionId, content: { text: 'x' } })
 
     expect(sent('another')).toEqual({ error: 'The draft belongs to another session.' })
-    expect(sent('minted', 'elsewhere')).toEqual({ error: 'The draft belongs to another session.' })
+    expect(sent('another', 'elsewhere')).toEqual({ error: 'The draft belongs to another session.' })
+    // Moved to another project, and sent before the save that moved it landed.
+    expect(sent('minted', 'elsewhere')).toHaveProperty('event')
     expect(sent('minted')).toHaveProperty('event')
     // A draft the environment never saw can still be sent.
     expect(
