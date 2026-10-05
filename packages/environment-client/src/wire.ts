@@ -3,6 +3,7 @@ import {
   ComposerResponseSchemas,
   DraftResponseSchemas,
   FilesystemResponseSchemas,
+  PairingResponseSchemas,
   ProofResponseSchemas,
   ProviderProbeResponseSchema,
   SessionSchema,
@@ -55,6 +56,10 @@ export const WIRE_COMMANDS = {
   revokeAuthorizedClient: 'client.revoke',
   revokeOtherAuthorizedClients: 'client.revoke_others',
   rotateOwnerCredential: 'client.owner.rotate',
+  createPairingLink: 'pairing.create',
+  listPairingLinks: 'pairing.list',
+  revokePairingLink: 'pairing.revoke',
+  redeemPairingLink: 'pairing.redeem',
 } as const satisfies Record<EnvironmentCommandName, string>
 
 /**
@@ -116,6 +121,10 @@ export const WIRE_RESPONSES = {
   'client.revoke': payload(ClientResponseSchemas['client.revoke'].shape.payload),
   'client.revoke_others': payload(ClientResponseSchemas['client.revoke_others'].shape.payload),
   'client.owner.rotate': payload(ClientResponseSchemas['client.owner.rotate'].shape.payload),
+  'pairing.create': payload(PairingResponseSchemas['pairing.create'].shape.payload),
+  'pairing.list': payload(PairingResponseSchemas['pairing.list'].shape.payload),
+  'pairing.revoke': payload(PairingResponseSchemas['pairing.revoke'].shape.payload),
+  'pairing.redeem': payload(PairingResponseSchemas['pairing.redeem'].shape.payload),
   [UPLOAD_TICKET_COMMAND]: payload(UploadResponseSchemas[UPLOAD_TICKET_COMMAND].shape.payload),
 } as const satisfies Record<WireCommandName, z.ZodType>
 

@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as ChatRouteImport } from './routes/_chat'
+import { Route as PairRouteImport } from './routes/pair'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ChatIndexRouteImport } from './routes/_chat/index'
 import { Route as PlaygroundConnectionRouteImport } from './routes/playground.connection'
@@ -17,6 +18,11 @@ import { Route as ChatSessionsSessionIdRouteImport } from './routes/_chat/sessio
 
 const ChatRoute = ChatRouteImport.update({
   id: '/_chat',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PairRoute = PairRouteImport.update({
+  id: '/pair',
+  path: '/pair',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsRoute = SettingsRouteImport.update({
@@ -42,11 +48,13 @@ const ChatSessionsSessionIdRoute = ChatSessionsSessionIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof ChatIndexRoute
+  '/pair': typeof PairRoute
   '/settings': typeof SettingsRoute
   '/playground/connection': typeof PlaygroundConnectionRoute
   '/sessions/$sessionId': typeof ChatSessionsSessionIdRoute
 }
 export interface FileRoutesByTo {
+  '/pair': typeof PairRoute
   '/settings': typeof SettingsRoute
   '/playground/connection': typeof PlaygroundConnectionRoute
   '/': typeof ChatIndexRoute
@@ -55,6 +63,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_chat': typeof ChatRouteWithChildren
+  '/pair': typeof PairRoute
   '/settings': typeof SettingsRoute
   '/playground/connection': typeof PlaygroundConnectionRoute
   '/_chat/': typeof ChatIndexRoute
@@ -63,12 +72,22 @@ export interface FileRoutesById {
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/settings' | '/playground/connection' | '/sessions/$sessionId'
+    | '/'
+    | '/pair'
+    | '/settings'
+    | '/playground/connection'
+    | '/sessions/$sessionId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/settings' | '/playground/connection' | '/' | '/sessions/$sessionId'
+  to:
+    | '/pair'
+    | '/settings'
+    | '/playground/connection'
+    | '/'
+    | '/sessions/$sessionId'
   id:
     | '__root__'
     | '/_chat'
+    | '/pair'
     | '/settings'
     | '/playground/connection'
     | '/_chat/'
@@ -77,6 +96,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   ChatRoute: typeof ChatRouteWithChildren
+  PairRoute: typeof PairRoute
   SettingsRoute: typeof SettingsRoute
   PlaygroundConnectionRoute: typeof PlaygroundConnectionRoute
 }
@@ -88,6 +108,13 @@ declare module '@tanstack/react-router' {
       path: ''
       fullPath: '/'
       preLoaderRoute: typeof ChatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/pair': {
+      id: '/pair'
+      path: '/pair'
+      fullPath: '/pair'
+      preLoaderRoute: typeof PairRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings': {
@@ -135,6 +162,7 @@ const ChatRouteWithChildren = ChatRoute._addFileChildren(ChatRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   ChatRoute: ChatRouteWithChildren,
+  PairRoute: PairRoute,
   SettingsRoute: SettingsRoute,
   PlaygroundConnectionRoute: PlaygroundConnectionRoute,
 }

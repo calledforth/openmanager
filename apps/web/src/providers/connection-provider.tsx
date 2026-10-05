@@ -134,6 +134,19 @@ type ConnectionValue = {
    */
   replaceCredential: (environmentId: string, credential: string) => void
   /**
+   * Save the credential a pairing exchange answered with, reached through the
+   * link's route, select that environment and connect to it. Returns false,
+   * saving nothing, when the environment already has a credential here: a
+   * pairing link never replaces one. A device that has one redeems the link
+   * over its own socket instead.
+   */
+  addPairedEnvironment: (input: {
+    environmentId: string
+    endpoint: string
+    label: string
+    credential: string
+  }) => boolean
+  /**
    * The route in use answered as a different environment. No socket may be
    * opened on it, whatever else the connection state says: the socket would
    * carry this environment's token to whatever answered.
@@ -956,6 +969,29 @@ export function ConnectionProvider({
     [stopRouteSearch, tokenRefused, update],
   )
 
+  const addPairedEnvironment = useCallback(
+    (input: { environmentId: string; endpoint: string; label: string; credential: string }) => {
+      const endpoint = parseEnvironmentEndpoint(input.endpoint)
+      if (!endpoint || !parseEnvironmentCredential(input.credential)) return false
+      // Another tab may have saved one since this tab last read the registry,
+      // so both copies are checked even when this tab has a record already.
+      const inMemory = findStoredEnvironment(registryRef.current.environments, input.environmentId)
+      const persisted = preview
+        ? undefined
+        : findStoredEnvironment(readEnvironmentRegistry().environments, input.environmentId)
+      if (inMemory?.credential || persisted?.credential) return false
+      const next = update((current) => upsertStoredEnvironment(current, { ...input, endpoint }))
+      if (!next) return false
+      setHasConnected(false)
+      abandonPendingConnect()
+      forgottenRoutes.current.delete(routeKey(input.environmentId, endpoint))
+      setActiveRoute(input.environmentId, endpoint)
+      setBootstrapNonce((value) => value + 1)
+      return true
+    },
+    [abandonPendingConnect, preview, setActiveRoute, update],
+  )
+
   // Another tab rotated a token (or connected again with a new one): this tab
   // switches to it rather than redialing, or being refused, with the old one.
   useEffect(() => {
@@ -998,6 +1034,7 @@ export function ConnectionProvider({
       confirmRoute,
       declineRoute,
       replaceCredential,
+      addPairedEnvironment,
       wrongEnvironment: answeredByAnother,
       routeVerified,
       retryNonce: bootstrapNonce,
@@ -1020,6 +1057,7 @@ export function ConnectionProvider({
       confirmRoute,
       declineRoute,
       replaceCredential,
+      addPairedEnvironment,
       answeredByAnother,
       routeVerified,
       bootstrapNonce,

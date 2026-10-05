@@ -962,6 +962,47 @@ describe('websocket environment client', () => {
     expect(heard).toHaveLength(1)
   })
 
+  it('creates, lists, withdraws and redeems pairing links', async () => {
+    const pairingCommands = ['pairing.create', 'pairing.list', 'pairing.revoke', 'pairing.redeem']
+    const { client, socket } = await connected([...FULL_CAPABILITIES, ...pairingCommands])
+    const link = {
+      linkId: 'link-1',
+      label: null,
+      capabilities: ['read', 'operate'],
+      createdByClientId: 'client-owner',
+      createdAt: '2026-10-01T10:00:00.000Z',
+      expiresAt: '2026-10-01T10:05:00.000Z',
+      status: 'waiting',
+      usedByClientId: null,
+      usedAt: null,
+    }
+
+    const created = client.commands.createPairingLink({ capabilities: ['read', 'operate'] })
+    expect(socket.last('pairing.create').payload).toEqual({ capabilities: ['read', 'operate'] })
+    socket.respond('pairing.create', { link, token: 'ABCDEFGHJKMN' })
+    await expect(created).resolves.toEqual({ link, token: 'ABCDEFGHJKMN' })
+
+    const listed = client.commands.listPairingLinks()
+    socket.respond('pairing.list', { links: [link] })
+    await expect(listed).resolves.toEqual([link])
+
+    const withdrawn = client.commands.revokePairingLink('link-1')
+    expect(socket.last('pairing.revoke').payload).toEqual({ linkId: 'link-1' })
+    socket.respond('pairing.revoke', { linkId: 'link-1' })
+    await expect(withdrawn).resolves.toBeUndefined()
+
+    const redeemed = client.commands.redeemPairingLink({ token: 'ABCDEFGHJKMN' })
+    expect(socket.last('pairing.redeem').payload).toEqual({ token: 'ABCDEFGHJKMN' })
+    const answer = {
+      clientId: 'client-phone',
+      clientLabel: 'Phone',
+      grant: ['read', 'operate'],
+      grantChanged: true,
+    }
+    socket.respond('pairing.redeem', answer)
+    await expect(redeemed).resolves.toEqual(answer)
+  })
+
   it('stops for good when its credential is revoked instead of redialing', async () => {
     const { client, socket, timers } = await connected()
     socket.drop(4401, 'revoked')

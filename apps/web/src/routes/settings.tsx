@@ -28,7 +28,9 @@ import {
   EnvironmentList,
   RouteOfferPrompt,
 } from '../components/connection-surfaces'
+import { findStoredEnvironment } from '../lib/environment-store'
 import { UI_FONTS } from '../lib/fonts'
+import { pairingAppUrl } from '../lib/pairing'
 import { useConnection } from '../providers/connection-provider'
 import { THEME_OPTIONS } from '@openmanager/app-core/providers/theme-provider'
 import { useTheme } from '../providers/theme-provider'
@@ -342,14 +344,20 @@ function ConnectedEnvironmentSettings() {
 
 /** Who can reach the connected environment, kept by the environment itself. */
 function DevicesPanel() {
-  const { environment, replaceCredential } = useConnection()
+  const { environment, environments, inUseEndpoint, replaceCredential } = useConnection()
   const environmentId = environment.status === 'selected' ? environment.environmentId : undefined
+  const routes = findStoredEnvironment(environments, environmentId)?.routes
   return (
     <DevicesSettingControl
+      pairing={
+        environmentId && routes
+          ? { environmentId, routes, inUseEndpoint, appUrl: pairingAppUrl() }
+          : undefined
+      }
       section={(body) => (
         <SettingsSection
           title="Devices"
-          description="Every device that can reach this environment. Revoking one disconnects it at once; to use it again, pair it with a new link."
+          description="Every device that can reach this environment. Pair a phone or another browser with a single-use link or QR code; revoking a device disconnects it at once."
         >
           {body}
         </SettingsSection>
