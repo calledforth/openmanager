@@ -892,8 +892,9 @@ function EnvironmentSessionStateProvider({
   )
 
   // A discarded draft on screen leaves for a blank page in its project (or
-  // where the landing opens, if its project is gone). Its address is replaced:
-  // the draft will be deleted, and its undo brings back the card, not the page.
+  // where the landing opens, if its project is gone). The blank page is
+  // pushed, not put in the draft's place: Back returns to the draft while its
+  // undo is open, which calls the discard off.
   const closeDraftPage = useCallback(
     (draftId: string) => {
       if (onScreenDraftRef.current !== draftId) return
@@ -901,8 +902,8 @@ function EnvironmentSessionStateProvider({
       const blank = canHostDraft(workspacesRef.current.find((ws) => ws.workspaceId === own))
         ? own
         : landingWorkspaceRef.current
-      if (blank) void openDraftRef.current(blank, { replace: true }).catch(noop)
-      else void navigateSession?.(null, { replace: true }).catch(noop)
+      if (blank) void openDraftRef.current(blank).catch(noop)
+      else void navigateSession?.(null).catch(noop)
     },
     [navigateSession],
   )

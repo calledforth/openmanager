@@ -18,6 +18,8 @@ import { SidebarProvider } from '../src/components/fluid/ui/sidebar'
 import { WorkspaceSidebarView } from '../src/components/sidebar/WorkspaceSidebarView'
 import type { SidebarDraft, SidebarWorkspace } from '../src/components/sidebar/sidebar-sessions'
 import { ThemeProvider } from '../src/providers/theme-provider'
+import { DraftDiscardToast } from '../src/components/sidebar/DraftDiscardToast'
+import { noticeAnchorRef, type NoticeAnchor } from '../src/lib/notice-anchors'
 
 // The Fluid popup takes half a minute to open under jsdom, so it stands in
 // here as Radix behaves: on close, `onCloseAutoFocus` runs once the popup is
@@ -164,7 +166,11 @@ afterEach(async () => {
 
 async function render(
   drafts: SidebarDraft[],
-  options: { activeSessionId?: string | null; onDiscardDraft?: () => void } = {},
+  options: {
+    activeSessionId?: string | null
+    activeDraftId?: string | null
+    onDiscardDraft?: () => void
+  } = {},
 ) {
   await act(() =>
     root.render(
@@ -177,6 +183,7 @@ async function render(
             onCreateSession={() => undefined}
             onSelectSession={() => undefined}
             drafts={drafts}
+            activeDraftId={options.activeDraftId ?? null}
             onOpenDraft={() => undefined}
             onDiscardDraft={options.onDiscardDraft ?? (() => undefined)}
             onAddWorkspace={() => undefined}
@@ -226,8 +233,8 @@ describe('a draft card', () => {
     await menuDiscard(0)
     await menuDiscard(1)
     expect(onDiscardDraft.mock.calls).toEqual([
-      ['d1', { fromKeyboard: true }],
-      ['d1', { fromKeyboard: false }],
+      ['d1', expect.objectContaining({ fromKeyboard: true })],
+      ['d1', { fromKeyboard: false, returnFocus: null }],
     ])
   })
 
@@ -256,13 +263,88 @@ describe('a settled session with unsent text', () => {
       item.textContent?.includes('Put away with a reply started'),
     )!
 
-  it('shows the mark and the tint, except while it is open', async () => {
+  it('shows the pen, with no tint, except while it is open', async () => {
     await render([])
     expect(row().textContent).toContain('Has an unsent draft')
-    expect(row().querySelector('button')!.className).toContain('bg-(--basis-draft-unsent)')
+    expect(row().innerHTML).not.toContain('basis-draft-unsent')
 
     await render([], { activeSessionId: 'settled-1' })
     expect(row().textContent).not.toContain('Has an unsent draft')
-    expect(row().querySelector('button')!.className).not.toContain('bg-(--basis-draft-unsent)')
+  })
+})
+
+describe('the open draft’s card', () => {
+  it('takes the selection fill a session card takes', async () => {
+    await render([draft('d1', 'open one'), draft('d2', 'waiting')], { activeDraftId: 'd1' })
+    const fill = (text: string) => cardButton(text).parentElement!.className
+    expect(fill('open one')).toContain('bg-active')
+    expect(fill('waiting')).toContain('bg-(--basis-draft-fill)')
+    // Still a draft by its label.
+    expect(cardButton('open one').textContent).toContain('Draft')
+  })
+})
+
+describe('the undo notice', () => {
+  const PENDING = { draftId: 'd1', key: 1, fromKeyboard: false, returnFocus: null }
+  const region = () => document.querySelector<HTMLElement>('body > [role="status"]')!
+  const anchored = (top: number) => {
+    const element = document.createElement('div')
+    element.getBoundingClientRect = () =>
+      ({
+        left: 300,
+        width: 600,
+        top,
+        right: 900,
+        bottom: top + 80,
+        height: 80,
+        x: 300,
+        y: top,
+      }) as DOMRect
+    return element
+  }
+  function Anchor({ name, element }: { name: NoticeAnchor; element: HTMLElement }) {
+    const ref = useRef<HTMLDivElement>(null)
+    useEffect(() => {
+      ref.current!.append(element)
+      const cleanup = noticeAnchorRef(name)(element)
+      return () => {
+        cleanup()
+        element.remove()
+      }
+    }, [element, name])
+    return <div ref={ref} />
+  }
+  async function show(sidebarOpen: boolean, anchors: ReactNode) {
+    await act(() =>
+      root.render(
+        <ThemeProvider>
+          <SidebarProvider persist={false} defaultOpen={sidebarOpen}>
+            {anchors}
+            <DraftDiscardToast
+              pending={PENDING}
+              onUndo={() => undefined}
+              onDismiss={() => undefined}
+              onHold={() => undefined}
+            />
+          </SidebarProvider>
+        </ThemeProvider>,
+      ),
+    )
+  }
+
+  it('moves above a composer that mounts after it is shown', async () => {
+    const composer = anchored(600)
+    // A child transcript has no composer: the notice falls back to the foot of the page.
+    await show(false, null)
+    expect(region().style.bottom).toBe('12px')
+    // Back to the session: its composer mounts, and the notice clears it.
+    await show(false, <Anchor name="composer" element={composer} />)
+    expect(region().style.bottom).toBe(`${window.innerHeight - 600 + 8}px`)
+    expect(region().style.left).toBe('300px')
+  })
+
+  it('rests just above the sidebar’s foot when docked', async () => {
+    await show(true, <Anchor name="sidebar-foot" element={anchored(700)} />)
+    expect(region().style.bottom).toBe(`${window.innerHeight - 700 + 4}px`)
   })
 })

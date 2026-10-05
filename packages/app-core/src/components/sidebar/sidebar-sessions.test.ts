@@ -286,7 +286,7 @@ describe('draft cards', () => {
       cards: [card('c', 3), card('a', 1)],
       openSent: false,
       openGone: false,
-      openSending: false,
+      openSending: null,
     }
     const frozen = card('b', 2)
     const ids = (cards: SidebarDraft[]) => cards.map((shown) => shown.draftId)
@@ -302,13 +302,15 @@ describe('draft cards', () => {
     ).toEqual(['c', 'a'])
     expect(ids(arrangeSidebarDrafts({ facts, frozen, hidden: 'b' }))).toEqual(['c', 'a'])
     expect(ids(arrangeSidebarDrafts({ facts, frozen, hidden: 'c' }))).toEqual(['b', 'a'])
-    // Being sent from its page: still frozen, but no longer discardable.
+    // Being sent from its page: what is being sent, not the snapshot, in the
+    // snapshot's place, and no longer discardable.
     const sending = arrangeSidebarDrafts({
-      facts: { ...facts, openSending: true },
+      facts: { ...facts, openSending: { ...card('b', 9), preview: 'as sent', sending: true } },
       frozen,
       hidden: null,
     })
-    expect(sending.find((shown) => shown.draftId === 'b')).toMatchObject({ sending: true })
+    expect(ids(sending)).toEqual(['c', 'b', 'a'])
+    expect(sending[1]).toMatchObject({ preview: 'as sent', sending: true })
   })
 
   it('says which draft is being sent, and when the one on screen is gone', () => {
@@ -321,7 +323,7 @@ describe('draft cards', () => {
     })
     expect(sidebarDraftCard(state, 'sending', 'opencode')).toMatchObject({ sending: true })
     expect(selectSidebarDrafts(state, 'open', 's2', 'opencode')).toMatchObject({
-      openSending: true,
+      openSending: { preview: 'typing', sending: true },
       openGone: false,
     })
     expect(selectSidebarDrafts(state, 'deleted', null, 'opencode').openGone).toBe(true)

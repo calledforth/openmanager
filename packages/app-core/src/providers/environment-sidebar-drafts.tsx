@@ -8,7 +8,6 @@ import {
   type ReactNode,
 } from 'react'
 import type { EnvironmentState } from '@openmanager/environment-client'
-import type { DraftContent, DraftTarget } from '@openmanager/protocol'
 import {
   NO_DRAFT_FACTS,
   arrangeSidebarDrafts,
@@ -22,6 +21,7 @@ import { useEnvironmentClient, useEnvironmentState } from './environment-client'
 import { SessionStateContext } from './session-provider'
 import {
   SidebarDraftsContext,
+  type DraftDiscardOptions,
   type PendingDraftDiscard,
   type SidebarDraftsValue,
 } from './sidebar-provider'
@@ -32,44 +32,42 @@ export const DRAFT_DISCARD_UNDO_MS = 6_000
 /** A discard waiting out its window, and the draft it was made on. */
 interface WatchedDiscard {
   /**
-   * The environment's revision of the draft the user discarded; 0 when it had
-   * none. Moves only with this client's own save of what it held.
+   * The newest revision of the draft that is the user's own: the one they
+   * discarded, or one this page wrote since (its last keystrokes, saved as
+   * the discarded page closed). 0 for a draft never saved.
    */
   revision: number
-  /** What this client last held unsaved for it, whose save is no change. */
-  own: string | null
-}
-
-/** What a user would recognise a draft by: its text, its images, its project. */
-function fingerprint(content: DraftContent, target: DraftTarget) {
-  return JSON.stringify([
-    content.text ?? '',
-    content.artifactIds ?? [],
-    target.type === 'new_session' ? target.workspaceId : null,
-  ])
+  /** This page held an edit of it at the last look: a write of its own was due. */
+  writing: boolean
 }
 
 /**
- * Whether a pending discard still deletes what the user discarded. It does
- * not once the environment has a later revision than the one discarded,
- * unless that revision is this client's own late save of what it held (the
- * last keystrokes, saved as the page closed): the draft was written to or
- * restored elsewhere meanwhile. Nor once the draft is gone (sent, or deleted
- * elsewhere): there is nothing left to delete. Notes this client's own
- * unsaved text as it goes, so call it on every change.
+ * Whether a pending discard still deletes what the user discarded. It goes
+ * by who wrote the draft's revisions, not by what they hold: a revision
+ * another client wrote since (more text, another model, a restore after a
+ * failed send) calls the discard off; one this page wrote never does,
+ * whenever it lands. Nor does a gone draft (sent, or deleted elsewhere)
+ * leave anything to delete.
+ *
+ * This page's writes are known by its edit: while the page holds one, every
+ * revision that arrives is either its own or about to be overwritten by it
+ * (saves are last-write-wins), and the revision the environment answers its
+ * last write with is current the moment the edit settles. Call it on every
+ * change, so that moment is seen.
  */
 function discardStands(state: EnvironmentState, draftId: string, watched: WatchedDiscard) {
   const saved = state.drafts[draftId]
   const edit = state.draftEdits[draftId]
   if (edit?.launching) return false
-  if (edit) watched.own = fingerprint(edit.content, edit.target)
-  if (!saved) return edit !== undefined
-  if (saved.revision <= watched.revision) return true
-  if (watched.own !== null && fingerprint(saved.content, saved.target) === watched.own) {
-    watched.revision = saved.revision
+  if (edit) {
+    watched.writing = true
     return true
   }
-  return false
+  if (watched.writing) {
+    watched.writing = false
+    if (saved) watched.revision = Math.max(watched.revision, saved.revision)
+  }
+  return saved !== undefined && saved.revision <= watched.revision
 }
 
 /** The open draft's card, as it was when the draft was opened. */
@@ -178,7 +176,7 @@ export function EnvironmentSidebarDraftsProvider({ children }: { children: React
   }, [settleDiscard, stopClock])
 
   const discardDraft = useCallback(
-    (draftId: string, options?: { fromKeyboard?: boolean }) => {
+    (draftId: string, options?: DraftDiscardOptions) => {
       if (!navigation || pendingRef.current?.draftId === draftId) return
       // A draft being sent is the send's: it becomes a session, or comes back.
       if (client.getState().draftEdits[draftId]?.launching) return
@@ -186,8 +184,16 @@ export function EnvironmentSidebarDraftsProvider({ children }: { children: React
       settleDiscard(true)
       const state = client.getState()
       keyRef.current += 1
-      const next = { draftId, key: keyRef.current, fromKeyboard: options?.fromKeyboard ?? false }
-      const watched: WatchedDiscard = { revision: state.drafts[draftId]?.revision ?? 0, own: null }
+      const next: PendingDraftDiscard = {
+        draftId,
+        key: keyRef.current,
+        fromKeyboard: options?.fromKeyboard ?? false,
+        returnFocus: options?.returnFocus ?? null,
+      }
+      const watched: WatchedDiscard = {
+        revision: state.drafts[draftId]?.revision ?? 0,
+        writing: false,
+      }
       discardStands(state, draftId, watched)
       pendingRef.current = next
       watchRef.current = watched

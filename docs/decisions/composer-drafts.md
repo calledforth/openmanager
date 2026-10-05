@@ -241,7 +241,9 @@ Every new-session draft with text or an image is a card at the top of the
 sidebar's Active list, newest edit first, on every device, live. Picks alone
 never make one. A card looks like a session's (project, first line, provider
 and branch), filled with the draft tint and labelled Draft where a session
-shows its status. Cards only show where the environment keeps drafts and the
+shows its status. The open draft's card takes the selection fill a session
+card takes (`bg-active`) instead of a deeper tint, so selection reads the
+same whatever the card is; its Draft label still says what it is. Cards only show where the environment keeps drafts and the
 host gives each its own page (`navigateDraft`); elsewhere (desktop, the
 localStorage fallback) `useSidebarDrafts` is null and nothing shows.
 
@@ -262,10 +264,14 @@ localStorage fallback) `useSidebarDrafts` is null and nothing shows.
 - **Sending** swaps the card for the session's. Cards are keyed by the session
   id minted with the draft, and a draft is no card from the update that lists
   its session, so the same row turns from draft to session in one frame,
-  with nothing folding away or growing in. A draft being sent keeps its card
-  meanwhile, showing the environment's last copy (the composer empties it),
-  and offers no discard: no ✕, no menu, and `discardDraft` does nothing. It
-  becomes a session or comes back whole.
+  with nothing folding away or growing in. As drafts sit above sessions, that
+  row then slides (a `layout="position"` animation on every Active row,
+  in one `LayoutGroup`) below the drafts still waiting, instead of jumping.
+  A draft being sent keeps its card meanwhile, and offers no discard: no ✕,
+  no menu, and `discardDraft` does nothing. It becomes a session or comes
+  back whole. The draft on screen, while it is sent, shows what is being sent
+  (read live from the launching edit) in its snapshot's place, not the
+  snapshot.
 - **Discarding** (✕ on hover and always on touch, or the card's menu, by
   right click or the menu key) hides the card at once and shows an undo
   notice. The draft is deleted only when the notice goes (6 s, held while the
@@ -275,31 +281,53 @@ localStorage fallback) `useSidebarDrafts` is null and nothing shows.
   on meanwhile. The flush listens in the capture phase, so the deletion is in
   the state before the host's own `pagehide` files it away for the next
   load. Undo just shows the card again. Discarding the draft on screen takes
-  the page to a blank `/` (replacing its address); going back to the
-  draft's address before the deletion cancels it. The one place a discard is
+  the page to a blank `/`, pushed rather than replacing the draft's
+  address: Back returns to the draft, and returning to it before the
+  deletion cancels it.
+- **A double click discards one draft.** After a pointer discard the next
+  card slides up under the pointer, ✕ showing. Until the pointer moves away
+  (more than 4 px, or 1.5 s pass, for touch), ✕ is hidden on every card and a
+  click on the same spot is ignored. Keyboard discards are never held back. The one place a discard is
   let go (`releaseDraft` in `environment-sidebar-drafts.tsx`) is where images
   kept with a draft (CAL-215) are to be released.
-- **A discard is of what the user saw.** It keeps the revision it was made
-  on. If the environment has a later one by the time it would delete (written
-  to on another device, or sent there and put back by a failed send), the
-  discard is called off: no deletion, the notice goes, the card comes back.
-  It is called off the moment the change arrives, and checked again before
-  deleting. The one later revision that counts as no change is this client's
-  own save of what it held (the last keystrokes, saved as the discarded page
-  closed). A draft gone meanwhile (sent, or deleted elsewhere) has nothing
-  left to delete, so the discard simply ends. An offline client cannot see a
-  later revision; its delete reaches the environment on reconnect and is
-  refused only if the draft was deleted (sent) since.
+- **A discard is of what the user saw, and goes by who wrote what.** It keeps
+  the revision it was made on. A later revision written by anyone else (more
+  text, another model or mode alone, a restore after a failed send on
+  another device) calls it off: no deletion, the notice goes, the card comes
+  back. One written by this page never does, whenever it lands: a save that
+  was on the wire when the user typed on and discarded, or the closing save
+  of the last keystrokes. It is called off the moment the change arrives,
+  and checked again before deleting. A draft gone meanwhile (sent, or
+  deleted elsewhere) has nothing left to delete, so the discard simply ends.
+
+  Provenance comes from the page's own draft sync, not from the draft's
+  `updatedByClientId`: a client does not know its own id without the admin
+  grant (`client.list`). While the page holds an edit of the draft, every
+  revision that arrives is its own or about to be overwritten by its save
+  (saves are last-write-wins); when that edit settles, the revision then
+  current is the answer to its own last write, and becomes the discard's.
+  So another tab of the same browser counts as another writer: its change
+  calls the discard off, as another device's does. That is a stricter
+  answer to the shared-client-id case than the writer id would give, and is
+  accepted. An offline client cannot see a later revision; its delete
+  reaches the environment on reconnect and is refused only if the draft was
+  deleted (sent) since.
 - **The undo notice** is mounted by the host at the shell, beside the sidebar
   rather than in it: on a phone the sidebar is a modal sheet that closes, and
   would unmount the notice, on the very tap that reaches for Undo. The
   notice's own root takes the pointer through the sheet's inert page. With
-  the sidebar open on a wide screen it rests on the sidebar's foot; on a
-  phone, or with the sidebar folded away, it floats just above the composer
-  (`data-chat-composer`), clear of its corners. Its `role="status"` region
-  is always mounted and the notice is swapped inside it, so each discard is
-  announced. A discard made from the keyboard puts focus on Undo; one made
-  with the pointer leaves focus alone.
+  the sidebar open on a wide screen it rests just above the sidebar's footer
+  (Settings and the like stay uncovered); on a phone, or with the sidebar
+  folded away, it floats just above the composer, clear of its corners. The
+  composer and the footer register themselves (`noticeAnchorRef` in
+  `lib/notice-anchors.ts`) and are measured through resize observers, so a
+  composer that mounts after the notice (back from a child transcript)
+  moves it. Its `role="status"` region is always mounted and the notice is
+  swapped inside it, so each discard is announced. A discard made from the
+  keyboard puts focus on Undo; one made with the pointer leaves focus alone.
+  Closed from inside with focus on it, focus goes to the card that came back
+  (Undo), else to the card that was beside the discarded one, else to the
+  card list; never to the page body.
 - **The card's menu** hangs from a hidden point, so on close focus goes back
   to the card, not to that point (where Enter would reopen the menu). The
   card does not claim `aria-haspopup`: its own action is opening the draft.
@@ -310,9 +338,9 @@ localStorage fallback) `useSidebarDrafts` is null and nothing shows.
 - **Not synced** shows as a quiet cloud mark, with the composer's reason on
   hover (`selectDraftSyncStatus`; nothing while merely saving).
 
-A session whose composer holds unsent text or an image gets a quieter step of
-the same tint (5 % of the accent against the draft cards' 6.5 %) and a pen
-beside its provider, on every device, settled rows included. Sending or
+A session whose composer holds unsent text or an image gets a pen in the
+draft accent beside its provider, on every device, settled rows included. No
+fill: a tinted session card read as one more draft. Sending or
 clearing the text removes it. The session on screen never shows it: its
 composer is the one being typed in, and a mark that came and went with each
 emptied line would flicker, just as the open draft's card stays frozen.

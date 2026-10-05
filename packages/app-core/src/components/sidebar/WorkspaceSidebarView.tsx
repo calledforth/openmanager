@@ -9,7 +9,13 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from 'react'
-import { AnimatePresence, motion, useReducedMotion, type MotionProps } from 'motion/react'
+import {
+  AnimatePresence,
+  LayoutGroup,
+  motion,
+  useReducedMotion,
+  type MotionProps,
+} from 'motion/react'
 import {
   ArrowUUpLeftIcon,
   ArrowUpRightIcon,
@@ -28,6 +34,7 @@ import {
 import type { ProviderId } from '@agentpack/contract'
 import { describeUnavailableWorkspace } from '../../lib/workspace-availability'
 import { formatRelativeTime, useNow } from '../../lib/relative-time'
+import { noticeAnchorRef } from '../../lib/notice-anchors'
 import { cn } from '../../lib/utils'
 import { DRAFT_SYNC_EXPLANATION } from '../chat/DraftSyncIndicator'
 import {
@@ -58,7 +65,9 @@ import { Tooltip } from '../ui/Tooltip'
 import { ProjectIcon } from './ProjectIcon'
 import { SessionBusyLoader, sessionBusyTone, type SessionBusyTone } from './SessionBusyLoader'
 import {
+  DRAFT_CARD_ATTRIBUTE,
   flattenSidebarSessions,
+  type DraftDiscardOptions,
   type SidebarDraft,
   type SidebarSession,
   type SidebarWorkspace,
@@ -74,26 +83,21 @@ const DEFAULT_PROVIDER_ID: ProviderId = 'opencode'
 // Positioned so the card's status washes and dither paint beneath its text.
 // Done and failed cards take their hover and selection fills from the status
 // palette, so on light themes the tint deepens instead of greying over.
-function cardFillClass(tone: SessionBusyTone | null, isActive: boolean, unsent = false): string {
+function cardFillClass(tone: SessionBusyTone | null, isActive: boolean): string {
   if (tone === 'done') {
     return isActive ? 'bg-(--basis-status-done-active)' : 'hover:bg-(--basis-status-done-hover)'
   }
   if (tone === 'error') {
     return isActive ? 'bg-(--basis-status-error-active)' : 'hover:bg-(--basis-status-error-hover)'
   }
-  if (isActive) return 'bg-active'
-  // Unsent text: a quieter step of the draft cards' fill, so the two read as kin.
-  return unsent
-    ? 'bg-(--basis-draft-unsent) hover:bg-(--basis-draft-unsent-hover)'
-    : 'hover:bg-hover'
+  return isActive ? 'bg-active' : 'hover:bg-hover'
 }
 
-// A new-session draft is filled with the accent at rest, and deepens on hover
-// and while it is open, the way done and failed cards deepen their own tint.
+// A new-session draft is filled with the accent at rest and deepens on hover.
+// Open, it takes the selection fill a session card takes, so the selected card
+// reads the same whatever it is; its Draft label still says what it is.
 function draftFillClass(isActive: boolean): string {
-  return isActive
-    ? 'bg-(--basis-draft-active)'
-    : 'bg-(--basis-draft-fill) hover:bg-(--basis-draft-hover)'
+  return isActive ? 'bg-active' : 'bg-(--basis-draft-fill) hover:bg-(--basis-draft-hover)'
 }
 
 const cardBodyClass =
@@ -423,7 +427,7 @@ export interface WorkspaceSidebarViewProps {
   activeDraftId?: string | null
   onOpenDraft?: (draftId: string) => void
   /** Absent when drafts cannot be discarded here; the card offers no discard. */
-  onDiscardDraft?: (draftId: string, options?: { fromKeyboard?: boolean }) => void
+  onDiscardDraft?: (draftId: string, options?: DraftDiscardOptions) => void
   onAddWorkspace: () => void
   /** The name a provider goes by; the raw id when the host has no catalog. */
   providerLabel?: (providerId: ProviderId) => string
@@ -476,7 +480,7 @@ export function WorkspaceSidebarView({
   const onDiscardDraft = useMemo(
     () =>
       canDiscardDraft
-        ? (draftId: string, options?: { fromKeyboard?: boolean }) =>
+        ? (draftId: string, options?: DraftDiscardOptions) =>
             discardDraftRef.current?.(draftId, options)
         : undefined,
     [canDiscardDraft],
@@ -562,22 +566,26 @@ export function WorkspaceSidebarView({
                 utilities. Cards space themselves (padding, not gap) so a
                 leaving card folds its spacing away with it. The list stays
                 mounted when it empties, so the last card still folds away. */}
-            <div role="list" className="flex flex-col">
-              <AnimatePresence initial={false}>
-                {/* Drafts first, newest edit first. A draft's card is keyed by
+            {/* Focusable from script alone: where focus lands when the card
+                it was on is gone and no other card is near. */}
+            <div role="list" tabIndex={-1} className="flex flex-col outline-none">
+              <LayoutGroup>
+                <AnimatePresence initial={false}>
+                  {/* Drafts first, newest edit first. A draft's card is keyed by
                     the session it will become, so its send hands the same
                     row over to the session's card: no fold, no grow, no gap. */}
-                {draftRows.map((row) => (
-                  <MemoActiveCard key={row.draft.sessionId} item={row} {...shared} />
-                ))}
-                {active.map((entry) => (
-                  <MemoActiveCard
-                    key={entry.root.session.externalId}
-                    item={{ kind: 'session', entry }}
-                    {...shared}
-                  />
-                ))}
-              </AnimatePresence>
+                  {draftRows.map((row) => (
+                    <MemoActiveCard key={row.draft.sessionId} item={row} {...shared} />
+                  ))}
+                  {active.map((entry) => (
+                    <MemoActiveCard
+                      key={entry.root.session.externalId}
+                      item={{ kind: 'session', entry }}
+                      {...shared}
+                    />
+                  ))}
+                </AnimatePresence>
+              </LayoutGroup>
             </div>
             <EmptyNote show={active.length + draftRows.length === 0} rowMotion={rowMotion}>
               {settled.length > 0 ? 'All caught up.' : 'No sessions yet.'}
@@ -636,7 +644,9 @@ export function WorkspaceSidebarView({
         ) : null}
       </SidebarContent>
 
-      {footer ? <SidebarFooter>{footer}</SidebarFooter> : null}
+      {footer ? (
+        <SidebarFooter ref={noticeAnchorRef('sidebar-foot')}>{footer}</SidebarFooter>
+      ) : null}
     </Sidebar>
   )
 }
@@ -716,7 +726,7 @@ interface RowHandlers {
   onSelectSession: WorkspaceSidebarViewProps['onSelectSession']
   onSettleSession?: WorkspaceSidebarViewProps['onSettleSession']
   onOpenDraft?: (draftId: string) => void
-  onDiscardDraft?: (draftId: string, options?: { fromKeyboard?: boolean }) => void
+  onDiscardDraft?: (draftId: string, options?: DraftDiscardOptions) => void
   providerLabel?: WorkspaceSidebarViewProps['providerLabel']
   rowMotion: MotionProps
 }
@@ -730,7 +740,14 @@ function ActiveCard({ item, ...handlers }: RowHandlers & { item: ActiveItem }) {
   return (
     // The clip lets the card fold to nothing on its way out; the padding
     // inside it is the space between cards, so it folds away too.
-    <motion.div role="listitem" className="overflow-hidden" {...handlers.rowMotion}>
+    // Rows slide to a new place rather than jump: a sent draft's row, now a
+    // session's, moves down past the drafts still waiting.
+    <motion.div
+      role="listitem"
+      layout="position"
+      className="overflow-hidden"
+      {...handlers.rowMotion}
+    >
       {item.kind === 'draft' ? (
         <DraftCardBody row={item} {...handlers} />
       ) : (
@@ -758,11 +775,14 @@ function sameItem(a: ActiveItem, b: ActiveItem): boolean {
 
 const MemoActiveCard = memo(ActiveCard, (a, b) => sameHandlers(a, b) && sameItem(a.item, b.item))
 
-/** Unsent text in a session's composer: a pen, quiet, beside its provider. */
+/**
+ * Unsent text in a session's composer: a pen in the draft accent beside its
+ * provider. The mark alone, no fill: a tinted session read as one more draft.
+ */
 function UnsentMark() {
   return (
     <span
-      className="flex shrink-0 items-center text-[color:var(--basis-draft)] opacity-80"
+      className="flex shrink-0 items-center text-[color:var(--basis-draft)]"
       title="Unsent draft"
     >
       <PencilSimpleLineIcon className="h-3 w-3" aria-hidden />
@@ -866,7 +886,7 @@ function SessionCardBody({
         className={cn(
           // Selection is a fill, never an outline, on every scheme.
           'relative rounded-[10px] transition-colors duration-100',
-          cardFillClass(tone, isActive, unsent),
+          cardFillClass(tone, isActive),
         )}
       >
         {tone === 'needs' ? (
@@ -919,7 +939,7 @@ function SessionCardBody({
       {/* Live work cannot be settled: the environment refuses it, since
             nothing would bring the card back once the turn finished. */}
       {onSettleSession && hasActions ? (
-        <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5 opacity-0 transition-opacity duration-80 group-has-[:focus-visible]/card:opacity-100 group-hover/card:opacity-100 pointer-coarse:opacity-100">
+        <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5 opacity-0 transition-opacity duration-80 group-has-[:focus-visible]/card:opacity-100 group-hover/card:opacity-100 pointer-coarse:opacity-100 [:root[data-draft-discard-guard]_&]:opacity-0">
           <CardAction
             label="Settle"
             onClick={() => onSettleSession(workspace.path, session.externalId, true)}
@@ -939,6 +959,57 @@ const imagesLabel = (count: number) => (count === 1 ? '1 image' : `${count} imag
 interface MenuAnchor {
   x: number
   y: number
+}
+
+/**
+ * After a discard by pointer the next card slides up under it, ✕ and all, so
+ * a double click would discard that one too. Its ✕ is hidden, and a click on
+ * it at the same spot ignored, until the pointer moves away (or a moment
+ * passes, so a touch screen is not left waiting for a move that never comes).
+ * The root carries the mark, for the cards' CSS.
+ */
+const DISCARD_GUARD_ATTRIBUTE = 'data-draft-discard-guard'
+const DISCARD_GUARD_SLOP_PX = 4
+const DISCARD_GUARD_MS = 1_500
+let discardGuard: { x: number; y: number; release: () => void } | null = null
+
+/** Whether a pointer discard at this spot may go ahead; if so, guards the spot. */
+function armDiscardGuard(at: { clientX: number; clientY: number }): boolean {
+  const near = (point: { x: number; y: number }, x: number, y: number) =>
+    Math.abs(point.x - x) <= DISCARD_GUARD_SLOP_PX && Math.abs(point.y - y) <= DISCARD_GUARD_SLOP_PX
+  if (discardGuard && near(discardGuard, at.clientX, at.clientY)) return false
+  discardGuard?.release()
+  if (typeof document === 'undefined') return true
+  const root = document.documentElement
+  const onMove = (event: PointerEvent) => {
+    if (guard && !near(guard, event.clientX, event.clientY)) guard.release()
+  }
+  const timer = setTimeout(() => guard.release(), DISCARD_GUARD_MS)
+  const guard = {
+    x: at.clientX,
+    y: at.clientY,
+    release: () => {
+      clearTimeout(timer)
+      window.removeEventListener('pointermove', onMove)
+      if (discardGuard === guard) {
+        discardGuard = null
+        root.removeAttribute(DISCARD_GUARD_ATTRIBUTE)
+      }
+    },
+  }
+  discardGuard = guard
+  root.setAttribute(DISCARD_GUARD_ATTRIBUTE, '')
+  window.addEventListener('pointermove', onMove)
+  return true
+}
+
+/** The card beside this one (below it, else above), or the list once it is the last. */
+function neighbourCard(card: HTMLElement | null): HTMLElement | null {
+  const row = card?.closest('[role="listitem"]')
+  const next = row?.nextElementSibling ?? row?.previousElementSibling
+  return (
+    next?.querySelector<HTMLElement>('button') ?? row?.closest<HTMLElement>('[role="list"]') ?? null
+  )
 }
 
 /**
@@ -966,12 +1037,18 @@ function DraftCardBody({
   const unsynced = draft.unsynced ? DRAFT_SYNC_EXPLANATION[draft.unsynced] : undefined
   const open = () => onOpenDraft?.(draft.draftId)
   // A draft being sent is the send's: nothing here discards it. A click
-  // with no pointer behind it (detail 0) came from the keyboard, and the
-  // undo notice then takes focus.
+  // with no pointer behind it (detail 0) came from the keyboard: the undo
+  // notice takes focus, and hands it to the next card over when it goes.
   const discard =
     onDiscardDraft && !draft.sending
-      ? (event: { detail: number }) =>
-          onDiscardDraft(draft.draftId, { fromKeyboard: event.detail === 0 })
+      ? (event: { detail: number; clientX: number; clientY: number }) => {
+          const fromKeyboard = event.detail === 0
+          if (!fromKeyboard && !armDiscardGuard(event)) return
+          onDiscardDraft(draft.draftId, {
+            fromKeyboard,
+            returnFocus: fromKeyboard ? neighbourCard(cardRef.current) : null,
+          })
+        }
       : undefined
 
   const cardRef = useRef<HTMLButtonElement>(null)
@@ -1084,6 +1161,7 @@ function DraftCardBody({
         <button
           ref={cardRef}
           type="button"
+          {...{ [DRAFT_CARD_ATTRIBUTE]: draft.draftId }}
           aria-current={isActive ? 'page' : undefined}
           onClick={open}
           onKeyDown={(event) => {
@@ -1203,15 +1281,14 @@ function SettledRow({
   const providerId = session.providerId ?? DEFAULT_PROVIDER_ID
   const tone = sessionBusyTone(session.status)
   const isActive = session.externalId === activeSessionId
-  // Settled work can still hold a reply the user started: the active cards'
-  // mark and tint, under the row's own hover.
+  // Settled work can still hold a reply the user started: the active cards' mark.
   const unsent = Boolean(session.hasUnsentDraft) && !isActive
   return (
     <MotionMenuItem className="overflow-hidden" {...rowMotion}>
       <SidebarMenuButton
         icon={depth > 0 ? ChildSessionIcon : providerIcon(providerId)}
         isActive={isActive}
-        className={cn('text-muted-foreground', unsent && 'bg-(--basis-draft-unsent)')}
+        className="text-muted-foreground"
         style={depth > 0 ? { paddingLeft: 8 + Math.min(depth, 4) * 12 } : undefined}
         onClick={() => onSelectSession(workspace.path, session.externalId, providerId)}
       >

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import type { ProviderId } from '@agentpack/contract'
 import { ThemeProvider } from '../../providers/theme-provider'
-import type { PendingDraftDiscard } from '../../providers/sidebar-provider'
+import type { DraftDiscardOptions, PendingDraftDiscard } from '../../providers/sidebar-provider'
 import { SidebarInset, SidebarProvider } from '../../components/fluid/ui/sidebar'
 import { DraftDiscardToast } from '../../components/sidebar/DraftDiscardToast'
 import { WorkspaceSidebarView } from '../../components/sidebar/WorkspaceSidebarView'
@@ -157,11 +157,14 @@ function Demo({
   drafts: initialDrafts = [],
   activeSessionId: initialSessionId = 'sess-001',
   activeDraftId: initialDraftId = null,
+  sendable = false,
 }: {
   workspaces?: SidebarWorkspace[]
   drafts?: SidebarDraft[]
   activeSessionId?: string | null
   activeDraftId?: string | null
+  /** Offers a button that sends the top draft, as the composer would. */
+  sendable?: boolean
 }) {
   const [workspaces, setWorkspaces] = useState(initialWorkspaces)
   const [activeSessionId, setActiveSessionId] = useState<string | null>(initialSessionId)
@@ -185,15 +188,44 @@ function Demo({
     clearTimeout(timer.current)
     timer.current = setTimeout(() => settle(false), 6_000)
   }
-  const discard = (draftId: string, options?: { fromKeyboard?: boolean }) => {
+  const discard = (draftId: string, options?: DraftDiscardOptions) => {
     settle(false)
-    const next = { draftId, key: Date.now(), fromKeyboard: options?.fromKeyboard ?? false }
+    const next = {
+      draftId,
+      key: Date.now(),
+      fromKeyboard: options?.fromKeyboard ?? false,
+      returnFocus: options?.returnFocus ?? null,
+    }
     pendingRef.current = next
     setPending(next)
     if (draftId === activeDraftId) setActiveDraftId(null)
     arm()
   }
   useEffect(() => () => clearTimeout(timer.current), [])
+  // A send, as the environment answers it: the draft goes and its session is
+  // listed in the same update, under the id minted with the draft.
+  const send = (sent: SidebarDraft) => {
+    setDrafts((all) => all.filter((shown) => shown.draftId !== sent.draftId))
+    setWorkspaces((current) =>
+      current.map((workspace) =>
+        workspace.path === sent.workspaceId
+          ? {
+              ...workspace,
+              sessions: [
+                {
+                  externalId: sent.sessionId,
+                  title: sent.preview,
+                  status: 'running',
+                  providerId: sent.providerId,
+                  updatedAt: new Date().toISOString(),
+                },
+                ...workspace.sessions,
+              ],
+            }
+          : workspace,
+      ),
+    )
+  }
   const shownDrafts = pending ? drafts.filter((shown) => shown.draftId !== pending.draftId) : drafts
   const patch = (externalId: string, change: Record<string, unknown>) =>
     setWorkspaces((current) =>
@@ -244,7 +276,17 @@ function Demo({
           onAddWorkspace={() => undefined}
           providerLabel={providerLabel}
         />
-        <SidebarInset />
+        <SidebarInset>
+          {sendable && drafts[0] ? (
+            <button
+              type="button"
+              className="m-6 self-start rounded-md bg-hover px-3 py-1.5 text-[13px]"
+              onClick={() => send(drafts[0]!)}
+            >
+              Send “{drafts[0].preview}”
+            </button>
+          ) : null}
+        </SidebarInset>
         <DraftDiscardToast
           pending={pending}
           onUndo={() => settle(true)}
@@ -278,12 +320,17 @@ export const DraftCards: Story = {
   ),
 }
 
+/** Sending the top draft: its row turns into the session's and slides below the drafts still waiting. */
+export const DraftSend: Story = {
+  render: () => <Demo sendable drafts={[DRAFT, DRAFT_NOT_SYNCED, DRAFT_IMAGES]} />,
+}
+
 /** A draft parked in its project. */
 export const Draft: Story = {
   render: () => <Demo drafts={[DRAFT]} />,
 }
 
-/** The draft on screen: its card shows selected, a step deeper in the tint. */
+/** The draft on screen: its card takes the selection fill a session card takes, and keeps its Draft label. */
 export const DraftOpen: Story = {
   render: () => (
     <Demo drafts={[DRAFT, DRAFT_NOT_SYNCED]} activeSessionId={null} activeDraftId="draft-1" />

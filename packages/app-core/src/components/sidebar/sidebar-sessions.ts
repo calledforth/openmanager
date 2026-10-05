@@ -57,6 +57,17 @@ export interface SidebarDraft {
   sending?: true
 }
 
+/** Marks a draft card's button with its draft id, for focus to find it again. */
+export const DRAFT_CARD_ATTRIBUTE = 'data-draft-card'
+
+/** How a draft card's discard was made. */
+export interface DraftDiscardOptions {
+  /** Made from the keyboard: the notice takes focus, so Undo is a keypress away. */
+  fromKeyboard?: boolean
+  /** Where focus goes when the notice closes with focus on it: the next card over. */
+  returnFocus?: HTMLElement | null
+}
+
 /** Long enough for any card width; the rest is never shown. */
 const PREVIEW_MAX = 160
 
@@ -141,15 +152,18 @@ export interface SidebarDraftFacts {
    * and deleted. Its snapshot would show text the composer no longer has.
    */
   openGone: boolean
-  /** The draft on screen is being sent. */
-  openSending: boolean
+  /**
+   * The draft on screen while it is being sent: its card as sent, read live,
+   * so the card shows what went rather than the snapshot. Null otherwise.
+   */
+  openSending: SidebarDraft | null
 }
 
 export const NO_DRAFT_FACTS: SidebarDraftFacts = {
   cards: [],
   openSent: false,
   openGone: false,
-  openSending: false,
+  openSending: null,
 }
 
 /**
@@ -176,7 +190,10 @@ export function selectSidebarDrafts(
     cards: cards.sort(newestDraftFirst),
     openSent: openSessionId !== null && state.sessions[openSessionId] !== undefined,
     openGone: openDraftId !== null && !state.drafts[openDraftId] && !state.draftEdits[openDraftId],
-    openSending: openDraftId !== null && state.draftEdits[openDraftId]?.launching === true,
+    openSending:
+      openDraftId !== null && state.draftEdits[openDraftId]?.launching
+        ? sidebarDraftCard(state, openDraftId, defaultProviderId)
+        : null,
   }
 }
 
@@ -204,7 +221,10 @@ export function sameSidebarDraftFacts(left: SidebarDraftFacts, right: SidebarDra
   return (
     left.openSent === right.openSent &&
     left.openGone === right.openGone &&
-    left.openSending === right.openSending &&
+    (left.openSending === right.openSending ||
+      (left.openSending !== null &&
+        right.openSending !== null &&
+        sameDraft(left.openSending, right.openSending))) &&
     left.cards.length === right.cards.length &&
     left.cards.every((card, index) => sameDraft(card, right.cards[index]!))
   )
@@ -214,8 +234,9 @@ export function sameSidebarDraftFacts(left: SidebarDraftFacts, right: SidebarDra
  * The cards to show: the live ones, plus the open draft's frozen card where
  * it had one when it was opened, less any discard waiting out its undo. The
  * frozen card keeps its place: it was taken before the typing that would
- * move it, and moves when the draft is left. It goes once its draft is a
- * session or is gone, and says so while it is being sent.
+ * move it, and moves when the draft is left. While the draft is being sent
+ * it shows what is being sent, still in its place; it goes once its draft is
+ * a session or is gone.
  */
 export function arrangeSidebarDrafts({
   facts,
@@ -232,7 +253,7 @@ export function arrangeSidebarDrafts({
     !facts.openGone &&
     !facts.cards.some((card) => card.draftId === frozen.draftId)
       ? facts.openSending
-        ? { ...frozen, sending: true as const }
+        ? { ...facts.openSending, editedAt: frozen.editedAt, sending: true as const }
         : frozen
       : null
   const cards = shown ? [...facts.cards, shown].sort(newestDraftFirst) : facts.cards

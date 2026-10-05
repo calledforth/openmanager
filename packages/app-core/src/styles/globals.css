@@ -1288,16 +1288,14 @@ textarea,
 }
 
 /* Unsent work. A new-session draft's card is filled with the scheme's accent
- * (a fill, never an outline), a step deeper on hover and while it is open; a
- * session whose composer holds unsent text takes a quieter step of the same
- * hue, so the two read as kin. Translucent, so the hue holds on every canvas. */
+ * (a fill, never an outline), a step deeper on hover; open, it takes the
+ * selection fill every card takes. A session whose composer holds unsent
+ * text gets no fill, only a pen in the same hue. Translucent, so the hue
+ * holds on every canvas. */
 :root {
   --basis-draft: var(--basis-accent-blue);
   --basis-draft-fill: color-mix(in oklab, var(--basis-draft) 6.5%, transparent);
   --basis-draft-hover: color-mix(in oklab, var(--basis-draft) 10%, transparent);
-  --basis-draft-active: color-mix(in oklab, var(--basis-draft) 14%, transparent);
-  --basis-draft-unsent: color-mix(in oklab, var(--basis-draft) 5%, transparent);
-  --basis-draft-unsent-hover: color-mix(in oklab, var(--basis-draft) 8%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {

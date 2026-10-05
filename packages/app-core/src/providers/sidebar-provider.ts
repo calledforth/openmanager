@@ -1,6 +1,8 @@
 import { createContext, useContext } from 'react'
 import type { ProviderId } from '@agentpack/contract'
-import type { SidebarDraft } from '../components/sidebar/sidebar-sessions'
+import type { DraftDiscardOptions, SidebarDraft } from '../components/sidebar/sidebar-sessions'
+
+export type { DraftDiscardOptions }
 
 /** Cheap facts about a workspace the host already knows; nothing is probed here. */
 export interface WorkspaceCapabilitySummary {
@@ -138,6 +140,8 @@ export interface PendingDraftDiscard {
   key: number
   /** Made from the keyboard: the notice takes focus, so Undo is a keypress away. */
   fromKeyboard: boolean
+  /** Where focus goes when the notice closes with focus on it, unless the card is back. */
+  returnFocus: HTMLElement | null
 }
 
 /**
@@ -162,7 +166,7 @@ export interface SidebarDraftsValue {
    * nothing to a draft being sent; called off if the draft changes elsewhere
    * during the window.
    */
-  discardDraft: (draftId: string, options?: { fromKeyboard?: boolean }) => void
+  discardDraft: (draftId: string, options?: DraftDiscardOptions) => void
   pendingDiscard: PendingDraftDiscard | null
   /** Bring the pending discard's card back; nothing was deleted. */
   undoDiscard: () => void

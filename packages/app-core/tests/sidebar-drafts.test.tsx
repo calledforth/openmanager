@@ -46,6 +46,10 @@ const SEED: MockSeed = {
   ],
 }
 
+// Whole shells mounted per test: the longest runs about 3 s alone, and
+// goes past 5 s under the full suite's load.
+vi.setConfig({ testTimeout: 20_000 })
+
 let container: HTMLDivElement
 let root: Root
 beforeEach(() => {
@@ -184,12 +188,18 @@ const openCard = async (client: MockEnvironmentClient, text: string) => {
   await act(() => cardFor(text)!.querySelector('button')!.click())
   await settle(client)
 }
-/** ✕ clicked with a pointer behind it, as a mouse or a tap makes. */
-const discard = async (text: string) => {
+/**
+ * ✕ clicked with a pointer behind it, as a mouse or a tap makes. Each lands
+ * somewhere new unless told where, as a repeat click on one spot is guarded.
+ */
+let pointerX = 0
+const discard = async (text: string, at = (pointerX += 20)) => {
   await act(() =>
     cardFor(text)!
       .querySelector<HTMLButtonElement>('[aria-label="Discard draft"]')!
-      .dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 })),
+      .dispatchEvent(
+        new MouseEvent('click', { bubbles: true, detail: 1, clientX: at, clientY: 40 }),
+      ),
   )
 }
 /** ✕ pressed from the keyboard: a click with no pointer behind it. */
@@ -303,7 +313,7 @@ describe('sidebar draft cards', () => {
     expect(draftCards()).toEqual(['first idea'])
   })
 
-  it('takes the page to a blank `/` when the draft on screen is discarded', async () => {
+  it('pushes a blank `/` when the draft on screen is discarded, so Back returns to it', async () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     await parkThree(client)
     await openCard(client, 'second idea')
@@ -312,7 +322,8 @@ describe('sidebar draft cards', () => {
 
     await discard('second idea')
     await settle(client)
-    expect(navigations).toEqual(['replace /'])
+    // Pushed: the draft's own entry stays in the history, one Back away.
+    expect(navigations).toEqual(['push /'])
     expect(pathOf(probe.route)).toBe('/')
     expect(probe.session.newSessionDraftId).not.toBe(second)
     // A blank page in the discarded draft's project.
@@ -320,7 +331,7 @@ describe('sidebar draft cards', () => {
     expect(composer().value).toBe('')
     expect(draftCards()).toEqual(['third idea', 'first idea'])
 
-    // Back to its address before the window closes: it is wanted after all.
+    // Back (to its address) before the window closes: it is wanted after all.
     await act(() => probe.go({ draftId: second }))
     await settle(client)
     expect(toast()).toBeUndefined()
@@ -512,8 +523,15 @@ describe('review regressions', () => {
     expect(document.activeElement).toBe(button(toast()!, 'Undo'))
     await key(document.activeElement!, 'Escape')
     expect(toast()).toBeUndefined()
+    // Not left on the page body: on the card that was next to it.
+    expect(document.activeElement).toBe(cardFor('second idea')!.querySelector('button'))
     await settle(client)
     expect(client.getState().drafts[third]).toBeUndefined()
+
+    // Undone from the keyboard: back on the card that came back.
+    await keyboardDiscard('second idea')
+    await act(() => button(toast()!, 'Undo').click())
+    expect(document.activeElement).toBe(cardFor('second idea')!.querySelector('button'))
 
     // From the pointer, focus stays where it was.
     await discard('second idea')
@@ -664,6 +682,84 @@ describe('review regressions', () => {
     await settle(client)
     expect(client.getState().drafts[third]?.content.text).toBe('third idea')
     expect(draftCards()).toContain('third idea')
+  })
+
+  it('calls the discard off on another device’s change of model alone, after the closing save', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await parkThree(client)
+    await openCard(client, 'first idea')
+    const first = probe.session.newSessionDraftId!
+    await type('first idea, edited')
+    await discard('first idea')
+    await settle(client)
+    // This page's own closing save landed; the discard stands.
+    expect(toast()).toBeDefined()
+    const saved = client.getState().drafts[first]!
+    // The same text, project and images, another provider: still not what was discarded.
+    await act(() =>
+      client.commands.saveDraft({
+        draftId: first,
+        baseRevision: saved.revision,
+        target: saved.target,
+        content: { ...saved.content, providerId: 'cursor' },
+      }),
+    )
+    await settle(client)
+    expect(toast()).toBeUndefined()
+    await act(() => window.dispatchEvent(new Event('pagehide')))
+    await settle(client)
+    expect(client.getState().drafts[first]?.content.providerId).toBe('cursor')
+  })
+
+  it('keeps a discard whose own earlier save answers after it', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await parkThree(client)
+    const third = idOf(client, 'third idea')
+    const { target } = client.getState().drafts[third]!
+    // X is on the wire when Y is typed, and the card discarded: X's answer
+    // brings a newer revision that holds neither Y nor what was discarded.
+    await act(() => {
+      client.drafts!.edit(third, target, { text: 'third idea X' })
+      client.drafts!.flush()
+      client.drafts!.edit(third, target, { text: 'third idea XY' })
+      cardFor('third idea')!
+        .querySelector<HTMLButtonElement>('[aria-label="Discard draft"]')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1, clientX: 999 }))
+    })
+    await settle(client)
+    expect(toast()).toBeDefined()
+    await act(() => window.dispatchEvent(new Event('pagehide')))
+    await settle(client)
+    expect(client.getState().drafts[third]).toBeUndefined()
+  })
+
+  it('shows what is being sent on the open draft’s card, not the snapshot', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await parkThree(client)
+    await openCard(client, 'first idea')
+    const first = probe.session.newSessionDraftId!
+    await type('first idea, as sent')
+    expect(draftCards()).toContain('first idea')
+    act(() => client.drafts!.beginLaunch(first))
+    expect(draftCards()).toContain('first idea, as sent')
+    expect(cardFor('first idea, as sent')!.querySelector('[aria-label="Discard draft"]')).toBeNull()
+  })
+
+  it('ignores a second click on the spot where the last discard was', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await parkThree(client)
+    await discard('third idea', 500)
+    // The next card slid up under the pointer: a double click's second half.
+    await discard('second idea', 500)
+    expect(probe.drafts!.pendingDiscard?.draftId).toBe(idOf(client, 'third idea'))
+    expect(document.documentElement.hasAttribute('data-draft-discard-guard')).toBe(true)
+    // The pointer moved off: the ✕ there is live again.
+    await act(() => {
+      window.dispatchEvent(new MouseEvent('pointermove', { clientX: 540, clientY: 40 }))
+    })
+    expect(document.documentElement.hasAttribute('data-draft-discard-guard')).toBe(false)
+    await discard('second idea', 500)
+    expect(probe.drafts!.pendingDiscard?.draftId).toBe(idOf(client, 'second idea'))
   })
 
   it('still deletes a draft whose own last keystrokes are saved during the window', async () => {
