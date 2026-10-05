@@ -608,8 +608,8 @@ function EnvironmentSessionStateProvider({
   // An address this client cannot place once the environment has listed its
   // drafts: a sent draft leads to its session, anything else to a blank page.
   // Only while that address is still on screen and nothing else was picked.
-  // A sent draft's session need not be loaded: the session's address opens
-  // it once it is listed, which takes a while for one past the first page.
+  // A sent draft's session need not be loaded: the session's address asks
+  // the environment for it, and leads on to `/` if it has gone since.
   const draftsListed = useEnvironmentState(selectDraftsListed)
   const sentSessionId = pagePending && shown ? sentDraftSession(shown.draftId) : undefined
   const sentSessionKnown = useEnvironmentState((state) =>

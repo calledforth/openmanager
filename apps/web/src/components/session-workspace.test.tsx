@@ -288,6 +288,72 @@ describe('session workspace', () => {
     expect(client.getState().activeSessionId).toBe('session-1')
   })
 
+  it('replaces the address of a session the environment does not have with `/`', async () => {
+    const { client, router } = renderConnected('/sessions/deleted-since')
+    await waitFor(() => expect(router.state.location.pathname).toBe('/'))
+    expect(client.calls).toContainEqual({ command: 'openSession', input: 'deleted-since' })
+    const textbox = await screen.findByRole('textbox')
+    await waitFor(() => expect(textbox).toBeEnabled())
+    expect(textbox).toHaveValue('')
+  })
+
+  it('leads a sent draft’s address on to `/` when its session was deleted since', async () => {
+    // This browser sent the draft; the session it became is gone.
+    localStorage.setItem('openmanager.sent-drafts', JSON.stringify({ 'sent-draft': 'deleted' }))
+    const { router } = renderConnected('/drafts/sent-draft', {
+      ...SEED,
+      workspaces: [{ ...WORKSPACE, capabilities: { git: false, providers: ['opencode'] } }],
+    })
+    const visited: string[] = []
+    const stop = router.history.subscribe(() => visited.push(router.history.location.pathname))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/'))
+    stop()
+    expect(visited).toContain('/sessions/deleted')
+    const textbox = await screen.findByRole('textbox')
+    await waitFor(() => expect(textbox).toBeEnabled())
+    expect(textbox).toHaveValue('')
+  })
+
+  it('opens a session from its URL before the catalog lists it, without leaving the URL', async () => {
+    connectedEnvironment()
+    // The catalog has not reached it (past its first page); the environment has it.
+    const client = createMockEnvironmentClient({ seed: { ...SEED, sessions: [] } })
+    const open = client.commands.openSession.bind(client.commands)
+    vi.spyOn(client.commands, 'openSession').mockImplementation(async (sessionId) => {
+      if (sessionId === SESSION.sessionId && !client.getState().sessions[sessionId]) {
+        const timestamp = new Date().toISOString()
+        client.emit({
+          type: 'event',
+          name: 'session.created',
+          eventId: 'listed-late',
+          timestamp,
+          scope: { type: 'environment', environmentId: 'env-local' },
+          payload: { session: SESSION },
+        })
+        client.emit({
+          type: 'event',
+          name: 'thread.created',
+          eventId: 'listed-late-thread',
+          timestamp,
+          scope: { type: 'session', environmentId: 'env-local', sessionId: SESSION.sessionId },
+          payload: { thread: THREAD },
+        })
+      }
+      return open(sessionId)
+    })
+    const { router } = renderWebApp(`/sessions/${SESSION.sessionId}`, {
+      createEnvironmentClient: () => client,
+    })
+    const visited: string[] = []
+    const stop = router.history.subscribe(() => visited.push(router.history.location.pathname))
+    await waitFor(() => expect(client.getState().activeSessionId).toBe(SESSION.sessionId))
+    stop()
+    expect(router.state.location.pathname).toBe(`/sessions/${SESSION.sessionId}`)
+    expect(visited).not.toContain('/')
+    // Asked for once: the catalog learning of it does not open it again.
+    expect(client.calls.filter((call) => call.command === 'openSession')).toHaveLength(1)
+  })
+
   it('adds a project picked in the folder browser', async () => {
     const user = userEvent.setup()
     const { client } = renderConnected('/', {

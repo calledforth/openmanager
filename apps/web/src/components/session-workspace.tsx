@@ -5,7 +5,9 @@ import {
 } from '@openmanager/app-core/providers/environment-client'
 import { useNavigate } from '@tanstack/react-router'
 import { ChatWorkspace } from '@openmanager/app-core/components/chat/ChatWorkspace'
-import type { EnvironmentState } from '@openmanager/environment-client'
+import { isEnvironmentClientError, type EnvironmentState } from '@openmanager/environment-client'
+
+const selectConnected = (state: EnvironmentState) => state.connection.phase === 'connected'
 
 /**
  * The chat pane for a route. With an environment client the shared chat
@@ -25,10 +27,15 @@ function ConnectedSessionWorkspace({ sessionId }: { sessionId?: string }) {
     [sessionId],
   )
   const known = useEnvironmentState(selector)
+  const connected = useEnvironmentState(selectConnected)
   const navigate = useNavigate()
   const openedSessionRef = useRef<string | null>(null)
+  // A session opened before the catalog knew it: the route's own open, on
+  // its way or done, so it is not asked for twice.
+  const probedSessionRef = useRef<string | null>(null)
 
   useEffect(() => {
+    if (probedSessionRef.current !== sessionId) probedSessionRef.current = null
     // Only the route selects a session. Active-session updates must never
     // retrigger an open for a route we are in the process of leaving.
     if (!sessionId) {
@@ -38,14 +45,34 @@ function ConnectedSessionWorkspace({ sessionId }: { sessionId?: string }) {
     if (!known) {
       // Deleting the viewed session (including from recovery) removes its
       // catalog entry. Replace that dead URL without observing active state.
-      if (openedSessionRef.current === sessionId) void navigate({ to: '/', replace: true })
+      if (openedSessionRef.current === sessionId) {
+        void navigate({ to: '/', replace: true })
+        return
+      }
+      // Not loaded: past the catalog's first page, or gone. Asking for it
+      // opens one that exists without waiting for the rest of the catalog;
+      // one the environment does not have leaves its address for `/`.
+      if (!connected || probedSessionRef.current === sessionId) return
+      probedSessionRef.current = sessionId
+      void client.commands.openSession(sessionId).catch((error: unknown) => {
+        if (probedSessionRef.current !== sessionId) return
+        probedSessionRef.current = null
+        if (isEnvironmentClientError(error) && error.code === 'not_found') {
+          void navigate({ to: '/', replace: true })
+        }
+      })
       return
     }
     openedSessionRef.current = sessionId
-    void client.commands.openSession(sessionId).catch(() => undefined)
+    if (probedSessionRef.current === sessionId) {
+      // The route's earlier open brought it in.
+      probedSessionRef.current = null
+    } else {
+      void client.commands.openSession(sessionId).catch(() => undefined)
+    }
     // Invalidate an in-flight open when leaving for another session or draft.
     return () => client.setActiveSession(null)
-  }, [client, sessionId, known, navigate])
+  }, [client, connected, sessionId, known, navigate])
 
   return <ChatWorkspace />
 }

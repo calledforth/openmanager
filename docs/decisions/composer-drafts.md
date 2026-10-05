@@ -55,11 +55,12 @@ needed no schema or protocol change.
   showing a blank composer that the draft would replace. A draft sent from
   this browser leads to its session (the browser remembers which session a
   sent draft became). Anything else replaces the address with `/`.
-  A sent draft's session need not be loaded yet: the session's own address
-  opens it once the session list reaches it, which for a session past the
-  first page is a moment after connecting. A loaded session is gone to at
-  once; otherwise the listing of drafts is waited for, because a draft sent
-  elsewhere can come back (see "Other devices").
+  A sent draft's session need not be loaded yet. A session's address opens
+  a session the client has not loaded (one past the session list's first
+  page) by asking the environment for it, and replaces the address with `/`
+  when the environment does not have it (deleted since). A loaded session
+  is gone to at once; otherwise the listing of drafts is waited for, because
+  a draft sent elsewhere can come back (see "Other devices").
 - **Sending** uses the session id minted with the draft. The session's
   address replaces the draft's in the history, since the draft is gone; a
   failed send leaves the draft and its address as they were. A draft being
@@ -241,9 +242,6 @@ less the draft on screen.
 - A draft's address leads to its session only when this browser sent it, or
   had its page open when another device did. Otherwise its old address opens
   a blank page.
-- A sent draft whose session was deleted since leads to that session's
-  address, which stays as it is: the session route only replaces the
-  address of a session it had opened.
 - If a send's response is lost after the session was created, the restored
   draft can come back next to the new session. Sending it again is refused,
   because the session id is taken.
