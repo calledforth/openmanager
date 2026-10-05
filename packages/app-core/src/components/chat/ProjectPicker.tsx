@@ -59,7 +59,8 @@ export function ProjectPicker({
 }: {
   workspaces: WorkspaceEntry[]
   recentWorkspaces: WorkspaceEntry[]
-  activeWorkspace: WorkspaceEntry
+  /** Null when the open draft has no project: the picker asks for one. */
+  activeWorkspace: WorkspaceEntry | null
   environmentLabel?: string
   onSelect: (workspacePath: string) => void
   onAddWorkspace: () => void
@@ -153,7 +154,7 @@ export function ProjectPicker({
           onQueryChange={setQuery}
           filter={filterProjects}
           onSelect={(item) => pick(item.value)}
-          defaultHighlight={activeWorkspace.path}
+          defaultHighlight={activeWorkspace?.path}
         >
           <CommandMenuInput
             ref={searchRef}
@@ -179,7 +180,7 @@ export function ProjectPicker({
                 <ProjectRow
                   item={item}
                   workspace={byPath.get(item.value)}
-                  active={item.value === activeWorkspace.path}
+                  active={item.value === activeWorkspace?.path}
                 />
               )
             }
@@ -213,19 +214,27 @@ export function ProjectPicker({
           onClick={toggle}
           aria-haspopup="dialog"
           aria-expanded={open}
-          aria-label={`Project: ${activeWorkspace.name}. Choose a project`}
+          aria-label={
+            activeWorkspace
+              ? `Project: ${activeWorkspace.name}. Choose a project`
+              : 'Choose a project'
+          }
           className={cn(
             'inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border-0 bg-transparent px-1.5 py-0.5 text-16-medium text-[var(--basis-text-strong)] transition-colors',
             'hover:bg-hover',
             open && 'bg-hover',
           )}
         >
-          <ProjectIcon
-            workspacePath={activeWorkspace.path}
-            fallbackIcon={FolderSimpleIcon}
-            className="h-4 w-4 text-[var(--basis-text-muted)]"
-          />
-          <span className="truncate">{activeWorkspace.name}</span>
+          {activeWorkspace ? (
+            <ProjectIcon
+              workspacePath={activeWorkspace.path}
+              fallbackIcon={FolderSimpleIcon}
+              className="h-4 w-4 text-[var(--basis-text-muted)]"
+            />
+          ) : (
+            <FolderSimpleIcon weight="light" className="h-4 w-4 text-[var(--basis-text-muted)]" />
+          )}
+          <span className="truncate">{activeWorkspace?.name ?? 'a project'}</span>
           <CaretDownIcon
             weight="light"
             className={cn(

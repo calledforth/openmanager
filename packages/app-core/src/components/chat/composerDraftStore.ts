@@ -9,7 +9,8 @@ import {
 
 /**
  * Where the composer keeps unsent text, by draft key (`session:<id>`,
- * `draft:<workspaceId>`, or anything a story picks). Reads are synchronous so
+ * `new:<draftId>` where drafts have ids, `draft:<workspaceId>` where a
+ * project has one, or anything a story picks). Reads are synchronous so
  * a restored draft is on screen at first paint. Attachments are not here:
  * they stay with the composer that holds their `File`s.
  */
@@ -20,6 +21,12 @@ export interface ComposerDraftStore {
   subscribe(listener: () => void): () => void
   /** Write anything waiting now: the composer is going away or the page is hidden. */
   flush(): void
+  /**
+   * Something other than text (an image) was added to the draft behind
+   * `key`: for stores whose drafts start blank and unsaved, it is a draft
+   * now. Typing says so through `setText`.
+   */
+  claim?(key: string): void
   /**
    * Set the draft behind `key` aside for a send that is starting, after the
    * composer has been cleared for it. Anything typed until the returned

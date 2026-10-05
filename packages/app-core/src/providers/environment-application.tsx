@@ -25,8 +25,11 @@ import {
 import type { InteractionResponse, Workspace } from '@openmanager/protocol'
 import {
   UPLOAD_TICKET_COMMAND,
+  hasDraftContent,
   selectActiveSession,
   selectActiveThread,
+  selectDraftContent,
+  selectDraftTarget,
   selectProviderCatalog,
   shallowEqualArray,
   type EnvironmentState,
@@ -74,6 +77,13 @@ import {
 } from './environment-composer'
 import { EnvironmentComposerDraftProvider } from './environment-drafts'
 import {
+  DraftPageContext,
+  rememberSentDraft,
+  sentDraftSession,
+  type DraftPageInternals,
+  type DraftPageTarget,
+} from './draft-pages'
+import {
   SidebarDataContext,
   SidebarSessionsContext,
   toggleCollapsedWorkspace,
@@ -112,13 +122,24 @@ const EMPTY_LIST: never[] = []
 export interface EnvironmentApplicationOptions {
   /** How this host lets the user add a workspace; absent means it cannot. */
   addWorkspace?: () => Promise<void>
-  /** Routed hosts navigate first; the destination owns session hydration. */
-  navigateSession?: (sessionId: string | null) => Promise<void>
-  /** True while the host shows its new-session landing (on the web, the `/`
-   * route). With no session and no draft open there, a draft stands in the
-   * most recently used project, so the composer is ready on arrival. Left
-   * false, a draft opens only when asked for. */
+  /** Routed hosts navigate first; the destination owns session hydration.
+   * `null` is the new-session landing. `replace` takes the place of the
+   * current history entry, for an address that leads nowhere any more. */
+  navigateSession?: (sessionId: string | null, options?: { replace?: boolean }) => Promise<void>
+  /**
+   * Hosts with draft pages: go to a draft's own address (on the web,
+   * `/drafts/<id>`). A draft gets one, in place of the blank page, with its
+   * first text or image. Without it the landing keeps its draft in memory.
+   */
+  navigateDraft?: (draftId: string, options?: { replace?: boolean }) => Promise<void>
+  /** True while the host shows a new-session page (on the web, `/` or
+   * `/drafts/<id>`). With no session open there, a draft stands in the most
+   * recently used project, so the composer is ready on arrival. Left false, a
+   * draft opens only when asked for. */
   onLanding?: boolean
+  /** On a host with draft pages, the draft the address names; null or
+   * absent on the blank page. */
+  landingDraftId?: string | null
   /** Where folded sidebar rows are remembered. Defaults to `localStorage`. */
   collapsedWorkspaceStorage?: Pick<Storage, 'getItem' | 'setItem'> | null
   /** Host actions for views (child sessions, icons, uploads). */
@@ -140,7 +161,9 @@ export function EnvironmentApplicationProviders({
       <EnvironmentSessionStateProvider
         addWorkspace={options.addWorkspace}
         navigateSession={options.navigateSession}
+        navigateDraft={options.navigateDraft}
         onLanding={options.onLanding ?? false}
+        landingDraftId={options.landingDraftId ?? null}
       >
         <EnvironmentComposerStateProvider>
           <EnvironmentComposerDraftProvider>
@@ -330,7 +353,7 @@ function EnvironmentPlatformCapabilitiesProvider({ children }: { children: React
 }
 
 // ---------------------------------------------------------------------------
-// Session state: navigation through the client, drafts kept locally.
+// Session state: navigation through the client, the draft page kept here.
 // ---------------------------------------------------------------------------
 
 interface DraftInternals {
@@ -358,26 +381,65 @@ function landingWorkspaceFor(workspaces: Workspace[], recent: Workspace[]): stri
   return (recent.find(canHostDraft) ?? workspaces.find(canHostDraft))?.workspaceId ?? null
 }
 
+/**
+ * The new-session draft a page shows. Its ids are minted when the page opens
+ * blank; nothing is saved until it gets text or an image, and only then does
+ * it get an address of its own (`/drafts/<id>`).
+ */
+interface DraftPage {
+  draftId: string
+  /** The id its session will get. Null while a draft opened by its address
+   * is not known here yet. */
+  sessionId: string | null
+  /** The project picked for it. On a blank page, null follows the landing. */
+  workspaceId: string | null
+  /** It has had text or an image, so it has an address. */
+  claimed: boolean
+}
+
+const mintPage = (workspaceId: string | null): DraftPage => ({
+  draftId: crypto.randomUUID(),
+  sessionId: crypto.randomUUID(),
+  workspaceId,
+  claimed: false,
+})
+
+/**
+ * A navigation this provider started, until the address reaches it: `to` is
+ * a draft's id, or null for the blank page. While the address still reads
+ * `from`, it is catching up, and the page this provider opened stands.
+ */
+interface RouteAhead {
+  to: string | null
+  from: string | null | undefined
+}
+
 const selectActiveSessionId = (state: EnvironmentState) =>
   selectActiveSession(state)?.sessionId ?? null
 const selectActiveSessionWorkspaceId = (state: EnvironmentState) =>
   selectActiveSession(state)?.workspaceId ?? null
 const selectActiveThreadId = (state: EnvironmentState) =>
   selectActiveThread(state)?.thread.threadId ?? null
+const selectDraftsListed = (state: EnvironmentState) => state.draftsListed
 
 function EnvironmentSessionStateProvider({
   addWorkspace,
   navigateSession,
+  navigateDraft,
   onLanding,
+  landingDraftId,
   children,
 }: {
   addWorkspace?: () => Promise<void>
-  navigateSession?: (sessionId: string | null) => Promise<void>
+  navigateSession?: EnvironmentApplicationOptions['navigateSession']
+  navigateDraft?: EnvironmentApplicationOptions['navigateDraft']
   onLanding: boolean
+  landingDraftId: string | null
   children: ReactNode
 }) {
   const client = useEnvironmentClient()
   const { commands } = client
+  const sync = client.drafts
   // Only which session is on screen, and where: its title, status or settle
   // are the sidebar's and the thread's to show, and reading the whole session
   // here would hand every reader of session state a new value on each.
@@ -386,12 +448,9 @@ function EnvironmentSessionStateProvider({
   const activeTurn = useActiveTurn()
   const workspaces = useWorkspaces()
   const recentWorkspaces = useRecentWorkspaces()
-  // A draft the user opened. The landing's own draft is derived below.
-  const [openedDraftWorkspaceId, setDraftWorkspaceId] = useState<string | null>(null)
-  // The landing's draft, once it has been shown. Held so that activity in
-  // another project, which reorders the recent list, does not move a draft
-  // the user may already be typing into.
-  const [heldLandingWorkspaceId, setHeldLandingWorkspaceId] = useState<string | null>(null)
+  const connection = useConnectionState()
+  const [page, setPage] = useState<DraftPage | null>(null)
+  const [ahead, setAhead] = useState<RouteAhead | null>(null)
   const [pendingDraftSessionStart, setPendingDraftSessionStart] = useState(false)
   const [launchingMessage, setLaunchingMessage] = useState<LaunchingMessage | null>(null)
   const [turnPending, setTurnPending] = useState(false)
@@ -407,31 +466,146 @@ function EnvironmentSessionStateProvider({
   // opened). Session opens resolve in any order; a slow one for an earlier
   // choice must not leave its session active after a later choice landed.
   const selectionRef = useRef<string | null>(null)
+  // Drafts this page gave an address, and where they go: the address of one
+  // the environment does not have (an image alone, or text since deleted)
+  // still opens it, and a sent one's leads to its session.
+  const claimedRef = useRef(new Map<string, { workspaceId: string; sessionId: string }>())
 
   // The session the client has selected, whether or not its row has arrived.
   const selectedSessionId = useEnvironmentState((state) => state.activeSessionId)
 
-  // Without this the landing names a project while nothing is open in it, and
-  // the composer below stays locked until another project is picked.
-  const landingOpen = onLanding && selectedSessionId === null && openedDraftWorkspaceId === null
-  const heldLandingWorkspace = workspaces.find(
-    (workspace) => workspace.workspaceId === heldLandingWorkspaceId,
-  )
-  // Availability decides only where a draft first opens. Once shown, it stays
-  // while its project is listed, as a draft the user opened does: moving it
-  // would hide what was typed, and a folder can come back. Removing the
-  // project ends it the same way removal ends any draft.
-  const landingWorkspaceId = !landingOpen
-    ? null
-    : heldLandingWorkspace
-      ? heldLandingWorkspace.workspaceId
-      : landingWorkspaceFor(workspaces, recentWorkspaces)
-  // Leaving the landing lets go, so the next visit starts from the most recent.
-  useEffect(() => setHeldLandingWorkspaceId(landingWorkspaceId), [landingWorkspaceId])
-  const draftWorkspaceId = openedDraftWorkspaceId ?? landingWorkspaceId
+  // Hosts with draft pages say which draft the address names: null for the
+  // blank page, undefined off the new-session pages.
+  const routed = navigateDraft !== undefined
+  const routeDraft = onLanding ? (routed ? landingDraftId : null) : undefined
+  const landingWorkspaceId = landingWorkspaceFor(workspaces, recentWorkspaces)
+  const isListed = (workspaceId: string | null): workspaceId is string =>
+    workspaceId !== null && workspaces.some((workspace) => workspace.workspaceId === workspaceId)
 
-  const isSessionDraftOpen = activeSessionId === null && draftWorkspaceId !== null
+  // The page follows the address, worked out here rather than in an effect:
+  // an effect would show the previous page for a frame, and one that
+  // navigated would race the sidebar's clicks.
+  let shown = page
+  const arrived = ahead !== null && (routeDraft === ahead.to || routeDraft !== ahead.from)
+  if (arrived) setAhead(null)
+  const catchingUp = ahead !== null && !arrived
+  if (!catchingUp && onLanding && selectedSessionId === null) {
+    if (!routed) {
+      shown ??= mintPage(null)
+    } else if (routeDraft === null || routeDraft === undefined) {
+      // `/` is a blank page: a draft that has been written in has its own address.
+      if (!shown || shown.claimed) shown = mintPage(null)
+    } else if (shown?.draftId !== routeDraft) {
+      const known = claimedRef.current.get(routeDraft)
+      shown = {
+        draftId: routeDraft,
+        sessionId: known?.sessionId ?? null,
+        workspaceId: known?.workspaceId ?? null,
+        claimed: true,
+      }
+    }
+  }
+  // A blank page keeps the project it was first shown in while that is
+  // listed, so activity elsewhere, which reorders the recent list, does not
+  // move a page the user may be about to type into. A folder that goes
+  // missing keeps it too: the folder can come back.
+  if (
+    shown &&
+    !shown.claimed &&
+    activeSessionId === null &&
+    !isListed(shown.workspaceId) &&
+    landingWorkspaceId !== null
+  ) {
+    shown = { ...shown, workspaceId: landingWorkspaceId }
+  }
+  if (shown !== page) {
+    if (shown?.draftId !== page?.draftId) draftGenerationRef.current += 1
+    setPage(shown)
+  }
+
+  const pageDraftId = shown?.draftId ?? null
+  const pageEnvironmentTarget = useEnvironmentState(
+    useCallback(
+      (state: EnvironmentState) =>
+        pageDraftId ? selectDraftTarget(state, pageDraftId) : undefined,
+      [pageDraftId],
+    ),
+  )
+  const environmentTarget =
+    pageEnvironmentTarget?.type === 'new_session' ? pageEnvironmentTarget : undefined
+  const pageSessionId = environmentTarget?.sessionId ?? shown?.sessionId ?? null
+  const pagePending = shown !== null && pageSessionId === null
+  // A draft opened by its address keeps what it was found as, so clearing
+  // its text (which deletes the environment's copy) leaves the page as it is.
+  if (shown && shown.sessionId === null && environmentTarget) {
+    const { sessionId, workspaceId } = environmentTarget
+    if (workspaceId) claimedRef.current.set(shown.draftId, { workspaceId, sessionId })
+    setPage({ ...shown, sessionId, workspaceId })
+  }
+  // The environment's copy says where a draft is; a page's own pick stands
+  // for one it does not have. An unlisted project is gone: a written draft
+  // stays and shows that, a blank page just opens where the landing would.
+  const pickedWorkspaceId = environmentTarget
+    ? environmentTarget.workspaceId
+    : (shown?.workspaceId ?? null)
+  const draftWorkspaceId = pagePending
+    ? null
+    : isListed(pickedWorkspaceId)
+      ? pickedWorkspaceId
+      : shown && !shown.claimed
+        ? landingWorkspaceId
+        : null
+
+  const isSessionDraftOpen = activeSessionId === null && shown !== null && !pagePending
   const activeWorkspacePath = activeSessionWorkspaceId ?? draftWorkspaceId
+  const isDraftLoading = activeSessionId === null && selectedSessionId === null && pagePending
+  const isDraftProjectRemoved = isSessionDraftOpen && !!shown?.claimed && draftWorkspaceId === null
+
+  // Read by callbacks that run outside render.
+  const pageRef = useRef(shown)
+  pageRef.current = shown
+  const pageSessionIdRef = useRef(pageSessionId)
+  pageSessionIdRef.current = pageSessionId
+  const draftWorkspaceRef = useRef(draftWorkspaceId)
+  draftWorkspaceRef.current = draftWorkspaceId
+  const routeRef = useRef(routeDraft)
+  routeRef.current = routeDraft
+
+  // An address this client cannot place once the environment has listed its
+  // drafts: a sent draft leads to its session, anything else to a blank page.
+  // Only while that address is still on screen and nothing else was picked.
+  const draftsListed = useEnvironmentState(selectDraftsListed)
+  const sentSessionId = pagePending && shown ? sentDraftSession(shown.draftId) : undefined
+  const sentSessionKnown = useEnvironmentState((state) =>
+    sentSessionId ? state.sessions[sentSessionId] !== undefined : false,
+  )
+  const sessionDraftOf = pageEnvironmentTarget?.type === 'session' ? pageDraftId : null
+  const canList = !!sync && (connection.phase !== 'connected' || client.supports('saveDraft'))
+  useEffect(() => {
+    if (!routed || !navigateSession || !pagePending || !pageDraftId) return
+    if (routeDraft !== pageDraftId || selectedSessionId !== null) return
+    const redirect = sessionDraftOf
+      ? sessionDraftOf
+      : sentSessionId && sentSessionKnown
+        ? sentSessionId
+        : draftsListed || !canList
+          ? null
+          : undefined
+    if (redirect === undefined) return
+    void navigateSession(redirect, { replace: true }).catch(noop)
+  }, [
+    canList,
+    draftsListed,
+    navigateSession,
+    pageDraftId,
+    pagePending,
+    routeDraft,
+    routed,
+    selectedSessionId,
+    sentSessionId,
+    sentSessionKnown,
+    sessionDraftOf,
+  ])
 
   // A submitted prompt reads as running until the environment reports the
   // turn itself; from then on the turn is the truth.
@@ -449,10 +623,10 @@ function EnvironmentSessionStateProvider({
   }, [])
 
   const openSessionLatest = useCallback(
-    async (sessionId: string) => {
+    async (sessionId: string, options?: { replace?: boolean }) => {
       selectionRef.current = sessionId
       if (navigateSession) {
-        await navigateSession(sessionId)
+        await navigateSession(sessionId, options)
         return
       }
       await commands.openSession(sessionId)
@@ -461,19 +635,85 @@ function EnvironmentSessionStateProvider({
     [client, commands, navigateSession],
   )
 
+  const claim = useCallback(
+    (draftId: string) => {
+      const current = pageRef.current
+      if (!current || current.draftId !== draftId || current.claimed) return
+      const workspaceId = draftWorkspaceRef.current
+      const sessionId = pageSessionIdRef.current
+      if (!workspaceId || !sessionId) return
+      const claimed: DraftPage = { ...current, sessionId, workspaceId, claimed: true }
+      pageRef.current = claimed
+      claimedRef.current.set(draftId, { workspaceId, sessionId })
+      setPage(claimed)
+      if (!navigateDraft) return
+      // Replaced, not pushed: the blank page it was is gone, not a step back.
+      setAhead((prev) => ({ to: draftId, from: prev ? prev.from : routeRef.current }))
+      void navigateDraft(draftId, { replace: true }).catch(noop)
+    },
+    [navigateDraft],
+  )
+
+  const pageTarget = useCallback((draftId: string): DraftPageTarget | undefined => {
+    const current = pageRef.current
+    const sessionId = pageSessionIdRef.current
+    if (current?.draftId === draftId && sessionId) {
+      return { type: 'new_session', workspaceId: draftWorkspaceRef.current, sessionId }
+    }
+    const known = claimedRef.current.get(draftId)
+    return known ? { type: 'new_session', ...known } : undefined
+  }, [])
+
+  const setDraftWorkspace = useCallback(
+    (workspaceId: string) => {
+      const current = pageRef.current
+      const sessionId = pageSessionIdRef.current
+      if (!current || !sessionId) return
+      setError(null)
+      // The draft keeps its text, images and picks; only its project changes.
+      // Picks that were seeded follow the new project, because they are
+      // worked out from its last-used preference whenever the draft is shown.
+      const state = client.getState()
+      const target = selectDraftTarget(state, current.draftId)
+      const content = selectDraftContent(state, current.draftId)
+      if (sync && target?.type === 'new_session' && content && target.workspaceId !== workspaceId) {
+        sync.edit(current.draftId, { ...target, workspaceId }, content)
+      }
+      if (current.claimed) claimedRef.current.set(current.draftId, { workspaceId, sessionId })
+      const moved = { ...current, sessionId, workspaceId }
+      pageRef.current = moved
+      setPage(moved)
+    },
+    [client, sync],
+  )
+
   const openDraft = useCallback(
     async (workspacePath: string) => {
       const previousSessionId = activeSessionWorkspaceId === workspacePath ? activeSessionId : null
       draftGenerationRef.current += 1
       selectionRef.current = null
       setError(null)
-      setDraftWorkspaceId(workspacePath)
+      // A blank page is never saved, so a fresh one leaves nothing behind
+      // when the open one is still empty. One that was written in stays a
+      // draft, reachable by its address. Emptied again but holding picks,
+      // it would linger as a draft nobody sees, so it goes.
+      const current = pageRef.current
+      if (sync && current?.claimed) {
+        const content = selectDraftContent(client.getState(), current.draftId)
+        if (content && !hasDraftContent(content)) sync.discard(current.draftId)
+      }
+      const next = mintPage(workspacePath)
+      pageRef.current = next
+      setPage(next)
       setPendingDraftSessionStart(false)
       setLaunchingMessage(null)
       setTurnPending(false)
       setAdoptedDraftSessionId(null)
       const generation = draftGenerationRef.current
-      if (navigateSession) await navigateSession(null)
+      if (navigateSession) {
+        if (routed) setAhead({ to: null, from: routeRef.current })
+        await navigateSession(null)
+      }
       // A later selection or draft landed while the navigation settled.
       if (draftGenerationRef.current !== generation) return
       client.setActiveSession(null)
@@ -483,14 +723,16 @@ function EnvironmentSessionStateProvider({
         revision: (prev?.revision ?? 0) + 1,
       }))
     },
-    [activeSessionId, activeSessionWorkspaceId, client, navigateSession],
+    [activeSessionId, activeSessionWorkspaceId, client, navigateSession, routed, sync],
   )
 
   const selectSession = useCallback(
     (_workspacePath: string, externalId: string) => {
       draftGenerationRef.current += 1
       setError(null)
-      setDraftWorkspaceId(null)
+      pageRef.current = null
+      setPage(null)
+      setAhead(null)
       // A launch still in flight continues in the sidebar; it no longer
       // holds this composer.
       setPendingDraftSessionStart(false)
@@ -508,7 +750,10 @@ function EnvironmentSessionStateProvider({
       launch: DraftLaunch,
       artifactIds?: string[],
     ): Promise<ThreadTarget | null> => {
-      if (!draftWorkspaceId) throw new Error('No draft is open')
+      // The project the draft was sent from: a page switched while its
+      // images uploaded does not move the send.
+      const workspaceId = launch.workspaceId !== undefined ? launch.workspaceId : draftWorkspaceId
+      if (!workspaceId) throw new Error('Pick a project for this draft to start it.')
       const generation = draftGenerationRef.current
       const environmentId = client.getState().environment?.environmentId
       if (!environmentId) throw new Error('No environment is connected')
@@ -524,7 +769,7 @@ function EnvironmentSessionStateProvider({
       try {
         created = await commands.createSession({
           environmentId,
-          workspaceId: draftWorkspaceId,
+          workspaceId,
           providerId,
           firstMessage: text,
           ...(preference ? { preference } : {}),
@@ -536,8 +781,12 @@ function EnvironmentSessionStateProvider({
         if (draft) client.drafts?.endLaunch(draft.draftId, 'refused')
         throw error
       }
-      if (draft) client.drafts?.endLaunch(draft.draftId, 'sent')
       const { session, thread } = created
+      if (draft) {
+        client.drafts?.endLaunch(draft.draftId, 'sent')
+        claimedRef.current.delete(draft.draftId)
+        rememberSentDraft(draft.draftId, session.sessionId)
+      }
       // The user moved on while the session was being created: do not pull
       // the view back to it. Its first turn continues in the sidebar.
       if (draftGenerationRef.current !== generation) return null
@@ -549,25 +798,30 @@ function EnvironmentSessionStateProvider({
       client.setActiveSession(session.sessionId)
       setAdoptedDraftSessionId(session.sessionId)
       setPendingDraftSessionStart(false)
-      setDraftWorkspaceId(null)
+      pageRef.current = null
+      setPage(null)
+      setAhead(null)
       // Creation already returned the first turn; its state now drives the composer.
       setTurnPending(false)
+      // A sent draft's address leads nowhere now, so the session takes its
+      // place in the history rather than following it.
+      const navigation = routed ? { replace: true } : undefined
       // The session's own copy of the message came with it, so the echo goes in
       // the same step. Without one (an environment that leaves the first turn
       // out of its reply) the echo stays until the session's history has it.
       if (created.firstTurn) {
         setLaunchingMessage(null)
-        await openSessionLatest(session.sessionId)
+        await openSessionLatest(session.sessionId, navigation)
       } else {
         try {
-          await openSessionLatest(session.sessionId)
+          await openSessionLatest(session.sessionId, navigation)
         } finally {
           setLaunchingMessage(null)
         }
       }
       return { sessionId: session.sessionId, threadId: thread.threadId }
     },
-    [client, commands, draftWorkspaceId, openSessionLatest],
+    [client, commands, draftWorkspaceId, openSessionLatest, routed],
   )
 
   const value = useMemo<SessionStateValue>(
@@ -575,6 +829,12 @@ function EnvironmentSessionStateProvider({
       activeWorkspacePath,
       activeSessionId,
       isSessionDraftOpen,
+      // Only where the environment keeps drafts: elsewhere the composer keeps
+      // one draft per project, in this browser.
+      newSessionDraftId: sync && isSessionDraftOpen ? pageDraftId : null,
+      isDraftLoading,
+      isDraftProjectRemoved,
+      ...(sync ? { setDraftWorkspace } : {}),
       pendingDraftSessionStart,
       launchingMessage,
       localSessionStatus,
@@ -595,23 +855,12 @@ function EnvironmentSessionStateProvider({
         }
         await addWorkspace().catch(fail)
       },
+      // A draft in the removed project stays open: one that was written in
+      // shows its project as gone so another can be picked, and a blank page
+      // moves to where the landing would open.
       removeWorkspace: async (path) => {
         setError(null)
-        try {
-          await commands.removeWorkspace(path)
-        } catch (err) {
-          fail(err)
-          return
-        }
-        // A draft for the removed workspace has nowhere to start a session.
-        if (draftWorkspaceId === path) {
-          draftGenerationRef.current += 1
-          setDraftWorkspaceId(null)
-          setPendingDraftSessionStart(false)
-          setLaunchingMessage(null)
-          setTurnPending(false)
-          setDraftRequest(null)
-        }
+        await commands.removeWorkspace(path).catch(fail)
       },
       selectSession,
       // The environment lists a child under its parent, so opening either
@@ -663,23 +912,33 @@ function EnvironmentSessionStateProvider({
       commands,
       defaultProviderId,
       draftRequest,
-      draftWorkspaceId,
       error,
       fail,
+      isDraftLoading,
+      isDraftProjectRemoved,
       isSessionDraftOpen,
       launchingMessage,
       localSessionStatus,
       openDraft,
       openSessionLatest,
+      pageDraftId,
       pendingDraftSessionStart,
       selectSession,
+      setDraftWorkspace,
+      sync,
     ],
   )
   const internals = useMemo<DraftInternals>(() => ({ startDraftSession }), [startDraftSession])
+  const pageInternals = useMemo<DraftPageInternals>(
+    () => ({ pageDraftId: isSessionDraftOpen ? pageDraftId : null, pageTarget, claim }),
+    [claim, isSessionDraftOpen, pageDraftId, pageTarget],
+  )
 
   return (
     <SessionStateContext.Provider value={value}>
-      <DraftInternalsContext.Provider value={internals}>{children}</DraftInternalsContext.Provider>
+      <DraftInternalsContext.Provider value={internals}>
+        <DraftPageContext.Provider value={pageInternals}>{children}</DraftPageContext.Provider>
+      </DraftInternalsContext.Provider>
     </SessionStateContext.Provider>
   )
 }
@@ -1053,13 +1312,15 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
           // Refused here rather than by the environment's rejection: the user
           // learns why before a session exists, and keeps what they typed.
           const launch = draftLaunch(activeWorkspacePath ?? '')
-          if (!(await ensureProvider(launch.providerId, activeWorkspacePath ?? ''))) {
+          const launchWorkspaceId =
+            launch.workspaceId !== undefined ? launch.workspaceId : activeWorkspacePath
+          if (!(await ensureProvider(launch.providerId, launchWorkspaceId ?? ''))) {
             throw new Error(
               `${providerDisplayName(launch.providerId)} is unavailable. Retry it from Settings.`,
             )
           }
           await startDraftSession(text, launch, artifactIds)
-          draftLaunched(activeWorkspacePath ?? '', launch)
+          draftLaunched(launch)
           return
         }
         const current = targetRef.current

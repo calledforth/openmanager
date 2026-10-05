@@ -391,8 +391,9 @@ describe('session workspace', () => {
     expect(client.calls.map((call) => call.command)).toContain('sendTurn')
   })
 
-  // `/` and `/sessions/$sessionId` share one chat pane, so sending a draft's
-  // first message moves the URL without rebuilding the pane mid-launch.
+  // `/`, `/drafts/$draftId` and `/sessions/$sessionId` share one chat pane, so
+  // a draft's first character and its first message move the URL without
+  // rebuilding the pane.
   it('launches a draft into its session route with the same composer and no landing in between', async () => {
     const user = userEvent.setup()
     const { client, router } = renderConnected('/', {
@@ -403,6 +404,12 @@ describe('session workspace', () => {
     const textbox = await screen.findByRole('textbox')
     await waitFor(() => expect(textbox).toBeEnabled())
     await user.type(textbox, 'first words')
+    // The first character gave the draft its address, in place.
+    await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/drafts\//))
+    const draftPath = router.state.location.pathname
+    expect(screen.getByRole('textbox')).toBe(textbox)
+    expect(textbox).toHaveFocus()
+    expect(textbox).toHaveValue('first words')
 
     // Held until the transcript has taken over, so the whole launch is watched.
     const create = client.commands.createSession.bind(client.commands)
@@ -423,10 +430,10 @@ describe('session workspace', () => {
     observer.observe(document.body, { childList: true, subtree: true, characterData: true })
     await user.click(screen.getByRole('button', { name: 'Send' }))
 
-    // Creating: the message is already in the transcript, the URL is still `/`.
+    // Creating: the message is already in the transcript, the URL is still the draft's.
     expect(await screen.findByText('Creating session…')).toBeInTheDocument()
     expect(screen.getByText('first words')).toBeInTheDocument()
-    expect(router.state.location.pathname).toBe('/')
+    expect(router.state.location.pathname).toBe(draftPath)
     expect(landingLeft).toBe(true)
 
     await act(async () => release())
@@ -437,5 +444,45 @@ describe('session workspace', () => {
     observer.disconnect()
     expect(screen.getByRole('textbox')).toBe(textbox)
     expect(landingReturned).toBe(false)
+  })
+
+  it('keeps each draft at its own address, and `/` blank', async () => {
+    const user = userEvent.setup()
+    const { router } = renderConnected('/', {
+      environment: SEED.environment,
+      workspaces: [{ ...WORKSPACE, capabilities: { git: false, providers: ['opencode'] } }],
+    })
+    const textbox = await screen.findByRole('textbox')
+    await waitFor(() => expect(textbox).toBeEnabled())
+    await user.type(textbox, 'first draft')
+    await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/drafts\//))
+    const first = router.state.location.pathname
+
+    // New agent: a blank page, the first draft kept at its address.
+    await user.click(screen.getByRole('button', { name: 'New agent' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/'))
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue(''))
+    await user.type(screen.getByRole('textbox'), 'second draft')
+    await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/drafts\//))
+    const second = router.state.location.pathname
+    expect(second).not.toBe(first)
+
+    await act(() => router.history.back())
+    await waitFor(() => expect(router.state.location.pathname).toBe(first))
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('first draft'))
+    await act(() => router.history.forward())
+    await waitFor(() => expect(router.state.location.pathname).toBe(second))
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('second draft'))
+  })
+
+  it('opens a blank page in place of a draft address nobody knows', async () => {
+    const { router } = renderConnected('/drafts/nobody-knows', {
+      environment: SEED.environment,
+      workspaces: [{ ...WORKSPACE, capabilities: { git: false, providers: ['opencode'] } }],
+    })
+    await waitFor(() => expect(router.state.location.pathname).toBe('/'))
+    const textbox = await screen.findByRole('textbox')
+    await waitFor(() => expect(textbox).toBeEnabled())
+    expect(textbox).toHaveValue('')
   })
 })

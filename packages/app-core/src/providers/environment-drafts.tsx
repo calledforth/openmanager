@@ -1,9 +1,8 @@
-import { useEffect, useMemo, type ReactNode } from 'react'
+import { useContext, useEffect, useMemo, useRef, type ReactNode } from 'react'
 import {
   selectDraftContent,
   selectDraftSyncStatus,
   selectDraftTarget,
-  selectNewSessionDraftId,
   type DraftSync,
   type EnvironmentClient,
   type EnvironmentState,
@@ -18,33 +17,48 @@ import {
   readComposerDrafts,
   writeComposerDrafts,
 } from '../components/chat/composerDrafts'
+import {
+  DraftPageContext,
+  DraftPicksContext,
+  type DraftPageInternals,
+  type DraftPageTarget,
+} from './draft-pages'
 import { useEnvironmentClient, useEnvironmentState } from './environment-client'
 
 const SESSION_KEY = 'session:'
-const NEW_SESSION_KEY = 'draft:'
+const NEW_SESSION_KEY = 'new:'
+/** What this browser kept a project's landing text under before drafts had ids. */
+const LEGACY_PROJECT_KEY = 'draft:'
 
 const mintId = () => crypto.randomUUID()
 
-/** A new-session draft set aside by a send, and the session it becomes. */
+/** The composer's key for a new-session draft. */
+export const newSessionDraftKey = (draftId: string) => `${NEW_SESSION_KEY}${draftId}`
+
+/** A new-session draft set aside by a send: the session it becomes, and where. */
 export interface SendingDraft {
   draftId: string
   sessionId: string
+  /** The project it is sent from; null when it has none to start in. */
+  workspaceId: string | null
 }
 
-/** What a send in flight set aside: its draft, or none when it had none (images only). */
-export interface SendingSlot {
-  draft: SendingDraft | null
+// Per sync, by draft id, in the order the sends began.
+const sendingDrafts = new WeakMap<DraftSync, Map<string, SendingDraft>>()
+
+/** The draft a send in flight set aside, by its id. */
+export function sendingNewSessionDraft(sync: DraftSync, draftId: string): SendingDraft | undefined {
+  return sendingDrafts.get(sync)?.get(draftId)
 }
 
-// Per sync, by project: what each composer's send in flight set aside.
-const sendingDrafts = new WeakMap<DraftSync, Map<string, SendingSlot>>()
-
-/** What a send in this project set aside, if one is in flight. */
-export function sendingNewSessionDraft(
-  sync: DraftSync,
-  workspaceId: string,
-): SendingSlot | undefined {
-  return sendingDrafts.get(sync)?.get(workspaceId)
+/**
+ * The draft the latest send in flight set aside. There is one composer, so
+ * that is the send being launched, even if the page changed while its images
+ * uploaded.
+ */
+export function latestSendingDraft(sync: DraftSync): SendingDraft | undefined {
+  const sending = sendingDrafts.get(sync)
+  return sending ? [...sending.values()].at(-1) : undefined
 }
 
 /** A new-session draft's place: the project it is for, and the session it will become. */
@@ -54,65 +68,97 @@ export const newSessionTarget = (workspaceId: string): DraftTarget => ({
   sessionId: mintId(),
 })
 
-/** The project's current new-session draft, or a fresh id and target for its first edit. */
-export function newSessionDraftFor(
-  state: EnvironmentState,
-  workspaceId: string,
-): { draftId: string; target: DraftTarget; content: DraftContent | undefined } {
-  const draftId = selectNewSessionDraftId(state, workspaceId)
-  const target = draftId ? selectDraftTarget(state, draftId) : undefined
-  if (draftId && target) {
-    return { draftId, target, content: selectDraftContent(state, draftId) }
-  }
-  return { draftId: mintId(), target: newSessionTarget(workspaceId), content: undefined }
+/**
+ * What the composer's draft store needs from the page: where a draft goes
+ * before the environment has it, the picks made on it so far, and the moment
+ * it is first written in.
+ */
+export interface ComposerDraftPages {
+  target(draftId: string): DraftPageTarget | undefined
+  picks(draftId: string): Pick<DraftContent, 'providerId' | 'preference'> | undefined
+  claim(draftId: string): void
 }
 
 /**
  * The composer's draft store over the environment: `session:<id>` is that
- * session's draft, `draft:<workspaceId>` the project's current new-session
- * draft. Other keys (no project picked yet) are held for this page only.
+ * session's draft, `new:<id>` a new-session draft. A new-session draft is
+ * saved from its first text: until then it is only the page's, and so are
+ * the picks made on it. Other keys are held for this page only.
  */
 export function createEnvironmentComposerDraftStore(
   client: EnvironmentClient,
   sync: DraftSync,
+  pages?: ComposerDraftPages,
 ): ComposerDraftStore {
   let loose: Record<string, string> = {}
   const looseListeners = new Set<() => void>()
+  // What is typed while a draft is being sent goes to a draft of its own,
+  // in the same project, so the send takes only what it was sent with.
+  const successors = new Map<string, { draftId: string; target: DraftTarget }>()
 
-  const resolve = (state: EnvironmentState, key: string) => {
-    if (key.startsWith(SESSION_KEY)) {
-      const sessionId = key.slice(SESSION_KEY.length)
-      const target: DraftTarget = { type: 'session', sessionId }
-      return { draftId: sessionId, target, content: selectDraftContent(state, sessionId) }
+  const sending = () => {
+    let bySync = sendingDrafts.get(sync)
+    if (!bySync) sendingDrafts.set(sync, (bySync = new Map()))
+    return bySync
+  }
+
+  const targetOf = (state: EnvironmentState, draftId: string) =>
+    selectDraftTarget(state, draftId) ?? pages?.target(draftId)
+
+  /** The draft a `new:` key writes to now: its own, or its successor while it is sent. */
+  const writing = (draftId: string) => {
+    const sent = sendingDrafts.get(sync)?.get(draftId)
+    if (!sent) return { draftId, fresh: false }
+    let next = successors.get(draftId)
+    if (!next) {
+      next = {
+        draftId: mintId(),
+        target: { type: 'new_session', workspaceId: sent.workspaceId, sessionId: mintId() },
+      }
+      successors.set(draftId, next)
     }
-    if (key.startsWith(NEW_SESSION_KEY)) {
-      return newSessionDraftFor(state, key.slice(NEW_SESSION_KEY.length))
-    }
-    return null
+    return { draftId: next.draftId, target: next.target, fresh: true }
+  }
+
+  const draftIdOf = (key: string) => {
+    if (key.startsWith(SESSION_KEY)) return key.slice(SESSION_KEY.length)
+    if (!key.startsWith(NEW_SESSION_KEY)) return null
+    const draftId = key.slice(NEW_SESSION_KEY.length)
+    return successors.get(draftId)?.draftId ?? draftId
   }
 
   return {
     getText(key) {
-      const state = client.getState()
-      if (key.startsWith(SESSION_KEY)) {
-        return selectDraftContent(state, key.slice(SESSION_KEY.length))?.text ?? ''
-      }
-      if (key.startsWith(NEW_SESSION_KEY)) {
-        const draftId = selectNewSessionDraftId(state, key.slice(NEW_SESSION_KEY.length))
-        return (draftId && selectDraftContent(state, draftId)?.text) || ''
-      }
-      return loose[key] ?? ''
+      const draftId = draftIdOf(key)
+      if (draftId === null) return loose[key] ?? ''
+      return selectDraftContent(client.getState(), draftId)?.text ?? ''
     },
     setText(key, text) {
-      const resolved = resolve(client.getState(), key)
-      if (!resolved) {
-        if ((loose[key] ?? '') === text) return
-        loose = { ...loose, [key]: text }
-        for (const listener of [...looseListeners]) listener()
+      const state = client.getState()
+      if (key.startsWith(SESSION_KEY)) {
+        const sessionId = key.slice(SESSION_KEY.length)
+        const content = selectDraftContent(state, sessionId)
+        sync.edit(sessionId, { type: 'session', sessionId }, { ...content, text })
         return
       }
-      const { draftId, target, content } = resolved
-      sync.edit(draftId, target, { ...content, text })
+      if (key.startsWith(NEW_SESSION_KEY)) {
+        const own = key.slice(NEW_SESSION_KEY.length)
+        const { draftId, target: successorTarget, fresh } = writing(own)
+        const target = successorTarget ?? targetOf(state, draftId)
+        if (target) {
+          const content = selectDraftContent(state, draftId)
+          // Picks alone are no draft: nothing is saved before the first text.
+          if (!content && !text) return
+          // A draft's first save carries the picks made on the page before it.
+          const picks = content || fresh ? undefined : pages?.picks(draftId)
+          sync.edit(draftId, target, { ...picks, ...content, text })
+          if (text && !fresh) pages?.claim(own)
+          return
+        }
+      }
+      if ((loose[key] ?? '') === text) return
+      loose = { ...loose, [key]: text }
+      for (const listener of [...looseListeners]) listener()
     },
     subscribe(listener) {
       looseListeners.add(listener)
@@ -123,43 +169,39 @@ export function createEnvironmentComposerDraftStore(
       }
     },
     flush: () => sync.flush(),
+    claim(key) {
+      if (key.startsWith(NEW_SESSION_KEY)) pages?.claim(key.slice(NEW_SESSION_KEY.length))
+    },
     getSyncStatus(key) {
-      const state = client.getState()
-      if (key.startsWith(SESSION_KEY)) {
-        return selectDraftSyncStatus(state, key.slice(SESSION_KEY.length))
-      }
-      if (key.startsWith(NEW_SESSION_KEY)) {
-        const draftId = selectNewSessionDraftId(state, key.slice(NEW_SESSION_KEY.length))
-        return draftId ? selectDraftSyncStatus(state, draftId) : 'synced'
-      }
+      const draftId = draftIdOf(key)
       // Held for this page only, with nothing to sync it to.
-      return 'synced'
+      if (draftId === null) return 'synced'
+      return selectDraftSyncStatus(client.getState(), draftId)
     },
     beginSend(key) {
       if (!key.startsWith(NEW_SESSION_KEY)) return undefined
-      const workspaceId = key.slice(NEW_SESSION_KEY.length)
-      const state = client.getState()
-      const draftId = selectNewSessionDraftId(state, workspaceId)
-      const target = draftId ? selectDraftTarget(state, draftId) : undefined
+      const draftId = key.slice(NEW_SESSION_KEY.length)
+      const target = targetOf(client.getState(), draftId)
+      if (target?.type !== 'new_session') return undefined
       // Held from here, not from `session.create`: images upload first, and
       // what is typed meanwhile must go to the next draft, not this one. A
-      // send with no draft holds that too, so it never takes one that turns
-      // up (from another device) while its images upload.
-      const slot: SendingSlot = {
-        draft:
-          draftId && target?.type === 'new_session'
-            ? { draftId, sessionId: target.sessionId }
-            : null,
+      // draft with nothing saved yet (images alone) is held too, so the send
+      // still takes the session id minted with it.
+      const slot: SendingDraft = {
+        draftId,
+        sessionId: target.sessionId,
+        workspaceId: target.workspaceId,
       }
-      let byProject = sendingDrafts.get(sync)
-      if (!byProject) sendingDrafts.set(sync, (byProject = new Map()))
-      byProject.set(workspaceId, slot)
-      if (slot.draft) sync.beginLaunch(slot.draft.draftId)
+      const bySync = sending()
+      bySync.delete(draftId)
+      bySync.set(draftId, slot)
+      sync.beginLaunch(draftId)
       return () => {
-        if (byProject.get(workspaceId) === slot) byProject.delete(workspaceId)
+        if (bySync.get(draftId) === slot) bySync.delete(draftId)
+        successors.delete(draftId)
         // A launch that ran has already settled the draft; this only puts
         // back one whose send stopped before it (a failed upload).
-        if (slot.draft) sync.endLaunch(slot.draft.draftId, 'aborted')
+        sync.endLaunch(draftId, 'aborted')
       }
     },
   }
@@ -167,7 +209,8 @@ export function createEnvironmentComposerDraftStore(
 
 /**
  * Brings this browser's old localStorage drafts into the environment once
- * their session or project is known here, then forgets them. A key for a
+ * their session or project is known here, then forgets them. A project's old
+ * landing text becomes a draft of its own, kept like any other. A key for a
  * session this client has not listed yet waits for the listing; one for
  * another environment is left alone.
  */
@@ -185,12 +228,10 @@ function importLocalDrafts(state: EnvironmentState, sync: DraftSync) {
         sync.edit(sessionId, { type: 'session', sessionId }, { text })
       }
       delete left[key]
-    } else if (key.startsWith(NEW_SESSION_KEY)) {
-      const workspaceId = key.slice(NEW_SESSION_KEY.length)
+    } else if (key.startsWith(LEGACY_PROJECT_KEY)) {
+      const workspaceId = key.slice(LEGACY_PROJECT_KEY.length)
       if (!state.workspaces[workspaceId]) continue
-      if (!selectNewSessionDraftId(state, workspaceId)) {
-        sync.edit(mintId(), newSessionTarget(workspaceId), { text })
-      }
+      sync.edit(mintId(), newSessionTarget(workspaceId), { text })
       delete left[key]
     }
   }
@@ -213,8 +254,22 @@ function importLocalDrafts(state: EnvironmentState, sync: DraftSync) {
 export function EnvironmentComposerDraftProvider({ children }: { children: ReactNode }) {
   const client = useEnvironmentClient()
   const sync = client.drafts
+  const page = useContext(DraftPageContext)
+  const picks = useContext(DraftPicksContext)
+  // The store outlives renders; it reads the page's latest through these.
+  const pageRef = useRef<DraftPageInternals | null>(page)
+  pageRef.current = page
+  const picksRef = useRef(picks)
+  picksRef.current = picks
   const store = useMemo(
-    () => (sync ? createEnvironmentComposerDraftStore(client, sync) : null),
+    () =>
+      sync
+        ? createEnvironmentComposerDraftStore(client, sync, {
+            target: (draftId) => pageRef.current?.pageTarget(draftId),
+            picks: (draftId) => picksRef.current?.(draftId),
+            claim: (draftId) => pageRef.current?.claim(draftId),
+          })
+        : null,
     [client, sync],
   )
   const listed = useEnvironmentState((state) => state.draftsListed)

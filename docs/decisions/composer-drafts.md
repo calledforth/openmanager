@@ -9,10 +9,10 @@ lived in the open tab.
 
 ## Two kinds of draft, one record each
 
-| Kind          | Draft id             | Belongs to                  |
-| ------------- | -------------------- | --------------------------- |
-| `session`     | the session's id     | that session's composer     |
-| `new_session` | minted by the client | a project, until it is sent |
+| Kind          | Draft id             | Belongs to                             |
+| ------------- | -------------------- | -------------------------------------- |
+| `session`     | the session's id     | that session's composer                |
+| `new_session` | minted by the client | a page in a project, until it is sent  |
 
 - A session's draft is named by the session id, so every device writes the
   same record and a session never has two. It holds text and images only: the
@@ -21,17 +21,58 @@ lived in the open tab.
 - A new-session draft carries its project and the id its session will get,
   minted with the draft. A retried first send therefore creates the same
   session id. The draft holds the text, images and the picks made in it:
-  provider, model, mode and settings. Only explicit picks are stored. What
-  the composer seeds from the project's "last used" is resolved again each
-  time the draft is shown.
+  provider, model, mode and settings. Only explicit picks are stored (see
+  "Picks" below). Its project can change: the draft is saved again with the
+  new `workspace_id`.
 - When its project is removed, a new-session draft is kept with no project
-  (`workspace_id` is `SET NULL`), so nothing typed is lost. The composer only
-  shows a project's drafts, so such a draft is not reachable from the UI until
-  draft pages land (CAL-213), where the user picks another project for it.
+  (`workspace_id` is `SET NULL`), so nothing typed is lost. Its page says the
+  project is gone, and the user picks another one for it.
 
-Today a project has one current new-session draft: the composer on the new-session
-page writes to the newest one. Draft pages, any number of drafts and sidebar cards
-are later work (CAL-213, CAL-214), and need no schema change.
+## Draft pages
+
+Each new-session draft has a page, `/drafts/<id>`, and a project can have any
+number of drafts. Reload, back, forward and bookmarks return to the draft. This
+needed no schema or protocol change.
+
+- **`/` is blank.** It holds one draft, not one per project, and opens in the
+  most recently used project that is available. Its ids (draft and session)
+  are minted when the page opens, but nothing is saved and the address stays
+  `/`. `/` never reopens an older draft of the project: older drafts are
+  reached by their address (and by the sidebar cards, CAL-214).
+- **The first character, or the first image, makes it a draft.** The text
+  is saved, and the address becomes `/drafts/<id>` by replacing the history
+  entry. On the web every chat page is a child of one pathless layout, so the
+  composer is not rebuilt and keeps its focus and caret. A model or mode
+  pick alone saves nothing and does not change the address: the page holds
+  it until the first save, which takes it along.
+- **New agent opens a blank page** in the project asked for. An empty page
+  was never saved, so opening another leaves nothing behind; one that has
+  text stays a draft at its address.
+- **The project picker on the page moves the draft.** Text, images and
+  explicit picks stay. Seeded values follow the new project.
+- **An unknown address** (deleted, sent, or not listed yet) waits for the
+  environment's listing; until then the page says it is opening rather than
+  showing a blank composer that the draft would replace. A draft sent from
+  this browser leads to its session (the browser remembers which session a
+  sent draft became). Anything else replaces the address with `/`.
+- **Sending** uses the session id minted with the draft. The session's
+  address replaces the draft's in the history, since the draft is gone; a
+  failed send leaves the draft and its address as they were.
+
+## Picks
+
+A draft stores only what the user explicitly picked. Seeded values (the
+provider the project last ran, its last-used model, mode and settings) are
+resolved again each time the draft is shown, so a session's model change
+shows in the next blank draft at once, and a draft moved to another project
+follows that project.
+
+A pick in a draft never writes the workspace's last-used preference. Only
+sessions do: the launch, which files the draft's explicit picks as the new
+session's seed (`session.create` with `preference`), and model, mode or
+setting changes made inside a session. A pick belongs to the provider it was
+made for. When that provider is down, the draft keeps the pick and holds the
+send with the reason until it is back or another is picked.
 
 ## Storage and events
 
@@ -93,8 +134,9 @@ saves the draft again at the next revision, as it was sent: the first message,
 the provider and the picks. The send may have beaten the draft's last
 autosave, so the saved row is not used. The retry then starts from what was
 written. An id that is already taken is refused with `conflict`, and a draft
-can only be sent as the session it was minted for, in its own project (or any
-project once its own was removed).
+can only be sent as the session it was minted for. It starts in the project it
+is sent from: the project is the user's to change, and a send can beat the
+save that moved the draft.
 
 A session draft is cleared, not consumed: sending empties the composer, and
 the emptied draft is deleted like any other.
@@ -124,8 +166,8 @@ the emptied draft is deleted like any other.
 - **Remote deletion.** An edit from before a remote send or discard is
   dropped. The environment would refuse it anyway.
 - **Sending.** The composer sets the draft aside when send is pressed, before
-  any image uploads, so what is typed meanwhile goes to the project's next
-  draft. The sync holds the draft's saves while it is being sent. If the send
+  any image uploads, so what is typed meanwhile goes to a draft of its own in
+  the same project. The sync holds the draft's saves while it is being sent. If the send
   fails, the restored text is kept even when the environment later announces
   the deletion and restore it made, and it is saved on top of them. A send
   that stops before it asks (a failed upload) is no deletion of its own, so
@@ -158,17 +200,28 @@ the emptied draft is deleted like any other.
   and saved once it is short enough again.
 
 `ComposerDraftStore` is the composer's view of this: synchronous text by draft
-key, so a restored draft is on screen at first paint. Hosts without an
-environment that keeps drafts fall back to localStorage. On first connect,
-old localStorage drafts are imported once their session or project is known,
-then removed.
+key (`session:<id>`, or `new:<draftId>` for a new-session draft), so a
+restored draft is on screen at first paint. The key is the draft's id, not its
+project, so moving a draft keeps what the composer holds for it. Hosts without
+an environment that keeps drafts fall back to localStorage and one draft per
+project (`draft:<workspaceId>`), with no draft pages. On first connect, old
+localStorage drafts are imported once their session or project is known, then
+removed; a project's old landing text becomes a draft of its own.
+
+Session state names the draft on screen (`newSessionDraftId`), and
+`selectNewSessionDraftIds` lists every new-session draft with text or images,
+newest first, whatever its project. The sidebar cards (CAL-214) show that list
+less the draft on screen.
 
 ## Not yet
 
 - Images still upload at send time and are not kept with a draft (CAL-215).
   `artifactIds` is already part of the content.
-- Sidebar draft cards (CAL-214) are not built yet; they should read
-  `selectDraftSyncStatus` and mark an unsynced draft the way the composer does.
+- Sidebar draft cards (CAL-214) are not built yet; they should list
+  `selectNewSessionDraftIds` less `newSessionDraftId`, and read
+  `selectDraftSyncStatus` to mark an unsynced draft the way the composer does.
+- A draft's address leads to its session only when it was sent from this
+  browser. Sent from another device, its old address opens a blank page.
 - If a send's response is lost after the session was created, the restored
   draft can come back next to the new session. Sending it again is refused,
   because the session id is taken.

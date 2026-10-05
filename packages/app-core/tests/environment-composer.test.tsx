@@ -239,7 +239,7 @@ describe('the composer over the environment client', () => {
     expect(probe.composer.composerConfigValues).toEqual({ effort: 'high' })
   })
 
-  it('files a draft pick as the workspace preference when it is made', async () => {
+  it('never files a draft pick as the workspace preference; the launch does', async () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     await mount(client)
     await openDraft(client)
@@ -249,34 +249,62 @@ describe('the composer over the environment client', () => {
     await act(() => probe.composer.setDraftConfigOption('fast', true))
     await act(() => probe.composer.setDraftMode('plan'))
     await settle(client)
-    const filed = client.calls
-      .filter((call) => call.command === 'setComposerPreference')
-      .map((call) => call.input)
-    const target = { workspaceId: WORKSPACE.workspaceId, providerId: 'opencode' }
-    expect(filed).toEqual([
-      { ...target, preference: { modelId: 'opus' } },
-      { ...target, preference: { configValues: { effort: 'high' } } },
-      // The values are replaced as a whole, so earlier ones ride along.
-      { ...target, preference: { configValues: { effort: 'high', fast: true } } },
-      { ...target, preference: { modeId: 'plan' } },
-    ])
-
-    // Never sent, and already what the workspace remembers.
-    expect(probe.composer.sessionLaunchPreferences(WORKSPACE.workspaceId, 'opencode')).toEqual({
-      preferredConfigValues: { effort: 'high', fast: true },
+    // Shown at once, kept with the draft, and never "last used" by picking.
+    expect(probe.composer.draftSessionState).toMatchObject({
+      models: { currentModelId: 'opus' },
+      modes: { currentModeId: 'plan' },
     })
+    expect(probe.composer.composerConfigValues).toEqual({ effort: 'high', fast: true })
+    expect(commandsOf(client)).not.toContain('setComposerPreference')
+    expect(client.getState().composerPreferences[WORKSPACE.workspaceId]?.opencode).toEqual({})
+    // Picks alone are no draft: nothing is saved for them.
+    expect(client.getState().draftEdits).toEqual({})
+    expect(client.getState().drafts).toEqual({})
+
+    // The send files them: one create carries them for the environment.
+    await act(() => probe.thread.sendMessage('hello'))
+    await settle(client)
+    expect(inputOf(client, 'createSession')).toMatchObject({
+      preference: { modelId: 'opus', configValues: { effort: 'high', fast: true } },
+      modeId: 'plan',
+    })
+    expect(commandsOf(client)).not.toContain('setComposerPreference')
   })
 
-  it('shows a pick that could not be filed and keeps it for the launch', async () => {
+  it('shows a session model change in the next blank draft at once', async () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     await mount(client)
     await openDraft(client)
-    vi.spyOn(client.commands, 'setComposerPreference').mockRejectedValue(
-      new EnvironmentClientError('unavailable', 'Preference refused.'),
-    )
+    // A pick in a draft that is then left unsent.
     await act(() => probe.composer.setDraftModel('opus'))
+    expect(probe.composer.draftSessionState?.models?.currentModelId).toBe('opus')
+
+    // A session in the project moves on to another model.
+    await act(() => probe.session.selectSession(WORKSPACE.workspaceId, SESSION.sessionId))
     await settle(client)
-    expect(probe.composer.error).toBe('Preference refused.')
+    await act(() => probe.composer.setSessionModel(SESSION.sessionId, 'sonnet'))
+    await settle(client)
+    expect(client.getState().composerPreferences[WORKSPACE.workspaceId]?.opencode?.modelId).toBe(
+      'sonnet',
+    )
+
+    // The next blank draft follows the project, not the pick left behind.
+    await openDraft(client)
+    expect(probe.composer.draftSessionState?.models?.currentModelId).toBe('sonnet')
+    // And it follows a later change made elsewhere, without a reload.
+    client.emit({
+      type: 'event',
+      eventId: 'preference-from-elsewhere',
+      timestamp: new Date().toISOString(),
+      name: 'composer.preferences.updated',
+      scope: { type: 'environment', environmentId: 'mock-environment' },
+      payload: {
+        workspaceId: WORKSPACE.workspaceId,
+        providerId: 'opencode',
+        preference: { modelId: 'opus' },
+      },
+    })
+    await settle(client)
     expect(probe.composer.draftSessionState?.models?.currentModelId).toBe('opus')
   })
 
@@ -309,14 +337,15 @@ describe('the composer over the environment client', () => {
     expect(probe.composer.draftSessionState?.providerId).toBe('opencode')
   })
 
-  it('launches an images-only send with no picks, even if a draft arrives meanwhile', async () => {
+  it('launches an images-only send as the page draft, with its picks and minted session', async () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     await mount(client)
     await openDraft(client)
-    const key = `draft:${WORKSPACE.workspaceId}`
+    await act(() => probe.composer.setDraftModel('opus'))
+    const draftId = probe.session.newSessionDraftId!
     let release: (() => void) | undefined
     act(() => {
-      release = probe.drafts.beginSend!(key)
+      release = probe.drafts.beginSend!(`new:${draftId}`)
     })
     // Another device starts a draft with its own picks while the images upload.
     act(() =>
@@ -327,11 +356,17 @@ describe('the composer over the environment client', () => {
       ),
     )
     const launch = probe.launch.draftLaunch(WORKSPACE.workspaceId)
-    expect(launch).toEqual({ providerId: 'opencode' })
+    expect(launch).toEqual({
+      providerId: 'opencode',
+      preference: { modelId: 'opus' },
+      workspaceId: WORKSPACE.workspaceId,
+      draft: { draftId, sessionId: expect.any(String) },
+    })
+    expect(launch.draft!.sessionId).not.toBe('phone-session')
     act(() => release!())
   })
 
-  it('holds draft picks locally and launches the session with them', async () => {
+  it('holds draft picks with the draft and launches the session with them', async () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     await mount(client)
     await openDraft(client)
@@ -353,20 +388,31 @@ describe('the composer over the environment client', () => {
       preferredConfigValues: { effort: 'high' },
     })
 
-    // The picks are kept in the project's draft, so a reload keeps them.
+    // The first text saves the draft, picks and all, so a reload keeps them.
+    const key = `new:${probe.session.newSessionDraftId}`
+    act(() => probe.drafts.setText(key, 'hello'))
     act(() => client.drafts!.flush())
     await settle(client)
     const [draft] = Object.values(client.getState().drafts)
     expect(draft).toMatchObject({
+      draftId: probe.session.newSessionDraftId,
       target: { type: 'new_session', workspaceId: WORKSPACE.workspaceId },
       content: {
+        text: 'hello',
         providerId: 'opencode',
         preference: { modelId: 'opus', configValues: { effort: 'high' } },
       },
     })
     const launchId = draft!.target.sessionId
 
-    const filedBeforeLaunch = commandsOf(client).length
+    // A pick made now goes to the saved draft.
+    await act(() => probe.composer.setDraftConfigOption('effort', 'low'))
+    expect(client.getState().draftEdits[draft!.draftId]?.content.preference).toEqual({
+      modelId: 'opus',
+      configValues: { effort: 'low' },
+    })
+
+    const before = commandsOf(client).length
     await act(() => probe.thread.sendMessage('hello'))
     await settle(client)
     // One command: the create carries the picks, whole, for the environment
@@ -374,7 +420,7 @@ describe('the composer over the environment client', () => {
     // The view then opens the session.
     expect(
       commandsOf(client)
-        .slice(filedBeforeLaunch)
+        .slice(before)
         .filter((command) => command !== 'saveDraft'),
     ).toEqual(['createSession', 'openSession'])
     expect(inputOf(client, 'createSession')).toEqual({
@@ -382,7 +428,7 @@ describe('the composer over the environment client', () => {
       workspaceId: WORKSPACE.workspaceId,
       providerId: 'opencode',
       firstMessage: 'hello',
-      preference: { modelId: 'opus', configValues: { effort: 'high' } },
+      preference: { modelId: 'opus', configValues: { effort: 'low' } },
       draftId: draft!.draftId,
       sessionId: launchId,
     })
@@ -391,8 +437,8 @@ describe('the composer over the environment client', () => {
     expect(client.getState().drafts).toEqual({})
     expect(client.getState().draftEdits).toEqual({})
 
-    // The picks are filed now. A later draft follows what the workspace
-    // remembers by then, not what this one held.
+    // A later draft follows what the workspace remembers by then, not what
+    // this one held.
     client.emit({
       type: 'event',
       eventId: 'preference-moved-on',

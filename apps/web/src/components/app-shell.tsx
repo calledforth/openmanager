@@ -40,8 +40,22 @@ const NewAgentIcon = phosphorIcon(NotePencilIcon)
 const AddProjectIcon = phosphorIcon(FolderPlusIcon)
 const RegenerateTitleIcon = phosphorIcon(ArrowsClockwiseIcon)
 
+const DRAFT_PATH = '/drafts/'
+
 function isSessionPath(pathname: string) {
-  return pathname === '/' || pathname.startsWith('/sessions/')
+  return pathname === '/' || pathname.startsWith('/sessions/') || pathname.startsWith(DRAFT_PATH)
+}
+
+/** The draft a `/drafts/<id>` address names. */
+function draftIdOf(pathname: string): string | null {
+  if (!pathname.startsWith(DRAFT_PATH)) return null
+  const id = pathname.slice(DRAFT_PATH.length)
+  if (!id || id.includes('/')) return null
+  try {
+    return decodeURIComponent(id)
+  } catch {
+    return null
+  }
 }
 
 /** The shell's own pages as sidebar rows; Sessions only when the project list isn't there. */
@@ -232,12 +246,18 @@ function ConnectedShell({
 }) {
   const navigate = useNavigate()
   const navigateSession = useCallback(
-    (sessionId: string | null) =>
+    (sessionId: string | null, options?: { replace?: boolean }) =>
       sessionId
-        ? navigate({ to: '/sessions/$sessionId', params: { sessionId } })
-        : navigate({ to: '/' }),
+        ? navigate({ to: '/sessions/$sessionId', params: { sessionId }, replace: options?.replace })
+        : navigate({ to: '/', replace: options?.replace }),
     [navigate],
   )
+  const navigateDraft = useCallback(
+    (draftId: string, options?: { replace?: boolean }) =>
+      navigate({ to: '/drafts/$draftId', params: { draftId }, replace: options?.replace }),
+    [navigate],
+  )
+  const landingDraftId = draftIdOf(pathname)
   const openSession = useCallback(
     (sessionId: string) => void navigateSession(sessionId),
     [navigateSession],
@@ -255,8 +275,11 @@ function ConnectedShell({
     <EnvironmentApplicationProviders
       addWorkspace={addWorkspace}
       navigateSession={navigateSession}
-      // `/` is the new-session landing: a draft is ready there on arrival.
-      onLanding={pathname === '/'}
+      navigateDraft={navigateDraft}
+      // `/` is a blank new-session page, ready on arrival; `/drafts/<id>` is
+      // a draft's own page, which it gets with its first text or image.
+      onLanding={pathname === '/' || landingDraftId !== null}
+      landingDraftId={landingDraftId}
     >
       {/* A healthy connection says nothing; trouble shows as the banner. */}
       <WorkspaceSidebar footer={<NavMenu pathname={pathname} includeSessions={false} />} />
