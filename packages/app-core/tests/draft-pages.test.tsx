@@ -658,27 +658,22 @@ describe('draft pages', () => {
       expect(client.getState().draftEdits[draftId]).toBeUndefined()
     })
 
-    it('waits for the session list before giving up on a sent draft’s session', async () => {
+    it('leads a sent draft’s address to its session when that session is not listed yet', async () => {
       const client = createMockEnvironmentClient({ seed: SEED })
-      rememberSentDraft('sent-late', 'session-late')
-      // Drafts listed, sessions not yet: the session may still arrive.
-      act(() => client.setConnection({ sessionsListed: false }))
-      await mount(client, { draftId: 'sent-late' })
-      expect(client.getState().draftsListed).toBe(true)
+      // Older than the first page of sessions, so not in the state yet; the
+      // session's own address opens it once its page is listed.
+      rememberSentDraft('sent-long-ago', 'session-old')
+      // Not until the drafts are listed: a draft sent elsewhere can come back.
+      act(() => client.disconnect())
+      await mount(client, { draftId: 'sent-long-ago' })
       expect(navigations).toEqual([])
       expect(probe.session.isDraftLoading).toBe(true)
 
-      await act(() =>
-        client.commands.createSession({
-          environmentId: client.getState().environment!.environmentId,
-          workspaceId: ALPHA.workspaceId,
-          providerId: 'opencode',
-          sessionId: 'session-late',
-        }),
-      )
-      act(() => client.setConnection({ sessionsListed: true }))
+      act(() => client.connect())
       await settle(client)
-      expect(navigations).toEqual(['replace /sessions/session-late'])
+      expect(client.getState().draftsListed).toBe(true)
+      expect(client.getState().sessions['session-old']).toBeUndefined()
+      expect(navigations).toEqual(['replace /sessions/session-old'])
     })
 
     it('opens New agent cleanly while the first character’s address is still on its way', async () => {

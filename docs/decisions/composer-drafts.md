@@ -9,10 +9,10 @@ lived in the open tab.
 
 ## Two kinds of draft, one record each
 
-| Kind          | Draft id             | Belongs to                             |
-| ------------- | -------------------- | -------------------------------------- |
-| `session`     | the session's id     | that session's composer                |
-| `new_session` | minted by the client | a page in a project, until it is sent  |
+| Kind          | Draft id             | Belongs to                            |
+| ------------- | -------------------- | ------------------------------------- |
+| `session`     | the session's id     | that session's composer               |
+| `new_session` | minted by the client | a page in a project, until it is sent |
 
 - A session's draft is named by the session id, so every device writes the
   same record and a session never has two. It holds text and images only: the
@@ -55,9 +55,11 @@ needed no schema or protocol change.
   showing a blank composer that the draft would replace. A draft sent from
   this browser leads to its session (the browser remembers which session a
   sent draft became). Anything else replaces the address with `/`.
-  A sent draft's session may only not be listed yet (drafts are listed as
-  soon as the client connects, sessions a moment later), so that fallback
-  waits for the connection's first session list (`sessionsListed`).
+  A sent draft's session need not be loaded yet: the session's own address
+  opens it once the session list reaches it, which for a session past the
+  first page is a moment after connecting. A loaded session is gone to at
+  once; otherwise the listing of drafts is waited for, because a draft sent
+  elsewhere can come back (see "Other devices").
 - **Sending** uses the session id minted with the draft. The session's
   address replaces the draft's in the history, since the draft is gone; a
   failed send leaves the draft and its address as they were. A draft being
@@ -232,6 +234,9 @@ less the draft on screen.
   `selectDraftSyncStatus` to mark an unsynced draft the way the composer does.
 - A draft's address leads to its session only when it was sent from this
   browser. Sent from another device, its old address opens a blank page.
+- A sent draft whose session was deleted since leads to that session's
+  address, which stays as it is: the session route only replaces the
+  address of a session it had opened.
 - If a send's response is lost after the session was created, the restored
   draft can come back next to the new session. Sending it again is refused,
   because the session id is taken.

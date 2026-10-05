@@ -598,6 +598,8 @@ function EnvironmentSessionStateProvider({
   // An address this client cannot place once the environment has listed its
   // drafts: a sent draft leads to its session, anything else to a blank page.
   // Only while that address is still on screen and nothing else was picked.
+  // A sent draft's session need not be loaded: the session's address opens
+  // it once it is listed, which takes a while for one past the first page.
   const draftsListed = useEnvironmentState(selectDraftsListed)
   const sentSessionId = pagePending && shown ? sentDraftSession(shown.draftId) : undefined
   const sentSessionKnown = useEnvironmentState((state) =>
@@ -605,9 +607,6 @@ function EnvironmentSessionStateProvider({
   )
   const sessionDraftOf = pageEnvironmentTarget?.type === 'session' ? pageDraftId : null
   const canList = !!sync && (connection.phase !== 'connected' || client.supports('saveDraft'))
-  // A sent draft's session may only not be listed yet: drafts are listed as
-  // soon as the client connects, sessions a moment later.
-  const sessionsListed = connection.sessionsListed
   // Once per address: a router that settles a moment later must not be sent
   // the same way twice.
   const redirectedRef = useRef<string | null>(null)
@@ -631,11 +630,9 @@ function EnvironmentSessionStateProvider({
         ? sessionDraftOf
         : sentSessionId && sentSessionKnown
           ? sentSessionId
-          : sentSessionId && !sessionsListed
-            ? undefined
-            : draftsListed || !canList
-              ? null
-              : undefined
+          : draftsListed || !canList
+            ? (sentSessionId ?? null)
+            : undefined
     if (redirect === undefined || redirectedRef.current === pageDraftId) return
     redirectedRef.current = pageDraftId
     void navigateSession(redirect, { replace: true }).catch(noop)
@@ -653,7 +650,6 @@ function EnvironmentSessionStateProvider({
     sentSessionId,
     sentSessionKnown,
     sessionDraftOf,
-    sessionsListed,
   ])
 
   /**

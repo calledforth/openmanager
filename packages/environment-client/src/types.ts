@@ -185,12 +185,6 @@ export interface ConnectionState {
    * brings it back. See `docs/connection-retry.md`.
    */
   retriesExhausted: boolean
-  /**
-   * The first page of sessions has been listed on this connection (or the
-   * environment lists none). Until then a session missing from the state may
-   * only not be loaded yet.
-   */
-  sessionsListed: boolean
 }
 
 /** Normalized, immutable. Every update produces a new root object. */

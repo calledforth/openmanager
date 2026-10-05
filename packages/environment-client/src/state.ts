@@ -43,7 +43,6 @@ export const INITIAL_CONNECTION: ConnectionState = {
   capabilities: [],
   attempt: 0,
   retriesExhausted: false,
-  sessionsListed: false,
 }
 
 export function createInitialState(): EnvironmentState {
