@@ -109,12 +109,14 @@ export {
   applyDraftSaved,
   applyDraftsUnlisted,
   draftBaseRevision,
+  hasDraftContent,
   isEmptyDraftContent,
   removeDraftEdit,
   selectDraftContent,
   selectDraftSyncStatus,
   selectDraftTarget,
   selectNewSessionDraftId,
+  selectNewSessionDraftIds,
 } from './draft-state'
 export { createDraftSync, DRAFT_SAVE_DEBOUNCE_MS, type DraftSyncOptions } from './draft-sync'
 export {
