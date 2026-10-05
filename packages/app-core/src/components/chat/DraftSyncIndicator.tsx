@@ -4,7 +4,8 @@ import type { DraftSyncStatus } from '@openmanager/environment-client'
 import { Tooltip } from '../ui/Tooltip'
 import type { ComposerDraftStore } from './composerDraftStore'
 
-const EXPLANATION: Partial<Record<DraftSyncStatus, string>> = {
+/** Why a draft is not synced, in the words every "Not synced" mark uses. */
+export const DRAFT_SYNC_EXPLANATION: Partial<Record<DraftSyncStatus, string>> = {
   offline: 'Saved on this device only. It syncs once the environment is reachable again.',
   unsupported: 'Saved on this device only. This environment does not keep drafts.',
   too_large: 'Too long to sync. Saved on this device until it is shorter.',
@@ -30,7 +31,7 @@ export function DraftSyncIndicator({
   draftKey: string
 }) {
   const status = useDraftSyncStatus(store, draftKey)
-  const explanation = EXPLANATION[status]
+  const explanation = DRAFT_SYNC_EXPLANATION[status]
   if (!explanation) return null
   return (
     <Tooltip content={explanation}>

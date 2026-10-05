@@ -2,9 +2,11 @@ import { useContext, useEffect, useMemo, useSyncExternalStore, type ReactNode } 
 import { PlatformCapabilitiesContext } from '../../providers/platform-provider'
 import {
   useSidebarData,
+  useSidebarDrafts,
   useSidebarSessions,
   type SidebarSessionEntry,
 } from '../../providers/sidebar-provider'
+import { DraftDiscardToast } from './DraftDiscardToast'
 import { WorkspaceSidebarView } from './WorkspaceSidebarView'
 
 function subscribeVisibility(onChange: () => void) {
@@ -39,6 +41,7 @@ function useWorkspaceSidebarModel() {
     acknowledgeSessionDone,
   } = useSidebarData()
   const sessionsByWorkspace = useSidebarSessions()
+  const drafts = useSidebarDrafts()
   const providerLabel = useContext(PlatformCapabilitiesContext)?.providerDisplayName
   const visible = useDocumentVisible()
 
@@ -85,9 +88,31 @@ function useWorkspaceSidebarModel() {
       ? (path: string, id: string, settled: boolean) => settleSession(path, id, settled)
       : undefined,
     onDeleteSession: (...args: Parameters<typeof deleteSession>) => void deleteSession(...args),
+    ...(drafts
+      ? {
+          drafts: drafts.drafts,
+          activeDraftId: drafts.openDraftId,
+          onOpenDraft: drafts.openDraft,
+          onDiscardDraft: drafts.discardDraft,
+        }
+      : {}),
     onAddWorkspace: () => void addWorkspace(),
     providerLabel,
   }
+}
+
+/** The undo for a discarded draft card, on hosts that have draft cards. */
+function DraftDiscardNotice() {
+  const drafts = useSidebarDrafts()
+  if (!drafts) return null
+  return (
+    <DraftDiscardToast
+      pending={drafts.pendingDiscard}
+      onUndo={drafts.undoDiscard}
+      onDismiss={drafts.confirmDiscard}
+      onHold={drafts.holdDiscard}
+    />
+  )
 }
 
 /**
@@ -102,5 +127,10 @@ export function WorkspaceSidebar({
   footer?: ReactNode
 }) {
   const model = useWorkspaceSidebarModel()
-  return <WorkspaceSidebarView {...model} titlebar={titlebar} footer={footer} />
+  return (
+    <>
+      <WorkspaceSidebarView {...model} titlebar={titlebar} footer={footer} />
+      <DraftDiscardNotice />
+    </>
+  )
 }

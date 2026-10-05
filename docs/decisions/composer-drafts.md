@@ -38,7 +38,7 @@ needed no schema or protocol change.
   most recently used project that is available. Its ids (draft and session)
   are minted when the page opens, but nothing is saved and the address stays
   `/`. `/` never reopens an older draft of the project: older drafts are
-  reached by their address (and by the sidebar cards, CAL-214).
+  reached by their address (and by their sidebar cards).
 - **The first character, or the first image, makes it a draft.** The text
   is saved, and the address becomes `/drafts/<id>` by replacing the history
   entry. On the web every chat page is a child of one pathless layout, so the
@@ -233,16 +233,62 @@ removed; a project's old landing text becomes a draft of its own.
 
 Session state names the draft on screen (`newSessionDraftId`), and
 `selectNewSessionDraftIds` lists every new-session draft with text or images,
-newest first, whatever its project. The sidebar cards (CAL-214) show that list
-less the draft on screen.
+newest first, whatever its project.
+
+## Sidebar draft cards
+
+Every new-session draft with text or an image is a card at the top of the
+sidebar's Active list, newest edit first, on every device, live. Picks alone
+never make one. A card looks like a session's (project, first line, provider
+and branch), filled with the draft tint and labelled Draft where a session
+shows its status. Cards only show where the environment keeps drafts and the
+host gives each its own page (`navigateDraft`); elsewhere (desktop, the
+localStorage fallback) `useSidebarDrafts` is null and nothing shows.
+
+- **The draft on screen.** A draft that had a card when it was opened keeps
+  it, selected, as a snapshot taken at that moment: typing does not repaint
+  or reorder it, and it updates (and moves to the top) when the draft is
+  left. A draft first written on this page has no card until it is left.
+  Clicking a card therefore never makes it vanish.
+- **Opening** a card goes to `/drafts/<id>` through the host, everything as
+  it was left, as picking a session does.
+- **Sending** swaps the card for the session's. Cards are keyed by the session
+  id minted with the draft, and a draft is no card from the update that lists
+  its session, so the same row turns from draft to session in one frame,
+  with nothing folding away or growing in. A draft being sent keeps its card
+  meanwhile, showing the environment's last copy (the composer empties it).
+- **Discarding** (✕ on hover, or the card's menu, by right click or the menu
+  key) hides the card at once and shows an undo notice. The draft is deleted
+  only when the notice goes (6 s, held while the pointer or focus is on it),
+  is dismissed, another draft is discarded, or the page is hidden or
+  unloaded. Undo just shows the card again. Discarding the draft on screen
+  takes the page to a blank `/` (replacing its address); going back to the
+  draft's address before the deletion cancels it. The one place a discard is
+  let go (`releaseDraft` in `environment-sidebar-drafts.tsx`) is where images
+  kept with a draft (CAL-215) are to be released.
+- **A removed project** (`workspaceId` null, or no longer listed) shows "No
+  project"; a missing or inaccessible folder is struck through with its badge,
+  as on session cards. Both open normally, and the page offers another
+  project.
+- **Not synced** shows as a quiet cloud mark, with the composer's reason on
+  hover (`selectDraftSyncStatus`; nothing while merely saving).
+
+A session whose composer holds unsent text or an image gets a quieter step of
+the same tint and a pen beside its provider, on every device. Sending or
+clearing the text removes it. The session on screen never shows it: its
+composer is the one being typed in, and a mark that came and went with each
+emptied line would flicker, just as the open draft's card stays frozen.
+
+Typing never re-renders the sidebar. The cards are read with an equality that
+ignores the draft on screen (its card is the snapshot), the unsent marks are a
+sorted list of session ids that ignores the session on screen, and both change
+only when a card's content or a draft's has-text fact does.
 
 ## Not yet
 
 - Images still upload at send time and are not kept with a draft (CAL-215).
-  `artifactIds` is already part of the content.
-- Sidebar draft cards (CAL-214) are not built yet; they should list
-  `selectNewSessionDraftIds` less `newSessionDraftId`, and read
-  `selectDraftSyncStatus` to mark an unsynced draft the way the composer does.
+  `artifactIds` is already part of the content, and a card already counts
+  them.
 - A draft's address leads to its session only when this browser sent it, or
   had its page open when another device did. Otherwise its old address opens
   a blank page.

@@ -30,6 +30,20 @@ export interface DraftPageInternals {
 
 export const DraftPageContext = createContext<DraftPageInternals | null>(null)
 
+/**
+ * Internal to the environment providers: moving between draft pages, for the
+ * sidebar's draft cards. Served only where the environment keeps drafts and
+ * the host gives each one an address; elsewhere the cards do not show.
+ */
+export interface DraftPageNavigation {
+  /** Go to a draft's own page, as it was left. */
+  openDraftPage: (draftId: string) => void
+  /** The draft is going: if it is on screen, a blank page takes its place. */
+  closeDraftPage: (draftId: string) => void
+}
+
+export const DraftPageNavigationContext = createContext<DraftPageNavigation | null>(null)
+
 /** The picks a draft holds before it is saved; the composer keeps them. */
 export type DraftPagePicks = (
   draftId: string,

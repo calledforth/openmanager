@@ -13,21 +13,30 @@ import {
   ArrowUUpLeftIcon,
   CaretDownIcon,
   CheckIcon,
+  CloudSlashIcon,
+  FolderDashedIcon,
   FolderPlusIcon,
   GitBranchIcon,
   GitForkIcon,
   NotePencilIcon,
+  PencilSimpleLineIcon,
+  TrashIcon,
+  XIcon,
 } from '@phosphor-icons/react'
 import type { ProviderId } from '@agentpack/contract'
 import { describeUnavailableWorkspace } from '../../lib/workspace-availability'
 import { formatRelativeTime, useNow } from '../../lib/relative-time'
 import { cn } from '../../lib/utils'
+import { DRAFT_SYNC_EXPLANATION } from '../chat/DraftSyncIndicator'
 import {
   phosphorIcon,
   type IconComponent,
   type IconComponentProps,
 } from '../fluid/lib/icon-context'
+import { SIDEBAR_MENU_GRID } from '../fluid/lib/sidebar-menu-grid'
 import { spring } from '../fluid/lib/springs'
+import { DropdownContent, DropdownMenu, DropdownTrigger } from '../fluid/ui/dropdown'
+import { MenuItem } from '../fluid/ui/menu-item'
 import {
   Sidebar,
   SidebarContent,
@@ -48,6 +57,7 @@ import { ProjectIcon } from './ProjectIcon'
 import { SessionBusyLoader, sessionBusyTone, type SessionBusyTone } from './SessionBusyLoader'
 import {
   flattenSidebarSessions,
+  type SidebarDraft,
   type SidebarSession,
   type SidebarWorkspace,
 } from './sidebar-sessions'
@@ -62,14 +72,26 @@ const DEFAULT_PROVIDER_ID: ProviderId = 'opencode'
 // Positioned so the card's status washes and dither paint beneath its text.
 // Done and failed cards take their hover and selection fills from the status
 // palette, so on light themes the tint deepens instead of greying over.
-function cardFillClass(tone: SessionBusyTone | null, isActive: boolean): string {
+function cardFillClass(tone: SessionBusyTone | null, isActive: boolean, unsent = false): string {
   if (tone === 'done') {
     return isActive ? 'bg-(--basis-status-done-active)' : 'hover:bg-(--basis-status-done-hover)'
   }
   if (tone === 'error') {
     return isActive ? 'bg-(--basis-status-error-active)' : 'hover:bg-(--basis-status-error-hover)'
   }
-  return isActive ? 'bg-active' : 'hover:bg-hover'
+  if (isActive) return 'bg-active'
+  // Unsent text: a quieter step of the draft cards' fill, so the two read as kin.
+  return unsent
+    ? 'bg-(--basis-draft-unsent) hover:bg-(--basis-draft-unsent-hover)'
+    : 'hover:bg-hover'
+}
+
+// A new-session draft is filled with the accent at rest, and deepens on hover
+// and while it is open, the way done and failed cards deepen their own tint.
+function draftFillClass(isActive: boolean): string {
+  return isActive
+    ? 'bg-(--basis-draft-active)'
+    : 'bg-(--basis-draft-fill) hover:bg-(--basis-draft-hover)'
 }
 
 const cardBodyClass =
@@ -80,6 +102,8 @@ const NewAgentIcon = phosphorIcon(NotePencilIcon)
 const AddProjectIcon = phosphorIcon(FolderPlusIcon)
 const ShowMoreIcon = phosphorIcon(CaretDownIcon)
 const ChildSessionIcon = phosphorIcon(GitBranchIcon)
+const OpenDraftIcon = phosphorIcon(PencilSimpleLineIcon)
+const DiscardDraftIcon = phosphorIcon(TrashIcon)
 
 // Provider marks need their id bound in.
 const providerIcons = new Map<ProviderId, IconComponent>()
@@ -153,6 +177,32 @@ export function partitionSidebarSessions(workspaces: SidebarWorkspace[]): {
   }
   settled.sort((a, b) => timeOf(b.root.session.settledAt) - timeOf(a.root.session.settledAt))
   return { active, settled }
+}
+
+const NO_DRAFTS: SidebarDraft[] = []
+
+/** A draft's card: the draft, and its project when that is listed. */
+export interface SidebarDraftRow {
+  kind: 'draft'
+  draft: SidebarDraft
+  /** Absent once the project was removed (or is not listed). */
+  workspace?: SidebarWorkspace
+}
+
+/** One card in Active: a draft, or a session with its subagents. */
+type ActiveItem = SidebarDraftRow | { kind: 'session'; entry: SidebarBoardEntry }
+
+/** Each draft with its project, in the order given. */
+export function placeSidebarDrafts(
+  drafts: SidebarDraft[],
+  workspaces: SidebarWorkspace[],
+): SidebarDraftRow[] {
+  if (drafts.length === 0) return []
+  const byPath = new Map(workspaces.map((workspace) => [workspace.path, workspace]))
+  return drafts.map((draft) => {
+    const workspace = draft.workspaceId === null ? undefined : byPath.get(draft.workspaceId)
+    return workspace ? { kind: 'draft', draft, workspace } : { kind: 'draft', draft }
+  })
 }
 
 function readSettledOpen(): boolean {
@@ -362,6 +412,16 @@ export interface WorkspaceSidebarViewProps {
     settled: boolean,
   ) => void | Promise<unknown>
   onDeleteSession?: (workspacePath: string, externalId: string, providerId: ProviderId) => void
+  /**
+   * Unsent new-session drafts, shown as cards at the top of Active, in the
+   * order given (newest edit first). Hosts without draft pages leave them out.
+   */
+  drafts?: SidebarDraft[]
+  /** The draft on screen; its card shows selected. */
+  activeDraftId?: string | null
+  onOpenDraft?: (draftId: string) => void
+  /** Absent when drafts cannot be discarded here; the card offers no discard. */
+  onDiscardDraft?: (draftId: string) => void
   onAddWorkspace: () => void
   /** The name a provider goes by; the raw id when the host has no catalog. */
   providerLabel?: (providerId: ProviderId) => string
@@ -385,21 +445,35 @@ export function WorkspaceSidebarView({
   onCreateSession,
   onSelectSession: requestSelect,
   onSettleSession: requestSettle,
+  drafts = NO_DRAFTS,
+  activeDraftId = null,
+  onOpenDraft: requestOpenDraft,
+  onDiscardDraft: requestDiscardDraft,
   onAddWorkspace,
   providerLabel,
   titlebar,
   footer,
 }: WorkspaceSidebarViewProps) {
-  // Rows are memoized, so they get one select and one settle callback for good.
+  // Rows are memoized, so they get one callback of each kind for good.
   const selectRef = useRef(requestSelect)
   const settleRef = useRef(requestSettle)
+  const openDraftRef = useRef(requestOpenDraft)
+  const discardDraftRef = useRef(requestDiscardDraft)
   useLayoutEffect(() => {
     selectRef.current = requestSelect
     settleRef.current = requestSettle
+    openDraftRef.current = requestOpenDraft
+    discardDraftRef.current = requestDiscardDraft
   })
   const onSelectSession = useCallback<WorkspaceSidebarViewProps['onSelectSession']>(
     (...args) => selectRef.current(...args),
     [],
+  )
+  const onOpenDraft = useCallback((draftId: string) => openDraftRef.current?.(draftId), [])
+  const canDiscardDraft = requestDiscardDraft !== undefined
+  const onDiscardDraft = useMemo(
+    () => (canDiscardDraft ? (draftId: string) => discardDraftRef.current?.(draftId) : undefined),
+    [canDiscardDraft],
   )
   const canSettle = requestSettle !== undefined
   const onSettleSession = useMemo<WorkspaceSidebarViewProps['onSettleSession']>(
@@ -419,6 +493,7 @@ export function WorkspaceSidebarView({
     : (workspaces.find((workspace) => !workspace.missing)?.path ?? null)
 
   const { active, settled } = useMemo(() => partitionSidebarSessions(workspaces), [workspaces])
+  const draftRows = useMemo(() => placeSidebarDrafts(drafts, workspaces), [drafts, workspaces])
   const now = useNow()
   const [settledOpen, setSettledOpen] = useState(readSettledOpen)
   const [settledVisible, setSettledVisible] = useState(SETTLED_PREVIEW_LIMIT)
@@ -428,17 +503,20 @@ export function WorkspaceSidebarView({
   // Armed once the first sessions have rendered, so the initial load lands
   // still and only later settles, unsettles and new threads move.
   const [armed, setArmed] = useState(false)
-  const hasSessions = active.length + settled.length > 0
+  const hasSessions = active.length + settled.length + draftRows.length > 0
   useEffect(() => {
     if (hasSessions) setArmed(true)
   }, [hasSessions])
   const rowMotion = useRowMotion(armed)
   const shared = {
     activeSessionId,
+    activeDraftId,
     environmentLabel,
     now,
     onSelectSession,
     onSettleSession,
+    onOpenDraft,
+    onDiscardDraft,
     providerLabel,
     rowMotion,
   }
@@ -480,12 +558,22 @@ export function WorkspaceSidebarView({
                 mounted when it empties, so the last card still folds away. */}
             <div role="list" className="flex flex-col">
               <AnimatePresence initial={false}>
+                {/* Drafts first, newest edit first. A draft's card is keyed by
+                    the session it will become, so its send hands the same
+                    row over to the session's card: no fold, no grow, no gap. */}
+                {draftRows.map((row) => (
+                  <MemoActiveCard key={row.draft.sessionId} item={row} {...shared} />
+                ))}
                 {active.map((entry) => (
-                  <MemoSessionCard key={entry.root.session.externalId} entry={entry} {...shared} />
+                  <MemoActiveCard
+                    key={entry.root.session.externalId}
+                    item={{ kind: 'session', entry }}
+                    {...shared}
+                  />
                 ))}
               </AnimatePresence>
             </div>
-            <EmptyNote show={active.length === 0} rowMotion={rowMotion}>
+            <EmptyNote show={active.length + draftRows.length === 0} rowMotion={rowMotion}>
               {settled.length > 0 ? 'All caught up.' : 'No sessions yet.'}
             </EmptyNote>
           </SidebarGroup>
@@ -602,10 +690,13 @@ function sameRow(a: SidebarBoardRow, b: SidebarBoardRow): boolean {
 function sameHandlers(a: RowHandlers, b: RowHandlers): boolean {
   return (
     a.activeSessionId === b.activeSessionId &&
+    a.activeDraftId === b.activeDraftId &&
     a.environmentLabel === b.environmentLabel &&
     a.now === b.now &&
     a.onSelectSession === b.onSelectSession &&
     a.onSettleSession === b.onSettleSession &&
+    a.onOpenDraft === b.onOpenDraft &&
+    a.onDiscardDraft === b.onDiscardDraft &&
     a.providerLabel === b.providerLabel &&
     a.rowMotion === b.rowMotion
   )
@@ -613,15 +704,68 @@ function sameHandlers(a: RowHandlers, b: RowHandlers): boolean {
 
 interface RowHandlers {
   activeSessionId: string | null
+  activeDraftId?: string | null
   environmentLabel?: string
   now: number
   onSelectSession: WorkspaceSidebarViewProps['onSelectSession']
   onSettleSession?: WorkspaceSidebarViewProps['onSettleSession']
+  onOpenDraft?: (draftId: string) => void
+  onDiscardDraft?: (draftId: string) => void
   providerLabel?: WorkspaceSidebarViewProps['providerLabel']
   rowMotion: MotionProps
 }
 
-function SessionCard({
+/**
+ * A card in Active. The row itself (what grows in and folds away) is the same
+ * element for a draft and for the session it becomes: sending swaps what is
+ * inside it, in place, in the frame the session is listed.
+ */
+function ActiveCard({ item, ...handlers }: RowHandlers & { item: ActiveItem }) {
+  return (
+    // The clip lets the card fold to nothing on its way out; the padding
+    // inside it is the space between cards, so it folds away too.
+    <motion.div role="listitem" className="overflow-hidden" {...handlers.rowMotion}>
+      {item.kind === 'draft' ? (
+        <DraftCardBody row={item} {...handlers} />
+      ) : (
+        <SessionCardBody entry={item.entry} {...handlers} />
+      )}
+    </motion.div>
+  )
+}
+
+function sameItem(a: ActiveItem, b: ActiveItem): boolean {
+  if (a.kind === 'draft' || b.kind === 'draft') {
+    if (a.kind !== 'draft' || b.kind !== 'draft') return false
+    return (
+      sameFields(a.draft, b.draft) &&
+      (a.workspace === b.workspace ||
+        (!!a.workspace && !!b.workspace && sameWorkspace(a.workspace, b.workspace)))
+    )
+  }
+  return (
+    sameRow(a.entry.root, b.entry.root) &&
+    a.entry.children.length === b.entry.children.length &&
+    a.entry.children.every((child, index) => sameRow(child, b.entry.children[index]!))
+  )
+}
+
+const MemoActiveCard = memo(ActiveCard, (a, b) => sameHandlers(a, b) && sameItem(a.item, b.item))
+
+/** Unsent text in a session's composer: a pen, quiet, beside its provider. */
+function UnsentMark() {
+  return (
+    <span
+      className="flex shrink-0 items-center text-[color:var(--basis-draft)] opacity-80"
+      title="Unsent draft"
+    >
+      <PencilSimpleLineIcon className="h-3 w-3" aria-hidden />
+      <span className="sr-only">Has an unsent draft</span>
+    </span>
+  )
+}
+
+function SessionCardBody({
   entry,
   activeSessionId,
   environmentLabel,
@@ -629,7 +773,6 @@ function SessionCard({
   onSelectSession,
   onSettleSession,
   providerLabel,
-  rowMotion,
 }: RowHandlers & { entry: SidebarBoardEntry }) {
   const { session, workspace } = entry.root
   const providerId = session.providerId ?? DEFAULT_PROVIDER_ID
@@ -683,6 +826,9 @@ function SessionCard({
       </span>
     </span>
   )
+  // Not on the session on screen: the host leaves it out there, so the card
+  // does not flicker as its composer empties and fills.
+  const unsent = Boolean(session.hasUnsentDraft) && !isActive
   const metaLine = (
     <span className="flex min-w-0 items-center gap-2 text-[12px] leading-4 text-faint">
       {/* The mark alone; its name is for hover and assistive tech. */}
@@ -690,6 +836,7 @@ function SessionCard({
         <ProviderIcon providerId={providerId} className="h-3 w-3 opacity-80" />
         <span className="sr-only">{providerName}</span>
       </span>
+      {unsent ? <UnsentMark /> : null}
       {git ? (
         <span
           className="flex min-w-0 items-center gap-1"
@@ -707,90 +854,281 @@ function SessionCard({
   )
 
   return (
-    // The clip lets the card fold to nothing on its way out; the padding
-    // inside it is the space between cards, so it folds away too.
-    <motion.div role="listitem" className="overflow-hidden" {...rowMotion}>
-      <div className="group/card relative pb-1">
-        <div
-          ref={cardRef}
+    <div className="group/card relative pb-1">
+      <div
+        ref={cardRef}
+        className={cn(
+          // Selection is a fill, never an outline, on every scheme.
+          'relative rounded-[10px] transition-colors duration-100',
+          cardFillClass(tone, isActive, unsent),
+        )}
+      >
+        {tone === 'needs' ? (
+          <span aria-hidden="true" className="session-row-dither session-row-dither--needs" />
+        ) : null}
+        {tone === 'done' || tone === 'error' ? (
+          <span
+            aria-hidden="true"
+            className={cn('session-card-wash', `session-card-wash--${tone}`)}
+          />
+        ) : null}
+        {moment?.tone === 'done' || moment?.tone === 'error' ? (
+          <span
+            key={moment.key}
+            aria-hidden="true"
+            className={cn('session-card-flash', `session-card-flash--${moment.tone}`)}
+          />
+        ) : null}
+        <button
+          type="button"
+          aria-current={isActive ? 'page' : undefined}
+          onClick={select}
           className={cn(
-            // Selection is a fill, never an outline, on every scheme.
-            'relative rounded-[10px] transition-colors duration-100',
-            cardFillClass(tone, isActive),
+            cardBodyClass,
+            'outline-none focus-visible:ring-1 focus-visible:ring-focus-ring',
+            session.workspaceUnavailable && 'opacity-70',
           )}
         >
-          {tone === 'needs' ? (
-            <span aria-hidden="true" className="session-row-dither session-row-dither--needs" />
-          ) : null}
-          {tone === 'done' || tone === 'error' ? (
-            <span
-              aria-hidden="true"
-              className={cn('session-card-wash', `session-card-wash--${tone}`)}
-            />
-          ) : null}
-          {moment?.tone === 'done' || moment?.tone === 'error' ? (
-            <span
-              key={moment.key}
-              aria-hidden="true"
-              className={cn('session-card-flash', `session-card-flash--${moment.tone}`)}
-            />
-          ) : null}
-          <button
-            type="button"
-            aria-current={isActive ? 'page' : undefined}
-            onClick={select}
-            className={cn(
-              cardBodyClass,
-              'outline-none focus-visible:ring-1 focus-visible:ring-focus-ring',
-              session.workspaceUnavailable && 'opacity-70',
-            )}
-          >
-            {projectLine}
-            <span className="truncate text-[14px] leading-5 text-foreground">
-              {session.title || 'New session'}
-              {environmentLabel ? <span className="sr-only"> on {environmentLabel}</span> : null}
-            </span>
-            {metaLine}
-          </button>
-          {entry.children.length > 0 ? (
-            <div role="list" className="mb-2 ml-5 mr-2 flex flex-col">
-              {entry.children.map((child) => (
-                <ChildRow
-                  key={child.session.externalId}
-                  row={child}
-                  activeSessionId={activeSessionId}
-                  now={now}
-                  onSelectSession={onSelectSession}
-                />
-              ))}
-            </div>
-          ) : null}
-        </div>
-        {/* Live work cannot be settled: the environment refuses it, since
-            nothing would bring the card back once the turn finished. */}
-        {onSettleSession && hasActions ? (
-          <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5 opacity-0 transition-opacity duration-80 group-has-[:focus-visible]/card:opacity-100 group-hover/card:opacity-100 pointer-coarse:opacity-100">
-            <CardAction
-              label="Settle"
-              onClick={() => onSettleSession(workspace.path, session.externalId, true)}
-            >
-              <CheckIcon />
-            </CardAction>
+          {projectLine}
+          <span className="truncate text-[14px] leading-5 text-foreground">
+            {session.title || 'New session'}
+            {environmentLabel ? <span className="sr-only"> on {environmentLabel}</span> : null}
+          </span>
+          {metaLine}
+        </button>
+        {entry.children.length > 0 ? (
+          <div role="list" className="mb-2 ml-5 mr-2 flex flex-col">
+            {entry.children.map((child) => (
+              <ChildRow
+                key={child.session.externalId}
+                row={child}
+                activeSessionId={activeSessionId}
+                now={now}
+                onSelectSession={onSelectSession}
+              />
+            ))}
           </div>
         ) : null}
       </div>
-    </motion.div>
+      {/* Live work cannot be settled: the environment refuses it, since
+            nothing would bring the card back once the turn finished. */}
+      {onSettleSession && hasActions ? (
+        <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5 opacity-0 transition-opacity duration-80 group-has-[:focus-visible]/card:opacity-100 group-hover/card:opacity-100 pointer-coarse:opacity-100">
+          <CardAction
+            label="Settle"
+            onClick={() => onSettleSession(workspace.path, session.externalId, true)}
+          >
+            <CheckIcon />
+          </CardAction>
+        </div>
+      ) : null}
+    </div>
   )
 }
 
-const MemoSessionCard = memo(
-  SessionCard,
-  (a, b) =>
-    sameHandlers(a, b) &&
-    sameRow(a.entry.root, b.entry.root) &&
-    a.entry.children.length === b.entry.children.length &&
-    a.entry.children.every((child, index) => sameRow(child, b.entry.children[index]!)),
-)
+/** What a draft with no text says in place of its first line. */
+const imagesLabel = (count: number) => (count === 1 ? '1 image' : `${count} images`)
+
+/** Where a draft card's menu opens: at the pointer, or the card's corner from the keyboard. */
+interface MenuAnchor {
+  x: number
+  y: number
+}
+
+/**
+ * An unsent new-session draft: a card like a session's (project, first line,
+ * provider and branch), filled with the draft tint and labelled Draft where a
+ * session shows its status. Opening it goes to the draft's page; ✕ and the
+ * card's menu (right click, or the menu key) discard it, with an undo.
+ */
+function DraftCardBody({
+  row,
+  activeDraftId,
+  environmentLabel,
+  onOpenDraft,
+  onDiscardDraft,
+  providerLabel,
+}: RowHandlers & { row: SidebarDraftRow }) {
+  const { draft, workspace } = row
+  const isActive = draft.draftId === activeDraftId
+  const providerName = providerLabel?.(draft.providerId) ?? draft.providerId
+  const unavailable = workspace?.missing
+    ? describeUnavailableWorkspace(workspace.availability)
+    : null
+  const git = workspace?.git
+  const preview = draft.preview || imagesLabel(draft.imageCount)
+  const unsynced = draft.unsynced ? DRAFT_SYNC_EXPLANATION[draft.unsynced] : undefined
+  const open = () => onOpenDraft?.(draft.draftId)
+  const discard = onDiscardDraft ? () => onDiscardDraft(draft.draftId) : undefined
+
+  const cardRef = useRef<HTMLButtonElement>(null)
+  const anchorRef = useRef<HTMLButtonElement>(null)
+  const [menuAt, setMenuAt] = useState<MenuAnchor | null>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const openMenu = (anchor: MenuAnchor) => {
+    setMenuAt(anchor)
+    setMenuOpen(true)
+  }
+
+  const projectLine = (
+    <span className="flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-muted-foreground">
+      {workspace ? (
+        <>
+          <ProjectIcon workspacePath={workspace.path} className="opacity-80" />
+          <span className={cn('truncate', workspace.missing && 'line-through decoration-faint')}>
+            {workspace.name}
+          </span>
+          {unavailable ? (
+            <span
+              className="shrink-0 rounded-sm px-1 text-[10px] leading-none text-faint"
+              title={unavailable.reason}
+            >
+              {unavailable.badge}
+            </span>
+          ) : null}
+        </>
+      ) : (
+        // Its project was removed: the draft is kept, and its page lets
+        // another project take it.
+        <span
+          className="flex min-w-0 items-center gap-1.5 text-faint"
+          title="Its project was removed. Open the draft to pick another."
+        >
+          <FolderDashedIcon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span className="truncate">No project</span>
+        </span>
+      )}
+      {/* Where a session shows its status. Gives way to ✕ on hover, as the
+          status gives way to Settle. */}
+      <span
+        className={cn(
+          'ml-auto flex shrink-0 items-center gap-1 pl-2 text-[color:var(--basis-draft)] transition-opacity duration-80',
+          discard &&
+            'group-has-[:focus-visible]/card:opacity-0 group-hover/card:opacity-0 pointer-coarse:opacity-0',
+        )}
+      >
+        <PencilSimpleLineIcon className="h-3 w-3" aria-hidden />
+        Draft
+      </span>
+    </span>
+  )
+  const metaLine = (
+    <span className="flex min-w-0 items-center gap-2 text-[12px] leading-4 text-faint">
+      <span className="flex shrink-0 items-center" title={providerName}>
+        <ProviderIcon providerId={draft.providerId} className="h-3 w-3 opacity-80" />
+        <span className="sr-only">{providerName}</span>
+      </span>
+      {git ? (
+        <span
+          className="flex min-w-0 items-center gap-1"
+          title={git.worktree ? 'Worktree' : undefined}
+        >
+          {git.worktree ? (
+            <GitForkIcon className="h-3 w-3 shrink-0" aria-label="Worktree" />
+          ) : (
+            <GitBranchIcon className="h-3 w-3 shrink-0" aria-hidden />
+          )}
+          <span className="truncate">{git.branch ?? 'detached'}</span>
+        </span>
+      ) : null}
+      {/* The composer's "Not synced", made quiet: the mark, and its reason on hover. */}
+      {unsynced ? (
+        <Tooltip content={unsynced}>
+          <span className="ml-auto flex shrink-0 items-center gap-1">
+            <CloudSlashIcon className="h-3 w-3" aria-hidden />
+            <span className="sr-only">Not synced. {unsynced}</span>
+          </span>
+        </Tooltip>
+      ) : null}
+    </span>
+  )
+
+  return (
+    <div
+      className="group/card relative pb-1"
+      onContextMenu={
+        discard
+          ? (event) => {
+              event.preventDefault()
+              const box = event.currentTarget.getBoundingClientRect()
+              openMenu({ x: event.clientX - box.left, y: event.clientY - box.top })
+            }
+          : undefined
+      }
+    >
+      <div
+        className={cn(
+          'relative rounded-[10px] transition-colors duration-100',
+          draftFillClass(isActive),
+        )}
+      >
+        <button
+          ref={cardRef}
+          type="button"
+          aria-current={isActive ? 'page' : undefined}
+          aria-haspopup={discard ? 'menu' : undefined}
+          onClick={open}
+          onKeyDown={(event) => {
+            if (!discard) return
+            if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+              event.preventDefault()
+              openMenu({ x: event.currentTarget.offsetWidth - 8, y: 8 })
+            }
+          }}
+          className={cn(
+            cardBodyClass,
+            'outline-none focus-visible:ring-1 focus-visible:ring-focus-ring',
+          )}
+        >
+          {projectLine}
+          <span className="truncate text-[14px] leading-5 text-foreground">
+            {preview}
+            {environmentLabel ? <span className="sr-only"> on {environmentLabel}</span> : null}
+          </span>
+          {metaLine}
+        </button>
+      </div>
+      {discard ? (
+        <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5 opacity-0 transition-opacity duration-80 group-has-[:focus-visible]/card:opacity-100 group-hover/card:opacity-100 pointer-coarse:opacity-100">
+          <CardAction label="Discard draft" onClick={discard}>
+            <XIcon />
+          </CardAction>
+        </div>
+      ) : null}
+      {/* Mounted on first use, then kept, so closing plays its exit. */}
+      {discard && menuAt ? (
+        <DropdownMenu
+          open={menuOpen}
+          onOpenChange={(next) => {
+            setMenuOpen(next)
+            if (next) return
+            // The menu hands focus back to its anchor, which is no place to
+            // leave it: back to the card, unless the user has moved on.
+            requestAnimationFrame(() => {
+              if (document.activeElement === anchorRef.current) cardRef.current?.focus()
+            })
+          }}
+        >
+          <DropdownTrigger
+            ref={anchorRef}
+            render={
+              <span
+                aria-hidden
+                tabIndex={-1}
+                className="pointer-events-none absolute size-px"
+                style={{ left: menuAt.x, top: menuAt.y }}
+              />
+            }
+          />
+          <DropdownContent className={cn('w-52', SIDEBAR_MENU_GRID)} sideOffset={2}>
+            <MenuItem index={0} icon={OpenDraftIcon} label="Open draft" onSelect={open} />
+            <MenuItem index={1} icon={DiscardDraftIcon} label="Discard draft" onSelect={discard} />
+          </DropdownContent>
+        </DropdownMenu>
+      ) : null}
+    </div>
+  )
+}
 
 /** A subagent transcript, kept under the card of the session that started it. */
 function ChildRow({
