@@ -33,6 +33,20 @@ function ConnectedSessionWorkspace({ sessionId }: { sessionId?: string }) {
   // A session opened before the catalog knew it: the route's own open, on
   // its way or done, so it is not asked for twice.
   const probedSessionRef = useRef<string | null>(null)
+  const mountedRef = useRef(true)
+
+  // Leaving the chat pane (for Settings, say) while that open is on its way:
+  // its late answer must neither select the session nor replace the page the
+  // user went to. Only on unmount: a re-run for the same address keeps it.
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      if (probedSessionRef.current === null) return
+      probedSessionRef.current = null
+      client.setActiveSession(null)
+    }
+  }, [client])
 
   useEffect(() => {
     if (probedSessionRef.current !== sessionId) probedSessionRef.current = null
@@ -55,7 +69,7 @@ function ConnectedSessionWorkspace({ sessionId }: { sessionId?: string }) {
       if (!connected || probedSessionRef.current === sessionId) return
       probedSessionRef.current = sessionId
       void client.commands.openSession(sessionId).catch((error: unknown) => {
-        if (probedSessionRef.current !== sessionId) return
+        if (!mountedRef.current || probedSessionRef.current !== sessionId) return
         probedSessionRef.current = null
         if (isEnvironmentClientError(error) && error.code === 'not_found') {
           void navigate({ to: '/', replace: true })

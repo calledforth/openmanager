@@ -297,6 +297,32 @@ describe('session workspace', () => {
     expect(textbox).toHaveValue('')
   })
 
+  it('stays where the user went when an unknown session’s answer comes late', async () => {
+    connectedEnvironment()
+    const client = createMockEnvironmentClient({ seed: SEED })
+    const open = client.commands.openSession.bind(client.commands)
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    vi.spyOn(client.commands, 'openSession').mockImplementation(async (sessionId) => {
+      if (sessionId === 'deleted-since') await held
+      return open(sessionId)
+    })
+    const { router } = renderWebApp('/sessions/deleted-since', {
+      createEnvironmentClient: () => client,
+    })
+    await waitFor(() => expect(client.commands.openSession).toHaveBeenCalledWith('deleted-since'))
+    await act(() => router.navigate({ to: '/settings' }))
+    expect(router.state.location.pathname).toBe('/settings')
+    // The environment answers that it has no such session, after the user left.
+    await act(async () => {
+      release()
+      await held
+    })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(router.state.location.pathname).toBe('/settings')
+    expect(client.getState().activeSessionId).toBeNull()
+  })
+
   it('leads a sent draft’s address on to `/` when its session was deleted since', async () => {
     // This browser sent the draft; the session it became is gone.
     localStorage.setItem('openmanager.sent-drafts', JSON.stringify({ 'sent-draft': 'deleted' }))
