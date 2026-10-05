@@ -89,3 +89,16 @@ export function rememberSentDraft(draftId: string, sessionId: string) {
 export function sentDraftSession(draftId: string): string | undefined {
   return sentHere.get(draftId) ?? readSent()[draftId]
 }
+
+/** The draft is back (its session was rolled back): its address is its own again. */
+export function forgetSentDraft(draftId: string) {
+  sentHere.delete(draftId)
+  const sent = readSent()
+  if (!(draftId in sent)) return
+  delete sent[draftId]
+  try {
+    storage()?.setItem(SENT_DRAFTS_KEY, JSON.stringify(sent))
+  } catch {
+    // Private mode or a full quota: this tab has forgotten it all the same.
+  }
+}

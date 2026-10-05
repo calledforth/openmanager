@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, useContext, useState } from 'react'
+import { act, useContext, useEffect, useRef, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import {
   createMockEnvironmentClient,
@@ -12,13 +12,13 @@ import {
   type ProviderCatalogEntry,
 } from '@openmanager/environment-client'
 import type { Workspace } from '@openmanager/protocol'
-import { EnvironmentClientProvider } from '../src/providers/environment-client'
+import { EnvironmentClientProvider, useEnvironmentState } from '../src/providers/environment-client'
 import { EnvironmentApplicationProviders } from '../src/providers/environment-application'
 import { useActiveThreadState } from '../src/providers/active-thread-provider'
 import { useComposerState, type ComposerStateValue } from '../src/providers/composer-provider'
 import { useSessionState, type SessionStateValue } from '../src/providers/session-provider'
 import { ThemeProvider } from '../src/providers/theme-provider'
-import { rememberSentDraft } from '../src/providers/draft-pages'
+import { rememberSentDraft, sentDraftSession } from '../src/providers/draft-pages'
 import {
   DraftLaunchContext,
   type DraftLaunchInternals,
@@ -174,6 +174,23 @@ function Capture() {
   return null
 }
 
+/**
+ * The web's session route: a session it opened that goes (deleted, or rolled
+ * back) replaces its dead address with `/`. Inside the providers, as the
+ * web's is, so its effects run before theirs.
+ */
+function SessionRoute({ route, go }: { route: Route; go: (route: Route) => void }) {
+  const sessionId = 'sessionId' in route ? route.sessionId : null
+  const known = useEnvironmentState((state) => !!sessionId && !!state.sessions[sessionId])
+  const opened = useRef<string | null>(null)
+  useEffect(() => {
+    if (!sessionId) return
+    if (known) opened.current = sessionId
+    else if (opened.current === sessionId) go({ draftId: null })
+  }, [go, known, sessionId])
+  return null
+}
+
 /** A host with draft pages over an in-memory address, opening sessions as the web does. */
 function Host({ client, initial }: { client: MockEnvironmentClient; initial: Route }) {
   const [route, setRoute] = useState<Route>(initial)
@@ -202,6 +219,7 @@ function Host({ client, initial }: { client: MockEnvironmentClient; initial: Rou
       }}
     >
       <ChatWorkspace />
+      <SessionRoute route={route} go={go} />
       <Capture />
     </EnvironmentApplicationProviders>
   )
@@ -656,6 +674,91 @@ describe('draft pages', () => {
       expect(navigations.at(-1)).toBe(`replace /sessions/${sessionId}`)
       expect(client.getState().activeSessionId).toBe(sessionId)
       expect(client.getState().draftEdits[draftId]).toBeUndefined()
+    })
+
+    it('puts back the page of a draft another device sent once that session is rolled back', async () => {
+      const client = createMockEnvironmentClient({ seed: SEED })
+      await mount(client)
+      await type('sent from the phone')
+      const draftId = probe.session.newSessionDraftId!
+      act(() => client.drafts!.flush())
+      await settle(client)
+      const saved = client.getState().drafts[draftId]!
+      const { sessionId } = saved.target as { sessionId: string }
+
+      // Another device sends it. The session is announced before its provider starts.
+      await act(() =>
+        client.commands.createSession({
+          environmentId: client.getState().environment!.environmentId,
+          workspaceId: ALPHA.workspaceId,
+          providerId: 'opencode',
+          firstMessage: 'sent from the phone',
+          draftId,
+          sessionId,
+        }),
+      )
+      await settle(client)
+      expect(pathOf(probe.route)).toBe(`/sessions/${sessionId}`)
+
+      // The provider fails to start: the environment deletes the session (its
+      // address falls back to `/`), then saves the draft back as it was sent.
+      await act(() => client.commands.deleteSession(sessionId))
+      await settle(client)
+      expect(pathOf(probe.route)).toBe('/')
+      await act(() =>
+        client.commands.saveDraft({
+          draftId,
+          baseRevision: saved.revision + 1,
+          target: saved.target,
+          content: { text: 'sent from the phone', providerId: 'opencode' },
+        }),
+      )
+      await settle(client)
+      expect(navigations.at(-1)).toBe(`replace /drafts/${draftId}`)
+      expect(pathOf(probe.route)).toBe(`/drafts/${draftId}`)
+      expect(probe.session.newSessionDraftId).toBe(draftId)
+      expect(probe.session.isSessionDraftOpen).toBe(true)
+      expect(composer().value).toBe('sent from the phone')
+      // Its address no longer leads to the session that never started.
+      expect(sentDraftSession(draftId)).toBeUndefined()
+    })
+
+    it('leaves the user where they went when a draft sent elsewhere comes back', async () => {
+      const client = createMockEnvironmentClient({ seed: SEED })
+      await mount(client)
+      await type('sent from the phone')
+      const draftId = probe.session.newSessionDraftId!
+      act(() => client.drafts!.flush())
+      await settle(client)
+      const saved = client.getState().drafts[draftId]!
+      const { sessionId } = saved.target as { sessionId: string }
+      await act(() =>
+        client.commands.createSession({
+          environmentId: client.getState().environment!.environmentId,
+          workspaceId: ALPHA.workspaceId,
+          providerId: 'opencode',
+          firstMessage: 'sent from the phone',
+          draftId,
+          sessionId,
+        }),
+      )
+      await settle(client)
+      // Off to another session before the rollback.
+      await act(() => probe.session.selectSession(ALPHA.workspaceId, SESSION.sessionId))
+      await settle(client)
+
+      await act(() => client.commands.deleteSession(sessionId))
+      await act(() =>
+        client.commands.saveDraft({
+          draftId,
+          baseRevision: saved.revision + 1,
+          target: saved.target,
+          content: { text: 'sent from the phone', providerId: 'opencode' },
+        }),
+      )
+      await settle(client)
+      expect(pathOf(probe.route)).toBe(`/sessions/${SESSION.sessionId}`)
+      expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
     })
 
     it('leads a sent draft’s address to its session when that session is not listed yet', async () => {

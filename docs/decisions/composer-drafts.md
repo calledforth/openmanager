@@ -69,7 +69,13 @@ needed no schema or protocol change.
 - **Other devices.** The page follows the environment's copy of its draft,
   so a move made elsewhere stands even after the text is cleared here. A
   draft sent elsewhere (its minted session exists, and this client is not
-  sending it) retires its page, which leads to that session.
+  sending it) retires its page, which leads to that session. The session is
+  announced before its provider starts, and no event says when the start can
+  no longer fail. If it fails, the environment deletes the session and saves
+  the draft back as sent; the page then takes its address back, from the
+  session's or from `/` where that dead address fell back to. Not if the
+  user has moved on meanwhile: to another session or draft, or off the
+  session while it stood.
 
 ## Picks
 
@@ -232,8 +238,9 @@ less the draft on screen.
 - Sidebar draft cards (CAL-214) are not built yet; they should list
   `selectNewSessionDraftIds` less `newSessionDraftId`, and read
   `selectDraftSyncStatus` to mark an unsynced draft the way the composer does.
-- A draft's address leads to its session only when it was sent from this
-  browser. Sent from another device, its old address opens a blank page.
+- A draft's address leads to its session only when this browser sent it, or
+  had its page open when another device did. Otherwise its old address opens
+  a blank page.
 - A sent draft whose session was deleted since leads to that session's
   address, which stays as it is: the session route only replaces the
   address of a session it had opened.

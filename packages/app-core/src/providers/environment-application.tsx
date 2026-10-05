@@ -78,6 +78,7 @@ import {
 import { EnvironmentComposerDraftProvider, sendingNewSessionDraft } from './environment-drafts'
 import {
   DraftPageContext,
+  forgetSentDraft,
   rememberSentDraft,
   sentDraftSession,
   type DraftPageInternals,
@@ -414,6 +415,12 @@ interface RouteAhead {
   expected: Array<string | null | undefined>
 }
 
+/** A draft page retired because another device sent its draft as `sessionId`. */
+interface RetiredPage {
+  draftId: string
+  sessionId: string
+}
+
 const selectActiveSessionId = (state: EnvironmentState) =>
   selectActiveSession(state)?.sessionId ?? null
 const selectActiveSessionWorkspaceId = (state: EnvironmentState) =>
@@ -451,6 +458,9 @@ function EnvironmentSessionStateProvider({
   const connection = useConnectionState()
   const [page, setPage] = useState<DraftPage | null>(null)
   const [ahead, setAhead] = useState<RouteAhead | null>(null)
+  const [retired, setRetired] = useState<RetiredPage | null>(null)
+  // The retired draft's session has been on screen since.
+  const retiredOpenedRef = useRef(false)
   const [pendingDraftSessionStart, setPendingDraftSessionStart] = useState(false)
   const [launchingMessage, setLaunchingMessage] = useState<LaunchingMessage | null>(null)
   const [turnPending, setTurnPending] = useState(false)
@@ -635,6 +645,10 @@ function EnvironmentSessionStateProvider({
             : undefined
     if (redirect === undefined || redirectedRef.current === pageDraftId) return
     redirectedRef.current = pageDraftId
+    if (pageConsumed && consumedSessionId) {
+      retiredOpenedRef.current = false
+      setRetired({ draftId: pageDraftId, sessionId: consumedSessionId })
+    }
     void navigateSession(redirect, { replace: true }).catch(noop)
   }, [
     canList,
@@ -651,6 +665,40 @@ function EnvironmentSessionStateProvider({
     sentSessionKnown,
     sessionDraftOf,
   ])
+
+  // A session sent from another device is announced before its provider
+  // starts, and nothing says when that start is past failing. If it fails,
+  // the environment deletes the session and saves the draft back, as sent:
+  // the retired page then takes its address back, unless the user has moved
+  // on (to another session or draft, or off the session while it stood).
+  const retiredState = useEnvironmentState(
+    useCallback(
+      (state: EnvironmentState) => {
+        if (!retired) return null
+        if (state.sessions[retired.sessionId]) return 'listed'
+        const target = state.drafts[retired.draftId]?.target
+        return target?.type === 'new_session' && target.sessionId === retired.sessionId
+          ? 'restored'
+          : 'gone'
+      },
+      [retired],
+    ),
+  )
+  useEffect(() => {
+    if (!retired) return
+    if (selectedSessionId === retired.sessionId) retiredOpenedRef.current = true
+    const movedOn =
+      (selectedSessionId !== null && selectedSessionId !== retired.sessionId) ||
+      (routeDraft != null && routeDraft !== retired.draftId) ||
+      (retiredOpenedRef.current && selectedSessionId === null && retiredState === 'listed')
+    if (!movedOn && retiredState !== 'restored') return
+    setRetired(null)
+    if (movedOn) return
+    forgetSentDraft(retired.draftId)
+    if (routeDraft !== retired.draftId) {
+      void navigateDraft?.(retired.draftId, { replace: true }).catch(noop)
+    }
+  }, [navigateDraft, retired, retiredState, routeDraft, selectedSessionId])
 
   /**
    * Navigate, holding the page this provider opened until every navigation
