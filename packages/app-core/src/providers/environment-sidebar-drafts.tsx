@@ -123,6 +123,9 @@ export function EnvironmentSidebarDraftsProvider({ children }: { children: React
   // names; and the store watch that ends the discard if the draft goes.
   const madeOnRef = useRef(0)
   const unwatchRef = useRef<(() => void) | undefined>(undefined)
+  // Holds the sync's record of this page's own answers for the draft while
+  // its window runs; the delete holds it after that, until it is answered.
+  const unpinRef = useRef<(() => void) | undefined>(undefined)
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const keyRef = useRef(0)
 
@@ -156,6 +159,8 @@ export function EnvironmentSidebarDraftsProvider({ children }: { children: React
       if (commit && discardOutstanding(client.getState(), current.draftId)) {
         releaseDraft(current.draftId, madeOnRef.current)
       }
+      unpinRef.current?.()
+      unpinRef.current = undefined
     },
     [client, releaseDraft, stopClock],
   )
@@ -182,6 +187,7 @@ export function EnvironmentSidebarDraftsProvider({ children }: { children: React
       }
       pendingRef.current = next
       madeOnRef.current = state.drafts[draftId]?.revision ?? 0
+      unpinRef.current = sync?.pinAnswer(draftId)
       // Gone meanwhile (sent, or deleted elsewhere): nothing is left to take,
       // and the notice goes at once. A draft written elsewhere meanwhile is
       // not judged here; the delete is refused for it when the window ends.

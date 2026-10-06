@@ -96,7 +96,7 @@ describe('draft service', () => {
     expect(next.payload.draft.revision).toBe(3)
   })
 
-  it('deletes on a matching revision, refuses on a later one, and deletes regardless with none', () => {
+  it('deletes on a matching revision, refuses on any other, and deletes regardless with none', () => {
     const { call } = setup()
     const target: DraftTarget = { type: 'new_session', workspaceId: 'ws', sessionId: 'minted' }
     const save = (draftId: string, baseRevision: number, text: string) =>
@@ -136,6 +136,22 @@ describe('draft service', () => {
       revision: theirs.revision,
       content: { text: 'theirs, written since' },
     })
+
+    // A revision above the draft's (an answer about the draft before it was
+    // deleted and written anew under a pruned tombstone): refused too, as
+    // only the exact revision is the draft the discard was made on.
+    const low = save('anew', 0, 'written anew')
+    const stale = call('draft.delete', {
+      draftId: 'anew',
+      baseRevision: low.revision,
+      ifRevision: low.revision + 99,
+    })
+    expect(stale.type).toBe('error')
+    expect(stale.error).toMatchObject({
+      code: 'conflict',
+      details: { draftId: 'anew', revision: low.revision, changed: true },
+    })
+    expect(live()).toContain('anew')
 
     // No revision named: today's unconditional delete, which a clear and a
     // send rely on, whatever was written since.

@@ -71,12 +71,34 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
   // The revision the environment answered this client's latest write of a
   // draft with. Answers only, never announcements: what a conditional delete
   // may name as this client's own. Bounded; one forgotten only makes a
-  // discard ask for an older revision, which the environment refuses.
+  // discard name an older revision, which the environment refuses.
   const answered = new Map<string, number>()
+  // Drafts a discard is waiting on (its undo window, then its delete): their
+  // answers are never evicted, or the discard would be refused for nothing.
+  const pinned = new Map<string, number>()
+  const isPinned = (draftId: string) =>
+    pinned.has(draftId) || store.getState().draftEdits[draftId]?.deleteIf !== undefined
   const answer = (draftId: string, revision: number) => {
+    const best = Math.max(revision, answered.get(draftId) ?? 0)
     answered.delete(draftId)
-    answered.set(draftId, Math.max(revision, answered.get(draftId) ?? 0))
-    if (answered.size > ANSWERED_KEPT) answered.delete(answered.keys().next().value!)
+    answered.set(draftId, best)
+    // The least recently answered unpinned drafts go first; pinned ones may
+    // hold the map past its size, by as many as are waiting.
+    for (const key of answered.keys()) {
+      if (answered.size <= ANSWERED_KEPT) break
+      if (key !== draftId && !isPinned(key)) answered.delete(key)
+    }
+  }
+  // An answer is about the draft as it was: once that draft is deleted, or
+  // the environment lists it at an earlier revision (its tombstone pruned and
+  // the draft written anew), the answer names nothing of this client's.
+  const forgetStaleAnswers = () => {
+    if (answered.size === 0) return
+    const { drafts } = store.getState()
+    for (const [draftId, revision] of answered) {
+      const draft = drafts[draftId]
+      if (!draft || draft.revision < revision) answered.delete(draftId)
+    }
   }
   // Drafts whose delete this client has sent and not yet seen answered.
   const deleting = new Set<string>()
@@ -314,7 +336,10 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
     if (!state.draftsListed) list()
     else if (reconnected) flush()
   }
-  const unsubscribe = store.subscribe(check)
+  const unsubscribe = store.subscribe(() => {
+    forgetStaleAnswers()
+    check()
+  })
   // A store handed over already connected changes nothing to notice.
   queueMicrotask(check)
 
@@ -412,6 +437,18 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
     },
 
     flush,
+
+    pinAnswer(draftId: string) {
+      pinned.set(draftId, (pinned.get(draftId) ?? 0) + 1)
+      let held = true
+      return () => {
+        if (!held) return
+        held = false
+        const count = (pinned.get(draftId) ?? 1) - 1
+        if (count > 0) pinned.set(draftId, count)
+        else pinned.delete(draftId)
+      }
+    },
 
     dispose() {
       disposed = true

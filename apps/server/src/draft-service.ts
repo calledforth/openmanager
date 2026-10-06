@@ -281,9 +281,11 @@ export function createDraftService(options: DraftServiceOptions) {
         revision: row.deleted_revision,
       })
     }
-    if (ifRevision !== undefined && row && row.revision > ifRevision) {
-      // A conditional delete (a discard) of the draft as it was: another
-      // client has written it since, and that text is not this one's to take.
+    if (ifRevision !== undefined && row && row.revision !== ifRevision) {
+      // A conditional delete (a discard) of the draft as it was at exactly
+      // that revision. Another revision is another draft as far as this
+      // client knows: written since, or deleted and written anew under a
+      // pruned tombstone (a lower revision). Neither is this client's to take.
       return errorResult(command.requestId, 'conflict', DRAFT_CHANGED_MESSAGE, {
         draftId,
         revision: row.revision,

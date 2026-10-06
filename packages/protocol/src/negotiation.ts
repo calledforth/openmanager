@@ -47,9 +47,9 @@ import {
 // `client.list.changed` event), and a revoked client's socket now closes with
 // 4401 `revoked`, which a client must treat as terminal rather than redial.
 // Version 15 adds `ifRevision` to `draft.delete`: a conditional delete,
-// refused as a `conflict` with `DraftChangedDetails` when the draft has a later
-// revision. The payload is strict, so a v14 environment would refuse every
-// discard that names it.
+// refused as a `conflict` with `DraftChangedDetails` unless the draft is at
+// exactly that revision. The payload is strict, so a v14 environment would
+// refuse every discard that names it.
 export const PROTOCOL_VERSION = 15 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)

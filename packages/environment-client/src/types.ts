@@ -613,6 +613,13 @@ export interface DraftSync {
    */
   discard(draftId: string, options?: { ifRevision?: number }): void
   /**
+   * Keep what this client knows of its own writes of the draft (the revision
+   * its latest save was answered with) until the returned release, for a
+   * discard waiting out its undo window: a busy sync must not forget it and
+   * have the discard refused. The delete itself keeps it until it is answered.
+   */
+  pinAnswer(draftId: string): () => void
+  /**
    * Hold the draft's saves while a `session.create` sends it. `sent` is what
    * the send carries, when the composer has already emptied the draft;
    * readers (the sidebar's card) show it instead of the emptied content.

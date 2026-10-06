@@ -726,8 +726,8 @@ export function createMockEnvironmentClient(
         revision: row.deletedRevision,
       })
     }
-    // A conditional delete of the draft as it was, written since: refused.
-    if (row && ifRevision !== undefined && row.revision > ifRevision) {
+    // A conditional delete of the draft as it was at exactly that revision.
+    if (row && ifRevision !== undefined && row.revision !== ifRevision) {
       throw new EnvironmentClientError('conflict', DRAFT_CHANGED_MESSAGE, {
         draftId,
         revision: row.revision,
