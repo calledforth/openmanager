@@ -170,6 +170,56 @@ save that moved the draft.
 A session draft is cleared, not consumed: sending empties the composer, and
 the emptied draft is deleted like any other.
 
+## Images
+
+A draft's images are kept with it, like its text: they survive a reload,
+follow the draft to another project, and show on every device. The
+environment decides how long an image lives, from the drafts table, in the
+same synchronous step as the write that changes it. No client releases an
+image.
+
+- **Upload on attach.** The composer uploads an image the moment it is
+  attached, then names it in the draft's `artifactIds` (in attach order). Send
+  waits until every image has landed. A new-session draft's image is uploaded
+  for the draft's project and held there (no session yet). A session draft's
+  image is uploaded for the session and is the session's from the start, like
+  anything sent in it.
+- **Lifetime.** A held image no launch claimed expires after a day
+  (`HELD_UPLOAD_TTL_MS`), unless a saved draft names it. The held-upload
+  sweep skips any image a live draft names, so an image lives exactly as long
+  as some draft wants it. An image taken out of a draft is not freed on the
+  spot: it is simply no longer named, and expires.
+- **Project move.** Saving a new-session draft with another project moves its
+  held images to that project, in the save's own transaction (the
+  `draft.saved` projection). An image a session has taken never moves.
+- **Project removal.** Removing a project keeps the held images a draft
+  names. `attachments.workspace_id` is nullable and `SET NULL` on removal
+  (migration 19, which rebuilds the table). A session's images still go with
+  the session. A held image nothing names expires as usual.
+- **Sending** claims the images as before, all or none. The client that
+  uploaded an image may claim it, and so may any client sending the draft
+  that names it: the draft's images are read before the send deletes it.
+  Claiming moves an image to the session's project, because a draft can be
+  sent from the project it was just moved to before the save that moved it
+  lands. A rolled-back launch hands its images back before the session is
+  deleted, and the draft it restores names them again.
+- **Discarding** frees the draft's held images in the `draft.delete` that
+  deletes it, once its tombstone is written: what the undo window ends with.
+  An image another live draft names, or a session took, stays. A refused
+  delete (a conditional discard of a draft written since, or one from before
+  a deletion) frees nothing. A send's deletion frees nothing either: its
+  session claims the images.
+- **Reading back.** A device that did not upload an image reads it through the
+  draft, at `GET /draft-artifacts/<draft-id>/<artifact-id>`. It answers only
+  while that draft names the image, to a client with `read`, like
+  `draft.list`. A session draft's images use the session's route. Bytes are
+  never cached by the browser (`no-store`); the client keeps its own object
+  URLs, and the composer shows its own preview of what it uploaded.
+- **Protocol v16.** A v15 environment has no read route, refuses another
+  device's images at launch, and expires a draft's images after a day.
+- **Hosts without kept drafts** (desktop, the localStorage fallback) keep
+  images in the composer and upload them when sent, as before.
+
 ## The client
 
 `EnvironmentState` holds:
@@ -228,9 +278,9 @@ the emptied draft is deleted like any other.
   draft over `DRAFT_SAVE_MAX_BYTES` encoded is kept on the device that has it,
   and saved once it is short enough again.
 
-`ComposerDraftStore` is the composer's view of this: synchronous text by draft
-key (`session:<id>`, or `new:<draftId>` for a new-session draft), so a
-restored draft is on screen at first paint. The key is the draft's id, not its
+`ComposerDraftStore` is the composer's view of this: synchronous text and
+images by draft key (`session:<id>`, or `new:<draftId>` for a new-session
+draft), so a restored draft is on screen at first paint. The key is the draft's id, not its
 project, so moving a draft keeps what the composer holds for it. Hosts without
 an environment that keeps drafts fall back to localStorage and one draft per
 project (`draft:<workspaceId>`), with no draft pages. On first connect, old
@@ -303,9 +353,9 @@ localStorage fallback) `useSidebarDrafts` is null and nothing shows.
   the Settle of the session below the last draft. Until the pointer moves
   away (more than 4 px, or 1.5 s pass, for touch), every card's action is
   hidden and a pointer click on one at the same spot is ignored. Keypresses
-  are never held back. The one place a discard is
-  let go (`releaseDraft` in `environment-sidebar-drafts.tsx`) is where images
-  kept with a draft (CAL-215) are to be released.
+  are never held back. A discard is let go in one place (`releaseDraft` in
+  `environment-sidebar-drafts.tsx`). Its images go with the draft, freed by
+  the environment in the delete itself (see "Images").
 - **A discard is of what the user saw, and the environment judges it.** The
   delete a discard sends is conditional (`draft.delete` with `ifRevision`,
   protocol v15): it names the revision the discard was made on, raised by the
@@ -387,9 +437,8 @@ only when a card's content or a draft's has-text fact does.
 
 ## Not yet
 
-- Images still upload at send time and are not kept with a draft (CAL-215).
-  `artifactIds` is already part of the content, and a card already counts
-  them.
+- An image taken out of a session's draft stays with the session until the
+  session is deleted: nothing frees a session's own unsent uploads yet.
 - A draft's address leads to its session only when this browser sent it, or
   had its page open when another device did. Otherwise its old address opens
   a blank page.
