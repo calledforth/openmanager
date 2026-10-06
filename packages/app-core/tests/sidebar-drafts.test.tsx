@@ -786,6 +786,23 @@ describe('review regressions', () => {
     expect(probe.drafts!.pendingDiscard?.draftId).toBe(idOf(client, 'second idea'))
   })
 
+  it('lets a replaced notice act on nothing', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await parkThree(client)
+    await discard('third idea')
+    const first = probe.drafts!.pendingDiscard!
+    await discard('second idea')
+    const second = probe.drafts!.pendingDiscard!
+    // The first notice's Undo, Dismiss and hold, reached mid-fade.
+    act(() => probe.drafts!.undoDiscard(first.key))
+    act(() => probe.drafts!.confirmDiscard(first.key))
+    act(() => probe.drafts!.holdDiscard(true, first.key))
+    expect(probe.drafts!.pendingDiscard).toBe(second)
+    expect(draftCards()).toEqual(['first idea'])
+    act(() => probe.drafts!.undoDiscard(second.key))
+    expect(draftCards()).toEqual(['second idea', 'first idea'])
+  })
+
   it('still deletes a draft whose own last keystrokes are saved during the window', async () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     await parkThree(client)

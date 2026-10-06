@@ -289,9 +289,11 @@ localStorage fallback) `useSidebarDrafts` is null and nothing shows.
   address: Back returns to the draft, and returning to it before the
   deletion cancels it.
 - **A double click discards one draft.** After a pointer discard the next
-  card slides up under the pointer, ✕ showing. Until the pointer moves away
-  (more than 4 px, or 1.5 s pass, for touch), ✕ is hidden on every card and a
-  click on the same spot is ignored. Keyboard discards are never held back. The one place a discard is
+  card slides up under the pointer, its action showing: another draft's ✕, or
+  the Settle of the session below the last draft. Until the pointer moves
+  away (more than 4 px, or 1.5 s pass, for touch), every card's action is
+  hidden and a pointer click on one at the same spot is ignored. Keypresses
+  are never held back. The one place a discard is
   let go (`releaseDraft` in `environment-sidebar-drafts.tsx`) is where images
   kept with a draft (CAL-215) are to be released.
 - **A discard is of what the user saw, and goes by who wrote what.** It keeps
@@ -331,6 +333,13 @@ localStorage fallback) `useSidebarDrafts` is null and nothing shows.
   screen's footer is the one to clear again. Its `role="status"` region is always mounted and the notice is
   swapped inside it, so each discard is announced. A discard made from the
   keyboard puts focus on Undo; one made with the pointer leaves focus alone.
+  On a phone that discard was made in the sidebar's sheet, a modal that
+  traps focus, so the sheet closes first and focus moves once it has let go.
+  Closing it is safe now the notice lives beside the sheet, and it is what a
+  tap on the notice does anyway; keeping focus in the sheet would leave Undo
+  out of the keyboard's reach. A notice replaced by the next discard plays
+  its way out inert (no pointer, focus or screen reader), and its actions
+  name its own discard's key, so a click mid-fade acts on nothing.
   Closed from inside with focus on it, focus goes to the card that came back
   (Undo), else to the card that was beside the discarded one, else to the
   card list; never to the page body.

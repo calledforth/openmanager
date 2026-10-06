@@ -14,7 +14,7 @@ import {
 import { createRoot, type Root } from 'react-dom/client'
 import { MotionGlobalConfig } from 'motion/react'
 import type { ProviderId } from '@agentpack/contract'
-import { SidebarProvider } from '../src/components/fluid/ui/sidebar'
+import { SidebarProvider, useSidebar } from '../src/components/fluid/ui/sidebar'
 import { WorkspaceSidebarView } from '../src/components/sidebar/WorkspaceSidebarView'
 import type { SidebarDraft, SidebarWorkspace } from '../src/components/sidebar/sidebar-sessions'
 import { ThemeProvider } from '../src/providers/theme-provider'
@@ -127,6 +127,13 @@ const WORKSPACE: SidebarWorkspace = {
       settledAt: '2026-10-01T11:00:00.000Z',
       hasUnsentDraft: true,
     },
+    {
+      externalId: 'ready-1',
+      title: 'Finished and waiting to be put away',
+      status: 'ready',
+      providerId: 'opencode' as ProviderId,
+      updatedAt: '2026-10-01T09:00:00.000Z',
+    },
   ],
 }
 const draft = (draftId: string, preview: string, extra: Partial<SidebarDraft> = {}) => ({
@@ -170,6 +177,7 @@ async function render(
     activeSessionId?: string | null
     activeDraftId?: string | null
     onDiscardDraft?: () => void
+    onSettleSession?: () => void
   } = {},
 ) {
   await act(() =>
@@ -182,6 +190,7 @@ async function render(
             activeSessionId={options.activeSessionId ?? null}
             onCreateSession={() => undefined}
             onSelectSession={() => undefined}
+            onSettleSession={options.onSettleSession}
             drafts={drafts}
             activeDraftId={options.activeDraftId ?? null}
             onOpenDraft={() => undefined}
@@ -254,6 +263,35 @@ describe('a draft card', () => {
     expect(card.firstElementChild!.className).toContain('pointer-coarse:pr-7')
     const label = [...card.querySelectorAll('span')].find((node) => node.textContent === 'Draft')!
     expect(label.className).not.toContain('pointer-coarse:opacity-0')
+  })
+})
+
+describe('the double-click guard', () => {
+  const click = (target: Element, detail: number, at: number) =>
+    act(() => {
+      target.dispatchEvent(
+        new MouseEvent('click', { bubbles: true, detail, clientX: at, clientY: 40 }),
+      )
+    })
+
+  it('keeps a double click on the last draft from settling the session that slides under it', async () => {
+    const onSettleSession = vi.fn()
+    await render([draft('d1', 'the last draft')], { onSettleSession })
+    const settle = container.querySelector('[aria-label="Settle"]')!
+    // Both cards' actions hide while the guard holds.
+    const guarded = '[:root[data-draft-discard-guard]_&]:opacity-0'
+    expect(settle.closest('.absolute')!.className).toContain(guarded)
+    expect(
+      container.querySelector('[aria-label="Discard draft"]')!.closest('.absolute')!.className,
+    ).toContain(guarded)
+
+    await click(container.querySelector('[aria-label="Discard draft"]')!, 1, 333)
+    // The second half of the double click lands on Settle: nothing settles.
+    await click(settle, 2, 333)
+    expect(onSettleSession).not.toHaveBeenCalled()
+    // A keypress is no double click: it still settles.
+    await click(settle, 0, 333)
+    expect(onSettleSession).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -341,6 +379,87 @@ describe('the undo notice', () => {
     await show(false, <Anchor name="composer" element={composer} />)
     expect(region().style.bottom).toBe(`${window.innerHeight - 600 + 8}px`)
     expect(region().style.left).toBe('300px')
+  })
+
+  it('closes the phone’s sidebar sheet before putting focus on Undo', async () => {
+    // A phone: the sidebar is a modal sheet that traps focus while it is open,
+    // and the notice sits outside it.
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query.includes('max-width'),
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+    }))
+    const seen: { sidebar?: ReturnType<typeof useSidebar> } = {}
+    function Capture() {
+      seen.sidebar = useSidebar()
+      return null
+    }
+    const mountToast = (pending: typeof PENDING | null) =>
+      act(() =>
+        root.render(
+          <ThemeProvider>
+            <SidebarProvider persist={false}>
+              <Capture />
+              <DraftDiscardToast
+                pending={pending}
+                onUndo={() => undefined}
+                onDismiss={() => undefined}
+                onHold={() => undefined}
+              />
+            </SidebarProvider>
+          </ThemeProvider>,
+        ),
+      )
+    await mountToast(null)
+    expect(seen.sidebar!.isMobile).toBe(true)
+    await act(() => seen.sidebar!.setOpenMobile(true))
+    await mountToast({ ...PENDING, fromKeyboard: true })
+    expect(seen.sidebar!.openMobile).toBe(false)
+    const undo = [...region().querySelectorAll('button')].find(
+      (node) => node.textContent === 'Undo',
+    )
+    expect(document.activeElement).toBe(undo)
+  })
+
+  it('leaves a replaced notice inert, still bound to its own discard', async () => {
+    // Let the exit play (jsdom never finishes it), as a real replacement does.
+    MotionGlobalConfig.skipAnimations = false
+    const onUndo = vi.fn()
+    const onDismiss = vi.fn()
+    const toast = (pending: typeof PENDING) =>
+      act(() =>
+        root.render(
+          <ThemeProvider>
+            <SidebarProvider persist={false}>
+              <DraftDiscardToast
+                pending={pending}
+                onUndo={onUndo}
+                onDismiss={onDismiss}
+                onHold={() => undefined}
+              />
+            </SidebarProvider>
+          </ThemeProvider>,
+        ),
+      )
+    await toast({ ...PENDING, draftId: 'a', key: 1 })
+    await toast({ ...PENDING, draftId: 'b', key: 2 })
+    const notices = [...region().children] as HTMLElement[]
+    expect(notices).toHaveLength(2)
+    const leaving = notices.find((notice) => notice.hasAttribute('inert'))!
+    expect(leaving).toBeDefined()
+    expect(leaving.getAttribute('aria-hidden')).toBe('true')
+    expect(leaving.className).toContain('pointer-events-none')
+    // Reached anyway (a click mid-fade): it names its own discard, not b's.
+    const undo = [...leaving.querySelectorAll('button')].find(
+      (node) => node.textContent === 'Undo',
+    )!
+    await act(() => undo.click())
+    await act(() => leaving.querySelector<HTMLButtonElement>('[aria-label="Dismiss"]')!.click())
+    expect(onUndo).toHaveBeenCalledWith(1)
+    expect(onDismiss).toHaveBeenCalledWith(1)
   })
 
   it('falls back to the footer still mounted when another one goes', async () => {

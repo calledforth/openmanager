@@ -168,12 +168,16 @@ export interface SidebarDraftsValue {
    */
   discardDraft: (draftId: string, options?: DraftDiscardOptions) => void
   pendingDiscard: PendingDraftDiscard | null
-  /** Bring the pending discard's card back; nothing was deleted. */
-  undoDiscard: () => void
-  /** Delete the pending discard's draft now. */
-  confirmDiscard: () => void
-  /** Pause the undo window while the user is reading or reaching for it. */
-  holdDiscard: (held: boolean) => void
+  /**
+   * Bring the pending discard's card back; nothing was deleted. Given the
+   * discard's `key`, does nothing once another discard has taken its place:
+   * a notice on its way out acts on its own discard or on none.
+   */
+  undoDiscard: (key?: number) => void
+  /** Delete the pending discard's draft now; `key` as for `undoDiscard`. */
+  confirmDiscard: (key?: number) => void
+  /** Pause the undo window while the user is reading or reaching for it; `key` as above. */
+  holdDiscard: (held: boolean, key?: number) => void
 }
 
 export const SidebarDraftsContext = createContext<SidebarDraftsValue | null>(null)

@@ -942,7 +942,12 @@ function SessionCardBody({
         <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5 opacity-0 transition-opacity duration-80 group-has-[:focus-visible]/card:opacity-100 group-hover/card:opacity-100 pointer-coarse:opacity-100 [:root[data-draft-discard-guard]_&]:opacity-0">
           <CardAction
             label="Settle"
-            onClick={() => onSettleSession(workspace.path, session.externalId, true)}
+            onClick={(event) => {
+              // The second half of a double click that discarded the draft
+              // above: this card slid up under it. A keypress still settles.
+              if (event.detail > 0 && onDiscardGuardedSpot(event)) return
+              onSettleSession(workspace.path, session.externalId, true)
+            }}
           >
             <CheckIcon />
           </CardAction>
@@ -962,22 +967,29 @@ interface MenuAnchor {
 }
 
 /**
- * After a discard by pointer the next card slides up under it, ✕ and all, so
- * a double click would discard that one too. Its ✕ is hidden, and a click on
- * it at the same spot ignored, until the pointer moves away (or a moment
- * passes, so a touch screen is not left waiting for a move that never comes).
- * The root carries the mark, for the cards' CSS.
+ * After a discard by pointer the next card slides up under it, ✕ (or a
+ * session's Settle) and all, so a double click would act on that one too.
+ * Every card's action is hidden, and a pointer click on one at the same spot
+ * ignored, until the pointer moves away (or a moment passes, so a touch
+ * screen is not left waiting for a move that never comes). Keypresses are
+ * never held back. The root carries the mark, for the cards' CSS.
  */
 const DISCARD_GUARD_ATTRIBUTE = 'data-draft-discard-guard'
 const DISCARD_GUARD_SLOP_PX = 4
 const DISCARD_GUARD_MS = 1_500
 let discardGuard: { x: number; y: number; release: () => void } | null = null
 
+const near = (point: { x: number; y: number }, x: number, y: number) =>
+  Math.abs(point.x - x) <= DISCARD_GUARD_SLOP_PX && Math.abs(point.y - y) <= DISCARD_GUARD_SLOP_PX
+
+/** Whether a pointer at this spot is where the last discard was, still guarded. */
+function onDiscardGuardedSpot(at: { clientX: number; clientY: number }): boolean {
+  return discardGuard !== null && near(discardGuard, at.clientX, at.clientY)
+}
+
 /** Whether a pointer discard at this spot may go ahead; if so, guards the spot. */
 function armDiscardGuard(at: { clientX: number; clientY: number }): boolean {
-  const near = (point: { x: number; y: number }, x: number, y: number) =>
-    Math.abs(point.x - x) <= DISCARD_GUARD_SLOP_PX && Math.abs(point.y - y) <= DISCARD_GUARD_SLOP_PX
-  if (discardGuard && near(discardGuard, at.clientX, at.clientY)) return false
+  if (onDiscardGuardedSpot(at)) return false
   discardGuard?.release()
   if (typeof document === 'undefined') return true
   const root = document.documentElement
@@ -1185,7 +1197,7 @@ function DraftCardBody({
         </button>
       </div>
       {discard ? (
-        <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5 opacity-0 transition-opacity duration-80 group-has-[:focus-visible]/card:opacity-100 group-hover/card:opacity-100 pointer-coarse:opacity-100">
+        <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5 opacity-0 transition-opacity duration-80 group-has-[:focus-visible]/card:opacity-100 group-hover/card:opacity-100 pointer-coarse:opacity-100 [:root[data-draft-discard-guard]_&]:opacity-0">
           <CardAction label="Discard draft" onClick={discard}>
             <XIcon />
           </CardAction>

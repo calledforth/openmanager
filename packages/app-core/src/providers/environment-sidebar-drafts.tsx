@@ -70,6 +70,15 @@ function discardStands(state: EnvironmentState, draftId: string, watched: Watche
   return saved !== undefined && saved.revision <= watched.revision
 }
 
+/**
+ * Whether an action names the discard waiting now. A notice on its way out
+ * names its own: once another has taken its place, what it asks for is not
+ * that one's to do. No key names whichever is waiting.
+ */
+function isCurrent(pending: PendingDraftDiscard | null, key: number | undefined) {
+  return pending !== null && (key === undefined || pending.key === key)
+}
+
 /** The open draft's card, as it was when the draft was opened. */
 interface FrozenCard {
   draftId: string | null
@@ -212,11 +221,21 @@ export function EnvironmentSidebarDraftsProvider({ children }: { children: React
     [client, navigation, settleDiscard, startClock],
   )
 
-  const undoDiscard = useCallback(() => settleDiscard(false), [settleDiscard])
-  const confirmDiscard = useCallback(() => settleDiscard(true), [settleDiscard])
+  const undoDiscard = useCallback(
+    (key?: number) => {
+      if (isCurrent(pendingRef.current, key)) settleDiscard(false)
+    },
+    [settleDiscard],
+  )
+  const confirmDiscard = useCallback(
+    (key?: number) => {
+      if (isCurrent(pendingRef.current, key)) settleDiscard(true)
+    },
+    [settleDiscard],
+  )
   const holdDiscard = useCallback(
-    (held: boolean) => {
-      if (!pendingRef.current) return
+    (held: boolean, key?: number) => {
+      if (!isCurrent(pendingRef.current, key)) return
       if (held) stopClock()
       else startClock()
     },
