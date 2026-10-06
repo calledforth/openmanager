@@ -81,6 +81,7 @@ import { createThreadService, type WorkspaceRuntimeResolver } from './thread-ser
 import {
   clearTunnelStatus,
   createTunnelSupervisor,
+  CLOUDFLARED_CONFIG_FILE_NAME,
   TUNNEL_STATUS_FILE_NAME,
   type TunnelSupervisor,
 } from './tunnel.ts'
@@ -707,6 +708,7 @@ export async function startServer(config: ServerConfig) {
       environmentId: identity.environmentId,
       log,
       statusFile: tunnelStatusFile,
+      configFile: join(config.dataDir, CLOUDFLARED_CONFIG_FILE_NAME),
     })
     tunnel.start()
   } else {

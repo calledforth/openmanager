@@ -28,6 +28,18 @@ import type { Logger } from './logger.ts'
 export const TUNNEL_TOKEN_FILE_NAME = 'tunnel-token'
 /** Where the server publishes the tunnel state for `service status` and the owner. */
 export const TUNNEL_STATUS_FILE_NAME = 'tunnel-status.json'
+/**
+ * The configuration file the connector is pointed at. Without one,
+ * cloudflared reads `~/.cloudflared/config.yml` when it exists, and a
+ * leftover `url:` or `loglevel:` there would apply to this tunnel too.
+ */
+export const CLOUDFLARED_CONFIG_FILE_NAME = 'cloudflared.yml'
+// cloudflared logs an error for a file with no settings, so it holds one
+// the command line already sets.
+const CLOUDFLARED_CONFIG_TEXT =
+  '# Written by the OpenManager environment server, which runs this tunnel.\n' +
+  '# Settings come from its command line and the Cloudflare dashboard.\n' +
+  'no-autoupdate: true\n'
 /** The longest token accepted. Real tokens are a few hundred characters. */
 export const TUNNEL_TOKEN_MAX_LENGTH = 4096
 
@@ -62,13 +74,32 @@ export type TunnelState =
   | 'token_missing'
   | 'stopped'
 
+/** Why the tunnel is in its state. docs/cloudflare-tunnel.md explains each. */
+export type TunnelReason =
+  // The connector
+  | 'token_invalid'
+  | 'tunnel_rejected'
+  | 'token_malformed'
+  | 'exited'
+  | 'spawn_failed'
+  | 'reconnecting'
+  | 'unready'
+  | 'start_timeout'
+  | 'resumed_stale'
+  // The hostname check
+  | 'other_environment'
+  | 'tunnel_unreachable'
+  | 'not_openmanager'
+  | 'unreachable'
+  | `http_${number}`
+
 export interface TunnelStatus {
   state: TunnelState
   hostname: string
   /** `https://<hostname>`, only once the self-check has passed. */
   route?: string
   /** Machine-readable detail for the state, when there is one. */
-  reason?: string
+  reason?: TunnelReason
   /** When the state last changed. */
   since: string
   /** Connector restarts since the server started. */
@@ -102,6 +133,8 @@ export interface TunnelTiming {
   selfCheckIntervalMs: number
   /** How long a stopping connector gets before it is killed. */
   stopTimeoutMs: number
+  /** At most one connector error line per this long is logged above `debug`. */
+  errorLogIntervalMs: number
 }
 
 export const DEFAULT_TUNNEL_TIMING: TunnelTiming = Object.freeze({
@@ -118,7 +151,11 @@ export const DEFAULT_TUNNEL_TIMING: TunnelTiming = Object.freeze({
   selfCheckRetryMaxMs: 300_000,
   selfCheckIntervalMs: 600_000,
   stopTimeoutMs: 5_000,
+  errorLogIntervalMs: 60_000,
 })
+
+/** Failed `/ready` probes in a row before a connected connector counts as down. */
+const UNREADY_PROBES = 2
 
 type Spawn = (
   file: string,
@@ -134,6 +171,8 @@ export interface TunnelSupervisorOptions {
   log: Logger
   /** Where to publish the status; omitted, nothing is written. */
   statusFile?: string
+  /** The server-owned configuration file the connector is pointed at. */
+  configFile?: string
   /** Environment the connector's own is built from. Defaults to `process.env`. */
   env?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
@@ -152,18 +191,21 @@ export interface TunnelSupervisorOptions {
  * port 0 picks a free loopback port, which the connector logs and the
  * supervisor reads `/ready` from.
  */
-export const CLOUDFLARED_ARGS = Object.freeze([
-  'tunnel',
-  '--no-autoupdate',
-  '--output',
-  'json',
-  '--loglevel',
-  'info',
-  '--metrics',
-  '127.0.0.1:0',
-  '--management-diagnostics=false',
-  'run',
-])
+export function cloudflaredArgs(configFile?: string): string[] {
+  return [
+    'tunnel',
+    ...(configFile ? ['--config', configFile] : []),
+    '--no-autoupdate',
+    '--output',
+    'json',
+    '--loglevel',
+    'info',
+    '--metrics',
+    '127.0.0.1:0',
+    '--management-diagnostics=false',
+    'run',
+  ]
+}
 
 /** A tunnel hostname: a lowercase DNS name with at least two labels, not an IP address. */
 export function validateTunnelHostname(value: string): string {
@@ -208,7 +250,14 @@ export function locateCloudflared(
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform = process.platform,
 ): string | undefined {
-  if (explicit !== undefined) return isExecutableFile(explicit, platform) ? explicit : undefined
+  if (explicit !== undefined) {
+    if (isExecutableFile(explicit, platform)) return explicit
+    // `--cloudflared C:\tools\cloudflared` names `cloudflared.exe` on Windows.
+    const withExe = `${explicit}.exe`
+    return platform === 'win32' && !/\.exe$/i.test(explicit) && isExecutableFile(withExe, platform)
+      ? withExe
+      : undefined
+  }
   // Windows spells it `Path`; the lookup must not depend on the casing.
   const pathKey = Object.keys(env).find((key) => key.toUpperCase() === 'PATH')
   const directories = (pathKey ? env[pathKey] : undefined)?.split(delimiter) ?? []
@@ -221,33 +270,72 @@ export function locateCloudflared(
   return undefined
 }
 
-/** The token from the environment variable, else from the token file; `undefined` when neither has one. */
-export function readTunnelToken(config: TunnelConfig): string | undefined {
-  if (config.token !== undefined) return config.token
+/**
+ * The token from the environment variable, else from the token file. A file
+ * that exists but holds no usable token is told apart from a missing one.
+ */
+export function readTunnelToken(
+  config: TunnelConfig,
+): { token: string } | { problem: 'missing' | 'malformed' } {
+  if (config.token !== undefined) return { token: config.token }
+  let text: string
   try {
-    return validateTunnelToken(readFileSync(config.tokenFile, 'utf8'))
+    text = readFileSync(config.tokenFile, 'utf8')
   } catch {
-    return undefined
+    return { problem: 'missing' }
+  }
+  try {
+    return { token: validateTunnelToken(text) }
+  } catch {
+    return { problem: 'malformed' }
   }
 }
 
 /**
- * The connector's environment: ours, minus anything that could change how
- * cloudflared runs (every `TUNNEL_*` variable is one of its settings) or that
- * it has no business seeing (`OPENMANAGER_*`), plus the token.
+ * Variables the connector may inherit: what a program needs to find its home
+ * and temporary folders, reach the network through a proxy and trust its
+ * certificates. Nothing else of the server's environment, which holds
+ * provider keys, reaches it; no `TUNNEL_*` setting can redirect it.
  */
+const CONNECTOR_ENV = new Set([
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'USERNAME',
+  'USERPROFILE',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'PROGRAMDATA',
+  'SYSTEMROOT',
+  'SYSTEMDRIVE',
+  'WINDIR',
+  'COMSPEC',
+  'PATHEXT',
+  'COMPUTERNAME',
+  'TEMP',
+  'TMP',
+  'TMPDIR',
+  'LANG',
+  'TZ',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+])
+
 export function cloudflaredEnvironment(base: NodeJS.ProcessEnv, token: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
   for (const [key, value] of Object.entries(base)) {
     if (value === undefined) continue
     const upper = key.toUpperCase()
-    if (
-      upper.startsWith('TUNNEL_') ||
-      upper.startsWith('OPENMANAGER_') ||
-      upper === 'NO_AUTOUPDATE'
-    )
-      continue
-    env[key] = value
+    if (CONNECTOR_ENV.has(upper) || upper.startsWith('LC_') || upper.startsWith('XDG_')) {
+      env[key] = value
+    }
   }
   env.TUNNEL_TOKEN = token
   return env
@@ -279,7 +367,7 @@ export function ingressIsShared(config: unknown, port: number): boolean | undefi
   })
 }
 
-type SelfCheck = { ok: true } | { ok: false; reason: string }
+type SelfCheck = { ok: true } | { ok: false; reason: TunnelReason }
 
 export type TunnelSupervisor = ReturnType<typeof createTunnelSupervisor>
 
@@ -307,22 +395,29 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
   let metrics: string | undefined
   let ready = false
   let everReady = false
+  let failedProbes = 0
   let spawnedAt = 0
   let readySince: number | undefined
   let unreadySince: number | undefined
   /** Why the connector is down or not connecting, from its own log or exit. */
-  let connectorReason: string | undefined
-  let blocked: 'binary_missing' | 'token_missing' | undefined
+  let connectorReason: TunnelReason | undefined
+  let blocked: { state: 'binary_missing' | 'token_missing'; reason?: TunnelReason } | undefined
   let selfCheck: SelfCheck | undefined
-  let selfCheckRunning = false
+  /** The connector a self-check in flight was started for. */
+  let checkingFor: ChildProcess | undefined
   let selfCheckFailures = 0
   let sharedIngress: boolean | undefined
   let crashes = 0
   let lastTick = now()
   let probing = false
-  let restartReason: string | undefined
-  /** Set when the machine woke: a failed self-check then restarts the connector once. */
-  let resumed = false
+  let restartReason: TunnelReason | undefined
+  /**
+   * When the machine last woke. The first hostname check started after it
+   * decides whether the connector is stale; a check begun before it says
+   * nothing about now.
+   */
+  let resumedAt: number | undefined
+  let lastErrorLogAt = Number.NEGATIVE_INFINITY
 
   let tick: ReturnType<typeof setInterval> | undefined
   let restartTimer: ReturnType<typeof setTimeout> | undefined
@@ -339,7 +434,6 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
       hostname,
       restarts: status.restarts,
       since: changed ? new Date(now()).toISOString() : status.since,
-      ...(next.sharedIngress !== undefined ? { sharedIngress: next.sharedIngress } : {}),
     }
     if (changed) {
       const healthy = ['starting', 'checking', 'connected', 'stopped'].includes(status.state)
@@ -357,7 +451,7 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
   function writeStatus(): void {
     const file = options.statusFile
     if (!file) return
-    const text = `${JSON.stringify({ ...status, serverPid: process.pid }, null, 2)}\n`
+    const text = `${JSON.stringify(status, null, 2)}\n`
     // Every probe refreshes the status; only a different one is written.
     if (text === written) return
     written = text
@@ -378,7 +472,13 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
   function refresh(): void {
     if (stopping) return publish({ state: 'stopped' })
     const shared = sharedIngress !== undefined ? { sharedIngress } : {}
-    if (blocked) return publish({ state: blocked, ...shared })
+    if (blocked) {
+      return publish({
+        state: blocked.state,
+        ...(blocked.reason ? { reason: blocked.reason } : {}),
+        ...shared,
+      })
+    }
     if (!child) return publish({ state: 'down', reason: connectorReason ?? 'exited', ...shared })
     if (!ready) {
       return everReady
@@ -407,13 +507,37 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
     restartTimer.unref?.()
   }
 
+  /** The `--config` to pass, written fresh each start; none when it cannot be written. */
+  function connectorConfig(): string | undefined {
+    const file = options.configFile
+    if (!file) return undefined
+    try {
+      writeFileSync(file, CLOUDFLARED_CONFIG_TEXT)
+      return file
+    } catch (error) {
+      log('warn', 'The cloudflared configuration file could not be written.', {
+        file,
+        reason: error instanceof Error ? error.message : String(error),
+      })
+      return undefined
+    }
+  }
+
   function startConnector(): void {
     restartTimer = undefined
     if (stopping || child) return
     const binary = locateCloudflared(config.cloudflared, options.env ?? process.env, platform)
-    token = readTunnelToken(config)
+    const read = readTunnelToken(config)
+    token = 'token' in read ? read.token : undefined
     blocked =
-      binary === undefined ? 'binary_missing' : token === undefined ? 'token_missing' : undefined
+      binary === undefined
+        ? { state: 'binary_missing' }
+        : 'problem' in read
+          ? {
+              state: 'token_missing',
+              ...(read.problem === 'malformed' ? { reason: 'token_malformed' as const } : {}),
+            }
+          : undefined
     if (blocked || binary === undefined || token === undefined) {
       refresh()
       // Installing the binary or saving the token later recovers without a restart.
@@ -422,6 +546,7 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
     metrics = undefined
     ready = false
     everReady = false
+    failedProbes = 0
     readySince = undefined
     unreadySince = undefined
     connectorReason = undefined
@@ -430,7 +555,7 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
     spawnedAt = now()
     let process_: ChildProcess
     try {
-      process_ = spawn(binary, CLOUDFLARED_ARGS, {
+      process_ = spawn(binary, cloudflaredArgs(connectorConfig()), {
         env: cloudflaredEnvironment(options.env ?? process.env, token),
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
@@ -457,14 +582,15 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
       metrics = undefined
       if (stopping) return
       if (error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
-        blocked = 'binary_missing'
+        blocked = { state: 'binary_missing' }
         refresh()
         return scheduleStart(timing.restartMaxMs)
       }
       const forced = restartReason
       restartReason = undefined
-      if (!forced && connectorReason === undefined) connectorReason = 'exited'
       if (forced) connectorReason = forced
+      else if (error) connectorReason = 'spawn_failed'
+      else connectorReason ??= 'exited'
       // A connector that stayed connected for a while earns a fresh backoff.
       if (readySince !== undefined && now() - readySince >= timing.stableMs) crashes = 0
       log(forced ? 'info' : 'warn', forced ? 'cloudflared restarting.' : 'cloudflared exited.', {
@@ -479,7 +605,12 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
       refresh()
       scheduleStart(delay)
     }
-    process_.once('error', (error) => onGone(null, null, error))
+    process_.once('error', (error) => {
+      // After a successful start, `error` means a signal could not be
+      // delivered; the process lives on and `close` still reports its end.
+      if (process_.pid === undefined) onGone(null, null, error)
+      else log('warn', 'cloudflared could not be signalled.', { reason: redact(error.message) })
+    })
     // `close`, not `exit`: the last log lines, which say why it stopped, are
     // read by then.
     process_.once('close', (code, signal) => onGone(code, signal))
@@ -491,14 +622,26 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
     if (line.trim().length === 0) return
     let message = line
     let errorText = ''
+    let level = ''
     try {
-      const record = JSON.parse(line) as { message?: unknown; error?: unknown }
+      const record = JSON.parse(line) as { message?: unknown; error?: unknown; level?: unknown }
       if (typeof record.message === 'string') message = record.message
       if (typeof record.error === 'string') errorText = record.error
+      if (typeof record.level === 'string') level = record.level
     } catch {
       /* Not every line is JSON: argument errors are printed plainly. */
     }
-    log('debug', 'cloudflared', { line })
+    // Connector errors say why a tunnel does not come up; one a minute is
+    // enough to tell, and a long outage does not flood the log.
+    if (
+      (level === 'error' || level === 'fatal') &&
+      now() - lastErrorLogAt >= timing.errorLogIntervalMs
+    ) {
+      lastErrorLogAt = now()
+      log('warn', 'cloudflared reported an error.', { line })
+    } else {
+      log('debug', 'cloudflared', { line })
+    }
     const address = /Starting metrics server on (127\.0\.0\.1:\d+)\/metrics/.exec(message)?.[1]
     if (address) {
       metrics = address
@@ -506,6 +649,9 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
     } else if (message.includes('Registered tunnel connection')) {
       if (connectorReason === 'tunnel_rejected') connectorReason = undefined
       void probe()
+    } else if (message.includes('Updated to new configuration')) {
+      // The dashboard changed what the tunnel routes.
+      if (child && metrics) void readIngress(child, metrics)
     } else if (/token is not valid/i.test(message)) {
       connectorReason = 'token_invalid'
       refresh()
@@ -550,8 +696,9 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
     }
     if (target !== child || stopping) return
     const wasReady = ready
-    ready = isReady
     if (isReady) {
+      failedProbes = 0
+      ready = true
       unreadySince = undefined
       if (!wasReady) {
         everReady = true
@@ -564,8 +711,14 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
         runSelfCheckSoon(0)
       }
     } else {
+      failedProbes += 1
+      // One slow answer from a busy machine is not an outage.
+      if (wasReady && failedProbes < UNREADY_PROBES) return
+      ready = false
       readySince = undefined
       unreadySince ??= now()
+      // Whatever the wake-up check would have said, the connector says first.
+      resumedAt = undefined
     }
     refresh()
   }
@@ -619,27 +772,36 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
   }
 
   async function runSelfCheck(): Promise<void> {
-    if (selfCheckRunning || stopping || !child || !ready) return
-    selfCheckRunning = true
+    if (checkingFor !== undefined || stopping || !child || !ready) return
     const target = child
+    checkingFor = target
+    const startedAt = now()
     let result: SelfCheck
     try {
       result = await checkHostname()
     } finally {
-      selfCheckRunning = false
+      checkingFor = undefined
     }
-    if (stopping || target !== child) return
+    if (stopping) return
+    // A check for a connector since replaced, or begun before the machine
+    // slept, says nothing about now. The one that was skipped meanwhile runs.
+    if (target !== child || (resumedAt !== undefined && startedAt < resumedAt)) {
+      if (child && ready) runSelfCheckSoon(0)
+      return
+    }
     selfCheck = result
-    const wokeUp = resumed
-    resumed = false
+    const afterWake = resumedAt !== undefined
+    if (result.ok || result.reason !== 'unreachable') resumedAt = undefined
     if (result.ok) {
       selfCheckFailures = 0
       runSelfCheckSoon(timing.selfCheckIntervalMs)
+      // The dashboard can change what the tunnel routes at any time.
+      if (metrics) void readIngress(target, metrics)
     } else {
       // A connector that says it is connected right after a sleep can hold
-      // connections the edge has already dropped. One fresh start settles it;
-      // a hostname that leads elsewhere is the dashboard's doing, not stale.
-      if (wokeUp && result.reason !== 'other_environment' && result.reason !== 'not_openmanager') {
+      // connections the edge has already dropped: Cloudflare answers 530.
+      // One fresh start settles it. Anything else is retried as usual.
+      if (afterWake && result.reason === 'tunnel_unreachable') {
         refresh()
         return restartConnector('resumed_stale')
       }
@@ -654,7 +816,7 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
     refresh()
   }
 
-  function restartConnector(reason: string): void {
+  function restartConnector(reason: TunnelReason): void {
     const running = child
     if (!running || stopping || restartReason !== undefined) return
     restartReason = reason
@@ -678,11 +840,13 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
         sleptMs: late,
       })
       if (child) {
-        resumed = true
         // Restart deadlines counted from before the sleep; measure from now.
         spawnedAt = current
         if (!ready) unreadySince = current
-        else runSelfCheckSoon(0)
+        else {
+          resumedAt = current
+          runSelfCheckSoon(0)
+        }
         void probe()
       } else {
         // A restart that was waiting out its backoff, or a missing binary or
@@ -724,12 +888,25 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
       clearTimeout(selfCheckTimer)
       const running = child
       if (running && running.exitCode === null && running.signalCode === null) {
-        const exited = new Promise<void>((resolve) => running.once('exit', () => resolve()))
-        running.kill()
-        const timer = setTimeout(() => running.kill('SIGKILL'), timing.stopTimeoutMs)
-        timer.unref?.()
-        await exited
-        clearTimeout(timer)
+        await new Promise<void>((resolve) => {
+          // A start that failed reports `error` and never `exit`; a connector
+          // that will not die still lets shutdown finish.
+          const done = () => {
+            clearTimeout(kill)
+            clearTimeout(giveUp)
+            resolve()
+          }
+          running.once('exit', done)
+          running.once('close', done)
+          running.once('error', () => {
+            if (running.pid === undefined) done()
+          })
+          running.kill()
+          const kill = setTimeout(() => running.kill('SIGKILL'), timing.stopTimeoutMs)
+          const giveUp = setTimeout(done, timing.stopTimeoutMs * 2)
+          kill.unref?.()
+          giveUp.unref?.()
+        })
       }
       child = undefined
       refresh()

@@ -49,21 +49,33 @@ enough) and the `cloudflared` binary.
    - Route only the environment server through this tunnel. The dashboard can
      add more hostnames or services; the server cannot stop that, but it
      notices and says so (see `sharedIngress` below).
-4. **Give the server the token and hostname.** Either for one run:
+4. **Give the server the token and hostname.** Read the token in without
+   echoing it, so it does not land in your shell history:
 
    ```sh
-   # PowerShell: $env:OPENMANAGER_TUNNEL_TOKEN = '<token>'
-   export OPENMANAGER_TUNNEL_TOKEN='<token>'
+   # bash or zsh
+   read -rs OPENMANAGER_TUNNEL_TOKEN && export OPENMANAGER_TUNNEL_TOKEN
+   # PowerShell (5.1 and 7)
+   $env:OPENMANAGER_TUNNEL_TOKEN = [Net.NetworkCredential]::new('', (Read-Host -AsSecureString 'Tunnel token')).Password
+   ```
+
+   Then either run the server once:
+
+   ```sh
    node apps/server/dist/main.js --tunnel-hostname om.example.com
    ```
 
-   or for the background service, which saves the token in the data
+   or install the background service, which saves the token in the data
    directory and remembers the rest:
 
    ```sh
-   export OPENMANAGER_TUNNEL_TOKEN='<token>'
    node apps/server/dist/main.js service install --tunnel-hostname om.example.com
    ```
+
+   You can also paste the token into `<data-dir>/tunnel-token` with an editor
+   (by default `~/.openmanager/tunnel-token`, or
+   `%USERPROFILE%\.openmanager\tunnel-token` on Windows) and leave the
+   variable unset.
 
 5. **Check it.** `service status` (or the log) should reach
    `Tunnel: https://om.example.com (connected ...)` within a few seconds of
@@ -101,53 +113,73 @@ server the new one.
 The server starts the connector once it is listening:
 
 ```
-cloudflared tunnel --no-autoupdate --output json --loglevel info
-  --metrics 127.0.0.1:0 --management-diagnostics=false run
+cloudflared tunnel --config <data-dir>/cloudflared.yml --no-autoupdate
+  --output json --loglevel info --metrics 127.0.0.1:0
+  --management-diagnostics=false run
 ```
 
-with the token in the child's `TUNNEL_TOKEN` environment variable. The rest of
-the child's environment is the server's, minus every `TUNNEL_*` variable
-(each is a `cloudflared` setting that could redirect the tunnel or raise its
-log level) and every `OPENMANAGER_*` variable. The log level is pinned to
-`info` because at `debug` `cloudflared` logs request headers, and the socket
-credential travels in one. Its log lines go to the server log at `debug`, with
-the token cut out of any line that contains it.
+with the token in the child's `TUNNEL_TOKEN` environment variable.
+
+- **Environment.** The child gets the token and only the variables a program
+  needs to find its home and temporary folders, use a proxy and trust
+  certificates (`PATH`, `HOME`/`USERPROFILE`, `TEMP`, `SystemRoot`,
+  `HTTPS_PROXY`, `SSL_CERT_FILE` and the like). Provider keys and every other
+  variable of the server stay out, and so does every `TUNNEL_*` variable, each
+  of which is a `cloudflared` setting that could redirect the tunnel or raise
+  its log level.
+- **Configuration file.** `<data-dir>/cloudflared.yml` is written by the
+  server and holds no settings that matter. Without it, `cloudflared` would
+  read `~/.cloudflared/config.yml`, and a leftover `url:` or `loglevel:` there
+  would apply to this tunnel.
+- **Logging.** The log level is pinned to `info` because at `debug`
+  `cloudflared` logs request headers, and the socket credential travels in
+  one. Its log lines go to the server log at `debug`, except that one error
+  line a minute is logged as a warning, so an owner at the default level sees
+  why a tunnel does not come up. The token is cut out of any line that
+  contains it.
 
 The connector's origin comes from the dashboard (step 3), not from the
-command line. The server reads it back from the connector's `/config` and
-reports `sharedIngress: true` when any rule sends traffic anywhere but its own
-loopback port.
+command line. The server reads it back from the connector's `/config` when it
+connects, when it logs a configuration update and after every passed hostname
+check, and reports `sharedIngress: true` when any rule sends traffic anywhere
+but its own loopback port.
 
 ### States
 
 The server publishes one state, logged on every change and written to
 `<data-dir>/tunnel-status.json`, which `service status` shows:
 
-| State               | Meaning                                                                                                     |
-| ------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `starting`          | The connector runs but has no connection to Cloudflare yet.                                                 |
-| `checking`          | Connected to Cloudflare; the server is checking that the hostname leads back to it.                         |
-| `connected`         | Connected, and `https://<hostname>/bootstrap` answered with this environment's ID. Only now is `route` set. |
-| `self_check_failed` | Connected, but the hostname does not lead here. `reason` says how.                                          |
-| `down`              | The connector exited, or lost every connection to Cloudflare. It is reconnecting or restarting.             |
-| `binary_missing`    | No `cloudflared` at `--cloudflared`, or none on `PATH`.                                                     |
-| `token_missing`     | No `OPENMANAGER_TUNNEL_TOKEN` and no token in the token file.                                               |
-| `stopped`           | The server is shutting down.                                                                                |
+| State               | Meaning                                                                                                          |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `starting`          | The connector runs but has no connection to Cloudflare yet.                                                      |
+| `checking`          | Connected to Cloudflare; the server is checking that the hostname leads back to it.                              |
+| `connected`         | Connected, and `https://<hostname>/bootstrap` answered with this environment's ID. Only now is `route` set.      |
+| `self_check_failed` | Connected, but the hostname does not lead here. `reason` says how.                                               |
+| `down`              | The connector exited, or lost every connection to Cloudflare. It is reconnecting or restarting.                  |
+| `binary_missing`    | No `cloudflared` at `--cloudflared`, or none on `PATH`.                                                          |
+| `token_missing`     | No `OPENMANAGER_TUNNEL_TOKEN` and no token in the token file (`token_malformed`: the file holds something else). |
+| `stopped`           | The server is shutting down.                                                                                     |
 
 `reason` values:
 
 - `token_invalid`: `cloudflared` cannot read the token (`down`).
+- `token_malformed`: the token file holds more than one line, or nothing
+  (`token_missing`).
 - `tunnel_rejected`: the token reads, but Cloudflare refuses it, usually a
-  deleted tunnel or a refreshed token (`starting`).
-- `exited`, `reconnecting`, `unready`, `start_timeout`, `resumed_stale`: why
-  the connector is down or was replaced (`down`).
+  deleted tunnel or a refreshed token (`starting`, or `down` once the
+  connector is replaced).
+- `exited`, `spawn_failed`, `reconnecting`, `unready`, `start_timeout`,
+  `resumed_stale`: why the connector is down or was replaced (`down`).
 - `other_environment`: the hostname answers as a different environment, for
   example the dashboard points it at another machine or port.
 - `tunnel_unreachable`: Cloudflare answered `530`; the hostname's tunnel has
   no connector. Usually a hostname that belongs to a different tunnel.
-- `http_<status>`: anything else, for example `http_403` when Cloudflare
-  Access sits in front of the hostname. Let `/bootstrap` through Access, or
-  the check cannot pass.
+- `http_<status>`: anything else. The common ones: `http_403` when "HTTP Host
+  Header" is set in the dashboard (the server refuses that `Host`) or when
+  Cloudflare Access sits in front of the hostname (let `/bootstrap` through,
+  or the check cannot pass); `http_404` when the public hostname has a path,
+  so `/bootstrap` falls to the dashboard's catch-all rule; `http_502` when the
+  dashboard points the hostname at the wrong port.
 - `not_openmanager`, `unreachable`: the hostname answered with something that
   is not an environment, or not at all (DNS not there yet, timeout).
 
@@ -162,16 +194,19 @@ connector's `/ready` every 5 seconds and steps in when that is not enough:
 - **Crash or exit:** restarted after 1 s, doubling to at most 60 s. A
   connector that stays connected for a minute earns a fresh 1 s backoff. A
   token `cloudflared` cannot read waits the full 60 s between attempts.
-- **Lost connections:** shown as `down` (`reconnecting`) at once. A connector
-  still without a connection after 60 s is restarted.
+- **Lost connections:** shown as `down` (`reconnecting`) after two failed
+  probes in a row. A connector still without a connection after 60 s is
+  restarted.
 - **Never connected:** a connector that has not connected 90 s after starting
   is restarted.
 - **Sleep and resume:** a 5-second tick that arrives 30 s or more late means
   the machine slept. The server then probes at once and repeats the
-  hostname check. A connector that claims to be connected but whose hostname
-  check fails right after a wake is holding connections Cloudflare already
-  dropped, and is restarted once. A restart that was waiting out its backoff
-  runs at once.
+  hostname check; a check that began before the sleep is discarded. If the
+  connector claims to be connected but Cloudflare answers that check with
+  `530`, the connector is holding connections Cloudflare already dropped,
+  and it is restarted once. Other failures after a wake, such as no network
+  yet, are retried as usual. A restart that was waiting out its backoff runs
+  at once.
 - **Missing binary or token:** retried every 60 s, so installing
   `cloudflared` or saving the token recovers without a restart.
 
@@ -192,7 +227,8 @@ tunnel: killing the server gives `502` at once; killing the connector gives a
 `service install` with a tunnel:
 
 - saves `OPENMANAGER_TUNNEL_TOKEN`, when set, to the token file
-  (`<data-dir>/tunnel-token`, readable only by you on Linux) and never writes
+  (`<data-dir>/tunnel-token`, written as a new file readable only by you on
+  Linux, then renamed into place) and never writes
   the token into the logon task or the systemd unit, which other tools and
   accounts can read;
 - refuses to install without a token, either in that variable or already in

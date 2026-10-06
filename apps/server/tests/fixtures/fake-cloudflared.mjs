@@ -59,6 +59,15 @@ const server = createServer((request, response) => {
     log('Registered tunnel connection')
     return send(200, {})
   }
+  if (request.url === '/fake/reconfigure') {
+    // The dashboard added a second service behind the tunnel.
+    ingress.config.ingress.splice(1, 0, {
+      hostname: 'files.test',
+      service: 'http://127.0.0.1:3000',
+    })
+    log('Updated to new configuration', { version: 4 })
+    return send(200, {})
+  }
   if (request.url === '/fake/exit') {
     send(200, {})
     setTimeout(() => process.exit(1), 10)

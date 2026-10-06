@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir, userInfo } from 'node:os'
 import { dirname, join } from 'node:path'
 import { tailLogFile, type LogOptions } from './logs.ts'
@@ -107,9 +107,17 @@ async function defaultWriteTempFile(name: string, data: Buffer): Promise<string>
 
 async function defaultWriteSecretFile(path: string, text: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-  await writeFile(path, text, { encoding: 'utf8', mode: 0o600 })
-  // `mode` applies only when the file is created; an older file keeps its own.
-  await chmod(path, 0o600)
+  // A fresh private file renamed over the old one: the secret is never in a
+  // file someone else could read, even when an older one was left readable.
+  const temporary = `${path}.${process.pid}.tmp`
+  try {
+    await writeFile(temporary, text, { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+    await chmod(temporary, 0o600)
+    await rename(temporary, path)
+  } catch (error) {
+    await rm(temporary, { force: true })
+    throw error
+  }
 }
 
 async function defaultReadFile(path: string): Promise<string | undefined> {

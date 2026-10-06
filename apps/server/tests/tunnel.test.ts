@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { loadConfig } from '../src/config.js'
 import { startServer } from '../src/server.js'
 import {
-  CLOUDFLARED_ARGS,
+  cloudflaredArgs,
   cloudflaredEnvironment,
   ingressIsShared,
   locateCloudflared,
@@ -66,11 +66,13 @@ async function installFake() {
  * with `Host: om.test` as Cloudflare would send it, so the Host allowlist is
  * exercised. Everything else (the metrics server) is a normal fetch.
  */
-function tunnelFetch(target: () => { port: number } | { status: number; body: unknown }) {
+type Target = { port: number } | { status: number; body: unknown }
+
+function tunnelFetch(target: () => Target | Promise<Target>) {
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input))
     if (url.protocol !== 'https:') return fetch(input, init)
-    const to = target()
+    const to = await target()
     if ('status' in to) return new Response(JSON.stringify(to.body), { status: to.status })
     return new Promise<Response>((resolveResponse, reject) => {
       const outgoing = httpRequest(
@@ -108,7 +110,7 @@ interface HostOptions {
   binary?: string
   mode?: string
   token?: string | null
-  target?: () => { port: number } | { status: number; body: unknown }
+  target?: () => Target | Promise<Target>
   timing?: Partial<TunnelTiming>
   now?: () => number
   ingress?: unknown
@@ -136,7 +138,12 @@ async function startTunnelHost(options: HostOptions = {}) {
     tunnelOptions: {
       timing: { ...FAST, ...options.timing },
       ...(options.now ? { now: options.now } : {}),
-      env: { ...process.env, TUNNEL_URL: 'http://evil.example', TUNNEL_LOGLEVEL: 'debug' },
+      env: {
+        ...process.env,
+        TUNNEL_URL: 'http://evil.example',
+        TUNNEL_LOGLEVEL: 'debug',
+        ANTHROPIC_API_KEY: 'provider-key',
+      },
       fetch: tunnelFetch(options.target ?? (() => ({ port: serverPort }))),
       // The supervisor resolves and checks the path override; the placeholder
       // there stands in for the binary, and this Node runs the fake script.
@@ -181,7 +188,7 @@ async function startTunnelHost(options: HostOptions = {}) {
               },
           )
       : []
-  const fakeOrder = async (order: 'unready' | 'ready' | 'exit') => {
+  const fakeOrder = async (order: 'unready' | 'ready' | 'exit' | 'reconfigure') => {
     const last = records().at(-1)!
     await fetch(`http://127.0.0.1:${last.metricsPort}/fake/${order}`)
   }
@@ -291,24 +298,41 @@ describe('tunnel configuration', () => {
   })
 
   it('never puts the token on the connector command line', () => {
-    expect(CLOUDFLARED_ARGS.join(' ')).not.toMatch(/token/i)
-    expect(CLOUDFLARED_ARGS).toContain('--no-autoupdate')
-    expect(CLOUDFLARED_ARGS).toEqual(expect.arrayContaining(['--loglevel', 'info']))
+    const args = cloudflaredArgs('/data/cloudflared.yml')
+    expect(args.join(' ')).not.toMatch(/token/i)
+    expect(args).toContain('--no-autoupdate')
+    expect(args).toEqual(expect.arrayContaining(['--loglevel', 'info']))
+    // Pinned, so a leftover ~/.cloudflared/config.yml cannot add settings.
+    expect(args.slice(0, 3)).toEqual(['tunnel', '--config', '/data/cloudflared.yml'])
+    expect(args.at(-1)).toBe('run')
   })
 
-  it('builds the connector environment without TUNNEL_* or OPENMANAGER_* settings', () => {
+  it('gives the connector only the environment it needs, plus the token', () => {
     const env = cloudflaredEnvironment(
       {
-        PATH: '/bin',
+        Path: '/bin',
+        HOME: '/home/ada',
+        SystemRoot: 'C:\\Windows',
+        HTTPS_PROXY: 'http://proxy:3128',
+        LC_ALL: 'C',
         TUNNEL_URL: 'http://elsewhere',
         tunnel_loglevel: 'debug',
         NO_AUTOUPDATE: 'false',
         OPENMANAGER_LOCAL_OWNER_CLAIM_KEY: 'k',
         OPENMANAGER_TUNNEL_TOKEN: 'old',
+        ANTHROPIC_API_KEY: 'sk-ant-secret',
+        OPENAI_API_KEY: 'sk-secret',
       },
       TOKEN,
     )
-    expect(env).toEqual({ PATH: '/bin', TUNNEL_TOKEN: TOKEN })
+    expect(env).toEqual({
+      Path: '/bin',
+      HOME: '/home/ada',
+      SystemRoot: 'C:\\Windows',
+      HTTPS_PROXY: 'http://proxy:3128',
+      LC_ALL: 'C',
+      TUNNEL_TOKEN: TOKEN,
+    })
   })
 
   it('finds cloudflared on PATH, or exactly where it was pointed', async () => {
@@ -318,6 +342,11 @@ describe('tunnel configuration', () => {
     expect(locateCloudflared(undefined, { PATH: '/nowhere' })).toBeUndefined()
     expect(locateCloudflared(binary, {})).toBe(binary)
     expect(locateCloudflared(join(dir, 'missing'), env)).toBeUndefined()
+    // On Windows a path without `.exe` names the executable.
+    const bare = binary.replace(/\.exe$/, '')
+    expect(locateCloudflared(bare, {}, 'win32')).toBe(
+      process.platform === 'win32' ? binary : undefined,
+    )
   })
 
   it('tells a tunnel that serves only this server from one that serves more', () => {
@@ -355,10 +384,14 @@ describe('tunnel supervisor', () => {
     const [started] = host.records()
     expect(started!.token).toBe(TOKEN)
     expect(started!.argv.join(' ')).not.toContain(TOKEN)
-    expect(started!.argv).toEqual([...CLOUDFLARED_ARGS])
+    expect(started!.argv).toEqual(cloudflaredArgs(join(host.dataDir, 'cloudflared.yml')))
+    expect(readFileSync(join(host.dataDir, 'cloudflared.yml'), 'utf8')).toContain(
+      'no-autoupdate: true',
+    )
     expect(started!.env.filter((name) => /^(TUNNEL_|OPENMANAGER_)/i.test(name))).toEqual([
       'TUNNEL_TOKEN',
     ])
+    expect(started!.env).not.toContain('ANTHROPIC_API_KEY')
     expect(host.spawned).toHaveLength(1)
     expect(host.spawned[0]).toMatch(/cloudflared(\.exe)?$/)
 
@@ -441,6 +474,8 @@ describe('tunnel supervisor', () => {
     const host = await startTunnelHost({ token: null, timing: { restartMaxMs: 100 } })
     await waitForState(host, 'token_missing')
     expect(host.spawned).toEqual([])
+    writeFileSync(join(host.dataDir, 'tunnel-token'), 'two\nlines\n')
+    await waitForState(host, 'token_missing', undefined, (s) => s.reason === 'token_malformed')
     writeFileSync(join(host.dataDir, 'tunnel-token'), `${TOKEN}\n`)
     await waitForState(host, 'connected')
     expect(host.records()[0]!.token).toBe(TOKEN)
@@ -473,6 +508,59 @@ describe('tunnel supervisor', () => {
     await waitForState(host, 'connected', undefined, (status) => status.sharedIngress === true)
     await host.close()
     expect(readFileSync(host.logFile, 'utf8')).toContain('also routes other hostnames')
+  })
+
+  it('notices a dashboard change that adds another service', async () => {
+    const host = await startTunnelHost()
+    await waitForState(host, 'connected', undefined, (status) => status.sharedIngress === false)
+    await host.fakeOrder('reconfigure')
+    await waitForState(host, 'connected', undefined, (status) => status.sharedIngress === true)
+  })
+
+  it('replaces a connector that never connects', async () => {
+    const host = await startTunnelHost({ mode: 'never_ready', timing: { startTimeoutMs: 300 } })
+    await waitFor(() => host.records().length >= 2, 'a second connector')
+    expect(stateOf(host).restarts).toBeGreaterThanOrEqual(1)
+    expect(stateOf(host).state).toMatch(/^(starting|down)$/)
+  })
+
+  it('stops cleanly while a restart is waiting out its backoff', async () => {
+    const host = await startTunnelHost({ timing: { restartMinMs: 5_000, restartMaxMs: 5_000 } })
+    await waitForState(host, 'connected')
+    await host.fakeOrder('exit')
+    await waitForState(host, 'down', undefined, (status) => status.reason === 'exited')
+    await host.close()
+    expect(stateOf(host).state).toBe('stopped')
+    await new Promise((resolveWait) => setTimeout(resolveWait, 200))
+    expect(host.records()).toHaveLength(1)
+  })
+
+  it('checks the replacement even when the old connector had a check in flight', async () => {
+    let hold: Promise<void> | undefined
+    let release = () => {}
+    let serverPort = 0
+    const host = await startTunnelHost({
+      target: async () => {
+        if (hold) await hold
+        return { port: serverPort }
+      },
+    })
+    serverPort = host.server.port
+    await waitForState(host, 'connected')
+    // The next check hangs; the connector is replaced while it does.
+    hold = new Promise<void>((resolveHold) => {
+      release = resolveHold
+    })
+    await host.fakeOrder('unready')
+    await waitForState(host, 'down')
+    await host.fakeOrder('ready')
+    await waitForState(host, 'checking')
+    await host.fakeOrder('exit')
+    await waitFor(() => host.records().length === 2, 'a replacement connector')
+    await waitForState(host, 'checking', undefined, (status) => status.restarts === 1)
+    hold = undefined
+    release()
+    await waitForState(host, 'connected', undefined, (status) => status.restarts === 1)
   })
 
   it('rechecks after a sleep and restarts a connector whose connections went stale', async () => {
