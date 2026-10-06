@@ -204,19 +204,49 @@ out from every route it asked (`route-fallback.ts`):
 
 | Reason | Learned from | Shown as |
 | --- | --- | --- |
-| `environment_offline` | Nothing answers on a loopback route (nothing listens on this device), or a gateway answers `502`/`503`/`504` (Cloudflare, Tailscale and ngrok all do this when their tunnel is up and the origin is not) | Environment offline |
+| `environment_offline` | Nothing answers on a loopback route (nothing listens on this device), a gateway answers `502`/`503`/`504` in a status this client can read, or the environment closed the socket with `1001` `server_shutdown` and no route has answered since | Environment offline |
 | `local_access_blocked` | A loopback route fails and the browser reports its `loopback-network` permission as denied: a hosted page that was refused access to this device | Local access blocked |
-| `route_refused` | `401`/`403` on `/bootstrap`: a tunnel's access gate, or the environment refusing this browser's origin | Route refused access |
+| `route_refused` | `401`/`403` on `/bootstrap`: a tunnel's access gate, or the environment refusing this browser's origin. On a loopback route, also an answer the page may not read | Route refused access |
 | `wrong_environment` | The address answers as another environment | Environment unreachable |
-| `route_down` | Nothing answers over a network, another HTTP error (Cloudflare's `530` is its tunnel being down), or something that is not an environment | Route unavailable |
-| `credential_rejected` | The socket is refused with `auth` | Not authorized |
+| `tunnel_down` | Over a network, an answer the page may not read, or Cloudflare's `530` | Tunnel down |
+| `route_down` | Nothing answers over a network at all, another HTTP error, or something that is not an environment | Route unavailable |
+| `credential_rejected` | The socket is closed with `4401`: the token was revoked, or the environment does not know it | Not authorized |
 
-A browser only sees a refusal it is allowed to read. The environment's own
-origin check answers `403` before it adds CORS headers, so from another origin
-that refusal arrives as a network failure and is reported as the route being
-down, or, on a loopback route, as the environment being offline; the
-offline wording mentions the page's address for that reason. A gateway that
-refuses without CORS headers looks the same.
+**What a browser can read.** A page on another origin reads an answer only if
+it carries CORS headers. Cloudflare's own error pages do not, so a browser sees
+its `530` (tunnel down) and its `502` (tunnel up, server stopped) as the same
+failed fetch as silence. Measured through a quick tunnel in Chromium, Firefox
+and WebKit, `fetch` throws a `TypeError` for both, and resource timing reports
+status `0`. The status rules in the table above only apply to a client that is
+not a browser (the mobile app), or to a page on the tunnel's own origin.
+
+After a failed bootstrap fetch, the client asks the same URL again with
+`mode: 'no-cors'`. That request cannot read the answer either, but it comes back
+opaque when something replied and throws when nothing did. That is the line
+between `tunnel_down` (Cloudflare answers for the hostname, the environment
+does not) and `route_down` (nothing answers at all: a hostname that no longer
+resolves, or this device's network). On a loopback route nothing stands in
+front of the environment, so an opaque answer is the environment refusing this
+page's origin, and is shown as `route_refused`.
+
+A browser cannot tell a tunnel that is down from a working tunnel whose server
+is stopped, so the tunnel wording names both. The one thing that does tell them
+apart is the environment itself: a server that shuts down on purpose closes
+every socket with `1001` `server_shutdown`, and that close passes through the
+tunnel. The client keeps it until any route answers, and shows the environment
+as offline instead of the tunnel as down. A crash, a killed process or a
+sleeping computer sends nothing, and reads as the tunnel being down.
+
+**A refused token.** A browser cannot read why a WebSocket upgrade was refused
+either: a `401` reaches it as a bare `1006`, the same as a dropped tunnel. The
+environment therefore completes the upgrade for a credential offered the
+browser's way (the `openmanager.auth.` subprotocol) and closes it at once with
+`4401` `unauthorized`, the terminal close a revocation already uses. Nothing is
+read from that socket, and the attempt still counts against the
+failed-credential budget. A credential sent as an `Authorization` header is still
+refused with `401` before the upgrade. Before this, a browser with a wrong or
+revoked token showed "Connected" and redialed until it locked out every device
+behind the tunnel.
 
 A browser that blocks a hosted page from reaching this device's loopback
 address fails the request the same way. Chrome, Edge and Firefox ask the
@@ -229,11 +259,12 @@ the person to check the browser too. See
 [deploying the web client](./web-deploy.md#hosted-page-to-an-environment-on-this-device).
 
 When routes disagree the client shows, in order: offline, local access
-blocked, refused, another environment, down. A sign that the server is down explains every other
-failure, a refusal is something a person can act on, and an address that now
-leads to another environment says what changed where silence says nothing. Over a network, silence cannot tell a tunnel that is down
-from a machine that is off, and the wording says so ("the environment itself
-may still be running"). `/playground/connection` shows each one.
+blocked, refused, another environment, tunnel down, down. A sign that the server is down explains every
+other failure, a refusal is something a person can act on, an address that now
+leads to another environment says what changed, and a gateway that answers
+says more than silence. Each reason has its own mark in the banner or on the
+screen: a cloud for the tunnel, power for the server, a key for the token.
+`/playground/connection` shows each one.
 
 While no route answers, the socket is closed and the reason stays on screen
 until a route answers again, at which point the client reconnects on its own.

@@ -56,9 +56,15 @@ Retries stop, and `connection.retriesExhausted` becomes `true`, when:
   credential was revoked, or the owner credential it used was rotated. It is
   reported as an `auth` failure. A browser cannot see why a later upgrade is
   refused, so without this every redial would also count against the
-  address's failed-credential limit.
+  address's failed-credential limit. For the same reason the environment
+  accepts a browser's upgrade with a credential it does not know and closes
+  it with `4401` (`unauthorized`), which ends retries the same way.
 - `maxAttempts` is set and exhausted. It is unset by default, so the shipped
   client retries a reachable-but-down environment forever.
+
+A close with `1001` (`server_shutdown`) is the environment stopping on purpose.
+It is retried like any drop, but the failure carries `serverStopped`, so the
+interface can say the environment shut down rather than that a tunnel is down.
 
 Only `connect()` starts the schedule again: it clears the timer, resets
 `attempt`, clears a terminal failure and `retriesExhausted`, and dials. A
