@@ -15,6 +15,7 @@ export function NewSessionLandingView({
   activeWorkspacePath,
   isWorkspacesLoading,
   isStarting,
+  draftWithoutProject = false,
   onSelectWorkspace,
   onAddWorkspace,
 }: {
@@ -26,6 +27,8 @@ export function NewSessionLandingView({
   activeWorkspacePath: string | null
   isWorkspacesLoading: boolean
   isStarting: boolean
+  /** The open draft's project was removed: it waits for another to be picked. */
+  draftWithoutProject?: boolean
   onSelectWorkspace: (workspacePath: string) => void
   onAddWorkspace: () => void
 }) {
@@ -66,12 +69,20 @@ export function NewSessionLandingView({
     )
   }
 
-  const activeWorkspace =
-    workspaces.find((workspace) => workspace.path === activeWorkspacePath) ?? workspaces[0]!
+  const activeWorkspace = draftWithoutProject
+    ? null
+    : (workspaces.find((workspace) => workspace.path === activeWorkspacePath) ?? workspaces[0]!)
   // Chips offer somewhere else to go; the active project is already chosen.
   const recentChips = recentWorkspaces
-    .filter((workspace) => !workspace.missing && workspace.path !== activeWorkspace.path)
+    .filter((workspace) => !workspace.missing && workspace.path !== activeWorkspace?.path)
     .slice(0, RECENT_CHIP_LIMIT)
+  // The draft stays with a project whose folder is gone, so nothing typed is
+  // hidden; it is said here, and another project is one pick away.
+  const unavailable = draftWithoutProject
+    ? 'This draft’s project was removed. Pick another to send it.'
+    : activeWorkspace && activeWorkspace.path === activeWorkspacePath && activeWorkspace.missing
+      ? `${activeWorkspace.name} is unavailable. Pick another project to send this draft.`
+      : null
 
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center px-6">
@@ -86,7 +97,9 @@ export function NewSessionLandingView({
             onSelect={(workspacePath) => {
               // With nothing open the first project is only what the picker
               // shows, so choosing it must still open it.
-              if (workspacePath !== activeWorkspacePath) onSelectWorkspace(workspacePath)
+              if (draftWithoutProject || workspacePath !== activeWorkspacePath) {
+                onSelectWorkspace(workspacePath)
+              }
             }}
             onAddWorkspace={onAddWorkspace}
           />
@@ -99,7 +112,9 @@ export function NewSessionLandingView({
               <span aria-hidden>·</span>
             </>
           )}
-          <span>{isStarting ? 'Starting session…' : 'Start with a message below'}</span>
+          <span>
+            {isStarting ? 'Starting session…' : (unavailable ?? 'Start with a message below')}
+          </span>
         </div>
 
         {recentChips.length > 0 && (
@@ -144,7 +159,14 @@ export function NewSessionLandingView({
 
 /** The landing bound to session state and the sidebar contract. */
 export function NewSessionLanding() {
-  const { activeWorkspacePath, pendingDraftSessionStart } = useSessionState()
+  const {
+    activeWorkspacePath,
+    pendingDraftSessionStart,
+    isSessionDraftOpen,
+    isDraftLoading,
+    isDraftProjectRemoved,
+    setDraftWorkspace,
+  } = useSessionState()
   const {
     environment,
     workspaces,
@@ -160,9 +182,18 @@ export function NewSessionLanding() {
       workspaces={workspaces}
       recentWorkspaces={recentWorkspaces}
       activeWorkspacePath={activeWorkspacePath}
-      isWorkspacesLoading={isWorkspacesLoading}
+      // A draft named by its address shows once it is known, never a blank
+      // page that it would then replace.
+      isWorkspacesLoading={isWorkspacesLoading || !!isDraftLoading}
       isStarting={pendingDraftSessionStart}
-      onSelectWorkspace={(workspacePath) => void createSession(workspacePath)}
+      draftWithoutProject={!!isDraftProjectRemoved}
+      // Where drafts have pages, picking a project moves the open draft with
+      // everything in it; elsewhere, or with none open, it opens one there.
+      onSelectWorkspace={(workspacePath) =>
+        isSessionDraftOpen && setDraftWorkspace
+          ? setDraftWorkspace(workspacePath)
+          : void createSession(workspacePath)
+      }
       onAddWorkspace={() => void addWorkspace()}
     />
   )

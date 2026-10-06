@@ -37,6 +37,7 @@ export function MessageInput() {
     activeSessionId,
     activeWorkspacePath,
     isSessionDraftOpen,
+    newSessionDraftId,
     pendingDraftSessionStart,
     localSessionStatus,
     defaultProviderId,
@@ -333,11 +334,25 @@ export function MessageInput() {
     }
   }
 
+  // A draft with an id keeps it as its key while it moves between projects,
+  // so what was typed and attached stays put; elsewhere a project has one.
   const draftKey = activeSessionId
     ? `session:${activeSessionId}`
-    : activeWorkspacePath
-      ? `draft:${activeWorkspacePath}`
-      : 'no-workspace'
+    : newSessionDraftId
+      ? `new:${newSessionDraftId}`
+      : activeWorkspacePath
+        ? `draft:${activeWorkspacePath}`
+        : 'no-workspace'
+  // A draft keeps a provider it was given even once that provider breaks:
+  // the pick stands, and the send waits for it or for another pick. Only a
+  // provider known to be down holds it; one being checked does not.
+  const draftProviderStatus = agentUiStatusByProvider[currentProviderId]
+  const sendBlockedReason =
+    activeSessionId || !isSessionDraftOpen
+      ? null
+      : draftProviderStatus !== 'probing' && providerBlocksComposer(draftProviderStatus)
+        ? `${currentProviderName} is unavailable. Pick another model, or retry it from Settings.`
+        : null
   const imageSupportMessage = !canUploadImages
     ? 'Image prompts are not available on this host.'
     : providerImageSupport === undefined
@@ -429,6 +444,7 @@ export function MessageInput() {
           }
           imageSupportMessage={imageSupportMessage}
           settingsError={composerError}
+          sendBlockedReason={sendBlockedReason}
           slashCommands={slashCommands}
           usage={usage}
           onModeChange={(id) => {

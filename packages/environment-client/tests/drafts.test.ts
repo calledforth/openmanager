@@ -12,8 +12,10 @@ import {
   applyDraftDeleted,
   applyDraftList,
   applyDraftSaved,
+  hasDraftContent,
   selectDraftContent,
   selectNewSessionDraftId,
+  selectNewSessionDraftIds,
 } from '../src/draft-state'
 import { createDraftSync } from '../src/draft-sync'
 import { EnvironmentClientError } from '../src/errors'
@@ -156,6 +158,52 @@ describe('draft state', () => {
     }
     expect(selectNewSessionDraftId(state, WORKSPACE.workspaceId)).toBe('old')
     expect(selectNewSessionDraftId(state, 'elsewhere')).toBeUndefined()
+  })
+
+  it('lists every new-session draft with something written in it, newest first', () => {
+    let state = applyDraftList(createInitialState(), {
+      drafts: [
+        { ...draft('older', 1, { text: 'older' }), updatedAt: '2026-10-01T09:00:00.000Z' },
+        draft('newer', 1, { text: 'newer' }),
+        // Picks alone are no content.
+        draft('picks-only', 1, { text: '', providerId: 'opencode' }),
+        draft('blank', 1, { text: '   ' }),
+        draft('image', 1, { text: '', artifactIds: ['a1'] }),
+        // A removed project's draft is still listed.
+        draft('orphan', 1, { text: 'orphan' }, { ...NEW, workspaceId: null, sessionId: 's-o' }),
+        draft(
+          SESSION_SUMMARY.sessionId,
+          1,
+          { text: 'a session draft' },
+          {
+            type: 'session',
+            sessionId: SESSION_SUMMARY.sessionId,
+          },
+        ),
+      ],
+      tombstones: [],
+    })
+    expect(selectNewSessionDraftIds(state).sort()).toEqual(['image', 'newer', 'older', 'orphan'])
+    expect(selectNewSessionDraftIds(state).at(-1)).toBe('older')
+    state = {
+      ...state,
+      draftEdits: {
+        // An edit waiting to be saved is newer than any copy.
+        older: { target: NEW, content: { text: 'edited' }, baseRevision: 1, editedAt: Date.now() },
+        newer: {
+          target: NEW,
+          content: { text: 'newer' },
+          baseRevision: 1,
+          editedAt: 0,
+          launching: true,
+        },
+      },
+    }
+    const listed = selectNewSessionDraftIds(state)
+    expect(listed[0]).toBe('older')
+    // Being sent: the session's now.
+    expect(listed).not.toContain('newer')
+    expect(hasDraftContent({ text: '', artifactIds: [] })).toBe(false)
   })
 })
 
@@ -384,6 +432,23 @@ describe('draft sync', () => {
     expect(selectNewSessionDraftId(store.getState(), WORKSPACE.workspaceId)).toBeUndefined()
     sync.endLaunch('d', 'sent')
     expect(store.getState().draftEdits.d).toBeUndefined()
+    sync.dispose()
+  })
+
+  it('never discards a draft that is being sent', async () => {
+    const { store, sync, saves } = setup()
+    await vi.advanceTimersByTimeAsync(0)
+    sync.edit('d', NEW, { text: 'Ship it', providerId: 'cursor', preference: { modelId: 'm' } })
+    // The composer clears for the send, keeping the picks it is sent with.
+    sync.edit('d', NEW, { text: '', providerId: 'cursor', preference: { modelId: 'm' } })
+    sync.beginLaunch('d')
+    sync.discard('d')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(store.getState().draftEdits.d).toMatchObject({
+      launching: true,
+      content: { providerId: 'cursor', preference: { modelId: 'm' } },
+    })
+    expect(saves).toHaveLength(0)
     sync.dispose()
   })
 

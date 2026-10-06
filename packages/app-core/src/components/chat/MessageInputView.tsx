@@ -323,6 +323,7 @@ export function MessageInputView({
   imageUploadEnabled,
   imageSupportMessage,
   settingsError,
+  sendBlockedReason = null,
   slashCommands = [],
   usage = null,
   onModeChange,
@@ -372,6 +373,9 @@ export function MessageInputView({
   imageSupportMessage: string | null
   /** Last failure from changing the model, mode or a setting. */
   settingsError?: string | null
+  /** Why this draft cannot be sent as it stands (its provider or project is
+   * unavailable). Send is held, and the reason shown, until it clears. */
+  sendBlockedReason?: string | null
   slashCommands?: SlashCommandItem[]
   usage?: ComposerUsage | null
   onModeChange: (id: string) => void
@@ -575,9 +579,18 @@ export function MessageInputView({
         }
         return { ...current, attachments: next }
       })
+      // An image is the draft's first content as much as text is.
+      if (attachmentsRef.current[draftKey]?.length) draftStore.claim?.(draftKey)
       setAttachmentError(error)
     },
-    [imageSupportMessage, imageUploadEnabled, pendingDraftSessionStart, updateDraft],
+    [
+      draftKey,
+      draftStore,
+      imageSupportMessage,
+      imageUploadEnabled,
+      pendingDraftSessionStart,
+      updateDraft,
+    ],
   )
 
   const removeAttachment = (id: string) => {
@@ -613,7 +626,13 @@ export function MessageInputView({
       return
     }
     const trimmed = text.trim()
-    if ((!trimmed && attachments.length === 0) || disabled || sending || pendingDraftSessionStart)
+    if (
+      (!trimmed && attachments.length === 0) ||
+      disabled ||
+      sending ||
+      pendingDraftSessionStart ||
+      sendBlockedReason
+    )
       return
     if (isAwaitingPlanReview && attachments.length > 0) {
       setAttachmentError('Remove image attachments before requesting plan changes.')
@@ -717,6 +736,7 @@ export function MessageInputView({
       !disabled &&
       !sending &&
       !pendingDraftSessionStart &&
+      !sendBlockedReason &&
       (attachments.length === 0 || imageUploadEnabled)
   const configSummary = sessionConfigSummary(configOptions)
   const effortChoices = effortOptions ?? effortLevels.map((level) => ({ id: level, name: level }))
@@ -839,6 +859,11 @@ export function MessageInputView({
         {settingsError && (
           <div className="px-2 pb-1 text-[11px] leading-4 text-amber-500" role="alert">
             {settingsError}
+          </div>
+        )}
+        {sendBlockedReason && !textOverride && (
+          <div className="px-2 pb-1 text-[11px] leading-4 text-amber-500" role="status">
+            {sendBlockedReason}
           </div>
         )}
 

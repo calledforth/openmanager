@@ -333,13 +333,10 @@ export function createDraftService(options: DraftServiceOptions) {
     launch(draftId: string, sent: SentDraft): DraftLaunch | { error: string } {
       const row = read(draftId)
       if (row?.session_id) return { error: "A session's draft cannot start another session." }
-      // Only the session the draft was minted for, in its project (or any
-      // project once its own was removed): a send must not consume another draft.
-      if (
-        row &&
-        ((row.launch_session_id !== null && row.launch_session_id !== sent.sessionId) ||
-          (row.workspace_id !== null && row.workspace_id !== sent.workspaceId))
-      ) {
+      // Only as the session the draft was minted for: a send must not consume
+      // another draft. Its project is the user's to change, and a send can beat
+      // the save that moved it, so the project it is sent from stands.
+      if (row && row.launch_session_id !== null && row.launch_session_id !== sent.sessionId) {
         return { error: 'The draft belongs to another session.' }
       }
       const { tombstone, event } = deletionEvent(draftId, row, now())

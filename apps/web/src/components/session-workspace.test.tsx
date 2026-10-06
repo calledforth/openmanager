@@ -288,6 +288,98 @@ describe('session workspace', () => {
     expect(client.getState().activeSessionId).toBe('session-1')
   })
 
+  it('replaces the address of a session the environment does not have with `/`', async () => {
+    const { client, router } = renderConnected('/sessions/deleted-since')
+    await waitFor(() => expect(router.state.location.pathname).toBe('/'))
+    expect(client.calls).toContainEqual({ command: 'openSession', input: 'deleted-since' })
+    const textbox = await screen.findByRole('textbox')
+    await waitFor(() => expect(textbox).toBeEnabled())
+    expect(textbox).toHaveValue('')
+  })
+
+  it('stays where the user went when an unknown session’s answer comes late', async () => {
+    connectedEnvironment()
+    const client = createMockEnvironmentClient({ seed: SEED })
+    const open = client.commands.openSession.bind(client.commands)
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    vi.spyOn(client.commands, 'openSession').mockImplementation(async (sessionId) => {
+      if (sessionId === 'deleted-since') await held
+      return open(sessionId)
+    })
+    const { router } = renderWebApp('/sessions/deleted-since', {
+      createEnvironmentClient: () => client,
+    })
+    await waitFor(() => expect(client.commands.openSession).toHaveBeenCalledWith('deleted-since'))
+    await act(() => router.navigate({ to: '/settings' }))
+    expect(router.state.location.pathname).toBe('/settings')
+    // The environment answers that it has no such session, after the user left.
+    await act(async () => {
+      release()
+      await held
+    })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(router.state.location.pathname).toBe('/settings')
+    expect(client.getState().activeSessionId).toBeNull()
+  })
+
+  it('leads a sent draft’s address on to `/` when its session was deleted since', async () => {
+    // This browser sent the draft; the session it became is gone.
+    localStorage.setItem('openmanager.sent-drafts', JSON.stringify({ 'sent-draft': 'deleted' }))
+    const { router } = renderConnected('/drafts/sent-draft', {
+      ...SEED,
+      workspaces: [{ ...WORKSPACE, capabilities: { git: false, providers: ['opencode'] } }],
+    })
+    const visited: string[] = []
+    const stop = router.history.subscribe(() => visited.push(router.history.location.pathname))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/'))
+    stop()
+    expect(visited).toContain('/sessions/deleted')
+    const textbox = await screen.findByRole('textbox')
+    await waitFor(() => expect(textbox).toBeEnabled())
+    expect(textbox).toHaveValue('')
+  })
+
+  it('opens a session from its URL before the catalog lists it, without leaving the URL', async () => {
+    connectedEnvironment()
+    // The catalog has not reached it (past its first page); the environment has it.
+    const client = createMockEnvironmentClient({ seed: { ...SEED, sessions: [] } })
+    const open = client.commands.openSession.bind(client.commands)
+    vi.spyOn(client.commands, 'openSession').mockImplementation(async (sessionId) => {
+      if (sessionId === SESSION.sessionId && !client.getState().sessions[sessionId]) {
+        const timestamp = new Date().toISOString()
+        client.emit({
+          type: 'event',
+          name: 'session.created',
+          eventId: 'listed-late',
+          timestamp,
+          scope: { type: 'environment', environmentId: 'env-local' },
+          payload: { session: SESSION },
+        })
+        client.emit({
+          type: 'event',
+          name: 'thread.created',
+          eventId: 'listed-late-thread',
+          timestamp,
+          scope: { type: 'session', environmentId: 'env-local', sessionId: SESSION.sessionId },
+          payload: { thread: THREAD },
+        })
+      }
+      return open(sessionId)
+    })
+    const { router } = renderWebApp(`/sessions/${SESSION.sessionId}`, {
+      createEnvironmentClient: () => client,
+    })
+    const visited: string[] = []
+    const stop = router.history.subscribe(() => visited.push(router.history.location.pathname))
+    await waitFor(() => expect(client.getState().activeSessionId).toBe(SESSION.sessionId))
+    stop()
+    expect(router.state.location.pathname).toBe(`/sessions/${SESSION.sessionId}`)
+    expect(visited).not.toContain('/')
+    // Asked for once: the catalog learning of it does not open it again.
+    expect(client.calls.filter((call) => call.command === 'openSession')).toHaveLength(1)
+  })
+
   it('adds a project picked in the folder browser', async () => {
     const user = userEvent.setup()
     const { client } = renderConnected('/', {
@@ -391,8 +483,9 @@ describe('session workspace', () => {
     expect(client.calls.map((call) => call.command)).toContain('sendTurn')
   })
 
-  // `/` and `/sessions/$sessionId` share one chat pane, so sending a draft's
-  // first message moves the URL without rebuilding the pane mid-launch.
+  // `/`, `/drafts/$draftId` and `/sessions/$sessionId` share one chat pane, so
+  // a draft's first character and its first message move the URL without
+  // rebuilding the pane.
   it('launches a draft into its session route with the same composer and no landing in between', async () => {
     const user = userEvent.setup()
     const { client, router } = renderConnected('/', {
@@ -403,6 +496,12 @@ describe('session workspace', () => {
     const textbox = await screen.findByRole('textbox')
     await waitFor(() => expect(textbox).toBeEnabled())
     await user.type(textbox, 'first words')
+    // The first character gave the draft its address, in place.
+    await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/drafts\//))
+    const draftPath = router.state.location.pathname
+    expect(screen.getByRole('textbox')).toBe(textbox)
+    expect(textbox).toHaveFocus()
+    expect(textbox).toHaveValue('first words')
 
     // Held until the transcript has taken over, so the whole launch is watched.
     const create = client.commands.createSession.bind(client.commands)
@@ -423,10 +522,10 @@ describe('session workspace', () => {
     observer.observe(document.body, { childList: true, subtree: true, characterData: true })
     await user.click(screen.getByRole('button', { name: 'Send' }))
 
-    // Creating: the message is already in the transcript, the URL is still `/`.
+    // Creating: the message is already in the transcript, the URL is still the draft's.
     expect(await screen.findByText('Creating session…')).toBeInTheDocument()
     expect(screen.getByText('first words')).toBeInTheDocument()
-    expect(router.state.location.pathname).toBe('/')
+    expect(router.state.location.pathname).toBe(draftPath)
     expect(landingLeft).toBe(true)
 
     await act(async () => release())
@@ -437,5 +536,45 @@ describe('session workspace', () => {
     observer.disconnect()
     expect(screen.getByRole('textbox')).toBe(textbox)
     expect(landingReturned).toBe(false)
+  })
+
+  it('keeps each draft at its own address, and `/` blank', async () => {
+    const user = userEvent.setup()
+    const { router } = renderConnected('/', {
+      environment: SEED.environment,
+      workspaces: [{ ...WORKSPACE, capabilities: { git: false, providers: ['opencode'] } }],
+    })
+    const textbox = await screen.findByRole('textbox')
+    await waitFor(() => expect(textbox).toBeEnabled())
+    await user.type(textbox, 'first draft')
+    await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/drafts\//))
+    const first = router.state.location.pathname
+
+    // New agent: a blank page, the first draft kept at its address.
+    await user.click(screen.getByRole('button', { name: 'New agent' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/'))
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue(''))
+    await user.type(screen.getByRole('textbox'), 'second draft')
+    await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/drafts\//))
+    const second = router.state.location.pathname
+    expect(second).not.toBe(first)
+
+    await act(() => router.history.back())
+    await waitFor(() => expect(router.state.location.pathname).toBe(first))
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('first draft'))
+    await act(() => router.history.forward())
+    await waitFor(() => expect(router.state.location.pathname).toBe(second))
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('second draft'))
+  })
+
+  it('opens a blank page in place of a draft address nobody knows', async () => {
+    const { router } = renderConnected('/drafts/nobody-knows', {
+      environment: SEED.environment,
+      workspaces: [{ ...WORKSPACE, capabilities: { git: false, providers: ['opencode'] } }],
+    })
+    await waitFor(() => expect(router.state.location.pathname).toBe('/'))
+    const textbox = await screen.findByRole('textbox')
+    await waitFor(() => expect(textbox).toBeEnabled())
+    expect(textbox).toHaveValue('')
   })
 })

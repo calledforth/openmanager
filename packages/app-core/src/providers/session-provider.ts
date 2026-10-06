@@ -31,8 +31,29 @@ export interface DraftRequest {
 export interface SessionStateValue {
   activeWorkspacePath: string | null
   activeSessionId: string | null
-  /** A new-session draft is on screen instead of a persisted session. */
+  /** A new-session draft is on screen instead of a persisted session. Its
+   * project can be gone (`activeWorkspacePath` is then null): the draft stays
+   * open so another project can be picked for it. */
   isSessionDraftOpen: boolean
+  /**
+   * The id of the new-session draft on screen, where the environment keeps
+   * drafts: the composer's draft key and, once it has text or an image, its
+   * address (`/drafts/<id>`). Null when no draft is on screen. Hosts that
+   * keep one draft per project leave it out.
+   */
+  newSessionDraftId?: string | null
+  /** The open draft was written in a project that has since been removed;
+   * it waits for another to be picked. */
+  isDraftProjectRemoved?: boolean
+  /** The address names a draft this client does not know yet: it waits for
+   * the environment's listing before showing a blank page in its place. */
+  isDraftLoading?: boolean
+  /**
+   * Move the open new-session draft to another project, keeping what was
+   * typed, attached and picked. Hosts without draft pages leave it out and
+   * open the project's own draft (`createSession`) instead.
+   */
+  setDraftWorkspace?: (workspacePath: string) => void
   /** The draft's first prompt was submitted and its session is being created. */
   pendingDraftSessionStart: boolean
   /** What that first prompt said, for the transcript to show until the new
@@ -57,7 +78,7 @@ export interface SessionStateValue {
   selectSession: (workspacePath: string, externalId: string, providerId?: ProviderId) => void
   openChildSession: (childExternalId: string, parentExternalId: string) => Promise<void>
   closeChildSession: (parentExternalId: string) => void
-  /** Open a new-session draft for `workspacePath`. */
+  /** Open a blank new-session draft for `workspacePath`. */
   createSession: (workspacePath: string) => Promise<void>
   renameSession?: (workspacePath: string, externalId: string, title: string | null) => Promise<void>
   /** Name the session again with the environment's title model. Hosts

@@ -72,6 +72,34 @@ export function selectNewSessionDraftId(
   return newest?.draftId
 }
 
+/** Something a person wrote or attached. Picks alone are not content: they never make a draft worth listing. */
+export function hasDraftContent(content: DraftContent | undefined): boolean {
+  return !!content && (content.text.trim().length > 0 || (content.artifactIds?.length ?? 0) > 0)
+}
+
+/**
+ * Every new-session draft with content, most recently edited first, whatever
+ * its project (a removed project's drafts have none). A draft being sent is
+ * left out: it is the session's now. Ids only, so a list can compare the
+ * answer with `shallowEqualArray` and read each draft on its own.
+ */
+export function selectNewSessionDraftIds(state: EnvironmentState): string[] {
+  const listed: Array<{ draftId: string; at: number }> = []
+  for (const [draftId, edit] of Object.entries(state.draftEdits)) {
+    if (edit.target.type !== 'new_session' || edit.launching) continue
+    if (hasDraftContent(edit.content)) listed.push({ draftId, at: edit.editedAt })
+  }
+  for (const draft of Object.values(state.drafts)) {
+    if (state.draftEdits[draft.draftId] || draft.target.type !== 'new_session') continue
+    if (hasDraftContent(draft.content)) {
+      listed.push({ draftId: draft.draftId, at: Date.parse(draft.updatedAt) })
+    }
+  }
+  return listed
+    .sort((left, right) => right.at - left.at || (right.draftId > left.draftId ? 1 : -1))
+    .map((entry) => entry.draftId)
+}
+
 /** The revision an edit made now would be based on. */
 export function draftBaseRevision(state: EnvironmentState, draftId: string): number {
   return Math.max(state.drafts[draftId]?.revision ?? 0, state.draftTombstones[draftId] ?? 0)

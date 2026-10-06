@@ -592,7 +592,7 @@ export interface DraftSync {
    * deletes the draft. While the environment cannot be reached, edits wait.
    */
   edit(draftId: string, target: DraftTarget, content: DraftContent): void
-  /** Delete a draft now, as discarding it does. */
+  /** Delete a draft now, as discarding it does. Does nothing to a draft being sent. */
   discard(draftId: string): void
   /** Hold the draft's saves while a `session.create` sends it. */
   beginLaunch(draftId: string): void
