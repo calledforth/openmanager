@@ -39,8 +39,21 @@ export function prepareDraftProjection(database: DatabaseSync) {
       deleted_at = excluded.deleted_at,
       deleted_revision = excluded.deleted_revision
   `)
+  // A held image belongs to the project its draft is in, so the project the
+  // draft is sent from can claim it and removing the old one leaves it alone.
+  // Only held images: one a session has taken is that session's.
+  const rehome = database.prepare(`
+    UPDATE attachments SET workspace_id = ?
+    WHERE attachment_id IN (SELECT value FROM json_each(?))
+      AND session_id IS NULL AND source = 'prompt' AND workspace_id IS NOT ?
+  `)
   return {
     saved(draft: Draft) {
+      const images = draft.content.artifactIds
+      if (draft.target.type === 'new_session' && draft.target.workspaceId && images?.length) {
+        const { workspaceId } = draft.target
+        rehome.run(workspaceId, JSON.stringify(images), workspaceId)
+      }
       upsert.run(
         draft.draftId,
         draft.target.type === 'session' ? draft.target.sessionId : null,

@@ -1,8 +1,14 @@
 import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
+import { mkdir } from 'node:fs/promises'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { FakeClaudeSdk, FakeConnectionFactory } from '@agentpack/runtime/testing'
 import {
   DraftResponseSchemas,
+  ProofResponseSchemas,
+  UploadResponseSchemas,
+  UploadResultSchema,
   type Draft,
   type DraftContent,
   type DraftTarget,
@@ -19,6 +25,7 @@ import {
   replay,
   startProtocolHost,
   type ProtocolClient,
+  type ProtocolHost,
 } from './helpers/protocol-client.js'
 import { expectCommand } from './helpers/proof-slice.js'
 
@@ -409,5 +416,186 @@ describe('composer drafts across clients', () => {
     // A save naming the removed project keeps the draft, without the project.
     const after = await saved(first, 'draft-f', 1, draft.target, { text: 'still here' })
     expect(after.target).toMatchObject({ workspaceId: null })
+  })
+})
+
+const IMAGE = Buffer.from('the bytes of a screenshot, as far as anyone can tell')
+
+/** Upload an image for a draft in `workspaceId`, as the client holding `token`. */
+async function uploadHeld(
+  host: ProtocolHost,
+  client: ProtocolClient,
+  token: string,
+  workspaceId: string,
+) {
+  const requestId = client.command('upload.ticket.create', {
+    workspaceId,
+    name: 'screenshot.png',
+    mimeType: 'image/png',
+    sizeBytes: IMAGE.byteLength,
+  })
+  const ticket = UploadResponseSchemas['upload.ticket.create'].parse(
+    await nextResponse(client, requestId),
+  ).payload
+  const response = await fetch(`${host.server.url}${ticket.uploadPath}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'image/png', authorization: `Bearer ${token}` },
+    body: IMAGE,
+  })
+  expect(response.status).toBe(201)
+  return UploadResultSchema.parse(await response.json()).artifactId
+}
+
+const read = (host: ProtocolHost, path: string, token: string) =>
+  fetch(`${host.server.url}${path}`, { headers: { authorization: `Bearer ${token}` } })
+
+/** The owner's laptop and a paired phone, as two clients of one environment. */
+async function startDevices({ failSessions = 0 } = {}) {
+  const started = await startHost({ failSessions })
+  const { host } = started
+  const phoneGrant = host.server.clients.issue({
+    label: 'Phone',
+    kind: 'paired',
+    capabilities: ['read', 'operate', 'agent'],
+  })
+  const phone = await connectProtocol({ ...host, token: phoneGrant.credential })
+  await handshake(phone)
+  return { ...started, laptop: started.first, phone, phoneToken: phoneGrant.credential }
+}
+
+describe('images kept with a draft, across clients', () => {
+  it('shows an image attached on one device on another, follows a project move, and is sent from there', async () => {
+    const { host, laptop, phone, phoneToken } = await startDevices()
+    const sessionId = randomUUID()
+    const artifactId = await uploadHeld(host, laptop, host.token, host.workspaceId)
+    const draft = await saved(
+      laptop,
+      'draft-img',
+      0,
+      { type: 'new_session', workspaceId: host.workspaceId, sessionId },
+      { text: 'What is wrong here?', artifactIds: [artifactId] },
+    )
+
+    // The other device lists the draft and reads its image through it.
+    const listed = (await list(phone)).drafts.find((each) => each.draftId === 'draft-img')
+    expect(listed?.content.artifactIds).toEqual([artifactId])
+    const bytes = await read(host, `/draft-artifacts/draft-img/${artifactId}`, phoneToken)
+    expect(bytes.status).toBe(200)
+    expect(bytes.headers.get('cache-control')).toBe('no-store')
+    expect(Buffer.from(await bytes.arrayBuffer())).toEqual(IMAGE)
+    const metadata = await read(
+      host,
+      `/draft-artifacts/draft-img/${artifactId}/metadata`,
+      phoneToken,
+    )
+    expect(await metadata.json()).toMatchObject({ artifactId, mimeType: 'image/png' })
+    // Only through a draft that names it, and never without a credential.
+    expect(
+      (await read(host, `/draft-artifacts/other-draft/${artifactId}`, phoneToken)).status,
+    ).toBe(404)
+    expect((await fetch(`${host.server.url}/draft-artifacts/draft-img/${artifactId}`)).status).toBe(
+      401,
+    )
+
+    // The phone moves the draft to another project, and sends it from there.
+    const otherRoot = join(host.dataDir, 'other-project')
+    await mkdir(otherRoot)
+    const added = ProofResponseSchemas['workspace.add'].parse(
+      await nextResponse(laptop, laptop.command('workspace.add', { path: otherRoot })),
+    ).payload
+    const otherId = added.workspace.workspaceId
+    await saved(
+      phone,
+      'draft-img',
+      draft.revision,
+      { type: 'new_session', workspaceId: otherId, sessionId },
+      { text: 'What is wrong here?', artifactIds: [artifactId] },
+    )
+    const createId = phone.command('session.create', {
+      environmentId: host.server.identity.environmentId,
+      providerId: 'cursor',
+      workspaceId: otherId,
+      firstMessage: 'What is wrong here?',
+      sessionId,
+      draftId: 'draft-img',
+      artifactIds: [artifactId],
+    })
+    const created = ProofResponseSchemas['session.create'].parse(
+      await nextResponse(phone, createId),
+    ).payload
+    expect(created.session).toMatchObject({ sessionId, workspaceId: otherId })
+    expect(created.firstTurn?.userMessage.content).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: 'artifact', artifactId })]),
+    )
+    // The session's now: read through the session, no longer through the draft.
+    expect((await read(host, `/artifacts/${sessionId}/${artifactId}`, phoneToken)).status).toBe(200)
+    expect((await read(host, `/draft-artifacts/draft-img/${artifactId}`, phoneToken)).status).toBe(
+      404,
+    )
+  })
+
+  it('frees the images of a discarded draft, and keeps them when the discard is refused', async () => {
+    const { host, laptop, phone } = await startDevices()
+    const target: DraftTarget = {
+      type: 'new_session',
+      workspaceId: host.workspaceId,
+      sessionId: randomUUID(),
+    }
+    const first = await uploadHeld(host, laptop, host.token, host.workspaceId)
+    const second = await uploadHeld(host, laptop, host.token, host.workspaceId)
+    const seen = await saved(laptop, 'draft-gone', 0, target, { text: '', artifactIds: [first] })
+    // The phone attaches another image after the laptop's discard was made.
+    const since = await saved(phone, 'draft-gone', seen.revision, target, {
+      text: '',
+      artifactIds: [first, second],
+    })
+    const blob = (artifactId: string) => join(host.dataDir, 'uploads', artifactId)
+
+    expect(await removeRaw(laptop, 'draft-gone', seen.revision, seen.revision)).toMatchObject({
+      error: { code: 'conflict', details: { changed: true } },
+    })
+    expect(existsSync(blob(first))).toBe(true)
+    expect(existsSync(blob(second))).toBe(true)
+
+    // Discarded as it stands now: both go, bytes and all.
+    expect(await removeRaw(laptop, 'draft-gone', since.revision, since.revision)).toMatchObject({
+      type: 'response',
+    })
+    expect(existsSync(blob(first))).toBe(false)
+    expect(existsSync(blob(second))).toBe(false)
+    expect((await read(host, `/draft-artifacts/draft-gone/${first}`, host.token)).status).toBe(404)
+  })
+
+  it('puts a rolled-back draft back with its images', async () => {
+    const { host, laptop, phone, phoneToken } = await startDevices({ failSessions: 1 })
+    const sessionId = randomUUID()
+    const target: DraftTarget = { type: 'new_session', workspaceId: host.workspaceId, sessionId }
+    const artifactId = await uploadHeld(host, laptop, host.token, host.workspaceId)
+    await saved(laptop, 'draft-back', 0, target, { text: 'Look', artifactIds: [artifactId] })
+
+    // Sent from the phone, which did not upload it.
+    const createId = phone.command('session.create', {
+      environmentId: host.server.identity.environmentId,
+      providerId: 'cursor',
+      workspaceId: host.workspaceId,
+      firstMessage: 'Look',
+      sessionId,
+      draftId: 'draft-back',
+      artifactIds: [artifactId],
+    })
+    expect(await nextResponse(phone, createId)).toMatchObject({ type: 'response' })
+
+    // The provider refuses the session after the create answered.
+    let restored: Draft | undefined
+    for (let attempt = 0; attempt < 100 && !restored; attempt += 1) {
+      restored = (await list(laptop)).drafts.find((each) => each.draftId === 'draft-back')
+      if (!restored) await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    expect(restored?.content).toMatchObject({ text: 'Look', artifactIds: [artifactId] })
+    // Held again rather than deleted with the session, and readable through the draft.
+    expect(existsSync(join(host.dataDir, 'uploads', artifactId))).toBe(true)
+    expect((await read(host, `/draft-artifacts/draft-back/${artifactId}`, phoneToken)).status).toBe(
+      200,
+    )
   })
 })

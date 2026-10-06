@@ -33,11 +33,19 @@ export function sameUploadScope(a: UploadScope | null, b: UploadScope | null): b
 
 /**
  * An image the environment stores. Its bytes are read through the environment
- * client's authorized route, never from a URL a view could put in `src`.
+ * client's authorized route, never from a URL a view could put in `src`: the
+ * session's, or for an image a new-session draft holds, the draft's.
  */
-export type ArtifactSource = {
-  sessionId: string
+export type ArtifactSource =
+  | { sessionId: string; draftId?: never; artifactId: string }
+  | { draftId: string; sessionId?: never; artifactId: string }
+
+/** An image kept with a draft, as the composer shows and sends it. */
+export type KeptImage = {
   artifactId: string
+  name: string
+  /** A local or fetched preview, when there is one to show yet. */
+  previewUrl?: string
 }
 
 /**

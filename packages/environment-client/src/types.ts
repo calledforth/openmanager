@@ -284,6 +284,13 @@ export interface DraftEdit {
    * anyone but this client. A later edit of the draft drops it.
    */
   deleteIf?: number
+  /**
+   * Set by `discard`, with or without `ifRevision`: the delete this edit
+   * carries is the user's, not a draft emptied by typing, so nothing holds it
+   * back and nothing on its way (an image) may write the draft again. A later
+   * edit of the draft drops it.
+   */
+  discarding?: true
 }
 
 /**
@@ -342,11 +349,14 @@ export interface SendTurnInput extends ThreadTarget {
   commandId?: string
 }
 
-/** An artifact is only ever addressed inside the session that owns it. */
-export interface ArtifactTarget {
-  sessionId: string
-  artifactId: string
-}
+/**
+ * An artifact is addressed inside what owns it: the session it was sent or
+ * made in, or, for an image held for a new-session draft, the draft that
+ * names it.
+ */
+export type ArtifactTarget =
+  | { sessionId: string; draftId?: never; artifactId: string }
+  | { draftId: string; sessionId?: never; artifactId: string }
 
 /** A file the composer attaches. The environment stores it under the session. */
 /**
@@ -619,6 +629,13 @@ export interface DraftSync {
    * have the discard refused. The delete itself keeps it until it is answered.
    */
   pinAnswer(draftId: string): () => void
+  /**
+   * Keep the draft from being deleted for being empty until the returned
+   * release: something it will hold (an image on its way) still counts as
+   * content. An emptied draft waits; once the last hold goes it is saved, or
+   * deleted if it is still empty. A discard is not held.
+   */
+  holdEmpty(draftId: string): () => void
   /**
    * Hold the draft's saves while a `session.create` sends it. `sent` is what
    * the send carries, when the composer has already emptied the draft;

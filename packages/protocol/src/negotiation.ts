@@ -50,7 +50,12 @@ import {
 // refused as a `conflict` with `DraftChangedDetails` unless the draft is at
 // exactly that revision. The payload is strict, so a v14 environment would
 // refuse every discard that names it.
-export const PROTOCOL_VERSION = 15 as const
+// Version 16 keeps a draft's images with the draft: they are uploaded when
+// attached and named in its `artifactIds`, read back on any device through
+// `GET /draft-artifacts/<draft-id>/<artifact-id>`, and claimable by whichever
+// client sends the draft. A v15 environment has no such route, refuses
+// another device's images at launch, and expires them after a day.
+export const PROTOCOL_VERSION = 16 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema

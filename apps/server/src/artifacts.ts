@@ -21,8 +21,34 @@ export type ArtifactMetadata = {
  */
 export type RecordedArtifact = Omit<ArtifactMetadata, 'sessionId'> & { sessionId?: string }
 
-/** Who may claim held uploads, and for which new session. */
-export type ArtifactClaim = { workspaceId: string; clientId: string; sessionId: string }
+/**
+ * Who may claim held uploads, and for which new session. A client may claim
+ * its own uploads, and any held image in `shared`: the images of the draft
+ * being launched, which another device may have attached. The images move to
+ * the session's workspace: a draft can be sent from the project it was just
+ * moved to before the save that moved it lands.
+ */
+export type ArtifactClaim = {
+  workspaceId: string
+  clientId: string
+  sessionId: string
+  shared?: readonly string[]
+}
+
+/** A held image a draft names, as the draft's read route answers it. */
+export type HeldArtifactMetadata = Omit<ArtifactMetadata, 'sessionId' | 'workspaceId'> & {
+  /** Null once the project it was held for is removed; the draft keeps it. */
+  workspaceId: string | null
+}
+
+/**
+ * Whether a live draft names the attachment row in scope. A draft is the only
+ * thing that wants a held image, so this is what keeps one alive.
+ */
+const NAMED_BY_A_DRAFT = `EXISTS (
+  SELECT 1 FROM drafts, json_each(drafts.content_json, '$.artifactIds') AS ref
+  WHERE drafts.deleted_at IS NULL AND ref.value = attachments.attachment_id
+)`
 
 /** Shared environment-owned metadata and bytes for uploads and provider output. */
 export function createArtifactStore(database: DatabaseSync, dataDir: string) {
@@ -44,17 +70,17 @@ export function createArtifactStore(database: DatabaseSync, dataDir: string) {
       storage_key, name, mime_type, size_bytes, created_at, source, metadata_json)
     VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
-  // Only the client that uploaded a held image can hand it to a session, and
-  // only to a session in the workspace it was uploaded for.
+  // A held image goes to a session only from the client that uploaded it, or
+  // as one of the images of the draft being launched (the last parameter, 1).
   const heldLookup = database.prepare(`
     SELECT 1 FROM attachments WHERE attachment_id = ? AND session_id IS NULL
-      AND workspace_id = ? AND uploaded_by_client_id = ? AND source = 'prompt'
+      AND source = 'prompt' AND (uploaded_by_client_id = ? OR ? = 1)
   `)
   const claimOne = database.prepare(`
-    UPDATE attachments SET session_id = ?,
+    UPDATE attachments SET session_id = ?, workspace_id = ?,
       metadata_json = json_set(COALESCE(metadata_json, '{}'), '$.sessionId', ?)
-    WHERE attachment_id = ? AND session_id IS NULL AND workspace_id = ?
-      AND uploaded_by_client_id = ? AND source = 'prompt'
+    WHERE attachment_id = ? AND session_id IS NULL AND source = 'prompt'
+      AND (uploaded_by_client_id = ? OR ? = 1)
   `)
   const releaseOne = database.prepare(`
     UPDATE attachments SET session_id = NULL,
@@ -62,15 +88,36 @@ export function createArtifactStore(database: DatabaseSync, dataDir: string) {
     WHERE attachment_id = ? AND session_id = ?
   `)
   // Rows migrated with a session they no longer match keep that id in their
-  // metadata; only a draft's upload, or one a failed launch handed back, has none.
+  // metadata; only a draft's upload, or one a failed launch handed back, has
+  // none. One a saved draft names is still wanted, however old it is.
   const heldBefore = database.prepare(`
     SELECT attachment_id AS artifactId FROM attachments
     WHERE session_id IS NULL AND source = 'prompt'
       AND json_extract(metadata_json, '$.sessionId') IS NULL AND created_at < ?
+      AND NOT ${NAMED_BY_A_DRAFT}
   `)
-  const deleteHeld = database.prepare(
-    'DELETE FROM attachments WHERE attachment_id = ? AND session_id IS NULL',
-  )
+  // Checked again in the delete itself: a draft saved since the read keeps it.
+  const deleteHeld = database.prepare(`
+    DELETE FROM attachments WHERE attachment_id = ? AND session_id IS NULL
+      AND source = 'prompt' AND json_extract(metadata_json, '$.sessionId') IS NULL
+      AND NOT ${NAMED_BY_A_DRAFT}
+  `)
+  const draftImages = database.prepare(`
+    SELECT ref.value AS artifactId
+    FROM drafts, json_each(drafts.content_json, '$.artifactIds') AS ref
+    WHERE drafts.draft_id = ? AND drafts.deleted_at IS NULL
+  `)
+  const heldForDraft = database.prepare(`
+    SELECT attachment_id AS artifactId, workspace_id AS workspaceId, name,
+      mime_type AS mimeType, size_bytes AS sizeBytes, created_at AS createdAt, source
+    FROM attachments
+    WHERE attachment_id = ? AND session_id IS NULL AND source = 'prompt'
+      AND EXISTS (
+        SELECT 1 FROM drafts, json_each(drafts.content_json, '$.artifactIds') AS ref
+        WHERE drafts.draft_id = ? AND drafts.deleted_at IS NULL
+          AND ref.value = attachments.attachment_id
+      )
+  `)
   const get = (sessionId: string, artifactId: string) =>
     lookup.get(artifactId, sessionId) as ArtifactMetadata | undefined
   const path = (artifactId: string) => {
@@ -95,7 +142,7 @@ export function createArtifactStore(database: DatabaseSync, dataDir: string) {
       metadata.sessionId, metadata.workspaceId)
     if (result.changes !== 1) throw new Error('Artifact session not found')
   }
-  const read = (metadata: ArtifactMetadata) => {
+  const read = (metadata: Pick<ArtifactMetadata, 'artifactId' | 'sizeBytes'>) => {
     const filePath = path(metadata.artifactId)
     const stat = statSync(filePath)
     if (!stat.isFile() || stat.size !== metadata.sizeBytes || stat.size > MAX_ATTACHMENT_BYTES) {
@@ -107,10 +154,16 @@ export function createArtifactStore(database: DatabaseSync, dataDir: string) {
     }
     return bytes
   }
-  /** Whether every held upload named here is one this client may give this workspace's new session. */
-  const claimable = (artifactIds: readonly string[], claim: Omit<ArtifactClaim, 'sessionId'>) =>
+  const sharedFlag = (artifactId: string, claim: Pick<ArtifactClaim, 'shared'>) =>
+    claim.shared?.includes(artifactId) ? 1 : 0
+  /** Whether every held upload named here is one this client may give a new session. */
+  const claimable = (
+    artifactIds: readonly string[],
+    claim: Pick<ArtifactClaim, 'clientId' | 'shared'>,
+  ) =>
     artifactIds.every(
-      (artifactId) => heldLookup.get(artifactId, claim.workspaceId, claim.clientId) !== undefined,
+      (artifactId) =>
+        heldLookup.get(artifactId, claim.clientId, sharedFlag(artifactId, claim)) !== undefined,
     )
   /**
    * Hand held uploads to a new session, all or none: a launch that could only
@@ -120,8 +173,14 @@ export function createArtifactStore(database: DatabaseSync, dataDir: string) {
     database.exec('BEGIN IMMEDIATE')
     try {
       for (const artifactId of new Set(artifactIds)) {
-        const result = claimOne.run(target.sessionId, target.sessionId, artifactId,
-          target.workspaceId, target.clientId)
+        const result = claimOne.run(
+          target.sessionId,
+          target.workspaceId,
+          target.sessionId,
+          artifactId,
+          target.clientId,
+          sharedFlag(artifactId, target),
+        )
         if (result.changes !== 1) {
           database.exec('ROLLBACK')
           return false
@@ -142,26 +201,54 @@ export function createArtifactStore(database: DatabaseSync, dataDir: string) {
   const release = (artifactIds: readonly string[], sessionId: string) => {
     for (const artifactId of new Set(artifactIds)) releaseOne.run(artifactId, sessionId)
   }
+  const removeBytes = (artifactId: string) => {
+    try {
+      rmSync(path(artifactId), { force: true })
+    } catch {
+      // An id this store did not mint names no file; startup sweeps strays.
+    }
+  }
   /**
-   * Remove held uploads no launch claimed before `cutoff`: the draft was
-   * abandoned. Row first, then bytes, so a claim racing the sweep either wins
-   * the row or finds nothing; it never gets a row whose bytes are gone.
+   * Remove held uploads no launch claimed before `cutoff` and no saved draft
+   * names: the draft was abandoned, or never saved. Row first, then bytes, so
+   * a claim racing the sweep either wins the row or finds nothing; it never
+   * gets a row whose bytes are gone.
    */
   const expireHeld = (cutoff: number) => {
     const expired: string[] = []
     for (const { artifactId } of heldBefore.all(cutoff) as { artifactId: string }[]) {
       if (deleteHeld.run(artifactId).changes !== 1) continue
       expired.push(artifactId)
-      try {
-        rmSync(path(artifactId), { force: true })
-      } catch {
-        // An id this store did not mint names no file; startup sweeps strays.
-      }
+      removeBytes(artifactId)
     }
     return expired
   }
+  /**
+   * Free the held images a deleted draft named, once its deletion is written.
+   * One another draft still names, or a session took, stays.
+   */
+  const discardHeld = (artifactIds: readonly string[]) => {
+    const discarded: string[] = []
+    for (const artifactId of new Set(artifactIds)) {
+      if (deleteHeld.run(artifactId).changes !== 1) continue
+      discarded.push(artifactId)
+      removeBytes(artifactId)
+    }
+    return discarded
+  }
+  /** The images a live draft names, in its order. */
+  const imagesOf = (draftId: string) =>
+    (draftImages.all(draftId) as { artifactId: unknown }[])
+      .map((row) => row.artifactId)
+      .filter((artifactId): artifactId is string => typeof artifactId === 'string')
+  /** A held image, if the live draft `draftId` names it. */
+  const getHeld = (draftId: string, artifactId: string) =>
+    heldForDraft.get(artifactId, draftId) as HeldArtifactMetadata | undefined
   return {
     get, record, read, path, claimable, claim, release, expireHeld,
+    getHeld,
+    discardHeld,
+    imagesOf,
     reference(metadata: ArtifactMetadata) {
       return { type: 'artifact' as const, artifactId: metadata.artifactId,
         mimeType: metadata.mimeType, name: metadata.name, sizeBytes: metadata.sizeBytes }

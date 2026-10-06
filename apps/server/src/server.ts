@@ -304,6 +304,10 @@ export async function startServer(config: ServerConfig) {
     database: eventDatabase,
     environmentId: () => identity.environmentId,
     appendAtomic: (events) => eventService.appendAtomic(events),
+    discardImages: (artifactIds) => {
+      const freed = artifacts.discardHeld(artifactIds)
+      if (freed.length > 0) log('info', 'freed images of a deleted draft', { count: freed.length })
+    },
   })
   try {
     drafts.pruneTombstones()

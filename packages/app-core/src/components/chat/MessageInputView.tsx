@@ -39,9 +39,13 @@ import {
   ACCEPTED_IMAGE_TYPES,
   MAX_IMAGE_ATTACHMENTS,
   MAX_IMAGE_BYTES,
+  type ArtifactSource,
   type DraftImageAttachment,
+  type KeptImage,
+  type UploadedImageAttachment,
 } from '../../lib/attachments'
-import { useComposerDraftStore } from './composerDraftStore'
+import { useArtifactPreviews } from '../../lib/artifact-preview'
+import { useComposerDraftStore, type ImageTarget } from './composerDraftStore'
 import { DraftSyncIndicator } from './DraftSyncIndicator'
 import {
   configurableSessionOptions,
@@ -293,6 +297,44 @@ function ModelConfigMenu({
 type ComposerDraft = { text: string; attachments: DraftImageAttachment[] }
 
 const NO_ATTACHMENTS: DraftImageAttachment[] = []
+const NO_IMAGE_IDS: readonly string[] = []
+
+/**
+ * The draft's images with the uploads still on their way, each where it was
+ * attached. An image with no slot (attached elsewhere, or before this
+ * composer) keeps its place ahead of this composer's.
+ */
+function inSlotOrder<T extends { id: string }>(
+  kept: readonly T[],
+  uploading: readonly T[],
+  slots: ReadonlyMap<string, number>,
+): T[] {
+  const slotOf = (item: T) => slots.get(item.id) ?? -1
+  const waiting = [...uploading].sort((a, b) => slotOf(a) - slotOf(b))
+  const merged: T[] = []
+  for (const item of kept) {
+    while (waiting.length > 0 && slotOf(waiting[0]!) < slotOf(item)) merged.push(waiting.shift()!)
+    merged.push(item)
+  }
+  return [...merged, ...waiting]
+}
+
+/** Where an image in slot `slot` goes among a draft's images, by their slots. */
+function slotIndex(images: readonly string[], slot: number, slots: ReadonlyMap<string, number>) {
+  const after = images.findIndex((id) => (slots.get(id) ?? -1) > slot)
+  return after === -1 ? images.length : after
+}
+
+/** An image as the composer shows it, whichever way the draft holds it. */
+type ComposerImage = {
+  id: string
+  name: string
+  /** Absent while a kept image's bytes load, or when they cannot be read. */
+  url?: string
+  /** On its way to the environment; the draft names it once it lands. */
+  uploading?: boolean
+  failed?: boolean
+}
 
 export function MessageInputView({
   disabled,
@@ -331,6 +373,7 @@ export function MessageInputView({
   onConfigOptionChange,
   onSend,
   onAbort,
+  uploadImage,
 }: {
   disabled: boolean
   pendingDraftSessionStart: boolean
@@ -381,20 +424,61 @@ export function MessageInputView({
   onModeChange: (id: string) => void
   onProviderModelChange: (providerId: ProviderId, modelId: string) => void
   onConfigOptionChange: (configId: string, value: SessionConfigValue) => void
-  onSend: (text: string, attachments: DraftImageAttachment[]) => Promise<void>
+  /**
+   * `attachments` are images still to upload; `kept` are images the draft
+   * already holds on the environment, uploaded when they were attached.
+   */
+  onSend: (text: string, attachments: DraftImageAttachment[], kept?: KeptImage[]) => Promise<void>
   onAbort: () => void
+  /**
+   * Store one image now, for the open draft. Given, and where the draft store
+   * keeps images, an image is uploaded when attached and kept with the draft,
+   * so it survives a reload and shows on every device; otherwise images wait
+   * here and upload when sent.
+   */
+  uploadImage?: (image: DraftImageAttachment) => Promise<UploadedImageAttachment>
 }) {
   // Text lives in the host's draft store, which reads synchronously, so a
   // restored draft is on screen at first paint — no frame of empty box.
   const draftStore = useComposerDraftStore()
   const readText = useCallback(() => draftStore.getText(draftKey), [draftKey, draftStore])
   const storedText = useSyncExternalStore(draftStore.subscribe, readText, readText)
-  // Attachments are `File` objects with `blob:` previews and are only uploaded
-  // at send time, so they stay with this composer: an unsent draft's images
-  // have nothing durable to restore from after a reload.
+  // Where the store keeps images, an image is uploaded as it is attached and
+  // the draft names it from then on: it is on every device and survives a
+  // reload. Here, then, are only the images still uploading. Elsewhere the
+  // `File`s wait here, with `blob:` previews, and upload when sent.
+  const keepsImages =
+    !!uploadImage &&
+    !!draftStore.getImages &&
+    !!draftStore.setImages &&
+    !!draftStore.keepsImages?.(draftKey)
+  const readImages = useCallback(
+    () => (keepsImages ? draftStore.getImages!(draftKey) : NO_IMAGE_IDS),
+    [draftKey, draftStore, keepsImages],
+  )
+  const storedImages = useSyncExternalStore(draftStore.subscribe, readImages, readImages)
   const [attachmentsByKey, setAttachmentsByKey] = useState<Record<string, DraftImageAttachment[]>>(
     {},
   )
+  // This composer's own previews of images it uploaded, so they need not be
+  // read back. Released once they are sent, or when it unmounts.
+  const keptPreviewsRef = useRef(new Map<string, { url: string; name: string }>())
+  // Each image takes its place in the draft when attached, not when its
+  // upload finishes: uploads started together land in any order. Slots
+  // count up, by upload (pending id) and, once landed, by artifact id.
+  const nextSlotRef = useRef(0)
+  const slotsRef = useRef(new Map<string, number>())
+  // The hold each upload keeps on its draft, by pending id: let go when the
+  // upload settles or the image is taken out, whichever comes first.
+  const holdsRef = useRef(new Map<string, () => void>())
+  const releaseHold = (attachmentId: string) => {
+    const release = holdsRef.current.get(attachmentId)
+    holdsRef.current.delete(attachmentId)
+    release?.()
+  }
+  // The draft key on screen; null once unmounted.
+  const draftKeyRef = useRef<string | null>(draftKey)
+  draftKeyRef.current = draftKey
   const [sending, setSending] = useState(false)
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [viewingAttachment, setViewingAttachment] = useState<number | null>(null)
@@ -414,11 +498,50 @@ export function MessageInputView({
   // underneath is left untouched so it comes back intact afterwards.
   const text = textOverride ? textOverride.value : draft.text
   const attachments = draft.attachments
+  // A kept image another device attached, or one from before a reload, is
+  // read back from the environment; one uploaded here shows its own preview.
+  const keptPreviews = keptPreviewsRef.current
+  const remoteSources = useMemo(
+    () =>
+      storedImages.flatMap((artifactId): ArtifactSource[] => {
+        if (keptPreviews.has(artifactId)) return []
+        const source = draftStore.imageSource?.(draftKey, artifactId)
+        return source ? [source] : []
+      }),
+    [draftKey, draftStore, keptPreviews, storedImages],
+  )
+  const remotePreviews = useArtifactPreviews(remoteSources)
+  const images: ComposerImage[] = keepsImages
+    ? inSlotOrder<ComposerImage>(
+        storedImages.map((artifactId, index) => {
+          const local = keptPreviews.get(artifactId)
+          const remote = remotePreviews[remoteSources.findIndex((s) => s.artifactId === artifactId)]
+          return {
+            id: artifactId,
+            name: local?.name ?? `Image ${index + 1}`,
+            url: local?.url ?? remote?.url,
+            failed: !local && remote?.failed === true,
+          }
+        }),
+        attachments.map((attachment) => ({
+          id: attachment.id,
+          name: attachment.file.name,
+          url: attachment.previewUrl,
+          uploading: true,
+        })),
+        slotsRef.current,
+      )
+    : attachments.map((attachment) => ({
+        id: attachment.id,
+        name: attachment.file.name,
+        url: attachment.previewUrl,
+      }))
+  const uploadingImages = keepsImages && attachments.length > 0
   // A preview belongs to the list it was opened on: once a send clears it or
   // another draft swaps it in, an index left behind would reopen the viewer on
   // whatever image lands there next. Compared by ids, not identity: a draft
   // with no entry yields a fresh empty array on every render.
-  const attachmentIds = attachments.map((attachment) => attachment.id).join('\n')
+  const attachmentIds = images.map((image) => image.id).join('\n')
   const [previewedIds, setPreviewedIds] = useState(attachmentIds)
   if (previewedIds !== attachmentIds) {
     setPreviewedIds(attachmentIds)
@@ -429,14 +552,17 @@ export function MessageInputView({
     attachmentsRef.current = attachmentsByKey
   }, [attachmentsByKey])
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    const kept = keptPreviewsRef.current
+    return () => {
       for (const item of Object.values(attachmentsRef.current)) {
         for (const attachment of item) URL.revokeObjectURL(attachment.previewUrl)
       }
-    },
-    [],
-  )
+      for (const { url } of kept.values()) URL.revokeObjectURL(url)
+      // Uploads still landing find no composer on screen.
+      draftKeyRef.current = null
+    }
+  }, [])
 
   // A borrowed composer never writes a draft — its text belongs to the caller
   // — so nothing here can leak a question answer into a session draft.
@@ -560,10 +686,13 @@ export function MessageInputView({
         return
       }
       let error: string | null = null
+      const added: DraftImageAttachment[] = []
+      // Images the draft already keeps count towards the limit too.
+      const kept = keepsImages ? draftStore.getImages!(draftKey).length : 0
       updateDraft((current) => {
         const next = [...current.attachments]
         for (const file of files) {
-          if (next.length >= MAX_IMAGE_ATTACHMENTS) {
+          if (kept + next.length >= MAX_IMAGE_ATTACHMENTS) {
             error = `You can attach up to ${MAX_IMAGE_ATTACHMENTS} images.`
             break
           }
@@ -575,25 +704,141 @@ export function MessageInputView({
             error = `${file.name} must be smaller than 10 MB.`
             continue
           }
-          next.push({ id: crypto.randomUUID(), file, previewUrl: URL.createObjectURL(file) })
+          const attachment = {
+            id: crypto.randomUUID(),
+            file,
+            previewUrl: URL.createObjectURL(file),
+          }
+          next.push(attachment)
+          added.push(attachment)
         }
         return { ...current, attachments: next }
       })
       // An image is the draft's first content as much as text is.
       if (attachmentsRef.current[draftKey]?.length) draftStore.claim?.(draftKey)
       setAttachmentError(error)
+      if (!keepsImages) return
+      // Tied to the draft as it is now: claimed above, so a first image's
+      // draft is the page's.
+      const target = draftStore.imageTarget?.(draftKey)
+      for (const attachment of added) {
+        slotsRef.current.set(attachment.id, (nextSlotRef.current += 1))
+        // On its way, the image is content: erasing the text meanwhile does
+        // not delete the draft it is for. Released once it has landed (or
+        // not) or is taken out, so a draft left with nothing is deleted
+        // then, as ever.
+        const release = draftStore.holdImage?.(draftKey)
+        if (release) holdsRef.current.set(attachment.id, release)
+        void keepImage(draftKey, attachment, target).finally(() => releaseHold(attachment.id))
+      }
     },
+    // keepImage reads only refs and stable props.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       draftKey,
       draftStore,
       imageSupportMessage,
       imageUploadEnabled,
+      keepsImages,
       pendingDraftSessionStart,
       updateDraft,
     ],
   )
 
+  /** The images still uploading for a draft, which need not be the one on screen now. */
+  const setUploading = (key: string, next: DraftImageAttachment[]) => {
+    attachmentsRef.current = { ...attachmentsRef.current, [key]: next }
+    setAttachmentsByKey(attachmentsRef.current)
+  }
+
+  /**
+   * Upload an image just attached, then name it, in its slot, in the draft it
+   * was attached to, wherever the user is by then. Only that draft: one that
+   * was deleted, sent or set aside meanwhile is not brought back by it. An
+   * image that lands nowhere (that, or removed while it uploaded) is left
+   * for the environment to expire: no draft names it.
+   */
+  const keepImage = async (
+    key: string,
+    attachment: DraftImageAttachment,
+    target: ImageTarget | undefined,
+  ) => {
+    const slot = slotsRef.current.get(attachment.id) ?? (nextSlotRef.current += 1)
+    const stillWanted = () =>
+      (attachmentsRef.current[key] ?? NO_ATTACHMENTS).some((each) => each.id === attachment.id)
+    const settle = () => {
+      slotsRef.current.delete(attachment.id)
+      setUploading(
+        key,
+        (attachmentsRef.current[key] ?? NO_ATTACHMENTS).filter((each) => each.id !== attachment.id),
+      )
+    }
+    const fail = (reason: string) => {
+      settle()
+      URL.revokeObjectURL(attachment.previewUrl)
+      if (draftKeyRef.current === key) {
+        setAttachmentError(`${attachment.file.name} was not attached. ${reason}`)
+      }
+    }
+    let stored: UploadedImageAttachment
+    try {
+      stored = await uploadImage!(attachment)
+    } catch (error) {
+      if (stillWanted()) fail(error instanceof Error ? error.message : 'The upload failed.')
+      return
+    }
+    if (!stillWanted()) {
+      settle()
+      URL.revokeObjectURL(attachment.previewUrl)
+      return
+    }
+    if (target && draftStore.imageTargetLive && !draftStore.imageTargetLive(target)) {
+      fail('Its draft was sent or deleted meanwhile.')
+      return
+    }
+    // In its slot: uploads started together finish in any order.
+    const images = draftStore.getImages!(key).filter((id) => id !== stored.id)
+    const at = slotIndex(images, slot, slotsRef.current)
+    slotsRef.current.set(stored.id, slot)
+    // Its own preview first, so naming it never sends for the bytes; and
+    // named before the upload is dropped from the list, so the image never
+    // blinks out between the two.
+    keptPreviewsRef.current.set(stored.id, {
+      url: attachment.previewUrl,
+      name: attachment.file.name,
+    })
+    if (!draftStore.setImages!(key, [...images.slice(0, at), stored.id, ...images.slice(at)])) {
+      slotsRef.current.delete(stored.id)
+      keptPreviewsRef.current.delete(stored.id)
+      fail('Its draft is gone.')
+      return
+    }
+    settle()
+  }
+
+  /** Let go of what this composer kept for images that are sent or removed. */
+  const forgetSent = (artifactIds: readonly string[]) => {
+    for (const artifactId of artifactIds) {
+      slotsRef.current.delete(artifactId)
+      const local = keptPreviewsRef.current.get(artifactId)
+      if (!local) continue
+      keptPreviewsRef.current.delete(artifactId)
+      URL.revokeObjectURL(local.url)
+    }
+  }
+
   const removeAttachment = (id: string) => {
+    if (keepsImages && storedImages.includes(id)) {
+      // Unnamed, the environment lets it go: at once if the draft is
+      // discarded, else when held images expire.
+      draftStore.setImages!(
+        draftKey,
+        draftStore.getImages!(draftKey).filter((artifactId) => artifactId !== id),
+      )
+      forgetSent([id])
+      setAttachmentError(null)
+      return
+    }
     updateDraft((current) => {
       const removed = current.attachments.find((attachment) => attachment.id === id)
       if (removed) URL.revokeObjectURL(removed.previewUrl)
@@ -602,6 +847,8 @@ export function MessageInputView({
         attachments: current.attachments.filter((attachment) => attachment.id !== id),
       }
     })
+    // Taken out on its way: it no longer keeps the draft from being empty.
+    releaseHold(id)
     setAttachmentError(null)
   }
 
@@ -627,18 +874,20 @@ export function MessageInputView({
     }
     const trimmed = text.trim()
     if (
-      (!trimmed && attachments.length === 0) ||
+      (!trimmed && images.length === 0) ||
       disabled ||
       sending ||
       pendingDraftSessionStart ||
-      sendBlockedReason
+      sendBlockedReason ||
+      // The draft names an image only once it has landed.
+      uploadingImages
     )
       return
-    if (isAwaitingPlanReview && attachments.length > 0) {
+    if (isAwaitingPlanReview && images.length > 0) {
       setAttachmentError('Remove image attachments before requesting plan changes.')
       return
     }
-    if (attachments.length && !imageUploadEnabled) {
+    if (images.length && !imageUploadEnabled) {
       setAttachmentError(imageSupportMessage ?? 'The selected model cannot read images.')
       return
     }
@@ -650,11 +899,27 @@ export function MessageInputView({
     // session, where the send waits on a provider handshake before the job is
     // even submitted. Restored verbatim if the send fails, so nothing is lost.
     const restore = draft
+    const restoreImages = storedImages
+    const kept: KeptImage[] = images
+      .filter((image) => !image.uploading && restoreImages.includes(image.id))
+      .map((image) => ({
+        artifactId: image.id,
+        name: image.name,
+        ...(image.url ? { previewUrl: image.url } : {}),
+      }))
     updateDraft(() => ({ text: '', attachments: NO_ATTACHMENTS }))
-    const release = draftStore.beginSend?.(draftKey, restore.text)
+    if (restoreImages.length > 0) draftStore.setImages?.(draftKey, NO_IMAGE_IDS)
+    const release = draftStore.beginSend?.(
+      draftKey,
+      restore.text,
+      keepsImages ? restoreImages : undefined,
+    )
     try {
-      await onSend(trimmed, attachments)
+      await onSend(trimmed, keepsImages ? NO_ATTACHMENTS : attachments, kept)
       release?.()
+      // Sent: the transcript reads them from the session now. A failed send
+      // keeps them, for the draft it puts back.
+      forgetSent(restoreImages)
     } catch (error) {
       release?.()
       // The composer stays live during an in-flight send, so anything typed
@@ -669,6 +934,13 @@ export function MessageInputView({
               attachments: [...restore.attachments, ...active.attachments],
             },
       )
+      if (restoreImages.length > 0) {
+        const active = draftStore.getImages?.(draftKey) ?? NO_IMAGE_IDS
+        draftStore.setImages?.(draftKey, [
+          ...restoreImages,
+          ...active.filter((artifactId) => !restoreImages.includes(artifactId)),
+        ])
+      }
       setAttachmentError(error instanceof Error ? error.message : 'Failed to send message')
     } finally {
       setSending(false)
@@ -712,7 +984,9 @@ export function MessageInputView({
   const currentProviderName =
     providerModelGroups.find((group) => group.providerId === currentProviderId)?.providerName ??
     currentProviderId
-  const hasContent = text.trim().length > 0 || attachments.length > 0
+  const hasContent = text.trim().length > 0 || images.length > 0
+  // Only an image whose bytes are here can be opened large.
+  const viewable = images.filter((image): image is ComposerImage & { url: string } => !!image.url)
   const placeholder = textOverride
     ? textOverride.placeholder
     : !activeWorkspacePath
@@ -732,12 +1006,13 @@ export function MessageInputView({
   const isPlan = currentModeId === 'plan'
   const sendActive = textOverride
     ? textOverride.canSubmit
-    : (isAwaitingPlanReview ? text.trim().length > 0 && attachments.length === 0 : hasContent) &&
+    : (isAwaitingPlanReview ? text.trim().length > 0 && images.length === 0 : hasContent) &&
       !disabled &&
       !sending &&
       !pendingDraftSessionStart &&
       !sendBlockedReason &&
-      (attachments.length === 0 || imageUploadEnabled)
+      !uploadingImages &&
+      (images.length === 0 || imageUploadEnabled)
   const configSummary = sessionConfigSummary(configOptions)
   const effortChoices = effortOptions ?? effortLevels.map((level) => ({ id: level, name: level }))
 
@@ -755,13 +1030,9 @@ export function MessageInputView({
           onDismiss={() => setSlashDismissed(true)}
         />
       )}
-      {viewingAttachment !== null && viewingAttachment < attachments.length && (
+      {viewingAttachment !== null && viewingAttachment < viewable.length && (
         <ImageViewer
-          images={attachments.map((attachment) => ({
-            id: attachment.id,
-            url: attachment.previewUrl,
-            name: attachment.file.name,
-          }))}
+          images={viewable.map((image) => ({ id: image.id, url: image.url, name: image.name }))}
           index={viewingAttachment}
           onIndexChange={setViewingAttachment}
           onClose={() => setViewingAttachment(null)}
@@ -798,33 +1069,60 @@ export function MessageInputView({
             event.target.value = ''
           }}
         />
-        {attachments.length > 0 && (
+        {images.length > 0 && (
           <div className="flex gap-2 overflow-x-auto px-2 pt-1.5 pb-0.5 scrollbar-hide">
-            {attachments.map((attachment, index) => (
+            {images.map((image) => (
               <div
-                key={attachment.id}
+                key={image.id}
+                aria-busy={image.uploading || undefined}
                 className="group relative h-16 w-16 shrink-0 overflow-hidden rounded-lg border border-[var(--basis-border)] bg-[var(--basis-surface)] shadow-sm"
               >
                 <button
                   type="button"
-                  onClick={() => setViewingAttachment(index)}
-                  aria-label={`Preview ${attachment.file.name}`}
-                  className="block h-full w-full cursor-zoom-in focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--basis-text-muted)]"
+                  disabled={!image.url}
+                  onClick={() =>
+                    setViewingAttachment(viewable.findIndex((each) => each.id === image.id))
+                  }
+                  aria-label={
+                    image.failed ? `${image.name} could not be loaded` : `Preview ${image.name}`
+                  }
+                  className="block h-full w-full cursor-zoom-in disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--basis-text-muted)]"
                 >
-                  <img
-                    src={attachment.previewUrl}
-                    alt={attachment.file.name}
-                    className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.03]"
-                  />
-                  <span className="pointer-events-none absolute bottom-1 right-1 flex h-4 w-4 items-center justify-center rounded border border-white/15 bg-black/55 text-white/75 opacity-0 shadow-sm backdrop-blur-sm transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-                    <ArrowsOutIcon className="h-2.5 w-2.5" />
-                  </span>
+                  {image.url ? (
+                    <img
+                      src={image.url}
+                      alt={image.name}
+                      className={cn(
+                        'h-full w-full object-cover transition-[transform,opacity] duration-200 group-hover:scale-[1.03]',
+                        image.uploading && 'opacity-60',
+                      )}
+                    />
+                  ) : (
+                    // Read back from the environment, or not there to read.
+                    <span
+                      className={cn(
+                        'flex h-full w-full items-center justify-center text-[10px] text-[var(--basis-text-muted)]',
+                        !image.failed && 'animate-pulse bg-[var(--basis-border)]',
+                      )}
+                    >
+                      {image.failed ? 'Unavailable' : null}
+                    </span>
+                  )}
+                  {image.uploading ? (
+                    <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-white">
+                      <CircleNotchIcon className="h-4 w-4 animate-spin drop-shadow" />
+                    </span>
+                  ) : image.url ? (
+                    <span className="pointer-events-none absolute bottom-1 right-1 flex h-4 w-4 items-center justify-center rounded border border-white/15 bg-black/55 text-white/75 opacity-0 shadow-sm backdrop-blur-sm transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                      <ArrowsOutIcon className="h-2.5 w-2.5" />
+                    </span>
+                  ) : null}
                 </button>
                 <button
                   type="button"
-                  onClick={() => removeAttachment(attachment.id)}
+                  onClick={() => removeAttachment(image.id)}
                   className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/70 text-white opacity-90 shadow-sm transition hover:bg-black group-hover:opacity-100"
-                  aria-label={`Remove ${attachment.file.name}`}
+                  aria-label={`Remove ${image.name}`}
                 >
                   <XIcon size={11} />
                 </button>
@@ -851,7 +1149,7 @@ export function MessageInputView({
           className={cn(chatComposerTextarea, 'max-h-[156px] overflow-y-auto')}
         />
 
-        {(attachmentError || (attachments.length > 0 && imageSupportMessage)) && (
+        {(attachmentError || (images.length > 0 && imageSupportMessage)) && (
           <div className="px-2 pb-1 text-[11px] leading-4 text-amber-500" role="alert">
             {attachmentError ?? imageSupportMessage}
           </div>

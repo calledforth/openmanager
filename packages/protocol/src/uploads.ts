@@ -17,6 +17,17 @@ export const ARTIFACT_PATH_PREFIX = '/artifacts/' as const
 export const artifactPath = (sessionId: string, artifactId: string) =>
   `${ARTIFACT_PATH_PREFIX}${encodeURIComponent(sessionId)}/${encodeURIComponent(artifactId)}`
 
+/**
+ * A new-session draft's images have no session yet. They are read back with
+ * `GET /draft-artifacts/<draft-id>/<artifact-id>`, which answers only while
+ * the draft names the image, so any device that can list the draft can show it.
+ */
+export const DRAFT_ARTIFACT_PATH_PREFIX = '/draft-artifacts/' as const
+
+/** Where a draft's held image is read, like `artifactPath`. */
+export const draftArtifactPath = (draftId: string, artifactId: string) =>
+  `${DRAFT_ARTIFACT_PATH_PREFIX}${encodeURIComponent(draftId)}/${encodeURIComponent(artifactId)}`
+
 const command = <N extends string, P extends z.ZodType>(name: N, payload: P) =>
   CommandEnvelopeSchema.extend({ name: z.literal(name), payload })
 const response = <P extends z.ZodType>(payload: P) => ResponseEnvelopeSchema.extend({ payload })
@@ -35,8 +46,11 @@ export const UploadSizeSchema = z.number().int().positive().max(Number.MAX_SAFE_
  * credential and the session, and PUTs the raw bytes to `uploadPath` over HTTP.
  *
  * A draft has no session yet, so it names its workspace instead. That upload
- * is held for the workspace, owned by the client that sent it, until the
- * `session.create` that launches the draft names it in `artifactIds`.
+ * is held for the workspace until the `session.create` that launches the
+ * draft names it in `artifactIds`. The client that sent it can claim it, and
+ * so can any client sending the draft that names it. A held image lives as
+ * long as a saved draft names it, follows that draft to another project, and
+ * is freed with the draft; one no draft names expires after a day.
  */
 export const UploadCommandSchemas = {
   [UPLOAD_TICKET_CAPABILITY]: command(

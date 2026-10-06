@@ -232,6 +232,78 @@ describe('composer drafts over the environment', () => {
     expect(sendingNewSessionDraft(client.drafts!, PAGE_DRAFT)).toBeUndefined()
   })
 
+  it("keeps a draft's images in the draft itself, so its first image saves it", async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client)
+    pagePicks[PAGE_DRAFT] = { providerId: 'opencode' }
+    expect(store.keepsImages!(PAGE_KEY)).toBe(true)
+    expect(store.keepsImages!('session:session-1')).toBe(true)
+    // Held on this page only: nowhere to keep an image.
+    expect(store.keepsImages!('landing')).toBe(false)
+    expect(store.getImages!(PAGE_KEY)).toEqual([])
+
+    act(() => store.setImages!(PAGE_KEY, ['artifact-1']))
+    expect(claimed).toEqual([PAGE_DRAFT])
+    const images = store.getImages!(PAGE_KEY)
+    expect(images).toEqual(['artifact-1'])
+    // The same array until it changes, as a store snapshot must be.
+    expect(store.getImages!(PAGE_KEY)).toBe(images)
+    act(() => store.setText(PAGE_KEY, 'what is this?'))
+    act(() => store.flush())
+    await settle(client)
+    expect(client.getState().drafts[PAGE_DRAFT]?.content).toEqual({
+      text: 'what is this?',
+      providerId: 'opencode',
+      artifactIds: ['artifact-1'],
+    })
+    // Read back through the draft that names it: it has no session yet.
+    expect(store.imageSource!(PAGE_KEY, 'artifact-1')).toEqual({
+      draftId: PAGE_DRAFT,
+      artifactId: 'artifact-1',
+    })
+    expect(store.imageSource!('session:session-1', 'artifact-2')).toEqual({
+      sessionId: 'session-1',
+      artifactId: 'artifact-2',
+    })
+
+    // Taking the last one out leaves no empty list behind.
+    act(() => store.setImages!(PAGE_KEY, []))
+    expect(selectDraftContent(client.getState(), PAGE_DRAFT)).toEqual({
+      text: 'what is this?',
+      providerId: 'opencode',
+    })
+  })
+
+  it("keeps a session's images in its draft", async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client)
+    act(() => store.setImages!('session:session-1', ['artifact-1', 'artifact-2']))
+    act(() => store.flush())
+    await settle(client)
+    expect(client.getState().drafts['session-1']?.content).toEqual({
+      text: '',
+      artifactIds: ['artifact-1', 'artifact-2'],
+    })
+    expect(store.getImages!('session:session-1')).toEqual(['artifact-1', 'artifact-2'])
+  })
+
+  it('shows the images a send took on its draft while it is sent', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client)
+    act(() => store.setText(PAGE_KEY, 'look'))
+    act(() => store.setImages!(PAGE_KEY, ['artifact-1']))
+    // The composer empties the box, then sets the draft aside with what it held.
+    act(() => store.setText(PAGE_KEY, ''))
+    act(() => store.setImages!(PAGE_KEY, []))
+    act(() => {
+      store.beginSend!(PAGE_KEY, 'look', ['artifact-1'])
+    })
+    expect(client.getState().draftEdits[PAGE_DRAFT]).toMatchObject({
+      launching: true,
+      sent: { text: 'look', artifactIds: ['artifact-1'] },
+    })
+  })
+
   it('holds text for a key with no project on this page only', async () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     await mount(client)

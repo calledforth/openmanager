@@ -1196,9 +1196,10 @@ describe('explicit session creation', () => {
         type: 'error',
         error: { code: 'not_found', message: expect.stringContaining('Attach them again') },
       })
+      // No draft named: only this client's own uploads would do.
       expect(artifacts.claimable).toHaveBeenCalledWith(['artifact-1'], {
-        workspaceId: input.workspaceId,
         clientId: 'owner',
+        shared: [],
       })
       expect(artifacts.claim).not.toHaveBeenCalled()
       await Promise.resolve()
@@ -1233,6 +1234,7 @@ describe('explicit session creation', () => {
         workspaceId: input.workspaceId,
         clientId: 'owner',
         sessionId,
+        shared: [],
       })
       expect(artifacts.release).toHaveBeenCalledWith(['artifact-1'], sessionId)
       expect(events.map((event) => event.name)).toEqual([

@@ -32,6 +32,15 @@ const LEGACY_PROJECT_KEY = 'draft:'
 
 const mintId = () => crypto.randomUUID()
 
+const NO_IMAGES: readonly string[] = []
+
+/** The draft with these images; a draft without any has no `artifactIds` at all. */
+function withImages(content: DraftContent | undefined, artifactIds: readonly string[]) {
+  const rest: DraftContent = { ...(content ?? { text: '' }) }
+  delete rest.artifactIds
+  return artifactIds.length > 0 ? { ...rest, artifactIds: [...artifactIds] } : rest
+}
+
 /** The composer's key for a new-session draft. */
 export const newSessionDraftKey = (draftId: string) => `${NEW_SESSION_KEY}${draftId}`
 
@@ -127,6 +136,35 @@ export function createEnvironmentComposerDraftStore(
     return successors.get(draftId)?.draftId ?? draftId
   }
 
+  /**
+   * Write a change to the draft behind a `session:` or `new:` key. False for
+   * any other key, and for a new-session draft with nowhere to go yet.
+   */
+  const change = (key: string, next: (content: DraftContent | undefined) => DraftContent) => {
+    const state = client.getState()
+    if (key.startsWith(SESSION_KEY)) {
+      const sessionId = key.slice(SESSION_KEY.length)
+      const content = selectDraftContent(state, sessionId)
+      sync.edit(sessionId, { type: 'session', sessionId }, next(content))
+      return true
+    }
+    if (!key.startsWith(NEW_SESSION_KEY)) return false
+    const own = key.slice(NEW_SESSION_KEY.length)
+    const { draftId, target: successorTarget, fresh } = writing(own)
+    const target = successorTarget ?? targetOf(state, draftId)
+    if (!target) return false
+    const content = selectDraftContent(state, draftId)
+    const changed = next(content)
+    const written = changed.text.length > 0 || (changed.artifactIds?.length ?? 0) > 0
+    // Picks alone are no draft: nothing is saved before the first text or image.
+    if (!content && !written) return true
+    // A draft's first save carries the picks made on the page before it.
+    const picks = content || fresh ? undefined : pages?.picks(draftId)
+    sync.edit(draftId, target, { ...picks, ...changed })
+    if (written && !fresh) pages?.claim(own)
+    return true
+  }
+
   return {
     getText(key) {
       const draftId = draftIdOf(key)
@@ -134,31 +172,56 @@ export function createEnvironmentComposerDraftStore(
       return selectDraftContent(client.getState(), draftId)?.text ?? ''
     },
     setText(key, text) {
-      const state = client.getState()
-      if (key.startsWith(SESSION_KEY)) {
-        const sessionId = key.slice(SESSION_KEY.length)
-        const content = selectDraftContent(state, sessionId)
-        sync.edit(sessionId, { type: 'session', sessionId }, { ...content, text })
-        return
-      }
-      if (key.startsWith(NEW_SESSION_KEY)) {
-        const own = key.slice(NEW_SESSION_KEY.length)
-        const { draftId, target: successorTarget, fresh } = writing(own)
-        const target = successorTarget ?? targetOf(state, draftId)
-        if (target) {
-          const content = selectDraftContent(state, draftId)
-          // Picks alone are no draft: nothing is saved before the first text.
-          if (!content && !text) return
-          // A draft's first save carries the picks made on the page before it.
-          const picks = content || fresh ? undefined : pages?.picks(draftId)
-          sync.edit(draftId, target, { ...picks, ...content, text })
-          if (text && !fresh) pages?.claim(own)
-          return
-        }
-      }
+      if (change(key, (content) => ({ ...content, text }))) return
       if ((loose[key] ?? '') === text) return
       loose = { ...loose, [key]: text }
       for (const listener of [...looseListeners]) listener()
+    },
+    // A draft's images are uploaded when attached and named in the draft, so
+    // they reach every device and outlive a reload (where the environment
+    // keeps drafts: a session's draft or a new-session one).
+    keepsImages: (key) => key.startsWith(SESSION_KEY) || key.startsWith(NEW_SESSION_KEY),
+    getImages(key) {
+      const draftId = draftIdOf(key)
+      if (draftId === null) return NO_IMAGES
+      return selectDraftContent(client.getState(), draftId)?.artifactIds ?? NO_IMAGES
+    },
+    setImages(key, artifactIds) {
+      return change(key, (content) => withImages(content, artifactIds))
+    },
+    imageTarget(key) {
+      const draftId = draftIdOf(key)
+      if (draftId === null) return undefined
+      const state = client.getState()
+      return {
+        key,
+        draftId,
+        deletedAt: state.draftTombstones[draftId] ?? 0,
+        existed: selectDraftContent(state, draftId) !== undefined,
+      }
+    },
+    holdImage(key) {
+      const draftId = draftIdOf(key)
+      return draftId === null ? undefined : sync.holdEmpty(draftId)
+    },
+    imageTargetLive(target) {
+      // The key writes to another draft now: this one is being sent.
+      if (draftIdOf(target.key) !== target.draftId) return false
+      const state = client.getState()
+      const edit = state.draftEdits[target.draftId]
+      if (edit?.launching) return false
+      // Discarded, its delete not answered yet: the image must not undo it.
+      if (edit?.discarding) return false
+      // Sent or deleted since, here or on another device.
+      if ((state.draftTombstones[target.draftId] ?? 0) > target.deletedAt) return false
+      return !target.existed || selectDraftContent(state, target.draftId) !== undefined
+    },
+    imageSource(key, artifactId) {
+      if (key.startsWith(SESSION_KEY)) {
+        return { sessionId: key.slice(SESSION_KEY.length), artifactId }
+      }
+      const draftId = draftIdOf(key)
+      return draftId === null ? undefined : { draftId, artifactId }
     },
     subscribe(listener) {
       looseListeners.add(listener)
@@ -178,7 +241,7 @@ export function createEnvironmentComposerDraftStore(
       if (draftId === null) return 'synced'
       return selectDraftSyncStatus(client.getState(), draftId)
     },
-    beginSend(key, sentText) {
+    beginSend(key, sentText, sentImages) {
       if (!key.startsWith(NEW_SESSION_KEY)) return undefined
       const draftId = key.slice(NEW_SESSION_KEY.length)
       const state = client.getState()
@@ -197,9 +260,14 @@ export function createEnvironmentComposerDraftStore(
       bySync.delete(draftId)
       bySync.set(draftId, slot)
       // The composer emptied the draft before this; what was sent is what it
-      // held then: the text given, with everything else it still holds.
+      // held then: the text and images given, with everything else it still holds.
       const held = selectDraftContent(state, draftId)
-      sync.beginLaunch(draftId, sentText !== undefined ? { ...held, text: sentText } : undefined)
+      sync.beginLaunch(
+        draftId,
+        sentText !== undefined
+          ? withImages({ ...held, text: sentText }, sentImages ?? held?.artifactIds ?? NO_IMAGES)
+          : undefined,
+      )
       return () => {
         if (bySync.get(draftId) === slot) bySync.delete(draftId)
         successors.delete(draftId)

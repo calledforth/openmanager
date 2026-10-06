@@ -74,9 +74,9 @@ describe('schema migrations', () => {
   it('initializes a fresh database to the latest numbered version', async () => {
     const database = openEnvironmentDatabase(await dataDir())
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(18)
+    expect(readSchemaVersion(database)).toBe(19)
     expect(database.prepare('PRAGMA user_version').get() as { user_version: number }).toEqual({
-      user_version: 18,
+      user_version: 19,
     })
     expect(database.prepare('PRAGMA journal_mode').get() as { journal_mode: string }).toEqual({
       journal_mode: 'wal',
@@ -114,7 +114,7 @@ describe('schema migrations', () => {
       'workspace_composer_preferences',
       'workspaces',
     ])
-    expect(runMigrations(database, MIGRATIONS)).toBe(18)
+    expect(runMigrations(database, MIGRATIONS)).toBe(19)
   })
 
   it('upgrades sequentially across restarts and leaves already-applied versions untouched', async () => {
@@ -201,7 +201,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(18)
+    expect(readSchemaVersion(database)).toBe(19)
     expect(database.prepare('SELECT provider_id FROM provider_profiles').all()).toEqual([
       { provider_id: 'cursor' },
     ])
@@ -307,6 +307,56 @@ describe('schema migrations', () => {
     expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
   })
 
+  it("rebuilds attachments so a draft's held image can outlive its project, keeping every row", async () => {
+    const directory = await dataDir()
+    const previous = openEnvironmentDatabase(directory, MIGRATIONS.slice(0, 18))
+    previous.exec(`
+      INSERT INTO authorized_clients (client_id, label, credential_hash, scopes_json, created_at)
+        VALUES ('client-1', 'laptop', X'01', '[]', 1);
+      INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at)
+        VALUES ('workspace-1', 'one', '/one', 1, 1);
+      INSERT INTO sessions (session_id, workspace_id, provider_id, status, created_at, updated_at)
+        VALUES ('session-1', 'workspace-1', 'cursor', 'idle', 1, 1);
+      INSERT INTO attachments (attachment_id, workspace_id, uploaded_by_client_id, storage_key,
+        name, mime_type, size_bytes, metadata_json, created_at, session_id, source)
+      VALUES
+        ('held', 'workspace-1', 'client-1', 'uploads/held', 'a.png', 'image/png', 3,
+          '{"source":"prompt"}', 5, NULL, 'prompt'),
+        ('sent', 'workspace-1', 'client-1', 'uploads/sent', 'b.png', 'image/png', 4,
+          '{"sessionId":"session-1","source":"prompt"}', 6, 'session-1', 'prompt'),
+        ('made', 'workspace-1', NULL, 'uploads/made', 'c.png', 'image/png', 5,
+          '{"sessionId":"session-1","source":"generated"}', 7, 'session-1', 'generated');
+    `)
+    const before = previous.prepare('SELECT * FROM attachments ORDER BY attachment_id').all()
+    previous.close()
+
+    const database = openEnvironmentDatabase(directory)
+    databases.push(database)
+    expect(readSchemaVersion(database)).toBe(19)
+    expect(database.prepare('SELECT * FROM attachments ORDER BY attachment_id').all()).toEqual(
+      before,
+    )
+    expect(
+      (database.prepare('PRAGMA index_list(attachments)').all() as { name: string }[])
+        .map((index) => index.name)
+        .filter((name) => !name.startsWith('sqlite_autoindex'))
+        .sort(),
+    ).toEqual([
+      'attachments_message_id_idx',
+      'attachments_session_created_idx',
+      'attachments_uploaded_by_client_id_idx',
+      'attachments_workspace_id_idx',
+    ])
+
+    // The project goes: its session takes its own images along, and the held
+    // one stays, with no project, for whichever draft names it.
+    database.prepare('DELETE FROM workspaces WHERE workspace_id = ?').run('workspace-1')
+    expect(
+      database.prepare('SELECT attachment_id, workspace_id, session_id FROM attachments').all(),
+    ).toEqual([{ attachment_id: 'held', workspace_id: null, session_id: null }])
+    expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+  })
+
   it('gives pre-existing client rows a kind and an idle expiry, and fails closed on new ones', async () => {
     const directory = await dataDir()
     const previous = openEnvironmentDatabase(directory, MIGRATIONS.slice(0, 3))
@@ -321,7 +371,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(18)
+    expect(readSchemaVersion(database)).toBe(19)
     expect(
       database
         .prepare('SELECT client_id, kind, expires_at FROM authorized_clients ORDER BY client_id')
@@ -358,7 +408,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(18)
+    expect(readSchemaVersion(database)).toBe(19)
     expect(tableNames(database)).toContain('audit_events')
     expect(
       database.prepare('SELECT client_id FROM authorized_clients').all(),
