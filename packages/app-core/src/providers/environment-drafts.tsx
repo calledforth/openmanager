@@ -178,10 +178,11 @@ export function createEnvironmentComposerDraftStore(
       if (draftId === null) return 'synced'
       return selectDraftSyncStatus(client.getState(), draftId)
     },
-    beginSend(key) {
+    beginSend(key, sentText) {
       if (!key.startsWith(NEW_SESSION_KEY)) return undefined
       const draftId = key.slice(NEW_SESSION_KEY.length)
-      const target = targetOf(client.getState(), draftId)
+      const state = client.getState()
+      const target = targetOf(state, draftId)
       if (target?.type !== 'new_session') return undefined
       // Held from here, not from `session.create`: images upload first, and
       // what is typed meanwhile must go to the next draft, not this one. A
@@ -195,7 +196,10 @@ export function createEnvironmentComposerDraftStore(
       const bySync = sending()
       bySync.delete(draftId)
       bySync.set(draftId, slot)
-      sync.beginLaunch(draftId)
+      // The composer emptied the draft before this; what was sent is what it
+      // held then: the text given, with everything else it still holds.
+      const held = selectDraftContent(state, draftId)
+      sync.beginLaunch(draftId, sentText !== undefined ? { ...held, text: sentText } : undefined)
       return () => {
         if (bySync.get(draftId) === slot) bySync.delete(draftId)
         successors.delete(draftId)

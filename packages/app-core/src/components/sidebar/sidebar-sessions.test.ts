@@ -286,7 +286,8 @@ describe('draft cards', () => {
       cards: [card('c', 3), card('a', 1)],
       openSent: false,
       openGone: false,
-      openSending: null,
+      openSending: false,
+      openSendingCard: null,
     }
     const frozen = card('b', 2)
     const ids = (cards: SidebarDraft[]) => cards.map((shown) => shown.draftId)
@@ -305,12 +306,24 @@ describe('draft cards', () => {
     // Being sent from its page: what is being sent, not the snapshot, in the
     // snapshot's place, and no longer discardable.
     const sending = arrangeSidebarDrafts({
-      facts: { ...facts, openSending: { ...card('b', 9), preview: 'as sent', sending: true } },
+      facts: {
+        ...facts,
+        openSending: true,
+        openSendingCard: { ...card('b', 9), preview: 'as sent', sending: true },
+      },
       frozen,
       hidden: null,
     })
     expect(ids(sending)).toEqual(['c', 'b', 'a'])
     expect(sending[1]).toMatchObject({ preview: 'as sent', sending: true })
+    // Nothing to show of what is being sent: the snapshot stays, still not
+    // discardable.
+    const blank = arrangeSidebarDrafts({
+      facts: { ...facts, openSending: true },
+      frozen,
+      hidden: null,
+    })
+    expect(blank[1]).toMatchObject({ preview: 'b', sending: true })
   })
 
   it('says which draft is being sent, and when the one on screen is gone', () => {
@@ -319,12 +332,29 @@ describe('draft cards', () => {
       edits: {
         sending: edit(newDraft('alpha', 's1'), { text: '' }, 5, { launching: true }),
         open: edit(newDraft('alpha', 's2'), { text: 'typing' }, 6, { launching: true }),
+        // Emptied by its composer before the send was held, and never saved:
+        // what went is the capture.
+        captured: edit(newDraft('alpha', 's3'), { text: '' }, 7, {
+          launching: true,
+          sent: { text: 'what went' },
+        }),
+        blank: edit(newDraft('alpha', 's4'), { text: '' }, 8, { launching: true }),
       },
     })
     expect(sidebarDraftCard(state, 'sending', 'opencode')).toMatchObject({ sending: true })
     expect(selectSidebarDrafts(state, 'open', 's2', 'opencode')).toMatchObject({
-      openSending: { preview: 'typing', sending: true },
+      openSending: true,
+      openSendingCard: { preview: 'typing', sending: true },
       openGone: false,
+    })
+    expect(sidebarDraftCard(state, 'captured', 'opencode')).toMatchObject({
+      preview: 'what went',
+      sending: true,
+    })
+    // No card to show, but still being sent.
+    expect(selectSidebarDrafts(state, 'blank', 's4', 'opencode')).toMatchObject({
+      openSending: true,
+      openSendingCard: null,
     })
     expect(selectSidebarDrafts(state, 'deleted', null, 'opencode').openGone).toBe(true)
   })

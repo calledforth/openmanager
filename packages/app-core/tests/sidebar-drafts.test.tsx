@@ -745,6 +745,30 @@ describe('review regressions', () => {
     expect(cardFor('first idea, as sent')!.querySelector('[aria-label="Discard draft"]')).toBeNull()
   })
 
+  // The composer empties the box before the send is held, and the send waits
+  // on uploads and `session.create`: hung here, so the card can be read mid-send.
+  const sendFromComposer = async (client: MockEnvironmentClient) => {
+    vi.spyOn(client.commands, 'createSession').mockReturnValue(new Promise(() => undefined))
+    await act(() =>
+      container.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!.click(),
+    )
+  }
+
+  it('shows the text sent from the composer, not the last autosave, while it is sent', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED, draftSaveDebounceMs: 60_000 })
+    await parkThree(client)
+    await openCard(client, 'first idea')
+    const first = probe.session.newSessionDraftId!
+    await type('first idea, edited before autosave')
+    expect(client.getState().drafts[first]!.content.text).toBe('first idea')
+    await sendFromComposer(client)
+    expect(composer().value).toBe('')
+    expect(draftCards()).toContain('first idea, edited before autosave')
+    expect(
+      cardFor('first idea, edited before autosave')!.querySelector('[aria-label="Discard draft"]'),
+    ).toBeNull()
+  })
+
   it('ignores a second click on the spot where the last discard was', async () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     await parkThree(client)

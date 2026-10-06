@@ -7,7 +7,11 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
  */
 export type NoticeAnchor = 'composer' | 'sidebar-foot'
 
-const anchors = new Map<NoticeAnchor, HTMLElement>()
+// Every mounted element of each kind, in the order they registered; the last
+// is the one in use. Two can be mounted at once (the phone's sheet keeps its
+// own sidebar footer beside the wide screen's), and when the newer goes the
+// older takes over again rather than leaving none.
+const anchors = new Map<NoticeAnchor, readonly HTMLElement[]>()
 const listeners = new Set<() => void>()
 const notify = () => {
   for (const listener of [...listeners]) listener()
@@ -20,15 +24,17 @@ export function noticeAnchorRef(name: NoticeAnchor) {
   let ref = refs.get(name)
   if (!ref) {
     ref = (element) => {
-      if (element) {
-        anchors.set(name, element)
-        notify()
-      }
+      if (!element) return () => undefined
+      anchors.set(name, [...(anchors.get(name) ?? []).filter((held) => held !== element), element])
+      notify()
       return () => {
-        if (element && anchors.get(name) === element) {
-          anchors.delete(name)
-          notify()
-        }
+        const held = anchors.get(name) ?? []
+        if (!held.includes(element)) return
+        anchors.set(
+          name,
+          held.filter((other) => other !== element),
+        )
+        notify()
       }
     }
     refs.set(name, ref)
@@ -47,7 +53,7 @@ const subscribe = (listener: () => void) => {
 export function useNoticeAnchor(name: NoticeAnchor): HTMLElement | null {
   return useSyncExternalStore(
     subscribe,
-    () => anchors.get(name) ?? null,
+    () => anchors.get(name)?.at(-1) ?? null,
     () => null,
   )
 }

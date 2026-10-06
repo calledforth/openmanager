@@ -299,6 +299,7 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
         baseRevision: held?.baseRevision ?? draftBaseRevision(state, draftId),
         editedAt: now(),
         ...(held?.launching ? { launching: true as const } : {}),
+        ...(held?.launching && held.sent ? { sent: held.sent } : {}),
         // Still not in the environment: the mark stays until a save lands.
         ...(held?.stalled ? { stalled: held.stalled } : {}),
         // Typed while this client's delete of the draft is on the wire: the
@@ -321,13 +322,13 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
       void write(draftId)
     },
 
-    beginLaunch(draftId: string) {
+    beginLaunch(draftId: string, sent?: DraftContent) {
       cancel(draftId)
       store.update((state) => {
         const held = state.draftEdits[draftId]
         const saved = state.drafts[draftId]
         const edit: DraftEdit | undefined = held
-          ? { ...held, launching: true }
+          ? { ...held, launching: true, ...(sent ? { sent } : {}) }
           : saved
             ? {
                 target: saved.target,
@@ -335,6 +336,7 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
                 baseRevision: saved.revision,
                 editedAt: now(),
                 launching: true,
+                ...(sent ? { sent } : {}),
               }
             : undefined
         return edit ? applyDraftEdit(state, draftId, edit) : state
@@ -358,6 +360,7 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
       const restored: DraftEdit =
         outcome === 'refused' ? { ...held, outlivesDeletion: true } : { ...held }
       delete restored.launching
+      delete restored.sent
       store.update((current) => applyDraftEdit(current, draftId, restored))
       schedule(draftId)
     },

@@ -117,11 +117,15 @@ export function sidebarDraftCard(
   const saved = state.drafts[draftId]
   const target: DraftTarget | undefined = edit?.target ?? saved?.target
   if (target?.type !== 'new_session') return null
-  // A draft being sent was emptied by its composer; what it was sent with is
-  // the environment's last copy, and its card shows that until the session
-  // takes its place.
+  // A draft being sent was emptied by its composer before the send was held;
+  // what it carries was taken as it began (`sent`), and its card shows that
+  // until the session takes its place. Failing that, the environment's last
+  // copy.
   let content: DraftContent | undefined = edit?.content ?? saved?.content
-  if (edit?.launching && !hasDraftContent(content)) content = saved?.content
+  if (edit?.launching) {
+    if (edit.sent && hasDraftContent(edit.sent)) content = edit.sent
+    else if (!hasDraftContent(content)) content = saved?.content
+  }
   if (!content || !hasDraftContent(content)) return null
   const picked = content.providerId
   const status = selectDraftSyncStatus(state, draftId)
@@ -152,18 +156,21 @@ export interface SidebarDraftFacts {
    * and deleted. Its snapshot would show text the composer no longer has.
    */
   openGone: boolean
+  /** The draft on screen is being sent: its card offers no discard, card or not. */
+  openSending: boolean
   /**
-   * The draft on screen while it is being sent: its card as sent, read live,
-   * so the card shows what went rather than the snapshot. Null otherwise.
+   * Its card as sent, read live, so the card shows what went rather than the
+   * snapshot. Null when not sending, or when there is nothing to show.
    */
-  openSending: SidebarDraft | null
+  openSendingCard: SidebarDraft | null
 }
 
 export const NO_DRAFT_FACTS: SidebarDraftFacts = {
   cards: [],
   openSent: false,
   openGone: false,
-  openSending: null,
+  openSending: false,
+  openSendingCard: null,
 }
 
 /**
@@ -186,14 +193,13 @@ export function selectSidebarDrafts(
     const card = sidebarDraftCard(state, draftId, defaultProviderId)
     if (card && !state.sessions[card.sessionId]) cards.push(card)
   }
+  const sending = openDraftId !== null && state.draftEdits[openDraftId]?.launching === true
   return {
     cards: cards.sort(newestDraftFirst),
     openSent: openSessionId !== null && state.sessions[openSessionId] !== undefined,
     openGone: openDraftId !== null && !state.drafts[openDraftId] && !state.draftEdits[openDraftId],
-    openSending:
-      openDraftId !== null && state.draftEdits[openDraftId]?.launching
-        ? sidebarDraftCard(state, openDraftId, defaultProviderId)
-        : null,
+    openSending: sending,
+    openSendingCard: sending ? sidebarDraftCard(state, openDraftId, defaultProviderId) : null,
   }
 }
 
@@ -221,10 +227,11 @@ export function sameSidebarDraftFacts(left: SidebarDraftFacts, right: SidebarDra
   return (
     left.openSent === right.openSent &&
     left.openGone === right.openGone &&
-    (left.openSending === right.openSending ||
-      (left.openSending !== null &&
-        right.openSending !== null &&
-        sameDraft(left.openSending, right.openSending))) &&
+    left.openSending === right.openSending &&
+    (left.openSendingCard === right.openSendingCard ||
+      (left.openSendingCard !== null &&
+        right.openSendingCard !== null &&
+        sameDraft(left.openSendingCard, right.openSendingCard))) &&
     left.cards.length === right.cards.length &&
     left.cards.every((card, index) => sameDraft(card, right.cards[index]!))
   )
@@ -253,7 +260,11 @@ export function arrangeSidebarDrafts({
     !facts.openGone &&
     !facts.cards.some((card) => card.draftId === frozen.draftId)
       ? facts.openSending
-        ? { ...facts.openSending, editedAt: frozen.editedAt, sending: true as const }
+        ? {
+            ...(facts.openSendingCard ?? frozen),
+            editedAt: frozen.editedAt,
+            sending: true as const,
+          }
         : frozen
       : null
   const cards = shown ? [...facts.cards, shown].sort(newestDraftFirst) : facts.cards

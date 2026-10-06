@@ -270,8 +270,12 @@ localStorage fallback) `useSidebarDrafts` is null and nothing shows.
   A draft being sent keeps its card meanwhile, and offers no discard: no ✕,
   no menu, and `discardDraft` does nothing. It becomes a session or comes
   back whole. The draft on screen, while it is sent, shows what is being sent
-  (read live from the launching edit) in its snapshot's place, not the
-  snapshot.
+  in its snapshot's place, not the snapshot. The composer empties the box
+  before the send is held, so the text is taken as the send begins
+  (`beginSend(key, sentText)` → `DraftEdit.sent`), not read back from the
+  emptied edit or the last autosave. Whether a draft is being sent is its own
+  fact, apart from whether there is a card to show: with nothing to show of
+  what is sent, the snapshot stays, still with no discard.
 - **Discarding** (✕ on hover and always on touch, or the card's menu, by
   right click or the menu key) hides the card at once and shows an undo
   notice. The draft is deleted only when the notice goes (6 s, held while the
@@ -322,7 +326,9 @@ localStorage fallback) `useSidebarDrafts` is null and nothing shows.
   composer and the footer register themselves (`noticeAnchorRef` in
   `lib/notice-anchors.ts`) and are measured through resize observers, so a
   composer that mounts after the notice (back from a child transcript)
-  moves it. Its `role="status"` region is always mounted and the notice is
+  moves it. Every mounted element of a kind stays registered, newest in use:
+  the phone's sheet mounts a second sidebar footer, and when it goes the wide
+  screen's footer is the one to clear again. Its `role="status"` region is always mounted and the notice is
   swapped inside it, so each discard is announced. A discard made from the
   keyboard puts focus on Undo; one made with the pointer leaves focus alone.
   Closed from inside with focus on it, focus goes to the card that came back

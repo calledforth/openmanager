@@ -258,6 +258,12 @@ export interface DraftEdit {
    */
   launching?: true
   /**
+   * What the send carries, while `launching`: taken as the send began, since
+   * the composer empties the box (and so `content`) before the launch is
+   * held. Goes with `launching`.
+   */
+  sent?: DraftContent
+  /**
    * Made after a deletion this client asked for: put back after a failed
    * send, or typed while a clear was being deleted. The environment's
    * announcement of that deletion (and of a failed send's restore) rebases
@@ -594,8 +600,12 @@ export interface DraftSync {
   edit(draftId: string, target: DraftTarget, content: DraftContent): void
   /** Delete a draft now, as discarding it does. Does nothing to a draft being sent. */
   discard(draftId: string): void
-  /** Hold the draft's saves while a `session.create` sends it. */
-  beginLaunch(draftId: string): void
+  /**
+   * Hold the draft's saves while a `session.create` sends it. `sent` is what
+   * the send carries, when the composer has already emptied the draft;
+   * readers (the sidebar's card) show it instead of the emptied content.
+   */
+  beginLaunch(draftId: string, sent?: DraftContent): void
   /**
    * The send finished:
    * - `sent`: the session was created, and the environment deleted the draft

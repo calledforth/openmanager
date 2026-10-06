@@ -343,6 +343,29 @@ describe('the undo notice', () => {
     expect(region().style.left).toBe('300px')
   })
 
+  it('falls back to the footer still mounted when another one goes', async () => {
+    // The wide screen's footer, then the phone sheet's, mounted beside it.
+    const desk = anchored(700)
+    const sheet = anchored(500)
+    await show(
+      true,
+      <>
+        <Anchor name="sidebar-foot" element={desk} />
+        <Anchor name="sidebar-foot" element={sheet} />
+      </>,
+    )
+    expect(region().style.bottom).toBe(`${window.innerHeight - 500 + 4}px`)
+    // The sheet closes: the wide screen's footer is the one to clear again.
+    await show(
+      true,
+      <>
+        <Anchor name="sidebar-foot" element={desk} />
+        {null}
+      </>,
+    )
+    expect(region().style.bottom).toBe(`${window.innerHeight - 700 + 4}px`)
+  })
+
   it('rests just above the sidebar’s foot when docked', async () => {
     await show(true, <Anchor name="sidebar-foot" element={anchored(700)} />)
     expect(region().style.bottom).toBe(`${window.innerHeight - 700 + 4}px`)
