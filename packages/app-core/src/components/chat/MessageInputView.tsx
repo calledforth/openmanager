@@ -651,7 +651,7 @@ export function MessageInputView({
     // even submitted. Restored verbatim if the send fails, so nothing is lost.
     const restore = draft
     updateDraft(() => ({ text: '', attachments: NO_ATTACHMENTS }))
-    const release = draftStore.beginSend?.(draftKey)
+    const release = draftStore.beginSend?.(draftKey, restore.text)
     try {
       await onSend(trimmed, attachments)
       release?.()

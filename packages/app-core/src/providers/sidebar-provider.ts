@@ -1,5 +1,8 @@
 import { createContext, useContext } from 'react'
 import type { ProviderId } from '@agentpack/contract'
+import type { DraftDiscardOptions, SidebarDraft } from '../components/sidebar/sidebar-sessions'
+
+export type { DraftDiscardOptions }
 
 /** Cheap facts about a workspace the host already knows; nothing is probed here. */
 export interface WorkspaceCapabilitySummary {
@@ -47,6 +50,9 @@ export interface SidebarSessionEntry {
   updatedAt?: string
   /** ISO time the user settled it; null or absent while it is active. */
   settledAt?: string | null
+  /** Its composer holds text or an image that was not sent. Hosts whose
+   * drafts do not sync leave it out. */
+  hasUnsentDraft?: boolean
 }
 
 /**
@@ -125,6 +131,60 @@ export function useSidebarSessions(): SidebarSessionsByWorkspace {
   const ctx = useContext(SidebarSessionsContext)
   if (!ctx) throw new Error('useSidebarSessions must be used within SidebarDataProvider')
   return ctx
+}
+
+/** A draft discard waiting out its undo window. */
+export interface PendingDraftDiscard {
+  draftId: string
+  /** Tells one discard from the next, so a second one restarts the notice. */
+  key: number
+  /** Made from the keyboard: the notice takes focus, so Undo is a keypress away. */
+  fromKeyboard: boolean
+  /** Where focus goes when the notice closes with focus on it, unless the card is back. */
+  returnFocus: HTMLElement | null
+}
+
+/**
+ * The new-session drafts the sidebar shows as cards, and what a card does.
+ * Only hosts whose environment keeps drafts and gives each its own page
+ * serve this; elsewhere `useSidebarDrafts` is null and no card shows.
+ */
+export interface SidebarDraftsValue {
+  /**
+   * Newest edit first. The draft on screen keeps the card it had when it was
+   * opened, unchanged while it is typed in; a draft first written on this
+   * screen gets its card once it is left.
+   */
+  drafts: SidebarDraft[]
+  /** The draft on screen, whose card shows selected. */
+  openDraftId: string | null
+  /** Go to the draft's page, everything as it was left. */
+  openDraft: (draftId: string) => void
+  /**
+   * Hide the draft's card, and delete the draft once the undo window closes
+   * or the page goes. The draft on screen leaves for a blank page. Does
+   * nothing to a draft being sent; called off if the draft changes elsewhere
+   * during the window.
+   */
+  discardDraft: (draftId: string, options?: DraftDiscardOptions) => void
+  pendingDiscard: PendingDraftDiscard | null
+  /**
+   * Bring the pending discard's card back; nothing was deleted. Given the
+   * discard's `key`, does nothing once another discard has taken its place:
+   * a notice on its way out acts on its own discard or on none.
+   */
+  undoDiscard: (key?: number) => void
+  /** Delete the pending discard's draft now; `key` as for `undoDiscard`. */
+  confirmDiscard: (key?: number) => void
+  /** Pause the undo window while the user is reading or reaching for it; `key` as above. */
+  holdDiscard: (held: boolean, key?: number) => void
+}
+
+export const SidebarDraftsContext = createContext<SidebarDraftsValue | null>(null)
+
+/** The draft cards, or null on a host without them. */
+export function useSidebarDrafts(): SidebarDraftsValue | null {
+  return useContext(SidebarDraftsContext)
 }
 
 export function resolveInitialWorkspacePath(

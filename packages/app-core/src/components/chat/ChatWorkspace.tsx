@@ -6,6 +6,7 @@ import { MessageInput } from './MessageInput'
 import { SessionBackgroundTasks } from './BackgroundTasksPill'
 import { SessionLaunchPill } from './SessionLaunchPill'
 import { useState, type ReactNode } from 'react'
+import { noticeAnchorRef } from '../../lib/notice-anchors'
 import { cn } from '../../lib/utils'
 import { describeUnavailableWorkspace } from '../../lib/workspace-availability'
 import {
@@ -172,9 +173,12 @@ function ChatWorkspaceContent() {
         <ChildSessionBanner onBack={() => closeChildSession(parentExternalId)} />
       ) : (
         <FloatingChatComposer>
-          <SessionLaunchPill />
-          <SessionBackgroundTasks />
-          <MessageInput />
+          {/* Registered so a notice (a discarded draft's undo) can sit above it. */}
+          <div ref={noticeAnchorRef('composer')}>
+            <SessionLaunchPill />
+            <SessionBackgroundTasks />
+            <MessageInput />
+          </div>
         </FloatingChatComposer>
       )}
     </>

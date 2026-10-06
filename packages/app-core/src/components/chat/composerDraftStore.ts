@@ -29,11 +29,13 @@ export interface ComposerDraftStore {
   claim?(key: string): void
   /**
    * Set the draft behind `key` aside for a send that is starting, after the
-   * composer has been cleared for it. Anything typed until the returned
-   * release is called goes to a new draft. Call the release when the send
-   * settles, before putting back the text of a failed one.
+   * composer has been cleared for it. `sentText` is the text being sent, as
+   * it was before the clear, so what shows the draft meanwhile (its sidebar
+   * card) shows what went. Anything typed until the returned release is
+   * called goes to a new draft. Call the release when the send settles,
+   * before putting back the text of a failed one.
    */
-  beginSend?(key: string): (() => void) | undefined
+  beginSend?(key: string, sentText?: string): (() => void) | undefined
   /**
    * Whether the draft behind `key` has reached where drafts are kept, for
    * stores that sync them; read again whenever `subscribe` fires. A store

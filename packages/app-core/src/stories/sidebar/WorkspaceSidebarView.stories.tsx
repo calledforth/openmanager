@@ -1,17 +1,19 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import type { ProviderId } from '@agentpack/contract'
 import { ThemeProvider } from '../../providers/theme-provider'
+import type { DraftDiscardOptions, PendingDraftDiscard } from '../../providers/sidebar-provider'
 import { SidebarInset, SidebarProvider } from '../../components/fluid/ui/sidebar'
+import { DraftDiscardToast } from '../../components/sidebar/DraftDiscardToast'
 import { WorkspaceSidebarView } from '../../components/sidebar/WorkspaceSidebarView'
-import type { SidebarWorkspace } from '../../components/sidebar/sidebar-sessions'
+import type { SidebarDraft, SidebarWorkspace } from '../../components/sidebar/sidebar-sessions'
 
 const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString()
 
 const PROVIDER_NAMES: Record<string, string> = {
   opencode: 'OpenCode',
   cursor: 'Cursor',
-  'claude-code': 'Claude Code',
+  claude: 'Claude Code',
   codex: 'Codex',
 }
 // Kept outside the render, as a host's would be, so unchanged rows skip it.
@@ -27,14 +29,14 @@ const initial: SidebarWorkspace[] = [
         externalId: 'sess-001',
         title: 'Status-based sidebar with settle',
         status: 'running',
-        providerId: 'claude-code' as ProviderId,
+        providerId: 'claude' as ProviderId,
         updatedAt: ago(1),
       },
       {
         externalId: 'sess-001-a',
         title: 'Explore t3code settle mechanism',
         status: 'ready',
-        providerId: 'claude-code' as ProviderId,
+        providerId: 'claude' as ProviderId,
         parentExternalId: 'sess-001',
         updatedAt: ago(3),
       },
@@ -83,6 +85,13 @@ const initial: SidebarWorkspace[] = [
         providerId: 'opencode' as ProviderId,
         updatedAt: ago(60 * 20),
       },
+      {
+        externalId: 'sess-103',
+        title: 'Tighten the theme picker',
+        status: 'ready',
+        providerId: 'cursor' as ProviderId,
+        updatedAt: ago(60 * 26),
+      },
     ],
   },
   {
@@ -95,7 +104,7 @@ const initial: SidebarWorkspace[] = [
         externalId: 'sess-201',
         title: 'Weekly review',
         status: 'ready',
-        providerId: 'claude-code' as ProviderId,
+        providerId: 'claude' as ProviderId,
         workspaceUnavailable: true,
         updatedAt: ago(60 * 24 * 3),
       },
@@ -103,9 +112,121 @@ const initial: SidebarWorkspace[] = [
   },
 ]
 
-function Demo() {
-  const [workspaces, setWorkspaces] = useState(initial)
-  const [activeSessionId, setActiveSessionId] = useState<string | null>('sess-001')
+const draft = (
+  draftId: string,
+  workspaceId: string | null,
+  preview: string,
+  minutesAgo: number,
+  extra: Partial<SidebarDraft> = {},
+): SidebarDraft => ({
+  draftId,
+  sessionId: `${draftId}-session`,
+  workspaceId,
+  providerId: 'claude' as ProviderId,
+  preview,
+  imageCount: 0,
+  editedAt: Date.now() - minutesAgo * 60_000,
+  ...extra,
+})
+
+const DRAFT = draft(
+  'draft-1',
+  '/workspace/openmanager',
+  'Sidebar draft cards: park, reopen and discard a draft, with an undo',
+  2,
+)
+const DRAFT_NO_PROJECT = draft('draft-2', null, 'Try the notes importer again', 30)
+const DRAFT_PROJECT_MISSING = draft('draft-3', '/workspace/notes', 'Weekly review outline', 90)
+const DRAFT_NOT_SYNCED = draft('draft-4', '/workspace/tend', 'Port the Graphite scheme', 8, {
+  providerId: 'cursor' as ProviderId,
+  unsynced: 'offline',
+})
+const DRAFT_IMAGES = draft('draft-5', '/workspace/tend', '', 12, { imageCount: 2 })
+
+/** The sessions with one composer holding unsent text. */
+const withUnsent = (externalId: string): SidebarWorkspace[] =>
+  initial.map((workspace) => ({
+    ...workspace,
+    sessions: workspace.sessions.map((session) =>
+      session.externalId === externalId ? { ...session, hasUnsentDraft: true } : session,
+    ),
+  }))
+
+function Demo({
+  workspaces: initialWorkspaces = initial,
+  drafts: initialDrafts = [],
+  activeSessionId: initialSessionId = 'sess-001',
+  activeDraftId: initialDraftId = null,
+  sendable = false,
+}: {
+  workspaces?: SidebarWorkspace[]
+  drafts?: SidebarDraft[]
+  activeSessionId?: string | null
+  activeDraftId?: string | null
+  /** Offers a button that sends the top draft, as the composer would. */
+  sendable?: boolean
+}) {
+  const [workspaces, setWorkspaces] = useState(initialWorkspaces)
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(initialSessionId)
+  const [activeDraftId, setActiveDraftId] = useState<string | null>(initialDraftId)
+  const [drafts, setDrafts] = useState(initialDrafts)
+  // The host's discard, in miniature: the card hides at once, and the draft
+  // goes only when the notice does.
+  const [pending, setPending] = useState<PendingDraftDiscard | null>(null)
+  const pendingRef = useRef<PendingDraftDiscard | null>(null)
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const settle = (keep: boolean) => {
+    clearTimeout(timer.current)
+    const current = pendingRef.current
+    pendingRef.current = null
+    setPending(null)
+    if (current && !keep) {
+      setDrafts((all) => all.filter((shown) => shown.draftId !== current.draftId))
+    }
+  }
+  const arm = () => {
+    clearTimeout(timer.current)
+    timer.current = setTimeout(() => settle(false), 6_000)
+  }
+  const discard = (draftId: string, options?: DraftDiscardOptions) => {
+    settle(false)
+    const next = {
+      draftId,
+      key: Date.now(),
+      fromKeyboard: options?.fromKeyboard ?? false,
+      returnFocus: options?.returnFocus ?? null,
+    }
+    pendingRef.current = next
+    setPending(next)
+    if (draftId === activeDraftId) setActiveDraftId(null)
+    arm()
+  }
+  useEffect(() => () => clearTimeout(timer.current), [])
+  // A send, as the environment answers it: the draft goes and its session is
+  // listed in the same update, under the id minted with the draft.
+  const send = (sent: SidebarDraft) => {
+    setDrafts((all) => all.filter((shown) => shown.draftId !== sent.draftId))
+    setWorkspaces((current) =>
+      current.map((workspace) =>
+        workspace.path === sent.workspaceId
+          ? {
+              ...workspace,
+              sessions: [
+                {
+                  externalId: sent.sessionId,
+                  title: sent.preview,
+                  status: 'running',
+                  providerId: sent.providerId,
+                  updatedAt: new Date().toISOString(),
+                },
+                ...workspace.sessions,
+              ],
+            }
+          : workspace,
+      ),
+    )
+  }
+  const shownDrafts = pending ? drafts.filter((shown) => shown.draftId !== pending.draftId) : drafts
   const patch = (externalId: string, change: Record<string, unknown>) =>
     setWorkspaces((current) =>
       current.map((workspace) => ({
@@ -124,8 +245,18 @@ function Demo() {
           workspaces={workspaces}
           activeWorkspacePath="/workspace/openmanager"
           activeSessionId={activeSessionId}
+          drafts={shownDrafts}
+          activeDraftId={activeDraftId}
+          onOpenDraft={(draftId) => {
+            setActiveSessionId(null)
+            setActiveDraftId(draftId)
+          }}
+          onDiscardDraft={discard}
           onCreateSession={() => undefined}
-          onSelectSession={(_, id) => setActiveSessionId(id)}
+          onSelectSession={(_, id) => {
+            setActiveDraftId(null)
+            setActiveSessionId(id)
+          }}
           onRenameSession={(_, id, title) => patch(id, { title: title ?? undefined })}
           // A round trip's worth of wait, as the environment would take: the
           // row should move on the click, not when this lands.
@@ -145,7 +276,23 @@ function Demo() {
           onAddWorkspace={() => undefined}
           providerLabel={providerLabel}
         />
-        <SidebarInset />
+        <SidebarInset>
+          {sendable && drafts[0] ? (
+            <button
+              type="button"
+              className="m-6 self-start rounded-md bg-hover px-3 py-1.5 text-[13px]"
+              onClick={() => send(drafts[0]!)}
+            >
+              Send “{drafts[0].preview}”
+            </button>
+          ) : null}
+        </SidebarInset>
+        <DraftDiscardToast
+          pending={pending}
+          onUndo={() => settle(true)}
+          onDismiss={() => settle(false)}
+          onHold={(held) => (held ? clearTimeout(timer.current) : arm())}
+        />
       </SidebarProvider>
     </ThemeProvider>
   )
@@ -161,4 +308,46 @@ type Story = StoryObj
 
 export const ActiveAndSettled: Story = {
   render: () => <Demo />,
+}
+
+/** Every draft card state at once, above the sessions. ✕ (or right click) discards with an undo. */
+export const DraftCards: Story = {
+  render: () => (
+    <Demo
+      workspaces={withUnsent('sess-103')}
+      drafts={[DRAFT, DRAFT_NOT_SYNCED, DRAFT_IMAGES, DRAFT_NO_PROJECT, DRAFT_PROJECT_MISSING]}
+    />
+  ),
+}
+
+/** Sending the top draft: its row turns into the session's and slides below the drafts still waiting. */
+export const DraftSend: Story = {
+  render: () => <Demo sendable drafts={[DRAFT, DRAFT_NOT_SYNCED, DRAFT_IMAGES]} />,
+}
+
+/** A draft parked in its project. */
+export const Draft: Story = {
+  render: () => <Demo drafts={[DRAFT]} />,
+}
+
+/** The draft on screen: its card takes the selection fill a session card takes, and keeps its Draft label. */
+export const DraftOpen: Story = {
+  render: () => (
+    <Demo drafts={[DRAFT, DRAFT_NOT_SYNCED]} activeSessionId={null} activeDraftId="draft-1" />
+  ),
+}
+
+/** Its project was removed, or its folder is missing: the draft is kept and says so. */
+export const DraftProjectUnavailable: Story = {
+  render: () => <Demo drafts={[DRAFT_NO_PROJECT, DRAFT_PROJECT_MISSING]} />,
+}
+
+/** Its latest edit has not reached the environment: the quiet cloud mark, reason on hover. */
+export const DraftNotSynced: Story = {
+  render: () => <Demo drafts={[DRAFT_NOT_SYNCED]} />,
+}
+
+/** A session whose composer holds unsent text: a quieter step of the draft tint, and a pen. */
+export const SessionWithUnsentDraft: Story = {
+  render: () => <Demo workspaces={withUnsent('sess-103')} activeSessionId="sess-002" />,
 }

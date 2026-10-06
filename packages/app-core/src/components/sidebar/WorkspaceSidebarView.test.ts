@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { formatRelativeTime } from '../../lib/relative-time'
-import { partitionSidebarSessions } from './WorkspaceSidebarView'
-import type { SidebarSession, SidebarWorkspace } from './sidebar-sessions'
+import { partitionSidebarSessions, placeSidebarDrafts } from './WorkspaceSidebarView'
+import type { SidebarDraft, SidebarSession, SidebarWorkspace } from './sidebar-sessions'
 
 const session = (
   externalId: string,
@@ -53,6 +53,34 @@ describe('partitionSidebarSessions', () => {
       workspace('alpha', [session('orphan', '2026-09-24T10:00:00Z', { parentExternalId: 'gone' })]),
     ])
     expect(ids(active)).toEqual([['orphan']])
+  })
+})
+
+describe('placeSidebarDrafts', () => {
+  const draft = (draftId: string, workspaceId: string | null): SidebarDraft => ({
+    draftId,
+    sessionId: `s-${draftId}`,
+    workspaceId,
+    providerId: 'opencode',
+    preview: draftId,
+    imageCount: 0,
+    editedAt: 0,
+  })
+
+  it('pairs each draft with its project, and leaves a removed or unlisted one without', () => {
+    const missing = { ...workspace('gone-folder', []), missing: true }
+    const rows = placeSidebarDrafts(
+      [draft('a', 'alpha'), draft('b', null), draft('c', 'unlisted'), draft('d', 'gone-folder')],
+      [workspace('alpha', []), missing],
+    )
+    expect(rows.map((row) => [row.draft.draftId, row.workspace?.path])).toEqual([
+      ['a', 'alpha'],
+      ['b', undefined],
+      ['c', undefined],
+      // A missing folder is still its project: the card says so.
+      ['d', 'gone-folder'],
+    ])
+    expect(rows[3]!.workspace?.missing).toBe(true)
   })
 })
 

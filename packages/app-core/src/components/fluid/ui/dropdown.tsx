@@ -403,6 +403,9 @@ interface DropdownContentProps {
   side?: RadixContentProps["side"];
   align?: RadixContentProps["align"];
   sideOffset?: number;
+  /** Where focus goes as the popup closes; `preventDefault()` keeps it off
+   *  the trigger, for a trigger that is no place to leave focus. */
+  onCloseAutoFocus?: RadixContentProps["onCloseAutoFocus"];
 }
 
 const DropdownContent = forwardRef<HTMLDivElement, DropdownContentProps>(
@@ -415,6 +418,7 @@ const DropdownContent = forwardRef<HTMLDivElement, DropdownContentProps>(
       side = "bottom",
       align = "start",
       sideOffset = 6,
+      onCloseAutoFocus,
     },
     ref
   ) => {
@@ -571,6 +575,7 @@ const DropdownContent = forwardRef<HTMLDivElement, DropdownContentProps>(
           side={side}
           align={align}
           sideOffset={sideOffset}
+          onCloseAutoFocus={onCloseAutoFocus}
         >
           <motion.div
             className={cn("z-50 outline-none", popupMotionClass)}

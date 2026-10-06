@@ -38,7 +38,7 @@ needed no schema or protocol change.
   most recently used project that is available. Its ids (draft and session)
   are minted when the page opens, but nothing is saved and the address stays
   `/`. `/` never reopens an older draft of the project: older drafts are
-  reached by their address (and by the sidebar cards, CAL-214).
+  reached by their address (and by their sidebar cards).
 - **The first character, or the first image, makes it a draft.** The text
   is saved, and the address becomes `/drafts/<id>` by replacing the history
   entry. On the web every chat page is a child of one pathless layout, so the
@@ -135,6 +135,12 @@ A save names the revision it was edited from (`baseRevision`). The rules:
    clear made offline must not delete the draft written since the send.
 5. A delete of a draft the environment never saw still writes a tombstone,
    because its first save may be on the wire behind the delete.
+6. A delete may also name `ifRevision` (protocol v15): delete only the draft
+   as it was at that revision. If the draft has a later revision, the delete
+   is refused with `conflict` and `DraftChangedDetails` (`changed: true`,
+   and the revision it has now), and the draft is untouched. Without it, a
+   delete takes whatever the draft holds, as a clear and a send need. A
+   sidebar discard always names it.
 
 `draft.list` returns live drafts plus the tombstones of session drafts, so a
 client knows what to save on top of. Tombstones of new-session drafts are
@@ -233,16 +239,157 @@ removed; a project's old landing text becomes a draft of its own.
 
 Session state names the draft on screen (`newSessionDraftId`), and
 `selectNewSessionDraftIds` lists every new-session draft with text or images,
-newest first, whatever its project. The sidebar cards (CAL-214) show that list
-less the draft on screen.
+newest first, whatever its project.
+
+## Sidebar draft cards
+
+Every new-session draft with text or an image is a card at the top of the
+sidebar's Active list, newest edit first, on every device, live. Picks alone
+never make one. A card looks like a session's (project, first line, provider
+and branch), filled with the draft tint and labelled Draft where a session
+shows its status. The provider is the one the draft's composer will run,
+chosen by the same rule (`resolveDraftProvider` in
+`providers/draft-provider.ts`): the pick, else the project's last-run
+provider, else the default, and of those only one the project still offers
+and is not known to be broken. The open draft's card takes the selection fill a session
+card takes (`bg-active`) instead of a deeper tint, so selection reads the
+same whatever the card is; its Draft label still says what it is. Cards only show where the environment keeps drafts and the
+host gives each its own page (`navigateDraft`); elsewhere (desktop, the
+localStorage fallback) `useSidebarDrafts` is null and nothing shows.
+
+- **The draft on screen.** A draft that had a card when it was opened keeps
+  it, selected, as a snapshot taken at that moment: typing does not repaint
+  or reorder it, and it updates (and moves to the top) when the draft is
+  left. A draft first written on this page has no card until it is left.
+  Clicking a card therefore never makes it vanish. Once the draft on screen
+  is a session, or is gone (deleted on another device, or emptied here), the
+  snapshot is dropped: typing there again starts a draft that gets a card
+  when it is left.
+- **Order** compares an edit waiting on this client (its clock) with saved
+  copies (the environment's clock). A skewed clock can misorder two drafts
+  edited moments apart on different devices; nothing worse, so no shared
+  clock is kept for it.
+- **Opening** a card goes to `/drafts/<id>` through the host, everything as
+  it was left, as picking a session does.
+- **Sending** swaps the card for the session's. Cards are keyed by the session
+  id minted with the draft, and a draft is no card from the update that lists
+  its session, so the same row turns from draft to session in one frame,
+  with nothing folding away or growing in. As drafts sit above sessions, that
+  row then slides (a `layout="position"` animation on every Active row,
+  in one `LayoutGroup`) below the drafts still waiting, instead of jumping.
+  A draft being sent keeps its card meanwhile, and offers no discard: no ✕,
+  no menu, and `discardDraft` does nothing. It becomes a session or comes
+  back whole. The draft on screen, while it is sent, shows what is being sent
+  in its snapshot's place, not the snapshot. The composer empties the box
+  before the send is held, so the text is taken as the send begins
+  (`beginSend(key, sentText)` → `DraftEdit.sent`), not read back from the
+  emptied edit or the last autosave. Whether a draft is being sent is its own
+  fact, apart from whether there is a card to show: with nothing to show of
+  what is sent, the snapshot stays, still with no discard.
+- **Discarding** (✕ on hover and always on touch, or the card's menu, by
+  right click or the menu key) hides the card at once and shows an undo
+  notice. The draft is deleted only when the notice goes (6 s, held while the
+  pointer or focus is on it, each counted apart), is dismissed (✕ or Escape),
+  another draft is discarded, or the page goes (`pagehide`, or `freeze`).
+  Hiding the page is not going: a tab switch keeps the undo, and the 6 s run
+  on meanwhile. The flush listens in the capture phase, so the deletion is in
+  the state before the host's own `pagehide` files it away for the next
+  load. Undo just shows the card again. Discarding the draft on screen takes
+  the page to a blank `/`, pushed rather than replacing the draft's
+  address: Back returns to the draft, and returning to it before the
+  deletion cancels it.
+- **A double click discards one draft.** After a pointer discard the next
+  card slides up under the pointer, its action showing: another draft's ✕, or
+  the Settle of the session below the last draft. Until the pointer moves
+  away (more than 4 px, or 1.5 s pass, for touch), every card's action is
+  hidden and a pointer click on one at the same spot is ignored. Keypresses
+  are never held back. The one place a discard is
+  let go (`releaseDraft` in `environment-sidebar-drafts.tsx`) is where images
+  kept with a draft (CAL-215) are to be released.
+- **A discard is of what the user saw, and the environment judges it.** The
+  delete a discard sends is conditional (`draft.delete` with `ifRevision`,
+  protocol v15): it names the revision the discard was made on, raised by the
+  answers to this page's own saves since (a closing save of the last
+  keystrokes, one on the wire when the user typed on, one queued ahead of the
+  delete). If the draft has a later revision when the delete arrives, written
+  by anyone else (more text, another model or mode alone, a restore after a
+  failed send, another tab of the same browser), the environment refuses it
+  with `DraftChangedDetails`; the draft stays as written, the page drops its
+  delete, and the card comes back. No unconditional delete (a clear, a send)
+  changes.
+
+  The page never guesses who wrote a revision. Only answers raise the
+  revision a delete names, never announcements, so a revision the page cannot
+  account for (another device's, or its own whose answer was lost with the
+  connection) makes the environment refuse the delete: at worst the card comes
+  back, and text written elsewhere is never deleted. An edit the page holds
+  and never writes (stalled as too large) protects nothing either, as the
+  delete still names only answered revisions. The same holds offline: the
+  delete reaches the environment on reconnect and is judged against the draft
+  as it is then. One case deletes text written elsewhere, by design: another
+  client saved exactly what this page saved, the environment answered this
+  page's save with that revision (an identical save is a no-op), and the
+  discard then deletes identical content.
+
+  During the window the notice goes at once only if the draft is gone (sent,
+  or deleted elsewhere): there is nothing left to take. A draft written
+  elsewhere meanwhile keeps its notice until the window ends; the refusal then
+  brings its card back.
+- **The undo notice** is mounted by the host at the shell, beside the sidebar
+  rather than in it: on a phone the sidebar is a modal sheet that closes, and
+  would unmount the notice, on the very tap that reaches for Undo. The
+  notice's own root takes the pointer through the sheet's inert page. With
+  the sidebar open on a wide screen it rests just above the sidebar's footer
+  (Settings and the like stay uncovered); on a phone, or with the sidebar
+  folded away, it floats just above the composer, clear of its corners. The
+  composer and the footer register themselves (`noticeAnchorRef` in
+  `lib/notice-anchors.ts`) and are measured through resize observers, so a
+  composer that mounts after the notice (back from a child transcript)
+  moves it. Every mounted element of a kind stays registered, newest in use:
+  the phone's sheet mounts a second sidebar footer, and when it goes the wide
+  screen's footer is the one to clear again. Its `role="status"` region is always mounted and the notice is
+  swapped inside it, so each discard is announced. A discard made from the
+  keyboard puts focus on Undo; one made with the pointer leaves focus alone.
+  On a phone that discard was made in the sidebar's sheet, a modal that
+  traps focus, so the sheet closes first and focus moves once it has let go.
+  Closing it is safe now the notice lives beside the sheet, and it is what a
+  tap on the notice does anyway; keeping focus in the sheet would leave Undo
+  out of the keyboard's reach. A notice replaced by the next discard plays
+  its way out inert (no pointer, focus or screen reader), and its actions
+  name its own discard's key, so a click mid-fade acts on nothing.
+  Closed from inside with focus on it, focus goes to the first of these the
+  user can see (`checkVisibility`: the wide screen's sidebar stays mounted,
+  hidden, below its breakpoint): the card that came back (Undo), the card
+  that was beside the discarded one, the card list, the control that opens
+  the sidebar (on a phone, where the sheet closed for the notice; it is not
+  reopened), the composer. Never the page body.
+- **The card's menu** hangs from a hidden point, so on close focus goes back
+  to the card, not to that point (where Enter would reopen the menu). The
+  card does not claim `aria-haspopup`: its own action is opening the draft.
+- **A removed project** (`workspaceId` null, or no longer listed) shows "No
+  project"; a missing or inaccessible folder is struck through with its badge,
+  as on session cards. Both open normally, and the page offers another
+  project.
+- **Not synced** shows as a quiet cloud mark, with the composer's reason on
+  hover (`selectDraftSyncStatus`; nothing while merely saving).
+
+A session whose composer holds unsent text or an image gets a pen in the
+draft accent beside its provider, on every device, settled rows included. No
+fill: a tinted session card read as one more draft. Sending or
+clearing the text removes it. The session on screen never shows it: its
+composer is the one being typed in, and a mark that came and went with each
+emptied line would flicker, just as the open draft's card stays frozen.
+
+Typing never re-renders the sidebar. The cards are read with an equality that
+ignores the draft on screen (its card is the snapshot), the unsent marks are a
+sorted list of session ids that ignores the session on screen, and both change
+only when a card's content or a draft's has-text fact does.
 
 ## Not yet
 
 - Images still upload at send time and are not kept with a draft (CAL-215).
-  `artifactIds` is already part of the content.
-- Sidebar draft cards (CAL-214) are not built yet; they should list
-  `selectNewSessionDraftIds` less `newSessionDraftId`, and read
-  `selectDraftSyncStatus` to mark an unsynced draft the way the composer does.
+  `artifactIds` is already part of the content, and a card already counts
+  them.
 - A draft's address leads to its session only when this browser sent it, or
   had its page open when another device did. Otherwise its old address opens
   a blank page.

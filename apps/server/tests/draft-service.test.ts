@@ -96,6 +96,74 @@ describe('draft service', () => {
     expect(next.payload.draft.revision).toBe(3)
   })
 
+  it('deletes on a matching revision, refuses on any other, and deletes regardless with none', () => {
+    const { call } = setup()
+    const target: DraftTarget = { type: 'new_session', workspaceId: 'ws', sessionId: 'minted' }
+    const save = (draftId: string, baseRevision: number, text: string) =>
+      call('draft.save', { draftId, baseRevision, target, content: { text } }).payload.draft
+    const live = () =>
+      call('draft.list', null).payload.drafts.map((draft: { draftId: string }) => draft.draftId)
+
+    // The revision the discard was made on is still the draft's: it goes.
+    const kept = save('kept', 0, 'mine')
+    expect(
+      call('draft.delete', {
+        draftId: 'kept',
+        baseRevision: kept.revision,
+        ifRevision: kept.revision,
+      }).payload,
+    ).toEqual({ draftId: 'kept', revision: kept.revision + 1 })
+
+    // Written since by another client: refused, distinguishably, and untouched.
+    const first = save('moved', 0, 'mine')
+    const theirs = save('moved', first.revision, 'theirs, written since')
+    const refused = call('draft.delete', {
+      draftId: 'moved',
+      baseRevision: first.revision,
+      ifRevision: first.revision,
+    })
+    expect(refused.type).toBe('error')
+    expect(refused.error).toEqual({
+      code: 'conflict',
+      message: 'This draft was changed since.',
+      details: { draftId: 'moved', revision: theirs.revision, changed: true },
+    })
+    expect(live()).toContain('moved')
+    const [moved] = call('draft.list', null).payload.drafts.filter(
+      (draft: { draftId: string }) => draft.draftId === 'moved',
+    )
+    expect(moved).toMatchObject({
+      revision: theirs.revision,
+      content: { text: 'theirs, written since' },
+    })
+
+    // A revision above the draft's (an answer about the draft before it was
+    // deleted and written anew under a pruned tombstone): refused too, as
+    // only the exact revision is the draft the discard was made on.
+    const low = save('anew', 0, 'written anew')
+    const stale = call('draft.delete', {
+      draftId: 'anew',
+      baseRevision: low.revision,
+      ifRevision: low.revision + 99,
+    })
+    expect(stale.type).toBe('error')
+    expect(stale.error).toMatchObject({
+      code: 'conflict',
+      details: { draftId: 'anew', revision: low.revision, changed: true },
+    })
+    expect(live()).toContain('anew')
+
+    // No revision named: today's unconditional delete, which a clear and a
+    // send rely on, whatever was written since.
+    expect(
+      call('draft.delete', { draftId: 'moved', baseRevision: first.revision }).payload,
+    ).toEqual({
+      draftId: 'moved',
+      revision: theirs.revision + 1,
+    })
+    expect(live()).not.toContain('moved')
+  })
+
   it('puts back a rolled-back first message whole, however long', () => {
     const database = setup()
     const text = 'x'.repeat(62_000)

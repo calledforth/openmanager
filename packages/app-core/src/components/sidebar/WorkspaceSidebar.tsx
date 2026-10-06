@@ -2,6 +2,7 @@ import { useContext, useEffect, useMemo, useSyncExternalStore, type ReactNode } 
 import { PlatformCapabilitiesContext } from '../../providers/platform-provider'
 import {
   useSidebarData,
+  useSidebarDrafts,
   useSidebarSessions,
   type SidebarSessionEntry,
 } from '../../providers/sidebar-provider'
@@ -39,6 +40,7 @@ function useWorkspaceSidebarModel() {
     acknowledgeSessionDone,
   } = useSidebarData()
   const sessionsByWorkspace = useSidebarSessions()
+  const drafts = useSidebarDrafts()
   const providerLabel = useContext(PlatformCapabilitiesContext)?.providerDisplayName
   const visible = useDocumentVisible()
 
@@ -85,6 +87,14 @@ function useWorkspaceSidebarModel() {
       ? (path: string, id: string, settled: boolean) => settleSession(path, id, settled)
       : undefined,
     onDeleteSession: (...args: Parameters<typeof deleteSession>) => void deleteSession(...args),
+    ...(drafts
+      ? {
+          drafts: drafts.drafts,
+          activeDraftId: drafts.openDraftId,
+          onOpenDraft: drafts.openDraft,
+          onDiscardDraft: drafts.discardDraft,
+        }
+      : {}),
     onAddWorkspace: () => void addWorkspace(),
     providerLabel,
   }
@@ -92,7 +102,9 @@ function useWorkspaceSidebarModel() {
 
 /**
  * The session sidebar bound to `useSidebarData`; render inside a Fluid
- * `SidebarProvider`. Hosts add their own rows through the slots.
+ * `SidebarProvider`. Hosts add their own rows through the slots. Hosts with
+ * draft cards also mount `DraftDiscardNotice` (`DraftDiscardToast.tsx`)
+ * beside it, outside the sidebar, for the undo of a discarded draft.
  */
 export function WorkspaceSidebar({
   titlebar,

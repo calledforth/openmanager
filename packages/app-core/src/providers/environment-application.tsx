@@ -76,8 +76,11 @@ import {
   type DraftLaunch,
 } from './environment-composer'
 import { EnvironmentComposerDraftProvider, sendingNewSessionDraft } from './environment-drafts'
+import { EnvironmentSidebarDraftsProvider } from './environment-sidebar-drafts'
+import { selectSessionsWithUnsentDraft } from '../components/sidebar/sidebar-sessions'
 import {
   DraftPageContext,
+  DraftPageNavigationContext,
   forgetSentDraft,
   rememberSentDraft,
   sentDraftSession,
@@ -805,25 +808,27 @@ function EnvironmentSessionStateProvider({
     [client, sync],
   )
 
+  // A blank page is never saved, so a fresh one leaves nothing behind when
+  // the open one is still empty. One that was written in stays a draft,
+  // reachable by its address. Emptied again but holding picks, it would
+  // linger as a draft nobody sees, so it goes when the page is left. One
+  // being sent is the send's, picks and all, whatever the composer shows.
+  const dropEmptiedPage = useCallback(() => {
+    const current = pageRef.current
+    if (!sync || !current?.claimed || sendingNewSessionDraft(sync, current.draftId)) return
+    const state = client.getState()
+    const content = selectDraftContent(state, current.draftId)
+    const sending = state.draftEdits[current.draftId]?.launching
+    if (content && !hasDraftContent(content) && !sending) sync.discard(current.draftId)
+  }, [client, sync])
+
   const openDraft = useCallback(
-    async (workspacePath: string) => {
+    async (workspacePath: string, options?: { replace?: boolean }) => {
       const previousSessionId = activeSessionWorkspaceId === workspacePath ? activeSessionId : null
       draftGenerationRef.current += 1
       selectionRef.current = null
       setError(null)
-      // A blank page is never saved, so a fresh one leaves nothing behind
-      // when the open one is still empty. One that was written in stays a
-      // draft, reachable by its address. Emptied again but holding picks,
-      // it would linger as a draft nobody sees, so it goes.
-      // One being sent is the send's, picks and all, whatever the composer
-      // shows meanwhile.
-      const current = pageRef.current
-      if (sync && current?.claimed && !sendingNewSessionDraft(sync, current.draftId)) {
-        const state = client.getState()
-        const content = selectDraftContent(state, current.draftId)
-        const sending = state.draftEdits[current.draftId]?.launching
-        if (content && !hasDraftContent(content) && !sending) sync.discard(current.draftId)
-      }
+      dropEmptiedPage()
       const next = mintPage(workspacePath)
       pageRef.current = next
       setPage(next)
@@ -836,7 +841,9 @@ function EnvironmentSessionStateProvider({
       setAdoptedDraftSessionId(null)
       const generation = draftGenerationRef.current
       if (navigateSession) {
-        await (routed ? followNavigation(null, () => navigateSession(null)) : navigateSession(null))
+        await (routed
+          ? followNavigation(null, () => navigateSession(null, options))
+          : navigateSession(null, options))
       }
       // A later selection or draft landed while the navigation settled.
       if (draftGenerationRef.current !== generation) return
@@ -851,11 +858,58 @@ function EnvironmentSessionStateProvider({
       activeSessionId,
       activeSessionWorkspaceId,
       client,
+      dropEmptiedPage,
       followNavigation,
       navigateSession,
       routed,
-      sync,
     ],
+  )
+  const openDraftRef = useRef(openDraft)
+  openDraftRef.current = openDraft
+  const landingWorkspaceRef = useRef(landingWorkspaceId)
+  landingWorkspaceRef.current = landingWorkspaceId
+  const workspacesRef = useRef(workspaces)
+  workspacesRef.current = workspaces
+  const onScreenDraftRef = useRef<string | null>(null)
+  onScreenDraftRef.current = isSessionDraftOpen ? pageDraftId : null
+
+  // The sidebar's draft cards: a draft's own page, by its address. A launch
+  // still in flight continues in the sidebar, as when a session is picked.
+  const openDraftPage = useCallback(
+    (draftId: string) => {
+      if (!navigateDraft || onScreenDraftRef.current === draftId) return
+      draftGenerationRef.current += 1
+      selectionRef.current = null
+      setError(null)
+      dropEmptiedPage()
+      setPendingDraftSessionStart(false)
+      setLaunchingMessage(null)
+      setTurnPending(false)
+      setAdoptedDraftSessionId(null)
+      void navigateDraft(draftId).catch(noop)
+    },
+    [dropEmptiedPage, navigateDraft],
+  )
+
+  // A discarded draft on screen leaves for a blank page in its project (or
+  // where the landing opens, if its project is gone). The blank page is
+  // pushed, not put in the draft's place: Back returns to the draft while its
+  // undo is open, which calls the discard off.
+  const closeDraftPage = useCallback(
+    (draftId: string) => {
+      if (onScreenDraftRef.current !== draftId) return
+      const own = draftWorkspaceRef.current
+      const blank = canHostDraft(workspacesRef.current.find((ws) => ws.workspaceId === own))
+        ? own
+        : landingWorkspaceRef.current
+      if (blank) void openDraftRef.current(blank).catch(noop)
+      else void navigateSession?.(null).catch(noop)
+    },
+    [navigateSession],
+  )
+  const pageNavigation = useMemo(
+    () => (sync && navigateDraft ? { openDraftPage, closeDraftPage } : null),
+    [closeDraftPage, navigateDraft, openDraftPage, sync],
   )
 
   const selectSession = useCallback(
@@ -1082,7 +1136,11 @@ function EnvironmentSessionStateProvider({
   return (
     <SessionStateContext.Provider value={value}>
       <DraftInternalsContext.Provider value={internals}>
-        <DraftPageContext.Provider value={pageInternals}>{children}</DraftPageContext.Provider>
+        <DraftPageContext.Provider value={pageInternals}>
+          <DraftPageNavigationContext.Provider value={pageNavigation}>
+            {children}
+          </DraftPageNavigationContext.Provider>
+        </DraftPageContext.Provider>
       </DraftInternalsContext.Provider>
     </SessionStateContext.Provider>
   )
@@ -1164,9 +1222,22 @@ function EnvironmentSidebarDataProvider({
   }, [environmentState])
   const workspaceEntries = useMemo(() => workspaces.map(toWorkspaceEntry), [workspaces])
   const recentEntries = useMemo(() => recentWorkspaces.map(toWorkspaceEntry), [recentWorkspaces])
+  // Which sessions hold an unsent draft: a coarse fact, so typing in a
+  // composer changes it only when the text empties or starts.
+  const syncsDrafts = client.drafts !== undefined
+  const openSessionId = session.activeSessionId
+  const unsent = useEnvironmentState(
+    useCallback(
+      (state: EnvironmentState) =>
+        syncsDrafts ? selectSessionsWithUnsentDraft(state, openSessionId) : EMPTY_LIST,
+      [openSessionId, syncsDrafts],
+    ),
+    shallowEqualArray,
+  )
   // What the sidebar was last handed, so an unchanged row stays the same object.
   const shownSessions = useRef<SidebarSessionsByWorkspace | null>(null)
   const sessionsByWorkspace = useMemo(() => {
+    const unsentIds = new Set(unsent)
     const grouped: SidebarSessionsByWorkspace = {}
     const unavailableWorkspaces = new Set(
       workspaceEntries
@@ -1193,12 +1264,13 @@ function EnvironmentSidebarDataProvider({
         ...(unavailableWorkspaces.has(summary.workspaceId) ? { workspaceUnavailable: true } : {}),
         ...(summary.updatedAt ? { updatedAt: summary.updatedAt } : {}),
         settledAt: summary.settledAt ?? null,
+        ...(unsentIds.has(summary.sessionId) ? { hasUnsentDraft: true } : {}),
       }
       ;(grouped[summary.workspaceId] ??= []).push(entry)
     }
     shownSessions.current = reuseUnchanged(shownSessions.current, grouped)
     return shownSessions.current
-  }, [session.defaultProviderId, sessions, workspaceEntries])
+  }, [session.defaultProviderId, sessions, unsent, workspaceEntries])
 
   // Offered only once the environment says it can keep the change.
   const canSettle = connection.phase === 'connected' && client.supports('settleSession')
@@ -1269,7 +1341,7 @@ function EnvironmentSidebarDataProvider({
   return (
     <SidebarDataContext.Provider value={value}>
       <SidebarSessionsContext.Provider value={sessionsByWorkspace}>
-        {children}
+        <EnvironmentSidebarDraftsProvider>{children}</EnvironmentSidebarDraftsProvider>
       </SidebarSessionsContext.Provider>
     </SidebarDataContext.Provider>
   )

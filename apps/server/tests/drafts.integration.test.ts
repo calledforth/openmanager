@@ -85,8 +85,17 @@ async function list(client: ProtocolClient) {
   return DraftResponseSchemas['draft.list'].parse(await nextResponse(client, requestId)).payload
 }
 
-async function removeRaw(client: ProtocolClient, draftId: string, baseRevision: number) {
-  const requestId = client.command('draft.delete', { draftId, baseRevision })
+async function removeRaw(
+  client: ProtocolClient,
+  draftId: string,
+  baseRevision: number,
+  ifRevision?: number,
+) {
+  const requestId = client.command('draft.delete', {
+    draftId,
+    baseRevision,
+    ...(ifRevision !== undefined ? { ifRevision } : {}),
+  })
   return nextResponse(client, requestId)
 }
 
@@ -183,6 +192,34 @@ describe('composer drafts across clients', () => {
       type: 'error',
       error: { code: 'conflict' },
     })
+  })
+
+  it('refuses a discard of a draft another client wrote since, and keeps its text', async () => {
+    const { host, first, second } = await startHost()
+    const target: DraftTarget = {
+      type: 'new_session',
+      workspaceId: host.workspaceId,
+      sessionId: randomUUID(),
+    }
+    const mine = await saved(first, 'draft-d', 0, target, { text: 'mine' })
+    const theirs = await saved(second, 'draft-d', mine.revision, target, { text: 'from the phone' })
+
+    // The first client discards the draft as it last wrote it.
+    expect(await removeRaw(first, 'draft-d', mine.revision, mine.revision)).toMatchObject({
+      type: 'error',
+      error: {
+        code: 'conflict',
+        details: { draftId: 'draft-d', revision: theirs.revision, changed: true },
+      },
+    })
+    expect((await list(first)).drafts).toEqual([theirs])
+
+    // Named at the revision it now has, the discard goes.
+    expect(await removeRaw(first, 'draft-d', theirs.revision, theirs.revision)).toMatchObject({
+      type: 'response',
+      payload: { draftId: 'draft-d', revision: theirs.revision + 1 },
+    })
+    expect((await list(first)).drafts).toEqual([])
   })
 
   it("clears a session's draft on send and accepts the next one typed after it", async () => {

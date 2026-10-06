@@ -1,5 +1,6 @@
 import {
   DRAFT_SAVE_MAX_BYTES,
+  DraftChangedDetailsSchema,
   DraftDeletedDetailsSchema,
   draftSaveBytes,
   type DraftContent,
@@ -53,6 +54,9 @@ export interface DraftSyncOptions {
 
 const sameJson = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)
 
+/** How many drafts' last answered revisions a sync keeps; the oldest go first. */
+const ANSWERED_KEPT = 64
+
 /**
  * Saves a client's draft edits to the environment, one request per draft at
  * a time so a later edit can never overtake an earlier one, and lists the
@@ -64,6 +68,38 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
   const now = options.now ?? Date.now
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
   const inFlight = new Set<string>()
+  // The revision the environment answered this client's latest write of a
+  // draft with. Answers only, never announcements: what a conditional delete
+  // may name as this client's own. Bounded; one forgotten only makes a
+  // discard name an older revision, which the environment refuses.
+  const answered = new Map<string, number>()
+  // Drafts a discard is waiting on (its undo window, then its delete): their
+  // answers are never evicted, or the discard would be refused for nothing.
+  const pinned = new Map<string, number>()
+  const isPinned = (draftId: string) =>
+    pinned.has(draftId) || store.getState().draftEdits[draftId]?.deleteIf !== undefined
+  const answer = (draftId: string, revision: number) => {
+    const best = Math.max(revision, answered.get(draftId) ?? 0)
+    answered.delete(draftId)
+    answered.set(draftId, best)
+    // The least recently answered unpinned drafts go first; pinned ones may
+    // hold the map past its size, by as many as are waiting.
+    for (const key of answered.keys()) {
+      if (answered.size <= ANSWERED_KEPT) break
+      if (key !== draftId && !isPinned(key)) answered.delete(key)
+    }
+  }
+  // An answer is about the draft as it was: once that draft is deleted, or
+  // the environment lists it at an earlier revision (its tombstone pruned and
+  // the draft written anew), the answer names nothing of this client's.
+  const forgetStaleAnswers = () => {
+    if (answered.size === 0) return
+    const { drafts } = store.getState()
+    for (const [draftId, revision] of answered) {
+      const draft = drafts[draftId]
+      if (!draft || draft.revision < revision) answered.delete(draftId)
+    }
+  }
   // Drafts whose delete this client has sent and not yet seen answered.
   const deleting = new Set<string>()
   const again = new Set<string>()
@@ -162,11 +198,24 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
     try {
       if (isEmptyDraftContent(edit.content)) {
         deleting.add(draftId)
+        // A discard names the newest revision that is its own: the one it was
+        // made on, or the answer to a save of this client's since (one queued
+        // ahead of this delete included). Written by anyone else since, the
+        // environment refuses it.
+        const ifRevision =
+          edit.deleteIf !== undefined
+            ? Math.max(edit.deleteIf, answered.get(draftId) ?? 0)
+            : undefined
         const tombstone = await commands
-          .deleteDraft({ draftId, baseRevision: edit.baseRevision })
+          .deleteDraft({
+            draftId,
+            baseRevision: edit.baseRevision,
+            ...(ifRevision !== undefined ? { ifRevision } : {}),
+          })
           .finally(() => {
             deleting.delete(draftId)
           })
+        answered.delete(draftId)
         // Rebase first: what was typed after the delete was sent is the
         // next draft, which the deletion must not take with it.
         store.update((current) =>
@@ -174,6 +223,7 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
         )
       } else {
         const draft = await commands.saveDraft(input)
+        answer(draftId, draft.revision)
         store.update((current) =>
           settle(draftId, edit, draft.revision)(applyDraftSaved(current, draft)),
         )
@@ -196,6 +246,15 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
             return draftEdits === next.draftEdits ? next : { ...next, draftEdits }
           })
           if (retry) again.add(draftId)
+          return
+        }
+        if (
+          error.code === 'conflict' &&
+          DraftChangedDetailsSchema.safeParse(error.details).success
+        ) {
+          // A discard refused: another client wrote the draft since. It stays,
+          // as the environment has it, and this client lets the discard go.
+          store.update((current) => removeDraftEdit(current, draftId, edit))
           return
         }
         if (error.code === 'validation' || error.code === 'not_found') {
@@ -277,7 +336,10 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
     if (!state.draftsListed) list()
     else if (reconnected) flush()
   }
-  const unsubscribe = store.subscribe(check)
+  const unsubscribe = store.subscribe(() => {
+    forgetStaleAnswers()
+    check()
+  })
   // A store handed over already connected changes nothing to notice.
   queueMicrotask(check)
 
@@ -299,6 +361,7 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
         baseRevision: held?.baseRevision ?? draftBaseRevision(state, draftId),
         editedAt: now(),
         ...(held?.launching ? { launching: true as const } : {}),
+        ...(held?.launching && held.sent ? { sent: held.sent } : {}),
         // Still not in the environment: the mark stays until a save lands.
         ...(held?.stalled ? { stalled: held.stalled } : {}),
         // Typed while this client's delete of the draft is on the wire: the
@@ -311,23 +374,32 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
       if (!edit.launching) schedule(draftId)
     },
 
-    discard(draftId: string) {
+    discard(draftId: string, options?: { ifRevision?: number }) {
       const state = store.getState()
       const target = selectDraftTarget(state, draftId)
       // A draft being sent is the send's: it goes with the session, or comes
       // back whole if the send fails.
       if (!target || state.draftEdits[draftId]?.launching) return
       this.edit(draftId, target, { text: '' })
+      const ifRevision = options?.ifRevision
+      if (ifRevision !== undefined) {
+        store.update((current) => {
+          const held = current.draftEdits[draftId]
+          return held
+            ? applyDraftEdit(current, draftId, { ...held, deleteIf: ifRevision })
+            : current
+        })
+      }
       void write(draftId)
     },
 
-    beginLaunch(draftId: string) {
+    beginLaunch(draftId: string, sent?: DraftContent) {
       cancel(draftId)
       store.update((state) => {
         const held = state.draftEdits[draftId]
         const saved = state.drafts[draftId]
         const edit: DraftEdit | undefined = held
-          ? { ...held, launching: true }
+          ? { ...held, launching: true, ...(sent ? { sent } : {}) }
           : saved
             ? {
                 target: saved.target,
@@ -335,6 +407,7 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
                 baseRevision: saved.revision,
                 editedAt: now(),
                 launching: true,
+                ...(sent ? { sent } : {}),
               }
             : undefined
         return edit ? applyDraftEdit(state, draftId, edit) : state
@@ -358,11 +431,24 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
       const restored: DraftEdit =
         outcome === 'refused' ? { ...held, outlivesDeletion: true } : { ...held }
       delete restored.launching
+      delete restored.sent
       store.update((current) => applyDraftEdit(current, draftId, restored))
       schedule(draftId)
     },
 
     flush,
+
+    pinAnswer(draftId: string) {
+      pinned.set(draftId, (pinned.get(draftId) ?? 0) + 1)
+      let held = true
+      return () => {
+        if (!held) return
+        held = false
+        const count = (pinned.get(draftId) ?? 1) - 1
+        if (count > 0) pinned.set(draftId, count)
+        else pinned.delete(draftId)
+      }
+    },
 
     dispose() {
       disposed = true

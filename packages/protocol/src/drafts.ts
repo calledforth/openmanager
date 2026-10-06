@@ -133,6 +133,15 @@ export const DraftCommandSchemas = {
        * a stale clear must not take the draft written since.
        */
       baseRevision: z.number().int().nonnegative(),
+      /**
+       * Delete only the draft as it is at exactly this revision (0: never
+       * saved). Refused with `DRAFT_CHANGED_MESSAGE` when the draft has any
+       * other revision: a later one written since, or a lower one after the
+       * draft was deleted and written anew under a pruned tombstone. So a
+       * discard never takes text another client wrote. Absent: delete whatever
+       * the draft holds now, as a clear or a send does.
+       */
+      ifRevision: z.number().int().nonnegative().optional(),
     }),
   ),
 } as const
@@ -157,11 +166,23 @@ export const DraftDeletedDetailsSchema = z.strictObject({
   revision: z.number().int().positive(),
 })
 
+/** The error `draft.delete` answers with when `ifRevision` is not the draft's revision now. */
+export const DRAFT_CHANGED_MESSAGE = 'This draft was changed since.'
+
+/** Tells a refused conditional delete from `DraftDeletedDetails`, which is strict and has no `changed`. */
+export const DraftChangedDetailsSchema = z.strictObject({
+  draftId: EntityIdSchema,
+  /** The draft's revision now, other than the one the delete named. */
+  revision: z.number().int().positive(),
+  changed: z.literal(true),
+})
+
 export type DraftContent = z.infer<typeof DraftContentSchema>
 export type DraftTarget = z.infer<typeof DraftTargetSchema>
 export type Draft = z.infer<typeof DraftSchema>
 export type DraftTombstone = z.infer<typeof DraftTombstoneSchema>
 export type DraftDeletedDetails = z.infer<typeof DraftDeletedDetailsSchema>
+export type DraftChangedDetails = z.infer<typeof DraftChangedDetailsSchema>
 export type DraftSaveInput = z.infer<
   (typeof DraftCommandSchemas)[typeof DRAFT_SAVE_CAPABILITY]
 >['payload']

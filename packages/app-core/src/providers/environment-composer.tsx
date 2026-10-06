@@ -22,7 +22,6 @@ import {
   selectProviderCatalog,
   shallowEqualArray,
   type EnvironmentState,
-  type ProviderCatalogEntry,
   type SessionComposerState,
 } from '@openmanager/environment-client'
 import type { SessionConfigValue } from '../components/chat/modelConfig'
@@ -41,12 +40,9 @@ import {
   type ComposerStateValue,
 } from './composer-provider'
 import { DraftPageContext, DraftPicksContext, type DraftPagePicks } from './draft-pages'
+import { resolveDraftProvider } from './draft-provider'
 import { latestSendingDraft } from './environment-drafts'
-import {
-  PlatformCapabilitiesContext,
-  providerBlocksComposer,
-  type ProviderUiStatus,
-} from './platform-provider'
+import { PlatformCapabilitiesContext, providerBlocksComposer } from './platform-provider'
 import { SessionStateContext } from './session-provider'
 
 const EMPTY_RECORD = {}
@@ -121,41 +117,6 @@ export const DraftLaunchContext = createContext<DraftLaunchInternals | null>(nul
 
 const UNSUPPORTED_PICK = 'This environment cannot change that for a new chat.'
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err))
-
-/**
- * The provider a draft in this workspace starts with: the pick when it can
- * still be made, otherwise the first provider the workspace offers that is not
- * known to be broken. An environment that lists no providers keeps the pick.
- */
-function draftProviderFor(
-  picked: ProviderId,
-  catalog: readonly ProviderCatalogEntry[],
-  offered: readonly string[] | undefined,
-  statuses: Partial<Record<ProviderId, ProviderUiStatus>>,
-): ProviderId {
-  const candidates = catalog
-    .map((entry) => entry.id)
-    .filter(isProviderId)
-    .filter((id) => !offered?.length || offered.includes(id))
-  if (candidates.length === 0 || candidates.includes(picked)) return picked
-  return candidates.find((id) => !providerBlocksComposer(statuses[id])) ?? candidates[0]!
-}
-
-/**
- * The provider this workspace last ran: that of its most recently active
- * top-level session. The environment keeps preferences per provider and none
- * for the provider itself, so the sessions are the record, for every client.
- */
-function lastProviderIn(state: EnvironmentState, workspaceId: string): ProviderId | undefined {
-  let best: { at: string; providerId: ProviderId } | undefined
-  for (const session of Object.values(state.sessions)) {
-    if (!session || session.workspaceId !== workspaceId || session.parentSessionId) continue
-    if (!isProviderId(session.providerId)) continue
-    const at = session.updatedAt ?? ''
-    if (!best || at > best.at) best = { at, providerId: session.providerId }
-  }
-  return best?.providerId
-}
 
 /**
  * A draft has no session to list its settings or commands, so it borrows the
@@ -310,17 +271,19 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
           : undefined,
     [draftId, pagePicks, savedDraft, savedPreference, savedProviderId],
   )
-  const offeredProviders = useEnvironmentState((state) =>
-    draftWorkspaceId ? state.workspaces[draftWorkspaceId]?.capabilities.providers : undefined,
-  )
-  const lastProviderId = useEnvironmentState((state) =>
-    draftWorkspaceId ? lastProviderIn(state, draftWorkspaceId) : undefined,
-  )
-  const draftProviderId = draftProviderFor(
-    currentSelection?.providerId ?? lastProviderId ?? defaultProviderId,
-    catalog,
-    offeredProviders,
-    agentUiStatusByProvider,
+  const pickedProviderId = currentSelection?.providerId
+  const draftProviderId = useEnvironmentState(
+    useCallback(
+      (state: EnvironmentState) =>
+        resolveDraftProvider(state, {
+          picked: pickedProviderId,
+          workspaceId: draftWorkspaceId ?? null,
+          defaultProviderId,
+          statuses: agentUiStatusByProvider,
+          catalog,
+        }),
+      [agentUiStatusByProvider, catalog, defaultProviderId, draftWorkspaceId, pickedProviderId],
+    ),
   )
   // Picks belong to the provider they were made for.
   const picked = currentSelection?.providerId === draftProviderId ? currentSelection : undefined
@@ -473,12 +436,13 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
       const state = client.getState()
       const { catalog, agentUiStatusByProvider, defaultProviderId } = liveRef.current
       const selection = explicitPicks(state, id)
-      const providerId = draftProviderFor(
-        selection?.providerId ?? lastProviderIn(state, workspaceId) ?? defaultProviderId,
+      const providerId = resolveDraftProvider(state, {
+        picked: selection?.providerId,
+        workspaceId,
+        defaultProviderId,
+        statuses: agentUiStatusByProvider,
         catalog,
-        state.workspaces[workspaceId]?.capabilities.providers,
-        agentUiStatusByProvider,
-      )
+      })
       const picked = selection?.providerId === providerId ? selection : undefined
       const profile: ProviderComposerProfile | undefined = state.providers[providerId]?.profile
       const preference = withExplicitPicks(

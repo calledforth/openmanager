@@ -258,6 +258,12 @@ export interface DraftEdit {
    */
   launching?: true
   /**
+   * What the send carries, while `launching`: taken as the send began, since
+   * the composer empties the box (and so `content`) before the launch is
+   * held. Goes with `launching`.
+   */
+  sent?: DraftContent
+  /**
    * Made after a deletion this client asked for: put back after a failed
    * send, or typed while a clear was being deleted. The environment's
    * announcement of that deletion (and of a failed send's restore) rebases
@@ -272,6 +278,12 @@ export interface DraftEdit {
    * an unsynced draft stays marked until the environment has its latest text.
    */
   stalled?: DraftStall
+  /**
+   * Set by a conditional discard: the revision it was made on. The delete
+   * this edit carries is refused if the draft has been written since by
+   * anyone but this client. A later edit of the draft drops it.
+   */
+  deleteIf?: number
 }
 
 /**
@@ -592,10 +604,27 @@ export interface DraftSync {
    * deletes the draft. While the environment cannot be reached, edits wait.
    */
   edit(draftId: string, target: DraftTarget, content: DraftContent): void
-  /** Delete a draft now, as discarding it does. Does nothing to a draft being sent. */
-  discard(draftId: string): void
-  /** Hold the draft's saves while a `session.create` sends it. */
-  beginLaunch(draftId: string): void
+  /**
+   * Delete a draft now, as discarding it does. Does nothing to a draft being
+   * sent. With `ifRevision` (the revision the discard was made on), only the
+   * draft as it was then is deleted: the delete names that revision, raised
+   * by the answers to this client's own saves since, and the environment
+   * refuses it if anyone else has written the draft. Refused, the draft stays.
+   */
+  discard(draftId: string, options?: { ifRevision?: number }): void
+  /**
+   * Keep what this client knows of its own writes of the draft (the revision
+   * its latest save was answered with) until the returned release, for a
+   * discard waiting out its undo window: a busy sync must not forget it and
+   * have the discard refused. The delete itself keeps it until it is answered.
+   */
+  pinAnswer(draftId: string): () => void
+  /**
+   * Hold the draft's saves while a `session.create` sends it. `sent` is what
+   * the send carries, when the composer has already emptied the draft;
+   * readers (the sidebar's card) show it instead of the emptied content.
+   */
+  beginLaunch(draftId: string, sent?: DraftContent): void
   /**
    * The send finished:
    * - `sent`: the session was created, and the environment deleted the draft
