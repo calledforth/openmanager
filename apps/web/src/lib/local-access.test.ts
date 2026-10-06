@@ -15,11 +15,10 @@ function permissions(states: Record<string, string>) {
 }
 
 describe('loopbackAccessDenied', () => {
-  it('reads the current permission name first', async () => {
-    // Edge 154 answers both names, and only the current one carries the denial.
-    const both = permissions({ 'loopback-network': 'denied', 'local-network-access': 'prompt' })
-    await expect(loopbackAccessDenied(both)).resolves.toBe(true)
-    expect(both.asked).toEqual(['loopback-network'])
+  it('reads the loopback permission', async () => {
+    const denied = permissions({ 'loopback-network': 'denied' })
+    await expect(loopbackAccessDenied(denied)).resolves.toBe(true)
+    expect(denied.asked).toEqual(['loopback-network'])
     await expect(
       loopbackAccessDenied(permissions({ 'loopback-network': 'granted' })),
     ).resolves.toBe(false)
@@ -28,10 +27,10 @@ describe('loopbackAccessDenied', () => {
     )
   })
 
-  it('falls back to the name the first Chrome versions used', async () => {
+  it('never asks for the legacy combined permission, which crashes older Chrome', async () => {
     const older = permissions({ 'local-network-access': 'denied' })
-    await expect(loopbackAccessDenied(older)).resolves.toBe(true)
-    expect(older.asked).toEqual(['loopback-network', 'local-network-access'])
+    await expect(loopbackAccessDenied(older)).resolves.toBe(false)
+    expect(older.asked).toEqual(['loopback-network'])
   })
 
   it('reports nothing denied where the browser has no such permission', async () => {

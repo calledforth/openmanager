@@ -141,7 +141,8 @@ below). This browser then holds the owner credential, which includes `admin`.
 **Settings → Devices → Pair a device**, tick what the device may do, and pick
 the route it should use (the tunnel, for a phone). The link opens `/pair` on
 the origin of the app that made it, so make the link from the hosted app,
-not from `pnpm dev:web`, whose links point at `localhost`. The device gets its
+not from `pnpm dev:web`, whose links point at this computer's loopback
+address. The device gets its
 own credential, which can be revoked on its own.
 
 `/local-owner` is not a third way. It hands the owner credential only to a
@@ -277,19 +278,24 @@ What the vendors document:
 
 What OpenManager does with that:
 
-- **While the prompt is open**, the bootstrap request waits on it and the app
-  shows _Connecting_. It does not try the tunnel until the person answers.
+- **While the prompt is open**, the bootstrap request on the route in use
+  waits on it and the app shows _Connecting_; it does not move to the tunnel
+  until the person answers. A route search or a health probe that meets the
+  open prompt gives up after a few seconds and reads the route as unreachable.
 - **Allowed:** the loopback route works like it does in `pnpm dev:web`.
 - **Blocked:** the loopback route fails at once and route search moves to the
   next saved route, normally the tunnel; the environment, its token and its
   sessions stay as they were. With no other route, the app shows **Local
   access blocked** and says where to allow it, instead of claiming the
   environment is offline. The client reads the browser's `loopback-network`
-  (or older `local-network-access`) permission to tell the two apart, because
-  the failed request itself looks the same as nothing listening
+  permission to tell the two apart, because the failed request itself looks
+  the same as nothing listening
   ([environment routes](./environment-routes.md#the-route-in-use-fallback-and-reconnect)).
-- **Closed without answering, or Safari:** the browser reports nothing the page
-  can read, so the loopback route reads as _Environment offline_. That wording
+  It never asks for the older combined `local-network-access` permission:
+  that query crashes the page in older Chrome, and `try` cannot catch it.
+- **Closed without answering, Safari, or a Chrome too old to know
+  `loopback-network`:** the browser reports nothing the page can read, so the
+  loopback route reads as _Environment offline_. That wording
   asks the person to check both the server and that the browser lets the page
   reach this device.
 

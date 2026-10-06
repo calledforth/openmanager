@@ -6,14 +6,13 @@
  * nothing listening, so the permission is the only way to tell them apart.
  * See docs/web-deploy.md for what each browser does.
  *
- * Current Chrome, Edge (154 tested) and Firefox (155 tested) name the
- * permission `loopback-network`; the first Chrome versions with the check
- * called it `local-network-access`. A browser that knows
- * neither name (Safari, older Chrome) answers false: it either allows the
- * request or blocks it some other way that it does not report.
+ * Current Chrome, Edge (154 tested) and Firefox (155 tested) call the
+ * permission `loopback-network`. The first Chrome versions with the check
+ * only knew the combined `local-network-access`, which is deliberately not
+ * asked: querying it crashes the renderer in older Chrome, and `try` cannot
+ * catch that. A browser that does not know `loopback-network` (those versions,
+ * Safari, older browsers) answers false, and the failure reads as before.
  */
-const LOOPBACK_PERMISSION_NAMES = ['loopback-network', 'local-network-access'] as const
-
 type PermissionsLike = {
   query: (descriptor: { name: string }) => Promise<{ state: string }>
 }
@@ -23,13 +22,11 @@ export async function loopbackAccessDenied(
     PermissionsLike | undefined,
 ): Promise<boolean> {
   if (!permissions) return false
-  for (const name of LOOPBACK_PERMISSION_NAMES) {
-    try {
-      const status = await permissions.query({ name })
-      return status.state === 'denied'
-    } catch {
-      // Not a permission this browser knows; try the older name.
-    }
+  try {
+    const status = await permissions.query({ name: 'loopback-network' })
+    return status.state === 'denied'
+  } catch {
+    // Not a permission this browser knows.
+    return false
   }
-  return false
 }

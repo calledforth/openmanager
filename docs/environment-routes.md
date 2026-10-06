@@ -205,7 +205,7 @@ out from every route it asked (`route-fallback.ts`):
 | Reason | Learned from | Shown as |
 | --- | --- | --- |
 | `environment_offline` | Nothing answers on a loopback route (nothing listens on this device), or a gateway answers `502`/`503`/`504` (Cloudflare, Tailscale and ngrok all do this when their tunnel is up and the origin is not) | Environment offline |
-| `local_access_blocked` | A loopback route fails and the browser reports its `loopback-network` (or older `local-network-access`) permission as denied: a hosted page that was refused access to this device | Local access blocked |
+| `local_access_blocked` | A loopback route fails and the browser reports its `loopback-network` permission as denied: a hosted page that was refused access to this device | Local access blocked |
 | `route_refused` | `401`/`403` on `/bootstrap`: a tunnel's access gate, or the environment refusing this browser's origin | Route refused access |
 | `wrong_environment` | The address answers as another environment | Environment unreachable |
 | `route_down` | Nothing answers over a network, another HTTP error (Cloudflare's `530` is its tunnel being down), or something that is not an environment | Route unavailable |
