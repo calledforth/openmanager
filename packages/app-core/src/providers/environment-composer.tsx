@@ -590,13 +590,19 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
         if (target?.type === 'new_session') kept = { draftId: id, sessionId: target.sessionId }
       }
       const launchWorkspaceId = sending ? sending.workspaceId : workspaceId
-      const { providerId, picked, profile, resolved } = draftFor(
+      const { providerId, picked, profile, preference, resolved } = draftFor(
         launchWorkspaceId ?? workspaceId,
         id,
       )
       // Only what was picked here: filing seeded values as "last used" would
-      // pin the workspace to them.
-      const picks = withExplicitPicks(null, picked)
+      // pin the workspace to them. Settings are one value to the environment,
+      // which replaces them whole, so a settings pick carries every setting
+      // the draft shows; otherwise the seeded ones would be dropped.
+      const settings = picked?.configValues ? preference.configValues : undefined
+      const picks = {
+        ...withExplicitPicks(null, picked),
+        ...(settings ? { configValues: settings } : {}),
+      }
       const modeId = resolved.modes?.currentModeId
       const launch: DraftLaunch = {
         providerId,

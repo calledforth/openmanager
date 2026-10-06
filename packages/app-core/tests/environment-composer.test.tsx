@@ -239,6 +239,38 @@ describe('the composer over the environment client', () => {
     expect(probe.composer.composerConfigValues).toEqual({ effort: 'high' })
   })
 
+  it('launches with every setting the draft shows when one of them is picked', async () => {
+    const client = createMockEnvironmentClient({
+      seed: {
+        ...SEED,
+        composerPreferences: {
+          [WORKSPACE.workspaceId]: {
+            opencode: { modelId: 'opus', configValues: { effort: 'high', fast: true } },
+          },
+        },
+      },
+    })
+    await mount(client)
+    await openDraft(client)
+    await act(() => probe.composer.setDraftConfigOption('effort', 'low'))
+    expect(probe.composer.composerConfigValues).toEqual({ effort: 'low', fast: true })
+
+    await act(() => probe.thread.sendMessage('hello'))
+    await settle(client)
+    // The environment replaces the settings whole, so the seeded one rides
+    // along; the seeded model, not picked, is left to the preference.
+    const created = inputOf(client, 'createSession') as { sessionId: string; preference: object }
+    expect(created.preference).toEqual({ configValues: { effort: 'low', fast: true } })
+    expect(client.getState().sessions[created.sessionId]?.composer?.configValues).toEqual({
+      effort: 'low',
+      fast: true,
+    })
+    expect(client.getState().composerPreferences[WORKSPACE.workspaceId]?.opencode).toEqual({
+      modelId: 'opus',
+      configValues: { effort: 'low', fast: true },
+    })
+  })
+
   it('never files a draft pick as the workspace preference; the launch does', async () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     await mount(client)

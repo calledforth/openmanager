@@ -89,9 +89,12 @@ follows that project.
 A pick in a draft never writes the workspace's last-used preference. Only
 sessions do: the launch, which files the draft's explicit picks as the new
 session's seed (`session.create` with `preference`), and model, mode or
-setting changes made inside a session. A pick belongs to the provider it was
-made for. When that provider is down, the draft keeps the pick and holds the
-send with the reason until it is back or another is picked.
+setting changes made inside a session. A provider's settings are one value
+that the environment replaces whole, so a launch with a settings pick files
+every setting the draft shows: the seeded ones with the picks over them. A
+pick belongs to the provider it was made for. When that provider is down, the
+draft keeps the pick and holds the send with the reason until it is back or
+another is picked.
 
 ## Storage and events
 
