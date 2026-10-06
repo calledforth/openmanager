@@ -304,6 +304,29 @@ describe('draft sync', () => {
     sync.dispose()
   })
 
+  it('tells which revisions its own writes were answered with, and when one is still unanswered', async () => {
+    const { store, sync, server, hold } = setup()
+    await vi.advanceTimersByTimeAsync(0)
+    const release = hold()
+    sync.edit('d', NEW, { text: 'mine' })
+    await vi.advanceTimersByTimeAsync(1000)
+    // Asked, not answered: what arrives meanwhile may be its own announcement.
+    expect(sync.writing('d')).toBe(true)
+    release()
+    await settle()
+    expect(sync.writing('d')).toBe(false)
+    const own = store.getState().drafts.d!.revision
+    expect(sync.wroteRevision('d', own)).toBe(true)
+
+    // Another client's save: a later revision, not this client's.
+    const theirs = draft('d', own + 1, { text: 'theirs' })
+    server.set('d', theirs)
+    store.update((state) => applyDraftSaved(state, theirs))
+    expect(sync.wroteRevision('d', own + 1)).toBe(false)
+    expect(sync.wroteRevision('other', own)).toBe(false)
+    sync.dispose()
+  })
+
   it('keeps a draft too big for one message here, and saves it once it fits', async () => {
     const { store, sync, saves } = setup()
     await vi.advanceTimersByTimeAsync(0)

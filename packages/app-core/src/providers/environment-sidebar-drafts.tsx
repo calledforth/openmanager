@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import type { EnvironmentState } from '@openmanager/environment-client'
+import type { DraftSync, EnvironmentState } from '@openmanager/environment-client'
 import {
   NO_DRAFT_FACTS,
   arrangeSidebarDrafts,
@@ -41,9 +41,15 @@ interface WatchedDiscard {
    * the discarded page closed). 0 for a draft never saved.
    */
   revision: number
-  /** This page held an edit of it at the last look: a write of its own was due. */
-  writing: boolean
+  /**
+   * Later revisions seen while a write of this page's was on the wire, not
+   * yet known to be its own or another's. Settled when that write is answered.
+   */
+  unsettled: Set<number>
 }
+
+/** What a discard asks of the draft sync: which revisions are this page's. */
+type WriteLedger = Pick<DraftSync, 'writing' | 'wroteRevision'>
 
 /**
  * Whether a pending discard still deletes what the user discarded. It goes
@@ -53,25 +59,33 @@ interface WatchedDiscard {
  * whenever it lands. Nor does a gone draft (sent, or deleted elsewhere)
  * leave anything to delete.
  *
- * This page's writes are known by its edit: while the page holds one, every
- * revision that arrives is either its own or about to be overwritten by it
- * (saves are last-write-wins), and the revision the environment answers its
- * last write with is current the moment the edit settles. Call it on every
- * change, so that moment is seen.
+ * This page's writes are known by revision: the draft sync records the
+ * revision each of its saves was answered with. A later revision that is not
+ * one of those is another's, even while this page holds an edit it has not
+ * written (stalled as too large, say: it would never overwrite the other's
+ * text). One that arrives while this page's own save is on the wire may be
+ * that save's own announcement, which comes before its answer; it is judged
+ * when the answer comes. Call it on every change, so that moment is seen.
  */
-function discardStands(state: EnvironmentState, draftId: string, watched: WatchedDiscard) {
+function discardStands(
+  state: EnvironmentState,
+  draftId: string,
+  watched: WatchedDiscard,
+  sync: WriteLedger,
+) {
   const saved = state.drafts[draftId]
   const edit = state.draftEdits[draftId]
   if (edit?.launching) return false
-  if (edit) {
-    watched.writing = true
-    return true
+  if (!saved) return edit !== undefined
+  if (saved.revision > watched.revision) watched.unsettled.add(saved.revision)
+  // Wait for this page's own answer before telling whose a revision is.
+  if (sync.writing(draftId)) return true
+  for (const revision of watched.unsettled) {
+    if (!sync.wroteRevision(draftId, revision)) return false
   }
-  if (watched.writing) {
-    watched.writing = false
-    if (saved) watched.revision = Math.max(watched.revision, saved.revision)
-  }
-  return saved !== undefined && saved.revision <= watched.revision
+  watched.unsettled.clear()
+  watched.revision = Math.max(watched.revision, saved.revision)
+  return true
 }
 
 /**
@@ -179,11 +193,16 @@ export function EnvironmentSidebarDraftsProvider({ children }: { children: React
       unwatchRef.current = undefined
       setPending(null)
       // Changed elsewhere since it was discarded: the card comes back instead.
-      if (commit && watched && discardStands(client.getState(), current.draftId, watched)) {
+      if (
+        commit &&
+        watched &&
+        sync &&
+        discardStands(client.getState(), current.draftId, watched, sync)
+      ) {
         releaseDraft(current.draftId)
       }
     },
-    [client, releaseDraft, stopClock],
+    [client, releaseDraft, stopClock, sync],
   )
 
   const startClock = useCallback(() => {
@@ -208,9 +227,9 @@ export function EnvironmentSidebarDraftsProvider({ children }: { children: React
       }
       const watched: WatchedDiscard = {
         revision: state.drafts[draftId]?.revision ?? 0,
-        writing: false,
+        unsettled: new Set(),
       }
-      discardStands(state, draftId, watched)
+      if (sync) discardStands(state, draftId, watched, sync)
       pendingRef.current = next
       watchRef.current = watched
       // Watched from now, not from the next render, so the composer's own
@@ -219,13 +238,15 @@ export function EnvironmentSidebarDraftsProvider({ children }: { children: React
       // card comes back.
       unwatchRef.current = client.subscribe(() => {
         if (pendingRef.current !== next) return
-        if (!discardStands(client.getState(), draftId, watched)) settleDiscard(false)
+        if (sync && !discardStands(client.getState(), draftId, watched, sync)) {
+          settleDiscard(false)
+        }
       })
       setPending(next)
       startClock()
       navigation.closeDraftPage(draftId)
     },
-    [client, navigation, settleDiscard, startClock],
+    [client, navigation, settleDiscard, startClock, sync],
   )
 
   const undoDiscard = useCallback(

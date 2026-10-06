@@ -619,4 +619,12 @@ export interface DraftSync {
   endLaunch(draftId: string, outcome: DraftLaunchOutcome): void
   /** Save every waiting edit now, as when the page is hidden. */
   flush(): void
+  /** A save or delete of the draft by this client is on the wire, not yet answered. */
+  writing(draftId: string): boolean
+  /**
+   * Whether the environment answered one of this client's own writes of the
+   * draft with `revision`. Known before the store applies the answer, so a
+   * reader woken by that update can already tell. The last few per draft.
+   */
+  wroteRevision(draftId: string, revision: number): boolean
 }

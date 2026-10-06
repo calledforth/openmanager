@@ -53,6 +53,9 @@ export interface DraftSyncOptions {
 
 const sameJson = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)
 
+/** How many of its own answered revisions per draft a sync keeps. */
+const WRITTEN_KEPT = 8
+
 /**
  * Saves a client's draft edits to the environment, one request per draft at
  * a time so a later edit can never overtake an earlier one, and lists the
@@ -64,6 +67,16 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
   const now = options.now ?? Date.now
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
   const inFlight = new Set<string>()
+  // The revisions the environment answered this client's own writes with, a
+  // few per draft: how a reader tells this client's revisions from another's.
+  const written = new Map<string, number[]>()
+  // Writes asked and not yet answered: the window in which a revision that
+  // arrives may be the announcement of this client's own.
+  const awaiting = new Set<string>()
+  const wrote = (draftId: string, revision: number) => {
+    const held = written.get(draftId) ?? []
+    written.set(draftId, [...held, revision].slice(-WRITTEN_KEPT))
+  }
   // Drafts whose delete this client has sent and not yet seen answered.
   const deleting = new Set<string>()
   const again = new Set<string>()
@@ -162,18 +175,26 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
     try {
       if (isEmptyDraftContent(edit.content)) {
         deleting.add(draftId)
+        awaiting.add(draftId)
         const tombstone = await commands
           .deleteDraft({ draftId, baseRevision: edit.baseRevision })
           .finally(() => {
             deleting.delete(draftId)
+            awaiting.delete(draftId)
           })
+        // Known as this client's before the store says so.
+        wrote(draftId, tombstone.revision)
         // Rebase first: what was typed after the delete was sent is the
         // next draft, which the deletion must not take with it.
         store.update((current) =>
           applyDraftDeleted(settle(draftId, edit, tombstone.revision)(current), tombstone),
         )
       } else {
-        const draft = await commands.saveDraft(input)
+        awaiting.add(draftId)
+        const draft = await commands.saveDraft(input).finally(() => {
+          awaiting.delete(draftId)
+        })
+        wrote(draftId, draft.revision)
         store.update((current) =>
           settle(draftId, edit, draft.revision)(applyDraftSaved(current, draft)),
         )
@@ -366,6 +387,14 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
     },
 
     flush,
+
+    writing(draftId: string) {
+      return awaiting.has(draftId)
+    },
+
+    wroteRevision(draftId: string, revision: number) {
+      return written.get(draftId)?.includes(revision) ?? false
+    },
 
     dispose() {
       disposed = true

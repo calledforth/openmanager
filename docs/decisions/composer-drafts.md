@@ -312,11 +312,17 @@ localStorage fallback) `useSidebarDrafts` is null and nothing shows.
 
   Provenance comes from the page's own draft sync, not from the draft's
   `updatedByClientId`: a client does not know its own id without the admin
-  grant (`client.list`). While the page holds an edit of the draft, every
-  revision that arrives is its own or about to be overwritten by its save
-  (saves are last-write-wins); when that edit settles, the revision then
-  current is the answer to its own last write, and becomes the discard's.
-  So another tab of the same browser counts as another writer: its change
+  grant (`client.list`). The sync records the revision each of its own
+  saves and deletes was answered with (`DraftSync.wroteRevision`), and says
+  while one is asked and not yet answered (`DraftSync.writing`). A later
+  revision is the page's own only if it is one of those. An edit the page
+  holds proves nothing: one stalled as too large, or otherwise never
+  written, would not overwrite another device's text, so that text is not
+  deleted for it. A revision that arrives while the page's own save is on
+  the wire may be that save's own announcement (the environment announces
+  before it answers), so it is judged when the answer comes: then it is
+  either the answered revision or another's, and another's calls the
+  discard off. Gone and launching drafts behave as before. So another tab of the same browser counts as another writer: its change
   calls the discard off, as another device's does. That is a stricter
   answer to the shared-client-id case than the writer id would give, and is
   accepted. An offline client cannot see a later revision; its delete

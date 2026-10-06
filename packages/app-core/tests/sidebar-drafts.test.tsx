@@ -6,6 +6,7 @@ import { MotionGlobalConfig } from 'motion/react'
 import {
   createMockEnvironmentClient,
   selectDraftContent,
+  selectDraftSyncStatus,
   selectDraftTarget,
   type MockEnvironmentClient,
   type MockSeed,
@@ -731,6 +732,89 @@ describe('review regressions', () => {
     await act(() => window.dispatchEvent(new Event('pagehide')))
     await settle(client)
     expect(client.getState().drafts[third]).toBeUndefined()
+  })
+
+  it('calls the discard off when another device saves over an edit this page cannot write', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await parkThree(client)
+    const third = idOf(client, 'third idea')
+    const saved = client.getState().drafts[third]!
+    // Held here, never to be written: too big for one message.
+    await act(() => {
+      client.drafts!.edit(third, saved.target, { text: 'third idea ' + 'x'.repeat(70_000) })
+      client.drafts!.flush()
+    })
+    await settle(client)
+    expect(selectDraftSyncStatus(client.getState(), third)).toBe('too_large')
+    await discard('third idea')
+    expect(toast()).toBeDefined()
+    // Another device writes the draft meanwhile. This page's edit would never
+    // overwrite it, so the revision is the other device's alone.
+    await act(() =>
+      client.commands.saveDraft({
+        draftId: third,
+        baseRevision: saved.revision,
+        target: saved.target,
+        content: { text: 'third idea, from the phone' },
+      }),
+    )
+    await settle(client)
+    expect(toast()).toBeUndefined()
+    expect(cardFor('third idea')).toBeDefined()
+    await act(() => window.dispatchEvent(new Event('pagehide')))
+    await settle(client)
+    expect(client.getState().drafts[third]?.content.text).toBe('third idea, from the phone')
+  })
+
+  it('keeps a discard whose own save is on the wire when it is made, once that save is answered', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await parkThree(client)
+    const third = idOf(client, 'third idea')
+    const { target } = client.getState().drafts[third]!
+    await act(() => {
+      client.drafts!.edit(third, target, { text: 'third idea, last words' })
+      client.drafts!.flush()
+      expect(client.drafts!.writing(third)).toBe(true)
+      cardFor('third idea')!
+        .querySelector<HTMLButtonElement>('[aria-label="Discard draft"]')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1, clientX: 777 }))
+    })
+    await settle(client)
+    // Answered: its revision is this page's own.
+    const answered = client.getState().drafts[third]!
+    expect(answered.content.text).toBe('third idea, last words')
+    expect(client.drafts!.wroteRevision(third, answered.revision)).toBe(true)
+    expect(toast()).toBeDefined()
+    await act(() => window.dispatchEvent(new Event('pagehide')))
+    await settle(client)
+    expect(client.getState().drafts[third]).toBeUndefined()
+  })
+
+  it('calls the discard off on another device’s save that lands while this page’s own is on the wire', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await parkThree(client)
+    const third = idOf(client, 'third idea')
+    const saved = client.getState().drafts[third]!
+    await act(() => {
+      // The other device's save reaches the environment first; this page's
+      // own is already on the wire, so its arrival cannot be judged yet.
+      void client.commands.saveDraft({
+        draftId: third,
+        baseRevision: saved.revision,
+        target: saved.target,
+        content: { text: 'third idea, from the phone' },
+      })
+      client.drafts!.edit(third, saved.target, { text: 'third idea, last words' })
+      client.drafts!.flush()
+      cardFor('third idea')!
+        .querySelector<HTMLButtonElement>('[aria-label="Discard draft"]')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1, clientX: 888 }))
+    })
+    await settle(client)
+    expect(toast()).toBeUndefined()
+    await act(() => window.dispatchEvent(new Event('pagehide')))
+    await settle(client)
+    expect(client.getState().drafts[third]).toBeDefined()
   })
 
   it('shows what is being sent on the open draft’s card, not the snapshot', async () => {
