@@ -6,8 +6,11 @@ import {
   type DraftStall,
   type EnvironmentState,
 } from '@openmanager/environment-client'
+import { resolveDraftProvider, type ProviderStatuses } from '../../providers/draft-provider'
 
 // The sidebar's view of sessions and projects, independent of any host.
+
+const NO_STATUSES: ProviderStatuses = {}
 
 export interface SidebarSession {
   externalId: string
@@ -81,30 +84,6 @@ export function draftPreview(text: string): string {
 }
 
 /**
- * Each project's last-run provider (its most recently active top-level
- * session's), as the draft's composer seeds it. Kept per sessions object, so
- * reading it on every keystroke costs one lookup.
- */
-const lastProviders = new WeakMap<EnvironmentState['sessions'], Map<string, ProviderId>>()
-function lastProviderOf(state: EnvironmentState, workspaceId: string | null) {
-  if (!workspaceId) return undefined
-  let byWorkspace = lastProviders.get(state.sessions)
-  if (!byWorkspace) {
-    const newest = new Map<string, { at: string; providerId: ProviderId }>()
-    for (const session of Object.values(state.sessions)) {
-      if (!session || session.parentSessionId || !isProviderId(session.providerId)) continue
-      const at = session.updatedAt ?? ''
-      const best = newest.get(session.workspaceId)
-      if (!best || at > best.at)
-        newest.set(session.workspaceId, { at, providerId: session.providerId })
-    }
-    byWorkspace = new Map([...newest].map(([id, { providerId }]) => [id, providerId]))
-    lastProviders.set(state.sessions, byWorkspace)
-  }
-  return byWorkspace.get(workspaceId)
-}
-
-/**
  * The card a new-session draft gets, or null when it gets none: only text or
  * an image makes a card, never a model or mode pick alone.
  */
@@ -112,6 +91,7 @@ export function sidebarDraftCard(
   state: EnvironmentState,
   draftId: string,
   defaultProviderId: ProviderId,
+  statuses: ProviderStatuses = NO_STATUSES,
 ): SidebarDraft | null {
   const edit = state.draftEdits[draftId]
   const saved = state.drafts[draftId]
@@ -133,10 +113,13 @@ export function sidebarDraftCard(
     draftId,
     sessionId: target.sessionId,
     workspaceId: target.workspaceId,
-    providerId:
-      (isProviderId(picked) ? picked : undefined) ??
-      lastProviderOf(state, target.workspaceId) ??
+    // The provider its composer will run, by the composer's own rule.
+    providerId: resolveDraftProvider(state, {
+      picked: isProviderId(picked) ? picked : undefined,
+      workspaceId: target.workspaceId,
       defaultProviderId,
+      statuses,
+    }),
     preview: draftPreview(content.text),
     imageCount: content.artifactIds?.length ?? 0,
     editedAt: edit ? edit.editedAt : saved ? Date.parse(saved.updatedAt) || 0 : 0,
@@ -185,12 +168,13 @@ export function selectSidebarDrafts(
   openDraftId: string | null,
   openSessionId: string | null,
   defaultProviderId: ProviderId,
+  statuses: ProviderStatuses = NO_STATUSES,
 ): SidebarDraftFacts {
   const cards: SidebarDraft[] = []
   const ids = new Set([...Object.keys(state.draftEdits), ...Object.keys(state.drafts)])
   for (const draftId of ids) {
     if (draftId === openDraftId) continue
-    const card = sidebarDraftCard(state, draftId, defaultProviderId)
+    const card = sidebarDraftCard(state, draftId, defaultProviderId, statuses)
     if (card && !state.sessions[card.sessionId]) cards.push(card)
   }
   const sending = openDraftId !== null && state.draftEdits[openDraftId]?.launching === true
@@ -199,7 +183,9 @@ export function selectSidebarDrafts(
     openSent: openSessionId !== null && state.sessions[openSessionId] !== undefined,
     openGone: openDraftId !== null && !state.drafts[openDraftId] && !state.draftEdits[openDraftId],
     openSending: sending,
-    openSendingCard: sending ? sidebarDraftCard(state, openDraftId, defaultProviderId) : null,
+    openSendingCard: sending
+      ? sidebarDraftCard(state, openDraftId, defaultProviderId, statuses)
+      : null,
   }
 }
 

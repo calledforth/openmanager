@@ -17,6 +17,7 @@ import {
   type SidebarSession,
 } from './sidebar-sessions'
 import { sessionBusyTone } from './SessionBusyLoader'
+import { resolveDraftProvider } from '../../providers/draft-provider'
 
 const session = (
   externalId: string,
@@ -357,6 +358,53 @@ describe('draft cards', () => {
       openSendingCard: null,
     })
     expect(selectSidebarDrafts(state, 'deleted', null, 'opencode').openGone).toBe(true)
+  })
+
+  it('names the provider the draft’s composer will run, not one its project no longer offers', () => {
+    const base = draftState({
+      saved: [
+        // Picked a provider its project has since stopped offering.
+        {
+          draftId: 'picked',
+          target: newDraft('alpha', 's1'),
+          content: { text: 'go', providerId: 'opencode' },
+        },
+        // No pick: the project's last-run provider, which it no longer offers.
+        { draftId: 'unpicked', target: newDraft('alpha', 's2'), content: { text: 'go' } },
+      ],
+      sessions: [{ sessionId: 'old', workspaceId: 'alpha', providerId: 'opencode' }],
+    })
+    const state = {
+      ...base,
+      providerOrder: ['opencode', 'cursor', 'claude'],
+      providers: Object.fromEntries(
+        ['opencode', 'cursor', 'claude'].map((id) => [id, { id, label: id }]),
+      ),
+      workspaces: {
+        alpha: {
+          workspaceId: 'alpha',
+          capabilities: { git: false, providers: ['cursor', 'claude'] },
+        },
+      },
+    } as unknown as EnvironmentState
+    // Cursor is known to be broken: the composer skips it, so the card does.
+    const statuses = { cursor: 'failed' } as const
+    for (const draftId of ['picked', 'unpicked']) {
+      const card = sidebarDraftCard(state, draftId, 'opencode', statuses)!
+      expect(card.providerId).toBe('claude')
+      // The composer's own rule, from the same pick.
+      const picked = draftId === 'picked' ? 'opencode' : undefined
+      expect(card.providerId).toBe(
+        resolveDraftProvider(state, {
+          picked,
+          workspaceId: 'alpha',
+          defaultProviderId: 'opencode',
+          statuses,
+        }),
+      )
+    }
+    // Healthy, cursor is the first the project offers.
+    expect(sidebarDraftCard(state, 'picked', 'opencode')!.providerId).toBe('cursor')
   })
 
   it('previews the first written line, trimmed and capped', () => {

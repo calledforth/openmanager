@@ -18,7 +18,11 @@ import {
 } from '../components/sidebar/sidebar-sessions'
 import { DraftPageNavigationContext } from './draft-pages'
 import { useEnvironmentClient, useEnvironmentState } from './environment-client'
+import type { ProviderStatuses } from './draft-provider'
+import { PlatformCapabilitiesContext } from './platform-provider'
 import { SessionStateContext } from './session-provider'
+
+const NO_STATUSES: ProviderStatuses = {}
 import {
   SidebarDraftsContext,
   type DraftDiscardOptions,
@@ -99,6 +103,9 @@ export function EnvironmentSidebarDraftsProvider({ children }: { children: React
   const sync = client.drafts
   const navigation = useContext(DraftPageNavigationContext)
   const { newSessionDraftId, defaultProviderId } = useContext(SessionStateContext)!
+  // Provider health, which the card's provider is chosen by as the composer's
+  // is. It changes with a provider's health, never with typing.
+  const statuses = useContext(PlatformCapabilitiesContext)?.agentUiStatusByProvider ?? NO_STATUSES
   const enabled = navigation !== null && sync !== undefined
   const openDraftId = enabled ? (newSessionDraftId ?? null) : null
 
@@ -111,7 +118,7 @@ export function EnvironmentSidebarDraftsProvider({ children }: { children: React
     shownFrozen = {
       draftId: openDraftId,
       card: openDraftId
-        ? sidebarDraftCard(client.getState(), openDraftId, defaultProviderId)
+        ? sidebarDraftCard(client.getState(), openDraftId, defaultProviderId, statuses)
         : null,
     }
     setFrozen(shownFrozen)
@@ -122,9 +129,9 @@ export function EnvironmentSidebarDraftsProvider({ children }: { children: React
     useCallback(
       (state: EnvironmentState) =>
         enabled
-          ? selectSidebarDrafts(state, openDraftId, frozenSessionId, defaultProviderId)
+          ? selectSidebarDrafts(state, openDraftId, frozenSessionId, defaultProviderId, statuses)
           : NO_DRAFT_FACTS,
-      [defaultProviderId, enabled, frozenSessionId, openDraftId],
+      [defaultProviderId, enabled, frozenSessionId, openDraftId, statuses],
     ),
     sameSidebarDraftFacts,
   )

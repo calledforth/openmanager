@@ -241,7 +241,11 @@ Every new-session draft with text or an image is a card at the top of the
 sidebar's Active list, newest edit first, on every device, live. Picks alone
 never make one. A card looks like a session's (project, first line, provider
 and branch), filled with the draft tint and labelled Draft where a session
-shows its status. The open draft's card takes the selection fill a session
+shows its status. The provider is the one the draft's composer will run,
+chosen by the same rule (`resolveDraftProvider` in
+`providers/draft-provider.ts`): the pick, else the project's last-run
+provider, else the default, and of those only one the project still offers
+and is not known to be broken. The open draft's card takes the selection fill a session
 card takes (`bg-active`) instead of a deeper tint, so selection reads the
 same whatever the card is; its Draft label still says what it is. Cards only show where the environment keeps drafts and the
 host gives each its own page (`navigateDraft`); elsewhere (desktop, the
