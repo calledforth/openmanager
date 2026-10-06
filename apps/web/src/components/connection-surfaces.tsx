@@ -14,6 +14,7 @@ import {
   type RouteHealthStatus,
   type StoredEnvironment,
 } from '../lib/environment-store'
+import { canClaimLocalOwner } from '../lib/local-owner'
 import { routeHealthLabel } from '../lib/route-health'
 import { cn } from '../lib/utils'
 
@@ -105,11 +106,14 @@ export function EnvironmentConnectForm({
   onConnect,
   submitLabel = 'Connect',
   className,
+  canClaimOwner = canClaimLocalOwner(),
 }: {
   initialEndpoint?: string
   onConnect: (endpoint: string, credential: string) => void
   submitLabel?: string
   className?: string
+  /** A blank token on localhost claims the owner credential (the dev shell only). */
+  canClaimOwner?: boolean
 }) {
   const [endpointValue, setEndpointValue] = useState(initialEndpoint)
   const [credentialValue, setCredentialValue] = useState('')
@@ -157,8 +161,9 @@ export function EnvironmentConnectForm({
         onChange={(event) => setCredentialValue(event.target.value)}
       />
       <p className="text-[13px] text-muted-foreground">
-        The token is optional. Leave it blank on localhost to request the local owner token. It
-        is stored with the environment, not with a particular URL.
+        {canClaimOwner
+          ? 'The token is optional. Leave it blank on localhost to request the local owner token. It is stored with the environment, not with a particular URL.'
+          : "On the environment's own computer, paste the token from owner-credential in its data directory (~/.openmanager by default). On another device, open a pairing link instead. The token is stored with the environment, not with a particular URL."}
       </p>
       {error ? (
         <p className="text-[13px] text-destructive" role="alert">

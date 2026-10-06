@@ -35,6 +35,17 @@ function parseLocalOwnerClaim(body: unknown): LocalOwnerClaim | undefined {
 }
 
 /**
+ * Whether this build can claim the local owner credential at all. Only the
+ * `pnpm dev:web` shell is given a claim key; a hosted build never is, so it
+ * takes a pasted token or a pairing link instead (docs/web-deploy.md).
+ */
+export function canClaimLocalOwner(
+  claimKey = import.meta.env.VITE_OPENMANAGER_LOCAL_OWNER_CLAIM_KEY,
+): boolean {
+  return LOCAL_OWNER_CLAIM_KEY_PATTERN.test(claimKey ?? '')
+}
+
+/**
  * Ask a loopback environment for its published owner credential. Remote
  * endpoints are not contacted: pairing is how those clients enroll. A failed
  * or ineligible claim is silent so the user can still paste a token.

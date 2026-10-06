@@ -1,6 +1,6 @@
 import { PROTOCOL_VERSION } from '@openmanager/protocol'
-import { describe, expect, it } from 'vitest'
-import { bootstrapUrl, interpretBootstrapResponse } from './bootstrap'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { bootstrapUrl, fetchBootstrap, interpretBootstrapResponse } from './bootstrap'
 
 describe('bootstrapUrl', () => {
   it('joins bootstrap onto the stored endpoint, including a path prefix', () => {
@@ -85,6 +85,46 @@ describe('interpretBootstrapResponse', () => {
       status: 'unreachable',
       message: 'The environment responded, but the bootstrap payload was not valid.',
       cause: 'invalid',
+    })
+  })
+})
+
+describe('fetchBootstrap', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function failFetchWithPermission(state: string) {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      permissions: { query: async () => ({ state }) },
+    })
+  }
+
+  it('tells a browser that blocked this device apart from nothing listening', async () => {
+    failFetchWithPermission('denied')
+    await expect(fetchBootstrap('http://127.0.0.1:43120')).resolves.toEqual({
+      status: 'unreachable',
+      message:
+        'This browser blocked this page from reaching http://127.0.0.1:43120 on this device.',
+      cause: 'blocked',
+    })
+  })
+
+  it('keeps a failure as a network failure when the permission was not refused', async () => {
+    failFetchWithPermission('prompt')
+    await expect(fetchBootstrap('http://127.0.0.1:43120')).resolves.toMatchObject({
+      status: 'unreachable',
+      cause: 'network',
+    })
+  })
+
+  it('never blames the loopback permission for a remote route', async () => {
+    failFetchWithPermission('denied')
+    await expect(fetchBootstrap('https://env.example.com')).resolves.toMatchObject({
+      status: 'unreachable',
+      cause: 'network',
     })
   })
 })

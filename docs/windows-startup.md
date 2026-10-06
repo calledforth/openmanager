@@ -56,6 +56,11 @@ flags. Anything else set only in the installing shell, such as
 user environment. Set persistent variables as user environment variables in
 Windows instead.
 
+To use the hosted web client, add its origin, for example
+`--allowed-origin https://openmanager.pages.dev`. A later `install` replaces
+every stored flag, so repeat the ones you installed with. See
+[deploying the web client](./web-deploy.md#allow-the-origin-on-the-environment).
+
 What `install` does, in order:
 
 1. Refuses if another process already answers on the chosen port (typically a

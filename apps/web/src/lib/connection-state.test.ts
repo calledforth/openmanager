@@ -264,6 +264,22 @@ describe('deriveConnectionUi', () => {
       expect(stoppedBehindTunnel.description).toContain('studio.example.com answers')
     })
 
+    it('tells a browser that blocked this device from an environment that is stopped', () => {
+      const blocked = failed({
+        reason: 'local_access_blocked',
+        endpoint: 'http://127.0.0.1:43120',
+        local: true,
+      })
+      expect(blocked).toMatchObject({
+        kind: 'unreachable',
+        surface: 'banner',
+        title: 'Local access blocked',
+        action: 'retry',
+      })
+      expect(blocked.description).toContain('blocked the page from reaching 127.0.0.1:43120')
+      expect(blocked.description).toContain("browser's site settings")
+    })
+
     it('tells a refused route from a refused token', () => {
       const refused = failed({ reason: 'route_refused', message: 'Forbidden.' })
       expect(refused).toMatchObject({
