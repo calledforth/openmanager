@@ -4,8 +4,10 @@ import {
   BinocularsIcon,
   CaretDownIcon,
   CircleDashedIcon,
+  CircleNotchIcon,
   FlowArrowIcon,
   RobotIcon,
+  SquareIcon,
   TerminalWindowIcon,
   type IconProps,
 } from '@phosphor-icons/react'
@@ -28,7 +30,40 @@ const KIND: Record<BackgroundTask['kind'], { icon: ComponentType<IconProps>; lab
 const taskLabel = (task: BackgroundTask) => task.description.trim() || KIND[task.kind].label
 
 const STOP_CLASS =
-  'shrink-0 rounded-full px-2 py-0.5 text-11-regular leading-none text-[var(--basis-text-muted)] transition-colors duration-100 hover:bg-hover hover:text-[var(--basis-text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent disabled:hover:text-[var(--basis-text-muted)]'
+  'flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[var(--basis-text-muted)] transition-colors duration-100 hover:bg-hover hover:text-[var(--basis-text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent disabled:hover:text-[var(--basis-text-muted)]'
+
+/** Square stop glyph, swapped for a spinner while the stop is pending. */
+function StopButton({
+  label,
+  tip = label,
+  pending,
+  onClick,
+}: {
+  /** Accessible name, e.g. "Stop pnpm build". */
+  label: string
+  /** Hover tip; rows keep it short since the task is named beside it. */
+  tip?: string
+  pending: boolean
+  onClick: () => void
+}) {
+  return (
+    <Tooltip content={pending ? 'Stopping…' : tip}>
+      <button
+        type="button"
+        className={STOP_CLASS}
+        disabled={pending}
+        aria-label={pending ? 'Stopping…' : label}
+        onClick={onClick}
+      >
+        {pending ? (
+          <CircleNotchIcon className="h-3 w-3 animate-spin" aria-hidden="true" />
+        ) : (
+          <SquareIcon className="h-2.5 w-2.5" weight="fill" aria-hidden="true" />
+        )}
+      </button>
+    </Tooltip>
+  )
+}
 
 /**
  * Work the agent left running after its turn ended, shown just above the
@@ -86,12 +121,9 @@ export function BackgroundTasksPill({
       transition={{ duration: reduceMotion ? 0 : 0.16, ease: [0.22, 1, 0.36, 1] }}
       className="mb-1.5 flex"
     >
-      <div
-        className={cn(
-          'flex min-w-0 max-w-full flex-col bg-float shadow-float-rest',
-          open ? 'rounded-[10px]' : 'rounded-full',
-        )}
-      >
+      {/* Fixed width and radius: opening the list only grows it upward,
+          instead of also snapping wider to fit the longest task. */}
+      <div className="flex w-[22rem] max-w-full flex-col rounded-[14px] bg-float shadow-float-rest">
         <AnimatePresence initial={false}>
           {several && open ? (
             <motion.ul
@@ -121,15 +153,12 @@ export function BackgroundTasksPill({
                     <span className="min-w-0 flex-1 truncate text-11-regular leading-5 text-[var(--basis-text)]">
                       {taskLabel(task)}
                     </span>
-                    <button
-                      type="button"
-                      className={STOP_CLASS}
-                      disabled={isStopping(task)}
-                      aria-label={`Stop ${taskLabel(task)}`}
+                    <StopButton
+                      label={`Stop ${taskLabel(task)}`}
+                      tip="Stop"
+                      pending={isStopping(task)}
                       onClick={() => stop([task.taskId])}
-                    >
-                      {isStopping(task) ? 'Stopping…' : 'Stop'}
-                    </button>
+                    />
                   </li>
                 )
               })}
@@ -147,7 +176,7 @@ export function BackgroundTasksPill({
               aria-expanded={open}
               aria-controls="background-task-list"
               onClick={() => setOpen((current) => !current)}
-              className="flex min-w-0 items-center gap-1 rounded-full text-11-regular leading-none text-[var(--basis-text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
+              className="flex min-w-0 flex-1 items-center gap-1 rounded-full text-11-regular leading-none text-[var(--basis-text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
             >
               <span className="truncate">{summary}</span>
               <CaretDownIcon
@@ -159,7 +188,7 @@ export function BackgroundTasksPill({
             </button>
           ) : (
             <Tooltip content={KIND[only.kind].label}>
-              <span className="flex min-w-0 items-center gap-1.5 text-11-regular leading-none text-[var(--basis-text)]">
+              <span className="flex min-w-0 flex-1 items-center gap-1.5 text-11-regular leading-none text-[var(--basis-text)]">
                 <OnlyIcon
                   className="h-3 w-3 shrink-0 text-[var(--basis-text-faint)]"
                   weight="bold"
@@ -174,14 +203,11 @@ export function BackgroundTasksPill({
               Couldn’t stop
             </span>
           ) : null}
-          <button
-            type="button"
-            className={STOP_CLASS}
-            disabled={allStopping}
+          <StopButton
+            label={several ? 'Stop all' : 'Stop'}
+            pending={allStopping}
             onClick={() => stop()}
-          >
-            {allStopping ? 'Stopping…' : several ? 'Stop all' : 'Stop'}
-          </button>
+          />
         </div>
       </div>
     </motion.div>

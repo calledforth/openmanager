@@ -412,11 +412,6 @@ textarea,
 
 /* Markdown block rhythm lives in §4 (.md) — do not add element rules here. */
 
-.chat-user :where(strong, b) {
-  font-weight: 400;
-  color: var(--color-chat-emphasis);
-}
-
 .chat-user {
   font-size: var(--chat-user-size);
   font-weight: 400;
@@ -813,8 +808,8 @@ textarea,
   .md .shiki span {
     color: var(--shiki-dark);
   }
-  html:is([data-theme='light'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light']) .md .shiki,
-  html:is([data-theme='light'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light']) .md .shiki span {
+  html:is([data-theme='light'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse']) .md .shiki,
+  html:is([data-theme='light'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse']) .md .shiki span {
     color: var(--shiki-light);
   }
 
@@ -834,6 +829,12 @@ textarea,
     text-align: left;
     vertical-align: top;
     border-bottom: 1px solid var(--basis-border-muted);
+    /* .md's `overflow-wrap: anywhere` shrinks a cell's min-content width to one
+       character, so auto table layout starves short columns and splits ids like
+       CAL-81 mid-word. break-word only breaks a word that can't fit on its own
+       line, so each column stays at least as wide as its longest word (the
+       .md-table wrapper scrolls if that overflows). */
+    overflow-wrap: break-word;
   }
   .md th {
     font-weight: 600;

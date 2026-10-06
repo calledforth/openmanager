@@ -19,7 +19,7 @@ export const composerPopover = 'rounded-[8px] bg-float shadow-float'
 /** A toolbar control in the composer, after Linear's property chips: bare text
  * at rest, a soft fill under the pointer or while its menu is open. */
 export const composerChip =
-  'flex h-6 shrink-0 items-center rounded-md px-1.5 text-11-regular leading-none text-[var(--basis-text)] transition-colors duration-100 hover:bg-hover disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent'
+  'flex h-6 shrink-0 cursor-pointer items-center rounded-md px-1.5 text-11-regular leading-none text-[var(--basis-text)] transition-colors duration-100 hover:bg-hover disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent'
 
 export const chatStreamInner = `px-2 py-1 ${typographyBody} text-[var(--basis-text)]`
 

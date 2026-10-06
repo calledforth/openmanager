@@ -48,7 +48,6 @@ function render(withPicker: boolean) {
             currentModelId="opus"
             onChange={() => undefined}
             canChangeProvider
-            configSummary={[]}
           />
         )}
         <CommandPalette />

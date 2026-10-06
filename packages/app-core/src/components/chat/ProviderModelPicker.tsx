@@ -186,7 +186,6 @@ export function ProviderModelPicker({
   onChange,
   disabled,
   canChangeProvider,
-  configSummary,
   shortcut,
   onDone,
 }: {
@@ -196,7 +195,6 @@ export function ProviderModelPicker({
   onChange: (providerId: ProviderId, modelId: string) => void
   disabled?: boolean
   canChangeProvider: boolean
-  configSummary: string[]
   /** Opens (and closes) the picker from anywhere, e.g. `"mod+shift+m"`. */
   shortcut?: string
   /** Runs when the picker closes from the keyboard or a pick, so the host can
@@ -305,8 +303,6 @@ export function ProviderModelPicker({
   const currentLabel = currentModel
     ? modelLabel(currentModel.name, currentModel.description)
     : (currentModelId.split('/').pop() ?? 'Model')
-  const displayLabel =
-    configSummary.length > 0 ? `${currentLabel} · ${configSummary.join(' · ')}` : currentLabel
   const selectedKey = favoriteModelKey(currentProviderId, currentModelId)
 
   const { open, setOpen, toggle, close, menuCoords, wrapRef, triggerRef, menuRef } =
@@ -538,7 +534,7 @@ export function ProviderModelPicker({
           )}
         >
           <ProviderIcon providerId={currentProviderId} />
-          <span className="truncate">{displayLabel}</span>
+          <span className="truncate">{currentLabel}</span>
           <CaretDownIcon
             size={9}
             weight="light"
@@ -589,13 +585,15 @@ function ModelRow({
   return (
     <CommandMenuItem
       value={model.key}
-      className="group/row h-9 gap-2.5 px-2.5 text-[13px] text-foreground"
+      className="group/row h-auto min-h-9 gap-2.5 px-2.5 py-1.5 text-[13px] text-foreground"
     >
       <ProviderIcon providerId={model.providerId} className="h-3.5 w-3.5 shrink-0" />
-      <span className="flex min-w-0 flex-1 items-baseline gap-2">
-        <span className="shrink-0 truncate">{model.label}</span>
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="truncate leading-[18px]">{model.label}</span>
         {description && (
-          <span className="min-w-0 truncate text-muted-foreground/70">{description}</span>
+          <span className="truncate text-[11.5px] leading-4 text-muted-foreground/70">
+            {description}
+          </span>
         )}
       </span>
       {model.contextWindowTokens && (
