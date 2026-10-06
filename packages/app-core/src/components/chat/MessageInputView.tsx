@@ -45,7 +45,7 @@ import {
   type UploadedImageAttachment,
 } from '../../lib/attachments'
 import { useArtifactPreviews } from '../../lib/artifact-preview'
-import { useComposerDraftStore } from './composerDraftStore'
+import { useComposerDraftStore, type ImageTarget } from './composerDraftStore'
 import { DraftSyncIndicator } from './DraftSyncIndicator'
 import {
   configurableSessionOptions,
@@ -299,6 +299,32 @@ type ComposerDraft = { text: string; attachments: DraftImageAttachment[] }
 const NO_ATTACHMENTS: DraftImageAttachment[] = []
 const NO_IMAGE_IDS: readonly string[] = []
 
+/**
+ * The draft's images with the uploads still on their way, each where it was
+ * attached. An image with no slot (attached elsewhere, or before this
+ * composer) keeps its place ahead of this composer's.
+ */
+function inSlotOrder<T extends { id: string }>(
+  kept: readonly T[],
+  uploading: readonly T[],
+  slots: ReadonlyMap<string, number>,
+): T[] {
+  const slotOf = (item: T) => slots.get(item.id) ?? -1
+  const waiting = [...uploading].sort((a, b) => slotOf(a) - slotOf(b))
+  const merged: T[] = []
+  for (const item of kept) {
+    while (waiting.length > 0 && slotOf(waiting[0]!) < slotOf(item)) merged.push(waiting.shift()!)
+    merged.push(item)
+  }
+  return [...merged, ...waiting]
+}
+
+/** Where an image in slot `slot` goes among a draft's images, by their slots. */
+function slotIndex(images: readonly string[], slot: number, slots: ReadonlyMap<string, number>) {
+  const after = images.findIndex((id) => (slots.get(id) ?? -1) > slot)
+  return after === -1 ? images.length : after
+}
+
 /** An image as the composer shows it, whichever way the draft holds it. */
 type ComposerImage = {
   id: string
@@ -435,9 +461,15 @@ export function MessageInputView({
     {},
   )
   // This composer's own previews of images it uploaded, so they need not be
-  // read back. Kept until it unmounts, like the previews of unsent `File`s.
+  // read back. Released once they are sent, or when it unmounts.
   const keptPreviewsRef = useRef(new Map<string, { url: string; name: string }>())
-  const draftKeyRef = useRef(draftKey)
+  // Each image takes its place in the draft when attached, not when its
+  // upload finishes: uploads started together land in any order. Slots
+  // count up, by upload (pending id) and, once landed, by artifact id.
+  const nextSlotRef = useRef(0)
+  const slotsRef = useRef(new Map<string, number>())
+  // The draft key on screen; null once unmounted.
+  const draftKeyRef = useRef<string | null>(draftKey)
   draftKeyRef.current = draftKey
   const [sending, setSending] = useState(false)
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
@@ -472,8 +504,8 @@ export function MessageInputView({
   )
   const remotePreviews = useArtifactPreviews(remoteSources)
   const images: ComposerImage[] = keepsImages
-    ? [
-        ...storedImages.map((artifactId, index) => {
+    ? inSlotOrder<ComposerImage>(
+        storedImages.map((artifactId, index) => {
           const local = keptPreviews.get(artifactId)
           const remote = remotePreviews[remoteSources.findIndex((s) => s.artifactId === artifactId)]
           return {
@@ -483,13 +515,14 @@ export function MessageInputView({
             failed: !local && remote?.failed === true,
           }
         }),
-        ...attachments.map((attachment) => ({
+        attachments.map((attachment) => ({
           id: attachment.id,
           name: attachment.file.name,
           url: attachment.previewUrl,
           uploading: true,
         })),
-      ]
+        slotsRef.current,
+      )
     : attachments.map((attachment) => ({
         id: attachment.id,
         name: attachment.file.name,
@@ -518,6 +551,8 @@ export function MessageInputView({
         for (const attachment of item) URL.revokeObjectURL(attachment.previewUrl)
       }
       for (const { url } of kept.values()) URL.revokeObjectURL(url)
+      // Uploads still landing find no composer on screen.
+      draftKeyRef.current = null
     }
   }, [])
 
@@ -674,7 +709,14 @@ export function MessageInputView({
       // An image is the draft's first content as much as text is.
       if (attachmentsRef.current[draftKey]?.length) draftStore.claim?.(draftKey)
       setAttachmentError(error)
-      if (keepsImages) for (const attachment of added) void keepImage(draftKey, attachment)
+      if (!keepsImages) return
+      // Tied to the draft as it is now: claimed above, so a first image's
+      // draft is the page's.
+      const target = draftStore.imageTarget?.(draftKey)
+      for (const attachment of added) {
+        slotsRef.current.set(attachment.id, (nextSlotRef.current += 1))
+        void keepImage(draftKey, attachment, target)
+      }
     },
     // keepImage reads only refs and stable props.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -696,44 +738,79 @@ export function MessageInputView({
   }
 
   /**
-   * Upload an image just attached, then name it in the draft it was attached
-   * to, wherever the user is by then. One removed while it uploaded is left
+   * Upload an image just attached, then name it, in its slot, in the draft it
+   * was attached to, wherever the user is by then. Only that draft: one that
+   * was deleted, sent or set aside meanwhile is not brought back by it. An
+   * image that lands nowhere (that, or removed while it uploaded) is left
    * for the environment to expire: no draft names it.
    */
-  const keepImage = async (key: string, attachment: DraftImageAttachment) => {
+  const keepImage = async (
+    key: string,
+    attachment: DraftImageAttachment,
+    target: ImageTarget | undefined,
+  ) => {
+    const slot = slotsRef.current.get(attachment.id) ?? (nextSlotRef.current += 1)
     const stillWanted = () =>
       (attachmentsRef.current[key] ?? NO_ATTACHMENTS).some((each) => each.id === attachment.id)
-    const settle = () =>
+    const settle = () => {
+      slotsRef.current.delete(attachment.id)
       setUploading(
         key,
         (attachmentsRef.current[key] ?? NO_ATTACHMENTS).filter((each) => each.id !== attachment.id),
       )
+    }
+    const fail = (reason: string) => {
+      settle()
+      URL.revokeObjectURL(attachment.previewUrl)
+      if (draftKeyRef.current === key) {
+        setAttachmentError(`${attachment.file.name} was not attached. ${reason}`)
+      }
+    }
     let stored: UploadedImageAttachment
     try {
       stored = await uploadImage!(attachment)
     } catch (error) {
-      if (!stillWanted()) return
-      settle()
-      URL.revokeObjectURL(attachment.previewUrl)
-      if (draftKeyRef.current === key) {
-        const reason = error instanceof Error ? error.message : 'The upload failed.'
-        setAttachmentError(`${attachment.file.name} was not attached. ${reason}`)
-      }
+      if (stillWanted()) fail(error instanceof Error ? error.message : 'The upload failed.')
       return
     }
     if (!stillWanted()) {
+      settle()
       URL.revokeObjectURL(attachment.previewUrl)
       return
     }
+    if (target && draftStore.imageTargetLive && !draftStore.imageTargetLive(target)) {
+      fail('Its draft was sent or deleted meanwhile.')
+      return
+    }
+    // In its slot: uploads started together finish in any order.
+    const images = draftStore.getImages!(key).filter((id) => id !== stored.id)
+    const at = slotIndex(images, slot, slotsRef.current)
+    slotsRef.current.set(stored.id, slot)
+    // Its own preview first, so naming it never sends for the bytes; and
+    // named before the upload is dropped from the list, so the image never
+    // blinks out between the two.
     keptPreviewsRef.current.set(stored.id, {
       url: attachment.previewUrl,
       name: attachment.file.name,
     })
-    // Named before the upload is dropped from the list, so the image never
-    // blinks out between the two.
-    const images = draftStore.getImages!(key)
-    if (!images.includes(stored.id)) draftStore.setImages!(key, [...images, stored.id])
+    if (!draftStore.setImages!(key, [...images.slice(0, at), stored.id, ...images.slice(at)])) {
+      slotsRef.current.delete(stored.id)
+      keptPreviewsRef.current.delete(stored.id)
+      fail('Its draft is gone.')
+      return
+    }
     settle()
+  }
+
+  /** Let go of what this composer kept for images that are sent or removed. */
+  const forgetSent = (artifactIds: readonly string[]) => {
+    for (const artifactId of artifactIds) {
+      slotsRef.current.delete(artifactId)
+      const local = keptPreviewsRef.current.get(artifactId)
+      if (!local) continue
+      keptPreviewsRef.current.delete(artifactId)
+      URL.revokeObjectURL(local.url)
+    }
   }
 
   const removeAttachment = (id: string) => {
@@ -744,11 +821,7 @@ export function MessageInputView({
         draftKey,
         draftStore.getImages!(draftKey).filter((artifactId) => artifactId !== id),
       )
-      const local = keptPreviewsRef.current.get(id)
-      if (local) {
-        keptPreviewsRef.current.delete(id)
-        URL.revokeObjectURL(local.url)
-      }
+      forgetSent([id])
       setAttachmentError(null)
       return
     }
@@ -828,6 +901,9 @@ export function MessageInputView({
     try {
       await onSend(trimmed, keepsImages ? NO_ATTACHMENTS : attachments, kept)
       release?.()
+      // Sent: the transcript reads them from the session now. A failed send
+      // keeps them, for the draft it puts back.
+      forgetSent(restoreImages)
     } catch (error) {
       release?.()
       // The composer stays live during an in-flight send, so anything typed

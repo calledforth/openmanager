@@ -187,7 +187,27 @@ export function createEnvironmentComposerDraftStore(
       return selectDraftContent(client.getState(), draftId)?.artifactIds ?? NO_IMAGES
     },
     setImages(key, artifactIds) {
-      change(key, (content) => withImages(content, artifactIds))
+      return change(key, (content) => withImages(content, artifactIds))
+    },
+    imageTarget(key) {
+      const draftId = draftIdOf(key)
+      if (draftId === null) return undefined
+      const state = client.getState()
+      return {
+        key,
+        draftId,
+        deletedAt: state.draftTombstones[draftId] ?? 0,
+        existed: selectDraftContent(state, draftId) !== undefined,
+      }
+    },
+    imageTargetLive(target) {
+      // The key writes to another draft now: this one is being sent.
+      if (draftIdOf(target.key) !== target.draftId) return false
+      const state = client.getState()
+      if (state.draftEdits[target.draftId]?.launching) return false
+      // Sent or deleted since, here or on another device.
+      if ((state.draftTombstones[target.draftId] ?? 0) > target.deletedAt) return false
+      return !target.existed || selectDraftContent(state, target.draftId) !== undefined
     },
     imageSource(key, artifactId) {
       if (key.startsWith(SESSION_KEY)) {

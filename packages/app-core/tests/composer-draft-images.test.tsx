@@ -295,6 +295,112 @@ describe('images kept with the composer draft', () => {
     expect(selectDraftContent(client.getState(), PAGE_DRAFT)?.artifactIds).toEqual(images)
     expect(thumbnails()).toEqual(['screenshot.png'])
     expect(container.textContent).toContain('The provider is unavailable.')
+    // Its own preview still shows: kept for the draft the failed send put back.
+    expect(container.querySelector('img[alt="screenshot.png"]')?.getAttribute('src')).toBe(
+      'blob:preview-1',
+    )
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:preview-1')
+  })
+
+  it('lets go of the previews of images once they are sent', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client)
+    await attach('first.png', 'second.png')
+    await settle(client)
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled()
+    await type('look')
+    await pressEnter()
+    await settle(client)
+    expect(thumbnails()).toEqual([])
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:preview-1')
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:preview-2')
+  })
+
+  it('keeps images in the order they were attached, whichever upload lands first', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    const landing = new Map<string, () => void>()
+    const { sent } = await mount(client, {
+      uploadImage: async (image) => {
+        await new Promise<void>((resolve) => landing.set(image.file.name, resolve))
+        return {
+          id: `artifact-${image.file.name}`,
+          name: image.file.name,
+          mimeType: 'image/png',
+          size: 3,
+          previewUrl: image.previewUrl,
+        }
+      },
+    })
+    await attach('first.png', 'second.png', 'third.png')
+    const land = async (name: string) => {
+      await act(async () => landing.get(name)!())
+      await settle(client)
+    }
+
+    await land('third.png')
+    await land('first.png')
+    // Still in attach order on screen, with one on its way between them.
+    expect(thumbnails()).toEqual(['first.png', 'second.png', 'third.png'])
+    await land('second.png')
+    expect(selectDraftContent(client.getState(), PAGE_DRAFT)?.artifactIds).toEqual([
+      'artifact-first.png',
+      'artifact-second.png',
+      'artifact-third.png',
+    ])
+    expect(thumbnails()).toEqual(['first.png', 'second.png', 'third.png'])
+
+    await pressEnter()
+    expect(sent[0]?.kept.map((image) => image.artifactId)).toEqual([
+      'artifact-first.png',
+      'artifact-second.png',
+      'artifact-third.png',
+    ])
+  })
+
+  it('never brings back a draft that was discarded while its image uploaded', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    let finish: (() => void) | undefined
+    const slow = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    await mount(client, {
+      uploadImage: async (image) => {
+        await slow
+        return {
+          id: 'artifact-late',
+          name: image.file.name,
+          mimeType: 'image/png',
+          size: 3,
+          previewUrl: image.previewUrl,
+        }
+      },
+    })
+    await type('half a thought')
+    await act(() => client.drafts!.flush())
+    await settle(client)
+    const saved = client.getState().drafts[PAGE_DRAFT]!
+    await attach('screenshot.png')
+
+    // Discarded from the sidebar, as the draft stood, and deleted.
+    await act(() => client.drafts!.discard(PAGE_DRAFT, { ifRevision: saved.revision }))
+    await settle(client)
+    expect(client.getState().drafts[PAGE_DRAFT]).toBeUndefined()
+    const saves = client.calls.filter((call) => call.command === 'saveDraft').length
+
+    // The upload lands after: the page still offers the draft's old place,
+    // but the deleted draft is not written again.
+    await act(async () => {
+      finish!()
+      await slow
+    })
+    await settle(client)
+    await act(() => client.drafts!.flush())
+    await settle(client)
+    expect(client.calls.filter((call) => call.command === 'saveDraft')).toHaveLength(saves)
+    expect(client.getState().drafts[PAGE_DRAFT]).toBeUndefined()
+    expect(selectDraftContent(client.getState(), PAGE_DRAFT)).toBeUndefined()
+    expect(thumbnails()).toEqual([])
+    expect(container.textContent).toContain('screenshot.png was not attached.')
   })
 
   it('drops an image from the draft when it is removed, and never names one removed mid-upload', async () => {

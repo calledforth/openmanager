@@ -27,7 +27,16 @@ export interface ComposerDraftStore {
   keepsImages?(key: string): boolean
   /** The draft's uploaded images, in order; the same array until they change. */
   getImages?(key: string): readonly string[]
-  setImages?(key: string, artifactIds: readonly string[]): void
+  /** False when there is no draft behind `key` to take them. */
+  setImages?(key: string, artifactIds: readonly string[]): boolean
+  /**
+   * The draft an image attached under `key` now is for, and its generation:
+   * the deletion it is past. An upload that lands after that draft was
+   * deleted, sent or set aside is no longer the draft's to take.
+   */
+  imageTarget?(key: string): ImageTarget | undefined
+  /** Whether the draft an upload started for is still there to take it. */
+  imageTargetLive?(target: ImageTarget): boolean
   /** Where the bytes of one of the draft's images are read from. */
   imageSource?(key: string, artifactId: string): ArtifactSource | undefined
   /** Fires when any draft may have changed, here or (for a synced store) elsewhere. */
@@ -59,6 +68,16 @@ export interface ComposerDraftStore {
    * without it keeps every draft where it is written.
    */
   getSyncStatus?(key: string): DraftSyncStatus
+}
+
+/** Which draft an image upload was started for; see `ComposerDraftStore.imageTarget`. */
+export interface ImageTarget {
+  key: string
+  draftId: string
+  /** The draft's last known deletion when the upload began (0 for none). */
+  deletedAt: number
+  /** Whether the draft had any content then: one that has none now is gone. */
+  existed: boolean
 }
 
 /** Supplied by hosts that keep drafts somewhere better than this browser. */
