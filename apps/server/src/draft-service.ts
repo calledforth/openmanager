@@ -50,6 +50,11 @@ export interface DraftServiceOptions {
   environmentId: () => string
   /** Commits events and their projection in one transaction, after anything buffered. */
   appendAtomic: (events: readonly ProofEvent[]) => void
+  /**
+   * Frees held images a deleted draft named, unless another draft names them
+   * or a session took them. Absent, they expire with the held-upload sweep.
+   */
+  discardImages?: (artifactIds: readonly string[]) => void
   now?: () => number
 }
 
@@ -130,6 +135,15 @@ export function createDraftService(options: DraftServiceOptions) {
   }
 
   const read = (draftId: string) => selectDraft.get(draftId) as DraftRow | undefined
+
+  const imagesIn = (row: DraftRow): string[] => {
+    try {
+      const ids = (JSON.parse(row.content_json) as DraftContent).artifactIds
+      return Array.isArray(ids) ? ids.filter((id) => typeof id === 'string') : []
+    } catch {
+      return []
+    }
+  }
 
   const toDraft = (row: DraftRow): Draft => ({
     draftId: row.draft_id,
@@ -296,6 +310,18 @@ export function createDraftService(options: DraftServiceOptions) {
     // first save may be on the wire behind this delete.
     const { tombstone, event } = deletionEvent(draftId, row, now())
     options.appendAtomic([event])
+    // Its images go with it, here and not in the projection: a send deletes
+    // the draft too, and its session claims them. Run once the tombstone is
+    // written, so the draft no longer counts as naming them; a refused delete
+    // never gets here. Synchronous, so no save can land in between.
+    const images = row ? imagesIn(row) : []
+    if (images.length > 0) {
+      try {
+        options.discardImages?.(images)
+      } catch {
+        // The draft is gone either way; the held-upload sweep frees them.
+      }
+    }
     return DraftResponseSchemas[DRAFT_DELETE_CAPABILITY].parse({
       type: 'response',
       requestId: command.requestId,

@@ -81,16 +81,34 @@ describe('held uploads', () => {
     expect(sessionOf('a')).toBe('session-1')
   })
 
-  it("refuses another client's upload and one held for another workspace", async () => {
+  it("refuses another client's upload unless the launched draft names it", async () => {
     const { artifacts, hold, sessionOf } = await store()
     hold('paired-upload', 'paired')
-    hold('elsewhere', 'owner', 'workspace-2')
-    for (const artifactId of ['paired-upload', 'elsewhere']) {
-      expect(artifacts.claimable([artifactId], OWNER_CLAIM)).toBe(false)
-      expect(artifacts.claim([artifactId], OWNER_CLAIM)).toBe(false)
-      expect(sessionOf(artifactId)).toBeNull()
-    }
+    expect(artifacts.claimable(['paired-upload'], OWNER_CLAIM)).toBe(false)
+    expect(artifacts.claim(['paired-upload'], OWNER_CLAIM)).toBe(false)
+    expect(sessionOf('paired-upload')).toBeNull()
     expect(artifacts.claimable(['missing'], OWNER_CLAIM)).toBe(false)
+
+    // Attached on the other device to the draft this launch sends.
+    const shared = ['paired-upload']
+    expect(artifacts.claimable(['paired-upload'], { ...OWNER_CLAIM, shared })).toBe(true)
+    expect(artifacts.claim(['paired-upload'], { ...OWNER_CLAIM, shared })).toBe(true)
+    expect(sessionOf('paired-upload')).toBe('session-1')
+  })
+
+  it("moves an image held for another workspace into the session's", async () => {
+    const { artifacts, database, hold, sessionOf } = await store()
+    // The draft moved projects, and was sent before the save that moved it.
+    hold('elsewhere', 'owner', 'workspace-2')
+    expect(artifacts.claimable(['elsewhere'], OWNER_CLAIM)).toBe(true)
+    expect(artifacts.claim(['elsewhere'], OWNER_CLAIM)).toBe(true)
+    expect(sessionOf('elsewhere')).toBe('session-1')
+    expect(
+      database
+        .prepare('SELECT workspace_id FROM attachments WHERE attachment_id = ?')
+        .get('elsewhere'),
+    ).toEqual({ workspace_id: 'workspace-1' })
+    expect(artifacts.get('session-1', 'elsewhere')).toMatchObject({ workspaceId: 'workspace-1' })
   })
 
   it('claims all of a launch or none of it', async () => {

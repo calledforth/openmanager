@@ -709,6 +709,59 @@ export const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    version: 19,
+    name: 'draft_images_outlive_projects',
+    up(database) {
+      const workspaceColumn = (
+        database.prepare('PRAGMA table_info(attachments)').all() as {
+          name: string
+          notnull: number
+        }[]
+      ).find((column) => column.name === 'workspace_id')
+      if (workspaceColumn?.notnull === 0) return
+      // A draft keeps its images when its project is removed, as it keeps its
+      // text, so a held image's project can go without the image. SQLite
+      // cannot relax NOT NULL or change a foreign key's action in place, so
+      // the table is rebuilt. Nothing references attachments, so dropping the
+      // old table touches no other row; a session's images still go with the
+      // session (`session_id` cascades) when a removed project takes it.
+      database.exec(`
+        CREATE TABLE attachments_v19 (
+          attachment_id TEXT PRIMARY KEY NOT NULL,
+          workspace_id TEXT REFERENCES workspaces(workspace_id) ON DELETE SET NULL,
+          message_id TEXT,
+          uploaded_by_client_id TEXT REFERENCES authorized_clients(client_id) ON DELETE SET NULL,
+          storage_key TEXT NOT NULL UNIQUE,
+          name TEXT NOT NULL,
+          mime_type TEXT NOT NULL,
+          size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+          metadata_json TEXT CHECK (metadata_json IS NULL OR json_valid(metadata_json)),
+          created_at INTEGER NOT NULL,
+          session_id TEXT REFERENCES sessions(session_id) ON DELETE CASCADE,
+          source TEXT NOT NULL DEFAULT 'prompt' CHECK (source IN ('prompt', 'generated')),
+          FOREIGN KEY (message_id, workspace_id)
+            REFERENCES messages(message_id, workspace_id) ON DELETE CASCADE
+        ) STRICT;
+
+        INSERT INTO attachments_v19 (attachment_id, workspace_id, message_id,
+          uploaded_by_client_id, storage_key, name, mime_type, size_bytes, metadata_json,
+          created_at, session_id, source)
+        SELECT attachment_id, workspace_id, message_id, uploaded_by_client_id, storage_key, name,
+          mime_type, size_bytes, metadata_json, created_at, session_id, source
+        FROM attachments;
+
+        DROP TABLE attachments;
+        ALTER TABLE attachments_v19 RENAME TO attachments;
+
+        CREATE INDEX attachments_workspace_id_idx ON attachments(workspace_id);
+        CREATE INDEX attachments_message_id_idx ON attachments(message_id);
+        CREATE INDEX attachments_uploaded_by_client_id_idx ON attachments(uploaded_by_client_id);
+        CREATE INDEX attachments_session_created_idx
+          ON attachments(session_id, created_at, attachment_id);
+      `)
+    },
+  },
 ]
 
 type RetainedActivityRow = {

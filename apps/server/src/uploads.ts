@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import {
   ARTIFACT_PATH_PREFIX,
+  DRAFT_ARTIFACT_PATH_PREFIX,
   UPLOAD_PATH_PREFIX,
   UPLOAD_TICKET_CAPABILITY,
   UploadCommandSchemas,
@@ -381,7 +382,8 @@ export function createUploadService(options: {
     /** Handle an upload route. Returns false when the request is not one. */
     handle(request: IncomingMessage, response: ServerResponse): boolean {
       const path = request.url?.split('?')[0] ?? ''
-      const download = path.startsWith(ARTIFACT_PATH_PREFIX)
+      const draftDownload = path.startsWith(DRAFT_ARTIFACT_PATH_PREFIX)
+      const download = draftDownload || path.startsWith(ARTIFACT_PATH_PREFIX)
       if (!download && !path.startsWith(UPLOAD_PATH_PREFIX)) return false
       if (request.method === 'OPTIONS') {
         response.writeHead(204, {
@@ -400,7 +402,11 @@ export function createUploadService(options: {
         return true
       }
       const remoteAddress = request.socket.remoteAddress ?? 'unknown'
-      const command = download ? `GET ${ARTIFACT_PATH_PREFIX}` : `PUT ${UPLOAD_PATH_PREFIX}`
+      const command = draftDownload
+        ? `GET ${DRAFT_ARTIFACT_PATH_PREFIX}`
+        : download
+          ? `GET ${ARTIFACT_PATH_PREFIX}`
+          : `PUT ${UPLOAD_PATH_PREFIX}`
       const lockout = options.rateLimiter.blocked('auth_failure', remoteAddress)
       if (!lockout.allowed) {
         options.audit.record({
@@ -435,15 +441,26 @@ export function createUploadService(options: {
         return true
       }
       if (download) {
-        // /artifacts/<session-id>/<artifact-id>[/metadata]; no client paths reach disk.
-        const match = /^\/artifacts\/([^/]+)\/([^/]+)(\/metadata)?$/.exec(path)
-        const metadata = match ? artifacts.get(match[1]!, match[2]!) : undefined
-        if (!client.capabilities.includes('read') || !metadata ||
-          !options.resolveWorkspace(metadata.workspaceId, { clientId: client.clientId, command })) {
+        // /artifacts/<session-id>/<artifact-id>[/metadata], or a draft's held
+        // image at /draft-artifacts/<draft-id>/<artifact-id>[/metadata], which
+        // answers only while that draft names it: whoever may list the draft
+        // may see its images. No client paths reach disk.
+        const match = /^\/(draft-)?artifacts\/([^/]+)\/([^/]+)(\/metadata)?$/.exec(path)
+        const metadata = !match
+          ? undefined
+          : draftDownload
+            ? artifacts.getHeld(match[2]!, match[3]!)
+            : artifacts.get(match[2]!, match[3]!)
+        // A held image whose project was removed is the draft's alone now.
+        const reader = { clientId: client.clientId, command }
+        const reachable =
+          metadata?.workspaceId === null ||
+          (metadata !== undefined && !!options.resolveWorkspace(metadata.workspaceId, reader))
+        if (!client.capabilities.includes('read') || !metadata || !reachable) {
           respond(response, 404, errorResult(null, 'not_found', 'Artifact not found.'))
           return true
         }
-        if (match![3]) {
+        if (match![4]) {
           respond(response, 200, metadata)
           return true
         }

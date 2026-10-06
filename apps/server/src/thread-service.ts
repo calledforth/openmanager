@@ -241,6 +241,12 @@ type ThreadRecord = {
   /** A session-scoped cancel must drain before another prompt can start. */
   cancellation?: Promise<void>
   pendingBuild?: boolean
+  /**
+   * The draft images this session's launch claimed. A rolled-back launch
+   * hands them back before the session's deletion would take them along, so
+   * the draft it restores has its images.
+   */
+  claimedArtifacts?: string[]
 }
 
 const errorResult = (requestId: string, code: ErrorCode, message: string, details?: unknown) => ({
@@ -734,6 +740,15 @@ export function createThreadService(
     if (sessions.get(record.session.sessionId) !== record) return
     sessions.delete(record.session.sessionId)
     if (threads.get(record.thread.threadId) === record) threads.delete(record.thread.threadId)
+    // Held again, and so kept for the draft restored below, rather than
+    // deleted with the session.
+    if (record.claimedArtifacts?.length) {
+      try {
+        options.artifacts?.release(record.claimedArtifacts, record.session.sessionId)
+      } catch (error) {
+        options.onPersistenceError?.(error, 'session.deleted')
+      }
+    }
     appendRuntimeEvent(
       ProofEventSchemas['session.deleted'].parse({
         type: 'event',
@@ -1689,10 +1704,13 @@ export function createThreadService(
             'This provider cannot start a chat in another mode.',
           )
         }
-        // A draft's images were uploaded for this workspace by this client and
-        // held for it. Checked before anything is announced, so a stale or
+        // A draft's images are held until its launch claims them: this
+        // client's own uploads, and any the draft being sent names, which
+        // another device may have attached. Read before the send deletes the
+        // draft, and checked before anything is announced, so a stale or
         // foreign id leaves no session behind; claimed once the session exists.
         const artifactIds = input.artifactIds ? [...new Set(input.artifactIds)] : []
+        let shared: string[] = []
         if (artifactIds.length > 0) {
           if (!options.artifacts || !context) {
             return errorResult(
@@ -1701,12 +1719,8 @@ export function createThreadService(
               'This environment cannot attach images to a new chat.',
             )
           }
-          if (
-            !options.artifacts.claimable(artifactIds, {
-              workspaceId: input.workspaceId,
-              clientId: context.clientId,
-            })
-          ) {
+          if (input.draftId !== undefined) shared = options.artifacts.imagesOf(input.draftId)
+          if (!options.artifacts.claimable(artifactIds, { clientId: context.clientId, shared })) {
             return errorResult(command.requestId, 'not_found', ARTIFACTS_UNAVAILABLE)
           }
         }
@@ -1753,7 +1767,8 @@ export function createThreadService(
               'This environment does not keep drafts.',
             )
           }
-          // Put back as sent if the session is rolled back: text, provider and picks.
+          // Put back as sent if the session is rolled back: text, images,
+          // provider and picks. The rollback hands the images back first.
           const picks = {
             ...input.preference,
             ...(input.modeId !== undefined ? { modeId: input.modeId } : {}),
@@ -1765,6 +1780,7 @@ export function createThreadService(
               text: input.firstMessage ?? '',
               providerId,
               ...(Object.keys(picks).length > 0 ? { preference: picks } : {}),
+              ...(artifactIds.length > 0 ? { artifactIds } : {}),
             },
           })
           if ('error' in launch) return errorResult(command.requestId, 'validation', launch.error)
@@ -1861,6 +1877,7 @@ export function createThreadService(
               workspaceId: input.workspaceId,
               clientId: context!.clientId,
               sessionId: session.sessionId,
+              shared,
             })
           } catch (error) {
             options.onPersistenceError?.(error, 'session.created')
@@ -1870,6 +1887,7 @@ export function createThreadService(
             rollbackSession(record)
             return errorResult(command.requestId, 'not_found', ARTIFACTS_UNAVAILABLE)
           }
+          record.claimedArtifacts = artifactIds
         }
         // Re-enter the existing turn command so validation, runtime scheduling and
         // history ownership remain in one place. No asynchronous gap is exposed.
@@ -1898,16 +1916,8 @@ export function createThreadService(
           }
           const started = ProofResponseSchemas['turn.send'].safeParse(result)
           if (!started.success) {
-            // The draft stays open with its images, so hand them back for the
-            // retry before the session's removal would take them with it.
-            if (artifactIds.length > 0) {
-              try {
-                options.artifacts!.release(artifactIds, session.sessionId)
-              } catch (error) {
-                options.onPersistenceError?.(error, 'session.created')
-              }
-            }
             // The session was already announced, so its removal must be too.
+            // It hands the images back for the retry, which the draft keeps.
             rollbackSession(record)
             return result
           }
