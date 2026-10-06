@@ -19,7 +19,7 @@
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 
 /* Fluid components' `dark:` utilities follow the app theme, not the OS. */
-@custom-variant dark (&:where(:root:not([data-theme='light'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light']) *));
+@custom-variant dark (&:where(:root:not([data-theme='light'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse']) *));
 
 @theme inline {
   --color-faint: var(--faint);
@@ -376,7 +376,7 @@
   --surface-8: #464646;
 }
 
-:root:is([data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light']) {
+:root:is([data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse']) {
   color-scheme: light;
   --background: #fcfcfc;
   --foreground: #1a1a1a;
@@ -419,10 +419,10 @@
 }
 
 /* Lovable Light: Lovable's current light editor. A #F5F5F5 canvas with white
-   for what holds a message, #ACACAC for the quiet text, near-black ink and
-   Lovable's blue as the one accent. Type follows Lovable dark (the shared
-   Tend typography in §4). */
-:root[data-theme='lovable-light'] {
+   for what holds a message. Inverse swaps those surfaces. #ACACAC for the
+   quiet text, near-black ink and Lovable's blue as the one accent. Type
+   follows Lovable dark (the shared Tend typography in §4). */
+:root:is([data-theme='lovable-light'], [data-theme='lovable-light-inverse']) {
   --background: #f5f5f5;
   --foreground: #1c1c1c;
   --muted-foreground: #6b6b6b;
@@ -448,7 +448,7 @@
   --basis-action-hover: color-mix(in oklab, var(--foreground), var(--background) 10%);
 }
 
-:root:is([data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light']) {
+:root:is([data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse']) {
   --basis-canvas-bg: var(--background);
   --basis-surface: var(--surface-3);
   --basis-surface-elevated: color-mix(in oklab, var(--background), var(--foreground) 4%);
@@ -472,7 +472,7 @@
   --basis-status-error-active: #fde7e7;
 }
 
-:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='lovable'], [data-theme='claudeish'], [data-theme='carbon'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light']) {
+:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='lovable'], [data-theme='claudeish'], [data-theme='carbon'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse']) {
   --basis-border: var(--border);
   --basis-border-muted: var(--rule);
   --basis-chat-text: var(--foreground);
@@ -513,7 +513,7 @@
 
 /* The light schemes follow suit: a quiet grey fill instead of a white box
    with an outline, so a message reads by colour the way it does on dark. */
-:root:is([data-theme='light'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light']) {
+:root:is([data-theme='light'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse']) {
   --basis-chat-user-bg: color-mix(in oklab, var(--basis-canvas-bg), #000 5.5%);
   --basis-chat-user-border: transparent;
 }
@@ -553,7 +553,7 @@
     0 0 0 1px rgb(0 0 0 / 0.32), 0 2px 4px rgb(0 0 0 / 0.12), 0 8px 16px -8px rgb(0 0 0 / 0.2);
 }
 
-:root:is([data-theme='light'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light']) {
+:root:is([data-theme='light'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse']) {
   --float-bg: #ffffff;
   --float-shadow:
     0 0 0 1px rgb(0 0 0 / 0.045), 0 1px 2px rgb(0 0 0 / 0.04), 0 4px 10px -2px rgb(0 0 0 / 0.05),
@@ -565,7 +565,7 @@
 
 /* Neutral Light's and Lovable Light's composer (the only resting float) keeps
    a slightly firmer hairline, so its light fill still has a visible edge. */
-:root:is([data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light']) {
+:root:is([data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse']) {
   --float-shadow-rest:
     0 0 0 1px rgb(0 0 0 / 0.08), 0 1px 2px rgb(0 0 0 / 0.05), 0 4px 12px -4px rgb(0 0 0 / 0.08);
 }
@@ -577,8 +577,21 @@
   --float-bg: #ffffff;
 }
 
+/* Lovable Light Inverse: white chat pane, a step under white on the rail.
+   Composer stays white (edge from the rest shadow). User bubbles keep the
+   shared light-scheme grey mix so they still read on white. */
+:root[data-theme='lovable-light-inverse'] {
+  --background: #ffffff;
+  --basis-chat-composer-bg: #ffffff;
+  --float-bg: #ffffff;
+}
+
+:root[data-theme='lovable-light-inverse'] [data-slot='sidebar'] {
+  background-color: #f8f8f8;
+}
+
 /* Lovable Light: replies read a step softer than the near-black UI ink. */
-:root[data-theme='lovable-light'] .md {
+:root:is([data-theme='lovable-light'], [data-theme='lovable-light-inverse']) .md {
   color: #333333;
 }
 
@@ -587,12 +600,12 @@
        400 body weight. Tracking stays the app's 0.01em: Tend's zero tracking
        reads cramped at the app's 14px.
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='lovable'], [data-theme='claudeish'], [data-theme='carbon'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light']) body {
+:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='lovable'], [data-theme='claudeish'], [data-theme='carbon'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse']) body {
   font-weight: 400;
   font-variation-settings: 'wght' 400;
 }
 
-:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='lovable'], [data-theme='claudeish'], [data-theme='carbon'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light']) :where(h1, h2) {
+:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='lovable'], [data-theme='claudeish'], [data-theme='carbon'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse']) :where(h1, h2) {
   letter-spacing: -0.015em;
 }
 

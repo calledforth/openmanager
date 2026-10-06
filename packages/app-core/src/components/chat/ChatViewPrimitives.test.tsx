@@ -38,6 +38,17 @@ describe('chat loading skeletons', () => {
     expect(html).toContain('aria-label="Preview image.png"')
     expect(html).not.toContain('target="_blank"')
   })
+
+  it('renders a user message as markdown, like assistant prose', () => {
+    const html = renderToStaticMarkup(
+      <UserMessage content={'Fix **this** in `app.ts`:\n\n- first\n- second'} />,
+    )
+
+    expect(html).toContain('class="md"')
+    expect(html).toContain('<strong>this</strong>')
+    expect(html).toContain('<code>app.ts</code>')
+    expect(html).toContain('<li>first</li>')
+  })
 })
 
 describe('assistant turn work disclosure', () => {

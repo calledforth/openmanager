@@ -9,7 +9,7 @@ import {
 } from 'react'
 import { DEFAULT_UI_FONT, isUiFontId, type UiFontId } from '../lib/fonts'
 
-/** `neutral`, `paper`, `lovable`, `lovable-light`, `claudeish`, `carbon` and the two `neutral-light` schemes are the Tend colour schemes (styles/fluid.css). */
+/** `neutral`, `paper`, `lovable`, `lovable-light`, `lovable-light-inverse`, `claudeish`, `carbon` and the two `neutral-light` schemes are the Tend colour schemes (styles/fluid.css). */
 export type ThemeMode =
   | 'dark'
   | 'light'
@@ -22,6 +22,7 @@ export type ThemeMode =
   | 'neutral-light'
   | 'neutral-light-soft'
   | 'lovable-light'
+  | 'lovable-light-inverse'
 
 export const THEME_MODES: readonly ThemeMode[] = [
   'dark',
@@ -35,6 +36,7 @@ export const THEME_MODES: readonly ThemeMode[] = [
   'neutral-light',
   'neutral-light-soft',
   'lovable-light',
+  'lovable-light-inverse',
 ]
 
 /** Every theme with its display name, in the order pickers list them. */
@@ -48,6 +50,7 @@ export const THEME_OPTIONS: ReadonlyArray<{ id: ThemeMode; label: string; hint: 
   { id: 'paper', label: 'Paper', hint: 'warm greys, dark' },
   { id: 'lovable', label: 'Lovable', hint: 'warm charcoal, dark' },
   { id: 'lovable-light', label: 'Lovable Light', hint: 'warm cream, light' },
+  { id: 'lovable-light-inverse', label: 'Lovable Light Inverse', hint: 'white chat, grey rail' },
   { id: 'claudeish', label: 'Claude-ish', hint: 'warm charcoal with clay, dark' },
   { id: 'carbon', label: 'Carbon', hint: 'neutral black with lime, dark' },
 ]
@@ -58,7 +61,13 @@ export function isThemeMode(value: string): value is ThemeMode {
 
 /** Whether a theme paints on a light canvas (icons and code blocks switch on this). */
 export function isLightTheme(mode: ThemeMode): boolean {
-  return mode === 'light' || mode === 'neutral-light' || mode === 'neutral-light-soft' || mode === 'lovable-light'
+  return (
+    mode === 'light' ||
+    mode === 'neutral-light' ||
+    mode === 'neutral-light-soft' ||
+    mode === 'lovable-light' ||
+    mode === 'lovable-light-inverse'
+  )
 }
 
 const THEME_STORAGE_KEY = 'openmanager-theme'

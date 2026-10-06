@@ -195,7 +195,7 @@ export interface SidebarDraftRow {
   workspace?: SidebarWorkspace
 }
 
-/** One card in Active: a draft, or a session with its subagents. */
+/** One card in Drafts or Active: a draft, or a session with its subagents. */
 type ActiveItem = SidebarDraftRow | { kind: 'session'; entry: SidebarBoardEntry }
 
 /** Each draft with its project, in the order given. */
@@ -419,7 +419,7 @@ export interface WorkspaceSidebarViewProps {
   ) => void | Promise<unknown>
   onDeleteSession?: (workspacePath: string, externalId: string, providerId: ProviderId) => void
   /**
-   * Unsent new-session drafts, shown as cards at the top of Active, in the
+   * Unsent new-session drafts, shown as cards in a Drafts section above Active, in the
    * order given (newest edit first). Hosts without draft pages leave them out.
    */
   drafts?: SidebarDraft[]
@@ -560,37 +560,43 @@ export function WorkspaceSidebarView({
         {workspaces.length === 0 ? (
           <p className="px-4 py-5 text-[13px] text-muted-foreground">No projects yet</p>
         ) : (
-          <SidebarGroup ref={setActiveGroup} style={{ minHeight: activeFloor }}>
-            <SidebarGroupLabel>Active</SidebarGroupLabel>
-            {/* Divs, not ul/li: the app's unlayered list rules outrank
-                utilities. Cards space themselves (padding, not gap) so a
-                leaving card folds its spacing away with it. The list stays
-                mounted when it empties, so the last card still folds away. */}
-            {/* Focusable from script alone: where focus lands when the card
-                it was on is gone and no other card is near. */}
-            <div role="list" tabIndex={-1} className="flex flex-col outline-none">
-              <LayoutGroup>
-                <AnimatePresence initial={false}>
-                  {/* Drafts first, newest edit first. A draft's card is keyed by
-                    the session it will become, so its send hands the same
-                    row over to the session's card: no fold, no grow, no gap. */}
-                  {draftRows.map((row) => (
-                    <MemoActiveCard key={row.draft.sessionId} item={row} {...shared} />
-                  ))}
-                  {active.map((entry) => (
-                    <MemoActiveCard
-                      key={entry.root.session.externalId}
-                      item={{ kind: 'session', entry }}
-                      {...shared}
-                    />
-                  ))}
-                </AnimatePresence>
-              </LayoutGroup>
-            </div>
-            <EmptyNote show={active.length + draftRows.length === 0} rowMotion={rowMotion}>
-              {settled.length > 0 ? 'All caught up.' : 'No sessions yet.'}
-            </EmptyNote>
-          </SidebarGroup>
+          // Drafts and Active share the floor, so Settled keeps its spot
+          // whether or not drafts are waiting above the active cards.
+          <div ref={setActiveGroup} className="flex flex-col" style={{ minHeight: activeFloor }}>
+            {/* Drafts, newest edit first, in a section of their own while
+                there are any. The section grows in with the first draft and
+                folds away with the last; a sent draft folds out of it as its
+                session grows in at the top of Active. */}
+            <AnimatePresence initial={false}>
+              {draftRows.length > 0 ? (
+                <motion.div key="drafts" className="overflow-hidden" {...rowMotion}>
+                  <SidebarGroup>
+                    <SidebarGroupLabel>Drafts</SidebarGroupLabel>
+                    <CardList>
+                      {draftRows.map((row) => (
+                        <MemoActiveCard key={row.draft.sessionId} item={row} {...shared} />
+                      ))}
+                    </CardList>
+                  </SidebarGroup>
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
+            <SidebarGroup>
+              <SidebarGroupLabel>Active</SidebarGroupLabel>
+              <CardList>
+                {active.map((entry) => (
+                  <MemoActiveCard
+                    key={entry.root.session.externalId}
+                    item={{ kind: 'session', entry }}
+                    {...shared}
+                  />
+                ))}
+              </CardList>
+              <EmptyNote show={active.length === 0} rowMotion={rowMotion}>
+                {settled.length > 0 ? 'All caught up.' : 'No sessions yet.'}
+              </EmptyNote>
+            </SidebarGroup>
+          </div>
         )}
 
         {/* Settled follows the active list in the same scroll. It rests at its
@@ -648,6 +654,23 @@ export function WorkspaceSidebarView({
         <SidebarFooter ref={noticeAnchorRef('sidebar-foot')}>{footer}</SidebarFooter>
       ) : null}
     </Sidebar>
+  )
+}
+
+/**
+ * A list of cards. Divs, not ul/li: the app's unlayered list rules outrank
+ * utilities. Cards space themselves (padding, not gap) so a leaving card folds
+ * its spacing away with it. The list stays mounted when it empties, so the
+ * last card still folds away. Focusable from script alone: where focus lands
+ * when the card it was on is gone and no other card is near.
+ */
+function CardList({ children }: { children: ReactNode }) {
+  return (
+    <div role="list" tabIndex={-1} className="flex flex-col outline-none">
+      <LayoutGroup>
+        <AnimatePresence initial={false}>{children}</AnimatePresence>
+      </LayoutGroup>
+    </div>
   )
 }
 
@@ -731,17 +754,12 @@ interface RowHandlers {
   rowMotion: MotionProps
 }
 
-/**
- * A card in Active. The row itself (what grows in and folds away) is the same
- * element for a draft and for the session it becomes: sending swaps what is
- * inside it, in place, in the frame the session is listed.
- */
+/** A card in Drafts or Active: a new-session draft, or a session. */
 function ActiveCard({ item, ...handlers }: RowHandlers & { item: ActiveItem }) {
   return (
     // The clip lets the card fold to nothing on its way out; the padding
     // inside it is the space between cards, so it folds away too.
-    // Rows slide to a new place rather than jump: a sent draft's row, now a
-    // session's, moves down past the drafts still waiting.
+    // Rows slide to a new place rather than jump.
     <motion.div
       role="listitem"
       layout="position"

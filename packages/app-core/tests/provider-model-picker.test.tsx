@@ -86,7 +86,6 @@ function render(props: Partial<Parameters<typeof ProviderModelPicker>[0]> = {}) 
           currentModelId="opus"
           onChange={onChange}
           canChangeProvider
-          configSummary={[]}
           shortcut="mod+shift+m"
           onDone={onDone}
           {...props}

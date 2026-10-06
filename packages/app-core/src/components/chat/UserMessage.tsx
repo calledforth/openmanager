@@ -4,6 +4,7 @@ import type { StreamMessagePart } from '@openmanager/shared/lib/remote-stream-pa
 import { cn } from '../../lib/utils'
 import type { ArtifactSource, OptimisticImage } from '../../lib/attachments'
 import { partArtifact, useArtifactPreview } from '../../lib/artifact-preview'
+import { Markdown } from '../markdown/Markdown'
 import { ImageViewer } from '../parts/GeneratedImagePart'
 import { Tooltip } from '../ui/Tooltip'
 import { chatUserInner, chatUserMessageShell } from './userMessageStyles'
@@ -151,7 +152,9 @@ export function UserMessage({
               ))}
             </div>
           )}
-          {content && <div className="min-w-0 whitespace-pre-wrap break-words">{content}</div>}
+          {/* Same renderer as assistant prose, so a prompt's code, lists and
+              links read the way the reply's do. */}
+          {content && <Markdown>{content}</Markdown>}
           {sendError && (
             <div className="mt-2 flex items-start justify-between gap-2 rounded-md border border-red-500/25 bg-red-500/10 px-2 py-1.5 text-[11px] leading-4 text-red-500">
               <span className="min-w-0 break-words">Not sent: {sendError}</span>

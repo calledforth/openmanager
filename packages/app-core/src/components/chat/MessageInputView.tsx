@@ -9,7 +9,6 @@ import {
   type ClipboardEvent,
   type DragEvent,
 } from 'react'
-import { createPortal } from 'react-dom'
 import {
   ArrowUpIcon,
   ArrowsOutIcon,
@@ -18,20 +17,17 @@ import {
   SquareIcon,
   XIcon,
   CircleNotchIcon,
-  FadersHorizontalIcon,
 } from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
 import type { ProviderId, SessionConfigOption } from '@agentpack/contract'
 import { ImageViewer } from '../parts/GeneratedImagePart'
 import { SearchableMenu, type SearchableMenuSection } from '../ui/SearchableMenu'
 import { Tooltip } from '../ui/Tooltip'
-import { usePortaledMenu } from '../ui/usePortaledMenu'
 import {
   chatInputShell,
   chatComposerTextarea,
   composerChip,
   composerFrame,
-  composerPopover,
   btnSend,
   COMPOSER_TEXTAREA_MAX_PX,
 } from './chatComposerStyles'
@@ -47,12 +43,8 @@ import {
 import { useArtifactPreviews } from '../../lib/artifact-preview'
 import { useComposerDraftStore, type ImageTarget } from './composerDraftStore'
 import { DraftSyncIndicator } from './DraftSyncIndicator'
-import {
-  configurableSessionOptions,
-  isBooleanSelect,
-  sessionConfigSummary,
-  type SessionConfigValue,
-} from './modelConfig'
+import type { SessionConfigValue } from './modelConfig'
+import { ModelSettingsControl, type EffortControl } from './ModelSettingsTiles'
 import { ContextMeter, type ComposerUsage } from './ContextMeter'
 import { SlashCommandPopup } from './SlashCommandPopup'
 import {
@@ -157,140 +149,6 @@ function PillSelect<T extends string>({
         </button>
       )}
     />
-  )
-}
-
-function ModelConfigMenu({
-  options,
-  onChange,
-  disabled,
-}: {
-  options: SessionConfigOption[]
-  onChange: (configId: string, value: SessionConfigValue) => void
-  disabled?: boolean
-}) {
-  const configurable = configurableSessionOptions(options)
-  const { open, toggle, menuCoords, wrapRef, triggerRef, menuRef } = usePortaledMenu({
-    placement: 'above',
-    minWidth: 280,
-    align: 'start',
-    deps: [configurable.length],
-  })
-
-  if (configurable.length === 0) return null
-
-  return (
-    <div ref={wrapRef} className="flex shrink-0">
-      <Tooltip content="Edit model settings">
-        <button
-          ref={triggerRef}
-          type="button"
-          onClick={toggle}
-          disabled={disabled}
-          aria-label="Edit model settings"
-          aria-expanded={open}
-          className={cn(
-            composerChip,
-            'w-6 justify-center px-0 text-[var(--basis-text-faint)] hover:text-[var(--basis-text)]',
-            open && 'bg-active text-[var(--basis-text)]',
-          )}
-        >
-          <FadersHorizontalIcon size={12} weight="regular" />
-        </button>
-      </Tooltip>
-      {open &&
-        menuCoords &&
-        createPortal(
-          <div
-            ref={menuRef}
-            className={cn('fixed z-[9999] overflow-hidden', composerPopover)}
-            style={{
-              left: menuCoords.left,
-              top: menuCoords.top,
-              bottom: menuCoords.bottom,
-              width: menuCoords.width,
-            }}
-            role="dialog"
-            aria-label="Model settings"
-          >
-            <div className="px-3 pb-1 pt-2.5">
-              <div className="text-11-medium text-[var(--basis-text-strong)]">Model settings</div>
-              <div className="mt-0.5 text-[10px] leading-4 text-[var(--basis-text-muted)]">
-                Applied to prompts in this workspace
-              </div>
-            </div>
-            <div className="flex max-h-[320px] flex-col gap-0.5 overflow-y-auto p-1.5">
-              {configurable.map((option) => {
-                const booleanLike = option.type === 'boolean' || isBooleanSelect(option)
-                const checked =
-                  option.type === 'boolean'
-                    ? option.currentValue
-                    : option.currentValue.toLowerCase() === 'true'
-                return (
-                  <div
-                    key={option.id}
-                    className="flex min-h-10 items-center justify-between gap-3 rounded-lg px-2 py-1.5 hover:bg-hover"
-                  >
-                    <span className="min-w-0">
-                      <span className="block text-11-medium text-[var(--basis-text)]">
-                        {option.name}
-                      </span>
-                      {option.description && (
-                        <span className="mt-0.5 block text-[10px] leading-3.5 text-[var(--basis-text-muted)]">
-                          {option.description}
-                        </span>
-                      )}
-                    </span>
-                    {booleanLike ? (
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-label={option.name}
-                        aria-checked={checked}
-                        onClick={() => {
-                          if (option.type === 'boolean') {
-                            onChange(option.id, !option.currentValue)
-                            return
-                          }
-                          const nextValue = option.options.find(
-                            (entry) => entry.value.toLowerCase() === String(!checked),
-                          )?.value
-                          if (nextValue !== undefined) onChange(option.id, nextValue)
-                        }}
-                        className={cn(
-                          'relative h-[18px] w-8 shrink-0 rounded-full transition-colors',
-                          checked ? 'bg-[var(--basis-action-bg)]' : 'bg-active',
-                        )}
-                      >
-                        <span
-                          className={cn(
-                            'absolute top-0.5 h-3 w-3 rounded-full bg-white shadow-sm transition-transform',
-                            checked ? 'translate-x-[15px]' : 'translate-x-0.5',
-                          )}
-                        />
-                      </button>
-                    ) : (
-                      <select
-                        value={option.currentValue}
-                        onChange={(event) => onChange(option.id, event.target.value)}
-                        className="h-7 max-w-[132px] shrink-0 rounded-md border-0 bg-hover px-2 text-11-regular text-[var(--basis-text)] outline-none hover:bg-active focus-visible:bg-active"
-                        aria-label={option.name}
-                      >
-                        {option.options.map((entry) => (
-                          <option key={entry.value} value={entry.value}>
-                            {entry.name}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          </div>,
-          document.body,
-        )}
-    </div>
   )
 }
 
@@ -1013,8 +871,17 @@ export function MessageInputView({
       !sendBlockedReason &&
       !uploadingImages &&
       (images.length === 0 || imageUploadEnabled)
-  const configSummary = sessionConfigSummary(configOptions)
   const effortChoices = effortOptions ?? effortLevels.map((level) => ({ id: level, name: level }))
+  // Blank until the session says otherwise: the CLI picks its own depth when
+  // nothing asked, and inventing "high" here would claim a setting never sent.
+  const effortControl: EffortControl | undefined =
+    effortChoices.length > 0
+      ? {
+          choices: effortChoices,
+          current: currentEffort,
+          onChange: (level) => onConfigOptionChange(effortConfigId, level),
+        }
+      : undefined
 
   return (
     // Attached under a question card or the todo list, the composer is part of
@@ -1202,14 +1069,14 @@ export function MessageInputView({
                 onChange={onProviderModelChange}
                 disabled={!canChangeSettings}
                 canChangeProvider={canChangeProvider}
-                configSummary={configSummary}
                 shortcut="mod+shift+m"
                 onDone={focusTextarea}
               />
             )}
 
-            <ModelConfigMenu
+            <ModelSettingsControl
               options={configOptions}
+              effort={effortControl}
               onChange={onConfigOptionChange}
               disabled={!canChangeSettings}
             />
@@ -1237,31 +1104,6 @@ export function MessageInputView({
                   describeOnHover
                 />
               )
-            )}
-
-            {effortChoices.length > 0 && (
-              <PillSelect
-                variant="ghost"
-                // Blank until the session says otherwise: the CLI picks its own
-                // depth when nothing asked, and inventing "high" here would
-                // claim a setting we never sent.
-                value={currentEffort}
-                options={
-                  effortChoices.some((choice) => choice.id === currentEffort)
-                    ? effortChoices
-                    : [
-                        {
-                          id: currentEffort,
-                          name: 'Auto effort',
-                          description: 'Let the model choose the depth.',
-                        },
-                        ...effortChoices,
-                      ]
-                }
-                onChange={(level) => onConfigOptionChange(effortConfigId, level)}
-                disabled={!canChangeSettings}
-                describeOnHover
-              />
             )}
 
             {usage && (
