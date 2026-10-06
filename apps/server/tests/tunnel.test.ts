@@ -1,5 +1,12 @@
 import { spawn as spawnProcess } from 'node:child_process'
-import { chmodSync, copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { createServer, request as httpRequest } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -114,6 +121,7 @@ interface HostOptions {
   timing?: Partial<TunnelTiming>
   now?: () => number
   ingress?: unknown
+  beforeStart?: (dataDir: string) => void
 }
 
 async function startTunnelHost(options: HostOptions = {}) {
@@ -124,6 +132,7 @@ async function startTunnelHost(options: HostOptions = {}) {
   const spawned: string[] = []
   // Known before the server starts, so the fake's ingress can name it.
   const serverPort = await freePort()
+  options.beforeStart?.(dataDir)
   const server = await startServer({
     port: serverPort,
     dataDir,
@@ -481,6 +490,15 @@ describe('tunnel supervisor', () => {
     writeFileSync(join(host.dataDir, 'tunnel-token'), `${TOKEN}\n`)
     await waitForState(host, 'connected')
     expect(host.records()[0]!.token).toBe(TOKEN)
+  })
+
+  it('does not start a connector without its pinned configuration file', async () => {
+    const host = await startTunnelHost({
+      // A folder where the file belongs: the write fails.
+      beforeStart: (dataDir) => mkdirSync(join(dataDir, 'cloudflared.yml')),
+    })
+    await waitForState(host, 'down', undefined, (status) => status.reason === 'config_unwritable')
+    expect(host.spawned).toEqual([])
   })
 
   it('names a token Cloudflare refuses', async () => {

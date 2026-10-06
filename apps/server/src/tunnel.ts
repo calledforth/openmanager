@@ -82,6 +82,7 @@ export type TunnelReason =
   | 'token_malformed'
   | 'exited'
   | 'spawn_failed'
+  | 'config_unwritable'
   | 'reconnecting'
   | 'unready'
   | 'start_timeout'
@@ -511,19 +512,21 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
     restartTimer.unref?.()
   }
 
-  /** The `--config` to pass, written fresh each start; none when it cannot be written. */
-  function connectorConfig(): string | undefined {
-    const file = options.configFile
-    if (!file) return undefined
+  /**
+   * Write the pinned `--config`, fresh each start. `false` when it cannot be
+   * written: the connector must then not start at all, because without it
+   * cloudflared falls back to `~/.cloudflared/config.yml`.
+   */
+  function writeConnectorConfig(file: string): boolean {
     try {
       writeFileSync(file, CLOUDFLARED_CONFIG_TEXT)
-      return file
+      return true
     } catch (error) {
       log('warn', 'The cloudflared configuration file could not be written.', {
         file,
         reason: error instanceof Error ? error.message : String(error),
       })
-      return undefined
+      return false
     }
   }
 
@@ -547,6 +550,12 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
       // Installing the binary or saving the token later recovers without a restart.
       return scheduleStart(timing.restartMaxMs)
     }
+    const configFile = options.configFile
+    if (configFile !== undefined && !writeConnectorConfig(configFile)) {
+      connectorReason = 'config_unwritable'
+      refresh()
+      return scheduleStart(timing.restartMaxMs)
+    }
     metrics = undefined
     ready = false
     everReady = false
@@ -559,7 +568,7 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
     spawnedAt = now()
     let process_: ChildProcess
     try {
-      process_ = spawn(binary, cloudflaredArgs(connectorConfig()), {
+      process_ = spawn(binary, cloudflaredArgs(configFile), {
         env: cloudflaredEnvironment(options.env ?? process.env, token),
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,

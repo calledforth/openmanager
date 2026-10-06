@@ -130,7 +130,8 @@ with the token in the child's `TUNNEL_TOKEN` environment variable.
 - **Configuration file.** `<data-dir>/cloudflared.yml` is written by the
   server and holds no settings that matter. Without it, `cloudflared` would
   read `~/.cloudflared/config.yml`, and a leftover `url:` or `loglevel:` there
-  would apply to this tunnel.
+  would apply to this tunnel. If the file cannot be written, the connector
+  is not started at all.
 - **Logging.** The log level is pinned to `info` because at `debug`
   `cloudflared` logs request headers, and the socket credential travels in
   one. Its log lines go to the server log at `debug`, except that one error
@@ -170,6 +171,8 @@ The server publishes one state, logged on every change and written to
   connector is replaced).
 - `exited`, `spawn_failed`, `reconnecting`, `unready`, `start_timeout`,
   `resumed_stale`: why the connector is down or was replaced (`down`).
+- `config_unwritable`: `<data-dir>/cloudflared.yml` could not be written, so
+  the connector is not started (`down`); retried every 60 s.
 - `other_environment`: the hostname answers as a different environment, for
   example the dashboard points it at another machine or port.
 - `tunnel_unreachable`: Cloudflare answered `530`; the hostname's tunnel has
