@@ -208,7 +208,10 @@ export function createEnvironmentComposerDraftStore(
       // The key writes to another draft now: this one is being sent.
       if (draftIdOf(target.key) !== target.draftId) return false
       const state = client.getState()
-      if (state.draftEdits[target.draftId]?.launching) return false
+      const edit = state.draftEdits[target.draftId]
+      if (edit?.launching) return false
+      // Discarded, its delete not answered yet: the image must not undo it.
+      if (edit?.discarding) return false
       // Sent or deleted since, here or on another device.
       if ((state.draftTombstones[target.draftId] ?? 0) > target.deletedAt) return false
       return !target.existed || selectDraftContent(state, target.draftId) !== undefined

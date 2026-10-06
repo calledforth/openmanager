@@ -519,6 +519,22 @@ describe('draft sync', () => {
     sync.dispose()
   })
 
+  it('never holds back a discard without a revision either', async () => {
+    const { store, sync, deletes } = setup()
+    await vi.advanceTimersByTimeAsync(0)
+    sync.edit('d', NEW, { text: 'see attached' })
+    await vi.advanceTimersByTimeAsync(1000)
+    sync.holdEmpty('d')
+    // Emptied by typing first, so the discard finds an empty edit already held.
+    sync.edit('d', NEW, { text: '' })
+    sync.discard('d')
+    expect(store.getState().draftEdits.d?.discarding).toBe(true)
+    await settle()
+    expect(deletes).toEqual([{ draftId: 'd' }])
+    expect(store.getState().drafts.d).toBeUndefined()
+    sync.dispose()
+  })
+
   it('deletes a draft left empty once the last image on its way stops coming', async () => {
     const { store, sync, deletes } = setup()
     await vi.advanceTimersByTimeAsync(0)

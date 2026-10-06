@@ -172,9 +172,11 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
     const edit = state.draftEdits[draftId]
     if (!edit || edit.launching) return
     // Emptied while an image is on its way: not empty yet. Written when the
-    // last hold goes. A discard deletes whatever is on its way.
+    // last hold goes. A discard, with or without `ifRevision`, deletes
+    // whatever is on its way.
     if (
       isEmptyDraftContent(edit.content) &&
+      !edit.discarding &&
       edit.deleteIf === undefined &&
       (emptyHolds.get(draftId) ?? 0) > 0
     ) {
@@ -393,14 +395,18 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
       if (!target || state.draftEdits[draftId]?.launching) return
       this.edit(draftId, target, { text: '' })
       const ifRevision = options?.ifRevision
-      if (ifRevision !== undefined) {
-        store.update((current) => {
-          const held = current.draftEdits[draftId]
-          return held
-            ? applyDraftEdit(current, draftId, { ...held, deleteIf: ifRevision })
-            : current
-        })
-      }
+      // The user's delete, conditional or not: never held back for an image
+      // on its way, and not to be written over by one landing.
+      store.update((current) => {
+        const held = current.draftEdits[draftId]
+        return held
+          ? applyDraftEdit(current, draftId, {
+              ...held,
+              discarding: true,
+              ...(ifRevision !== undefined ? { deleteIf: ifRevision } : {}),
+            })
+          : current
+      })
       void write(draftId)
     },
 

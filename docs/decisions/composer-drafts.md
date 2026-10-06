@@ -183,7 +183,10 @@ image.
   waits until every image has landed. An image on its way counts as content:
   erasing the text meanwhile does not delete the draft for being empty
   (`DraftSync.holdEmpty`). Once the last upload settles the draft is saved,
-  or deleted if nothing came. A discard is never held back. A new-session draft's image is uploaded
+  or deleted if nothing came; taking out an image still on its way lets go
+  of it at once. A discard, with or without a revision, is never held back
+  (`DraftEdit.discarding`), and an image landing after it is dropped rather
+  than writing the draft again. A new-session draft's image is uploaded
   for the draft's project and held there (no session yet). A session draft's
   image is uploaded for the session and is the session's from the start, like
   anything sent in it.

@@ -284,6 +284,13 @@ export interface DraftEdit {
    * anyone but this client. A later edit of the draft drops it.
    */
   deleteIf?: number
+  /**
+   * Set by `discard`, with or without `ifRevision`: the delete this edit
+   * carries is the user's, not a draft emptied by typing, so nothing holds it
+   * back and nothing on its way (an image) may write the draft again. A later
+   * edit of the draft drops it.
+   */
+  discarding?: true
 }
 
 /**

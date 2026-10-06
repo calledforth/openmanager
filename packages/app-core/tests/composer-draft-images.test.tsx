@@ -426,6 +426,55 @@ describe('images kept with the composer draft', () => {
       })
     }
 
+    it('lets a discard delete the draft at once, and the image landing meanwhile does not undo it', async () => {
+      const client = createMockEnvironmentClient({ seed: WITH_SESSION })
+      const upload = slowUpload()
+      await mount(client, { uploadImage: upload.uploadImage })
+      await type('see attached')
+      await act(() => client.drafts!.flush())
+      await settle(client)
+      await attach('screenshot.png')
+      const saves = client.calls.filter((call) => call.command === 'saveDraft').length
+
+      // Discarded with no revision named, and the image lands while the
+      // delete is still on the wire.
+      act(() => client.drafts!.discard(PAGE_DRAFT))
+      await upload.land()
+      await settle(client)
+      await act(() => client.drafts!.flush())
+      await settle(client)
+      expect(client.calls.some((call) => call.command === 'deleteDraft')).toBe(true)
+      expect(client.calls.filter((call) => call.command === 'saveDraft')).toHaveLength(saves)
+      expect(client.getState().drafts[PAGE_DRAFT]).toBeUndefined()
+      expect(selectDraftContent(client.getState(), PAGE_DRAFT)).toBeUndefined()
+      expect(container.textContent).toContain('screenshot.png was not attached.')
+    })
+
+    it('lets an emptied draft go once the image keeping it is taken out on its way', async () => {
+      const client = createMockEnvironmentClient({ seed: WITH_SESSION })
+      // Never lands: taking the image out must not wait for it.
+      const upload = slowUpload()
+      await mount(client, { uploadImage: upload.uploadImage })
+      await type('see attached')
+      await act(() => client.drafts!.flush())
+      await settle(client)
+      await attach('screenshot.png')
+      await type('')
+      await act(() => client.drafts!.flush())
+      await settle(client)
+      expect(client.getState().drafts[PAGE_DRAFT]).toBeDefined()
+
+      await act(() => {
+        container
+          .querySelector<HTMLButtonElement>('button[aria-label="Remove screenshot.png"]')!
+          .click()
+      })
+      await act(() => new Promise<void>((resolve) => setTimeout(resolve, 1_100)))
+      await settle(client)
+      expect(client.calls.some((call) => call.command === 'deleteDraft')).toBe(true)
+      expect(client.getState().drafts[PAGE_DRAFT]).toBeUndefined()
+    })
+
     it('deletes the emptied draft as ever once its only upload fails', async () => {
       const client = createMockEnvironmentClient({ seed: WITH_SESSION })
       const upload = slowUpload()

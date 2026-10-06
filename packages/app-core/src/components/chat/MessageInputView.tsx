@@ -468,6 +468,14 @@ export function MessageInputView({
   // count up, by upload (pending id) and, once landed, by artifact id.
   const nextSlotRef = useRef(0)
   const slotsRef = useRef(new Map<string, number>())
+  // The hold each upload keeps on its draft, by pending id: let go when the
+  // upload settles or the image is taken out, whichever comes first.
+  const holdsRef = useRef(new Map<string, () => void>())
+  const releaseHold = (attachmentId: string) => {
+    const release = holdsRef.current.get(attachmentId)
+    holdsRef.current.delete(attachmentId)
+    release?.()
+  }
   // The draft key on screen; null once unmounted.
   const draftKeyRef = useRef<string | null>(draftKey)
   draftKeyRef.current = draftKey
@@ -717,9 +725,11 @@ export function MessageInputView({
         slotsRef.current.set(attachment.id, (nextSlotRef.current += 1))
         // On its way, the image is content: erasing the text meanwhile does
         // not delete the draft it is for. Released once it has landed (or
-        // not), so a draft left with nothing is deleted then, as ever.
+        // not) or is taken out, so a draft left with nothing is deleted
+        // then, as ever.
         const release = draftStore.holdImage?.(draftKey)
-        void keepImage(draftKey, attachment, target).finally(() => release?.())
+        if (release) holdsRef.current.set(attachment.id, release)
+        void keepImage(draftKey, attachment, target).finally(() => releaseHold(attachment.id))
       }
     },
     // keepImage reads only refs and stable props.
@@ -837,6 +847,8 @@ export function MessageInputView({
         attachments: current.attachments.filter((attachment) => attachment.id !== id),
       }
     })
+    // Taken out on its way: it no longer keeps the draft from being empty.
+    releaseHold(id)
     setAttachmentError(null)
   }
 
