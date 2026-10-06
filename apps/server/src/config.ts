@@ -4,6 +4,13 @@ import { parseArgs } from 'node:util'
 import type { AgentRuntimeOptions } from '@agentpack/runtime/node'
 import type { TitleGenerator } from './session-titles/generator.ts'
 import { LOCAL_OWNER_CLAIM_KEY_PATTERN } from './local-owner.ts'
+import {
+  TUNNEL_TOKEN_FILE_NAME,
+  validateTunnelHostname,
+  validateTunnelToken,
+  type TunnelConfig,
+  type TunnelSupervisorOptions,
+} from './tunnel.ts'
 import type { WorkspaceRuntimeResolver } from './thread-service.ts'
 
 export const LOG_LEVELS = ['debug', 'info', 'warn', 'error', 'silent'] as const
@@ -64,6 +71,13 @@ export interface ServerConfig {
    * so the server watches it and follows. Explicit only: no environment variable.
    */
   exitWithParent?: boolean
+  /**
+   * The named Cloudflare tunnel this server runs and supervises, if any. Its
+   * hostname is added to the `Host` allowlist. See docs/cloudflare-tunnel.md.
+   */
+  tunnel?: TunnelConfig
+  /** Test-only connector seams (fake cloudflared, fake self-check, short timers). */
+  tunnelOptions?: Pick<TunnelSupervisorOptions, 'spawn' | 'fetch' | 'now' | 'timing' | 'env'>
 }
 
 export function validateOrigins(origins: readonly string[]): string[] {
@@ -152,6 +166,9 @@ export function loadConfig(
       'remint-owner': { type: 'boolean' },
       'log-file': { type: 'string' },
       'exit-with-parent': { type: 'boolean' },
+      'tunnel-hostname': { type: 'string' },
+      'tunnel-token-file': { type: 'string' },
+      cloudflared: { type: 'string' },
     },
     strict: true,
     allowPositionals: false,
@@ -193,6 +210,7 @@ export function loadConfig(
   if (localOwnerClaimKey && !LOCAL_OWNER_CLAIM_KEY_PATTERN.test(localOwnerClaimKey)) {
     throw new Error('Local owner claim key must be 32 bytes of unpadded base64url.')
   }
+  const tunnel = loadTunnelConfig(values, env, resolve(dataDir))
   return {
     port: Number(port),
     dataDir: resolve(dataDir),
@@ -206,5 +224,47 @@ export function loadConfig(
     ...(logFile !== undefined ? { logFile: resolve(logFile) } : {}),
     ...(values['exit-with-parent'] ? { exitWithParent: true } : {}),
     ...(localOwnerClaimKey ? { localOwnerClaimKey } : {}),
+    ...(tunnel ? { tunnel } : {}),
+  }
+}
+
+const checkedPath = (value: string, what: string) => {
+  if (value.trim().length === 0 || value.includes('\0')) {
+    throw new Error(`${what} must be a non-empty filesystem path.`)
+  }
+  return resolve(value)
+}
+
+/**
+ * The tunnel inputs. The token never comes from the command line, where any
+ * process can read it: it is `OPENMANAGER_TUNNEL_TOKEN`, or a file, by
+ * default `<data-dir>/tunnel-token`. Tunnel flags without a hostname are a
+ * mistake and refused; tunnel variables without one are ignored, so a
+ * profile that sets `OPENMANAGER_CLOUDFLARED` everywhere does no harm.
+ */
+function loadTunnelConfig(
+  values: { 'tunnel-hostname'?: string; 'tunnel-token-file'?: string; cloudflared?: string },
+  env: NodeJS.ProcessEnv,
+  dataDir: string,
+): TunnelConfig | undefined {
+  const hostname = values['tunnel-hostname'] ?? env.OPENMANAGER_TUNNEL_HOSTNAME
+  if (hostname === undefined || hostname.trim().length === 0) {
+    if (values['tunnel-token-file'] !== undefined || values.cloudflared !== undefined) {
+      throw new Error('--tunnel-token-file and --cloudflared need --tunnel-hostname.')
+    }
+    return undefined
+  }
+  const tokenFile = values['tunnel-token-file'] ?? env.OPENMANAGER_TUNNEL_TOKEN_FILE
+  const cloudflared = values.cloudflared ?? env.OPENMANAGER_CLOUDFLARED
+  const token = env.OPENMANAGER_TUNNEL_TOKEN
+  return {
+    hostname: validateTunnelHostname(hostname),
+    tokenFile: tokenFile
+      ? checkedPath(tokenFile, 'Tunnel token file')
+      : join(dataDir, TUNNEL_TOKEN_FILE_NAME),
+    ...(token !== undefined && token.trim().length > 0
+      ? { token: validateTunnelToken(token) }
+      : {}),
+    ...(cloudflared ? { cloudflared: checkedPath(cloudflared, 'The cloudflared path') } : {}),
   }
 }

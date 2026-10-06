@@ -1,4 +1,11 @@
+import { join } from 'node:path'
 import { loadConfig, type ServerConfig } from '../config.ts'
+import {
+  locateCloudflared,
+  TUNNEL_STATUS_FILE_NAME,
+  validateTunnelToken,
+  type TunnelStatus,
+} from '../tunnel.ts'
 import {
   defaultLogFile,
   resolveDeps,
@@ -40,8 +47,10 @@ export const SERVICE_USAGE = [
   '  logs [-f] [-n N]  Print the last N log lines (default 100); --follow tails updates',
   '',
   'Server flags for install are the normal ones (--port, --data-dir, --log-level,',
-  '--allowed-origin, --allowed-host, --workspace) plus --log-file. Values are baked',
-  'into the service; rerun install to change them.',
+  '--allowed-origin, --allowed-host, --workspace, --tunnel-hostname, --tunnel-token-file,',
+  '--cloudflared) plus --log-file. Values are baked into the service; rerun install to',
+  'change them. A tunnel token in OPENMANAGER_TUNNEL_TOKEN is saved to the data directory,',
+  'never into the service definition.',
 ]
 
 async function isHealthy(context: Context, port: number): Promise<boolean> {
@@ -116,13 +125,85 @@ async function install(context: Context, backend: ServiceBackend, flags: string[
   }
 
   await context.ensureDir(config.dataDir)
-  const notes = await backend.register(config, logFile)
+  const tunnelNotes: string[] = []
+  if (config.tunnel) config = await prepareTunnel(context, config, tunnelNotes)
+  const notes = [...tunnelNotes, ...(await backend.register(config, logFile))]
   context.stdout(`  Node:      ${context.execPath}`)
   context.stdout(`  Entry:     ${context.entry}`)
   context.stdout(`  Data dir:  ${config.dataDir}`)
   context.stdout(`  Log file:  ${logFile}`)
   for (const note of notes) context.stdout(note)
   await startAndWait(context, backend, config.port, logFile)
+}
+
+/**
+ * Settle the tunnel inputs before anything is registered. The token goes in
+ * its file in the data directory, never in the task or unit, which other
+ * accounts and tools can read. The `cloudflared` found now is baked in, so the
+ * service does not depend on the `PATH` its supervisor happens to provide.
+ */
+async function prepareTunnel(
+  context: Context,
+  config: ServerConfig,
+  notes: string[],
+): Promise<ServerConfig> {
+  const tunnel = config.tunnel!
+  const cloudflared = locateCloudflared(tunnel.cloudflared, context.env, context.platform)
+  if (!cloudflared) {
+    throw new ServiceError(
+      tunnel.cloudflared
+        ? `No cloudflared executable at ${tunnel.cloudflared}.`
+        : 'cloudflared is not on PATH. Install it, or pass --cloudflared <path>.',
+    )
+  }
+  if (tunnel.token !== undefined) {
+    await context.writeSecretFile(tunnel.tokenFile, `${tunnel.token}\n`)
+    notes.push(`  Tunnel:    token saved to ${tunnel.tokenFile}`)
+  } else {
+    let saved: string | undefined
+    try {
+      saved = validateTunnelToken((await context.readFile(tunnel.tokenFile)) ?? '')
+    } catch {
+      saved = undefined
+    }
+    if (!saved) {
+      throw new ServiceError(
+        `No tunnel token in ${tunnel.tokenFile}. Set OPENMANAGER_TUNNEL_TOKEN for this install, or save the token in that file.`,
+      )
+    }
+  }
+  notes.push(`  Tunnel:    https://${tunnel.hostname} through ${cloudflared}`)
+  // Saved above; the service reads it from the file.
+  const stored = { ...tunnel, cloudflared }
+  delete stored.token
+  return { ...config, tunnel: stored }
+}
+
+/** One line for `service status`: what the server last published about its tunnel. */
+async function tunnelLine(
+  context: Context,
+  hostname: string,
+  dataDir: string | undefined,
+  up: boolean,
+): Promise<{ line: string; status?: TunnelStatus }> {
+  if (!up || !dataDir) return { line: `Tunnel:    https://${hostname} (unknown; server not up)` }
+  let status: TunnelStatus | undefined
+  try {
+    const text = await context.readFile(join(dataDir, TUNNEL_STATUS_FILE_NAME))
+    status = text === undefined ? undefined : (JSON.parse(text) as TunnelStatus)
+  } catch {
+    status = undefined
+  }
+  if (!status || status.hostname !== hostname) {
+    return { line: `Tunnel:    https://${hostname} (no status yet)` }
+  }
+  const detail = [
+    status.state.replaceAll('_', ' '),
+    status.reason ? `: ${status.reason.replaceAll('_', ' ')}` : '',
+    ` since ${status.since}`,
+    status.sharedIngress ? '; also routes other services' : '',
+  ].join('')
+  return { line: `Tunnel:    https://${hostname} (${detail})`, status }
 }
 
 async function uninstall(context: Context, backend: ServiceBackend): Promise<void> {
@@ -241,11 +322,23 @@ async function status(context: Context, backend: ServiceBackend, json: boolean):
   } else {
     lines.push(`Server:    the ${backend.kind} has no --port; reinstall it`)
   }
+  let tunnel: TunnelStatus | undefined
+  if (installed.tunnelHostname) {
+    const reported = await tunnelLine(context, installed.tunnelHostname, installed.dataDir, up)
+    lines.push(reported.line)
+    tunnel = reported.status
+  }
   if (installed.dataDir) lines.push(`Data dir:  ${installed.dataDir}`)
   if (installed.logFile) lines.push(`Log file:  ${installed.logFile}`)
   if (json) {
     context.stdout(
-      JSON.stringify({ installed: true, state: snapshot.state, healthy: up, ...installed }),
+      JSON.stringify({
+        installed: true,
+        state: snapshot.state,
+        healthy: up,
+        ...installed,
+        ...(tunnel ? { tunnel } : {}),
+      }),
     )
   } else {
     for (const line of lines) context.stdout(line)

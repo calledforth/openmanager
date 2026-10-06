@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import {
@@ -77,6 +78,12 @@ import { createProviderService } from './provider-service.ts'
 import { createRateLimiter } from './rate-limit.ts'
 import { createRequestGuard } from './request-guard.ts'
 import { createThreadService, type WorkspaceRuntimeResolver } from './thread-service.ts'
+import {
+  clearTunnelStatus,
+  createTunnelSupervisor,
+  TUNNEL_STATUS_FILE_NAME,
+  type TunnelSupervisor,
+} from './tunnel.ts'
 import { createArtifactStore } from './artifacts.ts'
 import { createUploadService } from './uploads.ts'
 import { attachWebSocket, SOCKET_CAPABILITIES } from './websocket.ts'
@@ -135,7 +142,12 @@ export const SERVER_CAPABILITIES = [
 /** A loopback-only listener exposing public liveness and connection discovery. */
 export async function startServer(config: ServerConfig) {
   const allowedOrigins = validateOrigins(config.allowedOrigins ?? [])
-  const allowedHosts = validateHosts(config.allowedHosts ?? [])
+  // The tunnel's hostname is how Cloudflare's requests arrive (`Host` is not
+  // rewritten), so running a tunnel allows it.
+  const allowedHosts = validateHosts([
+    ...(config.allowedHosts ?? []),
+    ...(config.tunnel ? [config.tunnel.hostname] : []),
+  ])
   const workspaceRoots = validateWorkspaceRoots(config.workspaces ?? [])
   const log = createLogger(config.logLevel, resolveLogSink(config.logFile))
   const rateLimiter = createRateLimiter()
@@ -683,6 +695,23 @@ export async function startServer(config: ServerConfig) {
   websocketUrl = `ws://127.0.0.1:${address.port}/ws`
   syncProbeDirectory()
   providerService.start()
+  // Started only once the listener is up: the connector's one origin is this
+  // server's loopback port, and the self-check needs it to answer.
+  const tunnelStatusFile = join(config.dataDir, TUNNEL_STATUS_FILE_NAME)
+  let tunnel: TunnelSupervisor | undefined
+  if (config.tunnel) {
+    tunnel = createTunnelSupervisor({
+      ...config.tunnelOptions,
+      config: config.tunnel,
+      port: address.port,
+      environmentId: identity.environmentId,
+      log,
+      statusFile: tunnelStatusFile,
+    })
+    tunnel.start()
+  } else {
+    clearTunnelStatus(tunnelStatusFile)
+  }
   let closePromise: Promise<void> | undefined
   return {
     identity,
@@ -701,6 +730,8 @@ export async function startServer(config: ServerConfig) {
     uploads,
     pairing,
     sockets,
+    /** The tunnel supervisor, when this server runs a tunnel. */
+    tunnel,
     port: address.port,
     url: `http://127.0.0.1:${address.port}`,
     /** Revoke a client's credential and cut its live sockets in one step. */
@@ -733,6 +764,7 @@ export async function startServer(config: ServerConfig) {
           httpClose,
           runtime.shutdown(),
           threadService.stopTitles(),
+          tunnel?.stop(),
         ]).then(() => {
           stopRetention()
           pairing.close()

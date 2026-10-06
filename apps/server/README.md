@@ -72,6 +72,10 @@ with a nonzero exit code and an error on stderr.
 | `--remint-owner` | none (flag only) | off. Revokes the live owner row and publishes a new credential before listen. |
 | `--log-file` | `OPENMANAGER_LOG_FILE` | none. Appends the JSON log records (and startup errors) to this file instead of the console; a file of 10 MiB or more is rotated to `<file>.1` when the process starts. |
 | `--exit-with-parent` | none (flag only) | off. The server stops when the process that launched it exits. Set by the Windows logon task. |
+| `--tunnel-hostname` | `OPENMANAGER_TUNNEL_HOSTNAME` | none. Runs and supervises a named Cloudflare tunnel for this hostname; see [docs/cloudflare-tunnel.md](../../docs/cloudflare-tunnel.md). |
+| none (no flag) | `OPENMANAGER_TUNNEL_TOKEN` | none. The tunnel token; removed from the server's environment once read. |
+| `--tunnel-token-file` | `OPENMANAGER_TUNNEL_TOKEN_FILE` | `<data-dir>/tunnel-token` |
+| `--cloudflared` | `OPENMANAGER_CLOUDFLARED` | the first `cloudflared` on `PATH` |
 | none | `OPENMANAGER_LOCAL_OWNER_CLAIM_KEY` | none. A 32-byte base64url key generated and shared by `pnpm dev:web`; without it `/local-owner` is hidden. |
 
 ```sh
@@ -395,6 +399,9 @@ hostname is added explicitly:
 ```sh
 pnpm --filter server dev --allowed-host tunnel.example --allowed-host proxy.example:8443
 ```
+
+A tunnel the server runs itself (`--tunnel-hostname`) adds its hostname
+here on its own.
 
 Entries are exact `host` or `host:port` values, compared case-insensitively.
 Forwarded headers (`X-Forwarded-Host`, `X-Forwarded-Proto`, `Forwarded`) are

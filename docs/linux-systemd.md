@@ -89,11 +89,14 @@ node apps/server/dist/main.js service install --port 43120 --workspace ~/src/my-
 | `--log-level`                        | Server log level.                                                                    |
 | `--workspace` (repeatable)           | Folders registered on every start.                                                   |
 | `--allowed-origin`, `--allowed-host` | Browser origins and proxy hosts, as for a manual start.                              |
+| `--tunnel-hostname`, `--tunnel-token-file`, `--cloudflared` | The Cloudflare tunnel. The token is saved to the data directory, never into the unit; see [cloudflare-tunnel.md](./cloudflare-tunnel.md#background-service). |
 | `--log-file`                         | Log destination. Defaults to `<data-dir>/logs/server.log`.                           |
 
 The environment variables behind these flags (`OPENMANAGER_PORT`,
 `OPENMANAGER_DATA_DIR`, `OPENMANAGER_LOG_LEVEL`, `OPENMANAGER_ALLOWED_ORIGINS`,
-`OPENMANAGER_ALLOWED_HOSTS`, `OPENMANAGER_WORKSPACES`, `OPENMANAGER_LOG_FILE`)
+`OPENMANAGER_ALLOWED_HOSTS`, `OPENMANAGER_WORKSPACES`, `OPENMANAGER_LOG_FILE`,
+`OPENMANAGER_TUNNEL_HOSTNAME`, `OPENMANAGER_TUNNEL_TOKEN_FILE`,
+`OPENMANAGER_CLOUDFLARED`)
 are honoured the same way flags are, and likewise frozen into the unit as
 flags. No other variable of the installing shell is carried over apart from
 `PATH` (below): the service does not see `OPENMANAGER_LOCAL_OWNER_CLAIM_KEY`,

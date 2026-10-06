@@ -231,6 +231,14 @@ This is the Wave 1 starting point the issues above replace:
   events in SQLite (`audit_events`) and the structured log
   (`apps/server/src/audit.ts`). Rows carry client id, command and outcome;
   credentials and provider keys are redacted (CAL-48).
+- The server runs the named Cloudflare tunnel itself (CAL-109, CAL-110,
+  [cloudflare-tunnel.md](./cloudflare-tunnel.md)). The tunnel token reaches
+  `cloudflared` only through its environment, never its command line or the
+  log; the service keeps it in the data directory, not in the task or unit.
+  The connector runs at `info` log level, because at `debug` it logs request
+  headers, which carry the socket credential. Its hostname joins the `Host`
+  allowlist, and a route is reported `connected` only after
+  `https://<hostname>/bootstrap` answers with this environment's ID.
 - `/bootstrap` is unauthenticated and includes the provider snapshot, which D11
   moves behind authentication.
 

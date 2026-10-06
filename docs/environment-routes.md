@@ -264,8 +264,10 @@ probe does.
 ## Server-reported routes
 
 Not built. The environment does not yet say how it can be reached, so the
-client only knows the URLs a person typed. The intended shape, for when the
-Cloudflare tunnel lands:
+client only knows the URLs a person typed. The server already runs the
+Cloudflare tunnel and knows its route once the tunnel's self-check passes
+([cloudflare-tunnel.md](./cloudflare-tunnel.md)), but nothing reports it to
+clients yet. The intended shape:
 
 - Bootstrap gains an optional `routes: [{ type, endpoint }]`, advertised behind
   a capability. `BootstrapResponseSchema` already accepts unknown fields, so
