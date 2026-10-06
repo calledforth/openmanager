@@ -76,6 +76,9 @@ function readOptionalLabel(bootstrap: BootstrapResponse): string | undefined {
   return typeof bootstrap.label === 'string' && bootstrap.label.trim() ? bootstrap.label : undefined
 }
 
+/** How long the follow-up below may take before the answer counts as silence. */
+const UNREADABLE_PROBE_TIMEOUT_MS = 5000
+
 /**
  * After a bootstrap fetch failed, whether anything answered at all. A page may
  * only read a cross-origin answer that carries CORS headers, and the error
@@ -83,20 +86,28 @@ function readOptionalLabel(bootstrap: BootstrapResponse): string | undefined {
  * for a tunnel whose server is not running) carry none, so the browser
  * reports them as the same network failure as silence. A `no-cors` request
  * gets an opaque answer instead: no status, but proof that something replied.
- * Not asked once the fetch has been cancelled or timed out.
+ * With redirects left unfollowed, a sign-in gate (Cloudflare Access) shows as
+ * an opaque redirect rather than as an answer. Not asked once the fetch has
+ * been cancelled or timed out, and given up on after a few seconds.
  */
-async function answersUnreadably(endpoint: string, signal?: AbortSignal): Promise<boolean> {
-  if (signal?.aborted) return false
+async function unreadableAnswer(
+  endpoint: string,
+  signal?: AbortSignal,
+): Promise<'opaque' | 'opaque_redirect' | null> {
+  if (signal?.aborted) return null
   try {
+    const timeout = AbortSignal.timeout(UNREADABLE_PROBE_TIMEOUT_MS)
     const response = await fetch(bootstrapUrl(endpoint), {
       mode: 'no-cors',
+      redirect: 'manual',
       cache: 'no-store',
       credentials: 'omit',
-      signal,
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     })
-    return response.type === 'opaque'
+    if (response.type === 'opaqueredirect') return 'opaque_redirect'
+    return response.type === 'opaque' ? 'opaque' : null
   } catch {
-    return false
+    return null
   }
 }
 
@@ -127,7 +138,7 @@ export async function fetchBootstrap(
     return {
       status: 'unreachable',
       message: `Could not reach ${endpoint}. Check that the environment server is running, then retry.`,
-      cause: (await answersUnreadably(endpoint, options.signal)) ? 'opaque' : 'network',
+      cause: (await unreadableAnswer(endpoint, options.signal)) ?? 'network',
     }
   }
 

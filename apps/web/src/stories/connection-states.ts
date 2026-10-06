@@ -296,7 +296,7 @@ export const ROUTE_FAILURE_STORIES: RouteFailureStory[] = [
         endpoint: 'https://studio.example.com',
         local: false,
         tried: 1,
-        message: 'Unknown or revoked token.',
+        message: 'Token not recognized.',
       },
     },
   },

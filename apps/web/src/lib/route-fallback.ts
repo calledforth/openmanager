@@ -51,6 +51,8 @@ export function routeFailureReason(
   // that refuses this page's origin. Over a network it is most often a
   // gateway's error page: a tunnel that is down, or one with nothing behind it.
   if (outcome.cause === 'opaque') return local ? 'route_refused' : 'tunnel_down'
+  // Sent elsewhere without being told where: a sign-in gate in front of it.
+  if (outcome.cause === 'opaque_redirect') return 'route_refused'
   // Nothing answering on this device's own loopback address means nothing is
   // listening there. Over a network the same silence could be either side.
   if (outcome.cause === 'network' && local) return 'environment_offline'

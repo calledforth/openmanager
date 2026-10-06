@@ -167,14 +167,17 @@ export function attachWebSocket(
     const authProtocols = protocols.filter((p) => p.startsWith('openmanager.auth.'))
     const authorization = request.headers.authorization
     let candidate: string | undefined
+    // The browser's way: the protocol, and the credential as a second
+    // subprotocol when it has one. A browser without a token sends only the
+    // first.
     const browserOffered =
       authorization === undefined &&
-      protocols.length === 2 &&
       protocols.includes('openmanager.v1') &&
-      authProtocols.length === 1
+      authProtocols.length <= 1 &&
+      protocols.length === 1 + authProtocols.length
     if (authorization !== undefined && protocols.length === 0) {
       candidate = /^Bearer (\S+)$/.exec(authorization)?.[1]
-    } else if (browserOffered) {
+    } else if (browserOffered && authProtocols.length === 1) {
       candidate = authProtocols[0].slice('openmanager.auth.'.length)
     }
     // Every socket carries a per-client credential, loopback included: network
@@ -194,7 +197,9 @@ export function attachWebSocket(
       // credential budget every device behind a tunnel shares. A credential
       // offered the browser's way is refused after the upgrade instead, with
       // the terminal close a revocation uses. Nothing is read from the socket.
-      if (browserOffered) {
+      // It still counts against the socket cap; when that is full, the plain
+      // refusal is all there is room for.
+      if (browserOffered && wss.clients.size < SOCKET_LIMITS.maxConnections) {
         wss.handleUpgrade(request, socket, head, (ws) => {
           ws.on('error', () => ws.terminate())
           ws.close(REVOKED_CLOSE_CODE, CLIENT_UNAUTHORIZED_CLOSE_REASON)

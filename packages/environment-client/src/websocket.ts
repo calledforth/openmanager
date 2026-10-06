@@ -441,7 +441,7 @@ export function createWebSocketEnvironmentClient(
           message:
             reason === CLIENT_REVOKED_CLOSE_REASON
               ? "This device's access was revoked."
-              : 'Unknown or revoked token.',
+              : 'Token not recognized.',
         },
         retriesExhausted: true,
       })

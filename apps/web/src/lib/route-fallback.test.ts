@@ -82,6 +82,9 @@ describe('routeFailureReason', () => {
     // Nothing stands in front of a loopback address: the server answering
     // is refusing this page's origin.
     expect(routeFailureReason(opaque, 'env-a', LOCAL)).toBe('route_refused')
+    // A sign-in gate sends the page elsewhere instead of answering.
+    const gate: BootstrapOutcome = { status: 'unreachable', cause: 'opaque_redirect' }
+    expect(routeFailureReason(gate, 'env-a', TUNNEL)).toBe('route_refused')
   })
 
   it('keeps a refusal and another environment apart from a route that is down', () => {

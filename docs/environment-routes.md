@@ -206,7 +206,7 @@ out from every route it asked (`route-fallback.ts`):
 | --- | --- | --- |
 | `environment_offline` | Nothing answers on a loopback route (nothing listens on this device), a gateway answers `502`/`503`/`504` in a status this client can read, or the environment closed the socket with `1001` `server_shutdown` and no route has answered since | Environment offline |
 | `local_access_blocked` | A loopback route fails and the browser reports its `loopback-network` permission as denied: a hosted page that was refused access to this device | Local access blocked |
-| `route_refused` | `401`/`403` on `/bootstrap`: a tunnel's access gate, or the environment refusing this browser's origin. On a loopback route, also an answer the page may not read | Route refused access |
+| `route_refused` | `401`/`403` on `/bootstrap`: a tunnel's access gate, or the environment refusing this browser's origin. In a browser, also a redirect it may not follow (a sign-in gate), and on a loopback route an answer the page may not read | Route refused access |
 | `wrong_environment` | The address answers as another environment | Environment unreachable |
 | `tunnel_down` | Over a network, an answer the page may not read, or Cloudflare's `530` | Tunnel down |
 | `route_down` | Nothing answers over a network at all, another HTTP error, or something that is not an environment | Route unavailable |
@@ -225,16 +225,20 @@ After a failed bootstrap fetch, the client asks the same URL again with
 opaque when something replied and throws when nothing did. That is the line
 between `tunnel_down` (Cloudflare answers for the hostname, the environment
 does not) and `route_down` (nothing answers at all: a hostname that no longer
-resolves, or this device's network). On a loopback route nothing stands in
-front of the environment, so an opaque answer is the environment refusing this
-page's origin, and is shown as `route_refused`.
+resolves, or this device's network). The follow-up does not follow redirects,
+so a sign-in gate such as Cloudflare Access shows as an opaque redirect and is
+`route_refused`. It gives up after 5 seconds. On a loopback route nothing
+stands in front of the environment, so an opaque answer is the environment
+refusing this page's origin, and is shown as `route_refused`. Over a network
+the same refusal still reads as `tunnel_down`, which is why that wording ends
+with checking the page's address.
 
 A browser cannot tell a tunnel that is down from a working tunnel whose server
 is stopped, so the tunnel wording names both. The one thing that does tell them
 apart is the environment itself: a server that shuts down on purpose closes
 every socket with `1001` `server_shutdown`, and that close passes through the
-tunnel. The client keeps it until any route answers, and shows the environment
-as offline instead of the tunnel as down. A crash, a killed process or a
+tunnel. The client keeps it, per environment, until any route answers, and
+shows the environment as offline instead of the tunnel as down. A crash, a killed process or a
 sleeping computer sends nothing, and reads as the tunnel being down.
 
 **A refused token.** A browser cannot read why a WebSocket upgrade was refused
@@ -244,12 +248,16 @@ browser's way (the `openmanager.auth.` subprotocol) and closes it at once with
 `4401` `unauthorized`, the terminal close a revocation already uses. Nothing is
 read from that socket, and the attempt still counts against the
 failed-credential budget. A credential sent as an `Authorization` header is still
-refused with `401` before the upgrade. Before this, a browser with a wrong or
-revoked token showed "Connected" and redialed until it locked out every device
-behind the tunnel.
+refused with `401` before the upgrade. A browser that has no token at all
+offers only `openmanager.v1`, and is closed the same way. When the socket cap
+is full there is no room to accept the upgrade, and the plain `401` is all a
+browser gets. Before this, a browser with a wrong or revoked token showed
+"Connected" and redialed until it locked out every device behind the tunnel.
+A browser whose origin is not allowed never gets this far: its bootstrap is
+refused first, so no socket is opened.
 
 A browser that blocks a hosted page from reaching this device's loopback
-address fails the request the same way. Chrome, Edge and Firefox ask the
+address also fails the request like silence. Chrome, Edge and Firefox ask the
 person first; when the answer was no, the permission reads `denied` and the
 route is reported as `local_access_blocked` rather than offline, while the
 search moves on to the tunnel as for any failed route. A prompt closed without
@@ -258,8 +266,9 @@ content, report nothing, so those still read as offline and the wording asks
 the person to check the browser too. See
 [deploying the web client](./web-deploy.md#hosted-page-to-an-environment-on-this-device).
 
-When routes disagree the client shows, in order: offline, local access
-blocked, refused, another environment, tunnel down, down. A sign that the server is down explains every
+A refused token outranks every route failure. When routes disagree the client
+shows, in order: offline, local access blocked, refused, another environment,
+tunnel down, down. A sign that the server is down explains every
 other failure, a refusal is something a person can act on, an address that now
 leads to another environment says what changed, and a gateway that answers
 says more than silence. Each reason has its own mark in the banner or on the

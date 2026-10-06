@@ -197,6 +197,13 @@ describe('authenticated upgrade', () => {
     expect(host.server.sockets.connectionCount).toBe(0)
     expect(host.audits.map((event) => event.type)).toContain('auth.failed')
 
+    // A browser with no token at all offers only the protocol.
+    const bare = new WebSocket(host.url, ['openmanager.v1'], { origin: 'http://localhost:5173' })
+    clients.push(bare)
+    bare.on('error', () => {})
+    const [bareCode] = await once(bare, 'close')
+    expect(bareCode).toBe(REVOKED_CLOSE_CODE)
+
     // A credential sent as a header is still refused before the upgrade.
     expect(
       await rejection(host.url, { headers: { authorization: `Bearer ${mintCredential()}` } }),

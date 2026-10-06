@@ -1103,7 +1103,7 @@ describe('websocket environment client', () => {
     socket.drop(4401, 'unauthorized')
     expect(client.getState().connection).toMatchObject({
       phase: 'closed',
-      failure: { code: 'auth', message: 'Unknown or revoked token.' },
+      failure: { code: 'auth', message: 'Token not recognized.' },
       retriesExhausted: true,
     })
     timers.advance(60_000)

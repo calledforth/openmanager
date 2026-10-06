@@ -57,13 +57,15 @@ export type BootstrapOutcome =
        * `network`: nothing answered. `opaque`: something answered, but
        * without the CORS headers that would let this page read it: a
        * gateway's own error page, or the environment refusing this page's
-       * origin. `http`: something answered with an error status, often a
-       * gateway in front of the environment. `invalid`: what answered is not
-       * an environment. `blocked`: the browser refused to let this page reach
-       * its own loopback address (a denied local network access permission).
-       * Absent on outcomes built elsewhere.
+       * origin. `opaque_redirect`: what answered sent this page elsewhere
+       * without letting it read where, as a sign-in gate does. `http`:
+       * something answered with an error status, often a gateway in front of
+       * the environment. `invalid`: what answered is not an environment.
+       * `blocked`: the browser refused to let this page reach its own
+       * loopback address (a denied local network access permission). Absent
+       * on outcomes built elsewhere.
        */
-      cause?: 'network' | 'opaque' | 'http' | 'invalid' | 'blocked'
+      cause?: 'network' | 'opaque' | 'opaque_redirect' | 'http' | 'invalid' | 'blocked'
       httpStatus?: number
     }
 
@@ -263,7 +265,7 @@ function routeFailureUi(failure: RouteFailure, { named, label }: Context): Conne
         surface: 'banner',
         title: 'Environment offline',
         description: failure.stopped
-          ? `${named} shut down. Start the environment server again. ${RETRYING}`
+          ? `${named} shut down and has not answered since. Start the environment server again. ${RETRYING}`
           : failure.local
             ? `Nothing is answering at ${host} on this device, so ${named} looks stopped. Start the environment server; if it is already running, check that this browser lets the page reach apps on this device. ${RETRYING}`
             : `${host} answers, but ${named} is not running behind it. Start the environment server. ${RETRYING}`,
@@ -276,7 +278,7 @@ function routeFailureUi(failure: RouteFailure, { named, label }: Context): Conne
         kind: 'unreachable',
         surface: 'banner',
         title: 'Tunnel down',
-        description: `${host} answers, but ${named} does not answer through it.${others} The tunnel may be down, with the computer running ${named} asleep, off or offline, or the environment server behind it may be stopped. ${RETRYING}`,
+        description: `${host} answers, but ${named} does not answer through it.${others} The computer running ${named} may be asleep, off or offline, or its environment server may be stopped. If both are running, check that ${named} allows this page's address. ${RETRYING}`,
         action: 'retry',
         secondaryAction: 'change_environment',
       }

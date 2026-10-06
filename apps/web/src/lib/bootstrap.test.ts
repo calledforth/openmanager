@@ -20,6 +20,19 @@ describe('fetchBootstrap', () => {
       cause: 'opaque',
     })
     expect(fetch.mock.calls.map(([, init]) => init?.mode)).toEqual([undefined, 'no-cors'])
+    expect(fetch.mock.calls[1]![1]).toMatchObject({ redirect: 'manual' })
+
+    // A sign-in gate redirects; unfollowed, that reads as an opaque redirect.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.mode === 'no-cors') return { type: 'opaqueredirect' } as Response
+        throw new TypeError('Failed to fetch')
+      }),
+    )
+    expect(await fetchBootstrap('https://tunnel.example')).toMatchObject({
+      cause: 'opaque_redirect',
+    })
 
     vi.stubGlobal(
       'fetch',
