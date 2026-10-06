@@ -461,6 +461,8 @@ function EnvironmentSessionStateProvider({
   const [retired, setRetired] = useState<RetiredPage | null>(null)
   // The retired draft's session has been on screen since.
   const retiredOpenedRef = useRef(false)
+  // The retired draft's session went, and its address fell back to `/`.
+  const retiredFellBackRef = useRef(false)
   const [pendingDraftSessionStart, setPendingDraftSessionStart] = useState(false)
   const [launchingMessage, setLaunchingMessage] = useState<LaunchingMessage | null>(null)
   const [turnPending, setTurnPending] = useState(false)
@@ -647,6 +649,7 @@ function EnvironmentSessionStateProvider({
     redirectedRef.current = pageDraftId
     if (pageConsumed && consumedSessionId) {
       retiredOpenedRef.current = false
+      retiredFellBackRef.current = false
       setRetired({ draftId: pageDraftId, sessionId: consumedSessionId })
     }
     void navigateSession(redirect, { replace: true }).catch(noop)
@@ -670,7 +673,9 @@ function EnvironmentSessionStateProvider({
   // starts, and nothing says when that start is past failing. If it fails,
   // the environment deletes the session and saves the draft back, as sent:
   // the retired page then takes its address back, unless the user has moved
-  // on (to another session or draft, or off the session while it stood).
+  // on: to another session or draft, off the session while it stood, or off
+  // the `/` its address fell back to once it went. New agent and opening a
+  // session are moves whenever they come (`openDraft`, `selectSession`).
   const retiredState = useEnvironmentState(
     useCallback(
       (state: EnvironmentState) => {
@@ -687,10 +692,13 @@ function EnvironmentSessionStateProvider({
   useEffect(() => {
     if (!retired) return
     if (selectedSessionId === retired.sessionId) retiredOpenedRef.current = true
+    if (retiredState !== 'listed' && routeDraft === null) retiredFellBackRef.current = true
     const movedOn =
       (selectedSessionId !== null && selectedSessionId !== retired.sessionId) ||
       (routeDraft != null && routeDraft !== retired.draftId) ||
-      (retiredOpenedRef.current && selectedSessionId === null && retiredState === 'listed')
+      (retiredOpenedRef.current && selectedSessionId === null && retiredState === 'listed') ||
+      // Off the new-session pages (to Settings, say) after the fallback.
+      (retiredFellBackRef.current && routeDraft === undefined && selectedSessionId === null)
     if (!movedOn && retiredState !== 'restored') return
     setRetired(null)
     if (movedOn) return
@@ -819,6 +827,9 @@ function EnvironmentSessionStateProvider({
       const next = mintPage(workspacePath)
       pageRef.current = next
       setPage(next)
+      // The user's own move: a draft sent elsewhere that comes back does not
+      // take this page.
+      setRetired(null)
       setPendingDraftSessionStart(false)
       setLaunchingMessage(null)
       setTurnPending(false)
@@ -855,6 +866,8 @@ function EnvironmentSessionStateProvider({
       setPage(null)
       aheadRef.current = null
       setAhead(null)
+      // Another session is the user's own move, as New agent is.
+      setRetired((prev) => (prev && prev.sessionId !== externalId ? null : prev))
       // A launch still in flight continues in the sidebar; it no longer
       // holds this composer.
       setPendingDraftSessionStart(false)

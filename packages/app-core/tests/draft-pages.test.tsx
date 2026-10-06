@@ -137,14 +137,17 @@ const settle = async (client: MockEnvironmentClient) => {
   }
 }
 
-/** Where a host with draft pages is: `/`, `/drafts/<id>` or `/sessions/<id>`. */
-type Route = { draftId: string | null } | { sessionId: string }
+/** Where a host with draft pages is: `/`, `/drafts/<id>`, `/sessions/<id>`, or off
+ * the chat pages (`/settings`). */
+type Route = { draftId: string | null } | { sessionId: string } | { settings: true }
 const pathOf = (route: Route) =>
-  'sessionId' in route
-    ? `/sessions/${route.sessionId}`
-    : route.draftId
-      ? `/drafts/${route.draftId}`
-      : '/'
+  'settings' in route
+    ? '/settings'
+    : 'sessionId' in route
+      ? `/sessions/${route.sessionId}`
+      : route.draftId
+        ? `/drafts/${route.draftId}`
+        : '/'
 
 const probe = {} as {
   session: SessionStateValue
@@ -204,7 +207,7 @@ function Host({ client, initial }: { client: MockEnvironmentClient; initial: Rou
   return (
     <EnvironmentApplicationProviders
       collapsedWorkspaceStorage={null}
-      onLanding={!('sessionId' in route)}
+      onLanding={'draftId' in route}
       landingDraftId={'draftId' in route ? route.draftId : null}
       navigateSession={async (sessionId, options) => {
         const next: Route = sessionId ? { sessionId } : { draftId: null }
@@ -721,6 +724,77 @@ describe('draft pages', () => {
       expect(composer().value).toBe('sent from the phone')
       // Its address no longer leads to the session that never started.
       expect(sentDraftSession(draftId)).toBeUndefined()
+    })
+
+    /** A draft typed here and sent from another device, its session open here. */
+    const sentElsewhere = async (client: MockEnvironmentClient) => {
+      await type('sent from the phone')
+      const draftId = probe.session.newSessionDraftId!
+      act(() => client.drafts!.flush())
+      await settle(client)
+      const saved = client.getState().drafts[draftId]!
+      const { sessionId } = saved.target as { sessionId: string }
+      await act(() =>
+        client.commands.createSession({
+          environmentId: client.getState().environment!.environmentId,
+          workspaceId: ALPHA.workspaceId,
+          providerId: 'opencode',
+          firstMessage: 'sent from the phone',
+          draftId,
+          sessionId,
+        }),
+      )
+      await settle(client)
+      expect(pathOf(probe.route)).toBe(`/sessions/${sessionId}`)
+      // The environment deletes the session; its address falls back to `/`.
+      await act(() => client.commands.deleteSession(sessionId))
+      await settle(client)
+      expect(pathOf(probe.route)).toBe('/')
+      const restore = () =>
+        act(() =>
+          client.commands.saveDraft({
+            draftId,
+            baseRevision: saved.revision + 1,
+            target: saved.target,
+            content: { text: 'sent from the phone', providerId: 'opencode' },
+          }),
+        )
+      return { draftId, restore }
+    }
+
+    it('stays in Settings when a draft sent elsewhere comes back after its session went', async () => {
+      const client = createMockEnvironmentClient({ seed: SEED })
+      await mount(client)
+      const { draftId, restore } = await sentElsewhere(client)
+      // Before the draft is saved back, the user opens Settings.
+      await act(() => probe.go({ settings: true }))
+      await settle(client)
+      const before = navigations.length
+
+      await restore()
+      await settle(client)
+      expect(navigations.slice(before)).toEqual([])
+      expect(pathOf(probe.route)).toBe('/settings')
+      // The draft is back, for its address or a card.
+      expect(contentOf(client, draftId)?.text).toBe('sent from the phone')
+    })
+
+    it('keeps the New agent page opened before a draft sent elsewhere comes back', async () => {
+      const client = createMockEnvironmentClient({ seed: SEED })
+      await mount(client)
+      const { draftId, restore } = await sentElsewhere(client)
+      await act(() => probe.session.createSession(BETA.workspaceId))
+      await settle(client)
+      const blank = probe.session.newSessionDraftId!
+      expect(blank).not.toBe(draftId)
+      const before = navigations.length
+
+      await restore()
+      await settle(client)
+      expect(navigations.slice(before)).toEqual([])
+      expect(pathOf(probe.route)).toBe('/')
+      expect(probe.session.newSessionDraftId).toBe(blank)
+      expect(probe.session.activeWorkspacePath).toBe(BETA.workspaceId)
     })
 
     it('leaves the user where they went when a draft sent elsewhere comes back', async () => {

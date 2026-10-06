@@ -75,8 +75,9 @@ needed no schema or protocol change.
   no longer fail. If it fails, the environment deletes the session and saves
   the draft back as sent; the page then takes its address back, from the
   session's or from `/` where that dead address fell back to. Not if the
-  user has moved on meanwhile: to another session or draft, or off the
-  session while it stood.
+  user has moved on meanwhile: to another session or draft, to New agent,
+  off the session while it stood, or off that `/` (to Settings, say) before
+  the draft came back.
 
 ## Picks
 
