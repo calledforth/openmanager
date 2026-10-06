@@ -180,6 +180,29 @@ describe('authenticated upgrade', () => {
     expect(host.server.sockets.connectionCount).toBe(0)
   })
 
+  it('refuses a browser credential after the upgrade, where the browser can read why', async () => {
+    const host = await setup()
+    const ws = new WebSocket(host.url, ['openmanager.v1', `openmanager.auth.${mintCredential()}`], {
+      origin: 'http://localhost:5173',
+    })
+    clients.push(ws)
+    ws.on('error', () => {})
+    const messages: unknown[] = []
+    ws.on('message', (data) => messages.push(String(data)))
+    const [code, reason] = await once(ws, 'close')
+    expect(code).toBe(REVOKED_CLOSE_CODE)
+    expect(String(reason)).toBe('unauthorized')
+    // Nothing is served on it, and it counts as a failed credential.
+    expect(messages).toEqual([])
+    expect(host.server.sockets.connectionCount).toBe(0)
+    expect(host.audits.map((event) => event.type)).toContain('auth.failed')
+
+    // A credential sent as a header is still refused before the upgrade.
+    expect(
+      await rejection(host.url, { headers: { authorization: `Bearer ${mintCredential()}` } }),
+    ).toMatchObject({ status: 401, body: { error: { code: 'auth' } } })
+  })
+
   it('accepts native bearer and browser subprotocol credentials without echoing the token', async () => {
     const host = await setup()
     expect(host.token).toMatch(/^omc1\.[A-Za-z0-9_-]{43}$/)

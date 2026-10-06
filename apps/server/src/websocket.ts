@@ -19,8 +19,11 @@ import {
   CLIENT_LIST_CAPABILITY,
   CLIENT_REVOKED_CLOSE_CODE,
   CLIENT_REVOKED_CLOSE_REASON,
+  CLIENT_UNAUTHORIZED_CLOSE_REASON,
   requiredAccess,
   sameScope,
+  SERVER_SHUTDOWN_CLOSE_CODE,
+  SERVER_SHUTDOWN_CLOSE_REASON,
   SubscriptionEventSchema,
   type BootstrapResponse,
   type CommandEnvelope,
@@ -164,14 +167,14 @@ export function attachWebSocket(
     const authProtocols = protocols.filter((p) => p.startsWith('openmanager.auth.'))
     const authorization = request.headers.authorization
     let candidate: string | undefined
-    if (authorization !== undefined && protocols.length === 0) {
-      candidate = /^Bearer (\S+)$/.exec(authorization)?.[1]
-    } else if (
+    const browserOffered =
       authorization === undefined &&
       protocols.length === 2 &&
       protocols.includes('openmanager.v1') &&
       authProtocols.length === 1
-    ) {
+    if (authorization !== undefined && protocols.length === 0) {
+      candidate = /^Bearer (\S+)$/.exec(authorization)?.[1]
+    } else if (browserOffered) {
       candidate = authProtocols[0].slice('openmanager.auth.'.length)
     }
     // Every socket carries a per-client credential, loopback included: network
@@ -185,6 +188,20 @@ export function attachWebSocket(
         command: 'ws.upgrade',
         details: { presented: candidate !== undefined, origin: auditValue(request.headers.origin) },
       })
+      // A browser cannot read why an upgrade was refused: every refusal
+      // reaches it as a bare 1006, the same as a dropped tunnel. It would
+      // redial a credential that will never work, spending the failed-
+      // credential budget every device behind a tunnel shares. A credential
+      // offered the browser's way is refused after the upgrade instead, with
+      // the terminal close a revocation uses. Nothing is read from the socket.
+      if (browserOffered) {
+        wss.handleUpgrade(request, socket, head, (ws) => {
+          ws.on('error', () => ws.terminate())
+          ws.close(REVOKED_CLOSE_CODE, CLIENT_UNAUTHORIZED_CLOSE_REASON)
+          setTimeout(() => ws.terminate(), SOCKET_LIMITS.closeTimeoutMs).unref()
+        })
+        return
+      }
       return reject(401, 'auth', 'A valid client credential is required.')
     }
     if (wss.clients.size >= SOCKET_LIMITS.maxConnections) {
@@ -644,7 +661,8 @@ export function attachWebSocket(
     close() {
       if (!closePromise) {
         closing = true
-        for (const connection of connections.values()) connection.close(1001, 'server_shutdown')
+        for (const connection of connections.values())
+          connection.close(SERVER_SHUTDOWN_CLOSE_CODE, SERVER_SHUTDOWN_CLOSE_REASON)
         closePromise = new Promise<void>((resolve, reject) => {
           wss.close((error) => (error ? reject(error) : resolve()))
         })

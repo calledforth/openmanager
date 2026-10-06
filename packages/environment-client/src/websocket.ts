@@ -2,10 +2,13 @@ import {
   PLAN_BUILD_CAPABILITY,
   PAGE_LIMIT_MAX,
   CLIENT_REVOKED_CLOSE_CODE,
+  CLIENT_REVOKED_CLOSE_REASON,
   ClientListChangedEventSchema,
   ErrorEnvelopeSchema,
   PROTOCOL_VERSION,
   SESSION_CREATE_EXPLICIT_CAPABILITY,
+  SERVER_SHUTDOWN_CLOSE_CODE,
+  SERVER_SHUTDOWN_CLOSE_REASON,
   ProofEventSchema,
   ProviderHealthChangedEventSchema,
   ServerMessageSchema,
@@ -427,13 +430,19 @@ export function createWebSocketEnvironmentClient(
       patchConnection({ phase: 'closed', failure: null, attempt: 0, retriesExhausted: false })
       return
     }
-    // A revoked credential never works again. Redialing would only spend the
-    // address's failed-credential budget, which other devices behind the same
-    // tunnel share.
+    // A revoked or unknown credential never works again. Redialing would only
+    // spend the address's failed-credential budget, which other devices behind
+    // the same tunnel share.
     if (code === CLIENT_REVOKED_CLOSE_CODE) {
       patchConnection({
         phase: 'closed',
-        failure: { code: 'auth', message: "This device's access was revoked." },
+        failure: {
+          code: 'auth',
+          message:
+            reason === CLIENT_REVOKED_CLOSE_REASON
+              ? "This device's access was revoked."
+              : 'Unknown or revoked token.',
+        },
         retriesExhausted: true,
       })
       return
@@ -445,10 +454,12 @@ export function createWebSocketEnvironmentClient(
     scheduleReconnect(
       current.failure && TERMINAL_CODES.has(current.failure.code)
         ? current.failure
-        : {
-            code: 'unavailable',
-            message: reason ? `Connection closed (${reason}).` : 'Connection closed.',
-          },
+        : code === SERVER_SHUTDOWN_CLOSE_CODE && reason === SERVER_SHUTDOWN_CLOSE_REASON
+          ? { code: 'unavailable', message: 'The environment shut down.', serverStopped: true }
+          : {
+              code: 'unavailable',
+              message: reason ? `Connection closed (${reason}).` : 'Connection closed.',
+            },
     )
   }
 

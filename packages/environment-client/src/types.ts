@@ -168,6 +168,11 @@ export type ConnectionPhase = 'idle' | 'connecting' | 'connected' | 'reconnectin
 export interface ConnectionFailure {
   code: ErrorCode
   message: string
+  /**
+   * The environment closed the socket because it was shutting down. Set only
+   * on the failure that close caused; the redials after it say nothing new.
+   */
+  serverStopped?: true
 }
 
 export interface ConnectionState {
