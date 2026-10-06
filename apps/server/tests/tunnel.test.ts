@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { createServer, request as httpRequest } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { loadConfig } from '../src/config.js'
@@ -340,6 +340,8 @@ describe('tunnel configuration', () => {
     const env = { Path: ['/nowhere', dir].join(process.platform === 'win32' ? ';' : ':') }
     expect(locateCloudflared(undefined, env)).toBe(binary)
     expect(locateCloudflared(undefined, { PATH: '/nowhere' })).toBeUndefined()
+    // A relative PATH entry still yields an absolute path a service can use.
+    expect(locateCloudflared(undefined, { PATH: relative(process.cwd(), dir) })).toBe(binary)
     expect(locateCloudflared(binary, {})).toBe(binary)
     expect(locateCloudflared(join(dir, 'missing'), env)).toBeUndefined()
     // On Windows a path without `.exe` names the executable.

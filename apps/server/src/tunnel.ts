@@ -8,7 +8,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
-import { delimiter, join } from 'node:path'
+import { delimiter, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import type { Logger } from './logger.ts'
 
@@ -264,7 +264,9 @@ export function locateCloudflared(
   const name = platform === 'win32' ? 'cloudflared.exe' : 'cloudflared'
   for (const directory of directories) {
     if (directory.trim().length === 0) continue
-    const candidate = join(directory.replace(/^"(.*)"$/, '$1'), name)
+    // Absolute: a relative `PATH` entry means nothing to a service that
+    // starts in another folder.
+    const candidate = resolve(directory.replace(/^"(.*)"$/, '$1'), name)
     if (isExecutableFile(candidate, platform)) return candidate
   }
   return undefined
