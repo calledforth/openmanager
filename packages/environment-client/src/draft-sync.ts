@@ -102,6 +102,8 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
   }
   // Drafts whose delete this client has sent and not yet seen answered.
   const deleting = new Set<string>()
+  // Drafts not to delete for being empty yet, and how many hold each.
+  const emptyHolds = new Map<string, number>()
   const again = new Set<string>()
   // The wait before trying a failed save again, by draft.
   const saveRetryMs = new Map<string, number>()
@@ -169,6 +171,15 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
     const state = store.getState()
     const edit = state.draftEdits[draftId]
     if (!edit || edit.launching) return
+    // Emptied while an image is on its way: not empty yet. Written when the
+    // last hold goes. A discard deletes whatever is on its way.
+    if (
+      isEmptyDraftContent(edit.content) &&
+      edit.deleteIf === undefined &&
+      (emptyHolds.get(draftId) ?? 0) > 0
+    ) {
+      return
+    }
     if (isEmptyDraftContent(edit.content) && edit.baseRevision === 0 && !state.drafts[draftId]) {
       // Never reached the environment, and nothing is on its way there: there
       // is nothing to delete, connected or not.
@@ -391,6 +402,24 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
         })
       }
       void write(draftId)
+    },
+
+    holdEmpty(draftId: string) {
+      emptyHolds.set(draftId, (emptyHolds.get(draftId) ?? 0) + 1)
+      let held = true
+      return () => {
+        if (!held) return
+        held = false
+        const count = (emptyHolds.get(draftId) ?? 1) - 1
+        if (count > 0) {
+          emptyHolds.set(draftId, count)
+          return
+        }
+        emptyHolds.delete(draftId)
+        // What waited on the hold: saved now, or deleted if still empty.
+        const edit = store.getState().draftEdits[draftId]
+        if (edit && !edit.launching && !disposed) schedule(draftId)
+      }
     },
 
     beginLaunch(draftId: string, sent?: DraftContent) {

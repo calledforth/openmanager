@@ -85,6 +85,7 @@ async function mount(
   options: {
     onSend?: (sent: Sent) => Promise<void>
     uploadImage?: (image: DraftImageAttachment) => Promise<UploadedImageAttachment>
+    draftKey?: string
   } = {},
 ) {
   const sent: Sent[] = []
@@ -134,7 +135,7 @@ async function mount(
                 showModeControl={false}
                 showModelControl={false}
                 isStreaming={false}
-                draftKey={PAGE_KEY}
+                draftKey={options.draftKey ?? PAGE_KEY}
                 imageUploadEnabled
                 imageSupportMessage={null}
                 onModeChange={() => undefined}
@@ -355,6 +356,96 @@ describe('images kept with the composer draft', () => {
       'artifact-second.png',
       'artifact-third.png',
     ])
+  })
+
+  describe('an image on its way is content', () => {
+    const SESSION = { sessionId: 'session-1', workspaceId: WORKSPACE.workspaceId, title: 'First' }
+    const WITH_SESSION: MockSeed = {
+      workspaces: [WORKSPACE],
+      sessions: [
+        {
+          session: SESSION,
+          providerId: 'opencode',
+          threads: [{ threadId: 't1', sessionId: SESSION.sessionId }],
+        },
+      ],
+    }
+    /** An upload that lands, or fails, when the test says. */
+    const slowUpload = () => {
+      let land: ((ok: boolean) => void) | undefined
+      const outcome = new Promise<boolean>((resolve) => {
+        land = resolve
+      })
+      return {
+        land: async (ok = true) => {
+          await act(async () => land!(ok))
+        },
+        uploadImage: async (image: DraftImageAttachment) => {
+          if (!(await outcome)) throw new Error('The environment could not be reached.')
+          return {
+            id: 'artifact-1',
+            name: image.file.name,
+            mimeType: 'image/png',
+            size: 3,
+            previewUrl: image.previewUrl,
+          }
+        },
+      }
+    }
+
+    for (const [kind, draftKey, draftId] of [
+      ['a new-session draft', PAGE_KEY, PAGE_DRAFT],
+      ["a session's draft", `session:${SESSION.sessionId}`, SESSION.sessionId],
+    ] as const) {
+      it(`keeps ${kind} whose text is erased while its image uploads`, async () => {
+        const client = createMockEnvironmentClient({ seed: WITH_SESSION })
+        const upload = slowUpload()
+        await mount(client, { draftKey, uploadImage: upload.uploadImage })
+        await type('see attached')
+        await act(() => client.drafts!.flush())
+        await settle(client)
+        expect(client.getState().drafts[draftId]?.content.text).toBe('see attached')
+
+        await attach('screenshot.png')
+        // Erased, and written at once, while the image is still on its way.
+        await type('')
+        await act(() => client.drafts!.flush())
+        await settle(client)
+        expect(client.calls.some((call) => call.command === 'deleteDraft')).toBe(false)
+        expect(thumbnails()).toEqual(['screenshot.png'])
+
+        await upload.land()
+        await act(() => client.drafts!.flush())
+        await settle(client)
+        expect(client.calls.some((call) => call.command === 'deleteDraft')).toBe(false)
+        expect(client.getState().drafts[draftId]?.content).toEqual({
+          text: '',
+          artifactIds: ['artifact-1'],
+        })
+        expect(thumbnails()).toEqual(['screenshot.png'])
+      })
+    }
+
+    it('deletes the emptied draft as ever once its only upload fails', async () => {
+      const client = createMockEnvironmentClient({ seed: WITH_SESSION })
+      const upload = slowUpload()
+      await mount(client, { uploadImage: upload.uploadImage })
+      await type('see attached')
+      await act(() => client.drafts!.flush())
+      await settle(client)
+      await attach('screenshot.png')
+      await type('')
+      await act(() => client.drafts!.flush())
+      await settle(client)
+      expect(client.getState().drafts[PAGE_DRAFT]).toBeDefined()
+
+      await upload.land(false)
+      // Held for the image no longer: the pause in typing, then the delete.
+      await act(() => new Promise<void>((resolve) => setTimeout(resolve, 1_100)))
+      await settle(client)
+      expect(client.calls.some((call) => call.command === 'deleteDraft')).toBe(true)
+      expect(client.getState().drafts[PAGE_DRAFT]).toBeUndefined()
+    })
   })
 
   it('never brings back a draft that was discarded while its image uploaded', async () => {

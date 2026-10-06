@@ -37,6 +37,11 @@ export interface ComposerDraftStore {
   imageTarget?(key: string): ImageTarget | undefined
   /** Whether the draft an upload started for is still there to take it. */
   imageTargetLive?(target: ImageTarget): boolean
+  /**
+   * An image is on its way to the draft behind `key`: until the returned
+   * release, erasing its text does not delete it for being empty.
+   */
+  holdImage?(key: string): (() => void) | undefined
   /** Where the bytes of one of the draft's images are read from. */
   imageSource?(key: string, artifactId: string): ArtifactSource | undefined
   /** Fires when any draft may have changed, here or (for a synced store) elsewhere. */

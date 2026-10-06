@@ -715,7 +715,11 @@ export function MessageInputView({
       const target = draftStore.imageTarget?.(draftKey)
       for (const attachment of added) {
         slotsRef.current.set(attachment.id, (nextSlotRef.current += 1))
-        void keepImage(draftKey, attachment, target)
+        // On its way, the image is content: erasing the text meanwhile does
+        // not delete the draft it is for. Released once it has landed (or
+        // not), so a draft left with nothing is deleted then, as ever.
+        const release = draftStore.holdImage?.(draftKey)
+        void keepImage(draftKey, attachment, target).finally(() => release?.())
       }
     },
     // keepImage reads only refs and stable props.

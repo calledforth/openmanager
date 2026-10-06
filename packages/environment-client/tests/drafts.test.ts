@@ -487,6 +487,58 @@ describe('draft sync', () => {
     sync.dispose()
   })
 
+  it('keeps an emptied draft while an image is on its way, but never holds back a discard', async () => {
+    const { store, sync, saves, deletes } = setup()
+    await vi.advanceTimersByTimeAsync(0)
+    sync.edit('d', NEW, { text: 'see attached' })
+    await vi.advanceTimersByTimeAsync(1000)
+
+    // The text is erased while the image uploads: not empty, so not deleted.
+    const release = sync.holdEmpty('d')
+    sync.edit('d', NEW, { text: '' })
+    sync.flush()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(deletes).toEqual([])
+    expect(store.getState().drafts.d?.content.text).toBe('see attached')
+
+    // It lands: saved with the image, and never deleted.
+    sync.edit('d', NEW, { text: '', artifactIds: ['artifact-1'] })
+    release()
+    release() // a second release is nothing
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(deletes).toEqual([])
+    expect(saves.at(-1)).toMatchObject({ content: { text: '', artifactIds: ['artifact-1'] } })
+
+    // Held again, but a discard deletes whatever is on its way.
+    sync.holdEmpty('d')
+    const madeOn = store.getState().drafts.d!.revision
+    sync.discard('d', { ifRevision: madeOn })
+    await settle()
+    expect(deletes).toEqual([{ draftId: 'd', ifRevision: madeOn }])
+    expect(store.getState().drafts.d).toBeUndefined()
+    sync.dispose()
+  })
+
+  it('deletes a draft left empty once the last image on its way stops coming', async () => {
+    const { store, sync, deletes } = setup()
+    await vi.advanceTimersByTimeAsync(0)
+    sync.edit('d', NEW, { text: 'see attached' })
+    await vi.advanceTimersByTimeAsync(1000)
+    const first = sync.holdEmpty('d')
+    const second = sync.holdEmpty('d')
+    sync.edit('d', NEW, { text: '' })
+    await vi.advanceTimersByTimeAsync(1000)
+    first()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(deletes).toEqual([])
+    // Both failed: nothing came, and the draft is empty after all.
+    second()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(deletes).toEqual([{ draftId: 'd' }])
+    expect(store.getState().drafts.d).toBeUndefined()
+    sync.dispose()
+  })
+
   it('lets a draft discarded elsewhere stay gone', async () => {
     const { store, sync, server } = setup()
     await vi.advanceTimersByTimeAsync(0)

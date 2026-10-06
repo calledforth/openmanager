@@ -200,6 +200,10 @@ export function createEnvironmentComposerDraftStore(
         existed: selectDraftContent(state, draftId) !== undefined,
       }
     },
+    holdImage(key) {
+      const draftId = draftIdOf(key)
+      return draftId === null ? undefined : sync.holdEmpty(draftId)
+    },
     imageTargetLive(target) {
       // The key writes to another draft now: this one is being sent.
       if (draftIdOf(target.key) !== target.draftId) return false

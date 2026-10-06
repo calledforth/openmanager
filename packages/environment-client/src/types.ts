@@ -623,6 +623,13 @@ export interface DraftSync {
    */
   pinAnswer(draftId: string): () => void
   /**
+   * Keep the draft from being deleted for being empty until the returned
+   * release: something it will hold (an image on its way) still counts as
+   * content. An emptied draft waits; once the last hold goes it is saved, or
+   * deleted if it is still empty. A discard is not held.
+   */
+  holdEmpty(draftId: string): () => void
+  /**
    * Hold the draft's saves while a `session.create` sends it. `sent` is what
    * the send carries, when the composer has already emptied the draft;
    * readers (the sidebar's card) show it instead of the emptied content.
