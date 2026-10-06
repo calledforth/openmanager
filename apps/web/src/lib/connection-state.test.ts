@@ -234,12 +234,14 @@ describe('deriveConnectionUi', () => {
       const descriptions = new Set<string>()
       for (const story of ROUTE_FAILURE_STORIES) {
         const ui = deriveConnectionUi(story.input)
-        if (story.id !== 'route_search') expect(ui.reason, story.id).toBe(story.id)
+        // A variant's id is its reason followed by what sets it apart.
+        if (story.id !== 'route_search')
+          expect(story.id.startsWith(ui.reason!), story.id).toBe(true)
         titles.add(ui.title)
         descriptions.add(ui.description)
       }
       expect(descriptions.size).toBe(ROUTE_FAILURE_STORIES.length)
-      expect(titles.size).toBeGreaterThanOrEqual(5)
+      expect(titles.size).toBeGreaterThanOrEqual(6)
     })
 
     it('tells a tunnel that is down from an environment that is stopped', () => {
@@ -249,8 +251,17 @@ describe('deriveConnectionUi', () => {
         surface: 'banner',
         title: 'Route unavailable',
       })
-      expect(down.description).toContain('studio.example.com is not answering')
+      expect(down.description).toContain('Nothing answers at studio.example.com')
       expect(down.description).toContain('may still be running')
+
+      const tunnel = failed({ reason: 'tunnel_down' })
+      expect(tunnel).toMatchObject({ kind: 'unreachable', surface: 'banner', title: 'Tunnel down' })
+      expect(tunnel.description).toContain('studio.example.com answers')
+      expect(tunnel.description).toContain('asleep, off or offline')
+
+      const shutDown = failed({ reason: 'environment_offline', stopped: true })
+      expect(shutDown).toMatchObject({ title: 'Environment offline' })
+      expect(shutDown.description).toContain('Local environment shut down')
 
       const stoppedHere = failed({
         reason: 'environment_offline',

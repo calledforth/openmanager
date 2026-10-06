@@ -2,6 +2,48 @@ import { PROTOCOL_VERSION } from '@openmanager/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { bootstrapUrl, fetchBootstrap, interpretBootstrapResponse } from './bootstrap'
 
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
+describe('fetchBootstrap', () => {
+  it('tells an answer the page may not read from silence', async () => {
+    // A gateway's error page without CORS headers: the readable request
+    // fails like silence, but a no-cors one gets an opaque answer.
+    const fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.mode === 'no-cors') return { type: 'opaque' } as Response
+      throw new TypeError('Failed to fetch')
+    })
+    vi.stubGlobal('fetch', fetch)
+    expect(await fetchBootstrap('https://tunnel.example')).toMatchObject({
+      status: 'unreachable',
+      cause: 'opaque',
+    })
+    expect(fetch.mock.calls.map(([, init]) => init?.mode)).toEqual([undefined, 'no-cors'])
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('Failed to fetch')
+      }),
+    )
+    expect(await fetchBootstrap('https://tunnel.example')).toMatchObject({ cause: 'network' })
+  })
+
+  it('does not ask again once the fetch was cancelled', async () => {
+    const fetch = vi.fn(async () => {
+      throw new DOMException('Timed out', 'TimeoutError')
+    })
+    vi.stubGlobal('fetch', fetch)
+    const controller = new AbortController()
+    controller.abort()
+    expect(
+      await fetchBootstrap('https://tunnel.example', { signal: controller.signal }),
+    ).toMatchObject({ cause: 'network' })
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('bootstrapUrl', () => {
   it('joins bootstrap onto the stored endpoint, including a path prefix', () => {
     expect(bootstrapUrl('http://127.0.0.1:43120')).toBe('http://127.0.0.1:43120/bootstrap')

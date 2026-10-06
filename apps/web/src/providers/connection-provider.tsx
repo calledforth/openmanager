@@ -20,6 +20,7 @@ import {
   type DeriveConnectionInput,
   type EnvironmentSelection,
   type RouteFailure,
+  type RouteFailureReason,
   type RouteOffer,
   type RouteSearch,
   type TransportStatus,
@@ -63,6 +64,16 @@ import {
  * stops growing so a server that comes back is found within half a minute.
  */
 const ROUTE_RETRY_DELAYS_MS: readonly number[] = [2000, 4000, 8000, 15000, 30000]
+
+/**
+ * Reasons that only say the environment did not answer, not why. After the
+ * environment said it was shutting down, they mean it is still stopped.
+ */
+const SILENT_REASONS: ReadonlySet<RouteFailureReason> = new Set([
+  'route_down',
+  'tunnel_down',
+  'environment_offline',
+])
 
 /** The route the client switched to for each environment, by environment ID. */
 type ActiveRoutes = Readonly<Record<string, string>>
@@ -307,6 +318,12 @@ export function ConnectionProvider({
     setRouteFailureState(failure)
   }, [])
   const [routeSearch, setRouteSearch] = useState<TrackedSearch | null>(null)
+  /**
+   * The environment that closed its socket because it was shutting down, until
+   * one of its routes answers again. A gateway in front of a stopped server
+   * cannot say so in a way a browser may read; the server said it first.
+   */
+  const announcedStop = useRef<string | null>(null)
   const searchGeneration = useRef(0)
   const searching = useRef(false)
   const retryAttempt = useRef(0)
@@ -501,9 +518,16 @@ export function ConnectionProvider({
           update((current) => setStoredRouteHealth(current, environmentId, probe.endpoint, report))
         }
         if (result.found === null) {
-          setRouteFailure({ ...result.failure, environmentId })
+          const stopped =
+            announcedStop.current === environmentId && SILENT_REASONS.has(result.failure.reason)
+          setRouteFailure({
+            ...result.failure,
+            ...(stopped ? { reason: 'environment_offline', stopped: true } : {}),
+            environmentId,
+          })
           return
         }
+        if (announcedStop.current === environmentId) announcedStop.current = null
         setRouteFailure(null)
         const latest = findStoredEnvironment(registryRef.current.environments, environmentId)
         const inUse = inUseFor(latest, activeRoutesRef.current)
@@ -595,6 +619,9 @@ export function ConnectionProvider({
     if (liveBootstrap.status === 'ready') {
       setHasConnected(true)
       retryAttempt.current = 0
+      // Only a new answer: this effect also runs again on the one from before
+      // the server stopped.
+      if (fresh && announcedStop.current === answeredId) announcedStop.current = null
     }
     if (pending) setPending(null)
   }, [
@@ -860,7 +887,9 @@ export function ConnectionProvider({
       const selected = selectedStoredEnvironment(registryRef.current)
       if (pendingRef.current || selected?.environmentId !== environmentId) return
       if (inUseFor(selected, activeRoutesRef.current) !== routeEndpoint) return
+      if (report.stopped) announcedStop.current = environmentId
       if (report.status === 'available') {
+        if (announcedStop.current === environmentId) announcedStop.current = null
         // The socket is back: a search still out for it would only find, too
         // late, that nothing answered while the socket was down.
         searchGeneration.current += 1

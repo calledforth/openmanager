@@ -62,7 +62,7 @@ describe('routeFailureReason', () => {
         'env-a',
         TUNNEL,
       ),
-    ).toBe('route_down')
+    ).toBe('tunnel_down')
     expect(routeFailureReason({ status: 'unreachable', cause: 'invalid' }, 'env-a', TUNNEL)).toBe(
       'route_down',
     )
@@ -72,6 +72,16 @@ describe('routeFailureReason', () => {
     expect(routeFailureReason({ status: 'unreachable', cause: 'blocked' }, 'env-a', LOCAL)).toBe(
       'local_access_blocked',
     )
+  })
+
+  it('reads an answer the page may not read as a tunnel down, or on this device a refusal', () => {
+    // What a browser gets for Cloudflare's 530 and 502 alike: their error
+    // pages carry no CORS headers, so only an opaque answer is seen.
+    const opaque: BootstrapOutcome = { status: 'unreachable', cause: 'opaque' }
+    expect(routeFailureReason(opaque, 'env-a', TUNNEL)).toBe('tunnel_down')
+    // Nothing stands in front of a loopback address: the server answering
+    // is refusing this page's origin.
+    expect(routeFailureReason(opaque, 'env-a', LOCAL)).toBe('route_refused')
   })
 
   it('keeps a refusal and another environment apart from a route that is down', () => {
@@ -86,12 +96,12 @@ describe('summarizeRouteFailures', () => {
       { endpoint: LOCAL, outcome: nothing, reason: 'environment_offline', known: false },
       { endpoint: TUNNEL, outcome: nothing, reason: 'route_down', known: false },
     ])
+    // The client's own words for an unreachable route are not repeated.
     expect(failure).toEqual({
       reason: 'environment_offline',
       endpoint: LOCAL,
       local: true,
       tried: 2,
-      message: 'Down.',
     })
   })
 
@@ -115,6 +125,20 @@ describe('summarizeRouteFailures', () => {
         },
       ]),
     ).toMatchObject({ reason: 'environment_offline', endpoint: TUNNEL })
+  })
+
+  it('prefers a gateway answering over silence', () => {
+    expect(
+      summarizeRouteFailures([
+        { endpoint: LAN, outcome: nothing, reason: 'route_down', known: false },
+        {
+          endpoint: TUNNEL,
+          outcome: { status: 'unreachable', cause: 'opaque' },
+          reason: 'tunnel_down',
+          known: false,
+        },
+      ]),
+    ).toMatchObject({ reason: 'tunnel_down', endpoint: TUNNEL, tried: 2 })
   })
 
   it('prefers a refusal a person can act on over a route that is down', () => {

@@ -76,6 +76,30 @@ function readOptionalLabel(bootstrap: BootstrapResponse): string | undefined {
   return typeof bootstrap.label === 'string' && bootstrap.label.trim() ? bootstrap.label : undefined
 }
 
+/**
+ * After a bootstrap fetch failed, whether anything answered at all. A page may
+ * only read a cross-origin answer that carries CORS headers, and the error
+ * pages a gateway sends (Cloudflare's 530 for a tunnel that is down, its 502
+ * for a tunnel whose server is not running) carry none, so the browser
+ * reports them as the same network failure as silence. A `no-cors` request
+ * gets an opaque answer instead: no status, but proof that something replied.
+ * Not asked once the fetch has been cancelled or timed out.
+ */
+async function answersUnreadably(endpoint: string, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return false
+  try {
+    const response = await fetch(bootstrapUrl(endpoint), {
+      mode: 'no-cors',
+      cache: 'no-store',
+      credentials: 'omit',
+      signal,
+    })
+    return response.type === 'opaque'
+  } catch {
+    return false
+  }
+}
+
 export async function fetchBootstrap(
   endpoint: string,
   options: { signal?: AbortSignal } = {},
@@ -103,7 +127,7 @@ export async function fetchBootstrap(
     return {
       status: 'unreachable',
       message: `Could not reach ${endpoint}. Check that the environment server is running, then retry.`,
-      cause: 'network',
+      cause: (await answersUnreadably(endpoint, options.signal)) ? 'opaque' : 'network',
     }
   }
 

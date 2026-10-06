@@ -1,4 +1,15 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import {
+  CloudSlashIcon,
+  KeyIcon,
+  LinkBreakIcon,
+  LockKeyIcon,
+  PowerIcon,
+  ProhibitIcon,
+  SwapIcon,
+  WifiSlashIcon,
+  type Icon,
+} from '@phosphor-icons/react'
 import { Button } from '@openmanager/app-core/components/fluid/ui/button'
 import {
   connectionActionLabel,
@@ -33,6 +44,32 @@ export type ConnectionHandlers = {
   onChooseRoute?: (environmentId: string, endpoint: string) => void
   onRemoveRoute?: (environmentId: string, endpoint: string) => void
   onCheckRoutes?: () => void
+}
+
+/**
+ * One mark per thing that can be wrong, so failures that need different
+ * fixes do not look alike: the tunnel (a cloud), the server (power), the
+ * token (a key), the path (a broken link), this device (no wifi).
+ */
+function connectionIcon(state: ConnectionUiState): Icon | null {
+  switch (state.reason) {
+    case 'tunnel_down':
+      return CloudSlashIcon
+    case 'environment_offline':
+      return PowerIcon
+    case 'credential_rejected':
+      return KeyIcon
+    case 'route_refused':
+      return ProhibitIcon
+    case 'wrong_environment':
+      return SwapIcon
+    case 'route_down':
+      return LinkBreakIcon
+  }
+  // No network on this device has no action; retries that stopped do.
+  if (state.kind === 'offline') return state.action ? LinkBreakIcon : WifiSlashIcon
+  if (state.kind === 'unauthorized') return LockKeyIcon
+  return null
 }
 
 function runAction(action: ConnectionAction, handlers: ConnectionHandlers, endpoint?: string) {
@@ -388,11 +425,21 @@ export function ConnectionScreen({
     ? 'Choose a saved environment and the route to reach it by, or add another endpoint. A second URL for an environment you already have is added to it as another route.'
     : state.description
 
+  const StateIcon = connectionIcon(state)
+
   // Tend's connect page: a narrow column, vertically centred and lifted a
   // little above the middle.
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-auto px-6 pb-24">
       <div className="flex w-full max-w-[340px] flex-col">
+        {StateIcon ? (
+          <span
+            className="mb-4 flex size-10 items-center justify-center rounded-xl bg-hover text-[var(--basis-session-cube-needs)]"
+            aria-hidden
+          >
+            <StateIcon className="size-5" />
+          </span>
+        ) : null}
         <h1 className="text-[22px] font-semibold leading-[1.3] tracking-[-0.015em]">{title}</h1>
         <p className="mt-1 text-[14px] text-muted-foreground">{description}</p>
         {state.kind === 'no_environment' ? (
@@ -433,6 +480,7 @@ export function ConnectionBanner({
   // banner that offers an action is waiting on a person, so it is assertive.
   const needsAction = state.kind === 'unreachable' || (state.kind === 'offline' && !!state.action)
   const live = !needsAction
+  const StateIcon = connectionIcon(state)
   return (
     <div
       className={cn(
@@ -444,11 +492,21 @@ export function ConnectionBanner({
       role={live ? 'status' : 'alert'}
       aria-live={live ? 'polite' : 'assertive'}
     >
-      <div className="min-w-0">
-        <p className="text-ui-sm font-medium text-[var(--basis-text-strong)]">{state.title}</p>
-        <p className="mt-0.5 text-ui-xs leading-ui-normal text-[var(--basis-text-muted)]">
-          {state.description}
-        </p>
+      <div className="flex min-w-0 items-start gap-3">
+        {StateIcon ? (
+          <span
+            className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg bg-hover text-[var(--basis-session-cube-needs)]"
+            aria-hidden
+          >
+            <StateIcon className="size-4" />
+          </span>
+        ) : null}
+        <div className="min-w-0">
+          <p className="text-ui-sm font-medium text-[var(--basis-text-strong)]">{state.title}</p>
+          <p className="mt-0.5 text-ui-xs leading-ui-normal text-[var(--basis-text-muted)]">
+            {state.description}
+          </p>
+        </div>
       </div>
       <ActionButtons className="shrink-0" state={state} handlers={handlers} />
     </div>

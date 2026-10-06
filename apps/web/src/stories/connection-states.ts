@@ -132,7 +132,8 @@ export const CONNECTION_STORIES: ConnectionStory[] = [
 ]
 
 export type RouteFailureStory = {
-  id: RouteFailureReason | 'route_search'
+  /** The reason it shows, or the reason and a variant of it. */
+  id: RouteFailureReason | 'route_search' | `${RouteFailureReason}_${string}`
   name: string
   summary: string
   input: DeriveConnectionInput
@@ -162,7 +163,8 @@ export const ROUTE_FAILURE_STORIES: RouteFailureStory[] = [
   {
     id: 'route_down',
     name: 'Route unavailable',
-    summary: 'Nothing answers at the tunnel. The environment behind it may still be running.',
+    summary:
+      "Nothing answers at the address at all: this device's network, or the way to the address, is down.",
     input: {
       environment: studio,
       bootstrap: { status: 'unreachable', cause: 'network' },
@@ -176,9 +178,26 @@ export const ROUTE_FAILURE_STORIES: RouteFailureStory[] = [
     },
   },
   {
+    id: 'tunnel_down',
+    name: 'Tunnel down',
+    summary:
+      'Cloudflare answers for the hostname, but the environment does not answer through it: the tunnel is down, or the server behind it is stopped. A browser cannot tell those two apart.',
+    input: {
+      environment: studio,
+      bootstrap: { status: 'unreachable', cause: 'opaque' },
+      transport: failedTransport,
+      routeFailure: {
+        reason: 'tunnel_down',
+        endpoint: 'https://studio.example.com',
+        local: false,
+        tried: 1,
+      },
+    },
+  },
+  {
     id: 'environment_offline',
     name: 'Environment offline',
-    summary: 'Nothing listens on this device, or a tunnel answered 502 for it.',
+    summary: 'Nothing listens on this device, or a gateway said so in a status this page can read.',
     input: {
       environment: { ...studio, endpoint: 'http://127.0.0.1:43120' },
       bootstrap: { status: 'unreachable', cause: 'network' },
@@ -208,6 +227,24 @@ export const ROUTE_FAILURE_STORIES: RouteFailureStory[] = [
     },
   },
   {
+    id: 'environment_offline_stopped',
+    name: 'Environment shut down',
+    summary:
+      'The environment closed its socket as it shut down, so the silence from its tunnel since means it is still stopped.',
+    input: {
+      environment: studio,
+      bootstrap: { status: 'unreachable', cause: 'opaque' },
+      transport: failedTransport,
+      routeFailure: {
+        reason: 'environment_offline',
+        endpoint: 'https://studio.example.com',
+        local: false,
+        tried: 1,
+        stopped: true,
+      },
+    },
+  },
+  {
     id: 'route_refused',
     name: 'Route refused access',
     summary: 'The bootstrap was refused: a tunnel sign-in, or the environment origin check.',
@@ -221,6 +258,23 @@ export const ROUTE_FAILURE_STORIES: RouteFailureStory[] = [
         local: false,
         tried: 1,
         message: 'Forbidden.',
+      },
+    },
+  },
+  {
+    id: 'route_refused_local',
+    name: 'Page not allowed',
+    summary:
+      "Something answers on this device but will not let this page read it: the environment refusing this page's origin.",
+    input: {
+      environment: { ...studio, endpoint: 'http://127.0.0.1:43120' },
+      bootstrap: { status: 'unreachable', cause: 'opaque' },
+      transport: failedTransport,
+      routeFailure: {
+        reason: 'route_refused',
+        endpoint: 'http://127.0.0.1:43120',
+        local: true,
+        tried: 1,
       },
     },
   },
@@ -242,7 +296,7 @@ export const ROUTE_FAILURE_STORIES: RouteFailureStory[] = [
         endpoint: 'https://studio.example.com',
         local: false,
         tried: 1,
-        message: 'Client token revoked.',
+        message: 'Unknown or revoked token.',
       },
     },
   },

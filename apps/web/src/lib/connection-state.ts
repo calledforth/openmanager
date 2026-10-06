@@ -54,13 +54,16 @@ export type BootstrapOutcome =
       status: 'unreachable'
       message?: string
       /**
-       * `network`: nothing answered. `http`: something answered with an error
-       * status, often a gateway in front of the environment. `invalid`: what
-       * answered is not an environment. `blocked`: the browser refused to let
-       * this page reach its own loopback address (a denied local network
-       * access permission). Absent on outcomes built elsewhere.
+       * `network`: nothing answered. `opaque`: something answered, but
+       * without the CORS headers that would let this page read it: a
+       * gateway's own error page, or the environment refusing this page's
+       * origin. `http`: something answered with an error status, often a
+       * gateway in front of the environment. `invalid`: what answered is not
+       * an environment. `blocked`: the browser refused to let this page reach
+       * its own loopback address (a denied local network access permission).
+       * Absent on outcomes built elsewhere.
        */
-      cause?: 'network' | 'http' | 'invalid' | 'blocked'
+      cause?: 'network' | 'opaque' | 'http' | 'invalid' | 'blocked'
       httpStatus?: number
     }
 
@@ -95,11 +98,15 @@ export type ConnectionUiState = {
 /**
  * Why no saved route reaches the environment, in terms a person can act on.
  *
- * - `route_down`: the route itself does not answer. A tunnel or network path
- *   is down; the environment behind it may well be running.
+ * - `route_down`: nothing answers at the address at all. This device's
+ *   network, or the way to the address, is down.
+ * - `tunnel_down`: a gateway answers at the address but the environment does
+ *   not answer through it. Over a Cloudflare tunnel this is the tunnel being
+ *   down (`530`), or, since a browser cannot read the gateway's status, the
+ *   server behind a working tunnel being stopped.
  * - `environment_offline`: the environment server is not running. Nothing
- *   listens on this device's loopback address, or a gateway answered for an
- *   environment that did not.
+ *   listens on this device's loopback address, a gateway said so in a status
+ *   this page can read, or the environment said it was shutting down.
  * - `local_access_blocked`: the browser refused to let this page reach this
  *   device's loopback address. The environment may well be running.
  * - `route_refused`: `/bootstrap`, which takes no token, was refused: a
@@ -110,6 +117,7 @@ export type ConnectionUiState = {
  */
 export const ROUTE_FAILURE_REASONS = [
   'route_down',
+  'tunnel_down',
   'environment_offline',
   'local_access_blocked',
   'route_refused',
@@ -128,6 +136,11 @@ export type RouteFailure = {
   tried: number
   /** What the environment said, when it said something. */
   message?: string
+  /**
+   * The environment said it was shutting down, and no route has answered
+   * since. Only with `environment_offline`.
+   */
+  stopped?: boolean
 }
 
 /** The route in use failed and the environment's other routes are being tried. */
@@ -236,7 +249,9 @@ function routeFailureUi(failure: RouteFailure, { named, label }: Context): Conne
         kind: 'unauthorized',
         surface: 'screen',
         title: 'Route refused access',
-        description: `${host} refused this browser${said ? ` (${said})` : ''}, so ${named} cannot be reached through it.${others} If the address sits behind a sign-in, open it in a tab and sign in, then retry. ${RETRYING}`,
+        description: failure.local
+          ? `Something is running at ${host} on this device, but it refused this page${said ? ` (${said})` : ''}.${others} If it is ${named}, restart it with this page's address in --allowed-origin, then retry. ${RETRYING}`
+          : `${host} refused this browser${said ? ` (${said})` : ''}, so ${named} cannot be reached through it.${others} If the address sits behind a sign-in, open it in a tab and sign in, then retry. ${RETRYING}`,
         action: 'retry',
         secondaryAction: 'change_environment',
       }
@@ -247,9 +262,21 @@ function routeFailureUi(failure: RouteFailure, { named, label }: Context): Conne
         kind: 'unreachable',
         surface: 'banner',
         title: 'Environment offline',
-        description: failure.local
-          ? `Nothing is answering at ${host} on this device, so ${named} looks stopped. Start the environment server; if it is already running, check that it allows this page's address and that this browser lets the page reach apps on this device. ${RETRYING}`
-          : `${host} answers, but ${named} is not running behind it. Start the environment server. ${RETRYING}`,
+        description: failure.stopped
+          ? `${named} shut down. Start the environment server again. ${RETRYING}`
+          : failure.local
+            ? `Nothing is answering at ${host} on this device, so ${named} looks stopped. Start the environment server; if it is already running, check that this browser lets the page reach apps on this device. ${RETRYING}`
+            : `${host} answers, but ${named} is not running behind it. Start the environment server. ${RETRYING}`,
+        action: 'retry',
+        secondaryAction: 'change_environment',
+      }
+    case 'tunnel_down':
+      return {
+        ...base,
+        kind: 'unreachable',
+        surface: 'banner',
+        title: 'Tunnel down',
+        description: `${host} answers, but ${named} does not answer through it.${others} The tunnel may be down, with the computer running ${named} asleep, off or offline, or the environment server behind it may be stopped. ${RETRYING}`,
         action: 'retry',
         secondaryAction: 'change_environment',
       }
@@ -279,7 +306,7 @@ function routeFailureUi(failure: RouteFailure, { named, label }: Context): Conne
         kind: 'unreachable',
         surface: 'banner',
         title: 'Route unavailable',
-        description: `${host} is not answering. The tunnel or network path to ${named} may be down; the environment itself may still be running.${others} ${RETRYING}`,
+        description: `Nothing answers at ${host}.${others} This device's network, or the way to ${host}, may be down; ${named} itself may still be running. ${RETRYING}`,
         action: 'retry',
         secondaryAction: 'change_environment',
       }

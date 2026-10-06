@@ -15,10 +15,18 @@ const SEARCH_TIMEOUT_MS = 6000
  */
 const ORIGIN_DOWN_STATUSES = new Set([502, 503, 504])
 
+/** Cloudflare's answer for a hostname whose tunnel has no connector running. */
+const TUNNEL_DOWN_STATUS = 530
+
 /**
  * What a bootstrap answer says is wrong with a route, or null when the route
  * reached the environment it belongs to. A protocol mismatch reached it: that
  * is the environment's to fix, not the route's.
+ *
+ * A browser reads a gateway's status only when the answer carries CORS
+ * headers, and Cloudflare's error pages do not, so on another origin the
+ * statuses above are only seen by clients that are not browsers. A browser
+ * gets `opaque` instead: something answered, and nothing more.
  */
 export function routeFailureReason(
   outcome: BootstrapOutcome,
@@ -33,14 +41,19 @@ export function routeFailureReason(
   if (outcome.status === 'unauthorized') return 'route_refused'
   if (outcome.status !== 'unreachable') return null
   if (outcome.cause === 'blocked') return 'local_access_blocked'
+  const local = isLoopbackEnvironmentEndpoint(endpoint)
   if (outcome.cause === 'http' && ORIGIN_DOWN_STATUSES.has(outcome.httpStatus ?? 0)) {
     return 'environment_offline'
   }
+  if (outcome.cause === 'http' && outcome.httpStatus === TUNNEL_DOWN_STATUS) return 'tunnel_down'
+  // An answer this page may not read. On this device's own loopback address
+  // nothing stands in front of the environment, so what answered is a server
+  // that refuses this page's origin. Over a network it is most often a
+  // gateway's error page: a tunnel that is down, or one with nothing behind it.
+  if (outcome.cause === 'opaque') return local ? 'route_refused' : 'tunnel_down'
   // Nothing answering on this device's own loopback address means nothing is
   // listening there. Over a network the same silence could be either side.
-  if (outcome.cause === 'network' && isLoopbackEnvironmentEndpoint(endpoint)) {
-    return 'environment_offline'
-  }
+  if (outcome.cause === 'network' && local) return 'environment_offline'
   return 'route_down'
 }
 
@@ -48,8 +61,9 @@ export function routeFailureReason(
  * Which reason to show when several routes failed. A sign that the server
  * itself is down explains every other failure, so it wins; refusals are next,
  * since a person can act on them, the browser's own first; then an address
- * that now leads to another environment, which says what changed; a route
- * that is simply down is the least specific.
+ * that now leads to another environment, which says what changed; then a
+ * gateway answering for an environment that does not; a route where nothing
+ * answers at all is the least specific.
  */
 const REASON_RANK: readonly RouteFailureReason[] = [
   'credential_rejected',
@@ -57,6 +71,7 @@ const REASON_RANK: readonly RouteFailureReason[] = [
   'local_access_blocked',
   'route_refused',
   'wrong_environment',
+  'tunnel_down',
   'route_down',
 ]
 
@@ -79,10 +94,9 @@ export function summarizeRouteFailures(probes: readonly RouteProbe[]): RouteFail
     }
   }
   if (!worst) return null
-  const message =
-    worst.outcome.status === 'unauthorized' || worst.outcome.status === 'unreachable'
-      ? worst.outcome.message
-      : undefined
+  // Only a refusal carries words from what answered; an unreachable outcome's
+  // message is this client's own.
+  const message = worst.outcome.status === 'unauthorized' ? worst.outcome.message : undefined
   return {
     reason: worst.reason!,
     endpoint: worst.endpoint,

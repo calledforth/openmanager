@@ -895,6 +895,79 @@ describe('WebEnvironmentClientProvider', () => {
     )
   })
 
+  it('says a tunnel is down, or that the environment shut down when it said so', async () => {
+    // Only the tunnel route, as on a phone away from the computer.
+    localStorage.setItem(
+      ENVIRONMENT_STORAGE_KEY,
+      JSON.stringify({
+        version: 2,
+        selectedId: 'env-local',
+        environments: [
+          {
+            environmentId: 'env-local',
+            label: 'Local environment',
+            routes: [
+              { type: 'remote', endpoint: TUNNEL, priority: 0, health: { status: 'unknown' } },
+            ],
+            credential: 'client-token',
+          },
+        ],
+      }),
+    )
+    let up = true
+    // What a browser sees of Cloudflare's 530 and 502 alike: the readable
+    // request fails as if nothing answered, a no-cors one comes back opaque.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (up) return bootstrapAnswer()
+        if (init?.mode === 'no-cors') return { type: 'opaque', ok: false, status: 0 }
+        throw new TypeError('Failed to fetch')
+      }),
+    )
+    let notify = () => {}
+    let connection: unknown = { phase: 'connected', failure: null }
+    const client = createFakeClient()
+    client.getState.mockImplementation(() => ({
+      ...createInitialState(),
+      connection: connection as ReturnType<EnvironmentClient['getState']>['connection'],
+    }))
+    client.subscribe.mockImplementation(((listener: () => void) => {
+      notify = listener
+      return () => undefined
+    }) as never)
+    renderProvider(
+      vi.fn(() => client as EnvironmentClient),
+      { retryDelaysMs: [20] },
+    )
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+
+    // The environment closes the socket as it shuts down.
+    up = false
+    connection = {
+      phase: 'reconnecting',
+      failure: { code: 'unavailable', message: 'The environment shut down.', serverStopped: true },
+    }
+    act(() => notify())
+    await waitFor(() => expect(screen.getByText('reason: environment_offline')).toBeInTheDocument())
+
+    // The redials since say nothing new; it is still stopped.
+    connection = { phase: 'reconnecting', failure: { code: 'unavailable', message: 'Closed.' } }
+    act(() => notify())
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(screen.getByText('reason: environment_offline')).toBeInTheDocument()
+
+    // It comes back, then the tunnel drops without a word from the server.
+    up = true
+    connection = { phase: 'connected', failure: null }
+    act(() => notify())
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+    up = false
+    connection = { phase: 'reconnecting', failure: { code: 'unavailable', message: 'Closed.' } }
+    act(() => notify())
+    await waitFor(() => expect(screen.getByText('reason: tunnel_down')).toBeInTheDocument())
+  })
+
   it('records a route that does not answer and stays on it', async () => {
     seedTwoRoutes()
     vi.stubGlobal(
@@ -1075,7 +1148,9 @@ describe('WebEnvironmentClientProvider', () => {
 
     await waitFor(() => expect(storedRoutes()[1]!.health.status).toBe('unreachable'))
     const probed = fetchMock.mock.calls.slice(before).map(([input]) => String(input))
-    expect(probed).toEqual([`${TUNNEL}/bootstrap`])
+    // Asked twice: the failed fetch is followed by a no-cors one, to tell an
+    // answer the page may not read from silence.
+    expect([...new Set(probed)]).toEqual([`${TUNNEL}/bootstrap`])
     expect(storedRoutes()[0]).toMatchObject({ endpoint: ENDPOINT, health: { status: 'available' } })
   })
 
