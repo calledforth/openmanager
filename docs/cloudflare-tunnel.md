@@ -228,9 +228,10 @@ tunnel: killing the server gives `502` at once; killing the connector gives a
 
 - saves `OPENMANAGER_TUNNEL_TOKEN`, when set, to the token file
   (`<data-dir>/tunnel-token`, written as a new file readable only by you on
-  Linux, then renamed into place) and never writes
-  the token into the logon task or the systemd unit, which other tools and
-  accounts can read;
+  Linux, then renamed into place; on Windows it takes the data directory's
+  permissions, by default those of your user profile, like the owner
+  credential) and never writes the token into the logon task or the systemd
+  unit, which other tools and accounts can read;
 - refuses to install without a token, either in that variable or already in
   the token file;
 - finds `cloudflared` now and bakes its absolute path in as `--cloudflared`,

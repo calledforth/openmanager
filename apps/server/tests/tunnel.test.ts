@@ -345,10 +345,10 @@ describe('tunnel configuration', () => {
     expect(locateCloudflared(binary, {})).toBe(binary)
     expect(locateCloudflared(join(dir, 'missing'), env)).toBeUndefined()
     // On Windows a path without `.exe` names the executable.
-    const bare = binary.replace(/\.exe$/, '')
-    expect(locateCloudflared(bare, {}, 'win32')).toBe(
-      process.platform === 'win32' ? binary : undefined,
-    )
+    const exe = join(dir, 'cf-tool.exe')
+    writeFileSync(exe, '')
+    expect(locateCloudflared(join(dir, 'cf-tool'), {}, 'win32')).toBe(exe)
+    expect(locateCloudflared(join(dir, 'cf-tool'), {}, 'linux')).toBeUndefined()
   })
 
   it('tells a tunnel that serves only this server from one that serves more', () => {

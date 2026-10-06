@@ -328,6 +328,8 @@ const CONNECTOR_ENV = new Set([
   'NO_PROXY',
   'SSL_CERT_FILE',
   'SSL_CERT_DIR',
+  // Go runtime switches, such as `netedns0=0` for networks that mangle EDNS.
+  'GODEBUG',
 ])
 
 export function cloudflaredEnvironment(base: NodeJS.ProcessEnv, token: string): NodeJS.ProcessEnv {
