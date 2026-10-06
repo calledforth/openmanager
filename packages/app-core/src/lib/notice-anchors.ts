@@ -49,6 +49,11 @@ const subscribe = (listener: () => void) => {
   }
 }
 
+/** The element registered as `name` now, or null; for reads outside render. */
+export function noticeAnchor(name: NoticeAnchor): HTMLElement | null {
+  return anchors.get(name)?.at(-1) ?? null
+}
+
 /** The element registered as `name`, or null while none is mounted. */
 export function useNoticeAnchor(name: NoticeAnchor): HTMLElement | null {
   return useSyncExternalStore(

@@ -2,7 +2,7 @@ import { useEffect, useRef, type CSSProperties, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion, useIsPresent, useReducedMotion } from 'motion/react'
 import { XIcon } from '@phosphor-icons/react'
-import { useAnchorBox, useNoticeAnchor } from '../../lib/notice-anchors'
+import { noticeAnchor, useAnchorBox, useNoticeAnchor } from '../../lib/notice-anchors'
 import { cn } from '../../lib/utils'
 import { spring } from '../fluid/lib/springs'
 import { useSidebar } from '../fluid/ui/sidebar'
@@ -12,20 +12,41 @@ import { useSidebarDrafts, type PendingDraftDiscard } from '../../providers/side
 /** Gap between the notice and what it rests on: the composer, or the sidebar's foot. */
 const CLEARANCE = 8
 
-function draftCardButton(draftId: string): HTMLElement | null {
-  for (const node of document.querySelectorAll<HTMLElement>(`[${DRAFT_CARD_ATTRIBUTE}]`)) {
-    if (node.getAttribute(DRAFT_CARD_ATTRIBUTE) === draftId) return node
-  }
-  return null
+/**
+ * Whether the user can see it: connected, and not under a `display: none`.
+ * The wide screen's sidebar stays mounted, hidden, below its breakpoint, so
+ * being in the document is not enough.
+ */
+function shown(element: HTMLElement | null | undefined): element is HTMLElement {
+  if (!element?.isConnected) return false
+  return typeof element.checkVisibility === 'function'
+    ? element.checkVisibility()
+    : element.getClientRects().length > 0
 }
 
-/** Where focus goes once the notice it was on is gone. */
+const all = (selector: string) => [...document.querySelectorAll<HTMLElement>(selector)]
+
+/**
+ * Where focus goes once the notice it was on is gone: the first of these the
+ * user can see. The card that came back (Undo), the card that was beside the
+ * discarded one, the card list. On a phone those were in the sidebar's sheet,
+ * which closed for the notice: then the control that opens it again (focus
+ * returns to what opens a modal, which is not reopened for it), and failing
+ * that the composer. Never the page body.
+ */
 function focusAfter(choice: 'undo' | 'dismiss', pending: PendingDraftDiscard) {
-  const target =
-    (choice === 'undo' ? draftCardButton(pending.draftId) : null) ??
-    (pending.returnFocus?.isConnected ? pending.returnFocus : null) ??
-    document.querySelector<HTMLElement>('[data-sidebar="content"] [role="list"]')
-  target?.focus({ preventScroll: true })
+  const candidates = [
+    ...(choice === 'undo'
+      ? all(`[${DRAFT_CARD_ATTRIBUTE}]`).filter(
+          (node) => node.getAttribute(DRAFT_CARD_ATTRIBUTE) === pending.draftId,
+        )
+      : []),
+    pending.returnFocus,
+    ...all('[data-sidebar="content"] [role="list"]'),
+    ...all('[data-sidebar="trigger"]'),
+    noticeAnchor('composer')?.querySelector<HTMLElement>('textarea'),
+  ]
+  candidates.find(shown)?.focus({ preventScroll: true })
 }
 
 /**

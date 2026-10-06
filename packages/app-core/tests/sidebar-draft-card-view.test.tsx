@@ -19,6 +19,7 @@ import { WorkspaceSidebarView } from '../src/components/sidebar/WorkspaceSidebar
 import type { SidebarDraft, SidebarWorkspace } from '../src/components/sidebar/sidebar-sessions'
 import { ThemeProvider } from '../src/providers/theme-provider'
 import { DraftDiscardToast } from '../src/components/sidebar/DraftDiscardToast'
+import type { PendingDraftDiscard } from '../src/providers/sidebar-provider'
 import { noticeAnchorRef, type NoticeAnchor } from '../src/lib/notice-anchors'
 
 // The Fluid popup takes half a minute to open under jsdom, so it stands in
@@ -422,6 +423,83 @@ describe('the undo notice', () => {
       (node) => node.textContent === 'Undo',
     )
     expect(document.activeElement).toBe(undo)
+  })
+
+  it('returns focus to what the user can see on a phone, never the page body', async () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query.includes('max-width'),
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+    }))
+    const discard: PendingDraftDiscard = { ...PENDING, draftId: 'd1', fromKeyboard: true }
+    // The wide screen's sidebar, mounted but hidden below its breakpoint: the
+    // card that comes back, its neighbour and the list are all in it.
+    function HiddenDesktop() {
+      return (
+        <div data-sidebar="sidebar" style={{ display: 'none' }}>
+          <div data-sidebar="content">
+            <div role="list" tabIndex={-1}>
+              <button type="button" data-draft-card="d1">
+                the draft
+              </button>
+              <button type="button" id="neighbour">
+                the next card
+              </button>
+            </div>
+          </div>
+        </div>
+      )
+    }
+    const composerHost = document.createElement('div')
+    composerHost.append(document.createElement('textarea'))
+    let key = 10
+    async function cycle(choice: 'Undo' | 'Dismiss', extra: ReactNode) {
+      key += 1
+      const at = (pending: PendingDraftDiscard | null) =>
+        act(() =>
+          root.render(
+            <ThemeProvider>
+              <SidebarProvider persist={false}>
+                <HiddenDesktop />
+                {extra}
+                <DraftDiscardToast
+                  pending={pending}
+                  onUndo={() => undefined}
+                  onDismiss={() => undefined}
+                  onHold={() => undefined}
+                />
+              </SidebarProvider>
+            </ThemeProvider>,
+          ),
+        )
+      // Mounted first, so the phone's breakpoint has been read.
+      await at(null)
+      await at({ ...discard, key, returnFocus: document.getElementById('neighbour') })
+      const control = [...region().querySelectorAll('button')].find(
+        (node) => node.textContent === choice || node.getAttribute('aria-label') === choice,
+      )!
+      expect(document.activeElement).toBe(region().querySelector('button'))
+      await act(() => control.click())
+      // The host answers: the discard is settled, the notice goes.
+      await at(null)
+    }
+
+    // The control that opens the sidebar's sheet, as a modal returns focus.
+    await cycle(
+      'Undo',
+      <button type="button" data-sidebar="trigger">
+        Open sidebar
+      </button>,
+    )
+    expect(document.activeElement?.getAttribute('data-sidebar')).toBe('trigger')
+
+    // No such control in sight: the composer.
+    await cycle('Dismiss', <Anchor name="composer" element={composerHost} />)
+    expect(document.activeElement).toBe(composerHost.querySelector('textarea'))
+    expect(document.activeElement).not.toBe(document.body)
   })
 
   it('leaves a replaced notice inert, still bound to its own discard', async () => {

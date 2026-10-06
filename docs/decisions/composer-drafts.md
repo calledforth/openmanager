@@ -340,9 +340,12 @@ localStorage fallback) `useSidebarDrafts` is null and nothing shows.
   out of the keyboard's reach. A notice replaced by the next discard plays
   its way out inert (no pointer, focus or screen reader), and its actions
   name its own discard's key, so a click mid-fade acts on nothing.
-  Closed from inside with focus on it, focus goes to the card that came back
-  (Undo), else to the card that was beside the discarded one, else to the
-  card list; never to the page body.
+  Closed from inside with focus on it, focus goes to the first of these the
+  user can see (`checkVisibility`: the wide screen's sidebar stays mounted,
+  hidden, below its breakpoint): the card that came back (Undo), the card
+  that was beside the discarded one, the card list, the control that opens
+  the sidebar (on a phone, where the sheet closed for the notice; it is not
+  reopened), the composer. Never the page body.
 - **The card's menu** hangs from a hidden point, so on close focus goes back
   to the card, not to that point (where Enter would reopen the menu). The
   card does not claim `aria-haspopup`: its own action is opening the draft.
