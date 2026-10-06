@@ -135,6 +135,12 @@ A save names the revision it was edited from (`baseRevision`). The rules:
    clear made offline must not delete the draft written since the send.
 5. A delete of a draft the environment never saw still writes a tombstone,
    because its first save may be on the wire behind the delete.
+6. A delete may also name `ifRevision` (protocol v15): delete only the draft
+   as it was at that revision. If the draft has a later revision, the delete
+   is refused with `conflict` and `DraftChangedDetails` (`changed: true`,
+   and the revision it has now), and the draft is untouched. Without it, a
+   delete takes whatever the draft holds, as a clear and a send need. A
+   sidebar discard always names it.
 
 `draft.list` returns live drafts plus the tombstones of session drafts, so a
 client knows what to save on top of. Tombstones of new-session drafts are
@@ -300,34 +306,35 @@ localStorage fallback) `useSidebarDrafts` is null and nothing shows.
   are never held back. The one place a discard is
   let go (`releaseDraft` in `environment-sidebar-drafts.tsx`) is where images
   kept with a draft (CAL-215) are to be released.
-- **A discard is of what the user saw, and goes by who wrote what.** It keeps
-  the revision it was made on. A later revision written by anyone else (more
-  text, another model or mode alone, a restore after a failed send on
-  another device) calls it off: no deletion, the notice goes, the card comes
-  back. One written by this page never does, whenever it lands: a save that
-  was on the wire when the user typed on and discarded, or the closing save
-  of the last keystrokes. It is called off the moment the change arrives,
-  and checked again before deleting. A draft gone meanwhile (sent, or
-  deleted elsewhere) has nothing left to delete, so the discard simply ends.
+- **A discard is of what the user saw, and the environment judges it.** The
+  delete a discard sends is conditional (`draft.delete` with `ifRevision`,
+  protocol v15): it names the revision the discard was made on, raised by the
+  answers to this page's own saves since (a closing save of the last
+  keystrokes, one on the wire when the user typed on, one queued ahead of the
+  delete). If the draft has a later revision when the delete arrives, written
+  by anyone else (more text, another model or mode alone, a restore after a
+  failed send, another tab of the same browser), the environment refuses it
+  with `DraftChangedDetails`; the draft stays as written, the page drops its
+  delete, and the card comes back. No unconditional delete (a clear, a send)
+  changes.
 
-  Provenance comes from the page's own draft sync, not from the draft's
-  `updatedByClientId`: a client does not know its own id without the admin
-  grant (`client.list`). The sync records the revision each of its own
-  saves and deletes was answered with (`DraftSync.wroteRevision`), and says
-  while one is asked and not yet answered (`DraftSync.writing`). A later
-  revision is the page's own only if it is one of those. An edit the page
-  holds proves nothing: one stalled as too large, or otherwise never
-  written, would not overwrite another device's text, so that text is not
-  deleted for it. A revision that arrives while the page's own save is on
-  the wire may be that save's own announcement (the environment announces
-  before it answers), so it is judged when the answer comes: then it is
-  either the answered revision or another's, and another's calls the
-  discard off. Gone and launching drafts behave as before. So another tab of the same browser counts as another writer: its change
-  calls the discard off, as another device's does. That is a stricter
-  answer to the shared-client-id case than the writer id would give, and is
-  accepted. An offline client cannot see a later revision; its delete
-  reaches the environment on reconnect and is refused only if the draft was
-  deleted (sent) since.
+  The page never guesses who wrote a revision. Only answers raise the
+  revision a delete names, never announcements, so a revision the page cannot
+  account for (another device's, or its own whose answer was lost with the
+  connection) makes the environment refuse the delete: at worst the card comes
+  back, and text written elsewhere is never deleted. An edit the page holds
+  and never writes (stalled as too large) protects nothing either, as the
+  delete still names only answered revisions. The same holds offline: the
+  delete reaches the environment on reconnect and is judged against the draft
+  as it is then. One case deletes text written elsewhere, by design: another
+  client saved exactly what this page saved, the environment answered this
+  page's save with that revision (an identical save is a no-op), and the
+  discard then deletes identical content.
+
+  During the window the notice goes at once only if the draft is gone (sent,
+  or deleted elsewhere): there is nothing left to take. A draft written
+  elsewhere meanwhile keeps its notice until the window ends; the refusal then
+  brings its card back.
 - **The undo notice** is mounted by the host at the shell, beside the sidebar
   rather than in it: on a phone the sidebar is a modal sheet that closes, and
   would unmount the notice, on the very tap that reaches for Undo. The

@@ -218,7 +218,7 @@ describe('draft sync', () => {
   function setup(initial: EnvironmentState = connected(createInitialState())) {
     const store = createEnvironmentStore(initial)
     const saves: DraftSaveInput[] = []
-    const deletes: string[] = []
+    const deletes: Array<{ draftId: string; ifRevision?: number }> = []
     const server = new Map<string, Draft | number>()
     let gate: Promise<void> = Promise.resolve()
     const commands = {
@@ -247,15 +247,30 @@ describe('draft sync', () => {
         store.update((state) => applyDraftSaved(state, saved))
         return saved
       }),
-      deleteDraft: vi.fn(async ({ draftId }: { draftId: string }): Promise<DraftTombstone> => {
-        deletes.push(draftId)
-        await gate
-        const row = server.get(draftId)
-        const revision = (typeof row === 'number' ? row : (row?.revision ?? 0)) + 1
-        server.set(draftId, revision)
-        store.update((state) => applyDraftDeleted(state, { draftId, revision }))
-        return { draftId, revision }
-      }),
+      deleteDraft: vi.fn(
+        async ({
+          draftId,
+          ifRevision,
+        }: {
+          draftId: string
+          ifRevision?: number
+        }): Promise<DraftTombstone> => {
+          deletes.push(ifRevision === undefined ? { draftId } : { draftId, ifRevision })
+          await gate
+          const row = server.get(draftId)
+          if (ifRevision !== undefined && typeof row === 'object' && row.revision > ifRevision) {
+            throw new EnvironmentClientError('conflict', 'This draft was changed since.', {
+              draftId,
+              revision: row.revision,
+              changed: true,
+            })
+          }
+          const revision = (typeof row === 'number' ? row : (row?.revision ?? 0)) + 1
+          server.set(draftId, revision)
+          store.update((state) => applyDraftDeleted(state, { draftId, revision }))
+          return { draftId, revision }
+        },
+      ),
     }
     const sync = createDraftSync({ store, commands, supported: () => true, debounceMs: 1000 })
     return {
@@ -304,26 +319,87 @@ describe('draft sync', () => {
     sync.dispose()
   })
 
-  it('tells which revisions its own writes were answered with, and when one is still unanswered', async () => {
-    const { store, sync, server, hold } = setup()
+  it('names the revision a discard was made on, and lets the draft stay if anyone wrote it since', async () => {
+    const { store, sync, server, deletes } = setup()
     await vi.advanceTimersByTimeAsync(0)
-    const release = hold()
     sync.edit('d', NEW, { text: 'mine' })
     await vi.advanceTimersByTimeAsync(1000)
-    // Asked, not answered: what arrives meanwhile may be its own announcement.
-    expect(sync.writing('d')).toBe(true)
-    release()
-    await settle()
-    expect(sync.writing('d')).toBe(false)
-    const own = store.getState().drafts.d!.revision
-    expect(sync.wroteRevision('d', own)).toBe(true)
+    const mine = store.getState().drafts.d!.revision
 
-    // Another client's save: a later revision, not this client's.
-    const theirs = draft('d', own + 1, { text: 'theirs' })
+    // Another client's save lands; the discard was made on this client's own.
+    const theirs = draft('d', mine + 1, { text: 'theirs' })
     server.set('d', theirs)
     store.update((state) => applyDraftSaved(state, theirs))
-    expect(sync.wroteRevision('d', own + 1)).toBe(false)
-    expect(sync.wroteRevision('other', own)).toBe(false)
+    sync.discard('d', { ifRevision: mine })
+    await settle()
+    expect(deletes).toEqual([{ draftId: 'd', ifRevision: mine }])
+    // Refused: the draft stays as the other client wrote it, and nothing waits.
+    expect(store.getState().drafts.d).toEqual(theirs)
+    expect(store.getState().draftEdits.d).toBeUndefined()
+    sync.dispose()
+  })
+
+  it('never deletes past a revision whose answer it lost: the draft stays, or goes if nothing reached', async () => {
+    const { store, sync, server, deletes, commands } = setup()
+    await vi.advanceTimersByTimeAsync(0)
+    sync.edit('d', NEW, { text: 'mine' })
+    await vi.advanceTimersByTimeAsync(1000)
+    const madeOn = store.getState().drafts.d!.revision
+
+    // The last keystrokes reach the environment and are announced, but the
+    // answer is lost with the connection.
+    commands.saveDraft.mockImplementationOnce(async (input: DraftSaveInput) => {
+      const row = server.get(input.draftId) as Draft
+      const saved = draft(input.draftId, row.revision + 1, input.content, input.target)
+      server.set(input.draftId, saved)
+      store.update((state) => applyDraftSaved(state, saved))
+      throw new EnvironmentClientError('unavailable', 'The connection closed.')
+    })
+    sync.edit('d', NEW, { text: 'mine, last words' })
+    await vi.advanceTimersByTimeAsync(1000)
+    sync.discard('d', { ifRevision: madeOn })
+    await settle()
+    // Unanswered, the revision is not known as its own: the delete names the
+    // one the discard was made on, is refused, and the draft stays whole.
+    expect(deletes).toEqual([{ draftId: 'd', ifRevision: madeOn }])
+    expect(store.getState().drafts.d?.content).toEqual({ text: 'mine, last words' })
+    expect(store.getState().draftEdits.d).toBeUndefined()
+
+    // Lost before it reached anything: nothing was written since, so it goes.
+    sync.edit('e', NEW, { text: 'other' })
+    await vi.advanceTimersByTimeAsync(1000)
+    const eMadeOn = store.getState().drafts.e!.revision
+    commands.saveDraft.mockImplementationOnce(async () => {
+      throw new EnvironmentClientError('unavailable', 'The connection closed.')
+    })
+    sync.edit('e', NEW, { text: 'other, last words' })
+    await vi.advanceTimersByTimeAsync(1000)
+    sync.discard('e', { ifRevision: eMadeOn })
+    await settle()
+    expect(deletes.at(-1)).toEqual({ draftId: 'e', ifRevision: eMadeOn })
+    expect(store.getState().drafts.e).toBeUndefined()
+    sync.dispose()
+  })
+
+  it('raises a discard to the answer of its own save queued ahead of it', async () => {
+    const { store, sync, deletes, hold } = setup()
+    await vi.advanceTimersByTimeAsync(0)
+    sync.edit('d', NEW, { text: 'mine' })
+    await vi.advanceTimersByTimeAsync(1000)
+    const before = store.getState().drafts.d!.revision
+
+    // The last keystrokes are on the wire when the discard is made.
+    const release = hold()
+    sync.edit('d', NEW, { text: 'mine, last words' })
+    await vi.advanceTimersByTimeAsync(1000)
+    sync.discard('d', { ifRevision: before })
+    release()
+    await settle()
+    await vi.advanceTimersByTimeAsync(0)
+    await settle()
+    // Named at the closing save's answer, not at what it was made on.
+    expect(deletes).toEqual([{ draftId: 'd', ifRevision: before + 1 }])
+    expect(store.getState().drafts.d).toBeUndefined()
     sync.dispose()
   })
 
@@ -398,7 +474,7 @@ describe('draft sync', () => {
     sync.edit(sessionId, target, { text: '' })
     sync.flush()
     await settle()
-    expect(deletes).toEqual([sessionId])
+    expect(deletes).toEqual([{ draftId: sessionId }])
     sync.edit(sessionId, target, { text: 'And the docs' })
     release()
     await settle()

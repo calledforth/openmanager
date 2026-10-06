@@ -2,6 +2,7 @@ import {
   ACCESS_CAPABILITIES,
   ClientLabelSchema,
   ComposerCommandSchemas,
+  DRAFT_CHANGED_MESSAGE,
   DRAFT_DELETED_MESSAGE,
   DraftCommandSchemas,
   PAIRING_LINK_LIFETIME_MS,
@@ -712,13 +713,25 @@ export function createMockEnvironmentClient(
     store.update((state) => applyDraftList(state, list))
     return list
   }
-  const deleteDraftRow = (draftId: string, baseRevision?: number): DraftTombstone => {
+  const deleteDraftRow = (
+    draftId: string,
+    baseRevision?: number,
+    ifRevision?: number,
+  ): DraftTombstone => {
     const row = draftRows.get(draftId)
     if (row && !row.draft) return { draftId, revision: row.revision }
     if (row && baseRevision !== undefined && baseRevision < row.deletedRevision) {
       throw new EnvironmentClientError('conflict', DRAFT_DELETED_MESSAGE, {
         draftId,
         revision: row.deletedRevision,
+      })
+    }
+    // A conditional delete of the draft as it was, written since: refused.
+    if (row && ifRevision !== undefined && row.revision > ifRevision) {
+      throw new EnvironmentClientError('conflict', DRAFT_CHANGED_MESSAGE, {
+        draftId,
+        revision: row.revision,
+        changed: true,
       })
     }
     const sessionId = row?.sessionId ?? (store.getState().sessions[draftId] ? draftId : null)
@@ -1236,7 +1249,9 @@ export function createMockEnvironmentClient(
         return draft
       }),
     deleteDraft: (input) =>
-      run('deleteDraft', input, () => deleteDraftRow(input.draftId, input.baseRevision)),
+      run('deleteDraft', input, () =>
+        deleteDraftRow(input.draftId, input.baseRevision, input.ifRevision),
+      ),
     listAuthorizedClients: () =>
       run('listAuthorizedClients', null, () => {
         requireAdmin()

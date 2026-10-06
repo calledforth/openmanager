@@ -1,5 +1,6 @@
 import {
   DRAFT_SAVE_MAX_BYTES,
+  DraftChangedDetailsSchema,
   DraftDeletedDetailsSchema,
   draftSaveBytes,
   type DraftContent,
@@ -53,8 +54,8 @@ export interface DraftSyncOptions {
 
 const sameJson = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)
 
-/** How many of its own answered revisions per draft a sync keeps. */
-const WRITTEN_KEPT = 8
+/** How many drafts' last answered revisions a sync keeps; the oldest go first. */
+const ANSWERED_KEPT = 64
 
 /**
  * Saves a client's draft edits to the environment, one request per draft at
@@ -67,15 +68,15 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
   const now = options.now ?? Date.now
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
   const inFlight = new Set<string>()
-  // The revisions the environment answered this client's own writes with, a
-  // few per draft: how a reader tells this client's revisions from another's.
-  const written = new Map<string, number[]>()
-  // Writes asked and not yet answered: the window in which a revision that
-  // arrives may be the announcement of this client's own.
-  const awaiting = new Set<string>()
-  const wrote = (draftId: string, revision: number) => {
-    const held = written.get(draftId) ?? []
-    written.set(draftId, [...held, revision].slice(-WRITTEN_KEPT))
+  // The revision the environment answered this client's latest write of a
+  // draft with. Answers only, never announcements: what a conditional delete
+  // may name as this client's own. Bounded; one forgotten only makes a
+  // discard ask for an older revision, which the environment refuses.
+  const answered = new Map<string, number>()
+  const answer = (draftId: string, revision: number) => {
+    answered.delete(draftId)
+    answered.set(draftId, Math.max(revision, answered.get(draftId) ?? 0))
+    if (answered.size > ANSWERED_KEPT) answered.delete(answered.keys().next().value!)
   }
   // Drafts whose delete this client has sent and not yet seen answered.
   const deleting = new Set<string>()
@@ -175,26 +176,32 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
     try {
       if (isEmptyDraftContent(edit.content)) {
         deleting.add(draftId)
-        awaiting.add(draftId)
+        // A discard names the newest revision that is its own: the one it was
+        // made on, or the answer to a save of this client's since (one queued
+        // ahead of this delete included). Written by anyone else since, the
+        // environment refuses it.
+        const ifRevision =
+          edit.deleteIf !== undefined
+            ? Math.max(edit.deleteIf, answered.get(draftId) ?? 0)
+            : undefined
         const tombstone = await commands
-          .deleteDraft({ draftId, baseRevision: edit.baseRevision })
+          .deleteDraft({
+            draftId,
+            baseRevision: edit.baseRevision,
+            ...(ifRevision !== undefined ? { ifRevision } : {}),
+          })
           .finally(() => {
             deleting.delete(draftId)
-            awaiting.delete(draftId)
           })
-        // Known as this client's before the store says so.
-        wrote(draftId, tombstone.revision)
+        answered.delete(draftId)
         // Rebase first: what was typed after the delete was sent is the
         // next draft, which the deletion must not take with it.
         store.update((current) =>
           applyDraftDeleted(settle(draftId, edit, tombstone.revision)(current), tombstone),
         )
       } else {
-        awaiting.add(draftId)
-        const draft = await commands.saveDraft(input).finally(() => {
-          awaiting.delete(draftId)
-        })
-        wrote(draftId, draft.revision)
+        const draft = await commands.saveDraft(input)
+        answer(draftId, draft.revision)
         store.update((current) =>
           settle(draftId, edit, draft.revision)(applyDraftSaved(current, draft)),
         )
@@ -217,6 +224,15 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
             return draftEdits === next.draftEdits ? next : { ...next, draftEdits }
           })
           if (retry) again.add(draftId)
+          return
+        }
+        if (
+          error.code === 'conflict' &&
+          DraftChangedDetailsSchema.safeParse(error.details).success
+        ) {
+          // A discard refused: another client wrote the draft since. It stays,
+          // as the environment has it, and this client lets the discard go.
+          store.update((current) => removeDraftEdit(current, draftId, edit))
           return
         }
         if (error.code === 'validation' || error.code === 'not_found') {
@@ -333,13 +349,22 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
       if (!edit.launching) schedule(draftId)
     },
 
-    discard(draftId: string) {
+    discard(draftId: string, options?: { ifRevision?: number }) {
       const state = store.getState()
       const target = selectDraftTarget(state, draftId)
       // A draft being sent is the send's: it goes with the session, or comes
       // back whole if the send fails.
       if (!target || state.draftEdits[draftId]?.launching) return
       this.edit(draftId, target, { text: '' })
+      const ifRevision = options?.ifRevision
+      if (ifRevision !== undefined) {
+        store.update((current) => {
+          const held = current.draftEdits[draftId]
+          return held
+            ? applyDraftEdit(current, draftId, { ...held, deleteIf: ifRevision })
+            : current
+        })
+      }
       void write(draftId)
     },
 
@@ -387,14 +412,6 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
     },
 
     flush,
-
-    writing(draftId: string) {
-      return awaiting.has(draftId)
-    },
-
-    wroteRevision(draftId: string, revision: number) {
-      return written.get(draftId)?.includes(revision) ?? false
-    },
 
     dispose() {
       disposed = true

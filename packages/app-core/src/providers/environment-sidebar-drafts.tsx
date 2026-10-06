@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import type { DraftSync, EnvironmentState } from '@openmanager/environment-client'
+import type { EnvironmentState } from '@openmanager/environment-client'
 import {
   NO_DRAFT_FACTS,
   arrangeSidebarDrafts,
@@ -33,59 +33,17 @@ import {
 /** How long a discarded draft can still be brought back. */
 export const DRAFT_DISCARD_UNDO_MS = 6_000
 
-/** A discard waiting out its window, and the draft it was made on. */
-interface WatchedDiscard {
-  /**
-   * The newest revision of the draft that is the user's own: the one they
-   * discarded, or one this page wrote since (its last keystrokes, saved as
-   * the discarded page closed). 0 for a draft never saved.
-   */
-  revision: number
-  /**
-   * Later revisions seen while a write of this page's was on the wire, not
-   * yet known to be its own or another's. Settled when that write is answered.
-   */
-  unsettled: Set<number>
-}
-
-/** What a discard asks of the draft sync: which revisions are this page's. */
-type WriteLedger = Pick<DraftSync, 'writing' | 'wroteRevision'>
-
 /**
- * Whether a pending discard still deletes what the user discarded. It goes
- * by who wrote the draft's revisions, not by what they hold: a revision
- * another client wrote since (more text, another model, a restore after a
- * failed send) calls the discard off; one this page wrote never does,
- * whenever it lands. Nor does a gone draft (sent, or deleted elsewhere)
- * leave anything to delete.
- *
- * This page's writes are known by revision: the draft sync records the
- * revision each of its saves was answered with. A later revision that is not
- * one of those is another's, even while this page holds an edit it has not
- * written (stalled as too large, say: it would never overwrite the other's
- * text). One that arrives while this page's own save is on the wire may be
- * that save's own announcement, which comes before its answer; it is judged
- * when the answer comes. Call it on every change, so that moment is seen.
+ * Whether a pending discard has anything left to take. A draft that is gone
+ * (sent, or deleted elsewhere) has not, and one being sent is the send's.
+ * Whether it was written since is not judged here: the delete names the
+ * revision the discard was made on, and the environment refuses it if anyone
+ * else has written the draft since (`DraftSync.discard`).
  */
-function discardStands(
-  state: EnvironmentState,
-  draftId: string,
-  watched: WatchedDiscard,
-  sync: WriteLedger,
-) {
-  const saved = state.drafts[draftId]
+function discardOutstanding(state: EnvironmentState, draftId: string) {
   const edit = state.draftEdits[draftId]
   if (edit?.launching) return false
-  if (!saved) return edit !== undefined
-  if (saved.revision > watched.revision) watched.unsettled.add(saved.revision)
-  // Wait for this page's own answer before telling whose a revision is.
-  if (sync.writing(draftId)) return true
-  for (const revision of watched.unsettled) {
-    if (!sync.wroteRevision(draftId, revision)) return false
-  }
-  watched.unsettled.clear()
-  watched.revision = Math.max(watched.revision, saved.revision)
-  return true
+  return state.drafts[draftId] !== undefined || edit !== undefined
 }
 
 /**
@@ -161,9 +119,9 @@ export function EnvironmentSidebarDraftsProvider({ children }: { children: React
   // meanwhile, and nothing is deleted until the window closes.
   const [pending, setPending] = useState<PendingDraftDiscard | null>(null)
   const pendingRef = useRef<PendingDraftDiscard | null>(null)
-  // The draft the discard was made on, to tell a change made elsewhere from
-  // this client's own late save; watched through the store while it waits.
-  const watchRef = useRef<WatchedDiscard | null>(null)
+  // The revision the discard was made on (0: never saved), which its delete
+  // names; and the store watch that ends the discard if the draft goes.
+  const madeOnRef = useRef(0)
   const unwatchRef = useRef<(() => void) | undefined>(undefined)
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const keyRef = useRef(0)
@@ -177,32 +135,29 @@ export function EnvironmentSidebarDraftsProvider({ children }: { children: React
   /**
    * The one place a discarded draft is let go. Images kept with a draft
    * (CAL-215) are released here too, once they are: read the draft's
-   * `artifactIds` before deleting it.
+   * `artifactIds` before deleting it. The delete is conditional: written
+   * since by another client, the environment refuses it, the draft stays, and
+   * its card comes back.
    */
-  const releaseDraft = useCallback((draftId: string) => sync?.discard(draftId), [sync])
+  const releaseDraft = useCallback(
+    (draftId: string, madeOn: number) => sync?.discard(draftId, { ifRevision: madeOn }),
+    [sync],
+  )
 
   const settleDiscard = useCallback(
     (commit: boolean) => {
       const current = pendingRef.current
       if (!current) return
       stopClock()
-      const watched = watchRef.current
       pendingRef.current = null
-      watchRef.current = null
       unwatchRef.current?.()
       unwatchRef.current = undefined
       setPending(null)
-      // Changed elsewhere since it was discarded: the card comes back instead.
-      if (
-        commit &&
-        watched &&
-        sync &&
-        discardStands(client.getState(), current.draftId, watched, sync)
-      ) {
-        releaseDraft(current.draftId)
+      if (commit && discardOutstanding(client.getState(), current.draftId)) {
+        releaseDraft(current.draftId, madeOnRef.current)
       }
     },
-    [client, releaseDraft, stopClock, sync],
+    [client, releaseDraft, stopClock],
   )
 
   const startClock = useCallback(() => {
@@ -225,28 +180,20 @@ export function EnvironmentSidebarDraftsProvider({ children }: { children: React
         fromKeyboard: options?.fromKeyboard ?? false,
         returnFocus: options?.returnFocus ?? null,
       }
-      const watched: WatchedDiscard = {
-        revision: state.drafts[draftId]?.revision ?? 0,
-        unsettled: new Set(),
-      }
-      if (sync) discardStands(state, draftId, watched, sync)
       pendingRef.current = next
-      watchRef.current = watched
-      // Watched from now, not from the next render, so the composer's own
-      // last keystrokes (written as its page closes, below) are known as ours.
-      // Changed elsewhere meanwhile, the discard is called off at once and the
-      // card comes back.
+      madeOnRef.current = state.drafts[draftId]?.revision ?? 0
+      // Gone meanwhile (sent, or deleted elsewhere): nothing is left to take,
+      // and the notice goes at once. A draft written elsewhere meanwhile is
+      // not judged here; the delete is refused for it when the window ends.
       unwatchRef.current = client.subscribe(() => {
         if (pendingRef.current !== next) return
-        if (sync && !discardStands(client.getState(), draftId, watched, sync)) {
-          settleDiscard(false)
-        }
+        if (!discardOutstanding(client.getState(), draftId)) settleDiscard(false)
       })
       setPending(next)
       startClock()
       navigation.closeDraftPage(draftId)
     },
-    [client, navigation, settleDiscard, startClock, sync],
+    [client, navigation, settleDiscard, startClock],
   )
 
   const undoDiscard = useCallback(

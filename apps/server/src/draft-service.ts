@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import type { DatabaseSync } from 'node:sqlite'
 import {
+  DRAFT_CHANGED_MESSAGE,
   DRAFT_DELETED_MESSAGE,
   DRAFT_DELETE_CAPABILITY,
   DRAFT_LIST_CAPABILITY,
@@ -263,7 +264,7 @@ export function createDraftService(options: DraftServiceOptions) {
     if (!parsed.success) {
       return errorResult(command.requestId, 'validation', 'Invalid draft delete request.')
     }
-    const { draftId, baseRevision } = parsed.data.payload
+    const { draftId, baseRevision, ifRevision } = parsed.data.payload
     const row = read(draftId)
     if (row?.deleted_at != null) {
       return DraftResponseSchemas[DRAFT_DELETE_CAPABILITY].parse({
@@ -278,6 +279,15 @@ export function createDraftService(options: DraftServiceOptions) {
       return errorResult(command.requestId, 'conflict', DRAFT_DELETED_MESSAGE, {
         draftId,
         revision: row.deleted_revision,
+      })
+    }
+    if (ifRevision !== undefined && row && row.revision > ifRevision) {
+      // A conditional delete (a discard) of the draft as it was: another
+      // client has written it since, and that text is not this one's to take.
+      return errorResult(command.requestId, 'conflict', DRAFT_CHANGED_MESSAGE, {
+        draftId,
+        revision: row.revision,
+        changed: true,
       })
     }
     // A draft that never reached the environment still gets a tombstone: its

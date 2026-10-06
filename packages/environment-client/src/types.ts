@@ -278,6 +278,12 @@ export interface DraftEdit {
    * an unsynced draft stays marked until the environment has its latest text.
    */
   stalled?: DraftStall
+  /**
+   * Set by a conditional discard: the revision it was made on. The delete
+   * this edit carries is refused if the draft has been written since by
+   * anyone but this client. A later edit of the draft drops it.
+   */
+  deleteIf?: number
 }
 
 /**
@@ -598,8 +604,14 @@ export interface DraftSync {
    * deletes the draft. While the environment cannot be reached, edits wait.
    */
   edit(draftId: string, target: DraftTarget, content: DraftContent): void
-  /** Delete a draft now, as discarding it does. Does nothing to a draft being sent. */
-  discard(draftId: string): void
+  /**
+   * Delete a draft now, as discarding it does. Does nothing to a draft being
+   * sent. With `ifRevision` (the revision the discard was made on), only the
+   * draft as it was then is deleted: the delete names that revision, raised
+   * by the answers to this client's own saves since, and the environment
+   * refuses it if anyone else has written the draft. Refused, the draft stays.
+   */
+  discard(draftId: string, options?: { ifRevision?: number }): void
   /**
    * Hold the draft's saves while a `session.create` sends it. `sent` is what
    * the send carries, when the composer has already emptied the draft;
@@ -619,12 +631,4 @@ export interface DraftSync {
   endLaunch(draftId: string, outcome: DraftLaunchOutcome): void
   /** Save every waiting edit now, as when the page is hidden. */
   flush(): void
-  /** A save or delete of the draft by this client is on the wire, not yet answered. */
-  writing(draftId: string): boolean
-  /**
-   * Whether the environment answered one of this client's own writes of the
-   * draft with `revision`. Known before the store applies the answer, so a
-   * reader woken by that update can already tell. The last few per draft.
-   */
-  wroteRevision(draftId: string, revision: number): boolean
 }
