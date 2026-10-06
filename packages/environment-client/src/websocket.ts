@@ -13,6 +13,7 @@ import {
   advanceClientHeartbeat,
   artifactPath,
   createClientHeartbeatState,
+  draftArtifactPath,
   observeServerActivity,
   parseProtocolHandshakeResult,
   parseReplayResult,
@@ -1507,7 +1508,12 @@ export function createWebSocketEnvironmentClient(
       let response: Response
       try {
         response = await fetchBytes(
-          environmentHttpUrl(options.url, artifactPath(input.sessionId, input.artifactId)),
+          environmentHttpUrl(
+            options.url,
+            input.draftId !== undefined
+              ? draftArtifactPath(input.draftId, input.artifactId)
+              : artifactPath(input.sessionId, input.artifactId),
+          ),
           {
             headers: options.credential ? { authorization: `Bearer ${options.credential}` } : {},
             signal: init?.signal,

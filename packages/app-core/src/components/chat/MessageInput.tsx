@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ProviderId } from '@agentpack/contract'
 import { deriveSessionChrome } from '@agentpack/view'
 import { providerBlocksComposer, usePlatformCapabilities } from '../../providers/platform-provider'
@@ -23,7 +23,23 @@ import {
   type ComposerModelChoice,
 } from './providerModelGroups'
 import { effortConfigOption } from './modelConfig'
-import type { DraftImageAttachment, UploadedImageAttachment } from '../../lib/attachments'
+import type {
+  DraftImageAttachment,
+  KeptImage,
+  UploadedImageAttachment,
+} from '../../lib/attachments'
+
+/**
+ * A kept image as a send names it. Only its id reaches the environment; it
+ * carries no upload scope, as it is the draft's wherever the draft goes.
+ */
+const keptAttachment = (image: KeptImage): UploadedImageAttachment => ({
+  id: image.artifactId,
+  name: image.name,
+  mimeType: '',
+  size: 0,
+  previewUrl: image.previewUrl ?? '',
+})
 
 /**
  * The composer bound to the application providers: session navigation for
@@ -291,7 +307,24 @@ export function MessageInput() {
   }, [askHost, currentModelId, currentProviderId, getModelImageSupport])
   const modelImageSupport = catalogImageSupport ?? (askHost ? hostModelImageSupport : null)
 
-  const uploadAndSend = async (text: string, drafts: DraftImageAttachment[]) => {
+  // Where the draft keeps its images, each is stored as it is attached.
+  const uploadImage = useMemo(
+    () =>
+      uploadAttachments
+        ? async (image: DraftImageAttachment) => {
+            const [stored] = await uploadAttachments([image])
+            if (!stored) throw new Error('The image was not stored.')
+            return stored
+          }
+        : undefined,
+    [uploadAttachments],
+  )
+
+  const uploadAndSend = async (
+    text: string,
+    drafts: DraftImageAttachment[],
+    kept: KeptImage[] = [],
+  ) => {
     // Questions never reach here: while one is pending the composer is replaced
     // by the question prompt, which resolves it through its own submit.
     // A pending plan turns composer text into rejection feedback rather than a
@@ -307,11 +340,18 @@ export function MessageInput() {
     if (launching) {
       beginDraftTurn({
         text: text.trim(),
-        images: drafts.map((draft) => ({
-          id: draft.id,
-          name: draft.file.name,
-          previewUrl: draft.previewUrl,
-        })),
+        images: [
+          ...kept.map((image) => ({
+            id: image.artifactId,
+            name: image.name,
+            ...(image.previewUrl ? { previewUrl: image.previewUrl } : {}),
+          })),
+          ...drafts.map((draft) => ({
+            id: draft.id,
+            name: draft.file.name,
+            previewUrl: draft.previewUrl,
+          })),
+        ],
       })
     }
     let uploaded: UploadedImageAttachment[] = []
@@ -325,7 +365,9 @@ export function MessageInput() {
       }
     }
     try {
-      await sendMessage(text, uploaded)
+      // A kept image is already the environment's, held for this draft: it
+      // goes by its id, wherever the draft has moved since it was attached.
+      await sendMessage(text, [...kept.map(keptAttachment), ...uploaded])
     } catch (error) {
       if (uploaded.length && discardAttachments) {
         await discardAttachments(uploaded).catch(() => undefined)
@@ -475,6 +517,7 @@ export function MessageInput() {
             setDraftConfigOption(configId, value)
           }}
           onSend={uploadAndSend}
+          {...(uploadImage ? { uploadImage } : {})}
           onAbort={() => {
             if (activeSessionId) {
               void abortSession(activeSessionId)

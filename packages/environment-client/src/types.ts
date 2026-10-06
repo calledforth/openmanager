@@ -342,11 +342,14 @@ export interface SendTurnInput extends ThreadTarget {
   commandId?: string
 }
 
-/** An artifact is only ever addressed inside the session that owns it. */
-export interface ArtifactTarget {
-  sessionId: string
-  artifactId: string
-}
+/**
+ * An artifact is addressed inside what owns it: the session it was sent or
+ * made in, or, for an image held for a new-session draft, the draft that
+ * names it.
+ */
+export type ArtifactTarget =
+  | { sessionId: string; draftId?: never; artifactId: string }
+  | { draftId: string; sessionId?: never; artifactId: string }
 
 /** A file the composer attaches. The environment stores it under the session. */
 /**

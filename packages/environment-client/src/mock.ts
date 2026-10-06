@@ -826,9 +826,10 @@ export function createMockEnvironmentClient(
           )
         }
         // Checked before anything exists, as the environment does, so a stale
-        // id leaves no session behind.
+        // id leaves no session behind. A held image goes with the draft to
+        // whichever project it is sent from.
         const artifactIds = [...new Set(input.artifactIds ?? [])]
-        if (artifactIds.some((artifactId) => heldArtifacts.get(artifactId) !== input.workspaceId)) {
+        if (artifactIds.some((artifactId) => !heldArtifacts.has(artifactId))) {
           throw new EnvironmentClientError(
             'not_found',
             'These images are no longer available. Attach them again.',

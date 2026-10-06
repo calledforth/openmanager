@@ -394,6 +394,80 @@ describe('draft pages', () => {
     expect(client.getState().activeSessionId).toBe(sessionId)
   })
 
+  it('keeps an attached image with the draft through a reload and a project move, and sends it', async () => {
+    URL.createObjectURL = vi.fn(() => 'blob:local')
+    URL.revokeObjectURL = vi.fn()
+    // A provider that takes images, on a model that reads them.
+    const seeing: MockSeed = {
+      ...SEED,
+      providers: [
+        {
+          ...OPENCODE,
+          profile: {
+            ...OPENCODE.profile!,
+            promptCapabilities: { image: true, audio: false, embeddedContext: false },
+            availableModels: (OPENCODE.profile!.availableModels ?? []).map((model) => ({
+              ...model,
+              supportsImageInput: true,
+            })),
+          },
+        },
+      ],
+    }
+    const client = createMockEnvironmentClient({ seed: seeing, respond: () => null })
+    const uploadArtifact = vi.spyOn(client, 'uploadArtifact')
+    await mount(client)
+    await type('what is wrong here?')
+    const draftId = probe.session.newSessionDraftId!
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!
+    const file = new File(['png'], 'screenshot.png', { type: 'image/png' })
+    Object.defineProperty(input, 'files', { value: [file], configurable: true })
+    await act(() => {
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await settle(client)
+    // Uploaded as it was attached, held for the draft's project, and named in it.
+    expect(uploadArtifact).toHaveBeenCalledOnce()
+    expect(uploadArtifact.mock.calls[0]![0]).toMatchObject({ workspaceId: ALPHA.workspaceId })
+    const [artifactId] = contentOf(client, draftId)?.artifactIds ?? []
+    expect(artifactId).toBeTruthy()
+    act(() => client.drafts!.flush())
+    await settle(client)
+    expect(client.getState().drafts[draftId]?.content.artifactIds).toEqual([artifactId])
+
+    // A reload: the page comes back by its address, and reads the image back
+    // through the draft, having no preview of its own any more.
+    await act(() => root.unmount())
+    root = createRoot(container)
+    const fetchArtifact = vi.spyOn(client, 'fetchArtifact')
+    URL.createObjectURL = vi.fn(() => 'blob:read-back')
+    await mount(client, { draftId })
+    await settle(client)
+    expect(fetchArtifact).toHaveBeenCalledWith({ draftId, artifactId })
+    expect(container.querySelector('img[alt="Image 1"]')?.getAttribute('src')).toBe(
+      'blob:read-back',
+    )
+
+    // Moved to another project, then sent from there.
+    await act(() => probe.session.setDraftWorkspace!(BETA.workspaceId))
+    await settle(client)
+    await act(() =>
+      container.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!.click(),
+    )
+    await settle(client)
+    expect(client.calls.find((call) => call.command === 'createSession')?.input).toMatchObject({
+      workspaceId: BETA.workspaceId,
+      draftId,
+      firstMessage: 'what is wrong here?',
+      artifactIds: [artifactId],
+    })
+    const sessionId = client.getState().activeSessionId!
+    const threadId = client.getState().sessions[sessionId]!.threadIds[0]!
+    expect(client.getState().threads[threadId]?.messages[0]?.content).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: 'artifact', artifactId })]),
+    )
+  })
+
   it('leaves the draft as it was when its send fails', async () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     await mount(client)

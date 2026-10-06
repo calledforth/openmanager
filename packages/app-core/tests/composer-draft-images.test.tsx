@@ -1,0 +1,358 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import {
+  createMockEnvironmentClient,
+  selectDraftContent,
+  type MockEnvironmentClient,
+  type MockSeed,
+} from '@openmanager/environment-client'
+import { EnvironmentClientProvider } from '../src/providers/environment-client'
+import {
+  EnvironmentComposerDraftProvider,
+  newSessionDraftKey,
+} from '../src/providers/environment-drafts'
+import { DraftPageContext, type DraftPageInternals } from '../src/providers/draft-pages'
+import { MessageInputView } from '../src/components/chat/MessageInputView'
+import type {
+  DraftImageAttachment,
+  KeptImage,
+  UploadedImageAttachment,
+} from '../src/lib/attachments'
+import { ThemeProvider } from '../src/providers/theme-provider'
+
+const WORKSPACE = {
+  workspaceId: 'C:/repo',
+  name: 'repo',
+  path: 'C:/repo',
+  lastUsedAt: null,
+  lastActivityAt: null,
+  capabilities: { git: false, providers: ['opencode'] },
+  exists: true,
+}
+const SEED: MockSeed = { workspaces: [WORKSPACE] }
+const PAGE_DRAFT = 'page-draft'
+const PAGE_SESSION = 'page-session'
+const PAGE_KEY = newSessionDraftKey(PAGE_DRAFT)
+
+const page: DraftPageInternals = {
+  pageDraftId: PAGE_DRAFT,
+  pageTarget: (draftId) =>
+    draftId === PAGE_DRAFT
+      ? { type: 'new_session', workspaceId: WORKSPACE.workspaceId, sessionId: PAGE_SESSION }
+      : undefined,
+  claim: () => undefined,
+}
+
+let container: HTMLDivElement
+let root: Root
+let urls = 0
+beforeEach(() => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: false,
+    media: query,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    addListener: () => undefined,
+    removeListener: () => undefined,
+  }))
+  urls = 0
+  URL.createObjectURL = vi.fn(() => `blob:preview-${(urls += 1)}`)
+  URL.revokeObjectURL = vi.fn()
+  container = document.createElement('div')
+  document.body.append(container)
+  root = createRoot(container)
+})
+afterEach(async () => {
+  await act(() => root.unmount())
+  container.remove()
+  vi.unstubAllGlobals()
+})
+
+const settle = async (client: MockEnvironmentClient) => {
+  for (let round = 0; round < 6; round += 1) {
+    await act(() => client.settle())
+    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)))
+  }
+}
+
+type Sent = { text: string; attachments: DraftImageAttachment[]; kept: KeptImage[] }
+
+async function mount(
+  client: MockEnvironmentClient,
+  options: {
+    onSend?: (sent: Sent) => Promise<void>
+    uploadImage?: (image: DraftImageAttachment) => Promise<UploadedImageAttachment>
+  } = {},
+) {
+  const sent: Sent[] = []
+  const uploads: DraftImageAttachment[] = []
+  const uploadImage =
+    options.uploadImage ??
+    (async (image: DraftImageAttachment) => {
+      uploads.push(image)
+      const stored = await client.uploadArtifact!({
+        workspaceId: WORKSPACE.workspaceId,
+        name: image.file.name,
+        mimeType: image.file.type,
+        bytes: image.file,
+      })
+      return {
+        id: stored.artifactId,
+        name: stored.name,
+        mimeType: stored.mimeType,
+        size: stored.sizeBytes,
+        previewUrl: image.previewUrl,
+        workspaceId: stored.workspaceId,
+      }
+    })
+  await act(() =>
+    root.render(
+      <ThemeProvider>
+        <EnvironmentClientProvider client={client}>
+          <DraftPageContext.Provider value={page}>
+            <EnvironmentComposerDraftProvider>
+              <MessageInputView
+                disabled={false}
+                pendingDraftSessionStart={false}
+                activeWorkspacePath={WORKSPACE.workspaceId}
+                activeSessionId={null}
+                isSessionDraftOpen
+                providerReady
+                currentProviderId="opencode"
+                providerModelGroups={[]}
+                currentModelId=""
+                configOptions={[]}
+                modeOptions={[]}
+                effortLevels={[]}
+                currentEffort=""
+                currentModeId=""
+                canChangeSettings={false}
+                canChangeProvider={false}
+                showModeControl={false}
+                showModelControl={false}
+                isStreaming={false}
+                draftKey={PAGE_KEY}
+                imageUploadEnabled
+                imageSupportMessage={null}
+                onModeChange={() => undefined}
+                onProviderModelChange={() => undefined}
+                onConfigOptionChange={() => undefined}
+                onSend={async (text, attachments, kept = []) => {
+                  sent.push({ text, attachments, kept })
+                  await options.onSend?.({ text, attachments, kept })
+                }}
+                onAbort={() => undefined}
+                uploadImage={uploadImage}
+              />
+            </EnvironmentComposerDraftProvider>
+          </DraftPageContext.Provider>
+        </EnvironmentClientProvider>
+      </ThemeProvider>,
+    ),
+  )
+  await settle(client)
+  return { sent, uploads }
+}
+
+const textarea = () => container.querySelector('textarea')!
+
+async function attach(...names: string[]) {
+  const input = container.querySelector<HTMLInputElement>('input[type="file"]')!
+  const files = names.map((name) => new File(['png'], name, { type: 'image/png' }))
+  Object.defineProperty(input, 'files', { value: files, configurable: true })
+  await act(() => {
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+}
+
+async function type(text: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!
+  await act(() => {
+    setter.call(textarea(), text)
+    textarea().dispatchEvent(new Event('input', { bubbles: true }))
+  })
+}
+
+async function pressEnter() {
+  await act(async () => {
+    textarea().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  })
+}
+
+const thumbnails = () =>
+  [...container.querySelectorAll<HTMLImageElement>('img')].map((img) => img.getAttribute('alt'))
+
+describe('images kept with the composer draft', () => {
+  it('uploads an image when it is attached and names it in the draft', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    const { uploads } = await mount(client)
+
+    await attach('screenshot.png')
+    expect(uploads.map((upload) => upload.file.name)).toEqual(['screenshot.png'])
+    await settle(client)
+
+    const [artifactId] = selectDraftContent(client.getState(), PAGE_DRAFT)?.artifactIds ?? []
+    expect(artifactId).toBeDefined()
+    // Its own preview: nothing read back for an image uploaded here.
+    expect(container.querySelector(`img[alt="screenshot.png"]`)?.getAttribute('src')).toBe(
+      'blob:preview-1',
+    )
+    // Saved with the draft, so a reload or another device has it.
+    await act(() => client.drafts!.flush())
+    await settle(client)
+    expect(client.getState().drafts[PAGE_DRAFT]?.content.artifactIds).toEqual([artifactId])
+  })
+
+  it("reads back a draft's image from the environment when this page did not upload it", async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    // Attached elsewhere: on another device, or before a reload.
+    const stored = await client.uploadArtifact!({
+      workspaceId: WORKSPACE.workspaceId,
+      name: 'from-the-phone.png',
+      mimeType: 'image/png',
+      bytes: new Blob(['png'], { type: 'image/png' }),
+    })
+    await client.commands.saveDraft({
+      draftId: PAGE_DRAFT,
+      baseRevision: 0,
+      target: { type: 'new_session', workspaceId: WORKSPACE.workspaceId, sessionId: PAGE_SESSION },
+      content: { text: 'what is this?', artifactIds: [stored.artifactId] },
+    })
+    const fetchArtifact = vi.spyOn(client, 'fetchArtifact')
+    await mount(client)
+
+    expect(fetchArtifact).toHaveBeenCalledWith({
+      draftId: PAGE_DRAFT,
+      artifactId: stored.artifactId,
+    })
+    expect(textarea().value).toBe('what is this?')
+    expect(thumbnails()).toEqual(['Image 1'])
+    expect(container.querySelector('img[alt="Image 1"]')?.getAttribute('src')).toMatch(/^blob:/)
+  })
+
+  it('holds the send until the images have landed, then sends them by id', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    let finish: (() => void) | undefined
+    const landed = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    const { sent } = await mount(client, {
+      uploadImage: async (image) => {
+        await landed
+        return {
+          id: 'artifact-1',
+          name: image.file.name,
+          mimeType: 'image/png',
+          size: 3,
+          previewUrl: image.previewUrl,
+        }
+      },
+    })
+    await attach('screenshot.png')
+    await type('look at this')
+    expect(container.querySelector('[aria-busy="true"]')).not.toBeNull()
+    await pressEnter()
+    expect(sent).toEqual([])
+
+    await act(async () => {
+      finish!()
+      await landed
+    })
+    await settle(client)
+    expect(container.querySelector('[aria-busy="true"]')).toBeNull()
+    await pressEnter()
+    expect(sent).toEqual([
+      {
+        text: 'look at this',
+        attachments: [],
+        kept: [{ artifactId: 'artifact-1', name: 'screenshot.png', previewUrl: 'blob:preview-1' }],
+      },
+    ])
+    // Sent: the box and the draft are empty.
+    expect(thumbnails()).toEqual([])
+    expect(selectDraftContent(client.getState(), PAGE_DRAFT)?.artifactIds).toBeUndefined()
+  })
+
+  it('puts the images back with the text when the send fails', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client, {
+      onSend: async () => {
+        throw new Error('The provider is unavailable.')
+      },
+    })
+    await attach('screenshot.png')
+    await settle(client)
+    const images = selectDraftContent(client.getState(), PAGE_DRAFT)?.artifactIds
+    expect(images).toHaveLength(1)
+    await type('look')
+    await pressEnter()
+    await settle(client)
+
+    expect(textarea().value).toBe('look')
+    expect(selectDraftContent(client.getState(), PAGE_DRAFT)?.artifactIds).toEqual(images)
+    expect(thumbnails()).toEqual(['screenshot.png'])
+    expect(container.textContent).toContain('The provider is unavailable.')
+  })
+
+  it('drops an image from the draft when it is removed, and never names one removed mid-upload', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    let finish: (() => void) | undefined
+    const slow = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    let calls = 0
+    await mount(client, {
+      uploadImage: async (image) => {
+        calls += 1
+        if (calls === 2) await slow
+        return {
+          id: `artifact-${calls}`,
+          name: image.file.name,
+          mimeType: 'image/png',
+          size: 3,
+          previewUrl: image.previewUrl,
+        }
+      },
+    })
+    await attach('first.png')
+    await settle(client)
+    await attach('second.png')
+    expect(thumbnails()).toEqual(['first.png', 'second.png'])
+
+    // Taken out while it uploads: the draft never names it.
+    await act(() => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Remove second.png"]')!.click()
+    })
+    await act(async () => {
+      finish!()
+      await slow
+    })
+    await settle(client)
+    expect(selectDraftContent(client.getState(), PAGE_DRAFT)?.artifactIds).toEqual(['artifact-1'])
+
+    await act(() => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Remove first.png"]')!.click()
+    })
+    expect(selectDraftContent(client.getState(), PAGE_DRAFT)?.artifactIds).toBeUndefined()
+    expect(thumbnails()).toEqual([])
+  })
+
+  it('says so when an upload fails, and keeps nothing of it', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client, {
+      uploadImage: async () => {
+        throw new Error('The environment could not be reached.')
+      },
+    })
+    await attach('screenshot.png')
+    await settle(client)
+    expect(thumbnails()).toEqual([])
+    expect(selectDraftContent(client.getState(), PAGE_DRAFT)).toBeUndefined()
+    expect(container.textContent).toContain(
+      'screenshot.png was not attached. The environment could not be reached.',
+    )
+  })
+})

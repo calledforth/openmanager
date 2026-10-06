@@ -136,11 +136,10 @@ export function EnvironmentSidebarDraftsProvider({ children }: { children: React
   }, [])
 
   /**
-   * The one place a discarded draft is let go. Images kept with a draft
-   * (CAL-215) are released here too, once they are: read the draft's
-   * `artifactIds` before deleting it. The delete is conditional: written
-   * since by another client, the environment refuses it, the draft stays, and
-   * its card comes back.
+   * The one place a discarded draft is let go. The delete is conditional:
+   * written since by another client, the environment refuses it, the draft
+   * stays, and its card comes back. The draft's images go with it, freed by
+   * the environment in the delete itself, so a refused delete frees none.
    */
   const releaseDraft = useCallback(
     (draftId: string, madeOn: number) => sync?.discard(draftId, { ifRevision: madeOn }),

@@ -1,5 +1,6 @@
 import { createContext, useContext, useRef } from 'react'
 import type { DraftSyncStatus } from '@openmanager/environment-client'
+import type { ArtifactSource } from '../../lib/attachments'
 import {
   pruneComposerDrafts,
   readComposerDrafts,
@@ -11,12 +12,24 @@ import {
  * Where the composer keeps unsent text, by draft key (`session:<id>`,
  * `new:<draftId>` where drafts have ids, `draft:<workspaceId>` where a
  * project has one, or anything a story picks). Reads are synchronous so
- * a restored draft is on screen at first paint. Attachments are not here:
- * they stay with the composer that holds their `File`s.
+ * a restored draft is on screen at first paint. A store that keeps images
+ * (`keepsImages`) holds a draft's uploaded images by artifact id, so they
+ * outlive the composer; elsewhere they stay with the composer that holds
+ * their `File`s and upload when sent.
  */
 export interface ComposerDraftStore {
   getText(key: string): string
   setText(key: string, text: string): void
+  /**
+   * Whether the draft behind `key` keeps its images: they are uploaded when
+   * attached and named here, with `getImages`/`setImages`/`imageSource`.
+   */
+  keepsImages?(key: string): boolean
+  /** The draft's uploaded images, in order; the same array until they change. */
+  getImages?(key: string): readonly string[]
+  setImages?(key: string, artifactIds: readonly string[]): void
+  /** Where the bytes of one of the draft's images are read from. */
+  imageSource?(key: string, artifactId: string): ArtifactSource | undefined
   /** Fires when any draft may have changed, here or (for a synced store) elsewhere. */
   subscribe(listener: () => void): () => void
   /** Write anything waiting now: the composer is going away or the page is hidden. */
@@ -29,13 +42,17 @@ export interface ComposerDraftStore {
   claim?(key: string): void
   /**
    * Set the draft behind `key` aside for a send that is starting, after the
-   * composer has been cleared for it. `sentText` is the text being sent, as
-   * it was before the clear, so what shows the draft meanwhile (its sidebar
-   * card) shows what went. Anything typed until the returned release is
-   * called goes to a new draft. Call the release when the send settles,
-   * before putting back the text of a failed one.
+   * composer has been cleared for it. `sentText` and `sentImages` are what is
+   * being sent, as the draft held them before the clear, so what shows the
+   * draft meanwhile (its sidebar card) shows what went. Anything typed until
+   * the returned release is called goes to a new draft. Call the release when
+   * the send settles, before putting back the text of a failed one.
    */
-  beginSend?(key: string, sentText?: string): (() => void) | undefined
+  beginSend?(
+    key: string,
+    sentText?: string,
+    sentImages?: readonly string[],
+  ): (() => void) | undefined
   /**
    * Whether the draft behind `key` has reached where drafts are kept, for
    * stores that sync them; read again whenever `subscribe` fires. A store
