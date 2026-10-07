@@ -6,6 +6,7 @@ import {
   LockKeyIcon,
   PowerIcon,
   ProhibitIcon,
+  ShieldSlashIcon,
   SwapIcon,
   WifiSlashIcon,
   type Icon,
@@ -49,7 +50,8 @@ export type ConnectionHandlers = {
 /**
  * One mark per thing that can be wrong, so failures that need different
  * fixes do not look alike: the tunnel (a cloud), the server (power), the
- * token (a key), the path (a broken link), this device (no wifi).
+ * token (a key), the path (a broken link), this device (no wifi), the
+ * browser's own block on this device (a shield).
  */
 function connectionIcon(state: ConnectionUiState): Icon | null {
   switch (state.reason) {
@@ -65,6 +67,8 @@ function connectionIcon(state: ConnectionUiState): Icon | null {
       return SwapIcon
     case 'route_down':
       return LinkBreakIcon
+    case 'local_access_blocked':
+      return ShieldSlashIcon
   }
   // No network on this device has no action; retries that stopped do.
   if (state.kind === 'offline') return state.action ? LinkBreakIcon : WifiSlashIcon
