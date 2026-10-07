@@ -11,6 +11,25 @@ export const Route = createFileRoute('/playground/connection')({
   component: ConnectionStoriesPage,
 })
 
+/**
+ * A stand-in for the session under the strip, so a story shows what stays in
+ * place: the strip floats over the page instead of pushing it down.
+ */
+function SessionStandIn() {
+  return (
+    <div className="flex flex-col gap-4 px-6 pb-8 pt-16" aria-hidden="true">
+      <div className="ml-auto max-w-[70%] rounded-[14px] bg-hover px-3.5 py-2 text-[14px] text-foreground">
+        Why does the build fail on Windows only?
+      </div>
+      <div className="max-w-[80%] text-[14px] leading-6 text-muted-foreground">
+        The test temp directory resolves to an 8.3 short path on the Windows runner, so the lexical
+        comparison misses. Comparing real paths fixes it; the session stays here while the
+        connection comes back.
+      </div>
+    </div>
+  )
+}
+
 function StoryCard({
   id,
   name,
@@ -40,12 +59,10 @@ function StoryCard({
       </div>
       <div className="min-h-[220px] bg-[var(--basis-canvas-bg)]">
         {state.surface === 'banner' ? (
-          <div className="flex min-h-[220px] flex-col">
-            <ConnectionBanner state={state} />
-            <div className="flex flex-1 items-center justify-center px-6">
-              <p className="max-w-sm text-center text-ui-sm text-[var(--basis-text-muted)]">
-                Session workspace stays mounted while {state.kind.replace('_', ' ')}.
-              </p>
+          <div className="relative min-h-[220px]">
+            <SessionStandIn />
+            <div className="pointer-events-none absolute inset-x-0 top-3 flex justify-center px-3">
+              <ConnectionBanner className="pointer-events-auto" state={state} />
             </div>
           </div>
         ) : (
@@ -65,9 +82,9 @@ function ConnectionStoriesPage() {
         Connection states
       </h1>
       <p className="mt-1 max-w-2xl text-ui-sm leading-ui-normal text-[var(--basis-text-muted)]">
-        Storybook equivalent for first-run and failure surfaces. Blocking screens are for
-        setup and terminal errors. Connecting, reconnecting, and unreachable stay in the
-        shell as banners.
+        Storybook equivalent for first-run and failure surfaces. Blocking screens are for setup and
+        failures only a person can fix. Everything that waiting resolves is one strip over the page:
+        the environment it cannot reach, a spinner, and the cause on one muted line.
       </p>
 
       <section className="mt-8">
@@ -87,8 +104,8 @@ function ConnectionStoriesPage() {
         Route failures
       </h2>
       <p className="mt-1 max-w-2xl text-ui-sm leading-ui-normal text-[var(--basis-text-muted)]">
-        When the route in use fails, the other saved routes are tried, local first. These are what a
-        person sees when none of them reaches the environment.
+        When the route in use fails, the other saved routes are tried, local first. Every reason but
+        a refused token shows the same reconnect strip; only its detail line differs.
       </p>
       <div className="mt-6 grid gap-6">
         {ROUTE_FAILURE_STORIES.map((story) => (

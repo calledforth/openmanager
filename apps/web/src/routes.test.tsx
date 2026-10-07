@@ -885,9 +885,11 @@ describe('web routes', () => {
     )
 
     renderWebApp('/')
-    // /bootstrap takes no token, so a refusal there is the route's, not the token's.
-    expect(await screen.findByRole('heading', { name: 'Route refused access' })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Change environment' }))
+    // /bootstrap takes no token, so a refusal there is the route's, not the token's:
+    // it waits it out in the reconnect strip, with the refusal as its cause.
+    const refused = await screen.findByText(/^127\.0\.0\.1:43120 refused this page's address/)
+    expect(refused.closest('[role="status"]')).toHaveTextContent("Can't reach Local environment")
+    await user.click(screen.getByRole('button', { name: 'Switch environment' }))
     expect(
       await screen.findByRole('heading', { name: 'Select an environment' }),
     ).toBeInTheDocument()
@@ -960,7 +962,10 @@ describe('web routes', () => {
 
     renderWebApp('/')
     // Nothing answers on this device's own address: the server is not running.
-    expect(await screen.findByRole('alert')).toHaveTextContent('Environment offline')
+    const cause = await screen.findByText('Nothing is listening at 127.0.0.1:43120 on this device')
+    const strip = cause.closest('[role="status"]')
+    expect(strip).toHaveTextContent("Can't reach Local environment")
+    expect(strip).toHaveTextContent('Trying to reconnect…')
     expect(
       screen.getByText('Connect to an environment to see your sessions here.'),
     ).toBeInTheDocument()

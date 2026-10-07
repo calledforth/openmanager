@@ -177,7 +177,7 @@ the next reload or reselection.
 
 | Trigger | What is asked |
 | --- | --- |
-| The bootstrap on the route in use fails, is refused, or answers as another environment | Every other route, all at once. The interface says it is trying another route. |
+| The bootstrap on the route in use fails, is refused, or answers as another environment | Every other route, all at once. The reconnect strip names the route that stopped answering. |
 | The live socket drops | The route in use on its own first. If it still answers, the drop is a blip left to the socket's own backoff. If not, every other route. |
 | No route answered last time | Every route again, quietly, after 2 s, 4 s, 8 s, 15 s, then every 30 s. |
 
@@ -199,18 +199,31 @@ same one, so no other route is tried and nothing is retried. A `401`/`403` on
 the route or the browser (a tunnel's access gate, or the environment's origin
 check), not the token, and the next route is tried.
 
-**Why it failed.** When no route answers, the client shows one reason, worked
-out from every route it asked (`route-fallback.ts`):
+**Why it failed.** When no route answers, the client works out one reason
+from every route it asked (`route-fallback.ts`). The reason is for debugging,
+not a headline: every reason that waiting can resolve shows the same reconnect
+strip over the page, "Can't reach *environment*" with a spinner and "Trying to
+reconnect…", and the reason only picks its one muted detail line. Two reasons
+need a person instead, so they get their own state: a refused token is the
+**Not authorized** screen and nothing is retried, and a browser that blocked
+local access is its own **Local access blocked** strip, with the fix and no
+spinner, since waiting does not change a browser setting.
 
-| Reason | Learned from | Shown as |
+| Reason | Learned from | Detail line in the reconnect strip |
 | --- | --- | --- |
-| `environment_offline` | Nothing answers on a loopback route (nothing listens on this device), a gateway answers `502`/`503`/`504` in a status this client can read, or the environment closed the socket with `1001` `server_shutdown` and no route has answered since | Environment offline |
-| `local_access_blocked` | A loopback route fails and the browser reports its `loopback-network` permission as denied: a hosted page that was refused access to this device | Local access blocked |
-| `route_refused` | `401`/`403` on `/bootstrap`: a tunnel's access gate, or the environment refusing this browser's origin. In a browser, also a redirect it may not follow (a sign-in gate), and on a loopback route an answer the page may not read | Route refused access |
-| `wrong_environment` | The address answers as another environment | Environment unreachable |
-| `tunnel_down` | Over a network, an answer the page may not read, or Cloudflare's `530` | Tunnel down |
-| `route_down` | Nothing answers over a network at all, another HTTP error, or something that is not an environment | Route unavailable |
-| `credential_rejected` | The socket is closed with `4401`: the token was revoked, or the environment does not know it | Not authorized |
+| `environment_offline` | Nothing answers on a loopback route (nothing listens on this device), a gateway answers `502`/`503`/`504` in a status this client can read, or the environment closed the socket with `1001` `server_shutdown` and no route has answered since | "Nothing is listening at 127.0.0.1:43120 on this device", "*host* answered, but the environment behind it is stopped", or "*Environment* shut down" |
+| `local_access_blocked` | A loopback route fails and the browser reports its `loopback-network` permission as denied: a hosted page that was refused access to this device | None: its own **Local access blocked** strip, whose detail is "This browser blocked the page from reaching 127.0.0.1:43120" |
+| `route_refused` | `401`/`403` on `/bootstrap`: a tunnel's access gate, or the environment refusing this browser's origin. In a browser, also a redirect it may not follow (a sign-in gate), and on a loopback route an answer the page may not read | "127.0.0.1:43120 refused this page's address", or "*host* refused this browser" |
+| `wrong_environment` | The address answers as another environment | "A different environment answers at *host*" |
+| `tunnel_down` | Over a network, an answer the page may not read, or Cloudflare's `530` | "*host* answered, but nothing is connected behind it" |
+| `route_down` | Nothing answers over a network at all, another HTTP error, or something that is not an environment | "No answer from *host*" |
+| `credential_rejected` | The socket is closed with `4401`: the token was revoked, or the environment does not know it | None: the **Not authorized** screen |
+
+When more than one route was asked, the detail ends with how many, as in "No
+answer from om.example.com (2 routes tried)". The reason, the route, the count
+and whether the environment said it shut down all stay on the connection
+state (`reason`, `endpoint`, `routesTried`, `shutDown`) for anything that needs
+them.
 
 **What a browser can read.** A page on another origin reads an answer only if
 it carries CORS headers. Cloudflare's own error pages do not, so a browser sees
@@ -229,17 +242,18 @@ resolves, or this device's network). The follow-up does not follow redirects,
 so a sign-in gate such as Cloudflare Access shows as an opaque redirect and is
 `route_refused`. It gives up after 5 seconds. On a loopback route nothing
 stands in front of the environment, so an opaque answer is the environment
-refusing this page's origin, and is shown as `route_refused`. Over a network
-the same refusal still reads as `tunnel_down`, which is why that wording ends
-with checking the page's address.
+refusing this page's origin, and is reported as `route_refused`. Over a
+network the same refusal still reads as `tunnel_down`.
 
 A browser cannot tell a tunnel that is down from a working tunnel whose server
-is stopped, so the tunnel wording names both. The one thing that does tell them
-apart is the environment itself: a server that shuts down on purpose closes
-every socket with `1001` `server_shutdown`, and that close passes through the
-tunnel. The client keeps it, per environment, until any route answers, and
-shows the environment as offline instead of the tunnel as down. A crash, a killed process or a
-sleeping computer sends nothing, and reads as the tunnel being down.
+is stopped, so the `tunnel_down` detail says only that nothing is connected
+behind the address. The one thing that does tell them apart is the environment
+itself: a server that shuts down on purpose closes every socket with `1001`
+`server_shutdown`, and that close passes through the tunnel. The client keeps
+it, per environment, until any route answers, and reports the environment as
+offline ("*Environment* shut down") instead of the tunnel as down. A crash, a
+killed process or a sleeping computer sends nothing, and reads as the tunnel
+being down.
 
 **A refused token.** A browser cannot read why a WebSocket upgrade was refused
 either: a `401` reaches it as a bare `1006`, the same as a dropped tunnel. The
@@ -262,22 +276,22 @@ person first; when the answer was no, the permission reads `denied` and the
 route is reported as `local_access_blocked` rather than offline, while the
 search moves on to the tunnel as for any failed route. A prompt closed without
 an answer, and Safari, which blocks loopback from `https` pages as mixed
-content, report nothing, so those still read as offline and the wording asks
-the person to check the browser too. See
+content, report nothing, so those still read as offline, and the strip's
+detail line says only that nothing answers on this device. See
 [deploying the web client](./web-deploy.md#hosted-page-to-an-environment-on-this-device).
 
 A refused token outranks every route failure. When routes disagree the client
-shows, in order: offline, local access blocked, refused, another environment,
-tunnel down, down. A sign that the server is down explains every
-other failure, a refusal is something a person can act on, an address that now
-leads to another environment says what changed, and a gateway that answers
-says more than silence. Each reason has its own mark in the banner or on the
-screen: a cloud for the tunnel, power for the server, a key for the token.
-`/playground/connection` shows each one.
+reports, in order: offline, local access blocked, refused, another environment,
+tunnel down, down. A
+sign that the server is down explains every other failure, a refusal is the
+likeliest thing for a person to fix, an address that now leads to another
+environment says what changed, and a gateway that answers says more than
+silence. `/playground/connection` shows the strip for each reason.
 
-While no route answers, the socket is closed and the reason stays on screen
-until a route answers again, at which point the client reconnects on its own.
-**Retry** asks again straight away.
+While no route answers, the socket is closed and the strip stays over the page
+until a route answers again, at which point the client reconnects on its own
+and the strip goes. **Retry** asks again straight away; **Switch environment**
+opens the environment list.
 
 **Known gaps.** A route whose bootstrap answers but whose socket can never
 connect (a proxy that does not pass WebSocket upgrades) is treated as a blip

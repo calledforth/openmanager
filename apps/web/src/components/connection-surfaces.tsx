@@ -1,19 +1,9 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
-import {
-  CloudSlashIcon,
-  KeyIcon,
-  LinkBreakIcon,
-  LockKeyIcon,
-  PowerIcon,
-  ProhibitIcon,
-  ShieldSlashIcon,
-  SwapIcon,
-  WifiSlashIcon,
-  type Icon,
-} from '@phosphor-icons/react'
+import { KeyIcon } from '@phosphor-icons/react'
 import { Button } from '@openmanager/app-core/components/fluid/ui/button'
 import {
   connectionActionLabel,
+  connectionStatusLabel,
   type ConnectionAction,
   type ConnectionUiState,
 } from '../lib/connection-state'
@@ -47,35 +37,6 @@ export type ConnectionHandlers = {
   onCheckRoutes?: () => void
 }
 
-/**
- * One mark per thing that can be wrong, so failures that need different
- * fixes do not look alike: the tunnel (a cloud), the server (power), the
- * token (a key), the path (a broken link), this device (no wifi), the
- * browser's own block on this device (a shield).
- */
-function connectionIcon(state: ConnectionUiState): Icon | null {
-  switch (state.reason) {
-    case 'tunnel_down':
-      return CloudSlashIcon
-    case 'environment_offline':
-      return PowerIcon
-    case 'credential_rejected':
-      return KeyIcon
-    case 'route_refused':
-      return ProhibitIcon
-    case 'wrong_environment':
-      return SwapIcon
-    case 'route_down':
-      return LinkBreakIcon
-    case 'local_access_blocked':
-      return ShieldSlashIcon
-  }
-  // No network on this device has no action; retries that stopped do.
-  if (state.kind === 'offline') return state.action ? LinkBreakIcon : WifiSlashIcon
-  if (state.kind === 'unauthorized') return LockKeyIcon
-  return null
-}
-
 function runAction(action: ConnectionAction, handlers: ConnectionHandlers, endpoint?: string) {
   if (action === 'retry') handlers.onRetry?.()
   if (action === 'change_environment') handlers.onChangeEnvironment?.()
@@ -89,19 +50,27 @@ function ActionButtons({
   handlers,
   className,
   extra,
+  compact = false,
 }: {
   state: ConnectionUiState
   handlers: ConnectionHandlers
   className?: string
   extra?: ReactNode
+  /**
+   * Small text buttons with a hover fill, as the other floating notices
+   * have, for the banner.
+   */
+  compact?: boolean
 }) {
   return (
-    <div className={cn('flex flex-wrap gap-2', className)}>
+    <div className={cn('flex flex-wrap', compact ? 'gap-1.5' : 'gap-2', className)}>
       {extra}
       {state.action && state.action !== 'connect' ? (
         <Button
           type="button"
-          variant="secondary"
+          variant={compact ? 'ghost' : 'secondary'}
+          size={compact ? 'compact' : undefined}
+          className={compact ? 'text-foreground' : undefined}
           onClick={() => runAction(state.action!, handlers)}
         >
           {connectionActionLabel(state.action)}
@@ -111,6 +80,7 @@ function ActionButtons({
         <Button
           type="button"
           variant="ghost"
+          size={compact ? 'compact' : undefined}
           onClick={() => runAction(state.secondaryAction!, handlers)}
         >
           {connectionActionLabel(state.secondaryAction)}
@@ -429,7 +399,8 @@ export function ConnectionScreen({
     ? 'Choose a saved environment and the route to reach it by, or add another endpoint. A second URL for an environment you already have is added to it as another route.'
     : state.description
 
-  const StateIcon = connectionIcon(state)
+  // The one mark a screen keeps: a refused token is a key problem.
+  const StateIcon = state.kind === 'unauthorized' ? KeyIcon : null
 
   // Tend's connect page: a narrow column, vertically centred and lifted a
   // little above the middle.
@@ -472,63 +443,62 @@ export function ConnectionScreen({
   )
 }
 
+/**
+ * Every connection state that leaves the page in place, as one floating
+ * strip: the environment that cannot be reached, a spinner while the client
+ * retries on its own, and the cause as one muted line. The host positions it
+ * over the page, so it never moves what is underneath.
+ *
+ * A strip that is retrying, or that has nothing to press, is a polite status.
+ * One that waits on a person (retries stopped) is an alert.
+ */
 export function ConnectionBanner({
   state,
   handlers = {},
+  className,
 }: {
   state: ConnectionUiState
   handlers?: ConnectionHandlers
+  className?: string
 }) {
-  // An offline banner with no action recovers on its own once the network is
-  // back, so it stays a polite status like connecting and reconnecting. A
-  // banner that offers an action is waiting on a person, so it is assertive.
-  const needsAction = state.kind === 'unreachable' || (state.kind === 'offline' && !!state.action)
-  const live = !needsAction
-  const StateIcon = connectionIcon(state)
+  const needsPerson = !state.retrying && !!state.action
   return (
     <div
       className={cn(
-        'flex shrink-0 items-center justify-between gap-3 border-b px-5 py-2.5',
-        needsAction
-          ? 'border-[var(--basis-border)] bg-[var(--basis-surface)]'
-          : 'border-[var(--basis-border-muted)] bg-[var(--basis-surface-elevated)]',
+        'flex w-full max-w-[640px] flex-wrap items-center gap-x-3 gap-y-1 rounded-[14px] bg-float py-2 pl-3.5 pr-2 shadow-float',
+        className,
       )}
-      role={live ? 'status' : 'alert'}
-      aria-live={live ? 'polite' : 'assertive'}
+      role={needsPerson ? 'alert' : 'status'}
+      aria-live={needsPerson ? 'assertive' : 'polite'}
     >
-      <div className="flex min-w-0 items-start gap-3">
-        {StateIcon ? (
-          <span
-            className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg bg-hover text-[var(--basis-session-cube-needs)]"
-            aria-hidden
-          >
-            <StateIcon className="size-4" />
-          </span>
-        ) : null}
-        <div className="min-w-0">
-          <p className="text-ui-sm font-medium text-[var(--basis-text-strong)]">{state.title}</p>
-          <p className="mt-0.5 text-ui-xs leading-ui-normal text-[var(--basis-text-muted)]">
+      <div className="min-w-0 flex-1">
+        <p className="flex flex-wrap items-center gap-x-2 text-[13px] leading-5">
+          <span className="font-medium text-foreground">{state.title}</span>
+          <span className="sr-only">. </span>
+          <span className="flex items-center gap-1.5 text-muted-foreground">
+            {state.retrying ? (
+              <span className="todo-progress-loader shrink-0" aria-hidden="true" />
+            ) : null}
             {state.description}
-          </p>
-        </div>
+          </span>
+        </p>
+        {state.detail ? (
+          <p className="text-[12px] leading-4 text-faint">{state.detail}</p>
+        ) : null}
       </div>
-      <ActionButtons className="shrink-0" state={state} handlers={handlers} />
+      <ActionButtons className="shrink-0" state={state} handlers={handlers} compact />
     </div>
   )
 }
 
 export function ConnectionStatusChip({ state }: { state: ConnectionUiState }) {
   if (state.kind === 'no_environment') {
-    return (
-      <p className="px-2 text-[12px] text-muted-foreground">No environment</p>
-    )
+    return <p className="px-2 text-[12px] text-muted-foreground">No environment</p>
   }
 
+  // A screen, or a strip that stopped retrying, is waiting on a person.
   const needsAttention =
-    state.kind === 'confirm_route' ||
-    state.kind === 'unauthorized' ||
-    state.kind === 'incompatible_protocol' ||
-    (state.kind === 'offline' && !!state.action)
+    state.surface === 'screen' || (state.surface === 'banner' && !state.retrying && !!state.action)
   const tone =
     state.kind === 'ready'
       ? 'text-[var(--basis-session-cube-ready)]'
@@ -537,9 +507,11 @@ export function ConnectionStatusChip({ state }: { state: ConnectionUiState }) {
         : 'text-[var(--basis-text-muted)]'
 
   return (
-    <p className={cn('px-2 text-[12px]', tone)}>
-      {state.kind === 'ready' ? 'Connected' : state.title}
-      {state.environmentLabel ? ` · ${state.environmentLabel}` : ''}
+    <p className={cn('flex min-w-0 items-center gap-1.5 px-2 text-[12px]', tone)}>
+      {state.retrying ? (
+        <span className="todo-progress-loader shrink-0" aria-hidden="true" />
+      ) : null}
+      <span className="truncate">{connectionStatusLabel(state)}</span>
     </p>
   )
 }

@@ -7,10 +7,14 @@ import {
 } from '../stories/connection-states'
 import {
   bootstrapOutcomeFromQuery,
+  connectionStatusLabel,
   deriveConnectionUi,
   type DeriveConnectionInput,
   type RouteFailure,
 } from './connection-state'
+
+/** Route failures that need a person, so they never show the reconnect strip. */
+const PERSON_NEEDED = new Set(['credential_rejected', 'local_access_blocked'])
 
 /** Kinds that keep the shell mounted instead of replacing it. */
 const BANNER_KINDS = new Set(['connecting', 'reconnecting', 'offline', 'unreachable'])
@@ -19,8 +23,9 @@ describe('deriveConnectionUi', () => {
   it('maps each story fixture to its named state and surface', () => {
     for (const story of CONNECTION_STORIES) {
       const ui = deriveConnectionUi(story.input)
-      expect(ui.kind, story.id).toBe(story.id)
-      expect(ui.surface, story.id).toBe(BANNER_KINDS.has(story.id) ? 'banner' : 'screen')
+      // A variant's id is its kind followed by what sets it apart.
+      expect(story.id.startsWith(ui.kind), story.id).toBe(true)
+      expect(ui.surface, story.id).toBe(BANNER_KINDS.has(ui.kind) ? 'banner' : 'screen')
       expect(ui.title.length, story.id).toBeGreaterThan(0)
       expect(ui.description.length, story.id).toBeGreaterThan(0)
     }
@@ -74,8 +79,57 @@ describe('deriveConnectionUi', () => {
       bootstrap: { status: 'loading' },
       transport: { phase: 'reconnecting', hasConnected: true, failure: null },
     })
-    expect(ui).toMatchObject({ kind: 'reconnecting', surface: 'banner', action: 'retry' })
-    expect(ui.description).toContain('session stays here')
+    expect(ui).toMatchObject({
+      kind: 'reconnecting',
+      surface: 'banner',
+      title: "Can't reach Home",
+      description: 'Trying to reconnect…',
+      detail: 'The connection to 127.0.0.1:43120 dropped',
+      retrying: true,
+      action: 'retry',
+      secondaryAction: 'change_environment',
+    })
+  })
+
+  it('names the environment, or falls back to "the environment"', () => {
+    const ui = deriveConnectionUi({
+      environment: { status: 'selected', endpoint: 'http://127.0.0.1:43120' },
+      bootstrap: { status: 'unreachable', cause: 'network' },
+      transport: { phase: 'closed', hasConnected: false, failure: { code: 'unreachable' } },
+    })
+    expect(ui).toMatchObject({
+      kind: 'unreachable',
+      title: "Can't reach the environment",
+      detail: 'No answer from 127.0.0.1:43120',
+      retrying: true,
+    })
+  })
+
+  it('says what a bare bootstrap failure was, in its first sentence', () => {
+    const ui = deriveConnectionUi({
+      environment: { status: 'selected', endpoint: 'http://127.0.0.1:43120', label: 'Home' },
+      bootstrap: {
+        status: 'unreachable',
+        message: 'A different environment answers at this address. Use another route.',
+      },
+      transport: { phase: 'closed', hasConnected: false, failure: { code: 'unreachable' } },
+    })
+    expect(ui.detail).toBe('A different environment answers at this address')
+  })
+
+  it('shows a first connect working, not failing', () => {
+    const ui = deriveConnectionUi({
+      environment: { status: 'selected', endpoint: 'http://127.0.0.1:43120', label: 'Home' },
+      bootstrap: { status: 'loading' },
+      transport: { phase: 'connecting', hasConnected: false, failure: null },
+    })
+    expect(ui).toMatchObject({
+      kind: 'connecting',
+      surface: 'banner',
+      title: 'Connecting to Home',
+      retrying: true,
+    })
+    expect(ui.action).toBeUndefined()
   })
 
   it('reports no network as offline, with no action to take', () => {
@@ -85,10 +139,11 @@ describe('deriveConnectionUi', () => {
       transport: { phase: 'reconnecting', hasConnected: true, failure: null },
       network: { online: false },
     })
-    expect(ui).toMatchObject({ kind: 'offline', surface: 'banner', title: 'No network' })
+    expect(ui).toMatchObject({ kind: 'offline', surface: 'banner', title: "You're offline" })
     expect(ui.action).toBeUndefined()
     expect(ui.secondaryAction).toBeUndefined()
-    expect(ui.description).toContain('reconnects')
+    expect(ui.retrying).toBeUndefined()
+    expect(ui.description).toContain('network is back')
   })
 
   it('reports exhausted retries as offline, with a manual retry', () => {
@@ -106,10 +161,13 @@ describe('deriveConnectionUi', () => {
     expect(ui).toMatchObject({
       kind: 'offline',
       surface: 'banner',
-      title: 'Not connected',
+      title: "Can't reach Home",
+      description: 'Stopped retrying.',
       action: 'retry',
       secondaryAction: 'change_environment',
     })
+    // Nothing is retrying any more, so nothing spins.
+    expect(ui.retrying).toBeUndefined()
   })
 
   it('separates connecting, reconnecting and offline', () => {
@@ -229,53 +287,65 @@ describe('deriveConnectionUi', () => {
         ...extra,
       })
 
-    it('gives every reason its own wording and the reason itself', () => {
-      const titles = new Set<string>()
-      const descriptions = new Set<string>()
-      for (const story of ROUTE_FAILURE_STORIES) {
+    it('shows every reason that waiting resolves as the same reconnect state', () => {
+      const details = new Set<string>()
+      const waiting = ROUTE_FAILURE_STORIES.filter((story) => !PERSON_NEEDED.has(story.id))
+      for (const story of waiting) {
         const ui = deriveConnectionUi(story.input)
-        // A variant's id is its reason followed by what sets it apart.
-        if (story.id !== 'route_search')
+        expect(ui, story.id).toMatchObject({
+          surface: 'banner',
+          title: "Can't reach Rajku's laptop",
+          description: 'Trying to reconnect…',
+          retrying: true,
+          action: 'retry',
+          secondaryAction: 'change_environment',
+        })
+        // The reason itself is kept for debugging. A variant's id is its
+        // reason followed by what sets it apart.
+        if (story.id !== 'route_search') {
           expect(story.id.startsWith(ui.reason!), story.id).toBe(true)
-        titles.add(ui.title)
-        descriptions.add(ui.description)
+        }
+        details.add(ui.detail!)
       }
-      expect(descriptions.size).toBe(ROUTE_FAILURE_STORIES.length)
-      expect(titles.size).toBeGreaterThanOrEqual(6)
+      // Each cause still says something different on its one line.
+      expect(details.size).toBe(waiting.length)
     })
 
-    it('tells a tunnel that is down from an environment that is stopped', () => {
-      const down = failed({ reason: 'route_down' })
-      expect(down).toMatchObject({
-        kind: 'unreachable',
-        surface: 'banner',
-        title: 'Route unavailable',
-      })
-      expect(down.description).toContain('Nothing answers at studio.example.com')
-      expect(down.description).toContain('may still be running')
+    it('places every reason explicitly, so a new one cannot slip into the strip', () => {
+      expect(() => failed({ reason: 'not_a_reason' as unknown as RouteFailure['reason'] })).toThrow(
+        /not placed/,
+      )
+    })
 
-      const tunnel = failed({ reason: 'tunnel_down' })
-      expect(tunnel).toMatchObject({ kind: 'unreachable', surface: 'banner', title: 'Tunnel down' })
-      expect(tunnel.description).toContain('studio.example.com answers')
-      expect(tunnel.description).toContain('asleep, off or offline')
-
-      const shutDown = failed({ reason: 'environment_offline', stopped: true })
-      expect(shutDown).toMatchObject({ title: 'Environment offline' })
-      expect(shutDown.description).toContain('Local environment shut down')
-
-      const stoppedHere = failed({
+    it('keeps the cause as a short detail line', () => {
+      expect(failed({ reason: 'route_down' }).detail).toBe('No answer from studio.example.com')
+      expect(failed({ reason: 'tunnel_down' }).detail).toBe(
+        'studio.example.com answered, but nothing is connected behind it',
+      )
+      expect(failed({ reason: 'environment_offline', stopped: true })).toMatchObject({
+        detail: 'Local environment shut down',
         reason: 'environment_offline',
-        endpoint: 'http://127.0.0.1:43120',
-        local: true,
+        shutDown: true,
       })
-      expect(stoppedHere).toMatchObject({ kind: 'unreachable', title: 'Environment offline' })
-      expect(stoppedHere.description).toContain('127.0.0.1:43120 on this device')
-
-      const stoppedBehindTunnel = failed({ reason: 'environment_offline' })
-      expect(stoppedBehindTunnel.description).toContain('studio.example.com answers')
+      expect(
+        failed({ reason: 'environment_offline', endpoint: 'http://127.0.0.1:43120', local: true })
+          .detail,
+      ).toBe('Nothing is listening at 127.0.0.1:43120 on this device')
+      expect(failed({ reason: 'environment_offline' }).detail).toBe(
+        'studio.example.com answered, but the environment behind it is stopped',
+      )
+      expect(
+        failed({ reason: 'route_refused', endpoint: 'http://127.0.0.1:43120', local: true }).detail,
+      ).toBe("127.0.0.1:43120 refused this page's address")
+      expect(failed({ reason: 'route_refused', message: 'Forbidden.' }).detail).toBe(
+        'studio.example.com refused this browser (forbidden)',
+      )
+      expect(failed({ reason: 'wrong_environment' }).detail).toBe(
+        'A different environment answers at studio.example.com',
+      )
     })
 
-    it('tells a browser that blocked this device from an environment that is stopped', () => {
+    it('keeps a browser that blocked this device its own strip, with the fix', () => {
       const blocked = failed({
         reason: 'local_access_blocked',
         endpoint: 'http://127.0.0.1:43120',
@@ -285,34 +355,33 @@ describe('deriveConnectionUi', () => {
         kind: 'unreachable',
         surface: 'banner',
         title: 'Local access blocked',
+        detail: 'This browser blocked the page from reaching 127.0.0.1:43120',
         action: 'retry',
+        secondaryAction: 'change_environment',
       })
-      expect(blocked.description).toContain('blocked the page from reaching 127.0.0.1:43120')
       expect(blocked.description).toContain("browser's site settings")
+      // Waiting does not fix a browser setting, so nothing spins.
+      expect(blocked.retrying).toBeUndefined()
     })
 
-    it('tells a refused route from a refused token', () => {
-      const refused = failed({ reason: 'route_refused', message: 'Forbidden.' })
-      expect(refused).toMatchObject({
-        kind: 'unauthorized',
-        title: 'Route refused access',
-        action: 'retry',
-      })
-      expect(refused.description).toContain('(forbidden)')
-
+    it('keeps a refused token its own screen', () => {
       const rejected = failed({ reason: 'credential_rejected', message: 'Token revoked.' })
       expect(rejected).toMatchObject({
         kind: 'unauthorized',
+        surface: 'screen',
         title: 'Not authorized',
         action: 'change_environment',
       })
+      expect(rejected.retrying).toBeUndefined()
       expect(rejected.description).toContain('another route will not help')
       expect(rejected.description).toContain('(token revoked)')
     })
 
     it('says when the other routes failed too', () => {
-      expect(failed({ tried: 2 }).description).toContain('No other saved route answers either.')
-      expect(failed({ tried: 1 }).description).not.toContain('No other saved route')
+      const ui = failed({ tried: 2 })
+      expect(ui.detail).toBe('No answer from studio.example.com (2 routes tried)')
+      expect(ui.routesTried).toBe(2)
+      expect(failed({ tried: 1 }).detail).not.toContain('routes tried')
     })
 
     it('outranks a stale ready bootstrap, and is outranked by no network', () => {
@@ -324,7 +393,7 @@ describe('deriveConnectionUi', () => {
       )
     })
 
-    it('shows a search for another route as a connection in progress', () => {
+    it('shows a search for another route as reconnecting', () => {
       const ui = deriveConnectionUi({
         ...READY_CONNECTION_INPUT,
         bootstrap: { status: 'unauthorized' },
@@ -334,9 +403,31 @@ describe('deriveConnectionUi', () => {
       expect(ui).toMatchObject({
         kind: 'reconnecting',
         surface: 'banner',
-        title: 'Trying another route',
+        title: "Can't reach Local environment",
+        description: 'Trying to reconnect…',
+        detail: 'No answer from 127.0.0.1:43120; trying the other saved routes',
       })
     })
+  })
+
+  it('names the state in one line for the chip and settings', () => {
+    expect(connectionStatusLabel(deriveConnectionUi(READY_CONNECTION_INPUT))).toBe(
+      'Connected · Local environment',
+    )
+    expect(
+      connectionStatusLabel(
+        deriveConnectionUi({ ...READY_CONNECTION_INPUT, routeSearch: { from: 'http://x:1' } }),
+      ),
+    ).toBe("Can't reach Local environment")
+    expect(
+      connectionStatusLabel(
+        deriveConnectionUi({
+          ...READY_CONNECTION_INPUT,
+          bootstrap: { status: 'unauthorized' },
+          transport: { phase: 'closed', hasConnected: true, failure: { code: 'auth' } },
+        }),
+      ),
+    ).toBe('Not authorized · Local environment')
   })
 
   it('does not invent a failure from idle transport without an environment', () => {

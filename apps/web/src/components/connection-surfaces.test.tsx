@@ -3,10 +3,11 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { deriveConnectionUi } from '../lib/connection-state'
 import { routeTypeForEndpoint, type EnvironmentRoute } from '../lib/environment-store'
-import { CONNECTION_STORIES } from '../stories/connection-states'
+import { CONNECTION_STORIES, ROUTE_FAILURE_STORIES } from '../stories/connection-states'
 import {
   ConnectionBanner,
   ConnectionScreen,
+  ConnectionStatusChip,
   EnvironmentConnectForm,
   EnvironmentList,
 } from './connection-surfaces'
@@ -36,8 +37,61 @@ describe('connection surfaces', () => {
       const { unmount } = render(view)
       expect(screen.getByText(state.title)).toBeInTheDocument()
       expect(screen.getByText(state.description)).toBeInTheDocument()
+      if (state.detail) expect(screen.getByText(state.detail)).toBeInTheDocument()
       unmount()
     }
+  })
+
+  it('shows every route failure that waiting resolves as one reconnect strip', async () => {
+    const user = userEvent.setup()
+    for (const story of ROUTE_FAILURE_STORIES) {
+      if (story.id === 'credential_rejected' || story.id === 'local_access_blocked') continue
+      const onRetry = vi.fn()
+      const onChangeEnvironment = vi.fn()
+      const state = deriveConnectionUi(story.input)
+      const { container, unmount } = render(
+        <ConnectionBanner state={state} handlers={{ onRetry, onChangeEnvironment }} />,
+      )
+      const strip = screen.getByRole('status')
+      expect(strip, story.id).toHaveAttribute('aria-live', 'polite')
+      expect(strip, story.id).toHaveTextContent("Can't reach Rajku's laptop")
+      expect(strip, story.id).toHaveTextContent('Trying to reconnect…')
+      expect(strip, story.id).toHaveTextContent(state.detail!)
+      // The spinner is the only mark: no per-reason icon.
+      expect(container.querySelector('svg'), story.id).toBeNull()
+      expect(container.querySelector('.todo-progress-loader'), story.id).not.toBeNull()
+      await user.click(screen.getByRole('button', { name: 'Retry' }))
+      await user.click(screen.getByRole('button', { name: 'Switch environment' }))
+      expect(onRetry, story.id).toHaveBeenCalledTimes(1)
+      expect(onChangeEnvironment, story.id).toHaveBeenCalledTimes(1)
+      unmount()
+    }
+  })
+
+  it('keeps a refused token a screen with its key', () => {
+    const story = ROUTE_FAILURE_STORIES.find((item) => item.id === 'credential_rejected')!
+    const state = deriveConnectionUi(story.input)
+    const { container } = render(<ConnectionScreen state={state} />)
+    expect(screen.getByRole('heading', { name: 'Not authorized' })).toBeInTheDocument()
+    expect(container.querySelector('svg')).not.toBeNull()
+    expect(screen.queryByText('Trying to reconnect…')).not.toBeInTheDocument()
+  })
+
+  it('shows a browser that blocked this device as an alert with its fix, not a spinner', () => {
+    const story = ROUTE_FAILURE_STORIES.find((item) => item.id === 'local_access_blocked')!
+    const { container } = render(<ConnectionBanner state={deriveConnectionUi(story.input)} />)
+    const strip = screen.getByRole('alert')
+    expect(strip).toHaveTextContent('Local access blocked')
+    expect(strip).toHaveTextContent("browser's site settings")
+    expect(container.querySelector('.todo-progress-loader')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+  })
+
+  it('puts the same words in the status chip', () => {
+    const story = ROUTE_FAILURE_STORIES.find((item) => item.id === 'tunnel_down')!
+    const { container } = render(<ConnectionStatusChip state={deriveConnectionUi(story.input)} />)
+    expect(container).toHaveTextContent("Can't reach Rajku's laptop")
+    expect(container.querySelector('.todo-progress-loader')).not.toBeNull()
   })
 
   it('keeps session chrome visible for reconnecting banners', () => {
@@ -50,7 +104,8 @@ describe('connection surfaces', () => {
         <p>Session workspace stays mounted</p>
       </div>,
     )
-    expect(screen.getByRole('status')).toHaveTextContent('Reconnecting')
+    expect(screen.getByRole('status')).toHaveTextContent("Can't reach Local environment")
+    expect(screen.getByRole('status')).toHaveTextContent('Trying to reconnect…')
     expect(screen.getByText('Session workspace stays mounted')).toBeInTheDocument()
   })
 
@@ -59,8 +114,9 @@ describe('connection surfaces', () => {
     if (!story) throw new Error('missing offline story')
     const state = deriveConnectionUi(story.input)
     render(<ConnectionBanner state={state} />)
-    expect(screen.getByRole('status')).toHaveTextContent('No network')
+    expect(screen.getByRole('status')).toHaveTextContent("You're offline")
     expect(screen.queryByRole('button')).not.toBeInTheDocument()
+    expect(document.querySelector('.todo-progress-loader')).toBeNull()
     expect(screen.getByText(state.description)).toBeInTheDocument()
   })
 
@@ -75,10 +131,12 @@ describe('connection surfaces', () => {
       network: { online: true },
     })
     render(<ConnectionBanner state={state} handlers={{ onRetry, onChangeEnvironment }} />)
-    expect(screen.getByRole('alert')).toHaveTextContent('Not connected')
+    expect(screen.getByRole('alert')).toHaveTextContent("Can't reach Home")
+    expect(screen.getByRole('alert')).toHaveTextContent('Stopped retrying.')
+    expect(document.querySelector('.todo-progress-loader')).toBeNull()
     await user.click(screen.getByRole('button', { name: 'Retry' }))
     expect(onRetry).toHaveBeenCalled()
-    await user.click(screen.getByRole('button', { name: 'Change environment' }))
+    await user.click(screen.getByRole('button', { name: 'Switch environment' }))
     expect(onChangeEnvironment).toHaveBeenCalled()
   })
 

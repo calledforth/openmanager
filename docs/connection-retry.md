@@ -64,7 +64,8 @@ Retries stop, and `connection.retriesExhausted` becomes `true`, when:
 
 A close with `1001` (`server_shutdown`) is the environment stopping on purpose.
 It is retried like any drop, but the failure carries `serverStopped`, so the
-interface can say the environment shut down rather than that a tunnel is down.
+reconnect strip's detail line can say the environment shut down rather than
+that a tunnel is down.
 
 Only `connect()` starts the schedule again: it clears the timer, resets
 `attempt`, clears a terminal failure and `retriesExhausted`, and dials. A
@@ -137,34 +138,54 @@ by message ID, so it adds nothing a replay already delivered.
 ## How the shell maps this to UI
 
 `apps/web/src/lib/connection-state.ts` derives one `ConnectionKind` from the
-environment selection, the HTTP bootstrap result, the transport status, and the
-browser's network status. `apps/web/src/components/connection-surfaces.tsx`
-renders it as a blocking screen, a banner, or nothing.
+environment selection, the HTTP bootstrap result, the transport status, the
+browser's network status and, when no saved route answers, the route failure
+(see [environment routes](./environment-routes.md)).
+`apps/web/src/components/connection-surfaces.tsx` renders it as a blocking
+screen, a strip that floats over the page, or nothing.
 
-| kind                    | surface | means                                      | user action |
-| ----------------------- | ------- | ------------------------------------------ | ----------- |
-| `no_environment`        | screen  | nothing configured yet                     | add one     |
-| `incompatible_protocol` | screen  | versions cannot talk                       | upgrade     |
-| `unauthorized`          | screen  | credential refused                         | fix it      |
-| `ready`                 | none    | connected                                  | none        |
-| `offline`               | banner  | no network, or retries stopped             | wait, or retry |
-| `reconnecting`          | banner  | a live connection dropped, retries running | none        |
-| `connecting`            | banner  | first attempt, never connected             | none        |
-| `unreachable`           | banner  | endpoint answered badly or not at all      | retry       |
+The strip is one component for every state that leaves the page in place. It
+sits at the top of the main area, over the page rather than above it, so the
+session underneath neither unmounts nor moves. What a person sees:
 
-The three that are easy to confuse:
+| Shown as | When | Spinner | Actions |
+| --- | --- | --- | --- |
+| **Can't reach *environment*** · Trying to reconnect… | Every failure that waiting resolves: a dropped connection (`reconnecting`), the search for another route, an unreachable bootstrap, and every route failure except a refused token (`unreachable`) | yes | Retry, Switch environment |
+| **Connecting to *environment*** · Waiting for an answer… | The first attempt, before anything has failed (`connecting`) | yes | none |
+| **You're offline** · Reconnects when the network is back. | The browser reports no network (`offline`) | no | none |
+| **Can't reach *environment*** · Stopped retrying. | The client gave up (`offline` with `retriesExhausted`; only with a capped `maxAttempts`) | no | Retry, Switch environment |
+| **Not authorized** (screen) | The token or origin was refused (`unauthorized`); nothing is retried | no | Switch environment |
+| **Incompatible protocol** (screen) | Versions cannot talk | no | Retry, Switch environment |
+| **No environment configured** / **Add a route to *environment*?** (screens) | Nothing is configured, or a new address waits for consent | no | the form or the question |
+
+*environment* is the environment's label, or "the environment" when it has
+none. The reconnect strip carries one muted detail line with the specific cause
+("No answer from om.example.com", "om.example.com answered, but nothing is
+connected behind it", "*environment* shut down"); that line, and the `reason`,
+`endpoint`, `routesTried` and `shutDown` fields on the state, are for debugging.
+The headline never changes with the cause. A strip that is retrying, or has
+nothing to press, is a polite `status` live region; the stopped-retrying strip
+waits on a person and is an `alert`. The sidebar's status chip and Settings use
+the same headline (`connectionStatusLabel`).
+
+Each route failure reason is placed in one exhaustive `switch`
+(`routeFailureUi`): it either returns the reconnect state or its own state, and
+a new reason does not compile until it is placed, so nothing falls into the
+strip by accident.
+
+The three kinds that are easy to confuse:
 
 - **connecting** — the first attempt for this environment. Nothing has been
-  established yet, so there is nothing to lose.
+  established yet, so there is nothing to lose, and nothing says it failed.
 - **reconnecting** — a connection that existed has dropped and the backoff above
-  is running. The shell stays mounted and the session stays on screen; no
-  action is offered because the client is already handling it.
+  is running. It reads as "Can't reach *environment*", the same as any other
+  wait, and the session stays on screen under the strip.
 - **offline** — waiting will not help on its own. Either the device reports no
   network (`navigator.onLine === false`, tracked through the `online` /
   `offline` window events), or the client has stopped retrying
-  (`retriesExhausted`). The no-network variant offers no button, because the
-  only thing that fixes it is a network; the stopped-retrying variant offers
-  **Retry** and **Change environment**.
+  (`retriesExhausted`). The no-network variant offers no button and no spinner,
+  because the only thing that fixes it is a network; the stopped-retrying
+  variant offers **Retry** and **Switch environment**.
 
 Network listening lives in the web layer (`apps/web/src/lib/browser-runtime.ts`,
 consumed by `ConnectionProvider`), never in the framework-agnostic client
