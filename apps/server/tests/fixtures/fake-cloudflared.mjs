@@ -11,6 +11,12 @@
 import { appendFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 
+// Like cloudflared on Windows, a log line nobody reads anymore is dropped,
+// not fatal: a test that kills the server must not see the connector die
+// of a broken pipe instead.
+process.stdout.on('error', () => {})
+process.stderr.on('error', () => {})
+
 const mode = process.env.FAKE_CLOUDFLARED_MODE ?? 'ok'
 const token = process.env.TUNNEL_TOKEN ?? ''
 const log = (message, extra = {}) =>

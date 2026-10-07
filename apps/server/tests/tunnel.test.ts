@@ -1,4 +1,5 @@
 import { spawn as spawnProcess } from 'node:child_process'
+import { once } from 'node:events'
 import {
   chmodSync,
   copyFileSync,
@@ -30,6 +31,9 @@ import {
 } from '../src/tunnel.js'
 
 const FAKE = fileURLToPath(new URL('./fixtures/fake-cloudflared.mjs', import.meta.url))
+const PRELOAD = new URL('./fixtures/fake-cloudflared-preload.mjs', import.meta.url).href
+// The source entry, as `pnpm dev` runs it: no stale build in the way.
+const ENTRY = fileURLToPath(new URL('../src/main.ts', import.meta.url))
 const HOSTNAME = 'om.test'
 const TOKEN = 'eyJhIjoiZmFrZS1hY2NvdW50IiwidCI6ImZha2UtdHVubmVsIiwicyI6ImZha2Utc2VjcmV0In0'
 
@@ -673,6 +677,91 @@ describe('tunnel supervisor', () => {
     await host.close()
     expect(readFileSync(host.logFile, 'utf8')).toContain('the machine probably slept')
   })
+})
+
+/**
+ * A server in its own process, running the fake connector through a
+ * preload, so it can die the ways a real one does.
+ */
+async function startServerProcess(options: { crash?: boolean } = {}) {
+  const dataDir = await tempDir('openmanager-tunnel-process-')
+  const fake = await installFake()
+  const record = join(dataDir, 'fake-record.jsonl')
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    OPENMANAGER_TUNNEL_TOKEN: TOKEN,
+    FAKE_CLOUDFLARED_RECORD: record,
+    ...(options.crash ? { FAKE_SERVER_CRASH: '1' } : {}),
+  }
+  // A developer's own server may have handed this shell its settings.
+  for (const name of [
+    'OPENMANAGER_WORKSPACES',
+    'OPENMANAGER_TUNNEL_HOSTNAME',
+    'OPENMANAGER_TUNNEL_TOKEN_FILE',
+    'OPENMANAGER_CLOUDFLARED',
+  ])
+    delete env[name]
+  const child = spawnProcess(
+    process.execPath,
+    [
+      '--import',
+      PRELOAD,
+      ENTRY,
+      '--port=0',
+      '--data-dir',
+      dataDir,
+      '--log-file',
+      join(dataDir, 'server.log'),
+      '--tunnel-hostname',
+      HOSTNAME,
+      '--cloudflared',
+      fake.binary,
+    ],
+    { env, stdio: 'ignore', windowsHide: true },
+  )
+  const exited = once(child, 'exit') as Promise<[number | null, NodeJS.Signals | null]>
+  cleanups.push(async () => {
+    if (child.exitCode !== null || child.signalCode !== null) return
+    child.kill('SIGKILL')
+    await exited
+  })
+  const connector = await waitFor(
+    () => {
+      // A whole line: the fake has written its PID.
+      const text = existsSync(record) ? readFileSync(record, 'utf8') : ''
+      return text.includes('\n') && (JSON.parse(text.split('\n')[0]!) as { pid: number }).pid
+    },
+    'the connector to start',
+    20_000,
+  )
+  // Whatever the test proves, no fake connector outlives it.
+  cleanups.push(() => {
+    if (isAlive(connector)) process.kill(connector, 'SIGKILL')
+  })
+  return { child, exited, connector }
+}
+
+describe('the connector ends with its server', () => {
+  it('when the server crashes', async () => {
+    const server = await startServerProcess({ crash: true })
+    const [code] = await server.exited
+    expect(code).not.toBe(0)
+    await waitFor(() => !isAlive(server.connector), 'the connector to end', 3_000)
+  })
+
+  // POSIX has no equivalent without a helper process: a foreground server
+  // killed with SIGKILL leaves its connector (systemd ends it in service mode).
+  it.runIf(process.platform === 'win32')(
+    'when the server is killed outright on Windows',
+    async () => {
+      const server = await startServerProcess()
+      expect(isAlive(server.connector)).toBe(true)
+      // TerminateProcess: no handler in the server runs.
+      server.child.kill('SIGKILL')
+      await server.exited
+      await waitFor(() => !isAlive(server.connector), 'the connector to end', 3_000)
+    },
+  )
 })
 
 describe('tunnel off', () => {

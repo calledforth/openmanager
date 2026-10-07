@@ -173,6 +173,33 @@ type Spawn = (
   options: { env: NodeJS.ProcessEnv; stdio: ['ignore', 'pipe', 'pipe']; windowsHide: true },
 ) => ChildProcess
 
+/**
+ * Connectors running in this process. A server that ends without stopping
+ * its tunnel, through an uncaught exception, an unhandled rejection or
+ * `process.exit`, ends them on its way out: a connector without its server
+ * answers every device with an error instead of letting the edge say the
+ * environment is unreachable. Only synchronous work runs during `exit`, and
+ * a kill is synchronous.
+ */
+const liveConnectors = new Set<ChildProcess>()
+let exitHookInstalled = false
+
+function endConnectorsOnExit(): void {
+  for (const connector of liveConnectors) connector.kill('SIGKILL')
+}
+
+function trackConnector(connector: ChildProcess): void {
+  if (!exitHookInstalled) {
+    exitHookInstalled = true
+    process.on('exit', endConnectorsOnExit)
+  }
+  liveConnectors.add(connector)
+  connector.once('exit', () => liveConnectors.delete(connector))
+  connector.once('error', () => {
+    if (connector.pid === undefined) liveConnectors.delete(connector)
+  })
+}
+
 export interface TunnelSupervisorOptions {
   config: TunnelConfig
   /** The environment server's bound loopback port: the only origin the tunnel should reach. */
@@ -587,6 +614,11 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
     spawnedAt = now()
     let process_: ChildProcess
     try {
+      // Never `detached`. On Windows, Node puts the children it starts in a
+      // job object that ends them when this process ends, however it ends, so
+      // a server killed outright (Task Manager, `Stop-Process -Force`,
+      // `taskkill /F`) takes its connector with it. A detached child would
+      // leave that job and outlive the server.
       process_ = spawn(binary, cloudflaredArgs(configFile), {
         env: cloudflaredEnvironment(options.env ?? process.env, token),
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -600,6 +632,7 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
       return scheduleStart(backoff())
     }
     child = process_
+    trackConnector(process_)
     log('info', 'cloudflared started.', { pid: process_.pid, binary })
     for (const stream of [process_.stdout, process_.stderr]) {
       if (!stream) continue

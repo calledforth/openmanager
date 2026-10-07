@@ -328,11 +328,23 @@ To change the token later, follow [The tunnel token](#the-tunnel-token).
 `service status` adds a `Tunnel:` line, and `service status --json` a
 `tunnel` object with the published status.
 
-When the server stops normally it stops the connector. On Linux and WSL,
-systemd also ends anything left in the unit. On Windows, a server that is
-killed outright (Task Manager, `Stop-Process`) cannot, and its `cloudflared`
-keeps running. That orphan is harmless, since it serves the same hostname
-and origin as its replacement, but it lingers until you end it or sign out.
+The connector does not outlive its server. Without the server it would
+answer every device with a 502 instead of letting Cloudflare report the
+environment unreachable, so it ends with the server, however the server
+ends:
+
+- **A normal stop** stops it.
+- **A crash** (an uncaught exception or unhandled rejection) kills it on
+  the way out, from the server's `exit` handler.
+- **On Windows, a server killed outright** (Task Manager's End task,
+  `Stop-Process -Force`, `taskkill /F`) takes it along: Node starts its
+  children in a job object that Windows closes, ending them, when the server
+  process ends. This holds for the logon task, `node --watch` and a server
+  started by hand alike, so nothing is left to clean up at the next start.
+- **On Linux and WSL**, the systemd unit ends anything left in it when the
+  server stops. A server you run in a terminal yourself and kill with
+  `kill -9`, or that the runtime aborts (out of memory), leaves its
+  `cloudflared` running: Linux has no such job. End it by hand.
 
 ## Limits and follow-ups
 
