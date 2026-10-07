@@ -742,6 +742,9 @@ async function startServerProcess(options: { crash?: boolean } = {}) {
 }
 
 describe('the connector ends with its server', () => {
+  // On Windows the job object ends the connector whatever the server does, so
+  // only the Linux CI leg proves the server's own exit hook. Deleting the hook
+  // stays green on a Windows machine.
   it('when the server crashes', async () => {
     const server = await startServerProcess({ crash: true })
     const [code] = await server.exited

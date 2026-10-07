@@ -330,8 +330,8 @@ To change the token later, follow [The tunnel token](#the-tunnel-token).
 
 The connector does not outlive its server. Without the server it would
 answer every device with a 502 instead of letting Cloudflare report the
-environment unreachable, so it ends with the server, however the server
-ends:
+environment unreachable, so it ends with the server in every case but one
+(a Linux server killed with `kill -9`, below):
 
 - **A normal stop** stops it.
 - **A crash** (an uncaught exception or unhandled rejection) kills it on
