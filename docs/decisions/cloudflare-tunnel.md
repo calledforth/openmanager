@@ -81,9 +81,13 @@ socket upgrade. The self-check below cannot detect that. So:
   task or the systemd unit, never put on a command line, and never logged.
   The server reads it before each connector start and passes it to the child
   process in the `TUNNEL_TOKEN` environment variable.
-- To rotate it, use "Rotate token" in the dashboard, write the new token to
-  the file, and restart the server. Connectors using the old token stay
-  connected until they restart, so restart every machine that ran one.
+- To rotate it routinely, use "Rotate token" in the dashboard, write the new
+  token to the file, and restart the server. Connectors using the old token
+  stay connected until they restart.
+- If the token may have leaked, restarting your own machines is not enough:
+  a connector someone else started keeps its connection. Rotate the token,
+  disconnect every connection to the tunnel from the dashboard, then restart
+  only your own connector with the new token.
 
 **What the server does (CAL-109, CAL-110):**
 
@@ -120,8 +124,12 @@ proof" gap that
 [environment-routes.md](../environment-routes.md#merging-a-discovered-route)
 records for routes. In v1 the zone and the dashboard are the owner's own
 account, so the owner should protect that account like the machine. A
-credential bound to a key on the device would close this gap; D6 in the
-[threat model](../threat-model.md) plans that for cloud credentials.
+credential bound to a key on the device, which D6 in the
+[threat model](../threat-model.md) plans for cloud credentials, would stop a
+captured credential being reused elsewhere. It would not stop something in
+the middle from relaying a live connection and reading it. Only an
+end-to-end encrypted channel between device and environment would, and none
+is planned.
 
 Setting up or changing the tunnel is an owner action on the machine itself.
 v1 adds no remote command for it. When one is added it needs `admin`, as
