@@ -1,6 +1,7 @@
 import { spawn as spawnProcess, type ChildProcess } from 'node:child_process'
 import {
   accessSync,
+  chmodSync,
   constants,
   readFileSync,
   renameSync,
@@ -286,6 +287,15 @@ export function readTunnelToken(
     text = readFileSync(config.tokenFile, 'utf8')
   } catch {
     return { problem: 'missing' }
+  }
+  // A token pasted in with an editor gets the umask's 0644. The server owns
+  // this file, so it narrows it to the owner before anyone else reads it.
+  if (process.platform !== 'win32') {
+    try {
+      if ((statSync(config.tokenFile).mode & 0o077) !== 0) chmodSync(config.tokenFile, 0o600)
+    } catch {
+      /* A file the server cannot narrow still works; the owner chose its mode. */
+    }
   }
   try {
     return { token: validateTunnelToken(text) }

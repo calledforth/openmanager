@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -487,9 +488,14 @@ describe('tunnel supervisor', () => {
     expect(host.spawned).toEqual([])
     writeFileSync(join(host.dataDir, 'tunnel-token'), 'two\nlines\n')
     await waitForState(host, 'token_missing', undefined, (s) => s.reason === 'token_malformed')
-    writeFileSync(join(host.dataDir, 'tunnel-token'), `${TOKEN}\n`)
+    writeFileSync(join(host.dataDir, 'tunnel-token'), `${TOKEN}\n`, { mode: 0o644 })
+    chmodSync(join(host.dataDir, 'tunnel-token'), 0o644)
     await waitForState(host, 'connected')
     expect(host.records()[0]!.token).toBe(TOKEN)
+    // An editor's 0644 is narrowed to the owner (POSIX only; Windows has ACLs).
+    if (process.platform !== 'win32') {
+      expect(statSync(join(host.dataDir, 'tunnel-token')).mode & 0o777).toBe(0o600)
+    }
   })
 
   it('does not start a connector without its pinned configuration file', async () => {

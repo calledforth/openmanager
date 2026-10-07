@@ -75,7 +75,8 @@ enough) and the `cloudflared` binary.
    You can also paste the token into `<data-dir>/tunnel-token` with an editor
    (by default `~/.openmanager/tunnel-token`, or
    `%USERPROFILE%\.openmanager\tunnel-token` on Windows) and leave the
-   variable unset.
+   variable unset. On Linux and WSL the server narrows the file to mode
+   `0600` the first time it reads it.
 
 5. **Check it.** `service status` (or the log) should reach
    `Tunnel: https://om.example.com (connected ...)` within a few seconds of
@@ -264,7 +265,15 @@ and origin as its replacement, but it lingers until you end it or sign out.
   [environment-routes.md](./environment-routes.md#server-reported-routes).
 - **One failed-credential budget for every device.** All tunnel traffic
   arrives from `cloudflared` on `127.0.0.1`, so devices behind the tunnel share
-  one `auth_failure` and `pairing` budget. Tracked as a follow-up in the
+  one `auth_failure` budget (10 refused credentials a minute) and one
+  `pairing` budget (5 refused links a minute). Credentials are random, so this
+  is about availability, not guessing: a device whose credential was revoked
+  while it was offline keeps redialing and spends most of the budget, and two
+  such devices can hold every remote device at `429`. When a revoked device
+  you still have comes back online, close its tab or forget the environment
+  on it. Five bad pairing links in a minute lock pairing for the rest of
+  that minute. A Cloudflare WAF rate-limiting rule on `/ws` and `/pair` (the
+  Free plan has one) blunts outside floods. Tracked as a follow-up in the
   Cloudflare project.
 - **Changing the hostname** is an owner action: rerun `install` (or restart
   with the new flag). Devices add the new address once, as the decision
