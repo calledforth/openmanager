@@ -1,9 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { WebSocket } from 'ws'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -214,4 +214,46 @@ describe('process lifecycle', () => {
       children.splice(children.indexOf(serverProcess.child), 1)
     },
   )
+
+  it('writes an uncaught crash to the log file and still exits', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'openmanager-crash-log-test-'))
+    directories.push(dataDir)
+    const logFile = join(dataDir, 'server.log')
+    // Throws once the server has hooked the crash monitor, like a bug in any
+    // callback nothing else catches.
+    const crash = join(dataDir, 'crash.mjs')
+    await writeFile(
+      crash,
+      [
+        'const timer = setInterval(() => {',
+        "  if (process.listenerCount('uncaughtExceptionMonitor') === 0) return",
+        '  clearInterval(timer)',
+        "  throw new Error('crash probe')",
+        '}, 10)',
+      ].join('\n'),
+    )
+    const env = { ...process.env }
+    delete env.OPENMANAGER_WORKSPACES
+    const child = spawn(
+      process.execPath,
+      [
+        '--import',
+        pathToFileURL(crash).href,
+        entry,
+        '--port=0',
+        '--data-dir',
+        dataDir,
+        '--log-file',
+        logFile,
+      ],
+      { env, stdio: 'ignore', windowsHide: true },
+    )
+    children.push(child)
+    const [code] = (await once(child, 'exit')) as [number | null, NodeJS.Signals | null]
+    expect(code).not.toBe(0)
+    expect(code).not.toBeNull()
+    const log = await readFile(logFile, 'utf8')
+    expect(log).toContain('Environment server crashed (uncaughtException): Error: crash probe')
+    expect(log).toMatch(/crash probe\s+at /)
+  })
 })
