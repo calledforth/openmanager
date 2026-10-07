@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url'
 import { loadConfig } from './config.ts'
 import { consoleSink, createLogger, resolveLogSink, type LogSink } from './logger.ts'
+import { redactSecrets } from './redact.ts'
 import { runServiceCommand } from './service/cli.ts'
 import { startServer } from './server.ts'
 import { supervise, SUPERVISOR_FLAG } from './service/supervisor.ts'
@@ -27,12 +28,11 @@ async function serve(): Promise<void> {
     if (sink !== consoleSink) {
       // Node prints a crash to stderr, which a service has no console for. The
       // supervisor only sees the exit code, so the reason goes to the log file.
-      // A monitor records it without changing how the process ends.
+      // A monitor records it without changing how the process ends. The line
+      // skips the structured logger, so it redacts on its own (D10).
       process.on('uncaughtExceptionMonitor', (error, origin) => {
-        sink(
-          `Environment server crashed (${origin}): ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`,
-          'stderr',
-        )
+        const detail = error instanceof Error ? (error.stack ?? error.message) : String(error)
+        sink(redactSecrets(`Environment server crashed (${origin}): ${detail}`), 'stderr')
       })
     }
     const log = createLogger(config.logLevel, sink)
@@ -69,7 +69,7 @@ async function serve(): Promise<void> {
       watch.unref()
     }
   } catch (error: unknown) {
-    sink(error instanceof Error ? error.message : 'Server startup failed.', 'stderr')
+    sink(redactSecrets(error instanceof Error ? error.message : 'Server startup failed.'), 'stderr')
     process.exitCode = 1
     if (process.connected) process.disconnect()
   }

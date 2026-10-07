@@ -249,8 +249,10 @@ export async function startServer(config: ServerConfig) {
   const eventService = createPersistentEventService(
     eventDatabase,
     (record) => {
-      // The event is already stored, so a client that misses it replays it.
-      // Failing to send it live must not take the server down with it.
+      // The event is already stored: a client that is not connected gets it
+      // on replay. A connected client does not notice the gap until its next
+      // snapshot, so a throw here is a programming error to fix, logged
+      // instead of taking the server down with it.
       const publish = () => {
         try {
           publishDurableEvent(record)
