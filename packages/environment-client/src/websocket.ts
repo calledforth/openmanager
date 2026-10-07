@@ -1202,13 +1202,21 @@ export function createWebSocketEnvironmentClient(
       const payload = await request('session.create', input)
       store.update((state) => {
         const created = applySessionCreated(state, payload)
+        // Listed as it will be: on its provider, and working on the first
+        // message the environment has already started, so its card shows that
+        // from the first frame. Only from idle: a status an event already
+        // brought (the turn failed, or asks something) is newer than this.
+        const listed = created.sessions[payload.session.sessionId]!
         const withProvider = {
           ...created,
           sessions: {
             ...created.sessions,
             [payload.session.sessionId]: {
-              ...created.sessions[payload.session.sessionId]!,
+              ...listed,
               providerId: input.providerId,
+              ...(payload.firstTurn && listed.status === 'idle'
+                ? { status: 'running' as const }
+                : {}),
             },
           },
         }

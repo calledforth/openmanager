@@ -8,7 +8,8 @@ import { openEnvironmentDatabase } from '../src/db/database.js'
 import { createEventRepository, type DurableProofEvent } from '../src/db/event-repository.js'
 import { createEventRetention } from '../src/db/event-retention.js'
 import { createReplayReader } from '../src/db/replay.js'
-import { listSessionHistory } from '../src/db/session-store.js'
+import { listSessionHistory, listSessionSummaries } from '../src/db/session-store.js'
+import { SESSION_PAGE_BYTE_BUDGET } from '../src/session-pagination.js'
 
 const directories: string[] = []
 const databases: DatabaseSync[] = []
@@ -269,6 +270,28 @@ describe('replay reader', () => {
       mode: 'snapshot',
       reason: 'gap_expired',
     })
+  })
+
+  it('bounds the environment snapshot to the same byte-limited first session page', async () => {
+    const { database, reader } = await seeded()
+    const composer = JSON.stringify({
+      availableCommands: [{ name: 'large', description: '界'.repeat(7_000) }],
+    })
+    const insert = database.prepare(`INSERT INTO sessions
+      (session_id, workspace_id, provider_id, status, composer_json, created_at, updated_at)
+      VALUES (?, 'workspace-1', 'opencode', 'idle', ?, 1000, 1000)`)
+    for (let i = 0; i < 130; i++) insert.run(`large-${i}`, composer)
+    const result = reader.read(environmentScope, null)
+    if (result.mode !== 'snapshot' || !('sessions' in result.snapshot.state))
+      throw new Error('Expected environment snapshot')
+    const first = listSessionSummaries(database, { limit: 100 })
+    expect(result.snapshot.state.sessions).toEqual(first.sessions)
+    expect(first.sessions.length).toBeGreaterThan(0)
+    expect(first.sessions.length).toBeLessThan(100)
+    expect(first.nextCursor).not.toBeNull()
+    expect(Buffer.byteLength(JSON.stringify(first.sessions), 'utf8')).toBeLessThanOrEqual(
+      SESSION_PAGE_BYTE_BUDGET,
+    )
   })
 
   it('snapshots environment and session scopes from the catalog', async () => {

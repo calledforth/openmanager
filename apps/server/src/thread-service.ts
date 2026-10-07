@@ -4,7 +4,6 @@ import {
   ProofCommandSchemas,
   ProofEventSchemas,
   ProofResponseSchemas,
-  pageSessionSummaries,
   pageThreadMessages,
   BACKGROUND_TASKS_MAX,
   shouldReplaceSessionTitle,
@@ -49,6 +48,7 @@ import {
   listThreadsForSession,
 } from './db/session-store.ts'
 import type { ArtifactStore } from './artifacts.ts'
+import { pageSessionSummaries } from './session-pagination.ts'
 import type { CommandContext } from './command-context.ts'
 import { formatTitleContext, type TitleContextMessage } from './session-titles/context.ts'
 import { TitleGenerationError, type TitleGenerator } from './session-titles/generator.ts'
@@ -576,14 +576,15 @@ export function createThreadService(
   /**
    * Announce a session and its thread. `providerId` is what `providerForSession`
    * answers while the row is projected; the caller clears it once the record
-   * holds it, so a session never has two sources of truth.
+   * holds it, so a session never has two sources of truth. Returns the time
+   * the session was announced at.
    */
   const persistCreatedThread = (
     session: Session,
     thread: Thread,
     providerId: ProviderId,
     alongside: readonly ProofEvent[] = [],
-  ) => {
+  ): string => {
     const timestamp = new Date().toISOString()
     const created = ProofEventSchemas['session.created'].parse({
       type: 'event',
@@ -605,11 +606,12 @@ export function createThreadService(
     try {
       if (options.appendAtomic) {
         options.appendAtomic([created, threadCreated, ...alongside])
-        return
+        return timestamp
       }
       appendEvent(created)
       appendEvent(threadCreated)
       alongside.forEach(appendEvent)
+      return timestamp
     } catch (error) {
       // No record follows a failed announcement, so nothing else clears it.
       announcedProviders.delete(session.sessionId)
@@ -1797,8 +1799,14 @@ export function createThreadService(
         // restart, and every connected client sees the session at once. The
         // sent draft goes in the same write, so no save still in flight can
         // bring it back.
+        let announcedAt: string
         try {
-          persistCreatedThread(session, thread, providerId, draft ? [draft.event] : [])
+          announcedAt = persistCreatedThread(
+            session,
+            thread,
+            providerId,
+            draft ? [draft.event] : [],
+          )
         } catch (error) {
           options.onPersistenceError?.(error, 'session.created')
           return errorResult(
@@ -1836,7 +1844,8 @@ export function createThreadService(
           commandTurns: new Map(),
           interactions: new Map(),
           status: 'idle',
-          updatedAt: Date.now(),
+          // The time it was announced at, as the answer and the event say.
+          updatedAt: Date.parse(announcedAt),
         }
         sessions.set(session.sessionId, record)
         threads.set(thread.threadId, record)
@@ -1926,7 +1935,7 @@ export function createThreadService(
         return ProofResponseSchemas['session.create'].parse({
           type: 'response',
           requestId: command.requestId,
-          payload: { session, thread, ...(firstTurn ? { firstTurn } : {}) },
+          payload: { session, thread, ...(firstTurn ? { firstTurn } : {}), announcedAt },
         })
       }
 

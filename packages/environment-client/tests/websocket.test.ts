@@ -2576,10 +2576,16 @@ it('folds the first turn from creation without a second turn.send round trip', a
       content: [{ type: 'text', text: 'hello' }],
     },
   }
-  socket.respond('session.create', { session: SESSION, thread: THREAD, firstTurn })
+  const announcedAt = '2026-09-12T00:00:00.000Z'
+  socket.respond('session.create', { session: SESSION, thread: THREAD, firstTurn, announcedAt })
   expect(await pending).toMatchObject({ firstTurn })
   expect(client.getState().threads[THREAD.threadId]?.messages).toEqual([firstTurn.userMessage])
-  expect(client.getState().sessions[SESSION.sessionId]?.status).toBe('idle')
+  // Listed as the environment lists it, from the answer alone: working on its
+  // first message, with the time it was announced.
+  expect(client.getState().sessions[SESSION.sessionId]).toMatchObject({
+    status: 'running',
+    updatedAt: announcedAt,
+  })
   expect(socket.sent.some((message) => message.name === 'turn.send')).toBe(false)
 })
 

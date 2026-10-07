@@ -3024,3 +3024,41 @@ describe('session rows on a provider other than the workspace default', () => {
     events.close()
   })
 })
+
+describe('session.create', () => {
+  it('answers with the time it announced the session at', () => {
+    const runtime = {
+      ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-1', state: 'created' }),
+      prompt: vi.fn(),
+      cancel: vi.fn(),
+    }
+    const appended: EventEnvelope[] = []
+    const service = createThreadService(
+      runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
+      { rejection: () => undefined },
+      (event: EventEnvelope) => {
+        appended.push(event)
+      },
+      undefined,
+      registered,
+    )
+    service.setEnvironmentId('environment-1')
+    const created = ProofResponseSchemas['session.create'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'create',
+        name: 'session.create',
+        payload: {
+          environmentId: 'environment-1',
+          providerId: 'opencode',
+          workspaceId: '/workspace/project',
+        },
+      }),
+    ).payload
+    // The answer reaches the client before the event, so it carries the event's
+    // time: the client lists the session where the event would put it.
+    const announced = appended.find((event) => event.name === 'session.created')
+    expect(announced).toBeDefined()
+    expect(created.announcedAt).toBe(announced!.timestamp)
+  })
+})
