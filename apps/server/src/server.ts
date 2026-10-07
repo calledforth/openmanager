@@ -624,6 +624,17 @@ export async function startServer(config: ServerConfig) {
    * misses spend their own `tunnel_check` budget, never the credential one.
    */
   function handleTunnelCheck(request: IncomingMessage, response: ServerResponse) {
+    // The server's own probe is accepted before any budget is looked at:
+    // misses from someone behind the same address must not fail the check.
+    const nonce = new URL(request.url ?? '/', 'http://check').searchParams.get('nonce')
+    const viaTunnel =
+      config.tunnel !== undefined &&
+      request.headers.host?.trim().toLowerCase() === config.tunnel.hostname
+    if (viaTunnel && nonce !== null && tunnel?.acceptArrival(nonce)) {
+      response.writeHead(204, { 'cache-control': 'no-store' })
+      response.end()
+      return
+    }
     const key = budgetKey(request)
     const lockout = rateLimiter.blocked('tunnel_check', key)
     if (!lockout.allowed) {
@@ -631,15 +642,6 @@ export async function startServer(config: ServerConfig) {
         'cache-control': 'no-store',
         'retry-after': String(Math.ceil(lockout.retryAfterMs / 1000)),
       })
-      response.end()
-      return
-    }
-    const nonce = new URL(request.url ?? '/', 'http://check').searchParams.get('nonce')
-    const viaTunnel =
-      config.tunnel !== undefined &&
-      request.headers.host?.trim().toLowerCase() === config.tunnel.hostname
-    if (viaTunnel && nonce !== null && tunnel?.acceptArrival(nonce)) {
-      response.writeHead(204, { 'cache-control': 'no-store' })
       response.end()
       return
     }

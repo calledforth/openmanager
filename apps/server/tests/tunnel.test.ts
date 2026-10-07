@@ -499,6 +499,13 @@ describe('tunnel supervisor', () => {
     expect(host.server.rateLimiter.blocked('auth_failure', 'tunnel:198.51.100.2').allowed).toBe(
       true,
     )
+    // Misses from the server's own address do not fail its own check.
+    for (let attempt = 0; attempt < 30; attempt += 1) await probe('203.0.113.9')
+    expect(await probe('203.0.113.9')).toBe(429)
+    await host.fakeOrder('unready')
+    await waitForState(host, 'down')
+    await host.fakeOrder('ready')
+    await waitForState(host, 'connected')
   })
 
   it('keeps a failed-credential budget per device behind the tunnel, apart from local traffic', async () => {
