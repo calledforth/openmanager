@@ -249,9 +249,21 @@ export async function startServer(config: ServerConfig) {
   const eventService = createPersistentEventService(
     eventDatabase,
     (record) => {
+      // The event is already stored, so a client that misses it replays it.
+      // Failing to send it live must not take the server down with it.
+      const publish = () => {
+        try {
+          publishDurableEvent(record)
+        } catch (error) {
+          log('error', 'event was not sent', {
+            event: record.event.name,
+            reason: String(error),
+          })
+        }
+      }
       // Thread dispatch persists synchronously; its response must precede events on the socket.
-      if (record.event.name.startsWith('workspace.')) publishDurableEvent(record)
-      else queueMicrotask(() => publishDurableEvent(record))
+      if (record.event.name.startsWith('workspace.')) publish()
+      else queueMicrotask(publish)
     },
     {
       epoch: eventEpoch,
@@ -629,6 +641,7 @@ export async function startServer(config: ServerConfig) {
     rateLimiter,
     audit,
     bootstrap,
+    environmentId: identity.environmentId,
     replay: (scope, cursor) => replayReader.read(scope, cursor),
     dispatchCommand: (command, context) =>
       workspaces.dispatch(command, context) ??
@@ -643,8 +656,6 @@ export async function startServer(config: ServerConfig) {
     onConnectionsChanged: () => clientService.announce(),
   })
   clientSockets = sockets
-  publishDurableEvent = (record) => sockets.publish(record)
-  publishThreadEvent = (event) => sockets.publishEvent(event)
   closeClientSockets = (clientId) => {
     sockets.retireClient(clientId, GRANT_CHANGED_CLOSE_CODE, GRANT_CHANGED_CLOSE_REASON)
     // A ticket or transfer was authorized under the old grant; the device asks
@@ -681,6 +692,10 @@ export async function startServer(config: ServerConfig) {
   }
   const address = server.address() as AddressInfo
   websocketUrl = `ws://127.0.0.1:${address.port}/ws`
+  // Nothing goes out before the server listens and can describe itself. No
+  // client can be connected yet, and durable events stay replayable.
+  publishDurableEvent = (record) => sockets.publish(record)
+  publishThreadEvent = (event) => sockets.publishEvent(event)
   syncProbeDirectory()
   providerService.start()
   let closePromise: Promise<void> | undefined

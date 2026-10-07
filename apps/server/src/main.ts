@@ -24,6 +24,17 @@ async function serve(): Promise<void> {
   try {
     const config = loadConfig()
     sink = resolveLogSink(config.logFile)
+    if (sink !== consoleSink) {
+      // Node prints a crash to stderr, which a service has no console for. The
+      // supervisor only sees the exit code, so the reason goes to the log file.
+      // A monitor records it without changing how the process ends.
+      process.on('uncaughtExceptionMonitor', (error, origin) => {
+        sink(
+          `Environment server crashed (${origin}): ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`,
+          'stderr',
+        )
+      })
+    }
     const log = createLogger(config.logLevel, sink)
     const server = await startServer(config)
     log('info', `Environment server listening on ${server.url}`, { pid: process.pid })

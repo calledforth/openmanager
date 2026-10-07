@@ -130,6 +130,49 @@ describe('headless listener', () => {
     })
   })
 
+  it('starts cleanly when the last process died with background work running', async () => {
+    const directory = await dataDir()
+    const config = { port: 0, dataDir: directory, logLevel: 'silent' as const }
+    await (await startServer(config)).close()
+    const left = new DatabaseSync(join(directory, DATABASE_FILENAME))
+    left.exec(`
+      INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at)
+        VALUES ('workspace-1', 'Project', '/workspace/project', 1, 1);
+      INSERT INTO sessions (
+        session_id, workspace_id, provider_id, title, status, background_tasks_json,
+        created_at, updated_at
+      ) VALUES (
+        'session-1', 'workspace-1', 'claude', 'Build', 'running',
+        '[{"taskId":"task-1","kind":"shell","description":"Run the build"}]', 1, 1
+      );
+    `)
+    left.close()
+    const uncaught: unknown[] = []
+    const record = (error: unknown) => uncaught.push(error)
+    process.on('uncaughtException', record)
+    try {
+      // Startup clears the dead task and announces it; nothing may be sent
+      // before the server is listening and can describe itself.
+      const restarted = await startServer(config)
+      servers.push(restarted)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(uncaught).toEqual([])
+      expect((await fetch(`${restarted.url}/health`)).status).toBe(200)
+    } finally {
+      process.off('uncaughtException', record)
+    }
+    const after = new DatabaseSync(join(directory, DATABASE_FILENAME), { readOnly: true })
+    try {
+      expect(
+        after
+          .prepare('SELECT status, background_tasks_json FROM sessions WHERE session_id = ?')
+          .get('session-1'),
+      ).toEqual({ status: 'idle', background_tasks_json: null })
+    } finally {
+      after.close()
+    }
+  })
+
   it('returns composer preferences after a full server restart', async () => {
     const directory = await dataDir()
     const config = { port: 0, dataDir: directory, logLevel: 'silent' as const }
