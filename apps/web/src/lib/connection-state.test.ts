@@ -330,7 +330,7 @@ describe('deriveConnectionUi', () => {
       expect(
         failed({ reason: 'environment_offline', endpoint: 'http://127.0.0.1:43120', local: true })
           .detail,
-      ).toBe('Nothing is listening at 127.0.0.1:43120 on this device')
+      ).toBe('Nothing answers at 127.0.0.1:43120 on this device')
       expect(failed({ reason: 'environment_offline' }).detail).toBe(
         'studio.example.com answered, but the environment behind it is stopped',
       )

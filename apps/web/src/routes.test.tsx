@@ -962,7 +962,7 @@ describe('web routes', () => {
 
     renderWebApp('/')
     // Nothing answers on this device's own address: the server is not running.
-    const cause = await screen.findByText('Nothing is listening at 127.0.0.1:43120 on this device')
+    const cause = await screen.findByText('Nothing answers at 127.0.0.1:43120 on this device')
     const strip = cause.closest('[role="status"]')
     expect(strip).toHaveTextContent("Can't reach Local environment")
     expect(strip).toHaveTextContent('Trying to reconnect…')

@@ -482,9 +482,7 @@ export function ConnectionBanner({
             {state.description}
           </span>
         </p>
-        {state.detail ? (
-          <p className="text-[12px] leading-4 text-faint">{state.detail}</p>
-        ) : null}
+        {state.detail ? <p className="text-[12px] leading-4 text-faint">{state.detail}</p> : null}
       </div>
       <ActionButtons className="shrink-0" state={state} handlers={handlers} compact />
     </div>

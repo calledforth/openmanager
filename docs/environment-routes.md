@@ -211,7 +211,7 @@ spinner, since waiting does not change a browser setting.
 
 | Reason | Learned from | Detail line in the reconnect strip |
 | --- | --- | --- |
-| `environment_offline` | Nothing answers on a loopback route (nothing listens on this device), a gateway answers `502`/`503`/`504` in a status this client can read, or the environment closed the socket with `1001` `server_shutdown` and no route has answered since | "Nothing is listening at 127.0.0.1:43120 on this device", "*host* answered, but the environment behind it is stopped", or "*Environment* shut down" |
+| `environment_offline` | Nothing answers on a loopback route (nothing listens on this device), a gateway answers `502`/`503`/`504` in a status this client can read, or the environment closed the socket with `1001` `server_shutdown` and no route has answered since | "Nothing answers at 127.0.0.1:43120 on this device", "*host* answered, but the environment behind it is stopped", or "*Environment* shut down" |
 | `local_access_blocked` | A loopback route fails and the browser reports its `loopback-network` permission as denied: a hosted page that was refused access to this device | None: its own **Local access blocked** strip, whose detail is "This browser blocked the page from reaching 127.0.0.1:43120" |
 | `route_refused` | `401`/`403` on `/bootstrap`: a tunnel's access gate, or the environment refusing this browser's origin. In a browser, also a redirect it may not follow (a sign-in gate), and on a loopback route an answer the page may not read | "127.0.0.1:43120 refused this page's address", or "*host* refused this browser" |
 | `wrong_environment` | The address answers as another environment | "A different environment answers at *host*" |

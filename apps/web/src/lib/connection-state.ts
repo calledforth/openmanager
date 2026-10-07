@@ -347,7 +347,7 @@ function routeFailureUi(failure: RouteFailure, context: Context): ConnectionUiSt
         failure.stopped
           ? `${label ?? 'The environment'} shut down`
           : failure.local
-            ? `Nothing is listening at ${host} on this device`
+            ? `Nothing answers at ${host} on this device`
             : `${host} answered, but the environment behind it is stopped${tried}`,
       )
     case 'route_refused':
