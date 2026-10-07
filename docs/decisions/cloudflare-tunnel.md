@@ -87,7 +87,12 @@ socket upgrade. The self-check below cannot detect that. So:
 - If the token may have leaked, restarting your own machines is not enough:
   a connector someone else started keeps its connection. Rotate the token,
   disconnect every connection to the tunnel from the dashboard, then restart
-  only your own connector with the new token.
+  only your own connector with the new token. That stops new interception
+  but does not undo what was already captured: any credential a device sent
+  while the other connector ran still works through your own connector. Revoke
+  or rotate every device that connected through the tunnel in that window
+  (Settings → Devices), and pair it again where needed. Rotate the owner
+  credential (`client.owner.rotate`) if it was ever used through the tunnel.
 
 **What the server does (CAL-109, CAL-110):**
 
