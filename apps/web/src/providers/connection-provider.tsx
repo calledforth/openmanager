@@ -570,7 +570,7 @@ export function ConnectionProvider({
         setLocalOwnerClaimFailure({
           endpoint,
           message:
-            'The local owner credential belongs to a different environment. Change environment and reconnect to claim a matching credential.',
+            'The local owner credential belongs to a different environment. Switch environment and reconnect to claim a matching credential.',
         })
       }
       return

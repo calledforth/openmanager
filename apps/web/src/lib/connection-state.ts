@@ -498,7 +498,7 @@ export function deriveConnectionUi(input: DeriveConnectionInput): ConnectionUiSt
       const from = input.routeSearch.from
       return reconnectUi(
         { ...context, endpoint: from },
-        `No answer from ${hostOf(from)}; trying the other saved routes`,
+        `${hostOf(from)} did not work; trying the other saved routes`,
         { kind: input.transport.hasConnected ? 'reconnecting' : 'connecting' },
       )
     }

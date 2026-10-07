@@ -155,7 +155,7 @@ session underneath neither unmounts nor moves. What a person sees:
 | **You're offline** · Reconnects when the network is back. | The browser reports no network (`offline`) | no | none |
 | **Can't reach *environment*** · Stopped retrying. | The client gave up (`offline` with `retriesExhausted`; only with a capped `maxAttempts`) | no | Retry, Switch environment |
 | **Can't reach *environment*** · Not retrying. | An address a person typed did not answer (`unreachable` with `autoRetry: false`): only a saved environment's routes are searched and retried | no | Retry, Switch environment |
-| **Not authorized** (screen) | The token or origin was refused (`unauthorized`); nothing is retried | no | Switch environment |
+| **Not authorized** (screen) | The token was refused (`credential_rejected`, or an `auth` handshake failure); nothing is retried. A refused origin (`route_refused`) is a reconnect strip instead, and is retried | no | Switch environment |
 | **Incompatible protocol** (screen) | Versions cannot talk | no | Retry, Switch environment |
 | **No environment configured** / **Add a route to *environment*?** (screens) | Nothing is configured, or a new address waits for consent | no | the form or the question |
 

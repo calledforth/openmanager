@@ -424,7 +424,7 @@ describe('deriveConnectionUi', () => {
         surface: 'banner',
         title: "Can't reach Local environment",
         description: 'Trying to reconnect…',
-        detail: 'No answer from 127.0.0.1:43120; trying the other saved routes',
+        detail: '127.0.0.1:43120 did not work; trying the other saved routes',
       })
     })
   })
