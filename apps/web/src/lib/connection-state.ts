@@ -176,6 +176,13 @@ export type DeriveConnectionInput = {
   routeFailure?: RouteFailure
   /** The other saved routes are being tried after the route in use failed. */
   routeSearch?: RouteSearch
+  /**
+   * Whether a failed bootstrap is asked again on its own. A saved environment
+   * is (its routes are searched, then retried on a timer); an address a
+   * person just typed is not, so nothing should spin for it. Omitted means
+   * it is.
+   */
+  autoRetry?: boolean
 }
 
 /**
@@ -554,7 +561,22 @@ export function deriveConnectionUi(input: DeriveConnectionInput): ConnectionUiSt
     const message =
       (input.bootstrap.status === 'unreachable' ? input.bootstrap.message : undefined) ??
       input.transport.failure?.message
-    return reconnectUi(context, bootstrapDetail(input.bootstrap, host, message))
+    const detail = bootstrapDetail(input.bootstrap, host, message)
+    if (input.autoRetry === false) {
+      // Nothing asks again until a person does, so the strip does not spin.
+      return {
+        kind: 'unreachable',
+        surface: 'banner',
+        title: `Can't reach ${whom(label)}`,
+        description: 'Not retrying.',
+        detail,
+        action: 'retry',
+        secondaryAction: 'change_environment',
+        environmentLabel: label,
+        endpoint,
+      }
+    }
+    return reconnectUi(context, detail)
   }
 
   // The first attempt: nothing has failed yet, so nothing is "unreachable".

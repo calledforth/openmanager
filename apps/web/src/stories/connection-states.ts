@@ -111,6 +111,18 @@ export const CONNECTION_STORIES: ConnectionStory[] = [
     },
   },
   {
+    id: 'unreachable_typed',
+    name: 'Typed address unreachable',
+    summary:
+      'A connect a person started failed. Nothing asks a typed address again on its own, so nothing spins.',
+    input: {
+      environment: { status: 'selected', endpoint: 'http://127.0.0.1:43120' },
+      bootstrap: { status: 'unreachable', cause: 'network' },
+      transport: { phase: 'closed', hasConnected: false, failure: { code: 'unreachable' } },
+      autoRetry: false,
+    },
+  },
+  {
     id: 'incompatible_protocol',
     name: 'Protocol mismatch',
     summary: 'evaluateBootstrap returned incompatible_protocol.',

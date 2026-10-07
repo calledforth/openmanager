@@ -105,6 +105,25 @@ describe('deriveConnectionUi', () => {
     })
   })
 
+  it('does not spin for a typed address that nothing will ask again', () => {
+    const ui = deriveConnectionUi({
+      environment: { status: 'selected', endpoint: 'http://127.0.0.1:43120' },
+      bootstrap: { status: 'unreachable', cause: 'network' },
+      transport: { phase: 'closed', hasConnected: false, failure: { code: 'unreachable' } },
+      autoRetry: false,
+    })
+    expect(ui).toMatchObject({
+      kind: 'unreachable',
+      surface: 'banner',
+      title: "Can't reach the environment",
+      description: 'Not retrying.',
+      detail: 'No answer from 127.0.0.1:43120',
+      action: 'retry',
+      secondaryAction: 'change_environment',
+    })
+    expect(ui.retrying).toBeUndefined()
+  })
+
   it('says what a bare bootstrap failure was, in its first sentence', () => {
     const ui = deriveConnectionUi({
       environment: { status: 'selected', endpoint: 'http://127.0.0.1:43120', label: 'Home' },

@@ -674,6 +674,9 @@ export function ConnectionProvider({
     routeOffer,
     routeFailure: storedId && routeFailure?.environmentId === storedId ? routeFailure : undefined,
     routeSearch: storedId && routeSearch?.environmentId === storedId ? routeSearch : undefined,
+    // Only a saved selection has routes to search and retry; a typed connect
+    // that fails waits for the person.
+    autoRetry: storedId !== undefined,
   }
 
   // Returning from offline is the one event worth acting on: the bootstrap
