@@ -352,7 +352,7 @@ describe('the shared application over the environment client', () => {
     const childRow = buttonWithText('Subagent run')!
     expect(card.contains(childRow)).toBe(true)
     expect(card.contains(childRow.closest('[role="list"]'))).toBe(true)
-    expect(card.parentElement!.children).toHaveLength(1)
+    expect(card.parentElement!.querySelectorAll(':scope > [role="listitem"]')).toHaveLength(1)
   })
 
   it('opens a session from the sidebar and shows its mocked message list', async () => {

@@ -176,8 +176,11 @@ const type = async (text: string) => {
   })
 }
 
-/** The Active list's cards, top to bottom. */
-const activeCards = () => [...container.querySelectorAll<HTMLElement>('[role="list"]')[0]!.children]
+/** The cards, drafts then active sessions, top to bottom; the section labels between them are left out. */
+const activeCards = () =>
+  [...container.querySelectorAll<HTMLElement>('[role="list"]')[0]!.children].filter(
+    (row) => row.getAttribute('role') === 'listitem',
+  )
 /** Each draft card's first line, top to bottom. */
 const draftCards = () =>
   activeCards()
