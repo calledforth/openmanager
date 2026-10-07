@@ -80,6 +80,22 @@ function readOptionalLabel(bootstrap: BootstrapResponse): string | undefined {
 const UNREADABLE_PROBE_TIMEOUT_MS = 5000
 
 /**
+ * `signal`, also aborted after `ms`. `AbortSignal.any` is recent (Safari 17.4),
+ * so without it the two are joined by hand.
+ */
+function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
+  const timeout = AbortSignal.timeout(ms)
+  if (!signal) return timeout
+  if (typeof AbortSignal.any === 'function') return AbortSignal.any([signal, timeout])
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  if (signal.aborted) abort()
+  signal.addEventListener('abort', abort, { once: true })
+  timeout.addEventListener('abort', abort, { once: true })
+  return controller.signal
+}
+
+/**
  * After a bootstrap fetch failed, whether anything answered at all. A page may
  * only read a cross-origin answer that carries CORS headers, and the error
  * pages a gateway sends (Cloudflare's 530 for a tunnel that is down, its 502
@@ -96,13 +112,12 @@ async function unreadableAnswer(
 ): Promise<'opaque' | 'opaque_redirect' | null> {
   if (signal?.aborted) return null
   try {
-    const timeout = AbortSignal.timeout(UNREADABLE_PROBE_TIMEOUT_MS)
     const response = await fetch(bootstrapUrl(endpoint), {
       mode: 'no-cors',
       redirect: 'manual',
       cache: 'no-store',
       credentials: 'omit',
-      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      signal: withTimeout(signal, UNREADABLE_PROBE_TIMEOUT_MS),
     })
     if (response.type === 'opaqueredirect') return 'opaque_redirect'
     return response.type === 'opaque' ? 'opaque' : null

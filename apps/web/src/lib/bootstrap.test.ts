@@ -43,6 +43,23 @@ describe('fetchBootstrap', () => {
     expect(await fetchBootstrap('https://tunnel.example')).toMatchObject({ cause: 'network' })
   })
 
+  it('still asks where AbortSignal.any is missing', async () => {
+    const RealAbortSignal = AbortSignal
+    vi.stubGlobal('AbortSignal', {
+      timeout: (ms: number) => RealAbortSignal.timeout(ms),
+    })
+    const fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.mode === 'no-cors') return { type: 'opaque' } as Response
+      throw new TypeError('Failed to fetch')
+    })
+    vi.stubGlobal('fetch', fetch)
+    const controller = new AbortController()
+    expect(
+      await fetchBootstrap('https://tunnel.example', { signal: controller.signal }),
+    ).toMatchObject({ cause: 'opaque' })
+    expect(fetch.mock.calls[1]![1]!.signal).toBeInstanceOf(RealAbortSignal)
+  })
+
   it('does not ask again once the fetch was cancelled', async () => {
     const fetch = vi.fn(async () => {
       throw new DOMException('Timed out', 'TimeoutError')

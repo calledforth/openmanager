@@ -972,6 +972,8 @@ export function ConnectionProvider({
           // The route was used while the probe was out: what the connection
           // said about it is newer than this answer.
           if ((liveReports.current.get(key) ?? 0) !== reportsAtStart) return
+          // The environment answered since it said it was shutting down.
+          if (report.status === 'available') announcedStops.current.delete(item.environmentId)
           update((latest) =>
             isInUse(latest, item.environmentId, route.endpoint)
               ? latest
