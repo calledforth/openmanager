@@ -19,6 +19,7 @@ import { auditValue, type AuditLog, type AuditValue } from './audit.ts'
 import type { AuthenticatedClient } from './authorized-clients.ts'
 import type { CommandContext } from './command-context.ts'
 import type { Logger } from './logger.ts'
+import { remoteAddressKey, type BudgetKey } from './budget-key.ts'
 import type { RateLimiter } from './rate-limit.ts'
 import { isAllowedUploadType, isOversizedUpload, MAX_ATTACHMENT_BYTES } from './upload-limits.ts'
 
@@ -80,6 +81,8 @@ export function createUploadService(options: {
   audit: AuditLog
   log: Logger
   rateLimiter: RateLimiter
+  /** Who a failed credential is counted against; see `budget-key.ts`. */
+  budgetKey?: BudgetKey
   authenticate: (credential: string | undefined) => AuthenticatedClient | undefined
   /** The workspace that owns a session, or `undefined` when the session does not exist. */
   sessionWorkspace: (sessionId: string) => string | undefined
@@ -310,13 +313,19 @@ export function createUploadService(options: {
       if (!settle()) return
       try {
         renameSync(partialPath, finalPath)
-        artifacts.record({
-          artifactId,
-          ...(ticket.sessionId === undefined ? {} : { sessionId: ticket.sessionId }),
-          workspaceId: ticket.workspaceId,
-          name: ticket.name, mimeType: ticket.mimeType, sizeBytes: received,
-          source: 'prompt', createdAt: clock(),
-        }, ticket.clientId)
+        artifacts.record(
+          {
+            artifactId,
+            ...(ticket.sessionId === undefined ? {} : { sessionId: ticket.sessionId }),
+            workspaceId: ticket.workspaceId,
+            name: ticket.name,
+            mimeType: ticket.mimeType,
+            sizeBytes: received,
+            source: 'prompt',
+            createdAt: clock(),
+          },
+          ticket.clientId,
+        )
       } catch (error) {
         // A workspace deleted mid-transfer fails the insert; the bytes must
         // not outlive the row that would have named them.
@@ -396,9 +405,14 @@ export function createUploadService(options: {
         return true
       }
       if (request.method !== (download ? 'GET' : 'PUT')) {
-        respond(response, 405, errorResult(null, 'validation', download ? 'Artifacts use GET.' : 'Uploads use PUT.'), {
-          allow: download ? 'GET' : 'PUT',
-        })
+        respond(
+          response,
+          405,
+          errorResult(null, 'validation', download ? 'Artifacts use GET.' : 'Uploads use PUT.'),
+          {
+            allow: download ? 'GET' : 'PUT',
+          },
+        )
         return true
       }
       const remoteAddress = request.socket.remoteAddress ?? 'unknown'
@@ -407,7 +421,8 @@ export function createUploadService(options: {
         : download
           ? `GET ${ARTIFACT_PATH_PREFIX}`
           : `PUT ${UPLOAD_PATH_PREFIX}`
-      const lockout = options.rateLimiter.blocked('auth_failure', remoteAddress)
+      const budget = (options.budgetKey ?? remoteAddressKey)(request)
+      const lockout = options.rateLimiter.blocked('auth_failure', budget)
       if (!lockout.allowed) {
         options.audit.record({
           type: 'rate_limited',
@@ -427,7 +442,7 @@ export function createUploadService(options: {
         /^Bearer (\S+)$/.exec(request.headers.authorization ?? '')?.[1],
       )
       if (!client) {
-        options.rateLimiter.consume('auth_failure', remoteAddress)
+        options.rateLimiter.consume('auth_failure', budget)
         options.audit.record({
           type: 'auth.failed',
           remoteAddress,

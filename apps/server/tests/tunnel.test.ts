@@ -87,7 +87,7 @@ function tunnelFetch(target: () => Target | Promise<Target>) {
         {
           host: '127.0.0.1',
           port: to.port,
-          path: url.pathname,
+          path: `${url.pathname}${url.search}`,
           headers: { host: url.host, 'cf-connecting-ip': '203.0.113.9', 'cf-ray': 'fake' },
         },
         (incoming) => {
@@ -95,7 +95,10 @@ function tunnelFetch(target: () => Target | Promise<Target>) {
           incoming.on('data', (chunk: Buffer) => chunks.push(chunk))
           incoming.on('end', () =>
             resolveResponse(
-              new Response(Buffer.concat(chunks), { status: incoming.statusCode ?? 500 }),
+              // A 204 may not have a body, not even an empty one.
+              new Response(incoming.statusCode === 204 ? null : Buffer.concat(chunks), {
+                status: incoming.statusCode ?? 500,
+              }),
             ),
           )
         },
@@ -456,21 +459,74 @@ describe('tunnel supervisor', () => {
     expect(host.records()).toHaveLength(2)
   })
 
-  it('does not offer a hostname that answers as another environment', async () => {
-    let answer: { status: number; body: unknown } = {
+  it('passes the hostname check only when the probe arrives, not on an echo', async () => {
+    let serverPort = 0
+    let answer: { status: number; body: unknown } | undefined
+    const host = await startTunnelHost({ target: () => answer ?? { port: serverPort } })
+    serverPort = host.server.port
+    await waitForState(host, 'connected')
+    // An impostor that serves a copy of this environment's public bootstrap.
+    answer = {
       status: 200,
-      body: { environmentId: 'someone-else' },
+      body: { environmentId: host.server.identity.environmentId, ok: true },
     }
-    const host = await startTunnelHost({ target: () => answer })
+    await host.fakeOrder('unready')
+    await waitForState(host, 'down')
+    await host.fakeOrder('ready')
     const status = await waitForState(host, 'self_check_failed')
-    expect(status.reason).toBe('other_environment')
+    expect(status.reason).toBe('not_arrived')
     expect(status.route).toBeUndefined()
     answer = { status: 502, body: {} }
     await waitForState(host, 'self_check_failed', undefined, (s) => s.reason === 'http_502')
-    answer = { status: 200, body: { environmentId: host.server.identity.environmentId } }
+    answer = undefined
     await waitForState(host, 'connected')
     // A wrong hostname is the dashboard's doing; the connector is left alone.
     expect(host.records()).toHaveLength(1)
+  })
+
+  it('answers the check path with nothing but a 404 for any other nonce', async () => {
+    const host = await startTunnelHost()
+    await waitForState(host, 'connected')
+    const port = host.server.port
+    const probe = (ip: string) =>
+      hostRequest(port, '/tunnel-check?nonce=guess', { host: HOSTNAME, 'cf-connecting-ip': ip })
+    expect(await probe('198.51.100.1')).toBe(404)
+    expect(await hostRequest(port, '/tunnel-check', { host: `127.0.0.1:${port}` })).toBe(404)
+    // Misses are budgeted per client, apart from the credential budget.
+    for (let attempt = 0; attempt < 30; attempt += 1) await probe('198.51.100.2')
+    expect(await probe('198.51.100.2')).toBe(429)
+    expect(await probe('198.51.100.3')).toBe(404)
+    expect(host.server.rateLimiter.blocked('auth_failure', 'tunnel:198.51.100.2').allowed).toBe(
+      true,
+    )
+  })
+
+  it('keeps a failed-credential budget per device behind the tunnel, apart from local traffic', async () => {
+    const host = await startTunnelHost()
+    const port = host.server.port
+    const upgrade = (headers: Record<string, string>) =>
+      hostRequest(port, '/ws', {
+        connection: 'Upgrade',
+        upgrade: 'websocket',
+        'sec-websocket-version': '13',
+        'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==',
+        authorization: 'Bearer not-a-credential',
+        ...headers,
+      })
+    const remote = (ip?: string) =>
+      upgrade({ host: HOSTNAME, ...(ip ? { 'cf-connecting-ip': ip } : {}) })
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      expect(await remote('203.0.113.50')).toBe(401)
+    }
+    expect(await remote('203.0.113.50')).toBe(429)
+    // Another device, the same device's IPv6 neighbour, a request without
+    // the header and the owner's local browser each keep their own budget.
+    expect(await remote('203.0.113.51')).toBe(401)
+    expect(await remote()).toBe(401)
+    expect(await upgrade({ host: `127.0.0.1:${port}` })).toBe(401)
+    for (let attempt = 0; attempt < 10; attempt += 1) await remote('2001:db8:1:2::1')
+    expect(await remote('2001:db8:1:2:ffff::9')).toBe(429)
+    expect(await remote('2001:db8:1:3::1')).toBe(401)
   })
 
   it('reports a missing binary and keeps serving locally', async () => {

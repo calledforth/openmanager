@@ -237,8 +237,12 @@ This is the Wave 1 starting point the issues above replace:
   log; the service keeps it in the data directory, not in the task or unit.
   The connector runs at `info` log level, because at `debug` it logs request
   headers, which carry the socket credential. Its hostname joins the `Host`
-  allowlist, and a route is reported `connected` only after
-  `https://<hostname>/bootstrap` answers with this environment's ID.
+  allowlist, and the tunnel is reported `connected` only after a single-use
+  nonce sent to `https://<hostname>/tunnel-check` arrives at this process's
+  own listener; the response is not trusted. Behind the tunnel the
+  failed-attempt budgets are keyed by `CF-Connecting-IP` for tunnel-host
+  requests from loopback, apart from local traffic; the header is never
+  identity (`apps/server/src/budget-key.ts`).
 - `/bootstrap` is unauthenticated and includes the provider snapshot, which D11
   moves behind authentication.
 

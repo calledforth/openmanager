@@ -8,6 +8,8 @@ export const RATE_LIMITS = Object.freeze({
   auth_failure: { limit: 10, windowMs: 60_000 },
   /** Refused pairing attempts: per remote address at `POST /pair`, per client for `pairing.redeem`. */
   pairing: { limit: 5, windowMs: 60_000 },
+  /** Tunnel check probes that carry no pending nonce (`GET /tunnel-check`), per budget key. */
+  tunnel_check: { limit: 30, windowMs: 60_000 },
   /** Local-owner issuance attempts per remote address (`GET /local-owner`). */
   local_owner: { limit: 10, windowMs: 60_000 },
   /** `turn.send` per client. */

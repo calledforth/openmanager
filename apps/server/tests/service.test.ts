@@ -437,7 +437,7 @@ describe('service commands', () => {
     const status = {
       state: 'self_check_failed',
       hostname: 'om.example.com',
-      reason: 'other_environment',
+      reason: 'not_arrived',
       since: '2026-10-06T10:00:00.000Z',
       restarts: 0,
     }
@@ -446,7 +446,7 @@ describe('service commands', () => {
     const up = fakeSystem({ registered: existing, healthy: () => true, pids: [[4242]] })
     expect(await runServiceCommand(['status'], { ...up.deps, readFile: read })).toBe(0)
     expect(up.out).toContain(
-      'Tunnel:    https://om.example.com (self check failed: other environment since 2026-10-06T10:00:00.000Z)',
+      'Tunnel:    https://om.example.com (self check failed: not arrived since 2026-10-06T10:00:00.000Z)',
     )
     const json = fakeSystem({ registered: existing, healthy: () => true, pids: [[4242]] })
     await runServiceCommand(['status', '--json'], { ...json.deps, readFile: read })

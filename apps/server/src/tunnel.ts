@@ -1,4 +1,5 @@
 import { spawn as spawnProcess, type ChildProcess } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import {
   accessSync,
   chmodSync,
@@ -41,6 +42,14 @@ const CLOUDFLARED_CONFIG_TEXT =
   '# Written by the OpenManager environment server, which runs this tunnel.\n' +
   '# Settings come from its command line and the Cloudflare dashboard.\n' +
   'no-autoupdate: true\n'
+/**
+ * Where the hostname check arrives. The server sends a fresh nonce to
+ * `https://<hostname>/tunnel-check?nonce=...` and the check passes only if
+ * this process's own listener receives it. What comes back is not trusted:
+ * `/bootstrap` and the environment ID are public, so an impostor at the
+ * hostname could echo them.
+ */
+export const TUNNEL_CHECK_PATH = '/tunnel-check'
 /** The longest token accepted. Real tokens are a few hundred characters. */
 export const TUNNEL_TOKEN_MAX_LENGTH = 4096
 
@@ -89,9 +98,8 @@ export type TunnelReason =
   | 'start_timeout'
   | 'resumed_stale'
   // The hostname check
-  | 'other_environment'
+  | 'not_arrived'
   | 'tunnel_unreachable'
-  | 'not_openmanager'
   | 'unreachable'
   | `http_${number}`
 
@@ -169,7 +177,6 @@ export interface TunnelSupervisorOptions {
   config: TunnelConfig
   /** The environment server's bound loopback port: the only origin the tunnel should reach. */
   port: number
-  environmentId: string
   log: Logger
   /** Where to publish the status; omitted, nothing is written. */
   statusFile?: string
@@ -433,6 +440,8 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
    */
   let resumedAt: number | undefined
   let lastErrorLogAt = Number.NEGATIVE_INFINITY
+  /** Nonces of hostname checks in flight, and whether each has arrived. */
+  const pendingNonces = new Map<string, { arrived: boolean }>()
 
   let tick: ReturnType<typeof setInterval> | undefined
   let restartTimer: ReturnType<typeof setTimeout> | undefined
@@ -775,23 +784,38 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
     selfCheckTimer.unref?.()
   }
 
+  /**
+   * A reachability-and-arrival check, not an authentication of whoever
+   * answers: it passes only when the probe's single-use nonce reaches this
+   * process's listener. It carries no credential. Whoever controls the zone,
+   * its DNS or the tunnel's dashboard configuration could still relay the
+   * hostname here and see what is later sent to it; that is the trust already
+   * placed in Cloudflare and in the owner's account.
+   */
   async function checkHostname(): Promise<SelfCheck> {
+    const nonce = randomBytes(24).toString('base64url')
+    const arrival = { arrived: false }
+    pendingNonces.set(nonce, arrival)
+    let code: number | undefined
     try {
-      const { status: code, body } = await getJson(
-        `https://${hostname}/bootstrap`,
-        timing.selfCheckTimeoutMs,
-      )
-      // 530 is Cloudflare's own answer: the hostname's tunnel has no connector.
-      if (code === 530) return { ok: false, reason: 'tunnel_unreachable' }
-      if (code !== 200) return { ok: false, reason: `http_${code}` }
-      const environmentId = (body as { environmentId?: unknown } | undefined)?.environmentId
-      if (typeof environmentId !== 'string') return { ok: false, reason: 'not_openmanager' }
-      return environmentId === options.environmentId
-        ? { ok: true }
-        : { ok: false, reason: 'other_environment' }
+      const response = await httpFetch(`https://${hostname}${TUNNEL_CHECK_PATH}?nonce=${nonce}`, {
+        signal: AbortSignal.timeout(timing.selfCheckTimeoutMs),
+        redirect: 'manual',
+      })
+      code = response.status
+      await response.body?.cancel()
     } catch {
-      return { ok: false, reason: 'unreachable' }
+      code = undefined
+    } finally {
+      pendingNonces.delete(nonce)
     }
+    if (arrival.arrived) return { ok: true }
+    if (code === undefined) return { ok: false, reason: 'unreachable' }
+    // 530 is Cloudflare's own answer: the hostname's tunnel has no connector.
+    if (code === 530) return { ok: false, reason: 'tunnel_unreachable' }
+    // Something answered, and it was not this server.
+    if ((code >= 200 && code < 300) || code === 404) return { ok: false, reason: 'not_arrived' }
+    return { ok: false, reason: `http_${code}` }
   }
 
   async function runSelfCheck(): Promise<void> {
@@ -891,6 +915,16 @@ export function createTunnelSupervisor(options: TunnelSupervisorOptions) {
   return {
     status(): TunnelStatus {
       return status
+    },
+    /**
+     * Called by the listener for `GET /tunnel-check`. True, once, for the
+     * nonce of a check in flight; false for anything else.
+     */
+    acceptArrival(nonce: string): boolean {
+      const arrival = pendingNonces.get(nonce)
+      if (!arrival || arrival.arrived) return false
+      arrival.arrived = true
+      return true
     },
     onChange(listener: (status: TunnelStatus) => void): () => void {
       listeners.add(listener)

@@ -300,11 +300,10 @@ several devices pairing from one network do not lock each other out.
 `POST /pair` is under the same Host and Origin policy as every other route and
 answers CORS preflight for `POST`.
 
-Behind a tunnel every request arrives from the tunnel's local address, so the
-`/pair` budget is shared by everyone reaching that hostname: someone sending
-bad tokens can hold off pairing through the tunnel for a minute at a time,
-though never guess a token. Trusting the tunnel's client-address header on a
-tunnel listener is left to the Cloudflare work.
+Behind the server's own tunnel every request arrives from `127.0.0.1`, so the
+`/pair` budget for tunnel requests is kept per `CF-Connecting-IP` instead (see
+Rate limits): someone sending bad tokens holds off only their own address,
+and never guesses a token.
 
 Used and withdrawn links stay 90 days for the audit trail, then are deleted the
 next time a link is created.
@@ -435,6 +434,7 @@ Fixed windows, defined in [`src/rate-limit.ts`](src/rate-limit.ts) as
 | -------------- | -------------- | -------------- | ---------------------------------------------------------------------- |
 | `auth_failure` | remote address | 10 per minute  | Failed credential checks on WebSocket upgrade.                         |
 | `pairing`      | remote address, or client | 5 per minute | Refused `POST /pair` attempts (by address) and refused `pairing.redeem` (by client). |
+| `tunnel_check` | remote address | 30 per minute  | `GET /tunnel-check` requests that carry no pending nonce.               |
 | `local_owner`  | remote address | 10 per minute  | `GET /local-owner` issuance attempts.                                      |
 | `prompt`       | client         | 30 per minute  | `turn.send`.                                                           |
 | `mutation`     | client         | 120 per minute | Every other `operate`, `agent`, `terminal` or `admin` command, except `client.list`, which changes nothing. |
@@ -442,8 +442,12 @@ Fixed windows, defined in [`src/rate-limit.ts`](src/rate-limit.ts) as
 An address over its `auth_failure` budget receives `429` with a `Retry-After`
 header and the `unavailable` error code, and no credential it presents is
 checked until the window ends. Behind the tunnel every request arrives from
-`127.0.0.1`, so that lockout is shared by everyone on the tunnel for the rest
-of the minute; that is the accepted cost of not trusting a forwarded address.
+`127.0.0.1`, so for a loopback request whose `Host` is the configured tunnel
+hostname, "remote address" in this table means the `CF-Connecting-IP`
+Cloudflare set (IPv6 grouped by /64), or one tunnel bucket when the header is
+missing, always apart from local traffic
+([`src/budget-key.ts`](src/budget-key.ts)). The header is used for budgets
+only, never for identity.
 A client over a per-client budget receives an `unavailable` error with
 `details.policy` and `details.retryAfterMs` for that command; the protocol's
 retry policy for `unavailable` is `after_backoff`. Replays of an

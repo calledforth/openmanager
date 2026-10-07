@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
-import { createServer } from 'node:http'
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import {
   PLAN_BUILD_CAPABILITY,
@@ -82,9 +82,11 @@ import {
   clearTunnelStatus,
   createTunnelSupervisor,
   CLOUDFLARED_CONFIG_FILE_NAME,
+  TUNNEL_CHECK_PATH,
   TUNNEL_STATUS_FILE_NAME,
   type TunnelSupervisor,
 } from './tunnel.ts'
+import { createBudgetKey } from './budget-key.ts'
 import { createArtifactStore } from './artifacts.ts'
 import { createUploadService } from './uploads.ts'
 import { attachWebSocket, SOCKET_CAPABILITIES } from './websocket.ts'
@@ -152,6 +154,9 @@ export async function startServer(config: ServerConfig) {
   const workspaceRoots = validateWorkspaceRoots(config.workspaces ?? [])
   const log = createLogger(config.logLevel, resolveLogSink(config.logFile))
   const rateLimiter = createRateLimiter()
+  // Behind the tunnel every request is from loopback; budgets follow the
+  // device Cloudflare names instead, apart from local traffic.
+  const budgetKey = createBudgetKey(config.tunnel?.hostname)
   const identity = await loadEnvironmentIdentity(config.dataDir)
   const audit = createAuditLog(log, { dataDir: config.dataDir })
   const composerStore = openComposerStore(config.dataDir)
@@ -406,6 +411,7 @@ export async function startServer(config: ServerConfig) {
     audit,
     log,
     rateLimiter,
+    budgetKey,
     authenticate: (credential) => clients.authenticate(credential),
     sessionWorkspace: (sessionId) => {
       // A session created a moment ago may still be in the write batch.
@@ -419,6 +425,7 @@ export async function startServer(config: ServerConfig) {
     dataDir: config.dataDir,
     audit,
     rateLimiter,
+    budgetKey,
     environment: () => ({ environmentId: identity.environmentId, label: identity.label }),
     onGrantChanged: (clientId) => closeClientSockets(clientId),
     onClientsChanged: () => announceClients(),
@@ -494,6 +501,10 @@ export async function startServer(config: ServerConfig) {
         'cache-control': 'no-store',
       })
       response.end()
+      return
+    }
+    if (request.method === 'GET' && path === TUNNEL_CHECK_PATH) {
+      handleTunnelCheck(request, response)
       return
     }
     if (uploads.handle(request, response)) return
@@ -606,6 +617,36 @@ export async function startServer(config: ServerConfig) {
     response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
     response.end('Not found\n')
   })
+  /**
+   * The arrival end of the tunnel's hostname check. It reveals nothing: the
+   * nonce of a check in flight gets an empty 204, anything else the same 404
+   * as an unknown path. Only requests through the tunnel can match, and
+   * misses spend their own `tunnel_check` budget, never the credential one.
+   */
+  function handleTunnelCheck(request: IncomingMessage, response: ServerResponse) {
+    const key = budgetKey(request)
+    const lockout = rateLimiter.blocked('tunnel_check', key)
+    if (!lockout.allowed) {
+      response.writeHead(429, {
+        'cache-control': 'no-store',
+        'retry-after': String(Math.ceil(lockout.retryAfterMs / 1000)),
+      })
+      response.end()
+      return
+    }
+    const nonce = new URL(request.url ?? '/', 'http://check').searchParams.get('nonce')
+    const viaTunnel =
+      config.tunnel !== undefined &&
+      request.headers.host?.trim().toLowerCase() === config.tunnel.hostname
+    if (viaTunnel && nonce !== null && tunnel?.acceptArrival(nonce)) {
+      response.writeHead(204, { 'cache-control': 'no-store' })
+      response.end()
+      return
+    }
+    rateLimiter.consume('tunnel_check', key)
+    response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+    response.end('Not found\n')
+  }
   let clientSockets: ClientSockets | undefined
   const clientService = createClientService({
     clients,
@@ -640,6 +681,7 @@ export async function startServer(config: ServerConfig) {
     authenticate: (credential) => clients.authenticate(credential),
     guard,
     rateLimiter,
+    budgetKey,
     audit,
     bootstrap,
     replay: (scope, cursor) => replayReader.read(scope, cursor),
@@ -705,7 +747,6 @@ export async function startServer(config: ServerConfig) {
       ...config.tunnelOptions,
       config: config.tunnel,
       port: address.port,
-      environmentId: identity.environmentId,
       log,
       statusFile: tunnelStatusFile,
       configFile: join(config.dataDir, CLOUDFLARED_CONFIG_FILE_NAME),
