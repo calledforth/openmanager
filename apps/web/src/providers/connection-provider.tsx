@@ -325,6 +325,8 @@ export function ConnectionProvider({
    * it first.
    */
   const announcedStops = useRef(new Set<string>())
+  /** How many shutdowns each environment has announced, to date answers by. */
+  const stopCounts = useRef(new Map<string, number>())
   const searchGeneration = useRef(0)
   const searching = useRef(false)
   const retryAttempt = useRef(0)
@@ -891,6 +893,7 @@ export function ConnectionProvider({
       if (inUseFor(selected, activeRoutesRef.current) !== routeEndpoint) return
       if (report.stopped) {
         announcedStops.current.add(environmentId)
+        stopCounts.current.set(environmentId, (stopCounts.current.get(environmentId) ?? 0) + 1)
         // A search already out started before the server said it stopped; a
         // route it finds answering says nothing about the server now.
         searchGeneration.current += 1
@@ -966,14 +969,21 @@ export function ConnectionProvider({
         if (probing.current.has(key)) continue
         probing.current.add(key)
         const reportsAtStart = liveReports.current.get(key) ?? 0
+        const stopsAtStart = stopCounts.current.get(item.environmentId) ?? 0
         void probeRouteHealth(item.environmentId, route.endpoint).then((report) => {
           probing.current.delete(key)
           if (!mounted.current) return
           // The route was used while the probe was out: what the connection
           // said about it is newer than this answer.
           if ((liveReports.current.get(key) ?? 0) !== reportsAtStart) return
-          // The environment answered since it said it was shutting down.
-          if (report.status === 'available') announcedStops.current.delete(item.environmentId)
+          // The environment answered since it said it was shutting down, if
+          // this check started after it said so.
+          if (
+            report.status === 'available' &&
+            (stopCounts.current.get(item.environmentId) ?? 0) === stopsAtStart
+          ) {
+            announcedStops.current.delete(item.environmentId)
+          }
           update((latest) =>
             isInUse(latest, item.environmentId, route.endpoint)
               ? latest
