@@ -1,4 +1,12 @@
-import { useContext, useEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react'
+import {
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+  type MutableRefObject,
+  type ReactNode,
+} from 'react'
 import { PlatformCapabilitiesContext } from '../../providers/platform-provider'
 import {
   useSidebarData,
@@ -26,7 +34,7 @@ function useDocumentVisible(): boolean {
 const NO_SESSIONS: SidebarSessionEntry[] = []
 
 /** The view's props, read from the sidebar contract. */
-function useWorkspaceSidebarModel() {
+function useWorkspaceSidebarModel(closeSheet: MutableRefObject<() => void>) {
   const {
     environment,
     workspaces: catalog,
@@ -46,12 +54,13 @@ function useWorkspaceSidebarModel() {
   const visible = useDocumentVisible()
   // On a phone the sidebar is a sheet over the page: going somewhere from it
   // (a session, a draft, a new agent, Add project) closes it, so what was
-  // picked is on screen rather than behind the sheet.
-  const { isMobile, setOpenMobile } = useSidebar()
+  // picked is on screen rather than behind the sheet. `SheetCloser` keeps the
+  // closer current, so this hook never reads the sidebar's own state (width,
+  // peek, a rail drag) and renders for it.
   const away =
     <A extends unknown[], R>(go: (...args: A) => R) =>
     (...args: A): R => {
-      if (isMobile) setOpenMobile(false)
+      closeSheet.current()
       return go(...args)
     }
 
@@ -112,6 +121,18 @@ function useWorkspaceSidebarModel() {
 }
 
 /**
+ * Keeps `closeSheet` closing the phone sheet, and doing nothing on a wider
+ * window. Its own piece, so a rail drag or a peek renders only this.
+ */
+function SheetCloser({ closeSheet }: { closeSheet: MutableRefObject<() => void> }) {
+  const { isMobile, setOpenMobile } = useSidebar()
+  useEffect(() => {
+    closeSheet.current = isMobile ? () => setOpenMobile(false) : () => undefined
+  }, [closeSheet, isMobile, setOpenMobile])
+  return null
+}
+
+/**
  * The session sidebar bound to `useSidebarData`; render inside a Fluid
  * `SidebarProvider`. Hosts add their own rows through the slots. Hosts with
  * draft cards also mount `DraftDiscardNotice` (`DraftDiscardToast.tsx`)
@@ -124,6 +145,12 @@ export function WorkspaceSidebar({
   titlebar?: ReactNode
   footer?: ReactNode
 }) {
-  const model = useWorkspaceSidebarModel()
-  return <WorkspaceSidebarView {...model} titlebar={titlebar} footer={footer} />
+  const closeSheet = useRef<() => void>(() => undefined)
+  const model = useWorkspaceSidebarModel(closeSheet)
+  return (
+    <>
+      <SheetCloser closeSheet={closeSheet} />
+      <WorkspaceSidebarView {...model} titlebar={titlebar} footer={footer} />
+    </>
+  )
 }

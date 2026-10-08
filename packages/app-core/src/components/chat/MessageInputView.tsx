@@ -220,6 +220,8 @@ function useScrollEdgeFade() {
         ? `linear-gradient(to right, ${start ? 'transparent, #000 20px' : '#000'}, ${end ? '#000 calc(100% - 20px), transparent' : '#000'})`
         : ''
   }, [])
+  // Set up once: the composer renders on every keystroke, and nothing here
+  // needs to run then. The observer follows the chips as they come and go.
   useEffect(() => {
     const el = ref.current
     if (!el) return
@@ -227,14 +229,21 @@ function useScrollEdgeFade() {
     el.addEventListener('scroll', update, { passive: true })
     if (typeof ResizeObserver === 'undefined') return () => el.removeEventListener('scroll', update)
     // The row, and each chip: a label that changes length changes the overflow.
-    const observer = new ResizeObserver(update)
-    observer.observe(el)
-    for (const child of el.children) observer.observe(child)
+    const resize = new ResizeObserver(update)
+    const observeAll = () => {
+      resize.disconnect()
+      resize.observe(el)
+      for (const child of el.children) resize.observe(child)
+    }
+    observeAll()
+    const chips = new MutationObserver(observeAll)
+    chips.observe(el, { childList: true })
     return () => {
       el.removeEventListener('scroll', update)
-      observer.disconnect()
+      resize.disconnect()
+      chips.disconnect()
     }
-  })
+  }, [update])
   return ref
 }
 
