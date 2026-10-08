@@ -96,6 +96,8 @@ export function attachWebSocket(
     budgetKey?: BudgetKey
     audit: AuditLog
     bootstrap: () => BootstrapResponse
+    /** The environment every scope and event must belong to; known before the server listens. */
+    environmentId: string
     /**
      * Answer a reconnecting client's cursor: the missed tail of the scope or a
      * snapshot of it. Synchronous on purpose, so the live subscription can be
@@ -454,7 +456,7 @@ export function attachWebSocket(
             return
           }
           const scope = command.data.payload.scope
-          if (scope.environmentId !== options.bootstrap().environmentId) {
+          if (scope.environmentId !== options.environmentId) {
             reply(errorResult(message.requestId, 'auth', 'Scope belongs to another environment.'))
             return
           }
@@ -478,7 +480,7 @@ export function attachWebSocket(
             return
           }
           const { scope, cursor } = command.data.payload
-          if (scope.environmentId !== options.bootstrap().environmentId) {
+          if (scope.environmentId !== options.environmentId) {
             reply(errorResult(message.requestId, 'auth', 'Scope belongs to another environment.'))
             return
           }
@@ -585,7 +587,7 @@ export function attachWebSocket(
     },
     publish(recordInput: unknown) {
       const record = DurableEventSchema.parse(recordInput)
-      if (record.cursor.scope.environmentId !== options.bootstrap().environmentId) {
+      if (record.cursor.scope.environmentId !== options.environmentId) {
         throw new Error('Cannot publish an event from another environment.')
       }
       for (const connection of connections.values()) {
