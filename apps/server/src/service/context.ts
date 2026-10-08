@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir, userInfo } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { tailLogFile, type LogOptions } from './logs.ts'
 import type { ServerConfig } from '../config.ts'
 
@@ -38,6 +38,8 @@ export interface ServiceCommandDeps {
   /** Text of a file, or `undefined` when it does not exist. */
   readFile?: (path: string) => Promise<string | undefined>
   writeFile?: (path: string, text: string) => Promise<void>
+  /** Write a file only this user may read, creating its folder. */
+  writeSecretFile?: (path: string, text: string) => Promise<void>
   removeFile?: (path: string) => Promise<void>
   ensureDir?: (path: string) => Promise<void>
   tailLogs?: (path: string, options: LogOptions, output: (text: string) => void) => Promise<void>
@@ -103,6 +105,21 @@ async function defaultWriteTempFile(name: string, data: Buffer): Promise<string>
   return path
 }
 
+async function defaultWriteSecretFile(path: string, text: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+  // A fresh private file renamed over the old one: the secret is never in a
+  // file someone else could read, even when an older one was left readable.
+  const temporary = `${path}.${process.pid}.tmp`
+  try {
+    await writeFile(temporary, text, { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+    await chmod(temporary, 0o600)
+    await rename(temporary, path)
+  } catch (error) {
+    await rm(temporary, { force: true })
+    throw error
+  }
+}
+
 async function defaultReadFile(path: string): Promise<string | undefined> {
   try {
     return await readFile(path, 'utf8')
@@ -126,6 +143,7 @@ export function resolveDeps(deps: ServiceCommandDeps): Context {
     writeTempFile: deps.writeTempFile ?? defaultWriteTempFile,
     readFile: deps.readFile ?? defaultReadFile,
     writeFile: deps.writeFile ?? ((path, text) => writeFile(path, text, 'utf8')),
+    writeSecretFile: deps.writeSecretFile ?? defaultWriteSecretFile,
     removeFile: deps.removeFile ?? ((path) => rm(path, { force: true })),
     ensureDir: deps.ensureDir ?? (async (path) => void (await mkdir(path, { recursive: true }))),
     tailLogs: deps.tailLogs ?? tailLogFile,
@@ -153,6 +171,8 @@ export interface InstalledService {
   port: number | undefined
   dataDir: string | undefined
   logFile: string | undefined
+  /** The tunnel hostname the service runs, when it runs one. */
+  tunnelHostname?: string
 }
 
 /**

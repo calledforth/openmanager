@@ -30,6 +30,7 @@ import {
 } from '@openmanager/protocol/node'
 import { auditValue, type AuditLog } from './audit.ts'
 import { insertClientRow } from './authorized-clients.ts'
+import { remoteAddressKey, type BudgetKey } from './budget-key.ts'
 import type { CommandContext } from './command-context.ts'
 import { openEnvironmentDatabase } from './db/database.ts'
 import type { RateLimiter } from './rate-limit.ts'
@@ -208,6 +209,8 @@ export function createPairingService(options: {
   dataDir: string
   audit: AuditLog
   rateLimiter: RateLimiter
+  /** Who a refused `POST /pair` is counted against; see `budget-key.ts`. */
+  budgetKey?: BudgetKey
   environment: () => { environmentId: string; label: string }
   /**
    * A device's grant changed by redeeming a link. Called as the redeem
@@ -654,6 +657,7 @@ export function createPairingService(options: {
 
   const exchangeHttp = async (request: IncomingMessage, response: ServerResponse) => {
     const remoteAddress = request.socket.remoteAddress ?? 'unknown'
+    const budget = (options.budgetKey ?? remoteAddressKey)(request)
     const command = `POST ${PAIRING_EXCHANGE_PATH}`
     const who = { remoteAddress }
     const tooMany = (retryAfterMs: number, headers: Record<string, string> = {}) =>
@@ -661,7 +665,7 @@ export function createPairingService(options: {
         'retry-after': String(Math.ceil(retryAfterMs / 1000)),
         ...headers,
       })
-    const retryAfterMs = limited(remoteAddress, command, who)
+    const retryAfterMs = limited(budget, command, who)
     if (retryAfterMs !== undefined) {
       request.resume()
       tooMany(retryAfterMs)
@@ -672,7 +676,7 @@ export function createPairingService(options: {
     // it: requests held open together all passed the first check, and the
     // failures among them since count here. Nothing yields between this
     // check and the redeem.
-    const retryAfterBody = limited(remoteAddress, command, who)
+    const retryAfterBody = limited(budget, command, who)
     if (retryAfterBody !== undefined) {
       tooMany(retryAfterBody, text === undefined ? { connection: 'close' } : {})
       return
@@ -680,7 +684,7 @@ export function createPairingService(options: {
     if (text === undefined) {
       // A refused attempt like any other: it counts against the budget.
       const error = new Rejection(413, 'validation', 'malformed', 'Pairing request is too large.')
-      rejected(error, remoteAddress, command, who, request.headers.origin)
+      rejected(error, budget, command, who, request.headers.origin)
       send(
         response,
         error.status,
@@ -727,7 +731,7 @@ export function createPairingService(options: {
         send(response, 500, errorResult(null, 'internal', 'Pairing failed.'))
         return
       }
-      rejected(error, remoteAddress, command, who, request.headers.origin)
+      rejected(error, budget, command, who, request.headers.origin)
       send(
         response,
         error.status,

@@ -45,11 +45,14 @@ node apps/server/dist/main.js service install --port 43120 --workspace C:\src\my
 | `--log-level`                        | Server log level.                                                                     |
 | `--workspace` (repeatable)           | Folders registered on every start.                                                    |
 | `--allowed-origin`, `--allowed-host` | Browser origins and proxy hosts, as for a manual start.                               |
+| `--tunnel-hostname`, `--tunnel-token-file`, `--cloudflared` | The Cloudflare tunnel. The token is saved to the data directory, never into the task; see [cloudflare-tunnel.md](./cloudflare-tunnel.md#background-service). |
 | `--log-file`                         | Log destination. Defaults to `<data-dir>\logs\server.log`.                            |
 
 The environment variables behind these flags (`OPENMANAGER_PORT`,
 `OPENMANAGER_DATA_DIR`, `OPENMANAGER_LOG_LEVEL`, `OPENMANAGER_ALLOWED_ORIGINS`,
-`OPENMANAGER_ALLOWED_HOSTS`, `OPENMANAGER_WORKSPACES`, `OPENMANAGER_LOG_FILE`)
+`OPENMANAGER_ALLOWED_HOSTS`, `OPENMANAGER_WORKSPACES`, `OPENMANAGER_LOG_FILE`,
+`OPENMANAGER_TUNNEL_HOSTNAME`, `OPENMANAGER_TUNNEL_TOKEN_FILE`,
+`OPENMANAGER_CLOUDFLARED`)
 are honoured the same way flags are, and likewise frozen into the task as
 flags. Anything else set only in the installing shell, such as
 `OPENMANAGER_LOCAL_OWNER_CLAIM_KEY`, is not: the task runs with your normal

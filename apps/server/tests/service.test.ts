@@ -1,3 +1,5 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
@@ -21,6 +23,7 @@ import {
 const ENTRY = 'C:\\Users\\Ada Lovelace\\openmanager\\apps\\server\\dist\\main.js'
 const NODE = 'C:\\Program Files\\nodejs\\node.exe'
 const DATA_DIR = 'C:\\Users\\Ada Lovelace\\.openmanager'
+const TUNNEL_TOKEN = 'eyJhIjoiYWNjb3VudCIsInQiOiJ0dW5uZWwiLCJzIjoic2VjcmV0In0'
 
 describe('Windows command-line quoting', () => {
   it.each([
@@ -333,6 +336,127 @@ describe('service commands', () => {
       '--exit-with-parent',
     ])
     expect(system.out.at(-1)).toBe('Environment server is up at http://127.0.0.1:43121.')
+  })
+
+  it('install keeps the tunnel token in the data directory, never in the task', async () => {
+    const binDir = mkdtempSync(join(tmpdir(), 'openmanager-service-cloudflared-'))
+    try {
+      const cloudflared = join(binDir, 'cloudflared.exe')
+      writeFileSync(cloudflared, '')
+      const system = fakeSystem({})
+      const secrets: { path: string; text: string }[] = []
+      const dataDir = resolve(DATA_DIR)
+      const code = await runServiceCommand(
+        [
+          'install',
+          '--port',
+          '43121',
+          '--data-dir',
+          DATA_DIR,
+          '--tunnel-hostname',
+          'om.example.com',
+          '--cloudflared',
+          cloudflared,
+        ],
+        {
+          ...system.deps,
+          env: { ...system.deps.env, OPENMANAGER_TUNNEL_TOKEN: TUNNEL_TOKEN },
+          writeSecretFile: async (path, text) => void secrets.push({ path, text }),
+        },
+      )
+      expect(system.err).toEqual([])
+      expect(code).toBe(0)
+      const tokenFile = join(dataDir, 'tunnel-token')
+      expect(secrets).toEqual([{ path: tokenFile, text: `${TUNNEL_TOKEN}\n` }])
+      const xml = system.registered!
+      expect(xml).not.toContain(TUNNEL_TOKEN)
+      const argv = parseWindowsCommandLine(readTaskArguments(xml) ?? '')
+      expect(flagValue(argv, '--tunnel-hostname')).toBe('om.example.com')
+      expect(flagValue(argv, '--tunnel-token-file')).toBe(tokenFile)
+      expect(flagValue(argv, '--cloudflared')).toBe(cloudflared)
+      expect(system.out.join('\n')).not.toContain(TUNNEL_TOKEN)
+      expect(system.out).toContain(`  Tunnel:    token saved to ${tokenFile}`)
+
+      // Without a token in the environment, the file must already hold one.
+      const noToken = fakeSystem({})
+      const args = ['install', '--port', '43121', '--data-dir', DATA_DIR]
+      const tunnelArgs = ['--tunnel-hostname', 'om.example.com', '--cloudflared', cloudflared]
+      expect(
+        await runServiceCommand([...args, ...tunnelArgs], {
+          ...noToken.deps,
+          readFile: async () => undefined,
+        }),
+      ).toBe(1)
+      expect(noToken.err[0]).toContain('No tunnel token in')
+      expect(noToken.calls.map((call) => call[1])).not.toContain('/Create')
+      const saved = fakeSystem({})
+      expect(
+        await runServiceCommand([...args, ...tunnelArgs], {
+          ...saved.deps,
+          readFile: async (path) => (path === tokenFile ? `${TUNNEL_TOKEN}\n` : undefined),
+        }),
+      ).toBe(0)
+
+      // No cloudflared on PATH and none named: nothing is registered.
+      const noBinary = fakeSystem({})
+      expect(
+        await runServiceCommand([...args, '--tunnel-hostname', 'om.example.com'], {
+          ...noBinary.deps,
+          env: {
+            ...noBinary.deps.env,
+            OPENMANAGER_TUNNEL_TOKEN: TUNNEL_TOKEN,
+            PATH: binDir + '-none',
+          },
+        }),
+      ).toBe(1)
+      expect(noBinary.err[0]).toContain('cloudflared is not on PATH')
+    } finally {
+      rmSync(binDir, { recursive: true, force: true })
+    }
+  })
+
+  it('status shows the tunnel state the server published', async () => {
+    const existing = buildTaskXml({
+      userId: 'MACHINE\\ada',
+      command: 'conhost.exe',
+      arguments: [
+        '--headless',
+        NODE,
+        ENTRY,
+        '--port',
+        '43120',
+        '--data-dir',
+        DATA_DIR,
+        '--tunnel-hostname',
+        'om.example.com',
+      ]
+        .map(quoteWindowsArgument)
+        .join(' '),
+      workingDirectory: DATA_DIR,
+    })
+    const status = {
+      state: 'self_check_failed',
+      hostname: 'om.example.com',
+      reason: 'not_arrived',
+      since: '2026-10-06T10:00:00.000Z',
+      restarts: 0,
+    }
+    const read = async (path: string) =>
+      path === join(DATA_DIR, 'tunnel-status.json') ? JSON.stringify(status) : undefined
+    const up = fakeSystem({ registered: existing, healthy: () => true, pids: [[4242]] })
+    expect(await runServiceCommand(['status'], { ...up.deps, readFile: read })).toBe(0)
+    expect(up.out).toContain(
+      'Tunnel:    https://om.example.com (self check failed: not arrived since 2026-10-06T10:00:00.000Z)',
+    )
+    const json = fakeSystem({ registered: existing, healthy: () => true, pids: [[4242]] })
+    await runServiceCommand(['status', '--json'], { ...json.deps, readFile: read })
+    expect(JSON.parse(json.out[0]!)).toMatchObject({
+      tunnelHostname: 'om.example.com',
+      tunnel: { state: 'self_check_failed' },
+    })
+    const down = fakeSystem({ registered: existing })
+    await runServiceCommand(['status'], { ...down.deps, readFile: read })
+    expect(down.out).toContain('Tunnel:    https://om.example.com (unknown; server not up)')
   })
 
   it('install surfaces a Task Scheduler query failure instead of treating it as not installed', async () => {

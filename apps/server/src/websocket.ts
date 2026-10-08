@@ -37,6 +37,7 @@ import { auditValue, type AuditLog } from './audit.ts'
 import type { AuthenticatedClient } from './authorized-clients.ts'
 import type { CommandContext } from './command-context.ts'
 import type { ReplayResult } from './db/replay.ts'
+import { remoteAddressKey, type BudgetKey } from './budget-key.ts'
 import type { RateLimiter, RateLimitPolicy } from './rate-limit.ts'
 import type { RequestGuard } from './request-guard.ts'
 
@@ -91,6 +92,8 @@ export function attachWebSocket(
     /** Host and Origin policy, shared with the HTTP listener. */
     guard: RequestGuard
     rateLimiter: RateLimiter
+    /** Who a failed credential is counted against; see `budget-key.ts`. */
+    budgetKey?: BudgetKey
     audit: AuditLog
     bootstrap: () => BootstrapResponse
     /**
@@ -145,9 +148,10 @@ export function attachWebSocket(
     if (rejection) return reject(rejection.status, rejection.code, rejection.message)
     if (request.url !== '/ws') return reject(404, 'not_found', 'Unknown socket endpoint.')
     const remoteAddress = request.socket.remoteAddress ?? 'unknown'
+    const budget = (options.budgetKey ?? remoteAddressKey)(request)
     // An address over its failed-credential budget gets no further guesses
     // checked at all; the lockout answers before the store is consulted.
-    const lockout = options.rateLimiter.blocked('auth_failure', remoteAddress)
+    const lockout = options.rateLimiter.blocked('auth_failure', budget)
     if (!lockout.allowed) {
       options.audit.record({
         type: 'rate_limited',
@@ -184,7 +188,7 @@ export function attachWebSocket(
     // position grants nothing. The store answers with the client's grant.
     const client = options.authenticate(candidate)
     if (!client) {
-      options.rateLimiter.consume('auth_failure', remoteAddress)
+      options.rateLimiter.consume('auth_failure', budget)
       options.audit.record({
         type: 'auth.failed',
         remoteAddress,

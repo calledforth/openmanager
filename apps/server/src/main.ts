@@ -23,6 +23,9 @@ async function serve(): Promise<void> {
   let sink: LogSink = consoleSink
   try {
     const config = loadConfig()
+    // The tunnel token is held in the config from here on. Out of the
+    // environment, it is not inherited by provider CLIs, agents or terminals.
+    delete process.env.OPENMANAGER_TUNNEL_TOKEN
     sink = resolveLogSink(config.logFile)
     const log = createLogger(config.logLevel, sink)
     const server = await startServer(config)
