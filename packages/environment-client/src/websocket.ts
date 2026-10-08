@@ -1027,7 +1027,20 @@ export function createWebSocketEnvironmentClient(
     if (supports('listSessions'))
       reads.push(
         (async () => {
-          if (!options.store) return commands.listSessions()
+          if (!options.store) {
+            // Pages are cut by size as well as count, so one page is not the
+            // whole catalog: the rest follow in the background, as below.
+            const first = await commands.listSessions()
+            if (generation !== connectionGeneration || !ready) return
+            void (async () => {
+              let cursor: SessionListCursor | null = first.nextCursor
+              while (cursor) {
+                if (generation !== connectionGeneration || !ready) return
+                cursor = (await commands.listSessions({ cursor })).nextCursor
+              }
+            })().catch(() => undefined)
+            return
+          }
           const cached = store.getState().sessions
           // Recover the active session after the first page; older catalog
           // pages continue in the background and never open inactive runtimes.
