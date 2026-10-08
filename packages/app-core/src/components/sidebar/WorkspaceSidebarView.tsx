@@ -367,7 +367,14 @@ function useHandoff(
   if (seen.drafts === drafts) return [seen.handoff, endFold]
   const before = new Map(seen.drafts.map((draft) => [draft.sessionId, draft]))
   const from = new Map<string, string>()
+  // A sent card reads as its draft until its session is named, through any
+  // later change to the drafts or another hand-off.
   const previews = new Map<string, string>()
+  for (const entry of active) {
+    const id = entry.root.session.externalId
+    const preview = seen.handoff.previews.get(id)
+    if (preview !== undefined && !entry.root.session.title) previews.set(id, preview)
+  }
   if (before.size > 0) {
     for (const entry of active) {
       const id = entry.root.session.externalId
@@ -386,8 +393,8 @@ function useHandoff(
       previews,
       fold: drafts.length === 0 ? { px: measureFold(), count } : null,
     }
-  } else if (seen.handoff.from.size > 0) {
-    handoff = { ...NO_HANDOFF, count: seen.handoff.count }
+  } else if (seen.handoff.from.size > 0 || seen.handoff.previews.size !== previews.size) {
+    handoff = { ...NO_HANDOFF, count: seen.handoff.count, previews }
   }
   setSeen({ drafts, handoff })
   return [handoff, endFold]

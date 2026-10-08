@@ -244,11 +244,9 @@ describe('sidebar draft cards', () => {
   it('parks three drafts across two projects, reopens each, sends one, discards one and undoes it', async () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     await parkThree(client)
-    // Newest edit first, in the Drafts section above Active, each in its own
-    // project. The opened session is Active's only card.
+    // Newest edit first, at the top of Active, each in its own project.
     expect(draftCards()).toEqual(['third idea', 'second idea', 'first idea'])
-    expect(activeCards()).toHaveLength(3)
-    expect(container.querySelectorAll('[role="list"]')[1]!.children).toHaveLength(1)
+    expect(activeCards()).toHaveLength(4)
     expect(cardFor('second idea')!.textContent).toContain('beta')
     expect(cardFor('first idea')!.textContent).toContain('alpha')
 
@@ -268,8 +266,7 @@ describe('sidebar draft cards', () => {
     await openCard(client, 'second idea')
     expect(draftCards()).toEqual(['first idea, refined', 'third idea', 'second idea'])
 
-    // Sent from its page: the card leaves Drafts, and the session's card in
-    // Active is the one selected.
+    // Sent from its page: the same row becomes the session's card.
     const row = cardFor('second idea')!
     const { sessionId } = selectDraftTarget(client.getState(), probe.session.newSessionDraftId!)!
     await act(() =>
@@ -278,11 +275,9 @@ describe('sidebar draft cards', () => {
     await settle(client)
     expect(client.getState().sessions[sessionId!]).toBeDefined()
     expect(draftCards()).toEqual(['first idea, refined', 'third idea'])
-    expect(row.isConnected).toBe(false)
-    const sessionCards = [...container.querySelectorAll('[role="list"]')[1]!.children]
-    const sent = sessionCards.find((card) => card.querySelector('[aria-current="page"]'))
-    expect(sent).toBeDefined()
-    expect(sent!.textContent).not.toContain('Draft')
+    expect(row.isConnected).toBe(true)
+    expect(row.textContent).not.toContain('Draft')
+    expect(row.querySelector('[aria-current="page"]')).not.toBeNull()
 
     // Discarded: gone at once, back with Undo, and nothing was deleted.
     await discard('third idea')

@@ -217,6 +217,26 @@ describe('sending a draft from the sidebar', () => {
     expect(rowOf('Named by the environment')).toBeDefined()
   })
 
+  it('keeps reading as the draft while other drafts change, until its session is named', async () => {
+    const sent = draft('d1', 'first idea', 1)
+    await render({ sessions: [OLDER], drafts: [sent] })
+    const untitled = { ...session('d1-session', '', '2026-10-02T00:00:00.000Z'), title: undefined }
+    await render({ sessions: [untitled, OLDER], drafts: [] })
+    expect(rowOf('first idea')).toBeDefined()
+    // Another draft is written, then sent, before the first session is named.
+    await render({ sessions: [untitled, OLDER], drafts: [draft('d2', 'second idea', 2)] })
+    expect(rowOf('first idea')).toBeDefined()
+    const second = { ...session('d2-session', '', '2026-10-02T00:00:01.000Z'), title: undefined }
+    await render({ sessions: [second, untitled, OLDER], drafts: [] })
+    expect(rowOf('first idea')).toBeDefined()
+    expect(rowOf('second idea')).toBeDefined()
+    expect(rows()).not.toContain('New session')
+    const named = session('d1-session', 'Named by the environment', '2026-10-02T00:00:02.000Z')
+    await render({ sessions: [second, named, OLDER], drafts: [] })
+    expect(rowOf('Named by the environment')).toBeDefined()
+    expect(rowOf('second idea')).toBeDefined()
+  })
+
   it('fades the Active label in at its new place, after the Drafts label has gone', async () => {
     const fades: Array<{ keyframes: Keyframe[]; options: KeyframeAnimationOptions }> = []
     const animate = vi.fn(function (keyframes: Keyframe[], options: KeyframeAnimationOptions) {
