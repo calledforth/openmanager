@@ -6,7 +6,7 @@ Status: Accepted, 2026-09-06. Recorded from [CAL-19](https://linear.app/calledfo
 
 Use an independently hosted static SPA as the canonical OpenManager web client.
 
-The browser application is deployed separately from environment servers (for example Cloudflare Pages or Vercel). Environment servers expose the OpenManager API, WebSocket, bootstrap, and pairing surfaces; they do not own the canonical frontend.
+The browser application is deployed separately from environment servers (for example Cloudflare Workers static assets, Cloudflare Pages or Vercel). Environment servers expose the OpenManager API, WebSocket, bootstrap, and pairing surfaces; they do not own the canonical frontend.
 
 ## Context and rationale
 
@@ -56,10 +56,10 @@ An environment-served local or recovery UI may be added later for setup, offline
 
 ## Build and deploy
 
-- Web build: static Vite output suitable for Cloudflare Pages, Vercel, or equivalent static hosting.
+- Web build: static Vite output suitable for Cloudflare Workers static assets, Cloudflare Pages, Vercel, or equivalent static hosting.
 - Environment server: API/WebSocket/bootstrap/pairing endpoints only for the canonical architecture.
 - Multi-environment client state remains owned by the client and keyed by stable environment identity, not frontend URL.
-- Host: Cloudflare Pages. The build settings, response headers and CSP, origin allowlisting, and what each browser does when the hosted page reaches `127.0.0.1` are in [deploying the web client](../web-deploy.md). No hosted origin is allowed by default.
+- Host: Cloudflare Workers, assets only (no script on the path between the browser and an environment). Chosen over Cloudflare Pages in 2026-10 because Cloudflare now puts new static hosting on Workers and keeps Pages in maintenance. The build settings, response headers and CSP, origin allowlisting, and what each browser does when the hosted page reaches `127.0.0.1` are in [deploying the web client](../web-deploy.md). No hosted origin is allowed by default.
 
 ## Related records
 

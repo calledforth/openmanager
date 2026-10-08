@@ -2,12 +2,12 @@
 
 The web client is a static single-page app on its own origin
 ([hosting decision](./decisions/web-hosting.md)). This page covers putting the
-production build of `apps/web` on Cloudflare Pages, allowing its origin on an
+production build of `apps/web` on Cloudflare Workers, allowing its origin on an
 environment server, the headers it is served with, and what browsers do when a
 hosted page talks to an environment on `127.0.0.1`.
 
 The static host serves files only. API and WebSocket traffic goes straight
-from the browser to the environment's route, never through Pages.
+from the browser to the environment's route, never through the Worker.
 
 ## What gets deployed
 
@@ -22,33 +22,51 @@ from the browser to the environment's route, never through Pages.
 - `_headers`, the response headers below. Vite copies it from
   `apps/web/public/` unchanged.
 
-There is no `404.html` and no `_redirects`. When a project has no top-level
-`404.html`, Pages serves `index.html` for any path that is not a file, which
-is what a single-page app needs: a reload on `/sessions/<id>`,
+There is no `404.html` and no `_redirects`. `wrangler.jsonc` sets
+`not_found_handling` to `single-page-application`, so the Worker serves
+`index.html` for any path that is not a file, which is what a single-page app
+needs: a reload on `/sessions/<id>`,
 `/drafts/<id>`, `/settings` or `/pair` returns the app, and TanStack Router
 renders the route. Fragments never reach the host, so a pairing link's token
 stays in the browser.
 
-## Deploy to Cloudflare Pages
+## Deploy to Cloudflare Workers
 
-The account, the Pages project and the domain belong to the owner. Anyone who
-can deploy to this origin can read every credential stored in every browser
-that uses it (threat model D8), so keep deploy access to the owner.
+The web client is an **assets-only Worker**: `apps/web/wrangler.jsonc` names
+the build output as static assets and has no script, so requests for the page
+are answered from Cloudflare's edge without running any code, and nothing sits
+between the browser and an environment. (Cloudflare Pages served the same
+files until 2026-10; Cloudflare now puts new static hosting on Workers and
+keeps Pages in maintenance.)
+
+The account, the Worker and the domain belong to the owner. Anyone who can
+deploy to this origin can read every credential stored in every browser that
+uses it (threat model D8), so keep deploy access to the owner.
+
+What `wrangler.jsonc` sets:
+
+- `assets.directory` is `dist`, and `not_found_handling` is
+  `single-page-application`, so any path that is not a file gets
+  `index.html`.
+- `routes` names the custom domain, and `workers_dev` and `preview_urls` are
+  off, so the client has exactly one origin. Browsers keep credentials per
+  origin; a second address would be a second, empty registry. Deploying your
+  own copy means changing that hostname to one on a zone in your account. The
+  first deploy creates the DNS record.
 
 ### Connect the repository (recommended)
 
-In the Cloudflare dashboard: **Workers & Pages → Create → Pages → Connect to
-Git**, pick the repository, then set:
+In the Cloudflare dashboard: **Workers & Pages → Create → Workers → Import a
+repository**, pick the repository, then set:
 
-| Setting                | Value                                                                                                                           |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Production branch      | `main`                                                                                                                          |
-| Framework preset       | None                                                                                                                            |
-| Build command          | `pnpm build:web` (installs the web app and its workspace packages, then builds; the full command is in the root `package.json`) |
-| Build output directory | `apps/web/dist`                                                                                                                 |
-| Root directory         | empty (the repository root, where the lockfile and workspace packages are)                                                      |
+| Setting        | Value                                                                                                                              |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Project name   | `openmanager-web`, the `name` in `wrangler.jsonc`                                                                                  |
+| Root directory | `apps/web`                                                                                                                         |
+| Build command  | `pnpm -w build:web` (installs the web app and its workspace packages, then builds; the full command is in the root `package.json`) |
+| Deploy command | `npx wrangler deploy` (the default)                                                                                                |
 
-Environment variables, for Production and Preview:
+Build variables:
 
 | Variable                  | Value     | Why                                                                                                                |
 | ------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------ |
@@ -56,40 +74,27 @@ Environment variables, for Production and Preview:
 | `PNPM_VERSION`            | `10.30.3` | The `packageManager` version in `package.json`.                                                                    |
 | `SKIP_DEPENDENCY_INSTALL` | `1`       | The build command installs only the web app and its workspace packages, not Electron and the rest of the monorepo. |
 
-Never set `VITE_OPENMANAGER_LOCAL_OWNER_CLAIM_KEY` on Pages. Vite would bake it
+Never set `VITE_OPENMANAGER_LOCAL_OWNER_CLAIM_KEY` here. Vite would bake it
 into the public bundle.
 
-**Save and Deploy** builds `main` and publishes it at
-`https://<project>.pages.dev`. A custom domain is added later under the
-project's **Custom domains** tab; that is a new origin and needs allowing like
-any other (below).
+**Deploy** builds `main` and publishes it at the custom domain. Then, under
+**Settings → Build → Branch control**, clear **Enable Preview Builds**: a
+preview is another origin, and previews are off in the config anyway. If you
+do want one, allow its origin only on a test environment, and remove it
+afterwards.
 
-Optional: under **Settings → Build → Build watch paths**, include `apps/web/*`,
-`packages/*`, `package.json` and `pnpm-lock.yaml` so server-only commits do not
-rebuild the site.
+Wrangler is not pinned in `package.json`, so Workers Builds and `npx` use the
+latest release.
 
-**Preview builds.** Every branch pushed to the repository, and every pull
-request from it, gets its own deployment at `<hash>.<project>.pages.dev` and
-`<branch>.<project>.pages.dev`. Pull requests from forks are not built. Each
-preview is a separate origin: it cannot read the credentials stored by the
-production origin, and environments refuse it until it is allowed. Allow a
-preview origin only on a test environment, and remove it afterwards. Previews
-are public unless **Enable access policy** puts them behind Cloudflare Access;
-set preview branches to **None** under **Settings → Build → Branch control** to
-turn them off.
-
-### Or upload a local build
-
-Without the Git connection, build locally and upload with Wrangler (it asks
-you to log in the first time):
+### Or deploy a local build
 
 ```sh
 pnpm --filter @openmanager/web build
-npx wrangler pages project create openmanager --production-branch main
-npx wrangler pages deploy apps/web/dist --project-name openmanager --branch main
+cd apps/web && npx wrangler deploy
 ```
 
-The project only needs creating once.
+Wrangler asks you to log in the first time. The first deploy creates the
+Worker and the custom domain's DNS record.
 
 ## Allow the origin on the environment
 
@@ -100,11 +105,11 @@ its audit log. Allow the hosted origin exactly, with scheme and no trailing
 slash:
 
 ```sh
-node apps/server/dist/main.js --allowed-origin https://openmanager.pages.dev
+node apps/server/dist/main.js --allowed-origin https://app.example.com
 ```
 
 `OPENMANAGER_ALLOWED_ORIGINS` takes the same values, comma-separated. Repeat
-the flag for each origin: the `pages.dev` address, a custom domain, and
+the flag for each origin: the custom domain, any preview origin, and
 `http://localhost:5173,http://127.0.0.1:5173` if you also run `pnpm dev:web`
 against this server. `pnpm dev:web` itself allows its own two origins and adds
 whatever `OPENMANAGER_ALLOWED_ORIGINS` holds in its environment, so a hosted
@@ -116,7 +121,7 @@ the logon task or systemd unit ([Windows](./windows-startup.md),
 Run it again with every flag you want kept, plus the origin:
 
 ```sh
-node apps/server/dist/main.js service install --workspace C:\src\my-repo --allowed-origin https://openmanager.pages.dev
+node apps/server/dist/main.js service install --workspace C:\src\my-repo --allowed-origin https://app.example.com
 ```
 
 `service update` keeps the stored origins, so this is needed only when the
@@ -168,13 +173,13 @@ connect form says so: in a build without a claim key it asks for the token from
 | `Permissions-Policy`         | camera, microphone, geolocation, payment and USB off |
 | `Strict-Transport-Security`  | `max-age=31536000`                                   |
 
-It also drops the `Access-Control-Allow-Origin: *` Pages adds by default; no
-other site needs to read these files.
+It also drops any `Access-Control-Allow-Origin` the host would add; no other
+site needs to read these files.
 
 **Caching.** Files under `/assets/` get
 `Cache-Control: public, max-age=31536000, immutable`: a changed file always
 has a new name. Everything else, `index.html` and the single-page fallback
-included, keeps Pages' default `public, max-age=0, must-revalidate` with an
+included, keeps the host's default `public, max-age=0, must-revalidate` with an
 `ETag`, so a deploy reaches a reload at once.
 
 ### The content security policy
@@ -303,12 +308,12 @@ What OpenManager does with that:
 
 ## Check a build locally
 
-Serve the build with the same header and fallback rules Pages uses, no
+Serve the build with the same header and fallback rules the Worker uses, no
 account needed:
 
 ```sh
 pnpm --filter @openmanager/web build
-npx wrangler pages dev apps/web/dist --port 8788
+cd apps/web && npx wrangler dev --port 8788
 ```
 
 Start an environment with `--allowed-origin http://127.0.0.1:8788` and open

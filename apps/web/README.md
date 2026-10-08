@@ -27,23 +27,24 @@ automatic owner claiming on its own.
 
 ## Deploy
 
-The production build is a static site for Cloudflare Pages. `public/_headers`
-sets its CSP, security and cache headers, and Pages serves `index.html` for
-every route. Build settings, allowing the hosted origin on an environment, and
-what browsers do when a hosted page reaches `127.0.0.1` are in
+The production build is a static site, deployed as an assets-only Cloudflare
+Worker (`wrangler.jsonc`). `public/_headers` sets its CSP, security and cache
+headers, and the Worker serves `index.html` for every route. Build settings,
+allowing the hosted origin on an environment, and what browsers do when a
+hosted page reaches `127.0.0.1` are in
 [deploying the web client](../../docs/web-deploy.md).
 
 ## Routes
 
 The information architecture matches the desktop app and the mobile screens, expressed as URLs:
 
-| Path                     | Desktop analog                       |
-| ------------------------ | ------------------------------------ |
-| `/`                      | New-session landing inside the shell |
-| `/sessions/$sessionId`   | Active session / chat workspace      |
-| `/settings`              | Settings (theme, font, environment)  |
+| Path                     | Desktop analog                             |
+| ------------------------ | ------------------------------------------ |
+| `/`                      | New-session landing inside the shell       |
+| `/sessions/$sessionId`   | Active session / chat workspace            |
+| `/settings`              | Settings (theme, font, environment)        |
 | `/pair`                  | Where a pairing link lands on a new device |
-| `/playground/connection` | Storybook-equivalent connection states |
+| `/playground/connection` | Storybook-equivalent connection states     |
 
 First-run and terminal failures (no environment, protocol mismatch, unauthorized) replace the main pane. Connecting, reconnecting, and unreachable stay in-shell as a banner so the session UI is not swapped away. States come from the stored environment, `GET /bootstrap` + `evaluateBootstrap`, and connection status — not from a timeout.
 
