@@ -43,7 +43,11 @@ export function routeHealthFromConnection(
     return { status: 'unauthorized', message: connection.failure.message }
   }
   if (connection.failure?.code === 'unavailable') {
-    return { status: 'unreachable', message: connection.failure.message }
+    return {
+      status: 'unreachable',
+      message: connection.failure.message,
+      ...(connection.failure.serverStopped ? { stopped: true as const } : {}),
+    }
   }
   return null
 }

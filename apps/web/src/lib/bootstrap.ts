@@ -76,6 +76,56 @@ function readOptionalLabel(bootstrap: BootstrapResponse): string | undefined {
   return typeof bootstrap.label === 'string' && bootstrap.label.trim() ? bootstrap.label : undefined
 }
 
+/** How long the follow-up below may take before the answer counts as silence. */
+const UNREADABLE_PROBE_TIMEOUT_MS = 5000
+
+/**
+ * `signal`, also aborted after `ms`. `AbortSignal.any` is recent (Safari 17.4),
+ * so without it the two are joined by hand.
+ */
+function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
+  const timeout = AbortSignal.timeout(ms)
+  if (!signal) return timeout
+  if (typeof AbortSignal.any === 'function') return AbortSignal.any([signal, timeout])
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  if (signal.aborted) abort()
+  signal.addEventListener('abort', abort, { once: true })
+  timeout.addEventListener('abort', abort, { once: true })
+  return controller.signal
+}
+
+/**
+ * After a bootstrap fetch failed, whether anything answered at all. A page may
+ * only read a cross-origin answer that carries CORS headers, and the error
+ * pages a gateway sends (Cloudflare's 530 for a tunnel that is down, its 502
+ * for a tunnel whose server is not running) carry none, so the browser
+ * reports them as the same network failure as silence. A `no-cors` request
+ * gets an opaque answer instead: no status, but proof that something replied.
+ * With redirects left unfollowed, a sign-in gate (Cloudflare Access) shows as
+ * an opaque redirect rather than as an answer. Not asked once the fetch has
+ * been cancelled or timed out, and given up on after a few seconds.
+ */
+async function unreadableAnswer(
+  endpoint: string,
+  signal?: AbortSignal,
+): Promise<'opaque' | 'opaque_redirect' | null> {
+  if (signal?.aborted) return null
+  try {
+    const response = await fetch(bootstrapUrl(endpoint), {
+      mode: 'no-cors',
+      redirect: 'manual',
+      cache: 'no-store',
+      credentials: 'omit',
+      signal: withTimeout(signal, UNREADABLE_PROBE_TIMEOUT_MS),
+    })
+    if (response.type === 'opaqueredirect') return 'opaque_redirect'
+    return response.type === 'opaque' ? 'opaque' : null
+  } catch {
+    return null
+  }
+}
+
 export async function fetchBootstrap(
   endpoint: string,
   options: { signal?: AbortSignal } = {},
@@ -103,7 +153,7 @@ export async function fetchBootstrap(
     return {
       status: 'unreachable',
       message: `Could not reach ${endpoint}. Check that the environment server is running, then retry.`,
-      cause: 'network',
+      cause: (await unreadableAnswer(endpoint, options.signal)) ?? 'network',
     }
   }
 

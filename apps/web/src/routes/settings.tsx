@@ -28,6 +28,7 @@ import {
   EnvironmentList,
   RouteOfferPrompt,
 } from '../components/connection-surfaces'
+import { connectionStatusLabel } from '../lib/connection-state'
 import { findStoredEnvironment } from '../lib/environment-store'
 import { UI_FONTS } from '../lib/fonts'
 import { pairingAppUrl } from '../lib/pairing'
@@ -267,7 +268,7 @@ function EnvironmentsPanel() {
   const status =
     ui.kind === 'confirm_route'
       ? 'A new route is waiting for your answer'
-      : `${ui.title}${ui.environmentLabel ? ` · ${ui.environmentLabel}` : ''}`
+      : connectionStatusLabel(ui)
 
   return (
     <>

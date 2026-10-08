@@ -6,7 +6,8 @@ import type {
 } from '../lib/connection-state'
 
 export type ConnectionStory = {
-  id: Exclude<ConnectionKind, 'ready'>
+  /** The kind it shows, or the kind and what sets this variant apart. */
+  id: Exclude<ConnectionKind, 'ready'> | `${Exclude<ConnectionKind, 'ready'>}_${string}`
   name: string
   summary: string
   input: DeriveConnectionInput
@@ -50,7 +51,7 @@ export const CONNECTION_STORIES: ConnectionStory[] = [
   {
     id: 'connecting',
     name: 'Connecting',
-    summary: 'First bootstrap after an endpoint is chosen. Shell stays mounted.',
+    summary: 'First bootstrap after an endpoint is chosen. Nothing has failed yet; the page stays.',
     input: {
       environment: selected,
       bootstrap: { status: 'loading' },
@@ -60,7 +61,7 @@ export const CONNECTION_STORIES: ConnectionStory[] = [
   {
     id: 'reconnecting',
     name: 'Reconnecting',
-    summary: 'A live session already existed. Do not replace the whole screen.',
+    summary: 'A live connection dropped. The reconnect strip floats over the session.',
     input: {
       environment: selected,
       bootstrap: { status: 'loading' },
@@ -70,7 +71,7 @@ export const CONNECTION_STORIES: ConnectionStory[] = [
   {
     id: 'offline',
     name: 'Offline',
-    summary: 'The device reports no network. Nothing to retry until it returns.',
+    summary: 'The browser reports no network. Nothing to retry until it returns.',
     input: {
       environment: selected,
       bootstrap: { status: 'loading' },
@@ -79,13 +80,26 @@ export const CONNECTION_STORIES: ConnectionStory[] = [
     },
   },
   {
+    id: 'offline_stopped',
+    name: 'Stopped retrying',
+    summary: 'A capped retry policy ran out. Waiting no longer helps, so a person retries.',
+    input: {
+      environment: selected,
+      bootstrap: { status: 'loading' },
+      transport: { phase: 'closed', hasConnected: true, failure: null, retriesExhausted: true },
+      network: { online: true },
+    },
+  },
+  {
     id: 'unreachable',
     name: 'Server unreachable',
-    summary: 'Bootstrap or transport failed without a protocol or auth error.',
+    summary:
+      'Bootstrap or transport failed without a protocol or auth error, before routes were compared.',
     input: {
       environment: selected,
       bootstrap: {
         status: 'unreachable',
+        cause: 'network',
         message:
           'Could not reach http://127.0.0.1:43120. Check that the environment server is running, then retry.',
       },
@@ -94,6 +108,18 @@ export const CONNECTION_STORIES: ConnectionStory[] = [
         hasConnected: true,
         failure: { code: 'unreachable' },
       },
+    },
+  },
+  {
+    id: 'unreachable_typed',
+    name: 'Typed address unreachable',
+    summary:
+      'A connect a person started failed. Nothing asks a typed address again on its own, so nothing spins.',
+    input: {
+      environment: { status: 'selected', endpoint: 'http://127.0.0.1:43120' },
+      bootstrap: { status: 'unreachable', cause: 'network' },
+      transport: { phase: 'closed', hasConnected: false, failure: { code: 'unreachable' } },
+      autoRetry: false,
     },
   },
   {
@@ -132,7 +158,8 @@ export const CONNECTION_STORIES: ConnectionStory[] = [
 ]
 
 export type RouteFailureStory = {
-  id: RouteFailureReason | 'route_search'
+  /** The reason it shows, or the reason and a variant of it. */
+  id: RouteFailureReason | 'route_search' | `${RouteFailureReason}_${string}`
   name: string
   summary: string
   input: DeriveConnectionInput
@@ -142,11 +169,14 @@ const studio = {
   status: 'selected' as const,
   endpoint: 'https://studio.example.com',
   environmentId: 'env-studio',
-  label: 'Studio',
+  label: "Rajku's laptop",
 }
 const failedTransport = { phase: 'closed' as const, hasConnected: true, failure: null }
 
-/** Why no saved route reaches an environment, one story per reason. */
+/**
+ * Why no saved route reaches an environment, one story per reason. All but a
+ * refused token show the same reconnect strip; the reason is its detail line.
+ */
 export const ROUTE_FAILURE_STORIES: RouteFailureStory[] = [
   {
     id: 'route_search',
@@ -161,8 +191,9 @@ export const ROUTE_FAILURE_STORIES: RouteFailureStory[] = [
   },
   {
     id: 'route_down',
-    name: 'Route unavailable',
-    summary: 'Nothing answers at the tunnel. The environment behind it may still be running.',
+    name: 'Nothing answers',
+    summary:
+      "Nothing answers at the address at all: this device's network, or the way to the address, is down.",
     input: {
       environment: studio,
       bootstrap: { status: 'unreachable', cause: 'network' },
@@ -176,9 +207,26 @@ export const ROUTE_FAILURE_STORIES: RouteFailureStory[] = [
     },
   },
   {
+    id: 'tunnel_down',
+    name: 'Tunnel down',
+    summary:
+      'Cloudflare answers for the hostname, but the environment does not answer through it: the tunnel is down, or the server behind it is stopped. A browser cannot tell those two apart.',
+    input: {
+      environment: studio,
+      bootstrap: { status: 'unreachable', cause: 'opaque' },
+      transport: failedTransport,
+      routeFailure: {
+        reason: 'tunnel_down',
+        endpoint: 'https://studio.example.com',
+        local: false,
+        tried: 1,
+      },
+    },
+  },
+  {
     id: 'environment_offline',
     name: 'Environment offline',
-    summary: 'Nothing listens on this device, or a tunnel answered 502 for it.',
+    summary: 'Nothing listens on this device, or a gateway said so in a status this page can read.',
     input: {
       environment: { ...studio, endpoint: 'http://127.0.0.1:43120' },
       bootstrap: { status: 'unreachable', cause: 'network' },
@@ -208,8 +256,26 @@ export const ROUTE_FAILURE_STORIES: RouteFailureStory[] = [
     },
   },
   {
+    id: 'environment_offline_stopped',
+    name: 'Environment shut down',
+    summary:
+      'The environment closed its socket as it shut down, so the silence from its tunnel since means it is still stopped.',
+    input: {
+      environment: studio,
+      bootstrap: { status: 'unreachable', cause: 'opaque' },
+      transport: failedTransport,
+      routeFailure: {
+        reason: 'environment_offline',
+        endpoint: 'https://studio.example.com',
+        local: false,
+        tried: 1,
+        stopped: true,
+      },
+    },
+  },
+  {
     id: 'route_refused',
-    name: 'Route refused access',
+    name: 'Route refused',
     summary: 'The bootstrap was refused: a tunnel sign-in, or the environment origin check.',
     input: {
       environment: studio,
@@ -225,6 +291,23 @@ export const ROUTE_FAILURE_STORIES: RouteFailureStory[] = [
     },
   },
   {
+    id: 'route_refused_local',
+    name: 'Page not allowed',
+    summary:
+      "Something answers on this device but will not let this page read it: the environment refusing this page's origin.",
+    input: {
+      environment: { ...studio, endpoint: 'http://127.0.0.1:43120' },
+      bootstrap: { status: 'unreachable', cause: 'opaque' },
+      transport: failedTransport,
+      routeFailure: {
+        reason: 'route_refused',
+        endpoint: 'http://127.0.0.1:43120',
+        local: true,
+        tried: 1,
+      },
+    },
+  },
+  {
     id: 'credential_rejected',
     name: 'Token rejected',
     summary: 'The environment refused the client token. No other route is tried.',
@@ -233,7 +316,7 @@ export const ROUTE_FAILURE_STORIES: RouteFailureStory[] = [
       bootstrap: {
         status: 'ready',
         environmentId: 'env-studio',
-        label: 'Studio',
+        label: "Rajku's laptop",
         protocolVersion: PROTOCOL_VERSION,
       },
       transport: failedTransport,
@@ -242,7 +325,7 @@ export const ROUTE_FAILURE_STORIES: RouteFailureStory[] = [
         endpoint: 'https://studio.example.com',
         local: false,
         tried: 1,
-        message: 'Client token revoked.',
+        message: 'Token not recognized.',
       },
     },
   },

@@ -341,7 +341,12 @@ export function AppShell() {
       <SidebarInsetTopbar>
         {client && isSessionPath(pathname) ? <SessionTrail /> : null}
       </SidebarInsetTopbar>
-      {showBanner ? <ConnectionBanner state={ui} handlers={handlers} /> : null}
+      {/* Floats over the page under the topbar, so the session stays where it was. */}
+      {showBanner ? (
+        <div className="pointer-events-none absolute inset-x-0 top-11 z-30 flex justify-center px-3">
+          <ConnectionBanner className="pointer-events-auto" state={ui} handlers={handlers} />
+        </div>
+      ) : null}
       {showScreen ? (
         <ConnectionScreen
           state={ui}

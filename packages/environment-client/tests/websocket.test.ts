@@ -1096,6 +1096,37 @@ describe('websocket environment client', () => {
     expect(FakeSocket.instances).toHaveLength(1)
   })
 
+  it('stops for good when the environment does not know its credential', async () => {
+    // A browser cannot read a refused upgrade, so the environment closes an
+    // accepted one with the revocation code and its own reason.
+    const { client, socket, timers } = await connected()
+    socket.drop(4401, 'unauthorized')
+    expect(client.getState().connection).toMatchObject({
+      phase: 'closed',
+      failure: { code: 'auth', message: 'Token not recognized.' },
+      retriesExhausted: true,
+    })
+    timers.advance(60_000)
+    expect(FakeSocket.instances).toHaveLength(1)
+  })
+
+  it('says the environment shut down, then redials as for any drop', async () => {
+    const { client, socket, timers } = await connected()
+    socket.drop(1001, 'server_shutdown')
+    expect(client.getState().connection).toMatchObject({
+      phase: 'reconnecting',
+      failure: { code: 'unavailable', serverStopped: true },
+      retriesExhausted: false,
+    })
+    timers.advance(60_000)
+    expect(FakeSocket.instances.length).toBeGreaterThan(1)
+
+    // Any other close says nothing about why.
+    const other = await connected()
+    other.socket.drop(1001, 'going away')
+    expect(other.client.getState().connection.failure).not.toHaveProperty('serverStopped')
+  })
+
   it('probes a provider only when the environment advertises it', async () => {
     const older = await connected(FULL_CAPABILITIES, { providers: [BARE_PROVIDER] })
     expect(older.client.supports('probeProvider')).toBe(false)

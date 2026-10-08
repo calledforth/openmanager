@@ -68,6 +68,19 @@ describe('routeHealthFromConnection', () => {
     })
   })
 
+  it('passes on that the environment shut down, for the connection to keep', () => {
+    expect(
+      routeHealthFromConnection({
+        phase: 'reconnecting',
+        failure: {
+          code: 'unavailable',
+          message: 'The environment shut down.',
+          serverStopped: true,
+        },
+      }),
+    ).toEqual({ status: 'unreachable', message: 'The environment shut down.', stopped: true })
+  })
+
   it('reports a refused credential and a dropped connection differently', () => {
     expect(
       routeHealthFromConnection({

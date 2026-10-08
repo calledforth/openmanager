@@ -27,6 +27,21 @@ export const CLIENT_LIST_CHANGED_EVENT = 'client.list.changed' as const
  */
 export const CLIENT_REVOKED_CLOSE_CODE = 4401 as const
 export const CLIENT_REVOKED_CLOSE_REASON = 'revoked' as const
+/**
+ * The reason that goes with `4401` when a browser's socket offered a
+ * credential the environment does not know (never issued, or revoked while
+ * the client was away). A browser cannot read why an upgrade was refused, so
+ * the environment completes the upgrade and closes it with this instead.
+ */
+export const CLIENT_UNAUTHORIZED_CLOSE_REASON = 'unauthorized' as const
+
+/**
+ * The close every socket gets when the environment server shuts down on
+ * purpose. A client can tell from it that the server stopped, which a
+ * gateway in front of it (a tunnel) cannot say on its behalf.
+ */
+export const SERVER_SHUTDOWN_CLOSE_CODE = 1001 as const
+export const SERVER_SHUTDOWN_CLOSE_REASON = 'server_shutdown' as const
 
 /** The most clients one device list carries. */
 export const CLIENT_LIST_MAX = 1024

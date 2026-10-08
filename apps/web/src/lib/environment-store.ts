@@ -30,7 +30,15 @@ export type RouteHealth = {
   message?: string
 }
 
-export type RouteHealthReport = { status: RouteHealthStatus; message?: string }
+export type RouteHealthReport = {
+  status: RouteHealthStatus
+  message?: string
+  /**
+   * The live socket was closed by the environment shutting down. Read by the
+   * connection, which keeps it until a route answers; never saved.
+   */
+  stopped?: true
+}
 
 /**
  * One way to reach an environment. The endpoint is a replaceable network
