@@ -9,6 +9,7 @@
     "dev:web": "node scripts/dev-web.mjs",
     "test:dev-web": "node --test scripts/dev-web.test.mjs",
     "build": "pnpm --filter @openmanager/protocol build && pnpm --filter @openmanager/desktop build",
+    "build:web": "pnpm --filter @openmanager/web... install --frozen-lockfile && pnpm --filter @openmanager/web build",
     "dist:win": "pnpm --filter @openmanager/desktop dist:win",
     "preview": "pnpm --filter @openmanager/desktop preview",
     "storybook": "pnpm --filter @openmanager/app-core storybook",
