@@ -99,6 +99,18 @@ describe('connection surfaces', () => {
     expect(onConnect).toHaveBeenCalledWith('http://127.0.0.1:43120', 'dev-token')
   })
 
+  it('offers the blank-token owner claim only in a build that can make it', () => {
+    const { unmount } = render(<EnvironmentConnectForm onConnect={vi.fn()} canClaimOwner />)
+    expect(screen.getByText(/Leave it blank on localhost/)).toBeInTheDocument()
+    unmount()
+
+    // A hosted build has no claim key: the token comes from the data directory or a link.
+    render(<EnvironmentConnectForm onConnect={vi.fn()} canClaimOwner={false} />)
+    expect(screen.queryByText(/Leave it blank on localhost/)).not.toBeInTheDocument()
+    expect(screen.getByText(/paste the token from owner-credential/)).toBeInTheDocument()
+    expect(screen.getByText(/open a pairing link instead/)).toBeInTheDocument()
+  })
+
   it('lists saved environments for select and remove', async () => {
     const user = userEvent.setup()
     const onSelect = vi.fn()

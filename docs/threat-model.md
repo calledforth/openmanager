@@ -240,7 +240,11 @@ Proposed, not yet filed:
 
 - **New issue: harden the hosted web app origin (T10).** Strict CSP with no
   inline or third-party scripts, restricted deploy access, pinned dependencies,
-  and a later step binding browser credentials to a non-extractable key.
+  and a later step binding browser credentials to a non-extractable key. The
+  CSP now ships with the static build (`apps/web/public/_headers`, explained in
+  [deploying the web client](./web-deploy.md#the-content-security-policy)); its
+  `script-src` allows only same-origin scripts, while `connect-src` stays open
+  to any `https`/`wss` host because owners bring their own tunnel domains.
 - **CAL-45 scope addition (D5):** state that `agent` and `terminal` carry the
   same risk, and record per-client agent approval policy as a later
   enforcement step.

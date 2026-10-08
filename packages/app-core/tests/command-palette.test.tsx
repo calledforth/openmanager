@@ -93,7 +93,13 @@ describe('CommandPalette', () => {
   it('matches a theme by its hint, not by a blanket keyword', () => {
     const input = openPalette()
     act(() => type(input, 'light'))
-    expect(rowLabels()).toEqual(['Light', 'Neutral Light', 'Neutral Light Soft', 'Lovable Light'])
+    expect(rowLabels()).toEqual([
+      'Light',
+      'Neutral Light',
+      'Neutral Light Soft',
+      'Lovable Light',
+      'Lovable Light Inverse',
+    ])
   })
 
   it('still finds a whole group by its keyword', () => {

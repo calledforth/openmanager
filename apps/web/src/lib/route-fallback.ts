@@ -32,6 +32,7 @@ export function routeFailureReason(
   }
   if (outcome.status === 'unauthorized') return 'route_refused'
   if (outcome.status !== 'unreachable') return null
+  if (outcome.cause === 'blocked') return 'local_access_blocked'
   if (outcome.cause === 'http' && ORIGIN_DOWN_STATUSES.has(outcome.httpStatus ?? 0)) {
     return 'environment_offline'
   }
@@ -45,14 +46,15 @@ export function routeFailureReason(
 
 /**
  * Which reason to show when several routes failed. A sign that the server
- * itself is down explains every other failure, so it wins; a refusal is next,
- * since a person can act on it; then an address that now leads to another
- * environment, which says what changed; a route that is simply down is the
- * least specific.
+ * itself is down explains every other failure, so it wins; refusals are next,
+ * since a person can act on them, the browser's own first; then an address
+ * that now leads to another environment, which says what changed; a route
+ * that is simply down is the least specific.
  */
 const REASON_RANK: readonly RouteFailureReason[] = [
   'credential_rejected',
   'environment_offline',
+  'local_access_blocked',
   'route_refused',
   'wrong_environment',
   'route_down',

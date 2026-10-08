@@ -56,9 +56,11 @@ export type BootstrapOutcome =
       /**
        * `network`: nothing answered. `http`: something answered with an error
        * status, often a gateway in front of the environment. `invalid`: what
-       * answered is not an environment. Absent on outcomes built elsewhere.
+       * answered is not an environment. `blocked`: the browser refused to let
+       * this page reach its own loopback address (a denied local network
+       * access permission). Absent on outcomes built elsewhere.
        */
-      cause?: 'network' | 'http' | 'invalid'
+      cause?: 'network' | 'http' | 'invalid' | 'blocked'
       httpStatus?: number
     }
 
@@ -98,6 +100,8 @@ export type ConnectionUiState = {
  * - `environment_offline`: the environment server is not running. Nothing
  *   listens on this device's loopback address, or a gateway answered for an
  *   environment that did not.
+ * - `local_access_blocked`: the browser refused to let this page reach this
+ *   device's loopback address. The environment may well be running.
  * - `route_refused`: `/bootstrap`, which takes no token, was refused: a
  *   tunnel's access gate, a proxy, or the environment's origin check.
  * - `credential_rejected`: the environment itself refused this client's token.
@@ -107,6 +111,7 @@ export type ConnectionUiState = {
 export const ROUTE_FAILURE_REASONS = [
   'route_down',
   'environment_offline',
+  'local_access_blocked',
   'route_refused',
   'credential_rejected',
   'wrong_environment',
@@ -243,8 +248,18 @@ function routeFailureUi(failure: RouteFailure, { named, label }: Context): Conne
         surface: 'banner',
         title: 'Environment offline',
         description: failure.local
-          ? `Nothing is answering at ${host} on this device, so ${named} looks stopped. Start the environment server; if it is already running, check that it allows this page's address. ${RETRYING}`
+          ? `Nothing is answering at ${host} on this device, so ${named} looks stopped. Start the environment server; if it is already running, check that it allows this page's address and that this browser lets the page reach apps on this device. ${RETRYING}`
           : `${host} answers, but ${named} is not running behind it. Start the environment server. ${RETRYING}`,
+        action: 'retry',
+        secondaryAction: 'change_environment',
+      }
+    case 'local_access_blocked':
+      return {
+        ...base,
+        kind: 'unreachable',
+        surface: 'banner',
+        title: 'Local access blocked',
+        description: `This browser blocked the page from reaching ${host} on this device, so ${named} cannot be reached through it.${others} Allow this site to access apps and services on this device in the browser's site settings, then retry. ${RETRYING}`,
         action: 'retry',
         secondaryAction: 'change_environment',
       }

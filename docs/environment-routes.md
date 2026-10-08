@@ -205,6 +205,7 @@ out from every route it asked (`route-fallback.ts`):
 | Reason | Learned from | Shown as |
 | --- | --- | --- |
 | `environment_offline` | Nothing answers on a loopback route (nothing listens on this device), or a gateway answers `502`/`503`/`504` (Cloudflare, Tailscale and ngrok all do this when their tunnel is up and the origin is not) | Environment offline |
+| `local_access_blocked` | A loopback route fails and the browser reports its `loopback-network` permission as denied: a hosted page that was refused access to this device | Local access blocked |
 | `route_refused` | `401`/`403` on `/bootstrap`: a tunnel's access gate, or the environment refusing this browser's origin | Route refused access |
 | `wrong_environment` | The address answers as another environment | Environment unreachable |
 | `route_down` | Nothing answers over a network, another HTTP error (Cloudflare's `530` is its tunnel being down), or something that is not an environment | Route unavailable |
@@ -217,8 +218,18 @@ down, or, on a loopback route, as the environment being offline; the
 offline wording mentions the page's address for that reason. A gateway that
 refuses without CORS headers looks the same.
 
-When routes disagree the client shows, in order: offline, refused, another
-environment, down. A sign that the server is down explains every other
+A browser that blocks a hosted page from reaching this device's loopback
+address fails the request the same way. Chrome, Edge and Firefox ask the
+person first; when the answer was no, the permission reads `denied` and the
+route is reported as `local_access_blocked` rather than offline, while the
+search moves on to the tunnel as for any failed route. A prompt closed without
+an answer, and Safari, which blocks loopback from `https` pages as mixed
+content, report nothing, so those still read as offline and the wording asks
+the person to check the browser too. See
+[deploying the web client](./web-deploy.md#hosted-page-to-an-environment-on-this-device).
+
+When routes disagree the client shows, in order: offline, local access
+blocked, refused, another environment, down. A sign that the server is down explains every other
 failure, a refusal is something a person can act on, and an address that now
 leads to another environment says what changed where silence says nothing. Over a network, silence cannot tell a tunnel that is down
 from a machine that is off, and the wording says so ("the environment itself

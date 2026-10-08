@@ -192,6 +192,22 @@ export const ROUTE_FAILURE_STORIES: RouteFailureStory[] = [
     },
   },
   {
+    id: 'local_access_blocked',
+    name: 'Local access blocked',
+    summary: 'The hosted page was refused the browser permission to reach this device.',
+    input: {
+      environment: { ...studio, endpoint: 'http://127.0.0.1:43120' },
+      bootstrap: { status: 'unreachable', cause: 'blocked' },
+      transport: failedTransport,
+      routeFailure: {
+        reason: 'local_access_blocked',
+        endpoint: 'http://127.0.0.1:43120',
+        local: true,
+        tried: 1,
+      },
+    },
+  },
+  {
     id: 'route_refused',
     name: 'Route refused access',
     summary: 'The bootstrap was refused: a tunnel sign-in, or the environment origin check.',

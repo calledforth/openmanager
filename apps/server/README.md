@@ -66,7 +66,7 @@ with a nonzero exit code and an error on stderr.
 | `--port`      | `OPENMANAGER_PORT`      | `43120`                                     |
 | `--data-dir`  | `OPENMANAGER_DATA_DIR`  | `.openmanager` in the user's home directory |
 | `--log-level` | `OPENMANAGER_LOG_LEVEL` | `info`                                      |
-| `--allowed-origin` (repeatable) | `OPENMANAGER_ALLOWED_ORIGINS` (comma-separated) | none |
+| `--allowed-origin` (repeatable) | `OPENMANAGER_ALLOWED_ORIGINS` (comma-separated) | none. Exact browser origins, such as the hosted web client's; see [deploying the web client](../../docs/web-deploy.md#allow-the-origin-on-the-environment). |
 | `--allowed-host` (repeatable) | `OPENMANAGER_ALLOWED_HOSTS` (comma-separated) | none |
 | `--workspace` (repeatable) | `OPENMANAGER_WORKSPACES` (separated by the platform PATH delimiter) | none |
 | `--remint-owner` | none (flag only) | off. Revokes the live owner row and publishes a new credential before listen. |

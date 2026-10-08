@@ -59,6 +59,7 @@ An environment-served local or recovery UI may be added later for setup, offline
 - Web build: static Vite output suitable for Cloudflare Pages, Vercel, or equivalent static hosting.
 - Environment server: API/WebSocket/bootstrap/pairing endpoints only for the canonical architecture.
 - Multi-environment client state remains owned by the client and keyed by stable environment identity, not frontend URL.
+- Host: Cloudflare Pages. The build settings, response headers and CSP, origin allowlisting, and what each browser does when the hosted page reaches `127.0.0.1` are in [deploying the web client](../web-deploy.md). No hosted origin is allowed by default.
 
 ## Related records
 

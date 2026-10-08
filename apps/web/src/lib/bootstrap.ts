@@ -4,7 +4,8 @@ import {
   type BootstrapResponse,
 } from '@openmanager/protocol'
 import type { BootstrapOutcome } from './connection-state'
-import { environmentBootstrapUrl } from './environment-store'
+import { environmentBootstrapUrl, isLoopbackEnvironmentEndpoint } from './environment-store'
+import { loopbackAccessDenied } from './local-access'
 
 export function bootstrapUrl(endpoint: string): string {
   return environmentBootstrapUrl(endpoint)
@@ -89,6 +90,16 @@ export async function fetchBootstrap(
       signal: options.signal,
     })
   } catch {
+    // A browser that refused this page access to its own loopback address
+    // fails the fetch exactly as if nothing listened there. Its permission
+    // state is the one place the difference shows.
+    if (isLoopbackEnvironmentEndpoint(endpoint) && (await loopbackAccessDenied())) {
+      return {
+        status: 'unreachable',
+        message: `This browser blocked this page from reaching ${endpoint} on this device.`,
+        cause: 'blocked',
+      }
+    }
     return {
       status: 'unreachable',
       message: `Could not reach ${endpoint}. Check that the environment server is running, then retry.`,

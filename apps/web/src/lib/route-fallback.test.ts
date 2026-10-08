@@ -68,6 +68,12 @@ describe('routeFailureReason', () => {
     )
   })
 
+  it('reads a browser that blocked this device as that, not as the environment being stopped', () => {
+    expect(routeFailureReason({ status: 'unreachable', cause: 'blocked' }, 'env-a', LOCAL)).toBe(
+      'local_access_blocked',
+    )
+  })
+
   it('keeps a refusal and another environment apart from a route that is down', () => {
     expect(routeFailureReason({ status: 'unauthorized' }, 'env-a', TUNNEL)).toBe('route_refused')
     expect(routeFailureReason(ready('env-b'), 'env-a', TUNNEL)).toBe('wrong_environment')
@@ -87,6 +93,28 @@ describe('summarizeRouteFailures', () => {
       tried: 2,
       message: 'Down.',
     })
+  })
+
+  it('names a blocked local route when the tunnel is down too', () => {
+    const blocked = { status: 'unreachable', cause: 'blocked', message: 'Blocked.' } as const
+    expect(
+      summarizeRouteFailures([
+        { endpoint: LOCAL, outcome: blocked, reason: 'local_access_blocked', known: false },
+        { endpoint: TUNNEL, outcome: nothing, reason: 'route_down', known: false },
+      ]),
+    ).toMatchObject({ reason: 'local_access_blocked', endpoint: LOCAL, local: true })
+    // A gateway saying the environment is down still explains everything.
+    expect(
+      summarizeRouteFailures([
+        { endpoint: LOCAL, outcome: blocked, reason: 'local_access_blocked', known: false },
+        {
+          endpoint: TUNNEL,
+          outcome: { status: 'unreachable', cause: 'http', httpStatus: 502 },
+          reason: 'environment_offline',
+          known: false,
+        },
+      ]),
+    ).toMatchObject({ reason: 'environment_offline', endpoint: TUNNEL })
   })
 
   it('prefers a refusal a person can act on over a route that is down', () => {
