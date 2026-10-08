@@ -385,6 +385,17 @@ textarea,
   letter-spacing: inherit;
 }
 
+/* Touch screens: a field under 16px makes iOS Safari zoom the whole page in
+   when it takes focus, and the page stays zoomed after. Text fields are 16px
+   there instead; the rest of the type keeps its size. */
+@media (pointer: coarse) {
+  input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']),
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
 /* Caret follows theme text (avoids white caret on light canvas). */
 input,
 textarea,

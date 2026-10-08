@@ -22,12 +22,14 @@ export function SidebarInsetTopbar({
   const { isPeeking } = useSidebar();
   return (
     <header
-      className={cn("flex h-9 shrink-0 items-center gap-1.5 px-1", className)}
+      className={cn("flex h-9 shrink-0 items-center gap-1.5 px-1 max-md:h-11", className)}
     >
-      {/* Compact, so the bar stays slim; the glyph keeps the rail's 16px. */}
+      {/* Compact, so the bar stays slim; the glyph keeps the rail's 16px. On
+          a phone it is the only way to the sidebar, so it takes a finger-sized
+          target. */}
       <SidebarTrigger
         size="icon-compact"
-        className={`[&_svg]:size-4 transition-opacity delay-200 duration-160 ${
+        className={`[&_svg]:size-4 transition-opacity delay-200 duration-160 max-md:size-9 ${
           isPeeking ? "opacity-0" : "opacity-100"
         }`}
       />

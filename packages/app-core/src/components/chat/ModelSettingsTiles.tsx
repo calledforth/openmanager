@@ -649,7 +649,15 @@ export function ModelSettingsControl({
           ) : (
             <FadersHorizontalIcon size={12} className="shrink-0" />
           )}
-          {summary.length > 0 && <span className="truncate">{summary.join(' · ')}</span>}
+          {/* A phone's row keeps the first setting (the effort); the menu has the rest. */}
+          {summary.length > 0 && (
+            <span className="truncate">
+              {summary[0]}
+              {summary.length > 1 && (
+                <span className="max-sm:hidden"> · {summary.slice(1).join(' · ')}</span>
+              )}
+            </span>
+          )}
           {fast && (
             <LightningIcon
               size={11}
@@ -678,7 +686,7 @@ export function ModelSettingsControl({
               left: menuCoords.left,
               top: menuCoords.top,
               bottom: menuCoords.bottom,
-              width: POPOVER_WIDTH,
+              width: menuCoords.width,
             }}
           >
             <ModelSettingsTiles

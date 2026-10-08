@@ -443,7 +443,9 @@ function DeviceRow({
   }, [renaming])
   return (
     <li
-      className="flex items-center gap-3 rounded-lg bg-hover/70 px-3 py-2.5"
+      // On a phone the actions take their own line under the device, so its
+      // name and tags keep the row's width.
+      className="flex items-center gap-3 rounded-lg bg-hover/70 px-3 py-2.5 max-sm:flex-wrap max-sm:gap-y-1.5"
       aria-label={device.label}
     >
       <span aria-hidden className="flex shrink-0 text-muted-foreground">
@@ -458,8 +460,10 @@ function DeviceRow({
             onSave={onRename}
           />
         ) : (
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className="truncate text-[13px] text-foreground">{device.label}</span>
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+            <span className="min-w-0 max-w-full truncate text-[13px] text-foreground">
+              {device.label}
+            </span>
             {isCurrent ? <Tag>This device</Tag> : null}
             {device.kind === 'owner' ? <Tag>Owner</Tag> : null}
           </div>
@@ -478,7 +482,7 @@ function DeviceRow({
         </div>
       </div>
       {renaming ? null : (
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1 max-sm:basis-full max-sm:pl-5">
           {canRename ? (
             <Button
               ref={renameButton}

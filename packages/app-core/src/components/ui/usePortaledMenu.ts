@@ -34,7 +34,8 @@ export function usePortaledMenu({
     const el = triggerRef.current
     if (!el) return
     const rect = el.getBoundingClientRect()
-    const width = Math.max(minWidth, rect.width)
+    // Never wider than the window: on a phone a 440px menu would run off the edge.
+    const width = Math.min(Math.max(minWidth, rect.width), window.innerWidth - 16)
     let left = rect.left
     if (align === 'center') left = rect.left + rect.width / 2 - width / 2
     if (align === 'end') left = rect.right - width

@@ -75,6 +75,23 @@ function prefersReducedMotion() {
   return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
 }
 
+const NARROW_QUERY = '(max-width: 639px)'
+
+function subscribeNarrow(onChange: () => void) {
+  const query = window.matchMedia?.(NARROW_QUERY)
+  query?.addEventListener('change', onChange)
+  return () => query?.removeEventListener('change', onChange)
+}
+
+/** A phone-width window, where the composer's long placeholder would wrap. */
+function useNarrowScreen() {
+  return useSyncExternalStore(
+    subscribeNarrow,
+    () => window.matchMedia?.(NARROW_QUERY).matches ?? false,
+    () => false,
+  )
+}
+
 /** Mode / misc select. Menu is portaled — avoids overflow-x-auto / overflow-hidden clipping. */
 function PillSelect<T extends string>({
   value,
@@ -135,7 +152,8 @@ function PillSelect<T extends string>({
           disabled={isDisabled}
           className={cn(
             composerChip,
-            'max-w-[220px] gap-1',
+            // A phone's row has room for a short label; the rest truncates.
+            'max-w-[220px] gap-1 max-sm:max-w-[7.5rem]',
             ghost ? 'bg-transparent' : 'bg-hover',
             open && 'bg-active text-[var(--basis-text-strong)]',
           )}
@@ -181,6 +199,43 @@ function inSlotOrder<T extends { id: string }>(
 function slotIndex(images: readonly string[], slot: number, slots: ReadonlyMap<string, number>) {
   const after = images.findIndex((id) => (slots.get(id) ?? -1) > slot)
   return after === -1 ? images.length : after
+}
+
+/**
+ * Fades the toolbar's edge on the side with more chips to scroll to. On a
+ * phone the chips outgrow the row; without the fade the last one is just cut
+ * off at the send button, with nothing to say the row scrolls. Written
+ * straight to the element's style, so scrolling never renders the composer.
+ */
+function useScrollEdgeFade() {
+  const ref = useRef<HTMLDivElement>(null)
+  const update = useCallback(() => {
+    const el = ref.current
+    if (!el) return
+    const room = el.scrollWidth - el.clientWidth
+    const start = room > 1 && el.scrollLeft > 1
+    const end = room > 1 && el.scrollLeft < room - 1
+    el.style.maskImage =
+      start || end
+        ? `linear-gradient(to right, ${start ? 'transparent, #000 20px' : '#000'}, ${end ? '#000 calc(100% - 20px), transparent' : '#000'})`
+        : ''
+  }, [])
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    update()
+    el.addEventListener('scroll', update, { passive: true })
+    if (typeof ResizeObserver === 'undefined') return () => el.removeEventListener('scroll', update)
+    // The row, and each chip: a label that changes length changes the overflow.
+    const observer = new ResizeObserver(update)
+    observer.observe(el)
+    for (const child of el.children) observer.observe(child)
+    return () => {
+      el.removeEventListener('scroll', update)
+      observer.disconnect()
+    }
+  })
+  return ref
 }
 
 /** An image as the composer shows it, whichever way the draft holds it. */
@@ -347,6 +402,7 @@ export function MessageInputView({
   const lastHeightRef = useRef<number | null>(null)
   const shellRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const toolbarRef = useScrollEdgeFade()
   const attachmentsRef = useRef(attachmentsByKey)
   const draft: ComposerDraft = {
     text: storedText,
@@ -845,6 +901,9 @@ export function MessageInputView({
   const hasContent = text.trim().length > 0 || images.length > 0
   // Only an image whose bytes are here can be opened large.
   const viewable = images.filter((image): image is ComposerImage & { url: string } => !!image.url)
+  const narrow = useNarrowScreen()
+  // On a phone the full hint runs to two lines; the box says just the ask.
+  const askPlaceholder = narrow ? 'Ask anything…' : 'Ask anything, @ to mention, / for workflows'
   const placeholder = textOverride
     ? textOverride.placeholder
     : !activeWorkspacePath
@@ -852,14 +911,14 @@ export function MessageInputView({
       : // A launching draft keeps its placeholder; the pill above says what
         // is happening, so the box does not change twice in a second.
         !activeSessionId && isSessionDraftOpen
-        ? 'Ask anything, @ to mention, / for workflows'
+        ? askPlaceholder
         : !activeSessionId
           ? 'Select a session...'
           : !providerReady
             ? `Connecting to ${currentProviderName}...`
             : isAwaitingPlanReview
               ? 'Describe what should change in the plan…'
-              : 'Ask anything, @ to mention, / for workflows'
+              : askPlaceholder
 
   const isPlan = currentModeId === 'plan'
   const sendActive = textOverride
@@ -1033,7 +1092,10 @@ export function MessageInputView({
         )}
 
         <div className="flex items-center justify-between gap-1.5 px-1 pb-0.5">
-          <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto scrollbar-hide">
+          <div
+            ref={toolbarRef}
+            className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto scrollbar-hide"
+          >
             <Tooltip
               content={
                 isAwaitingPlanReview

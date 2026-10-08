@@ -1241,7 +1241,8 @@ const CommandMenuShortcut = forwardRef<HTMLElement, CommandMenuShortcutProps>(
       <kbd
         ref={ref}
         data-slot="command-menu-shortcut"
-        className={cn("ml-auto inline-flex shrink-0 items-center gap-0.5 align-middle font-sans", className)}
+        // Keys mean nothing under a finger: touch screens drop the caps.
+        className={cn("ml-auto inline-flex shrink-0 items-center gap-0.5 align-middle font-sans pointer-coarse:hidden", className)}
         {...props}
       >
         {caps.map((cap, i) => (
@@ -1435,6 +1436,8 @@ const CommandMenuFooter = forwardRef<HTMLDivElement, CommandMenuFooterProps>(
         className={cn(
           "flex shrink-0 items-center overflow-hidden text-muted-foreground",
           compact ? "h-8 gap-3 px-3 text-[11px]" : "h-10 gap-4 px-4 text-[12px]",
+          // The default footer is all key hints, which a touch screen can't use.
+          !children && "pointer-coarse:hidden",
           className
         )}
         {...props}

@@ -146,7 +146,7 @@ export function ProjectPicker({
         role="dialog"
         aria-label="Choose a project"
         className="fixed z-[200] flex max-h-[min(400px,60vh)] flex-col overflow-hidden rounded-float bg-float text-left shadow-float"
-        style={{ left: menuCoords.left, top: menuCoords.top, width: MENU_WIDTH }}
+        style={{ left: menuCoords.left, top: menuCoords.top, width: menuCoords.width }}
       >
         <CommandMenu
           items={items}

@@ -453,7 +453,7 @@ export function ProviderModelPicker({
       >
         <div
           className="flex max-h-[min(420px,70vh)] flex-col overflow-hidden rounded-float bg-float shadow-float"
-          style={{ width: MENU_WIDTH }}
+          style={{ width: menuCoords.width }}
         >
           <CommandMenu
             items={items}
@@ -636,7 +636,7 @@ function ModelRow({
 /** Only the keys the menu adds; arrows and Enter go without saying. */
 function PickerFooter({ hasTabs, hasFavorites }: { hasTabs: boolean; hasFavorites: boolean }) {
   return (
-    <div className="flex h-8 shrink-0 items-center gap-3 px-3 text-[11px] text-muted-foreground">
+    <div className="flex h-8 shrink-0 items-center gap-3 px-3 text-[11px] text-muted-foreground pointer-coarse:hidden">
       {hasTabs && (
         <span className="flex items-center gap-1.5">
           <CommandMenuShortcut keys="tab" className="ml-0" />
@@ -660,7 +660,7 @@ function PickerFooter({ hasTabs, hasFavorites }: { hasTabs: boolean; hasFavorite
 function ModelMetaCard({ rows, top }: { rows: MetaRow[]; top: number }) {
   return (
     <div
-      className="pointer-events-none absolute left-[calc(100%+8px)] z-[201] w-[232px] rounded-[10px] bg-float px-3 py-2.5 shadow-float"
+      className="pointer-events-none absolute left-[calc(100%+8px)] z-[201] max-md:hidden w-[232px] rounded-[10px] bg-float px-3 py-2.5 shadow-float"
       style={{ top }}
       role="tooltip"
     >

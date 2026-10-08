@@ -77,7 +77,7 @@ function ConnectionStoriesPage() {
   const ready = deriveConnectionUi(READY_CONNECTION_INPUT)
 
   return (
-    <div className="min-h-0 flex-1 overflow-auto px-8 py-8">
+    <div className="min-h-0 flex-1 overflow-auto px-4 py-8 sm:px-8">
       <h1 className="text-ui-base font-medium text-[var(--basis-text-strong)]">
         Connection states
       </h1>

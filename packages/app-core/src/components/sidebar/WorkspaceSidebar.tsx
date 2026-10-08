@@ -6,6 +6,7 @@ import {
   useSidebarSessions,
   type SidebarSessionEntry,
 } from '../../providers/sidebar-provider'
+import { useSidebar } from '../fluid/ui/sidebar'
 import { WorkspaceSidebarView } from './WorkspaceSidebarView'
 
 function subscribeVisibility(onChange: () => void) {
@@ -43,6 +44,16 @@ function useWorkspaceSidebarModel() {
   const drafts = useSidebarDrafts()
   const providerLabel = useContext(PlatformCapabilitiesContext)?.providerDisplayName
   const visible = useDocumentVisible()
+  // On a phone the sidebar is a sheet over the page: going somewhere from it
+  // (a session, a draft, a new agent, Add project) closes it, so what was
+  // picked is on screen rather than behind the sheet.
+  const { isMobile, setOpenMobile } = useSidebar()
+  const away =
+    <A extends unknown[], R>(go: (...args: A) => R) =>
+    (...args: A): R => {
+      if (isMobile) setOpenMobile(false)
+      return go(...args)
+    }
 
   // Done only means "finished and not looked at yet". Opening the session, or
   // having it on screen while it finishes, clears it. A hidden window waits
@@ -77,8 +88,8 @@ function useWorkspaceSidebarModel() {
     workspaces,
     activeWorkspacePath,
     activeSessionId,
-    onCreateSession: (workspacePath: string) => void createSession(workspacePath),
-    onSelectSession: selectSession,
+    onCreateSession: away((workspacePath: string) => void createSession(workspacePath)),
+    onSelectSession: away(selectSession),
     onRenameSession: renameSession
       ? (path: string, id: string, title: string | null) => void renameSession(path, id, title)
       : undefined,
@@ -91,11 +102,11 @@ function useWorkspaceSidebarModel() {
       ? {
           drafts: drafts.drafts,
           activeDraftId: drafts.openDraftId,
-          onOpenDraft: drafts.openDraft,
+          onOpenDraft: away(drafts.openDraft),
           onDiscardDraft: drafts.discardDraft,
         }
       : {}),
-    onAddWorkspace: () => void addWorkspace(),
+    onAddWorkspace: away(() => void addWorkspace()),
     providerLabel,
   }
 }

@@ -25,6 +25,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarProvider,
+  useSidebar,
 } from '@openmanager/app-core/components/fluid/ui/sidebar'
 import { SidebarInsetTopbar } from '@openmanager/app-core/components/fluid/sidebar-app/inset-topbar'
 import {
@@ -62,6 +63,8 @@ function draftIdOf(pathname: string): string | null {
 /** The shell's own pages as sidebar rows; Sessions only when the project list isn't there. */
 function NavMenu({ pathname, includeSessions }: { pathname: string; includeSessions: boolean }) {
   const navigate = useNavigate()
+  // On a phone the rows sit in a sheet over the page; going to one closes it.
+  const { isMobile, setOpenMobile } = useSidebar()
   const SessionsIcon = useIcon('message-circle')
   const SettingsIcon = useIcon('settings')
   const StatesIcon = useIcon('sliders-horizontal')
@@ -79,7 +82,10 @@ function NavMenu({ pathname, includeSessions }: { pathname: string; includeSessi
             <SidebarMenuButton
               icon={item.icon}
               isActive={item.to === '/' ? isSessionPath(pathname) : pathname === item.to}
-              onClick={() => void navigate({ to: item.to })}
+              onClick={() => {
+                if (isMobile) setOpenMobile(false)
+                void navigate({ to: item.to })
+              }}
             >
               {item.label}
             </SidebarMenuButton>

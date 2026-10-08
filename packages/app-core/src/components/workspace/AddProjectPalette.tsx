@@ -278,10 +278,10 @@ function FolderBrowser({
         </p>
       ) : null}
       <div className="flex h-11 shrink-0 items-center gap-4 px-4 text-[12px] text-muted-foreground">
-        <span className="flex items-center gap-1.5">
+        <span className="flex items-center gap-1.5 pointer-coarse:hidden">
           Open <CommandMenuShortcut keys="enter" className="ml-0" />
         </span>
-        <span className="flex items-center gap-1.5">
+        <span className="flex items-center gap-1.5 pointer-coarse:hidden">
           Up <CommandMenuShortcut keys="alt+up" className="ml-0" />
         </span>
         <Button

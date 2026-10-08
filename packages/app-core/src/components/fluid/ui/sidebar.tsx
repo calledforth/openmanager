@@ -240,7 +240,10 @@ const SidebarContent = forwardRef<HTMLDivElement, SidebarContentProps>(
           <div
             ref={ref}
             data-sidebar="content"
-            className={cn("scroll-fade flex min-h-0 w-full flex-1 flex-col overflow-y-auto", className)}
+            // Its sections keep their own height and the region scrolls: a
+            // flex child with a set min-height would otherwise shrink to it
+            // and paint over the section below.
+            className={cn("scroll-fade flex min-h-0 w-full flex-1 flex-col overflow-y-auto [&>*]:shrink-0", className)}
             {...props}
           >
             {children}
