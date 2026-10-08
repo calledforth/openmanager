@@ -2,6 +2,7 @@ node_modules/
 .pnpm-store/
 out/
 dist/
+.wrangler/
 storybook-static/
 .env
 .env.local

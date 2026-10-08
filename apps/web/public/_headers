@@ -1,4 +1,4 @@
-# Response headers for the hosted web client on Cloudflare Pages.
+# Response headers for the hosted web client on Cloudflare (Workers static assets).
 # Vite copies this file to dist/ unchanged. See docs/web-deploy.md for why
 # each directive is what it is; keep the two in step.
 
@@ -14,6 +14,6 @@
 
 # Vite puts a content hash in every file name under /assets, so a changed
 # file always gets a new URL. Everything else (index.html, the SPA fallback,
-# theme-boot.js) keeps Pages' default of revalidating on every load.
+# theme-boot.js) keeps the host's default of revalidating on every load.
 /assets/*
   Cache-Control: public, max-age=31536000, immutable

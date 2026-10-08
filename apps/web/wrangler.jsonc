@@ -1,0 +1,21 @@
+// The web client as an assets-only Worker: no script, so requests for the
+// page are answered from Cloudflare's edge without running any code, and
+// nothing sits between the browser and an environment. docs/web-deploy.md
+// explains each setting.
+{
+  "name": "openmanager-web",
+  "compatibility_date": "2026-10-08",
+  "assets": {
+    "directory": "./dist",
+    // Any path that is not a file gets index.html, and TanStack Router
+    // renders the route.
+    "not_found_handling": "single-page-application",
+  },
+  // One origin only. Browsers keep credentials per origin, so a second
+  // address (workers.dev, a preview) would be a second, empty registry.
+  // Deploying your own copy means changing this hostname to one on a zone in
+  // your account; the first deploy creates the DNS record.
+  "routes": [{ "pattern": "app.cletus.xyz", "custom_domain": true }],
+  "workers_dev": false,
+  "preview_urls": false,
+}

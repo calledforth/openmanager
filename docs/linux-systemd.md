@@ -104,7 +104,7 @@ so `/local-owner` stays hidden, nor provider settings you export in your
 shell. Put environment-only settings in a drop-in.
 
 To use the hosted web client, add its origin, for example
-`--allowed-origin https://openmanager.pages.dev`. A later `install` replaces
+`--allowed-origin https://app.example.com`. A later `install` replaces
 every stored flag, so repeat the ones you installed with. See
 [deploying the web client](./web-deploy.md#allow-the-origin-on-the-environment).
 
