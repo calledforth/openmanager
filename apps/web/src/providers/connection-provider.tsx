@@ -696,12 +696,15 @@ export function ConnectionProvider({
   }, [online, preview, stopRouteSearch])
 
   // While no route answers, ask them all again with a growing delay. A token
-  // the environment refused, or a browser that blocked local access, is not
-  // retried: each needs a person, and the strip says so.
+  // the environment refused is not retried, nor is a browser that blocked
+  // local access when that is the only route: each needs a person, and the
+  // strip says so. With more routes saved the search goes on, since the
+  // blocked route outranks a tunnel that is merely down and would otherwise
+  // hide its return until someone pressed Retry.
   useEffect(() => {
     if (preview || !online || !routeFailure) return
     if (routeFailure.reason === 'credential_rejected') return
-    if (routeFailure.reason === 'local_access_blocked') return
+    if (routeFailure.reason === 'local_access_blocked' && routeFailure.tried <= 1) return
     const delay = retryDelaysMs[Math.min(retryAttempt.current, retryDelaysMs.length - 1)]
     const timer = setTimeout(() => {
       retryAttempt.current += 1

@@ -22,10 +22,19 @@ afterEach(() => {
   localStorage.clear()
   vi.unstubAllGlobals()
   setOnline(true)
+  delete (window.navigator as { permissions?: unknown }).permissions
 })
 
 function setOnline(online: boolean) {
   Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: online })
+}
+
+/** The browser refused this page its `loopback-network` permission. */
+function blockLoopbackAccess() {
+  Object.defineProperty(window.navigator, 'permissions', {
+    configurable: true,
+    value: { query: async () => ({ state: 'denied' }) },
+  })
 }
 
 function transition(type: 'online' | 'offline') {
@@ -893,6 +902,52 @@ describe('WebEnvironmentClientProvider', () => {
     expect(createClient).toHaveBeenLastCalledWith(
       expect.objectContaining({ url: 'ws://127.0.0.1:43120/ws' }),
     )
+  })
+
+  it('keeps searching for the tunnel while the browser blocks the local route', async () => {
+    seedTwoRoutes()
+    blockLoopbackAccess()
+    let tunnelUp = false
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (tunnelUp && String(input).startsWith(TUNNEL)) return bootstrapAnswer()
+        throw new TypeError('Failed to fetch')
+      }),
+    )
+    const createClient = vi.fn(() => createFakeClient() as EnvironmentClient)
+    renderProvider(createClient, { retryDelaysMs: [20] })
+
+    // The blocked route is the one named, since a person can act on it.
+    await waitFor(() =>
+      expect(screen.getByText('reason: local_access_blocked')).toBeInTheDocument(),
+    )
+    expect(createClient).not.toHaveBeenCalled()
+
+    // The tunnel comes back; nobody pressed anything.
+    tunnelUp = true
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+    expect(screen.getByText(`in use: ${TUNNEL}`)).toBeInTheDocument()
+  })
+
+  it('leaves a blocked local route alone when it is the only one', async () => {
+    seedEnvironment()
+    blockLoopbackAccess()
+    const fetchMock = vi.fn(async () => {
+      throw new TypeError('Failed to fetch')
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const createClient = vi.fn(() => createFakeClient() as EnvironmentClient)
+    renderProvider(createClient, { retryDelaysMs: [20] })
+
+    await waitFor(() =>
+      expect(screen.getByText('reason: local_access_blocked')).toBeInTheDocument(),
+    )
+    const asked = fetchMock.mock.calls.length
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    // Waiting changes no browser setting, so the strip's "then retry" is true.
+    expect(fetchMock.mock.calls.length).toBe(asked)
+    expect(createClient).not.toHaveBeenCalled()
   })
 
   it('says a tunnel is down, or that the environment shut down when it said so', async () => {

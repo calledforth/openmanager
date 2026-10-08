@@ -207,7 +207,9 @@ reconnect…", and the reason only picks its one muted detail line. Two reasons
 need a person instead, so they get their own state: a refused token is the
 **Not authorized** screen and nothing is retried, and a browser that blocked
 local access is its own **Local access blocked** strip, with the fix and no
-spinner, since waiting does not change a browser setting.
+spinner, since waiting does not change a browser setting. The environment's
+other routes are still searched behind it, so a tunnel that comes back is
+found without a press.
 
 | Reason | Learned from | Detail line in the reconnect strip |
 | --- | --- | --- |
