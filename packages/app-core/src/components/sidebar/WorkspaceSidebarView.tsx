@@ -605,12 +605,22 @@ export function WorkspaceSidebarView({
   const settleRef = useRef(requestSettle)
   const openDraftRef = useRef(requestOpenDraft)
   const discardDraftRef = useRef(requestDiscardDraft)
+  const createSessionRef = useRef(onCreateSession)
+  const addWorkspaceRef = useRef(onAddWorkspace)
   useLayoutEffect(() => {
     selectRef.current = requestSelect
     settleRef.current = requestSettle
     openDraftRef.current = requestOpenDraft
     discardDraftRef.current = requestDiscardDraft
+    createSessionRef.current = onCreateSession
+    addWorkspaceRef.current = onAddWorkspace
   })
+  // The header's two actions, stable too, so a session update leaves it be.
+  const onCreateSessionStable = useCallback(
+    (workspacePath: string) => createSessionRef.current(workspacePath),
+    [],
+  )
+  const onAddWorkspaceStable = useCallback(() => addWorkspaceRef.current(), [])
   const onSelectSession = useCallback<WorkspaceSidebarViewProps['onSelectSession']>(
     (...args) => selectRef.current(...args),
     [],
@@ -658,6 +668,27 @@ export function WorkspaceSidebarView({
     if (hasSessions) setArmed(true)
   }, [hasSessions])
   const rowMotion = useRowMotion(armed)
+  const onSettledOpenChange = useCallback((open: boolean) => {
+    setSettledOpen(open)
+    writeSettledOpen(open)
+    if (!open) setSettledVisible(SETTLED_PREVIEW_LIMIT)
+  }, [])
+  const onShowMoreSettled = useCallback(
+    () => setSettledVisible((count) => count + SETTLED_PAGE_SIZE),
+    [],
+  )
+  // The shelf hears about the selection only when it is one of its rows.
+  const settledSelection =
+    activeSessionId !== null &&
+    settled
+      .slice(0, settledVisible)
+      .some(
+        (entry) =>
+          entry.root.session.externalId === activeSessionId ||
+          entry.children.some((child) => child.session.externalId === activeSessionId),
+      )
+      ? activeSessionId
+      : null
   // Selection is handed to each row as its own (`selected`), not as the id
   // on screen: opening another session re-renders the two rows it moves
   // between, not the whole list.
@@ -693,27 +724,11 @@ export function WorkspaceSidebarView({
   return (
     <Sidebar className="text-[15px]">
       {titlebar}
-      <SidebarHeader>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              icon={NewAgentIcon}
-              disabled={!newThreadTarget}
-              onClick={() => {
-                if (newThreadTarget) onCreateSession(newThreadTarget)
-              }}
-            >
-              New agent
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton icon={AddProjectIcon} onClick={onAddWorkspace}>
-              Add project
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
-      </SidebarHeader>
-
+      <MemoSidebarActions
+        newThreadTarget={newThreadTarget}
+        onCreateSession={onCreateSessionStable}
+        onAddWorkspace={onAddWorkspaceStable}
+      />
       <SidebarContent>
         {workspaces.length === 0 ? (
           <p className="px-4 py-5 text-[13px] text-muted-foreground">No projects yet</p>
@@ -788,54 +803,16 @@ export function WorkspaceSidebarView({
             folded, and moves only when the cards outgrow that, riding down as
             they grow in. */}
         {workspaces.length > 0 || settled.length > 0 ? (
-          <SidebarGroup
-            ref={setSettledGroup}
-            collapsible
-            className="pb-1"
+          <MemoSettledShelf
+            groupRef={setSettledGroup}
+            settled={settled}
             open={settledOpen}
-            onOpenChange={(open) => {
-              setSettledOpen(open)
-              writeSettledOpen(open)
-              if (!open) setSettledVisible(SETTLED_PREVIEW_LIMIT)
-            }}
-          >
-            {/* The toggle is a button, which inherits the row size; the spans
-                carry the label size themselves. */}
-            <SidebarGroupLabel>
-              <span className="text-[12px]">Settled</span>
-              <span className="text-[12px] tabular-nums text-faint">{settled.length}</span>
-            </SidebarGroupLabel>
-            <EmptyNote show={settled.length === 0} rowMotion={rowMotion}>
-              Settle a finished thread and it waits here.
-            </EmptyNote>
-            {/* Mounted while empty too, so the last row still folds away. */}
-            <SidebarMenu>
-              <AnimatePresence initial={false} presenceAffectsLayout={false}>
-                {settled
-                  .slice(0, settledVisible)
-                  .flatMap((entry) => [entry.root, ...entry.children])
-                  .map((row) => (
-                    <MemoSettledRow
-                      key={row.session.externalId}
-                      row={row}
-                      selected={row.session.externalId === activeSessionId ? activeSessionId : null}
-                      {...shared}
-                    />
-                  ))}
-              </AnimatePresence>
-              {settled.length > settledVisible ? (
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    icon={ShowMoreIcon}
-                    className="text-muted-foreground"
-                    onClick={() => setSettledVisible((count) => count + SETTLED_PAGE_SIZE)}
-                  >
-                    Show more
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ) : null}
-            </SidebarMenu>
-          </SidebarGroup>
+            onOpenChange={onSettledOpenChange}
+            visible={settledVisible}
+            onShowMore={onShowMoreSettled}
+            selected={settledSelection}
+            {...shared}
+          />
         ) : null}
       </SidebarContent>
 
@@ -845,6 +822,146 @@ export function WorkspaceSidebarView({
     </Sidebar>
   )
 }
+
+/**
+ * The Settled shelf. Its own memoized piece: an update to an active session
+ * re-renders the session list, and a shelf whose rows are all as they were
+ * (and whose selection, page and fold are too) has nothing to show for it.
+ */
+function SettledShelf({
+  groupRef,
+  settled,
+  open,
+  onOpenChange,
+  visible,
+  onShowMore,
+  selected,
+  ...shared
+}: Omit<RowHandlers, 'selected'> & {
+  groupRef: Ref<HTMLDivElement>
+  settled: SidebarBoardEntry[]
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  visible: number
+  onShowMore: () => void
+  /** The open session when it is one of the shelf's rows, else null. */
+  selected: string | null
+}) {
+  return (
+    <SidebarGroup
+      ref={groupRef}
+      collapsible
+      className="pb-1"
+      open={open}
+      onOpenChange={onOpenChange}
+    >
+      {/* The toggle is a button, which inherits the row size; the spans
+          carry the label size themselves. */}
+      <SidebarGroupLabel>
+        <span className="text-[12px]">Settled</span>
+        <span className="text-[12px] tabular-nums text-faint">{settled.length}</span>
+      </SidebarGroupLabel>
+      <EmptyNote show={settled.length === 0} rowMotion={shared.rowMotion}>
+        Settle a finished thread and it waits here.
+      </EmptyNote>
+      {/* Mounted while empty too, so the last row still folds away. */}
+      <SidebarMenu>
+        <AnimatePresence initial={false} presenceAffectsLayout={false}>
+          {settled
+            .slice(0, visible)
+            .flatMap((entry) => [entry.root, ...entry.children])
+            .map((row) => (
+              <MemoSettledRow
+                key={row.session.externalId}
+                row={row}
+                selected={row.session.externalId === selected ? selected : null}
+                {...shared}
+              />
+            ))}
+        </AnimatePresence>
+        {settled.length > visible ? (
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              icon={ShowMoreIcon}
+              className="text-muted-foreground"
+              onClick={onShowMore}
+            >
+              Show more
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        ) : null}
+      </SidebarMenu>
+    </SidebarGroup>
+  )
+}
+
+type SettledShelfProps = Parameters<typeof SettledShelf>[0]
+
+/** Same entries, row for row, by what a settled row shows. */
+function sameEntries(a: SidebarBoardEntry[], b: SidebarBoardEntry[]): boolean {
+  return (
+    a === b ||
+    (a.length === b.length &&
+      a.every(
+        (entry, index) =>
+          sameRow(entry.root, b[index]!.root) &&
+          entry.children.length === b[index]!.children.length &&
+          entry.children.every((child, at) => sameRow(child, b[index]!.children[at]!)),
+      ))
+  )
+}
+
+const MemoSettledShelf = memo(
+  SettledShelf,
+  (a: SettledShelfProps, b: SettledShelfProps) =>
+    a.groupRef === b.groupRef &&
+    a.open === b.open &&
+    a.onOpenChange === b.onOpenChange &&
+    a.visible === b.visible &&
+    a.onShowMore === b.onShowMore &&
+    sameHandlers({ ...a, selected: a.selected }, { ...b, selected: b.selected }) &&
+    sameEntries(a.settled, b.settled),
+)
+
+/**
+ * New agent and Add project. Its own memoized piece: server updates re-render
+ * the session list, and these two buttons (and their tooltips) have no part
+ * in that. Only where a new agent would start changes them.
+ */
+function SidebarActions({
+  newThreadTarget,
+  onCreateSession,
+  onAddWorkspace,
+}: {
+  newThreadTarget: string | null
+  onCreateSession: (workspacePath: string) => void
+  onAddWorkspace: () => void
+}) {
+  return (
+    <SidebarHeader>
+      <SidebarMenu>
+        <SidebarMenuItem>
+          <SidebarMenuButton
+            icon={NewAgentIcon}
+            disabled={!newThreadTarget}
+            onClick={() => {
+              if (newThreadTarget) onCreateSession(newThreadTarget)
+            }}
+          >
+            New agent
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+        <SidebarMenuItem>
+          <SidebarMenuButton icon={AddProjectIcon} onClick={onAddWorkspace}>
+            Add project
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+      </SidebarMenu>
+    </SidebarHeader>
+  )
+}
+
+const MemoSidebarActions = memo(SidebarActions)
 
 /**
  * A list of cards. Divs, not ul/li: the app's unlayered list rules outrank

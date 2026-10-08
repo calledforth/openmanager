@@ -112,7 +112,7 @@ import {
 } from './permission-provider'
 import { QuestionStateProvider, type PendingQuestion } from './question-provider'
 import { PlanStateProvider, type PlanRow } from './plan-provider'
-import { ViewActionsContext, type ViewActions } from './view-actions'
+import { ViewActionsContext, WorkspaceIconContext, type ViewActions } from './view-actions'
 import { createEnvironmentThreadStores } from '../lib/environment-thread'
 import { providerHealthReportFromWire } from '../lib/provider-health-view'
 
@@ -2007,5 +2007,15 @@ function EnvironmentViewActions({
     }),
     [actions, activeSessionId, openChildSession, resolveWorkspaceIcon, uploadAttachments],
   )
-  return <ViewActionsContext.Provider value={value}>{children}</ViewActionsContext.Provider>
+  // Icons get the lookup on its own (`WorkspaceIconContext`); a host's own
+  // `resolveWorkspaceIcon` in `actions` still wins, as it does in `value`.
+  const iconLookup =
+    (actions && 'resolveWorkspaceIcon' in actions
+      ? actions.resolveWorkspaceIcon
+      : resolveWorkspaceIcon) ?? null
+  return (
+    <ViewActionsContext.Provider value={value}>
+      <WorkspaceIconContext.Provider value={iconLookup}>{children}</WorkspaceIconContext.Provider>
+    </ViewActionsContext.Provider>
+  )
 }

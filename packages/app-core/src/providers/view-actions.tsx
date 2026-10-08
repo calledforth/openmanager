@@ -21,3 +21,16 @@ export interface ViewActions {
 
 export const ViewActionsContext = createContext<ViewActions>({ activeSessionId: null })
 export const useViewActions = () => useContext(ViewActionsContext)
+
+/** No icon source provided here: icons read `resolveWorkspaceIcon` from `ViewActions`. */
+export const WORKSPACE_ICONS_UNSET = Symbol('workspace icons unset')
+
+/**
+ * The workspace icon lookup on its own, for hosts that can offer it apart
+ * from `ViewActions`. `ViewActions` also carries the open session, so every
+ * project icon reading it would re-render on each session switch; this one
+ * changes only with the lookup. Null: provided, and there is no lookup.
+ */
+export const WorkspaceIconContext = createContext<
+  ViewActions['resolveWorkspaceIcon'] | null | typeof WORKSPACE_ICONS_UNSET
+>(WORKSPACE_ICONS_UNSET)
