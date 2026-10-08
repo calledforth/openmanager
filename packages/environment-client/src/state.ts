@@ -866,11 +866,21 @@ export function applyInteractionResolved(
   return patchThread(state, thread, (current) => resolveInteraction(current, interactionId, null))
 }
 
+/**
+ * A created session, from the command's answer. That answer arrives before the
+ * `session.created` event, so it carries the announcement time: without it the
+ * session would be listed as the oldest, at the bottom of the sidebar, and move
+ * to the top once the event came. With it the event restates what is held.
+ */
 export function applySessionCreated(
   state: EnvironmentState,
-  payload: { session: Session; thread: Thread },
+  payload: { session: Session; thread: Thread; announcedAt?: string },
 ): EnvironmentState {
-  const withSession = upsertSession(state, payload.session, [payload.thread.threadId])
+  const { announcedAt } = payload
+  const upserted = upsertSession(state, payload.session, [payload.thread.threadId], announcedAt)
+  const withSession = announcedAt
+    ? touchWorkspaceActivity(upserted, payload.session.sessionId, announcedAt)
+    : upserted
   if (withSession.threads[payload.thread.threadId]) return withSession
   return {
     ...withSession,
@@ -1198,19 +1208,44 @@ export function selectComposerPreference(
  * stable across renders.
  */
 export function selectSessionList(state: EnvironmentState, workspaceId?: string): SessionSummary[] {
-  const sessions = state.sessionOrder
-    .map((id) => state.sessions[id])
-    .filter((session): session is SessionSummary => session !== undefined)
-    .sort(compareSessionsNewestFirst)
-  return workspaceId ? sessions.filter((session) => session.workspaceId === workspaceId) : sessions
+  // Every store update runs this for the sidebar, a streamed token included;
+  // only a change to the sessions themselves sorts them again.
+  let cached = sessionLists.get(state.sessions)
+  if (!cached || cached.order !== state.sessionOrder) {
+    cached = { order: state.sessionOrder, lists: new Map() }
+    sessionLists.set(state.sessions, cached)
+  }
+  const key = workspaceId ?? ''
+  const listed = cached.lists.get(key)
+  if (listed) return listed
+  const all = cached.lists.get('') ?? sortNewestFirst(state)
+  cached.lists.set('', all)
+  const list = workspaceId ? all.filter((session) => session.workspaceId === workspaceId) : all
+  cached.lists.set(key, list)
+  return list
 }
 
-function compareSessionsNewestFirst(left: SessionSummary, right: SessionSummary): number {
-  const time =
-    Date.parse(sessionListCursorOf(right).updatedAt) -
-    Date.parse(sessionListCursorOf(left).updatedAt)
-  if (time !== 0) return time
-  return right.sessionId < left.sessionId ? -1 : right.sessionId > left.sessionId ? 1 : 0
+/** Sorted lists by the sessions they were read from, per workspace (`''` for all). */
+const sessionLists = new WeakMap<
+  EnvironmentState['sessions'],
+  { order: EnvironmentState['sessionOrder']; lists: Map<string, SessionSummary[]> }
+>()
+
+function sortNewestFirst(state: EnvironmentState): SessionSummary[] {
+  const keyed: { session: SessionSummary; at: number }[] = []
+  for (const id of state.sessionOrder) {
+    const session = state.sessions[id]
+    if (session) keyed.push({ session, at: Date.parse(sessionListCursorOf(session).updatedAt) })
+  }
+  return keyed
+    .sort((left, right) => {
+      const time = right.at - left.at
+      if (time !== 0) return time
+      const a = left.session.sessionId
+      const b = right.session.sessionId
+      return b < a ? -1 : b > a ? 1 : 0
+    })
+    .map(({ session }) => session)
 }
 
 export function selectActiveSession(state: EnvironmentState): SessionSummary | null {

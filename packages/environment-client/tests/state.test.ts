@@ -5,6 +5,7 @@ import {
   applyEvent,
   applyInteractionResolved,
   applySessionAcknowledged,
+  applySessionCreated,
   applySessionHistory,
   applySessionList,
   applySessionOpen,
@@ -243,6 +244,43 @@ describe('applyEvent', () => {
       'session-new',
       SESSION.sessionId,
     ])
+  })
+
+  it('lists a created session first from the answer, before its event arrives', () => {
+    const session = { ...SESSION, sessionId: 'session-new' }
+    const thread = { threadId: 'thread-new', sessionId: session.sessionId }
+    const announcedAt = '2026-09-12T00:00:00.000Z'
+    // The answer reaches the client before `session.created` does.
+    const created = applySessionCreated(seeded(), { session, thread, announcedAt })
+    expect(selectSessionList(created).map((row) => row.sessionId)).toEqual([
+      'session-new',
+      SESSION.sessionId,
+    ])
+    expect(created.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe(announcedAt)
+
+    // The event then restates it: nothing the sidebar reads changes again.
+    const announced = applyEvent(created, {
+      ...event({
+        name: 'session.created' as const,
+        scope: environmentScope,
+        payload: { session },
+      }),
+      timestamp: announcedAt,
+    })
+    expect(announced.sessions).toBe(created.sessions)
+    expect(announced.workspaces).toBe(created.workspaces)
+  })
+
+  it('reads the session list once per change to the sessions', () => {
+    const state = seeded()
+    const listed = selectSessionList(state)
+    // A streamed token changes the thread, not the sessions.
+    const streamed = applyEvent(applyEvent(state, turnStarted()), delta('turn-1', 'm', 'x'))
+    expect(streamed.sessions).toBe(state.sessions)
+    expect(selectSessionList(streamed)).toBe(listed)
+    expect(selectSessionList(streamed, WORKSPACE.workspaceId)).toBe(
+      selectSessionList(state, WORKSPACE.workspaceId),
+    )
   })
 
   it('returns the same state when an event changes nothing', () => {

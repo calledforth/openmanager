@@ -15,6 +15,7 @@ import {
   selectSidebarDrafts,
   sidebarDraftCard,
   type SidebarDraft,
+  type SidebarDraftFacts,
 } from '../components/sidebar/sidebar-sessions'
 import { DraftPageNavigationContext } from './draft-pages'
 import { useEnvironmentClient, useEnvironmentState } from './environment-client'
@@ -98,13 +99,33 @@ export function EnvironmentSidebarDraftsProvider({ children }: { children: React
   const frozenSessionId = shownFrozen.card?.sessionId ?? null
 
   const facts = useEnvironmentState(
-    useCallback(
-      (state: EnvironmentState) =>
-        enabled
-          ? selectSidebarDrafts(state, openDraftId, frozenSessionId, defaultProviderId, statuses)
-          : NO_DRAFT_FACTS,
-      [defaultProviderId, enabled, frozenSessionId, openDraftId, statuses],
-    ),
+    useMemo(() => {
+      if (!enabled) return () => NO_DRAFT_FACTS
+      // Read again only when what the cards are made of changed: every store
+      // update runs this, a streamed token included.
+      let last: { inputs: readonly unknown[]; facts: SidebarDraftFacts } | undefined
+      return (state: EnvironmentState) => {
+        const inputs = [
+          state.drafts,
+          state.draftEdits,
+          state.sessions,
+          state.workspaces,
+          state.providers,
+          state.providerOrder,
+          state.connection.phase,
+        ]
+        if (last && last.inputs.every((input, index) => input === inputs[index])) return last.facts
+        const facts = selectSidebarDrafts(
+          state,
+          openDraftId,
+          frozenSessionId,
+          defaultProviderId,
+          statuses,
+        )
+        last = { inputs, facts }
+        return facts
+      }
+    }, [defaultProviderId, enabled, frozenSessionId, openDraftId, statuses]),
     sameSidebarDraftFacts,
   )
   // The draft on screen went (deleted elsewhere, or emptied here): its

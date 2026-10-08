@@ -112,7 +112,7 @@ import {
 } from './permission-provider'
 import { QuestionStateProvider, type PendingQuestion } from './question-provider'
 import { PlanStateProvider, type PlanRow } from './plan-provider'
-import { ViewActionsContext, type ViewActions } from './view-actions'
+import { ViewActionsContext, WorkspaceIconContext, type ViewActions } from './view-actions'
 import { createEnvironmentThreadStores } from '../lib/environment-thread'
 import { providerHealthReportFromWire } from '../lib/provider-health-view'
 
@@ -1023,6 +1023,54 @@ function EnvironmentSessionStateProvider({
     [client, commands, draftWorkspaceId, openSessionLatest, routed],
   )
 
+  // The commands the sidebar and the palette call stay the same functions
+  // while the state beside them changes (a launch, a pending turn, an error):
+  // the sidebar data is built from them, and a new value would re-render every
+  // reader of it, the whole session list included, in the middle of a send.
+  const addWorkspaceCommand = useCallback(async () => {
+    setError(null)
+    if (!addWorkspace) {
+      setError('This host cannot add workspaces.')
+      return
+    }
+    await addWorkspace().catch(fail)
+  }, [addWorkspace, fail])
+  // A draft in the removed project stays open: one that was written in
+  // shows its project as gone so another can be picked, and a blank page
+  // moves to where the landing would open.
+  const removeWorkspace = useCallback(
+    async (path: string) => {
+      setError(null)
+      await commands.removeWorkspace(path).catch(fail)
+    },
+    [commands, fail],
+  )
+  const createSession = useCallback(
+    async (workspacePath: string) => openDraftRef.current(workspacePath),
+    [],
+  )
+  const renameSession = useCallback(
+    async (_workspacePath: string, externalId: string, title: string | null) => {
+      setError(null)
+      await commands.renameSession(externalId, title).catch(fail)
+    },
+    [commands, fail],
+  )
+  const regenerateSessionTitle = useCallback(
+    async (externalId: string) => {
+      setError(null)
+      await commands.regenerateSessionTitle(externalId).catch(fail)
+    },
+    [commands, fail],
+  )
+  const deleteSession = useCallback(
+    async (_workspacePath: string, externalId: string) => {
+      setError(null)
+      await commands.deleteSession(externalId).catch(fail)
+    },
+    [commands, fail],
+  )
+
   const value = useMemo<SessionStateValue>(
     () => ({
       activeWorkspacePath,
@@ -1046,21 +1094,8 @@ function EnvironmentSessionStateProvider({
         fallback ??
         defaultProviderId,
       setDefaultProviderId: setDefaultProviderIdState,
-      addWorkspace: async () => {
-        setError(null)
-        if (!addWorkspace) {
-          setError('This host cannot add workspaces.')
-          return
-        }
-        await addWorkspace().catch(fail)
-      },
-      // A draft in the removed project stays open: one that was written in
-      // shows its project as gone so another can be picked, and a blank page
-      // moves to where the landing would open.
-      removeWorkspace: async (path) => {
-        setError(null)
-        await commands.removeWorkspace(path).catch(fail)
-      },
+      addWorkspace: addWorkspaceCommand,
+      removeWorkspace,
       selectSession,
       // The environment lists a child under its parent, so opening either
       // side is a plain session open; nothing is remembered here.
@@ -1071,19 +1106,10 @@ function EnvironmentSessionStateProvider({
       closeChildSession: (parentExternalId) => {
         void openSessionLatest(parentExternalId).catch(fail)
       },
-      createSession: async (workspacePath) => openDraft(workspacePath),
-      renameSession: async (_workspacePath, externalId, title) => {
-        setError(null)
-        await commands.renameSession(externalId, title).catch(fail)
-      },
-      regenerateSessionTitle: async (externalId) => {
-        setError(null)
-        await commands.regenerateSessionTitle(externalId).catch(fail)
-      },
-      deleteSession: async (_workspacePath, externalId) => {
-        setError(null)
-        await commands.deleteSession(externalId).catch(fail)
-      },
+      createSession,
+      renameSession,
+      regenerateSessionTitle,
+      deleteSession,
       beginDraftTurn: (message) => {
         setError(null)
         setPendingDraftSessionStart(true)
@@ -1105,11 +1131,12 @@ function EnvironmentSessionStateProvider({
     [
       activeSessionId,
       activeWorkspacePath,
-      addWorkspace,
+      addWorkspaceCommand,
       adoptedDraftSessionId,
       client,
-      commands,
+      createSession,
       defaultProviderId,
+      deleteSession,
       draftRequest,
       error,
       fail,
@@ -1118,10 +1145,12 @@ function EnvironmentSessionStateProvider({
       isSessionDraftOpen,
       launchingMessage,
       localSessionStatus,
-      openDraft,
       openSessionLatest,
       pageDraftId,
       pendingDraftSessionStart,
+      regenerateSessionTitle,
+      removeWorkspace,
+      renameSession,
       selectSession,
       setDraftWorkspace,
       sync,
@@ -1227,11 +1256,17 @@ function EnvironmentSidebarDataProvider({
   const syncsDrafts = client.drafts !== undefined
   const openSessionId = session.activeSessionId
   const unsent = useEnvironmentState(
-    useCallback(
-      (state: EnvironmentState) =>
-        syncsDrafts ? selectSessionsWithUnsentDraft(state, openSessionId) : EMPTY_LIST,
-      [openSessionId, syncsDrafts],
-    ),
+    useMemo(() => {
+      if (!syncsDrafts) return () => EMPTY_LIST
+      // Read again only when a draft changed, not on every streamed token.
+      let last: { drafts: unknown; edits: unknown; ids: string[] } | undefined
+      return (state: EnvironmentState) => {
+        if (last && last.drafts === state.drafts && last.edits === state.draftEdits) return last.ids
+        const ids = selectSessionsWithUnsentDraft(state, openSessionId)
+        last = { drafts: state.drafts, edits: state.draftEdits, ids }
+        return ids
+      }
+    }, [openSessionId, syncsDrafts]),
     shallowEqualArray,
   )
   // What the sidebar was last handed, so an unchanged row stays the same object.
@@ -1972,5 +2007,15 @@ function EnvironmentViewActions({
     }),
     [actions, activeSessionId, openChildSession, resolveWorkspaceIcon, uploadAttachments],
   )
-  return <ViewActionsContext.Provider value={value}>{children}</ViewActionsContext.Provider>
+  // Icons get the lookup on its own (`WorkspaceIconContext`); a host's own
+  // `resolveWorkspaceIcon` in `actions` still wins, as it does in `value`.
+  const iconLookup =
+    (actions && 'resolveWorkspaceIcon' in actions
+      ? actions.resolveWorkspaceIcon
+      : resolveWorkspaceIcon) ?? null
+  return (
+    <ViewActionsContext.Provider value={value}>
+      <WorkspaceIconContext.Provider value={iconLookup}>{children}</WorkspaceIconContext.Provider>
+    </ViewActionsContext.Provider>
+  )
 }

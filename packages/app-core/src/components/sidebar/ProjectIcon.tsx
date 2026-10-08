@@ -1,6 +1,11 @@
-import { useEffect, useState, type ComponentType } from 'react'
+import { useContext, useEffect, useState, type ComponentType } from 'react'
 import { FolderSimpleIcon } from '@phosphor-icons/react'
-import { useViewActions, type ViewActions } from '../../providers/view-actions'
+import {
+  useViewActions,
+  WORKSPACE_ICONS_UNSET,
+  WorkspaceIconContext,
+  type ViewActions,
+} from '../../providers/view-actions'
 import { cn } from '../../lib/utils'
 
 // Preserve instant remounts without mixing icons from different hosts/environments.
@@ -9,16 +14,37 @@ const iconCaches = new WeakMap<
   Map<string, string | null>
 >()
 
-export function ProjectIcon({
-  workspacePath,
-  className,
-  fallbackIcon: FallbackIcon = FolderSimpleIcon,
-}: {
+interface ProjectIconProps {
   workspacePath: string
   className?: string
   fallbackIcon?: ComponentType<{ className?: string; weight?: 'regular' | 'bold' }>
-}) {
+}
+
+/**
+ * A workspace's icon, or the fallback. The lookup comes from
+ * `WorkspaceIconContext` where the host provides it, so switching sessions
+ * leaves every icon be; hosts that only provide `ViewActions` still work.
+ */
+export function ProjectIcon(props: ProjectIconProps) {
+  const lookup = useContext(WorkspaceIconContext)
+  return lookup === WORKSPACE_ICONS_UNSET ? (
+    <ProjectIconFromViewActions {...props} />
+  ) : (
+    <ResolvedProjectIcon {...props} resolveWorkspaceIcon={lookup ?? undefined} />
+  )
+}
+
+function ProjectIconFromViewActions(props: ProjectIconProps) {
   const { resolveWorkspaceIcon } = useViewActions()
+  return <ResolvedProjectIcon {...props} resolveWorkspaceIcon={resolveWorkspaceIcon} />
+}
+
+function ResolvedProjectIcon({
+  workspacePath,
+  className,
+  fallbackIcon: FallbackIcon = FolderSimpleIcon,
+  resolveWorkspaceIcon,
+}: ProjectIconProps & { resolveWorkspaceIcon: ViewActions['resolveWorkspaceIcon'] }) {
   let cache = resolveWorkspaceIcon ? iconCaches.get(resolveWorkspaceIcon) : undefined
   if (resolveWorkspaceIcon && !cache) {
     cache = new Map()

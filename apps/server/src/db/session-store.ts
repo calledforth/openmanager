@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { budgetSessionPage } from '../session-pagination.ts'
 import {
   ContentBlockSchema,
   HistoryCursorSchema,
@@ -188,11 +189,11 @@ export function listSessionSummaries(
   ) as SessionRow[]
   const page = rows.slice(0, limit).map(sessionRowToSummary)
   const last = page.at(-1)
-  return {
+  return budgetSessionPage({
     sessions: page,
     nextCursor:
       rows.length > limit && last ? { updatedAt: last.updatedAt, sessionId: last.sessionId } : null,
-  }
+  })
 }
 
 export function listThreadsForSession(database: DatabaseSync, sessionId: string): Thread[] {

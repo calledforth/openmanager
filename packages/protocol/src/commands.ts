@@ -233,6 +233,13 @@ export const ProofResponseSchemas = {
       thread: ThreadSchema,
       // Absent on older environments and when no first message was requested.
       firstTurn: TurnStartSchema.optional(),
+      /**
+       * When the environment announced the session: its `session.created`
+       * time, and so its first `updatedAt`. The answer reaches the client
+       * before that event does, and a session listed without a time sorts as
+       * the oldest. Absent on older environments.
+       */
+      announcedAt: TimestampSchema.optional(),
     }),
   ),
   'session.open': response(

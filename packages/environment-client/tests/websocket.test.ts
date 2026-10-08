@@ -304,6 +304,23 @@ describe('websocket environment client', () => {
     client.dispose()
   })
 
+  it('reads every session page without a cache store, since a page can be cut short by size', async () => {
+    const older = { ...SESSION_SUMMARY, sessionId: 'older', updatedAt: '2026-09-09T00:00:00.000Z' }
+    const { client, socket } = await connected(['session.list'], {}, { environmentId: ENV })
+    const cursor = { updatedAt: SESSION_SUMMARY.updatedAt, sessionId: SESSION.sessionId }
+    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: cursor })
+    await flush()
+    expect(socket.last('session.list').payload).toMatchObject({ cursor })
+    socket.respond('session.list', { sessions: [older], nextCursor: null })
+    await flush()
+    expect(socket.sent.filter((message) => message.name === 'session.list')).toHaveLength(2)
+    expect(selectSessionList(client.getState()).map((session) => session.sessionId)).toEqual([
+      SESSION.sessionId,
+      'older',
+    ])
+    client.dispose()
+  })
+
   it('keeps unchanged cached sessions listed and adding a workspace keeps existing data', async () => {
     const state = createInitialState()
     state.workspaces = { [WORKSPACE.workspaceId]: WORKSPACE }
@@ -2576,10 +2593,16 @@ it('folds the first turn from creation without a second turn.send round trip', a
       content: [{ type: 'text', text: 'hello' }],
     },
   }
-  socket.respond('session.create', { session: SESSION, thread: THREAD, firstTurn })
+  const announcedAt = '2026-09-12T00:00:00.000Z'
+  socket.respond('session.create', { session: SESSION, thread: THREAD, firstTurn, announcedAt })
   expect(await pending).toMatchObject({ firstTurn })
   expect(client.getState().threads[THREAD.threadId]?.messages).toEqual([firstTurn.userMessage])
-  expect(client.getState().sessions[SESSION.sessionId]?.status).toBe('idle')
+  // Listed as the environment lists it, from the answer alone: working on its
+  // first message, with the time it was announced.
+  expect(client.getState().sessions[SESSION.sessionId]).toMatchObject({
+    status: 'running',
+    updatedAt: announcedAt,
+  })
   expect(socket.sent.some((message) => message.name === 'turn.send')).toBe(false)
 })
 

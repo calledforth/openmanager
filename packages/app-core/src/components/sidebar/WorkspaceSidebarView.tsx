@@ -8,14 +8,9 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
+  type Ref,
 } from 'react'
-import {
-  AnimatePresence,
-  LayoutGroup,
-  motion,
-  useReducedMotion,
-  type MotionProps,
-} from 'motion/react'
+import { AnimatePresence, motion, useReducedMotion, type MotionProps } from 'motion/react'
 import {
   ArrowUUpLeftIcon,
   ArrowUpRightIcon,
@@ -186,6 +181,7 @@ export function partitionSidebarSessions(workspaces: SidebarWorkspace[]): {
 }
 
 const NO_DRAFTS: SidebarDraft[] = []
+const NO_DRAFT_ROWS: SidebarDraftRow[] = []
 
 /** A draft's card: the draft, and its project when that is listed. */
 export interface SidebarDraftRow {
@@ -203,7 +199,7 @@ export function placeSidebarDrafts(
   drafts: SidebarDraft[],
   workspaces: SidebarWorkspace[],
 ): SidebarDraftRow[] {
-  if (drafts.length === 0) return []
+  if (drafts.length === 0) return NO_DRAFT_ROWS
   const byPath = new Map(workspaces.map((workspace) => [workspace.path, workspace]))
   return drafts.map((draft) => {
     const workspace = draft.workspaceId === null ? undefined : byPath.get(draft.workspaceId)
@@ -296,6 +292,157 @@ function useRowMotion(armed: boolean): MotionProps {
       },
     }
   }, [armed, reduceMotion])
+}
+
+/**
+ * How a card that changes places moves: a sent draft's card going down to
+ * the top of Active past the drafts still waiting, and those drafts closing
+ * up. Nothing else moves this way: a card only takes a layout measurement
+ * when its place changes (`layoutDependency`), not on every render of the
+ * list, and a session that changes places with newer activity still moves at
+ * once.
+ */
+function useCardLayoutTransition(): MotionProps['transition'] {
+  const reduceMotion = useReducedMotion() ?? false
+  return useMemo(() => ({ layout: reduceMotion ? { duration: 0 } : ROOM }), [reduceMotion])
+}
+
+/**
+ * The room a handed-over card closes below itself when it was the last draft:
+ * the Drafts label and the gap under the drafts. Those go at once, with the
+ * Active label taking the Drafts label's place, so nothing above the card
+ * moves and the card holds still; the sessions below rise into the room as
+ * it closes. One animation, so nothing can fall out of step with it.
+ */
+interface HandoffFold {
+  px: number
+  /** The hand-off it belongs to, so a later one replays it. */
+  count: number
+}
+
+/** A sent draft whose session took its card over. */
+interface Handoff {
+  /** Counts hand-offs, so each one replays the Active label's fade. */
+  count: number
+  /** The session each handed-over card belongs to, and the draft it was. */
+  from: ReadonlyMap<string, string>
+  /** What each handed-over card read as a draft: its title until the session is named. */
+  previews: ReadonlyMap<string, string>
+  /** The last draft went with it (see `HandoffFold`). */
+  fold: HandoffFold | null
+}
+
+const NO_HANDOFF: Handoff = { count: 0, from: new Map(), previews: new Map(), fold: null }
+
+/**
+ * Notices a draft's card becoming its session's: a key that was a draft in
+ * the last render and is an active session now. The two lists never share a
+ * key in one render, since a draft whose session is listed is left out of
+ * the drafts in the same update. Read during render, so the frame that
+ * moves the card already knows. `measureFold` reads the room the Drafts
+ * label and its gap took, from the frame still on screen.
+ */
+function useHandoff(
+  drafts: SidebarDraft[],
+  active: SidebarBoardEntry[],
+  measureFold: () => number,
+): [Handoff, (count: number) => void] {
+  // Keyed on the drafts as the host hands them over, which change only when a
+  // card does: a session update must not set state here and render the whole
+  // view a second time.
+  const [seen, setSeen] = useState<{ drafts: SidebarDraft[]; handoff: Handoff }>({
+    drafts,
+    handoff: NO_HANDOFF,
+  })
+  // Once its room has closed, the fold is over and the faded Drafts label goes.
+  const endFold = useCallback(
+    (count: number) =>
+      setSeen((current) =>
+        current.handoff.fold?.count === count
+          ? { ...current, handoff: { ...current.handoff, fold: null } }
+          : current,
+      ),
+    [],
+  )
+  if (seen.drafts === drafts) return [seen.handoff, endFold]
+  const before = new Map(seen.drafts.map((draft) => [draft.sessionId, draft]))
+  const from = new Map<string, string>()
+  // A sent card reads as its draft until its session is named, through any
+  // later change to the drafts or another hand-off.
+  const previews = new Map<string, string>()
+  for (const entry of active) {
+    const id = entry.root.session.externalId
+    const preview = seen.handoff.previews.get(id)
+    if (preview !== undefined && !entry.root.session.title) previews.set(id, preview)
+  }
+  if (before.size > 0) {
+    for (const entry of active) {
+      const id = entry.root.session.externalId
+      const draft = before.get(id)
+      if (draft === undefined) continue
+      from.set(id, draft.draftId)
+      if (draft.preview) previews.set(id, draft.preview)
+    }
+  }
+  let handoff = seen.handoff
+  if (from.size > 0) {
+    const count = seen.handoff.count + 1
+    handoff = {
+      count,
+      from,
+      previews,
+      fold: drafts.length === 0 ? { px: measureFold(), count } : null,
+    }
+  } else if (seen.handoff.from.size > 0 || seen.handoff.previews.size !== previews.size) {
+    handoff = { ...NO_HANDOFF, count: seen.handoff.count, previews }
+  }
+  setSeen({ drafts, handoff })
+  return [handoff, endFold]
+}
+
+/**
+ * The fold's timing: the slow tier's length, eased out, on CSS rather than
+ * Motion. It has to be in place in the very commit that hands the card over,
+ * before the first frame paints, and a Motion value only lands on the frame
+ * after.
+ */
+const FOLD_MS = 240
+const FOLD_EASE = 'cubic-bezier(0.25, 1, 0.5, 1)'
+/** The Active label's fade after a hand-off, begun once the Drafts label (spring.moderate.exit) is mostly gone. */
+const LABEL_FADE_MS = 200
+const LABEL_FADE_DELAY_MS = 90
+
+/**
+ * The surface behind an element: the first ancestor that paints a background.
+ * A card moving past another takes it as its own for the move, so the card on
+ * top hides the one beneath rather than both showing through each other's
+ * translucent fills; at rest it is the same colour as what is behind.
+ */
+function surfaceBehind(element: HTMLElement): string {
+  for (let node = element.parentElement; node; node = node.parentElement) {
+    const color = getComputedStyle(node).backgroundColor
+    if (color && color !== 'transparent' && color !== 'rgba(0, 0, 0, 0)') return color
+  }
+  return ''
+}
+
+/** A session card that was a selected draft stays selected through the hand-off. */
+function handedSelection(
+  entry: SidebarBoardEntry,
+  handoff: Handoff,
+  activeDraftId: string | null,
+): string | null {
+  const id = entry.root.session.externalId
+  return activeDraftId !== null && handoff.from.get(id) === activeDraftId ? id : null
+}
+
+/** The id a card shows selected: the session on screen if it is this card or one of its subagents. */
+function entrySelection(entry: SidebarBoardEntry, activeSessionId: string | null): string | null {
+  if (activeSessionId === null) return null
+  if (entry.root.session.externalId === activeSessionId) return activeSessionId
+  return entry.children.some((child) => child.session.externalId === activeSessionId)
+    ? activeSessionId
+    : null
 }
 
 function writeSettledOpen(open: boolean) {
@@ -465,12 +612,22 @@ export function WorkspaceSidebarView({
   const settleRef = useRef(requestSettle)
   const openDraftRef = useRef(requestOpenDraft)
   const discardDraftRef = useRef(requestDiscardDraft)
+  const createSessionRef = useRef(onCreateSession)
+  const addWorkspaceRef = useRef(onAddWorkspace)
   useLayoutEffect(() => {
     selectRef.current = requestSelect
     settleRef.current = requestSettle
     openDraftRef.current = requestOpenDraft
     discardDraftRef.current = requestDiscardDraft
+    createSessionRef.current = onCreateSession
+    addWorkspaceRef.current = onAddWorkspace
   })
+  // The header's two actions, stable too, so a session update leaves it be.
+  const onCreateSessionStable = useCallback(
+    (workspacePath: string) => createSessionRef.current(workspacePath),
+    [],
+  )
+  const onAddWorkspaceStable = useCallback(() => addWorkspaceRef.current(), [])
   const onSelectSession = useCallback<WorkspaceSidebarViewProps['onSelectSession']>(
     (...args) => selectRef.current(...args),
     [],
@@ -518,9 +675,31 @@ export function WorkspaceSidebarView({
     if (hasSessions) setArmed(true)
   }, [hasSessions])
   const rowMotion = useRowMotion(armed)
+  const onSettledOpenChange = useCallback((open: boolean) => {
+    setSettledOpen(open)
+    writeSettledOpen(open)
+    if (!open) setSettledVisible(SETTLED_PREVIEW_LIMIT)
+  }, [])
+  const onShowMoreSettled = useCallback(
+    () => setSettledVisible((count) => count + SETTLED_PAGE_SIZE),
+    [],
+  )
+  // The shelf hears about the selection only when it is one of its rows.
+  const settledSelection =
+    activeSessionId !== null &&
+    settled
+      .slice(0, settledVisible)
+      .some(
+        (entry) =>
+          entry.root.session.externalId === activeSessionId ||
+          entry.children.some((child) => child.session.externalId === activeSessionId),
+      )
+      ? activeSessionId
+      : null
+  // Selection is handed to each row as its own (`selected`), not as the id
+  // on screen: opening another session re-renders the two rows it moves
+  // between, not the whole list.
   const shared = {
-    activeSessionId,
-    activeDraftId,
     environmentLabel,
     now,
     onSelectSession,
@@ -530,32 +709,33 @@ export function WorkspaceSidebarView({
     providerLabel,
     rowMotion,
   }
+  const cardLayout = useCardLayoutTransition()
+  const draftsLabelRef = useRef<HTMLDivElement>(null)
+  const activeLabelRef = useRef<HTMLDivElement>(null)
+  const [handoff, endFold] = useHandoff(drafts, active, () => {
+    // Read in the render that hands the card over, off the frame on screen.
+    const label = draftsLabelRef.current?.offsetHeight ?? 0
+    const gap = activeLabelRef.current
+      ? Number.parseFloat(getComputedStyle(activeLabelRef.current).paddingTop) || 0
+      : 0
+    return label + gap
+  })
+  const fold = handoff.fold
+  useEffect(() => {
+    if (!fold) return
+    const timer = setTimeout(() => endFold(fold.count), FOLD_MS + 60)
+    return () => clearTimeout(timer)
+  }, [endFold, fold])
 
   // Rows at Tend's 15px body size.
   return (
     <Sidebar className="text-[15px]">
       {titlebar}
-      <SidebarHeader>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              icon={NewAgentIcon}
-              disabled={!newThreadTarget}
-              onClick={() => {
-                if (newThreadTarget) onCreateSession(newThreadTarget)
-              }}
-            >
-              New agent
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton icon={AddProjectIcon} onClick={onAddWorkspace}>
-              Add project
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
-      </SidebarHeader>
-
+      <MemoSidebarActions
+        newThreadTarget={newThreadTarget}
+        onCreateSession={onCreateSessionStable}
+        onAddWorkspace={onAddWorkspaceStable}
+      />
       <SidebarContent>
         {workspaces.length === 0 ? (
           <p className="px-4 py-5 text-[13px] text-muted-foreground">No projects yet</p>
@@ -563,31 +743,57 @@ export function WorkspaceSidebarView({
           // Drafts and Active share the floor, so Settled keeps its spot
           // whether or not drafts are waiting above the active cards.
           <div ref={setActiveGroup} className="flex flex-col" style={{ minHeight: activeFloor }}>
-            {/* Drafts, newest edit first, in a section of their own while
-                there are any. The section grows in with the first draft and
-                folds away with the last; a sent draft folds out of it as its
-                session grows in at the top of Active. */}
-            <AnimatePresence initial={false}>
-              {draftRows.length > 0 ? (
-                <motion.div key="drafts" className="overflow-hidden" {...rowMotion}>
-                  <SidebarGroup>
-                    <SidebarGroupLabel>Drafts</SidebarGroupLabel>
-                    <CardList>
-                      {draftRows.map((row) => (
-                        <MemoActiveCard key={row.draft.sessionId} item={row} {...shared} />
-                      ))}
-                    </CardList>
-                  </SidebarGroup>
-                </motion.div>
-              ) : null}
-            </AnimatePresence>
+            {/* Drafts, newest edit first, then the active sessions: one list,
+                with each section's label a row in it. A draft's card is keyed
+                by the session it will become, so its send hands the same row
+                to the session's card, which slides down to the top of Active
+                rather than folding away here and growing in there. The Drafts
+                label comes and goes with the first and last draft. */}
             <SidebarGroup>
-              <SidebarGroupLabel>Active</SidebarGroupLabel>
               <CardList>
+                {/* Kept for the fold after the last draft is handed over: out
+                    of the flow, fading where it was as Active takes its place. */}
+                {draftRows.length > 0 || fold ? (
+                  <SectionLabel
+                    key="drafts-label"
+                    rowRef={draftsLabelRef}
+                    rowMotion={rowMotion}
+                    popped={draftRows.length === 0}
+                  >
+                    Drafts
+                  </SectionLabel>
+                ) : null}
+                {draftRows.map((row, index) => (
+                  <MemoActiveCard
+                    key={row.draft.sessionId}
+                    item={row}
+                    place={index}
+                    layoutTransition={cardLayout}
+                    fold={null}
+                    untitled={undefined}
+                    selected={row.draft.draftId === activeDraftId ? row.draft.draftId : null}
+                    {...shared}
+                  />
+                ))}
+                <MemoActiveLabel
+                  key="active-label"
+                  rowRef={activeLabelRef}
+                  spaced={draftRows.length > 0}
+                  instant={fold !== null}
+                  handoff={handoff.count}
+                />
                 {active.map((entry) => (
                   <MemoActiveCard
                     key={entry.root.session.externalId}
                     item={{ kind: 'session', entry }}
+                    place="session"
+                    layoutTransition={cardLayout}
+                    fold={fold && handoff.from.has(entry.root.session.externalId) ? fold : null}
+                    untitled={handoff.previews.get(entry.root.session.externalId)}
+                    selected={
+                      entrySelection(entry, activeSessionId) ??
+                      handedSelection(entry, handoff, activeDraftId)
+                    }
                     {...shared}
                   />
                 ))}
@@ -604,49 +810,16 @@ export function WorkspaceSidebarView({
             folded, and moves only when the cards outgrow that, riding down as
             they grow in. */}
         {workspaces.length > 0 || settled.length > 0 ? (
-          <SidebarGroup
-            ref={setSettledGroup}
-            collapsible
-            className="pb-1"
+          <MemoSettledShelf
+            groupRef={setSettledGroup}
+            settled={settled}
             open={settledOpen}
-            onOpenChange={(open) => {
-              setSettledOpen(open)
-              writeSettledOpen(open)
-              if (!open) setSettledVisible(SETTLED_PREVIEW_LIMIT)
-            }}
-          >
-            {/* The toggle is a button, which inherits the row size; the spans
-                carry the label size themselves. */}
-            <SidebarGroupLabel>
-              <span className="text-[12px]">Settled</span>
-              <span className="text-[12px] tabular-nums text-faint">{settled.length}</span>
-            </SidebarGroupLabel>
-            <EmptyNote show={settled.length === 0} rowMotion={rowMotion}>
-              Settle a finished thread and it waits here.
-            </EmptyNote>
-            {/* Mounted while empty too, so the last row still folds away. */}
-            <SidebarMenu>
-              <AnimatePresence initial={false}>
-                {settled
-                  .slice(0, settledVisible)
-                  .flatMap((entry) => [entry.root, ...entry.children])
-                  .map((row) => (
-                    <MemoSettledRow key={row.session.externalId} row={row} {...shared} />
-                  ))}
-              </AnimatePresence>
-              {settled.length > settledVisible ? (
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    icon={ShowMoreIcon}
-                    className="text-muted-foreground"
-                    onClick={() => setSettledVisible((count) => count + SETTLED_PAGE_SIZE)}
-                  >
-                    Show more
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ) : null}
-            </SidebarMenu>
-          </SidebarGroup>
+            onOpenChange={onSettledOpenChange}
+            visible={settledVisible}
+            onShowMore={onShowMoreSettled}
+            selected={settledSelection}
+            {...shared}
+          />
         ) : null}
       </SidebarContent>
 
@@ -658,21 +831,266 @@ export function WorkspaceSidebarView({
 }
 
 /**
+ * The Settled shelf. Its own memoized piece: an update to an active session
+ * re-renders the session list, and a shelf whose rows are all as they were
+ * (and whose selection, page and fold are too) has nothing to show for it.
+ */
+function SettledShelf({
+  groupRef,
+  settled,
+  open,
+  onOpenChange,
+  visible,
+  onShowMore,
+  selected,
+  ...shared
+}: Omit<RowHandlers, 'selected'> & {
+  groupRef: Ref<HTMLDivElement>
+  settled: SidebarBoardEntry[]
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  visible: number
+  onShowMore: () => void
+  /** The open session when it is one of the shelf's rows, else null. */
+  selected: string | null
+}) {
+  return (
+    <SidebarGroup
+      ref={groupRef}
+      collapsible
+      className="pb-1"
+      open={open}
+      onOpenChange={onOpenChange}
+    >
+      {/* The toggle is a button, which inherits the row size; the spans
+          carry the label size themselves. */}
+      <SidebarGroupLabel>
+        <span className="text-[12px]">Settled</span>
+        <span className="text-[12px] tabular-nums text-faint">{settled.length}</span>
+      </SidebarGroupLabel>
+      <EmptyNote show={settled.length === 0} rowMotion={shared.rowMotion}>
+        Settle a finished thread and it waits here.
+      </EmptyNote>
+      {/* Mounted while empty too, so the last row still folds away. */}
+      <SidebarMenu>
+        <AnimatePresence initial={false} presenceAffectsLayout={false}>
+          {settled
+            .slice(0, visible)
+            .flatMap((entry) => [entry.root, ...entry.children])
+            .map((row) => (
+              <MemoSettledRow
+                key={row.session.externalId}
+                row={row}
+                selected={row.session.externalId === selected ? selected : null}
+                {...shared}
+              />
+            ))}
+        </AnimatePresence>
+        {settled.length > visible ? (
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              icon={ShowMoreIcon}
+              className="text-muted-foreground"
+              onClick={onShowMore}
+            >
+              Show more
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        ) : null}
+      </SidebarMenu>
+    </SidebarGroup>
+  )
+}
+
+type SettledShelfProps = Parameters<typeof SettledShelf>[0]
+
+/** Same entries, row for row, by what a settled row shows. */
+function sameEntries(a: SidebarBoardEntry[], b: SidebarBoardEntry[]): boolean {
+  return (
+    a === b ||
+    (a.length === b.length &&
+      a.every(
+        (entry, index) =>
+          sameRow(entry.root, b[index]!.root) &&
+          entry.children.length === b[index]!.children.length &&
+          entry.children.every((child, at) => sameRow(child, b[index]!.children[at]!)),
+      ))
+  )
+}
+
+const MemoSettledShelf = memo(
+  SettledShelf,
+  (a: SettledShelfProps, b: SettledShelfProps) =>
+    a.groupRef === b.groupRef &&
+    a.open === b.open &&
+    a.onOpenChange === b.onOpenChange &&
+    a.visible === b.visible &&
+    a.onShowMore === b.onShowMore &&
+    sameHandlers({ ...a, selected: a.selected }, { ...b, selected: b.selected }) &&
+    sameEntries(a.settled, b.settled),
+)
+
+/**
+ * New agent and Add project. Its own memoized piece: server updates re-render
+ * the session list, and these two buttons (and their tooltips) have no part
+ * in that. Only where a new agent would start changes them.
+ */
+function SidebarActions({
+  newThreadTarget,
+  onCreateSession,
+  onAddWorkspace,
+}: {
+  newThreadTarget: string | null
+  onCreateSession: (workspacePath: string) => void
+  onAddWorkspace: () => void
+}) {
+  return (
+    <SidebarHeader>
+      <SidebarMenu>
+        <SidebarMenuItem>
+          <SidebarMenuButton
+            icon={NewAgentIcon}
+            disabled={!newThreadTarget}
+            onClick={() => {
+              if (newThreadTarget) onCreateSession(newThreadTarget)
+            }}
+          >
+            New agent
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+        <SidebarMenuItem>
+          <SidebarMenuButton icon={AddProjectIcon} onClick={onAddWorkspace}>
+            Add project
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+      </SidebarMenu>
+    </SidebarHeader>
+  )
+}
+
+const MemoSidebarActions = memo(SidebarActions)
+
+/**
  * A list of cards. Divs, not ul/li: the app's unlayered list rules outrank
  * utilities. Cards space themselves (padding, not gap) so a leaving card folds
  * its spacing away with it. The list stays mounted when it empties, so the
  * last card still folds away. Focusable from script alone: where focus lands
  * when the card it was on is gone and no other card is near.
+ *
+ * A card coming or going does not re-render the others: nothing here measures
+ * its neighbours for it (`presenceAffectsLayout`). They close the gap in normal
+ * flow as its height changes.
  */
 function CardList({ children }: { children: ReactNode }) {
   return (
-    <div role="list" tabIndex={-1} className="flex flex-col outline-none">
-      <LayoutGroup>
-        <AnimatePresence initial={false}>{children}</AnimatePresence>
-      </LayoutGroup>
+    <div role="list" tabIndex={-1} className="relative flex flex-col outline-none">
+      <AnimatePresence initial={false} presenceAffectsLayout={false}>
+        {children}
+      </AnimatePresence>
     </div>
   )
 }
+
+/**
+ * A section's label as a row of the card list: it comes and goes as a card
+ * does. Not a list item; a heading, so the sections can be found by one.
+ */
+function SectionLabel({
+  rowMotion,
+  rowRef,
+  popped,
+  children,
+}: {
+  rowMotion: MotionProps
+  rowRef: Ref<HTMLDivElement>
+  /** Out of the flow, fading where it is: its section was handed over (`HandoffFold`). */
+  popped: boolean
+  children: ReactNode
+}) {
+  const reduceMotion = useReducedMotion() ?? false
+  return (
+    <motion.div
+      ref={rowRef}
+      role="presentation"
+      aria-hidden={popped || undefined}
+      className={cn('overflow-hidden', popped && 'pointer-events-none absolute inset-x-0 top-0')}
+      {...rowMotion}
+      animate={
+        popped
+          ? { opacity: 0, transition: reduceMotion ? { duration: 0 } : spring.moderate.exit }
+          : rowMotion.animate
+      }
+    >
+      <SidebarGroupLabel role="heading" aria-level={2}>
+        {children}
+      </SidebarGroupLabel>
+    </motion.div>
+  )
+}
+
+/** The room between the last draft and the Active label. */
+const SECTION_GAP = 16
+
+/**
+ * The Active label, always in the list. Drafts above it are set off by a gap
+ * that opens with the first draft and closes with the last. When a sent
+ * draft's card moves down past it, the label does not travel up through the
+ * card: it fades in at its new place instead (`handoff` counts the hand-offs).
+ *
+ * The gap is plain CSS, so that a hand-off of the last draft can close it in
+ * the commit itself (`instant`), the card below holding still.
+ */
+function ActiveLabel({
+  rowRef,
+  spaced,
+  instant,
+  handoff,
+}: {
+  rowRef: Ref<HTMLDivElement>
+  spaced: boolean
+  instant: boolean
+  handoff: number
+}) {
+  const reduceMotion = useReducedMotion() ?? false
+  const labelRef = useRef<HTMLDivElement>(null)
+  // Web Animations, not Motion: inside the list's presence (initial={false})
+  // a Motion child mounted later skips its `initial`, so a keyed fade never
+  // plays. Opacity alone runs off the main thread, and it waits a beat, until
+  // the Drafts label it replaces has mostly faded, so the two never overprint.
+  useLayoutEffect(() => {
+    const label = labelRef.current
+    if (handoff === 0 || reduceMotion || typeof label?.animate !== 'function') return
+    const fade = label.animate([{ opacity: 0 }, { opacity: 1 }], {
+      duration: LABEL_FADE_MS,
+      delay: LABEL_FADE_DELAY_MS,
+      easing: FOLD_EASE,
+      fill: 'backwards',
+    })
+    return () => fade.cancel()
+  }, [handoff, reduceMotion])
+  return (
+    <div
+      ref={rowRef}
+      role="presentation"
+      style={{
+        paddingTop: spaced ? SECTION_GAP : 0,
+        // Opening on the slow tier, closing with the label's fold above it.
+        transition:
+          instant || reduceMotion
+            ? undefined
+            : `padding-top ${spaced ? FOLD_MS : spring.slow.exit.duration * 1000}ms ${FOLD_EASE}`,
+      }}
+    >
+      <div ref={labelRef}>
+        <SidebarGroupLabel role="heading" aria-level={2}>
+          Active
+        </SidebarGroupLabel>
+      </div>
+    </div>
+  )
+}
+
+const MemoActiveLabel = memo(ActiveLabel)
 
 /** What an empty list says, coming and going the way a row does. */
 function EmptyNote({
@@ -728,8 +1146,7 @@ function sameRow(a: SidebarBoardRow, b: SidebarBoardRow): boolean {
 
 function sameHandlers(a: RowHandlers, b: RowHandlers): boolean {
   return (
-    a.activeSessionId === b.activeSessionId &&
-    a.activeDraftId === b.activeDraftId &&
+    a.selected === b.selected &&
     a.environmentLabel === b.environmentLabel &&
     a.now === b.now &&
     a.onSelectSession === b.onSelectSession &&
@@ -742,8 +1159,12 @@ function sameHandlers(a: RowHandlers, b: RowHandlers): boolean {
 }
 
 interface RowHandlers {
-  activeSessionId: string | null
-  activeDraftId?: string | null
+  /**
+   * The id this row shows selected: its session's, a subagent's under it, or
+   * its draft's. Null when the selection is elsewhere, so moving it touches
+   * only the rows it leaves and reaches.
+   */
+  selected: string | null
   environmentLabel?: string
   now: number
   onSelectSession: WorkspaceSidebarViewProps['onSelectSession']
@@ -754,22 +1175,92 @@ interface RowHandlers {
   rowMotion: MotionProps
 }
 
+interface ActiveCardProps extends RowHandlers {
+  item: ActiveItem
+  /**
+   * Where the card is, as far as moving goes: a draft's index among the
+   * drafts, or `session`. The card is measured for a move only when this
+   * changes, so a draft handed to its session (or closing up after one) moves,
+   * and nothing else measures.
+   */
+  place: number | 'session'
+  /** How the card moves when its place changes (`useCardLayoutTransition`). */
+  layoutTransition: MotionProps['transition']
+  /**
+   * The room this card closes below itself, when it took the last draft's
+   * place (`HandoffFold`). Read in the render that hands the card over, which
+   * re-renders it anyway, so it is left out of the card's comparison: the fold
+   * being over is no reason to render the card again.
+   */
+  fold: HandoffFold | null
+  /** What a session card reads while its session has no title yet: the draft's first line, after a hand-off. */
+  untitled: string | undefined
+}
+
 /** A card in Drafts or Active: a new-session draft, or a session. */
-function ActiveCard({ item, ...handlers }: RowHandlers & { item: ActiveItem }) {
+function ActiveCard({
+  item,
+  place,
+  layoutTransition,
+  fold,
+  untitled,
+  ...handlers
+}: ActiveCardProps) {
+  const rowRef = useRef<HTMLDivElement>(null)
+  const reduceMotion = useReducedMotion() ?? false
+  // Before the first frame paints: the room starts open, so nothing below the
+  // card moves in the commit, then closes.
+  useLayoutEffect(() => {
+    const row = rowRef.current
+    if (!fold || !row || reduceMotion) return
+    row.style.transition = 'none'
+    row.style.paddingBottom = `${fold.px}px`
+    void row.offsetHeight
+    row.style.transition = `padding-bottom ${FOLD_MS}ms ${FOLD_EASE}`
+    row.style.paddingBottom = '0px'
+    const timer = setTimeout(() => {
+      row.style.transition = ''
+      row.style.paddingBottom = ''
+    }, FOLD_MS + 60)
+    return () => clearTimeout(timer)
+  }, [fold, reduceMotion])
   return (
     // The clip lets the card fold to nothing on its way out; the padding
     // inside it is the space between cards, so it folds away too.
-    // Rows slide to a new place rather than jump.
     <motion.div
+      ref={rowRef}
       role="listitem"
       layout="position"
+      layoutDependency={place}
+      transition={layoutTransition}
       className="overflow-hidden"
+      // Moving past another card, it is lifted: opaque (`surfaceBehind`), on
+      // top, with the floating shadow, so the card it covers for a moment
+      // reads as passed over rather than gone.
+      onLayoutAnimationStart={() => {
+        const row = rowRef.current
+        if (!row) return
+        row.style.backgroundColor = surfaceBehind(row)
+        row.style.position = 'relative'
+        row.style.zIndex = '1'
+        row.style.borderRadius = '10px'
+        row.style.boxShadow = 'var(--shadow-float-rest)'
+      }}
+      onLayoutAnimationComplete={() => {
+        const row = rowRef.current
+        if (!row) return
+        row.style.backgroundColor = ''
+        row.style.position = ''
+        row.style.zIndex = ''
+        row.style.borderRadius = ''
+        row.style.boxShadow = ''
+      }}
       {...handlers.rowMotion}
     >
       {item.kind === 'draft' ? (
         <DraftCardBody row={item} {...handlers} />
       ) : (
-        <SessionCardBody entry={item.entry} {...handlers} />
+        <SessionCardBody entry={item.entry} untitled={untitled} {...handlers} />
       )}
     </motion.div>
   )
@@ -791,7 +1282,14 @@ function sameItem(a: ActiveItem, b: ActiveItem): boolean {
   )
 }
 
-const MemoActiveCard = memo(ActiveCard, (a, b) => sameHandlers(a, b) && sameItem(a.item, b.item))
+const MemoActiveCard = memo(
+  ActiveCard,
+  (a, b) =>
+    a.place === b.place &&
+    a.untitled === b.untitled &&
+    sameHandlers(a, b) &&
+    sameItem(a.item, b.item),
+)
 
 /**
  * Unsent text in a session's composer: a pen in the draft accent beside its
@@ -811,16 +1309,17 @@ function UnsentMark() {
 
 function SessionCardBody({
   entry,
-  activeSessionId,
+  untitled,
+  selected,
   environmentLabel,
   now,
   onSelectSession,
   onSettleSession,
   providerLabel,
-}: RowHandlers & { entry: SidebarBoardEntry }) {
+}: RowHandlers & { entry: SidebarBoardEntry; untitled?: string }) {
   const { session, workspace } = entry.root
   const providerId = session.providerId ?? DEFAULT_PROVIDER_ID
-  const isActive = session.externalId === activeSessionId
+  const isActive = session.externalId === selected
   const unavailable = workspace.missing
     ? describeUnavailableWorkspace(workspace.availability)
     : null
@@ -935,7 +1434,7 @@ function SessionCardBody({
         >
           {projectLine}
           <span className="truncate text-[14px] leading-5 text-foreground">
-            {session.title || 'New session'}
+            {session.title || untitled || 'New session'}
             {environmentLabel ? <span className="sr-only"> on {environmentLabel}</span> : null}
           </span>
           {metaLine}
@@ -946,7 +1445,7 @@ function SessionCardBody({
               <ChildRow
                 key={child.session.externalId}
                 row={child}
-                activeSessionId={activeSessionId}
+                selected={selected}
                 now={now}
                 onSelectSession={onSelectSession}
               />
@@ -1036,7 +1535,13 @@ function armDiscardGuard(at: { clientX: number; clientY: number }): boolean {
 /** The card beside this one (below it, else above), or the list once it is the last. */
 function neighbourCard(card: HTMLElement | null): HTMLElement | null {
   const row = card?.closest('[role="listitem"]')
-  const next = row?.nextElementSibling ?? row?.previousElementSibling
+  // Section labels are rows of the list too; they are passed over.
+  const sibling = (direction: 'nextElementSibling' | 'previousElementSibling') => {
+    let at = row?.[direction]
+    while (at && at.getAttribute('role') !== 'listitem') at = at[direction]
+    return at
+  }
+  const next = sibling('nextElementSibling') ?? sibling('previousElementSibling')
   return (
     next?.querySelector<HTMLElement>('button') ?? row?.closest<HTMLElement>('[role="list"]') ?? null
   )
@@ -1050,14 +1555,14 @@ function neighbourCard(card: HTMLElement | null): HTMLElement | null {
  */
 function DraftCardBody({
   row,
-  activeDraftId,
+  selected,
   environmentLabel,
   onOpenDraft,
   onDiscardDraft,
   providerLabel,
 }: RowHandlers & { row: SidebarDraftRow }) {
   const { draft, workspace } = row
-  const isActive = draft.draftId === activeDraftId
+  const isActive = draft.draftId === selected
   const providerName = providerLabel?.(draft.providerId) ?? draft.providerId
   const unavailable = workspace?.missing
     ? describeUnavailableWorkspace(workspace.availability)
@@ -1260,13 +1765,13 @@ function DraftCardBody({
 /** A subagent transcript, kept under the card of the session that started it. */
 function ChildRow({
   row,
-  activeSessionId,
+  selected,
   now,
   onSelectSession,
-}: Pick<RowHandlers, 'activeSessionId' | 'now' | 'onSelectSession'> & { row: SidebarBoardRow }) {
+}: Pick<RowHandlers, 'selected' | 'now' | 'onSelectSession'> & { row: SidebarBoardRow }) {
   const { session, workspace, depth } = row
   const providerId = session.providerId ?? DEFAULT_PROVIDER_ID
-  const isActive = session.externalId === activeSessionId
+  const isActive = session.externalId === selected
   const tone = sessionBusyTone(session.status)
   return (
     // Buttons inherit their font, so the size is set on the wrapper.
@@ -1300,7 +1805,7 @@ const MotionMenuItem = motion.create(SidebarMenuItem)
 /** Settled work at a glance: what it was and when it was put away. */
 function SettledRow({
   row,
-  activeSessionId,
+  selected,
   environmentLabel,
   now,
   onSelectSession,
@@ -1310,7 +1815,7 @@ function SettledRow({
   const { session, workspace, depth } = row
   const providerId = session.providerId ?? DEFAULT_PROVIDER_ID
   const tone = sessionBusyTone(session.status)
-  const isActive = session.externalId === activeSessionId
+  const isActive = session.externalId === selected
   // Settled work can still hold a reply the user started: the active cards' mark.
   const unsent = Boolean(session.hasUnsentDraft) && !isActive
   return (
