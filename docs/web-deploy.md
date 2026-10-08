@@ -40,19 +40,19 @@ that uses it (threat model D8), so keep deploy access to the owner.
 In the Cloudflare dashboard: **Workers & Pages → Create → Pages → Connect to
 Git**, pick the repository, then set:
 
-| Setting                | Value                                                                                                 |
-| ---------------------- | ----------------------------------------------------------------------------------------------------- |
-| Production branch      | `main`                                                                                                |
-| Framework preset       | None                                                                                                  |
-| Build command          | `pnpm --filter @openmanager/web... install --frozen-lockfile && pnpm --filter @openmanager/web build` |
-| Build output directory | `apps/web/dist`                                                                                       |
-| Root directory         | empty (the repository root, where the lockfile and workspace packages are)                            |
+| Setting                | Value                                                                                                                           |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Production branch      | `main`                                                                                                                          |
+| Framework preset       | None                                                                                                                            |
+| Build command          | `pnpm build:web` (installs the web app and its workspace packages, then builds; the full command is in the root `package.json`) |
+| Build output directory | `apps/web/dist`                                                                                                                 |
+| Root directory         | empty (the repository root, where the lockfile and workspace packages are)                                                      |
 
 Environment variables, for Production and Preview:
 
 | Variable                  | Value     | Why                                                                                                                |
 | ------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------ |
-| `NODE_VERSION`            | `22`      | The version CI builds the web app with.                                                                            |
+| `NODE_VERSION`            | `24`      | The version CI builds the web app with, and the one the server needs.                                              |
 | `PNPM_VERSION`            | `10.30.3` | The `packageManager` version in `package.json`.                                                                    |
 | `SKIP_DEPENDENCY_INSTALL` | `1`       | The build command installs only the web app and its workspace packages, not Electron and the rest of the monorepo. |
 
