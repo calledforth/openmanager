@@ -52,7 +52,7 @@ Environment variables, for Production and Preview:
 
 | Variable                  | Value     | Why                                                                                                                |
 | ------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------ |
-| `NODE_VERSION`            | `22`      | The version CI builds the web app with.                                                                            |
+| `NODE_VERSION`            | `24`      | The version CI builds the web app with, and the one the server needs.                                              |
 | `PNPM_VERSION`            | `10.30.3` | The `packageManager` version in `package.json`.                                                                    |
 | `SKIP_DEPENDENCY_INSTALL` | `1`       | The build command installs only the web app and its workspace packages, not Electron and the rest of the monorepo. |
 
