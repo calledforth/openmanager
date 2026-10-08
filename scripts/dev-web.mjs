@@ -5,6 +5,20 @@ import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 
 export const WEB_ORIGINS = 'http://localhost:5173,http://127.0.0.1:5173'
+
+/**
+ * The origins the server allows: the dev web page's own, plus any the
+ * caller set in `OPENMANAGER_ALLOWED_ORIGINS` (a hosted copy of the web
+ * client, say), so the variable adds to the launcher's list rather than
+ * being replaced by it.
+ */
+export function allowedOrigins(env = process.env) {
+  const extra = (env.OPENMANAGER_ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0)
+  return [...new Set([...WEB_ORIGINS.split(','), ...extra])].join(',')
+}
 /** The repository itself is the default workspace, so the dev loop has one to list. */
 export const DEFAULT_WORKSPACE = resolve(fileURLToPath(import.meta.url), '..', '..')
 
@@ -130,7 +144,7 @@ export function main() {
     'server',
     ['--filter', '@openmanager/server', 'dev'],
     {
-      OPENMANAGER_ALLOWED_ORIGINS: WEB_ORIGINS,
+      OPENMANAGER_ALLOWED_ORIGINS: allowedOrigins(),
       OPENMANAGER_LOCAL_OWNER_CLAIM_KEY: localOwnerClaimKey,
       OPENMANAGER_WORKSPACES: process.env.OPENMANAGER_WORKSPACES ?? DEFAULT_WORKSPACE,
     },

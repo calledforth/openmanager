@@ -3,12 +3,14 @@ import { spawn } from 'node:child_process'
 import process from 'node:process'
 import { test } from 'node:test'
 import {
+  allowedOrigins,
   createLocalOwnerClaimKey,
   isolatedSpawnOptions,
   isChildOpen,
   markChildClosed,
   pnpmCommand,
   stopProcessTree,
+  WEB_ORIGINS,
 } from './dev-web.mjs'
 
 function isAlive(pid) {
@@ -37,6 +39,16 @@ test('Windows launches pnpm through a shell; POSIX uses a process group', () => 
   assert.equal(options.shell, process.platform === 'win32')
   assert.equal(options.detached, process.platform !== 'win32')
   assert.equal(pnpmCommand(), process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm')
+})
+
+test('the dev web origins come first and the caller may add more', () => {
+  assert.equal(allowedOrigins({}), WEB_ORIGINS)
+  assert.equal(
+    allowedOrigins({
+      OPENMANAGER_ALLOWED_ORIGINS: ' https://app.example.com ,, http://127.0.0.1:5173',
+    }),
+    `${WEB_ORIGINS},https://app.example.com`,
+  )
 })
 
 test('local owner claim keys carry 256 bits as unpadded base64url', () => {

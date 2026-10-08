@@ -106,7 +106,9 @@ node apps/server/dist/main.js --allowed-origin https://openmanager.pages.dev
 `OPENMANAGER_ALLOWED_ORIGINS` takes the same values, comma-separated. Repeat
 the flag for each origin: the `pages.dev` address, a custom domain, and
 `http://localhost:5173,http://127.0.0.1:5173` if you also run `pnpm dev:web`
-against this server.
+against this server. `pnpm dev:web` itself allows its own two origins and adds
+whatever `OPENMANAGER_ALLOWED_ORIGINS` holds in its environment, so a hosted
+copy of the web client can talk to the dev server too.
 
 **Background service.** `service install` bakes the flags it is given into
 the logon task or systemd unit ([Windows](./windows-startup.md),
