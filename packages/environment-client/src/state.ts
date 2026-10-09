@@ -80,9 +80,31 @@ export function createThreadState(
     interactions: [],
     failures: [],
     notices: [],
+    liveNotices: [],
     outbox: [],
     hydration,
   }
+}
+
+/**
+ * Drop the live notice of `turnId`: the turn moved on (it streamed, called a
+ * tool, asked something, recorded a notice or ended), so the retry or
+ * compaction it described is over.
+ */
+function settleLiveNotice(thread: ThreadState, turnId: string): ThreadState {
+  if (!thread.liveNotices.some((notice) => notice.turnId === turnId)) return thread
+  return { ...thread, liveNotices: thread.liveNotices.filter((notice) => notice.turnId !== turnId) }
+}
+
+/** Live notices only describe turns that are still running. */
+function openTurnNotices(thread: ThreadState, turns: readonly Turn[]): ThreadState['liveNotices'] {
+  if (thread.liveNotices.length === 0) return thread.liveNotices
+  const open = new Set(
+    turns
+      .filter((turn) => turn.state === 'running' || turn.state === 'waiting')
+      .map((turn) => turn.turnId),
+  )
+  return thread.liveNotices.filter((notice) => open.has(notice.turnId))
 }
 
 /**
@@ -509,12 +531,28 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
     case 'message.delta':
     case 'message.reasoning':
     case 'tool.updated':
-      return patchThread(state, thread, (current) => foldProtocolEvent(current, event))
-    case 'turn.notice':
+    case 'turn.notice.recorded':
+      return patchThread(state, thread, (current) => {
+        const folded = foldProtocolEvent(current, event)
+        // The user's own prompt is no sign the provider has recovered.
+        const movedOn = event.name !== 'message.delta' || event.payload.role === 'assistant'
+        return movedOn ? settleLiveNotice(folded, event.payload.turnId) : folded
+      })
+    case 'turn.notice': {
+      // A notice for a turn that already ended describes nothing still going.
+      const turn = state.threads[thread.threadId]?.turns.find(
+        (item) => item.turnId === event.payload.turnId,
+      )
+      if (turn && turn.state !== 'running' && turn.state !== 'waiting') return state
       return patchThread(state, thread, (current) => ({
         ...current,
-        notices: [...current.notices, event.payload],
+        // The newest says where the provider has got to; one per turn.
+        liveNotices: [
+          ...current.liveNotices.filter((notice) => notice.turnId !== event.payload.turnId),
+          event.payload,
+        ],
       }))
+    }
     case 'interaction.requested':
       return patchThread(state, thread, (current) => {
         const pending: PendingInteraction = {
@@ -523,7 +561,10 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
           turnId: event.payload.turnId,
           interaction: event.payload.interaction,
         }
-        const updated = setTurnState(current, event.payload.turnId, 'waiting')
+        const updated = settleLiveNotice(
+          setTurnState(current, event.payload.turnId, 'waiting'),
+          event.payload.turnId,
+        )
         return {
           ...updated,
           interactions: upsertById(
@@ -594,6 +635,9 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
         : threadSnapshot.nextCursor,
     reasoning: threadSnapshot.reasoning,
     tools: threadSnapshot.tools,
+    notices: threadSnapshot.notices ?? [],
+    // Not part of any snapshot: kept only while their turn is still open.
+    liveNotices: openTurnNotices(existing, threadSnapshot.turns),
     interactions: threadSnapshot.interactions.map((item) => ({
       sessionId: thread.sessionId,
       threadId: thread.threadId,
@@ -686,6 +730,9 @@ export function applySessionHistory(
     const tools = fresh
       ? mergeById(payload.tools ?? [], current.tools, (tool) => tool.toolCallId)
       : mergeById(current.tools, payload.tools ?? [], (tool) => tool.toolCallId)
+    const notices = fresh
+      ? mergeById(payload.notices ?? [], current.notices, (notice) => notice.noticeId)
+      : mergeById(current.notices, payload.notices ?? [], (notice) => notice.noticeId)
     const openTurn = payload.turns.find(
       (turn) => turn.state === 'waiting' || turn.state === 'running',
     )
@@ -697,6 +744,16 @@ export function applySessionHistory(
         turnId: openTurn?.turnId ?? payload.turns.at(-1)?.turnId ?? '',
         interaction: item.interaction,
       }))
+    const turns = older
+      ? [
+          ...payload.turns.filter(
+            (turn) => !current.turns.some((known) => known.turnId === turn.turnId),
+          ),
+          ...current.turns,
+        ]
+      : payload.turns.length > 0
+        ? payload.turns
+        : current.turns
     return {
       ...current,
       turns: older
@@ -712,6 +769,8 @@ export function applySessionHistory(
       messages,
       reasoning,
       tools,
+      notices,
+      liveNotices: openTurnNotices(current, turns),
       order,
       outbox: reconcileOutbox(current, payload.messages),
       interactions:

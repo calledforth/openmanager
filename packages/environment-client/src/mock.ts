@@ -30,6 +30,9 @@ import {
   type Session,
   type Thread,
   type Turn,
+  type DurableTurnNotice,
+  type TransientTurnNotice,
+  type TurnFailure,
   type TurnFailureReason,
   type TurnStart,
   type Workspace,
@@ -167,6 +170,14 @@ export interface MockCommandCall {
  * protocol-valid events. Anything the mock emits is parsed against the
  * protocol schemas so a test cannot pass with data the wire would reject.
  */
+/** A notice as a test writes it: the mock fills in its id and turn. */
+export type MockNotice<T extends { noticeId: string; turnId: string }> = Omit<
+  T,
+  'noticeId' | 'turnId'
+> & {
+  noticeId?: string
+}
+
 export interface MockEnvironmentClient extends EnvironmentClient {
   readonly calls: readonly MockCommandCall[]
   emit(event: ProofEvent): void
@@ -174,9 +185,17 @@ export interface MockEnvironmentClient extends EnvironmentClient {
   streamAssistantText(target: MockTurnTarget, text: string, messageId?: string): string
   completeTurn(target: MockTurnTarget): void
   interruptTurn(target: MockTurnTarget): void
-  failTurn(target: MockTurnTarget, reason: TurnFailureReason, message: string): void
+  failTurn(
+    target: MockTurnTarget,
+    reason: TurnFailureReason,
+    message: string,
+    recovery?: Pick<TurnFailure, 'action' | 'resetsAt'>,
+  ): void
   requestInteraction(target: MockTurnTarget, interaction: Interaction): void
-  notice(target: MockTurnTarget, message: string): void
+  /** A transient notice: the provider retrying, or compacting. */
+  notice(target: MockTurnTarget, notice: MockNotice<TransientTurnNotice>): void
+  /** A durable notice, placed in the turn where it lands. */
+  recordNotice(target: MockTurnTarget, notice: MockNotice<DurableTurnNotice>): void
   setConnection(patch: Partial<ConnectionState>): void
   /**
    * Drop, rehydrate the active session from a `session.open` snapshot, and
@@ -1510,14 +1529,14 @@ export function createMockEnvironmentClient(
         payload: { turnId: target.turnId },
       })
     },
-    failTurn: (target, reason, message) => {
+    failTurn: (target, reason, message, recovery = {}) => {
       requireThread(target)
       cancelScript(target.turnId)
       emit({
         ...base(),
         name: 'turn.failed',
         scope: threadScope(target),
-        payload: { turnId: target.turnId, reason, message },
+        payload: { turnId: target.turnId, reason, message, ...recovery },
       })
     },
     requestInteraction: (target, interaction) => {
@@ -1529,13 +1548,22 @@ export function createMockEnvironmentClient(
         payload: { turnId: target.turnId, interaction },
       })
     },
-    notice: (target, message) => {
+    notice: (target, notice) => {
       requireThread(target)
       emit({
         ...base(),
         name: 'turn.notice',
         scope: threadScope(target),
-        payload: { turnId: target.turnId, message },
+        payload: { noticeId: nextId(), ...notice, turnId: target.turnId },
+      })
+    },
+    recordNotice: (target, notice) => {
+      requireThread(target)
+      emit({
+        ...base(),
+        name: 'turn.notice.recorded',
+        scope: threadScope(target),
+        payload: { noticeId: nextId(), ...notice, turnId: target.turnId },
       })
     },
     setConnection: (patch) => store.update((state) => applyConnection(state, patch)),

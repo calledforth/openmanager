@@ -1,11 +1,12 @@
 import type {
   ContentBlock,
+  DurableTurnNotice,
   Interaction,
   Message,
   ProofEvent,
   Thread,
   Turn,
-  TurnFailureReason,
+  TurnFailure as ProtocolTurnFailure,
 } from '@openmanager/protocol'
 
 export interface ReasoningEntry {
@@ -25,18 +26,15 @@ export interface PendingInteraction {
   interaction: Interaction
 }
 
-export interface TurnFailure {
-  turnId: string
-  reason: TurnFailureReason
-  message: string
-}
+/** How a turn failed, with the turn it belongs to. */
+export type TurnFailure = ProtocolTurnFailure & { turnId: string }
 
 /**
  * One thing that took its place in a turn's transcript: a message, a reasoning
- * block or a tool call, named by the id it is stored under.
+ * block, a tool call or a durable notice, named by the id it is stored under.
  */
 export interface ActivityRef {
-  kind: 'message' | 'reasoning' | 'tool'
+  kind: 'message' | 'reasoning' | 'tool' | 'notice'
   id: string
   turnId: string
 }
@@ -57,6 +55,8 @@ export interface ProtocolThreadView {
   order: ActivityRef[]
   interactions: PendingInteraction[]
   failures: TurnFailure[]
+  /** Durable notices, placed in `order` under kind `notice`. */
+  notices: DurableTurnNotice[]
 }
 
 /** Append `ref` unless the same entry is already placed. */
@@ -93,6 +93,16 @@ function upsert<T>(items: T[], id: (item: T) => string, next: T): T[] {
   return copy
 }
 
+/** The failure fields of a `turn.failed` payload, without its turn id. */
+function failureOf(payload: ProtocolTurnFailure & { turnId: string }): ProtocolTurnFailure {
+  return {
+    reason: payload.reason,
+    message: payload.message,
+    ...(payload.action ? { action: payload.action } : {}),
+    ...(payload.resetsAt ? { resetsAt: payload.resetsAt } : {}),
+  }
+}
+
 function mergeContent(existing: ContentBlock[], delta: ContentBlock): ContentBlock[] {
   const last = existing.at(-1)
   return last?.type === 'text' && delta.type === 'text'
@@ -124,6 +134,7 @@ export function foldProtocolEvent<T extends ProtocolThreadView>(current: T, even
           : event.name === 'turn.interrupted'
             ? 'interrupted'
             : 'failed'
+      const failure = event.name === 'turn.failed' ? failureOf(event.payload) : undefined
       return {
         ...current,
         turns: upsert(current.turns, (item) => item.turnId, {
@@ -133,17 +144,30 @@ export function foldProtocolEvent<T extends ProtocolThreadView>(current: T, even
           state,
           // The terminal event's time is when the work stopped.
           finishedAt: event.timestamp,
+          // The failure travels with the turn, as history pages bring it.
+          ...(failure ? { failure } : {}),
         }),
         reasoning: closeReasoning(current.reasoning, turnId),
         interactions: current.interactions.filter((item) => item.turnId !== turnId),
-        failures:
-          event.name === 'turn.failed'
-            ? upsert(current.failures, (item) => item.turnId, {
-                turnId,
-                reason: event.payload.reason,
-                message: event.payload.message,
-              })
-            : current.failures,
+        failures: failure
+          ? upsert(current.failures, (item) => item.turnId, { turnId, ...failure })
+          : current.failures,
+      }
+    }
+    case 'turn.notice.recorded': {
+      const existing = current.notices.some((notice) => notice.noticeId === event.payload.noticeId)
+      return {
+        ...current,
+        notices: upsert(current.notices, (notice) => notice.noticeId, event.payload),
+        order: existing
+          ? current.order
+          : placeActivity(current.order, {
+              kind: 'notice',
+              id: event.payload.noticeId,
+              turnId,
+            }),
+        // Like any other entry, a notice ends a thought that has no framing.
+        reasoning: closeReasoning(current.reasoning, turnId),
       }
     }
     case 'message.delta': {
