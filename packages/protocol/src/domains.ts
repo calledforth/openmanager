@@ -162,10 +162,49 @@ export const SessionListCursorSchema = z.object({
 export const HistoryCursorSchema = z.object({
   ordinal: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
 })
+/**
+ * Why a turn failed, as the environment classified it. Provider exit codes,
+ * error text and opaque detail stay host-side; this enum and the host's own
+ * message are what crosses the wire.
+ */
+export const TurnFailureReasonSchema = z.enum([
+  'provider_process_exited',
+  'provider_process_crashed',
+  'provider_error',
+  'authentication_required',
+  'capability_missing',
+  /** The conversation no longer fits the model's context window. */
+  'context_window_exceeded',
+  /** The account's usage allowance is spent until `resetsAt`, when known. */
+  'usage_limit',
+  /** The provider is refusing requests for now; a later retry may pass. */
+  'rate_limited',
+  /** The provider has no capacity right now; a later retry may pass. */
+  'overloaded',
+  /** The model declined the request. */
+  'refused',
+])
+/**
+ * What the user can do about a failed turn, judged by the environment for the
+ * provider that ran it: send the prompt again, compact the conversation, or
+ * sign the provider in. Absent when nothing in the app helps.
+ */
+export const TurnRecoveryActionSchema = z.enum(['retry', 'compact', 'sign_in'])
+/** How a turn failed. Kept with the turn, so history shows what live did. */
+export const TurnFailureSchema = z.object({
+  reason: TurnFailureReasonSchema,
+  message: z.string(),
+  action: TurnRecoveryActionSchema.optional(),
+  /** When the limit behind a `usage_limit` lifts, if the provider said. */
+  resetsAt: TimestampSchema.optional(),
+})
+
 export const TurnSchema = z.object({
   turnId: EntityIdSchema,
   threadId: EntityIdSchema,
   state: z.enum(['running', 'waiting', 'completed', 'interrupted', 'failed']),
+  /** How a `failed` turn failed. Absent on other states and on older environments. */
+  failure: TurnFailureSchema.optional(),
   /**
    * When the turn started and settled, so a transcript can label finished
    * work with how long it took. Absent on older environments and, for
@@ -245,13 +284,77 @@ export const ToolCallStateSchema = z.object({
   kind: ToolKindSchema.optional(),
   status: ToolCallStatusSchema.optional(),
 })
+/** The longest text a notice carries; provider prose past it is cut. */
+export const TURN_NOTICE_TEXT_MAX = 2000
+/**
+ * Notices that only describe what is happening right now. They travel as
+ * `turn.notice`, are never stored, and a client drops them once the turn moves
+ * on: the provider is retrying a request, or compacting the conversation.
+ */
+export const TransientTurnNoticeKindSchema = z.enum(['retrying', 'compacting'])
+/**
+ * Notices that stay part of the turn. They travel as `turn.notice.recorded`,
+ * are stored with the turn and come back with its history, in the place they
+ * happened: the conversation was compacted, the model was switched after a
+ * refusal or declined without one, a usage limit is close, or the provider
+ * said something worth keeping (`info`, `warning`).
+ */
+export const DurableTurnNoticeKindSchema = z.enum([
+  'compacted',
+  'model_fallback',
+  'refusal',
+  'usage_warning',
+  'info',
+  'warning',
+])
+const turnNotice = <K extends z.ZodType>(kind: K) =>
+  z.object({
+    noticeId: EntityIdSchema,
+    turnId: EntityIdSchema,
+    kind,
+    /** The whole notice as plain text; the fields below only refine it. */
+    message: z.string().max(TURN_NOTICE_TEXT_MAX),
+    /** A second line the provider gave, such as a policy explanation. */
+    detail: z.string().max(TURN_NOTICE_TEXT_MAX).optional(),
+    /** `retrying`: how far the provider is through its retries, and why. */
+    retry: z
+      .object({
+        attempt: z.number().int().positive(),
+        maxAttempts: z.number().int().positive().optional(),
+        cause: TurnFailureReasonSchema.optional(),
+        /** When the next attempt is due. */
+        retryAt: TimestampSchema.optional(),
+      })
+      .optional(),
+    /** `model_fallback`: the model the turn moved off, and the one it moved to. */
+    model: z
+      .object({ from: z.string().max(256).optional(), to: z.string().min(1).max(256) })
+      .optional(),
+    /** `compacted`: what started the compaction and how much it saved. */
+    compaction: z
+      .object({
+        trigger: z.enum(['manual', 'auto']),
+        tokensBefore: z.number().int().nonnegative().optional(),
+        tokensAfter: z.number().int().nonnegative().optional(),
+      })
+      .optional(),
+    /** `usage_warning`: when the limit it warns about resets. */
+    resetsAt: TimestampSchema.optional(),
+  })
+export const TransientTurnNoticeSchema = turnNotice(TransientTurnNoticeKindSchema)
+export const DurableTurnNoticeSchema = turnNotice(DurableTurnNoticeKindSchema)
+export const TurnNoticeSchema = turnNotice(
+  z.union([TransientTurnNoticeKindSchema, DurableTurnNoticeKindSchema]),
+)
+
 /**
  * One thing that took its place in a turn's transcript, named by the id it is
- * stored under. A list of these is the order messages, reasoning blocks and
- * tool calls happened in, which their id-keyed lists alone cannot say.
+ * stored under. A list of these is the order messages, reasoning blocks, tool
+ * calls and durable notices happened in, which their id-keyed lists alone
+ * cannot say.
  */
 export const ActivityRefSchema = z.object({
-  kind: z.enum(['message', 'reasoning', 'tool']),
+  kind: z.enum(['message', 'reasoning', 'tool', 'notice']),
   id: EntityIdSchema,
   turnId: EntityIdSchema,
 })
@@ -423,6 +526,13 @@ export type Message = z.infer<typeof MessageSchema>
 export type ReasoningBlock = z.infer<typeof ReasoningBlockSchema>
 export type ToolCallState = z.infer<typeof ToolCallStateSchema>
 export type ActivityRef = z.infer<typeof ActivityRefSchema>
+export type TurnFailureReason = z.infer<typeof TurnFailureReasonSchema>
+export type TurnRecoveryAction = z.infer<typeof TurnRecoveryActionSchema>
+export type TurnFailure = z.infer<typeof TurnFailureSchema>
+export type TurnNotice = z.infer<typeof TurnNoticeSchema>
+export type TransientTurnNotice = z.infer<typeof TransientTurnNoticeSchema>
+export type DurableTurnNotice = z.infer<typeof DurableTurnNoticeSchema>
+export type TurnNoticeKind = TurnNotice['kind']
 export type TurnStart = z.infer<typeof TurnStartSchema>
 export type TurnStarted = z.infer<typeof TurnStartedSchema>
 export type BackgroundTask = z.infer<typeof BackgroundTaskSchema>

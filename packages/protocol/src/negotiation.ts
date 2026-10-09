@@ -55,7 +55,15 @@ import {
 // `GET /draft-artifacts/<draft-id>/<artifact-id>`, and claimable by whichever
 // client sends the draft. A v15 environment has no such route, refuses
 // another device's images at launch, and expires them after a day.
-export const PROTOCOL_VERSION = 16 as const
+// Version 18 types turn problems. `turn.failed` gains reasons
+// (`context_window_exceeded`, `usage_limit`, `rate_limited`, `overloaded`,
+// `refused`) a v17 client's enum rejects, plus `action` and `resetsAt`; a
+// turn carries its `failure`; `turn.notice` becomes a structured transient
+// notice with a `kind`; the new durable `turn.notice.recorded` is stored,
+// replayed, and placed in the transcript `order` under kind `notice`, which a
+// v17 client's strict enum rejects along with the page. (17 is the tool
+// payloads change, which lands before this one.)
+export const PROTOCOL_VERSION = 18 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema
