@@ -120,6 +120,9 @@ export {
   resolveClaudeExecutable,
 } from './session/claude/executable.js'
 export { treeKiller } from './session/ChildProcessConnection.js'
+// Claude Code's SDK frames to agent events, without a process: for hosts that
+// replay recorded frames and for their tests.
+export { ClaudeMessageTranslator } from './session/claude/ClaudeMessageTranslator.js'
 export type {
   AcpProviderConfig,
   ClaudeProviderConfig,

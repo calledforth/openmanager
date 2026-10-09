@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AgentRuntime } from '@agentpack/runtime/node'
+import { ClaudeMessageTranslator, type AgentRuntime } from '@agentpack/runtime/node'
 import {
   ProofEventSchemas,
   ProofResponseSchemas,
@@ -12,6 +12,7 @@ import {
   applyToolUpdate,
   boundToolOutput,
   toolOutputBytes,
+  type DurableEvent,
   type EventEnvelope,
   type ProofEvent,
   type ToolCallState,
@@ -30,6 +31,7 @@ import {
   partialToolPayload,
 } from '../src/db/session-store.js'
 import { createThreadService, type WorkspaceRuntimeResolver } from '../src/thread-service.js'
+import { createPersistentEventService } from '../src/event-service.js'
 
 const directories: string[] = []
 const databases: DatabaseSync[] = []
@@ -523,29 +525,29 @@ describe('tool payloads in turn_activity', () => {
     expect(page.tools[1]).toMatchObject({ status: 'completed', finishedAt: at(2) })
   })
 
-  it('upgrades a version 19 database without touching the tool calls it holds', async () => {
+  it('upgrades a version 19 database, settling only the calls its ended turns left open', async () => {
     const directory = await dataDir()
     const old = openEnvironmentDatabase(directory, MIGRATIONS.slice(0, 19))
     expect(readSchemaVersion(old)).toBe(19)
     seed(old)
     old.exec(`
       INSERT INTO turns (turn_id, thread_id, workspace_id, state, started_at, updated_at)
-      VALUES ('turn-1', 'thread-1', 'workspace-1', 'completed', 1, 1)
+      VALUES ('turn-1', 'thread-1', 'workspace-1', 'completed', 1, 1);
+      INSERT INTO turns (turn_id, thread_id, workspace_id, state, started_at, updated_at, finished_at)
+      VALUES ('turn-2', 'thread-1', 'workspace-1', 'interrupted', 2, ${T0}, ${T0});
     `)
-    old
-      .prepare(
-        `INSERT INTO turn_activity (activity_id, workspace_id, thread_id, turn_id, kind, ordinal,
-           state_json, created_at, updated_at)
-         VALUES ('legacy-tool', 'workspace-1', 'thread-1', 'turn-1', 'tool', 5, ?, 1, 1)`,
-      )
-      .run(
-        JSON.stringify({
-          toolCallId: 'legacy-tool',
-          turnId: 'turn-1',
-          title: 'Read file',
-          status: 'completed',
-        }),
-      )
+    const insert = old.prepare(
+      `INSERT INTO turn_activity (activity_id, workspace_id, thread_id, turn_id, kind, ordinal,
+         state_json, created_at, updated_at)
+       VALUES (?, 'workspace-1', 'thread-1', ?, 'tool', ?, ?, 1, 1)`,
+    )
+    const legacy = (id: string, turnId: string, ordinal: number, state: object) =>
+      insert.run(id, turnId, ordinal, JSON.stringify({ toolCallId: id, turnId, ...state }))
+    legacy('legacy-tool', 'turn-1', 5, { title: 'Read file', status: 'completed' })
+    // Left open by an older version under turns that have ended.
+    legacy('legacy-open', 'turn-1', 6, { title: 'Run tests', status: 'in_progress' })
+    legacy('legacy-bare', 'turn-1', 7, { title: 'Search' })
+    legacy('legacy-timed', 'turn-2', 8, { title: 'Build', status: 'pending' })
     old.close()
 
     const upgraded = openEnvironmentDatabase(directory)
@@ -559,6 +561,15 @@ describe('tool payloads in turn_activity', () => {
     )
     expect(history(upgraded).tools).toEqual([
       { toolCallId: 'legacy-tool', turnId: 'turn-1', title: 'Read file', status: 'completed' },
+      { toolCallId: 'legacy-open', turnId: 'turn-1', title: 'Run tests', status: 'cancelled' },
+      { toolCallId: 'legacy-bare', turnId: 'turn-1', title: 'Search', status: 'cancelled' },
+      {
+        toolCallId: 'legacy-timed',
+        turnId: 'turn-2',
+        title: 'Build',
+        status: 'cancelled',
+        finishedAt: at(0),
+      },
     ])
     // A reasoning row can never hold a payload.
     expect(() =>
@@ -733,5 +744,160 @@ describe('tool calls through the thread service', () => {
     expect(states.map((item) => item.status)).toEqual(['cancelled', 'cancelled'])
     const names = h.events.map((event) => event.name)
     expect(names.lastIndexOf('tool.updated')).toBeLessThan(names.indexOf('turn.interrupted'))
+  })
+})
+
+describe('Claude Code edit results end to end', () => {
+  it('never stores or serves what an edit wrote, only its message', async () => {
+    const directory = await dataDir()
+    const database = openEnvironmentDatabase(directory)
+    databases.push(database)
+    database
+      .prepare(
+        `INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at)
+         VALUES ('/workspace/project', 'project', '/workspace/project', 1, 1)`,
+      )
+      .run()
+    const published: DurableEvent[] = []
+    const events = createPersistentEventService(database, (record) => published.push(record), {
+      sessionProviderId: () => 'claude',
+    })
+    const runtime = {
+      ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-session', state: 'created' }),
+      prompt: vi.fn(() => new Promise<void>(() => undefined)),
+      cancel: vi.fn(),
+    }
+    const service = createThreadService(
+      runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
+      { rejection: () => undefined },
+      events.append,
+      undefined,
+      (workspaceId) =>
+        workspaceId === '/workspace/project'
+          ? { providerId: 'claude', cwd: workspaceId }
+          : undefined,
+      { database, flush: events.flush, appendAtomic: events.appendAtomic },
+    )
+    service.setEnvironmentId('environment-1')
+    const created = ProofResponseSchemas['session.create'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'create',
+        name: 'session.create',
+        payload: {
+          environmentId: 'environment-1',
+          providerId: 'claude',
+          workspaceId: '/workspace/project',
+        },
+      }),
+    ).payload
+    const target = { sessionId: created.session.sessionId, threadId: created.thread.threadId }
+    const sent = ProofResponseSchemas['turn.send'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'send',
+        name: 'turn.send',
+        payload: { ...target, text: 'edit the notebook' },
+      }),
+    ).payload
+    await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(1))
+    let seq = 0
+    const emit = (event: Record<string, unknown>) =>
+      service.onRuntimeEvent({
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-session',
+        ...event,
+        id: `runtime-${(seq += 1)}`,
+        seq,
+        timestamp: new Date(T0 + seq * 1000).toISOString(),
+        providerId: 'claude',
+        threadId: target.threadId,
+        messageId: 'assistant-1',
+      } as Parameters<typeof service.onRuntimeEvent>[0])
+    emit({
+      category: 'lifecycle',
+      event: 'prompt_started',
+      data: { prompt: 'edit the notebook', userMessageId: sent.userMessage.messageId },
+    })
+    // The frames Claude Code sends, through the real translator.
+    const translator = new ClaudeMessageTranslator({
+      route: () => ({ threadId: target.threadId, workspaceId: '/workspace/project' }),
+      log: () => undefined,
+    })
+    const frames = [
+      [
+        'toolu_nb',
+        'NotebookEdit',
+        { notebook_path: '/n.ipynb', cell_id: 'c1', new_source: 'SECRET' },
+        'Updated cell c1 with SECRET',
+        false,
+      ],
+      [
+        'toolu_ed',
+        'Edit',
+        { file_path: '/a.ts', old_string: 'SECRET', new_string: 'SECRET 2' },
+        '<tool_use_error>String to replace not found in file.\nString: SECRET</tool_use_error>',
+        true,
+      ],
+    ] as const
+    frames.forEach(([id, name, input, result, isError], index) => {
+      const stream = (event: Record<string, unknown>) => ({
+        type: 'stream_event',
+        event,
+        parent_tool_use_id: null,
+        uuid: `uuid-${id}`,
+        session_id: 'provider-session',
+      })
+      const messages = [
+        stream({
+          type: 'content_block_start',
+          index,
+          content_block: { type: 'tool_use', id, name, input: {} },
+        }),
+        stream({
+          type: 'content_block_delta',
+          index,
+          delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+        }),
+        {
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: id,
+                content: result,
+                ...(isError ? { is_error: true } : {}),
+              },
+            ],
+          },
+          parent_tool_use_id: null,
+          session_id: 'provider-session',
+        },
+      ]
+      for (const message of messages) {
+        for (const event of translator.translate(message as never).events) emit(event)
+      }
+    })
+    emit({ category: 'lifecycle', event: 'prompt_completed', data: { stopReason: 'end_turn' } })
+    events.flush()
+
+    const page = listSessionHistory(database, target)!
+    expect(page.tools.map((tool) => [tool.toolName, tool.status, tool.output?.text])).toEqual([
+      ['NotebookEdit', 'completed', 'Updated cell c1'],
+      ['Edit', 'failed', 'String to replace not found in file.'],
+    ])
+    expect(JSON.stringify(published)).not.toContain('SECRET')
+    expect(JSON.stringify(page)).not.toContain('SECRET')
+    const stored = database.prepare('SELECT state_json, payload_json FROM turn_activity').all() as {
+      state_json: string
+      payload_json: string | null
+    }[]
+    expect(stored).toHaveLength(2)
+    expect(JSON.stringify(stored)).not.toContain('SECRET')
+    const logged = database.prepare('SELECT event_json FROM event_log').all()
+    expect(JSON.stringify(logged)).not.toContain('SECRET')
+    events.close()
   })
 })

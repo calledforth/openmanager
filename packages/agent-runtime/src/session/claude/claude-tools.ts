@@ -135,6 +135,53 @@ export function claudeToolContentFromInput(
   return undefined
 }
 
+/** Claude Code's tools whose result text can quote what they wrote. */
+const EDIT_RESULT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
+
+/** The text of a tool result: a string, or the text of its text blocks. */
+function resultText(content: unknown): string | undefined {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return undefined
+  const texts = content.flatMap((raw) => {
+    const block = object(raw)
+    const text = string(block.type) === 'text' ? string(block.text) : undefined
+    return text === undefined ? [] : [text]
+  })
+  return texts.length > 0 ? texts.join('\n') : undefined
+}
+
+/** An edit tool's result reduced to its one-line message, never what was written.
+ *
+ * Claude Code's edit results quote the edit itself, live-verified against the
+ * bundled CLI (agent-sdk 0.3.220):
+ * - NotebookEdit answers `Updated cell <id> with <new_source>` (and
+ *   `Inserted cell ... with ...`): the whole cell source.
+ * - A failed Edit answers `String to replace not found in file.\nString:
+ *   <old_string>`, and the "Found N matches" error ends the same way, both
+ *   inside `<tool_use_error>`.
+ * - Older CLIs followed a successful Edit or Write with a `cat -n` snippet,
+ *   and MultiEdit lists each replacement after its first line.
+ *
+ * So the first line is kept, a quoted `String:` is cut off, and a notebook
+ * message stops before ` with `. Any other tool's result passes untouched.
+ * Undefined when an edit result has no text at all. */
+export function claudeEditResultBody(toolName: string | undefined, content: unknown): unknown {
+  if (!toolName || !EDIT_RESULT_TOOLS.has(toolName)) return content
+  const text = resultText(content)
+  if (text === undefined) return undefined
+  let message = text.trim()
+  const wrapped = /^<tool_use_error>([\s\S]*?)(?:<\/tool_use_error>)?$/.exec(message)
+  if (wrapped) message = wrapped[1]!.trim()
+  message = message.split(/\s*\bString:/)[0]!
+  message = message.split('\n')[0]!.trim()
+  if (toolName === 'NotebookEdit') {
+    const cell = /^((?:Updated|Inserted|Deleted|Replaced) cell \S+?)(?: with\b.*)?$/.exec(message)
+    if (cell) message = cell[1]!
+    else message = message.split(' with ')[0]!
+  }
+  return message
+}
+
 /** Tools whose structured result is a file patch. */
 const PATCH_TOOLS = new Set(['Edit', 'Write', 'MultiEdit'])
 

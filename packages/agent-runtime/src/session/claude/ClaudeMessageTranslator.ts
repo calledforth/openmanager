@@ -13,6 +13,7 @@ import type { BackendEvent, BackendRoute } from '../../backends/Backend.js'
 import type { HostDeps } from '../../host.js'
 import { number, object, routeEvent, string } from '../wire.js'
 import {
+  claudeEditResultBody,
   claudeToolContentFromInput,
   claudeToolKind,
   claudeToolLocations,
@@ -486,17 +487,19 @@ export class ClaudeMessageTranslator {
       const toolUseId = string(block.tool_use_id)
       if (!toolUseId) continue
       const failed = block.is_error === true
+      const toolName = this.toolNames.get(toolUseId)
+      // An edit tool's result quotes the edit; only its message line is kept.
+      const body = claudeEditResultBody(toolName, block.content)
       const resultContent = this.contentFromInput.has(toolUseId)
         ? undefined
-        : toolResultContent(block.content)
-      const toolName = this.toolNames.get(toolUseId)
+        : toolResultContent(body)
       const extras = claudeToolResultExtras(toolName, structured)
       const update: ToolCallUpdate = {
         toolCallId: toolUseId,
         ...(toolName ? { toolName } : {}),
         status: failed || extras.outcome ? 'failed' : 'completed',
         ...extras,
-        rawOutput: block.content,
+        rawOutput: body,
         // Content is supplied only when the input produced none. `content` is
         // replaced wholesale downstream, so publishing result text for an Edit
         // would discard the diff that call already emitted.

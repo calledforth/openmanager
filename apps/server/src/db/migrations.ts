@@ -798,6 +798,30 @@ export const MIGRATIONS: readonly Migration[] = [
             CHECK (output_bytes >= 0)
         `)
       }
+      // Calls recorded before this version could stay open under a turn that
+      // had already ended: nothing settled them. They never reported a result,
+      // so they were cancelled with their turn, at the time it finished when
+      // that is known. Without this they would spin forever, and every client
+      // resuming such a thread would keep asking the environment about them.
+      database.exec(`
+        UPDATE turn_activity
+        SET state_json = CASE
+          WHEN (SELECT finished_at FROM turns WHERE turns.turn_id = turn_activity.turn_id) IS NULL
+            THEN json_set(state_json, '$.status', 'cancelled')
+          ELSE json_insert(
+            json_set(state_json, '$.status', 'cancelled'),
+            '$.finishedAt',
+            strftime(
+              '%Y-%m-%dT%H:%M:%fZ',
+              (SELECT finished_at FROM turns WHERE turns.turn_id = turn_activity.turn_id) / 1000.0,
+              'unixepoch'
+            )
+          )
+        END
+        WHERE kind = 'tool'
+          AND COALESCE(json_extract(state_json, '$.status'), 'pending') IN ('pending', 'in_progress')
+          AND turn_id IN (SELECT turn_id FROM turns WHERE state NOT IN ('running', 'waiting'))
+      `)
     },
   },
 ]

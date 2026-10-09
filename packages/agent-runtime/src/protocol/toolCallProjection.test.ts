@@ -180,22 +180,27 @@ describe('Claude Code tool calls on the wire', () => {
       }),
     )
     feed(
-      toolResult('toolu_edit', 'The file /repo/a.ts has been updated.', {
-        tool_use_result: {
-          filePath: '/repo/a.ts',
-          oldString: 'const a = 1',
-          newString: 'const a = 2',
-          structuredPatch: [
-            {
-              oldStart: 1,
-              oldLines: 1,
-              newStart: 1,
-              newLines: 2,
-              lines: ['-const a = 1', '+const a = 2', '+const b = 3', ' x'],
-            },
-          ],
+      // As an older CLI answered: the message, then a `cat -n` of the edited region.
+      toolResult(
+        'toolu_edit',
+        "The file /repo/a.ts has been updated. Here's the result of running `cat -n` on a snippet of the edited file:\n     1\tconst a = 2\n     2\tconst b = 3",
+        {
+          tool_use_result: {
+            filePath: '/repo/a.ts',
+            oldString: 'const a = 1',
+            newString: 'const a = 2',
+            structuredPatch: [
+              {
+                oldStart: 1,
+                oldLines: 1,
+                newStart: 1,
+                newLines: 2,
+                lines: ['-const a = 1', '+const a = 2', '+const b = 3', ' x'],
+              },
+            ],
+          },
         },
-      }),
+      ),
     )
 
     const json = JSON.stringify(updates)
@@ -208,9 +213,76 @@ describe('Claude Code tool calls on the wire', () => {
       input: { file_path: '/repo/a.ts', replace_all: false },
       locations: [{ path: '/repo/a.ts' }],
       lineChanges: { added: 2, removed: 1 },
-      output: { text: 'The file /repo/a.ts has been updated.' },
+      output: {
+        text: "The file /repo/a.ts has been updated. Here's the result of running `cat -n` on a snippet of the edited file:",
+      },
     })
   })
+
+  it.each([
+    [
+      'a notebook cell it updated',
+      'NotebookEdit',
+      'Updated cell c1 with SECRET = 1\nprint(SECRET)',
+      false,
+      'Updated cell c1',
+    ],
+    [
+      'a notebook cell it inserted',
+      'NotebookEdit',
+      'Inserted cell c2 with SECRET',
+      false,
+      'Inserted cell c2',
+    ],
+    [
+      'a failed Edit',
+      'Edit',
+      '<tool_use_error>String to replace not found in file.\nString: SECRET OLD</tool_use_error>',
+      true,
+      'String to replace not found in file.',
+    ],
+    [
+      'an Edit with several matches',
+      'Edit',
+      '<tool_use_error>Found 2 matches of the string to replace, but replace_all is false. To replace all occurrences, set replace_all to true. To replace only one occurrence, please provide more context to uniquely identify the instance.\nString: SECRET OLD</tool_use_error>',
+      true,
+      'Found 2 matches of the string to replace, but replace_all is false. To replace all occurrences, set replace_all to true. To replace only one occurrence, please provide more context to uniquely identify the instance.',
+    ],
+    [
+      'a MultiEdit listing its replacements',
+      'MultiEdit',
+      'Applied 1 edit to /repo/b.ts:\n1. Replaced "SECRET OLD" with "SECRET NEW"',
+      false,
+      'Applied 1 edit to /repo/b.ts:',
+    ],
+    [
+      'a Write followed by a snippet',
+      'Write',
+      'File created successfully at: /repo/new.ts\n     1\tSECRET',
+      false,
+      'File created successfully at: /repo/new.ts',
+    ],
+  ] as const)(
+    'keeps only the message of %s, never what was written',
+    (_case, name, result, isError, message) => {
+      const { feed, states, updates } = claude()
+      feed(toolStart(0, 'toolu_e', name))
+      feed(toolInput(0, { notebook_path: '/repo/n.ipynb', file_path: '/repo/a.ts' }))
+      // The result as a string, and as text blocks.
+      feed(toolResult('toolu_e', result, isError ? { is_error: true } : {}))
+      expect(states.get('host-toolu_e')).toMatchObject({
+        toolName: name,
+        status: isError ? 'failed' : 'completed',
+        output: { text: message },
+      })
+      feed(toolStart(1, 'toolu_f', name))
+      feed(
+        toolResult('toolu_f', [{ type: 'text', text: result }], isError ? { is_error: true } : {}),
+      )
+      expect(states.get('host-toolu_f')!.output).toEqual({ text: message })
+      expect(JSON.stringify(updates)).not.toContain('SECRET')
+    },
+  )
 
   it('prefers git diff counts and never carries a Write body or MultiEdit bodies', () => {
     const { feed, states, updates } = claude()

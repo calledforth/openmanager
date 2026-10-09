@@ -917,12 +917,17 @@ export function createWebSocketEnvironmentClient(
    * that names it. Stops once every call is answered, at the oldest page, or
    * after a bounded number of pages; an unanswered call stays as it was.
    */
+  /** Held calls each thread has already asked the environment about, by thread. */
+  const askedTools = new Map<string, Set<string>>()
   const reconcileRetainedTools = async (snapshot: ScopeSnapshot, stale: readonly string[]) => {
     const scope = snapshot.cursor.scope
     if (scope.type !== 'thread') return
     const generation = connectionGeneration
     const thread = { sessionId: scope.sessionId, threadId: scope.threadId }
-    const waiting = new Set(stale)
+    const asked = askedTools.get(thread.threadId) ?? new Set<string>()
+    const waiting = new Set(stale.filter((toolCallId) => !asked.has(toolCallId)))
+    if (waiting.size === 0) return
+    const walked = [...waiting]
     let cursor = (snapshot.state as { nextCursor?: HistoryCursor | null }).nextCursor ?? null
     for (let pages = 0; cursor && waiting.size > 0 && pages < RETAINED_TOOL_PAGES_MAX; pages += 1) {
       const page = await request('session.history', { ...thread, cursor })
@@ -932,6 +937,11 @@ export function createWebSocketEnvironmentClient(
       store.update((state) => applyToolStates(state, thread, answered))
       cursor = page.nextCursor
     }
+    // A finished walk has said all it can about these calls, answered or not:
+    // the next snapshot does not walk the same pages for them again. A walk
+    // cut short (a dropped connection, a failed read) is not remembered.
+    for (const toolCallId of walked) asked.add(toolCallId)
+    askedTools.set(thread.threadId, asked)
   }
 
   const hydrateThread = (scope: SubscriptionScope) => {

@@ -2547,6 +2547,77 @@ describe('cursor replay on reconnect', () => {
     },
   )
 
+  it('asks about a held call once, however many snapshots follow', async () => {
+    const { client, socket, timers } = await connected(REPLAY_CAPABILITIES)
+    const opened = client.commands.openSession(SESSION.sessionId)
+    socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
+    await flush()
+    const empty = {
+      thread: THREAD,
+      turns: [],
+      messages: [],
+      reasoning: [],
+      tools: [],
+      interactions: [],
+      nextCursor: null,
+    }
+    socket.respond('subscription.replay', {
+      mode: 'snapshot',
+      subscriptionId: 'sub-thread',
+      reason: 'initial',
+      snapshot: { cursor: cursor(1), state: empty },
+    })
+    await opened
+    const running = { toolCallId: 'tool-1', turnId: 'turn-1', status: 'in_progress' } as const
+    socket.receive(live(2, turnStarted()))
+    socket.receive(live(3, event({ name: 'tool.updated', scope: threadScope, payload: running })))
+    socket.receive(live(4, delta('turn-1', 'assistant-1', 'Hi')))
+    socket.receive(live(5, delta('turn-1', 'assistant-2', 'More')))
+    const reset = {
+      mode: 'snapshot',
+      reason: 'stream_reset',
+      snapshot: {
+        cursor: cursor(40, 'reset'),
+        state: {
+          ...empty,
+          turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'interrupted' }],
+          messages: [
+            {
+              messageId: 'assistant-2',
+              threadId: THREAD.threadId,
+              turnId: 'turn-1',
+              role: 'assistant',
+              content: [{ type: 'text', text: 'More' }],
+            },
+          ],
+          nextCursor: { ordinal: 7 },
+        },
+      },
+    }
+    const reconnect = async (index: number) => {
+      FakeSocket.instances[index - 1]!.drop(1006)
+      await flush()
+      timers.advance(1_000)
+      const next = FakeSocket.instances[index]!
+      next.open()
+      next.respond('protocol.handshake', bootstrap(REPLAY_CAPABILITIES))
+      await flush()
+      next.respond('subscription.replay', { ...reset, subscriptionId: `sub-thread-${index}` })
+      await flush()
+      return next
+    }
+    // A legacy call no page names: the walk ends at the oldest page unanswered.
+    const first = await reconnect(1)
+    expect(first.sent.filter((message) => message.name === 'session.history')).toHaveLength(1)
+    first.respond('session.history', { ...empty, turns: [], nextCursor: null })
+    await flush()
+    expect(selectActiveThread(client.getState())!.tools[0]?.status).toBe('in_progress')
+    // The next reset does not walk the same pages for it again.
+    const second = await reconnect(2)
+    expect(second.sent.filter((message) => message.name === 'session.history')).toHaveLength(0)
+    client.dispose()
+  })
+
   it('replaces the scope from a snapshot when the gap can no longer be replayed', async () => {
     const { client, next } = await dropped()
     next.respond('subscription.replay', {

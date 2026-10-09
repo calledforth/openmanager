@@ -445,4 +445,64 @@ describe('tool payloads in the client store', () => {
       expect(staleRetainedTools(state, snapshot)).toEqual([])
     },
   )
+
+  it("takes a page answer's state but keeps the output the client watched over a marker", () => {
+    const watched = boundToolOutput(`build log ${'x'.repeat(40_000)} done`)
+    let state = applySessionHistory(seeded(), THREAD, {
+      messages: [],
+      turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'completed' }],
+      interactions: [],
+      nextCursor: null,
+      reasoning: [],
+      tools: [
+        {
+          toolCallId: 'build',
+          turnId: 't1',
+          toolName: 'Bash',
+          status: 'in_progress',
+          input: { command: 'make' },
+          output: watched,
+        },
+        {
+          toolCallId: 'short',
+          turnId: 't1',
+          toolName: 'Bash',
+          status: 'in_progress',
+          output: { text: 'a' },
+        },
+      ],
+      order: [],
+    })
+    state = applyToolStates(state, THREAD, [
+      // Past the page budget: the state, and only a marker for the output.
+      {
+        toolCallId: 'build',
+        turnId: 't1',
+        toolName: 'Bash',
+        status: 'completed',
+        finishedAt: '2026-10-09T12:00:00.000Z',
+        lineChanges: { added: 1, removed: 0 },
+        output: { text: '', omittedBytes: 40_020 },
+      },
+      // A page that shows more than the client held wins.
+      {
+        toolCallId: 'short',
+        turnId: 't1',
+        status: 'failed',
+        output: { text: 'a\nb\nexit 1' },
+      },
+    ])
+    const [build, short] = selectActiveThread(state)!.tools
+    expect(build).toEqual({
+      toolCallId: 'build',
+      turnId: 't1',
+      toolName: 'Bash',
+      status: 'completed',
+      finishedAt: '2026-10-09T12:00:00.000Z',
+      lineChanges: { added: 1, removed: 0 },
+      input: { command: 'make' },
+      output: watched,
+    })
+    expect(short).toMatchObject({ status: 'failed', output: { text: 'a\nb\nexit 1' } })
+  })
 })

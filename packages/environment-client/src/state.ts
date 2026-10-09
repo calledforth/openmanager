@@ -1,5 +1,5 @@
 import { foldProtocolEvent, isTurnSettled, placeActivity } from '@agentpack/view/protocol'
-import { sessionListCursorOf } from '@openmanager/protocol'
+import { sessionListCursorOf, utf8Bytes } from '@openmanager/protocol'
 import type {
   BackgroundTask,
   Message,
@@ -701,10 +701,42 @@ export function applyToolStates(
       ...current,
       tools: current.tools.map((tool) => {
         const known = byId.get(tool.toolCallId)
-        return known && known.turnId === tool.turnId ? { ...tool, ...known } : tool
+        return known && known.turnId === tool.turnId ? mergeToolState(tool, known) : tool
       }),
     }
   })
+}
+
+/** The bytes of output a value actually shows: its start and its newest end. */
+const shownOutputBytes = (output: ToolState['output']) =>
+  output ? utf8Bytes(output.text) + utf8Bytes(output.tail ?? '') : -1
+
+/**
+ * A history page's word on a held call. Its state (status, times, name, title,
+ * kind, line changes) is the environment's and wins. Its payload may be cut
+ * to fit the page, or be only a marker, so the held payload stays unless the
+ * page shows at least as much output, and input and locations fill in only
+ * where the client has none.
+ */
+function mergeToolState(held: ToolState, page: ToolState): ToolState {
+  const next: ToolState = { ...held }
+  for (const key of [
+    'status',
+    'startedAt',
+    'finishedAt',
+    'toolName',
+    'title',
+    'kind',
+    'lineChanges',
+  ] as const) {
+    if (page[key] !== undefined) Object.assign(next, { [key]: page[key] })
+  }
+  if (page.output && shownOutputBytes(page.output) >= shownOutputBytes(held.output)) {
+    next.output = page.output
+  }
+  if (held.input === undefined && page.input !== undefined) next.input = page.input
+  if (held.locations === undefined && page.locations !== undefined) next.locations = page.locations
+  return next
 }
 
 /**
