@@ -1,5 +1,5 @@
 import { foldProtocolEvent, isTurnSettled, placeActivity } from '@agentpack/view/protocol'
-import { sessionListCursorOf, utf8Bytes } from '@openmanager/protocol'
+import { sessionListCursorOf, toolOutputSourceBytes, utf8Bytes } from '@openmanager/protocol'
 import type {
   BackgroundTask,
   Message,
@@ -708,15 +708,34 @@ export function applyToolStates(
 }
 
 /** The bytes of output a value actually shows: its start and its newest end. */
-const shownOutputBytes = (output: ToolState['output']) =>
-  output ? utf8Bytes(output.text) + utf8Bytes(output.tail ?? '') : -1
+const shownOutputBytes = (output: NonNullable<ToolState['output']>) =>
+  utf8Bytes(output.text) + utf8Bytes(output.tail ?? '')
+
+/**
+ * Which output to keep for a held call a history page answers for. The held
+ * one stopped when the client lost track of the call, so it is stale by
+ * definition: a page that saw more of the output (more source bytes) wins as
+ * soon as it shows any of it, however much it had to cut to fit. Only when
+ * both saw the same output (the page's copy shrunk, or only a marker) does
+ * the side that shows more of it win.
+ */
+function newerOutput(held: ToolState['output'], page: ToolState['output']): ToolState['output'] {
+  if (!page) return held
+  if (!held) return page
+  const pageSource = toolOutputSourceBytes(page)
+  const heldSource = toolOutputSourceBytes(held)
+  const pageShown = shownOutputBytes(page)
+  if (pageSource > heldSource) return pageShown > 0 ? page : held
+  if (pageSource < heldSource) return held
+  return pageShown >= shownOutputBytes(held) ? page : held
+}
 
 /**
  * A history page's word on a held call. Its state (status, times, name, title,
  * kind, line changes) is the environment's and wins. Its payload may be cut
- * to fit the page, or be only a marker, so the held payload stays unless the
- * page shows at least as much output, and input and locations fill in only
- * where the client has none.
+ * to fit the page, or be only a marker: the output is chosen by
+ * `newerOutput`, and input and locations fill in only where the client has
+ * none.
  */
 function mergeToolState(held: ToolState, page: ToolState): ToolState {
   const next: ToolState = { ...held }
@@ -731,9 +750,8 @@ function mergeToolState(held: ToolState, page: ToolState): ToolState {
   ] as const) {
     if (page[key] !== undefined) Object.assign(next, { [key]: page[key] })
   }
-  if (page.output && shownOutputBytes(page.output) >= shownOutputBytes(held.output)) {
-    next.output = page.output
-  }
+  const output = newerOutput(held.output, page.output)
+  if (output) next.output = output
   if (held.input === undefined && page.input !== undefined) next.input = page.input
   if (held.locations === undefined && page.locations !== undefined) next.locations = page.locations
   return next

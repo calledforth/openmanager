@@ -438,8 +438,44 @@ describe('ACP edit calls', () => {
       status: 'completed',
       input: {},
       locations: [{ path: '/repo/src/a.ts' }],
-      output: { text: 'Success. Updated the following files:\nM src/a.ts' },
+      // An edit's result keeps its message line; the files are its locations.
+      output: { text: 'Success. Updated the following files:' },
     })
+  })
+
+  it('cuts any edit result to its message, even without the provider tool name', () => {
+    // As if Claude Code's name for the call had been forgotten: only the kind is known.
+    const { project, states, updates } = projector()
+    project(acp({ title: 'Edit', kind: 'edit', status: 'in_progress' }, 'tool_call'))
+    project(
+      acp({
+        status: 'failed',
+        rawOutput:
+          '<tool_use_error>String to replace not found in file.\nString: SECRET OLD</tool_use_error>',
+      }),
+    )
+    expect(states.get('host-patch')!.output).toEqual({
+      text: 'String to replace not found in file.',
+    })
+    project(acp({ toolCallId: 'cell', title: 'NotebookEdit', kind: 'edit' }, 'tool_call'))
+    project(
+      acp({ toolCallId: 'cell', status: 'completed', rawOutput: 'Updated cell c1 with SECRET' }),
+    )
+    expect(states.get('host-cell')!.output).toEqual({ text: 'Updated cell c1' })
+    // Content appended to an edit is its body, never output.
+    project(
+      stamp({
+        workspaceId: 'w',
+        sessionId: 's',
+        category: 'tool',
+        event: 'tool_call_content',
+        data: {
+          toolCallId: 'cell',
+          item: { type: 'content', content: { type: 'text', text: 'SECRET' } },
+        },
+      } as BackendEvent),
+    )
+    expect(JSON.stringify(updates)).not.toContain('SECRET')
   })
 
   it('shows why an edit failed', () => {

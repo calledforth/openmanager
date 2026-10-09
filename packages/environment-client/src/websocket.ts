@@ -924,7 +924,12 @@ export function createWebSocketEnvironmentClient(
     if (scope.type !== 'thread') return
     const generation = connectionGeneration
     const thread = { sessionId: scope.sessionId, threadId: scope.threadId }
-    const asked = askedTools.get(thread.threadId) ?? new Set<string>()
+    // Registered before the walk, so walks that overlap share one record.
+    let asked = askedTools.get(thread.threadId)
+    if (!asked) {
+      asked = new Set<string>()
+      askedTools.set(thread.threadId, asked)
+    }
     const waiting = new Set(stale.filter((toolCallId) => !asked.has(toolCallId)))
     if (waiting.size === 0) return
     const walked = [...waiting]
@@ -941,7 +946,6 @@ export function createWebSocketEnvironmentClient(
     // the next snapshot does not walk the same pages for them again. A walk
     // cut short (a dropped connection, a failed read) is not remembered.
     for (const toolCallId of walked) asked.add(toolCallId)
-    askedTools.set(thread.threadId, asked)
   }
 
   const hydrateThread = (scope: SubscriptionScope) => {

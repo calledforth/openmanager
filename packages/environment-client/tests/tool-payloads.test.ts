@@ -3,6 +3,7 @@ import {
   ProofEventSchema,
   TOOL_OUTPUT_MAX_BYTES,
   boundToolOutput,
+  shrinkToolOutput,
   toolOutputBytes,
   type ProofEvent,
   type ScopeSnapshot,
@@ -504,5 +505,42 @@ describe('tool payloads in the client store', () => {
       output: watched,
     })
     expect(short).toMatchObject({ status: 'failed', output: { text: 'a\nb\nexit 1' } })
+  })
+
+  it.each([
+    [
+      'a whole stored output whose newest end is escape-heavy',
+      (full: string) => boundToolOutput(full),
+      `${'\u001b[31m'.repeat(3_000)}FAILED: 3 tests`,
+    ],
+    [
+      'a page that had to shrink the final output to a few KB',
+      (full: string) => shrinkToolOutput(boundToolOutput(full), 3_000),
+      '\nFAILED: 3 tests',
+    ],
+  ])('takes %s over the stale copy the client held', (_case, stored, ending) => {
+    const start = `running ${'x'.repeat(30_000)}`
+    // What the client had when it lost track of the call: mid-stream.
+    const stale = boundToolOutput(start)
+    let state = applySessionHistory(seeded(), THREAD, {
+      messages: [],
+      turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'completed' }],
+      interactions: [],
+      nextCursor: null,
+      reasoning: [],
+      tools: [{ toolCallId: 'run', turnId: 't1', status: 'in_progress', output: stale }],
+      order: [],
+    })
+    const page = stored(start + ending)
+    // Shows fewer bytes than the stale copy, but saw more of the output.
+    expect(Buffer.byteLength(page.text + (page.tail ?? ''))).toBeLessThan(
+      Buffer.byteLength(stale.text + (stale.tail ?? '')),
+    )
+    state = applyToolStates(state, THREAD, [
+      { toolCallId: 'run', turnId: 't1', status: 'failed', output: page },
+    ])
+    const [run] = selectActiveThread(state)!.tools
+    expect(run).toMatchObject({ status: 'failed', output: page })
+    expect(run!.output!.tail!.endsWith('FAILED: 3 tests')).toBe(true)
   })
 })

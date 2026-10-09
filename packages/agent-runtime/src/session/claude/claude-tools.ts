@@ -9,6 +9,7 @@ import type {
   ToolKind,
 } from '@agentpack/contract'
 import { subtaskStatusFromTool } from '../../backends/acp/extensions.js'
+import { editResultMessage } from '../../protocol/toolCallProjection.js'
 import { object, string } from '../wire.js'
 
 /** Claude Code's built-in tools, mapped onto the contract's tool vocabulary.
@@ -169,17 +170,10 @@ export function claudeEditResultBody(toolName: string | undefined, content: unkn
   if (!toolName || !EDIT_RESULT_TOOLS.has(toolName)) return content
   const text = resultText(content)
   if (text === undefined) return undefined
-  let message = text.trim()
-  const wrapped = /^<tool_use_error>([\s\S]*?)(?:<\/tool_use_error>)?$/.exec(message)
-  if (wrapped) message = wrapped[1]!.trim()
-  message = message.split(/\s*\bString:/)[0]!
-  message = message.split('\n')[0]!.trim()
-  if (toolName === 'NotebookEdit') {
-    const cell = /^((?:Updated|Inserted|Deleted|Replaced) cell \S+?)(?: with\b.*)?$/.exec(message)
-    if (cell) message = cell[1]!
-    else message = message.split(' with ')[0]!
-  }
-  return message
+  const message = editResultMessage(text)
+  // A notebook message that is not one of the known shapes still stops
+  // before what it says the cell now holds.
+  return toolName === 'NotebookEdit' ? message.split(' with ')[0]! : message
 }
 
 /** Tools whose structured result is a file patch. */

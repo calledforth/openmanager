@@ -234,6 +234,8 @@ export function projectAgentEvent(
       if (!text) return null
       const toolCallId = required('toolCallId')
       const tracker = context.toolCalls
+      // An edit's content is its body, never output.
+      if (isEdit(tracker?.kindOf(toolCallId), undefined)) return null
       const output = tracker ? tracker.append(toolCallId, text) : statelessDelta(text)
       tracker?.observe(toolCallId, {})
       return emit('tool.updated', threadScope, {

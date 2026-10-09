@@ -110,6 +110,31 @@ function reportedText(value: unknown): string | undefined {
  * edit's own content is its body, never output.
  */
 export function toolOutputText(tool: AgentTool, edit: boolean): string | undefined {
+  const text = reportedOutputText(tool, edit)
+  // An edit's result can quote what it wrote; only its message line is kept.
+  return edit && text !== undefined ? editResultMessage(text) || undefined : text
+}
+
+/**
+ * An edit tool's result reduced to its one-line message, never what was
+ * written. Results can quote the edit: Claude Code's NotebookEdit answers
+ * `Updated cell <id> with <new_source>`, a failed Edit ends with
+ * `String: <old_string>` inside `<tool_use_error>`, and older CLIs followed a
+ * successful Edit or Write with a `cat -n` snippet. So the error wrapper goes,
+ * a quoted `String:` is cut off, only the first line stays, and a cell message
+ * stops before ` with `.
+ */
+export function editResultMessage(text: string): string {
+  let message = text.trim()
+  const wrapped = /^<tool_use_error>([\s\S]*?)(?:<\/tool_use_error>)?$/.exec(message)
+  if (wrapped) message = wrapped[1]!.trim()
+  message = message.split(/\s*\bString:/)[0]!
+  message = message.split('\n')[0]!.trim()
+  const cell = /^((?:Updated|Inserted|Deleted|Replaced) cell \S+?) with\b/.exec(message)
+  return cell ? cell[1]! : message
+}
+
+function reportedOutputText(tool: AgentTool, edit: boolean): string | undefined {
   if (!edit && tool.content?.length) {
     const texts = tool.content.flatMap((item) => {
       const text = contentText(item)
