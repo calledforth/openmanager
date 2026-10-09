@@ -307,9 +307,12 @@ describe('tool payloads in turn_activity', () => {
       `INSERT INTO turns (turn_id, thread_id, workspace_id, state, started_at, updated_at, finished_at)
        VALUES (?, 'thread-1', 'workspace-1', 'completed', ?, ?, ?)`,
     )
+    // One transaction: thousands of separate commits take seconds on a slow disk.
+    database.exec('BEGIN')
     for (let index = 0; index < turnCount; index += 1) {
       insert.run(`old-${index}-${'t'.repeat(200)}`, index + 1, index + 1, index + 1)
     }
+    database.exec('COMMIT')
     const events: DurableProofEvent[] = [started()]
     for (let index = 0; index < 20; index += 1) {
       events.push(

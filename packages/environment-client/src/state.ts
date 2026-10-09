@@ -571,6 +571,11 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
   const withThread = ensureThread(state, thread)
   const existing = withThread.threads[thread.threadId]!
   const messages = retainOlderMessages(existing.messages, threadSnapshot.messages)
+  const older = olderActivity(
+    existing,
+    messages.slice(0, messages.length - threadSnapshot.messages.length),
+    threadSnapshot.order ?? orderOfMessages(threadSnapshot.messages),
+  )
   const replaced: ThreadState = {
     ...createThreadState(thread, 'ready'),
     // A snapshot describes what the environment has; a send it has not
@@ -579,13 +584,10 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
     outbox: reconcileOutbox(existing, threadSnapshot.messages),
     turns: threadSnapshot.turns,
     messages,
-    // Older pages the client keeps in front of the snapshot place their
-    // messages; the snapshot places its own page, reasoning and tools included
-    // when the environment reports them.
-    order: [
-      ...orderOfMessages(messages.slice(0, messages.length - threadSnapshot.messages.length)),
-      ...(threadSnapshot.order ?? orderOfMessages(threadSnapshot.messages)),
-    ],
+    // Older pages the client keeps in front of the snapshot keep everything
+    // they placed; the snapshot places its own page, reasoning and tools
+    // included when the environment reports them.
+    order: older.order,
     historyCursor:
       existing.historyCursor !== undefined &&
       existing.messages.findIndex(
@@ -593,8 +595,13 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
       ) > 0
         ? existing.historyCursor
         : threadSnapshot.nextCursor,
-    reasoning: threadSnapshot.reasoning,
-    tools: threadSnapshot.tools,
+    reasoning: older.keep(
+      'reasoning',
+      existing.reasoning,
+      threadSnapshot.reasoning,
+      (entry) => entry.messageId,
+    ),
+    tools: older.keep('tool', existing.tools, threadSnapshot.tools, (tool) => tool.toolCallId),
     interactions: threadSnapshot.interactions.map((item) => ({
       sessionId: thread.sessionId,
       threadId: thread.threadId,
@@ -603,6 +610,49 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
     })),
   }
   return { ...withThread, threads: { ...withThread.threads, [thread.threadId]: replaced } }
+}
+
+/**
+ * What a snapshot leaves of the client's older history. A snapshot carries the
+ * newest page only, and its window starts right after the last older message
+ * the client keeps (see `retainOlderMessages`): everything the client placed
+ * up to that message is history the snapshot predates, and stays, whatever
+ * its kind. Anything placed after it is the snapshot's to say.
+ *
+ * `order` is the retained older order followed by the snapshot's. `keep`
+ * merges one activity list the same way: the retained older entries of that
+ * kind, then the snapshot's. Every kind of activity a page carries goes
+ * through `keep`, so a new kind joins without its own rule.
+ */
+function olderActivity(
+  existing: ThreadState,
+  olderMessages: readonly Message[],
+  snapshotOrder: readonly ActivityRef[],
+) {
+  const last = olderMessages.at(-1)
+  const end = last
+    ? existing.order.findIndex((ref) => ref.kind === 'message' && ref.id === last.messageId)
+    : -1
+  const inSnapshot = new Set(snapshotOrder.map((ref) => `${ref.kind}:${ref.id}`))
+  const retained = (
+    !last ? [] : end === -1 ? orderOfMessages(olderMessages) : existing.order.slice(0, end + 1)
+  ).filter((ref) => !inSnapshot.has(`${ref.kind}:${ref.id}`))
+  const kept = new Set(retained.map((ref) => `${ref.kind}:${ref.id}`))
+  return {
+    order: [...retained, ...snapshotOrder],
+    keep<T>(
+      kind: ActivityRef['kind'],
+      held: readonly T[],
+      fresh: readonly T[],
+      id: (item: T) => string,
+    ): T[] {
+      const freshIds = new Set(fresh.map(id))
+      return [
+        ...held.filter((item) => kept.has(`${kind}:${id(item)}`) && !freshIds.has(id(item))),
+        ...fresh,
+      ]
+    },
+  }
 }
 
 /**
