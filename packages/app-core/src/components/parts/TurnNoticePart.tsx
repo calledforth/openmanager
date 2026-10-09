@@ -97,7 +97,12 @@ export function TurnNoticePart({ notice, live = false }: { notice: Notice; live?
  */
 export function TurnFailurePart({ part }: { part: FailurePart }) {
   const recovery = useTurnRecovery()
-  const copy = describeFailure(part.failure, recovery?.providerName)
+  const copy = describeFailure(
+    part.failure,
+    recovery?.providerName,
+    undefined,
+    part.resendable !== false,
+  )
   const [pending, setPending] = useState(false)
   const perform =
     !part.actionable || !copy.action || !recovery

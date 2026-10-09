@@ -14,7 +14,11 @@ import { createThreadService, type WorkspaceRuntimeResolver } from '../src/threa
 import { createPersistentEventService } from '../src/event-service.js'
 import { openEnvironmentDatabase } from '../src/db/database.js'
 import { createReplayReader } from '../src/db/replay.js'
-import { listSessionHistory } from '../src/db/session-store.js'
+import {
+  NOTICE_BUDGET_BYTES,
+  NOTICES_PER_PAGE_MAX,
+  listSessionHistory,
+} from '../src/db/session-store.js'
 
 const registered: WorkspaceRuntimeResolver = (workspaceId) =>
   workspaceId === '/workspace/project'
@@ -41,9 +45,18 @@ async function setup() {
   `)
   const published: DurableEvent[] = []
   const transient: EventEnvelope[] = []
-  const events = createPersistentEventService(database, (record) => published.push(record), {
-    sessionProviderId: () => 'claude',
-  })
+  /** Every event in the order a subscriber would receive it. */
+  const timeline: string[] = []
+  const events = createPersistentEventService(
+    database,
+    (record) => {
+      published.push(record)
+      timeline.push(record.event.name)
+    },
+    {
+      sessionProviderId: () => 'claude',
+    },
+  )
   const runtime = {
     ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-session', state: 'created' }),
     prompt: vi.fn(() => new Promise<void>(() => undefined)),
@@ -53,7 +66,10 @@ async function setup() {
     runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
     { rejection: () => undefined },
     events.append,
-    (event) => transient.push(event),
+    (event) => {
+      transient.push(event)
+      timeline.push(event.name)
+    },
     registered,
     { database, flush: events.flush, appendAtomic: events.appendAtomic },
   )
@@ -116,6 +132,7 @@ async function setup() {
     events,
     published,
     transient,
+    timeline,
     target,
     started,
     emit,
@@ -126,6 +143,47 @@ async function setup() {
 }
 
 describe('turn notices', () => {
+  it('keeps the newest notices within the page budget and says how many it left out', async () => {
+    const h = await setup()
+    for (let index = 0; index < 60; index += 1) {
+      h.notice({ kind: 'warning', message: `${index}:${'w'.repeat(1500)}` })
+    }
+    h.text('Still going')
+    const page = h.history()
+    const bytes = Buffer.byteLength(JSON.stringify(page.notices), 'utf8')
+    expect(bytes).toBeLessThanOrEqual(NOTICE_BUDGET_BYTES)
+    expect(page.notices.length).toBeLessThanOrEqual(NOTICES_PER_PAGE_MAX)
+    const [marker, ...kept] = page.notices
+    expect(marker).toMatchObject({
+      kind: 'info',
+      message: `${60 - kept.length} earlier notices not loaded`,
+    })
+    // The newest survive, in order, and the marker sits where the gap is.
+    expect(kept.at(-1)?.message.startsWith('59:')).toBe(true)
+    const noticeRefs = page.order.filter((ref) => ref.kind === 'notice').map((ref) => ref.id)
+    expect(noticeRefs).toEqual(page.notices.map((notice) => notice.noticeId))
+    expect(page.order.at(-1)?.kind).toBe('message')
+  })
+
+  it('delivers output the batcher held before a retry notice that followed it', async () => {
+    const h = await setup()
+    h.text('Partial answer')
+    h.emit({
+      category: 'error',
+      event: 'rpc_error',
+      data: { source: 'claude/api', message: 'x', recoverable: true },
+    })
+    // Without the flush the delta would land after the notice and read, on
+    // every client, as the recovery the notice is waiting for.
+    expect(h.timeline.filter((name) => name !== 'session.updated')).toEqual([
+      'session.created',
+      'thread.created',
+      'turn.started',
+      'message.delta',
+      'turn.notice',
+    ])
+  })
+
   it('publishes retries and compaction progress live, and stores neither', async () => {
     const h = await setup()
     h.emit({

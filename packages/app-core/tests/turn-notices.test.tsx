@@ -202,6 +202,21 @@ describe('projecting notices and failures', () => {
     expect(ended.byId.get('turn:t1:assistant')).toBeUndefined()
   })
 
+  it('offers Retry only when the prompt it would resend is loaded', () => {
+    const failure = { reason: 'overloaded' as const, message: 'Busy', action: 'retry' as const }
+    const failed = (messages: ReturnType<typeof userMessage>[]) =>
+      projectThread({
+        ...base,
+        turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'failed' as const, failure }],
+        messages,
+      })
+        .byId.get('turn:t1:assistant')!
+        .content.parts?.at(-1)
+    expect(failed([userMessage('t1')])).toMatchObject({ actionable: true, resendable: true })
+    // A background turn, or a prompt on a history page not loaded yet.
+    expect(failed([])).toMatchObject({ actionable: true, resendable: false })
+  })
+
   it('offers a failure its action only on the newest turn', () => {
     const failure = { reason: 'overloaded' as const, message: 'Busy', action: 'retry' as const }
     const state = {
@@ -275,6 +290,21 @@ describe('rendering notices and failures', () => {
     expect(html).toContain('Sign in to Claude on the machine running this environment')
     expect(html).toContain('>Retry</button>')
     expect(markup([failurePart('t1', failure, false)])).not.toContain('<button')
+    // Nothing loaded to resend: guidance, never a dead button.
+    const unsendable = markup([failurePart('t1', failure, true, false)])
+    expect(unsendable).not.toContain('<button')
+    expect(unsendable).toContain('then send your message again')
+    // Compacting needs no prompt.
+    expect(
+      markup([
+        failurePart(
+          't1',
+          { reason: 'context_window_exceeded', message: 'Long', action: 'compact' },
+          true,
+          false,
+        ),
+      ]),
+    ).toContain('>Compact</button>')
     // A host with no way to retry shows the guidance alone, never a dead button.
     expect(
       markup([failurePart('t1', failure, true)], recovery({ retry: undefined })),
@@ -349,10 +379,105 @@ describe('recovering from a failed turn in the app', () => {
       }),
     )
     expect(container.textContent).toContain('The provider is overloaded right now.')
-    await act(() => buttonWithText('Retry')!.click())
+    // A second click before the first has re-rendered must not send twice.
+    await act(async () => {
+      buttonWithText('Retry')!.click()
+      buttonWithText('Retry')!.click()
+    })
     await settle(client)
     const sends = client.calls.filter((call) => call.command === 'sendTurn')
+    expect(sends).toHaveLength(2)
     expect(sends.at(-1)?.input).toMatchObject({ ...THREAD, text: 'build the thing' })
+  })
+
+  it('offers no Retry for a turn with no prompt to send, and says what to do', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED, respond: () => null })
+    await render(<MockEnvironmentApp client={client} />)
+    await settle(client)
+    // A turn the provider began by itself: nobody sent a prompt.
+    await act(() =>
+      client.emit({
+        type: 'event',
+        name: 'turn.started',
+        eventId: 'background-start',
+        timestamp: '2026-10-09T10:00:00.000Z',
+        scope: {
+          type: 'thread',
+          environmentId: client.getState().environment!.environmentId,
+          ...THREAD,
+        },
+        payload: {
+          turn: {
+            turnId: 'background-1',
+            threadId: THREAD.threadId,
+            state: 'running',
+            origin: 'background',
+          },
+        },
+      }),
+    )
+    await act(() =>
+      client.failTurn({ ...THREAD, turnId: 'background-1' }, 'overloaded', 'Overloaded.', {
+        action: 'retry',
+      }),
+    )
+    expect(container.textContent).toContain('Overloaded.')
+    expect(container.textContent).toContain('Send your message again to retry.')
+    expect(buttonWithText('Retry')).toBeUndefined()
+  })
+
+  it('holds recovery while a message from the composer is still being sent', async () => {
+    const client = createMockEnvironmentClient({
+      seed: {
+        ...SEED,
+        sessions: [
+          {
+            session: SESSION,
+            threads: [THREAD],
+            turns: [
+              {
+                turnId: 'failed-1',
+                threadId: THREAD.threadId,
+                state: 'failed',
+                failure: { reason: 'overloaded', message: 'Overloaded.', action: 'retry' },
+              },
+            ],
+            messages: [
+              {
+                messageId: 'failed-1-user',
+                threadId: THREAD.threadId,
+                turnId: 'failed-1',
+                role: 'user',
+                content: [{ type: 'text', text: 'first try' }],
+              },
+            ],
+          },
+        ],
+      },
+      respond: () => null,
+      latencyMs: 50,
+    })
+    await render(<MockEnvironmentApp client={client} />)
+    await settle(client)
+    expect(buttonWithText('Retry')?.disabled).toBe(false)
+
+    const textarea = container.querySelector('textarea')!
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!
+    await act(() => {
+      setter.call(textarea, 'something else')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(() =>
+      container.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!.click(),
+    )
+    // The send has not reached the environment yet: Retry must wait for it.
+    expect(buttonWithText('Retry')?.disabled).toBe(true)
+    await act(() => buttonWithText('Retry')!.click())
+    await settle(client)
+    const texts = client.calls
+      .filter((call) => call.command === 'sendTurn')
+      .map((call) => (call.input as { text: string }).text)
+    expect(texts).toEqual(['something else'])
   })
 
   it('compacts the conversation when it no longer fits', async () => {

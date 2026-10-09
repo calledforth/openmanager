@@ -12,7 +12,7 @@ import {
   type ToolState,
 } from '@openmanager/environment-client'
 import type { LocalStreamingMessage, MessagePart } from './streaming-messages-store'
-import { failurePart, noticePart } from './turn-notice-parts'
+import { failurePart, noticePart, resendablePrompt } from './turn-notice-parts'
 import type { TurnRuntimeMetadata } from '../components/parts/turn-work-group'
 import type {
   MessageContentSnapshot,
@@ -233,10 +233,14 @@ function projectTurn(
   // Whether the failure offers its action. Kept to this rather than `latest`,
   // so a new turn does not rebuild the settled turn before it.
   const actionable = latest && turn.state === 'failed' && failure !== undefined
+  // Retry needs the prompt on hand: a background turn has none, and a reloaded
+  // long turn may keep it on a page not loaded yet.
+  const resendable = actionable && resendablePrompt(messages, turn.turnId) !== undefined
   const deps = [
     turn,
     sequenceStart,
     actionable,
+    resendable,
     failure,
     liveNotice,
     ...messages,
@@ -322,7 +326,7 @@ function projectTurn(
       .map((notice) => noticePart(notice)),
     // Last, where the turn is up to now.
     ...(liveNotice ? [noticePart(liveNotice, true)] : []),
-    ...(failure ? [failurePart(turn.turnId, failure, actionable)] : []),
+    ...(failure ? [failurePart(turn.turnId, failure, actionable, resendable)] : []),
   )
   if (parts.length > 0 || !settled) {
     // Each run is its own message; the plain-text fallback keeps them as paragraphs.

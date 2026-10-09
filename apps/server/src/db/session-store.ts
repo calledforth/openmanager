@@ -317,13 +317,18 @@ export function listSessionHistory(
     if (row.kind === 'reasoning') reasoning.push(ReasoningBlockSchema.parse(state))
     else tools.push(ToolCallStateSchema.parse(state))
   }
-  capReasoningText(reasoning)
-  const noticeRows = database
-    .prepare(TURN_NOTICES_PAGE_SQL)
-    .all(query.threadId, olderBound, newerBound) as TurnNoticeRow[]
-  const notices = noticeRows.map((row) =>
-    DurableTurnNoticeSchema.parse(JSON.parse(row.notice_json)),
+  // Notices first: what they take comes out of what reasoning may spend, so
+  // the two together stay inside the reasoning budget the page always had.
+  const {
+    rows: noticeRows,
+    notices,
+    bytes: noticeBytes,
+  } = boundNotices(
+    database
+      .prepare(TURN_NOTICES_PAGE_SQL)
+      .all(query.threadId, olderBound, newerBound) as TurnNoticeRow[],
   )
+  capReasoningText(reasoning, REASONING_TEXT_BUDGET_BYTES - noticeBytes)
   const order: ActivityRef[] = [
     ...pageRows.map((row) => ({
       ordinal: row.ordinal,
@@ -424,9 +429,12 @@ export const REASONING_TEXT_BUDGET_BYTES = 384 * 1024
  * blocks past the budget keep the note alone. Tokens and phase stay, so every
  * row still reads as a finished thought of a known size.
  */
-function capReasoningText(reasoning: ReasoningBlock[]): void {
+function capReasoningText(
+  reasoning: ReasoningBlock[],
+  budget: number = REASONING_TEXT_BUDGET_BYTES,
+): void {
   const encodedBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), 'utf8')
-  let remaining = REASONING_TEXT_BUDGET_BYTES
+  let remaining = Math.max(0, budget)
   for (let index = reasoning.length - 1; index >= 0; index -= 1) {
     const block = reasoning[index]!
     const bytes = encodedBytes(block.content)
@@ -447,6 +455,58 @@ function capReasoningText(reasoning: ReasoningBlock[]): void {
       ...block,
       content: [{ type: 'text', text: kept ? `${note}\n${kept}` : note }],
     }
+  }
+}
+
+/** The most durable notices one history page or snapshot carries. */
+export const NOTICES_PER_PAGE_MAX = 50
+/** What those notices may take of the page, as encoded JSON. */
+export const NOTICE_BUDGET_BYTES = 32 * 1024
+
+/**
+ * Keep a page's newest notices within the count and byte limits. A long turn
+ * can pile up provider warnings without adding a message, and an unbounded
+ * page would close the socket instead of loading the thread. What does not
+ * fit is replaced by one `info` notice, placed where the newest left-out
+ * notice was, saying how many earlier ones were left out.
+ */
+function boundNotices(all: TurnNoticeRow[]): {
+  rows: TurnNoticeRow[]
+  notices: DurableTurnNotice[]
+  bytes: number
+} {
+  const encoded = (notice: DurableTurnNotice) => Buffer.byteLength(JSON.stringify(notice), 'utf8')
+  const kept: { row: TurnNoticeRow; notice: DurableTurnNotice }[] = []
+  let bytes = 0
+  let index = all.length - 1
+  for (; index >= 0; index -= 1) {
+    const row = all[index]!
+    const notice = DurableTurnNoticeSchema.parse(JSON.parse(row.notice_json))
+    const size = encoded(notice)
+    // Room is left for the marker that stands in for anything left out.
+    if (kept.length >= NOTICES_PER_PAGE_MAX - 1 || bytes + size > NOTICE_BUDGET_BYTES - 512) break
+    kept.unshift({ row, notice })
+    bytes += size
+  }
+  const newestOmitted = all[index]
+  if (newestOmitted) {
+    const omitted = index + 1
+    const marker: DurableTurnNotice = {
+      noticeId: `omitted-before-${newestOmitted.notice_id}`.slice(0, 256),
+      turnId: newestOmitted.turn_id,
+      kind: 'info',
+      message: `${omitted} earlier ${omitted === 1 ? 'notice' : 'notices'} not loaded`,
+    }
+    kept.unshift({
+      row: { ...newestOmitted, notice_id: marker.noticeId, notice_json: '' },
+      notice: marker,
+    })
+    bytes += encoded(marker)
+  }
+  return {
+    rows: kept.map((item) => item.row),
+    notices: kept.map((item) => item.notice),
+    bytes,
   }
 }
 

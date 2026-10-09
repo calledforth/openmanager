@@ -189,6 +189,24 @@ describe('Claude usage and rate limits', () => {
       },
     ])
   })
+
+  it('warns again at the same threshold once the allowance has reset', () => {
+    const { events, feed } = build()
+    const warning = (resetsAt: number) => ({
+      status: 'allowed_warning',
+      rateLimitType: 'five_hour',
+      surpassedThreshold: 0.9,
+      resetsAt,
+    })
+    feed(limit(warning(1_791_000_000)))
+    feed(limit({ status: 'allowed', rateLimitType: 'five_hour', resetsAt: 1_791_018_000 }))
+    feed(limit(warning(1_791_018_000)))
+    feed(limit(warning(1_791_018_000)))
+    expect(notices(events).map((notice) => notice.resetsAt)).toEqual([
+      new Date(1_791_000_000 * 1000).toISOString(),
+      new Date(1_791_018_000 * 1000).toISOString(),
+    ])
+  })
 })
 
 describe('Claude failure classification', () => {

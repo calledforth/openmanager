@@ -1,5 +1,6 @@
 import type {
   DurableTurnNotice,
+  Message,
   TransientTurnNotice,
   TurnFailure,
   TurnFailureReason,
@@ -31,7 +32,27 @@ export interface FailurePart {
    * since retrying or compacting after later turns would act on the wrong one.
    */
   actionable: boolean
+  /**
+   * Whether the turn's prompt is loaded and can be sent again. A background
+   * turn has none, and a reloaded long turn may keep its prompt on an older
+   * page; Retry is offered only when this holds.
+   */
+  resendable: boolean
   [key: string]: unknown
+}
+
+/** The prompt a turn was sent with, as a retry would send it again. */
+export function resendablePrompt(
+  messages: readonly Message[],
+  turnId: string,
+): { text: string; artifactIds: string[] } | undefined {
+  const prompt = messages.find((message) => message.turnId === turnId && message.role === 'user')
+  if (!prompt) return undefined
+  const text = prompt.content.map((block) => (block.type === 'text' ? block.text : '')).join('')
+  const artifactIds = prompt.content.flatMap((block) =>
+    block.type === 'artifact' ? [block.artifactId] : [],
+  )
+  return text || artifactIds.length > 0 ? { text, artifactIds } : undefined
 }
 
 const noticeParts = new WeakMap<object, NoticePart>()
@@ -54,22 +75,24 @@ export function noticePart(
   return part
 }
 
-const failureParts = new WeakMap<TurnFailure, Map<boolean, FailurePart>>()
+const failureParts = new WeakMap<TurnFailure, Map<string, FailurePart>>()
 
 export function failurePart(
   turnId: string,
   failure: TurnFailure,
   actionable: boolean,
+  resendable = true,
 ): FailurePart {
-  let byActionable = failureParts.get(failure)
-  if (!byActionable) {
-    byActionable = new Map()
-    failureParts.set(failure, byActionable)
+  let byFlags = failureParts.get(failure)
+  if (!byFlags) {
+    byFlags = new Map()
+    failureParts.set(failure, byFlags)
   }
-  let part = byActionable.get(actionable)
+  const key = `${actionable}:${resendable}`
+  let part = byFlags.get(key)
   if (!part) {
-    part = { type: 'failure', id: `failure:${turnId}`, turnId, failure, actionable }
-    byActionable.set(actionable, part)
+    part = { type: 'failure', id: `failure:${turnId}`, turnId, failure, actionable, resendable }
+    byFlags.set(key, part)
   }
   return part
 }
@@ -208,6 +231,28 @@ export function describeFailure(
   failure: TurnFailure,
   providerName?: string,
   now: Date = new Date(),
+  /** Whether the prompt can be sent again; without it there is no Retry. */
+  resendable = true,
+): FailureCopy {
+  const copy = describeFailureCopy(failure, providerName, now)
+  if (copy.action?.kind !== 'retry' || resendable) return copy
+  // Never a dead button: say how instead.
+  const hint = 'Send your message again to retry.'
+  return {
+    title: copy.title,
+    guidance:
+      failure.reason === 'authentication_required'
+        ? `Sign in to ${providerName ?? 'the provider'} on the machine running this environment, then send your message again.`
+        : copy.guidance
+          ? `${copy.guidance} ${hint}`
+          : hint,
+  }
+}
+
+function describeFailureCopy(
+  failure: TurnFailure,
+  providerName: string | undefined,
+  now: Date,
 ): FailureCopy {
   const action = actionButton(failure.action)
   const base = { title: failure.message, ...(action ? { action } : {}) }

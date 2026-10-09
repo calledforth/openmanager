@@ -194,7 +194,8 @@ export class ClaudeMessageTranslator {
   /** The latest `rate_limit_info`: the only structured source of when a
    * usage limit resets, read when a turn then fails on that limit. */
   private rateLimit: ClaudeRateLimit | undefined
-  /** Limits already warned about, so each threshold is announced once. */
+  /** Limits already warned about, so each threshold is announced once per
+   * allowance window. */
   private readonly warnedLimits = new Set<string>()
 
   constructor(deps: ClaudeMessageTranslatorDeps) {
@@ -729,7 +730,11 @@ export class ClaudeMessageTranslator {
     const info = object(message.rate_limit_info)
     this.rateLimit = info
     if (string(info.status) !== 'allowed_warning') return []
-    const key = `${string(info.rateLimitType) ?? ''}:${number(info.surpassedThreshold) ?? ''}`
+    // Keyed by the allowance window too: the same threshold in the next window
+    // is a new warning, not a repeat.
+    const key = [info.rateLimitType, info.surpassedThreshold, info.resetsAt]
+      .map((part) => (typeof part === 'string' || typeof part === 'number' ? part : ''))
+      .join(':')
     if (this.warnedLimits.has(key)) return []
     this.warnedLimits.add(key)
     return [this.notice(message.session_id, usageWarningNotice(info))]

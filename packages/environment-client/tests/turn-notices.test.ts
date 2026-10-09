@@ -143,6 +143,51 @@ describe('durable notices', () => {
     expect(thread(state).liveNotices).toEqual([])
   })
 
+  it('keeps the notices and order of older history a reconnect snapshot does not carry', () => {
+    let state = applyEvent(seeded(), delta('turn-1', 'a1', 'First answer'))
+    state = applyEvent(state, recorded('n-old'))
+    state = applyEvent(state, completed())
+    state = applyEvent(state, turnStarted('turn-2', 'again'))
+    state = applyEvent(state, delta('turn-2', 'a2', 'Second answer'))
+    const message = (messageId: string, turnId: string, role: 'user' | 'assistant') => ({
+      messageId,
+      threadId: THREAD.threadId,
+      turnId,
+      role,
+      content: [{ type: 'text' as const, text: messageId }],
+    })
+    // The newest page only: everything of turn 1 is older history.
+    const snapshot: ScopeSnapshot = {
+      cursor: { scope: threadScope, epoch: 'epoch', sequence: 9 },
+      state: {
+        thread: THREAD,
+        turns: [
+          { turnId: 'turn-1', threadId: THREAD.threadId, state: 'completed' },
+          { turnId: 'turn-2', threadId: THREAD.threadId, state: 'completed' },
+        ],
+        messages: [message('turn-2-user', 'turn-2', 'user'), message('a2', 'turn-2', 'assistant')],
+        nextCursor: { ordinal: 3 },
+        reasoning: [],
+        tools: [],
+        order: [
+          { kind: 'message', id: 'turn-2-user', turnId: 'turn-2' },
+          { kind: 'message', id: 'a2', turnId: 'turn-2' },
+        ],
+        notices: [],
+        interactions: [],
+      },
+    }
+    const after = thread(applySnapshot(state, snapshot))
+    expect(after.notices.map((notice) => notice.noticeId)).toEqual(['n-old'])
+    expect(after.order.map((ref) => `${ref.kind}:${ref.id}`)).toEqual([
+      'message:turn-1-user',
+      'message:a1',
+      'notice:n-old',
+      'message:turn-2-user',
+      'message:a2',
+    ])
+  })
+
   it('merges a history page without losing live ones', () => {
     let state = applyEvent(seeded(), recorded('notice-live', 'warning'))
     state = applySessionHistory(state, THREAD, {

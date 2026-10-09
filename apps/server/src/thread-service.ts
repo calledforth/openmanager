@@ -892,8 +892,19 @@ export function createThreadService(
     // own signals would only repeat them.
     if (projected.name === 'session.created') return
     if (options.database && projected.name === 'turn.started') return
-    if (projected.name === 'turn.notice') publishTransient(projected)
-    else appendRuntimeEvent(projected)
+    if (projected.name === 'turn.notice') {
+      // Output the batcher still holds happened before this notice. Published
+      // after it, a late delta would read as the recovery the notice waits for
+      // and clear it on every client; the provider's order must hold.
+      try {
+        options.flush?.()
+      } catch (error) {
+        // A failed write keeps its batch queued; the notice still goes out.
+        if (!options.onPersistenceError) throw error
+        options.onPersistenceError(error, projected.name)
+      }
+      publishTransient(projected)
+    } else appendRuntimeEvent(projected)
     if (active && projected.name === 'interaction.requested') {
       const { interaction } = projected.payload
       active.pendingInteractions.add(interaction.interactionId)

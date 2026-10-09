@@ -611,6 +611,11 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
   const withThread = ensureThread(state, thread)
   const existing = withThread.threads[thread.threadId]!
   const messages = retainOlderMessages(existing.messages, threadSnapshot.messages)
+  const older = retainOlderActivity(
+    existing,
+    messages.slice(0, messages.length - threadSnapshot.messages.length),
+    threadSnapshot.messages[0]?.messageId,
+  )
   const replaced: ThreadState = {
     ...createThreadState(thread, 'ready'),
     // A snapshot describes what the environment has; a send it has not
@@ -619,13 +624,13 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
     outbox: reconcileOutbox(existing, threadSnapshot.messages),
     turns: threadSnapshot.turns,
     messages,
-    // Older pages the client keeps in front of the snapshot place their
-    // messages; the snapshot places its own page, reasoning and tools included
-    // when the environment reports them.
-    order: [
-      ...orderOfMessages(messages.slice(0, messages.length - threadSnapshot.messages.length)),
-      ...(threadSnapshot.order ?? orderOfMessages(threadSnapshot.messages)),
-    ],
+    // Older pages the client keeps in front of the snapshot keep everything
+    // they placed; the snapshot places its own page, reasoning, tools and
+    // notices included when the environment reports them.
+    order: mergeOrder(
+      older.order,
+      threadSnapshot.order ?? orderOfMessages(threadSnapshot.messages),
+    ),
     historyCursor:
       existing.historyCursor !== undefined &&
       existing.messages.findIndex(
@@ -633,9 +638,9 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
       ) > 0
         ? existing.historyCursor
         : threadSnapshot.nextCursor,
-    reasoning: threadSnapshot.reasoning,
-    tools: threadSnapshot.tools,
-    notices: threadSnapshot.notices ?? [],
+    reasoning: mergeById(threadSnapshot.reasoning, older.reasoning, (entry) => entry.messageId),
+    tools: mergeById(threadSnapshot.tools, older.tools, (tool) => tool.toolCallId),
+    notices: mergeById(threadSnapshot.notices ?? [], older.notices, (notice) => notice.noticeId),
     // Not part of any snapshot: kept only while their turn is still open.
     liveNotices: openTurnNotices(existing, threadSnapshot.turns),
     interactions: threadSnapshot.interactions.map((item) => ({
@@ -646,6 +651,40 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
     })),
   }
   return { ...withThread, threads: { ...withThread.threads, [thread.threadId]: replaced } }
+}
+
+/**
+ * What the older pages a client keeps in front of a snapshot placed: their
+ * order up to the snapshot's first message, and the reasoning, tools and
+ * notices that order names. Without it a reconnect after scrolling back would
+ * keep the older messages but drop every thought, tool call and notice
+ * between them. A client that holds no order for them falls back to their
+ * messages alone.
+ */
+function retainOlderActivity(
+  existing: ThreadState,
+  olderMessages: readonly Message[],
+  firstSnapshotMessageId: string | undefined,
+): Pick<ThreadState, 'order' | 'reasoning' | 'tools' | 'notices'> {
+  if (olderMessages.length === 0) return { order: [], reasoning: [], tools: [], notices: [] }
+  const cut = existing.order.findIndex(
+    (ref) => ref.kind === 'message' && ref.id === firstSnapshotMessageId,
+  )
+  if (cut <= 0) {
+    return { order: orderOfMessages(olderMessages), reasoning: [], tools: [], notices: [] }
+  }
+  const order = existing.order.slice(0, cut)
+  const placed = (kind: ActivityRef['kind']) =>
+    new Set(order.filter((ref) => ref.kind === kind).map((ref) => ref.id))
+  const reasoningIds = placed('reasoning')
+  const toolIds = placed('tool')
+  const noticeIds = placed('notice')
+  return {
+    order,
+    reasoning: existing.reasoning.filter((entry) => reasoningIds.has(entry.messageId)),
+    tools: existing.tools.filter((tool) => toolIds.has(tool.toolCallId)),
+    notices: existing.notices.filter((notice) => noticeIds.has(notice.noticeId)),
+  }
 }
 
 /**

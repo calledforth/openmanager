@@ -98,6 +98,7 @@ import {
   type WorkspaceEntry,
 } from './sidebar-provider'
 import { TurnRecoveryContext, type TurnRecoveryValue } from './turn-recovery'
+import { resendablePrompt } from '../lib/turn-notice-parts'
 import {
   ActiveThreadStateContext,
   ActiveThreadStoresContext,
@@ -1634,11 +1635,17 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
 
   // What a failed turn's row offers. A retry is a new turn with the failed
   // turn's prompt and images; compacting is Claude Code's own `/compact`,
-  // sent as the composer sends any command.
+  // sent as the composer sends any command. Neither may race a send that is
+  // still on its way: the environment would refuse the second, and that
+  // refusal would clear the composer's pending state for the first.
+  const recoveryBusy = !!activeTurn || session.localSessionStatus !== null
+  const recoveryBusyRef = useRef(recoveryBusy)
+  recoveryBusyRef.current = recoveryBusy
   const resend = useCallback(
     async (text: string, artifactIds: string[] = []) => {
       const current = targetRef.current
-      if (!current) return
+      if (!current || recoveryBusyRef.current) return
+      recoveryBusyRef.current = true
       setError(null)
       beginSessionTurn()
       await commands
@@ -1651,18 +1658,12 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
     async (turnId: string) => {
       const current = targetRef.current
       if (!current) return
-      const prompt = client
-        .getState()
-        .threads[current.threadId]?.messages.find(
-          (message) => message.turnId === turnId && message.role === 'user',
-        )
-      if (!prompt) return
-      const text = prompt.content.map((block) => (block.type === 'text' ? block.text : '')).join('')
-      const artifactIds = prompt.content.flatMap((block) =>
-        block.type === 'artifact' ? [block.artifactId] : [],
+      // The row only offers Retry when this prompt is loaded; see the projection.
+      const prompt = resendablePrompt(
+        client.getState().threads[current.threadId]?.messages ?? [],
+        turnId,
       )
-      if (!text && artifactIds.length === 0) return
-      await resend(text, artifactIds)
+      if (prompt) await resend(prompt.text, prompt.artifactIds)
     },
     [client, resend],
   )
@@ -1675,9 +1676,9 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       ...(activeProviderId && isProviderId(activeProviderId)
         ? { providerName: providerDisplayName(activeProviderId) }
         : {}),
-      busy: !!activeTurn,
+      busy: recoveryBusy,
     }),
-    [activeProviderId, activeTurn, compactSession, providerDisplayName, retryTurn],
+    [activeProviderId, compactSession, providerDisplayName, recoveryBusy, retryTurn],
   )
 
   const respond = useCallback(

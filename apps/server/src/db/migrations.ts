@@ -763,9 +763,11 @@ export const MIGRATIONS: readonly Migration[] = [
     },
   },
   {
-    // REBASE: placeholder for the tool payloads migration, which takes 20 and
-    // is expected to merge first. Replace this entry with that one when
-    // rebasing; it exists only so the catalog stays contiguous until then.
+    // !!! PLACEHOLDER. This entry MUST be replaced by the real migration 20 on
+    // rebase; never run this branch against a real database. Migration 20
+    // belongs to the tool payloads change (PR #212), which merges first; this
+    // no-op only keeps the catalog contiguous until then. A database that ran
+    // it would record version 21 and never run the real 20.
     version: 20,
     name: 'reserved_for_tool_payloads',
     up() {},
