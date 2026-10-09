@@ -97,6 +97,7 @@ import {
   type SidebarSessionsByWorkspace,
   type WorkspaceEntry,
 } from './sidebar-provider'
+import { TurnRecoveryContext, type TurnRecoveryValue } from './turn-recovery'
 import {
   ActiveThreadStateContext,
   ActiveThreadStoresContext,
@@ -1631,6 +1632,54 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
     [beginSessionTurn, client, commands, failTurn],
   )
 
+  // What a failed turn's row offers. A retry is a new turn with the failed
+  // turn's prompt and images; compacting is Claude Code's own `/compact`,
+  // sent as the composer sends any command.
+  const resend = useCallback(
+    async (text: string, artifactIds: string[] = []) => {
+      const current = targetRef.current
+      if (!current) return
+      setError(null)
+      beginSessionTurn()
+      await commands
+        .sendTurn({ ...current, text, ...(artifactIds.length ? { artifactIds } : {}) })
+        .catch(() => failTurn())
+    },
+    [beginSessionTurn, commands, failTurn],
+  )
+  const retryTurn = useCallback(
+    async (turnId: string) => {
+      const current = targetRef.current
+      if (!current) return
+      const prompt = client
+        .getState()
+        .threads[current.threadId]?.messages.find(
+          (message) => message.turnId === turnId && message.role === 'user',
+        )
+      if (!prompt) return
+      const text = prompt.content.map((block) => (block.type === 'text' ? block.text : '')).join('')
+      const artifactIds = prompt.content.flatMap((block) =>
+        block.type === 'artifact' ? [block.artifactId] : [],
+      )
+      if (!text && artifactIds.length === 0) return
+      await resend(text, artifactIds)
+    },
+    [client, resend],
+  )
+  const compactSession = useCallback(() => resend('/compact'), [resend])
+  const activeProviderId = activeSession?.providerId
+  const recovery = useMemo<TurnRecoveryValue>(
+    () => ({
+      retry: retryTurn,
+      compact: compactSession,
+      ...(activeProviderId && isProviderId(activeProviderId)
+        ? { providerName: providerDisplayName(activeProviderId) }
+        : {}),
+      busy: !!activeTurn,
+    }),
+    [activeProviderId, activeTurn, compactSession, providerDisplayName, retryTurn],
+  )
+
   const respond = useCallback(
     async (threadId: string, response: InteractionResponse) => {
       const state = client.getState()
@@ -1783,7 +1832,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
   return (
     <ActiveThreadStoresContext.Provider value={threadStores}>
       <ActiveThreadStateContext.Provider value={value}>
-        {children}
+        <TurnRecoveryContext.Provider value={recovery}>{children}</TurnRecoveryContext.Provider>
       </ActiveThreadStateContext.Provider>
     </ActiveThreadStoresContext.Provider>
   )
