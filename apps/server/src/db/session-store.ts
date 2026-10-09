@@ -313,7 +313,6 @@ export function listSessionHistory(
     }
   }
   capReasoningText(reasoning)
-  attachToolPayloads(database, tools, toolRows, encodedBytes(messages) + encodedBytes(reasoning))
   const order: ActivityRef[] = [
     ...pageRows.map((row) => ({
       ordinal: row.ordinal,
@@ -363,7 +362,7 @@ export function listSessionHistory(
         : undefined,
     }),
   )
-  return {
+  const page: SessionHistoryPage = {
     messages,
     turns,
     interactions,
@@ -373,6 +372,9 @@ export function listSessionHistory(
     order,
     nextCursor: rows.length > limit && oldest !== undefined ? { ordinal: oldest.ordinal } : null,
   }
+  // Last, against the page as it will be sent: everything else is measured first.
+  attachToolPayloads(database, page, toolRows)
+  return page
 }
 
 function messageFromRow(database: DatabaseSync, row: MessageRow): Message {
@@ -429,71 +431,114 @@ function capReasoningText(reasoning: ReasoningBlock[]): void {
 
 /**
  * Tool payload (input, output, locations) a page may carry. Like reasoning,
- * the newest calls are served first, and the payloads never take the page past
- * `HISTORY_PAGE_BUDGET_BYTES` together with its messages and reasoning.
+ * the newest calls are served first.
  */
 export const TOOL_PAYLOAD_BUDGET_BYTES = 256 * 1024
 /**
- * What one history page or snapshot may come to before tool payloads are
- * left out: the socket's 1 MiB slow-consumer budget, less room for the
- * envelope, turns, interactions and order list.
+ * What one history page or snapshot frame may come to with its tool payloads:
+ * the socket's 1 MiB slow-consumer budget, less headroom for other frames
+ * queued behind it. Payloads only fill what the rest of the page leaves; a
+ * page already over this without them is sent as it is, payload-free.
  */
 export const HISTORY_PAGE_BUDGET_BYTES = 896 * 1024
+/**
+ * Room kept for what wraps a page on the wire: the response or snapshot
+ * envelope, request and subscription ids, the cursor and its scope.
+ */
+export const HISTORY_ENVELOPE_RESERVE_BYTES = 8 * 1024
 /** Less room than this is not worth a partial payload; the call is marked instead. */
 const PARTIAL_PAYLOAD_MIN_BYTES = 512
 
 const encodedBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), 'utf8')
 
 /**
- * Give the page's tool calls their payloads, newest first, while the budget
- * lasts. The call that does not fit keeps its locations and input if they do
+ * Give the page's tool calls their payloads, newest first, while the frame
+ * budget lasts. The room is what the complete page leaves, measured after its
+ * messages, reasoning, turns, interactions, plans, order and tool states, and
+ * every call is charged exactly what it adds to the encoded page.
+ *
+ * The call that does not fit whole keeps its locations and input if they fit
  * and as much of its output's start and newest end as the rest allows. Older
- * calls past the budget carry no input or locations, and an output that is
- * only a marker of how many payload bytes were left out, so a client can tell
- * "not loaded" from "no output". Only payloads that fit are read at all.
+ * calls carry no input or locations, and an output that is only a marker of
+ * how many payload bytes were left out, so a client can tell "not loaded" from
+ * "no output"; a marker that does not fit either is left off. Only payloads
+ * that may fit are read at all.
  */
 function attachToolPayloads(
   database: DatabaseSync,
-  tools: ToolCallState[],
+  page: SessionHistoryPage,
   rows: readonly TurnActivityRow[],
-  spentBytes: number,
 ): void {
+  const tools = page.tools
+  if (!rows.some((row) => row.payload_bytes > 0)) return
   const read = database.prepare(TURN_ACTIVITY_PAYLOAD_SQL)
   const payloadOf = (row: TurnActivityRow): ToolPayload => {
     const found = read.get(row.activity_id) as { payload_json: string | null } | undefined
     return found?.payload_json ? (JSON.parse(found.payload_json) as ToolPayload) : {}
   }
-  let remaining = Math.min(
-    TOOL_PAYLOAD_BUDGET_BYTES,
-    Math.max(0, HISTORY_PAGE_BUDGET_BYTES - spentBytes - encodedBytes(tools)),
-  )
+  const frame = HISTORY_PAGE_BUDGET_BYTES - HISTORY_ENVELOPE_RESERVE_BYTES
+  const bare = encodedBytes(page)
+  const light = [...tools]
+  let remaining = Math.min(TOOL_PAYLOAD_BUDGET_BYTES, Math.max(0, frame - bare))
+  const marker = (index: number): ToolCallState => ({
+    ...tools[index]!,
+    output: { text: '', omittedBytes: rows[index]!.payload_bytes },
+  })
+  // What marking every older call would add, so a newer call's payload never
+  // takes the room the markers below it need.
+  const olderMarkers: number[] = []
+  let markers = 0
+  for (let index = 0; index < tools.length; index += 1) {
+    olderMarkers.push(markers)
+    if (rows[index]!.payload_bytes > 0) {
+      markers += encodedBytes(marker(index)) - encodedBytes(tools[index])
+    }
+  }
+  // Once one call does not fit whole, every older one is only marked.
+  let whole = true
   for (let index = tools.length - 1; index >= 0; index -= 1) {
     const row = rows[index]!
     if (row.payload_bytes === 0) continue
-    if (row.payload_bytes <= remaining) {
-      remaining -= row.payload_bytes
-      tools[index] = ToolCallStateSchema.parse({ ...tools[index], ...payloadOf(row) })
-      continue
+    const state = tools[index]!
+    const stateBytes = encodedBytes(state)
+    const cost = (next: ToolCallState) => encodedBytes(next) - stateBytes
+    const available = remaining - olderMarkers[index]!
+    const take = (next: ToolCallState, limit: number): boolean => {
+      const bytes = cost(next)
+      if (bytes > limit) return false
+      tools[index] = next
+      remaining -= bytes
+      return true
     }
-    if (remaining >= PARTIAL_PAYLOAD_MIN_BYTES) {
+    // The stored payload's own size is within a byte of what it adds.
+    if (whole && row.payload_bytes <= available + 1) {
+      if (take(ToolCallStateSchema.parse({ ...state, ...payloadOf(row) }), available)) continue
+    }
+    if (whole && available >= PARTIAL_PAYLOAD_MIN_BYTES) {
+      whole = false
       const payload = payloadOf(row)
-      const kept: ToolPayload = {}
-      let room = remaining
+      let candidate: ToolCallState = state
       for (const key of ['locations', 'input'] as const) {
         if (payload[key] === undefined) continue
-        const bytes = encodedBytes(payload[key])
-        if (bytes > room) continue
-        Object.assign(kept, { [key]: payload[key] })
-        room -= bytes
+        const next = { ...candidate, [key]: payload[key] }
+        if (cost(next) <= available) candidate = next
       }
-      if (payload.output) kept.output = shrinkToolOutput(payload.output, room)
-      remaining = 0
-      tools[index] = ToolCallStateSchema.parse({ ...tools[index], ...kept })
-      continue
+      if (payload.output) {
+        // `,"output":` is what the key itself adds around the value.
+        const room = available - cost(candidate) - 10
+        if (room > 0) {
+          const next = { ...candidate, output: shrinkToolOutput(payload.output, room) }
+          if (cost(next) <= available) candidate = next
+        }
+      }
+      if (candidate !== state && take(ToolCallStateSchema.parse(candidate), available)) continue
     }
-    remaining = 0
-    tools[index] = { ...tools[index]!, output: { text: '', omittedBytes: row.payload_bytes } }
+    whole = false
+    take(marker(index), remaining)
   }
+  // Payloads must never be what takes the frame over: if they somehow did,
+  // the page goes out as it would have without them.
+  if (encodedBytes(page) > Math.max(frame, bare)) tools.splice(0, tools.length, ...light)
 }
 
 /**

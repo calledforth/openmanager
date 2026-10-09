@@ -206,4 +206,23 @@ describe('tool call state', () => {
     ).toBe(false)
     expect(PROTOCOL_VERSION).toBe(17)
   })
+
+  it('checks inputs, outputs and deltas against their bounds in encoded bytes', () => {
+    const accepts = (payload: Record<string, unknown>) =>
+      ToolCallUpdateSchema.safeParse({ ...base, ...payload }).success
+    // Few characters, many bytes: 1,500 CJK characters are 4,500 UTF-8 bytes.
+    expect(accepts({ input: { query: '中'.repeat(1_500) } })).toBe(false)
+    expect(accepts({ input: { query: '中'.repeat(1_000) } })).toBe(true)
+    expect(accepts({ input: boundToolInput({ query: '中'.repeat(10_000) }) })).toBe(true)
+    // Each half within the cap, the two together not.
+    expect(
+      accepts({ output: { text: 'a'.repeat(10_000), omittedBytes: 5, tail: 'b'.repeat(10_000) } }),
+    ).toBe(false)
+    expect(accepts({ output: { text: '中'.repeat(6_000) } })).toBe(false)
+    expect(accepts({ output: boundToolOutput('中'.repeat(60_000)) })).toBe(true)
+    // Quotes and newlines cost two bytes each once encoded.
+    expect(accepts({ outputDelta: '\n'.repeat(10_000) })).toBe(false)
+    expect(accepts({ outputDelta: '😀'.repeat(4_000) })).toBe(true)
+    expect(accepts({ outputDelta: '😀'.repeat(5_000) })).toBe(false)
+  })
 })

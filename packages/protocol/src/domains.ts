@@ -7,6 +7,9 @@ import {
   TOOL_LOCATIONS_MAX,
   TOOL_NAME_MAX_LENGTH,
   TOOL_OUTPUT_MAX_BYTES,
+  jsonStringBytes,
+  toolOutputBytes,
+  utf8Bytes,
 } from './tool-output.js'
 
 /** Host-owned resource identity, distinct from a command's request ID. */
@@ -282,6 +285,10 @@ export const ToolOutputSchema = z
     message: 'Only a truncated output has a tail.',
     path: ['tail'],
   })
+  // The whole object, as it travels: head, tail and keys together.
+  .refine((output) => toolOutputBytes(output) <= TOOL_OUTPUT_MAX_BYTES, {
+    message: 'Tool output exceeds its bound.',
+  })
 /** Lines an edit added and removed, only ever as the provider reported them. */
 export const ToolLineChangesSchema = z.object({
   added: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
@@ -290,7 +297,7 @@ export const ToolLineChangesSchema = z.object({
 /** A tool's input as the environment keeps it: JSON, bounded, edit bodies removed. */
 export const ToolInputSchema = z
   .json()
-  .refine((input) => JSON.stringify(input).length <= TOOL_INPUT_MAX_BYTES, {
+  .refine((input) => utf8Bytes(JSON.stringify(input)) <= TOOL_INPUT_MAX_BYTES, {
     message: 'Tool input exceeds its bound.',
   })
 /** What the environment keeps of a tool call, and what a page or a snapshot carries. */
@@ -317,7 +324,14 @@ export const ToolCallStateSchema = z.object({
  * appended with `appendToolOutput`. Never both: their order would be ambiguous.
  */
 export const ToolCallUpdateSchema = ToolCallStateSchema.extend({
-  outputDelta: z.string().min(1).max(TOOL_OUTPUT_MAX_BYTES).optional(),
+  outputDelta: z
+    .string()
+    .min(1)
+    .max(TOOL_OUTPUT_MAX_BYTES)
+    .refine((delta) => jsonStringBytes(delta) <= TOOL_OUTPUT_MAX_BYTES, {
+      message: 'Tool output delta exceeds its bound.',
+    })
+    .optional(),
 }).refine((update) => update.output === undefined || update.outputDelta === undefined, {
   message: 'A tool update replaces its output or appends to it, not both.',
   path: ['outputDelta'],

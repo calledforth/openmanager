@@ -23,6 +23,7 @@ import { readSchemaVersion } from '../src/db/migrate.js'
 import { MIGRATIONS } from '../src/db/migrations.js'
 import { createReplayReader } from '../src/db/replay.js'
 import {
+  HISTORY_ENVELOPE_RESERVE_BYTES,
   HISTORY_PAGE_BUDGET_BYTES,
   TOOL_PAYLOAD_BUDGET_BYTES,
   listSessionHistory,
@@ -295,6 +296,60 @@ describe('tool payloads in turn_activity', () => {
     expect(encoded(snapshot)).toBeLessThan(1024 * 1024)
   })
 
+  it.each([
+    ['leaves payloads less room when turns fill the page', 2_200],
+    ['carries no payload when the page is over budget without one', 3_200],
+  ])('%s', async (_name, turnCount) => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    // Every turn of the thread rides each page; long ids make them heavy.
+    const insert = database.prepare(
+      `INSERT INTO turns (turn_id, thread_id, workspace_id, state, started_at, updated_at, finished_at)
+       VALUES (?, 'thread-1', 'workspace-1', 'completed', ?, ?, ?)`,
+    )
+    for (let index = 0; index < turnCount; index += 1) {
+      insert.run(`old-${index}-${'t'.repeat(200)}`, index + 1, index + 1, index + 1)
+    }
+    const events: DurableProofEvent[] = [started()]
+    for (let index = 0; index < 20; index += 1) {
+      events.push(
+        tool({
+          toolCallId: `call-${index}`,
+          toolName: 'Bash',
+          status: 'completed',
+          input: { command: `run ${index}` },
+          output: boundToolOutput(`${index}:${'x'.repeat(60_000)}`),
+        }),
+      )
+    }
+    events.push(finished())
+    repository.appendEvents(scope, events)
+
+    const page = history(database)
+    const bare = {
+      ...page,
+      tools: page.tools.map(
+        ({ input: _input, output: _output, locations: _locations, ...state }) => state,
+      ),
+    }
+    const frame = HISTORY_PAGE_BUDGET_BYTES - HISTORY_ENVELOPE_RESERVE_BYTES
+    if (encoded(bare) <= frame) {
+      // Payloads fill what the turns leave, and no more.
+      expect(encoded(page)).toBeLessThanOrEqual(frame)
+      expect(encoded(page) - encoded(bare)).toBeLessThan(TOOL_PAYLOAD_BUDGET_BYTES)
+      expect(encoded(page) - encoded(bare)).toBeGreaterThan(frame - encoded(bare) - 20_000)
+      expect(page.tools.at(-1)!.output).toEqual(boundToolOutput(`19:${'x'.repeat(60_000)}`))
+      expect(page.tools[0]!.output).toMatchObject({ text: '' })
+    } else {
+      // Already over without payloads: they are left off, markers included.
+      expect(
+        page.tools.every((item) => item.input === undefined && item.output === undefined),
+      ).toBe(true)
+      expect(encoded(page)).toBe(encoded(bare))
+    }
+    expect(encoded(bare) <= frame).toBe(turnCount === 2_200)
+  })
+
   it('replays output deltas to exactly what a late joiner reads from the snapshot', async () => {
     const { database } = await createDatabase()
     const repository = createEventRepository(database)
@@ -340,14 +395,67 @@ describe('tool payloads in turn_activity', () => {
 
   it('settles a call a dead process left open as cancelled when the environment restarts', async () => {
     const { database, directory } = await createDatabase()
-    createEventRepository(database).appendEvents(scope, [
+    // A second thread whose turn finished before the crash.
+    database.exec(`
+      INSERT INTO threads (thread_id, session_id, workspace_id, created_at, updated_at)
+      VALUES ('thread-2', 'session-1', 'workspace-1', 1, 1);
+    `)
+    const settledScope = { ...scope, threadId: 'thread-2' }
+    const repository = createEventRepository(database)
+    repository.appendEvents(scope, [
       started(),
       tool({ toolName: 'Bash', status: 'in_progress', input: { command: 'sleep 100' } }),
       tool({ toolCallId: 'tool-done', toolName: 'Read', status: 'completed', finishedAt: at(2) }),
     ])
+    repository.appendEvents(settledScope, [
+      ProofEventSchemas['turn.started'].parse({
+        ...started('turn-2'),
+        scope: settledScope,
+        payload: {
+          turn: { turnId: 'turn-2', threadId: 'thread-2', state: 'running' },
+          userMessage: {
+            messageId: 'prompt-turn-2',
+            threadId: 'thread-2',
+            turnId: 'turn-2',
+            role: 'user',
+            content: [{ type: 'text', text: 'Hi' }],
+          },
+        },
+      }),
+      ProofEventSchemas['turn.completed'].parse({
+        ...finished('turn.completed', 'turn-2'),
+        scope: settledScope,
+      }),
+    ])
+    const readerOf = (db: DatabaseSync) =>
+      createReplayReader(db, {
+        epoch: 'epoch-1',
+        environment: () => ({ environmentId: 'environment-1', name: 'Local' }),
+        workspaces: () => [],
+      })
+    // What a connected client last applied, just before the process died.
+    const before = readerOf(database).read(scope, null)
+    const settledBefore = readerOf(database).read(settledScope, null)
+    if (before.mode !== 'snapshot' || settledBefore.mode !== 'snapshot') throw new Error('snapshot')
     database.close()
     const reopened = openEnvironmentDatabase(directory)
     databases.push(reopened)
+
+    // Resuming from that cursor must not replay nothing over a running turn:
+    // the stream reset hands the client the recovered state instead.
+    const resumed = readerOf(reopened).read(scope, before.snapshot.cursor)
+    expect(resumed).toMatchObject({ mode: 'snapshot', reason: 'stream_reset' })
+    if (resumed.mode !== 'snapshot') return
+    const state = resumed.snapshot.state as { turns: { state: string }[]; tools: ToolCallState[] }
+    expect(state.turns[0]!.state).toBe('interrupted')
+    expect(state.tools[0]).toMatchObject({ toolCallId: 'tool-1', status: 'cancelled' })
+    expect(resumed.snapshot.cursor.sequence).toBe(before.snapshot.cursor.sequence)
+    // A thread with nothing to recover keeps its stream.
+    expect(readerOf(reopened).read(settledScope, settledBefore.snapshot.cursor)).toMatchObject({
+      mode: 'replay',
+      events: [],
+    })
+
     const page = history(reopened)
     expect(page.turns[0]!.state).toBe('interrupted')
     expect(page.tools[0]).toMatchObject({

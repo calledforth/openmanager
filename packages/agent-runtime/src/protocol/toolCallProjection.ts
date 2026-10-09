@@ -44,19 +44,35 @@ const EDIT_BODY_KEYS = new Set([
   'new_source',
   'content',
   'contents',
+])
+/**
+ * Keys whose string value is a patch or diff body, whatever the tool says it
+ * is: OpenCode's `apply_patch` sends its whole patch as `patchText`. For any
+ * tool only a string is a body, so a `diff: true` flag stays; an edit tool
+ * loses the key whatever it holds.
+ */
+const PATCH_BODY_KEYS = new Set([
   'patch',
+  'patchText',
+  'patch_text',
   'diff',
+  'diffText',
+  'diff_text',
+  'unifiedDiff',
+  'unified_diff',
 ])
 /** Claude Code's edit tools, recognised by name even on an update that carries no kind. */
 const EDIT_TOOL_NAMES = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
 
-function stripEditBodies(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stripEditBodies)
+/** The input without edit bodies (an edit tool's) or patch bodies (any tool's). */
+function stripBodies(value: unknown, edit: boolean): unknown {
+  if (Array.isArray(value)) return value.map((item) => stripBodies(item, edit))
   if (!value || typeof value !== 'object') return value
   const kept: Record<string, unknown> = {}
   for (const [key, item] of Object.entries(value)) {
-    if (EDIT_BODY_KEYS.has(key)) continue
-    kept[key] = item && typeof item === 'object' ? stripEditBodies(item) : item
+    if (edit && EDIT_BODY_KEYS.has(key)) continue
+    if (PATCH_BODY_KEYS.has(key) && (edit || typeof item === 'string')) continue
+    kept[key] = item && typeof item === 'object' ? stripBodies(item, edit) : item
   }
   return kept
 }
@@ -72,12 +88,26 @@ function textOf(value: unknown): string | undefined {
 }
 
 /**
+ * A provider-shaped raw output's text: `{ output }` on success or `{ error }`
+ * on failure, the shape OpenCode reports with its `metadata` beside it. The
+ * metadata (which can hold a diff) is never read.
+ */
+function reportedText(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const report = value as { output?: unknown; error?: unknown }
+  if (typeof report.output === 'string' && report.output) return report.output
+  if (typeof report.error === 'string' && report.error) return report.error
+  return undefined
+}
+
+/**
  * The output a tool update reports, as text, whole (a replacement of what
  * came before). Text and embedded-resource content first; for a tool with no
  * such content, a raw output that is text (Claude Code's tool result: a string
- * or a list of text blocks). Images are left out: the environment moves them
- * into the reply. Diffs and terminals are left out: chat carries no diff, and
- * a terminal is only a handle. An edit's own content is its body, never output.
+ * or a list of text blocks) or a report's `output` or `error` string. Images
+ * are left out: the environment moves them into the reply. Diffs and terminals
+ * are left out: chat carries no diff, and a terminal is only a handle. An
+ * edit's own content is its body, never output.
  */
 export function toolOutputText(tool: AgentTool, edit: boolean): string | undefined {
   if (!edit && tool.content?.length) {
@@ -96,7 +126,7 @@ export function toolOutputText(tool: AgentTool, edit: boolean): string | undefin
     })
     return texts.length > 0 ? texts.join('\n') : undefined
   }
-  return textOf(raw)
+  return textOf(raw) ?? reportedText(raw)
 }
 
 /** The text of one content item, if it has any to show as output. */
@@ -137,9 +167,7 @@ export function toolFields(
       : undefined
   const edit = isEdit(tool.kind ?? options.kind, toolName)
   const input =
-    tool.rawInput === undefined
-      ? undefined
-      : boundToolInput(edit ? stripEditBodies(tool.rawInput) : tool.rawInput)
+    tool.rawInput === undefined ? undefined : boundToolInput(stripBodies(tool.rawInput, edit))
   // An outcome only ever explains a call that did not complete.
   const status: ToolCallStatus | undefined =
     tool.outcome && tool.status !== 'completed' ? tool.outcome : tool.status

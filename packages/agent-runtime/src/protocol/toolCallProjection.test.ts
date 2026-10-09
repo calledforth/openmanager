@@ -307,6 +307,114 @@ describe('Claude Code tool calls on the wire', () => {
   })
 })
 
+describe('ACP edit calls', () => {
+  // As OpenCode reports them over ACP: no tool name, `kind: 'edit'`, the
+  // output as `{ output | error, metadata }` and the diff as content.
+  const acp = (
+    data: Record<string, unknown>,
+    event: 'tool_call' | 'tool_call_update' = 'tool_call_update',
+  ) =>
+    stamp({
+      workspaceId: 'w',
+      sessionId: 's',
+      category: 'tool',
+      event,
+      data: { toolCallId: 'patch', ...data },
+    } as BackendEvent)
+  const patch = [
+    '*** Begin Patch',
+    '*** Update File: src/a.ts',
+    '-SECRET OLD LINE',
+    '+SECRET NEW LINE',
+    '*** End Patch',
+  ].join('\n')
+  const diff = {
+    type: 'diff',
+    path: '/repo/src/a.ts',
+    oldText: 'SECRET OLD',
+    newText: 'SECRET NEW',
+  }
+
+  it('never carries an apply_patch body, and shows what the provider said it did', () => {
+    const { project, updates, states } = projector()
+    project(
+      acp(
+        {
+          title: 'apply_patch',
+          kind: 'edit',
+          status: 'pending',
+          rawInput: { patchText: patch },
+          locations: [{ path: '/repo/src/a.ts' }],
+        },
+        'tool_call',
+      ),
+    )
+    project(
+      acp({
+        status: 'completed',
+        content: [diff],
+        rawOutput: {
+          output: 'Success. Updated the following files:\nM src/a.ts',
+          metadata: { diff: 'SECRET DIFF' },
+        },
+      }),
+    )
+    expect(JSON.stringify(updates)).not.toContain('SECRET')
+    expect(states.get('host-patch')).toMatchObject({
+      title: 'apply_patch',
+      kind: 'edit',
+      status: 'completed',
+      input: {},
+      locations: [{ path: '/repo/src/a.ts' }],
+      output: { text: 'Success. Updated the following files:\nM src/a.ts' },
+    })
+  })
+
+  it('shows why an edit failed', () => {
+    const { project, states, updates } = projector()
+    project(
+      acp(
+        {
+          title: 'edit',
+          kind: 'edit',
+          status: 'in_progress',
+          rawInput: { filePath: '/repo/a.ts', oldString: 'SECRET', newString: 'SECRET 2' },
+        },
+        'tool_call',
+      ),
+    )
+    project(
+      acp({
+        status: 'failed',
+        content: [],
+        rawOutput: { error: 'oldString not found in content', metadata: {} },
+      }),
+    )
+    expect(JSON.stringify(updates)).not.toContain('SECRET')
+    expect(states.get('host-patch')).toMatchObject({
+      status: 'failed',
+      input: { filePath: '/repo/a.ts' },
+      output: { text: 'oldString not found in content' },
+    })
+  })
+
+  it('drops a patch body from any tool but keeps a diff flag', () => {
+    const { project, states } = projector()
+    project(
+      acp(
+        {
+          title: 'git',
+          kind: 'execute',
+          status: 'in_progress',
+          rawInput: { patchText: patch, unified_diff: patch, diff: true, cwd: '/repo' },
+        },
+        'tool_call',
+      ),
+    )
+    expect(states.get('host-patch')!.input).toEqual({ diff: true, cwd: '/repo' })
+  })
+})
+
 describe('streamed tool output', () => {
   const update = (
     data: Record<string, unknown>,

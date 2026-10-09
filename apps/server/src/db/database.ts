@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { runMigrations, type Migration } from './migrate.ts'
@@ -36,7 +37,9 @@ export function openEnvironmentDatabase(
 /**
  * Reconcile work that cannot still be live after the owning server process has
  * restarted. The turn is recorded as interrupted, but its session shows as
- * failed: nobody asked for it to stop, so the user should notice. Keeping this in one transaction prevents clients from observing a
+ * failed: nobody asked for it to stop, so the user should notice. Tools left
+ * open are cancelled, and the threads affected start a new stream epoch so a
+ * reconnecting client takes a snapshot. Keeping this in one transaction prevents clients from observing a
  * session whose status disagrees with its turn, messages, or interactions.
  */
 export function recoverInterruptedTurns(database: DatabaseSync, now = Date.now()): number {
@@ -83,6 +86,21 @@ export function recoverInterruptedTurns(database: DatabaseSync, now = Date.now()
          )`,
       )
       .run(now)
+    if (tableExists(database, 'event_streams')) {
+      // Recovery rewrites rows without writing events, so a client resuming
+      // one of these threads from a cursor saved before the crash would replay
+      // nothing and keep showing the turn and its tools as running. A new
+      // epoch makes its next replay a `stream_reset` snapshot of the recovered
+      // state; the sequence carries on, so later events append as before.
+      const threads = database
+        .prepare(`SELECT DISTINCT thread_id FROM turns WHERE state IN ('running', 'waiting')`)
+        .all() as { thread_id: string }[]
+      const reset = database.prepare(
+        `UPDATE event_streams SET epoch = ?, updated_at = ?
+         WHERE scope_type = 'thread' AND thread_id = ?`,
+      )
+      for (const { thread_id: threadId } of threads) reset.run(randomUUID(), now, threadId)
+    }
     if (tableExists(database, 'turn_activity')) {
       // A tool still open when its turn died never reported a result: it was
       // cancelled with the turn. `json_insert` keeps a finish time already set.
