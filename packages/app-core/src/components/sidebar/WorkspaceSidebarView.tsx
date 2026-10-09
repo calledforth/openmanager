@@ -78,7 +78,10 @@ const DEFAULT_PROVIDER_ID: ProviderId = 'opencode'
 // Positioned so the card's status washes and dither paint beneath its text.
 // Done and failed cards take their hover and selection fills from the status
 // palette, so on light themes the tint deepens instead of greying over.
-function cardFillClass(tone: SessionBusyTone | null, isActive: boolean): string {
+// A session holding an unsent reply takes a draft card's fill, so it reads as
+// a draft at a glance; open, it takes the selection fill like any card.
+function cardFillClass(tone: SessionBusyTone | null, isActive: boolean, unsent: boolean): string {
+  if (unsent && !isActive) return draftFillClass(false)
   if (tone === 'done') {
     return isActive ? 'bg-(--basis-status-done-active)' : 'hover:bg-(--basis-status-done-hover)'
   }
@@ -1293,7 +1296,8 @@ const MemoActiveCard = memo(
 
 /**
  * Unsent text in a session's composer: a pen in the draft accent beside its
- * provider. The mark alone, no fill: a tinted session read as one more draft.
+ * provider. On an active card the card also takes the draft fill; a settled
+ * row has the mark alone.
  */
 function UnsentMark() {
   return (
@@ -1403,7 +1407,7 @@ function SessionCardBody({
         className={cn(
           // Selection is a fill, never an outline, on every scheme.
           'relative rounded-[10px] transition-colors duration-100',
-          cardFillClass(tone, isActive),
+          cardFillClass(tone, isActive, unsent),
         )}
       >
         {tone === 'needs' ? (

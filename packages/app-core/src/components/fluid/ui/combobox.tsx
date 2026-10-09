@@ -1292,7 +1292,7 @@ const ComboboxItem = forwardRef<HTMLDivElement, ComboboxItemProps>(
         className={cn(
           // Fixed height so the text-box trim on the label doesn't shrink
           // the row; shrink-0 because the list is a max-height flex column.
-          `relative z-10 flex ${sizeClasses.control} shrink-0 items-center ${sizeClasses.gap} ${shape.item} ${sizeClasses.itemPx} ${sizeClasses.text} cursor-pointer outline-none select-none`,
+          `relative z-10 flex ${sizeClasses.control} shrink-0 items-center ${sizeClasses.gap} ${shape.item} ${sizeClasses.itemPx} ${sizeClasses.text} outline-none select-none`,
           "transition-[color] duration-80",
           isActive || isChecked ? "text-foreground" : "text-muted-foreground",
           disabled && "opacity-50 pointer-events-none",

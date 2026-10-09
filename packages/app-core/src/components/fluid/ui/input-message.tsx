@@ -236,7 +236,7 @@ function FilePreviewTile({ file, onRemove, size }: FilePreviewTileProps) {
           // of theme — the close badge needs to read as a "delete affordance"
           // over arbitrary image/PDF content, so it sits at a fixed contrast
           // instead of flipping with the surrounding surface.
-          className="absolute top-1 right-1 w-5 h-5 rounded-full bg-neutral-900 text-white opacity-0 group-hover/tile:opacity-100 transition-opacity duration-80 flex items-center justify-center cursor-pointer outline-none focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-[color:var(--focus-ring,#6B97FF)]"
+          className="absolute top-1 right-1 w-5 h-5 rounded-full bg-neutral-900 text-white opacity-0 group-hover/tile:opacity-100 transition-opacity duration-80 flex items-center justify-center outline-none focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-[color:var(--focus-ring,#6B97FF)]"
         >
           <XIcon size={12} strokeWidth={2.5} />
         </button>
@@ -348,7 +348,7 @@ function QueuedRow({
             isTouch
               ? "opacity-100"
               : "opacity-0 group-hover/qrow:opacity-100 focus-visible:opacity-100",
-            "transition-opacity duration-80 cursor-pointer outline-none",
+            "transition-opacity duration-80 outline-none",
             "focus-visible:ring-1 focus-visible:ring-[color:var(--focus-ring,#6B97FF)]"
           )}
         >
@@ -401,7 +401,7 @@ function SuggestionRow({
       aria-selected={active}
       onClick={onSelect}
       className={cn(
-        "relative flex cursor-pointer items-center gap-2",
+        "relative flex items-center gap-2",
         // Text size mirrors the composer's textarea/placeholder (the rows
         // read as prompt candidates, not metadata); heights follow the
         // QueuedRow step ladder.

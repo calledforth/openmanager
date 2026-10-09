@@ -1700,8 +1700,7 @@ function Row({
           }
           className={cn(
             "absolute inset-0 inline-flex items-center justify-center bg-foreground text-background",
-            shape.bg,
-            onArrowClick && "cursor-pointer"
+            shape.bg
           )}
           initial={{ opacity: 0, scale: 0.6 }}
           animate={{ opacity: 1, scale: 1 }}
@@ -1823,7 +1822,7 @@ function Row({
       onClick={onClick}
       onKeyDown={onKeyDown}
       className={cn(
-        "relative z-10 flex cursor-pointer select-none outline-none",
+        "relative z-10 flex select-none outline-none",
         // Tighter gap when the chip sits on the left — it reads as a
         // leading list marker, so coupling it close to the title looks
         // more intentional than the larger right-side gap (where the

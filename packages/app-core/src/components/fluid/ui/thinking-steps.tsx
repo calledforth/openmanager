@@ -79,7 +79,7 @@ const TriggerRow = forwardRef<HTMLButtonElement, TriggerRowProps>(
           className={cn(
             `relative z-10 flex items-center gap-2.5 ${shape.item} ${sizeClasses.px} ${
               sizeClasses.variant === "compact" ? "py-1.5" : "py-2"
-            } cursor-pointer outline-none select-none`,
+            } outline-none select-none`,
             "focus-visible:ring-1 focus-visible:ring-[color:var(--focus-ring,#6B97FF)] focus-visible:ring-offset-0",
             className
           )}

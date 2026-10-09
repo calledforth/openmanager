@@ -4,7 +4,7 @@ import { cn } from '../../lib/utils'
 export const activityRowBare = 'w-full max-w-none py-px text-ui-base leading-snug'
 export const activityRow = activityRowBare
 export const activityDetailsSummary =
-  'flex cursor-pointer list-none items-start gap-1.5 text-ui-base leading-snug [&::-webkit-details-marker]:hidden'
+  'flex list-none items-start gap-1.5 text-ui-base leading-snug [&::-webkit-details-marker]:hidden'
 
 export const shimmerTextClass = 'inline basis-tool-shimmer'
 export const shimmerTextStyle: CSSProperties = {

@@ -373,7 +373,7 @@ function Choice({
       <label
         className={cn(
           // Selection is a fill, never an outline.
-          'flex cursor-pointer items-start gap-2.5 rounded-md px-2.5 py-1.5 transition-colors duration-100',
+          'flex items-start gap-2.5 rounded-md px-2.5 py-1.5 transition-colors duration-100',
           'has-[:focus-visible]:ring-1 has-[:focus-visible]:ring-focus-ring',
           checked ? 'bg-active' : 'hover:bg-hover',
           disabled && 'cursor-default',
