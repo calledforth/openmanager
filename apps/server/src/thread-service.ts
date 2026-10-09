@@ -137,6 +137,7 @@ const RUN_BREAKING_EVENTS: ReadonlySet<RuntimeEvent['event']> = new Set<RuntimeE
   'plan_review_request',
   'plan_update',
   'subtask_update',
+  'provider_notice',
   'extension_request',
   'extension_notification',
   'rpc_error',
@@ -470,6 +471,12 @@ export function createThreadService(
       event.name === 'turn.failed'
     ) {
       const record = threads.get(event.scope.threadId)
+      // Mirrors the SQLite projection: a failed turn keeps how it failed.
+      if (record && event.name === 'turn.failed') {
+        const { turnId, ...failure } = event.payload
+        const turn = record.turns.find((item) => item.turnId === turnId)
+        if (turn) turn.failure = failure
+      }
       // Mirrors the SQLite projection: only a completed turn leaves news
       // behind, and not while background work is still running.
       if (record) {
@@ -870,10 +877,13 @@ export function createThreadService(
         projected.payload.content = options.artifacts.reference(metadata)
       } catch (error) {
         options.onPersistenceError?.(error, 'artifact.generated')
-        // Never fall back to putting image bytes in the event log.
-        publishTransient({ type: 'event', name: 'turn.notice', eventId: randomUUID(),
-          timestamp: event.timestamp, scope: threadScope(record),
-          payload: { turnId: projected.payload.turnId, message:'A generated image could not be stored.' } })
+        // Never fall back to putting image bytes in the event log. The gap
+        // stays explained in the transcript, where the image would have been.
+        const noticeId = randomUUID()
+        appendRuntimeEvent(ProofEventSchemas['turn.notice.recorded'].parse({ type: 'event',
+          name: 'turn.notice.recorded', eventId: noticeId, timestamp: event.timestamp,
+          scope: threadScope(record), payload: { noticeId, turnId: projected.payload.turnId,
+            kind: 'warning', message: 'A generated image could not be stored.' } }))
         return
       }
     }
@@ -882,8 +892,19 @@ export function createThreadService(
     // own signals would only repeat them.
     if (projected.name === 'session.created') return
     if (options.database && projected.name === 'turn.started') return
-    if (projected.name === 'turn.notice') publishTransient(projected)
-    else appendRuntimeEvent(projected)
+    if (projected.name === 'turn.notice') {
+      // Output the batcher still holds happened before this notice. Published
+      // after it, a late delta would read as the recovery the notice waits for
+      // and clear it on every client; the provider's order must hold.
+      try {
+        options.flush?.()
+      } catch (error) {
+        // A failed write keeps its batch queued; the notice still goes out.
+        if (!options.onPersistenceError) throw error
+        options.onPersistenceError(error, projected.name)
+      }
+      publishTransient(projected)
+    } else appendRuntimeEvent(projected)
     if (active && projected.name === 'interaction.requested') {
       const { interaction } = projected.payload
       active.pendingInteractions.add(interaction.interactionId)
@@ -2628,6 +2649,7 @@ export function createThreadService(
         event.event === 'plan_review_resolved' ||
         event.event === 'plan_update' ||
         event.event === 'subtask_update' ||
+        event.event === 'provider_notice' ||
         event.category === 'error' ||
         event.event === 'process_exited'
       // Output of a turn the provider began by itself just before this one's

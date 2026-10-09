@@ -12,6 +12,7 @@ import {
   type ToolState,
 } from '@openmanager/environment-client'
 import type { LocalStreamingMessage, MessagePart } from './streaming-messages-store'
+import { failurePart, noticePart, resendablePrompt } from './turn-notice-parts'
 import type { TurnRuntimeMetadata } from '../components/parts/turn-work-group'
 import type {
   MessageContentSnapshot,
@@ -213,20 +214,46 @@ function projectTurn(
   thread: ThreadState,
   turn: Turn,
   sequenceStart: number,
+  /** The thread's newest turn: only its failure offers retry or compaction. */
+  latest: boolean,
   previous: TurnProjection | undefined,
 ): TurnProjection {
   const messages = byTurn(thread.messages, turn.turnId)
   const reasoning = byTurn(thread.reasoning, turn.turnId)
   const tools = byTurn(thread.tools, turn.turnId)
+  const notices = byTurn(thread.notices, turn.turnId)
   const order = byTurn(thread.order, turn.turnId)
-  const failure = thread.failures.find((item) => item.turnId === turn.turnId)
-  const deps = [turn, sequenceStart, failure, ...messages, ...reasoning, ...tools, ...order]
+  const settled = isTurnSettled(turn)
+  // History brings the failure on the turn; a live `turn.failed` sets both.
+  const failure = turn.failure ?? thread.failures.find((item) => item.turnId === turn.turnId)
+  // What the provider is doing about a hiccup right now, while the turn runs.
+  const liveNotice = settled
+    ? undefined
+    : thread.liveNotices.find((item) => item.turnId === turn.turnId)
+  // Whether the failure offers its action. Kept to this rather than `latest`,
+  // so a new turn does not rebuild the settled turn before it.
+  const actionable = latest && turn.state === 'failed' && failure !== undefined
+  // Retry needs the prompt on hand: a background turn has none, and a reloaded
+  // long turn may keep it on a page not loaded yet.
+  const resendable = actionable && resendablePrompt(messages, turn.turnId) !== undefined
+  const deps = [
+    turn,
+    sequenceStart,
+    actionable,
+    resendable,
+    failure,
+    liveNotice,
+    ...messages,
+    ...reasoning,
+    ...tools,
+    ...notices,
+    ...order,
+  ]
   if (previous && shallowEqualArray(previous.deps, deps)) return previous
 
   const entries: ProjectedMessage[] = []
   const userSources = new Map<string, Message>()
   let sequenceNum = sequenceStart
-  const settled = isTurnSettled(turn)
 
   for (const message of messages) {
     if (message.role !== 'user') continue
@@ -258,6 +285,7 @@ function projectTurn(
   const reasoningById = new Map(reasoning.map((entry) => [entry.messageId, entry]))
   const toolsById = new Map(tools.map((tool) => [tool.toolCallId, tool]))
   const assistantById = new Map(assistantMessages.map((message) => [message.messageId, message]))
+  const noticesById = new Map(notices.map((notice) => [notice.noticeId, notice]))
   // The transcript follows the order things happened in: a thought, the tools
   // it led to, the text that followed. Anything the order does not place (a
   // page from an environment that keeps no order) falls back to the grouped
@@ -274,6 +302,9 @@ function projectTurn(
     } else if (ref.kind === 'tool') {
       const tool = toolsById.get(ref.id)
       placedParts = tool ? [toolPart(tool)] : undefined
+    } else if (ref.kind === 'notice') {
+      const notice = noticesById.get(ref.id)
+      placedParts = notice ? [noticePart(notice)] : undefined
     } else {
       const message = assistantById.get(ref.id)
       placedParts = message ? textParts(message, sessionId) : undefined
@@ -290,9 +321,12 @@ function projectTurn(
     ...assistantMessages
       .filter((message) => !placed.has(`message:${message.messageId}`))
       .flatMap((message) => textParts(message, sessionId)),
-    ...(failure
-      ? [{ type: 'text', id: `failure:${turn.turnId}`, text: `Turn failed: ${failure.message}` }]
-      : []),
+    ...notices
+      .filter((notice) => !placed.has(`notice:${notice.noticeId}`))
+      .map((notice) => noticePart(notice)),
+    // Last, where the turn is up to now.
+    ...(liveNotice ? [noticePart(liveNotice, true)] : []),
+    ...(failure ? [failurePart(turn.turnId, failure, actionable, resendable)] : []),
   )
   if (parts.length > 0 || !settled) {
     // Each run is its own message; the plain-text fallback keeps them as paragraphs.
@@ -343,8 +377,15 @@ export function projectThread(
   const byId = new Map<string, ProjectedMessage>()
   const messages: UIMessage[] = []
   let sequence = 0
+  const newest = thread.turns.at(-1)
   for (const turn of thread.turns) {
-    const projection = projectTurn(thread, turn, sequence, previous.turns.get(turn.turnId))
+    const projection = projectTurn(
+      thread,
+      turn,
+      sequence,
+      turn === newest,
+      previous.turns.get(turn.turnId),
+    )
     turns.set(turn.turnId, projection)
     for (const entry of projection.entries) {
       byId.set(entry.message.externalId, entry)

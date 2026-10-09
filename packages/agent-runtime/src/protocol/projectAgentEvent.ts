@@ -1,9 +1,17 @@
-import type { AgentEvent } from '@agentpack/contract'
+import type {
+  AgentEvent,
+  ProviderNotice,
+  ProviderProblem,
+  ProviderProblemCode,
+} from '@agentpack/contract'
 import {
   ProofEventSchema,
+  TimestampSchema,
+  TURN_NOTICE_TEXT_MAX,
   type ProofEvent,
   type SubscriptionScope,
   type TurnFailureReason,
+  type TurnRecoveryAction,
 } from '@openmanager/protocol'
 
 /** Host identities: never copy provider session/thread/request IDs onto the wire. */
@@ -83,12 +91,70 @@ export function projectAgentEvent(
         resolvedByClientId: context.resolvedByClientId ?? null,
       },
     )
-  const failed = (reason: TurnFailureReason = context.failureReason ?? 'provider_error') =>
+  const failed = (
+    reason: TurnFailureReason = context.failureReason ?? 'provider_error',
+    recovery: { action?: TurnRecoveryAction; resetsAt?: string } = {},
+  ) =>
     emit('turn.failed', threadScope, {
       turnId: required('turnId'),
       reason,
       message: failureMessage(reason),
+      ...recovery,
     })
+  /** A failure the provider typed: its reason, and what can be done about it. */
+  const failedWith = (problem: ProviderProblem) => {
+    const action = problem.action ?? defaultAction(problem.code)
+    const resetsAt = timestamp(problem.resetsAt)
+    return failed(reasonOf(problem.code), {
+      ...(action ? { action } : {}),
+      ...(resetsAt ? { resetsAt } : {}),
+    })
+  }
+  const notice = (data: ProviderNotice) => {
+    const resetsAt = timestamp(data.resetsAt)
+    return emit(data.kind === 'compacting' ? 'turn.notice' : 'turn.notice.recorded', threadScope, {
+      noticeId: context.eventId,
+      turnId: required('turnId'),
+      kind: data.kind,
+      message: clip(data.message, TURN_NOTICE_TEXT_MAX),
+      ...(data.detail ? { detail: clip(data.detail, TURN_NOTICE_TEXT_MAX) } : {}),
+      ...(data.model
+        ? {
+            model: {
+              ...(data.model.from ? { from: clip(data.model.from, 256) } : {}),
+              to: clip(data.model.to, 256),
+            },
+          }
+        : {}),
+      ...(data.compaction ? { compaction: data.compaction } : {}),
+      ...(resetsAt ? { resetsAt } : {}),
+    })
+  }
+  /** The provider is retrying; say so, and how far it has got. */
+  const retrying = (problem: ProviderProblem | undefined) => {
+    const retry = problem?.retry
+    const cause = problem ? retryCause(problem.code) : undefined
+    const delay = retry?.delayMs
+    const due = delay === undefined ? Number.NaN : Date.parse(source.timestamp) + delay
+    return emit('turn.notice', threadScope, {
+      noticeId: context.eventId,
+      turnId: required('turnId'),
+      kind: 'retrying',
+      message: retryMessage(problem),
+      ...(retry && retry.attempt > 0
+        ? {
+            retry: {
+              attempt: Math.floor(retry.attempt),
+              ...(retry.maxAttempts && retry.maxAttempts > 0
+                ? { maxAttempts: Math.floor(retry.maxAttempts) }
+                : {}),
+              ...(cause ? { cause } : {}),
+              ...(Number.isFinite(due) ? { retryAt: new Date(due).toISOString() } : {}),
+            },
+          }
+        : {}),
+    })
+  }
 
   switch (source.event) {
     case 'process_spawned':
@@ -216,17 +282,19 @@ export function projectAgentEvent(
       return resolved('plan', source.data.outcome)
     case 'rpc_error':
     case 'runtime_error':
-      // Provider diagnostics stay host-side. A recoverable error must not end a turn.
+      // Provider diagnostics stay host-side: only the typed problem crosses.
+      // A recoverable error must not end a turn.
       if (!context.turnId) return null
-      return source.data.recoverable
-        ? emit('turn.notice', threadScope, {
-            turnId: required('turnId'),
-            message: 'The turn is recovering from a temporary error.',
-          })
+      if (source.data.recoverable) return retrying(source.data.problem)
+      return source.data.problem && !context.failureReason
+        ? failedWith(source.data.problem)
         : failed()
     case 'auth_required':
       if (!context.turnId) return null
-      return failed('authentication_required')
+      return failed('authentication_required', { action: 'sign_in' })
+    case 'provider_notice':
+      if (!context.turnId) return null
+      return notice(source.data)
     case 'capability_missing':
       if (!context.turnId) return null
       return failed('capability_missing')
@@ -259,5 +327,89 @@ function failureMessage(reason: TurnFailureReason): string {
       return 'The provider does not support this operation.'
     case 'provider_error':
       return 'The provider failed to complete the turn.'
+    case 'context_window_exceeded':
+      return "The conversation is too long for the model's context window."
+    case 'usage_limit':
+      return "You've reached your usage limit."
+    case 'rate_limited':
+      return 'The provider is rate limiting requests.'
+    case 'overloaded':
+      return 'The provider is overloaded right now.'
+    case 'refused':
+      return 'The model declined this request.'
   }
+}
+
+function reasonOf(code: ProviderProblemCode): TurnFailureReason {
+  switch (code) {
+    case 'unauthorized':
+      return 'authentication_required'
+    case 'context_window_exceeded':
+    case 'usage_limit':
+    case 'rate_limited':
+    case 'overloaded':
+    case 'refused':
+      return code
+    case 'server_error':
+    case 'network':
+    case 'unknown':
+      return 'provider_error'
+  }
+}
+
+/** What helps, when the provider did not say: a passing condition is worth
+ * another try, and a signed-out provider needs signing in. Compacting is the
+ * provider's own call, since not every provider can. */
+function defaultAction(code: ProviderProblemCode): TurnRecoveryAction | undefined {
+  switch (code) {
+    case 'unauthorized':
+      return 'sign_in'
+    case 'rate_limited':
+    case 'overloaded':
+    case 'server_error':
+    case 'network':
+      return 'retry'
+    default:
+      return undefined
+  }
+}
+
+function retryCause(code: ProviderProblemCode): TurnFailureReason | undefined {
+  switch (code) {
+    case 'rate_limited':
+    case 'overloaded':
+      return code
+    case 'server_error':
+    case 'network':
+      return 'provider_error'
+    default:
+      return undefined
+  }
+}
+
+function retryMessage(problem: ProviderProblem | undefined): string {
+  const retry = problem?.retry
+  if (!problem || !retry) return 'The turn is recovering from a temporary error.'
+  const why =
+    problem.code === 'overloaded'
+      ? 'the provider was overloaded'
+      : problem.code === 'rate_limited'
+        ? 'a rate limit'
+        : problem.code === 'network'
+          ? 'a connection error'
+          : problem.code === 'server_error'
+            ? 'a server error'
+            : 'a temporary error'
+  const of = retry.maxAttempts ? ` of ${retry.maxAttempts}` : ''
+  return `Retrying after ${why} (attempt ${retry.attempt}${of})`
+}
+
+/** Provider prose is cut, never refused: a long line must not cost the event. */
+function clip(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1)}\u2026`
+}
+
+/** A provider's time, only if it is one the protocol accepts. */
+function timestamp(value: string | undefined): string | undefined {
+  return value !== undefined && TimestampSchema.safeParse(value).success ? value : undefined
 }

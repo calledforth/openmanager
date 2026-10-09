@@ -59,6 +59,7 @@ export function MessageInput() {
     defaultProviderId,
     launchingMessage,
     beginDraftTurn,
+    beginSessionTurn,
     failTurn,
   } = useSessionState()
   const {
@@ -354,13 +355,18 @@ export function MessageInput() {
         ],
       })
     }
+    // A send into an open session is pending from here, uploads included, so
+    // nothing else (a failed turn's Retry or Compact) starts a turn meanwhile.
+    // The send itself confirms or fails it; a failed upload fails it here.
+    const sendingToSession = !!activeSessionId && drafts.length > 0
+    if (sendingToSession) beginSessionTurn()
     let uploaded: UploadedImageAttachment[] = []
     if (drafts.length > 0) {
       try {
         if (!uploadAttachments) throw new Error('This host cannot upload images')
         uploaded = await uploadAttachments(drafts)
       } catch (error) {
-        if (launching) failTurn()
+        if (launching || sendingToSession) failTurn()
         throw error
       }
     }

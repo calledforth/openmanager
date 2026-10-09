@@ -97,6 +97,8 @@ import {
   type SidebarSessionsByWorkspace,
   type WorkspaceEntry,
 } from './sidebar-provider'
+import { TurnRecoveryContext, type TurnRecoveryValue } from './turn-recovery'
+import { resendablePrompt } from '../lib/turn-notice-parts'
 import {
   ActiveThreadStateContext,
   ActiveThreadStoresContext,
@@ -1119,6 +1121,7 @@ function EnvironmentSessionStateProvider({
         setError(null)
         setTurnPending(true)
       },
+      confirmSessionTurn: () => setTurnPending(false),
       attachTurnJob: () => undefined,
       failTurn: (message) => {
         setPendingDraftSessionStart(false)
@@ -1493,7 +1496,8 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
   const targetRef = useRef(target)
   targetRef.current = target
 
-  const { beginDraftTurn, beginSessionTurn, failTurn, isSessionDraftOpen } = session
+  const { beginDraftTurn, beginSessionTurn, confirmSessionTurn, failTurn, isSessionDraftOpen } =
+    session
   const { activeWorkspacePath, launchingMessage } = session
 
   // A draft's first message is on screen from the moment it is sent, not from
@@ -1584,7 +1588,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
         // retry, so it is neither an error banner nor a composer rollback.
         await commands
           .sendTurn({ ...current, text, ...(artifactIds?.length ? { artifactIds } : {}) })
-          .catch(() => failTurn())
+          .then(confirmSessionTurn, () => failTurn())
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         failTurn(message)
@@ -1597,6 +1601,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       beginDraftTurn,
       beginSessionTurn,
       commands,
+      confirmSessionTurn,
       draftLaunch,
       draftLaunched,
       ensureProvider,
@@ -1626,9 +1631,57 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
           ...(pending.artifactIds ? { artifactIds: pending.artifactIds } : {}),
           commandId,
         })
-        .catch(() => failTurn())
+        .then(confirmSessionTurn, () => failTurn())
     },
-    [beginSessionTurn, client, commands, failTurn],
+    [beginSessionTurn, client, commands, confirmSessionTurn, failTurn],
+  )
+
+  // What a failed turn's row offers. A retry is a new turn with the failed
+  // turn's prompt and images; compacting is Claude Code's own `/compact`,
+  // sent as the composer sends any command. Neither may race a send that is
+  // still on its way: the environment would refuse the second, and that
+  // refusal would clear the composer's pending state for the first.
+  const recoveryBusy = !!activeTurn || session.localSessionStatus !== null
+  const recoveryBusyRef = useRef(recoveryBusy)
+  recoveryBusyRef.current = recoveryBusy
+  const resend = useCallback(
+    async (text: string, artifactIds: string[] = []) => {
+      const current = targetRef.current
+      if (!current || recoveryBusyRef.current) return
+      recoveryBusyRef.current = true
+      setError(null)
+      beginSessionTurn()
+      await commands
+        .sendTurn({ ...current, text, ...(artifactIds.length ? { artifactIds } : {}) })
+        .then(confirmSessionTurn, () => failTurn())
+    },
+    [beginSessionTurn, commands, confirmSessionTurn, failTurn],
+  )
+  const retryTurn = useCallback(
+    async (turnId: string) => {
+      const current = targetRef.current
+      if (!current) return
+      // The row only offers Retry when this prompt is loaded; see the projection.
+      const prompt = resendablePrompt(
+        client.getState().threads[current.threadId]?.messages ?? [],
+        turnId,
+      )
+      if (prompt) await resend(prompt.text, prompt.artifactIds)
+    },
+    [client, resend],
+  )
+  const compactSession = useCallback(() => resend('/compact'), [resend])
+  const activeProviderId = activeSession?.providerId
+  const recovery = useMemo<TurnRecoveryValue>(
+    () => ({
+      retry: retryTurn,
+      compact: compactSession,
+      ...(activeProviderId && isProviderId(activeProviderId)
+        ? { providerName: providerDisplayName(activeProviderId) }
+        : {}),
+      busy: recoveryBusy,
+    }),
+    [activeProviderId, compactSession, providerDisplayName, recoveryBusy, retryTurn],
   )
 
   const respond = useCallback(
@@ -1783,7 +1836,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
   return (
     <ActiveThreadStoresContext.Provider value={threadStores}>
       <ActiveThreadStateContext.Provider value={value}>
-        {children}
+        <TurnRecoveryContext.Provider value={recovery}>{children}</TurnRecoveryContext.Provider>
       </ActiveThreadStateContext.Provider>
     </ActiveThreadStoresContext.Provider>
   )

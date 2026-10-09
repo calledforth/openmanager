@@ -18,6 +18,7 @@ import {
   ReasoningBlockSchema,
   ToolCallStateSchema,
   ActivityRefSchema,
+  DurableTurnNoticeSchema,
   SubscriptionScopeSchema,
   InteractionResponseSchema,
   InteractionSchema,
@@ -268,6 +269,8 @@ export const ProofResponseSchemas = {
       reasoning: z.array(ReasoningBlockSchema).optional(),
       tools: z.array(ToolCallStateSchema).optional(),
       order: z.array(ActivityRefSchema).optional(),
+      /** Durable notices of the turns on this page; absent from environments that keep none. */
+      notices: z.array(DurableTurnNoticeSchema).optional(),
       nextCursor: HistoryCursorSchema.nullable(),
     }),
   ),

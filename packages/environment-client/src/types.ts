@@ -4,6 +4,7 @@ import type {
   AuthorizedClientList,
   BackgroundTask,
   Draft,
+  DurableTurnNotice,
   DraftContent,
   DraftList,
   DraftDeleteInput,
@@ -30,6 +31,7 @@ import type {
   SessionStatus,
   SessionTitleSource,
   Thread,
+  TransientTurnNotice,
   Turn,
   UploadResult,
   Workspace,
@@ -133,10 +135,12 @@ export interface OutboxEntry {
   error?: string
 }
 
-export interface TurnNotice {
-  turnId: string
-  message: string
-}
+/**
+ * What the provider is doing about a hiccup in a turn right now: retrying a
+ * request, or compacting the conversation. Never stored; a thread keeps the
+ * latest one per turn and drops it once the turn moves on.
+ */
+export type TurnNotice = TransientTurnNotice
 
 /**
  * `idle` means we only know the thread exists (its scope produced an event
@@ -155,7 +159,10 @@ export interface ThreadState {
   order: ActivityRef[]
   interactions: PendingInteraction[]
   failures: TurnFailure[]
-  notices: TurnNotice[]
+  /** Durable notices, placed in `order`; see `ProtocolThreadView.notices`. */
+  notices: DurableTurnNotice[]
+  /** The live notice of each turn still going, at most one per turn. */
+  liveNotices: TurnNotice[]
   /** Sends still waiting on the environment, oldest first, newest last. */
   outbox: OutboxEntry[]
   hydration: HydrationState

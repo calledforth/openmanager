@@ -74,9 +74,9 @@ describe('schema migrations', () => {
   it('initializes a fresh database to the latest numbered version', async () => {
     const database = openEnvironmentDatabase(await dataDir())
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(19)
+    expect(readSchemaVersion(database)).toBe(21)
     expect(database.prepare('PRAGMA user_version').get() as { user_version: number }).toEqual({
-      user_version: 19,
+      user_version: 21,
     })
     expect(database.prepare('PRAGMA journal_mode').get() as { journal_mode: string }).toEqual({
       journal_mode: 'wal',
@@ -110,11 +110,12 @@ describe('schema migrations', () => {
       'stash_items',
       'threads',
       'turn_activity',
+      'turn_notices',
       'turns',
       'workspace_composer_preferences',
       'workspaces',
     ])
-    expect(runMigrations(database, MIGRATIONS)).toBe(19)
+    expect(runMigrations(database, MIGRATIONS)).toBe(21)
   })
 
   it('upgrades sequentially across restarts and leaves already-applied versions untouched', async () => {
@@ -201,7 +202,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(19)
+    expect(readSchemaVersion(database)).toBe(21)
     expect(database.prepare('SELECT provider_id FROM provider_profiles').all()).toEqual([
       { provider_id: 'cursor' },
     ])
@@ -332,7 +333,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(19)
+    expect(readSchemaVersion(database)).toBe(21)
     expect(database.prepare('SELECT * FROM attachments ORDER BY attachment_id').all()).toEqual(
       before,
     )
@@ -371,7 +372,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(19)
+    expect(readSchemaVersion(database)).toBe(21)
     expect(
       database
         .prepare('SELECT client_id, kind, expires_at FROM authorized_clients ORDER BY client_id')
@@ -395,6 +396,44 @@ describe('schema migrations', () => {
     ).toThrow(/CHECK constraint failed/)
   })
 
+  it('adds turn notices and a turn failure column, keeping failed turns as they were', async () => {
+    const directory = await dataDir()
+    const previous = openEnvironmentDatabase(directory, MIGRATIONS.slice(0, 19))
+    previous.exec(`
+      INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at)
+        VALUES ('workspace-1', 'Project', '/project', 1, 1);
+      INSERT INTO sessions (session_id, workspace_id, provider_id, status, created_at, updated_at)
+        VALUES ('session-1', 'workspace-1', 'claude', 'error', 1, 1);
+      INSERT INTO threads (thread_id, session_id, workspace_id, created_at, updated_at)
+        VALUES ('thread-1', 'session-1', 'workspace-1', 1, 1);
+      INSERT INTO turns (turn_id, thread_id, workspace_id, state, failure_reason, started_at, updated_at)
+        VALUES ('turn-1', 'thread-1', 'workspace-1', 'failed', 'provider_error', 1, 1);
+    `)
+    expect(tableNames(previous)).not.toContain('turn_notices')
+    previous.close()
+
+    const database = openEnvironmentDatabase(directory)
+    databases.push(database)
+    expect(readSchemaVersion(database)).toBe(21)
+    expect(tableNames(database)).toContain('turn_notices')
+    expect(
+      database.prepare('SELECT failure_reason, failure_json FROM turns').get(),
+    ).toEqual({ failure_reason: 'provider_error', failure_json: null })
+    database.exec(`
+      INSERT INTO turn_notices (
+        notice_id, workspace_id, thread_id, turn_id, ordinal, notice_json, created_at
+      ) VALUES ('notice-1', 'workspace-1', 'thread-1', 'turn-1', 0, '{}', 1)
+    `)
+    expect(() =>
+      database.exec(`UPDATE turns SET failure_json = 'not json' WHERE turn_id = 'turn-1'`),
+    ).toThrow(/CHECK constraint failed/)
+    // A notice belongs to its turn and goes with it.
+    database.prepare('DELETE FROM turns WHERE turn_id = ?').run('turn-1')
+    expect(database.prepare('SELECT COUNT(*) AS count FROM turn_notices').get()).toEqual({
+      count: 0,
+    })
+  })
+
   it('adds a queryable audit_events table when upgrading from v4', async () => {
     const directory = await dataDir()
     const previous = openEnvironmentDatabase(directory, MIGRATIONS.slice(0, 4))
@@ -408,7 +447,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(19)
+    expect(readSchemaVersion(database)).toBe(21)
     expect(tableNames(database)).toContain('audit_events')
     expect(
       database.prepare('SELECT client_id FROM authorized_clients').all(),

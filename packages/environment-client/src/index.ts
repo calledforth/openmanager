@@ -131,6 +131,7 @@ export {
   type MockCommandCall,
   type MockEnvironmentClient,
   type MockEnvironmentClientOptions,
+  type MockNotice,
   type MockSeed,
   type MockSeedSession,
   type MockTurnContext,

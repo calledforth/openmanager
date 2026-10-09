@@ -2,7 +2,9 @@ import type { DatabaseSync } from 'node:sqlite'
 import { budgetSessionPage } from '../session-pagination.ts'
 import {
   ContentBlockSchema,
+  DurableTurnNoticeSchema,
   HistoryCursorSchema,
+  OMITTED_NOTICES_ID_PREFIX,
   InteractionSchema,
   InteractionResponseSchema,
   PlanHistoryEntrySchema,
@@ -10,9 +12,11 @@ import {
   SessionListCursorSchema,
   SessionSummarySchema,
   ToolCallStateSchema,
+  TurnFailureSchema,
   TurnSchema,
   resolvePageLimit,
   type ActivityRef,
+  type DurableTurnNotice,
   type HistoryCursor,
   type Interaction,
   type Message,
@@ -37,6 +41,7 @@ import {
   THREADS_FOR_SESSION_SQL,
   TURN_ACTIVITY_PAGE_SQL,
   TURN_FOR_COMMAND_ID_SQL,
+  TURN_NOTICES_PAGE_SQL,
   TURNS_FOR_THREAD_SQL,
   USER_MESSAGE_FOR_TURN_SQL,
 } from './queries.ts'
@@ -74,7 +79,9 @@ export interface SessionHistoryPage {
   /** Reasoning blocks and tool calls of the turns whose messages are on the page. */
   reasoning: ReasoningBlock[]
   tools: ToolCallState[]
-  /** The page's messages, reasoning and tools in the order they happened. */
+  /** Durable notices of the page, placed in `order` like the rest. */
+  notices: DurableTurnNotice[]
+  /** The page's messages, reasoning, tools and notices in the order they happened. */
   order: ActivityRef[]
   nextCursor: HistoryCursor | null
 }
@@ -101,9 +108,16 @@ type TurnRow = {
   turn_id: string
   thread_id: string
   state: string
+  failure_json?: string | null
   origin?: string | null
   started_at: number
   finished_at: number | null
+}
+type TurnNoticeRow = {
+  notice_id: string
+  turn_id: string
+  ordinal: number
+  notice_json: string
 }
 type TurnActivityRow = {
   activity_id: string
@@ -282,6 +296,7 @@ export function listSessionHistory(
           ? {}
           : { finishedAt: new Date(row.finished_at).toISOString() }),
         ...(row.origin ? { origin: row.origin } : {}),
+        ...failureOf(row),
       }),
   )
   // The reasoning and tool calls that belong to this page: everything after
@@ -303,7 +318,18 @@ export function listSessionHistory(
     if (row.kind === 'reasoning') reasoning.push(ReasoningBlockSchema.parse(state))
     else tools.push(ToolCallStateSchema.parse(state))
   }
-  capReasoningText(reasoning)
+  // Notices first: what they take comes out of what reasoning may spend, so
+  // the two together stay inside the reasoning budget the page always had.
+  const {
+    rows: noticeRows,
+    notices,
+    bytes: noticeBytes,
+  } = boundNotices(
+    database
+      .prepare(TURN_NOTICES_PAGE_SQL)
+      .all(query.threadId, olderBound, newerBound) as TurnNoticeRow[],
+  )
+  capReasoningText(reasoning, REASONING_TEXT_BUDGET_BYTES - noticeBytes)
   const order: ActivityRef[] = [
     ...pageRows.map((row) => ({
       ordinal: row.ordinal,
@@ -312,6 +338,10 @@ export function listSessionHistory(
     ...activityRows.map((row) => ({
       ordinal: row.ordinal,
       ref: { kind: row.kind, id: row.activity_id, turnId: row.turn_id },
+    })),
+    ...noticeRows.map((row) => ({
+      ordinal: row.ordinal,
+      ref: { kind: 'notice' as const, id: row.notice_id, turnId: row.turn_id },
     })),
   ]
     .sort((left, right) => left.ordinal - right.ordinal)
@@ -360,9 +390,18 @@ export function listSessionHistory(
     plans,
     reasoning,
     tools,
+    notices,
     order,
     nextCursor: rows.length > limit && oldest !== undefined ? { ordinal: oldest.ordinal } : null,
   }
+}
+
+/** A failed turn's stored failure. A row that predates it, or that does not
+ * parse, reads as a plain failed turn, which is what it was before. */
+function failureOf(row: TurnRow): { failure?: Turn['failure'] } {
+  if (row.state !== 'failed' || !row.failure_json) return {}
+  const parsed = TurnFailureSchema.safeParse(JSON.parse(row.failure_json))
+  return parsed.success ? { failure: parsed.data } : {}
 }
 
 function messageFromRow(database: DatabaseSync, row: MessageRow): Message {
@@ -391,9 +430,12 @@ export const REASONING_TEXT_BUDGET_BYTES = 384 * 1024
  * blocks past the budget keep the note alone. Tokens and phase stay, so every
  * row still reads as a finished thought of a known size.
  */
-function capReasoningText(reasoning: ReasoningBlock[]): void {
+function capReasoningText(
+  reasoning: ReasoningBlock[],
+  budget: number = REASONING_TEXT_BUDGET_BYTES,
+): void {
   const encodedBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), 'utf8')
-  let remaining = REASONING_TEXT_BUDGET_BYTES
+  let remaining = Math.max(0, budget)
   for (let index = reasoning.length - 1; index >= 0; index -= 1) {
     const block = reasoning[index]!
     const bytes = encodedBytes(block.content)
@@ -414,6 +456,60 @@ function capReasoningText(reasoning: ReasoningBlock[]): void {
       ...block,
       content: [{ type: 'text', text: kept ? `${note}\n${kept}` : note }],
     }
+  }
+}
+
+/** The most durable notices one history page or snapshot carries. */
+export const NOTICES_PER_PAGE_MAX = 50
+/** What those notices may take of the page, as encoded JSON. */
+export const NOTICE_BUDGET_BYTES = 32 * 1024
+
+/**
+ * Keep a page's newest notices within the count and byte limits. A long turn
+ * can pile up provider warnings without adding a message, and an unbounded
+ * page would close the socket instead of loading the thread. When some do not
+ * fit, one `info` marker (id prefix `OMITTED_NOTICES_ID_PREFIX`) takes the
+ * place of the newest one left out and says how many earlier ones are not
+ * shown; room for it is reserved only then.
+ */
+function boundNotices(all: TurnNoticeRow[]): {
+  rows: TurnNoticeRow[]
+  notices: DurableTurnNotice[]
+  bytes: number
+} {
+  const parsed = all.map((row) => {
+    const notice = DurableTurnNoticeSchema.parse(JSON.parse(row.notice_json))
+    return { row, notice, size: Buffer.byteLength(JSON.stringify(notice), 'utf8') }
+  })
+  const newest = (count: number, budget: number) => {
+    let bytes = 0
+    let start = parsed.length
+    while (start > 0 && parsed.length - start < count) {
+      const size = parsed[start - 1]!.size
+      if (bytes + size > budget) break
+      bytes += size
+      start -= 1
+    }
+    return { start, bytes }
+  }
+  const whole = newest(NOTICES_PER_PAGE_MAX, NOTICE_BUDGET_BYTES)
+  if (whole.start === 0) {
+    return { rows: all, notices: parsed.map((item) => item.notice), bytes: whole.bytes }
+  }
+  // Something is left out: keep one slot and some bytes for the marker.
+  const { start, bytes } = newest(NOTICES_PER_PAGE_MAX - 1, NOTICE_BUDGET_BYTES - 512)
+  const newestOmitted = parsed[start - 1]!.row
+  const marker: DurableTurnNotice = {
+    noticeId: `${OMITTED_NOTICES_ID_PREFIX}${newestOmitted.notice_id}`.slice(0, 256),
+    turnId: newestOmitted.turn_id,
+    kind: 'info',
+    message: `${start} earlier ${start === 1 ? 'notice' : 'notices'} not shown`,
+  }
+  const kept = parsed.slice(start)
+  return {
+    rows: [{ ...newestOmitted, notice_id: marker.noticeId }, ...kept.map((item) => item.row)],
+    notices: [marker, ...kept.map((item) => item.notice)],
+    bytes: bytes + Buffer.byteLength(JSON.stringify(marker), 'utf8'),
   }
 }
 

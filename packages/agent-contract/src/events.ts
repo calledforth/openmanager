@@ -54,6 +54,12 @@ export type AgentEventName =
   | 'usage_update'
   | 'available_commands_update'
   | 'background_tasks_update'
+  /** Something the provider said about the turn that the user should see:
+   * the conversation was compacted, the model was switched or declined, a
+   * usage limit is near, or a plain informational or warning line. See
+   * `ProviderNotice`. Retries are not notices: they stay a recoverable
+   * `rpc_error`, whose contract the terminal-cleanup sites depend on. */
+  | 'provider_notice'
   | 'extension_request'
   | 'extension_resolved'
   | 'extension_notification'
@@ -324,6 +330,60 @@ export type SessionUsage = {
   cost?: SessionCost
 }
 
+/** What kind of trouble a provider request ran into, when the provider says.
+ *
+ * Typed so a host can tell the user what happened and what to do about it
+ * without parsing provider prose. `network` is a request that never got an
+ * answer; `unknown` is a failure the provider did not classify. */
+export type ProviderProblemCode =
+  | 'unauthorized'
+  | 'context_window_exceeded'
+  | 'usage_limit'
+  | 'rate_limited'
+  | 'overloaded'
+  | 'server_error'
+  | 'network'
+  | 'refused'
+  | 'unknown'
+
+/** What the user can do about a problem in the app: send the prompt again,
+ * compact the conversation, or sign the provider in. */
+export type ProviderRecoveryAction = 'retry' | 'compact' | 'sign_in'
+
+export type ProviderProblem = {
+  code: ProviderProblemCode
+  /** Only the provider knows whether, say, compacting is something it can
+   * do. Absent means the host's default for the code. */
+  action?: ProviderRecoveryAction
+  /** When a usage or rate limit lifts (ISO 8601), if the provider said. */
+  resetsAt?: string
+  /** On a recoverable error: how far through its retries the provider is. */
+  retry?: { attempt: number; maxAttempts?: number; delayMs?: number }
+}
+
+export type ProviderNoticeKind =
+  /** Transient: the conversation is being compacted right now. */
+  | 'compacting'
+  | 'compacted'
+  | 'model_fallback'
+  | 'refusal'
+  | 'usage_warning'
+  | 'info'
+  | 'warning'
+
+/** A `provider_notice`. `message` is complete on its own; the structured
+ * fields let a client say it better. Only `info`, `warning` and a refusal's
+ * `detail` carry the provider's own prose. */
+export type ProviderNotice = {
+  kind: ProviderNoticeKind
+  message: string
+  detail?: string
+  model?: { from?: string; to: string }
+  compaction?: { trigger: 'manual' | 'auto'; tokensBefore?: number; tokensAfter?: number }
+  /** When the limit a `usage_warning` is about resets (ISO 8601). */
+  resetsAt?: string
+}
+
 /** `recoverable: true` is a statement about the TURN, not about the process.
  *
  * It means: the operation that failed is being retried and the turn this error
@@ -344,6 +404,8 @@ export type RpcErrorData = {
   code?: number
   /** See the note above `RpcErrorData`: the turn survives this error. */
   recoverable?: boolean
+  /** What went wrong, typed, when the provider says. */
+  problem?: ProviderProblem
   details?: unknown
 }
 
@@ -352,6 +414,8 @@ export type RuntimeErrorData = {
   message: string
   /** See the note above `RpcErrorData`: the turn survives this error. */
   recoverable?: boolean
+  /** What went wrong, typed, when the provider says. */
+  problem?: ProviderProblem
   details?: unknown
 }
 
@@ -559,6 +623,12 @@ export type AgentEvent = AgentEventBase &
         event: 'background_tasks_update'
         sessionId: string
         data: { tasks: BackgroundTask[] }
+      }
+    | {
+        category: 'session'
+        event: 'provider_notice'
+        sessionId: string
+        data: ProviderNotice
       }
     | {
         category: 'extension'
