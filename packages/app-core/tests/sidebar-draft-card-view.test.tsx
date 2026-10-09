@@ -179,6 +179,7 @@ async function render(
     activeDraftId?: string | null
     onDiscardDraft?: () => void
     onSettleSession?: () => void
+    workspaces?: SidebarWorkspace[]
   } = {},
 ) {
   await act(() =>
@@ -186,7 +187,7 @@ async function render(
       <ThemeProvider>
         <SidebarProvider persist={false}>
           <WorkspaceSidebarView
-            workspaces={[WORKSPACE]}
+            workspaces={options.workspaces ?? [WORKSPACE]}
             activeWorkspacePath={null}
             activeSessionId={options.activeSessionId ?? null}
             onCreateSession={() => undefined}
@@ -309,6 +310,38 @@ describe('a settled session with unsent text', () => {
 
     await render([], { activeSessionId: 'settled-1' })
     expect(row().textContent).not.toContain('Has an unsent draft')
+  })
+})
+
+describe('an active session with unsent text', () => {
+  const withReply: SidebarWorkspace = {
+    ...WORKSPACE,
+    sessions: [
+      ...WORKSPACE.sessions,
+      {
+        externalId: 'active-unsent',
+        title: 'Active with a reply started',
+        status: 'ready',
+        providerId: 'opencode' as ProviderId,
+        updatedAt: '2026-10-01T12:00:00.000Z',
+        hasUnsentDraft: true,
+      },
+    ],
+  }
+  const fill = (text: string) => cardButton(text).parentElement!.className
+
+  it('takes a draft card’s fill, and the selection fill while it is open', async () => {
+    await render([draft('d1', 'a new draft')], { workspaces: [withReply] })
+    expect(fill('Active with a reply started')).toContain('bg-(--basis-draft-fill)')
+    expect(fill('Active with a reply started')).toContain('hover:bg-(--basis-draft-hover)')
+    // The same fill a new-session draft has.
+    expect(fill('a new draft')).toContain('bg-(--basis-draft-fill)')
+    // A session with nothing unsent keeps the plain card.
+    expect(fill('Finished and waiting to be put away')).not.toContain('basis-draft')
+
+    await render([], { workspaces: [withReply], activeSessionId: 'active-unsent' })
+    expect(fill('Active with a reply started')).toContain('bg-active')
+    expect(fill('Active with a reply started')).not.toContain('basis-draft')
   })
 })
 
