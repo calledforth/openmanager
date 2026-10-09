@@ -394,8 +394,9 @@ function removeSession(state: EnvironmentState, sessionId: string): EnvironmentS
  * Fold one live event into the state. Branches keyed by resource ID
  * (sessions, turns, tools, interactions) are idempotent, so a replayed event
  * cannot double-apply. Delta events (`message.delta`, `message.reasoning`,
- * `turn.notice`) append and are not; the transport de-duplicates those by
- * cursor at the snapshot/replay boundary.
+ * `turn.notice`, and a `tool.updated` carrying `outputDelta`) append and are
+ * not; the transport de-duplicates those by cursor at the snapshot/replay
+ * boundary.
  */
 export function applyEvent(state: EnvironmentState, event: ProofEvent): EnvironmentState {
   switch (event.name) {
