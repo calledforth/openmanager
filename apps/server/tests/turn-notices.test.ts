@@ -5,6 +5,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentRuntime } from '@agentpack/runtime/node'
 import {
+  OMITTED_NOTICES_ID_PREFIX,
   ProofResponseSchemas,
   ScopeSnapshotSchema,
   type DurableEvent,
@@ -12,6 +13,7 @@ import {
 } from '@openmanager/protocol/node'
 import { createThreadService, type WorkspaceRuntimeResolver } from '../src/thread-service.js'
 import { createPersistentEventService } from '../src/event-service.js'
+import { createEventDelivery } from '../src/event-delivery.js'
 import { openEnvironmentDatabase } from '../src/db/database.js'
 import { createReplayReader } from '../src/db/replay.js'
 import {
@@ -45,13 +47,20 @@ async function setup() {
   `)
   const published: DurableEvent[] = []
   const transient: EventEnvelope[] = []
-  /** Every event in the order a subscriber would receive it. */
+  /** Every event in the order a socket would send it, through the server's own delivery. */
   const timeline: string[] = []
+  const delivery = createEventDelivery({
+    durable: (record) => timeline.push(record.event.name),
+    transient: (event) => timeline.push(event.name),
+    onError: (_name, error) => {
+      throw error
+    },
+  })
   const events = createPersistentEventService(
     database,
     (record) => {
       published.push(record)
-      timeline.push(record.event.name)
+      delivery.durable(record)
     },
     {
       sessionProviderId: () => 'claude',
@@ -68,7 +77,7 @@ async function setup() {
     events.append,
     (event) => {
       transient.push(event)
-      timeline.push(event.name)
+      delivery.transient(event)
     },
     registered,
     { database, flush: events.flush, appendAtomic: events.appendAtomic },
@@ -154,15 +163,28 @@ describe('turn notices', () => {
     expect(bytes).toBeLessThanOrEqual(NOTICE_BUDGET_BYTES)
     expect(page.notices.length).toBeLessThanOrEqual(NOTICES_PER_PAGE_MAX)
     const [marker, ...kept] = page.notices
+    expect(marker?.noticeId.startsWith(OMITTED_NOTICES_ID_PREFIX)).toBe(true)
     expect(marker).toMatchObject({
       kind: 'info',
-      message: `${60 - kept.length} earlier notices not loaded`,
+      message: `${60 - kept.length} earlier notices not shown`,
     })
     // The newest survive, in order, and the marker sits where the gap is.
     expect(kept.at(-1)?.message.startsWith('59:')).toBe(true)
     const noticeRefs = page.order.filter((ref) => ref.kind === 'notice').map((ref) => ref.id)
     expect(noticeRefs).toEqual(page.notices.map((notice) => notice.noticeId))
     expect(page.order.at(-1)?.kind).toBe('message')
+  })
+
+  it('shows a page of exactly the limit whole, with no marker', async () => {
+    const h = await setup()
+    for (let index = 0; index < NOTICES_PER_PAGE_MAX; index += 1) {
+      h.notice({ kind: 'info', message: `note ${index}` })
+    }
+    const page = h.history()
+    expect(page.notices).toHaveLength(NOTICES_PER_PAGE_MAX)
+    expect(
+      page.notices.some((notice) => notice.noticeId.startsWith(OMITTED_NOTICES_ID_PREFIX)),
+    ).toBe(false)
   })
 
   it('delivers output the batcher held before a retry notice that followed it', async () => {
@@ -173,8 +195,11 @@ describe('turn notices', () => {
       event: 'rpc_error',
       data: { source: 'claude/api', message: 'x', recoverable: true },
     })
-    // Without the flush the delta would land after the notice and read, on
-    // every client, as the recovery the notice is waiting for.
+    // Stored events go out on a microtask; let the socket drain.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    // Without the flush, or with the notice sent ahead of the stored output's
+    // microtask, the delta would land after the notice and read, on every
+    // client, as the recovery the notice is waiting for.
     expect(h.timeline.filter((name) => name !== 'session.updated')).toEqual([
       'session.created',
       'thread.created',

@@ -94,6 +94,14 @@ export interface SessionStateValue {
    * once by the composer before any image uploads. */
   beginDraftTurn: (message?: LaunchingMessage) => void
   beginSessionTurn: () => void
+  /**
+   * The environment accepted the send: its turn is in client state now, so
+   * that turn's own state says whether it is running. Needed because a turn
+   * can start and end before any render sees it running, and then nothing
+   * else would clear the pending send. Hosts that track no pending send
+   * leave it out.
+   */
+  confirmSessionTurn?: () => void
   /** Track the job running the current turn so its terminal status can
    * unlock the composer. */
   attachTurnJob: (jobId: string) => void

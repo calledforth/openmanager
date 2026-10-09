@@ -287,6 +287,15 @@ export const ToolCallStateSchema = z.object({
 /** The longest text a notice carries; provider prose past it is cut. */
 export const TURN_NOTICE_TEXT_MAX = 2000
 /**
+ * The id prefix of the `info` notice a history page or snapshot puts in place
+ * of older notices it had no room for. A marker describes only the page that
+ * carried it, so a client keeps the newest one and never merges it forward.
+ */
+export const OMITTED_NOTICES_ID_PREFIX = 'omitted-notices-'
+export function isOmittedNoticesMarker(noticeId: string): boolean {
+  return noticeId.startsWith(OMITTED_NOTICES_ID_PREFIX)
+}
+/**
  * Notices that only describe what is happening right now. They travel as
  * `turn.notice`, are never stored, and a client drops them once the turn moves
  * on: the provider is retrying a request, or compacting the conversation.

@@ -10,6 +10,14 @@ import {
   type MockSeed,
 } from '@openmanager/environment-client'
 import { MockEnvironmentApp } from '../src/testing/mock-environment-app'
+import { ChatWorkspace } from '../src/components/chat/ChatWorkspace'
+import {
+  ComposerDraftStoreContext,
+  createLocalComposerDraftStore,
+} from '../src/components/chat/composerDraftStore'
+import { EnvironmentApplicationProviders } from '../src/providers/environment-application'
+import { EnvironmentClientProvider } from '../src/providers/environment-client'
+import { ThemeProvider } from '../src/providers/theme-provider'
 import { MessageParts } from '../src/components/parts/MessageParts'
 import { projectThread } from '../src/lib/environment-thread'
 import {
@@ -35,6 +43,34 @@ const SEED: MockSeed = {
   workspaces: [WORKSPACE],
   sessions: [{ session: SESSION, threads: [THREAD], turns: [], messages: [] }],
   activeSessionId: SESSION.sessionId,
+}
+
+/** The session after a turn that failed in a way Retry can help with. */
+const failedSeed: MockSeed = {
+  ...SEED,
+  sessions: [
+    {
+      session: SESSION,
+      threads: [THREAD],
+      turns: [
+        {
+          turnId: 'failed-1',
+          threadId: THREAD.threadId,
+          state: 'failed',
+          failure: { reason: 'overloaded', message: 'Overloaded.', action: 'retry' },
+        },
+      ],
+      messages: [
+        {
+          messageId: 'failed-1-user',
+          threadId: THREAD.threadId,
+          turnId: 'failed-1',
+          role: 'user',
+          content: [{ type: 'text', text: 'first try' }],
+        },
+      ],
+    },
+  ],
 }
 
 const notice = (patch: Record<string, unknown>) => ({
@@ -426,36 +462,166 @@ describe('recovering from a failed turn in the app', () => {
     expect(buttonWithText('Retry')).toBeUndefined()
   })
 
+  it('frees recovery and the composer when a turn fails before it is ever shown running', async () => {
+    // The provider fails the turn in the same tick the environment starts it,
+    // so no render ever sees it running.
+    const client: MockEnvironmentClient = createMockEnvironmentClient({
+      seed: SEED,
+      respond: (turn) => {
+        client.failTurn(turn, 'overloaded', 'Overloaded.', { action: 'retry' })
+        return null
+      },
+    })
+    await render(<MockEnvironmentApp client={client} />)
+    await settle(client)
+    const textarea = container.querySelector('textarea')!
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!
+    await act(() => {
+      setter.call(textarea, 'quick fail')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(() =>
+      container.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!.click(),
+    )
+    await settle(client)
+
+    expect(container.textContent).toContain('Overloaded.')
+    expect(container.querySelector('button[aria-label="Stop"]')).toBeNull()
+    expect(buttonWithText('Retry')?.disabled).toBe(false)
+    await act(() => buttonWithText('Retry')!.click())
+    await settle(client)
+    const texts = client.calls
+      .filter((call) => call.command === 'sendTurn')
+      .map((call) => (call.input as { text: string }).text)
+    expect(texts).toEqual(['quick fail', 'quick fail'])
+  })
+
+  /** `failedSeed` on a model that reads images, so the composer takes one. */
+  const imageSeed: MockSeed = {
+    ...failedSeed,
+    providers: [
+      {
+        id: 'opencode',
+        displayName: 'OpenCode',
+        capabilities: {
+          canSetModel: true,
+          canSetMode: true,
+          canSetConfigOption: true,
+          canDeleteSession: false,
+          canLoadSession: true,
+          canListSessions: false,
+          canCancelPrompt: true,
+          supportsPlans: false,
+          supportsAvailableCommands: true,
+          supportsUsage: true,
+          supportsPermissionRequests: true,
+          supportsAuthentication: true,
+          supportsThoughtStreaming: true,
+          supportsSubtasks: true,
+          supportsExtensions: false,
+          supportsQuestions: true,
+        },
+        health: {
+          summary: 'ready',
+          refreshing: false,
+          install: 'installed',
+          auth: 'authenticated',
+          runtime: { state: 'running', liveProcesses: 1, activeTurns: 0 },
+          lastProbe: null,
+          update: 'current',
+        },
+        profile: {
+          providerId: 'opencode',
+          promptCapabilities: { image: true, audio: false, embeddedContext: false },
+          availableModels: [{ modelId: 'vision', name: 'Vision', supportsImageInput: true }],
+          defaultModelId: 'vision',
+          updatedAt: 1,
+        },
+      },
+    ],
+    sessions: failedSeed.sessions!.map((entry) => ({
+      ...entry,
+      providerId: 'opencode',
+      session: { ...entry.session, composer: { modelId: 'vision' } },
+    })),
+  }
+
+  // A host whose drafts keep no images (this browser's local store) holds a
+  // picked image as a file and uploads it when the message is sent, which is
+  // the window these cover. Environment drafts upload on attach instead, and
+  // their Send waits for that.
+  const LocalDraftsApp = ({ client }: { client: MockEnvironmentClient }) => (
+    <ThemeProvider>
+      <EnvironmentClientProvider client={client}>
+        <EnvironmentApplicationProviders collapsedWorkspaceStorage={null}>
+          <ComposerDraftStoreContext.Provider value={localDrafts}>
+            <ChatWorkspace />
+          </ComposerDraftStoreContext.Provider>
+        </EnvironmentApplicationProviders>
+      </EnvironmentClientProvider>
+    </ThemeProvider>
+  )
+  const localDrafts = createLocalComposerDraftStore()
+  const attachAndSend = async (text: string) => {
+    // jsdom has no object URLs; the composer previews a picked file with one.
+    URL.createObjectURL = vi.fn(() => 'blob:attached')
+    URL.revokeObjectURL = vi.fn()
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!
+    const file = new File(['png'], 'screenshot.png', { type: 'image/png' })
+    Object.defineProperty(input, 'files', { value: [file], configurable: true })
+    await act(() => {
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    const textarea = container.querySelector('textarea')!
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!
+    await act(() => {
+      setter.call(textarea, text)
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(() =>
+      container.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!.click(),
+    )
+  }
+
+  it('holds recovery while the composer uploads the images of a send', async () => {
+    const client = createMockEnvironmentClient({
+      seed: imageSeed,
+      respond: () => null,
+      // Long enough that a loaded test run cannot finish the send before the check.
+      latencyMs: 400,
+    })
+    await render(<LocalDraftsApp client={client} />)
+    await settle(client)
+    expect(buttonWithText('Retry')?.disabled).toBe(false)
+    await attachAndSend('what is this?')
+    // The upload is still on its way: no turn may start ahead of this send.
+    expect(client.calls.some((call) => call.command === 'sendTurn')).toBe(false)
+    expect(buttonWithText('Retry')?.disabled).toBe(true)
+    await settle(client)
+    expect(client.calls.filter((call) => call.command === 'sendTurn')).toHaveLength(1)
+  })
+
+  it('frees recovery when the upload of a send fails', async () => {
+    const client = createMockEnvironmentClient({
+      seed: imageSeed,
+      respond: () => null,
+    })
+    vi.spyOn(client, 'uploadArtifact').mockRejectedValue(new Error('disk full'))
+    await render(<LocalDraftsApp client={client} />)
+    await settle(client)
+    await attachAndSend('what is this?')
+    await settle(client)
+    expect(client.calls.some((call) => call.command === 'sendTurn')).toBe(false)
+    expect(container.querySelector('button[aria-label="Stop"]')).toBeNull()
+    expect(buttonWithText('Retry')?.disabled).toBe(false)
+  })
+
   it('holds recovery while a message from the composer is still being sent', async () => {
     const client = createMockEnvironmentClient({
-      seed: {
-        ...SEED,
-        sessions: [
-          {
-            session: SESSION,
-            threads: [THREAD],
-            turns: [
-              {
-                turnId: 'failed-1',
-                threadId: THREAD.threadId,
-                state: 'failed',
-                failure: { reason: 'overloaded', message: 'Overloaded.', action: 'retry' },
-              },
-            ],
-            messages: [
-              {
-                messageId: 'failed-1-user',
-                threadId: THREAD.threadId,
-                turnId: 'failed-1',
-                role: 'user',
-                content: [{ type: 'text', text: 'first try' }],
-              },
-            ],
-          },
-        ],
-      },
+      seed: failedSeed,
       respond: () => null,
-      latencyMs: 50,
+      // Long enough that a loaded test run cannot finish the send before the check.
+      latencyMs: 400,
     })
     await render(<MockEnvironmentApp client={client} />)
     await settle(client)
@@ -472,7 +638,8 @@ describe('recovering from a failed turn in the app', () => {
     )
     // The send has not reached the environment yet: Retry must wait for it.
     expect(buttonWithText('Retry')?.disabled).toBe(true)
-    await act(() => buttonWithText('Retry')!.click())
+    const held = buttonWithText('Retry')
+    if (held) await act(() => held.click())
     await settle(client)
     const texts = client.calls
       .filter((call) => call.command === 'sendTurn')

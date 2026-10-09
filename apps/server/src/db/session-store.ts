@@ -4,6 +4,7 @@ import {
   ContentBlockSchema,
   DurableTurnNoticeSchema,
   HistoryCursorSchema,
+  OMITTED_NOTICES_ID_PREFIX,
   InteractionSchema,
   InteractionResponseSchema,
   PlanHistoryEntrySchema,
@@ -466,47 +467,49 @@ export const NOTICE_BUDGET_BYTES = 32 * 1024
 /**
  * Keep a page's newest notices within the count and byte limits. A long turn
  * can pile up provider warnings without adding a message, and an unbounded
- * page would close the socket instead of loading the thread. What does not
- * fit is replaced by one `info` notice, placed where the newest left-out
- * notice was, saying how many earlier ones were left out.
+ * page would close the socket instead of loading the thread. When some do not
+ * fit, one `info` marker (id prefix `OMITTED_NOTICES_ID_PREFIX`) takes the
+ * place of the newest one left out and says how many earlier ones are not
+ * shown; room for it is reserved only then.
  */
 function boundNotices(all: TurnNoticeRow[]): {
   rows: TurnNoticeRow[]
   notices: DurableTurnNotice[]
   bytes: number
 } {
-  const encoded = (notice: DurableTurnNotice) => Buffer.byteLength(JSON.stringify(notice), 'utf8')
-  const kept: { row: TurnNoticeRow; notice: DurableTurnNotice }[] = []
-  let bytes = 0
-  let index = all.length - 1
-  for (; index >= 0; index -= 1) {
-    const row = all[index]!
+  const parsed = all.map((row) => {
     const notice = DurableTurnNoticeSchema.parse(JSON.parse(row.notice_json))
-    const size = encoded(notice)
-    // Room is left for the marker that stands in for anything left out.
-    if (kept.length >= NOTICES_PER_PAGE_MAX - 1 || bytes + size > NOTICE_BUDGET_BYTES - 512) break
-    kept.unshift({ row, notice })
-    bytes += size
-  }
-  const newestOmitted = all[index]
-  if (newestOmitted) {
-    const omitted = index + 1
-    const marker: DurableTurnNotice = {
-      noticeId: `omitted-before-${newestOmitted.notice_id}`.slice(0, 256),
-      turnId: newestOmitted.turn_id,
-      kind: 'info',
-      message: `${omitted} earlier ${omitted === 1 ? 'notice' : 'notices'} not loaded`,
+    return { row, notice, size: Buffer.byteLength(JSON.stringify(notice), 'utf8') }
+  })
+  const newest = (count: number, budget: number) => {
+    let bytes = 0
+    let start = parsed.length
+    while (start > 0 && parsed.length - start < count) {
+      const size = parsed[start - 1]!.size
+      if (bytes + size > budget) break
+      bytes += size
+      start -= 1
     }
-    kept.unshift({
-      row: { ...newestOmitted, notice_id: marker.noticeId, notice_json: '' },
-      notice: marker,
-    })
-    bytes += encoded(marker)
+    return { start, bytes }
   }
+  const whole = newest(NOTICES_PER_PAGE_MAX, NOTICE_BUDGET_BYTES)
+  if (whole.start === 0) {
+    return { rows: all, notices: parsed.map((item) => item.notice), bytes: whole.bytes }
+  }
+  // Something is left out: keep one slot and some bytes for the marker.
+  const { start, bytes } = newest(NOTICES_PER_PAGE_MAX - 1, NOTICE_BUDGET_BYTES - 512)
+  const newestOmitted = parsed[start - 1]!.row
+  const marker: DurableTurnNotice = {
+    noticeId: `${OMITTED_NOTICES_ID_PREFIX}${newestOmitted.notice_id}`.slice(0, 256),
+    turnId: newestOmitted.turn_id,
+    kind: 'info',
+    message: `${start} earlier ${start === 1 ? 'notice' : 'notices'} not shown`,
+  }
+  const kept = parsed.slice(start)
   return {
-    rows: kept.map((item) => item.row),
-    notices: kept.map((item) => item.notice),
-    bytes,
+    rows: [{ ...newestOmitted, notice_id: marker.noticeId }, ...kept.map((item) => item.row)],
+    notices: [marker, ...kept.map((item) => item.notice)],
+    bytes: bytes + Buffer.byteLength(JSON.stringify(marker), 'utf8'),
   }
 }
 

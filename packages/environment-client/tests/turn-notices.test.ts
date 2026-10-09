@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ScopeSnapshot } from '@openmanager/protocol'
+import { OMITTED_NOTICES_ID_PREFIX, type ScopeSnapshot } from '@openmanager/protocol'
 import { applyEvent, applySessionHistory, applySnapshot, createInitialState } from '../src/state'
 import type { EnvironmentState } from '../src/types'
 import {
@@ -186,6 +186,94 @@ describe('durable notices', () => {
       'message:turn-2-user',
       'message:a2',
     ])
+  })
+
+  it('takes omitted-notices markers only from the page that carries them', () => {
+    const marker = (id: string, count: number) => ({
+      noticeId: `${OMITTED_NOTICES_ID_PREFIX}${id}`,
+      turnId: 'turn-1',
+      kind: 'info' as const,
+      message: `${count} earlier notices not shown`,
+    })
+    const page = (notices: ReturnType<typeof marker>[]) => ({
+      messages: [],
+      turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'running' as const }],
+      interactions: [],
+      order: notices.map((notice) => ({
+        kind: 'notice' as const,
+        id: notice.noticeId,
+        turnId: 'turn-1',
+      })),
+      notices,
+      nextCursor: null,
+    })
+    const ids = (state: EnvironmentState) => ({
+      notices: thread(state).notices.map((notice) => notice.noticeId),
+      order: thread(state)
+        .order.filter((ref) => ref.kind === 'notice')
+        .map((ref) => ref.id),
+    })
+    // The newest page as first loaded, then loaded again with a new count.
+    let state = applySessionHistory(seeded(), THREAD, page([marker('a', 3)]))
+    state = applySessionHistory(state, THREAD, page([marker('b', 5)]))
+    expect(ids(state)).toEqual({
+      notices: [`${OMITTED_NOTICES_ID_PREFIX}b`],
+      order: [`${OMITTED_NOTICES_ID_PREFIX}b`],
+    })
+    // An older page covers another window: both markers stand.
+    state = applySessionHistory(state, THREAD, page([marker('c', 2)]), true)
+    expect(ids(state).notices.sort()).toEqual([
+      `${OMITTED_NOTICES_ID_PREFIX}b`,
+      `${OMITTED_NOTICES_ID_PREFIX}c`,
+    ])
+  })
+
+  it('drops a stale marker from older history on a reconnect snapshot', () => {
+    let state = applyEvent(seeded(), delta('turn-1', 'a1', 'First answer'))
+    state = applyEvent(
+      state,
+      event({
+        name: 'turn.notice.recorded',
+        scope: threadScope,
+        payload: {
+          noticeId: `${OMITTED_NOTICES_ID_PREFIX}old`,
+          turnId: 'turn-1',
+          kind: 'info',
+          message: '4 earlier notices not shown',
+        },
+      }),
+    )
+    state = applyEvent(state, recorded('n-real'))
+    state = applyEvent(state, completed())
+    state = applyEvent(state, turnStarted('turn-2', 'again'))
+    state = applyEvent(state, delta('turn-2', 'a2', 'Second answer'))
+    const snapshot: ScopeSnapshot = {
+      cursor: { scope: threadScope, epoch: 'epoch', sequence: 9 },
+      state: {
+        thread: THREAD,
+        turns: [
+          { turnId: 'turn-1', threadId: THREAD.threadId, state: 'completed' },
+          { turnId: 'turn-2', threadId: THREAD.threadId, state: 'completed' },
+        ],
+        messages: [
+          {
+            messageId: 'turn-2-user',
+            threadId: THREAD.threadId,
+            turnId: 'turn-2',
+            role: 'user',
+            content: [{ type: 'text', text: 'again' }],
+          },
+        ],
+        reasoning: [],
+        tools: [],
+        order: [{ kind: 'message', id: 'turn-2-user', turnId: 'turn-2' }],
+        notices: [],
+        interactions: [],
+      },
+    }
+    const after = thread(applySnapshot(state, snapshot))
+    expect(after.notices.map((notice) => notice.noticeId)).toEqual(['n-real'])
+    expect(after.order.some((ref) => ref.id.startsWith(OMITTED_NOTICES_ID_PREFIX))).toBe(false)
   })
 
   it('merges a history page without losing live ones', () => {

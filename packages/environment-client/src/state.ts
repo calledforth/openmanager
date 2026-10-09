@@ -1,5 +1,5 @@
 import { foldProtocolEvent, placeActivity } from '@agentpack/view/protocol'
-import { sessionListCursorOf } from '@openmanager/protocol'
+import { isOmittedNoticesMarker, sessionListCursorOf } from '@openmanager/protocol'
 import type {
   BackgroundTask,
   Message,
@@ -673,7 +673,9 @@ function retainOlderActivity(
   if (cut <= 0) {
     return { order: orderOfMessages(olderMessages), reasoning: [], tools: [], notices: [] }
   }
-  const order = existing.order.slice(0, cut)
+  // An omitted-notices marker describes the page that carried it, with the
+  // count it had then; the snapshot brings its own if it needs one.
+  const order = withoutMarkers(existing.order.slice(0, cut))
   const placed = (kind: ActivityRef['kind']) =>
     new Set(order.filter((ref) => ref.kind === kind).map((ref) => ref.id))
   const reasoningIds = placed('reasoning')
@@ -685,6 +687,11 @@ function retainOlderActivity(
     tools: existing.tools.filter((tool) => toolIds.has(tool.toolCallId)),
     notices: existing.notices.filter((notice) => noticeIds.has(notice.noticeId)),
   }
+}
+
+/** Order refs without any omitted-notices marker; see `OMITTED_NOTICES_ID_PREFIX`. */
+function withoutMarkers(order: readonly ActivityRef[]): ActivityRef[] {
+  return order.filter((ref) => ref.kind !== 'notice' || !isOmittedNoticesMarker(ref.id))
 }
 
 /**
@@ -753,13 +760,23 @@ export function applySessionHistory(
     // everything the page names.
     const pageOrder = payload.order ?? orderOfMessages(payload.messages)
     const fresh = !older && current.hydration !== 'ready'
+    // A newest page replaces any omitted-notices marker the client held: a
+    // marker's count describes the page that carried it, then. An older page
+    // covers another window, so the newer page's marker stays beside it.
+    const held = older
+      ? current
+      : {
+          ...current,
+          order: withoutMarkers(current.order),
+          notices: current.notices.filter((notice) => !isOmittedNoticesMarker(notice.noticeId)),
+        }
     const order = fresh
-      ? mergeOrder(pageOrder, current.order)
+      ? mergeOrder(pageOrder, held.order)
       : [
           ...pageOrder.filter(
-            (ref) => !current.order.some((known) => known.kind === ref.kind && known.id === ref.id),
+            (ref) => !held.order.some((known) => known.kind === ref.kind && known.id === ref.id),
           ),
-          ...current.order,
+          ...held.order,
         ]
     // Reasoning and tools are keyed by id, so a page's entries replace what
     // the client held for them and leave live ones it does not name alone.
@@ -770,8 +787,8 @@ export function applySessionHistory(
       ? mergeById(payload.tools ?? [], current.tools, (tool) => tool.toolCallId)
       : mergeById(current.tools, payload.tools ?? [], (tool) => tool.toolCallId)
     const notices = fresh
-      ? mergeById(payload.notices ?? [], current.notices, (notice) => notice.noticeId)
-      : mergeById(current.notices, payload.notices ?? [], (notice) => notice.noticeId)
+      ? mergeById(payload.notices ?? [], held.notices, (notice) => notice.noticeId)
+      : mergeById(held.notices, payload.notices ?? [], (notice) => notice.noticeId)
     const openTurn = payload.turns.find(
       (turn) => turn.state === 'waiting' || turn.state === 'running',
     )

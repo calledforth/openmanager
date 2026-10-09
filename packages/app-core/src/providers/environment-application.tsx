@@ -1121,6 +1121,7 @@ function EnvironmentSessionStateProvider({
         setError(null)
         setTurnPending(true)
       },
+      confirmSessionTurn: () => setTurnPending(false),
       attachTurnJob: () => undefined,
       failTurn: (message) => {
         setPendingDraftSessionStart(false)
@@ -1495,7 +1496,8 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
   const targetRef = useRef(target)
   targetRef.current = target
 
-  const { beginDraftTurn, beginSessionTurn, failTurn, isSessionDraftOpen } = session
+  const { beginDraftTurn, beginSessionTurn, confirmSessionTurn, failTurn, isSessionDraftOpen } =
+    session
   const { activeWorkspacePath, launchingMessage } = session
 
   // A draft's first message is on screen from the moment it is sent, not from
@@ -1586,7 +1588,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
         // retry, so it is neither an error banner nor a composer rollback.
         await commands
           .sendTurn({ ...current, text, ...(artifactIds?.length ? { artifactIds } : {}) })
-          .catch(() => failTurn())
+          .then(confirmSessionTurn, () => failTurn())
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         failTurn(message)
@@ -1599,6 +1601,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       beginDraftTurn,
       beginSessionTurn,
       commands,
+      confirmSessionTurn,
       draftLaunch,
       draftLaunched,
       ensureProvider,
@@ -1628,9 +1631,9 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
           ...(pending.artifactIds ? { artifactIds: pending.artifactIds } : {}),
           commandId,
         })
-        .catch(() => failTurn())
+        .then(confirmSessionTurn, () => failTurn())
     },
-    [beginSessionTurn, client, commands, failTurn],
+    [beginSessionTurn, client, commands, confirmSessionTurn, failTurn],
   )
 
   // What a failed turn's row offers. A retry is a new turn with the failed
@@ -1650,9 +1653,9 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       beginSessionTurn()
       await commands
         .sendTurn({ ...current, text, ...(artifactIds.length ? { artifactIds } : {}) })
-        .catch(() => failTurn())
+        .then(confirmSessionTurn, () => failTurn())
     },
-    [beginSessionTurn, commands, failTurn],
+    [beginSessionTurn, commands, confirmSessionTurn, failTurn],
   )
   const retryTurn = useCallback(
     async (turnId: string) => {
