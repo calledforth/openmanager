@@ -5,6 +5,7 @@ import {
   boundToolOutput,
   toolOutputBytes,
   type ProofEvent,
+  type ScopeSnapshot,
   type ToolCallState,
   type ToolCallUpdate,
 } from '@openmanager/protocol'
@@ -12,6 +13,8 @@ import {
   applyEvent,
   applySessionHistory,
   applySnapshot,
+  applyToolStates,
+  staleRetainedTools,
   createInitialState,
   selectActiveThread,
 } from '../src/state'
@@ -340,80 +343,106 @@ describe('tool payloads in the client store', () => {
     expect(thread.historyCursor).toBeNull()
   })
 
-  it('cancels a kept call the snapshot does not name once its turn has ended', () => {
-    const message = (messageId: string, turnId: string, role: 'user' | 'assistant') => ({
-      messageId,
-      threadId: THREAD.threadId,
-      turnId,
-      role,
-      content: [{ type: 'text' as const, text: messageId }],
-    })
-    const ref = (kind: 'message' | 'tool', id: string, turnId: string) => ({ kind, id, turnId })
-    // A long turn: a background call early on, then more than a page of text.
-    let state = applySessionHistory(seeded(), THREAD, {
-      messages: [message('u1', 't1', 'user'), message('a1', 't1', 'assistant')],
-      turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'running' }],
-      interactions: [],
-      nextCursor: null,
-      reasoning: [],
-      tools: [
-        { toolCallId: 'watch', turnId: 't1', toolName: 'Bash', status: 'in_progress' },
-        { toolCallId: 'done', turnId: 't1', toolName: 'Read', status: 'completed' },
-      ],
-      order: [
-        ref('message', 'u1', 't1'),
-        ref('tool', 'watch', 't1'),
-        ref('tool', 'done', 't1'),
-        ref('message', 'a1', 't1'),
-      ],
-    })
-    state = applyEvent(
-      state,
-      ProofEventSchema.parse(
-        event({
-          name: 'message.delta',
-          scope: threadScope,
-          payload: {
-            messageId: 'a2',
-            turnId: 't1',
-            role: 'assistant',
-            content: { type: 'text', text: 'a2' },
-          },
-        }),
-      ),
-    )
-    // After a restart: the turn is over, and the page no longer reaches the call.
-    state = applySnapshot(state, {
-      cursor: { scope: threadScope, epoch: 'reset-epoch', sequence: 50 },
-      state: {
-        thread: THREAD,
-        turns: [
-          {
-            turnId: 't1',
-            threadId: THREAD.threadId,
-            state: 'interrupted',
-            finishedAt: '2026-10-09T12:00:00.000Z',
-          },
-        ],
-        messages: [message('a2', 't1', 'assistant')],
-        nextCursor: { ordinal: 3 },
-        reasoning: [],
-        tools: [],
-        order: [ref('message', 'a2', 't1')],
+  it.each([
+    ['completed while the client was away', 'completed'],
+    ['cancelled by a restart', 'cancelled'],
+  ] as const)(
+    'keeps a held call the snapshot does not name as it was until the environment says it was %s',
+    (_case, outcome) => {
+      const message = (messageId: string, turnId: string, role: 'user' | 'assistant') => ({
+        messageId,
+        threadId: THREAD.threadId,
+        turnId,
+        role,
+        content: [{ type: 'text' as const, text: messageId }],
+      })
+      const ref = (kind: 'message' | 'tool', id: string, turnId: string) => ({ kind, id, turnId })
+      // A long turn: a background call early on, then more than a page of text.
+      let state = applySessionHistory(seeded(), THREAD, {
+        messages: [message('u1', 't1', 'user'), message('a1', 't1', 'assistant')],
+        turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'running' }],
         interactions: [],
-      },
-    })
-    const tools = selectActiveThread(state)!.tools
-    expect(tools).toEqual([
-      {
-        toolCallId: 'watch',
-        turnId: 't1',
-        toolName: 'Bash',
-        status: 'cancelled',
-        finishedAt: '2026-10-09T12:00:00.000Z',
-      },
-      // A call that had already finished keeps its own outcome.
-      { toolCallId: 'done', turnId: 't1', toolName: 'Read', status: 'completed' },
-    ])
-  })
+        nextCursor: null,
+        reasoning: [],
+        tools: [
+          { toolCallId: 'watch', turnId: 't1', toolName: 'Bash', status: 'in_progress' },
+          { toolCallId: 'done', turnId: 't1', toolName: 'Read', status: 'completed' },
+        ],
+        order: [
+          ref('message', 'u1', 't1'),
+          ref('tool', 'watch', 't1'),
+          ref('tool', 'done', 't1'),
+          ref('message', 'a1', 't1'),
+        ],
+      })
+      state = applyEvent(
+        state,
+        ProofEventSchema.parse(
+          event({
+            name: 'message.delta',
+            scope: threadScope,
+            payload: {
+              messageId: 'a2',
+              turnId: 't1',
+              role: 'assistant',
+              content: { type: 'text', text: 'a2' },
+            },
+          }),
+        ),
+      )
+      // The turn is over, and the snapshot's page no longer reaches the call.
+      const snapshot: ScopeSnapshot = {
+        cursor: { scope: threadScope, epoch: 'reset-epoch', sequence: 50 },
+        state: {
+          thread: THREAD,
+          turns: [
+            {
+              turnId: 't1',
+              threadId: THREAD.threadId,
+              state: outcome === 'cancelled' ? 'interrupted' : 'completed',
+              finishedAt: '2026-10-09T12:00:00.000Z',
+            },
+          ],
+          messages: [message('a2', 't1', 'assistant')],
+          nextCursor: { ordinal: 3 },
+          reasoning: [],
+          tools: [],
+          order: [ref('message', 'a2', 't1')],
+          interactions: [],
+        },
+      }
+      state = applySnapshot(state, snapshot)
+      // No guess: the call stays as the client last saw it, and is the one to ask about.
+      expect(selectActiveThread(state)!.tools.map((tool) => tool.status)).toEqual([
+        'in_progress',
+        'completed',
+      ])
+      expect(staleRetainedTools(state, snapshot)).toEqual(['watch'])
+
+      // The environment's history page answers, and only the held call changes.
+      state = applyToolStates(state, THREAD, [
+        {
+          toolCallId: 'watch',
+          turnId: 't1',
+          toolName: 'Bash',
+          status: outcome,
+          finishedAt: '2026-10-09T11:59:00.000Z',
+        },
+        { toolCallId: 'never-held', turnId: 't1', status: 'completed' },
+      ])
+      const thread = selectActiveThread(state)!
+      expect(thread.tools).toEqual([
+        {
+          toolCallId: 'watch',
+          turnId: 't1',
+          toolName: 'Bash',
+          status: outcome,
+          finishedAt: '2026-10-09T11:59:00.000Z',
+        },
+        { toolCallId: 'done', turnId: 't1', toolName: 'Read', status: 'completed' },
+      ])
+      expect(thread.historyCursor).toBeNull()
+      expect(staleRetainedTools(state, snapshot)).toEqual([])
+    },
+  )
 })

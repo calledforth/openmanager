@@ -30,6 +30,7 @@ import {
   environmentScope,
   event,
   permission,
+  threadScope,
   turnStarted,
 } from './fixtures'
 
@@ -2430,6 +2431,121 @@ describe('cursor replay on reconnect', () => {
     // The catalog reads and the re-open still follow, as before.
     expect(next.last('session.list')).toBeDefined()
   })
+
+  it.each(['completed', 'cancelled'] as const)(
+    'asks the environment what became of a held call a snapshot cannot speak for (%s)',
+    async (outcome) => {
+      const { client, socket, timers } = await connected(REPLAY_CAPABILITIES)
+      const opened = client.commands.openSession(SESSION.sessionId)
+      socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
+      await flush()
+      socket.respond('subscription.replay', {
+        mode: 'snapshot',
+        subscriptionId: 'sub-thread',
+        reason: 'initial',
+        snapshot: {
+          cursor: cursor(1),
+          state: {
+            thread: THREAD,
+            turns: [],
+            messages: [],
+            reasoning: [],
+            tools: [],
+            interactions: [],
+            nextCursor: null,
+          },
+        },
+      })
+      await opened
+      const running = {
+        toolCallId: 'tool-1',
+        turnId: 'turn-1',
+        toolName: 'Bash',
+        status: 'in_progress',
+      } as const
+      socket.receive(live(2, turnStarted()))
+      socket.receive(live(3, event({ name: 'tool.updated', scope: threadScope, payload: running })))
+      socket.receive(live(4, delta('turn-1', 'assistant-1', 'Hi')))
+      socket.receive(live(5, delta('turn-1', 'assistant-2', 'More')))
+      socket.drop(1006)
+      await flush()
+      timers.advance(100)
+      const next = FakeSocket.instances[1]!
+      next.open()
+      next.respond('protocol.handshake', bootstrap(REPLAY_CAPABILITIES))
+      await flush()
+
+      // Too much was missed: the snapshot's page holds only the newest text.
+      next.respond('subscription.replay', {
+        mode: 'snapshot',
+        subscriptionId: 'sub-thread-2',
+        reason: 'gap_expired',
+        snapshot: {
+          cursor: cursor(40),
+          state: {
+            thread: THREAD,
+            turns: [
+              {
+                turnId: 'turn-1',
+                threadId: THREAD.threadId,
+                state: outcome === 'cancelled' ? 'interrupted' : 'completed',
+              },
+            ],
+            messages: [
+              {
+                messageId: 'assistant-2',
+                threadId: THREAD.threadId,
+                turnId: 'turn-1',
+                role: 'assistant',
+                content: [{ type: 'text', text: 'More' }],
+              },
+            ],
+            reasoning: [],
+            tools: [],
+            interactions: [],
+            nextCursor: { ordinal: 7 },
+          },
+        },
+      })
+      await flush()
+      // Not guessed: it stays as last seen while the environment is asked.
+      const held = () => selectActiveThread(client.getState())!.tools[0]
+      expect(held()?.status).toBe('in_progress')
+      expect(next.last('session.history').payload).toEqual({ ...THREAD, cursor: { ordinal: 7 } })
+      next.respond('session.history', {
+        messages: [
+          {
+            messageId: 'turn-1-user',
+            threadId: THREAD.threadId,
+            turnId: 'turn-1',
+            role: 'user',
+            content: [{ type: 'text', text: 'hello' }],
+          },
+        ],
+        turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'completed' }],
+        interactions: [],
+        nextCursor: null,
+        reasoning: [],
+        tools: [{ ...running, status: outcome, finishedAt: '2026-10-09T12:00:00.000Z' }],
+      })
+      await flush()
+      const thread = selectActiveThread(client.getState())!
+      expect(held()).toEqual({
+        ...running,
+        status: outcome,
+        finishedAt: '2026-10-09T12:00:00.000Z',
+      })
+      // Only the call's state was taken: the transcript and its cursor are untouched.
+      expect(thread.messages.map((message) => message.messageId)).toEqual([
+        'turn-1-user',
+        'assistant-1',
+        'assistant-2',
+      ])
+      expect(thread.historyCursor).toBeNull()
+      expect(next.sent.filter((message) => message.name === 'session.history')).toHaveLength(1)
+      client.dispose()
+    },
+  )
 
   it('replaces the scope from a snapshot when the gap can no longer be replayed', async () => {
     const { client, next } = await dropped()

@@ -602,10 +602,7 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
       threadSnapshot.reasoning,
       (entry) => entry.messageId,
     ),
-    tools: settleHeldTools(
-      older.keep('tool', existing.tools, threadSnapshot.tools, (tool) => tool.toolCallId),
-      threadSnapshot,
-    ),
+    tools: older.keep('tool', existing.tools, threadSnapshot.tools, (tool) => tool.toolCallId),
     interactions: threadSnapshot.interactions.map((item) => ({
       sessionId: thread.sessionId,
       threadId: thread.threadId,
@@ -660,29 +657,52 @@ function olderActivity(
 }
 
 /**
- * Close the older tool calls a snapshot does not carry but whose turn it says
- * has ended. A restart cancels every call its dead process left open without
- * an event (see `recoverInterruptedTurns`), and the snapshot that follows
- * names only its own page: a long turn's early call, still open in what the
- * client kept, would otherwise spin forever under a turn that is over.
+ * The older tool calls a client kept through a snapshot that may be out of
+ * date: the snapshot does not name them, they are still open as the client
+ * last saw them, and the snapshot says their turn has ended. They may have
+ * completed, failed or been declined while the client was away, or have been
+ * cancelled by a restart; only the environment knows which, so they are left
+ * as they are until `applyToolStates` brings its answer (see the history walk
+ * after a snapshot in `websocket.ts`). Guessing would show wrong outcomes.
  */
-function settleHeldTools(
-  tools: ToolState[],
-  snapshot: { tools: readonly ToolState[]; turns: readonly Turn[] },
-): ToolState[] {
-  const fresh = new Set(snapshot.tools.map((tool) => tool.toolCallId))
-  const ended = new Map(
-    snapshot.turns.filter(isTurnSettled).map((turn) => [turn.turnId, turn] as const),
-  )
-  return tools.map((tool) => {
-    const turn = ended.get(tool.turnId)
-    const open =
-      tool.status === undefined || tool.status === 'pending' || tool.status === 'in_progress'
-    if (fresh.has(tool.toolCallId) || !turn || !open) return tool
+export function staleRetainedTools(state: EnvironmentState, snapshot: ScopeSnapshot): string[] {
+  if (snapshot.cursor.scope.type !== 'thread') return []
+  const held = state.threads[snapshot.cursor.scope.threadId]
+  if (!held) return []
+  const named = snapshot.state as { tools?: readonly ToolState[]; turns?: readonly Turn[] }
+  const fresh = new Set((named.tools ?? []).map((tool) => tool.toolCallId))
+  const ended = new Set((named.turns ?? []).filter(isTurnSettled).map((turn) => turn.turnId))
+  return held.tools
+    .filter(
+      (tool) =>
+        !fresh.has(tool.toolCallId) &&
+        ended.has(tool.turnId) &&
+        (tool.status === undefined || tool.status === 'pending' || tool.status === 'in_progress'),
+    )
+    .map((tool) => tool.toolCallId)
+}
+
+/**
+ * The environment's word on tool calls the client already holds, read from a
+ * history page: each named call takes the page's fields over its own. Calls the
+ * client does not hold are not added, and nothing else of the page is applied,
+ * so the thread's messages, order and history cursor stay as they are.
+ */
+export function applyToolStates(
+  state: EnvironmentState,
+  thread: Thread,
+  tools: readonly ToolState[],
+): EnvironmentState {
+  if (tools.length === 0) return state
+  const byId = new Map(tools.map((tool) => [tool.toolCallId, tool]))
+  return patchThread(state, thread, (current) => {
+    if (!current.tools.some((tool) => byId.has(tool.toolCallId))) return current
     return {
-      ...tool,
-      status: 'cancelled',
-      ...(tool.finishedAt === undefined && turn.finishedAt ? { finishedAt: turn.finishedAt } : {}),
+      ...current,
+      tools: current.tools.map((tool) => {
+        const known = byId.get(tool.toolCallId)
+        return known && known.turnId === tool.turnId ? { ...tool, ...known } : tool
+      }),
     }
   })
 }
