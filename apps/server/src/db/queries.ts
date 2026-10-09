@@ -72,7 +72,7 @@ export const TURNS_FOR_THREAD_SQL = `
  * the page's messages by sorting on it.
  */
 export const TURN_ACTIVITY_PAGE_SQL = `
-  SELECT activity_id, turn_id, kind, ordinal, state_json, payload_bytes
+  SELECT activity_id, turn_id, kind, ordinal, state_json, payload_bytes, output_bytes
   FROM turn_activity
   WHERE thread_id = ? AND ordinal > ? AND ordinal < ?
   ORDER BY ordinal`

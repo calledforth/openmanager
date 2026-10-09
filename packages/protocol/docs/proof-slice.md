@@ -203,7 +203,9 @@ History pages and thread snapshots carry tool payloads newest first within
 256 KiB, and never past 896 KiB for the page as a whole. The call that does
 not fit keeps its locations and input if they fit and a shrunk output; older
 calls carry no input or locations and `output: { text: '', omittedBytes }`,
-naming the payload bytes left out, so "not loaded" differs from "no output".
+naming the bytes of the whole output left out, so "not loaded" differs from
+"no output". Every omission marker counts output bytes only; a call that had
+no output carries no marker.
 
 Later file/git/terminal families can use an appropriate existing scope or add an
 explicit new scope under protocol versioning. They must not smuggle new scope

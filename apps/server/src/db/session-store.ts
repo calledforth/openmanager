@@ -13,6 +13,7 @@ import {
   TurnSchema,
   resolvePageLimit,
   shrinkToolOutput,
+  toolOutputSourceBytes,
   type ActivityRef,
   type HistoryCursor,
   type Interaction,
@@ -115,6 +116,8 @@ type TurnActivityRow = {
   state_json: string
   /** Encoded size of the row's payload; 0 when it has none (see migration 20). */
   payload_bytes: number
+  /** Bytes of the whole output the tool produced; what an omission marker reports. */
+  output_bytes: number
 }
 export type ToolPayload = Pick<ToolCallState, 'input' | 'output' | 'locations'>
 type MessageRow = {
@@ -460,9 +463,9 @@ const encodedBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value)
  * The call that does not fit whole keeps its locations and input if they fit
  * and as much of its output's start and newest end as the rest allows. Older
  * calls carry no input or locations, and an output that is only a marker of
- * how many payload bytes were left out, so a client can tell "not loaded" from
- * "no output"; a marker that does not fit either is left off. Only payloads
- * that may fit are read at all.
+ * the whole output's size (`output_bytes`), so a client can tell "not loaded"
+ * from "no output"; a call that had no output gets no marker, and a marker
+ * that does not fit is left off. Only payloads that may fit are read at all.
  */
 function attachToolPayloads(
   database: DatabaseSync,
@@ -480,19 +483,19 @@ function attachToolPayloads(
   const bare = encodedBytes(page)
   const light = [...tools]
   let remaining = Math.min(TOOL_PAYLOAD_BUDGET_BYTES, Math.max(0, frame - bare))
-  const marker = (index: number): ToolCallState => ({
-    ...tools[index]!,
-    output: { text: '', omittedBytes: rows[index]!.payload_bytes },
-  })
+  // A call that had no output has nothing to mark: it is left as it is.
+  const marker = (index: number): ToolCallState | undefined =>
+    rows[index]!.output_bytes > 0
+      ? { ...tools[index]!, output: { text: '', omittedBytes: rows[index]!.output_bytes } }
+      : undefined
   // What marking every older call would add, so a newer call's payload never
   // takes the room the markers below it need.
   const olderMarkers: number[] = []
   let markers = 0
   for (let index = 0; index < tools.length; index += 1) {
     olderMarkers.push(markers)
-    if (rows[index]!.payload_bytes > 0) {
-      markers += encodedBytes(marker(index)) - encodedBytes(tools[index])
-    }
+    const marked = marker(index)
+    if (marked) markers += encodedBytes(marked) - encodedBytes(tools[index])
   }
   // Once one call does not fit whole, every older one is only marked.
   let whole = true
@@ -520,7 +523,8 @@ function attachToolPayloads(
       if (candidate && take(ToolCallStateSchema.parse(candidate), available)) continue
     }
     whole = false
-    take(marker(index), remaining)
+    const marked = marker(index)
+    if (marked) take(marked, remaining)
   }
   // Payloads must never be what takes the frame over: if they somehow did,
   // the page goes out as it would have without them.
@@ -542,11 +546,7 @@ export function partialToolPayload(
   const stateBytes = encodedBytes(state)
   const cost = (next: ToolCallState) => encodedBytes(next) - stateBytes
   const output = payload.output
-  const outputBytes = output
-    ? Buffer.byteLength(output.text, 'utf8') +
-      Buffer.byteLength(output.tail ?? '', 'utf8') +
-      (output.omittedBytes ?? 0)
-    : 0
+  const outputBytes = output ? toolOutputSourceBytes(output) : 0
   const outputMarker = output && outputBytes > 0 ? { text: '', omittedBytes: outputBytes } : output
   // What the output key costs at its least; it is appended last, so it adds
   // the same to any candidate.

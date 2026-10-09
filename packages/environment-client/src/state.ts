@@ -1,4 +1,4 @@
-import { foldProtocolEvent, placeActivity } from '@agentpack/view/protocol'
+import { foldProtocolEvent, isTurnSettled, placeActivity } from '@agentpack/view/protocol'
 import { sessionListCursorOf } from '@openmanager/protocol'
 import type {
   BackgroundTask,
@@ -28,6 +28,7 @@ import type {
   SessionStatus,
   SessionSummary,
   ThreadState,
+  ToolState,
 } from './types'
 import {
   applyDraftDeleted,
@@ -601,7 +602,10 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
       threadSnapshot.reasoning,
       (entry) => entry.messageId,
     ),
-    tools: older.keep('tool', existing.tools, threadSnapshot.tools, (tool) => tool.toolCallId),
+    tools: settleHeldTools(
+      older.keep('tool', existing.tools, threadSnapshot.tools, (tool) => tool.toolCallId),
+      threadSnapshot,
+    ),
     interactions: threadSnapshot.interactions.map((item) => ({
       sessionId: thread.sessionId,
       threadId: thread.threadId,
@@ -653,6 +657,34 @@ function olderActivity(
       ]
     },
   }
+}
+
+/**
+ * Close the older tool calls a snapshot does not carry but whose turn it says
+ * has ended. A restart cancels every call its dead process left open without
+ * an event (see `recoverInterruptedTurns`), and the snapshot that follows
+ * names only its own page: a long turn's early call, still open in what the
+ * client kept, would otherwise spin forever under a turn that is over.
+ */
+function settleHeldTools(
+  tools: ToolState[],
+  snapshot: { tools: readonly ToolState[]; turns: readonly Turn[] },
+): ToolState[] {
+  const fresh = new Set(snapshot.tools.map((tool) => tool.toolCallId))
+  const ended = new Map(
+    snapshot.turns.filter(isTurnSettled).map((turn) => [turn.turnId, turn] as const),
+  )
+  return tools.map((tool) => {
+    const turn = ended.get(tool.turnId)
+    const open =
+      tool.status === undefined || tool.status === 'pending' || tool.status === 'in_progress'
+    if (fresh.has(tool.toolCallId) || !turn || !open) return tool
+    return {
+      ...tool,
+      status: 'cancelled',
+      ...(tool.finishedAt === undefined && turn.finishedAt ? { finishedAt: turn.finishedAt } : {}),
+    }
+  })
 }
 
 /**

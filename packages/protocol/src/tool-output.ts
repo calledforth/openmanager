@@ -158,6 +158,15 @@ export function appendToolOutput(output: ToolOutput | undefined, delta: string):
   }
 }
 
+/**
+ * UTF-8 bytes of the whole output the tool produced: what is kept and what
+ * was left out. Every omission marker reports this, so "N KB of output not
+ * shown" always means output.
+ */
+export function toolOutputSourceBytes(output: ToolOutput): number {
+  return utf8Bytes(output.text) + utf8Bytes(output.tail ?? '') + (output.omittedBytes ?? 0)
+}
+
 /** Encoded bytes of the output object as it travels. */
 export function toolOutputBytes(output: ToolOutput): number {
   return utf8Bytes(JSON.stringify(output))

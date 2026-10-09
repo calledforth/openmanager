@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
-import { applyToolUpdate, type ProofEvent, type ToolCallState } from '@openmanager/protocol/node'
+import {
+  applyToolUpdate,
+  toolOutputSourceBytes,
+  type ProofEvent,
+  type ToolCallState,
+  type ToolOutput,
+} from '@openmanager/protocol/node'
 import type { DurableProofEvent } from './event-repository.ts'
 import { prepareDraftProjection } from './draft-projection.ts'
 
@@ -158,12 +164,13 @@ export function createEventProjector(
     insertActivity: database.prepare(
       `INSERT INTO turn_activity (
          activity_id, workspace_id, thread_id, turn_id, kind, ordinal, state_json,
-         payload_json, payload_bytes, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         payload_json, payload_bytes, output_bytes, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     updateActivity: database.prepare(
       `UPDATE turn_activity
-       SET state_json = ?, payload_json = ?, payload_bytes = ?, updated_at = ?
+       SET state_json = ?, payload_json = ?, payload_bytes = ?, output_bytes = ?,
+           updated_at = ?
        WHERE activity_id = ?`,
     ),
     insertMessage: database.prepare(
@@ -305,10 +312,12 @@ export function createEventProjector(
   ): void {
     const columns = (value: ActivityValue) => {
       const payload = value.payload === undefined ? null : JSON.stringify(value.payload)
+      const output = value.payload?.output as ToolOutput | undefined
       return [
         JSON.stringify(value.state),
         payload,
         payload === null ? 0 : Buffer.byteLength(payload, 'utf8'),
+        output ? toolOutputSourceBytes(output) : 0,
       ] as const
     }
     const { turnId } = event.payload

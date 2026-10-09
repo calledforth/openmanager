@@ -209,15 +209,21 @@ describe('tool payloads in turn_activity', () => {
     // The payload sits beside the row's small state, and its size beside that.
     const row = database
       .prepare(
-        "SELECT state_json, payload_json, payload_bytes FROM turn_activity WHERE activity_id = 'tool-1'",
+        "SELECT state_json, payload_json, payload_bytes, output_bytes FROM turn_activity WHERE activity_id = 'tool-1'",
       )
-      .get() as { state_json: string; payload_json: string; payload_bytes: number }
+      .get() as {
+      state_json: string
+      payload_json: string
+      payload_bytes: number
+      output_bytes: number
+    }
     expect(JSON.parse(row.state_json)).not.toHaveProperty('output')
     expect(JSON.parse(row.payload_json)).toEqual({
       input: { command: 'pnpm test' },
       output: { text: 'running\nok 1\nok 2\n' },
     })
     expect(row.payload_bytes).toBe(Buffer.byteLength(row.payload_json))
+    expect(row.output_bytes).toBe(Buffer.byteLength('running\nok 1\nok 2\n'))
     const declined = database
       .prepare("SELECT payload_json, payload_bytes FROM turn_activity WHERE activity_id = 'tool-3'")
       .get()
@@ -228,7 +234,16 @@ describe('tool payloads in turn_activity', () => {
     const { database } = await createDatabase()
     const repository = createEventRepository(database)
     const big = `start\n${'x'.repeat(60_000)}\nend`
-    const events: DurableProofEvent[] = [started()]
+    const events: DurableProofEvent[] = [
+      started(),
+      // The oldest call never produced output: there is nothing to mark.
+      tool({
+        toolCallId: 'quiet',
+        toolName: 'Bash',
+        status: 'completed',
+        input: { command: 'true' },
+      }),
+    ]
     for (let index = 0; index < 40; index += 1) {
       events.push(
         tool({
@@ -259,11 +274,18 @@ describe('tool payloads in turn_activity', () => {
     const newest = page.tools.at(-1)!
     expect(newest.output).toEqual(boundToolOutput(`39:${big}`))
     expect(newest.input).toBeDefined()
-    const oldest = page.tools[0]!
+    expect(page.tools[0]).toEqual({
+      toolCallId: 'quiet',
+      turnId: 'turn-1',
+      toolName: 'Bash',
+      status: 'completed',
+    })
+    const oldest = page.tools[1]!
     expect(oldest.input).toBeUndefined()
     expect(oldest.locations).toBeUndefined()
     expect(oldest.output).toMatchObject({ text: '' })
-    expect(oldest.output!.omittedBytes).toBeGreaterThan(TOOL_OUTPUT_MAX_BYTES)
+    // The marker counts the whole output, never the input or locations beside it.
+    expect(oldest.output!.omittedBytes).toBe(Buffer.byteLength(`0:${big}`))
     // Each kept output still opens with its start and ends with its newest end.
     const partial = page.tools.find(
       (item) => item.output && item.output.text !== '' && toolOutputBytes(item.output) < 16_000,
@@ -272,9 +294,9 @@ describe('tool payloads in turn_activity', () => {
     expect(partial!.output!.text.length).toBeGreaterThan(0)
     expect(partial!.output!.tail!.endsWith('\nend')).toBe(true)
     // Newest first: whole, then the one cut to fit, then markers only.
-    const shape = page.tools.map((item) =>
-      item.output!.text === '' ? 'marker' : item === partial ? 'partial' : 'whole',
-    )
+    const shape = page.tools
+      .slice(1)
+      .map((item) => (item.output!.text === '' ? 'marker' : item === partial ? 'partial' : 'whole'))
     const firstWhole = shape.indexOf('whole')
     expect(shape.slice(0, shape.indexOf('partial')).every((kind) => kind === 'marker')).toBe(true)
     expect(shape.indexOf('partial')).toBe(firstWhole - 1)
@@ -532,7 +554,9 @@ describe('tool payloads in turn_activity', () => {
     const columns = (
       upgraded.prepare('PRAGMA table_info(turn_activity)').all() as { name: string }[]
     ).map((column) => column.name)
-    expect(columns).toEqual(expect.arrayContaining(['payload_json', 'payload_bytes']))
+    expect(columns).toEqual(
+      expect.arrayContaining(['payload_json', 'payload_bytes', 'output_bytes']),
+    )
     expect(history(upgraded).tools).toEqual([
       { toolCallId: 'legacy-tool', turnId: 'turn-1', title: 'Read file', status: 'completed' },
     ])

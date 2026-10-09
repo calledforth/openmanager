@@ -775,7 +775,9 @@ export const MIGRATIONS: readonly Migration[] = [
       // apart from `state_json` so the row's small state (name, status, times)
       // can be read for every call of a page while the payload is read only
       // for the calls the page has room for. `payload_bytes` is the payload's
-      // encoded size, so that choice is made without reading the payload.
+      // encoded size, so that choice is made without reading the payload, and
+      // `output_bytes` the size of the whole output the tool produced, which
+      // is what a page reports when it leaves a call's output out.
       // Calls recorded before this migration have no payload: providers never
       // sent one, and the event log holds none to rebuild from.
       if (!columns.has('payload_json')) {
@@ -788,6 +790,12 @@ export const MIGRATIONS: readonly Migration[] = [
         database.exec(`
           ALTER TABLE turn_activity ADD COLUMN payload_bytes INTEGER NOT NULL DEFAULT 0
             CHECK (payload_bytes >= 0)
+        `)
+      }
+      if (!columns.has('output_bytes')) {
+        database.exec(`
+          ALTER TABLE turn_activity ADD COLUMN output_bytes INTEGER NOT NULL DEFAULT 0
+            CHECK (output_bytes >= 0)
         `)
       }
     },
