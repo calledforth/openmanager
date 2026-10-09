@@ -755,7 +755,7 @@ const SidebarShell = forwardRef<HTMLDivElement, SidebarShellProps>(
               aria-label="Peek sidebar"
               aria-expanded={isPeeking}
               className={cn(
-                "group/peek-strip absolute inset-y-0 z-40 w-3 outline-none",
+                "group/peek-strip absolute inset-y-0 z-40 w-3 cursor-pointer outline-none",
                 side === "left" ? "left-0" : "right-0"
               )}
               onPointerEnter={
@@ -1502,7 +1502,7 @@ const SidebarGroupLabel = forwardRef<HTMLDivElement, SidebarGroupLabelProps>(
               ? ({ "--group-actions-pad": `${group.actionsCount * 28 + 6}px` } as CSSProperties)
               : undefined,
           className: cn(
-            "flex h-8 w-full shrink-0 select-none items-center gap-2 px-2 text-left text-muted-foreground/70 outline-none",
+            "flex h-8 w-full shrink-0 cursor-pointer select-none items-center gap-2 px-2 text-left text-muted-foreground/70 outline-none",
             "transition-colors duration-80 hover:text-muted-foreground",
             group.actionsCount > 0 && "pr-[var(--group-actions-pad)]",
             "focus-visible:ring-1 focus-visible:ring-[color:var(--focus-ring,#6B97FF)]",

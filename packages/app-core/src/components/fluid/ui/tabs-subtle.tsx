@@ -353,7 +353,7 @@ const TabsSubtleItem = forwardRef<HTMLButtonElement, TabsSubtleItemProps>(
           // Fixed heights (was py-2 around a 19.5px line box ≈ 35.5px) so the
           // text-box trim on the label doesn't shrink the tab. Standalone
           // pills sit directly on the ladder's control height.
-          "relative z-10 flex items-center bg-transparent border-none outline-none",
+          "relative z-10 flex items-center cursor-pointer bg-transparent border-none outline-none",
           sizeClasses.control,
           sizeClasses.px,
           !collapseLabel && sizeClasses.gap,

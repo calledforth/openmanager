@@ -1345,7 +1345,7 @@ const CommandMenuItem = memo(forwardRef<HTMLDivElement, CommandMenuItemProps>(
         className={cn(
           // Fixed height so the text-box trim on the label doesn't shrink
           // the row; shrink-0 because the list is a flex column.
-          "relative z-10 flex shrink-0 items-center select-none outline-none",
+          "relative z-10 flex shrink-0 items-center cursor-pointer select-none outline-none",
           sizeClasses.control,
           sizeClasses.gap,
           sizeClasses.itemPx,

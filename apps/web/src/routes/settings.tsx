@@ -101,7 +101,7 @@ function ChoiceGroup<T extends string>({
             key={option.id}
             className={cn(
               // Selection is a fill, never an outline.
-              'rounded-md px-3 py-1.5 text-[13px] transition-colors duration-100',
+              'cursor-pointer rounded-md px-3 py-1.5 text-[13px] transition-colors duration-100',
               'has-[:focus-visible]:ring-1 has-[:focus-visible]:ring-focus-ring',
               selected
                 ? 'bg-active text-foreground'

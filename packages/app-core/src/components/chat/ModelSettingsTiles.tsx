@@ -146,7 +146,7 @@ export function EffortMeter({
 // Plain-size utilities only: `cn` (tailwind-merge) reads the `text-11-*`
 // typography classes as colours and drops them next to a text colour.
 const tileBase =
-  'relative flex min-w-0 flex-col items-start rounded-[8px] px-2.5 py-2 text-left transition-colors duration-100'
+  'relative flex min-w-0 cursor-pointer flex-col items-start rounded-[8px] px-2.5 py-2 text-left transition-colors duration-100'
 const tileLabel = 'text-[10.5px] leading-4 text-[var(--basis-text-faint)]'
 const tileValue =
   'max-w-full truncate text-[12px] font-medium leading-4 text-[var(--basis-text-strong)]'
@@ -304,7 +304,7 @@ function EffortTile({ effort }: { effort: EffortControl }) {
                   : { borderColor: ink(previewed ? 55 : 28) }),
               }}
               className={cn(
-                'flex-1 rounded-[4px] border transition-colors duration-100',
+                'flex-1 cursor-pointer rounded-[4px] border transition-colors duration-100',
                 // Not reached: a dotted outline, no fill.
                 filled ? 'border-transparent' : 'border-dotted',
               )}
@@ -476,7 +476,7 @@ function SettingTile({
                   if (!on) onChange(entry.value)
                 }}
                 className={cn(
-                  'flex h-7 min-w-0 flex-1 items-center justify-center rounded-[6px] px-2 transition-colors duration-100',
+                  'flex h-7 min-w-0 flex-1 cursor-pointer items-center justify-center rounded-[6px] px-2 transition-colors duration-100',
                   on ? picked : unpicked,
                 )}
               >
@@ -577,7 +577,7 @@ function SettingTile({
                 onMouseDown={keepFocus}
                 onClick={() => onChange(entry.value)}
                 className={cn(
-                  'flex h-7 shrink-0 items-center justify-between gap-2 rounded-[6px] px-2 text-left',
+                  'flex h-7 shrink-0 cursor-pointer items-center justify-between gap-2 rounded-[6px] px-2 text-left',
                   on
                     ? 'bg-hover text-[var(--basis-text-strong)]'
                     : 'text-[var(--basis-text-muted)] hover:bg-hover hover:text-[var(--basis-text)]',

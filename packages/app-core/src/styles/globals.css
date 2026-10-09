@@ -371,6 +371,27 @@ body {
     font-size: inherit;
     font-weight: inherit;
   }
+
+  /* Anything clickable shows the hand on hover, so components need not opt
+     in one by one (Tailwind v4 leaves buttons on the arrow). A utility such
+     as cursor-default or cursor-text still wins: it is in a later layer. */
+  :is(
+    button,
+    summary,
+    select,
+    [role='button'],
+    [role='link'],
+    [role='tab'],
+    [role='menuitem'],
+    [role='menuitemradio'],
+    [role='menuitemcheckbox'],
+    [role='option'],
+    [role='switch'],
+    [role='checkbox'],
+    [role='radio']
+  ):not(:disabled, [aria-disabled='true'], [data-disabled]) {
+    cursor: pointer;
+  }
 }
 
 /* Inherit font settings into form elements */

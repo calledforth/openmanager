@@ -228,7 +228,7 @@ Select.displayName = "Select";
 
 const triggerVariants = cva(
   [
-    "group inline-flex items-center justify-between outline-none",
+    "group inline-flex items-center justify-between outline-none cursor-pointer",
     "transition-all duration-80",
     "disabled:opacity-50 disabled:pointer-events-none",
     "focus-visible:ring-1 focus-visible:ring-[color:var(--focus-ring,#6B97FF)]",
@@ -689,7 +689,7 @@ const SelectItem = forwardRef<HTMLDivElement, SelectItemProps>(
           // the text-box trim on the item text doesn't shrink the row.
           // shrink-0: the popup is a max-height flex column, so without it
           // a long list compresses rows to fit instead of scrolling.
-          `relative z-10 flex ${sizeClasses.control} shrink-0 items-center ${sizeClasses.gap} ${shape.item} ${sizeClasses.itemPx} ${sizeClasses.text} outline-none select-none`,
+          `relative z-10 flex ${sizeClasses.control} shrink-0 items-center ${sizeClasses.gap} ${shape.item} ${sizeClasses.itemPx} ${sizeClasses.text} cursor-pointer outline-none select-none`,
           "transition-[color] duration-80",
           isActive || isChecked
             ? "text-foreground"

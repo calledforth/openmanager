@@ -34,7 +34,7 @@ export function ScrollToEndButton({ visible, onClick }: { visible: boolean; onCl
         aria-hidden={!shown}
         onClick={onClick}
         className={cn(
-          'group/end flex size-7 items-center justify-center rounded-full bg-float text-muted-foreground shadow-float',
+          'group/end flex size-7 cursor-pointer items-center justify-center rounded-full bg-float text-muted-foreground shadow-float',
           'transition-[opacity,transform,color] duration-150 ease-out hover:text-foreground active:scale-95',
           'focus-visible:outline-2 focus-visible:outline-ring',
           shown ? 'pointer-events-auto opacity-100' : 'translate-y-1.5 scale-90 opacity-0',
