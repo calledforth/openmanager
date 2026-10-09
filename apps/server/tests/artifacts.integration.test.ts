@@ -151,7 +151,7 @@ describe('artifact metadata', () => {
     }
     // The raw file keeps the version this server now expects.
     const raw = new DatabaseSync(join(directory, DATABASE_FILENAME))
-    expect(raw.prepare('PRAGMA user_version').get()).toEqual({ user_version: 19 })
+    expect(raw.prepare('PRAGMA user_version').get()).toEqual({ user_version: 20 })
     raw.close()
   })
 
@@ -481,11 +481,21 @@ describe('artifact metadata', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ session_id: sessionId, source: 'generated' })
     const artifactId = rows[0]!.attachment_id as string
+    // The image names the tool call it came from, under the host's id for it,
+    // and the tool's own output carries no image.
+    const tool = records.find((record) => record.event.name === 'tool.updated')!.event.payload as {
+      toolCallId: string
+    }
     expect(
       records
         .filter((record) => record.event.name === 'message.delta')
         .map((record) => record.event.payload),
-    ).toMatchObject([{ role: 'assistant', content: { type: 'artifact', artifactId } }])
+    ).toMatchObject([
+      {
+        role: 'assistant',
+        content: { type: 'artifact', artifactId, toolCallId: tool.toolCallId },
+      },
+    ])
     expect(JSON.stringify(records)).not.toContain(data)
     // The result is filed after the tool call that produced it, so a transcript
     // in arrival order shows the work before the image.
@@ -496,6 +506,25 @@ describe('artifact metadata', () => {
     await host.server.close()
     const restarted = await restart(host, connections)
     try {
+      expect(
+        restarted.threadService.dispatch({
+          type: 'command',
+          requestId: 'history-after-restart',
+          name: 'session.history',
+          payload: { sessionId, threadId },
+        }),
+      ).toMatchObject({
+        payload: {
+          messages: [
+            { role: 'user' },
+            {
+              role: 'assistant',
+              content: [{ type: 'artifact', artifactId, toolCallId: tool.toolCallId }],
+            },
+          ],
+          tools: [{ toolCallId: tool.toolCallId, title: 'Render chart', status: 'completed' }],
+        },
+      })
       const bytes = await get(restarted.url, `/artifacts/${sessionId}/${artifactId}`, host.token)
       expect(bytes.status).toBe(200)
       expect(Buffer.from(await bytes.arrayBuffer())).toEqual(GENERATED)

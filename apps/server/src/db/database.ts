@@ -83,6 +83,25 @@ export function recoverInterruptedTurns(database: DatabaseSync, now = Date.now()
          )`,
       )
       .run(now)
+    if (tableExists(database, 'turn_activity')) {
+      // A tool still open when its turn died never reported a result: it was
+      // cancelled with the turn. `json_insert` keeps a finish time already set.
+      database
+        .prepare(
+          `UPDATE turn_activity
+           SET state_json = json_insert(
+                 json_set(state_json, '$.status', 'cancelled'), '$.finishedAt', ?
+               ),
+               updated_at = ?
+           WHERE kind = 'tool'
+             AND COALESCE(json_extract(state_json, '$.status'), 'pending')
+                 IN ('pending', 'in_progress')
+             AND turn_id IN (
+               SELECT turn_id FROM turns WHERE state IN ('running', 'waiting')
+             )`,
+        )
+        .run(new Date(now).toISOString(), now)
+    }
     const recovered = Number(
       database
         .prepare(

@@ -12,6 +12,7 @@ import {
   ToolCallStateSchema,
   TurnSchema,
   resolvePageLimit,
+  shrinkToolOutput,
   type ActivityRef,
   type HistoryCursor,
   type Interaction,
@@ -36,6 +37,7 @@ import {
   THREAD_IN_SESSION_SQL,
   THREADS_FOR_SESSION_SQL,
   TURN_ACTIVITY_PAGE_SQL,
+  TURN_ACTIVITY_PAYLOAD_SQL,
   TURN_FOR_COMMAND_ID_SQL,
   TURNS_FOR_THREAD_SQL,
   USER_MESSAGE_FOR_TURN_SQL,
@@ -111,7 +113,10 @@ type TurnActivityRow = {
   kind: 'reasoning' | 'tool'
   ordinal: number
   state_json: string
+  /** Encoded size of the row's payload; 0 when it has none (see migration 20). */
+  payload_bytes: number
 }
+type ToolPayload = Pick<ToolCallState, 'input' | 'output' | 'locations'>
 type MessageRow = {
   message_id: string
   thread_id: string
@@ -298,12 +303,17 @@ export function listSessionHistory(
     .all(query.threadId, olderBound, newerBound) as TurnActivityRow[]
   const reasoning: ReasoningBlock[] = []
   const tools: ToolCallState[] = []
+  const toolRows: TurnActivityRow[] = []
   for (const row of activityRows) {
     const state: unknown = JSON.parse(row.state_json)
     if (row.kind === 'reasoning') reasoning.push(ReasoningBlockSchema.parse(state))
-    else tools.push(ToolCallStateSchema.parse(state))
+    else {
+      tools.push(ToolCallStateSchema.parse(state))
+      toolRows.push(row)
+    }
   }
   capReasoningText(reasoning)
+  attachToolPayloads(database, tools, toolRows, encodedBytes(messages) + encodedBytes(reasoning))
   const order: ActivityRef[] = [
     ...pageRows.map((row) => ({
       ordinal: row.ordinal,
@@ -414,6 +424,75 @@ function capReasoningText(reasoning: ReasoningBlock[]): void {
       ...block,
       content: [{ type: 'text', text: kept ? `${note}\n${kept}` : note }],
     }
+  }
+}
+
+/**
+ * Tool payload (input, output, locations) a page may carry. Like reasoning,
+ * the newest calls are served first, and the payloads never take the page past
+ * `HISTORY_PAGE_BUDGET_BYTES` together with its messages and reasoning.
+ */
+export const TOOL_PAYLOAD_BUDGET_BYTES = 256 * 1024
+/**
+ * What one history page or snapshot may come to before tool payloads are
+ * left out: the socket's 1 MiB slow-consumer budget, less room for the
+ * envelope, turns, interactions and order list.
+ */
+export const HISTORY_PAGE_BUDGET_BYTES = 896 * 1024
+/** Less room than this is not worth a partial payload; the call is marked instead. */
+const PARTIAL_PAYLOAD_MIN_BYTES = 512
+
+const encodedBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), 'utf8')
+
+/**
+ * Give the page's tool calls their payloads, newest first, while the budget
+ * lasts. The call that does not fit keeps its locations and input if they do
+ * and as much of its output's start and newest end as the rest allows. Older
+ * calls past the budget carry no input or locations, and an output that is
+ * only a marker of how many payload bytes were left out, so a client can tell
+ * "not loaded" from "no output". Only payloads that fit are read at all.
+ */
+function attachToolPayloads(
+  database: DatabaseSync,
+  tools: ToolCallState[],
+  rows: readonly TurnActivityRow[],
+  spentBytes: number,
+): void {
+  const read = database.prepare(TURN_ACTIVITY_PAYLOAD_SQL)
+  const payloadOf = (row: TurnActivityRow): ToolPayload => {
+    const found = read.get(row.activity_id) as { payload_json: string | null } | undefined
+    return found?.payload_json ? (JSON.parse(found.payload_json) as ToolPayload) : {}
+  }
+  let remaining = Math.min(
+    TOOL_PAYLOAD_BUDGET_BYTES,
+    Math.max(0, HISTORY_PAGE_BUDGET_BYTES - spentBytes - encodedBytes(tools)),
+  )
+  for (let index = tools.length - 1; index >= 0; index -= 1) {
+    const row = rows[index]!
+    if (row.payload_bytes === 0) continue
+    if (row.payload_bytes <= remaining) {
+      remaining -= row.payload_bytes
+      tools[index] = ToolCallStateSchema.parse({ ...tools[index], ...payloadOf(row) })
+      continue
+    }
+    if (remaining >= PARTIAL_PAYLOAD_MIN_BYTES) {
+      const payload = payloadOf(row)
+      const kept: ToolPayload = {}
+      let room = remaining
+      for (const key of ['locations', 'input'] as const) {
+        if (payload[key] === undefined) continue
+        const bytes = encodedBytes(payload[key])
+        if (bytes > room) continue
+        Object.assign(kept, { [key]: payload[key] })
+        room -= bytes
+      }
+      if (payload.output) kept.output = shrinkToolOutput(payload.output, room)
+      remaining = 0
+      tools[index] = ToolCallStateSchema.parse({ ...tools[index], ...kept })
+      continue
+    }
+    remaining = 0
+    tools[index] = { ...tools[index]!, output: { text: '', omittedBytes: row.payload_bytes } }
   }
 }
 

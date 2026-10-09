@@ -762,6 +762,36 @@ export const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    version: 20,
+    name: 'tool_call_payloads',
+    up(database) {
+      const columns = new Set(
+        (database.prepare('PRAGMA table_info(turn_activity)').all() as { name: string }[]).map(
+          (column) => column.name,
+        ),
+      )
+      // A tool call's bounded input, output and locations (protocol v17), kept
+      // apart from `state_json` so the row's small state (name, status, times)
+      // can be read for every call of a page while the payload is read only
+      // for the calls the page has room for. `payload_bytes` is the payload's
+      // encoded size, so that choice is made without reading the payload.
+      // Calls recorded before this migration have no payload: providers never
+      // sent one, and the event log holds none to rebuild from.
+      if (!columns.has('payload_json')) {
+        database.exec(`
+          ALTER TABLE turn_activity ADD COLUMN payload_json TEXT
+            CHECK (payload_json IS NULL OR (kind = 'tool' AND json_valid(payload_json)))
+        `)
+      }
+      if (!columns.has('payload_bytes')) {
+        database.exec(`
+          ALTER TABLE turn_activity ADD COLUMN payload_bytes INTEGER NOT NULL DEFAULT 0
+            CHECK (payload_bytes >= 0)
+        `)
+      }
+    },
+  },
 ]
 
 type RetainedActivityRow = {

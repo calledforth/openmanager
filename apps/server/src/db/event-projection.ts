@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
-import type { ProofEvent } from '@openmanager/protocol/node'
+import { applyToolUpdate, type ProofEvent, type ToolCallState } from '@openmanager/protocol/node'
 import type { DurableProofEvent } from './event-repository.ts'
 import { prepareDraftProjection } from './draft-projection.ts'
 
@@ -10,7 +10,15 @@ type MessageDelta = Extract<ProofEvent, { name: 'message.delta' }>
 type MessageContent = MessageDelta['payload']['content']
 type MessageReasoning = Extract<ProofEvent, { name: 'message.reasoning' }>
 type ToolUpdated = Extract<ProofEvent, { name: 'tool.updated' }>
-type ActivityRow = { turn_id: string; thread_id: string; kind: string; state_json: string }
+type ActivityRow = {
+  turn_id: string
+  thread_id: string
+  kind: string
+  state_json: string
+  payload_json: string | null
+}
+/** A row's small state, and the payload kept beside it (see migration 20). */
+type ActivityValue = { state: unknown; payload?: Record<string, unknown> }
 
 export interface EventProjectionOptions {
   /** Host-owned provider identity, absent from the public session summary. */
@@ -144,16 +152,19 @@ export function createEventProjector(
        ) AS INTEGER) + 1 AS ordinal`,
     ),
     selectActivity: database.prepare(
-      'SELECT turn_id, thread_id, kind, state_json FROM turn_activity WHERE activity_id = ?',
+      `SELECT turn_id, thread_id, kind, state_json, payload_json
+       FROM turn_activity WHERE activity_id = ?`,
     ),
     insertActivity: database.prepare(
       `INSERT INTO turn_activity (
          activity_id, workspace_id, thread_id, turn_id, kind, ordinal, state_json,
-         created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         payload_json, payload_bytes, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     updateActivity: database.prepare(
-      'UPDATE turn_activity SET state_json = ?, updated_at = ? WHERE activity_id = ?',
+      `UPDATE turn_activity
+       SET state_json = ?, payload_json = ?, payload_bytes = ?, updated_at = ?
+       WHERE activity_id = ?`,
     ),
     insertMessage: database.prepare(
       `INSERT INTO messages (
@@ -282,15 +293,24 @@ export function createEventProjector(
   /**
    * Upsert one reasoning block or tool call of a turn. The first event for an
    * id takes the next thread-wide ordinal, which fixes the entry's place among
-   * the turn's messages; later events only revise its state.
+   * the turn's messages; later events only revise its state. `next` sees the
+   * state and payload as one value and hands them back apart.
    */
   function upsertActivity(
     event: MessageReasoning | ToolUpdated,
     activityId: string,
     kind: 'reasoning' | 'tool',
     at: number,
-    next: (existing: unknown | undefined) => unknown,
+    next: (existing: unknown | undefined) => ActivityValue,
   ): void {
+    const columns = (value: ActivityValue) => {
+      const payload = value.payload === undefined ? null : JSON.stringify(value.payload)
+      return [
+        JSON.stringify(value.state),
+        payload,
+        payload === null ? 0 : Buffer.byteLength(payload, 'utf8'),
+      ] as const
+    }
     const { turnId } = event.payload
     const turn = s.selectTurnWorkspace.get(turnId, event.scope.threadId) as
       { workspace_id: string } | undefined
@@ -304,7 +324,13 @@ export function createEventProjector(
       ) {
         throw new Error(`Cannot update mismatched ${kind} ${activityId}`)
       }
-      s.updateActivity.run(JSON.stringify(next(JSON.parse(existing.state_json))), at, activityId)
+      const held = {
+        ...(JSON.parse(existing.state_json) as Record<string, unknown>),
+        ...(existing.payload_json
+          ? (JSON.parse(existing.payload_json) as Record<string, unknown>)
+          : {}),
+      }
+      s.updateActivity.run(...columns(next(held)), at, activityId)
       return
     }
     const { ordinal } = s.nextMessageOrdinal.get(event.scope.threadId, event.scope.threadId) as {
@@ -317,7 +343,7 @@ export function createEventProjector(
       turnId,
       kind,
       ordinal,
-      JSON.stringify(next(undefined)),
+      ...columns(next(undefined)),
       at,
       at,
     )
@@ -341,26 +367,35 @@ export function createEventProjector(
       const total =
         tokens === undefined ? previous?.tokens : Math.max(previous?.tokens ?? 0, tokens)
       return {
-        messageId,
-        turnId,
-        phase,
-        content: merged,
-        ...(total === undefined ? {} : { tokens: total }),
+        state: {
+          messageId,
+          turnId,
+          phase,
+          content: merged,
+          ...(total === undefined ? {} : { tokens: total }),
+        },
       }
     })
   }
 
-  /** Later updates fill in or revise title, kind and status; nothing is forgotten. */
+  /**
+   * Fold the update exactly as clients do (`applyToolUpdate`): fields fill in
+   * or revise, output is replaced or appended to, a final status stays. The
+   * bounded input, output and locations go to the payload column.
+   */
   function projectTool(event: ToolUpdated, at: number): void {
-    const { toolCallId, turnId, title, kind, status } = event.payload
-    upsertActivity(event, toolCallId, 'tool', at, (existing) => ({
-      ...((existing as Record<string, unknown> | undefined) ?? {}),
-      toolCallId,
-      turnId,
-      ...(title === undefined ? {} : { title }),
-      ...(kind === undefined ? {} : { kind }),
-      ...(status === undefined ? {} : { status }),
-    }))
+    upsertActivity(event, event.payload.toolCallId, 'tool', at, (existing) => {
+      const { input, output, locations, ...state } = applyToolUpdate(
+        existing as ToolCallState | undefined,
+        event.payload,
+      )
+      const payload = {
+        ...(input === undefined ? {} : { input }),
+        ...(output === undefined ? {} : { output }),
+        ...(locations === undefined ? {} : { locations }),
+      }
+      return { state, ...(Object.keys(payload).length > 0 ? { payload } : {}) }
+    })
   }
 
   return function projectEvent(event: DurableProofEvent): void {
