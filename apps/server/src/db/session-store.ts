@@ -116,7 +116,7 @@ type TurnActivityRow = {
   /** Encoded size of the row's payload; 0 when it has none (see migration 20). */
   payload_bytes: number
 }
-type ToolPayload = Pick<ToolCallState, 'input' | 'output' | 'locations'>
+export type ToolPayload = Pick<ToolCallState, 'input' | 'output' | 'locations'>
 type MessageRow = {
   message_id: string
   thread_id: string
@@ -516,22 +516,8 @@ function attachToolPayloads(
     }
     if (whole && available >= PARTIAL_PAYLOAD_MIN_BYTES) {
       whole = false
-      const payload = payloadOf(row)
-      let candidate: ToolCallState = state
-      for (const key of ['locations', 'input'] as const) {
-        if (payload[key] === undefined) continue
-        const next = { ...candidate, [key]: payload[key] }
-        if (cost(next) <= available) candidate = next
-      }
-      if (payload.output) {
-        // `,"output":` is what the key itself adds around the value.
-        const room = available - cost(candidate) - 10
-        if (room > 0) {
-          const next = { ...candidate, output: shrinkToolOutput(payload.output, room) }
-          if (cost(next) <= available) candidate = next
-        }
-      }
-      if (candidate !== state && take(ToolCallStateSchema.parse(candidate), available)) continue
+      const candidate = partialToolPayload(state, payloadOf(row), available)
+      if (candidate && take(ToolCallStateSchema.parse(candidate), available)) continue
     }
     whole = false
     take(marker(index), remaining)
@@ -539,6 +525,50 @@ function attachToolPayloads(
   // Payloads must never be what takes the frame over: if they somehow did,
   // the page goes out as it would have without them.
   if (encodedBytes(page) > Math.max(frame, bare)) tools.splice(0, tools.length, ...light)
+}
+
+/**
+ * As much of one call's payload as fits in `available` encoded bytes over its
+ * small state, or undefined when none of it does. Room for the output's
+ * omission marker is set aside before locations or input may take any, so a
+ * call that had output never comes back looking as if it returned nothing:
+ * it carries the start and newest end of its output, or at least the marker.
+ */
+export function partialToolPayload(
+  state: ToolCallState,
+  payload: ToolPayload,
+  available: number,
+): ToolCallState | undefined {
+  const stateBytes = encodedBytes(state)
+  const cost = (next: ToolCallState) => encodedBytes(next) - stateBytes
+  const output = payload.output
+  const outputBytes = output
+    ? Buffer.byteLength(output.text, 'utf8') +
+      Buffer.byteLength(output.tail ?? '', 'utf8') +
+      (output.omittedBytes ?? 0)
+    : 0
+  const outputMarker = output && outputBytes > 0 ? { text: '', omittedBytes: outputBytes } : output
+  // What the output key costs at its least; it is appended last, so it adds
+  // the same to any candidate.
+  const reserve = outputMarker ? cost({ ...state, output: outputMarker }) : 0
+  if (reserve > available) return undefined
+  let candidate: ToolCallState = state
+  for (const key of ['locations', 'input'] as const) {
+    if (payload[key] === undefined) continue
+    const next = { ...candidate, [key]: payload[key] }
+    if (cost(next) + reserve <= available) candidate = next
+  }
+  if (output && outputMarker) {
+    let kept = outputMarker
+    // `,"output":` is what the key itself adds around the value.
+    const room = available - cost(candidate) - 10
+    if (room > 0) {
+      const shrunk = shrinkToolOutput(output, room)
+      if (cost({ ...candidate, output: shrunk }) <= available) kept = shrunk
+    }
+    candidate = { ...candidate, output: kept }
+  }
+  return candidate === state ? undefined : candidate
 }
 
 /**

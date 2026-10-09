@@ -27,6 +27,7 @@ import {
   HISTORY_PAGE_BUDGET_BYTES,
   TOOL_PAYLOAD_BUDGET_BYTES,
   listSessionHistory,
+  partialToolPayload,
 } from '../src/db/session-store.js'
 import { createThreadService, type WorkspaceRuntimeResolver } from '../src/thread-service.js'
 
@@ -351,6 +352,36 @@ describe('tool payloads in turn_activity', () => {
       expect(encoded(page)).toBe(encoded(bare))
     }
     expect(encoded(bare) <= frame).toBe(turnCount === 2_200)
+  })
+
+  it("never lets arguments crowd out every trace of a call's output", () => {
+    const state: ToolCallState = { toolCallId: 'call', turnId: 'turn-1', toolName: 'Bash' }
+    const payload = {
+      input: { command: `run ${'y'.repeat(3_000)}` },
+      locations: [{ path: '/workspace/a.ts' }],
+      output: boundToolOutput(`start\n${'x'.repeat(60_000)}\nend`),
+    }
+    const added = (next: ToolCallState) => encoded(next) - encoded(state)
+    const outputBytes = (output: NonNullable<ToolCallState['output']>) =>
+      Buffer.byteLength(output.text) +
+      Buffer.byteLength(output.tail ?? '') +
+      (output.omittedBytes ?? 0)
+    const total = outputBytes(payload.output)
+    // Room for the input and locations exactly, and nothing more.
+    const tight = added({ ...state, input: payload.input, locations: payload.locations })
+    for (const available of [tight, tight + 40, tight + 600, 2_000, 120]) {
+      const fitted = partialToolPayload(state, payload, available)!
+      expect(added(fitted)).toBeLessThanOrEqual(available)
+      // The output is there: some of it, or a marker of all of it.
+      expect(fitted.output).toBeDefined()
+      expect(outputBytes(fitted.output!)).toBe(total)
+      if (fitted.output!.text === '') expect(fitted.output!.omittedBytes).toBe(total)
+    }
+    // Arguments go first when the marker would not fit beside them.
+    expect(partialToolPayload(state, payload, tight)!.input).toBeUndefined()
+    expect(partialToolPayload(state, payload, 2_000)!.output!.text.startsWith('start')).toBe(true)
+    // Not even the marker fits: nothing is offered.
+    expect(partialToolPayload(state, payload, 10)).toBeUndefined()
   })
 
   it('replays output deltas to exactly what a late joiner reads from the snapshot', async () => {
