@@ -762,6 +762,55 @@ export const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    // REBASE: placeholder for the tool payloads migration, which takes 20 and
+    // is expected to merge first. Replace this entry with that one when
+    // rebasing; it exists only so the catalog stays contiguous until then.
+    version: 20,
+    name: 'reserved_for_tool_payloads',
+    up() {},
+  },
+  {
+    version: 21,
+    name: 'turn_notices',
+    up(database) {
+      // Durable notices of a turn (a compaction, a model switch, a refusal,
+      // a usage warning, a provider's warning), one row each. `ordinal` is
+      // drawn from the same thread-wide counter as messages and turn
+      // activity, so one sort places a notice where it happened in the turn.
+      // Their own table rather than `turn_activity`, whose kinds are fixed by
+      // a CHECK constraint that other work rebuilds.
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS turn_notices (
+          notice_id TEXT PRIMARY KEY NOT NULL,
+          workspace_id TEXT NOT NULL,
+          thread_id TEXT NOT NULL,
+          turn_id TEXT NOT NULL,
+          ordinal REAL NOT NULL CHECK (ordinal >= 0),
+          notice_json TEXT NOT NULL CHECK (json_valid(notice_json)),
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY (turn_id, thread_id, workspace_id)
+            REFERENCES turns(turn_id, thread_id, workspace_id) ON DELETE CASCADE,
+          UNIQUE (thread_id, ordinal)
+        ) STRICT;
+
+        CREATE INDEX IF NOT EXISTS turn_notices_turn_id_idx ON turn_notices(turn_id);
+      `)
+      // How a failed turn failed: reason, the host's message, the recovery
+      // action and when a usage limit resets. `failure_reason` stays as it
+      // was; this is the whole failure a history page hands back.
+      const columns = new Set(
+        (database.prepare('PRAGMA table_info(turns)').all() as { name: string }[]).map(
+          (column) => column.name,
+        ),
+      )
+      if (!columns.has('failure_json')) {
+        database.exec(
+          'ALTER TABLE turns ADD COLUMN failure_json TEXT CHECK (failure_json IS NULL OR json_valid(failure_json))',
+        )
+      }
+    },
+  },
 ]
 
 type RetainedActivityRow = {

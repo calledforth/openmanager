@@ -124,6 +124,7 @@ export function createReplayReader(database: DatabaseSync, options: ReplayReader
         nextCursor: page.nextCursor,
         reasoning: page.reasoning,
         tools: page.tools,
+        notices: page.notices,
         order: page.order,
         interactions: page.interactions.map(({ turnId, interaction }) => ({ turnId, interaction })),
       },

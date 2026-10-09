@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { budgetSessionPage } from '../session-pagination.ts'
 import {
   ContentBlockSchema,
+  DurableTurnNoticeSchema,
   HistoryCursorSchema,
   InteractionSchema,
   InteractionResponseSchema,
@@ -10,9 +11,11 @@ import {
   SessionListCursorSchema,
   SessionSummarySchema,
   ToolCallStateSchema,
+  TurnFailureSchema,
   TurnSchema,
   resolvePageLimit,
   type ActivityRef,
+  type DurableTurnNotice,
   type HistoryCursor,
   type Interaction,
   type Message,
@@ -37,6 +40,7 @@ import {
   THREADS_FOR_SESSION_SQL,
   TURN_ACTIVITY_PAGE_SQL,
   TURN_FOR_COMMAND_ID_SQL,
+  TURN_NOTICES_PAGE_SQL,
   TURNS_FOR_THREAD_SQL,
   USER_MESSAGE_FOR_TURN_SQL,
 } from './queries.ts'
@@ -74,7 +78,9 @@ export interface SessionHistoryPage {
   /** Reasoning blocks and tool calls of the turns whose messages are on the page. */
   reasoning: ReasoningBlock[]
   tools: ToolCallState[]
-  /** The page's messages, reasoning and tools in the order they happened. */
+  /** Durable notices of the page, placed in `order` like the rest. */
+  notices: DurableTurnNotice[]
+  /** The page's messages, reasoning, tools and notices in the order they happened. */
   order: ActivityRef[]
   nextCursor: HistoryCursor | null
 }
@@ -101,9 +107,16 @@ type TurnRow = {
   turn_id: string
   thread_id: string
   state: string
+  failure_json?: string | null
   origin?: string | null
   started_at: number
   finished_at: number | null
+}
+type TurnNoticeRow = {
+  notice_id: string
+  turn_id: string
+  ordinal: number
+  notice_json: string
 }
 type TurnActivityRow = {
   activity_id: string
@@ -282,6 +295,7 @@ export function listSessionHistory(
           ? {}
           : { finishedAt: new Date(row.finished_at).toISOString() }),
         ...(row.origin ? { origin: row.origin } : {}),
+        ...failureOf(row),
       }),
   )
   // The reasoning and tool calls that belong to this page: everything after
@@ -304,6 +318,12 @@ export function listSessionHistory(
     else tools.push(ToolCallStateSchema.parse(state))
   }
   capReasoningText(reasoning)
+  const noticeRows = database
+    .prepare(TURN_NOTICES_PAGE_SQL)
+    .all(query.threadId, olderBound, newerBound) as TurnNoticeRow[]
+  const notices = noticeRows.map((row) =>
+    DurableTurnNoticeSchema.parse(JSON.parse(row.notice_json)),
+  )
   const order: ActivityRef[] = [
     ...pageRows.map((row) => ({
       ordinal: row.ordinal,
@@ -312,6 +332,10 @@ export function listSessionHistory(
     ...activityRows.map((row) => ({
       ordinal: row.ordinal,
       ref: { kind: row.kind, id: row.activity_id, turnId: row.turn_id },
+    })),
+    ...noticeRows.map((row) => ({
+      ordinal: row.ordinal,
+      ref: { kind: 'notice' as const, id: row.notice_id, turnId: row.turn_id },
     })),
   ]
     .sort((left, right) => left.ordinal - right.ordinal)
@@ -360,9 +384,18 @@ export function listSessionHistory(
     plans,
     reasoning,
     tools,
+    notices,
     order,
     nextCursor: rows.length > limit && oldest !== undefined ? { ordinal: oldest.ordinal } : null,
   }
+}
+
+/** A failed turn's stored failure. A row that predates it, or that does not
+ * parse, reads as a plain failed turn, which is what it was before. */
+function failureOf(row: TurnRow): { failure?: Turn['failure'] } {
+  if (row.state !== 'failed' || !row.failure_json) return {}
+  const parsed = TurnFailureSchema.safeParse(JSON.parse(row.failure_json))
+  return parsed.success ? { failure: parsed.data } : {}
 }
 
 function messageFromRow(database: DatabaseSync, row: MessageRow): Message {
