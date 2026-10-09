@@ -1311,6 +1311,22 @@ describe('AcpSessionRuntime RPC timeouts', () => {
     expect(harness.runtime.phase).toBe('ready')
   })
 
+  it('types a failed prompt the provider described plainly', async () => {
+    const harness = build({
+      newSession: async () => ({ sessionId: 'session-1' }),
+      prompt: async () => {
+        throw new Error('Rate limit exceeded, try again later')
+      },
+    })
+    await harness.runtime.start()
+    await expect(
+      harness.runtime.prompt({ prompt: { text: 'hi', blocks: [{ type: 'text', text: 'hi' }] } }),
+    ).rejects.toThrow('Rate limit exceeded')
+    expect(harness.events.find((event) => event.event === 'rpc_error')?.data).toMatchObject({
+      problem: { code: 'rate_limited' },
+    })
+  })
+
   it('never applies a handshake budget to a prompt', async () => {
     const harness = build(
       {
