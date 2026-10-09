@@ -1,6 +1,16 @@
 import { z } from 'zod'
 import { SessionTitleSourceSchema } from './session-title.js'
 import { SessionComposerStateSchema } from './session-composer.js'
+import {
+  TOOL_INPUT_MAX_BYTES,
+  TOOL_LOCATION_PATH_MAX_LENGTH,
+  TOOL_LOCATIONS_MAX,
+  TOOL_NAME_MAX_LENGTH,
+  TOOL_OUTPUT_MAX_BYTES,
+  jsonStringBytes,
+  toolOutputBytes,
+  utf8Bytes,
+} from './tool-output.js'
 
 /** Host-owned resource identity, distinct from a command's request ID. */
 export const EntityIdSchema = z.string().min(1).max(256).regex(/^\S+$/)
@@ -186,6 +196,12 @@ export const ArtifactReferenceSchema = z.object({
   mimeType: z.string().min(1),
   name: z.string().min(1),
   sizeBytes: z.number().int().positive(),
+  /**
+   * The tool call whose result produced this image, when the agent's tool made
+   * it rather than the user attaching it. The image is shown in the reply; the
+   * id lets a client show it under that tool's row as well.
+   */
+  toolCallId: EntityIdSchema.optional(),
 })
 export const ContentBlockSchema = z.discriminatedUnion('type', [
   ArtifactReferenceSchema,
@@ -236,14 +252,89 @@ export const ToolKindSchema = z.enum([
   'switch_mode',
   'other',
 ])
-export const ToolCallStatusSchema = z.enum(['pending', 'in_progress', 'completed', 'failed'])
-/** What a `tool.updated` event carries, and what the environment keeps of a tool call. */
+/**
+ * Where a tool call is. `declined` and `cancelled` are outcomes of their own,
+ * not failures: the user (or a rule acting for them) refused to let the tool
+ * run, or the turn stopped before the tool reported a result.
+ */
+export const ToolCallStatusSchema = z.enum([
+  'pending',
+  'in_progress',
+  'completed',
+  'failed',
+  'declined',
+  'cancelled',
+])
+/** A file a tool call touched or was pointed at. */
+export const ToolLocationSchema = z.object({
+  path: z.string().min(1).max(TOOL_LOCATION_PATH_MAX_LENGTH),
+  line: z.number().int().nonnegative().optional(),
+})
+/**
+ * A tool call's output, bounded to `TOOL_OUTPUT_MAX_BYTES`: the whole of it
+ * while it fits, then its start (`text`), its newest end (`tail`) and how
+ * many bytes were left out between them. See `tool-output.ts`.
+ */
+export const ToolOutputSchema = z
+  .object({
+    text: z.string().max(TOOL_OUTPUT_MAX_BYTES),
+    omittedBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+    tail: z.string().max(TOOL_OUTPUT_MAX_BYTES).optional(),
+  })
+  .refine((output) => output.tail === undefined || output.omittedBytes !== undefined, {
+    message: 'Only a truncated output has a tail.',
+    path: ['tail'],
+  })
+  // The whole object, as it travels: head, tail and keys together.
+  .refine((output) => toolOutputBytes(output) <= TOOL_OUTPUT_MAX_BYTES, {
+    message: 'Tool output exceeds its bound.',
+  })
+/** Lines an edit added and removed, only ever as the provider reported them. */
+export const ToolLineChangesSchema = z.object({
+  added: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  removed: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+})
+/** A tool's input as the environment keeps it: JSON, bounded, edit bodies removed. */
+export const ToolInputSchema = z
+  .json()
+  .refine((input) => utf8Bytes(JSON.stringify(input)) <= TOOL_INPUT_MAX_BYTES, {
+    message: 'Tool input exceeds its bound.',
+  })
+/** What the environment keeps of a tool call, and what a page or a snapshot carries. */
 export const ToolCallStateSchema = z.object({
   toolCallId: EntityIdSchema,
   turnId: EntityIdSchema,
+  /** The provider's own name for the tool, unchanged: `Bash`, `mcp__github__search`. */
+  toolName: z.string().min(1).max(TOOL_NAME_MAX_LENGTH).optional(),
+  /** A human title, when the provider gives one; separate from the name. */
   title: z.string().optional(),
   kind: ToolKindSchema.optional(),
   status: ToolCallStatusSchema.optional(),
+  input: ToolInputSchema.optional(),
+  output: ToolOutputSchema.optional(),
+  locations: z.array(ToolLocationSchema).max(TOOL_LOCATIONS_MAX).optional(),
+  lineChanges: ToolLineChangesSchema.optional(),
+  /** When the call opened, and when it reached a final status. */
+  startedAt: TimestampSchema.optional(),
+  finishedAt: TimestampSchema.optional(),
+})
+/**
+ * What a `tool.updated` event carries: any of the fields above, which replace
+ * what was held (`output` included), or `outputDelta`, newly streamed output
+ * appended with `appendToolOutput`. Never both: their order would be ambiguous.
+ */
+export const ToolCallUpdateSchema = ToolCallStateSchema.extend({
+  outputDelta: z
+    .string()
+    .min(1)
+    .max(TOOL_OUTPUT_MAX_BYTES)
+    .refine((delta) => jsonStringBytes(delta) <= TOOL_OUTPUT_MAX_BYTES, {
+      message: 'Tool output delta exceeds its bound.',
+    })
+    .optional(),
+}).refine((update) => update.output === undefined || update.outputDelta === undefined, {
+  message: 'A tool update replaces its output or appends to it, not both.',
+  path: ['outputDelta'],
 })
 /**
  * One thing that took its place in a turn's transcript, named by the id it is
@@ -422,6 +513,10 @@ export type Turn = z.infer<typeof TurnSchema>
 export type Message = z.infer<typeof MessageSchema>
 export type ReasoningBlock = z.infer<typeof ReasoningBlockSchema>
 export type ToolCallState = z.infer<typeof ToolCallStateSchema>
+export type ToolCallUpdate = z.infer<typeof ToolCallUpdateSchema>
+export type ToolCallStatus = z.infer<typeof ToolCallStatusSchema>
+export type ToolLocation = z.infer<typeof ToolLocationSchema>
+export type ToolLineChanges = z.infer<typeof ToolLineChangesSchema>
 export type ActivityRef = z.infer<typeof ActivityRefSchema>
 export type TurnStart = z.infer<typeof TurnStartSchema>
 export type TurnStarted = z.infer<typeof TurnStartedSchema>

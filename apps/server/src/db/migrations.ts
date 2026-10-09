@@ -762,6 +762,68 @@ export const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    version: 20,
+    name: 'tool_call_payloads',
+    up(database) {
+      const columns = new Set(
+        (database.prepare('PRAGMA table_info(turn_activity)').all() as { name: string }[]).map(
+          (column) => column.name,
+        ),
+      )
+      // A tool call's bounded input, output and locations (protocol v17), kept
+      // apart from `state_json` so the row's small state (name, status, times)
+      // can be read for every call of a page while the payload is read only
+      // for the calls the page has room for. `payload_bytes` is the payload's
+      // encoded size, so that choice is made without reading the payload, and
+      // `output_bytes` the size of the whole output the tool produced, which
+      // is what a page reports when it leaves a call's output out.
+      // Calls recorded before this migration have no payload: providers never
+      // sent one, and the event log holds none to rebuild from.
+      if (!columns.has('payload_json')) {
+        database.exec(`
+          ALTER TABLE turn_activity ADD COLUMN payload_json TEXT
+            CHECK (payload_json IS NULL OR (kind = 'tool' AND json_valid(payload_json)))
+        `)
+      }
+      if (!columns.has('payload_bytes')) {
+        database.exec(`
+          ALTER TABLE turn_activity ADD COLUMN payload_bytes INTEGER NOT NULL DEFAULT 0
+            CHECK (payload_bytes >= 0)
+        `)
+      }
+      if (!columns.has('output_bytes')) {
+        database.exec(`
+          ALTER TABLE turn_activity ADD COLUMN output_bytes INTEGER NOT NULL DEFAULT 0
+            CHECK (output_bytes >= 0)
+        `)
+      }
+      // Calls recorded before this version could stay open under a turn that
+      // had already ended: nothing settled them. They never reported a result,
+      // so they were cancelled with their turn, at the time it finished when
+      // that is known. Without this they would spin forever, and every client
+      // resuming such a thread would keep asking the environment about them.
+      database.exec(`
+        UPDATE turn_activity
+        SET state_json = CASE
+          WHEN (SELECT finished_at FROM turns WHERE turns.turn_id = turn_activity.turn_id) IS NULL
+            THEN json_set(state_json, '$.status', 'cancelled')
+          ELSE json_insert(
+            json_set(state_json, '$.status', 'cancelled'),
+            '$.finishedAt',
+            strftime(
+              '%Y-%m-%dT%H:%M:%fZ',
+              (SELECT finished_at FROM turns WHERE turns.turn_id = turn_activity.turn_id) / 1000.0,
+              'unixepoch'
+            )
+          )
+        END
+        WHERE kind = 'tool'
+          AND COALESCE(json_extract(state_json, '$.status'), 'pending') IN ('pending', 'in_progress')
+          AND turn_id IN (SELECT turn_id FROM turns WHERE state NOT IN ('running', 'waiting'))
+      `)
+    },
+  },
 ]
 
 type RetainedActivityRow = {

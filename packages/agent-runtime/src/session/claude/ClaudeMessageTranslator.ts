@@ -13,9 +13,11 @@ import type { BackendEvent, BackendRoute } from '../../backends/Backend.js'
 import type { HostDeps } from '../../host.js'
 import { number, object, routeEvent, string } from '../wire.js'
 import {
+  claudeEditResultBody,
   claudeToolContentFromInput,
   claudeToolKind,
   claudeToolLocations,
+  claudeToolResultExtras,
   claudeToolTitle,
   planUpdateFromTodoWrite,
 } from './claude-tools.js'
@@ -291,6 +293,7 @@ export class ClaudeMessageTranslator {
       const call: ToolCall = {
         toolCallId: toolUseId,
         title: claudeToolTitle(toolName),
+        toolName,
         kind: claudeToolKind(toolName),
         status: 'pending',
         rawInput: object(block.input),
@@ -385,6 +388,7 @@ export class ClaudeMessageTranslator {
     const update: ToolCallUpdate = {
       toolCallId: toolUseId,
       title: claudeToolTitle(toolName),
+      toolName,
       kind: claudeToolKind(toolName),
       status: 'in_progress',
       rawInput: input,
@@ -469,6 +473,10 @@ export class ClaudeMessageTranslator {
     const content = object(message.message).content
     if (!Array.isArray(content)) return []
     const events: BackendEvent[] = []
+    // The structured result rides the message, not the block, so it can only
+    // be attributed when the message reports exactly one tool's result.
+    const results = content.filter((raw) => string(object(raw).type) === 'tool_result')
+    const structured = results.length === 1 ? object(message).tool_use_result : undefined
     for (const raw of content) {
       const block = object(raw)
       if (string(block.type) !== 'tool_result') continue
@@ -479,13 +487,19 @@ export class ClaudeMessageTranslator {
       const toolUseId = string(block.tool_use_id)
       if (!toolUseId) continue
       const failed = block.is_error === true
+      const toolName = this.toolNames.get(toolUseId)
+      // An edit tool's result quotes the edit; only its message line is kept.
+      const body = claudeEditResultBody(toolName, block.content)
       const resultContent = this.contentFromInput.has(toolUseId)
         ? undefined
-        : toolResultContent(block.content)
+        : toolResultContent(body)
+      const extras = claudeToolResultExtras(toolName, structured)
       const update: ToolCallUpdate = {
         toolCallId: toolUseId,
-        status: failed ? 'failed' : 'completed',
-        rawOutput: block.content,
+        ...(toolName ? { toolName } : {}),
+        status: failed || extras.outcome ? 'failed' : 'completed',
+        ...extras,
+        rawOutput: body,
         // Content is supplied only when the input produced none. `content` is
         // replaced wholesale downstream, so publishing result text for an Edit
         // would discard the diff that call already emitted.
@@ -565,10 +579,12 @@ export class ClaudeMessageTranslator {
         const toolUseId = string(raw.tool_use_id)
         if (!toolUseId) return []
         const toolName = string(raw.tool_name)
+        // Refused by a rule, not broken: the tool never ran.
         const update: ToolCallUpdate = {
           toolCallId: toolUseId,
           status: 'failed',
-          ...(toolName ? { title: claudeToolTitle(toolName) } : {}),
+          outcome: 'declined',
+          ...(toolName ? { title: claudeToolTitle(toolName), toolName } : {}),
         }
         return [this.toolEvent(message.session_id, update, 'update')]
       }

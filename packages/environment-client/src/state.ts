@@ -1,5 +1,5 @@
-import { foldProtocolEvent, placeActivity } from '@agentpack/view/protocol'
-import { sessionListCursorOf } from '@openmanager/protocol'
+import { foldProtocolEvent, isTurnSettled, placeActivity } from '@agentpack/view/protocol'
+import { sessionListCursorOf, toolOutputSourceBytes, utf8Bytes } from '@openmanager/protocol'
 import type {
   BackgroundTask,
   Message,
@@ -28,6 +28,7 @@ import type {
   SessionStatus,
   SessionSummary,
   ThreadState,
+  ToolState,
 } from './types'
 import {
   applyDraftDeleted,
@@ -394,8 +395,9 @@ function removeSession(state: EnvironmentState, sessionId: string): EnvironmentS
  * Fold one live event into the state. Branches keyed by resource ID
  * (sessions, turns, tools, interactions) are idempotent, so a replayed event
  * cannot double-apply. Delta events (`message.delta`, `message.reasoning`,
- * `turn.notice`) append and are not; the transport de-duplicates those by
- * cursor at the snapshot/replay boundary.
+ * `turn.notice`, and a `tool.updated` carrying `outputDelta`) append and are
+ * not; the transport de-duplicates those by cursor at the snapshot/replay
+ * boundary.
  */
 export function applyEvent(state: EnvironmentState, event: ProofEvent): EnvironmentState {
   switch (event.name) {
@@ -570,6 +572,11 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
   const withThread = ensureThread(state, thread)
   const existing = withThread.threads[thread.threadId]!
   const messages = retainOlderMessages(existing.messages, threadSnapshot.messages)
+  const older = olderActivity(
+    existing,
+    messages.slice(0, messages.length - threadSnapshot.messages.length),
+    threadSnapshot.order ?? orderOfMessages(threadSnapshot.messages),
+  )
   const replaced: ThreadState = {
     ...createThreadState(thread, 'ready'),
     // A snapshot describes what the environment has; a send it has not
@@ -578,13 +585,10 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
     outbox: reconcileOutbox(existing, threadSnapshot.messages),
     turns: threadSnapshot.turns,
     messages,
-    // Older pages the client keeps in front of the snapshot place their
-    // messages; the snapshot places its own page, reasoning and tools included
-    // when the environment reports them.
-    order: [
-      ...orderOfMessages(messages.slice(0, messages.length - threadSnapshot.messages.length)),
-      ...(threadSnapshot.order ?? orderOfMessages(threadSnapshot.messages)),
-    ],
+    // Older pages the client keeps in front of the snapshot keep everything
+    // they placed; the snapshot places its own page, reasoning and tools
+    // included when the environment reports them.
+    order: older.order,
     historyCursor:
       existing.historyCursor !== undefined &&
       existing.messages.findIndex(
@@ -592,8 +596,13 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
       ) > 0
         ? existing.historyCursor
         : threadSnapshot.nextCursor,
-    reasoning: threadSnapshot.reasoning,
-    tools: threadSnapshot.tools,
+    reasoning: older.keep(
+      'reasoning',
+      existing.reasoning,
+      threadSnapshot.reasoning,
+      (entry) => entry.messageId,
+    ),
+    tools: older.keep('tool', existing.tools, threadSnapshot.tools, (tool) => tool.toolCallId),
     interactions: threadSnapshot.interactions.map((item) => ({
       sessionId: thread.sessionId,
       threadId: thread.threadId,
@@ -602,6 +611,150 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
     })),
   }
   return { ...withThread, threads: { ...withThread.threads, [thread.threadId]: replaced } }
+}
+
+/**
+ * What a snapshot leaves of the client's older history. A snapshot carries the
+ * newest page only, and its window starts right after the last older message
+ * the client keeps (see `retainOlderMessages`): everything the client placed
+ * up to that message is history the snapshot predates, and stays, whatever
+ * its kind. Anything placed after it is the snapshot's to say.
+ *
+ * `order` is the retained older order followed by the snapshot's. `keep`
+ * merges one activity list the same way: the retained older entries of that
+ * kind, then the snapshot's. Every kind of activity a page carries goes
+ * through `keep`, so a new kind joins without its own rule.
+ */
+function olderActivity(
+  existing: ThreadState,
+  olderMessages: readonly Message[],
+  snapshotOrder: readonly ActivityRef[],
+) {
+  const last = olderMessages.at(-1)
+  const end = last
+    ? existing.order.findIndex((ref) => ref.kind === 'message' && ref.id === last.messageId)
+    : -1
+  const inSnapshot = new Set(snapshotOrder.map((ref) => `${ref.kind}:${ref.id}`))
+  const retained = (
+    !last ? [] : end === -1 ? orderOfMessages(olderMessages) : existing.order.slice(0, end + 1)
+  ).filter((ref) => !inSnapshot.has(`${ref.kind}:${ref.id}`))
+  const kept = new Set(retained.map((ref) => `${ref.kind}:${ref.id}`))
+  return {
+    order: [...retained, ...snapshotOrder],
+    keep<T>(
+      kind: ActivityRef['kind'],
+      held: readonly T[],
+      fresh: readonly T[],
+      id: (item: T) => string,
+    ): T[] {
+      const freshIds = new Set(fresh.map(id))
+      return [
+        ...held.filter((item) => kept.has(`${kind}:${id(item)}`) && !freshIds.has(id(item))),
+        ...fresh,
+      ]
+    },
+  }
+}
+
+/**
+ * The older tool calls a client kept through a snapshot that may be out of
+ * date: the snapshot does not name them, they are still open as the client
+ * last saw them, and the snapshot says their turn has ended. They may have
+ * completed, failed or been declined while the client was away, or have been
+ * cancelled by a restart; only the environment knows which, so they are left
+ * as they are until `applyToolStates` brings its answer (see the history walk
+ * after a snapshot in `websocket.ts`). Guessing would show wrong outcomes.
+ */
+export function staleRetainedTools(state: EnvironmentState, snapshot: ScopeSnapshot): string[] {
+  if (snapshot.cursor.scope.type !== 'thread') return []
+  const held = state.threads[snapshot.cursor.scope.threadId]
+  if (!held) return []
+  const named = snapshot.state as { tools?: readonly ToolState[]; turns?: readonly Turn[] }
+  const fresh = new Set((named.tools ?? []).map((tool) => tool.toolCallId))
+  const ended = new Set((named.turns ?? []).filter(isTurnSettled).map((turn) => turn.turnId))
+  return held.tools
+    .filter(
+      (tool) =>
+        !fresh.has(tool.toolCallId) &&
+        ended.has(tool.turnId) &&
+        (tool.status === undefined || tool.status === 'pending' || tool.status === 'in_progress'),
+    )
+    .map((tool) => tool.toolCallId)
+}
+
+/**
+ * The environment's word on tool calls the client already holds, read from a
+ * history page: each named call takes the page's fields over its own. Calls the
+ * client does not hold are not added, and nothing else of the page is applied,
+ * so the thread's messages, order and history cursor stay as they are.
+ */
+export function applyToolStates(
+  state: EnvironmentState,
+  thread: Thread,
+  tools: readonly ToolState[],
+): EnvironmentState {
+  if (tools.length === 0) return state
+  const byId = new Map(tools.map((tool) => [tool.toolCallId, tool]))
+  return patchThread(state, thread, (current) => {
+    if (!current.tools.some((tool) => byId.has(tool.toolCallId))) return current
+    return {
+      ...current,
+      tools: current.tools.map((tool) => {
+        const known = byId.get(tool.toolCallId)
+        return known && known.turnId === tool.turnId ? mergeToolState(tool, known) : tool
+      }),
+    }
+  })
+}
+
+/** The bytes of output a value actually shows: its start and its newest end. */
+const shownOutputBytes = (output: NonNullable<ToolState['output']>) =>
+  utf8Bytes(output.text) + utf8Bytes(output.tail ?? '')
+
+/**
+ * Which output to keep for a held call a history page answers for. The held
+ * one stopped when the client lost track of the call, so it is stale by
+ * definition: a page that saw more of the output (more source bytes) wins as
+ * soon as it shows any of it, however much it had to cut to fit. Only when
+ * both saw the same output (the page's copy shrunk, or only a marker) does
+ * the side that shows more of it win.
+ */
+function newerOutput(held: ToolState['output'], page: ToolState['output']): ToolState['output'] {
+  if (!page) return held
+  if (!held) return page
+  const pageSource = toolOutputSourceBytes(page)
+  const heldSource = toolOutputSourceBytes(held)
+  const pageShown = shownOutputBytes(page)
+  if (pageSource > heldSource) return pageShown > 0 ? page : held
+  if (pageSource < heldSource) return held
+  return pageShown >= shownOutputBytes(held) ? page : held
+}
+
+/**
+ * A history page's word on a held call. Its state (status, times, name, title,
+ * kind, line changes) is the environment's and wins. Its payload may be cut
+ * to fit the page, or be only a marker: the output is chosen by
+ * `newerOutput`, and input and locations fill in only where the client has
+ * none.
+ */
+function mergeToolState(held: ToolState, page: ToolState): ToolState {
+  const next: ToolState = { ...held }
+  for (const key of [
+    'status',
+    'startedAt',
+    'finishedAt',
+    'toolName',
+    'title',
+    'kind',
+    'lineChanges',
+  ] as const) {
+    if (page[key] !== undefined) Object.assign(next, { [key]: page[key] })
+  }
+  const output = newerOutput(held.output, page.output)
+  if (output) next.output = output
+  if (held.input === undefined && page.input !== undefined) next.input = page.input
+  if (held.locations === undefined && page.locations !== undefined) next.locations = page.locations
+  return next
 }
 
 /**

@@ -9,6 +9,7 @@ import type {
   ToolKind,
 } from '@agentpack/contract'
 import { subtaskStatusFromTool } from '../../backends/acp/extensions.js'
+import { editResultMessage } from '../../protocol/toolCallProjection.js'
 import { object, string } from '../wire.js'
 
 /** Claude Code's built-in tools, mapped onto the contract's tool vocabulary.
@@ -134,6 +135,91 @@ export function claudeToolContentFromInput(
 
   return undefined
 }
+
+/** Claude Code's tools whose result text can quote what they wrote. */
+const EDIT_RESULT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
+
+/** The text of a tool result: a string, or the text of its text blocks. */
+function resultText(content: unknown): string | undefined {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return undefined
+  const texts = content.flatMap((raw) => {
+    const block = object(raw)
+    const text = string(block.type) === 'text' ? string(block.text) : undefined
+    return text === undefined ? [] : [text]
+  })
+  return texts.length > 0 ? texts.join('\n') : undefined
+}
+
+/** An edit tool's result reduced to its one-line message, never what was written.
+ *
+ * Claude Code's edit results quote the edit itself, live-verified against the
+ * bundled CLI (agent-sdk 0.3.220):
+ * - NotebookEdit answers `Updated cell <id> with <new_source>` (and
+ *   `Inserted cell ... with ...`): the whole cell source.
+ * - A failed Edit answers `String to replace not found in file.\nString:
+ *   <old_string>`, and the "Found N matches" error ends the same way, both
+ *   inside `<tool_use_error>`.
+ * - Older CLIs followed a successful Edit or Write with a `cat -n` snippet,
+ *   and MultiEdit lists each replacement after its first line.
+ *
+ * So the first line is kept, a quoted `String:` is cut off, and a notebook
+ * message stops before ` with `. Any other tool's result passes untouched.
+ * Undefined when an edit result has no text at all. */
+export function claudeEditResultBody(toolName: string | undefined, content: unknown): unknown {
+  if (!toolName || !EDIT_RESULT_TOOLS.has(toolName)) return content
+  const text = resultText(content)
+  if (text === undefined) return undefined
+  const message = editResultMessage(text)
+  // A notebook message that is not one of the known shapes still stops
+  // before what it says the cell now holds.
+  return toolName === 'NotebookEdit' ? message.split(' with ')[0]! : message
+}
+
+/** Tools whose structured result is a file patch. */
+const PATCH_TOOLS = new Set(['Edit', 'Write', 'MultiEdit'])
+
+/** What Claude Code's structured tool result (`tool_use_result`, the tool's
+ * own Output object) says that the model-visible text does not.
+ *
+ * - Lines changed, for the edit tools only, and only as Claude Code reported
+ *   them: `gitDiff.additions`/`deletions` when it computed a git diff, else the
+ *   `+`/`-` lines of its `structuredPatch`. Nothing is diffed here; a result
+ *   without either reports nothing.
+ * - `interrupted` on a `Bash` result: the command was stopped, not failed. */
+export function claudeToolResultExtras(
+  toolName: string | undefined,
+  result: unknown,
+): Pick<ToolCallUpdate, 'lineChanges' | 'outcome'> {
+  const value = object(result)
+  const extras: Pick<ToolCallUpdate, 'lineChanges' | 'outcome'> = {}
+  if (toolName === 'Bash' && value.interrupted === true) extras.outcome = 'cancelled'
+  if (!toolName || !PATCH_TOOLS.has(toolName)) return extras
+  const gitDiff = object(value.gitDiff)
+  const additions = gitDiff.additions
+  const deletions = gitDiff.deletions
+  if (isCount(additions) && isCount(deletions)) {
+    extras.lineChanges = { added: additions, removed: deletions }
+    return extras
+  }
+  if (!Array.isArray(value.structuredPatch)) return extras
+  let added = 0
+  let removed = 0
+  for (const hunk of value.structuredPatch) {
+    const lines = object(hunk).lines
+    if (!Array.isArray(lines)) continue
+    for (const line of lines) {
+      if (typeof line !== 'string') continue
+      if (line.startsWith('+')) added += 1
+      else if (line.startsWith('-')) removed += 1
+    }
+  }
+  extras.lineChanges = { added, removed }
+  return extras
+}
+
+const isCount = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 
 const PLAN_STATUSES = new Set(['pending', 'in_progress', 'completed'])
 
