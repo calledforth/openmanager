@@ -22,6 +22,19 @@ export function allowedOrigins(env = process.env) {
 /** The repository itself is the default workspace, so the dev loop has one to list. */
 export const DEFAULT_WORKSPACE = resolve(fileURLToPath(import.meta.url), '..', '..')
 
+/**
+ * Reads `.env` at the repository root into `process.env`, so settings such as
+ * `OPENMANAGER_TUNNEL_HOSTNAME` don't have to be set on every run. Variables
+ * already set in the shell win. A missing file is fine.
+ */
+export function loadDotEnv(path = resolve(DEFAULT_WORKSPACE, '.env')) {
+  try {
+    process.loadEnvFile(path)
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+  }
+}
+
 export function createLocalOwnerClaimKey() {
   return randomBytes(32).toString('base64url')
 }
@@ -135,6 +148,7 @@ let exitCode = 0
 export function main() {
   process.on('SIGINT', onInterrupt)
   process.on('SIGTERM', onInterrupt)
+  loadDotEnv()
 
   console.log('[dev:web] starting environment server (http://127.0.0.1:43120) and web (http://127.0.0.1:5173)')
 
