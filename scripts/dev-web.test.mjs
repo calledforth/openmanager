@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import process from 'node:process'
 import { test } from 'node:test'
 import {
@@ -7,11 +10,28 @@ import {
   createLocalOwnerClaimKey,
   isolatedSpawnOptions,
   isChildOpen,
+  loadDotEnv,
   markChildClosed,
   pnpmCommand,
   stopProcessTree,
   WEB_ORIGINS,
 } from './dev-web.mjs'
+
+test('.env fills unset variables, the shell wins, and a missing file is fine', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dev-web-env-'))
+  const file = join(dir, '.env')
+  writeFileSync(file, ['DEV_WEB_TEST_A=from-file', 'DEV_WEB_TEST_B=from-file', ''].join('\n'))
+  process.env.DEV_WEB_TEST_B = 'from-shell'
+  try {
+    loadDotEnv(file)
+    assert.equal(process.env.DEV_WEB_TEST_A, 'from-file')
+    assert.equal(process.env.DEV_WEB_TEST_B, 'from-shell')
+    loadDotEnv(join(dir, 'missing.env'))
+  } finally {
+    delete process.env.DEV_WEB_TEST_A
+    delete process.env.DEV_WEB_TEST_B
+  }
+})
 
 function isAlive(pid) {
   try {
