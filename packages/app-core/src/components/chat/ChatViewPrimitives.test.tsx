@@ -102,3 +102,44 @@ describe('assistant turn work disclosure', () => {
     expect(html).not.toContain('Worked')
   })
 })
+
+describe('assistant copy button', () => {
+  it('offers a copy button once the reply has settled', () => {
+    const html = renderToStaticMarkup(<AssistantMessage content="All done." isFinal />)
+
+    expect(html).toContain('aria-label="Copy message"')
+    expect(html).toContain('group/assistant')
+  })
+
+  it('hides the copy button while the reply is streaming', () => {
+    const html = renderToStaticMarkup(<AssistantMessage content="All do" isFinal={false} />)
+
+    expect(html).not.toContain('aria-label="Copy message"')
+  })
+
+  it('hides the copy button when a settled turn has no answer text', () => {
+    const html = renderToStaticMarkup(
+      <AssistantMessage
+        content=""
+        isFinal
+        parts={[
+          {
+            type: 'tool',
+            id: 'tool-1',
+            tool: 'Read',
+            state: { status: 'completed', input: { path: 'a.ts' } },
+          },
+        ]}
+      />,
+    )
+
+    expect(html).not.toContain('aria-label="Copy message"')
+  })
+
+  it('keeps the user copy button', () => {
+    const html = renderToStaticMarkup(<UserMessage content="hello" />)
+
+    expect(html).toContain('aria-label="Copy message"')
+    expect(html).toContain('group-hover/user:opacity-100')
+  })
+})

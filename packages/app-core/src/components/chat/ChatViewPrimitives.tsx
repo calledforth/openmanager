@@ -12,6 +12,7 @@ import { cn } from '../../lib/utils'
 import type { StreamMessagePart } from '@openmanager/shared/lib/remote-stream-parts'
 import { chatStreamInner } from './chatComposerStyles'
 import { SessionBusyLoader } from '../sidebar/SessionBusyLoader'
+import { CopyMessageButton } from './CopyMessageButton'
 
 export { UserMessage } from './UserMessage'
 
@@ -37,6 +38,15 @@ export function ChatLoadingSkeleton() {
   )
 }
 
+/** The reply's prose as the reader sees it: visible text parts, without tool calls or reasoning. */
+function replyText(parts: MessagePart[]): string {
+  return parts
+    .filter((part) => part.type === 'text' && !part.synthetic && !part.ignored)
+    .map((part) => (typeof part.text === 'string' ? part.text.trim() : ''))
+    .filter(Boolean)
+    .join('\n\n')
+}
+
 export function AssistantMessage({
   content,
   isFinal,
@@ -54,9 +64,12 @@ export function AssistantMessage({
   const workParts = partition?.workParts ?? []
   const finalParts = partition?.finalParts ?? []
   const hasWorkGroup = workParts.length > 0
+  // Copy only once the reply has settled; a streaming turn is still changing.
+  const copyText =
+    isFinal !== true ? '' : hasParts ? replyText(hasWorkGroup ? finalParts : parts) : content.trim()
 
   return (
-    <div className="py-1">
+    <div className="group/assistant py-1">
       <div className={cn(chatStreamInner, isStreaming ? 'opacity-90' : 'opacity-100')}>
         {/* The work group's own label says it once the turn has one. */}
         {runtime?.unprompted && !hasWorkGroup ? (
@@ -73,6 +86,11 @@ export function AssistantMessage({
           <MessageParts parts={parts} isStreaming={isStreaming} />
         ) : (
           <TextPart text={content} />
+        )}
+        {copyText && (
+          <div className="-ml-1.5 mt-1 flex justify-start">
+            <CopyMessageButton text={copyText} row="assistant" />
+          </div>
         )}
       </div>
     </div>
