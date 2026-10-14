@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import type { Readable } from 'node:stream'
-import { createLogger, resolveLogSink, type LogSink } from '../logger.ts'
+import { appendLogFile, consoleSink, createLogger, type LogSink } from '../logger.ts'
 import { loadConfig } from '../config.ts'
 import { redactSecrets } from '../redact.ts'
 
@@ -39,7 +39,8 @@ function forwardOutput(
  * observes failures itself. systemd already provides this supervision. */
 export async function supervise(entry: string | undefined, args: string[]): Promise<number> {
   const config = loadConfig(args)
-  const sink = resolveLogSink(config.logFile)
+  // By path, not a held descriptor: each server it starts may rotate the file.
+  const sink = config.logFile ? appendLogFile(config.logFile) : consoleSink
   const log = createLogger(config.logLevel, sink)
   const parent = process.ppid
   const failures: number[] = []

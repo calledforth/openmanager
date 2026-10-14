@@ -1,9 +1,9 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { loadConfig } from '../src/config.js'
-import { createLogger, LOG_ROTATE_BYTES, openLogFile } from '../src/logger.js'
+import { appendLogFile, createLogger, LOG_ROTATE_BYTES, openLogFile } from '../src/logger.js'
 
 const directories: string[] = []
 afterEach(async () => {
@@ -62,5 +62,16 @@ describe('log file sink', () => {
     sink('fresh', 'stdout')
     expect((await stat(`${file}.1`)).size).toBe(LOG_ROTATE_BYTES)
     expect(await readFile(file, 'utf8')).toBe('fresh\n')
+  })
+
+  it('keeps appending to the current file after another process rotates it', async () => {
+    const dir = await scratch()
+    const file = join(dir, 'logs', 'server.log')
+    const sink = appendLogFile(file)
+    sink('before', 'stderr')
+    await rename(file, `${file}.1`)
+    sink('after', 'stderr')
+    expect(await readFile(`${file}.1`, 'utf8')).toBe('before\n')
+    expect(await readFile(file, 'utf8')).toBe('after\n')
   })
 })
