@@ -1,4 +1,12 @@
-import { closeSync, mkdirSync, openSync, renameSync, statSync, writeSync } from 'node:fs'
+import {
+  appendFileSync,
+  closeSync,
+  mkdirSync,
+  openSync,
+  renameSync,
+  statSync,
+  writeSync,
+} from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { LOG_LEVELS, type LogLevel } from './config.ts'
 import { redactSecrets } from './redact.ts'
@@ -58,6 +66,24 @@ export function openLogFile(path: string): LogSink {
     }
   })
   return sink
+}
+
+/**
+ * Append each line by path, opening the file for every write. For a process
+ * that outlives the one rotating the file: the Windows supervisor writes a
+ * few lines per server run, and a held descriptor would follow the file to
+ * `<file>.1` when the next server rotates it on start.
+ */
+export function appendLogFile(path: string): LogSink {
+  const file = resolve(path)
+  mkdirSync(dirname(file), { recursive: true })
+  return (line) => {
+    try {
+      appendFileSync(file, `${line}\n`)
+    } catch {
+      /* A full or detached disk must not take the supervisor down with it. */
+    }
+  }
 }
 
 export function resolveLogSink(logFile: string | undefined): LogSink {

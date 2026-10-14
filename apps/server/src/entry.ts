@@ -44,11 +44,20 @@ async function serve(): Promise<void> {
     // environment, it is not inherited by provider CLIs, agents or terminals.
     delete process.env.OPENMANAGER_TUNNEL_TOKEN
     sink = resolveLogSink(config.logFile)
-    if (sink !== consoleSink) {
+    // Under the Windows supervisor, stdout and stderr are pipes it copies into
+    // the log file. If it dies first they break; that must not crash the
+    // server, which notices the missing parent and stops on its own.
+    const supervised = process.connected
+    if (supervised) {
+      process.stdout.on('error', () => {})
+      process.stderr.on('error', () => {})
+    }
+    if (sink !== consoleSink && !supervised) {
       // Node prints a crash to stderr, which a service has no console for. The
-      // supervisor only sees the exit code, so the reason goes to the log file.
-      // A monitor records it without changing how the process ends. The line
-      // skips the structured logger, so it redacts on its own (D10).
+      // reason goes to the log file instead (the supervisor, when there is one,
+      // copies stderr there already). A monitor records it without changing
+      // how the process ends. The line skips the structured logger, so it
+      // redacts on its own (D10).
       process.on('uncaughtExceptionMonitor', (error, origin) => {
         const detail = error instanceof Error ? (error.stack ?? error.message) : String(error)
         sink(redactSecrets(`Environment server crashed (${origin}): ${detail}`), 'stderr')

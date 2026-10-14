@@ -112,12 +112,14 @@ describe('process lifecycle', () => {
     } finally {
       database.close()
     }
-    const record = output
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => JSON.parse(line))
-      .find((line) => line.message.startsWith('Environment server listening'))
-    process.kill(record.pid, 'SIGKILL')
+    const serverPids = () =>
+      output
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { message: string; pid?: number })
+        .filter((line) => line.message.startsWith('Environment server listening'))
+        .map((line) => line.pid!)
+    process.kill(serverPids()[0]!, 'SIGKILL')
     await vi.waitFor(() => expect(urls()).toHaveLength(2), { timeout: 15000 })
     expect(await readFile(join(dataDir, 'identity.json'), 'utf8')).toBe(identity)
     expect(await readFile(join(dataDir, 'owner-credential'), 'utf8')).toBe(credential)
@@ -144,9 +146,11 @@ describe('process lifecycle', () => {
     const [code, reason] = await closed
     expect(code, `${output}\n${errors}`).toBe(1001)
     expect(String(reason)).toBe('server_shutdown')
-    // stdout is inherited by the server; close waits for it to exit too.
     await supervisorClosed
     children.splice(children.indexOf(supervisor), 1)
+    // The server outlives its supervisor until it has closed SQLite.
+    const server = serverPids()[1]!
+    await vi.waitFor(() => expect(() => process.kill(server, 0)).toThrow(), { timeout: 10_000 })
   }, 25_000)
 
   it('preserves environment identity and durable credential state across a graceful restart', async () => {
@@ -256,4 +260,68 @@ describe('process lifecycle', () => {
     expect(log).toContain('Environment server crashed (uncaughtException): Error: crash probe')
     expect(log).toMatch(/crash probe\s+at /)
   })
+})
+
+describe('supervised server output', () => {
+  it('keeps the server up when Node prints a warning after a child program exits', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'openmanager-supervised-output-test-'))
+    directories.push(dataDir)
+    const logFile = join(dataDir, 'server.log')
+    // In the server (not the supervisor): run a program to completion, then
+    // print a warning. With the console inherited, the warning crashed the
+    // detached server on Windows once that program had exited.
+    const probe = join(dataDir, 'warn.mjs')
+    await writeFile(
+      probe,
+      [
+        "import { spawn } from 'node:child_process'",
+        // The program started here inherits NODE_OPTIONS and loads this file
+        // too; the variable keeps it from starting one of its own.
+        "if (!process.argv.includes('--supervise') && !process.env.WARN_PROBE_CHILD) {",
+        "  const env = { ...process.env, WARN_PROBE_CHILD: '1' }",
+        "  const done = spawn(process.execPath, ['-e', '0'], { stdio: 'ignore', windowsHide: true, env })",
+        "  done.on('exit', () => setTimeout(() => process.emitWarning('supervised warning probe'), 50))",
+        '}',
+      ].join('\n'),
+    )
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      // The supervisor starts the server without its own exec arguments, so
+      // the probe travels in the environment both of them read.
+      NODE_OPTIONS:
+        `${process.env.NODE_OPTIONS ?? ''} --import ${pathToFileURL(probe).href}`.trim(),
+    }
+    delete env.OPENMANAGER_WORKSPACES
+    const supervisor = spawn(
+      process.execPath,
+      [entry, '--supervise', '--port=0', '--data-dir', dataDir, '--log-file', logFile],
+      { env, stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true },
+    )
+    children.push(supervisor)
+    const exited = once(supervisor, 'exit')
+    const readLog = () => readFile(logFile, 'utf8').catch(() => '')
+    try {
+      await vi.waitFor(
+        async () => {
+          const log = await readLog()
+          expect(log).toContain('supervised warning probe')
+          expect(log).toContain('Environment server listening')
+        },
+        { timeout: 15_000, interval: 100 },
+      )
+      // A crash would show within a moment of the warning.
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      const log = await readLog()
+      // Still the first server: nothing crashed and nothing was restarted.
+      expect(log).not.toContain('Environment server crashed')
+      expect(log.match(/Environment server listening/g)).toHaveLength(1)
+      const url = log.match(/http:\/\/127\.0\.0\.1:\d+/)![0]
+      expect((await fetch(`${url}/bootstrap`)).ok).toBe(true)
+    } finally {
+      // A graceful stop, so the server has closed SQLite before cleanup.
+      supervisor.send('shutdown')
+      expect((await exited)[0]).toBe(0)
+      children.splice(children.indexOf(supervisor), 1)
+    }
+  }, 30_000)
 })
