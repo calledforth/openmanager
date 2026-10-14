@@ -164,10 +164,13 @@ async function readRecord(root: string, deps: StandaloneDeps): Promise<InstallRe
     // Missing or unreadable: fall back to where activate would have put it.
   }
   const binDir =
-    deps.env.OPENMANAGER_BIN_DIR ||
-    (typeof recorded.binDir === 'string' && recorded.binDir
-      ? recorded.binDir
-      : defaultBinDir(deps.platform, deps.env, deps.homedir, root))
+    // Absolute, so a later update from another folder finds the same launcher.
+    pathFor(deps.platform).resolve(
+      deps.env.OPENMANAGER_BIN_DIR ||
+        (typeof recorded.binDir === 'string' && recorded.binDir
+          ? recorded.binDir
+          : defaultBinDir(deps.platform, deps.env, deps.homedir, root)),
+    )
   const version =
     typeof recorded.version === 'string' && isVersion(recorded.version)
       ? recorded.version
@@ -425,11 +428,24 @@ async function installVersion(
 }
 
 /** Remove version folders other than `keep`, skipping any still in use. */
+/** A staging folder younger than this may belong to an install script still running. */
+const STALE_STAGING_MS = 24 * 60 * 60_000
+
 async function pruneVersions(copy: InstalledCopy, keep: readonly string[], deps: StandaloneDeps) {
   const path = pathFor(deps.platform)
   const entries = await readdir(copy.versionsDir).catch(() => [] as string[])
   for (const entry of entries) {
-    if (keep.includes(entry) || !(isVersion(entry) || entry.startsWith('.staging-'))) continue
+    if (keep.includes(entry)) continue
+    if (entry.startsWith('.staging-')) {
+      // The install scripts stage here without the lock; leave recent ones.
+      const modified = await stat(path.join(copy.versionsDir, entry)).then(
+        (info) => info.mtimeMs,
+        () => Date.now(),
+      )
+      if (Date.now() - modified < STALE_STAGING_MS) continue
+    } else if (!isVersion(entry)) {
+      continue
+    }
     // A version whose server is still running is locked on Windows; next time.
     await rm(path.join(copy.versionsDir, entry), { recursive: true, force: true }).catch(() => {})
   }
@@ -525,6 +541,8 @@ async function update(
       // An install script may have unpacked it without moving the service.
       return await moveServiceTo(deps.execPath, await lookUpService(deps.execPath, deps), deps)
     }
+    // The build the service runs now is the last known good one; keep it.
+    const running = serviceVersion(await lookUpService(deps.execPath, deps), deps)
     const executable = await installVersion(copy.root, target, deps)
     await activateCopy(
       { ...copy, version: target, versionDir: versionDirectory(copy.root, target, deps.platform) },
@@ -536,7 +554,10 @@ async function update(
     // Both versions stay when the handoff failed or could not be checked.
     if (moved !== 0 || service.state === 'unknown') return moved
     // Keep the version moved from, for a manual rollback.
-    await pruneVersions(copy, [target, copy.version], deps)
+    const keep = [target, copy.version, running].filter(
+      (version): version is string => version !== undefined,
+    )
+    await pruneVersions(copy, keep, deps)
     return 0
   } catch (error) {
     return fail(error, deps)

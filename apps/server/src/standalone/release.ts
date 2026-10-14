@@ -88,21 +88,32 @@ export function parseChecksums(text: string): Map<string, string> {
 }
 
 /** Ask GitHub for the newest server release. */
+/** Pages of 100 releases read before giving up; desktop releases share the list. */
+export const RELEASE_PAGES = 5
+
+/**
+ * Ask GitHub for the newest server release. Releases are listed newest first,
+ * so the first page holding any server release holds the newest one.
+ */
 export async function fetchNewestRelease(
   fetchImpl: typeof fetch,
   env: NodeJS.ProcessEnv,
 ): Promise<string> {
-  const url =
+  const base =
     env.OPENMANAGER_RELEASES_API ??
     `https://api.github.com/repos/${REPOSITORY}/releases?per_page=100`
-  const response = await fetchImpl(url, {
-    headers: { accept: 'application/vnd.github+json', 'user-agent': 'openmanager-update' },
-    signal: AbortSignal.timeout(30_000),
-  })
-  if (!response.ok) {
-    throw new Error(`GitHub answered ${response.status} when asked for the newest release.`)
+  for (let page = 1; page <= RELEASE_PAGES; page++) {
+    const response = await fetchImpl(`${base}&page=${page}`, {
+      headers: { accept: 'application/vnd.github+json', 'user-agent': 'openmanager-update' },
+      signal: AbortSignal.timeout(30_000),
+    })
+    if (!response.ok) {
+      throw new Error(`GitHub answered ${response.status} when asked for the newest release.`)
+    }
+    const listing: unknown = await response.json()
+    const version = newestRelease(listing)
+    if (version) return version
+    if (!Array.isArray(listing) || listing.length < 100) break
   }
-  const version = newestRelease(await response.json())
-  if (!version) throw new Error('GitHub lists no published OpenManager server release yet.')
-  return version
+  throw new Error('GitHub lists no published OpenManager server release yet.')
 }

@@ -44,16 +44,21 @@
   $version = $env:OPENMANAGER_VERSION
   if (-not $version) {
     Step 'Finding the newest release...'
-    try {
-      $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases?per_page=100" -Headers $headers
-    } catch {
-      Fail "could not ask GitHub for the newest release ($($_.Exception.Message)). Set OPENMANAGER_VERSION to skip the lookup."
+    # Newest first; desktop releases share the list, so read on until a page has a server one.
+    $newest = $null
+    for ($page = 1; $page -le 5 -and -not $newest; $page++) {
+      try {
+        $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases?per_page=100&page=$page" -Headers $headers
+      } catch {
+        Fail "could not ask GitHub for the newest release ($($_.Exception.Message)). Set OPENMANAGER_VERSION to skip the lookup."
+      }
+      $newest = $releases |
+        Where-Object { $_.tag_name -match '^server-v\d+\.\d+\.\d+$' -and -not $_.draft -and -not $_.prerelease } |
+        ForEach-Object { [version] $_.tag_name.Substring(8) } |
+        Sort-Object -Descending |
+        Select-Object -First 1
+      if (@($releases).Count -lt 100) { break }
     }
-    $newest = $releases |
-      Where-Object { $_.tag_name -match '^server-v\d+\.\d+\.\d+$' -and -not $_.draft -and -not $_.prerelease } |
-      ForEach-Object { [version] $_.tag_name.Substring(8) } |
-      Sort-Object -Descending |
-      Select-Object -First 1
     if (-not $newest) { Fail 'GitHub lists no published OpenManager server release yet.' }
     $version = $newest.ToString()
   }
@@ -61,6 +66,9 @@
 
   $root = if ($env:OPENMANAGER_INSTALL_DIR) { $env:OPENMANAGER_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'OpenManager' }
   $binDir = if ($env:OPENMANAGER_BIN_DIR) { $env:OPENMANAGER_BIN_DIR } else { Join-Path $root 'bin' }
+  # Absolute paths: PATH and the launcher must not depend on this shell's folder.
+  $root = [IO.Path]::GetFullPath($root)
+  $binDir = [IO.Path]::GetFullPath($binDir)
   $baseUrl = if ($env:OPENMANAGER_RELEASE_BASE_URL) { $env:OPENMANAGER_RELEASE_BASE_URL.TrimEnd('/') } else { "https://github.com/$repo/releases/download" }
   # cmd.exe expands %NAME% in a .cmd file's own path, so the launcher could not run.
   if ($root.Contains('%') -or $binDir.Contains('%')) { Fail "the install folder cannot contain '%': $root" }

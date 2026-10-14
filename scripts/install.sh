@@ -61,11 +61,19 @@ trap 'rm -rf "$tmp" ${staging:+"$staging"}' EXIT INT TERM
 version=${OPENMANAGER_VERSION:-}
 if [ -z "$version" ]; then
   step "Finding the newest release..."
-  fetch "https://api.github.com/repos/$repo/releases?per_page=100" "$tmp/releases.json" ||
-    fail "could not ask GitHub for the newest release."
-  # Unauthenticated listings never include drafts; prerelease versions carry a '-'.
-  version=$(grep -o '"tag_name": *"server-v[0-9][0-9.]*"' "$tmp/releases.json" |
-    sed 's/.*"server-v\([0-9.]*\)"/\1/' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+  # Newest first; desktop releases share the list, so read on until a page
+  # has a server one. Unauthenticated listings never include drafts, and
+  # prerelease versions carry a '-'.
+  version=
+  page=1
+  while [ -z "$version" ] && [ "$page" -le 5 ]; do
+    fetch "https://api.github.com/repos/$repo/releases?per_page=100&page=$page" "$tmp/releases.json" ||
+      fail "could not ask GitHub for the newest release. Set OPENMANAGER_VERSION to skip the lookup."
+    version=$(grep -o '"tag_name": *"server-v[0-9][0-9.]*"' "$tmp/releases.json" |
+      sed 's/.*"server-v\([0-9.]*\)"/\1/' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+    [ "$(grep -c '"tag_name"' "$tmp/releases.json")" -lt 100 ] && break
+    page=$((page + 1))
+  done
   [ -n "$version" ] || fail "GitHub lists no published OpenManager server release yet."
 fi
 printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' ||

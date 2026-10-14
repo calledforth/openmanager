@@ -32,6 +32,7 @@ import {
 import {
   archiveName,
   compareVersions,
+  fetchNewestRelease,
   newestRelease,
   parseChecksums,
   releaseTarget,
@@ -140,6 +141,24 @@ describe('releases', () => {
     expect(newestRelease(listing)).toBe('0.2.0')
     expect(newestRelease(listing, true)).toBe('0.3.0-beta.1')
     expect(newestRelease({ message: 'rate limited' })).toBeUndefined()
+  })
+
+  it('reads further pages when desktop releases fill the first one', async () => {
+    const pages = new Map<string, unknown>([
+      ['1', Array.from({ length: 100 }, (_, index) => ({ tag_name: `v0.9.${index}` }))],
+      ['2', [{ tag_name: 'v0.1.0' }, { tag_name: 'server-v0.4.0' }, { tag_name: 'server-v0.3.0' }]],
+    ])
+    const requested: string[] = []
+    const fake = (async (input: string | URL | Request) => {
+      const page = new URL(String(input)).searchParams.get('page')!
+      requested.push(page)
+      return Response.json(pages.get(page) ?? [])
+    }) as typeof fetch
+    expect(await fetchNewestRelease(fake, {})).toBe('0.4.0')
+    expect(requested).toEqual(['1', '2'])
+    await expect(fetchNewestRelease(async () => Response.json([]), {})).rejects.toThrow(
+      'no published OpenManager server release',
+    )
   })
 
   it('reads sha256sum output, with or without the binary marker', () => {
