@@ -320,7 +320,9 @@ async function activate(copy: InstalledCopy, deps: StandaloneDeps): Promise<numb
     const moved = await moveServiceTo(deps.execPath, service, deps)
     if (moved !== 0) return moved
     // Like update: keep this version and the one before it, for a rollback.
-    if (service.state !== 'unknown') {
+    // Re-running the installer for the active version changes nothing, and
+    // pruning then would drop the build kept from the last real update.
+    if (service.state !== 'unknown' && previous !== copy.version) {
       const keep = [copy.version, previous, serviceVersion(service, deps)].filter(
         (version): version is string => version !== undefined,
       )

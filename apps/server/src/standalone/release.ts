@@ -87,7 +87,6 @@ export function parseChecksums(text: string): Map<string, string> {
   return sums
 }
 
-/** Ask GitHub for the newest server release. */
 /** Pages of 100 releases read before giving up; desktop releases share the list. */
 export const RELEASE_PAGES = 5
 
@@ -103,7 +102,9 @@ export async function fetchNewestRelease(
     env.OPENMANAGER_RELEASES_API ??
     `https://api.github.com/repos/${REPOSITORY}/releases?per_page=100`
   for (let page = 1; page <= RELEASE_PAGES; page++) {
-    const response = await fetchImpl(`${base}&page=${page}`, {
+    const url = new URL(base)
+    url.searchParams.set('page', String(page))
+    const response = await fetchImpl(url, {
       headers: { accept: 'application/vnd.github+json', 'user-agent': 'openmanager-update' },
       signal: AbortSignal.timeout(30_000),
     })

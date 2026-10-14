@@ -161,6 +161,21 @@ describe('releases', () => {
     )
   })
 
+  it('adds the page to a custom releases address with or without a query', async () => {
+    const requested: string[] = []
+    const fake = (async (input: string | URL | Request) => {
+      requested.push(String(input))
+      return Response.json([{ tag_name: 'server-v0.2.0' }])
+    }) as typeof fetch
+    for (const api of ['https://mirror.example/releases', 'https://mirror.example/r?per_page=100']) {
+      expect(await fetchNewestRelease(fake, { OPENMANAGER_RELEASES_API: api })).toBe('0.2.0')
+    }
+    expect(requested).toEqual([
+      'https://mirror.example/releases?page=1',
+      'https://mirror.example/r?per_page=100&page=1',
+    ])
+  })
+
   it('reads sha256sum output, with or without the binary marker', () => {
     const hash = 'a'.repeat(64)
     expect(parseChecksums(`${hash}  one.zip\r\n${'B'.repeat(64)} *two.tar.gz\nnoise\n`)).toEqual(
@@ -432,6 +447,18 @@ describe.skipIf(target === undefined)('standalone commands', () => {
     writeFileSync(
       join(system.root, 'install.json'),
       JSON.stringify({ binDir: system.binDir, version: '0.2.0' }),
+    )
+    expect(await runActivate([], system.deps)).toBe(0)
+    expect(readdirSync(join(system.root, 'versions')).sort()).toEqual(['0.2.0', '0.3.0'])
+  })
+
+  it('activating the active version again keeps the rollback build', async () => {
+    const system = fakeInstall({ version: '0.3.0' })
+    cleanups.push(system.temp)
+    mkdirSync(join(system.root, 'versions', '0.2.0'))
+    writeFileSync(
+      join(system.root, 'install.json'),
+      JSON.stringify({ binDir: system.binDir, version: '0.3.0' }),
     )
     expect(await runActivate([], system.deps)).toBe(0)
     expect(readdirSync(join(system.root, 'versions')).sort()).toEqual(['0.2.0', '0.3.0'])
