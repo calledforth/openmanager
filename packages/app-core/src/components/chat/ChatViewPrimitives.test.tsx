@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { AssistantMessage, ChatLoadingSkeleton, UserMessage } from './ChatViewPrimitives'
+import {
+  AssistantMessage,
+  assistantCopyText,
+  ChatLoadingSkeleton,
+  UserMessage,
+} from './ChatViewPrimitives'
 
 describe('chat loading skeletons', () => {
   it('announces the conversation loading state once', () => {
@@ -141,5 +146,52 @@ describe('assistant copy button', () => {
 
     expect(html).toContain('aria-label="Copy message"')
     expect(html).toContain('group-hover/user:opacity-100')
+  })
+})
+
+describe('assistant copy text', () => {
+  const read = {
+    type: 'tool',
+    id: 'tool-1',
+    tool: 'Read',
+    state: { status: 'completed', input: { path: 'a.ts' } },
+  }
+
+  it('copies only the answer below collapsed work', () => {
+    const parts = [
+      { type: 'text', id: 'note', text: 'Let me look at the file.' },
+      read,
+      { type: 'text', id: 'final', text: 'Everything checks out.' },
+    ]
+
+    expect(assistantCopyText('', true, parts)).toBe('Everything checks out.')
+  })
+
+  it('skips reasoning and hidden text, which fold into the work above the answer', () => {
+    const parts = [
+      { type: 'reasoning', id: 'r', text: 'thinking about it' },
+      { type: 'text', id: 'b', text: 'injected', synthetic: true },
+      { type: 'text', id: 'c', text: 'ignored', ignored: true },
+      { type: 'text', id: 'd', text: 'The answer.\n' },
+    ]
+
+    expect(assistantCopyText('', true, parts)).toBe('The answer.')
+  })
+
+  it('joins every paragraph of the answer', () => {
+    const parts = [
+      { type: 'text', id: 'a', text: 'First paragraph.' },
+      { type: 'text', id: 'b', text: 'Second paragraph.\n' },
+    ]
+
+    expect(assistantCopyText('', true, parts)).toBe('First paragraph.\n\nSecond paragraph.')
+  })
+
+  it('falls back to content when the reply has no parts', () => {
+    expect(assistantCopyText('  Plain reply.\n', true, undefined)).toBe('Plain reply.')
+  })
+
+  it('copies nothing while the reply streams', () => {
+    expect(assistantCopyText('Partial', false, undefined)).toBe('')
   })
 })

@@ -38,9 +38,20 @@ export function ChatLoadingSkeleton() {
   )
 }
 
-/** The reply's prose as the reader sees it: visible text parts, without tool calls or reasoning. */
-function replyText(parts: MessagePart[]): string {
-  return parts
+/**
+ * What the copy button under a reply copies: the answer text the reader sees, without tool
+ * calls, reasoning or hidden parts. A settled turn with collapsed work copies only the answer
+ * below it. Empty while the turn streams, so no button shows.
+ */
+export function assistantCopyText(
+  content: string,
+  isFinal: boolean | undefined,
+  parts: MessagePart[] | undefined,
+): string {
+  if (isFinal !== true) return ''
+  if (!parts?.length) return content.trim()
+  const { workParts, finalParts } = partitionSettledTurnParts(parts)
+  return (workParts.length > 0 ? finalParts : parts)
     .filter((part) => part.type === 'text' && !part.synthetic && !part.ignored)
     .map((part) => (typeof part.text === 'string' ? part.text.trim() : ''))
     .filter(Boolean)
@@ -64,9 +75,7 @@ export function AssistantMessage({
   const workParts = partition?.workParts ?? []
   const finalParts = partition?.finalParts ?? []
   const hasWorkGroup = workParts.length > 0
-  // Copy only once the reply has settled; a streaming turn is still changing.
-  const copyText =
-    isFinal !== true ? '' : hasParts ? replyText(hasWorkGroup ? finalParts : parts) : content.trim()
+  const copyText = assistantCopyText(content, isFinal, parts)
 
   return (
     <div className="group/assistant py-1">
