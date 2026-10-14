@@ -9,6 +9,15 @@ import { findStoredEnvironment } from '../lib/environment-store'
 import { routeHealthFromConnection } from '../lib/route-health'
 import { createEnvironmentCache, writeEnvironmentCache } from '../lib/environment-cache'
 import { useConnection } from './connection-provider'
+import type { ConnectionUiState } from '../lib/connection-state'
+
+/** States that waiting does not fix. The client goes; a person decides what next. */
+const NEEDS_A_PERSON: ReadonlySet<ConnectionUiState['kind']> = new Set([
+  'no_environment',
+  'confirm_route',
+  'unauthorized',
+  'incompatible_protocol',
+])
 
 /**
  * Owns the WebSocket client for the selected environment. The client exists
@@ -42,14 +51,15 @@ export function WebEnvironmentClientProvider({
     environment.status === 'selected' ? (environment.environmentId ?? null) : null
   const stored = findStoredEnvironment(environments, environmentId)
   const credential = stored?.credential || undefined
-  // An offline blip must not tear the client down: the socket's own backoff
-  // loop is what recovers the session, and disposing would drop the store with
-  // it. Only a different environment, or a failure that needs a person,
-  // replaces the client.
+  // A drop, an offline blip, or a route that is slow to answer must not tear
+  // the client down: the socket's own backoff loop is what recovers the
+  // session, and disposing would drop the store and unmount the page with it.
+  // Only a different environment (the effect's keys), or a failure that needs
+  // a person, replaces the client.
   // A route that answered as another environment never gets a socket, even
   // when the device being offline outranks that in the interface: the socket
   // would hand this environment's token to whatever answered.
-  const alive = (ui.kind === 'ready' || ui.kind === 'offline') && !wrongEnvironment
+  const alive = !NEEDS_A_PERSON.has(ui.kind) && !wrongEnvironment
 
   // Staying alive and being opened are different permissions. A client that
   // exists rides out an offline gap, but a new one is only opened on a route

@@ -10,7 +10,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react'
-import { fetchBootstrap } from '../lib/bootstrap'
+import { fetchBootstrap, PROTOCOL_VERSION } from '../lib/bootstrap'
 import { isBrowserOnline, subscribeToNetworkStatus } from '../lib/browser-runtime'
 import {
   bootstrapOutcomeFromQuery,
@@ -66,6 +66,13 @@ import {
 const ROUTE_RETRY_DELAYS_MS: readonly number[] = [2000, 4000, 8000, 15000, 30000]
 
 /**
+ * How long the route in use gets to answer bootstrap. Without a limit, a
+ * request a tunnel holds open keeps the connection waiting until the tunnel
+ * gives up, which for Cloudflare is about 100 seconds.
+ */
+const BOOTSTRAP_TIMEOUT_MS = 10_000
+
+/**
  * Reasons that only say the environment did not answer, not why. After the
  * environment said it was shutting down, they mean it is still stopped.
  */
@@ -80,6 +87,8 @@ type ActiveRoutes = Readonly<Record<string, string>>
 
 type TrackedFailure = RouteFailure & { environmentId: string }
 type TrackedSearch = RouteSearch & { environmentId: string }
+/** What the live socket on a route last said about itself. */
+type SocketReport = { environmentId: string; endpoint: string; connected: boolean }
 
 type PendingConnect = {
   endpoint: string
@@ -319,6 +328,26 @@ export function ConnectionProvider({
   }, [])
   const [routeSearch, setRouteSearch] = useState<TrackedSearch | null>(null)
   /**
+   * Whether the live socket on the selected route is connected. While it is,
+   * the socket is what says the environment is there: a bootstrap asked again
+   * meanwhile (a retry, the network coming back) can only be older news, so it
+   * may neither take the connection down nor move it to another route.
+   */
+  const [socketReport, setSocketReportState] = useState<SocketReport | null>(null)
+  const socketReportRef = useRef<SocketReport | null>(null)
+  const setSocketReport = useCallback((report: SocketReport) => {
+    const current = socketReportRef.current
+    if (
+      current?.environmentId === report.environmentId &&
+      current.endpoint === report.endpoint &&
+      current.connected === report.connected
+    ) {
+      return
+    }
+    socketReportRef.current = report
+    setSocketReportState(report)
+  }, [])
+  /**
    * Environments that closed their socket because they were shutting down,
    * each kept until one of its routes answers again. A gateway in front of a
    * stopped server cannot say so in a way a browser may read; the server said
@@ -432,9 +461,20 @@ export function ConnectionProvider({
       // HTTP bootstrap is unauthenticated discovery. The stored credential is
       // for the later WebSocket upgrade; sending Authorization here would
       // preflight CORS and the environment server does not handle OPTIONS.
-      return fetchBootstrap(endpoint)
+      return fetchBootstrap(endpoint, { timeoutMs: BOOTSTRAP_TIMEOUT_MS })
     },
+    // Asking the same route again keeps its last answer on screen while the
+    // new one is out. Without it every retry, and every return from offline,
+    // read as "no answer yet" and took down a connection that was working.
+    // Never across routes: an answer is only ever about the route it came from.
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[1] === endpoint ? previous : undefined,
+    // Returning from offline already asks again (see below).
+    refetchOnReconnect: false,
   })
+  // The answer on screen may be the last one while a new one is out; only a
+  // new answer may verify a route for a new socket.
+  const bootstrapIsFresh = !bootstrapQuery.isPlaceholderData
 
   const liveBootstrap = useMemo(
     () => bootstrapOutcomeFromQuery(endpoint !== null, bootstrapQuery.data),
@@ -548,6 +588,13 @@ export function ConnectionProvider({
     if (liveBootstrap.status === 'unreachable' || liveBootstrap.status === 'unauthorized') {
       if (!fresh) return
       recordedBootstrap.current = liveBootstrap
+      // The socket on this route is connected, which says more than a failed
+      // bootstrap: nothing to record, and no other route to look for. If the
+      // socket drops, it starts its own search.
+      const socket = socketReportRef.current
+      if (socket?.connected && socket.environmentId === storedId && socket.endpoint === endpoint) {
+        return
+      }
       const report = failureId ? routeHealthFromBootstrap(liveBootstrap, failureId) : null
       if (failureId && report) {
         noteLiveReport(failureId, endpoint)
@@ -651,9 +698,15 @@ export function ConnectionProvider({
     liveBootstrap.environmentId !== storedId
   const routeVerified =
     storedId !== undefined &&
+    bootstrapIsFresh &&
     liveBootstrap.status === 'ready' &&
     liveBootstrap.environmentId === storedId
-  const effectiveBootstrap: BootstrapOutcome =
+  const socketConnected =
+    storedId !== undefined &&
+    socketReport?.connected === true &&
+    socketReport.environmentId === storedId &&
+    socketReport.endpoint === endpoint
+  const answeredBootstrap: BootstrapOutcome =
     localOwnerClaimFailure?.endpoint === endpoint
       ? { status: 'unauthorized', message: localOwnerClaimFailure.message }
       : answeredByAnother
@@ -662,6 +715,23 @@ export function ConnectionProvider({
             message: `${WRONG_ENVIRONMENT_MESSAGE} Use another route to this environment, or connect to the address again to add what answers there.`,
           }
         : liveBootstrap
+  // A connected socket is proof the route reaches this environment in this
+  // protocol: its handshake said so. Bootstrap failing, or not having answered
+  // yet, does not outweigh that. What does is an answer from another
+  // environment, or a protocol change: those still take over.
+  const socketOutranksBootstrap =
+    socketConnected &&
+    answeredBootstrap === liveBootstrap &&
+    liveBootstrap.status !== 'ready' &&
+    liveBootstrap.status !== 'incompatible_protocol'
+  const effectiveBootstrap: BootstrapOutcome = socketOutranksBootstrap
+    ? {
+        status: 'ready',
+        environmentId: storedId,
+        label: environment.status === 'selected' ? environment.label : undefined,
+        protocolVersion: PROTOCOL_VERSION,
+      }
+    : answeredBootstrap
 
   const input: DeriveConnectionInput = preview ?? {
     environment,
@@ -673,7 +743,10 @@ export function ConnectionProvider({
     network: { online },
     routeOffer,
     routeFailure: storedId && routeFailure?.environmentId === storedId ? routeFailure : undefined,
-    routeSearch: storedId && routeSearch?.environmentId === storedId ? routeSearch : undefined,
+    routeSearch:
+      storedId && !socketConnected && routeSearch?.environmentId === storedId
+        ? routeSearch
+        : undefined,
     // Only a saved selection has routes to search and retry; a typed connect
     // that fails waits for the person.
     autoRetry: storedId !== undefined,
@@ -899,6 +972,11 @@ export function ConnectionProvider({
       const selected = selectedStoredEnvironment(registryRef.current)
       if (pendingRef.current || selected?.environmentId !== environmentId) return
       if (inUseFor(selected, activeRoutesRef.current) !== routeEndpoint) return
+      setSocketReport({
+        environmentId,
+        endpoint: routeEndpoint,
+        connected: report.status === 'available',
+      })
       if (report.stopped) {
         announcedStops.current.add(environmentId)
         stopCounts.current.set(environmentId, (stopCounts.current.get(environmentId) ?? 0) + 1)
@@ -948,6 +1026,7 @@ export function ConnectionProvider({
       noteLiveReport,
       preview,
       setRouteFailure,
+      setSocketReport,
       startRouteSearch,
       stopRouteSearch,
       tokenRefused,

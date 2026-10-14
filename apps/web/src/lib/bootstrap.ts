@@ -128,7 +128,11 @@ async function unreadableAnswer(
 
 export async function fetchBootstrap(
   endpoint: string,
-  options: { signal?: AbortSignal } = {},
+  options: {
+    signal?: AbortSignal
+    /** Give up after this long, as an address that does not answer. */
+    timeoutMs?: number
+  } = {},
 ): Promise<BootstrapOutcome> {
   let response: Response
   try {
@@ -137,7 +141,10 @@ export async function fetchBootstrap(
     // require a credential (the token is for the later WebSocket upgrade).
     response = await fetch(bootstrapUrl(endpoint), {
       headers: { accept: 'application/json' },
-      signal: options.signal,
+      signal:
+        options.timeoutMs === undefined
+          ? options.signal
+          : withTimeout(options.signal, options.timeoutMs),
     })
   } catch {
     // A browser that refused this page access to its own loopback address

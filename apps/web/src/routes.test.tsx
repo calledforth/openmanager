@@ -73,7 +73,7 @@ const TUNNEL_SOCKET = environmentSocketUrl('https://tunnel.example')
 /** Stand-in sockets that record where each was dialled and with which token. */
 function trackSockets() {
   const dialled: Array<{ url: string; credential: string | undefined }> = []
-  const live = new Set<object>()
+  const live = new Set<ReturnType<typeof createMockEnvironmentClient>>()
   const create: WebAppProps['createEnvironmentClient'] = (options) => {
     dialled.push({ url: options.url, credential: options.credential })
     const client = createMockEnvironmentClient({
@@ -640,10 +640,7 @@ describe('web routes', () => {
 
     renderWebApp('/settings', { createEnvironmentClient: sockets.create })
     await waitFor(() => expect(sockets.dialled()).toHaveLength(1))
-    await user.type(
-      await screen.findByLabelText('Environment endpoint'),
-      'https://tunnel.example',
-    )
+    await user.type(await screen.findByLabelText('Environment endpoint'), 'https://tunnel.example')
     await user.click(screen.getByRole('button', { name: 'Add environment' }))
     await waitFor(() =>
       expect(JSON.stringify(vi.mocked(fetch).mock.calls)).toContain('tunnel.example'),
@@ -747,6 +744,107 @@ describe('web routes', () => {
     // Same environment, same route, same token: the session it holds stays.
     expect(sockets.clients()).toHaveLength(1)
     expect(screen.getByRole('button', { name: 'New agent' })).toBeInTheDocument()
+  })
+
+  it('keeps a connected socket when asking bootstrap again fails', async () => {
+    let answered = 0
+    seedRegistry([
+      {
+        environmentId: 'env-local',
+        endpoints: ['https://tunnel.example'],
+        credential: 'client-token',
+      },
+    ])
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        // The first answer arrives; the tunnel fails every later one.
+        if (answered++ > 0) throw new Error('tunnel hiccup')
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            protocolVersion: PROTOCOL_VERSION,
+            capabilities: ['connection.heartbeat'],
+            environmentId: 'env-local',
+            label: 'Local environment',
+          }),
+        }
+      }),
+    )
+    const online = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(true)
+    const sockets = trackSockets()
+
+    renderWebApp('/settings', { createEnvironmentClient: sockets.create })
+    await screen.findByText(/Connected · Local environment/)
+
+    // Returning from offline asks bootstrap again, and that answer fails.
+    online.mockReturnValue(false)
+    act(() => void window.dispatchEvent(new Event('offline')))
+    online.mockReturnValue(true)
+    act(() => void window.dispatchEvent(new Event('online')))
+    await waitFor(() => expect(answered).toBeGreaterThan(1))
+    await act(async () => {})
+
+    // The socket is still connected, which outweighs a failed bootstrap: same
+    // client, no redial, no banner, the page stays.
+    expect(sockets.clients()).toHaveLength(1)
+    expect(sockets.dialled()).toHaveLength(1)
+    expect(screen.queryByText(/Can't reach/)).not.toBeInTheDocument()
+    expect(screen.getByText(/Connected · Local environment/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'New agent' })).toBeInTheDocument()
+  })
+
+  it('keeps the client and the page through a drop that no route answers', async () => {
+    let answered = 0
+    seedRegistry([
+      {
+        environmentId: 'env-local',
+        endpoints: ['https://tunnel.example'],
+        credential: 'client-token',
+      },
+    ])
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        if (answered++ > 0) throw new Error('environment down')
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            protocolVersion: PROTOCOL_VERSION,
+            capabilities: ['connection.heartbeat'],
+            environmentId: 'env-local',
+            label: 'Local environment',
+          }),
+        }
+      }),
+    )
+    const sockets = trackSockets()
+
+    renderWebApp('/', { createEnvironmentClient: sockets.create })
+    await screen.findByRole('button', { name: 'New agent' })
+    const [client] = sockets.clients()
+
+    act(() =>
+      client!.setConnection({
+        phase: 'reconnecting',
+        hasConnected: true,
+        failure: { code: 'unavailable', message: 'The environment closed the connection.' },
+      }),
+    )
+    // No route answers: the strip says so, while the client keeps redialling
+    // on its own and the page stays mounted under it.
+    expect(await screen.findByText("Can't reach Local environment")).toBeInTheDocument()
+    expect(sockets.clients()).toEqual([client])
+    expect(screen.getByRole('button', { name: 'New agent' })).toBeInTheDocument()
+
+    act(() => client!.setConnection({ phase: 'connected', failure: null }))
+    await waitFor(() =>
+      expect(screen.queryByText("Can't reach Local environment")).not.toBeInTheDocument(),
+    )
+    expect(sockets.clients()).toEqual([client])
+    expect(sockets.dialled()).toHaveLength(1)
   })
 
   it('switches route only when asked, keeping the environment, its token and the other route', async () => {
