@@ -171,7 +171,14 @@ export class ChildProcessConnectionFactory implements AcpConnectionFactory {
     // and it is why `child.kill()` reaches anything there. It is also why the
     // process that matters is a grandchild — see `killTree`.
     const shell = process.platform === 'win32'
-    const options: SpawnOptionsWithoutStdio = { cwd: spec.cwd, env: { ...spec.env } }
+    // `windowsHide`: a host without a console of its own (the Windows service)
+    // would otherwise give the shell a new console, and Windows 11 shows that
+    // as an empty terminal window; closing it kills the agent.
+    const options: SpawnOptionsWithoutStdio = {
+      cwd: spec.cwd,
+      env: { ...spec.env },
+      windowsHide: true,
+    }
     const child = shell
       ? // Through a shell Node joins the arguments onto the command itself,
         // unescaped, and warns on stderr that it did (DEP0190). Handing it
