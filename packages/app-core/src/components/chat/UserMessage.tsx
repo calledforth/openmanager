@@ -1,12 +1,12 @@
-import { useEffect, useState } from 'react'
-import { ArrowsOutIcon, CheckIcon, ImageBrokenIcon } from '@phosphor-icons/react'
+import { useState } from 'react'
+import { ArrowsOutIcon, ImageBrokenIcon } from '@phosphor-icons/react'
 import type { StreamMessagePart } from '@openmanager/shared/lib/remote-stream-parts'
 import { cn } from '../../lib/utils'
 import type { ArtifactSource, OptimisticImage } from '../../lib/attachments'
 import { partArtifact, useArtifactPreview } from '../../lib/artifact-preview'
 import { Markdown } from '../markdown/Markdown'
 import { ImageViewer } from '../parts/GeneratedImagePart'
-import { Tooltip } from '../ui/Tooltip'
+import { CopyMessageButton } from './CopyMessageButton'
 import { chatUserInner, chatUserMessageShell } from './userMessageStyles'
 
 type MessagePart = StreamMessagePart
@@ -56,56 +56,6 @@ function ImageThumbnail({ image, onPreview }: { image: BubbleImage; onPreview: (
         <ArrowsOutIcon className="h-2.5 w-2.5" />
       </span>
     </button>
-  )
-}
-
-/** Phosphor's Copy glyph (same 256 grid and regular stroke) with rounded corners. */
-function SoftCopyIcon({ size }: { size: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 256 256"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={16}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M168 168h24a24 24 0 0 0 24-24V64a24 24 0 0 0-24-24h-80a24 24 0 0 0-24 24v24" />
-      <rect x="40" y="88" width="128" height="128" rx="24" />
-    </svg>
-  )
-}
-
-/** Copies the prompt's text; shown under the bubble while the row is hovered. */
-function CopyMessageButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false)
-  useEffect(() => {
-    if (!copied) return
-    const timer = setTimeout(() => setCopied(false), 1400)
-    return () => clearTimeout(timer)
-  }, [copied])
-  const label = copied ? 'Copied' : 'Copy message'
-  return (
-    <Tooltip content={label} side="bottom">
-      <button
-        type="button"
-        aria-label={label}
-        onClick={() => {
-          void navigator.clipboard.writeText(text).then(() => setCopied(true))
-        }}
-        className={cn(
-          'flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-[color,background-color,opacity] duration-100',
-          'text-[var(--basis-text-faint)] hover:bg-hover hover:text-[var(--basis-text)]',
-          'opacity-0 focus-visible:opacity-100 group-hover/user:opacity-100 pointer-coarse:opacity-100',
-          copied && 'opacity-100',
-        )}
-      >
-        {copied ? <CheckIcon size={13} weight="bold" /> : <SoftCopyIcon size={13} />}
-      </button>
-    </Tooltip>
   )
 }
 
@@ -174,7 +124,7 @@ export function UserMessage({
       {/* Under the bubble's right edge, where the eye finishes reading it. */}
       {content ? (
         <div className="mt-1 flex justify-end">
-          <CopyMessageButton text={content} />
+          <CopyMessageButton text={content} row="user" />
         </div>
       ) : (
         <div className="h-2" />
