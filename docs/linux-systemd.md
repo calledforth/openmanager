@@ -28,11 +28,13 @@ normal Linux machine. On WSL the distro itself is the limit: see
 - systemd as the init system, with a user manager for your account
   (`systemctl --user status` works). Most desktop and server distributions
   have this; containers usually do not.
-- Node 24 LTS on disk. The unit records the absolute path of the `node` that
-  runs `service install`, so install with the Node you intend to keep. nvm
-  and fnm paths are fine as long as that version stays installed; after
-  `nvm uninstall` of that version, run `install` again.
-- A built server: the unit runs `apps/server/dist/main.js`.
+- The `openmanager` command, from the install script in
+  [install.md](./install.md). It has Node built in and the unit runs it
+  directly, so nvm switches and uninstalls do not affect the service.
+- Or, for development, a built checkout run with Node 24 or newer. The unit
+  then records the absolute path of the `node` that runs `service install`
+  plus `apps/server/dist/main.js`; after `nvm uninstall` of that version, run
+  `install` again.
 - Run the commands as yourself, from a normal login shell, not with `sudo`.
   The service runs as whoever installs it, and provider CLI logins
   (`~/.claude`, `~/.codex`, ...) are per user.
@@ -67,20 +69,28 @@ not interfere.
 
 ## Install
 
-From the repository root, inside Linux or the WSL distro:
+Inside Linux or the WSL distro:
 
 ```sh
-pnpm install
-pnpm --filter @openmanager/server build
-node apps/server/dist/main.js service install
+openmanager service install
 ```
+
+From a checkout, the same command is `node apps/server/dist/main.js service
+install` after `pnpm install` and `pnpm --filter @openmanager/server build`.
 
 `install` accepts the normal server flags and bakes the resolved values into
 the unit, exactly as on Windows:
 
 ```sh
-node apps/server/dist/main.js service install --port 43120 --workspace ~/src/my-repo --log-level debug
+openmanager service install --port 43120 --workspace ~/src/my-repo --log-level debug
 ```
+
+Without `--port` (or `OPENMANAGER_PORT`), a first install takes the first
+free port from 43120 and prints it; a reinstall keeps the installed port. On
+WSL, ports Windows already listens on are skipped too: with NAT networking
+they look free from inside the distro, but Windows' localhost forwarding
+could not reach a server there. An explicit `--port` that Windows uses is
+refused for the same reason.
 
 | Flag                                 | Effect in the unit                                                                   |
 | ------------------------------------ | ------------------------------------------------------------------------------------ |
@@ -131,7 +141,8 @@ What `install` does, in order:
 
 ### What the unit contains
 
-The unit runs `<node> <dist/main.js> <flags>` with `Type=exec`,
+The unit runs `<openmanager> <flags>` (`<node> <dist/main.js> <flags>` from a
+checkout) with `Type=exec`,
 `Restart=on-failure` after 10 seconds, at most 5 starts in 5 minutes,
 `KillMode=mixed` (the server gets SIGTERM and can end its provider processes
 itself; anything left after 15 seconds is killed) and `WantedBy=default.target`.
@@ -150,7 +161,7 @@ drop-in rather than editing the unit, because `install` rewrites the unit file:
 systemctl --user edit openmanager-server
 # [Service]
 # Environment=SOME_VARIABLE=value
-node apps/server/dist/main.js service restart
+openmanager service restart
 ```
 
 Drop-ins live in `~/.config/systemd/user/openmanager-server.service.d/`,
@@ -176,6 +187,22 @@ stops it.
 `install` and `status` read this file through WSL interop and say which case
 you are in; if interop is turned off they print the advice regardless.
 
+### WSL interop
+
+`install` also uses interop to ask Windows which ports it listens on (with
+`netstat.exe`), so it does not pick a port Windows already serves. When it
+cannot, it says so next to the port it chose.
+
+With systemd on, a distro can lose interop: running any Windows program, even
+`cmd.exe`, fails with `Exec format error`, because the `WSLInterop` entry in
+`/proc/sys/fs/binfmt_misc` is gone. Register it permanently and restart the
+binfmt service:
+
+```sh
+echo ':WSLInterop:M::MZ::/init:PF' | sudo tee /usr/lib/binfmt.d/WSLInterop.conf
+sudo systemctl restart systemd-binfmt
+```
+
 Nothing starts WSL when Windows boots or you sign in. With the setting above
 the server comes up as soon as anything starts the distro (opening a WSL
 terminal, or a `wsl.exe` command) and then stays up.
@@ -186,8 +213,18 @@ turned on so the unit behaves the same if that ever changes.
 
 ## Upgrade without losing the environment
 
-Build or unpack the new release into a **separate directory**, then run its entry
-with the Node binary you want the service to use:
+With the released executable:
+
+```sh
+openmanager update
+```
+
+It downloads the newest release into its own version folder, switches the
+`openmanager` command to it, and runs that version's `service update`, which is
+the handoff described below ([install.md](./install.md#update)).
+
+From a checkout, build or unpack the new release into a **separate directory**,
+then run its entry with the Node binary you want the service to use:
 
 ```sh
 node /path/to/new-release/apps/server/dist/main.js service update
@@ -195,7 +232,7 @@ node /path/to/new-release/apps/server/dist/main.js service update
 
 On Windows, use the corresponding Windows path. `update` takes no server flags:
 it reads the installed definition, prepares the replacement, stops the old
-process and waits for shutdown, switches the Node/entry paths, then starts the
+process and waits for shutdown, switches the program paths, then starts the
 new build and waits up to 20 seconds for health. No manual process kill is needed.
 Keep the old release in place until the command finishes; do not overwrite a
 running release's files or Node executable.
@@ -230,12 +267,12 @@ with the same credential and the user can explicitly start another turn.
 ## Check, start, stop, restart, remove
 
 ```sh
-node apps/server/dist/main.js service status
-node apps/server/dist/main.js service status --json
-node apps/server/dist/main.js service start
-node apps/server/dist/main.js service stop
-node apps/server/dist/main.js service restart
-node apps/server/dist/main.js service uninstall
+openmanager service status
+openmanager service status --json
+openmanager service start
+openmanager service stop
+openmanager service restart
+openmanager service uninstall
 ```
 
 - `status` prints the unit state (for example `active, running; enabled`),
@@ -299,8 +336,8 @@ is clear which one a Windows client reaches.
 ## Logs
 
 ```sh
-node apps/server/dist/main.js service logs
-node apps/server/dist/main.js service logs --lines 200 --follow
+openmanager service logs
+openmanager service logs --lines 200 --follow
 ```
 
 `logs` reads the installed log path, including a custom `--log-file`, rather

@@ -53,15 +53,23 @@ Then open <http://127.0.0.1:5173>. This starts:
 
 and connects them for you, with this repo as the first project.
 
-### Run the server in the background
+### Install the server on a machine
 
-```bash
-pnpm --filter @openmanager/server build
-node apps/server/dist/main.js service install
+No checkout or Node needed. Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/calledforth/openmanager/main/scripts/install.ps1 | iex
 ```
 
-See [docs/windows-startup.md](docs/windows-startup.md) and
-[docs/linux-systemd.md](docs/linux-systemd.md).
+Linux or WSL:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/calledforth/openmanager/main/scripts/install.sh | sh
+```
+
+Then `openmanager service install` runs it in the background. See
+[docs/install.md](docs/install.md). From a checkout, the same commands are
+`node apps/server/dist/main.js service install` after a build.
 
 ## What's in the repo
 

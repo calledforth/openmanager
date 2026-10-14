@@ -107,7 +107,7 @@ export function parseSystemdCommandLine(line: string): string[] {
 }
 
 export interface UnitDefinition {
-  /** Absolute Node binary, the entry script, then the server flags. */
+  /** The program (Node plus the entry script, or the openmanager executable), then the server flags. */
   execStart: readonly string[]
   workingDirectory: string
   /** `PATH` for the server and the provider CLIs it spawns. */

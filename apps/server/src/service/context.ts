@@ -1,8 +1,10 @@
 import { spawn } from 'node:child_process'
+import { createServer } from 'node:net'
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir, userInfo } from 'node:os'
 import { dirname, join } from 'node:path'
 import { tailLogFile, type LogOptions } from './logs.ts'
+import { quoteWindowsArgument } from './windows-task.ts'
 import type { ServerConfig } from '../config.ts'
 
 /**
@@ -20,11 +22,21 @@ export interface RunResult {
 export interface RunOptions {
   /** Kill the process and report `code: null` after this long. */
   timeoutMs?: number
+  /**
+   * Windows: run with the console code page set to UTF-8. Console tools such
+   * as schtasks.exe otherwise write the legacy code page, and a non-ASCII path
+   * (a profile like `C:\Users\José`) would be read back mangled.
+   */
+  utf8Console?: boolean
 }
 
 export interface ServiceCommandDeps {
-  /** Absolute path of the server entry the service should run (normally `dist/main.js`). */
-  entry: string
+  /**
+   * Absolute path of the server entry the service should run with `execPath`
+   * (normally `dist/main.js`). `undefined` when `execPath` is the standalone
+   * `openmanager` executable, which carries the server inside it.
+   */
+  entry: string | undefined
   platform?: NodeJS.Platform
   env?: NodeJS.ProcessEnv
   /** Node binary baked into the service. Defaults to the one running this command. */
@@ -47,12 +59,34 @@ export interface ServiceCommandDeps {
   sleep?: (ms: number) => Promise<void>
   /** Clock for the health and stop deadlines; tests pair it with `sleep`. */
   now?: () => number
+  /** Whether 127.0.0.1:`port` can be bound; used to pick a free port at install. */
+  portFree?: (port: number) => Promise<boolean>
   stdout?: (line: string) => void
   stderr?: (line: string) => void
 }
 
-export interface Context extends Required<Omit<ServiceCommandDeps, 'uid'>> {
+export interface Context extends Required<Omit<ServiceCommandDeps, 'uid' | 'entry' | 'portFree'>> {
+  entry: string | undefined
   uid: number | undefined
+  /** Whether nothing on this machine listens on 127.0.0.1:`port`. */
+  portFree: (port: number) => Promise<boolean>
+}
+
+/** The command that starts the server: `[node, main.js]`, or `[openmanager]` for a release. */
+export function serverProgram(context: Pick<Context, 'execPath' | 'entry'>): string[] {
+  return context.entry === undefined ? [context.execPath] : [context.execPath, context.entry]
+}
+
+/** Whether binding 127.0.0.1:`port` succeeds right now. */
+export function canBindLoopback(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = createServer()
+    server.unref()
+    server.once('error', () => resolve(false))
+    server.listen({ host: '127.0.0.1', port, exclusive: true }, () => {
+      server.close(() => resolve(true))
+    })
+  })
 }
 
 function defaultRun(
@@ -61,7 +95,23 @@ function defaultRun(
   options: RunOptions = {},
 ): Promise<RunResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(file, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+    const child =
+      options.utf8Console && process.platform === 'win32'
+        ? spawn(
+            'cmd.exe',
+            [
+              '/d',
+              '/s',
+              '/c',
+              `"chcp 65001 >nul & ${[file, ...args].map(quoteWindowsArgument).join(' ')}"`,
+            ],
+            {
+              stdio: ['ignore', 'pipe', 'pipe'],
+              windowsHide: true,
+              windowsVerbatimArguments: true,
+            },
+          )
+        : spawn(file, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
     let stdout = ''
     let stderr = ''
     let timedOut = false
@@ -72,6 +122,10 @@ function defaultRun(
             timedOut = true
             child.kill('SIGKILL')
           }, options.timeoutMs)
+    // Whole characters only: a UTF-8 sequence split across chunks must not
+    // turn into U+FFFD inside a path that is written back.
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
     child.stdout.on('data', (chunk) => {
       stdout += String(chunk)
     })
@@ -150,6 +204,7 @@ export function resolveDeps(deps: ServiceCommandDeps): Context {
     fetch: deps.fetch ?? fetch,
     sleep: deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
     now: deps.now ?? Date.now,
+    portFree: deps.portFree ?? canBindLoopback,
     stdout: deps.stdout ?? ((line) => console.log(line)),
     stderr: deps.stderr ?? ((line) => console.error(line)),
   }
@@ -173,6 +228,8 @@ export interface InstalledService {
   logFile: string | undefined
   /** The tunnel hostname the service runs, when it runs one. */
   tunnelHostname?: string
+  /** The command the service starts: `[node, main.js]` or `[openmanager]`. */
+  program?: string[]
 }
 
 /**
@@ -189,6 +246,13 @@ export interface ServiceBackend {
   readonly restartHint: string
   /** Throws a {@link ServiceError} when this machine cannot host the service at all. */
   preflight(): Promise<void>
+  /**
+   * Ports in use on a host that shares 127.0.0.1 with this machine without
+   * sharing its sockets: Windows, seen from a WSL distro. `undefined` when
+   * there is no such host; `'unknown'` when there is one but it could not be
+   * asked (WSL interop off or broken).
+   */
+  hostPorts?(): Promise<ReadonlySet<number> | 'unknown' | undefined>
   /**
    * Whether this service's own server process is up, as its supervisor sees
    * it. `/health` alone cannot tell: another server (a `pnpm dev:web`, a

@@ -144,6 +144,8 @@ function fakeSystem(options: {
   killFails?: boolean
   lastResult?: string
   processQueryFails?: boolean
+  /** Ports another program already binds. */
+  busyPorts?: number[]
 }) {
   const calls: string[][] = []
   const out: string[] = []
@@ -248,6 +250,7 @@ function fakeSystem(options: {
     }) as typeof fetch,
     sleep: async (ms) => void (clock += ms),
     now: () => clock,
+    portFree: async (port) => !(options.busyPorts ?? []).includes(port),
     stdout: (line) => out.push(line),
     stderr: (line) => err.push(line),
   }
@@ -839,5 +842,88 @@ describe('shutdown confirmation regressions', () => {
     expect(system.err[0]).toContain('Something other than')
     expect(system.calls.map((call) => call[1])).not.toContain('/Run')
     expect(system.out.join(' ')).not.toContain('already up')
+  })
+})
+
+const EXE = 'C:\\Users\\Ada Lovelace\\AppData\\Local\\OpenManager\\versions\\0.2.0\\openmanager.exe'
+
+describe('released executable and port choice', () => {
+  it('a released executable registers itself, with no separate Node or entry', async () => {
+    const system = fakeSystem({})
+    system.deps.entry = undefined
+    system.deps.execPath = EXE
+    expect(await runServiceCommand(['install', '--port', '43121'], system.deps)).toBe(0)
+    const argv = parseWindowsCommandLine(readTaskArguments(system.registered!) ?? '')
+    expect(argv.slice(0, 3)).toEqual(['--headless', EXE, '--supervise'])
+    expect(system.out).toContain(`  Program:   ${EXE}`)
+
+    // status --json reports the program, so update/activate can compare it.
+    system.out.length = 0
+    await runServiceCommand(['status', '--json'], system.deps)
+    expect(JSON.parse(system.out[0]!).program).toEqual([EXE])
+  })
+
+  it('update moves a Node + main.js task to the released executable', async () => {
+    const system = fakeSystem({ registered: LIFECYCLE_TASK, healthy: () => true, pids: [[42], []] })
+    system.deps.entry = undefined
+    system.deps.execPath = EXE
+    expect(await runServiceCommand(['update'], system.deps)).toBe(0)
+    const before = parseWindowsCommandLine(readTaskArguments(LIFECYCLE_TASK)!)
+    const after = parseWindowsCommandLine(readTaskArguments(system.registered!)!)
+    // This older task predates the supervisor; the update adds it.
+    expect(after).toEqual(['--headless', EXE, '--supervise', ...before.slice(3)])
+    // The old node process was found by its entry and waited for, not killed.
+    expect(system.calls.some((call) => call[0] === 'taskkill.exe')).toBe(false)
+  })
+
+  it('stops a released executable found by its own path', async () => {
+    const registered = buildTaskXml({
+      userId: 'MACHINE\\ada',
+      command: 'C:\\Windows\\System32\\conhost.exe',
+      arguments: ['--headless', EXE, '--supervise', '--port', '43120', '--data-dir', DATA_DIR]
+        .concat(['--log-file', 'C:\\x.log', '--exit-with-parent'])
+        .map(quoteWindowsArgument)
+        .join(' '),
+      workingDirectory: DATA_DIR,
+    })
+    const system = fakeSystem({ registered, healthy: () => true, pids: [[7], [7], []] })
+    expect(await runServiceCommand(['stop'], system.deps)).toBe(0)
+    expect(system.out[0]).toContain('Stopped the environment server')
+    const lookup = system.calls.find((call) => call[0] === 'powershell.exe')!
+    const script = Buffer.from(lookup.at(-1)!, 'base64').toString('utf16le')
+    expect(script).toContain("Name = 'openmanager.exe'")
+  })
+
+  it('without --port, install takes the first free port and says so', async () => {
+    const system = fakeSystem({ busyPorts: [43120, 43121] })
+    expect(await runServiceCommand(['install'], system.deps)).toBe(0)
+    expect(system.out).toContain('Port 43120 is taken; using 43122.')
+    const argv = parseWindowsCommandLine(readTaskArguments(system.registered!) ?? '')
+    expect(flagValue(argv, '--port')).toBe('43122')
+  })
+
+  it('without --port, a reinstall keeps the installed port', async () => {
+    const system = fakeSystem({ registered: LIFECYCLE_TASK, pids: [[]] })
+    const installedPort = flagValue(
+      parseWindowsCommandLine(readTaskArguments(LIFECYCLE_TASK)!),
+      '--port',
+    )
+    expect(await runServiceCommand(['install'], system.deps)).toBe(0)
+    const argv = parseWindowsCommandLine(readTaskArguments(system.registered!) ?? '')
+    expect(flagValue(argv, '--port')).toBe(installedPort)
+  })
+
+  it('refuses an explicit port another program binds', async () => {
+    const system = fakeSystem({ busyPorts: [43125] })
+    expect(await runServiceCommand(['install', '--port', '43125'], system.deps)).toBe(1)
+    expect(system.err[0]).toContain('another program is using port 43125')
+    expect(system.calls.map((call) => call[1])).not.toContain('/Create')
+  })
+
+  it('gives up with a clear message when every port in the range is taken', async () => {
+    const busyPorts = Array.from({ length: 20 }, (_, index) => 43120 + index)
+    const system = fakeSystem({ busyPorts })
+    expect(await runServiceCommand(['install'], system.deps)).toBe(1)
+    expect(system.err[0]).toBe('Ports 43120-43139 are all in use. Pick one with --port.')
   })
 })

@@ -29,6 +29,21 @@ export function serverArguments(config: ServerConfig, logFile: string): string[]
   return args
 }
 
+/**
+ * Split a stored command line into the program that runs the server and its
+ * flags. The program is everything before the first `--flag`: `node` plus
+ * `main.js` for a checkout, or the `openmanager` executable alone for an
+ * installed release. Neither path starts with `--`, and every server flag does.
+ */
+export function splitProgram(argv: readonly string[]): {
+  program: string[]
+  flags: string[]
+} {
+  const index = argv.findIndex((arg) => arg.startsWith('--'))
+  const end = index === -1 ? argv.length : index
+  return { program: argv.slice(0, end), flags: argv.slice(end) }
+}
+
 /** Value that follows `flag` in an argument list, or `undefined`. */
 export function flagValue(argv: readonly string[], flag: string): string | undefined {
   const index = argv.indexOf(flag)

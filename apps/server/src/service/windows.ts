@@ -2,13 +2,14 @@ import { userInfo } from 'node:os'
 import { win32 } from 'node:path'
 import type { ServerConfig } from '../config.ts'
 import {
+  serverProgram,
   ServiceError,
   trimOutput,
   type Context,
   type RunResult,
   type ServiceBackend,
 } from './context.ts'
-import { describeArguments, flagValue } from './server-arguments.ts'
+import { describeArguments, flagValue, splitProgram } from './server-arguments.ts'
 import { SHUTDOWN_TIMEOUT_MS, SUPERVISOR_FLAG } from './supervisor.ts'
 import {
   buildTaskXml,
@@ -41,12 +42,13 @@ const LAST_RESULT_HINTS: Record<string, string> = {
   '267009': 'currently running',
   '267011': 'has not run yet',
   '267014': 'last run was stopped',
-  '2147942402': 'program not found; reinstall after moving Node or the repository',
+  '2147942402': 'program not found; reinstall after moving Node, the repository or OpenManager',
   '2147942667': 'working directory missing; reinstall',
 }
 
 function schtasks(context: Context, args: readonly string[]): Promise<RunResult> {
-  return context.run('schtasks.exe', args)
+  // Queries return paths, which must come back intact (see RunOptions).
+  return context.run('schtasks.exe', args, { utf8Console: args[0] === '/Query' })
 }
 
 /**
@@ -78,20 +80,32 @@ async function readTaskStatus(context: Context): Promise<TaskStatus | undefined>
 }
 
 /**
- * PIDs of node processes started from this entry by the task. Task Scheduler
- * only knows the console host, so stopping goes through the command line: the
- * entry path plus the marker flag identify our server and nothing else.
+ * Whether a process command line runs `program`: the same entry script under
+ * any `node.exe` (as before), or the same `openmanager` executable.
+ */
+function runsProgram(args: readonly string[], program: readonly string[]): boolean {
+  const same = (value: string | undefined, expected: string) =>
+    value?.toLowerCase() === expected.toLowerCase()
+  return program.length > 1 ? same(args[1], program[1]!) : same(args[0], program[0]!)
+}
+
+/**
+ * PIDs of processes the task started from this program. Task Scheduler only
+ * knows the console host, so stopping goes through the command line: the
+ * program plus the marker flag identify our server and nothing else.
  * `undefined` when the lookup itself failed, which says nothing either way.
  */
 async function findServerProcesses(
   context: Context,
-  entry: string,
+  program: readonly string[],
   dataDir: string | undefined,
 ): Promise<number[] | undefined> {
+  // The image name sits in a WQL string inside a PowerShell string.
+  const image = win32.basename(program[0] ?? 'node.exe').replace(/['"`$]/g, '')
   const script = [
     "$ErrorActionPreference = 'Stop'",
     '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()',
-    'Get-CimInstance Win32_Process -Filter "Name = \'node.exe\'" |',
+    `Get-CimInstance Win32_Process -Filter "Name = '${image}'" |`,
     '  Where-Object { $_.CommandLine } |',
     '  Select-Object ProcessId, CommandLine | ConvertTo-Json -Compress',
   ].join('\n')
@@ -121,7 +135,7 @@ async function findServerProcesses(
       )
         throw new Error('Invalid process record')
       const args = parseWindowsCommandLine(record.CommandLine)
-      return args[1]?.toLowerCase() === entry.toLowerCase() &&
+      return runsProgram(args, program) &&
         args.includes(SERVICE_MARKER_FLAG) &&
         (dataDir === undefined ||
           flagValue(args, '--data-dir')?.toLowerCase() === dataDir.toLowerCase())
@@ -146,7 +160,7 @@ function consoleHostPath(context: Context): string {
 }
 
 export function createWindowsBackend(context: Context): ServiceBackend {
-  let installedEntry = context.entry
+  let installedProgram = serverProgram(context)
   let installedDataDir: string | undefined
   return {
     kind: 'logon task',
@@ -156,7 +170,7 @@ export function createWindowsBackend(context: Context): ServiceBackend {
     async preflight() {},
 
     async running() {
-      const pids = await findServerProcesses(context, installedEntry, installedDataDir)
+      const pids = await findServerProcesses(context, installedProgram, installedDataDir)
       return pids === undefined ? undefined : pids.length > 0
     },
 
@@ -164,21 +178,16 @@ export function createWindowsBackend(context: Context): ServiceBackend {
       const xml = await readTaskXml(context)
       if (xml === undefined) return undefined
       const args = parseWindowsCommandLine(readTaskArguments(xml) ?? '')
-      installedEntry =
-        args[0] === '--headless' ? (args[2] ?? context.entry) : (args[1] ?? context.entry)
+      const { program } = splitProgram(args[0] === '--headless' ? args.slice(1) : args)
+      if (program.length > 0) installedProgram = program
       const installed = describeArguments(args)
       installedDataDir = installed.dataDir
-      return installed
+      return { ...installed, program: installedProgram }
     },
 
     async register(config: ServerConfig, logFile: string) {
       const command = consoleHostPath(context)
-      const args = [
-        '--headless',
-        context.execPath,
-        context.entry,
-        ...serviceArguments(config, logFile),
-      ]
+      const args = ['--headless', ...serverProgram(context), ...serviceArguments(config, logFile)]
       const xml = buildTaskXml({
         userId: currentUserId(context),
         command,
@@ -218,23 +227,25 @@ export function createWindowsBackend(context: Context): ServiceBackend {
     async prepareUpdate() {
       const xml = await readTaskXml(context)
       const args = parseWindowsCommandLine(readTaskArguments(xml ?? '') ?? '')
+      const { program, flags } = splitProgram(args.slice(1))
       if (
         !xml ||
         args[0] !== '--headless' ||
-        !args[2] ||
-        !args.includes(SERVICE_MARKER_FLAG) ||
+        program.length === 0 ||
+        !flags.includes(SERVICE_MARKER_FLAG) ||
         (xml.match(/<Exec>/g)?.length ?? 0) !== 1
       ) {
         throw new ServiceError(
           'Cannot update this task: expected a headless server task. Reinstall it first.',
         )
       }
-      args[1] = context.execPath
-      args[2] = context.entry
-      if (!args.includes(SUPERVISOR_FLAG)) args.splice(3, 0, SUPERVISOR_FLAG)
+      const next = serverProgram(context)
+      if (!flags.includes(SUPERVISOR_FLAG)) flags.unshift(SUPERVISOR_FLAG)
+      const updatedArgs = ['--headless', ...next, ...flags]
       const updated = xml.replace(
         /<Arguments>[\s\S]*?<\/Arguments>/,
-        () => `<Arguments>${escapeXml(args.map(quoteWindowsArgument).join(' '))}</Arguments>`,
+        () =>
+          `<Arguments>${escapeXml(updatedArgs.map(quoteWindowsArgument).join(' '))}</Arguments>`,
       )
       return async () => {
         const path = await context.writeTempFile(
@@ -248,7 +259,7 @@ export function createWindowsBackend(context: Context): ServiceBackend {
         } finally {
           await context.removeFile(path)
         }
-        installedEntry = context.entry
+        installedProgram = next
       }
     },
 
@@ -260,7 +271,7 @@ export function createWindowsBackend(context: Context): ServiceBackend {
     async stop() {
       const ended = await schtasks(context, ['/End', '/TN', TASK_NAME])
       const lookup = async () => {
-        const found = await findServerProcesses(context, installedEntry, installedDataDir)
+        const found = await findServerProcesses(context, installedProgram, installedDataDir)
         if (found === undefined) {
           throw new ServiceError(
             'Cannot confirm the service stopped: process lookup failed. The service registration and credentials have been retained.',
@@ -310,7 +321,7 @@ export function createWindowsBackend(context: Context): ServiceBackend {
           `Last run:  ${taskStatus.lastRunTime}, result ${taskStatus.lastResult}${hint ? ` (${hint})` : ''}`,
         )
       }
-      const running = await findServerProcesses(context, installedEntry, installedDataDir)
+      const running = await findServerProcesses(context, installedProgram, installedDataDir)
       const state =
         running === undefined || !taskStatus
           ? 'unknown'

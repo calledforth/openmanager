@@ -15,28 +15,32 @@ unit there instead; see [linux-systemd.md](./linux-systemd.md).
 
 - Native Windows 10 or 11, signed in as the user whose provider logins
   (Claude Code, Codex, Cursor, OpenCode) the environment should use.
-- Node 24 LTS on disk. The task records the absolute path of the `node.exe`
-  that runs `service install`, so install with the Node you intend to keep.
-  Version managers that swap the binary under a stable path (nvm-windows,
-  fnm's `installation` folders) are fine as long as that path keeps existing.
-- A built server: the task runs `apps/server/dist/main.js`.
+- The `openmanager` command, from the install script in
+  [install.md](./install.md). It has Node built in, and the task runs that
+  executable directly, so switching or removing the machine's Node does not
+  affect it.
+- Or, for development, a built checkout run with Node 24 or newer. The task
+  then records the absolute path of the `node.exe` that runs `service install`
+  plus `apps/server/dist/main.js`, so install with the Node you intend to keep.
 
 ## Install
 
-From the repository root:
-
 ```sh
-pnpm install
-pnpm --filter @openmanager/server build
-node apps/server/dist/main.js service install
+openmanager service install
 ```
+
+From a checkout, the same command is `node apps/server/dist/main.js service
+install` after `pnpm install` and `pnpm --filter @openmanager/server build`.
 
 `install` accepts the normal server flags and bakes the resolved values into
 the task, so a later shell environment cannot change what the task runs:
 
 ```sh
-node apps/server/dist/main.js service install --port 43120 --workspace C:\src\my-repo --log-level debug
+openmanager service install --port 43120 --workspace C:\src\my-repo --log-level debug
 ```
+
+Without `--port` (or `OPENMANAGER_PORT`), a first install takes the first
+free port from 43120 and prints it; a reinstall keeps the installed port.
 
 | Flag                                 | Effect in the task                                                                    |
 | ------------------------------------ | ------------------------------------------------------------------------------------- |
@@ -66,9 +70,9 @@ every stored flag, so repeat the ones you installed with. See
 
 What `install` does, in order:
 
-1. Refuses if another process already answers on the chosen port (typically a
+1. If a task already exists, stops its server so the new one can bind.
+2. Refuses if another program still holds the chosen port (typically a
    `pnpm dev:web` server). Stop it or pick another `--port`.
-2. If a task already exists, stops its server so the new one can bind.
 3. Writes a task definition and registers it with `schtasks /Create`. The task
    is `\OpenManager\Environment Server` in Task Scheduler; it triggers at your
    logon, runs with your interactive token at least privilege, never times
@@ -76,7 +80,8 @@ What `install` does, in order:
    after 10 seconds, at most three times in a rolling five-minute window.
 4. Starts the task and waits up to 20 seconds for `GET /health` to answer.
 
-The action is `conhost.exe --headless <node> <dist\main.js> --supervise <flags> --exit-with-parent`.
+The action is `conhost.exe --headless <openmanager.exe> --supervise <flags> --exit-with-parent`
+(`<node> <dist\main.js>` in place of `<openmanager.exe>` from a checkout).
 The headless console host keeps a terminal window from appearing. It can report
 exit code 0 even when its child crashes, so the launcher observes server exits
 directly instead of relying on Task Scheduler's restart-on-failure setting. The
@@ -88,8 +93,18 @@ Scheduler's last result may still be 0 because of conhost.
 
 ## Upgrade without losing the environment
 
-Build or unpack the new release into a **separate directory**, then run its entry
-with the Node binary you want the service to use:
+With the released executable:
+
+```sh
+openmanager update
+```
+
+It downloads the newest release into its own version folder, switches the
+`openmanager` command to it, and runs that version's `service update`, which is
+the handoff described below ([install.md](./install.md#update)).
+
+From a checkout, build or unpack the new release into a **separate directory**,
+then run its entry with the Node binary you want the service to use:
 
 ```sh
 node /path/to/new-release/apps/server/dist/main.js service update
@@ -97,7 +112,7 @@ node /path/to/new-release/apps/server/dist/main.js service update
 
 On Windows, use the corresponding Windows path. `update` takes no server flags:
 it reads the installed definition, prepares the replacement, stops the old
-process and waits for shutdown, switches the Node/entry paths, then starts the
+process and waits for shutdown, switches the program paths, then starts the
 new build and waits up to 20 seconds for health. No manual process kill is needed.
 Keep the old release in place until the command finishes; do not overwrite a
 running release's files or Node executable.
@@ -132,12 +147,12 @@ with the same credential and the user can explicitly start another turn.
 ## Check, start, stop, restart, remove
 
 ```sh
-node apps/server/dist/main.js service status
-node apps/server/dist/main.js service status --json
-node apps/server/dist/main.js service start
-node apps/server/dist/main.js service stop
-node apps/server/dist/main.js service restart
-node apps/server/dist/main.js service uninstall
+openmanager service status
+openmanager service status --json
+openmanager service start
+openmanager service stop
+openmanager service restart
+openmanager service uninstall
 ```
 
 - `status` prints the task state, the last run result, whether `/health`
@@ -209,8 +224,8 @@ crash-loop.
 ## Logs
 
 ```sh
-node apps/server/dist/main.js service logs
-node apps/server/dist/main.js service logs --lines 200 --follow
+openmanager service logs
+openmanager service logs --lines 200 --follow
 ```
 
 `logs` reads the installed log path, including a custom `--log-file`, rather
