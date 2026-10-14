@@ -222,9 +222,10 @@ export interface ServiceBackend {
   /**
    * Ports in use on a host that shares 127.0.0.1 with this machine without
    * sharing its sockets: Windows, seen from a WSL distro. `undefined` when
-   * there is no such host or it could not be asked.
+   * there is no such host; `'unknown'` when there is one but it could not be
+   * asked (WSL interop off or broken).
    */
-  hostPorts?(): Promise<ReadonlySet<number> | undefined>
+  hostPorts?(): Promise<ReadonlySet<number> | 'unknown' | undefined>
   /**
    * Whether this service's own server process is up, as its supervisor sees
    * it. `/health` alone cannot tell: another server (a `pnpm dev:web`, a

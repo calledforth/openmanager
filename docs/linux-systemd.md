@@ -187,6 +187,22 @@ stops it.
 `install` and `status` read this file through WSL interop and say which case
 you are in; if interop is turned off they print the advice regardless.
 
+### WSL interop
+
+`install` also uses interop to ask Windows which ports it listens on (with
+`netstat.exe`), so it does not pick a port Windows already serves. When it
+cannot, it says so next to the port it chose.
+
+With systemd on, a distro can lose interop: running any Windows program, even
+`cmd.exe`, fails with `Exec format error`, because the `WSLInterop` entry in
+`/proc/sys/fs/binfmt_misc` is gone. Register it permanently and restart the
+binfmt service:
+
+```sh
+echo ':WSLInterop:M::MZ::/init:PF' | sudo tee /usr/lib/binfmt.d/WSLInterop.conf
+sudo systemctl restart systemd-binfmt
+```
+
 Nothing starts WSL when Windows boots or you sign in. With the setting above
 the server comes up as soon as anything starts the distro (opening a WSL
 terminal, or a `wsl.exe` command) and then stays up.

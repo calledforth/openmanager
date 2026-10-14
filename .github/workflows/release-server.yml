@@ -33,7 +33,7 @@ concurrency:
 env:
   # The Node every executable embeds (`node --build-sea` copies the Node that
   # runs it, and needs 25.7 or newer). Bump it to ship Node security fixes.
-  SEA_NODE_VERSION: '26.8.2'
+  SEA_NODE_VERSION: '26.11.1'
 
 jobs:
   build:

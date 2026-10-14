@@ -229,10 +229,10 @@ export function createSystemdBackend(context: Context): ServiceBackend {
         const result = await context.run('netstat.exe', ['-ano', '-p', 'TCP'], {
           timeoutMs: INTEROP_TIMEOUT_MS,
         })
-        return result.code === 0 ? parseWindowsListeningPorts(result.stdout) : undefined
+        return result.code === 0 ? parseWindowsListeningPorts(result.stdout) : 'unknown'
       } catch {
-        // No interop (turned off in wsl.conf): nothing more can be checked.
-        return undefined
+        // No interop (off in wsl.conf, or its binfmt entry lost): Windows cannot be asked.
+        return 'unknown'
       }
     },
 

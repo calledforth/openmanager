@@ -694,5 +694,11 @@ describe('released executable and ports on systemd', () => {
     const system = fakeSystemd({ wsl: true, linger: true, busyPorts: [43120] })
     expect(await runServiceCommand(['install'], system.deps)).toBe(0)
     expect(system.out).toContain('Port 43120 is taken; using 43121.')
+    expect(system.out.join('\n')).toContain('Windows could not be asked which ports it uses')
+
+    // Off WSL there is no Windows to ask, so no warning.
+    const linux = fakeSystemd({ linger: true })
+    expect(await runServiceCommand(['install'], linux.deps)).toBe(0)
+    expect(linux.out.join('\n')).not.toContain('Windows could not be asked')
   })
 })

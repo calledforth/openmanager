@@ -166,7 +166,8 @@ async function install(context: Context, backend: ServiceBackend, flags: string[
     context.stdout(`Replacing the existing ${backend.kind}.`)
     await backend.stop()
   }
-  const hostPorts = await backend.hostPorts?.()
+  const host = await backend.hostPorts?.()
+  const hostPorts = host === 'unknown' ? undefined : host
   if (!explicitPort) {
     // A reinstall keeps its port: devices and the tunnel are set up for it.
     const port = existing?.port ?? (await pickPort(context, hostPorts))
@@ -195,6 +196,11 @@ async function install(context: Context, backend: ServiceBackend, flags: string[
   const notes = [...tunnelNotes, ...(await backend.register(config, logFile))]
   context.stdout(`  Program:   ${serverProgram(context).join(' ')}`)
   context.stdout(`  Port:      ${config.port}`)
+  if (host === 'unknown') {
+    context.stdout(
+      `             Windows could not be asked which ports it uses (WSL interop is off or broken; see docs/linux-systemd.md). If Windows already serves http://127.0.0.1:${config.port}, it cannot reach this server: reinstall with another --port.`,
+    )
+  }
   context.stdout(`  Data dir:  ${config.dataDir}`)
   context.stdout(`  Log file:  ${logFile}`)
   for (const note of notes) context.stdout(note)
