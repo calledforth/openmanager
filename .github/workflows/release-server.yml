@@ -1,0 +1,169 @@
+name: Server Release
+
+# Builds the self-contained `openmanager` executable for every supported
+# platform. A `server-v<version>` tag publishes the archives, the install
+# scripts and SHA256SUMS to a GitHub Release (docs/RELEASING.md). Pull requests
+# that touch the server build the same archives without publishing.
+
+on:
+  push:
+    tags:
+      - 'server-v*'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/server/**'
+      - 'packages/agent-contract/**'
+      - 'packages/agent-runtime/**'
+      - 'packages/protocol/**'
+      - 'packages/shared/**'
+      - 'scripts/install.ps1'
+      - 'scripts/install.sh'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/release-server.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: server-release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The Node every executable embeds (`node --build-sea` copies the Node that
+  # runs it, and needs 25.7 or newer). Bump it to ship Node security fixes.
+  SEA_NODE_VERSION: '26.8.2'
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: win32-x64
+          - os: ubuntu-24.04
+            target: linux-x64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.SEA_NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Check the tag matches the server version
+        if: ${{ github.ref_type == 'tag' }}
+        shell: bash
+        run: |
+          version=$(node -p "require('./apps/server/package.json').version")
+          if [ "server-v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match apps/server/package.json version $version."
+            exit 1
+          fi
+
+      - name: Install server workspace
+        run: pnpm --filter @openmanager/server... install --frozen-lockfile
+
+      - name: Build the executable and archive
+        run: pnpm --filter @openmanager/server build:standalone
+
+      - name: Smoke test the executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=apps/server/dist-standalone/openmanager
+          if [ -f "$exe.exe" ]; then exe="$exe.exe"; fi
+          "$exe" --version
+          "$exe" service help >/dev/null
+          data=$(mktemp -d)
+          "$exe" --port 43199 --data-dir "$data" &
+          pid=$!
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:43199/health; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:43199/health | grep -q '"status":"ok"'
+          kill "$pid"
+
+      - name: Upload archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: server-${{ matrix.target }}
+          path: |
+            apps/server/dist-standalone/openmanager-*.zip
+            apps/server/dist-standalone/openmanager-*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub Release
+    if: ${{ github.ref_type == 'tag' }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Download archives
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: server-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Add install scripts and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp scripts/install.sh scripts/install.ps1 release-assets/
+          cd release-assets
+          sha256sum openmanager-* install.sh install.ps1 > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Attest build provenance
+        uses: actions/attest@f6bf1532d7d6793fce74eac584813a8eee607999 # v4
+        with:
+          subject-path: release-assets/*
+
+      - name: Create GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#server-v}"
+          notes=$(printf '%s\n' \
+            'Install or upgrade the environment server:' '' \
+            '- Windows (PowerShell): `irm https://raw.githubusercontent.com/calledforth/openmanager/main/scripts/install.ps1 | iex`' \
+            '- Linux and WSL: `curl -fsSL https://raw.githubusercontent.com/calledforth/openmanager/main/scripts/install.sh | sh`' \
+            '- Already installed: `openmanager update`' '' \
+            'Then `openmanager service install`. Guide: [docs/install.md](https://github.com/calledforth/openmanager/blob/main/docs/install.md).')
+          args=(--verify-tag --title "OpenManager server $version" --notes "$notes" --generate-notes)
+          # Desktop releases live in this repository too; never take "latest" from them.
+          args+=(--latest=false)
+          if [[ "$version" == *-* ]]; then args+=(--prerelease); fi
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          else
+            gh release create "$RELEASE_TAG" "${args[@]}" release-assets/*
+          fi

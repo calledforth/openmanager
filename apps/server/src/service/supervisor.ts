@@ -10,7 +10,7 @@ export const SHUTDOWN_TIMEOUT_MS = 15_000
 
 /** conhost discards the child's exit code, so Windows needs a launcher that
  * observes failures itself. systemd already provides this supervision. */
-export async function supervise(entry: string, args: string[]): Promise<number> {
+export async function supervise(entry: string | undefined, args: string[]): Promise<number> {
   const config = loadConfig(args)
   const log = createLogger(config.logLevel, resolveLogSink(config.logFile))
   const parent = process.ppid
@@ -47,7 +47,7 @@ export async function supervise(entry: string, args: string[]): Promise<number> 
   try {
     while (!stopping) {
       const result = await new Promise<{ code: number | null; error?: Error }>((resolve) => {
-        child = spawn(process.execPath, [entry, ...args], {
+        child = spawn(process.execPath, entry === undefined ? args : [entry, ...args], {
           // The server must outlive an abruptly terminated launcher long enough
           // to notice its parent is gone and close SQLite/provider processes.
           detached: true,

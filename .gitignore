@@ -2,6 +2,7 @@ node_modules/
 .pnpm-store/
 out/
 dist/
+dist-standalone/
 .wrangler/
 storybook-static/
 .env

@@ -37,7 +37,10 @@ pnpm --filter @openmanager/server start
 The built server can install itself as a background service, so the
 environment is up without a terminal and stays up when the desktop app or a
 browser tab closes. On native Windows that is a per-user logon task; on Linux
-and WSL it is a systemd user unit. The commands are the same:
+and WSL it is a systemd user unit. Released builds are a single `openmanager`
+executable with Node built in ([docs/install.md](../../docs/install.md),
+built by `pnpm --filter @openmanager/server build:standalone`); from a
+checkout the commands are the same with `node apps/server/dist/main.js`:
 
 ```sh
 pnpm --filter @openmanager/server build

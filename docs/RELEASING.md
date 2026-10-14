@@ -1,9 +1,53 @@
 # Releasing OpenManager
 
-OpenManager uses GitHub Actions and public GitHub Releases. A release tag builds the Windows NSIS
-installer, portable executable, updater metadata, blockmap, checksums, and a GitHub artifact
-attestation. The installed NSIS build checks GitHub Releases for updates; the portable build must be
-updated manually.
+OpenManager uses GitHub Actions and public GitHub Releases. There are two independent release
+trains in this repository:
+
+- **Desktop app**, tags `v*`: the Windows NSIS installer and portable build. Most of this page.
+- **Environment server**, tags `server-v*`: the self-contained `openmanager` executable. See
+  [Environment server releases](#environment-server-releases) below.
+
+A desktop release tag builds the Windows NSIS installer, portable executable, updater metadata,
+blockmap, checksums, and a GitHub artifact attestation. The installed NSIS build checks GitHub
+Releases for updates; the portable build must be updated manually.
+
+## Environment server releases
+
+`.github/workflows/release-server.yml` builds `openmanager` for `win32-x64`, `linux-x64` and
+`linux-arm64` (a Node single-executable application; see
+[decisions/server-packaging.md](./decisions/server-packaging.md)), smoke-tests each one, and on a
+`server-v<version>` tag publishes a GitHub Release with:
+
+- `openmanager-<version>-win32-x64.zip`, `openmanager-<version>-linux-x64.tar.gz`,
+  `openmanager-<version>-linux-arm64.tar.gz`
+- `install.ps1`, `install.sh` (copies of `scripts/`) and `SHA256SUMS` over all of them
+- a build provenance attestation
+
+The release is never marked "latest", so the desktop updater keeps resolving desktop releases. The
+install scripts and `openmanager update` find the newest non-draft, non-prerelease `server-v*` tag
+themselves. A version with a `-` suffix (`0.3.0-beta.1`) is published as a prerelease and is only
+installed when asked for by version.
+
+Pull requests that touch the server build the same archives without publishing; the archives are
+attached to the workflow run for 14 days. **Actions → Server Release → Run workflow** does the same
+for any branch.
+
+To release:
+
+```sh
+git switch -c release/server-0.2.0 origin/main
+# bump "version" in apps/server/package.json to 0.2.0, open a PR, merge it
+git switch main && git pull --ff-only
+git tag -a server-v0.2.0 -m "OpenManager server 0.2.0"
+git push origin server-v0.2.0
+```
+
+The workflow refuses a tag that does not match `apps/server/package.json`. Never move or reuse a
+published tag; fix forward with a new patch version. To ship a newer embedded Node, bump
+`SEA_NODE_VERSION` in the workflow and release.
+
+After publishing, check an install from the release on Windows and on Linux or WSL
+([install.md](./install.md)), and `openmanager update` from the previous version.
 
 ## One-time GitHub setup
 

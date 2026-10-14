@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { createServer } from 'node:net'
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir, userInfo } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -23,8 +24,12 @@ export interface RunOptions {
 }
 
 export interface ServiceCommandDeps {
-  /** Absolute path of the server entry the service should run (normally `dist/main.js`). */
-  entry: string
+  /**
+   * Absolute path of the server entry the service should run with `execPath`
+   * (normally `dist/main.js`). `undefined` when `execPath` is the standalone
+   * `openmanager` executable, which carries the server inside it.
+   */
+  entry: string | undefined
   platform?: NodeJS.Platform
   env?: NodeJS.ProcessEnv
   /** Node binary baked into the service. Defaults to the one running this command. */
@@ -47,12 +52,34 @@ export interface ServiceCommandDeps {
   sleep?: (ms: number) => Promise<void>
   /** Clock for the health and stop deadlines; tests pair it with `sleep`. */
   now?: () => number
+  /** Whether 127.0.0.1:`port` can be bound; used to pick a free port at install. */
+  portFree?: (port: number) => Promise<boolean>
   stdout?: (line: string) => void
   stderr?: (line: string) => void
 }
 
-export interface Context extends Required<Omit<ServiceCommandDeps, 'uid'>> {
+export interface Context extends Required<Omit<ServiceCommandDeps, 'uid' | 'entry' | 'portFree'>> {
+  entry: string | undefined
   uid: number | undefined
+  /** Whether nothing on this machine listens on 127.0.0.1:`port`. */
+  portFree: (port: number) => Promise<boolean>
+}
+
+/** The command that starts the server: `[node, main.js]`, or `[openmanager]` for a release. */
+export function serverProgram(context: Pick<Context, 'execPath' | 'entry'>): string[] {
+  return context.entry === undefined ? [context.execPath] : [context.execPath, context.entry]
+}
+
+/** Whether binding 127.0.0.1:`port` succeeds right now. */
+export function canBindLoopback(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = createServer()
+    server.unref()
+    server.once('error', () => resolve(false))
+    server.listen({ host: '127.0.0.1', port, exclusive: true }, () => {
+      server.close(() => resolve(true))
+    })
+  })
 }
 
 function defaultRun(
@@ -150,6 +177,7 @@ export function resolveDeps(deps: ServiceCommandDeps): Context {
     fetch: deps.fetch ?? fetch,
     sleep: deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
     now: deps.now ?? Date.now,
+    portFree: deps.portFree ?? canBindLoopback,
     stdout: deps.stdout ?? ((line) => console.log(line)),
     stderr: deps.stderr ?? ((line) => console.error(line)),
   }
@@ -173,6 +201,8 @@ export interface InstalledService {
   logFile: string | undefined
   /** The tunnel hostname the service runs, when it runs one. */
   tunnelHostname?: string
+  /** The command the service starts: `[node, main.js]` or `[openmanager]`. */
+  program?: string[]
 }
 
 /**
@@ -189,6 +219,12 @@ export interface ServiceBackend {
   readonly restartHint: string
   /** Throws a {@link ServiceError} when this machine cannot host the service at all. */
   preflight(): Promise<void>
+  /**
+   * Ports in use on a host that shares 127.0.0.1 with this machine without
+   * sharing its sockets: Windows, seen from a WSL distro. `undefined` when
+   * there is no such host or it could not be asked.
+   */
+  hostPorts?(): Promise<ReadonlySet<number> | undefined>
   /**
    * Whether this service's own server process is up, as its supervisor sees
    * it. `/health` alone cannot tell: another server (a `pnpm dev:web`, a

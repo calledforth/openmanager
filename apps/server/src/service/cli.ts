@@ -9,6 +9,7 @@ import {
 import {
   defaultLogFile,
   resolveDeps,
+  serverProgram,
   ServiceError,
   type Context,
   type ServiceBackend,
@@ -19,7 +20,7 @@ import { createSystemdBackend } from './systemd.ts'
 import { createWindowsBackend } from './windows.ts'
 
 /**
- * `openmanager-server service <install|uninstall|start|stop|restart|update|status|logs>`.
+ * `openmanager service <install|uninstall|start|stop|restart|update|status|logs>`.
  *
  * One command surface, two supervisors: a per-user logon task on Windows
  * (docs/windows-startup.md) and a systemd user unit on Linux and WSL
@@ -31,9 +32,14 @@ export { defaultLogFile, type RunResult, type ServiceCommandDeps } from './conte
 
 export const HEALTH_TIMEOUT_MS = 20_000
 const POLL_INTERVAL_MS = 500
+/** Where `install` starts looking for a free port when none is given. */
+export const DEFAULT_PORT = 43120
+/** How many ports from {@link DEFAULT_PORT} `install` tries before giving up. */
+export const PORT_SEARCH_SPAN = 20
 
 export const SERVICE_USAGE = [
-  'Usage: node dist/main.js service <command> [server flags]',
+  'Usage: openmanager service <command> [server flags]',
+  '   or: node dist/main.js service <command> [server flags]   (from a checkout)',
   '',
   'Commands:',
   '  install [flags]  Install the background service with the given server flags and start it',
@@ -46,7 +52,8 @@ export const SERVICE_USAGE = [
   '  status [--json]   Show running/stopped/failed state, health and installed paths',
   '  logs [-f] [-n N]  Print the last N log lines (default 100); --follow tails updates',
   '',
-  'Server flags for install are the normal ones (--port, --data-dir, --log-level,',
+  'Without --port, install keeps the port of an installed service, or takes the first',
+  `free one from ${DEFAULT_PORT}. Server flags for install are the normal ones (--port, --data-dir, --log-level,`,
   '--allowed-origin, --allowed-host, --workspace, --tunnel-hostname, --tunnel-token-file,',
   '--cloudflared) plus --log-file. Values are baked into the service; rerun install to',
   'change them. A tunnel token in OPENMANAGER_TUNNEL_TOKEN is saved to the data directory,',
@@ -93,6 +100,48 @@ async function startAndWait(
   )
 }
 
+/** Whether the port was chosen by a flag or `OPENMANAGER_PORT` rather than defaulted. */
+function portGiven(flags: readonly string[], env: NodeJS.ProcessEnv): boolean {
+  return (
+    env.OPENMANAGER_PORT !== undefined ||
+    flags.some((flag) => flag === '--port' || flag.startsWith('--port='))
+  )
+}
+
+/**
+ * Why `port` cannot take the service, or `undefined` when it can. Binding is
+ * the real test; `/health` names the common culprit. On WSL, ports Windows
+ * listens on count too: with NAT localhost forwarding they look free from
+ * inside the distro, but Windows could not reach a WSL server there.
+ */
+async function portProblem(
+  context: Context,
+  port: number,
+  hostPorts: ReadonlySet<number> | undefined,
+): Promise<string | undefined> {
+  if (await isHealthy(context, port)) {
+    return `something already answers on http://127.0.0.1:${port} (for example a pnpm dev:web server)`
+  }
+  if (!(await context.portFree(port))) return `another program is using port ${port}`
+  if (hostPorts?.has(port)) {
+    return `Windows already uses port ${port}, so it could not reach a server there`
+  }
+  return undefined
+}
+
+/** The first port from {@link DEFAULT_PORT} nothing is using. */
+async function pickPort(
+  context: Context,
+  hostPorts: ReadonlySet<number> | undefined,
+): Promise<number> {
+  for (let port = DEFAULT_PORT; port < DEFAULT_PORT + PORT_SEARCH_SPAN; port++) {
+    if ((await portProblem(context, port, hostPorts)) === undefined) return port
+  }
+  throw new ServiceError(
+    `Ports ${DEFAULT_PORT}-${DEFAULT_PORT + PORT_SEARCH_SPAN - 1} are all in use. Pick one with --port.`,
+  )
+}
+
 async function install(context: Context, backend: ServiceBackend, flags: string[]): Promise<void> {
   let config: ServerConfig
   try {
@@ -100,6 +149,7 @@ async function install(context: Context, backend: ServiceBackend, flags: string[
   } catch (error) {
     throw new ServiceError(error instanceof Error ? error.message : String(error))
   }
+  const explicitPort = portGiven(flags, context.env)
   if (config.port === 0) {
     throw new ServiceError('The service needs a fixed --port; port 0 cannot be discovered later.')
   }
@@ -116,11 +166,26 @@ async function install(context: Context, backend: ServiceBackend, flags: string[
     context.stdout(`Replacing the existing ${backend.kind}.`)
     await backend.stop()
   }
+  const hostPorts = await backend.hostPorts?.()
+  if (!explicitPort) {
+    // A reinstall keeps its port: devices and the tunnel are set up for it.
+    const port = existing?.port ?? (await pickPort(context, hostPorts))
+    if (port !== DEFAULT_PORT && existing?.port === undefined) {
+      context.stdout(`Port ${DEFAULT_PORT} is taken; using ${port}.`)
+    }
+    config = { ...config, port }
+  }
   // Checked after the old server is gone, so a replacement cannot mistake an
-  // unrelated server on the target port for its own successful start.
-  if (await isHealthy(context, config.port)) {
+  // unrelated server on the target port for its own successful start. The
+  // old service's own Windows-side forwarding may linger on its port.
+  const problem = await portProblem(
+    context,
+    config.port,
+    config.port === existing?.port ? undefined : hostPorts,
+  )
+  if (problem !== undefined) {
     throw new ServiceError(
-      `Something already answers on http://127.0.0.1:${config.port}. Stop it (for example a pnpm dev:web server) or pick another --port.`,
+      `Cannot use port ${config.port}: ${problem}. Stop it or pick another --port.`,
     )
   }
 
@@ -128,8 +193,8 @@ async function install(context: Context, backend: ServiceBackend, flags: string[
   const tunnelNotes: string[] = []
   if (config.tunnel) config = await prepareTunnel(context, config, tunnelNotes)
   const notes = [...tunnelNotes, ...(await backend.register(config, logFile))]
-  context.stdout(`  Node:      ${context.execPath}`)
-  context.stdout(`  Entry:     ${context.entry}`)
+  context.stdout(`  Program:   ${serverProgram(context).join(' ')}`)
+  context.stdout(`  Port:      ${config.port}`)
   context.stdout(`  Data dir:  ${config.dataDir}`)
   context.stdout(`  Log file:  ${logFile}`)
   for (const note of notes) context.stdout(note)
@@ -251,7 +316,7 @@ async function update(context: Context, backend: ServiceBackend): Promise<void> 
   // already have migrated SQLite. Keep the registration and data for a retry.
   await startAndWait(context, backend, installed.port, installed.logFile)
   context.stdout(
-    `Updated to ${context.entry}. Identity, credentials and SQLite stay in ${installed.dataDir}.`,
+    `Updated to ${serverProgram(context).join(' ')}. Identity, credentials and SQLite stay in ${installed.dataDir}.`,
   )
 }
 

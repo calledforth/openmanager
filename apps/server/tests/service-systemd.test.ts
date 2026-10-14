@@ -17,6 +17,7 @@ import {
   unitFilePath,
   wslKeepsDistroRunning,
 } from '../src/service/systemd-unit.js'
+import { parseWindowsListeningPorts } from '../src/service/systemd.js'
 
 const HOME = '/home/ada'
 const NODE = '/home/ada/.nvm/versions/node/v24.21.0/bin/node'
@@ -158,6 +159,10 @@ interface FakeOptions {
   noInterop?: boolean
   /** `loginctl` is not installed. */
   noLoginctl?: boolean
+  /** Ports another program in this distro already binds. */
+  busyPorts?: number[]
+  /** `netstat.exe -ano -p TCP` output from Windows; interop fails when undefined. */
+  windowsNetstat?: string
 }
 
 /** A scripted systemd user manager, logind and WSL interop. */
@@ -228,6 +233,10 @@ function fakeSystemd(options: FakeOptions = {}) {
       }
       return ok(`${linger ? 'yes' : 'no'}\n`)
     }
+    if (file === 'netstat.exe') {
+      if (options.windowsNetstat === undefined) throw new Error('spawn netstat.exe ENOENT')
+      return ok(options.windowsNetstat)
+    }
     if (file === 'cmd.exe') return ok('C:\\Users\\Ada\r\n')
     if (file === 'wslpath') return ok('/mnt/c/Users/Ada\n')
     throw new Error(`unexpected command ${file} ${args.join(' ')}`)
@@ -257,6 +266,7 @@ function fakeSystemd(options: FakeOptions = {}) {
       let clock = 0
       return () => (clock += 500)
     })(),
+    portFree: async (port) => !(options.busyPorts ?? []).includes(port),
     stdout: (line) => out.push(line),
     stderr: (line) => err.push(line),
   }
@@ -627,4 +637,62 @@ describe('systemd maintenance', () => {
       expect(system.systemctlVerbs()).not.toContain(`disable ${UNIT_NAME}`)
     },
   )
+})
+
+const LINUX_EXE = '/home/ada/.local/share/openmanager/versions/0.2.0/openmanager'
+
+const NETSTAT = [
+  '',
+  'Active Connections',
+  '',
+  '  Proto  Local Address          Foreign Address        State           PID',
+  '  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1180',
+  '  TCP    127.0.0.1:43120        0.0.0.0:0              ABHÖREN         9001',
+  '  TCP    127.0.0.1:52000        127.0.0.1:43120        ESTABLISHED     9002',
+  '  TCP    [::]:43121             [::]:0                 LISTENING       9003',
+  '',
+].join('\r\n')
+
+describe('released executable and ports on systemd', () => {
+  it('a released executable is the whole ExecStart program', async () => {
+    const system = fakeSystemd({ linger: true })
+    system.deps.entry = undefined
+    system.deps.execPath = LINUX_EXE
+    expect(await runServiceCommand(['install', '--port', '43125'], system.deps)).toBe(0)
+    const execStart = readUnitExecStart(system.files.get(UNIT_PATH)!)!
+    expect(execStart.slice(0, 3)).toEqual([LINUX_EXE, '--port', '43125'])
+  })
+
+  it('update swaps Node + main.js for the released executable and keeps the flags', async () => {
+    const system = fakeSystemd({ unit: INSTALLED_UNIT, linger: true, healthy: () => true })
+    system.deps.entry = undefined
+    system.deps.execPath = LINUX_EXE
+    expect(await runServiceCommand(['update'], system.deps)).toBe(0)
+    const before = readUnitExecStart(INSTALLED_UNIT)!
+    expect(readUnitExecStart(system.files.get(UNIT_PATH)!)).toEqual([LINUX_EXE, ...before.slice(2)])
+  })
+
+  it('reads netstat listening rows in any language', () => {
+    expect([...parseWindowsListeningPorts(NETSTAT)].sort()).toEqual([135, 43120, 43121])
+  })
+
+  it('on WSL, skips ports Windows listens on, since forwarding hides them from the distro', async () => {
+    const system = fakeSystemd({ wsl: true, linger: true, windowsNetstat: NETSTAT })
+    expect(await runServiceCommand(['install'], system.deps)).toBe(0)
+    expect(system.out).toContain('Port 43120 is taken; using 43122.')
+    const execStart = readUnitExecStart(system.files.get(UNIT_PATH)!)!
+    expect(execStart[execStart.indexOf('--port') + 1]).toBe('43122')
+  })
+
+  it('on WSL, refuses an explicit port Windows already uses', async () => {
+    const system = fakeSystemd({ wsl: true, linger: true, windowsNetstat: NETSTAT })
+    expect(await runServiceCommand(['install', '--port', '43120'], system.deps)).toBe(1)
+    expect(system.err[0]).toContain('Windows already uses port 43120')
+  })
+
+  it('without interop, WSL falls back to checking its own ports', async () => {
+    const system = fakeSystemd({ wsl: true, linger: true, busyPorts: [43120] })
+    expect(await runServiceCommand(['install'], system.deps)).toBe(0)
+    expect(system.out).toContain('Port 43120 is taken; using 43121.')
+  })
 })

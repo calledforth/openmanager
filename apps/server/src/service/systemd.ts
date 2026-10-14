@@ -1,13 +1,14 @@
 import { posix } from 'node:path'
 import type { ServerConfig } from '../config.ts'
 import {
+  serverProgram,
   ServiceError,
   trimOutput,
   type Context,
   type RunResult,
   type ServiceBackend,
 } from './context.ts'
-import { describeArguments, serverArguments } from './server-arguments.ts'
+import { describeArguments, serverArguments, splitProgram } from './server-arguments.ts'
 import {
   buildUnitFile,
   parseSystemctlShow,
@@ -84,6 +85,23 @@ async function isWsl(context: Context): Promise<boolean> {
   if (context.env.WSL_DISTRO_NAME) return true
   const release = await context.readFile('/proc/sys/kernel/osrelease')
   return release !== undefined && /microsoft/i.test(release)
+}
+
+/**
+ * TCP ports with a listening socket in `netstat -ano -p TCP` output from
+ * Windows. A listening row has a wildcard foreign address (`0.0.0.0:0` or
+ * `[::]:0`); the state column is not used because Windows translates it.
+ */
+export function parseWindowsListeningPorts(netstat: string): Set<number> {
+  const ports = new Set<number>()
+  for (const line of netstat.split(/\r?\n/)) {
+    const [protocol, local, foreign] = line.trim().split(/\s+/)
+    if (protocol?.toUpperCase() !== 'TCP' || !local || !foreign) continue
+    if (!/^(?:0\.0\.0\.0|\[::\]):0$/.test(foreign)) continue
+    const port = Number(/:(\d+)$/.exec(local)?.[1])
+    if (Number.isInteger(port) && port > 0) ports.add(port)
+  }
+  return ports
 }
 
 async function loginctl(context: Context, args: readonly string[]): Promise<RunResult> {
@@ -205,6 +223,19 @@ export function createSystemdBackend(context: Context): ServiceBackend {
       }
     },
 
+    async hostPorts() {
+      if (!(await isWsl(context))) return undefined
+      try {
+        const result = await context.run('netstat.exe', ['-ano', '-p', 'TCP'], {
+          timeoutMs: INTEROP_TIMEOUT_MS,
+        })
+        return result.code === 0 ? parseWindowsListeningPorts(result.stdout) : undefined
+      } catch {
+        // No interop (turned off in wsl.conf): nothing more can be checked.
+        return undefined
+      }
+    },
+
     async running() {
       // is-active always prints a state; no output means systemd was not reached.
       const state = (await systemctl(context, ['is-active', UNIT_NAME])).stdout.trim()
@@ -214,20 +245,20 @@ export function createSystemdBackend(context: Context): ServiceBackend {
     async read() {
       const text = await context.readFile(unitPath)
       if (text === undefined) return undefined
-      return describeArguments((readUnitExecStart(text) ?? []).slice(2))
+      const { program, flags } = splitProgram(readUnitExecStart(text) ?? [])
+      return { ...describeArguments(flags), program }
     },
 
     async register(config: ServerConfig, logFile: string) {
-      const lineBreak = [context.execPath, context.entry, config.dataDir, logFile].find((value) =>
-        /[\r\n]/.test(value),
-      )
+      const program = serverProgram(context)
+      const lineBreak = [...program, config.dataDir, logFile].find((value) => /[\r\n]/.test(value))
       if (lineBreak !== undefined) {
         throw new ServiceError(
           `A unit file cannot hold a path with a line break: ${JSON.stringify(lineBreak)}.`,
         )
       }
       const unit = buildUnitFile({
-        execStart: [context.execPath, context.entry, ...serverArguments(config, logFile)],
+        execStart: [...program, ...serverArguments(config, logFile)],
         workingDirectory: config.dataDir,
         path: servicePath(context.env.PATH, context.execPath),
       })
@@ -266,10 +297,11 @@ export function createSystemdBackend(context: Context): ServiceBackend {
     async prepareUpdate() {
       const text = await context.readFile(unitPath)
       const args = text === undefined ? undefined : readUnitExecStart(text)
+      const { program, flags } = splitProgram(args ?? [])
       if (
         !text ||
         !args ||
-        args.length < 2 ||
+        program.length === 0 ||
         (text.match(/^ExecStart=/gm)?.length ?? 0) !== 1 ||
         /^ExecStart=.*\\[ \t]*\r?$/m.test(text)
       ) {
@@ -277,9 +309,7 @@ export function createSystemdBackend(context: Context): ServiceBackend {
           'Cannot update this unit: expected one single-line server ExecStart. Reinstall it first.',
         )
       }
-      const command = [context.execPath, context.entry, ...args.slice(2)]
-        .map(quoteSystemdArgument)
-        .join(' ')
+      const command = [...serverProgram(context), ...flags].map(quoteSystemdArgument).join(' ')
       const updated = text.replace(/^ExecStart=.*$/m, () => `ExecStart=${command}`)
       return async () => {
         await context.writeFile(unitPath, updated)
