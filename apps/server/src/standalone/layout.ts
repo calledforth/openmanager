@@ -96,18 +96,47 @@ export function isVersion(value: string): boolean {
 export const CURRENT_FILE = 'current'
 
 /**
- * Text of the Windows launcher. It reads the version from `<root>\current`
- * instead of naming it, so its text never changes: cmd.exe reads a batch file
- * by byte offset while running it, and rewriting the launcher an `update` is
- * running from would make cmd continue mid-line in the new text. UTF-8
- * without a BOM, since the path may hold non-ASCII profile characters.
+ * How the Windows launcher names the install folder. cmd.exe decodes a batch
+ * file in the console's OEM code page, so a literal non-ASCII path (a profile
+ * such as `C:\Users\José`) would break; variables it expands itself do not.
+ * So: relative to the launcher when it sits in `<root>\bin`, else through
+ * `%LOCALAPPDATA%` or `%USERPROFILE%` when the folder is under one, else as is.
  */
-export function windowsLauncher(root: string): string {
+export function launcherRootExpression(
+  root: string,
+  binDir: string,
+  env: NodeJS.ProcessEnv,
+): string {
+  const normalize = (value: string) => win32.normalize(value).replace(/\\+$/, '').toLowerCase()
+  // A literal `%` in a batch file must be doubled, or cmd expands what follows.
+  const literal = (value: string) => value.replaceAll('%', '%%')
+  if (normalize(binDir) === normalize(win32.join(root, 'bin'))) return '%~dp0..'
+  for (const name of ['LOCALAPPDATA', 'USERPROFILE'] as const) {
+    const base = env[name]
+    if (!base) continue
+    const prefix = normalize(base)
+    const target = normalize(root)
+    if (target === prefix || target.startsWith(`${prefix}\\`)) {
+      const rest = win32.normalize(root).slice(win32.normalize(base).replace(/\\+$/, '').length)
+      return `%${name}%${literal(rest)}`
+    }
+  }
+  return literal(root)
+}
+
+/**
+ * Text of the Windows launcher, given {@link launcherRootExpression}. It reads
+ * the version from `<root>\current` instead of naming it, so its text never
+ * changes: cmd.exe reads a batch file by byte offset while running it, and
+ * rewriting the launcher an `update` is running from would make cmd continue
+ * mid-line in the new text.
+ */
+export function windowsLauncher(rootExpression: string): string {
   return [
     '@echo off',
     'setlocal',
-    `set /p OPENMANAGER_VERSION=<"${root}\\${CURRENT_FILE}"`,
-    `"${root}\\${VERSIONS_DIR}\\%OPENMANAGER_VERSION%\\openmanager.exe" %*`,
+    `set /p OPENMANAGER_VERSION=<"${rootExpression}\\${CURRENT_FILE}"`,
+    `"${rootExpression}\\${VERSIONS_DIR}\\%OPENMANAGER_VERSION%\\openmanager.exe" %*`,
     '',
   ].join('\r\n')
 }

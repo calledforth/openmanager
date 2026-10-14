@@ -4,6 +4,7 @@ import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir, userInfo } from 'node:os'
 import { dirname, join } from 'node:path'
 import { tailLogFile, type LogOptions } from './logs.ts'
+import { quoteWindowsArgument } from './windows-task.ts'
 import type { ServerConfig } from '../config.ts'
 
 /**
@@ -21,6 +22,12 @@ export interface RunResult {
 export interface RunOptions {
   /** Kill the process and report `code: null` after this long. */
   timeoutMs?: number
+  /**
+   * Windows: run with the console code page set to UTF-8. Console tools such
+   * as schtasks.exe otherwise write the legacy code page, and a non-ASCII path
+   * (a profile like `C:\Users\José`) would be read back mangled.
+   */
+  utf8Console?: boolean
 }
 
 export interface ServiceCommandDeps {
@@ -88,7 +95,23 @@ function defaultRun(
   options: RunOptions = {},
 ): Promise<RunResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(file, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+    const child =
+      options.utf8Console && process.platform === 'win32'
+        ? spawn(
+            'cmd.exe',
+            [
+              '/d',
+              '/s',
+              '/c',
+              `"chcp 65001 >nul & ${[file, ...args].map(quoteWindowsArgument).join(' ')}"`,
+            ],
+            {
+              stdio: ['ignore', 'pipe', 'pipe'],
+              windowsHide: true,
+              windowsVerbatimArguments: true,
+            },
+          )
+        : spawn(file, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
     let stdout = ''
     let stderr = ''
     let timedOut = false

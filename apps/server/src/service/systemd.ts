@@ -225,15 +225,16 @@ export function createSystemdBackend(context: Context): ServiceBackend {
 
     async hostPorts() {
       if (!(await isWsl(context))) return undefined
-      try {
-        const result = await context.run('netstat.exe', ['-ano', '-p', 'TCP'], {
-          timeoutMs: INTEROP_TIMEOUT_MS,
-        })
-        return result.code === 0 ? parseWindowsListeningPorts(result.stdout) : 'unknown'
-      } catch {
-        // No interop (off in wsl.conf, or its binfmt entry lost): Windows cannot be asked.
-        return 'unknown'
+      // No `-p`: `-p TCP` lists IPv4 only, and a server on [::1] counts too.
+      // The full path covers appendWindowsPath=false in wsl.conf.
+      for (const netstat of ['netstat.exe', '/mnt/c/Windows/System32/netstat.exe']) {
+        const result = await context
+          .run(netstat, ['-ano'], { timeoutMs: INTEROP_TIMEOUT_MS })
+          .catch(() => undefined)
+        if (result?.code === 0) return parseWindowsListeningPorts(result.stdout)
       }
+      // No interop (off in wsl.conf, or its binfmt entry lost).
+      return 'unknown'
     },
 
     async running() {

@@ -37,7 +37,10 @@ export function releaseBaseUrl(env: NodeJS.ProcessEnv): string {
 }
 
 function parts(version: string): { numbers: number[]; pre: string | undefined } {
-  const [core = '', pre] = version.split('-', 2)
+  // Only the first '-' separates: `1.2.3-rc-2` has prerelease `rc-2`.
+  const dash = version.indexOf('-')
+  const core = dash === -1 ? version : version.slice(0, dash)
+  const pre = dash === -1 ? undefined : version.slice(dash + 1)
   return { numbers: core.split('.').map(Number), pre }
 }
 

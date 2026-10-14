@@ -8,6 +8,7 @@ import {
   readFile,
   rename,
   rm,
+  rmdir,
   stat,
   symlink,
   writeFile,
@@ -28,6 +29,7 @@ import {
   installedCopy,
   isVersion,
   launcherName,
+  launcherRootExpression,
   pathContains,
   versionDirectory,
   windowsLauncher,
@@ -134,22 +136,88 @@ function requireInstall(deps: StandaloneDeps, command: string): InstalledCopy {
       `${deps.execPath} is not inside an OpenManager install (…/versions/<version>/). Reinstall with the install script.`,
     )
   }
+  if (deps.platform === 'win32' && copy.root.includes('%')) {
+    // cmd.exe expands %NAME% in the launcher's own path before running it.
+    throw new CommandError(
+      `The install folder ${copy.root} contains '%', which the openmanager command cannot run from on Windows. Install into a folder without '%'.`,
+    )
+  }
   return copy
 }
 
 interface InstallRecord {
   binDir: string
+  /** The version the launcher ran before, when known. */
+  version?: string
 }
 
+/**
+ * Where the launcher lives (OPENMANAGER_BIN_DIR, else the recorded folder,
+ * else the default) and which version was last activated.
+ */
 async function readRecord(root: string, deps: StandaloneDeps): Promise<InstallRecord> {
   const path = pathFor(deps.platform).join(root, INSTALL_RECORD)
+  let recorded: { binDir?: unknown; version?: unknown } = {}
   try {
-    const parsed = JSON.parse(await readFile(path, 'utf8')) as { binDir?: unknown }
-    if (typeof parsed.binDir === 'string' && parsed.binDir) return { binDir: parsed.binDir }
+    recorded = JSON.parse(await readFile(path, 'utf8')) as typeof recorded
   } catch {
     // Missing or unreadable: fall back to where activate would have put it.
   }
-  return { binDir: defaultBinDir(deps.platform, deps.env, deps.homedir, root) }
+  const binDir =
+    deps.env.OPENMANAGER_BIN_DIR ||
+    (typeof recorded.binDir === 'string' && recorded.binDir
+      ? recorded.binDir
+      : defaultBinDir(deps.platform, deps.env, deps.homedir, root))
+  const version =
+    typeof recorded.version === 'string' && isVersion(recorded.version)
+      ? recorded.version
+      : undefined
+  return { binDir, ...(version ? { version } : {}) }
+}
+
+const LOCK_FILE = '.lock'
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    // EPERM: it exists but belongs to someone else.
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+/**
+ * Run `action` holding `<root>/.lock`, so two updates (or an update and an
+ * install script) cannot prune or swap each other's versions. A lock whose
+ * process is gone is taken over.
+ */
+async function withInstallLock<T>(
+  root: string,
+  deps: StandaloneDeps,
+  action: () => Promise<T>,
+): Promise<T> {
+  const file = pathFor(deps.platform).join(root, LOCK_FILE)
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await writeFile(file, String(process.pid), { flag: 'wx' })
+      break
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || attempt > 0) throw error
+      const holder = Number((await readFile(file, 'utf8').catch(() => '')).trim())
+      if (Number.isInteger(holder) && holder > 0 && processAlive(holder)) {
+        throw new CommandError(
+          `Another openmanager install or update is running (process ${holder}). Let it finish, then try again.`,
+        )
+      }
+      await rm(file, { force: true })
+    }
+  }
+  try {
+    return await action()
+  } finally {
+    await rm(file, { force: true })
+  }
 }
 
 /** Replace `target` with what `write` puts at a temporary path, by rename. */
@@ -177,7 +245,7 @@ async function writeLauncher(binDir: string, copy: InstalledCopy, deps: Standalo
     await replaceAtomically(path.join(copy.root, CURRENT_FILE), (temporary) =>
       writeFile(temporary, copy.version, 'utf8'),
     )
-    const text = windowsLauncher(copy.root)
+    const text = windowsLauncher(launcherRootExpression(copy.root, binDir, deps.env))
     if ((await readFile(launcher, 'utf8').catch(() => undefined)) !== text) {
       await replaceAtomically(launcher, (temporary) => writeFile(temporary, text, 'utf8'))
     }
@@ -188,17 +256,29 @@ async function writeLauncher(binDir: string, copy: InstalledCopy, deps: Standalo
   return launcher
 }
 
-/** Make `copy` the version on PATH and record where the launcher lives. */
-async function activateCopy(copy: InstalledCopy, deps: StandaloneDeps): Promise<string> {
+/**
+ * Make `copy` the version on PATH and record where the launcher lives.
+ * Returns the launcher and the version that was active before.
+ */
+async function activateCopy(
+  copy: InstalledCopy,
+  deps: StandaloneDeps,
+): Promise<{ launcher: string; previous: string | undefined }> {
   const path = pathFor(deps.platform)
-  const { binDir } = await readRecord(copy.root, deps)
+  const { binDir, version: previous } = await readRecord(copy.root, deps)
   const launcher = await writeLauncher(binDir, copy, deps)
   await writeFile(
     path.join(copy.root, INSTALL_RECORD),
     `${JSON.stringify({ binDir, version: copy.version }, null, 2)}\n`,
     'utf8',
   )
-  return launcher
+  return { launcher, previous }
+}
+
+/** The version folder an installed service runs from, when it runs a released executable. */
+function serviceVersion(service: ServiceLookup, deps: StandaloneDeps): string | undefined {
+  if (service.state !== 'installed' || service.program.length !== 1) return undefined
+  return installedCopy(service.program[0]!, deps.platform)?.version
 }
 
 /** `openmanager activate`: called by the install scripts on the version they unpacked. */
@@ -209,11 +289,27 @@ export async function runActivate(
   try {
     if (args.length > 0) throw new CommandError('"openmanager activate" takes no arguments.')
     const copy = requireInstall(deps, 'activate')
-    const launcher = await activateCopy(copy, deps)
+    return await withInstallLock(copy.root, deps, () => activate(copy, deps))
+  } catch (error) {
+    return fail(error, deps)
+  }
+}
+
+async function activate(copy: InstalledCopy, deps: StandaloneDeps): Promise<number> {
+  try {
+    const { launcher, previous } = await activateCopy(copy, deps)
     const binDir = pathFor(deps.platform).dirname(launcher)
     deps.stdout(`OpenManager ${copy.version} is installed: ${launcher}`)
-    const moved = await moveServiceTo(deps.execPath, deps)
+    const service = await lookUpService(deps.execPath, deps)
+    const moved = await moveServiceTo(deps.execPath, service, deps)
     if (moved !== 0) return moved
+    // Like update: keep this version and the one before it, for a rollback.
+    if (service.state !== 'unknown') {
+      const keep = [copy.version, previous, serviceVersion(service, deps)].filter(
+        (version): version is string => version !== undefined,
+      )
+      await pruneVersions(copy, keep, deps)
+    }
     if (!pathContains(deps.env.PATH, binDir, deps.platform)) {
       deps.stdout(
         deps.platform === 'win32'
@@ -339,25 +435,25 @@ async function pruneVersions(copy: InstalledCopy, keep: readonly string[], deps:
   }
 }
 
-/**
- * The installed background service as `executable` sees it: `undefined` when
- * there is none, or when the service manager could not be asked at all (a
- * WSL distro without systemd, say), which leaves nothing to move or remove.
- */
-async function installedService(
-  executable: string,
-  deps: StandaloneDeps,
-): Promise<{ program: string[] } | undefined> {
+type ServiceLookup =
+  | { state: 'none' }
+  | { state: 'installed'; program: string[] }
+  /** The service manager could not be asked (Task Scheduler down, no systemd). */
+  | { state: 'unknown'; reason: string }
+
+/** The installed background service as `executable` sees it. */
+async function lookUpService(executable: string, deps: StandaloneDeps): Promise<ServiceLookup> {
   const result = await deps.run(executable, ['service', 'status', '--json'])
   try {
     const status = JSON.parse(result.stdout) as { installed?: unknown; program?: unknown }
-    if (status.installed !== true) return undefined
+    if (status.installed !== true) return { state: 'none' }
     const program = Array.isArray(status.program)
       ? status.program.filter((part): part is string => typeof part === 'string')
       : []
-    return { program }
+    return { state: 'installed', program }
   } catch {
-    return undefined
+    const reason = `${result.stderr}${result.stdout}`.trim() || `exit ${result.code}`
+    return { state: 'unknown', reason }
   }
 }
 
@@ -369,9 +465,18 @@ function samePath(a: string | undefined, b: string, platform: NodeJS.Platform): 
  * Hand an installed service over to `executable` (CAL-95's `service update`)
  * unless it already runs it. Returns the exit code.
  */
-async function moveServiceTo(executable: string, deps: StandaloneDeps): Promise<number> {
-  const service = await installedService(executable, deps)
-  if (!service) return 0
+async function moveServiceTo(
+  executable: string,
+  service: ServiceLookup,
+  deps: StandaloneDeps,
+): Promise<number> {
+  if (service.state === 'unknown') {
+    deps.stderr(
+      `Could not check for a background service, so none was moved to this version (${service.reason}). Run "openmanager service update" once that works.`,
+    )
+    return 0
+  }
+  if (service.state === 'none') return 0
   if (service.program.length === 1 && samePath(service.program[0], executable, deps.platform)) {
     return 0
   }
@@ -397,15 +502,28 @@ export async function runUpdate(
     }
     const copy = requireInstall(deps, 'update')
     const target = args[0] ?? (await fetchNewestRelease(deps.fetch, deps.env))
+    return await withInstallLock(copy.root, deps, () => update(copy, target, args[0], deps))
+  } catch (error) {
+    return fail(error, deps)
+  }
+}
+
+async function update(
+  copy: InstalledCopy,
+  target: string,
+  requested: string | undefined,
+  deps: StandaloneDeps,
+): Promise<number> {
+  try {
     if (
-      (args[0] === undefined && compareVersions(target, copy.version) <= 0) ||
+      (requested === undefined && compareVersions(target, copy.version) <= 0) ||
       target === copy.version
     ) {
       deps.stdout(
-        `OpenManager ${copy.version} is already the ${args[0] ? 'installed' : 'newest'} version.`,
+        `OpenManager ${copy.version} is already the ${requested ? 'installed' : 'newest'} version.`,
       )
       // An install script may have unpacked it without moving the service.
-      return await moveServiceTo(deps.execPath, deps)
+      return await moveServiceTo(deps.execPath, await lookUpService(deps.execPath, deps), deps)
     }
     const executable = await installVersion(copy.root, target, deps)
     await activateCopy(
@@ -413,9 +531,10 @@ export async function runUpdate(
       deps,
     )
     deps.stdout(`OpenManager ${target} is installed; "openmanager" now runs it.`)
-    const moved = await moveServiceTo(executable, deps)
-    // Both versions stay when the handoff failed.
-    if (moved !== 0) return moved
+    const service = await lookUpService(executable, deps)
+    const moved = await moveServiceTo(executable, service, deps)
+    // Both versions stay when the handoff failed or could not be checked.
+    if (moved !== 0 || service.state === 'unknown') return moved
     // Keep the version moved from, for a manual rollback.
     await pruneVersions(copy, [target, copy.version], deps)
     return 0
@@ -438,16 +557,29 @@ const USER_PATH_SCRIPT = (dir: string) =>
     "[Environment]::SetEnvironmentVariable('OPENMANAGER_PATH_REFRESH', $null, 'User')",
   ].join('\n')
 
-/** `openmanager uninstall`: the service, the launcher and every version; never the data. */
+/**
+ * `openmanager uninstall [--force]`: the service, the launcher and every
+ * version. Only what the install layout owns is deleted, so a data directory
+ * someone placed inside the install folder survives.
+ */
 export async function runUninstall(
   args: readonly string[],
   deps: StandaloneDeps = defaultDeps(),
 ): Promise<number> {
   try {
-    if (args.length > 0) throw new CommandError('"openmanager uninstall" takes no arguments.')
+    const force = args.length === 1 && args[0] === '--force'
+    if (args.length > 0 && !force) {
+      throw new CommandError('Usage: openmanager uninstall [--force]')
+    }
     const copy = requireInstall(deps, 'uninstall')
     const path = pathFor(deps.platform)
-    if (await installedService(deps.execPath, deps)) {
+    const service = await lookUpService(deps.execPath, deps)
+    if (service.state === 'unknown' && !force) {
+      throw new CommandError(
+        `Could not check for an installed background service (${service.reason}), so nothing was removed: a service left pointing at a deleted program fails at every start. Fix that, or run "openmanager uninstall --force" to remove the program anyway.`,
+      )
+    }
+    if (service.state === 'installed') {
       const serviceCode = await deps.service(['uninstall'])
       if (serviceCode !== 0) {
         deps.stderr(
@@ -458,6 +590,8 @@ export async function runUninstall(
     }
     const { binDir } = await readRecord(copy.root, deps)
     const launcher = path.join(binDir, launcherName(deps.platform))
+    const binInRoot = path.dirname(launcher) === path.join(copy.root, 'bin')
+    const owned = [INSTALL_RECORD, CURRENT_FILE].map((name) => path.join(copy.root, name))
     if (deps.platform === 'win32') {
       // install.ps1 put the folder on the user PATH; take exactly that entry off.
       const result = await deps.run('powershell.exe', [
@@ -471,17 +605,45 @@ export async function runUninstall(
       if (result.code !== 0) deps.stderr(`Remove ${binDir} from your user PATH yourself.`)
       // This executable runs from the install folder, which Windows will not
       // delete until it exits, and cmd.exe may still be reading the launcher
-      // that started it. A detached helper removes both a moment later.
-      const script = `ping -n 3 127.0.0.1 >nul & del /f /q "${launcher}" & rmdir /s /q "${copy.root}"`
-      spawn('cmd.exe', ['/d', '/c', script], {
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-        windowsVerbatimArguments: true,
-      }).unref()
+      // that started it. A detached helper removes them a moment later,
+      // retrying the versions folder while the exiting process lets go.
+      // PowerShell with -LiteralPath: no path character (%, &, ^) is special.
+      const quote = (value: string) => `'${value.replaceAll("'", "''")}'`
+      const removeIfEmpty = (folder: string) =>
+        `if (-not (Get-ChildItem -LiteralPath ${quote(folder)} -Force -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath ${quote(folder)} -Force -ErrorAction SilentlyContinue }`
+      const script = [
+        'Start-Sleep -Seconds 2',
+        `$versions = ${quote(copy.versionsDir)}`,
+        'for ($i = 0; $i -lt 15 -and (Test-Path -LiteralPath $versions); $i++) {',
+        '  Remove-Item -LiteralPath $versions -Recurse -Force -ErrorAction SilentlyContinue',
+        '  if (Test-Path -LiteralPath $versions) { Start-Sleep -Seconds 1 }',
+        '}',
+        ...[launcher, ...owned].map(
+          (file) => `Remove-Item -LiteralPath ${quote(file)} -Force -ErrorAction SilentlyContinue`,
+        ),
+        ...(binInRoot ? [removeIfEmpty(path.join(copy.root, 'bin'))] : []),
+        removeIfEmpty(copy.root),
+      ].join('\n')
+      // A detached powershell.exe gets no console and never starts; started
+      // from a detached cmd.exe it does. The base64 script has no character
+      // cmd would expand.
+      const encoded = Buffer.from(script, 'utf16le').toString('base64')
+      spawn(
+        'cmd.exe',
+        [
+          '/d',
+          '/c',
+          `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}`,
+        ],
+        { detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true },
+      ).unref()
     } else {
       await rm(launcher, { force: true })
-      await rm(copy.root, { recursive: true, force: true })
+      await rm(copy.versionsDir, { recursive: true, force: true })
+      for (const file of owned) await rm(file, { force: true })
+      if (binInRoot) await rmdir(path.join(copy.root, 'bin')).catch(() => {})
+      // Only when empty: anything else in the folder is not ours to delete.
+      await rmdir(copy.root).catch(() => {})
     }
     deps.stdout(`Removed OpenManager from ${copy.root}.`)
     deps.stdout(

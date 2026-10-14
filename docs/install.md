@@ -25,7 +25,9 @@ The script downloads the newest release from
 [GitHub Releases](https://github.com/calledforth/openmanager/releases),
 checks it against the release's `SHA256SUMS`, and puts the `openmanager`
 command on your `PATH`. Open a new terminal afterwards so the command is
-found. Running the script again installs the newest version over the old one.
+found. Running the script again installs the newest version and moves an
+installed background service to it, like `openmanager update`; the previous
+version stays on disk, older ones are removed.
 
 | Setting                   | Default                                                       |
 | ------------------------- | ------------------------------------------------------------- |
@@ -99,8 +101,14 @@ openmanager uninstall
 ```
 
 This removes the background service, the `openmanager` command and every
-downloaded version. Your data stays in `~/.openmanager` (or the `--data-dir`
-you chose); delete that folder yourself to remove it too.
+downloaded version. It deletes only files OpenManager put in its install
+folder, never anything else in it. Your data stays in `~/.openmanager` (or the
+`--data-dir` you chose); delete that folder yourself to remove it too.
+
+If the service manager cannot be asked whether a service is installed (for
+example `systemctl --user` is unreachable), `uninstall` stops without removing
+anything, because a service left pointing at a deleted program fails at every
+start. `openmanager uninstall --force` removes the program anyway.
 
 ## Where things are
 

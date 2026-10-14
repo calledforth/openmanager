@@ -5,6 +5,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   readlinkSync,
   rmSync,
@@ -24,6 +25,7 @@ import {
   defaultBinDir,
   defaultInstallRoot,
   installedCopy,
+  launcherRootExpression,
   pathContains,
   windowsLauncher,
 } from '../src/standalone/layout.js'
@@ -97,6 +99,18 @@ describe('install layout', () => {
   })
 })
 
+describe('launcher text', () => {
+  it('names the install folder without literal non-ASCII text or bare percent signs', () => {
+    const env = { LOCALAPPDATA: 'C:\\Users\\José\\AppData\\Local' }
+    const root = 'C:\\Users\\José\\AppData\\Local\\OpenManager'
+    expect(launcherRootExpression(root, `${root}\\bin`, env)).toBe('%~dp0..')
+    expect(launcherRootExpression(root, 'C:\\tools', env)).toBe('%LOCALAPPDATA%\\OpenManager')
+    expect(launcherRootExpression('D:\\100%\\OpenManager', 'C:\\tools', {})).toBe(
+      'D:\\100%%\\OpenManager',
+    )
+  })
+})
+
 describe('releases', () => {
   it('names one archive per supported target', () => {
     expect(releaseTarget('win32', 'x64')).toBe('win32-x64')
@@ -111,6 +125,7 @@ describe('releases', () => {
     expect(compareVersions('0.10.0', '0.9.9')).toBeGreaterThan(0)
     expect(compareVersions('1.0.0-beta.2', '1.0.0')).toBeLessThan(0)
     expect(compareVersions('1.0.0-beta.10', '1.0.0-beta.2')).toBeGreaterThan(0)
+    expect(compareVersions('1.2.3-rc-2', '1.2.3-rc-1')).toBeGreaterThan(0)
     expect(compareVersions('1.2.3', '1.2.3')).toBe(0)
   })
 
@@ -152,6 +167,8 @@ function fakeInstall(options: {
   newest?: string
   /** Exit code of `<new exe> service update`. */
   serviceUpdateCode?: number
+  /** `service status --json` fails before printing JSON (no user bus, say). */
+  statusFails?: boolean
 }) {
   const temp = mkdtempSync(join(tmpdir(), 'om-standalone-'))
   const root = join(temp, 'OpenManager')
@@ -173,6 +190,13 @@ function fakeInstall(options: {
         return { code: 0, stdout: `${readFileSync(file, 'utf8')}\n`, stderr: '' }
       }
       if (args.join(' ') === 'service status --json') {
+        if (options.statusFails) {
+          return {
+            code: 1,
+            stdout: '',
+            stderr: 'systemctl --user could not reach your user service manager',
+          }
+        }
         return options.serviceProgram
           ? {
               code: 0,
@@ -263,10 +287,16 @@ afterEach(() => {
 })
 
 /** The executable the launcher runs now. */
-function launcherTarget(system: { binDir: string; root: string }): string {
+function launcherTarget(system: {
+  binDir: string
+  root: string
+  deps: { env: NodeJS.ProcessEnv }
+}): string {
   const launcher = join(system.binDir, launcherFile)
   if (process.platform === 'win32') {
-    expect(readFileSync(launcher, 'utf8')).toBe(windowsLauncher(system.root))
+    expect(readFileSync(launcher, 'utf8')).toBe(
+      windowsLauncher(launcherRootExpression(system.root, system.binDir, system.deps.env)),
+    )
     const version = readFileSync(join(system.root, 'current'), 'utf8')
     return join(system.root, 'versions', version, exeName)
   }
@@ -373,6 +403,58 @@ describe.skipIf(target === undefined)('standalone commands', () => {
       expect(existsSync(join(system.binDir, launcherFile))).toBe(false)
       expect(existsSync(system.root)).toBe(false)
       expect(existsSync(dataDir)).toBe(true)
+    },
+  )
+
+  it('activate keeps this version and the one before it, and prunes older ones', async () => {
+    const system = fakeInstall({ version: '0.3.0' })
+    cleanups.push(system.temp)
+    for (const old of ['0.1.0', '0.2.0']) mkdirSync(join(system.root, 'versions', old))
+    writeFileSync(
+      join(system.root, 'install.json'),
+      JSON.stringify({ binDir: system.binDir, version: '0.2.0' }),
+    )
+    expect(await runActivate([], system.deps)).toBe(0)
+    expect(readdirSync(join(system.root, 'versions')).sort()).toEqual(['0.2.0', '0.3.0'])
+  })
+
+  it('refuses to run while another install holds the lock, and takes over a stale one', async () => {
+    const system = fakeInstall({})
+    cleanups.push(system.temp)
+    writeFileSync(join(system.root, '.lock'), String(process.pid))
+    expect(await runActivate([], system.deps)).toBe(1)
+    expect(system.err[0]).toContain('Another openmanager install or update is running')
+    writeFileSync(join(system.root, '.lock'), '999999999')
+    expect(await runActivate([], system.deps)).toBe(0)
+    expect(existsSync(join(system.root, '.lock'))).toBe(false)
+  })
+
+  it('uninstall stops when the service cannot be checked, unless forced', async () => {
+    const system = fakeInstall({ statusFails: true })
+    cleanups.push(system.temp)
+    expect(await runUninstall([], system.deps)).toBe(1)
+    expect(system.err[0]).toContain('Could not check for an installed background service')
+    expect(existsSync(system.execPath)).toBe(true)
+    // On Windows a detached helper deletes the folder; keep the test to the guard.
+    if (process.platform === 'win32') return
+    expect(await runUninstall(['--force'], system.deps)).toBe(0)
+    expect(system.serviceCalls).toEqual([])
+    expect(existsSync(system.execPath)).toBe(false)
+  })
+
+  it.skipIf(process.platform === 'win32')(
+    'uninstall deletes only what the layout owns, so a data folder inside it survives',
+    async () => {
+      const system = fakeInstall({})
+      cleanups.push(system.temp)
+      const data = join(system.root, 'data')
+      mkdirSync(data)
+      writeFileSync(join(data, 'identity.json'), '{}')
+      expect(await runActivate([], system.deps)).toBe(0)
+      expect(await runUninstall([], system.deps)).toBe(0)
+      expect(existsSync(join(data, 'identity.json'))).toBe(true)
+      expect(existsSync(join(system.root, 'versions'))).toBe(false)
+      expect(existsSync(join(system.root, 'install.json'))).toBe(false)
     },
   )
 

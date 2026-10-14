@@ -47,7 +47,8 @@ const LAST_RESULT_HINTS: Record<string, string> = {
 }
 
 function schtasks(context: Context, args: readonly string[]): Promise<RunResult> {
-  return context.run('schtasks.exe', args)
+  // Queries return paths, which must come back intact (see RunOptions).
+  return context.run('schtasks.exe', args, { utf8Console: args[0] === '/Query' })
 }
 
 /**

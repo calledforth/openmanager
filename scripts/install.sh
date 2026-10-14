@@ -55,7 +55,8 @@ fi
 command -v tar >/dev/null 2>&1 || fail "needs tar."
 
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT INT TERM
+staging=
+trap 'rm -rf "$tmp" ${staging:+"$staging"}' EXIT INT TERM
 
 version=${OPENMANAGER_VERSION:-}
 if [ -z "$version" ]; then
@@ -90,19 +91,20 @@ else
     fail "checksum mismatch for $archive (expected $expected, got $actual). Nothing was installed."
 
   step "Unpacking..."
-  mkdir -p "$tmp/unpacked" "$root/versions"
-  tar -xzf "$tmp/$archive" -C "$tmp/unpacked"
-  chmod 755 "$tmp/unpacked/openmanager"
-  reported=$("$tmp/unpacked/openmanager" --version) ||
-    fail "the downloaded executable does not run here."
-  [ "$reported" = "$version" ] || fail "the downloaded executable reports '$reported', expected $version."
-  printf '%s' "$version" >"$tmp/unpacked/.install-complete"
-  # Stage beside the target so the final move is a rename on one filesystem.
+  # Unpack and test-run beside the target, not in $TMPDIR (often mounted
+  # noexec), so the final move is also a rename on one filesystem.
   staging="$root/versions/.staging-$$"
   rm -rf "$staging"
-  mv "$tmp/unpacked" "$staging"
+  mkdir -p "$staging"
+  tar -xzf "$tmp/$archive" -C "$staging"
+  chmod 755 "$staging/openmanager"
+  reported=$("$staging/openmanager" --version) ||
+    fail "the downloaded executable does not run here."
+  [ "$reported" = "$version" ] || fail "the downloaded executable reports '$reported', expected $version."
+  printf '%s' "$version" >"$staging/.install-complete"
   rm -rf "$version_dir"
   mv "$staging" "$version_dir"
+  staging=
 fi
 
 # Writes the launcher and moves an installed service to this version.

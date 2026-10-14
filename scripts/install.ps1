@@ -26,6 +26,14 @@
   # Piped into iex, `exit` would close the user's terminal; throwing stops just this script.
   function Fail([string] $message) { throw "OpenManager install: $message" }
 
+  function Download([string] $url, [string] $file, [string] $what) {
+    try {
+      Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri $url -OutFile $file
+    } catch {
+      Fail "could not download $what from $url ($($_.Exception.Message))"
+    }
+  }
+
   switch ($env:PROCESSOR_ARCHITECTURE) {
     'AMD64' { }
     # Windows 11 on Arm runs x64 programs through emulation.
@@ -36,7 +44,11 @@
   $version = $env:OPENMANAGER_VERSION
   if (-not $version) {
     Step 'Finding the newest release...'
-    $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases?per_page=100" -Headers $headers
+    try {
+      $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases?per_page=100" -Headers $headers
+    } catch {
+      Fail "could not ask GitHub for the newest release ($($_.Exception.Message)). Set OPENMANAGER_VERSION to skip the lookup."
+    }
     $newest = $releases |
       Where-Object { $_.tag_name -match '^server-v\d+\.\d+\.\d+$' -and -not $_.draft -and -not $_.prerelease } |
       ForEach-Object { [version] $_.tag_name.Substring(8) } |
@@ -50,6 +62,8 @@
   $root = if ($env:OPENMANAGER_INSTALL_DIR) { $env:OPENMANAGER_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'OpenManager' }
   $binDir = if ($env:OPENMANAGER_BIN_DIR) { $env:OPENMANAGER_BIN_DIR } else { Join-Path $root 'bin' }
   $baseUrl = if ($env:OPENMANAGER_RELEASE_BASE_URL) { $env:OPENMANAGER_RELEASE_BASE_URL.TrimEnd('/') } else { "https://github.com/$repo/releases/download" }
+  # cmd.exe expands %NAME% in a .cmd file's own path, so the launcher could not run.
+  if ($root.Contains('%') -or $binDir.Contains('%')) { Fail "the install folder cannot contain '%': $root" }
   $versionsDir = Join-Path $root 'versions'
   $versionDir = Join-Path $versionsDir $version
   $exe = Join-Path $versionDir 'openmanager.exe'
@@ -65,12 +79,12 @@
     try {
       Step "Downloading $archive..."
       $sums = Join-Path $staging 'SHA256SUMS'
-      Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri "$baseUrl/server-v$version/SHA256SUMS" -OutFile $sums
+      Download "$baseUrl/server-v$version/SHA256SUMS" $sums "the checksums of $version"
       $line = Get-Content $sums | Where-Object { $_ -match ('^([0-9a-fA-F]{64})\s+\*?' + [regex]::Escape($archive) + '\s*$') } | Select-Object -First 1
       if (-not $line) { Fail "SHA256SUMS of $version does not list $archive." }
       $expected = $line.Substring(0, 64).ToLowerInvariant()
       $zip = Join-Path $staging $archive
-      Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri "$baseUrl/server-v$version/$archive" -OutFile $zip
+      Download "$baseUrl/server-v$version/$archive" $zip $archive
       $actual = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLowerInvariant()
       if ($actual -ne $expected) { Fail "checksum mismatch for $archive (expected $expected, got $actual). Nothing was installed." }
 
