@@ -137,6 +137,11 @@ type ConnectionValue = {
     report: RouteHealthReport,
     credential?: string,
   ) => void
+  /**
+   * The socket on this route is gone (its client was disposed or replaced).
+   * What it last said about itself no longer describes anything live.
+   */
+  forgetSocket: (environmentId: string, endpoint: string) => void
   /** Ask every saved route that is not in use whether it still answers. */
   checkRoutes: () => void
   retry: () => void
@@ -347,6 +352,12 @@ export function ConnectionProvider({
     socketReportRef.current = report
     setSocketReportState(report)
   }, [])
+  const forgetSocket = useCallback((environmentId: string, endpoint: string) => {
+    const current = socketReportRef.current
+    if (current?.environmentId !== environmentId || current.endpoint !== endpoint) return
+    socketReportRef.current = null
+    setSocketReportState(null)
+  }, [])
   /**
    * Environments that closed their socket because they were shutting down,
    * each kept until one of its routes answers again. A gateway in front of a
@@ -467,8 +478,10 @@ export function ConnectionProvider({
     // new one is out. Without it every retry, and every return from offline,
     // read as "no answer yet" and took down a connection that was working.
     // Never across routes: an answer is only ever about the route it came from.
+    // Never for a connect a person started either: it settles on, and saves
+    // its token under, whoever answers it now, not whoever answered before.
     placeholderData: (previous, previousQuery) =>
-      previousQuery?.queryKey[1] === endpoint ? previous : undefined,
+      !pending && previousQuery?.queryKey[1] === endpoint ? previous : undefined,
     // Returning from offline already asks again (see below).
     refetchOnReconnect: false,
   })
@@ -609,6 +622,8 @@ export function ConnectionProvider({
       return
     }
     if (liveBootstrap.status !== 'ready' && liveBootstrap.status !== 'incompatible_protocol') return
+    // An answer from before the connect says nothing about who has its token.
+    if (pending && !bootstrapIsFresh) return
     const answeredId = liveBootstrap.environmentId
     if (!answeredId) return
     if (pending?.claimedEnvironmentId && pending.claimedEnvironmentId !== answeredId) {
@@ -678,6 +693,7 @@ export function ConnectionProvider({
   }, [
     preview,
     liveBootstrap,
+    bootstrapIsFresh,
     endpoint,
     update,
     pending,
@@ -1165,6 +1181,7 @@ export function ConnectionProvider({
       chooseRoute,
       removeRoute,
       reportRouteHealth,
+      forgetSocket,
       checkRoutes,
       retry,
       changeEnvironment,
@@ -1188,6 +1205,7 @@ export function ConnectionProvider({
       chooseRoute,
       removeRoute,
       reportRouteHealth,
+      forgetSocket,
       checkRoutes,
       retry,
       changeEnvironment,

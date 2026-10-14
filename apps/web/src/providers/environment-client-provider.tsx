@@ -40,6 +40,7 @@ export function WebEnvironmentClientProvider({
     environments,
     retryNonce,
     reportRouteHealth,
+    forgetSocket,
     wrongEnvironment,
     routeVerified,
   } = useConnection()
@@ -139,6 +140,10 @@ export function WebEnvironmentClientProvider({
       publishAuthorizedClient()
       release = () => {
         unsubscribe()
+        // Whatever this socket said about the route stops being true now. Left
+        // on record, a later return to the route would read as connected
+        // before anything had answered there.
+        forgetSocket(environmentId, endpoint)
         next.dispose()
         if (transport.current === next) transport.current = null
         unsubscribeCache()
@@ -152,7 +157,7 @@ export function WebEnvironmentClientProvider({
       cancelled = true
       release?.()
     }
-  }, [createClient, credential, endpoint, environmentId, open, reportRouteHealth])
+  }, [createClient, credential, endpoint, environmentId, forgetSocket, open, reportRouteHealth])
 
   // A manual retry, or the network coming back, should dial now rather than at
   // the end of the current backoff window. connect() on a live client is a

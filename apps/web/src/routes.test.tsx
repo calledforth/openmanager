@@ -572,6 +572,61 @@ describe('web routes', () => {
     expect(screen.queryByRole('button', { name: 'Add route' })).not.toBeInTheDocument()
   })
 
+  it('settles a connect on the answer to it, not on the last answer from that address', async () => {
+    const user = userEvent.setup()
+    let answered = 0
+    seedRegistry([
+      {
+        environmentId: 'env-a',
+        label: 'Lab A',
+        endpoints: ['https://tunnel.example'],
+        credential: 'token-a',
+      },
+    ])
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        // The address answered as A; it has since been handed to B, whose
+        // answer is slow to arrive.
+        const first = answered++ === 0
+        if (!first) await gate
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            protocolVersion: PROTOCOL_VERSION,
+            capabilities: ['connection.heartbeat'],
+            environmentId: first ? 'env-a' : 'env-b',
+            label: first ? 'Lab A' : 'Lab B',
+          }),
+        }
+      }),
+    )
+
+    renderWebApp('/settings')
+    await screen.findByText(/Connected · Lab A/)
+    await user.type(screen.getByLabelText('Environment endpoint'), 'https://tunnel.example')
+    await user.type(screen.getByLabelText('Client token'), 'token-b')
+    await user.click(screen.getByRole('button', { name: 'Add environment' }))
+    await act(async () => {})
+
+    // A's earlier answer says nothing about who has B's token.
+    expect(storedRegistry().environments).toMatchObject([
+      { environmentId: 'env-a', credential: 'token-a' },
+    ])
+    release()
+    await waitFor(() =>
+      expect(storedRegistry().environments).toMatchObject([
+        { environmentId: 'env-a', credential: 'token-a' },
+        { environmentId: 'env-b', credential: 'token-b' },
+      ]),
+    )
+  })
+
   it('keeps a different environment ID at a new address as its own environment', async () => {
     const user = userEvent.setup()
     seedRegistry([
@@ -844,6 +899,50 @@ describe('web routes', () => {
       expect(screen.queryByText("Can't reach Local environment")).not.toBeInTheDocument(),
     )
     expect(sockets.clients()).toEqual([client])
+    expect(sockets.dialled()).toHaveLength(1)
+  })
+
+  it('does not read a route as connected after its socket is gone', async () => {
+    const user = userEvent.setup()
+    let answeredA = 0
+    seedRegistry([
+      {
+        environmentId: 'env-local',
+        endpoints: ['https://a.example', 'https://b.example'],
+        credential: 'client-token',
+      },
+    ])
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        // Route A answers once, then goes down; route B never answers.
+        if (!String(input).startsWith('https://a.example/') || answeredA++ > 0) {
+          throw new Error('no answer')
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            protocolVersion: PROTOCOL_VERSION,
+            capabilities: ['connection.heartbeat'],
+            environmentId: 'env-local',
+            label: 'Local environment',
+          }),
+        }
+      }),
+    )
+    const sockets = trackSockets()
+
+    renderWebApp('/settings', { createEnvironmentClient: sockets.create })
+    await screen.findByText(/Connected · Local environment/)
+    await user.click(await screen.findByRole('button', { name: 'Use https://b.example' }))
+    await waitFor(() => expect(sockets.clients()).toHaveLength(0))
+    await user.click(await screen.findByRole('button', { name: 'Use https://a.example' }))
+
+    // A's old socket said it was connected, but that socket is gone and A no
+    // longer answers: nothing may read as connected, and nothing is dialled.
+    expect((await screen.findAllByText("Can't reach Local environment")).length).toBeGreaterThan(0)
+    expect(screen.queryByText(/Connected · Local environment/)).not.toBeInTheDocument()
     expect(sockets.dialled()).toHaveLength(1)
   })
 
