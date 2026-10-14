@@ -84,6 +84,8 @@ function capture(file: string, args: readonly string[]): Promise<RunResult> {
     const child = spawn(file, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
     let stdout = ''
     let stderr = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
     child.stdout.on('data', (chunk) => (stdout += String(chunk)))
     child.stderr.on('data', (chunk) => (stderr += String(chunk)))
     child.once('error', reject)
@@ -155,7 +157,11 @@ interface InstallRecord {
  * Where the launcher lives (OPENMANAGER_BIN_DIR, else the recorded folder,
  * else the default) and which version was last activated.
  */
-async function readRecord(root: string, deps: StandaloneDeps): Promise<InstallRecord> {
+async function readRecord(
+  root: string,
+  deps: StandaloneDeps,
+  { recordedOnly = false } = {},
+): Promise<InstallRecord> {
   const path = pathFor(deps.platform).join(root, INSTALL_RECORD)
   let recorded: { binDir?: unknown; version?: unknown } = {}
   try {
@@ -166,7 +172,7 @@ async function readRecord(root: string, deps: StandaloneDeps): Promise<InstallRe
   const binDir =
     // Absolute, so a later update from another folder finds the same launcher.
     pathFor(deps.platform).resolve(
-      deps.env.OPENMANAGER_BIN_DIR ||
+      (recordedOnly ? undefined : deps.env.OPENMANAGER_BIN_DIR) ||
         (typeof recorded.binDir === 'string' && recorded.binDir
           ? recorded.binDir
           : defaultBinDir(deps.platform, deps.env, deps.homedir, root)),
@@ -206,11 +212,11 @@ async function withInstallLock<T>(
       await writeFile(file, String(process.pid), { flag: 'wx' })
       break
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || attempt > 0) throw error
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
       const holder = Number((await readFile(file, 'utf8').catch(() => '')).trim())
-      if (Number.isInteger(holder) && holder > 0 && processAlive(holder)) {
+      if (attempt > 0 || (Number.isInteger(holder) && holder > 0 && processAlive(holder))) {
         throw new CommandError(
-          `Another openmanager install or update is running (process ${holder}). Let it finish, then try again.`,
+          `Another openmanager install or update is running${holder > 0 ? ` (process ${holder})` : ''}. Let it finish, then try again. If none is, delete ${file}.`,
         )
       }
       await rm(file, { force: true })
@@ -248,7 +254,14 @@ async function writeLauncher(binDir: string, copy: InstalledCopy, deps: Standalo
     await replaceAtomically(path.join(copy.root, CURRENT_FILE), (temporary) =>
       writeFile(temporary, copy.version, 'utf8'),
     )
-    const text = windowsLauncher(launcherRootExpression(copy.root, binDir, deps.env))
+    const expression = launcherRootExpression(copy.root, binDir, deps.env)
+    if (/[^\x20-\x7e]/.test(expression)) {
+      // cmd.exe would decode the literal path in the OEM code page.
+      throw new CommandError(
+        `The openmanager command cannot be placed in ${binDir} for an install folder with non-ASCII characters (${copy.root}). Leave OPENMANAGER_BIN_DIR unset, or install under %LOCALAPPDATA% or your profile.`,
+      )
+    }
+    const text = windowsLauncher(expression)
     if ((await readFile(launcher, 'utf8').catch(() => undefined)) !== text) {
       await replaceAtomically(launcher, (temporary) => writeFile(temporary, text, 'utf8'))
     }
@@ -609,10 +622,17 @@ export async function runUninstall(
         return serviceCode
       }
     }
-    const { binDir } = await readRecord(copy.root, deps)
+    // Where the launcher was put, not where an environment variable says now.
+    const { binDir } = await readRecord(copy.root, deps, { recordedOnly: true })
     const launcher = path.join(binDir, launcherName(deps.platform))
-    const binInRoot = path.dirname(launcher) === path.join(copy.root, 'bin')
-    const owned = [INSTALL_RECORD, CURRENT_FILE].map((name) => path.join(copy.root, name))
+    const comparable = (value: string) => {
+      const normalized = path.normalize(value).replace(/[\\/]+$/, '')
+      return deps.platform === 'win32' ? normalized.toLowerCase() : normalized
+    }
+    const binInRoot = comparable(binDir) === comparable(path.join(copy.root, 'bin'))
+    const owned = [INSTALL_RECORD, CURRENT_FILE, LOCK_FILE].map((name) =>
+      path.join(copy.root, name),
+    )
     if (deps.platform === 'win32') {
       // install.ps1 put the folder on the user PATH; take exactly that entry off.
       const result = await deps.run('powershell.exe', [
@@ -629,21 +649,26 @@ export async function runUninstall(
       // that started it. A detached helper removes them a moment later,
       // retrying the versions folder while the exiting process lets go.
       // PowerShell with -LiteralPath: no path character (%, &, ^) is special.
+      // Each path appears once, keeping the cmd.exe line (8191 characters
+      // at most) short even for a long install path.
       const quote = (value: string) => `'${value.replaceAll("'", "''")}'`
-      const removeIfEmpty = (folder: string) =>
-        `if (-not (Get-ChildItem -LiteralPath ${quote(folder)} -Force -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath ${quote(folder)} -Force -ErrorAction SilentlyContinue }`
       const script = [
         'Start-Sleep -Seconds 2',
-        `$versions = ${quote(copy.versionsDir)}`,
+        `$root = ${quote(copy.root)}`,
+        `$launcher = ${quote(launcher)}`,
+        "$versions = Join-Path $root 'versions'",
         'for ($i = 0; $i -lt 15 -and (Test-Path -LiteralPath $versions); $i++) {',
         '  Remove-Item -LiteralPath $versions -Recurse -Force -ErrorAction SilentlyContinue',
         '  if (Test-Path -LiteralPath $versions) { Start-Sleep -Seconds 1 }',
         '}',
-        ...[launcher, ...owned].map(
-          (file) => `Remove-Item -LiteralPath ${quote(file)} -Force -ErrorAction SilentlyContinue`,
-        ),
-        ...(binInRoot ? [removeIfEmpty(path.join(copy.root, 'bin'))] : []),
-        removeIfEmpty(copy.root),
+        `foreach ($file in @($launcher, ${[INSTALL_RECORD, CURRENT_FILE, LOCK_FILE].map((name) => `(Join-Path $root ${quote(name)})`).join(', ')})) {`,
+        '  Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue',
+        '}',
+        `foreach ($folder in @(${binInRoot ? "(Join-Path $root 'bin'), " : ''}$root)) {`,
+        '  if (-not (Get-ChildItem -LiteralPath $folder -Force -ErrorAction SilentlyContinue)) {',
+        '    Remove-Item -LiteralPath $folder -Force -ErrorAction SilentlyContinue',
+        '  }',
+        '}',
       ].join('\n')
       // A detached powershell.exe gets no console and never starts; started
       // from a detached cmd.exe it does. The base64 script has no character

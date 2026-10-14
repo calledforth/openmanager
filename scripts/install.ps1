@@ -67,8 +67,8 @@
   $root = if ($env:OPENMANAGER_INSTALL_DIR) { $env:OPENMANAGER_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'OpenManager' }
   $binDir = if ($env:OPENMANAGER_BIN_DIR) { $env:OPENMANAGER_BIN_DIR } else { Join-Path $root 'bin' }
   # Absolute paths: PATH and the launcher must not depend on this shell's folder.
-  $root = [IO.Path]::GetFullPath($root)
-  $binDir = [IO.Path]::GetFullPath($binDir)
+  $root = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($root)
+  $binDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($binDir)
   $baseUrl = if ($env:OPENMANAGER_RELEASE_BASE_URL) { $env:OPENMANAGER_RELEASE_BASE_URL.TrimEnd('/') } else { "https://github.com/$repo/releases/download" }
   # cmd.exe expands %NAME% in a .cmd file's own path, so the launcher could not run.
   if ($root.Contains('%') -or $binDir.Contains('%')) { Fail "the install folder cannot contain '%': $root" }

@@ -71,7 +71,7 @@ if [ -z "$version" ]; then
       fail "could not ask GitHub for the newest release. Set OPENMANAGER_VERSION to skip the lookup."
     version=$(grep -o '"tag_name": *"server-v[0-9][0-9.]*"' "$tmp/releases.json" |
       sed 's/.*"server-v\([0-9.]*\)"/\1/' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
-    [ "$(grep -c '"tag_name"' "$tmp/releases.json")" -lt 100 ] && break
+    [ "$(grep -o '"tag_name"' "$tmp/releases.json" | wc -l)" -lt 100 ] && break
     page=$((page + 1))
   done
   [ -n "$version" ] || fail "GitHub lists no published OpenManager server release yet."

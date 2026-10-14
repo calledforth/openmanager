@@ -122,6 +122,10 @@ function defaultRun(
             timedOut = true
             child.kill('SIGKILL')
           }, options.timeoutMs)
+    // Whole characters only: a UTF-8 sequence split across chunks must not
+    // turn into U+FFFD inside a path that is written back.
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
     child.stdout.on('data', (chunk) => {
       stdout += String(chunk)
     })
