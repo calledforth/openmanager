@@ -140,10 +140,12 @@ describe('theme families', () => {
     expect(localStorage.getItem('openmanager-theme')).toBe('lovable')
   })
 
-  it('pins a scheme with setTheme, keeping system mode when the system already shows it', () => {
+  it('pins a scheme and its mode with setTheme, so the system no longer moves it', () => {
     mount()
     act(() => api.setTheme('black'))
-    expect(api.mode).toBe('system')
+    expect(api.mode).toBe('dark')
+    expect(dataTheme()).toBe('black')
+    act(() => setSystemLight(true))
     expect(dataTheme()).toBe('black')
     act(() => api.setTheme('neutral-light'))
     expect(api.mode).toBe('light')
@@ -162,5 +164,11 @@ describe('theme families', () => {
       JSON.stringify({ mode: 'sepia', family: 'nope', picks: { lovable: { dark: 'light' } } }),
     )
     expect(readStoredAppearance()).toEqual({ mode: 'system', family: 'default', picks: {} })
+  })
+
+  it('falls back to the single saved scheme when the appearance is unreadable', () => {
+    localStorage.setItem('openmanager-appearance', '{not json')
+    localStorage.setItem('openmanager-theme', 'carbon')
+    expect(readStoredAppearance()).toMatchObject({ mode: 'dark', family: 'carbon' })
   })
 })

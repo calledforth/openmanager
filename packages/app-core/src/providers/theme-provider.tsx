@@ -114,14 +114,19 @@ function appearanceFromTheme(theme: ThemeMode): Appearance {
 export function readStoredAppearance(): Appearance {
   try {
     const raw = localStorage.getItem(APPEARANCE_STORAGE_KEY)
-    if (raw) {
-      const parsed = JSON.parse(raw) as Record<string, unknown>
+    const parsed: unknown = raw ? JSON.parse(raw) : null
+    if (parsed && typeof parsed === 'object') {
+      const saved = parsed as Record<string, unknown>
       return {
-        mode: isAppearanceMode(parsed.mode) ? parsed.mode : DEFAULT_APPEARANCE.mode,
-        family: isThemeFamilyId(parsed.family) ? parsed.family : DEFAULT_APPEARANCE.family,
-        picks: readPicks(parsed.picks),
+        mode: isAppearanceMode(saved.mode) ? saved.mode : DEFAULT_APPEARANCE.mode,
+        family: isThemeFamilyId(saved.family) ? saved.family : DEFAULT_APPEARANCE.family,
+        picks: readPicks(saved.picks),
       }
     }
+  } catch {
+    /* unreadable: fall back to the single saved scheme */
+  }
+  try {
     const legacy = localStorage.getItem(THEME_STORAGE_KEY)
     if (legacy && isThemeMode(legacy)) return appearanceFromTheme(legacy)
   } catch {
@@ -196,9 +201,11 @@ interface ThemeValue {
   setFamily: (family: ThemeFamilyId) => void
   /** The variant the family shows for each scheme. */
   variants: Record<ColorScheme, ThemeMode>
+  /** The variant last picked in every family, so a family can be previewed as it would show. */
+  picks: ThemePicks
   /** Picks a variant within its family (and moves to that family), keeping the mode. */
   setVariant: (variant: ThemeMode) => void
-  /** Shows exactly this scheme: its family and variant, and its mode unless the system already gives it. */
+  /** Shows exactly this scheme: its family and variant, with the mode pinned to its scheme. */
   setTheme: (mode: ThemeMode) => void
   toggleTheme: () => void
   font: UiFontId
@@ -278,11 +285,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     (variant: ThemeMode) =>
       setAppearance((current) => {
         if (!isThemeMode(variant)) return current
-        const scheme = schemeOfTheme(variant)
-        const mode = current.mode === 'system' && system === scheme ? 'system' : scheme
-        return { ...withPick(current, variant), mode }
+        return { ...withPick(current, variant), mode: schemeOfTheme(variant) }
       }),
-    [system],
+    [],
   )
   const scheme = schemeOfTheme(theme)
   const toggleTheme = useCallback(
@@ -304,6 +309,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       family,
       setFamily,
       variants: { light: lightVariant, dark: darkVariant },
+      picks: appearance.picks,
       setVariant,
       setTheme,
       toggleTheme,
@@ -319,6 +325,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       setFamily,
       lightVariant,
       darkVariant,
+      appearance.picks,
       setVariant,
       setTheme,
       toggleTheme,

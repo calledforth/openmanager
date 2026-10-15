@@ -378,7 +378,7 @@ const APPEARANCE_MODES: ReadonlyArray<{ id: AppearanceMode; label: string }> = [
 ]
 
 function AppearancePanel() {
-  const { mode, setMode, scheme, family, setFamily, variants, setVariant, font, setFont } =
+  const { mode, setMode, scheme, family, setFamily, variants, picks, setVariant, font, setFont } =
     useTheme()
   // A family's own variants, for each scheme in play that offers more than one.
   const variantRows = (['light', 'dark'] as const).filter(
@@ -402,20 +402,18 @@ function AppearancePanel() {
         title="Theme"
         description="Every theme comes in light and dark; the mode decides which you see."
       >
-        <ThemeFamilyPicker
-          value={family.id}
-          scheme={scheme}
-          variants={variants}
-          onChange={setFamily}
-        />
+        <ThemeFamilyPicker value={family.id} scheme={scheme} picks={picks} onChange={setFamily} />
         {variantRows.map((row) => (
           <div key={row} className="mt-4">
             <h3 className="text-[12px] text-muted-foreground">
-              {family.label} {row === 'light' ? 'light' : 'dark'}
+              {row === 'light' ? 'Light variants' : 'Dark variants'}
+              {row !== scheme ? (
+                <span className="text-faint"> · used when this device is {row}</span>
+              ) : null}
             </h3>
             <ChoiceGroup
               name={`theme-variant-${row}`}
-              label={`${family.label} ${row}`}
+              label={`${family.label} ${row} variants`}
               value={variants[row]}
               options={family[row]}
               onChange={setVariant}

@@ -23,6 +23,7 @@ let host: HTMLElement | null = null
 afterEach(() => {
   act(() => root?.unmount())
   host?.remove()
+  globalThis.localStorage?.clear()
 })
 
 function type(input: HTMLInputElement, value: string) {
@@ -106,6 +107,17 @@ describe('CommandPalette', () => {
       'Claude',
       'Carbon',
     ])
+  })
+
+  it("lists the current family's variants, and picking one shows exactly it", () => {
+    const input = openPalette()
+    act(() => type(input, 'variant'))
+    expect(rowLabels()).toEqual(['Dark', 'Black'])
+    act(() => type(input, 'black'))
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(document.documentElement.dataset.theme).toBe('black')
   })
 
   it('switches family and keeps the palette open', () => {

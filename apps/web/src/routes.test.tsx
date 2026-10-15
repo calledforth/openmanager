@@ -277,11 +277,11 @@ describe('web routes', () => {
     await user.click(within(themes).getByRole('radio', { name: /Lovable/ }))
     expect(document.documentElement.dataset.theme).toBe('lovable')
     // Lovable has one dark variant, so there is nothing more to pick in dark.
-    expect(screen.queryByRole('radiogroup', { name: 'Lovable dark' })).toBeNull()
+    expect(screen.queryByRole('radiogroup', { name: 'Lovable dark variants' })).toBeNull()
 
     await user.click(screen.getByRole('radio', { name: 'Light' }))
     expect(document.documentElement.dataset.theme).toBe('lovable-light')
-    const lightVariants = screen.getByRole('radiogroup', { name: 'Lovable light' })
+    const lightVariants = screen.getByRole('radiogroup', { name: 'Lovable light variants' })
     await user.click(within(lightVariants).getByRole('radio', { name: 'Inverse' }))
     expect(document.documentElement.dataset.theme).toBe('lovable-light-inverse')
 

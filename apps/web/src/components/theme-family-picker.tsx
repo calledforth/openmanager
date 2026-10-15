@@ -3,7 +3,7 @@ import {
   familyVariant,
   type ColorScheme,
   type ThemeFamilyId,
-  type ThemeMode,
+  type ThemePicks,
   type ThemeSwatch,
 } from '@openmanager/app-core/providers/theme-provider'
 import { cn } from '../lib/utils'
@@ -11,14 +11,15 @@ import { cn } from '../lib/utils'
 /**
  * A miniature of the app in one scheme: the rail, a sent message, a reply and
  * the composer with its send button. Painted from the variant's swatch, since
- * a preview can't take on a `:root` scheme of its own.
+ * a preview can't take on a `:root` scheme of its own. A faint hairline keeps
+ * a light preview's edge on a light page.
  */
 export function ThemePreview({ swatch, className }: { swatch: ThemeSwatch; className?: string }) {
   return (
     <div
       aria-hidden
       className={cn(
-        'flex aspect-[16/10] overflow-hidden rounded-md shadow-[inset_0_0_0_1px_rgb(var(--overlay)/0.08)] transition-colors duration-200',
+        'flex aspect-[16/10] overflow-hidden rounded-md shadow-[inset_0_0_0_1px_rgb(var(--overlay)/0.06)] transition-colors duration-200',
         className,
       )}
       style={{ backgroundColor: swatch.canvas }}
@@ -56,20 +57,20 @@ export function ThemePreview({ swatch, className }: { swatch: ThemeSwatch; class
 }
 
 /**
- * The theme families as cards. Each card previews the family in the scheme
- * on screen, so switching the mode flips every card with the app. Selection
- * is a fill, never an outline.
+ * The theme families as cards. Each card previews its family in the scheme on
+ * screen, as the family would show (with its picked variant), so switching the
+ * mode flips every card with the app. Selection is a fill, never an outline.
  */
 export function ThemeFamilyPicker({
   value,
   scheme,
-  variants,
+  picks,
   onChange,
 }: {
   value: ThemeFamilyId
   scheme: ColorScheme
-  /** The selected family's variants; other families preview their first. */
-  variants: Record<ColorScheme, ThemeMode>
+  /** The variant last picked in each family. */
+  picks: ThemePicks
   onChange: (family: ThemeFamilyId) => void
 }) {
   return (
@@ -80,7 +81,8 @@ export function ThemeFamilyPicker({
     >
       {THEME_FAMILIES.map((family) => {
         const selected = family.id === value
-        const variant = familyVariant(family, scheme, selected ? variants[scheme] : undefined)
+        const variant = familyVariant(family, scheme, picks[family.id]?.[scheme])
+        const hintId = `theme-family-${family.id}-hint`
         return (
           <label
             key={family.id}
@@ -96,6 +98,8 @@ export function ThemeFamilyPicker({
               name="theme-family"
               value={family.id}
               checked={selected}
+              aria-label={family.label}
+              aria-describedby={hintId}
               onChange={() => onChange(family.id)}
             />
             <ThemePreview swatch={variant.swatch} />
@@ -108,7 +112,9 @@ export function ThemeFamilyPicker({
               >
                 {family.label}
               </span>
-              <span className="block truncate text-[12px] text-faint">{family.hint}</span>
+              <span id={hintId} className="block truncate text-[12px] text-faint">
+                {family.hint}
+              </span>
             </span>
           </label>
         )

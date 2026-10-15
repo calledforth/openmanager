@@ -110,9 +110,9 @@ export interface CommandPaletteProps {
 }
 
 const APPEARANCE_MODES: ReadonlyArray<{ id: AppearanceMode; label: string; hint: string }> = [
-  { id: 'light', label: 'Light mode', hint: 'every theme in light' },
-  { id: 'dark', label: 'Dark mode', hint: 'every theme in dark' },
-  { id: 'system', label: 'System mode', hint: 'follow this device' },
+  { id: 'light', label: 'Light mode', hint: 'the light side of every theme' },
+  { id: 'dark', label: 'Dark mode', hint: 'the dark side of every theme' },
+  { id: 'system', label: 'System mode', hint: 'follow this device’s setting' },
 ]
 
 /**
@@ -123,7 +123,7 @@ const APPEARANCE_MODES: ReadonlyArray<{ id: AppearanceMode; label: string; hint:
  * the app change behind it.
  */
 export function CommandPalette({ commands }: CommandPaletteProps = {}) {
-  const { mode, setMode, family, setFamily, font, setFont } = useTheme()
+  const { theme, setTheme, mode, setMode, family, setFamily, font, setFont } = useTheme()
   const pickers = useAvailablePickers()
 
   const items = useMemo<CommandPaletteItemData[]>(
@@ -166,8 +166,8 @@ export function CommandPalette({ commands }: CommandPaletteProps = {}) {
         keepOpen: true,
         onSelect: () => setMode(option.id),
       })),
-      // Families, not their variants: each follows the mode above, and the
-      // variants live in Settings → Appearance.
+      // Families, not every scheme: each follows the mode above. The current
+      // family's variants follow, where a side has more than one.
       ...THEME_FAMILIES.map((option) => ({
         value: `theme:${option.id}`,
         label: option.label,
@@ -180,6 +180,21 @@ export function CommandPalette({ commands }: CommandPaletteProps = {}) {
         keepOpen: true,
         onSelect: () => setFamily(option.id),
       })),
+      ...(['light', 'dark'] as const)
+        .filter((side) => family[side].length > 1)
+        .flatMap((side) => family[side])
+        .map((variant) => ({
+          value: `variant:${variant.id}`,
+          label: variant.name,
+          description: variant.hint,
+          icon: ThemeIcon,
+          group: `${family.label} variants`,
+          current: variant.id === theme,
+          keywords: ['variant', family.label.toLowerCase()],
+          keepOpen: true,
+          // Shows exactly this variant, so it pins the mode to its side.
+          onSelect: () => setTheme(variant.id),
+        })),
       ...UI_FONTS.map((option) => ({
         value: `font:${option.id}`,
         label: option.label,
@@ -191,7 +206,7 @@ export function CommandPalette({ commands }: CommandPaletteProps = {}) {
         onSelect: () => setFont(option.id),
       })),
     ],
-    [commands, pickers, mode, setMode, family.id, setFamily, font, setFont],
+    [commands, pickers, theme, setTheme, mode, setMode, family, setFamily, font, setFont],
   )
 
   return <CommandPaletteView items={items} />
