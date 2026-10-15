@@ -18,7 +18,7 @@ import {
 } from '../fluid/ui/command-menu'
 import { phosphorIcon } from '../fluid/lib/icon-context'
 import { UI_FONTS } from '../../lib/fonts'
-import { THEME_OPTIONS, useTheme } from '../../providers/theme-provider'
+import { THEME_FAMILIES, useTheme, type AppearanceMode } from '../../providers/theme-provider'
 import { requestPicker, useAvailablePickers } from './pickerRegistry'
 
 /** A palette row. `current` marks the option already in effect with a check
@@ -109,6 +109,12 @@ export interface CommandPaletteProps {
   commands?: readonly CommandPaletteItemData[]
 }
 
+const APPEARANCE_MODES: ReadonlyArray<{ id: AppearanceMode; label: string; hint: string }> = [
+  { id: 'light', label: 'Light mode', hint: 'every theme in light' },
+  { id: 'dark', label: 'Dark mode', hint: 'every theme in dark' },
+  { id: 'system', label: 'System mode', hint: 'follow this device' },
+]
+
 /**
  * ⌘K / Ctrl+K from anywhere. The host's commands come first, then the
  * pickers on screen (model, project) with their own shortcuts; after them it
@@ -117,7 +123,7 @@ export interface CommandPaletteProps {
  * the app change behind it.
  */
 export function CommandPalette({ commands }: CommandPaletteProps = {}) {
-  const { theme, setTheme, font, setFont } = useTheme()
+  const { mode, setMode, family, setFamily, font, setFont } = useTheme()
   const pickers = useAvailablePickers()
 
   const items = useMemo<CommandPaletteItemData[]>(
@@ -149,18 +155,30 @@ export function CommandPalette({ commands }: CommandPaletteProps = {}) {
             },
           ]
         : []),
-      ...THEME_OPTIONS.map((option) => ({
+      ...APPEARANCE_MODES.map((option) => ({
+        value: `mode:${option.id}`,
+        label: option.label,
+        description: option.hint,
+        icon: ThemeIcon,
+        group: 'Appearance',
+        current: option.id === mode,
+        keywords: ['mode', 'appearance', 'theme'],
+        keepOpen: true,
+        onSelect: () => setMode(option.id),
+      })),
+      // Families, not their variants: each follows the mode above, and the
+      // variants live in Settings → Appearance.
+      ...THEME_FAMILIES.map((option) => ({
         value: `theme:${option.id}`,
         label: option.label,
         description: option.hint,
         icon: ThemeIcon,
         group: 'Themes',
-        current: option.id === theme,
-        // No "dark"/"light" here: every hint already says which it is, so
-        // those words find the matching themes instead of all of them.
-        keywords: ['theme', 'colour', 'color', 'scheme', 'appearance'],
+        current: option.id === family.id,
+        // No "dark"/"light" here: those words find the modes instead of every theme.
+        keywords: ['theme', 'colour', 'color', 'scheme'],
         keepOpen: true,
-        onSelect: () => setTheme(option.id),
+        onSelect: () => setFamily(option.id),
       })),
       ...UI_FONTS.map((option) => ({
         value: `font:${option.id}`,
@@ -173,7 +191,7 @@ export function CommandPalette({ commands }: CommandPaletteProps = {}) {
         onSelect: () => setFont(option.id),
       })),
     ],
-    [commands, pickers, theme, setTheme, font, setFont],
+    [commands, pickers, mode, setMode, family.id, setFamily, font, setFont],
   )
 
   return <CommandPaletteView items={items} />

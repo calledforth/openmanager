@@ -268,6 +268,34 @@ describe('web routes', () => {
     expect(document.documentElement.dataset.theme).toBeUndefined()
   })
 
+  it('picks a theme family that follows the mode, with its variants beside it', async () => {
+    const user = userEvent.setup()
+    renderWebApp('/settings?tab=appearance')
+
+    const themes = await screen.findByRole('radiogroup', { name: 'Theme' })
+    await user.click(screen.getByRole('radio', { name: 'Dark' }))
+    await user.click(within(themes).getByRole('radio', { name: /Lovable/ }))
+    expect(document.documentElement.dataset.theme).toBe('lovable')
+    // Lovable has one dark variant, so there is nothing more to pick in dark.
+    expect(screen.queryByRole('radiogroup', { name: 'Lovable dark' })).toBeNull()
+
+    await user.click(screen.getByRole('radio', { name: 'Light' }))
+    expect(document.documentElement.dataset.theme).toBe('lovable-light')
+    const lightVariants = screen.getByRole('radiogroup', { name: 'Lovable light' })
+    await user.click(within(lightVariants).getByRole('radio', { name: 'Inverse' }))
+    expect(document.documentElement.dataset.theme).toBe('lovable-light-inverse')
+
+    await user.click(within(themes).getByRole('radio', { name: /Claude/ }))
+    expect(document.documentElement.dataset.theme).toBe('claude-light')
+    await user.click(screen.getByRole('radio', { name: 'Dark' }))
+    expect(document.documentElement.dataset.theme).toBe('claudeish')
+
+    // Going back to Lovable in light brings back the variant picked there.
+    await user.click(screen.getByRole('radio', { name: 'Light' }))
+    await user.click(within(themes).getByRole('radio', { name: /Lovable/ }))
+    expect(document.documentElement.dataset.theme).toBe('lovable-light-inverse')
+  })
+
   it('shows the connection story playground for every state', async () => {
     renderWebApp('/playground/connection')
     expect(await screen.findByRole('heading', { name: 'Connection states' })).toBeInTheDocument()
