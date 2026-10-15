@@ -33,7 +33,8 @@ import { findStoredEnvironment } from '../lib/environment-store'
 import { UI_FONTS } from '../lib/fonts'
 import { pairingAppUrl } from '../lib/pairing'
 import { useConnection } from '../providers/connection-provider'
-import { THEME_OPTIONS } from '@openmanager/app-core/providers/theme-provider'
+import type { AppearanceMode } from '@openmanager/app-core/providers/theme-provider'
+import { ThemeFamilyPicker } from '../components/theme-family-picker'
 import { useTheme } from '../providers/theme-provider'
 import { cn } from '../lib/utils'
 
@@ -370,18 +371,55 @@ function DevicesPanel() {
   )
 }
 
+const APPEARANCE_MODES: ReadonlyArray<{ id: AppearanceMode; label: string }> = [
+  { id: 'light', label: 'Light' },
+  { id: 'dark', label: 'Dark' },
+  { id: 'system', label: 'System' },
+]
+
 function AppearancePanel() {
-  const { theme, setTheme, font, setFont } = useTheme()
+  const { mode, setMode, scheme, family, setFamily, variants, picks, setVariant, font, setFont } =
+    useTheme()
+  // A family's own variants, for each scheme in play that offers more than one.
+  const variantRows = (['light', 'dark'] as const).filter(
+    (row) => (mode === 'system' || mode === row) && family[row].length > 1,
+  )
   return (
     <>
-      <SettingsSection title="Theme">
+      <SettingsSection
+        title="Mode"
+        description="System follows this device’s light or dark setting."
+      >
         <ChoiceGroup
-          name="theme"
-          label="Theme"
-          value={theme}
-          options={THEME_OPTIONS}
-          onChange={setTheme}
+          name="appearance-mode"
+          label="Mode"
+          value={mode}
+          options={APPEARANCE_MODES}
+          onChange={setMode}
         />
+      </SettingsSection>
+      <SettingsSection
+        title="Theme"
+        description="Every theme comes in light and dark; the mode decides which you see."
+      >
+        <ThemeFamilyPicker value={family.id} scheme={scheme} picks={picks} onChange={setFamily} />
+        {variantRows.map((row) => (
+          <div key={row} className="mt-4">
+            <h3 className="text-[12px] text-muted-foreground">
+              {row === 'light' ? 'Light variants' : 'Dark variants'}
+              {row !== scheme ? (
+                <span className="text-faint"> · used when this device is {row}</span>
+              ) : null}
+            </h3>
+            <ChoiceGroup
+              name={`theme-variant-${row}`}
+              label={`${family.label} ${row} variants`}
+              value={variants[row]}
+              options={family[row]}
+              onChange={setVariant}
+            />
+          </div>
+        ))}
       </SettingsSection>
       <SettingsSection title="Font">
         <ChoiceGroup name="font" label="Font" value={font} options={UI_FONTS} onChange={setFont} />

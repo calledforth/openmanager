@@ -19,7 +19,7 @@
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 
 /* Fluid components' `dark:` utilities follow the app theme, not the OS. */
-@custom-variant dark (&:where(:root:not([data-theme='light'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse']) *));
+@custom-variant dark (&:where(:root:not([data-theme='light'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse'], [data-theme='paper-light'], [data-theme='claude-light'], [data-theme='carbon-light']) *));
 
 @theme inline {
   --color-faint: var(--faint);
@@ -376,7 +376,7 @@
   --surface-8: #464646;
 }
 
-:root:is([data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse']) {
+:root:is([data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse'], [data-theme='paper-light'], [data-theme='claude-light'], [data-theme='carbon-light']) {
   color-scheme: light;
   --background: #fcfcfc;
   --foreground: #1a1a1a;
@@ -436,6 +436,59 @@
   --surface-2: #f8f8f8;
 }
 
+/* Paper Light: Paper's warm greys on a page. Like Paper dark it sets the base
+   colours and mixes the lines and fills from them, so every grey keeps the
+   warmth; floating panels stay white. */
+:root[data-theme='paper-light'] {
+  --background: #f6f4ef;
+  --foreground: #24221e;
+  --muted-foreground: #77726a;
+  --faint: #aaa49a;
+  --rule: color-mix(in oklab, var(--background), var(--foreground) 7%);
+  --border: color-mix(in oklab, var(--background), var(--foreground) 11%);
+  --selected: color-mix(in oklab, var(--background), var(--foreground) 18%);
+  --surface-1: color-mix(in oklab, var(--background), var(--foreground) 2.5%);
+  --surface-2: color-mix(in oklab, var(--background), #ffffff 45%);
+  --hover: rgb(36 34 30 / 0.045);
+  --active: rgb(36 34 30 / 0.075);
+}
+
+/* Claude Light: Claude-ish on ivory. A #FAF9F5 page, a step darker on the
+   rail, near-black ink and the same clay accent, a shade deeper so it holds
+   on a light canvas. */
+:root[data-theme='claude-light'] {
+  --background: #faf9f5;
+  --foreground: #141413;
+  --muted-foreground: #73726c;
+  --faint: #a6a49b;
+  --rule: #ebe9e1;
+  --border: #e3e0d6;
+  --selected: #dcd8cc;
+  --tint: #c96442;
+  --tint-soft: rgb(201 100 66 / 0.14);
+  --surface-1: #f5f4ed;
+  --surface-2: #fbfaf7;
+  --hover: rgb(20 20 19 / 0.045);
+  --active: rgb(20 20 19 / 0.075);
+}
+
+/* Carbon Light: Carbon turned over. A flat neutral #FAFAFA page, one grey step
+   for what holds a message, #141414 ink, and the same lime, kept on the
+   primary action (dark ink on it) with a deeper lime for links and focus. */
+:root[data-theme='carbon-light'] {
+  --background: #fafafa;
+  --foreground: #141414;
+  --muted-foreground: #6e6e6e;
+  --faint: #a3a3a3;
+  --rule: rgb(0 0 0 / 0.07);
+  --border: rgb(0 0 0 / 0.1);
+  --selected: #d6d6d6;
+  --tint: #4f7a00;
+  --tint-soft: rgb(197 242 58 / 0.4);
+  --surface-1: #f4f4f4;
+  --surface-2: #f7f7f7;
+}
+
 /* The app's own --basis-* tokens, pointed at the scheme. */
 :root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='lovable'], [data-theme='claudeish'], [data-theme='carbon']) {
   color-scheme: dark;
@@ -448,7 +501,7 @@
   --basis-action-hover: color-mix(in oklab, var(--foreground), var(--background) 10%);
 }
 
-:root:is([data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse']) {
+:root:is([data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse'], [data-theme='paper-light'], [data-theme='claude-light'], [data-theme='carbon-light']) {
   --basis-canvas-bg: var(--background);
   --basis-surface: var(--surface-3);
   --basis-surface-elevated: color-mix(in oklab, var(--background), var(--foreground) 4%);
@@ -472,7 +525,7 @@
   --basis-status-error-active: #fde7e7;
 }
 
-:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='lovable'], [data-theme='claudeish'], [data-theme='carbon'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse']) {
+:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='lovable'], [data-theme='claudeish'], [data-theme='carbon'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse'], [data-theme='paper-light'], [data-theme='claude-light'], [data-theme='carbon-light']) {
   --basis-border: var(--border);
   --basis-border-muted: var(--rule);
   --basis-chat-text: var(--foreground);
@@ -513,7 +566,7 @@
 
 /* The light schemes follow suit: a quiet grey fill instead of a white box
    with an outline, so a message reads by colour the way it does on dark. */
-:root:is([data-theme='light'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse']) {
+:root:is([data-theme='light'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse'], [data-theme='paper-light'], [data-theme='claude-light'], [data-theme='carbon-light']) {
   --basis-chat-user-bg: color-mix(in oklab, var(--basis-canvas-bg), #000 5.5%);
   --basis-chat-user-border: transparent;
 }
@@ -553,7 +606,7 @@
     0 0 0 1px rgb(0 0 0 / 0.32), 0 2px 4px rgb(0 0 0 / 0.12), 0 8px 16px -8px rgb(0 0 0 / 0.2);
 }
 
-:root:is([data-theme='light'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse']) {
+:root:is([data-theme='light'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse'], [data-theme='paper-light'], [data-theme='claude-light'], [data-theme='carbon-light']) {
   --float-bg: #ffffff;
   --float-shadow:
     0 0 0 1px rgb(0 0 0 / 0.045), 0 1px 2px rgb(0 0 0 / 0.04), 0 4px 10px -2px rgb(0 0 0 / 0.05),
@@ -565,7 +618,7 @@
 
 /* Neutral Light's and Lovable Light's composer (the only resting float) keeps
    a slightly firmer hairline, so its light fill still has a visible edge. */
-:root:is([data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse']) {
+:root:is([data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse'], [data-theme='paper-light'], [data-theme='claude-light'], [data-theme='carbon-light']) {
   --float-shadow-rest:
     0 0 0 1px rgb(0 0 0 / 0.08), 0 1px 2px rgb(0 0 0 / 0.05), 0 4px 12px -4px rgb(0 0 0 / 0.08);
 }
@@ -590,6 +643,42 @@
   background-color: #f8f8f8;
 }
 
+/* Paper Light: menus and the composer on a warm white, not a cold one. */
+:root[data-theme='paper-light'] {
+  --float-bg: #fdfcfa;
+  --basis-chat-composer-bg: #fdfcfa;
+}
+
+/* Claude Light: sent messages on a warm sand step, the composer and menus on
+   white, the rail a step under the page. */
+:root[data-theme='claude-light'] {
+  --basis-chat-user-bg: #f0eee6;
+  --basis-chat-composer-bg: #ffffff;
+  --float-bg: #ffffff;
+}
+
+:root[data-theme='claude-light'] [data-slot='sidebar'] {
+  background-color: #f5f4ed;
+}
+
+/* Carbon Light: one #EBEBEB step for sent messages, body text a step under
+   the headings, and the lime on the primary action. */
+:root[data-theme='carbon-light'] {
+  --basis-text: #2b2b2b;
+  --basis-chat-text: #2b2b2b;
+  --basis-chat-user-bg: #ebebeb;
+  --basis-chat-composer-bg: #ffffff;
+  --float-bg: #ffffff;
+  --basis-action-bg: #c5f23a;
+  --basis-action-fg: #141414;
+  --basis-action-hover: color-mix(in oklab, #c5f23a, #000000 8%);
+}
+
+/* Claude Light: replies in a soft near-black, the way Claude sets them. */
+:root[data-theme='claude-light'] .md {
+  color: #3d3d3a;
+}
+
 /* Lovable Light: replies read a step softer than the near-black UI ink. */
 :root:is([data-theme='lovable-light'], [data-theme='lovable-light-inverse']) .md {
   color: #333333;
@@ -600,12 +689,12 @@
        400 body weight. Tracking stays the app's 0.01em: Tend's zero tracking
        reads cramped at the app's 14px.
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='lovable'], [data-theme='claudeish'], [data-theme='carbon'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse']) body {
+:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='lovable'], [data-theme='claudeish'], [data-theme='carbon'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse'], [data-theme='paper-light'], [data-theme='claude-light'], [data-theme='carbon-light']) body {
   font-weight: 400;
   font-variation-settings: 'wght' 400;
 }
 
-:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='lovable'], [data-theme='claudeish'], [data-theme='carbon'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse']) :where(h1, h2) {
+:root:is([data-theme='neutral'], [data-theme='paper'], [data-theme='lovable'], [data-theme='claudeish'], [data-theme='carbon'], [data-theme='neutral-light'], [data-theme='neutral-light-soft'], [data-theme='lovable-light'], [data-theme='lovable-light-inverse'], [data-theme='paper-light'], [data-theme='claude-light'], [data-theme='carbon-light']) :where(h1, h2) {
   letter-spacing: -0.015em;
 }
 

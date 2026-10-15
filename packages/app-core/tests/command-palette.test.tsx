@@ -23,6 +23,7 @@ let host: HTMLElement | null = null
 afterEach(() => {
   act(() => root?.unmount())
   host?.remove()
+  globalThis.localStorage?.clear()
 })
 
 function type(input: HTMLInputElement, value: string) {
@@ -90,16 +91,44 @@ describe('CommandPalette', () => {
     expect(rowLabels()).toEqual(['Carbon'])
   })
 
-  it('matches a theme by its hint, not by a blanket keyword', () => {
+  it('lists the modes and the theme families, not every variant', () => {
     const input = openPalette()
     act(() => type(input, 'light'))
+    expect(rowLabels()).toEqual(['Light mode'])
+    act(() => type(input, 'theme'))
     expect(rowLabels()).toEqual([
-      'Light',
-      'Neutral Light',
-      'Neutral Light Soft',
-      'Lovable Light',
-      'Lovable Light Inverse',
+      'Light mode',
+      'Dark mode',
+      'System mode',
+      'Default',
+      'Neutral',
+      'Paper',
+      'Lovable',
+      'Claude',
+      'Carbon',
     ])
+  })
+
+  it("lists the current family's variants, and picking one shows exactly it", () => {
+    const input = openPalette()
+    act(() => type(input, 'variant'))
+    expect(rowLabels()).toEqual(['Dark', 'Black'])
+    act(() => type(input, 'black'))
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(document.documentElement.dataset.theme).toBe('black')
+  })
+
+  it('switches family and keeps the palette open', () => {
+    const input = openPalette()
+    act(() => type(input, 'lovable'))
+    expect(rowLabels()).toEqual(['Lovable'])
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(document.documentElement.dataset.theme).toBe('lovable')
+    expect(document.querySelector('input[role="combobox"]')).toBeTruthy()
   })
 
   it('still finds a whole group by its keyword', () => {
