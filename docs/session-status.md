@@ -90,7 +90,8 @@ sidebar gives each its own state:
 
 Neither is stored. Both are read from the turn and interaction rows
 (`db/session-activity.ts`), and only for sessions that are waiting or running,
-so a listing stays cheap. The derived `session.updated` carries them beside
+so a listing stays cheap. Migration 20 indexes `turns(thread_id, state)`, so
+the reads reach a thread's open turns without walking its finished ones. The derived `session.updated` carries them beside
 the status, and is also sent when only they change: a question answered while
 a permission is still open, or a turn ending while background work goes on.
 They are sent only when they apply, and a `session.updated` that carries a

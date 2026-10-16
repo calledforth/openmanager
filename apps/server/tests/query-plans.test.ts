@@ -73,11 +73,11 @@ describe('bounded query plans', () => {
     const database = await createDatabase()
     const pending = plan(database, PENDING_INTERACTIONS_FOR_SESSION_SQL)
     expectIndexed(pending, 'threads_session_')
-    expectIndexed(pending, 'turns_thread_')
+    expectIndexed(pending, 'turns_thread_state_idx')
     expectIndexed(pending, 'interactions_turn_id_idx')
     const open = plan(database, OPEN_TURN_FOR_SESSION_SQL)
     expectIndexed(open, 'threads_session_')
-    expectIndexed(open, 'turns_thread_')
+    expectIndexed(open, 'turns_thread_state_idx')
   })
 
   it('replays a deduplicated send from indexed turns and messages', async () => {
