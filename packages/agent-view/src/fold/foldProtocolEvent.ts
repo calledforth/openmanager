@@ -1,11 +1,13 @@
-import type {
-  ContentBlock,
-  Interaction,
-  Message,
-  ProofEvent,
-  Thread,
-  Turn,
-  TurnFailureReason,
+import {
+  applyToolUpdate,
+  type ContentBlock,
+  type Interaction,
+  type Message,
+  type ProofEvent,
+  type Thread,
+  type ToolCallState,
+  type Turn,
+  type TurnFailureReason,
 } from '@openmanager/protocol'
 
 export interface ReasoningEntry {
@@ -16,7 +18,11 @@ export interface ReasoningEntry {
   tokens?: number
 }
 
-export type ToolState = Extract<ProofEvent, { name: 'tool.updated' }>['payload']
+/**
+ * A tool call as the client holds it: what a history page or a snapshot
+ * carries, kept current by folding `tool.updated` with `applyToolUpdate`.
+ */
+export type ToolState = ToolCallState
 
 export interface PendingInteraction {
   sessionId: string
@@ -201,10 +207,13 @@ export function foldProtocolEvent<T extends ProtocolThreadView>(current: T, even
       const existing = current.tools.find((tool) => tool.toolCallId === event.payload.toolCallId)
       return {
         ...current,
-        tools: upsert(current.tools, (tool) => tool.toolCallId, {
-          ...existing,
-          ...event.payload,
-        }),
+        // The same fold the environment stores with, so output deltas land
+        // exactly as they do in a page or snapshot read later.
+        tools: upsert(
+          current.tools,
+          (tool) => tool.toolCallId,
+          applyToolUpdate(existing, event.payload),
+        ),
         order: existing
           ? current.order
           : placeActivity(current.order, { kind: 'tool', id: event.payload.toolCallId, turnId }),

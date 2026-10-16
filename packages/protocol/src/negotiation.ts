@@ -55,7 +55,13 @@ import {
 // `GET /draft-artifacts/<draft-id>/<artifact-id>`, and claimable by whichever
 // client sends the draft. A v15 environment has no such route, refuses
 // another device's images at launch, and expires them after a day.
-export const PROTOCOL_VERSION = 16 as const
+// Version 17 gives tool calls their payloads: `tool.updated` carries the
+// provider's tool name, a bounded input and output, the files touched, lines
+// changed when the provider reports them, start and end times, and output
+// streamed as `outputDelta` appends. Its status gains `declined` and
+// `cancelled`, which a v16 client's enum rejects along with the event, and a
+// tool-made image names its `toolCallId`.
+export const PROTOCOL_VERSION = 17 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema

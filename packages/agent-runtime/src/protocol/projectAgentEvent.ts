@@ -5,6 +5,17 @@ import {
   type SubscriptionScope,
   type TurnFailureReason,
 } from '@openmanager/protocol'
+import {
+  contentText,
+  isEdit,
+  statelessDelta,
+  statelessOutput,
+  toolFields,
+  toolOutputText,
+  type ToolCallTracker,
+} from './toolCallProjection.js'
+
+export { ToolCallTracker } from './toolCallProjection.js'
 
 /** Host identities: never copy provider session/thread/request IDs onto the wire. */
 export interface ProtocolEventContext {
@@ -23,6 +34,13 @@ export interface ProtocolEventContext {
   completionState?: 'completed' | 'interrupted' | 'failed'
   /** Host classification of a terminal failure; provider diagnostics never cross this boundary. */
   failureReason?: TurnFailureReason
+  /**
+   * The turn's tool calls so far, so output streams as deltas and a declined
+   * permission reads as such. Without it every update replaces the output.
+   */
+  toolCalls?: ToolCallTracker
+  /** The user asked to stop the turn: a tool failing from here on was cancelled. */
+  interruptRequested?: boolean
 }
 
 /** Map provider events into the provider-neutral proof protocol. */
@@ -179,14 +197,53 @@ export function projectAgentEvent(
         tokens: source.data.tokens,
       })
     case 'tool_call':
-    case 'tool_call_update':
-      return emit('tool.updated', threadScope, {
-        toolCallId: required('toolCallId'),
-        turnId: required('turnId'),
-        title: source.data.title,
-        kind: source.data.kind,
-        status: source.data.status,
+    case 'tool_call_update': {
+      const toolCallId = required('toolCallId')
+      const tracker = context.toolCalls
+      const known = tracker?.has(toolCallId) ?? false
+      const kind = source.data.kind ?? tracker?.kindOf(toolCallId)
+      const fields = toolFields(source.data, {
+        kind,
+        // The first event of a call opens it, whichever kind of event it is.
+        opens: source.event === 'tool_call' || (tracker !== undefined && !known),
+        timestamp: source.timestamp,
       })
+      if (fields.status === 'failed') {
+        if (tracker?.isDeclined(toolCallId)) fields.status = 'declined'
+        else if (context.interruptRequested) fields.status = 'cancelled'
+      }
+      const text = toolOutputText(source.data, isEdit(kind, fields.toolName))
+      const output =
+        text === undefined
+          ? {}
+          : tracker
+            ? tracker.replace(toolCallId, text)
+            : statelessOutput(text)
+      tracker?.observe(toolCallId, { kind: fields.kind, status: fields.status })
+      return emit('tool.updated', threadScope, {
+        toolCallId,
+        turnId: required('turnId'),
+        ...fields,
+        ...output,
+      })
+    }
+    case 'tool_call_content': {
+      // Appended output. Anything that is not text (an image, a diff, a
+      // terminal handle) has no place in a tool's output.
+      const text = contentText(source.data.item)
+      if (!text) return null
+      const toolCallId = required('toolCallId')
+      const tracker = context.toolCalls
+      // An edit's content is its body, never output.
+      if (isEdit(tracker?.kindOf(toolCallId), undefined)) return null
+      const output = tracker ? tracker.append(toolCallId, text) : statelessDelta(text)
+      tracker?.observe(toolCallId, {})
+      return emit('tool.updated', threadScope, {
+        toolCallId,
+        turnId: required('turnId'),
+        ...output,
+      })
+    }
     case 'permission_request':
       return requested('permission', {
         toolCall: {
@@ -230,7 +287,6 @@ export function projectAgentEvent(
     case 'capability_missing':
       if (!context.turnId) return null
       return failed('capability_missing')
-    case 'tool_call_content':
     case 'plan_update':
     case 'subtask_update':
     case 'current_model_update':
@@ -238,8 +294,7 @@ export function projectAgentEvent(
     case 'config_option_update':
     case 'usage_update':
     case 'available_commands_update':
-    // Task ids are the provider's; the host announces the roster under its own.
-    case 'background_tasks_update':
+    case 'background_tasks_update': // Task ids are the provider's; the host announces its own.
     case 'extension_request':
     case 'extension_resolved':
     case 'extension_notification':

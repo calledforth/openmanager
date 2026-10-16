@@ -12,6 +12,8 @@ import {
   ToolCallStateSchema,
   TurnSchema,
   resolvePageLimit,
+  shrinkToolOutput,
+  toolOutputSourceBytes,
   type ActivityRef,
   type HistoryCursor,
   type Interaction,
@@ -36,6 +38,7 @@ import {
   THREAD_IN_SESSION_SQL,
   THREADS_FOR_SESSION_SQL,
   TURN_ACTIVITY_PAGE_SQL,
+  TURN_ACTIVITY_PAYLOAD_SQL,
   TURN_FOR_COMMAND_ID_SQL,
   TURNS_FOR_THREAD_SQL,
   USER_MESSAGE_FOR_TURN_SQL,
@@ -111,7 +114,12 @@ type TurnActivityRow = {
   kind: 'reasoning' | 'tool'
   ordinal: number
   state_json: string
+  /** Encoded size of the row's payload; 0 when it has none (see migration 20). */
+  payload_bytes: number
+  /** Bytes of the whole output the tool produced; what an omission marker reports. */
+  output_bytes: number
 }
+export type ToolPayload = Pick<ToolCallState, 'input' | 'output' | 'locations'>
 type MessageRow = {
   message_id: string
   thread_id: string
@@ -298,10 +306,14 @@ export function listSessionHistory(
     .all(query.threadId, olderBound, newerBound) as TurnActivityRow[]
   const reasoning: ReasoningBlock[] = []
   const tools: ToolCallState[] = []
+  const toolRows: TurnActivityRow[] = []
   for (const row of activityRows) {
     const state: unknown = JSON.parse(row.state_json)
     if (row.kind === 'reasoning') reasoning.push(ReasoningBlockSchema.parse(state))
-    else tools.push(ToolCallStateSchema.parse(state))
+    else {
+      tools.push(ToolCallStateSchema.parse(state))
+      toolRows.push(row)
+    }
   }
   capReasoningText(reasoning)
   const order: ActivityRef[] = [
@@ -353,7 +365,7 @@ export function listSessionHistory(
         : undefined,
     }),
   )
-  return {
+  const page: SessionHistoryPage = {
     messages,
     turns,
     interactions,
@@ -363,6 +375,9 @@ export function listSessionHistory(
     order,
     nextCursor: rows.length > limit && oldest !== undefined ? { ordinal: oldest.ordinal } : null,
   }
+  // Last, against the page as it will be sent: everything else is measured first.
+  attachToolPayloads(database, page, toolRows)
+  return page
 }
 
 function messageFromRow(database: DatabaseSync, row: MessageRow): Message {
@@ -415,6 +430,145 @@ function capReasoningText(reasoning: ReasoningBlock[]): void {
       content: [{ type: 'text', text: kept ? `${note}\n${kept}` : note }],
     }
   }
+}
+
+/**
+ * Tool payload (input, output, locations) a page may carry. Like reasoning,
+ * the newest calls are served first.
+ */
+export const TOOL_PAYLOAD_BUDGET_BYTES = 256 * 1024
+/**
+ * What one history page or snapshot frame may come to with its tool payloads:
+ * the socket's 1 MiB slow-consumer budget, less headroom for other frames
+ * queued behind it. Payloads only fill what the rest of the page leaves; a
+ * page already over this without them is sent as it is, payload-free.
+ */
+export const HISTORY_PAGE_BUDGET_BYTES = 896 * 1024
+/**
+ * Room kept for what wraps a page on the wire: the response or snapshot
+ * envelope, request and subscription ids, the cursor and its scope.
+ */
+export const HISTORY_ENVELOPE_RESERVE_BYTES = 8 * 1024
+/** Less room than this is not worth a partial payload; the call is marked instead. */
+const PARTIAL_PAYLOAD_MIN_BYTES = 512
+
+const encodedBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), 'utf8')
+
+/**
+ * Give the page's tool calls their payloads, newest first, while the frame
+ * budget lasts. The room is what the complete page leaves, measured after its
+ * messages, reasoning, turns, interactions, plans, order and tool states, and
+ * every call is charged exactly what it adds to the encoded page.
+ *
+ * The call that does not fit whole keeps its locations and input if they fit
+ * and as much of its output's start and newest end as the rest allows. Older
+ * calls carry no input or locations, and an output that is only a marker of
+ * the whole output's size (`output_bytes`), so a client can tell "not loaded"
+ * from "no output"; a call that had no output gets no marker, and a marker
+ * that does not fit is left off. Only payloads that may fit are read at all.
+ */
+function attachToolPayloads(
+  database: DatabaseSync,
+  page: SessionHistoryPage,
+  rows: readonly TurnActivityRow[],
+): void {
+  const tools = page.tools
+  if (!rows.some((row) => row.payload_bytes > 0)) return
+  const read = database.prepare(TURN_ACTIVITY_PAYLOAD_SQL)
+  const payloadOf = (row: TurnActivityRow): ToolPayload => {
+    const found = read.get(row.activity_id) as { payload_json: string | null } | undefined
+    return found?.payload_json ? (JSON.parse(found.payload_json) as ToolPayload) : {}
+  }
+  const frame = HISTORY_PAGE_BUDGET_BYTES - HISTORY_ENVELOPE_RESERVE_BYTES
+  const bare = encodedBytes(page)
+  const light = [...tools]
+  let remaining = Math.min(TOOL_PAYLOAD_BUDGET_BYTES, Math.max(0, frame - bare))
+  // A call that had no output has nothing to mark: it is left as it is.
+  const marker = (index: number): ToolCallState | undefined =>
+    rows[index]!.output_bytes > 0
+      ? { ...tools[index]!, output: { text: '', omittedBytes: rows[index]!.output_bytes } }
+      : undefined
+  // What marking every older call would add, so a newer call's payload never
+  // takes the room the markers below it need.
+  const olderMarkers: number[] = []
+  let markers = 0
+  for (let index = 0; index < tools.length; index += 1) {
+    olderMarkers.push(markers)
+    const marked = marker(index)
+    if (marked) markers += encodedBytes(marked) - encodedBytes(tools[index])
+  }
+  // Once one call does not fit whole, every older one is only marked.
+  let whole = true
+  for (let index = tools.length - 1; index >= 0; index -= 1) {
+    const row = rows[index]!
+    if (row.payload_bytes === 0) continue
+    const state = tools[index]!
+    const stateBytes = encodedBytes(state)
+    const cost = (next: ToolCallState) => encodedBytes(next) - stateBytes
+    const available = remaining - olderMarkers[index]!
+    const take = (next: ToolCallState, limit: number): boolean => {
+      const bytes = cost(next)
+      if (bytes > limit) return false
+      tools[index] = next
+      remaining -= bytes
+      return true
+    }
+    // The stored payload's own size is within a byte of what it adds.
+    if (whole && row.payload_bytes <= available + 1) {
+      if (take(ToolCallStateSchema.parse({ ...state, ...payloadOf(row) }), available)) continue
+    }
+    if (whole && available >= PARTIAL_PAYLOAD_MIN_BYTES) {
+      whole = false
+      const candidate = partialToolPayload(state, payloadOf(row), available)
+      if (candidate && take(ToolCallStateSchema.parse(candidate), available)) continue
+    }
+    whole = false
+    const marked = marker(index)
+    if (marked) take(marked, remaining)
+  }
+  // Payloads must never be what takes the frame over: if they somehow did,
+  // the page goes out as it would have without them.
+  if (encodedBytes(page) > Math.max(frame, bare)) tools.splice(0, tools.length, ...light)
+}
+
+/**
+ * As much of one call's payload as fits in `available` encoded bytes over its
+ * small state, or undefined when none of it does. Room for the output's
+ * omission marker is set aside before locations or input may take any, so a
+ * call that had output never comes back looking as if it returned nothing:
+ * it carries the start and newest end of its output, or at least the marker.
+ */
+export function partialToolPayload(
+  state: ToolCallState,
+  payload: ToolPayload,
+  available: number,
+): ToolCallState | undefined {
+  const stateBytes = encodedBytes(state)
+  const cost = (next: ToolCallState) => encodedBytes(next) - stateBytes
+  const output = payload.output
+  const outputBytes = output ? toolOutputSourceBytes(output) : 0
+  const outputMarker = output && outputBytes > 0 ? { text: '', omittedBytes: outputBytes } : output
+  // What the output key costs at its least; it is appended last, so it adds
+  // the same to any candidate.
+  const reserve = outputMarker ? cost({ ...state, output: outputMarker }) : 0
+  if (reserve > available) return undefined
+  let candidate: ToolCallState = state
+  for (const key of ['locations', 'input'] as const) {
+    if (payload[key] === undefined) continue
+    const next = { ...candidate, [key]: payload[key] }
+    if (cost(next) + reserve <= available) candidate = next
+  }
+  if (output && outputMarker) {
+    let kept = outputMarker
+    // `,"output":` is what the key itself adds around the value.
+    const room = available - cost(candidate) - 10
+    if (room > 0) {
+      const shrunk = shrinkToolOutput(output, room)
+      if (cost({ ...candidate, output: shrunk }) <= available) kept = shrunk
+    }
+    candidate = { ...candidate, output: kept }
+  }
+  return candidate === state ? undefined : candidate
 }
 
 /**

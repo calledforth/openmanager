@@ -72,10 +72,19 @@ export const TURNS_FOR_THREAD_SQL = `
  * the page's messages by sorting on it.
  */
 export const TURN_ACTIVITY_PAGE_SQL = `
-  SELECT activity_id, turn_id, kind, ordinal, state_json
+  SELECT activity_id, turn_id, kind, ordinal, state_json, payload_bytes, output_bytes
   FROM turn_activity
   WHERE thread_id = ? AND ordinal > ? AND ordinal < ?
   ORDER BY ordinal`
+
+/**
+ * One tool call's payload (input, output, locations), read only for the calls
+ * a page has room for; `payload_bytes` above says which those are.
+ */
+export const TURN_ACTIVITY_PAYLOAD_SQL = `
+  SELECT payload_json
+  FROM turn_activity
+  WHERE activity_id = ?`
 
 /** Pending interactions of one turn; settled rows stay out of history. Sorted by callers. */
 export const INTERACTIONS_FOR_TURN_SQL = `

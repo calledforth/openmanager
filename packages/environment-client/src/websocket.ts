@@ -29,7 +29,9 @@ import {
   type ErrorCode,
   type ProofEvent,
   type ProtocolHandshakeCommand,
+  type HistoryCursor,
   type ReplayCommand,
+  type ScopeSnapshot,
   type SubscriptionScope,
   type Thread,
   UploadResultSchema,
@@ -67,7 +69,9 @@ import {
   applyTurnStarted,
   applyWorkspaceList,
   applyWorkspaceRemoved,
+  applyToolStates,
   selectSessionList,
+  staleRetainedTools,
 } from './state'
 import { createSettleTracker } from './settle'
 import { createEnvironmentStore, type EnvironmentStore } from './store'
@@ -173,6 +177,8 @@ const HANDSHAKE_NAME = 'protocol.handshake'
 const SUBSCRIBE_NAME = 'subscription.subscribe'
 const UNSUBSCRIBE_NAME = 'subscription.unsubscribe'
 const REPLAY_NAME = 'subscription.replay'
+/** How many older history pages a client reads to settle held tool calls after a snapshot. */
+const RETAINED_TOOL_PAGES_MAX = 20
 /** Catalog re-reads before a refresh gives up on dropping omitted sessions. */
 const RECONCILE_PASSES = 3
 
@@ -872,6 +878,10 @@ export function createWebSocketEnvironmentClient(
           } else {
             store.update((state) => applySnapshot(state, payload.snapshot))
             subscription.cursor = payload.snapshot.cursor
+            const stale = staleRetainedTools(store.getState(), payload.snapshot)
+            if (stale.length > 0) {
+              void reconcileRetainedTools(payload.snapshot, stale).catch(() => undefined)
+            }
             // Preference events were missed along with the rest of the gap and
             // the snapshot does not carry them, so held ones read as unloaded.
             if (subscription.scope.type === 'environment' && payload.reason !== 'initial') {
@@ -898,6 +908,44 @@ export function createWebSocketEnvironmentClient(
     })
     subscription.recovery = tracked
     return tracked
+  }
+
+  /**
+   * Ask the environment what became of held tool calls a snapshot could not
+   * speak for (see `staleRetainedTools`): walk the history pages older than
+   * the snapshot's, newest first, and take each call's state from the page
+   * that names it. Stops once every call is answered, at the oldest page, or
+   * after a bounded number of pages; an unanswered call stays as it was.
+   */
+  /** Held calls each thread has already asked the environment about, by thread. */
+  const askedTools = new Map<string, Set<string>>()
+  const reconcileRetainedTools = async (snapshot: ScopeSnapshot, stale: readonly string[]) => {
+    const scope = snapshot.cursor.scope
+    if (scope.type !== 'thread') return
+    const generation = connectionGeneration
+    const thread = { sessionId: scope.sessionId, threadId: scope.threadId }
+    // Registered before the walk, so walks that overlap share one record.
+    let asked = askedTools.get(thread.threadId)
+    if (!asked) {
+      asked = new Set<string>()
+      askedTools.set(thread.threadId, asked)
+    }
+    const waiting = new Set(stale.filter((toolCallId) => !asked.has(toolCallId)))
+    if (waiting.size === 0) return
+    const walked = [...waiting]
+    let cursor = (snapshot.state as { nextCursor?: HistoryCursor | null }).nextCursor ?? null
+    for (let pages = 0; cursor && waiting.size > 0 && pages < RETAINED_TOOL_PAGES_MAX; pages += 1) {
+      const page = await request('session.history', { ...thread, cursor })
+      if (generation !== connectionGeneration) return
+      const answered = (page.tools ?? []).filter((tool) => waiting.has(tool.toolCallId))
+      for (const tool of answered) waiting.delete(tool.toolCallId)
+      store.update((state) => applyToolStates(state, thread, answered))
+      cursor = page.nextCursor
+    }
+    // A finished walk has said all it can about these calls, answered or not:
+    // the next snapshot does not walk the same pages for them again. A walk
+    // cut short (a dropped connection, a failed read) is not remembered.
+    for (const toolCallId of walked) asked.add(toolCallId)
   }
 
   const hydrateThread = (scope: SubscriptionScope) => {

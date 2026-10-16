@@ -169,6 +169,44 @@ deltas and tool summaries follow, then a completed/interrupted/failed event.
 when no text exists, and zero is a valid token reading. Interaction requested and
 resolved events carry the same host interaction identity and their owning turn.
 
+### Tool calls
+
+Since protocol v17 a `tool.updated` payload (`ToolCallUpdateSchema`) carries,
+besides the host `toolCallId` and `turnId`:
+
+| Field | Meaning |
+| --- | --- |
+| `toolName` | The provider's own tool name, unchanged: Claude Code `Bash`, `Grep`, `mcp__<server>__<tool>`. There are no openmanager-specific names. Separate from `title`, which may be prose. |
+| `title`, `kind` | As before. |
+| `status` | `pending`, `in_progress`, `completed`, `failed`, `declined` (the user, or a rule acting for them, refused the call), `cancelled` (the turn stopped before the call reported a result). A final status is never left again. |
+| `input` | The tool's arguments as bounded JSON: at most `TOOL_INPUT_MAX_BYTES` (4 KiB) encoded, each string cut to `TOOL_INPUT_STRING_MAX_BYTES` (2 KiB, ending in `…`) and shorter until the whole fits. An edit tool's bodies (`old_string`, `new_string`, `content`, `edits[]` bodies, `new_source`, …) are removed; paths and flags stay. |
+| `output` | The bounded output, replacing what was held: `{ text }` while it fits in `TOOL_OUTPUT_MAX_BYTES` (16 KiB encoded); past that `{ text, omittedBytes, tail }`, the first 4 KiB, the UTF-8 bytes left out, and the newest end. |
+| `outputDelta` | Newly streamed output, appended with `appendToolOutput`. Never together with `output`. Past the cap the head stays and the tail moves, so a live viewer always sees the newest output. A provider that resends its whole output is turned into deltas when the resend extends what came before. |
+| `locations` | Files the call touched, at most 16, paths of at most 1024 characters. |
+| `lineChanges` | `{ added, removed }`, only when the provider reported them (Claude Code's structured patch or git diff of an edit). Never computed by diffing. |
+| `startedAt`, `finishedAt` | When the call opened and reached a final status. |
+
+All sizes are JSON-encoded UTF-8 bytes. The environment and clients fold
+updates with the same `applyToolUpdate`, so a stored call, a history page, a
+snapshot and a client that watched live hold the same value. No diff or file
+body crosses the wire. Images a tool returns are not part of its output: the
+environment stores them and files them in the reply as `artifact` blocks that
+name the call in `toolCallId`.
+
+When a turn ends, the environment settles every call it left open with a
+`tool.updated` just before the terminal turn event: `declined` if the user
+refused its permission, otherwise `cancelled`. A failure reported after the
+user refused the permission reads as `declined`, and after the user asked the
+turn to stop as `cancelled`.
+
+History pages and thread snapshots carry tool payloads newest first within
+256 KiB, and never past 896 KiB for the page as a whole. The call that does
+not fit keeps its locations and input if they fit and a shrunk output; older
+calls carry no input or locations and `output: { text: '', omittedBytes }`,
+naming the bytes of the whole output left out, so "not loaded" differs from
+"no output". Every omission marker counts output bytes only; a call that had
+no output carries no marker.
+
 Later file/git/terminal families can use an appropriate existing scope or add an
 explicit new scope under protocol versioning. They must not smuggle new scope
 types through the generic JSON payload or widen the meaning of existing scopes.
@@ -196,9 +234,9 @@ provider value. Every non-null result is validated by `ProofEventSchema`.
 | `user_message_chunk` | `message.delta` | Host user-message ID |
 | `agent_message_chunk` | `message.delta` | Host assistant-message ID |
 | `agent_thought_chunk` | `message.reasoning` | Host assistant-message ID |
-| `tool_call` | `tool.updated` | Host tool-call ID; raw input/output omitted |
-| `tool_call_update` | `tool.updated` | Host tool-call ID; raw input/output omitted |
-| `tool_call_content` | — | Deferred protocol family |
+| `tool_call` | `tool.updated` | Host tool-call ID; provider tool name, bounded input/output, locations, line changes, `startedAt` (see Tool calls) |
+| `tool_call_update` | `tool.updated` | Host tool-call ID; as above, output as a replacement or an `outputDelta`; `finishedAt` on a final status |
+| `tool_call_content` | `tool.updated` | Appended text output as `outputDelta`; images, diffs and terminal handles omitted |
 | `plan_update` | — | Deferred protocol family |
 | `subtask_update` | — | Deferred protocol family |
 | `permission_request` | `interaction.requested` | Host interaction/tool IDs |

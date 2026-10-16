@@ -32,6 +32,7 @@ import {
 import {
   projectAgentEvent,
   providers,
+  ToolCallTracker,
   type AgentRuntime,
   type HostDeps,
   type ProtocolEventContext,
@@ -404,6 +405,21 @@ export function createThreadService(
    * report must not quietly recreate what the user removed.
    */
   const forgottenChildren = new Set<string>()
+  /**
+   * What each running turn's tool calls have sent so far, by host turn id:
+   * output to stream as deltas, declined permissions, calls still open. Kept
+   * apart from the turn record because a turn's record is often let go before
+   * its terminal event is written, and that event is what settles the calls.
+   */
+  const toolCallsByTurn = new Map<string, ToolCallTracker>()
+  const toolCallsFor = (turnId: string) => {
+    let tracker = toolCallsByTurn.get(turnId)
+    if (!tracker) {
+      tracker = new ToolCallTracker()
+      toolCallsByTurn.set(turnId, tracker)
+    }
+    return tracker
+  }
   // Supplied after construction so the service can be assembled before the
   // WebSocket publisher exists.
   let environmentId = ''
@@ -458,6 +474,13 @@ export function createThreadService(
   // Provider callbacks and turn settlement must not fail because a write did:
   // the in-memory turn still settles, and the host decides how to report it.
   const appendRuntimeEvent = (event: ProofEvent) => {
+    if (
+      event.name === 'turn.completed' ||
+      event.name === 'turn.interrupted' ||
+      event.name === 'turn.failed'
+    ) {
+      settleToolCalls(event)
+    }
     try {
       appendEvent(event)
     } catch (error) {
@@ -494,6 +517,37 @@ export function createThreadService(
             },
           }
         }
+      }
+    }
+  }
+
+  /**
+   * Close the tool calls a turn leaves open, just before the event that ends
+   * it: clients ignore a turn's events once it has ended. A call whose
+   * permission the user refused is declined; any other never reported a
+   * result, so it was cancelled with the turn.
+   */
+  const settleToolCalls = (
+    event: Extract<ProofEvent, { name: 'turn.completed' | 'turn.interrupted' | 'turn.failed' }>,
+  ) => {
+    const { turnId } = event.payload
+    const tracker = toolCallsByTurn.get(turnId)
+    if (!tracker) return
+    toolCallsByTurn.delete(turnId)
+    for (const { toolCallId, status } of tracker.settle()) {
+      const settled = ProofEventSchemas['tool.updated'].parse({
+        type: 'event',
+        name: 'tool.updated',
+        eventId: randomUUID(),
+        timestamp: event.timestamp,
+        scope: event.scope,
+        payload: { toolCallId, turnId, status, finishedAt: event.timestamp },
+      })
+      try {
+        appendEvent(settled)
+      } catch (error) {
+        if (!options.onPersistenceError) throw error
+        options.onPersistenceError(error, settled.name)
       }
     }
   }
@@ -658,6 +712,7 @@ export function createThreadService(
   const abandonTurn = (item: ThreadRecord) => {
     if (!item.activeTurn) return
     item.activeTurn.interruptRequested = true
+    toolCallsByTurn.delete(item.activeTurn.turn.turnId)
     item.activeTurn = undefined
     void item.runtimeSession
       .then((sessionId) => runtime.cancel({ ...route(item), sessionId }))
@@ -803,8 +858,14 @@ export function createThreadService(
         active.generatedImages ??= new Set()
         if (active.generatedImages.has(key)) continue
         active.generatedImages.add(key)
-        projectOwnEvent(record, { ...event, category: 'stream', event: 'agent_message_chunk',
-          data: { content: image } }, active)
+        projectOwnEvent(
+          record,
+          { ...event, category: 'stream', event: 'agent_message_chunk', data: { content: image } },
+          active,
+          undefined,
+          undefined,
+          stableId(active.toolIds, event.data.toolCallId),
+        )
       }
     }
   }
@@ -815,6 +876,8 @@ export function createThreadService(
     active: ActiveTurn | undefined,
     completionState?: ProtocolEventContext['completionState'],
     failureReason?: TurnFailureReason,
+    /** The host id of the tool call a promoted image came from. */
+    imageToolCallId?: string,
   ): void => {
     // The durable prompt already names its uploaded images. Provider echoes must
     // neither duplicate them nor relabel them as generated output.
@@ -860,6 +923,12 @@ export function createThreadService(
           : undefined,
       completionState,
       failureReason,
+      toolCalls: active
+        ? providerToolId !== undefined
+          ? toolCallsFor(active.turn.turnId)
+          : toolCallsByTurn.get(active.turn.turnId)
+        : undefined,
+      interruptRequested: active?.interruptRequested,
     })
     if (!projected) return
     if (projected.name === 'message.delta' && projected.payload.content.type === 'image' && options.artifacts) {
@@ -867,7 +936,10 @@ export function createThreadService(
         const content = projected.payload.content
         const metadata = options.artifacts.generated(record.session.sessionId,
           record.session.workspaceId, content.mimeType, content.data)
-        projected.payload.content = options.artifacts.reference(metadata)
+        projected.payload.content = {
+          ...options.artifacts.reference(metadata),
+          ...(imageToolCallId ? { toolCallId: imageToolCallId } : {}),
+        }
       } catch (error) {
         options.onPersistenceError?.(error, 'artifact.generated')
         // Never fall back to putting image bytes in the event log.
@@ -904,6 +976,8 @@ export function createThreadService(
       if (entry) {
         entry.settled = true
         entry.resolution = projected.payload.response
+        const refused = declinedToolCall(entry.interaction, projected.payload.response)
+        if (refused) toolCallsFor(active.turn.turnId).decline(refused)
         if (entry.interaction.lifecycle) {
           entry.interaction = {
             ...entry.interaction,
@@ -922,6 +996,16 @@ export function createThreadService(
       active.pendingInteractions.delete(projected.payload.response.interactionId)
       touch(record, active.pendingInteractions.size > 0 ? 'waiting' : 'running')
     }
+  }
+
+  /** The tool call a permission answer refused, if it refused one. */
+  const declinedToolCall = (interaction: Interaction, response: InteractionResponse) => {
+    if (interaction.kind !== 'permission' || response.outcome.outcome !== 'selected') return
+    const { optionId } = response.outcome
+    const option = interaction.options.find((item) => item.optionId === optionId)
+    return option?.kind === 'reject_once' || option?.kind === 'reject_always'
+      ? interaction.toolCall.toolCallId
+      : undefined
   }
 
   /** Where a session rests once a turn has ended without failing. */

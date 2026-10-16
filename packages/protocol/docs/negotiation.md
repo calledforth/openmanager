@@ -46,6 +46,10 @@ draft; the upload result then carries `workspaceId` and no `sessionId`.
 Version 8 adds `filesystem.browse`, which lists the environment's folders for
 Add project's picker, and `environment.settings.get`/`.set`, which hold settings
 every paired client shares, starting with the folder that picker opens in.
+Later versions are listed beside `PROTOCOL_VERSION` in `src/negotiation.ts`.
+Version 17 gives tool calls their payloads and the `declined` and `cancelled`
+statuses, which a version-16 peer's status enum rejects; see
+[Tool calls](./proof-slice.md#tool-calls).
 
 Call `evaluateBootstrap` with the parsed HTTP body and the capabilities required
 by the current client path:

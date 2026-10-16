@@ -1,0 +1,903 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import type { DatabaseSync } from 'node:sqlite'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ClaudeMessageTranslator, type AgentRuntime } from '@agentpack/runtime/node'
+import {
+  ProofEventSchemas,
+  ProofResponseSchemas,
+  TOOL_OUTPUT_MAX_BYTES,
+  appendToolOutput,
+  applyToolUpdate,
+  boundToolOutput,
+  toolOutputBytes,
+  type DurableEvent,
+  type EventEnvelope,
+  type ProofEvent,
+  type ToolCallState,
+  type ToolCallUpdate,
+} from '@openmanager/protocol/node'
+import { openEnvironmentDatabase } from '../src/db/database.js'
+import { createEventRepository, type DurableProofEvent } from '../src/db/event-repository.js'
+import { readSchemaVersion } from '../src/db/migrate.js'
+import { MIGRATIONS } from '../src/db/migrations.js'
+import { createReplayReader } from '../src/db/replay.js'
+import {
+  HISTORY_ENVELOPE_RESERVE_BYTES,
+  HISTORY_PAGE_BUDGET_BYTES,
+  TOOL_PAYLOAD_BUDGET_BYTES,
+  listSessionHistory,
+  partialToolPayload,
+} from '../src/db/session-store.js'
+import { createThreadService, type WorkspaceRuntimeResolver } from '../src/thread-service.js'
+import { createPersistentEventService } from '../src/event-service.js'
+
+const directories: string[] = []
+const databases: DatabaseSync[] = []
+afterEach(async () => {
+  for (const database of databases.splice(0)) {
+    try {
+      database.close()
+    } catch {
+      /* closed by the test */
+    }
+  }
+  await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })))
+})
+
+const scope = {
+  type: 'thread',
+  environmentId: 'environment-1',
+  sessionId: 'session-1',
+  threadId: 'thread-1',
+} as const
+const T0 = Date.parse('2026-10-09T10:00:00.000Z')
+const at = (second: number) => new Date(T0 + second * 1000).toISOString()
+const encoded = (value: unknown) => Buffer.byteLength(JSON.stringify(value), 'utf8')
+
+async function dataDir(): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), 'openmanager-tool-payloads-'))
+  directories.push(directory)
+  return directory
+}
+
+function seed(database: DatabaseSync): void {
+  database.exec(`
+    INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at)
+    VALUES ('workspace-1', 'Workspace', '/workspace', 1, 1);
+    INSERT INTO sessions (session_id, workspace_id, provider_id, status, created_at, updated_at)
+    VALUES ('session-1', 'workspace-1', 'claude', 'idle', 1, 1);
+    INSERT INTO threads (thread_id, session_id, workspace_id, created_at, updated_at)
+    VALUES ('thread-1', 'session-1', 'workspace-1', 1, 1);
+  `)
+}
+
+async function createDatabase(): Promise<{ database: DatabaseSync; directory: string }> {
+  const directory = await dataDir()
+  const database = openEnvironmentDatabase(directory)
+  databases.push(database)
+  seed(database)
+  return { database, directory }
+}
+
+let eventCount = 0
+const started = (turnId = 'turn-1', second = 0): DurableProofEvent =>
+  ProofEventSchemas['turn.started'].parse({
+    type: 'event',
+    name: 'turn.started',
+    eventId: `started-${turnId}`,
+    timestamp: at(second),
+    scope,
+    payload: {
+      turn: { turnId, threadId: 'thread-1', state: 'running' },
+      userMessage: {
+        messageId: `prompt-${turnId}`,
+        threadId: 'thread-1',
+        turnId,
+        role: 'user',
+        content: [{ type: 'text', text: 'Do it' }],
+      },
+    },
+  })
+const tool = (
+  patch: Omit<ToolCallUpdate, 'turnId' | 'toolCallId'> & { toolCallId?: string; turnId?: string },
+  second = 1,
+): DurableProofEvent =>
+  ProofEventSchemas['tool.updated'].parse({
+    type: 'event',
+    name: 'tool.updated',
+    eventId: `tool-${(eventCount += 1)}`,
+    timestamp: at(second),
+    scope,
+    payload: { toolCallId: 'tool-1', turnId: 'turn-1', ...patch },
+  })
+const text = (value: string, messageId = 'reply-1', turnId = 'turn-1'): DurableProofEvent =>
+  ProofEventSchemas['message.delta'].parse({
+    type: 'event',
+    name: 'message.delta',
+    eventId: `text-${(eventCount += 1)}`,
+    timestamp: at(2),
+    scope,
+    payload: { messageId, turnId, role: 'assistant', content: { type: 'text', text: value } },
+  })
+const finished = (
+  name: 'turn.completed' | 'turn.interrupted' = 'turn.completed',
+  turnId = 'turn-1',
+): DurableProofEvent =>
+  ProofEventSchemas[name].parse({
+    type: 'event',
+    name,
+    eventId: `${name}-${turnId}`,
+    timestamp: at(9),
+    scope,
+    payload: { turnId },
+  })
+
+/** What a client holds after folding these events. */
+function fold(
+  events: readonly ProofEvent[],
+  from: ToolCallState[] = [],
+): Map<string, ToolCallState> {
+  const tools = new Map(from.map((item) => [item.toolCallId, item]))
+  for (const event of events) {
+    if (event.name !== 'tool.updated') continue
+    tools.set(
+      event.payload.toolCallId,
+      applyToolUpdate(tools.get(event.payload.toolCallId), event.payload),
+    )
+  }
+  return tools
+}
+
+const history = (database: DatabaseSync) =>
+  listSessionHistory(database, { sessionId: 'session-1', threadId: 'thread-1' })!
+
+describe('tool payloads in turn_activity', () => {
+  it('stores what the events said and reads back what a client folded', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const events = [
+      started(),
+      tool({
+        toolName: 'Bash',
+        title: 'Bash',
+        kind: 'execute',
+        status: 'pending',
+        input: { command: 'pnpm test' },
+        startedAt: at(1),
+      }),
+      tool({ status: 'in_progress', output: { text: 'running\n' } }),
+      tool({ outputDelta: 'ok 1\n' }),
+      tool({ outputDelta: 'ok 2\n' }),
+      tool({
+        toolCallId: 'tool-2',
+        toolName: 'Edit',
+        kind: 'edit',
+        status: 'completed',
+        input: { file_path: '/workspace/a.ts' },
+        locations: [{ path: '/workspace/a.ts' }],
+        lineChanges: { added: 3, removed: 1 },
+        startedAt: at(2),
+        finishedAt: at(3),
+      }),
+      tool({ status: 'completed', finishedAt: at(4) }, 4),
+      tool({ toolCallId: 'tool-3', toolName: 'Bash', status: 'declined', finishedAt: at(5) }, 5),
+      tool({ toolCallId: 'tool-4', toolName: 'Bash', status: 'cancelled', finishedAt: at(6) }, 6),
+      finished(),
+    ]
+    repository.appendEvents(scope, events)
+
+    const page = history(database)
+    expect(page.tools).toEqual([...fold(events).values()])
+    expect(page.tools[0]).toEqual({
+      toolCallId: 'tool-1',
+      turnId: 'turn-1',
+      toolName: 'Bash',
+      title: 'Bash',
+      kind: 'execute',
+      status: 'completed',
+      input: { command: 'pnpm test' },
+      output: { text: 'running\nok 1\nok 2\n' },
+      startedAt: at(1),
+      finishedAt: at(4),
+    })
+    expect(page.tools.map((item) => item.status)).toEqual([
+      'completed',
+      'completed',
+      'declined',
+      'cancelled',
+    ])
+    // The payload sits beside the row's small state, and its size beside that.
+    const row = database
+      .prepare(
+        "SELECT state_json, payload_json, payload_bytes, output_bytes FROM turn_activity WHERE activity_id = 'tool-1'",
+      )
+      .get() as {
+      state_json: string
+      payload_json: string
+      payload_bytes: number
+      output_bytes: number
+    }
+    expect(JSON.parse(row.state_json)).not.toHaveProperty('output')
+    expect(JSON.parse(row.payload_json)).toEqual({
+      input: { command: 'pnpm test' },
+      output: { text: 'running\nok 1\nok 2\n' },
+    })
+    expect(row.payload_bytes).toBe(Buffer.byteLength(row.payload_json))
+    expect(row.output_bytes).toBe(Buffer.byteLength('running\nok 1\nok 2\n'))
+    const declined = database
+      .prepare("SELECT payload_json, payload_bytes FROM turn_activity WHERE activity_id = 'tool-3'")
+      .get()
+    expect(declined).toEqual({ payload_json: null, payload_bytes: 0 })
+  })
+
+  it('keeps a page and a snapshot inside the frame budget, newest payloads first', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const big = `start\n${'x'.repeat(60_000)}\nend`
+    const events: DurableProofEvent[] = [
+      started(),
+      // The oldest call never produced output: there is nothing to mark.
+      tool({
+        toolCallId: 'quiet',
+        toolName: 'Bash',
+        status: 'completed',
+        input: { command: 'true' },
+      }),
+    ]
+    for (let index = 0; index < 40; index += 1) {
+      events.push(
+        tool({
+          toolCallId: `call-${index}`,
+          toolName: 'Bash',
+          status: 'completed',
+          input: { command: `run ${index} ${'y'.repeat(2_000)}` },
+          output: boundToolOutput(`${index}:${big}`),
+          locations: [{ path: `/workspace/file-${index}.ts` }],
+        }),
+      )
+    }
+    events.push(text('done'), finished())
+    repository.appendEvents(scope, events)
+
+    const page = history(database)
+    expect(encoded(page)).toBeLessThan(HISTORY_PAGE_BUDGET_BYTES)
+    const payloads = page.tools.reduce(
+      (sum, item) =>
+        sum +
+        (item.input === undefined ? 0 : encoded(item.input)) +
+        (item.output === undefined ? 0 : encoded(item.output)) +
+        (item.locations === undefined ? 0 : encoded(item.locations)),
+      0,
+    )
+    expect(payloads).toBeLessThanOrEqual(TOOL_PAYLOAD_BUDGET_BYTES + 40 * 64)
+    // The newest calls come whole; the oldest say how much was left out.
+    const newest = page.tools.at(-1)!
+    expect(newest.output).toEqual(boundToolOutput(`39:${big}`))
+    expect(newest.input).toBeDefined()
+    expect(page.tools[0]).toEqual({
+      toolCallId: 'quiet',
+      turnId: 'turn-1',
+      toolName: 'Bash',
+      status: 'completed',
+    })
+    const oldest = page.tools[1]!
+    expect(oldest.input).toBeUndefined()
+    expect(oldest.locations).toBeUndefined()
+    expect(oldest.output).toMatchObject({ text: '' })
+    // The marker counts the whole output, never the input or locations beside it.
+    expect(oldest.output!.omittedBytes).toBe(Buffer.byteLength(`0:${big}`))
+    // Each kept output still opens with its start and ends with its newest end.
+    const partial = page.tools.find(
+      (item) => item.output && item.output.text !== '' && toolOutputBytes(item.output) < 16_000,
+    )
+    expect(partial).toBeDefined()
+    expect(partial!.output!.text.length).toBeGreaterThan(0)
+    expect(partial!.output!.tail!.endsWith('\nend')).toBe(true)
+    // Newest first: whole, then the one cut to fit, then markers only.
+    const shape = page.tools
+      .slice(1)
+      .map((item) => (item.output!.text === '' ? 'marker' : item === partial ? 'partial' : 'whole'))
+    const firstWhole = shape.indexOf('whole')
+    expect(shape.slice(0, shape.indexOf('partial')).every((kind) => kind === 'marker')).toBe(true)
+    expect(shape.indexOf('partial')).toBe(firstWhole - 1)
+    expect(shape.slice(firstWhole).every((kind) => kind === 'whole')).toBe(true)
+    expect(page.tools.map((item) => item.status).every((status) => status === 'completed')).toBe(
+      true,
+    )
+
+    // A late joiner's snapshot is the same page, under the same budget.
+    const reader = createReplayReader(database, {
+      epoch: 'epoch-1',
+      environment: () => ({ environmentId: 'environment-1', name: 'Local' }),
+      workspaces: () => [],
+    })
+    const snapshot = reader.read(scope, null)
+    expect(snapshot.mode).toBe('snapshot')
+    if (snapshot.mode !== 'snapshot') return
+    const state = snapshot.snapshot.state as { tools: ToolCallState[] }
+    expect(state.tools).toEqual(page.tools)
+    expect(encoded(snapshot)).toBeLessThan(1024 * 1024)
+  })
+
+  it.each([
+    ['leaves payloads less room when turns fill the page', 2_200],
+    ['carries no payload when the page is over budget without one', 3_200],
+  ])('%s', async (_name, turnCount) => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    // Every turn of the thread rides each page; long ids make them heavy.
+    const insert = database.prepare(
+      `INSERT INTO turns (turn_id, thread_id, workspace_id, state, started_at, updated_at, finished_at)
+       VALUES (?, 'thread-1', 'workspace-1', 'completed', ?, ?, ?)`,
+    )
+    // One transaction: thousands of separate commits take seconds on a slow disk.
+    database.exec('BEGIN')
+    for (let index = 0; index < turnCount; index += 1) {
+      insert.run(`old-${index}-${'t'.repeat(200)}`, index + 1, index + 1, index + 1)
+    }
+    database.exec('COMMIT')
+    const events: DurableProofEvent[] = [started()]
+    for (let index = 0; index < 20; index += 1) {
+      events.push(
+        tool({
+          toolCallId: `call-${index}`,
+          toolName: 'Bash',
+          status: 'completed',
+          input: { command: `run ${index}` },
+          output: boundToolOutput(`${index}:${'x'.repeat(60_000)}`),
+        }),
+      )
+    }
+    events.push(finished())
+    repository.appendEvents(scope, events)
+
+    const page = history(database)
+    const bare = {
+      ...page,
+      tools: page.tools.map(
+        ({ input: _input, output: _output, locations: _locations, ...state }) => state,
+      ),
+    }
+    const frame = HISTORY_PAGE_BUDGET_BYTES - HISTORY_ENVELOPE_RESERVE_BYTES
+    if (encoded(bare) <= frame) {
+      // Payloads fill what the turns leave, and no more.
+      expect(encoded(page)).toBeLessThanOrEqual(frame)
+      expect(encoded(page) - encoded(bare)).toBeLessThan(TOOL_PAYLOAD_BUDGET_BYTES)
+      expect(encoded(page) - encoded(bare)).toBeGreaterThan(frame - encoded(bare) - 20_000)
+      expect(page.tools.at(-1)!.output).toEqual(boundToolOutput(`19:${'x'.repeat(60_000)}`))
+      expect(page.tools[0]!.output).toMatchObject({ text: '' })
+    } else {
+      // Already over without payloads: they are left off, markers included.
+      expect(
+        page.tools.every((item) => item.input === undefined && item.output === undefined),
+      ).toBe(true)
+      expect(encoded(page)).toBe(encoded(bare))
+    }
+    expect(encoded(bare) <= frame).toBe(turnCount === 2_200)
+  })
+
+  it("never lets arguments crowd out every trace of a call's output", () => {
+    const state: ToolCallState = { toolCallId: 'call', turnId: 'turn-1', toolName: 'Bash' }
+    const payload = {
+      input: { command: `run ${'y'.repeat(3_000)}` },
+      locations: [{ path: '/workspace/a.ts' }],
+      output: boundToolOutput(`start\n${'x'.repeat(60_000)}\nend`),
+    }
+    const added = (next: ToolCallState) => encoded(next) - encoded(state)
+    const outputBytes = (output: NonNullable<ToolCallState['output']>) =>
+      Buffer.byteLength(output.text) +
+      Buffer.byteLength(output.tail ?? '') +
+      (output.omittedBytes ?? 0)
+    const total = outputBytes(payload.output)
+    // Room for the input and locations exactly, and nothing more.
+    const tight = added({ ...state, input: payload.input, locations: payload.locations })
+    for (const available of [tight, tight + 40, tight + 600, 2_000, 120]) {
+      const fitted = partialToolPayload(state, payload, available)!
+      expect(added(fitted)).toBeLessThanOrEqual(available)
+      // The output is there: some of it, or a marker of all of it.
+      expect(fitted.output).toBeDefined()
+      expect(outputBytes(fitted.output!)).toBe(total)
+      if (fitted.output!.text === '') expect(fitted.output!.omittedBytes).toBe(total)
+    }
+    // Arguments go first when the marker would not fit beside them.
+    expect(partialToolPayload(state, payload, tight)!.input).toBeUndefined()
+    expect(partialToolPayload(state, payload, 2_000)!.output!.text.startsWith('start')).toBe(true)
+    // Not even the marker fits: nothing is offered.
+    expect(partialToolPayload(state, payload, 10)).toBeUndefined()
+  })
+
+  it('replays output deltas to exactly what a late joiner reads from the snapshot', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const reader = createReplayReader(database, {
+      epoch: 'epoch-1',
+      environment: () => ({ environmentId: 'environment-1', name: 'Local' }),
+      workspaces: () => [],
+    })
+    repository.appendEvents(scope, [
+      started(),
+      tool({ toolName: 'Bash', status: 'in_progress', input: { command: 'make' } }),
+    ])
+    const early = reader.read(scope, null)
+    if (early.mode !== 'snapshot') throw new Error('expected a snapshot')
+    // Enough to pass the output cap, few enough for one replay frame.
+    const chunks = Array.from({ length: 120 }, (_, index) => `line ${index} ${'.'.repeat(200)}\n`)
+    repository.appendEvents(scope, [
+      ...chunks.map((chunk) => tool({ outputDelta: chunk })),
+      tool({ status: 'completed', finishedAt: at(8) }),
+    ])
+
+    // Client A watched from the early snapshot and catches up by replay.
+    const replayed = reader.read(scope, early.snapshot.cursor)
+    expect(replayed.mode).toBe('replay')
+    if (replayed.mode !== 'replay') return
+    const early_tools = (early.snapshot.state as { tools: ToolCallState[] }).tools
+    const caughtUp = fold(
+      replayed.events.map((record) => record.event),
+      early_tools,
+    )
+    // Client B joins now.
+    const late = reader.read(scope, null)
+    if (late.mode !== 'snapshot') throw new Error('expected a snapshot')
+    const lateTools = (late.snapshot.state as { tools: ToolCallState[] }).tools
+    expect([...caughtUp.values()]).toEqual(lateTools)
+    const output = lateTools[0]!.output!
+    expect(output).toEqual(
+      chunks.reduce<ReturnType<typeof boundToolOutput> | undefined>(appendToolOutput, undefined),
+    )
+    expect(output.tail!.endsWith(chunks.at(-1)!)).toBe(true)
+    expect(toolOutputBytes(output)).toBeLessThanOrEqual(TOOL_OUTPUT_MAX_BYTES)
+  })
+
+  it('settles a call a dead process left open as cancelled when the environment restarts', async () => {
+    const { database, directory } = await createDatabase()
+    // A second thread whose turn finished before the crash.
+    database.exec(`
+      INSERT INTO threads (thread_id, session_id, workspace_id, created_at, updated_at)
+      VALUES ('thread-2', 'session-1', 'workspace-1', 1, 1);
+    `)
+    const settledScope = { ...scope, threadId: 'thread-2' }
+    const repository = createEventRepository(database)
+    repository.appendEvents(scope, [
+      started(),
+      tool({ toolName: 'Bash', status: 'in_progress', input: { command: 'sleep 100' } }),
+      tool({ toolCallId: 'tool-done', toolName: 'Read', status: 'completed', finishedAt: at(2) }),
+    ])
+    repository.appendEvents(settledScope, [
+      ProofEventSchemas['turn.started'].parse({
+        ...started('turn-2'),
+        scope: settledScope,
+        payload: {
+          turn: { turnId: 'turn-2', threadId: 'thread-2', state: 'running' },
+          userMessage: {
+            messageId: 'prompt-turn-2',
+            threadId: 'thread-2',
+            turnId: 'turn-2',
+            role: 'user',
+            content: [{ type: 'text', text: 'Hi' }],
+          },
+        },
+      }),
+      ProofEventSchemas['turn.completed'].parse({
+        ...finished('turn.completed', 'turn-2'),
+        scope: settledScope,
+      }),
+    ])
+    const readerOf = (db: DatabaseSync) =>
+      createReplayReader(db, {
+        epoch: 'epoch-1',
+        environment: () => ({ environmentId: 'environment-1', name: 'Local' }),
+        workspaces: () => [],
+      })
+    // What a connected client last applied, just before the process died.
+    const before = readerOf(database).read(scope, null)
+    const settledBefore = readerOf(database).read(settledScope, null)
+    if (before.mode !== 'snapshot' || settledBefore.mode !== 'snapshot') throw new Error('snapshot')
+    database.close()
+    const reopened = openEnvironmentDatabase(directory)
+    databases.push(reopened)
+
+    // Resuming from that cursor must not replay nothing over a running turn:
+    // the stream reset hands the client the recovered state instead.
+    const resumed = readerOf(reopened).read(scope, before.snapshot.cursor)
+    expect(resumed).toMatchObject({ mode: 'snapshot', reason: 'stream_reset' })
+    if (resumed.mode !== 'snapshot') return
+    const state = resumed.snapshot.state as { turns: { state: string }[]; tools: ToolCallState[] }
+    expect(state.turns[0]!.state).toBe('interrupted')
+    expect(state.tools[0]).toMatchObject({ toolCallId: 'tool-1', status: 'cancelled' })
+    expect(resumed.snapshot.cursor.sequence).toBe(before.snapshot.cursor.sequence)
+    // A thread with nothing to recover keeps its stream.
+    expect(readerOf(reopened).read(settledScope, settledBefore.snapshot.cursor)).toMatchObject({
+      mode: 'replay',
+      events: [],
+    })
+
+    const page = history(reopened)
+    expect(page.turns[0]!.state).toBe('interrupted')
+    expect(page.tools[0]).toMatchObject({
+      toolCallId: 'tool-1',
+      status: 'cancelled',
+      input: { command: 'sleep 100' },
+    })
+    expect(page.tools[0]!.finishedAt).toBeDefined()
+    expect(page.tools[1]).toMatchObject({ status: 'completed', finishedAt: at(2) })
+  })
+
+  it('upgrades a version 19 database, settling only the calls its ended turns left open', async () => {
+    const directory = await dataDir()
+    const old = openEnvironmentDatabase(directory, MIGRATIONS.slice(0, 19))
+    expect(readSchemaVersion(old)).toBe(19)
+    seed(old)
+    old.exec(`
+      INSERT INTO turns (turn_id, thread_id, workspace_id, state, started_at, updated_at)
+      VALUES ('turn-1', 'thread-1', 'workspace-1', 'completed', 1, 1);
+      INSERT INTO turns (turn_id, thread_id, workspace_id, state, started_at, updated_at, finished_at)
+      VALUES ('turn-2', 'thread-1', 'workspace-1', 'interrupted', 2, ${T0}, ${T0});
+    `)
+    const insert = old.prepare(
+      `INSERT INTO turn_activity (activity_id, workspace_id, thread_id, turn_id, kind, ordinal,
+         state_json, created_at, updated_at)
+       VALUES (?, 'workspace-1', 'thread-1', ?, 'tool', ?, ?, 1, 1)`,
+    )
+    const legacy = (id: string, turnId: string, ordinal: number, state: object) =>
+      insert.run(id, turnId, ordinal, JSON.stringify({ toolCallId: id, turnId, ...state }))
+    legacy('legacy-tool', 'turn-1', 5, { title: 'Read file', status: 'completed' })
+    // Left open by an older version under turns that have ended.
+    legacy('legacy-open', 'turn-1', 6, { title: 'Run tests', status: 'in_progress' })
+    legacy('legacy-bare', 'turn-1', 7, { title: 'Search' })
+    legacy('legacy-timed', 'turn-2', 8, { title: 'Build', status: 'pending' })
+    old.close()
+
+    const upgraded = openEnvironmentDatabase(directory)
+    databases.push(upgraded)
+    expect(readSchemaVersion(upgraded)).toBe(20)
+    const columns = (
+      upgraded.prepare('PRAGMA table_info(turn_activity)').all() as { name: string }[]
+    ).map((column) => column.name)
+    expect(columns).toEqual(
+      expect.arrayContaining(['payload_json', 'payload_bytes', 'output_bytes']),
+    )
+    expect(history(upgraded).tools).toEqual([
+      { toolCallId: 'legacy-tool', turnId: 'turn-1', title: 'Read file', status: 'completed' },
+      { toolCallId: 'legacy-open', turnId: 'turn-1', title: 'Run tests', status: 'cancelled' },
+      { toolCallId: 'legacy-bare', turnId: 'turn-1', title: 'Search', status: 'cancelled' },
+      {
+        toolCallId: 'legacy-timed',
+        turnId: 'turn-2',
+        title: 'Build',
+        status: 'cancelled',
+        finishedAt: at(0),
+      },
+    ])
+    // A reasoning row can never hold a payload.
+    expect(() =>
+      upgraded
+        .prepare(
+          `INSERT INTO turn_activity (activity_id, workspace_id, thread_id, turn_id, kind, ordinal,
+             state_json, payload_json, created_at, updated_at)
+           VALUES ('thought', 'workspace-1', 'thread-1', 'turn-1', 'reasoning', 6, '{}', '{}', 1, 1)`,
+        )
+        .run(),
+    ).toThrow(/CHECK/)
+  })
+})
+
+describe('tool calls through the thread service', () => {
+  const registered: WorkspaceRuntimeResolver = (workspaceId) =>
+    workspaceId === '/workspace/project' ? { providerId: 'opencode', cwd: workspaceId } : undefined
+
+  async function setup() {
+    let finishPrompt: () => void = () => undefined
+    const runtime = {
+      ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-session', state: 'created' }),
+      prompt: vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finishPrompt = resolve
+          }),
+      ),
+      cancel: vi.fn().mockResolvedValue(undefined),
+    }
+    const events: EventEnvelope[] = []
+    const service = createThreadService(
+      runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
+      { rejection: () => undefined },
+      (event) => events.push(event),
+      undefined,
+      registered,
+    )
+    service.setEnvironmentId('environment-1')
+    const created = ProofResponseSchemas['session.create'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'create',
+        name: 'session.create',
+        payload: {
+          environmentId: 'environment-1',
+          providerId: 'opencode',
+          workspaceId: '/workspace/project',
+        },
+      }),
+    ).payload
+    const target = { sessionId: created.session.sessionId, threadId: created.thread.threadId }
+    const sent = ProofResponseSchemas['turn.send'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'send',
+        name: 'turn.send',
+        payload: { ...target, text: 'go' },
+      }),
+    ).payload
+    await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(1))
+    let seq = 0
+    const emit = (event: Record<string, unknown>) =>
+      service.onRuntimeEvent({
+        id: `runtime-${(seq += 1)}`,
+        seq,
+        timestamp: at(seq),
+        providerId: 'opencode',
+        threadId: target.threadId,
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-session',
+        messageId: 'assistant-1',
+        ...event,
+      } as Parameters<typeof service.onRuntimeEvent>[0])
+    emit({
+      category: 'lifecycle',
+      event: 'prompt_started',
+      data: { prompt: 'go', userMessageId: sent.userMessage.messageId },
+    })
+    const tools = () =>
+      events.filter((event) => event.name === 'tool.updated') as Extract<
+        ProofEvent,
+        { name: 'tool.updated' }
+      >[]
+    return { service, runtime, events, emit, tools, target, sent, finish: () => finishPrompt() }
+  }
+
+  it('reads a call whose permission the user refused as declined, and cancels what the turn leaves open', async () => {
+    const h = await setup()
+    h.emit({
+      category: 'tool',
+      event: 'tool_call',
+      data: {
+        toolCallId: 'p-rm',
+        title: 'rm -rf build',
+        kind: 'execute',
+        status: 'pending',
+        rawInput: { command: 'rm -rf build' },
+      },
+    })
+    h.emit({
+      category: 'permission',
+      event: 'permission_request',
+      data: {
+        requestId: 'provider-permission',
+        sessionId: 'provider-session',
+        toolCall: { toolCallId: 'p-rm', title: 'rm -rf build' },
+        options: [
+          { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+          { optionId: 'deny', name: 'Deny', kind: 'reject_once' },
+        ],
+      },
+    })
+    h.emit({
+      category: 'permission',
+      event: 'permission_resolved',
+      data: {
+        requestId: 'provider-permission',
+        outcome: { outcome: 'selected', optionId: 'deny' },
+      },
+    })
+    h.emit({
+      category: 'tool',
+      event: 'tool_call_update',
+      data: { toolCallId: 'p-rm', status: 'failed' },
+    })
+    h.emit({
+      category: 'tool',
+      event: 'tool_call',
+      data: { toolCallId: 'p-ls', title: 'ls', kind: 'execute', status: 'in_progress' },
+    })
+    h.emit({ category: 'lifecycle', event: 'prompt_completed', data: { stopReason: 'end_turn' } })
+
+    const [rm, ls] = [...fold(h.tools()).values()]
+    expect(rm).toMatchObject({ status: 'declined', input: { command: 'rm -rf build' } })
+    expect(ls).toMatchObject({ status: 'cancelled' })
+    expect(ls!.finishedAt).toBeDefined()
+    // The settling update lands before the turn's end, which clients would
+    // otherwise treat as final and ignore anything after.
+    const names = h.events.map((event) => event.name)
+    expect(names.lastIndexOf('tool.updated')).toBeLessThan(names.indexOf('turn.completed'))
+  })
+
+  it('cancels the calls a stopped turn leaves running', async () => {
+    const h = await setup()
+    h.emit({
+      category: 'tool',
+      event: 'tool_call',
+      data: { toolCallId: 'p-sleep', title: 'sleep', kind: 'execute', status: 'in_progress' },
+    })
+    h.service.dispatch({
+      type: 'command',
+      requestId: 'stop',
+      name: 'turn.interrupt',
+      payload: { ...h.target, turnId: h.sent.turn.turnId },
+    })
+    // A provider reports the stopped tool as failed: it was cancelled.
+    h.emit({
+      category: 'tool',
+      event: 'tool_call',
+      data: { toolCallId: 'p-two', title: 'two', status: 'in_progress' },
+    })
+    h.emit({
+      category: 'tool',
+      event: 'tool_call_update',
+      data: { toolCallId: 'p-two', status: 'failed' },
+    })
+    await vi.waitFor(() =>
+      expect(h.events.some((event) => event.name === 'turn.interrupted')).toBe(true),
+    )
+    const states = [...fold(h.tools()).values()]
+    expect(states.map((item) => item.status)).toEqual(['cancelled', 'cancelled'])
+    const names = h.events.map((event) => event.name)
+    expect(names.lastIndexOf('tool.updated')).toBeLessThan(names.indexOf('turn.interrupted'))
+  })
+})
+
+describe('Claude Code edit results end to end', () => {
+  it('never stores or serves what an edit wrote, only its message', async () => {
+    const directory = await dataDir()
+    const database = openEnvironmentDatabase(directory)
+    databases.push(database)
+    database
+      .prepare(
+        `INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at)
+         VALUES ('/workspace/project', 'project', '/workspace/project', 1, 1)`,
+      )
+      .run()
+    const published: DurableEvent[] = []
+    const events = createPersistentEventService(database, (record) => published.push(record), {
+      sessionProviderId: () => 'claude',
+    })
+    const runtime = {
+      ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-session', state: 'created' }),
+      prompt: vi.fn(() => new Promise<void>(() => undefined)),
+      cancel: vi.fn(),
+    }
+    const service = createThreadService(
+      runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
+      { rejection: () => undefined },
+      events.append,
+      undefined,
+      (workspaceId) =>
+        workspaceId === '/workspace/project'
+          ? { providerId: 'claude', cwd: workspaceId }
+          : undefined,
+      { database, flush: events.flush, appendAtomic: events.appendAtomic },
+    )
+    service.setEnvironmentId('environment-1')
+    const created = ProofResponseSchemas['session.create'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'create',
+        name: 'session.create',
+        payload: {
+          environmentId: 'environment-1',
+          providerId: 'claude',
+          workspaceId: '/workspace/project',
+        },
+      }),
+    ).payload
+    const target = { sessionId: created.session.sessionId, threadId: created.thread.threadId }
+    const sent = ProofResponseSchemas['turn.send'].parse(
+      service.dispatch({
+        type: 'command',
+        requestId: 'send',
+        name: 'turn.send',
+        payload: { ...target, text: 'edit the notebook' },
+      }),
+    ).payload
+    await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(1))
+    let seq = 0
+    const emit = (event: Record<string, unknown>) =>
+      service.onRuntimeEvent({
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-session',
+        ...event,
+        id: `runtime-${(seq += 1)}`,
+        seq,
+        timestamp: new Date(T0 + seq * 1000).toISOString(),
+        providerId: 'claude',
+        threadId: target.threadId,
+        messageId: 'assistant-1',
+      } as Parameters<typeof service.onRuntimeEvent>[0])
+    emit({
+      category: 'lifecycle',
+      event: 'prompt_started',
+      data: { prompt: 'edit the notebook', userMessageId: sent.userMessage.messageId },
+    })
+    // The frames Claude Code sends, through the real translator.
+    const translator = new ClaudeMessageTranslator({
+      route: () => ({ threadId: target.threadId, workspaceId: '/workspace/project' }),
+      log: () => undefined,
+    })
+    const frames = [
+      [
+        'toolu_nb',
+        'NotebookEdit',
+        { notebook_path: '/n.ipynb', cell_id: 'c1', new_source: 'SECRET' },
+        'Updated cell c1 with SECRET',
+        false,
+      ],
+      [
+        'toolu_ed',
+        'Edit',
+        { file_path: '/a.ts', old_string: 'SECRET', new_string: 'SECRET 2' },
+        '<tool_use_error>String to replace not found in file.\nString: SECRET</tool_use_error>',
+        true,
+      ],
+    ] as const
+    frames.forEach(([id, name, input, result, isError], index) => {
+      const stream = (event: Record<string, unknown>) => ({
+        type: 'stream_event',
+        event,
+        parent_tool_use_id: null,
+        uuid: `uuid-${id}`,
+        session_id: 'provider-session',
+      })
+      const messages = [
+        stream({
+          type: 'content_block_start',
+          index,
+          content_block: { type: 'tool_use', id, name, input: {} },
+        }),
+        stream({
+          type: 'content_block_delta',
+          index,
+          delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+        }),
+        {
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: id,
+                content: result,
+                ...(isError ? { is_error: true } : {}),
+              },
+            ],
+          },
+          parent_tool_use_id: null,
+          session_id: 'provider-session',
+        },
+      ]
+      for (const message of messages) {
+        for (const event of translator.translate(message as never).events) emit(event)
+      }
+    })
+    emit({ category: 'lifecycle', event: 'prompt_completed', data: { stopReason: 'end_turn' } })
+    events.flush()
+
+    const page = listSessionHistory(database, target)!
+    expect(page.tools.map((tool) => [tool.toolName, tool.status, tool.output?.text])).toEqual([
+      ['NotebookEdit', 'completed', 'Updated cell c1'],
+      ['Edit', 'failed', 'String to replace not found in file.'],
+    ])
+    expect(JSON.stringify(published)).not.toContain('SECRET')
+    expect(JSON.stringify(page)).not.toContain('SECRET')
+    const stored = database.prepare('SELECT state_json, payload_json FROM turn_activity').all() as {
+      state_json: string
+      payload_json: string | null
+    }[]
+    expect(stored).toHaveLength(2)
+    expect(JSON.stringify(stored)).not.toContain('SECRET')
+    const logged = database.prepare('SELECT event_json FROM event_log').all()
+    expect(JSON.stringify(logged)).not.toContain('SECRET')
+    events.close()
+  })
+})

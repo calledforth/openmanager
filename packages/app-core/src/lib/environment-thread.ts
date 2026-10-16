@@ -1,6 +1,6 @@
 import { isTurnSettled } from '@agentpack/view'
 export { isTurnSettled } from '@agentpack/view'
-import type { ContentBlock, Message, Turn } from '@openmanager/protocol'
+import { renderToolOutput, type ContentBlock, type Message, type Turn } from '@openmanager/protocol'
 import {
   selectActiveThread,
   shallowEqualArray,
@@ -137,22 +137,50 @@ function buildReasoningPart(entry: ReasoningEntry, settled: boolean): MessagePar
   }
 }
 
+/**
+ * The part's status. `declined` and `cancelled` pass through as they are:
+ * settled, so nothing spins, and not `error`, so nothing reads as a failure.
+ */
 function toolStatus(status: ToolState['status']): string {
   if (status === 'in_progress') return 'running'
   if (status === 'failed') return 'error'
   return status ?? 'pending'
 }
 
+/**
+ * A tool call as a message part. The provider's tool name is what the
+ * presenters look a tool up by, so it leads, with the title as the fallback
+ * for providers that send none. `state.input` and `state.output` are where
+ * the existing presenters read a call's arguments and result; the bounded
+ * output also rides whole as `toolOutput`, and the files touched, the lines
+ * changed and the timing ride beside it, for richer renderers to use.
+ */
 function toolPart(tool: ToolState): MessagePart {
   let part = toolParts.get(tool)
   if (!part) {
+    const startedAt = tool.startedAt ? Date.parse(tool.startedAt) : Number.NaN
+    const finishedAt = tool.finishedAt ? Date.parse(tool.finishedAt) : Number.NaN
     part = {
       type: 'tool',
       id: tool.toolCallId,
       callID: tool.toolCallId,
-      tool: tool.title ?? tool.kind ?? 'tool',
+      tool: tool.toolName ?? tool.title ?? tool.kind ?? 'tool',
+      ...(tool.toolName ? { toolName: tool.toolName } : {}),
+      ...(tool.title !== undefined ? { title: tool.title } : {}),
       ...(tool.kind ? { kind: tool.kind } : {}),
-      state: { status: toolStatus(tool.status) },
+      state: {
+        status: toolStatus(tool.status),
+        ...(tool.input !== undefined ? { input: tool.input } : {}),
+        ...(tool.output ? { output: renderToolOutput(tool.output) } : {}),
+      },
+      ...(tool.output ? { toolOutput: tool.output } : {}),
+      ...(tool.locations ? { locations: tool.locations } : {}),
+      ...(tool.lineChanges ? { lineChanges: tool.lineChanges } : {}),
+      ...(Number.isFinite(startedAt)
+        ? {
+            time: { start: startedAt, ...(Number.isFinite(finishedAt) ? { end: finishedAt } : {}) },
+          }
+        : {}),
     }
     toolParts.set(tool, part)
   }

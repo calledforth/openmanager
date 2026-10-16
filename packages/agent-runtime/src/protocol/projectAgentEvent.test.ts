@@ -61,7 +61,8 @@ const fixtures: AgentEvent[] = [
     data: {
       toolCallId: 'provider-tool',
       title: 'Read',
-      rawInput: { secret: 'hidden' },
+      // The input travels (bounded, as `input`); provider metadata never does.
+      rawInput: { file_path: '/workspace/a.ts' },
       metadata: { secret: 'hidden' },
     },
   },
@@ -141,6 +142,7 @@ describe('agent to environment protocol projection', () => {
     expect(json).not.toContain('hidden')
     expect(json).not.toContain('providerId')
     expect(json).not.toContain('rawInput')
+    // An object raw output is provider-shaped; only text output is carried.
     expect(json).not.toContain('rawOutput')
     expect(json).not.toContain('metadata')
     expect(json).not.toContain('900')

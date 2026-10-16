@@ -120,6 +120,9 @@ export {
   resolveClaudeExecutable,
 } from './session/claude/executable.js'
 export { treeKiller } from './session/ChildProcessConnection.js'
+// Claude Code's SDK frames to agent events, without a process: for hosts that
+// replay recorded frames and for their tests.
+export { ClaudeMessageTranslator } from './session/claude/ClaudeMessageTranslator.js'
 export type {
   AcpProviderConfig,
   ClaudeProviderConfig,
@@ -142,3 +145,4 @@ export type {
 export type { HostDeps, HostLogEntry } from './host.js'
 export { projectAgentEvent } from './protocol/projectAgentEvent.js'
 export type { ProtocolEventContext } from './protocol/projectAgentEvent.js'
+export { ToolCallTracker } from './protocol/toolCallProjection.js'

@@ -24,6 +24,7 @@ import {
   THREAD_IN_SESSION_SQL,
   THREADS_FOR_SESSION_SQL,
   TURN_ACTIVITY_PAGE_SQL,
+  TURN_ACTIVITY_PAYLOAD_SQL,
   TURN_FOR_COMMAND_ID_SQL,
   TURNS_FOR_THREAD_SQL,
   USER_MESSAGE_FOR_TURN_SQL,
@@ -89,6 +90,7 @@ describe('bounded query plans', () => {
     expectIndexed(plan(database, MESSAGE_PARTS_SQL), 'sqlite_autoindex_message_parts_')
     expectIndexed(plan(database, INTERACTIONS_FOR_TURN_SQL), 'interactions_turn_id_idx')
     expectIndexed(plan(database, TURN_ACTIVITY_PAGE_SQL), 'sqlite_autoindex_turn_activity_')
+    expectIndexed(plan(database, TURN_ACTIVITY_PAYLOAD_SQL), 'sqlite_autoindex_turn_activity_')
   })
 
   it('reads events after a cursor straight from the (scope_key, sequence) primary key', async () => {
