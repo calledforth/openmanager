@@ -5,7 +5,12 @@ import { cn } from '../../lib/utils'
  * moves in its own way, and the motion matches how urgent it is:
  *
  * - `working`: light runs clockwise around the dots (iris).
- * - `needs`: the dots knock twice, rest, and knock again (amber).
+ * - `background`: the turn is over but work it started still runs; one dot
+ *   breathes while the rest stay dim (sky).
+ * - `question`: the agent asked something; the dots bob in turn, like a chat
+ *   waiting on a reply (pink).
+ * - `needs`: a permission or plan review; the dots knock twice, rest, and
+ *   knock again (amber).
  * - `done`: the dots draw together into one dot that pings, until the user
  *   opens the session (mint).
  * - `error`: the dots jolt apart once and then hold still (coral).
@@ -13,13 +18,15 @@ import { cn } from '../../lib/utils'
  * The motion is pure CSS (globals.css, `.session-busy-*`) and stops under
  * `prefers-reduced-motion`. Colour and shape still carry the state.
  */
-export type SessionBusyTone = 'working' | 'needs' | 'done' | 'error'
+export type SessionBusyTone = 'working' | 'background' | 'question' | 'needs' | 'done' | 'error'
 
 const DOTS = [0, 1, 2, 3] as const
 const SPARKS = [0, 1, 2, 3, 4, 5, 6, 7] as const
 
 const LABEL: Record<SessionBusyTone, string> = {
   working: 'Session in progress',
+  background: 'Session running background work',
+  question: 'Session has a question for you',
   needs: 'Session needs your attention',
   done: 'Session finished',
   error: 'Session failed',
@@ -62,12 +69,24 @@ export function SessionBusyLoader({
   )
 }
 
+/** What the status alone does not say, when the host knows it. */
+export type SessionBusyDetail = {
+  /** The kind of request a waiting session is waiting on. */
+  waitingOn?: string
+  /** A running session kept going only by its background work. */
+  inBackground?: boolean
+}
+
 /** The glyph a session status earns, or null when it is at rest and shows its age. */
-export function sessionBusyTone(status: string): SessionBusyTone | null {
-  if (status === 'waiting') return 'needs'
+export function sessionBusyTone(
+  status: string,
+  detail: SessionBusyDetail = {},
+): SessionBusyTone | null {
+  if (status === 'waiting') return detail.waitingOn === 'question' ? 'question' : 'needs'
   if (status === 'done') return 'done'
   if (status === 'error') return 'error'
-  if (status === 'running' || status === 'busy') return 'working'
+  if (status === 'running') return detail.inBackground ? 'background' : 'working'
+  if (status === 'busy') return 'working'
   // `ready` / `idle`: nothing is happening and nothing is unseen.
   return null
 }

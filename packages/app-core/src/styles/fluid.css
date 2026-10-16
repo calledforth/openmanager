@@ -512,7 +512,9 @@
   --basis-session-cube-needs: #b8860b;
   --basis-session-cube-ready: #2f8f45;
   --basis-status-working: #6b56e0;
+  --basis-status-background: #1f74b0;
   --basis-status-needs: #b7791f;
+  --basis-status-question: #b8337f;
   --basis-status-done: #12805a;
   --basis-status-error: #c73b3b;
   --basis-status-done-wash: #e3f6ec;

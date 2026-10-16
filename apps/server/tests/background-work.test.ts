@@ -173,13 +173,14 @@ async function setup(durable = true, onPersistenceError?: (error: unknown) => vo
       : ProofResponseSchemas['session.open'].parse(dispatch('session.open', { sessionId })).payload
           .session
   }
+  /** Each status broadcast, marked when it is running for background work alone. */
   const statuses = () =>
-    published.flatMap((event) =>
-      event.name === 'session.updated' &&
-      (event.payload as { status?: string }).status !== undefined
-        ? [(event.payload as { status: string }).status]
-        : [],
-    )
+    published.flatMap((event) => {
+      if (event.name !== 'session.updated') return []
+      const { status, inBackground } = event.payload as { status?: string; inBackground?: true }
+      if (status === undefined) return []
+      return [inBackground ? `${status}:background` : status]
+    })
   return {
     database,
     events,
@@ -214,8 +215,9 @@ describe('background work', () => {
     ])
     // The provider's own id never crosses the wire.
     expect(session.backgroundTasks![0]!.taskId).not.toBe('provider-task')
-    // Sidebar subscribers saw it start working and nothing since.
-    expect(h.statuses()).toEqual(['running'])
+    // Sidebar subscribers saw it start working, then go on in the background.
+    expect(h.statuses()).toEqual(['running', 'running:background'])
+    expect(session.inBackground).toBe(true)
   })
 
   it('files the turn the provider starts by itself, then rests the session as done', async () => {
@@ -225,7 +227,9 @@ describe('background work', () => {
     // The task settles and the agent wakes to report. No command asked for it.
     h.emit({ category: 'lifecycle', event: 'background_turn_started', data: {} }, 'assistant-2')
     h.roster()
+    // Working again: a turn is in flight.
     expect(h.summary().status).toBe('running')
+    expect(h.summary()).not.toHaveProperty('inBackground')
     h.text('assistant-2', 'The build passed.')
     h.completed('assistant-2')
 
@@ -233,8 +237,9 @@ describe('background work', () => {
     expect(session.status).toBe('idle')
     expect(session.doneAt).toEqual(expect.any(String))
     expect(session.backgroundTasks).toBeUndefined()
-    // One continuous stretch of work as far as the sidebar is concerned.
-    expect(h.statuses()).toEqual(['running', 'idle'])
+    // One continuous stretch of work as far as the sidebar is concerned,
+    // with the wait between the turns marked as background work.
+    expect(h.statuses()).toEqual(['running', 'running:background', 'running', 'idle'])
 
     const history = listSessionHistory(h.database!, { ...h.created.thread })!
     expect(history.turns).toHaveLength(2)
@@ -494,16 +499,18 @@ describe('background work', () => {
   it('mirrors the same lifecycle without a database', async () => {
     const h = await setup(false)
     await h.userTurn('provider-task')
-    expect(h.summary()).toMatchObject({ status: 'running', doneAt: null })
+    expect(h.summary()).toMatchObject({ status: 'running', doneAt: null, inBackground: true })
     expect(h.summary().backgroundTasks).toHaveLength(1)
 
     h.emit({ category: 'lifecycle', event: 'background_turn_started', data: {} }, 'assistant-2')
+    expect(h.summary()).not.toHaveProperty('inBackground')
     h.roster()
     h.text('assistant-2', 'The build passed.')
     h.completed('assistant-2')
 
     expect(h.summary()).toMatchObject({ status: 'idle', doneAt: expect.any(String) })
     expect(h.summary().backgroundTasks).toBeUndefined()
+    expect(h.statuses()).toEqual(['running', 'running:background', 'running', 'idle'])
   })
 })
 

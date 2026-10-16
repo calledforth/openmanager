@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { budgetSessionPage } from '../session-pagination.ts'
+import { readSessionActivity } from './session-activity.ts'
 import {
   ContentBlockSchema,
   HistoryCursorSchema,
@@ -147,7 +148,7 @@ const FIRST_LIST_CURSOR = {
 } as const
 const FIRST_HISTORY_ORDINAL = Number.MAX_SAFE_INTEGER
 
-export function sessionRowToSummary(row: SessionRow): SessionSummary {
+export function sessionRowToSummary(database: DatabaseSync, row: SessionRow): SessionSummary {
   return SessionSummarySchema.parse({
     sessionId: row.session_id,
     workspaceId: row.workspace_id,
@@ -165,6 +166,7 @@ export function sessionRowToSummary(row: SessionRow): SessionSummary {
       ? { backgroundTasks: JSON.parse(row.background_tasks_json) }
       : {}),
     ...(row.composer_json ? { composer: JSON.parse(row.composer_json) } : {}),
+    ...readSessionActivity(database, row),
   })
 }
 
@@ -187,7 +189,7 @@ export function listSessionSummaries(
           .all(query.workspaceId, updatedAtMs, sessionId, limit + 1)
       : database.prepare(SESSION_LIST_FOR_ENVIRONMENT_SQL).all(updatedAtMs, sessionId, limit + 1)
   ) as SessionRow[]
-  const page = rows.slice(0, limit).map(sessionRowToSummary)
+  const page = rows.slice(0, limit).map((row) => sessionRowToSummary(database, row))
   const last = page.at(-1)
   return budgetSessionPage({
     sessions: page,
@@ -214,7 +216,7 @@ export function getSessionSummary(
        FROM sessions WHERE session_id = ?`,
     )
     .get(sessionId) as SessionRow | undefined
-  return row ? sessionRowToSummary(row) : undefined
+  return row ? sessionRowToSummary(database, row) : undefined
 }
 
 /**

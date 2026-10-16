@@ -42,7 +42,7 @@ export function SessionNotifications({
         notices.push({
           id: session.externalId,
           title: session.title || 'Session',
-          body: noticeBody(notice),
+          body: noticeBody(notice, session.waitingOn),
         })
       }
     }

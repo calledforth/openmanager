@@ -152,6 +152,71 @@ const withUnsent = (externalId: string): SidebarWorkspace[] =>
     ),
   }))
 
+/** One card in each state the sidebar shows, in order of how much each wants you. */
+const EVERY_STATUS: SidebarWorkspace[] = [
+  {
+    path: '/workspace/openmanager',
+    name: 'openmanager',
+    git: { branch: 'main', worktree: false },
+    sessions: [
+      {
+        externalId: 'status-question',
+        title: 'Pick a schema for drafts',
+        status: 'waiting',
+        waitingOn: 'question',
+        providerId: 'claude' as ProviderId,
+        updatedAt: ago(1),
+      },
+      {
+        externalId: 'status-needs',
+        title: 'Delete old build folders',
+        status: 'waiting',
+        waitingOn: 'permission',
+        providerId: 'codex' as ProviderId,
+        updatedAt: ago(2),
+      },
+      {
+        externalId: 'status-working',
+        title: 'Fix the flaky upload test',
+        status: 'running',
+        providerId: 'claude' as ProviderId,
+        updatedAt: ago(3),
+      },
+      {
+        externalId: 'status-background',
+        title: 'Run the full e2e suite',
+        status: 'running',
+        inBackground: true,
+        backgroundTaskCount: 2,
+        backgroundTaskNames: 'pnpm test:e2e\nTail the server log',
+        providerId: 'claude' as ProviderId,
+        updatedAt: ago(4),
+      },
+      {
+        externalId: 'status-done',
+        title: 'Composer image capabilities',
+        status: 'done',
+        providerId: 'opencode' as ProviderId,
+        updatedAt: ago(9),
+      },
+      {
+        externalId: 'status-error',
+        title: 'Port Graphite scheme',
+        status: 'error',
+        providerId: 'cursor' as ProviderId,
+        updatedAt: ago(14),
+      },
+      {
+        externalId: 'status-ready',
+        title: 'Tighten the theme picker',
+        status: 'ready',
+        providerId: 'cursor' as ProviderId,
+        updatedAt: ago(60 * 3),
+      },
+    ],
+  },
+]
+
 function Demo({
   workspaces: initialWorkspaces = initial,
   drafts: initialDrafts = [],
@@ -308,6 +373,11 @@ type Story = StoryObj
 
 export const ActiveAndSettled: Story = {
   render: () => <Demo />,
+}
+
+/** Every session state: a question, needs input, working, background work, done, failed, at rest. */
+export const EveryStatus: Story = {
+  render: () => <Demo workspaces={EVERY_STATUS} activeSessionId={null} />,
 }
 
 /** Every draft card state at once, above the sessions. ✕ (or right click) discards with an undo. */

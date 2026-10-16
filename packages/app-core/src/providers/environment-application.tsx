@@ -1300,6 +1300,17 @@ function EnvironmentSidebarDataProvider({
         ...(summary.updatedAt ? { updatedAt: summary.updatedAt } : {}),
         settledAt: summary.settledAt ?? null,
         ...(unsentIds.has(summary.sessionId) ? { hasUnsentDraft: true } : {}),
+        ...(summary.waitingOn ? { waitingOn: summary.waitingOn } : {}),
+        ...(summary.inBackground ? { inBackground: true } : {}),
+        // Primitives, so an unchanged roster keeps the row as it was.
+        ...(summary.backgroundTasks?.length
+          ? {
+              backgroundTaskCount: summary.backgroundTasks.length,
+              backgroundTaskNames: summary.backgroundTasks
+                .map((task) => task.description || task.kind)
+                .join('\n'),
+            }
+          : {}),
       }
       ;(grouped[summary.workspaceId] ??= []).push(entry)
     }

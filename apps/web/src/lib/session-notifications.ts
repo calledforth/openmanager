@@ -31,7 +31,9 @@ const NOTICE_BODY: Record<SessionNotice, string> = {
   error: 'Stopped with an error',
 }
 
-export function noticeBody(notice: SessionNotice): string {
+/** A question says so; any other wait is input in general. */
+export function noticeBody(notice: SessionNotice, waitingOn?: string): string {
+  if (notice === 'waiting' && waitingOn === 'question') return 'Has a question for you'
   return NOTICE_BODY[notice]
 }
 
