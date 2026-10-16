@@ -97,6 +97,8 @@ export const SessionSchema = z.object({
 })
 /** Server-owned lifecycle, persisted in sessions.status; see docs/session-status.md. */
 export const SessionStatusSchema = z.enum(['idle', 'running', 'waiting', 'error'])
+/** What a waiting session is waiting on: the kind of its pending request. */
+export const InteractionKindSchema = z.enum(['permission', 'question', 'plan'])
 /** The most background tasks one session reports at a time. */
 export const BACKGROUND_TASKS_MAX = 64
 /**
@@ -138,6 +140,17 @@ export const SessionSummarySchema = SessionSchema.extend({
    * environments.
    */
   backgroundTasks: BackgroundTaskListSchema.optional(),
+  /**
+   * The kind of request a `waiting` session is waiting on. When several are
+   * open, a question wins, then the oldest. Absent unless the session is
+   * waiting, and on older environments.
+   */
+  waitingOn: InteractionKindSchema.optional(),
+  /**
+   * True while a `running` session is running only because of its background
+   * work: no turn is in flight. Absent otherwise, and on older environments.
+   */
+  inBackground: z.literal(true).optional(),
   /** Absent until the session has a selection, and on older environments. */
   composer: SessionComposerStateSchema.optional(),
 })
@@ -415,6 +428,7 @@ export type WorkspaceCapabilities = z.infer<typeof WorkspaceCapabilitiesSchema>
 export type Session = z.infer<typeof SessionSchema>
 export type SessionStatus = z.infer<typeof SessionStatusSchema>
 export type SessionSummary = z.infer<typeof SessionSummarySchema>
+export type InteractionKind = z.infer<typeof InteractionKindSchema>
 export type SessionListCursor = z.infer<typeof SessionListCursorSchema>
 export type HistoryCursor = z.infer<typeof HistoryCursorSchema>
 export type Thread = z.infer<typeof ThreadSchema>

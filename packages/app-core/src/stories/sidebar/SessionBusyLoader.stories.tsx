@@ -13,10 +13,17 @@ const meta = {
 export default meta
 type Story = StoryObj<typeof SessionBusyLoader>
 
-const TONES = ['working', 'needs', 'done', 'error'] as const satisfies readonly SessionBusyTone[]
+const TONES = [
+  'working',
+  'background',
+  'question',
+  'needs',
+  'done',
+  'error',
+] as const satisfies readonly SessionBusyTone[]
 
-/** Ships at 8×8, right-aligned in the session card. Needs also gets a
- * trailing amber dither on the card. */
+/** Ships at 8×8, right-aligned in the session card. A question and needs
+ * also get a trailing dither on the card, in their own colour. */
 export const SidebarSize: Story = {
   render: () => (
     <ThemeProvider>
@@ -26,8 +33,11 @@ export const SidebarSize: Story = {
             key={tone}
             className="relative flex items-center gap-2 overflow-hidden rounded-md bg-[var(--basis-surface-hover)] px-2 py-1"
           >
-            {tone === 'needs' ? (
-              <span aria-hidden="true" className="session-row-dither session-row-dither--needs" />
+            {tone === 'needs' || tone === 'question' ? (
+              <span
+                aria-hidden="true"
+                className={`session-row-dither session-row-dither--${tone}`}
+              />
             ) : null}
             <span className="relative flex-1 truncate text-[13px] text-[var(--basis-text)]">
               {tone}

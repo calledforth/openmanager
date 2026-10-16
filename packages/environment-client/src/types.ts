@@ -17,6 +17,7 @@ import type {
   FilesystemListing,
   HistoryCursor,
   Interaction,
+  InteractionKind,
   InteractionResponse,
   Message,
   PairingLink,
@@ -84,6 +85,10 @@ export interface SessionSummary extends Session {
    * well as during one. Absent when there is none.
    */
   backgroundTasks?: BackgroundTask[]
+  /** What a `waiting` session is waiting on. Absent otherwise, and on older environments. */
+  waitingOn?: InteractionKind
+  /** A `running` session with no turn in flight, kept going by background work alone. */
+  inBackground?: true
   /**
    * The session's own model, mode and config selection, kept current by
    * `session.composer.updated`. Absent until the environment reports one.

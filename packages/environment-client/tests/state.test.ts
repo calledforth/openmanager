@@ -1193,6 +1193,61 @@ describe('snapshots', () => {
   })
 })
 
+describe('what a status leaves unsaid', () => {
+  const status = (payload: Record<string, unknown>) =>
+    event({
+      name: 'session.updated',
+      scope: environmentScope,
+      payload: { sessionId: SESSION.sessionId, ...payload },
+    })
+
+  it('keeps what a session waits on with its status, and clears it with the next status', () => {
+    let state = applyEvent(seeded(), status({ status: 'waiting', waitingOn: 'question' }))
+    expect(state.sessions[SESSION.sessionId]).toMatchObject({
+      status: 'waiting',
+      waitingOn: 'question',
+    })
+    // An update about something else leaves it alone.
+    state = applyEvent(state, status({ title: 'Renamed' }))
+    expect(state.sessions[SESSION.sessionId]?.waitingOn).toBe('question')
+    // A status that says nothing of it (an older environment) clears it.
+    state = applyEvent(state, status({ status: 'waiting' }))
+    expect(state.sessions[SESSION.sessionId]).not.toHaveProperty('waitingOn')
+    state = applyEvent(state, status({ status: 'running', inBackground: true }))
+    expect(state.sessions[SESSION.sessionId]).toMatchObject({ inBackground: true })
+    expect(state.sessions[SESSION.sessionId]).not.toHaveProperty('waitingOn')
+    state = applyEvent(state, status({ status: 'idle' }))
+    expect(state.sessions[SESSION.sessionId]).not.toHaveProperty('inBackground')
+  })
+
+  it('drops either one beside a status it does not belong to', () => {
+    const state = applyEvent(
+      seeded(),
+      status({ status: 'idle', waitingOn: 'question', inBackground: true }),
+    )
+    expect(state.sessions[SESSION.sessionId]).not.toHaveProperty('waitingOn')
+    expect(state.sessions[SESSION.sessionId]).not.toHaveProperty('inBackground')
+  })
+
+  it('takes both from a listing, and keeps them through a bare session', () => {
+    const listed = applySessionList(seeded(), [
+      {
+        ...SESSION,
+        status: 'waiting',
+        waitingOn: 'question',
+        providerId: 'claude',
+        updatedAt: '2026-09-30T10:00:00.000Z',
+      },
+    ])
+    expect(listed.sessions[SESSION.sessionId]?.waitingOn).toBe('question')
+    const replayed = applyEvent(
+      listed,
+      event({ name: 'session.created', scope: environmentScope, payload: { session: SESSION } }),
+    )
+    expect(replayed.sessions[SESSION.sessionId]?.waitingOn).toBe('question')
+  })
+})
+
 describe('background work', () => {
   const TASK = { taskId: 'task-1', kind: 'shell' as const, description: 'Run the build' }
   const roster = (...tasks: (typeof TASK)[]) =>

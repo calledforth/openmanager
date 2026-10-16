@@ -286,10 +286,23 @@ export function createMockEnvironmentClient(
       const session = state.sessions[parsed.scope.sessionId]
       if (session) {
         const working = !!session.backgroundTasks?.length
-        const derived = deriveSessionStatus(session.threadIds.map((id) => state.threads[id]!))
+        const threads = session.threadIds.map((id) => state.threads[id]!)
+        const derived = deriveSessionStatus(threads)
         // Like the environment, a session with background work still running
         // rests at running rather than idle.
         const status = derived === 'idle' && working ? 'running' : derived
+        // And says what it waits on (a question first, then the oldest
+        // request) or that it runs for its background work alone.
+        const pending = threads.flatMap((thread) => thread.interactions)
+        const waitingOn =
+          status === 'waiting'
+            ? pending.some((entry) => entry.interaction.kind === 'question')
+              ? 'question'
+              : (pending[0]?.interaction.kind ?? null)
+            : null
+        const inBackground = status === 'running' && derived === 'idle'
+        const activityChanged =
+          (waitingOn ?? undefined) !== session.waitingOn || inBackground !== !!session.inBackground
         // Like the environment, a turn or a question brings a settled session back.
         const unsettle =
           !!session.settledAt &&
@@ -307,7 +320,7 @@ export function createMockEnvironmentClient(
                 ? null
                 : undefined
         const doneChanged = doneAt !== undefined && doneAt !== (session.doneAt ?? null)
-        if (status !== session.status || unsettle || doneChanged)
+        if (status !== session.status || unsettle || doneChanged || activityChanged)
           emit({
             ...base(),
             name: 'session.updated',
@@ -315,6 +328,8 @@ export function createMockEnvironmentClient(
             payload: {
               sessionId: session.sessionId,
               status,
+              ...(waitingOn ? { waitingOn } : {}),
+              ...(inBackground ? { inBackground } : {}),
               ...(unsettle ? { settledAt: null } : {}),
               ...(doneChanged ? { doneAt } : {}),
             },

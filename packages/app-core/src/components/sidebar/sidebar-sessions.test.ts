@@ -41,6 +41,18 @@ describe('sessionBusyTone', () => {
     expect(sessionBusyTone('ready')).toBe(null)
     expect(sessionBusyTone('idle')).toBe(null)
   })
+
+  it('gives a question and background work their own states', () => {
+    expect(sessionBusyTone('waiting', { waitingOn: 'question' })).toBe('question')
+    expect(sessionBusyTone('waiting', { waitingOn: 'permission' })).toBe('needs')
+    expect(sessionBusyTone('waiting', { waitingOn: 'plan' })).toBe('needs')
+    expect(sessionBusyTone('running', { inBackground: true })).toBe('background')
+    expect(sessionBusyTone('running', { inBackground: false })).toBe('working')
+    // Each only counts beside its own status.
+    expect(sessionBusyTone('running', { waitingOn: 'question' })).toBe('working')
+    expect(sessionBusyTone('waiting', { inBackground: true })).toBe('needs')
+    expect(sessionBusyTone('busy', { inBackground: true })).toBe('working')
+  })
 })
 
 describe('flattenSidebarSessions', () => {

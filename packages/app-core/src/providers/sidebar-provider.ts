@@ -53,6 +53,16 @@ export interface SidebarSessionEntry {
   /** Its composer holds text or an image that was not sent. Hosts whose
    * drafts do not sync leave it out. */
   hasUnsentDraft?: boolean
+  /** What a `waiting` session waits on (`question`, `permission`, `plan`),
+   * when the host knows. A question gets its own state in the sidebar. */
+  waitingOn?: string
+  /** A `running` session with no turn in flight, kept going only by its
+   * background work. Hosts that cannot tell leave it out. */
+  inBackground?: boolean
+  /** How many background tasks are running, and what they are, one per
+   * line. Absent when there are none. */
+  backgroundTaskCount?: number
+  backgroundTaskNames?: string
 }
 
 /**

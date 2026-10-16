@@ -77,6 +77,27 @@ emptied roster a few seconds late when no turn is in flight, so the session
 does not read as finished in the gap before the provider's own turn begins; a
 roster emptied by a stop is reported at once.
 
+## What a status leaves unsaid
+
+Two optional `SessionSummary` fields say what the status alone cannot, and the
+sidebar gives each its own state:
+
+- `waitingOn` is the kind (`question`, `permission` or `plan`) of the request
+  a `waiting` session is waiting on. When several are open a question wins,
+  since only the user can answer it; otherwise the oldest.
+- `inBackground: true` marks a `running` session with no turn in flight:
+  it is running only because of its background work.
+
+Neither is stored. Both are read from the turn and interaction rows
+(`db/session-activity.ts`), and only for sessions that are waiting or running,
+so a listing stays cheap. The derived `session.updated` carries them beside
+the status, and is also sent when only they change: a question answered while
+a permission is still open, or a turn ending while background work goes on.
+They are sent only when they apply, and a `session.updated` that carries a
+status without them clears them. That is also how an older environment reads:
+its sessions show plain needs input and working. The fields are additive and
+optional, so no protocol version bump.
+
 ## Done (unseen completions)
 
 `SessionSummary.doneAt` is set when a turn **completes** and stays set until a
@@ -92,8 +113,9 @@ Acknowledging a session that is not done is a no-op and publishes nothing.
 nothing unseen.
 
 The shared sidebar maps idle with `doneAt` to **done** (mint), plain idle to
-its age, running to working (iris), waiting to needs input (amber), and error
-to failed (coral). The glyph animates each state and marks transitions once;
+its age, running to working (iris), running `inBackground` to **background**
+(sky, with the task count), waiting on a question to **has a question** (pink),
+any other wait to needs input (amber), and error to failed (coral). The glyph animates each state and marks transitions once;
 reduced motion keeps the colours and drops the motion. A client acknowledges
 a done session when it is the active one and the window is visible, so work
 that finishes while the user is away still shows when they come back. Legacy desktop `busy` and `done` values remain supported

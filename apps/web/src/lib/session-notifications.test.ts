@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import {
   forgetUnsavedNotificationsChoice,
   NOTIFICATIONS_STORAGE_KEY,
+  noticeBody,
   readNotificationsEnabled,
   sessionNotice,
   writeNotificationsEnabled,
@@ -35,6 +36,15 @@ describe('sessionNotice', () => {
     expect(sessionNotice('done', 'ready')).toBeNull()
     expect(sessionNotice('waiting', 'ready')).toBeNull()
     expect(sessionNotice('ready', 'error')).toBeNull()
+  })
+})
+
+describe('noticeBody', () => {
+  it('says when the wait is a question', () => {
+    expect(noticeBody('waiting', 'question')).toBe('Has a question for you')
+    expect(noticeBody('waiting', 'permission')).toBe('Needs your input')
+    expect(noticeBody('waiting')).toBe('Needs your input')
+    expect(noticeBody('done', 'question')).toBe('Finished')
   })
 })
 

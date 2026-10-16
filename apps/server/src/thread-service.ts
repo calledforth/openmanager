@@ -15,6 +15,7 @@ import {
   type ErrorCode,
   type EventEnvelope,
   type Interaction,
+  type InteractionKind,
   type InteractionResponse,
   type Message,
   type ProofEvent,
@@ -48,6 +49,7 @@ import {
   listThreadsForSession,
 } from './db/session-store.ts'
 import type { ArtifactStore } from './artifacts.ts'
+import { waitingKind } from './db/session-activity.ts'
 import { pageSessionSummaries } from './session-pagination.ts'
 import type { CommandContext } from './command-context.ts'
 import { formatTitleContext, type TitleContextMessage } from './session-titles/context.ts'
@@ -120,7 +122,8 @@ type ActiveTurn = {
   generatedImages?: Set<string>
   toolIds: Map<string, string>
   interactionIds: Map<string, string>
-  pendingInteractions: Set<string>
+  /** Each open request's kind and when it was raised, by host id. */
+  pendingInteractions: Map<string, { kind: InteractionKind; createdAt: number }>
 }
 
 /**
@@ -174,6 +177,18 @@ function runMessageId(active: ActiveTurn, event: RuntimeEvent): string | undefin
  * What the host remembers about one interaction, so a resolve command can be
  * checked against the request and answered the same way twice.
  */
+/** What a status event says beside the status; see db/session-activity.ts. */
+type StatusActivity = { waitingOn: InteractionKind | null; inBackground: boolean }
+
+function summaryActivity(
+  activity: StatusActivity,
+): Pick<SessionSummary, 'waitingOn' | 'inBackground'> {
+  return {
+    ...(activity.waitingOn ? { waitingOn: activity.waitingOn } : {}),
+    ...(activity.inBackground ? { inBackground: true as const } : {}),
+  }
+}
+
 type InteractionEntry = {
   /** The provider's own request id; clients only ever see the host id. */
   providerRequestId: string
@@ -233,6 +248,8 @@ type ThreadRecord = {
   backgroundTasks?: BackgroundTask[]
   /** The host id of each live background task, by the provider's own id. */
   backgroundTaskIds?: Map<string, string>
+  /** In-memory mode only: what the last status event said beside the status. */
+  announced?: StatusActivity
   /**
    * The start of a turn the provider began by itself that could not be
    * written. Kept so the turn's next event can try again.
@@ -886,7 +903,10 @@ export function createThreadService(
     else appendRuntimeEvent(projected)
     if (active && projected.name === 'interaction.requested') {
       const { interaction } = projected.payload
-      active.pendingInteractions.add(interaction.interactionId)
+      active.pendingInteractions.set(interaction.interactionId, {
+        kind: interaction.kind,
+        createdAt: Date.now(),
+      })
       if (providerInteractionId) {
         record.interactions.set(interaction.interactionId, {
           providerRequestId: providerInteractionId,
@@ -959,7 +979,8 @@ export function createThreadService(
       payload: {
         sessionId: record.session.sessionId,
         backgroundTasks: tasks,
-        ...(status ? { status } : {}),
+        // Nothing is in flight here, so running is running for this work alone.
+        ...(status ? { status, ...(status === 'running' ? { inBackground: true } : {}) } : {}),
       },
     })
     try {
@@ -974,6 +995,7 @@ export function createThreadService(
     }
     record.backgroundTasks = tasks
     record.backgroundTaskIds = ids
+    if (status) record.announced = { waitingOn: null, inBackground: status === 'running' }
     if (status && status !== record.status) {
       record.status = status
       record.updatedAt = Date.now()
@@ -1025,7 +1047,6 @@ export function createThreadService(
       return
     }
     record.turns.push(turn)
-    touch(record, 'running')
     record.activeTurn = {
       turn,
       interruptRequested: false,
@@ -1033,18 +1054,39 @@ export function createThreadService(
       runtimeMessageId: event.messageId,
       toolIds: new Map(),
       interactionIds: new Map(),
-      pendingInteractions: new Set(),
+      pendingInteractions: new Map(),
     }
+    // After the turn is open, so the session no longer reads as background only.
+    touch(record, 'running')
   }
 
   const touch = (record: ThreadRecord, status?: SessionStatus) => {
     record.updatedAt = Date.now()
-    if (!status || record.status === status) return
+    if (!status) return
+    const changed = record.status !== status
     record.status = status
     // SQLite emits status from its transaction. The in-memory test seam
-    // still models the same server-owned environment event.
-    if (!options.database) emitStatus(record, status)
+    // still models the same server-owned environment event, which also goes
+    // out when only what the session waits on, or works for, has changed.
+    if (options.database) return
+    const activity = activityOf(record, status)
+    if (
+      changed ||
+      activity.waitingOn !== record.announced?.waitingOn ||
+      activity.inBackground !== record.announced?.inBackground
+    ) {
+      emitStatus(record, status)
+    }
   }
+
+  /** The in-memory reading of `readSessionActivity`; see db/session-activity.ts. */
+  const activityOf = (record: ThreadRecord, status: SessionStatus): StatusActivity => ({
+    waitingOn:
+      status === 'waiting'
+        ? (waitingKind(record.activeTurn?.pendingInteractions.values() ?? []) ?? null)
+        : null,
+    inBackground: status === 'running' && !record.activeTurn && !!record.backgroundTasks?.length,
+  })
 
   /**
    * Settle a title against its provenance and announce the winner. A manual
@@ -1264,6 +1306,8 @@ export function createThreadService(
     if (unsettle) record.settledAt = undefined
     // A new turn supersedes the last result, as `turn.started` does in SQLite.
     if (status === 'running' || status === 'waiting') record.doneAt = undefined
+    const activity = activityOf(record, status)
+    record.announced = activity
     appendRuntimeEvent(
       ProofEventSchemas['session.updated'].parse({
         type: 'event',
@@ -1274,6 +1318,7 @@ export function createThreadService(
         payload: {
           sessionId: record.session.sessionId,
           status,
+          ...summaryActivity(activity),
           ...(unsettle ? { settledAt: null } : {}),
           doneAt: record.doneAt === undefined ? null : new Date(record.doneAt).toISOString(),
         },
@@ -1384,6 +1429,7 @@ export function createThreadService(
     settledAt: record.settledAt === undefined ? null : new Date(record.settledAt).toISOString(),
     doneAt: record.doneAt === undefined ? null : new Date(record.doneAt).toISOString(),
     ...(record.backgroundTasks?.length ? { backgroundTasks: record.backgroundTasks } : {}),
+    ...summaryActivity(activityOf(record, record.status)),
   })
 
   const sendTurn = (command: CommandEnvelope, context?: CommandContext, modeId?: string) => {
@@ -1483,7 +1529,6 @@ export function createThreadService(
     record.turns.push(turn)
     record.messages.push(userMessage)
     record.commandTurns.set(commandId, started)
-    touch(record, 'running')
     const title = titleFromPrompt(input.text)
     if (title) applyTitle(record, title, 'fallback')
     titleFromFirstPrompt(record, userMessage)
@@ -1494,9 +1539,11 @@ export function createThreadService(
       ...(modeId ? { modeId } : {}),
       toolIds: new Map(),
       interactionIds: new Map(),
-      pendingInteractions: new Set(),
+      pendingInteractions: new Map(),
     }
     record.activeTurn = active
+    // After the turn is open, so the session does not read as background only.
+    touch(record, 'running')
     active.completion = record.runtimeSession
       .then((sessionId) => {
         // Deleting the session or closing the workspace drops the record while

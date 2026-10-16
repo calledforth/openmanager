@@ -12,6 +12,7 @@ import {
 } from '@openmanager/protocol/node'
 import { createEventProjector, type EventProjectionOptions } from './event-projection.ts'
 import { EVENT_TOMBSTONE_SQL } from './queries.ts'
+import { readSessionActivity, type SessionActivity } from './session-activity.ts'
 
 type ThreadScope = Extract<SubscriptionScope, { type: 'thread' }>
 export type TerminalEvent = Extract<
@@ -76,7 +77,7 @@ export function createEventRepository(
   const project = createEventProjector(database, options)
   const statements = {
     sessionStatus: database.prepare(
-      'SELECT status, settled_at, done_at FROM sessions WHERE session_id = ?',
+      'SELECT session_id, status, settled_at, done_at, background_tasks_json FROM sessions WHERE session_id = ?',
     ),
     ensureStream: database.prepare(
       `INSERT INTO event_streams (
@@ -102,6 +103,13 @@ export function createEventRepository(
        SET head_sequence = ?, oldest_sequence = COALESCE(oldest_sequence, ?), updated_at = ?
        WHERE scope_key = ?`,
     ),
+  }
+
+  const readStatus = (
+    sessionId: string,
+  ): (SessionStatusRow & { activity: SessionActivity }) | undefined => {
+    const row = statements.sessionStatus.get(sessionId) as SessionStatusRow | undefined
+    return row ? { ...row, activity: readSessionActivity(database, row) } : undefined
   }
 
   const writeScope = (
@@ -184,23 +192,27 @@ export function createEventRepository(
         changesSessionStatus(event) && event.scope.type === 'thread'
           ? event.scope.sessionId
           : undefined
-      const before = sessionId
-        ? (statements.sessionStatus.get(sessionId) as SessionStatusRow | undefined)
-        : undefined
+      const before = sessionId ? readStatus(sessionId) : undefined
       project(event)
-      const after = sessionId
-        ? (statements.sessionStatus.get(sessionId) as SessionStatusRow | undefined)
-        : undefined
+      const after = sessionId ? readStatus(sessionId) : undefined
       // Activity that unsettles a session rides the same environment event as
       // its status, so a sidebar that never loads the thread still sees it.
       const unsettled = !!before?.settled_at && after?.settled_at === null
       // Done rides it too: set when a turn completes, cleared when the next starts.
       const doneChanged = !!before && !!after && before.done_at !== after.done_at
+      // So does what the status alone does not say: a second request can
+      // change what a session waits on, and a turn ending or starting can
+      // leave it running only for its background work, or no longer.
+      const activityChanged =
+        !!before &&
+        !!after &&
+        (before.activity.waitingOn !== after.activity.waitingOn ||
+          before.activity.inBackground !== after.activity.inBackground)
       if (
         sessionId &&
         before &&
         after &&
-        (before.status !== after.status || unsettled || doneChanged)
+        (before.status !== after.status || unsettled || doneChanged || activityChanged)
       ) {
         statusEvents.push(
           ProofEventSchemas['session.updated'].parse({
@@ -212,6 +224,8 @@ export function createEventRepository(
             payload: {
               sessionId,
               status: after.status,
+              // Only when they apply: a status without them clears them.
+              ...after.activity,
               ...(unsettled ? { settledAt: null } : {}),
               ...(doneChanged
                 ? { doneAt: after.done_at === null ? null : new Date(after.done_at).toISOString() }
@@ -313,9 +327,11 @@ export function isTerminal(event: ProofEvent): event is TerminalEvent {
 }
 
 type SessionStatusRow = {
+  session_id: string
   status: SessionStatus
   settled_at: number | null
   done_at: number | null
+  background_tasks_json: string | null
 }
 
 function changesSessionStatus(event: ProofEvent): boolean {

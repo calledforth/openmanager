@@ -10,6 +10,7 @@ import {
   WorkspaceSchema,
   SessionSchema,
   SessionStatusSchema,
+  InteractionKindSchema,
   ThreadSchema,
   TurnStartedSchema,
   BackgroundTaskListSchema,
@@ -78,6 +79,12 @@ export const ProofEventSchemas = {
       doneAt: TimestampSchema.nullable().optional(),
       /** Present only when the session's background work changed: every task still running. */
       backgroundTasks: BackgroundTaskListSchema.optional(),
+      /**
+       * A status carries these when they apply to it, and a status without
+       * them clears them. See `SessionSummary`.
+       */
+      waitingOn: InteractionKindSchema.nullable().optional(),
+      inBackground: z.boolean().optional(),
     }),
   ),
   'session.deleted': event(

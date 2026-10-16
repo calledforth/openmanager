@@ -458,6 +458,8 @@ function writeSettledOpen(open: boolean) {
 
 const STATUS_COPY: Record<SessionBusyTone, string> = {
   working: 'Working',
+  background: 'Background',
+  question: 'Has a question',
   needs: 'Needs input',
   done: 'Done',
   error: 'Failed',
@@ -465,6 +467,8 @@ const STATUS_COPY: Record<SessionBusyTone, string> = {
 
 const STATUS_TEXT: Record<SessionBusyTone, string> = {
   working: 'text-[color:var(--basis-status-working)]',
+  background: 'text-[color:var(--basis-status-background)]',
+  question: 'text-[color:var(--basis-status-question)]',
   needs: 'text-[color:var(--basis-status-needs)]',
   done: 'text-[color:var(--basis-status-done)]',
   error: 'text-[color:var(--basis-status-error)]',
@@ -484,7 +488,10 @@ function useStatusMoment(tone: SessionBusyTone | null): StatusMoment | null {
   useEffect(() => {
     if (previous.current === tone) return
     previous.current = tone
-    setMoment(tone && tone !== 'working' ? { tone, key: Date.now() } : null)
+    // Work going on, in a turn or behind one, is not news.
+    setMoment(
+      tone && tone !== 'working' && tone !== 'background' ? { tone, key: Date.now() } : null,
+    )
   }, [tone])
   return moment
 }
@@ -495,21 +502,32 @@ function StatusOrAge({
   iso,
   now,
   moment,
+  backgroundTaskCount,
+  backgroundTaskNames,
 }: {
   tone: SessionBusyTone | null
   iso?: string
   now: number
   moment?: StatusMoment | null
+  backgroundTaskCount?: number
+  /** What is running in the background, one per line, for the hover. */
+  backgroundTaskNames?: string
 }) {
   if (tone) {
+    // Background work says how much of it there is, and names it on hover.
+    const count = tone === 'background' ? backgroundTaskCount : undefined
     return (
-      <span className={cn('flex items-center gap-1.5', STATUS_TEXT[tone])}>
+      <span
+        className={cn('flex items-center gap-1.5', STATUS_TEXT[tone])}
+        title={tone === 'background' ? backgroundTaskNames : undefined}
+      >
         <SessionBusyLoader
           tone={tone}
           className={moment?.tone === tone ? 'session-busy-ring--moment' : undefined}
           burst={moment?.tone === 'done' && tone === 'done' ? moment.key : undefined}
         />
         {STATUS_COPY[tone]}
+        {count ? <span className="tabular-nums opacity-70">· {count}</span> : null}
       </span>
     )
   }
@@ -1330,14 +1348,19 @@ function SessionCardBody({
   const git = workspace.git
   const select = () => onSelectSession(workspace.path, session.externalId, providerId)
   const providerName = providerLabel?.(providerId) ?? providerId
-  const tone = sessionBusyTone(session.status)
+  const tone = sessionBusyTone(session.status, session)
   const moment = useStatusMoment(tone)
   // Live work cannot be settled, so its status has nothing to make room for.
-  const hasActions = Boolean(onSettleSession) && tone !== 'working' && tone !== 'needs'
+  const hasActions =
+    Boolean(onSettleSession) &&
+    tone !== 'working' &&
+    tone !== 'background' &&
+    tone !== 'needs' &&
+    tone !== 'question'
   const reduceMotion = useReducedMotion() ?? false
   const cardRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    if (moment?.tone !== 'needs' || reduceMotion) return
+    if ((moment?.tone !== 'needs' && moment?.tone !== 'question') || reduceMotion) return
     const card = cardRef.current
     // Web Animations is everywhere the app runs, but not in every test DOM.
     if (typeof card?.animate === 'function') {
@@ -1369,7 +1392,14 @@ function SessionCardBody({
             'group-has-[:focus-visible]/card:opacity-0 group-hover/card:opacity-0 pointer-coarse:opacity-0',
         )}
       >
-        <StatusOrAge tone={tone} iso={session.updatedAt} now={now} moment={moment} />
+        <StatusOrAge
+          tone={tone}
+          iso={session.updatedAt}
+          now={now}
+          moment={moment}
+          backgroundTaskCount={session.backgroundTaskCount}
+          backgroundTaskNames={session.backgroundTaskNames}
+        />
       </span>
     </span>
   )
@@ -1410,8 +1440,11 @@ function SessionCardBody({
           cardFillClass(tone, isActive, unsent),
         )}
       >
-        {tone === 'needs' ? (
-          <span aria-hidden="true" className="session-row-dither session-row-dither--needs" />
+        {tone === 'needs' || tone === 'question' ? (
+          <span
+            aria-hidden="true"
+            className={cn('session-row-dither', `session-row-dither--${tone}`)}
+          />
         ) : null}
         {tone === 'done' || tone === 'error' ? (
           <span
@@ -1776,7 +1809,7 @@ function ChildRow({
   const { session, workspace, depth } = row
   const providerId = session.providerId ?? DEFAULT_PROVIDER_ID
   const isActive = session.externalId === selected
-  const tone = sessionBusyTone(session.status)
+  const tone = sessionBusyTone(session.status, session)
   return (
     // Buttons inherit their font, so the size is set on the wrapper.
     <div role="listitem" className="text-[13px]">
@@ -1818,7 +1851,7 @@ function SettledRow({
 }: RowHandlers & { row: SidebarBoardRow }) {
   const { session, workspace, depth } = row
   const providerId = session.providerId ?? DEFAULT_PROVIDER_ID
-  const tone = sessionBusyTone(session.status)
+  const tone = sessionBusyTone(session.status, session)
   const isActive = session.externalId === selected
   // Settled work can still hold a reply the user started: the active cards' mark.
   const unsent = Boolean(session.hasUnsentDraft) && !isActive

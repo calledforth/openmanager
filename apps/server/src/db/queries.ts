@@ -27,6 +27,22 @@ export const SESSION_LIST_FOR_WORKSPACE_SQL = `
   ORDER BY updated_at DESC, session_id DESC
   LIMIT ?`
 
+/** The requests a waiting session is waiting on: the pending interactions of its open turns. */
+export const PENDING_INTERACTIONS_FOR_SESSION_SQL = `
+  SELECT interactions.kind, interactions.created_at
+  FROM threads
+  JOIN turns ON turns.thread_id = threads.thread_id
+  JOIN interactions ON interactions.turn_id = turns.turn_id
+  WHERE threads.session_id = ? AND turns.state = 'waiting' AND interactions.state = 'pending'`
+
+/** Whether a session has a turn in flight. */
+export const OPEN_TURN_FOR_SESSION_SQL = `
+  SELECT 1
+  FROM threads
+  JOIN turns ON turns.thread_id = threads.thread_id
+  WHERE threads.session_id = ? AND turns.state IN ('running', 'waiting')
+  LIMIT 1`
+
 /** One thread, only if it belongs to the named session. */
 export const THREAD_IN_SESSION_SQL = `
   SELECT thread_id, session_id

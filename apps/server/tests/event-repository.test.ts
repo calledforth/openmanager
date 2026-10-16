@@ -183,7 +183,10 @@ describe('event repository transactions', () => {
       for (const record of records) {
         if (record.event.name !== 'session.updated') continue
         expect(record.cursor.scope.type).toBe('environment')
-        statuses.push(ProofEventSchemas['session.updated'].parse(record.event).payload.status)
+        const { status, waitingOn } = ProofEventSchemas['session.updated'].parse(
+          record.event,
+        ).payload
+        statuses.push(waitingOn ? `${status}:${waitingOn}` : status)
       }
       return records
     }
@@ -222,6 +225,11 @@ describe('event repository transactions', () => {
     expect(
       database.prepare('SELECT status FROM sessions WHERE session_id = ?').get('session-1'),
     ).toEqual({ status: 'waiting' })
+    // A listing says the same as the broadcast.
+    expect(getSessionSummary(database, 'session-1')).toMatchObject({
+      status: 'waiting',
+      waitingOn: 'question',
+    })
     for (const kind of ['question', 'permission'] as const) {
       append(
         ProofEventSchemas['interaction.resolved'].parse({
@@ -238,9 +246,18 @@ describe('event repository transactions', () => {
         }),
       )
     }
-    expect(statuses).toEqual(['running', 'waiting', 'running'])
+    // What it waits on rides along: a question outranks the plan asked before
+    // it and the permission asked after, and each answer moves it on.
+    expect(statuses).toEqual([
+      'running',
+      'waiting:plan',
+      'waiting:question',
+      'waiting:permission',
+      'running',
+    ])
+    expect(getSessionSummary(database, 'session-1')).not.toHaveProperty('waitingOn')
     append(completed())
-    expect(statuses).toEqual(['running', 'waiting', 'running', 'idle'])
+    expect(statuses.slice(-2)).toEqual(['running', 'idle'])
     expect(
       database.prepare('SELECT status FROM sessions WHERE session_id = ?').get('session-1'),
     ).toEqual({ status: 'idle' })
@@ -253,7 +270,7 @@ describe('event repository transactions', () => {
       database
         .prepare("SELECT count(*) AS n FROM event_log WHERE event_name = 'session.updated'")
         .get(),
-    ).toEqual({ n: 4 })
+    ).toEqual({ n: 6 })
   })
 
   it('ranks generated titles above the agent and below nothing the user asked for', async () => {
