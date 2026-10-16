@@ -10,6 +10,7 @@ type MessageDelta = Extract<ProofEvent, { name: 'message.delta' }>
 type MessageContent = MessageDelta['payload']['content']
 type MessageReasoning = Extract<ProofEvent, { name: 'message.reasoning' }>
 type ToolUpdated = Extract<ProofEvent, { name: 'tool.updated' }>
+type NoticeRecorded = Extract<ProofEvent, { name: 'turn.notice.recorded' }>
 type ActivityRow = { turn_id: string; thread_id: string; kind: string; state_json: string }
 
 export interface EventProjectionOptions {
@@ -109,7 +110,7 @@ export function createEventProjector(
     ),
     finishOpenTurn: database.prepare(
       `UPDATE turns
-       SET state = ?, failure_reason = ?, finished_at = ?, updated_at = ?
+       SET state = ?, failure_reason = ?, failure_json = ?, finished_at = ?, updated_at = ?
        WHERE turn_id = ? AND thread_id = ? AND state IN ('running', 'waiting')`,
     ),
     insertInteraction: database.prepare(
@@ -133,15 +134,22 @@ export function createEventProjector(
     selectMessage: database.prepare(
       'SELECT turn_id, thread_id, role, is_final FROM messages WHERE message_id = ?',
     ),
-    // One counter across messages and turn activity, so sorting both on
-    // `ordinal` gives the order text, thoughts and tools happened in. Activity
-    // rebuilt by migration 11 sits at fractional ordinals between messages, so
-    // the next live ordinal is the integer above whatever is highest.
+    // One counter across messages, turn activity and notices, so sorting
+    // them on `ordinal` gives the order text, thoughts, tools and notices
+    // happened in. Activity rebuilt by migration 11 sits at fractional
+    // ordinals between messages, so the next live ordinal is the integer
+    // above whatever is highest. Notices reuse the second thread id (`?2`).
     nextMessageOrdinal: database.prepare(
       `SELECT CAST(MAX(
          COALESCE((SELECT MAX(ordinal) FROM messages WHERE thread_id = ?), -1),
-         COALESCE((SELECT MAX(ordinal) FROM turn_activity WHERE thread_id = ?), -1)
+         COALESCE((SELECT MAX(ordinal) FROM turn_activity WHERE thread_id = ?), -1),
+         COALESCE((SELECT MAX(ordinal) FROM turn_notices WHERE thread_id = ?2), -1)
        ) AS INTEGER) + 1 AS ordinal`,
+    ),
+    insertNotice: database.prepare(
+      `INSERT INTO turn_notices (
+         notice_id, workspace_id, thread_id, turn_id, ordinal, notice_json, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ),
     selectActivity: database.prepare(
       'SELECT turn_id, thread_id, kind, state_json FROM turn_activity WHERE activity_id = ?',
@@ -363,6 +371,26 @@ export function createEventProjector(
     }))
   }
 
+  /** A durable notice takes the next ordinal, which places it in its turn. */
+  function projectNotice(event: NoticeRecorded, at: number): void {
+    const { noticeId, turnId } = event.payload
+    const turn = s.selectTurnWorkspace.get(turnId, event.scope.threadId) as
+      { workspace_id: string } | undefined
+    if (!turn) throw new Error(`Cannot project notice for missing turn ${turnId}`)
+    const { ordinal } = s.nextMessageOrdinal.get(event.scope.threadId, event.scope.threadId) as {
+      ordinal: number
+    }
+    s.insertNotice.run(
+      noticeId,
+      turn.workspace_id,
+      event.scope.threadId,
+      turnId,
+      ordinal,
+      JSON.stringify(event.payload),
+      at,
+    )
+  }
+
   return function projectEvent(event: DurableProofEvent): void {
     const at = Date.parse(event.timestamp)
     switch (event.name) {
@@ -535,9 +563,18 @@ export function createEventProjector(
             : event.name === 'turn.interrupted'
               ? 'interrupted'
               : 'failed'
+        const failure = event.name === 'turn.failed' ? event.payload : undefined
         const finished = s.finishOpenTurn.run(
           state,
-          event.name === 'turn.failed' ? event.payload.reason : null,
+          failure ? failure.reason : null,
+          failure
+            ? JSON.stringify({
+                reason: failure.reason,
+                message: failure.message,
+                ...(failure.action ? { action: failure.action } : {}),
+                ...(failure.resetsAt ? { resetsAt: failure.resetsAt } : {}),
+              })
+            : null,
           at,
           at,
           turnId,
@@ -573,6 +610,9 @@ export function createEventProjector(
         return
       case 'tool.updated':
         projectTool(event, at)
+        return
+      case 'turn.notice.recorded':
+        projectNotice(event, at)
         return
     }
   }

@@ -338,6 +338,7 @@ function eventTurnId(event: DurableProofEvent): string | undefined {
     case 'message.delta':
     case 'message.reasoning':
     case 'tool.updated':
+    case 'turn.notice.recorded':
     case 'interaction.requested':
     case 'interaction.resolved':
     case 'interaction.expired':

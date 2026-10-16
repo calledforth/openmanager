@@ -1072,6 +1072,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
         routeEvent(this.route(), completed.sessionId, 'error', 'runtime_error', {
           kind: 'provider',
           message,
+          ...(completed.problem ? { problem: completed.problem } : {}),
           // The counts still happened, and this is the only frame left to carry
           // them; `prompt_completed`'s `usage` field has no failure counterpart.
           details: {

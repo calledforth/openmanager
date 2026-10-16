@@ -88,6 +88,7 @@ import {
 } from './tunnel.ts'
 import { createBudgetKey } from './budget-key.ts'
 import { createArtifactStore } from './artifacts.ts'
+import { createEventDelivery } from './event-delivery.ts'
 import { createUploadService } from './uploads.ts'
 import { attachWebSocket, SOCKET_CAPABILITIES } from './websocket.ts'
 import { openWorkspaceRegistry } from './workspaces.ts'
@@ -264,27 +265,20 @@ export async function startServer(config: ServerConfig) {
   // One epoch per process for streams that start here; replay reads it for
   // scopes that have no stream row yet.
   const eventEpoch = randomUUID()
+  // Stored and transient events share one delivery queue; see event-delivery.
+  const delivery = createEventDelivery({
+    durable: (record) => publishDurableEvent(record),
+    transient: (event) => publishThreadEvent(event),
+    // A stored event is already stored: a client that is not connected gets
+    // it on replay. A connected client does not notice the gap until its next
+    // snapshot, so a throw here is a programming error to fix, logged instead
+    // of taking the server down with it.
+    onError: (name, error) =>
+      log('error', 'event was not sent', { event: name, reason: String(error) }),
+  })
   const eventService = createPersistentEventService(
     eventDatabase,
-    (record) => {
-      // The event is already stored: a client that is not connected gets it
-      // on replay. A connected client does not notice the gap until its next
-      // snapshot, so a throw here is a programming error to fix, logged
-      // instead of taking the server down with it.
-      const publish = () => {
-        try {
-          publishDurableEvent(record)
-        } catch (error) {
-          log('error', 'event was not sent', {
-            event: record.event.name,
-            reason: String(error),
-          })
-        }
-      }
-      // Thread dispatch persists synchronously; its response must precede events on the socket.
-      if (record.event.name.startsWith('workspace.')) publish()
-      else queueMicrotask(publish)
-    },
+    (record) => delivery.durable(record),
     {
       epoch: eventEpoch,
       // The row names the provider the session was created on. The thread
@@ -359,7 +353,7 @@ export async function startServer(config: ServerConfig) {
     runtime,
     providerService,
     (event) => eventService.append(event),
-    (event) => publishThreadEvent(event),
+    (event) => delivery.transient(event),
     resolveWorkspace,
     {
       database: eventDatabase,

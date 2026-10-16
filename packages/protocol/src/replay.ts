@@ -21,6 +21,7 @@ import {
   ReasoningBlockSchema,
   ToolCallStateSchema,
   ActivityRefSchema,
+  DurableTurnNoticeSchema,
   InteractionSchema,
   HistoryCursorSchema,
   type SubscriptionScope,
@@ -155,10 +156,12 @@ const ThreadSnapshotSchema = z
       reasoning: z.array(ReasoningBlockSchema),
       tools: z.array(ToolCallStateSchema),
       /**
-       * Messages, reasoning and tools of the page in the order they happened.
-       * Absent from an older environment, which lists its messages only.
+       * Messages, reasoning, tools and notices of the page in the order they
+       * happened. Absent from an older environment, which lists its messages only.
        */
       order: z.array(ActivityRefSchema).optional(),
+      /** The page's durable notices; absent from environments that keep none. */
+      notices: z.array(DurableTurnNoticeSchema).optional(),
       interactions: z.array(z.object({ turnId: EntityIdSchema, interaction: InteractionSchema })),
     }),
   })
@@ -182,6 +185,7 @@ const ThreadSnapshotSchema = z
       ...state.messages,
       ...state.reasoning,
       ...state.tools,
+      ...(state.notices ?? []),
       ...state.interactions,
     ]
     // A reasoning block is filed under its own message id, distinct from the

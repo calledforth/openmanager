@@ -17,6 +17,9 @@ import {
   ToolCallStateSchema,
   InteractionSchema,
   InteractionResponseSchema,
+  TurnFailureSchema,
+  TransientTurnNoticeSchema,
+  DurableTurnNoticeSchema,
 } from './domains.js'
 import {
   ComposerPreferenceTargetSchema,
@@ -38,15 +41,6 @@ const event = <N extends string, S extends z.ZodType, P extends z.ZodType>(
     scope,
     payload,
   })
-
-export const TurnFailureReasonSchema = z.enum([
-  'provider_process_exited',
-  'provider_process_crashed',
-  'provider_error',
-  'authentication_required',
-  'capability_missing',
-])
-export type TurnFailureReason = z.infer<typeof TurnFailureReasonSchema>
 
 export const ProofEventSchemas = {
   'workspace.updated': event(
@@ -136,17 +130,12 @@ export const ProofEventSchemas = {
   'turn.failed': event(
     'turn.failed',
     ThreadScopeSchema,
-    z.object({
-      turnId: EntityIdSchema,
-      reason: TurnFailureReasonSchema,
-      message: z.string(),
-    }),
+    TurnFailureSchema.extend({ turnId: EntityIdSchema }),
   ),
-  'turn.notice': event(
-    'turn.notice',
-    ThreadScopeSchema,
-    z.object({ turnId: EntityIdSchema, message: z.string() }),
-  ),
+  /** What the provider is doing about a hiccup right now. Transient: never stored or replayed. */
+  'turn.notice': event('turn.notice', ThreadScopeSchema, TransientTurnNoticeSchema),
+  /** A notice that stays part of the turn: stored, replayed and placed in its order. */
+  'turn.notice.recorded': event('turn.notice.recorded', ThreadScopeSchema, DurableTurnNoticeSchema),
   'message.delta': event(
     'message.delta',
     ThreadScopeSchema,
@@ -214,6 +203,7 @@ export const ProofEventSchema = z.discriminatedUnion('name', [
   ProofEventSchemas['turn.interrupted'],
   ProofEventSchemas['turn.failed'],
   ProofEventSchemas['turn.notice'],
+  ProofEventSchemas['turn.notice.recorded'],
   ProofEventSchemas['message.delta'],
   ProofEventSchemas['message.reasoning'],
   ProofEventSchemas['tool.updated'],

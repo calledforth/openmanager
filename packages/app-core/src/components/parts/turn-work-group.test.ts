@@ -45,6 +45,39 @@ describe('settled turn work grouping', () => {
     expect(partition.finalParts.map((part) => part.id)).toEqual(['image', 'final'])
   })
 
+  it('keeps a failure in view after the work it ended', () => {
+    const partition = partitionSettledTurnParts([
+      { type: 'tool', id: 'read', tool: 'Read', state: { status: 'completed' } },
+      { type: 'failure', id: 'failure:t1' },
+    ])
+
+    expect(partition.workParts.map((part) => part.id)).toEqual(['read'])
+    expect(partition.finalParts.map((part) => part.id)).toEqual(['failure:t1'])
+  })
+
+  it('does not fold the answer away behind a notice that followed it', () => {
+    const partition = partitionSettledTurnParts([
+      { type: 'tool', id: 'read', tool: 'Read', state: { status: 'completed' } },
+      { type: 'text', id: 'final', text: 'Done.' },
+      { type: 'notice', id: 'notice:n1', notice: { kind: 'warning' } },
+    ])
+
+    expect(partition.workParts.map((part) => part.id)).toEqual(['read'])
+    expect(partition.finalParts.map((part) => part.id)).toEqual(['final', 'notice:n1'])
+  })
+
+  it('keeps notices that change how to read the answer beside it', () => {
+    const partition = partitionSettledTurnParts([
+      { type: 'notice', id: 'notice:info', notice: { kind: 'info' } },
+      { type: 'notice', id: 'notice:fallback', notice: { kind: 'model_fallback' } },
+      { type: 'tool', id: 'read', tool: 'Read', state: { status: 'completed' } },
+      { type: 'text', id: 'final', text: 'Here it is.' },
+    ])
+
+    expect(partition.workParts.map((part) => part.id)).toEqual(['notice:info', 'read'])
+    expect(partition.finalParts.map((part) => part.id)).toEqual(['notice:fallback', 'final'])
+  })
+
   it('formats successful duration and stopped outcomes', () => {
     expect(
       settledTurnLabel({

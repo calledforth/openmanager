@@ -58,7 +58,7 @@ export const MESSAGE_PARTS_SQL = `
 
 /** Turns of a thread in start order, joined to messages by callers hydrating a page. */
 export const TURNS_FOR_THREAD_SQL = `
-  SELECT turn_id, thread_id, workspace_id, state, failure_reason, origin, started_at,
+  SELECT turn_id, thread_id, workspace_id, state, failure_reason, failure_json, origin, started_at,
          finished_at, updated_at
   FROM turns
   WHERE thread_id = ?
@@ -74,6 +74,17 @@ export const TURNS_FOR_THREAD_SQL = `
 export const TURN_ACTIVITY_PAGE_SQL = `
   SELECT activity_id, turn_id, kind, ordinal, state_json
   FROM turn_activity
+  WHERE thread_id = ? AND ordinal > ? AND ordinal < ?
+  ORDER BY ordinal`
+
+/**
+ * The durable notices between two message ordinals of a thread, both
+ * exclusive, in the order they happened. They share the thread-wide ordinal
+ * counter, so they partition across history pages exactly as activity does.
+ */
+export const TURN_NOTICES_PAGE_SQL = `
+  SELECT notice_id, turn_id, ordinal, notice_json
+  FROM turn_notices
   WHERE thread_id = ? AND ordinal > ? AND ordinal < ?
   ORDER BY ordinal`
 

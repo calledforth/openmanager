@@ -379,13 +379,36 @@ export const proofEvents = [
     ...base,
     name: 'turn.failed',
     scope: threadScope,
-    payload: { turnId: 'turn-1', reason: 'provider_error', message: 'Failed' },
+    payload: {
+      turnId: 'turn-1',
+      reason: 'usage_limit',
+      message: 'You have reached your usage limit.',
+      resetsAt: '2026-01-01T05:00:00.000Z',
+    },
   },
   {
     ...base,
     name: 'turn.notice',
     scope: threadScope,
-    payload: { turnId: 'turn-1', message: 'Retrying' },
+    payload: {
+      noticeId: 'notice-1',
+      turnId: 'turn-1',
+      kind: 'retrying',
+      message: 'Retrying (attempt 2 of 10)',
+      retry: { attempt: 2, maxAttempts: 10, cause: 'overloaded' },
+    },
+  },
+  {
+    ...base,
+    name: 'turn.notice.recorded',
+    scope: threadScope,
+    payload: {
+      noticeId: 'notice-2',
+      turnId: 'turn-1',
+      kind: 'compacted',
+      message: 'Conversation compacted',
+      compaction: { trigger: 'auto', tokensBefore: 180000, tokensAfter: 40000 },
+    },
   },
   {
     ...base,

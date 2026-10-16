@@ -165,7 +165,7 @@ keys; provider sequence numbers are never synchronization cursors.
 The public event families are listed in `ProofEventSchemas` and illustrated in
 `tests/proof-fixtures.ts`. A turn starts with a user message; message/reasoning
 deltas and tool summaries follow, then a completed/interrupted/failed event.
-`turn.notice` is nonterminal. `message.reasoning` preserves start/delta/stop even
+`turn.notice` and `turn.notice.recorded` are nonterminal. `message.reasoning` preserves start/delta/stop even
 when no text exists, and zero is a valid token reading. Interaction requested and
 resolved events carry the same host interaction identity and their owning turn.
 
@@ -216,16 +216,30 @@ provider value. Every non-null result is validated by `ProofEventSchema`.
 | `extension_request` | — | Opaque provider extension stays host-side |
 | `extension_resolved` | — | Opaque provider extension stays host-side |
 | `extension_notification` | — | Opaque provider extension stays host-side |
-| `rpc_error` | `turn.notice` / `turn.failed` | Active turns only; generic message |
-| `runtime_error` | `turn.notice` / `turn.failed` | Active turns only; generic message |
-| `auth_required` | `turn.failed` | Active turns only; `authentication_required` |
+| `provider_notice` | `turn.notice` / `turn.notice.recorded` | Active turns only; `compacting` is transient, every other kind is durable |
+| `rpc_error` | `turn.notice` / `turn.failed` | Active turns only; recoverable is a `retrying` notice, else a failure typed by its `problem` |
+| `runtime_error` | `turn.notice` / `turn.failed` | Active turns only; as `rpc_error` |
+| `auth_required` | `turn.failed` | Active turns only; `authentication_required`, action `sign_in` |
 | `capability_missing` | `turn.failed` | Active turns only; `capability_missing` |
 
 `turn.failed.reason` is a provider-neutral enum:
 `provider_process_exited`, `provider_process_crashed`, `provider_error`,
-`authentication_required`, or `capability_missing`. Provider exit codes, signals,
-error text and opaque detail objects remain available only to host diagnostics.
-Recoverable notices are transient. Durable mapped events receive a host epoch and
+`authentication_required`, `capability_missing`, `context_window_exceeded`,
+`usage_limit`, `rate_limited`, `overloaded`, or `refused`. A failure may name a
+recovery `action` (`retry`, `compact`, `sign_in`) the environment judged right
+for the provider, and a `usage_limit` may say when it `resetsAt`. The message is
+the host's own wording for the reason. Provider exit codes, signals, error text
+and opaque detail objects remain available only to host diagnostics. A failed
+turn carries the same `failure` in history.
+
+Notices come in two kinds. `turn.notice` is transient (`retrying`,
+`compacting`): it says what the provider is doing about a hiccup right now, is
+never stored, and a client drops it once the turn moves on. `turn.notice.recorded`
+is durable (`compacted`, `model_fallback`, `refusal`, `usage_warning`, `info`,
+`warning`): it is stored with the turn, replayed, and placed in the transcript
+order under the `notice` activity kind. Retry progress, model names and
+compaction sizes travel as structured fields; only `info`, `warning` and a
+refusal's `detail` carry provider prose, capped at `TURN_NOTICE_TEXT_MAX`. Durable mapped events receive a host epoch and
 a contiguous sequence in their exact scope before entering the append callback;
 that callback is the SQLite insertion seam.
 

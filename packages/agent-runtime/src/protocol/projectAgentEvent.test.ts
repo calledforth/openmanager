@@ -267,3 +267,145 @@ describe('agent to environment protocol projection', () => {
     })
   })
 })
+
+describe('typed problems and notices', () => {
+  const error = (
+    data: Record<string, unknown>,
+    event: 'rpc_error' | 'runtime_error' = 'runtime_error',
+  ) =>
+    ({
+      ...base,
+      category: 'error',
+      event,
+      data: { kind: 'provider', source: 'claude/api', message: 'provider secret', ...data },
+    }) as AgentEvent
+  const notice = (data: Record<string, unknown>) =>
+    ({ ...base, category: 'session', event: 'provider_notice', data }) as AgentEvent
+
+  it.each([
+    [{ code: 'context_window_exceeded', action: 'compact' }, 'context_window_exceeded', 'compact'],
+    [{ code: 'usage_limit' }, 'usage_limit', undefined],
+    [{ code: 'rate_limited' }, 'rate_limited', 'retry'],
+    [{ code: 'overloaded' }, 'overloaded', 'retry'],
+    [{ code: 'server_error' }, 'provider_error', 'retry'],
+    [{ code: 'network' }, 'provider_error', 'retry'],
+    [{ code: 'unauthorized' }, 'authentication_required', 'sign_in'],
+    [{ code: 'refused' }, 'refused', undefined],
+    [{ code: 'unknown' }, 'provider_error', undefined],
+  ])('fails a turn on %j as %s with action %s', (problem, reason, action) => {
+    const result = projectAgentEvent(error({ problem }), context)
+    expect(result).toMatchObject({ name: 'turn.failed', payload: { reason } })
+    expect(result?.payload).not.toHaveProperty('resetsAt')
+    if (action) expect(result?.payload).toMatchObject({ action })
+    else expect(result?.payload).not.toHaveProperty('action')
+    expect(JSON.stringify(result)).not.toContain('secret')
+  })
+
+  it('carries when a usage limit resets, and drops a time the protocol cannot read', () => {
+    expect(
+      projectAgentEvent(
+        error({ problem: { code: 'usage_limit', resetsAt: '2026-10-09T15:00:00.000Z' } }),
+        context,
+      )?.payload,
+    ).toMatchObject({ reason: 'usage_limit', resetsAt: '2026-10-09T15:00:00.000Z' })
+    expect(
+      projectAgentEvent(error({ problem: { code: 'usage_limit', resetsAt: 'tomorrow' } }), context)
+        ?.payload,
+    ).not.toHaveProperty('resetsAt')
+  })
+
+  it('lets the host classification of an exit outrank a provider problem', () => {
+    expect(
+      projectAgentEvent(error({ problem: { code: 'overloaded' } }), {
+        ...context,
+        failureReason: 'provider_process_crashed',
+      })?.payload,
+    ).toMatchObject({ reason: 'provider_process_crashed' })
+  })
+
+  it('offers sign-in for a provider that needs it', () => {
+    const source = {
+      ...base,
+      category: 'error',
+      event: 'auth_required',
+      data: { message: 'provider secret' },
+    } as AgentEvent
+    expect(projectAgentEvent(source, context)?.payload).toMatchObject({
+      reason: 'authentication_required',
+      action: 'sign_in',
+    })
+  })
+
+  it('turns a provider retry into a transient notice with its progress', () => {
+    const result = projectAgentEvent(
+      error(
+        {
+          recoverable: true,
+          problem: { code: 'overloaded', retry: { attempt: 2, maxAttempts: 10, delayMs: 5000 } },
+        },
+        'rpc_error',
+      ),
+      context,
+    )
+    expect(result).toEqual(
+      expect.objectContaining({
+        name: 'turn.notice',
+        payload: {
+          noticeId: 'host-event',
+          turnId: 'host-turn',
+          kind: 'retrying',
+          message: 'Retrying after the provider was overloaded (attempt 2 of 10)',
+          retry: {
+            attempt: 2,
+            maxAttempts: 10,
+            cause: 'overloaded',
+            retryAt: '2026-09-06T05:00:05.000Z',
+          },
+        },
+      }),
+    )
+  })
+
+  it('keeps an untyped recoverable error a generic retrying notice', () => {
+    expect(projectAgentEvent(error({ recoverable: true }, 'rpc_error'), context)?.payload).toEqual({
+      noticeId: 'host-event',
+      turnId: 'host-turn',
+      kind: 'retrying',
+      message: 'The turn is recovering from a temporary error.',
+    })
+  })
+
+  it('records durable notices and keeps compacting transient', () => {
+    expect(
+      projectAgentEvent(
+        notice({
+          kind: 'compacted',
+          message: 'Conversation compacted',
+          compaction: { trigger: 'auto', tokensBefore: 100, tokensAfter: 10 },
+        }),
+        context,
+      ),
+    ).toMatchObject({
+      name: 'turn.notice.recorded',
+      payload: { kind: 'compacted', compaction: { trigger: 'auto', tokensBefore: 100 } },
+    })
+    expect(
+      projectAgentEvent(notice({ kind: 'compacting', message: 'Compacting' }), context)?.name,
+    ).toBe('turn.notice')
+    expect(
+      projectAgentEvent(notice({ kind: 'info', message: 'Hi' }), { ...context, turnId: undefined }),
+    ).toBeNull()
+  })
+
+  it('cuts provider prose to the protocol limit instead of refusing it', () => {
+    const result = projectAgentEvent(
+      notice({ kind: 'warning', message: 'x'.repeat(5000), detail: 'y'.repeat(5000) }),
+      context,
+    )
+    expect(ProofEventSchema.safeParse(result).success).toBe(true)
+    const payload = result?.payload as { message: string; detail: string }
+    expect(payload.message).toHaveLength(2000)
+    expect(payload.message.endsWith('…')).toBe(true)
+    expect(payload.detail).toHaveLength(2000)
+  })
+})
