@@ -184,6 +184,8 @@ export type Delivery = { s?: string; port?: number; a: number; at: number } & (
       pending: string[]
       /** Sockets it was handed to (`ws.send`). */
       sent: string[]
+      /** Owed, not handed over, and still open afterwards: the server's own loss. */
+      withheld: string[]
     }
   | {
       k: 'carried'

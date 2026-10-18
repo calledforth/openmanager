@@ -100,8 +100,15 @@ class Story {
     return row
   }
 
-  /** A publish of `event` to this client: owed and handed over, or owed and not. */
-  publish(event: { scopeKey: string; sequence: number; name: string }, handed = true) {
+  /**
+   * A publish of `event` to this client: owed and handed over; owed and not
+   * while the socket stayed open (false); or not sent because the send
+   * closed the socket ('closed', slow_consumer).
+   */
+  publish(
+    event: { scopeKey: string; sequence: number; name: string },
+    handed: boolean | 'closed' = true,
+  ) {
     this.deliver(
       {
         k: 'publish',
@@ -110,7 +117,8 @@ class Story {
         name: event.name,
         owed: [SOCKET],
         pending: [],
-        sent: handed ? [SOCKET] : [],
+        sent: handed === true ? [SOCKET] : [],
+        withheld: handed === false ? [SOCKET] : [],
       },
       null,
     )
@@ -159,7 +167,7 @@ class Story {
   }
 
   /** A turn starts: the thread event, its write, and the status event, in one transaction. */
-  turnStarted(sessionId: string, ts: string, handed: boolean | 'not subscribed' = true) {
+  turnStarted(sessionId: string, ts: string, handed: boolean | 'closed' | 'not subscribed' = true) {
     const started = this.event('turn.started', ts, {
       scopeKey: K,
       sessionId,
@@ -448,6 +456,16 @@ describe('the seeded runs’ fingerprints', () => {
     ).toBeUndefined()
     const cause = workspaceRecencyMirror({ workspaceId: W, held: usedAt, witness: lost.witness })
     expect(judge([recencyEntry(usedAt, turnAt)], cause).outcome).toBe('unexpected')
+    // Not sent because the send closed the socket (slow_consumer): the client
+    // recovers by replay (which offers it again) or by a snapshot, not offered here.
+    const closed = new Story()
+    closed.created(S, held)
+    closed.started(S, usedAt, stamped)
+    closed.subscribeThread()
+    closed.turnStarted(S, turnAt, 'closed')
+    expect(classify(result([recencyEntry(usedAt, turnAt)], {}), contextOf(closed))[0]!.cause).toBe(
+      'WORKSPACE_RECENCY_MIRROR',
+    )
     // A client that never watched the thread is X1's: nothing offered it the turn.
     const sidebar = new Story()
     sidebar.created(S, held)

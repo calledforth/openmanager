@@ -114,10 +114,13 @@ function carried(p: Provenance, sockets: ReadonlyMap<string, number>) {
 /**
  * Whether the server offered this client a durable record as an event:
  * replayed to one of its sockets, handed to one and reached it, or owed to
- * an open one (subscribed, or its subscription request in hand) and never
- * handed over, which is the server's own loss. A record handed over and lost
- * on the way (a cut) is not offered: the client recovers past it by replay,
- * which offers it again, or by a snapshot.
+ * an open one (subscribed) and never handed over while it stayed open, which
+ * is the server's own loss. Not offered: a record handed over and lost on the
+ * way (a cut), or not sent because the send closed the socket
+ * (slow_consumer); the client recovers past it by replay, which offers it
+ * again, or by a snapshot. A subscription request still in hand when the
+ * record was published is answered by a read made after it: a replay offers
+ * the record, a snapshot already holds it.
  */
 function offeredAsEvent(
   p: Provenance,
@@ -143,10 +146,8 @@ function offeredAsEvent(
       const reached = wire.reached?.(event.scopeKey, event.sequence, sockets.get(socket)!)
       if (reached !== false) return `handed to socket ${socket}${reached ? ' and reached it' : ''}`
     }
-    for (const socket of [...delivery.owed, ...delivery.pending]) {
-      if (sockets.has(socket) && !delivery.sent.includes(socket)) {
-        return `owed to open socket ${socket} and never handed over`
-      }
+    for (const socket of delivery.withheld) {
+      if (sockets.has(socket)) return `owed to open socket ${socket} and never handed over`
     }
   }
   return undefined

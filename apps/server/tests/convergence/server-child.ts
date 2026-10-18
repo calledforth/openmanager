@@ -671,11 +671,11 @@ function readAudit(): AuditRow[] {
       event: { name: string }
     }
     const key = keyOf(record.cursor.scope)
-    const owed: string[] = []
+    const owed: WebSocket[] = []
     const pending: string[] = []
     for (const [ws, subscriptions] of granted) {
       if (ws.readyState !== WebSocket.OPEN) continue
-      if ([...subscriptions.values()].includes(key ?? '')) owed.push(socketKey(ws))
+      if ([...subscriptions.values()].includes(key ?? '')) owed.push(ws)
     }
     for (const [ws, requests] of asked) {
       for (const request of requests.values()) {
@@ -695,9 +695,14 @@ function readAudit(): AuditRow[] {
         key,
         seq: record.cursor.sequence,
         name: record.event.name,
-        owed,
+        owed: owed.map(socketKey),
         pending,
         sent: [...sent].map(socketKey),
+        // Owed, not handed over, and still open: the server's own loss. A
+        // socket the send closed instead (slow_consumer) is not in it.
+        withheld: owed
+          .filter((ws) => !sent.has(ws) && ws.readyState === WebSocket.OPEN)
+          .map(socketKey),
       })
     }
   }
