@@ -750,6 +750,51 @@ describe('the shared application over the environment client', () => {
     expect(client.getState().threads[THREAD.threadId]?.messages).toHaveLength(3)
   })
 
+  it('updates the sent bubble and the reply in place as they are confirmed, never replacing them', async () => {
+    const client = createMockEnvironmentClient({
+      seed: { ...SEEDED_HISTORY, activeSessionId: SESSION.sessionId },
+      respond: () => null,
+      latencyMs: 30,
+    })
+    await render(<App client={client} />)
+    await settle(client)
+    const rows = () => [...container.querySelectorAll<HTMLElement>('[data-index]')]
+    const rowWith = (text: string) => rows().find((row) => row.textContent?.includes(text))
+
+    // The environment's answer is held on a faked clock until the echo has
+    // been drawn, however slowly this run renders.
+    let sent!: ReturnType<typeof client.commands.sendTurn>
+    let echo: HTMLElement | undefined
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      await act(async () => {
+        sent = client.commands.sendTurn({ ...THREAD, text: 'hold me' })
+      })
+      expect(client.getState().threads[THREAD.threadId]?.outbox).toHaveLength(1)
+      echo = rowWith('hold me')
+      expect(echo).toBeDefined()
+      await act(async () => {
+        vi.runOnlyPendingTimers()
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+
+    await settle(client)
+    const { turn } = await sent
+    expect(client.getState().threads[THREAD.threadId]?.outbox).toHaveLength(0)
+    // The same element: a new one would replay the bubble's entrance.
+    expect(rowWith('hold me')).toBe(echo)
+
+    // The reply's row is the turn's until its first text names it.
+    const reply = rows().at(-1)!
+    expect(reply).not.toBe(echo)
+    await act(() => {
+      client.streamAssistantText({ ...THREAD, turnId: turn.turnId }, 'Tokens', 'assistant-stream')
+    })
+    expect(rowWith('Tokens')).toBe(reply)
+  })
+
   it('keeps a refused prompt on screen with its reason and retries it under one id', async () => {
     const client = createMockEnvironmentClient({
       seed: { ...SEEDED_HISTORY, activeSessionId: SESSION.sessionId },

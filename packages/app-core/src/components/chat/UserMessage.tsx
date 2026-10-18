@@ -97,8 +97,16 @@ export function UserMessage({
         <div className={chatUserInner}>
           {images.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-1.5">
+              {/* Keyed by the stored image where there is one: the echo of a
+                  send and the message that confirms it name the same bytes
+                  under different ids, and a remount would blank the preview
+                  for a frame. */}
               {images.map((image, index) => (
-                <ImageThumbnail key={image.id} image={image} onPreview={() => setViewing(index)} />
+                <ImageThumbnail
+                  key={image.artifact ? `artifact:${image.artifact.artifactId}` : image.id}
+                  image={image}
+                  onPreview={() => setViewing(index)}
+                />
               ))}
             </div>
           )}
