@@ -14,9 +14,17 @@
  * the larger nightly set in `--mode nightly`.
  */
 import { describe, it } from 'vitest'
-import { classify } from './causes.ts'
-import { describeDiff, type DiffEntry } from './normalize.ts'
-import { prng, report, Rig, sleep, until, type TestClient } from './harness.ts'
+import { classify, type RunContext } from './causes.ts'
+import { describeDiff } from './normalize.ts'
+import {
+  prng,
+  report,
+  Rig,
+  sleep,
+  until,
+  type ConvergenceResult,
+  type TestClient,
+} from './harness.ts'
 import { NIGHTLY } from './scenario.ts'
 import { recordEvidence } from './evidence.ts'
 import { createSession, startTurn, type Target } from './steps.ts'
@@ -39,10 +47,13 @@ interface SessionModel extends Target {
   turn: TurnModel | null
   /**
    * The server restarted since this client last opened the session. A
-   * restarted server serves `turn.send` only for threads `session.open`
-   * restored, and a reconnecting client does not open its session again
-   * (websocket.ts:1074-1083), so the send fails "Thread not found" until the
-   * user reopens it. The model reopens first, as the user would.
+   * WORKAROUND, not a fix: a restarted server serves `turn.send` only for
+   * threads `session.open` restored, and a reconnecting client does not open
+   * its session again (websocket.ts:1073-1083), so the send fails "Thread not
+   * found" until the user reopens it. That is a known divergence of its own,
+   * demonstrated by S17 (scenarios.test.ts), which F3 fixes; until then the
+   * model reopens first, as the user has to. Note what this hides: the runs
+   * do not exercise sending into a chat that was open across a restart.
    */
   stale: boolean
 }
@@ -53,9 +64,11 @@ interface Model {
   /**
    * A provider process that crashed marks the provider unhealthy, and the
    * server then refuses `session.create`, `session.open` and `turn.send` for
-   * it ("Provider is unhealthy") until a
-   * probe says otherwise. Probes are off here, so only a new server process
-   * (restart, crash) makes it usable again.
+   * it ("Provider is unhealthy") until a probe says otherwise. Probes are off
+   * here, so only a new server process (restart, crash) makes it usable
+   * again. Out of F2's scope (a provider-availability issue, raised
+   * separately): the model stops creating, opening, sending and checking
+   * while it lasts, because a fresh load cannot open the chat then.
    */
   providerHealthy: boolean
 }
@@ -126,6 +139,8 @@ class ModelRun {
   readonly log: string[] = []
   readonly known = new Set<string>()
   checks = 0
+  /** Stamp times from every server generation, and when each restart came back. */
+  private readonly context: RunContext = { stamps: {}, restarts: [] }
   skippedChecks = 0
   private a!: TestClient
   private readonly model: Model = { sessions: [], active: null, providerHealthy: true }
@@ -153,6 +168,11 @@ class ModelRun {
   }
 
   /** After a restart or crash, no turn is running anywhere and the provider is new. */
+  /** Keep the stamp times of this server generation; a crash would lose them. */
+  private async collectStamps() {
+    Object.assign(this.context.stamps, await this.rig.server.readStamps())
+  }
+
   private forgetTurns() {
     this.model.providerHealthy = true
     for (const session of this.model.sessions) {
@@ -181,6 +201,7 @@ class ModelRun {
         const session = { ...target, turn: null, stale: false }
         model.sessions.push(session)
         model.active = session
+        await this.collectStamps()
         return
       }
       case 'openSession': {
@@ -332,11 +353,18 @@ class ModelRun {
         if (active) active.stale = false
         return
       case 'restart':
-        await this.reconnectAfter(() => this.rig.restart())
+        await this.collectStamps()
+        await this.reconnectAfter(async () => {
+          await this.rig.restart()
+          this.context.restarts.push(Date.now())
+        })
         this.forgetTurns()
         return
       case 'crashServer':
-        await this.reconnectAfter(() => this.rig.crash())
+        await this.reconnectAfter(async () => {
+          await this.rig.crash()
+          this.context.restarts.push(Date.now())
+        })
         this.forgetTurns()
         return
       case 'check':
@@ -359,12 +387,17 @@ class ModelRun {
     }
     this.checks += 1
     await this.connected()
+    await this.collectStamps()
+    const unknown = (checked: ConvergenceResult) =>
+      classify(checked, this.context)
+        .filter(({ cause }) => cause === undefined)
+        .map(({ entry }) => entry)
     let result = await this.rig.checkConvergence(this.a, { timeoutMs: 1 })
-    if (!result.converged && unknown(result.entries).length > 0) {
+    if (!result.converged && unknown(result).length > 0) {
       result = await this.rig.checkConvergence(this.a)
     }
     if (result.converged) return
-    const unexplained = unknown(result.entries)
+    const unexplained = unknown(result)
     if (unexplained.length > 0) {
       throw new Error(
         `Seed ${this.seed} diverged for a reason no known cause explains, after:\n` +
@@ -372,8 +405,7 @@ class ModelRun {
           `Unexplained:\n${describeDiff(unexplained)}\n${report(result)}`,
       )
     }
-    for (const { causes } of classify(result.entries))
-      for (const cause of causes) this.known.add(cause)
+    for (const { cause } of classify(result, this.context)) if (cause) this.known.add(cause)
   }
 
   async run(): Promise<void> {
@@ -400,11 +432,6 @@ class ModelRun {
     await this.check()
   }
 }
-
-const unknown = (entries: readonly DiffEntry[]) =>
-  classify(entries)
-    .filter(({ causes }) => causes.length === 0)
-    .map(({ entry }) => entry)
 
 describe('seeded model-based runs', () => {
   for (const seed of SEEDS) {

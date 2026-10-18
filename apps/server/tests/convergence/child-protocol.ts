@@ -38,9 +38,26 @@ export type ProviderOp =
   | { op: 'emitUnstorableImage'; sessionId: string }
   /** An OpenCode `task` tool that names a child provider session (`subtask_update`). */
   | { op: 'emitSubtask'; sessionId: string; toolCallId: string; childProviderSessionId: string }
+  /**
+   * Text, then an image the artifact store refuses, in one step: the notice
+   * is published while the text still waits in the batcher, whatever the
+   * host's scheduling (S5).
+   */
+  | { op: 'emitTextThenUnstorableImage'; sessionId: string; text: string }
   /** Text produced inside the child at a steady rate, so the IPC channel is not the bottleneck. */
   | { op: 'streamText'; sessionId: string; bytesPerSecond: number; durationMs: number }
   | { op: 'setNewSessionDelay'; ms: number }
+  /**
+   * The fake Claude Code SDK (sessions on provider `claude`): wait for the
+   * runtime's `prompts`-th prompt, report a background-task roster
+   * (`background_tasks_changed`, REPLACE semantics), or end the prompted turn.
+   */
+  | { op: 'claudeWaitPrompt'; prompts: number }
+  | {
+      op: 'claudeBackground'
+      tasks: Array<{ task_id: string; task_type: string; description: string }>
+    }
+  | { op: 'claudeComplete' }
   /** Every prompt from now on runs these steps by itself; `null` returns to manual prompts. */
   | { op: 'setAutoScript'; steps: ScriptStep[] | null }
 
@@ -51,6 +68,11 @@ export type ServerOp =
   | { op: 'readThread'; sessionId: string; threadId: string }
   /** The threads the server holds for a session (`listThreadsForSession`), whatever any client knows. */
   | { op: 'readSessionThreads'; sessionId: string }
+  /**
+   * Host session id → when the fake provider resolved its `session/new`, in
+   * epoch milliseconds: the moment `persistRuntimeSession` stamps the row.
+   */
+  | { op: 'readStamps' }
   /** The server's own session summaries (`listSessionSummaries` walked to the end), newest first. */
   | { op: 'readSessions' }
   /** Per-connection socket buffers, read from inside the server process (S15). */

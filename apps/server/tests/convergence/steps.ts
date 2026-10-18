@@ -16,7 +16,17 @@ export interface Target {
 export async function createSession(
   rig: Rig,
   client: TestClient,
-  options: { title?: string | null; open?: boolean; providerId?: string } = {},
+  options: {
+    title?: string | null
+    open?: boolean
+    providerId?: string
+    /**
+     * Wait (default) until the server is quiet, so the provider session has
+     * resolved and its runtime stamp (S8's cause) has landed before the
+     * scenario goes on. Only a scenario about the stamp turns it off.
+     */
+    settle?: boolean
+  } = {},
 ): Promise<Target> {
   const title = options.title === undefined ? 'Scenario' : options.title
   const created = await client.client.commands.createSession({
@@ -27,6 +37,7 @@ export async function createSession(
   })
   const target = { sessionId: created.session.sessionId, threadId: created.thread.threadId }
   if (options.open !== false) await client.client.commands.openSession(target.sessionId)
+  if (options.settle !== false) await rig.waitQuiet()
   return target
 }
 

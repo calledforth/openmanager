@@ -1,36 +1,40 @@
 /**
- * The §8.4 scenarios of docs/sync-foundations.md against today's server.
+ * The §8.4 scenarios of docs/sync-foundations.md against today's server, and
+ * the divergences found beside them.
  *
- * Three buckets:
- *   - known divergence on main: the scenario passes only when it produced the
- *     documented failure for the documented reason (see evidence.ts). When a
- *     later phase fixes it, it fails with "now converges ... flip it";
+ * Buckets:
+ *   - known divergence on main: the diff is judged against the primary cause
+ *     instantiated with the fixture's own ids and captured values, plus the
+ *     residual causes the scenario names, each as tight (evidence.ts). Primary
+ *     gone: "flip it to a guard". Anything else: wrong cause;
  *   - regression guard: the property must hold, now and after every phase;
- *   - not runnable on main: the seam does not exist yet (todo, construction
- *     written out).
+ *   - future tests: a body written against today's harness but asserting a
+ *     later phase (skipped), or no body yet because the seam does not exist
+ *     (todo).
  */
 import { describe, expect } from 'vitest'
 import {
-  ENVIRONMENT_SNAPSHOT_NEVER_REMOVES,
-  REASONING_BUDGET_MARKER,
-  RUNTIME_STAMP,
-  SESSION_CREATED_PARTIAL,
-  SILENT_RECOVERY,
-  SNAPSHOT_MERGE_DROPS_OLDER_ACTIVITY,
-  THOUGHT_CLOSED_BY_FOLD,
-  WORKSPACE_RECENCY_MIRROR,
+  environmentSnapshotNeverRemoves,
+  reasoningBudgetMarker,
+  runtimeStamp,
+  sessionCreatedPartial,
+  silentRecovery,
+  snapshotMergeDropsOlderActivity,
+  thoughtClosedByFold,
+  workspaceRecencyMirror,
 } from './causes.ts'
 import {
   FlipError,
   demonstrateDiff,
   expectConverges,
   expectConvergesExcept,
-  matches,
   recordEvidence,
+  verdictOf,
 } from './evidence.ts'
 import { Driver, sleep, until, type Rig, type TestClient } from './harness.ts'
 import type { FrameFields, FrameRecord } from './link-proxy.ts'
-import { notRunnable, scenario } from './scenario.ts'
+import { normalize, serverThreadView, type ThreadView } from './normalize.ts'
+import { afterPhase, futureTest, scenario } from './scenario.ts'
 import {
   createSession,
   scriptedTurn,
@@ -47,17 +51,30 @@ import {
 
 const KiB = 1024
 
-/** Text in chunks the size the batcher flushes at, so a big message streams as on a real turn. */
-async function emitLargeText(rig: Rig, target: Target, bytes: number, kind: 'text' | 'thought') {
+/**
+ * Text in chunks the size the batcher flushes at, so a big message streams
+ * as on a real turn. Returns what was sent.
+ */
+async function emitLargeText(
+  rig: Rig,
+  target: Target,
+  bytes: number,
+  kind: 'text' | 'thought',
+): Promise<string> {
   const chunk = 16_000
-  for (let sent = 0; sent < bytes; sent += chunk) {
-    const size = Math.min(chunk, bytes - sent)
+  let sent = ''
+  for (let offset = 0; offset < bytes; offset += chunk) {
+    const text = String.fromCharCode(97 + ((offset / chunk) % 26)).repeat(
+      Math.min(chunk, bytes - offset),
+    )
     await rig.provider({
       op: kind === 'text' ? 'emitText' : 'emitThought',
       sessionId: target.sessionId,
-      text: String.fromCharCode(97 + ((sent / chunk) % 26)).repeat(size),
+      text,
     })
+    sent += text
   }
+  return sent
 }
 
 async function finish(rig: Rig, client: TestClient, target: Target, turnId: string) {
@@ -73,15 +90,15 @@ async function finish(rig: Rig, client: TestClient, target: Target, turnId: stri
 /**
  * A thread longer than one history page (100 messages): the first
  * `activityTurns` turns think and use a tool, the rest only answer. Only the
- * oldest turns have thoughts, so they are the ones a snapshot merge drops and
- * no other cause (S2) shows in the same diff.
+ * oldest turns have thoughts, so they are the ones a snapshot merge drops.
+ * Returns those turns' ids.
  */
 async function buildLongThread(
   rig: Rig,
   client: TestClient,
   target: Target,
   options: { turns: number; activityTurns: number },
-) {
+): Promise<string[]> {
   await rig.provider({
     op: 'setAutoScript',
     steps: [
@@ -91,8 +108,9 @@ async function buildLongThread(
       { op: 'complete' },
     ],
   })
+  const early: string[] = []
   for (let index = 0; index < options.activityTurns; index++) {
-    await scriptedTurn(client, target, `Early step ${index + 1}`)
+    early.push(await scriptedTurn(client, target, `Early step ${index + 1}`))
   }
   await rig.provider({
     op: 'setAutoScript',
@@ -102,6 +120,7 @@ async function buildLongThread(
     await scriptedTurn(client, target, `Step ${index + 1}`)
   }
   await rig.provider({ op: 'setAutoScript', steps: null })
+  return early
 }
 
 /** Walk every older history page, as scrolling to the top of the chat does. */
@@ -111,6 +130,38 @@ async function walkHistory(client: TestClient, target: Target) {
     if (!cursor) return
     await client.client.commands.loadSessionHistory({ ...target, cursor })
   }
+}
+
+/** The server's own read of a thread, normalized. */
+async function serverThread(rig: Rig, target: Target): Promise<ThreadView> {
+  return serverThreadView(await rig.server.readThread(target.sessionId, target.threadId))
+}
+
+/** A client's own view of one thread, normalized. */
+function clientThread(client: TestClient, target: Target): ThreadView {
+  const view = normalize(client.client.getState(), target.sessionId)
+  const found = view.active?.threads[target.threadId]
+  if (!found) throw new Error(`${client.name} does not hold thread ${target.threadId}.`)
+  return found
+}
+
+/**
+ * The server's read of the activity of `turnIds`: what the snapshot merge
+ * drops, as the fresh load must show it.
+ */
+function olderActivity(server: ThreadView, threadId: string, turnIds: readonly string[]) {
+  const inTurns = (value: unknown) => turnIds.includes((value as { turnId: string }).turnId)
+  const pick = (record: Record<string, unknown>) =>
+    Object.fromEntries(Object.entries(record).filter(([, value]) => inTurns(value)))
+  const reasoning = pick(server.reasoning)
+  const tools = pick(server.tools)
+  const refs = (server.order as Array<{ kind: string; id: string; turnId: string }>).filter(
+    (ref) => (ref.kind === 'reasoning' || ref.kind === 'tool') && turnIds.includes(ref.turnId),
+  ) as Array<{ kind: 'reasoning' | 'tool'; id: string; turnId: string }>
+  if (Object.keys(reasoning).length === 0 || Object.keys(tools).length === 0) {
+    throw new Error('The fixture has no older activity to lose.')
+  }
+  return { threadId, reasoning, tools, refs }
 }
 
 const downFrames = (frames: readonly FrameRecord[]) =>
@@ -177,10 +228,16 @@ async function threadWithAnswer(rig: Rig, bytes: number): Promise<Target> {
   return target
 }
 
+/** A client's sidebar row for one session, as normalize shows it. */
+const rowOf = (client: TestClient, sessionId: string) =>
+  (normalize(client.client.getState(), null).sessions as Array<{ sessionId: string }>).find(
+    (row) => row.sessionId === sessionId,
+  )
+
 /**
  * The heartbeat floor on main (S7, S14): a client on a slow link opens a
  * thread right after its handshake; the ping queued at 15 s waits behind the
- * answer, the pong deadline passes at about 25 s, and the server closes with
+ * answer, the pong deadline passes, and the server closes with
  * `heartbeat_timeout`. The client reconnects and asks for the thread again.
  */
 async function demonstrateHeartbeatLoop(
@@ -210,10 +267,7 @@ async function demonstrateHeartbeatLoop(
     unsubscribe()
   }
   if (ready) {
-    throw new FlipError(
-      name,
-      'The thread loaded over the slow link; assert zero heartbeat closes now.',
-    )
+    throw new FlipError(name, 'The thread loaded over the slow link; enable its after-F5a half.')
   }
   recordEvidence({
     scenario: name,
@@ -239,6 +293,13 @@ async function demonstrateHeartbeatLoop(
   })
 }
 
+/**
+ * Tool status at turn end on this build. Main never settles a tool, on either
+ * side (event-projection.ts:528-570). F3 writes `tool.updated {cancelled}`
+ * before the terminal (§4.3); that phase changes this to 'cancelled'.
+ */
+const TOOL_STATUS_AFTER_TURN_END = 'in_progress'
+
 // ---------------------------------------------------------------------------
 // Scenarios
 // ---------------------------------------------------------------------------
@@ -261,11 +322,27 @@ describe('§8.4 scenarios on main', () => {
         turnState(a, target, turnId) === 'waiting',
       'A to hold the open tool, thought and question',
     )
-    await rig.waitQuiet()
+    // A valid baseline: before the crash A agrees with the server, except for
+    // the workspace recency the question moved (X1, an interaction event is
+    // not one the client mirrors it on), named with its fingerprint.
+    await expectConvergesExcept('S1 baseline', rig, a, [
+      (result) => workspaceRecencyMirror(result, rig.workspaceId),
+    ])
+    const held = clientThread(a, target)
     const before = a.connects
     await rig.crash()
     await until(() => a.connects > before, 'A to reconnect after the crash', 20_000)
-    await demonstrateDiff('S1', rig, a, SILENT_RECOVERY)
+    await demonstrateDiff(
+      'S1',
+      rig,
+      a,
+      silentRecovery({
+        threadId: target.threadId,
+        turnId,
+        openState: 'waiting',
+        interactions: held.interactions,
+      }),
+    )
   })
 
   scenario('S2 a thought followed by text, connected throughout', {}, async (rig) => {
@@ -275,7 +352,14 @@ describe('§8.4 scenarios on main', () => {
     await rig.provider({ op: 'emitThought', sessionId: target.sessionId, text: 'Thinking' })
     await rig.provider({ op: 'emitText', sessionId: target.sessionId, text: 'The answer.' })
     await finish(rig, a, target, turnId)
-    await demonstrateDiff('S2', rig, a, THOUGHT_CLOSED_BY_FOLD)
+    const thoughts = thread(a, target)!.reasoning.map((entry) => entry.messageId)
+    expect(thoughts).toHaveLength(1)
+    await demonstrateDiff(
+      'S2',
+      rig,
+      a,
+      thoughtClosedByFold({ threadId: target.threadId, messageIds: thoughts }),
+    )
   })
 
   scenario('S3 a tool left open when the turn completes (guard)', {}, async (rig) => {
@@ -285,15 +369,27 @@ describe('§8.4 scenarios on main', () => {
     await rig.provider({ op: 'openTool', sessionId: target.sessionId, toolCallId: 'tool-s3' })
     await finish(rig, a, target, turnId)
     const result = await expectConverges('S3', rig, a)
-    // Both sides agree today because neither settles the tool; after F3 both say cancelled.
-    const tools = Object.values(result.fresh.active?.threads ?? {}).flatMap((view) =>
-      Object.values(view.tools),
+    // Equal is not enough: the tool must be there, with this build's status.
+    const statuses = [result.view, result.fresh].map((view) =>
+      Object.values(view.active!.threads[target.threadId]!.tools).map(
+        (tool) => (tool as { status?: string }).status,
+      ),
     )
+    statuses.push(
+      Object.values(result.server.threads[target.threadId]!.tools).map(
+        (tool) => (tool as { status?: string }).status,
+      ),
+    )
+    for (const seen of statuses) {
+      expect(seen, `one tool, ${TOOL_STATUS_AFTER_TURN_END} after the turn ended`).toEqual([
+        TOOL_STATUS_AFTER_TURN_END,
+      ])
+    }
     recordEvidence({
       scenario: 'S3',
       bucket: 'regression-guard',
       cause: 'tool status',
-      observed: tools,
+      observed: statuses,
     })
   })
 
@@ -303,10 +399,19 @@ describe('§8.4 scenarios on main', () => {
     async (rig) => {
       const a = await rig.connect('A')
       const target = await createSession(rig, a)
-      await buildLongThread(rig, a, target, { turns: 52, activityTurns: 2 })
+      const early = await buildLongThread(rig, a, target, { turns: 52, activityTurns: 2 })
       await walkHistory(a, target)
       expect(thread(a, target)?.messages.length).toBe(104)
-      await rig.waitQuiet()
+      // A valid baseline: before the gap A differs from the server only by
+      // the fold closing the early thoughts (S2), exactly those.
+      const server = await serverThread(rig, target)
+      const older = olderActivity(server, target.threadId, early)
+      await expectConvergesExcept('S4 baseline', rig, a, [
+        thoughtClosedByFold({
+          threadId: target.threadId,
+          messageIds: Object.keys(older.reasoning),
+        }),
+      ])
       rig.proxy.down()
       rig.proxy.cut()
       await until(() => a.client.getState().connection.phase !== 'connected', 'A to notice the cut')
@@ -329,7 +434,7 @@ describe('§8.4 scenarios on main', () => {
         (frame) => info(frame).reason === 'gap_expired' && info(frame).threadId === target.threadId,
       )
       expect(answer, 'the catch-up was a gap_expired snapshot').toBeDefined()
-      await demonstrateDiff('S4', rig, a, SNAPSHOT_MERGE_DROPS_OLDER_ACTIVITY)
+      await demonstrateDiff('S4', rig, a, snapshotMergeDropsOlderActivity(older))
     },
   )
 
@@ -338,12 +443,18 @@ describe('§8.4 scenarios on main', () => {
     const target = await createSession(rig, a)
     const turnId = await startTurn(a, target)
     rig.proxy.record(true)
-    await rig.provider({ op: 'emitText', sessionId: target.sessionId, text: 'first words' })
-    // The artifact store refuses this image, and the server says so with a
+    // One child step: the text enters the batcher and the image is refused
+    // before any timer runs, so the order does not depend on how fast the
+    // host schedules two separate requests against the 100 ms window. The
+    // artifact store refuses the image and the server says so with a
     // transient `turn.notice` (thread-service.ts:865-880). No recoverable
-    // `rpc_error` exists on the ACP path: the runtime never sets `recoverable`
-    // there (AcpSessionRuntimeImpl.ts:415), so this is the doc's fallback.
-    await rig.provider({ op: 'emitUnstorableImage', sessionId: target.sessionId })
+    // `rpc_error` exists on the ACP path (AcpSessionRuntimeImpl.ts:415), so
+    // this is the doc's fallback.
+    await rig.provider({
+      op: 'emitTextThenUnstorableImage',
+      sessionId: target.sessionId,
+      text: 'first words',
+    })
     await rig.provider({ op: 'emitText', sessionId: target.sessionId, text: ' then more' })
     await finish(rig, a, target, turnId)
     await rig.waitQuiet()
@@ -422,17 +533,26 @@ describe('§8.4 scenarios on main', () => {
     await startTurn(a, target)
     // The turn stays open: any end of it would also close the thought in A's
     // fold (S2), and this scenario shows the budget alone.
-    await emitLargeText(rig, target, 400 * KiB, 'thought')
-    await untilThread(
+    const text = await emitLargeText(rig, target, 400 * KiB, 'thought')
+    const entry = await untilThread(
       a,
       target,
       (state) =>
-        state.reasoning.some((entry) =>
-          entry.content.some((block) => block.type === 'text' && block.text.length >= 400 * KiB),
+        state.reasoning.some((item) =>
+          item.content.some((block) => block.type === 'text' && block.text.length === text.length),
         ),
       'A to hold the whole thought',
     )
-    await demonstrateDiff('S6(b)', rig, a, REASONING_BUDGET_MARKER)
+    await demonstrateDiff(
+      'S6(b)',
+      rig,
+      a,
+      reasoningBudgetMarker({
+        threadId: target.threadId,
+        messageId: entry.reasoning[0]!.messageId,
+        text,
+      }),
+    )
   })
 
   scenario(
@@ -453,25 +573,49 @@ describe('§8.4 scenarios on main', () => {
     async (rig) => {
       const a = await rig.connect('A')
       const b = await rig.connect('B')
+      // Its own stamp lands 500 ms after its creation; createSession waits for it.
       const older = await createSession(rig, a, { title: 'Older', open: false })
-      // Its own stamp lands 500 ms after its creation; let that pass first.
-      await rig.waitQuiet()
       await until(
-        () => b.client.getState().sessions[older.sessionId] !== undefined,
+        () => b.client.getState().sessions[older.sessionId],
         'B to list the older session',
       )
-      const created = await createSession(rig, a, { title: 'New', open: false })
+      const created = await createSession(rig, a, { title: 'New', open: false, settle: false })
       // Inside the 500 ms before the new session's stamp: the older one moves above it.
       await a.client.commands.renameSession(older.sessionId, 'Older, renamed')
-      await until(
-        () => b.client.getState().sessions[created.sessionId] !== undefined,
+      const held = await until(
+        () => b.client.getState().sessions[created.sessionId]?.updatedAt,
         'B to list the new session',
       )
-      // B heard of both sessions only through session.created, which names no
-      // provider (X2); that shows in the same diff and is not this cause.
-      await demonstrateDiff('S8', rig, b, RUNTIME_STAMP, {
-        alsoExplainedBy: [SESSION_CREATED_PARTIAL],
-      })
+      await rig.waitQuiet()
+      const stamps = await rig.server.readStamps()
+      await demonstrateDiff(
+        'S8',
+        rig,
+        b,
+        (result) =>
+          runtimeStamp({
+            sessionId: created.sessionId,
+            heldUpdatedAt: held,
+            stampedAt: stamps[created.sessionId]!,
+            order: {
+              held: [older.sessionId, created.sessionId],
+              stamped: [created.sessionId, older.sessionId],
+            },
+            workspace: {
+              workspaceId: rig.workspaceId,
+              held: (result.view.workspaces[rig.workspaceId] as { lastActivityAt: string })
+                .lastActivityAt,
+            },
+          }),
+        // B heard of both sessions only through session.created, which names no
+        // provider (X2): named, and only for these two sessions.
+        [
+          sessionCreatedPartial({
+            sessionIds: [older.sessionId, created.sessionId],
+            providerId: 'opencode',
+          }),
+        ],
+      )
     },
   )
 
@@ -480,7 +624,7 @@ describe('§8.4 scenarios on main', () => {
    * stamp follows the child's insert in the same synchronous step
    * (thread-service.ts:1338-1352), so whether its `updatedAt` moves depends on
    * the clock crossing a millisecond in between. The run records which
-   * happened, and fails only on a divergence no known cause explains.
+   * happened, and fails on anything the instantiated causes do not explain.
    */
   scenario(
     'S8 (child) a child session registered through subtask_update (observed)',
@@ -504,23 +648,31 @@ describe('§8.4 scenarios on main', () => {
         'B to list the child session',
       )
       await finish(rig, a, parent, turnId)
+      const held = child.updatedAt!
       const result = await rig.checkConvergence(b)
-      const allowed = [RUNTIME_STAMP, SESSION_CREATED_PARTIAL, WORKSPACE_RECENCY_MIRROR]
-      const unexplained = result.entries.filter(
-        (entry) =>
-          !allowed.some((cause) => cause.explains.some((matcher) => matches(matcher, entry))),
-      )
-      expect(unexplained, 'only the stamp, the bare session.created and recency may show').toEqual(
-        [],
-      )
-      const stamped = result.entries.some(
-        (entry) => entry.path === `sessions[${child.sessionId}].updatedAt`,
-      )
+      const { verdict } = verdictOf('S8 (child)', result, undefined, [
+        // The child's stamp has no provider session of its own: it follows
+        // the insert, so it lands at the insert's time or just after.
+        runtimeStamp({
+          sessionId: child.sessionId,
+          heldUpdatedAt: held,
+          stampedAt: Date.parse(held),
+        }),
+        sessionCreatedPartial({
+          sessionIds: [parent.sessionId, child.sessionId],
+          providerId: 'opencode',
+        }),
+        workspaceRecencyMirror(result, rig.workspaceId),
+      ])
+      expect(verdict.residual, 'only the instantiated causes may show').toEqual([])
       recordEvidence({
         scenario: 'S8 (child)',
         bucket: 'regression-guard',
         cause: 'observation: did the child stamp cross a millisecond?',
-        observed: { childStampDiverged: stamped, entries: result.entries },
+        observed: {
+          childStampDiverged: verdict.residualCauses.includes('RUNTIME_STAMP'),
+          entries: result.entries,
+        },
       })
     },
   )
@@ -528,8 +680,9 @@ describe('§8.4 scenarios on main', () => {
   /**
    * The S9 setup: a parent with a child, 110 other sessions (more than one
    * catalog page, and enough to move a whole page between any two reads), B
-   * holding the whole catalog, then B cut while the parent is deleted and
-   * 501 renames push the environment stream past the replay cap.
+   * holding the whole catalog and an environment cursor, then B cut while
+   * the parent is deleted and 501 renames push the environment stream past
+   * the replay cap.
    */
   async function s9Setup(rig: Rig, childProviderSessionId: string) {
     const driver = new Driver(rig)
@@ -553,8 +706,12 @@ describe('§8.4 scenarios on main', () => {
     const others: string[] = []
     for (let index = 0; index < 110; index++) {
       const client = await driver.client()
-      others.push((await createSession(rig, client, { title: `S${index}`, open: false })).sessionId)
+      others.push(
+        (await createSession(rig, client, { title: `S${index}`, open: false, settle: false }))
+          .sessionId,
+      )
     }
+    await rig.waitQuiet()
     const total = others.length + 2
     const b = await rig.connect('B')
     await until(
@@ -570,7 +727,12 @@ describe('§8.4 scenarios on main', () => {
       () => b.client.getState().sessions[others[0]!]?.title === 'Seen by B',
       'B to apply a live environment event',
     )
-    await rig.waitQuiet()
+    await rig.settle()
+    // The rows B will keep, as normalize shows them.
+    const rows = {
+      [parent.sessionId]: rowOf(b, parent.sessionId),
+      [child.sessionId]: rowOf(b, child.sessionId),
+    }
     rig.proxy.down()
     rig.proxy.cut()
     await until(() => b.client.getState().connection.phase !== 'connected', 'B to notice the cut')
@@ -578,14 +740,14 @@ describe('§8.4 scenarios on main', () => {
     for (let index = 0; index < 501; index++) {
       await (await driver.client()).client.commands.renameSession(others[0]!, `Gap ${index}`)
     }
-    return { driver, b, parent, child: child.sessionId, others, total }
+    return { driver, b, parent, child: child.sessionId, others, total, rows }
   }
 
   scenario(
     'S9 a deleted parent and child, a gap past the replay cap, a moving catalog',
     { timeoutMs: 180_000 },
     async (rig) => {
-      const { driver, b, parent, child, others, total } = await s9Setup(rig, 'fake-child-s9')
+      const { driver, b, parent, child, others, total, rows } = await s9Setup(rig, 'fake-child-s9')
       let renames = 0
       const movePage = async () => {
         // A whole page of sessions moves above wherever B's read began.
@@ -620,11 +782,11 @@ describe('§8.4 scenarios on main', () => {
         info(environmentReplay).reason,
         'B caught up with a gap_expired environment snapshot',
       ).toBe('gap_expired')
-      // The renames that move the catalog also move the workspace's recency
-      // with no event (X1); that shows in the same diff and is not this cause.
-      await demonstrateDiff('S9', rig, b, ENVIRONMENT_SNAPSHOT_NEVER_REMOVES, {
-        alsoExplainedBy: [WORKSPACE_RECENCY_MIRROR],
-      })
+      await demonstrateDiff('S9', rig, b, environmentSnapshotNeverRemoves({ rows }), [
+        // The renames that move the catalog also move the workspace's recency
+        // with no event (X1): named, with its fingerprint.
+        (result) => workspaceRecencyMirror(result, rig.workspaceId),
+      ])
       recordEvidence({
         scenario: 'S9',
         bucket: 'known-divergence',
@@ -658,10 +820,16 @@ describe('§8.4 scenarios on main', () => {
     async (rig) => {
       const a = await rig.connect('A')
       const target = await createSession(rig, a)
-      await buildLongThread(rig, a, target, { turns: 52, activityTurns: 2 })
+      const early = await buildLongThread(rig, a, target, { turns: 52, activityTurns: 2 })
       await walkHistory(a, target)
       expect(thread(a, target)?.messages.length).toBe(104)
-      await rig.waitQuiet()
+      const older = olderActivity(await serverThread(rig, target), target.threadId, early)
+      await expectConvergesExcept('S10 baseline', rig, a, [
+        thoughtClosedByFold({
+          threadId: target.threadId,
+          messageIds: Object.keys(older.reasoning),
+        }),
+      ])
       rig.proxy.record(true)
       const reloaded = await rig.reload(a)
       // The cache already says "ready"; wait for the reload's own initial snapshot.
@@ -672,7 +840,7 @@ describe('§8.4 scenarios on main', () => {
           ),
         'the reload to receive its initial thread snapshot',
       )
-      await demonstrateDiff('S10', rig, reloaded, SNAPSHOT_MERGE_DROPS_OLDER_ACTIVITY)
+      await demonstrateDiff('S10', rig, reloaded, snapshotMergeDropsOlderActivity(older))
     },
   )
 
@@ -746,12 +914,13 @@ describe('§8.4 scenarios on main', () => {
     })
   })
 
-  notRunnable(
+  futureTest(
     'S13 a lost durable record, then a notice for the same scope',
-    'F4 (the delivery-queue seam)',
+    'F4 (a delivery-queue seam that drops one record for one connection)',
     'with A subscribed to a thread, the seam drops one durable record for A only; the server then ' +
       'publishes a turn.notice for that scope whose `after` is ahead of A’s cursor; A must recover, ' +
-      'replay the missing record, apply the notice and converge (§5.5)',
+      'replay the missing record, apply the notice and converge (§5.5). There is nothing on main to ' +
+      'drop a record for one connection, so there is no body yet.',
   )
 
   scenario(
@@ -766,12 +935,27 @@ describe('§8.4 scenarios on main', () => {
     },
   )
 
-  notRunnable(
-    'S14 after F5a: the same answer completes with no reconnect',
+  afterPhase(
+    'S14 the same answer completes over 300 B/s with no reconnect',
     'F5a (beats, rate-sized fragments)',
-    'threadWithAnswer(30 KB); proxy.throttle(down, 300 B/s, 64 KiB); a fresh client opens the thread ' +
-      'right after its handshake; it must reach ready on its first socket (about 100 s; nightly: 300 KB, ' +
-      'about 17 min), with zero heartbeat closes on either side, then converge',
+    { timeoutMs: 300_000 },
+    async (rig) => {
+      const target = await threadWithAnswer(rig, 30_000)
+      rig.proxy.throttle('down', 300, 64 * KiB)
+      const client = await rig.connect('C')
+      await client.client.commands.openSession(target.sessionId)
+      await untilThread(
+        client,
+        target,
+        (state) => state.hydration === 'ready',
+        'the answer',
+        240_000,
+      )
+      expect(client.dials, 'the first socket carried it').toBe(1)
+      expect(proxiedCloses(rig, 'heartbeat_timeout'), 'no server heartbeat close').toEqual([])
+      expect(client.closes, 'no client close').toEqual([])
+      await expectConverges('S14 after F5a', rig, client)
+    },
   )
 
   scenario(
@@ -780,7 +964,7 @@ describe('§8.4 scenarios on main', () => {
     async (rig) => {
       const a = await rig.connect('A')
       const target = await createSession(rig, a)
-      const turnId = await startTurn(a, target)
+      await startTurn(a, target)
       rig.proxy.throttle('down', 10 * KiB, 256 * KiB)
       const streaming = rig
         .provider({
@@ -790,7 +974,7 @@ describe('§8.4 scenarios on main', () => {
           durationMs: 60_000,
         })
         .catch(() => undefined)
-      const samples: Array<{ atMs: number; bufferedAmount: number }> = []
+      const samples: Array<{ atMs: number; bufferedAmount: number; proxyQueued: number }> = []
       const started = rig.now()
       while (proxiedCloses(rig, 'slow_consumer').length === 0 && rig.now() - started < 70_000) {
         const sockets = await rig.server.sampleSockets()
@@ -801,6 +985,9 @@ describe('§8.4 scenarios on main', () => {
         samples.push({
           atMs: rig.now() - started,
           bufferedAmount: proxied.reduce((total, socket) => total + socket.bufferedAmount, 0),
+          proxyQueued: rig.proxy
+            .backlog()
+            .reduce((total, entry) => total + entry.down + entry.inspecting, 0),
         })
         await sleep(1_000)
       }
@@ -808,10 +995,7 @@ describe('§8.4 scenarios on main', () => {
       await streaming
       const closes = proxiedCloses(rig, 'slow_consumer')
       if (closes.length === 0) {
-        throw new FlipError(
-          'S15',
-          'No slow_consumer close in 70 s; assert the window and backlog bounds now.',
-        )
+        throw new FlipError('S15', 'No slow_consumer close in 70 s; enable its after-F5a half.')
       }
       recordEvidence({
         scenario: 'S15',
@@ -828,25 +1012,90 @@ describe('§8.4 scenarios on main', () => {
           })),
         },
       })
-      void turnId
     },
   )
 
-  notRunnable(
-    'S15 after F5a: the backlog stays bounded and A catches up',
-    'F5a (send window, lagging, catch-up)',
-    'same construction; sampled queued + in-flight bytes never exceed window + 1 MiB backlog + one ' +
-      'materialized answer; A sees subscription.lagging then subscription.catchup; after the producer ' +
-      'stops, A converges',
+  afterPhase(
+    'S15 the backlog stays bounded, the scope lags and catches up',
+    'F5a (send window, backlog bound, subscription.lagging and .catchup)',
+    { timeoutMs: 200_000 },
+    async (rig) => {
+      // §7.3 FLOW_POLICY: 4 MiB maximum window, 1 MiB backlog bound.
+      const bound = 4 * 1024 * KiB + 1024 * KiB
+      const a = await rig.connect('A')
+      const target = await createSession(rig, a)
+      await startTurn(a, target)
+      rig.proxy.throttle('down', 10 * KiB, 256 * KiB)
+      rig.proxy.record(true)
+      const streaming = rig.provider({
+        op: 'streamText',
+        sessionId: target.sessionId,
+        bytesPerSecond: 100 * KiB,
+        durationMs: 60_000,
+      })
+      let largest = 0
+      const started = rig.now()
+      while (rig.now() - started < 61_000) {
+        const sockets = await rig.server.sampleSockets()
+        const held = sockets.reduce((total, socket) => total + socket.bufferedAmount, 0)
+        largest = Math.max(largest, held)
+        // One materialized catch-up answer may come on top; the thread is the only scope here.
+        expect(held, 'server buffering stays within window + backlog + one answer').toBeLessThan(
+          bound + 8 * 1024 * KiB,
+        )
+        await sleep(1_000)
+      }
+      await streaming
+      await rig.provider({ op: 'completeTurn', sessionId: target.sessionId })
+      const names = downFrames(rig.proxy.frames).map((frame) => info(frame).name)
+      const lagging = names.indexOf('subscription.lagging')
+      expect(lagging, 'A was told the scope is lagging').toBeGreaterThanOrEqual(0)
+      expect(names.indexOf('subscription.catchup', lagging), 'then caught up').toBeGreaterThan(
+        lagging,
+      )
+      expect(proxiedCloses(rig, 'slow_consumer'), 'never closed').toEqual([])
+      recordEvidence({
+        scenario: 'S15 after F5a',
+        bucket: 'regression-guard',
+        cause: 'bounded',
+        observed: { largest },
+      })
+      await expectConverges('S15 after F5a', rig, a)
+    },
   )
 
-  notRunnable(
+  afterPhase(
     'S16 a sudden rate drop mid-answer',
-    'F5a (8 KiB fragment cap, browser watchdog per frame)',
-    'start a ~2 MB answer on throttle(5 MB/s, 256 KiB); once ~1 MB is delivered switch to ' +
-      'throttle(1 KiB/s, 256 KiB); every in-flight fragment (≤ 8 KiB) arrives within ~8 s, the watchdog ' +
-      'never fires, later fragments shrink to ~2 KiB, the answer completes with no reconnect (nightly; ' +
-      'the CI variant drops with only ~64 KiB left)',
+    'F5a (8 KiB fragment cap, per-frame browser watchdog)',
+    { timeoutMs: 1_800_000 },
+    async (rig) => {
+      // Nightly shape: drop with about 1 MB left. The CI variant drops with
+      // about 64 KiB left (set `leftAtDrop` to 64 KiB).
+      const answer = 2_000_000
+      const leftAtDrop = 1_000_000
+      const target = await threadWithAnswer(rig, answer)
+      rig.proxy.throttle('down', 5_000_000, 256 * KiB)
+      const client = await rig.connect('C')
+      void client.client.commands.openSession(target.sessionId)
+      const before = rig.proxy.delivered().down
+      await until(
+        () => rig.proxy.delivered().down - before >= answer - leftAtDrop,
+        'the first part of the answer at 5 MB/s',
+        60_000,
+        5,
+      )
+      rig.proxy.throttle('down', KiB, 256 * KiB)
+      await untilThread(
+        client,
+        target,
+        (state) => state.hydration === 'ready',
+        'the rest',
+        1_500_000,
+      )
+      expect(client.dials, 'no reconnect').toBe(1)
+      expect(client.closes, 'the watchdog never fired').toEqual([])
+      await expectConverges('S16', rig, client)
+    },
   )
 
   for (const [id, pair] of [
@@ -861,7 +1110,7 @@ describe('§8.4 scenarios on main', () => {
     ],
     ['W7', 'the runtime stamp (thread-service.ts:419-426, after session.created)'],
   ] as const) {
-    notRunnable(
+    futureTest(
       `${id} crash window: ${pair}`,
       'F3 (a beforeCommit seam reachable from startServer)',
       'kill the server child between the row write and its event; after the restart the row and the ' +
@@ -879,9 +1128,11 @@ describe('divergences on main that §8.4 does not list', () => {
       const target = await createSession(rig, a)
       const turnId = await startTurn(a, target)
       await finish(rig, a, target, turnId)
-      await rig.waitQuiet()
+      await rig.settle()
       await a.client.commands.renameSession(target.sessionId, 'Renamed later')
-      await demonstrateDiff('X1', rig, a, WORKSPACE_RECENCY_MIRROR)
+      await demonstrateDiff('X1', rig, a, (result) =>
+        workspaceRecencyMirror(result, rig.workspaceId),
+      )
     },
   )
 
@@ -891,14 +1142,79 @@ describe('divergences on main that §8.4 does not list', () => {
     async (rig) => {
       const a = await rig.connect('A')
       const b = await rig.connect('B')
-      const target = await createSession(rig, a, { open: false })
-      await until(() => b.client.getState().sessions[target.sessionId], 'B to list the new session')
-      // Nothing follows the creation, so the runtime stamp (S8's cause) shows too.
-      await demonstrateDiff('X2', rig, b, SESSION_CREATED_PARTIAL, {
-        alsoExplainedBy: [RUNTIME_STAMP],
-      })
+      const target = await createSession(rig, a, { open: false, settle: false })
+      const held = await until(
+        () => b.client.getState().sessions[target.sessionId]?.updatedAt,
+        'B to list the new session',
+      )
+      await rig.waitQuiet()
+      const stamps = await rig.server.readStamps()
+      await demonstrateDiff(
+        'X2',
+        rig,
+        b,
+        sessionCreatedPartial({ sessionIds: [target.sessionId], providerId: 'opencode' }),
+        [
+          // Nothing follows the creation, so the runtime stamp (S8's cause)
+          // shows too: named, for this session, with its stamp time.
+          (result) =>
+            runtimeStamp({
+              sessionId: target.sessionId,
+              heldUpdatedAt: held,
+              stampedAt: stamps[target.sessionId]!,
+              workspace: {
+                workspaceId: rig.workspaceId,
+                held: (result.view.workspaces[rig.workspaceId] as { lastActivityAt: string })
+                  .lastActivityAt,
+              },
+            }),
+        ],
+      )
     },
   )
+
+  /**
+   * After a restart, the open chat refuses a send. A reconnecting client
+   * does not send `session.open` again for a session whose scopes it still
+   * subscribes to (websocket.ts:1073-1083); the restarted server serves
+   * `turn.send` only for threads in memory, which only `session.open`
+   * restores (thread-service.ts:1420-1422, :2231-2314). F3 owns the fix.
+   * Nothing here compares state before the send: a fresh load opens the
+   * session itself, which would restore the thread and hide the bug.
+   */
+  scenario('S17 a send in the open chat after a server restart (F3)', {}, async (rig) => {
+    const a = await rig.connect('A')
+    const target = await createSession(rig, a)
+    const turnId = await startTurn(a, target)
+    await finish(rig, a, target, turnId)
+    const before = a.connects
+    await rig.restart()
+    await until(() => a.connects > before, 'A to reconnect after the restart', 20_000)
+    await until(() => !a.busy(), 'A to finish its reconnect')
+    const refused = await a.client.commands
+      .sendTurn({ ...target, text: 'And now?' })
+      .then(() => undefined)
+      .catch((error: unknown) => error as { code?: string; message?: string })
+    if (!refused) throw new FlipError('S17', 'The send was accepted after the restart.')
+    expect(refused, 'refused as a missing thread').toMatchObject({
+      code: 'not_found',
+      message: 'Thread not found.',
+    })
+    // What the user must do today, and what the seeded runs do (model.test.ts):
+    // reopen the chat, which restores the thread, then send.
+    await a.client.commands.openSession(target.sessionId)
+    const retried = await startTurn(a, target, 'And now, reopened?')
+    await finish(rig, a, target, retried)
+    recordEvidence({
+      scenario: 'S17',
+      bucket: 'known-divergence',
+      cause:
+        'turn.send serves only threads in memory (thread-service.ts:1420-1422); a reconnecting ' +
+        'client does not reopen its session (websocket.ts:1073-1083), so after a restart the open ' +
+        'chat refuses a send until it is reopened.',
+      observed: { refused, afterReopen: 'accepted' },
+    })
+  })
 
   /**
    * #219's `waitingOn`: a question outranks a permission, and answering it
@@ -919,9 +1235,11 @@ describe('divergences on main that §8.4 does not list', () => {
     const settle = async (step: string, expected: string | undefined) => {
       await until(() => waitingOn() === expected || undefined, `B to show waitingOn ${expected}`)
       // Interaction events move sessions.updated_at, and with it the
-      // workspace's recency, with no workspace event (X1): named, not ignored.
-      await expectConvergesExcept(`G1 ${step} (sidebar)`, rig, b, [WORKSPACE_RECENCY_MIRROR])
-      await expectConvergesExcept(`G1 ${step} (chat)`, rig, a, [WORKSPACE_RECENCY_MIRROR])
+      // workspace's recency, with no workspace event (X1): named, with its fingerprint.
+      const recency = (result: Parameters<typeof workspaceRecencyMirror>[0]) =>
+        workspaceRecencyMirror(result, rig.workspaceId)
+      await expectConvergesExcept(`G1 ${step} (sidebar)`, rig, b, [recency])
+      await expectConvergesExcept(`G1 ${step} (chat)`, rig, a, [recency])
       steps.push({ step, waitingOn: waitingOn() })
     }
     await rig.provider({ op: 'askPermission', sessionId: target.sessionId, toolCallId: 'edit-g1' })
@@ -962,6 +1280,60 @@ describe('divergences on main that §8.4 does not list', () => {
   })
 
   /**
+   * #219's `inBackground`: a Claude Code turn ends with a background task
+   * still running, so the session stays running for that work alone; the
+   * roster empties and it rests; a restart while work runs clears it
+   * (forgetStaleBackgroundWork). A sidebar-only client must follow each step.
+   */
+  scenario(
+    'G3 inBackground follows background-only work, and a restart (#219, guard)',
+    {},
+    async (rig) => {
+      const a = await rig.connect('A')
+      const b = await rig.connect('B')
+      const target = await createSession(rig, a, { providerId: 'claude' })
+      await b.client.commands.listSessions()
+      const row = () => b.client.getState().sessions[target.sessionId]
+      const steps: Array<{ step: string; status: unknown; inBackground: unknown }> = []
+      const recency = (result: Parameters<typeof workspaceRecencyMirror>[0]) =>
+        workspaceRecencyMirror(result, rig.workspaceId)
+      const settle = async (step: string, status: string, inBackground: true | undefined) => {
+        await until(
+          () => (row()?.status === status && row()?.inBackground === inBackground) || undefined,
+          `B to show ${status}${inBackground ? ', in the background' : ''}`,
+        )
+        await expectConvergesExcept(`G3 ${step} (sidebar)`, rig, b, [recency])
+        await expectConvergesExcept(`G3 ${step} (chat)`, rig, a, [recency])
+        steps.push({ step, status: row()?.status, inBackground: row()?.inBackground })
+      }
+      const shell = { task_id: 'bg-1', task_type: 'local_bash', description: 'Run the build' }
+      let prompts = 0
+      const turnWithBackgroundWork = async () => {
+        await startTurn(a, target, `Build it ${prompts + 1}`)
+        await rig.provider({ op: 'claudeWaitPrompt', prompts: ++prompts })
+        await rig.provider({ op: 'claudeBackground', tasks: [shell] })
+        await rig.provider({ op: 'claudeComplete' })
+      }
+      await turnWithBackgroundWork()
+      await settle('turn ended, work still running', 'running', true)
+      await rig.provider({ op: 'claudeBackground', tasks: [] })
+      await settle('work finished', 'idle', undefined)
+      await turnWithBackgroundWork()
+      await settle('second turn ended, work still running', 'running', true)
+      const before = b.connects
+      await rig.restart()
+      await until(() => b.connects > before, 'B to reconnect after the restart', 20_000)
+      await settle('server restarted while work ran', 'idle', undefined)
+      recordEvidence({
+        scenario: 'G3',
+        bucket: 'regression-guard',
+        cause: 'inBackground',
+        observed: steps,
+      })
+    },
+  )
+
+  /**
    * Persisted drafts and composer preferences (normalize compares both, and
    * the composer read the app makes): B follows them live, across a short gap
    * that replays, and across one past the replay cap, after which the client
@@ -975,8 +1347,7 @@ describe('divergences on main that §8.4 does not list', () => {
       const b = await rig.connect('B')
       const target = await createSession(rig, a, { title: 'With a draft' })
       await b.client.commands.openSession(target.sessionId)
-      // A turn, so the session's last change is one every client mirrors, not
-      // the runtime stamp (S8) or the recency it moves (X1).
+      // A turn, so the session's last change is one every client mirrors.
       const turnId = await startTurn(a, target)
       await finish(rig, a, target, turnId)
       const pair = { workspaceId: rig.workspaceId, providerId: 'opencode' }

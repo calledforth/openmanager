@@ -143,6 +143,11 @@ export class ServerProcess {
     return this.call({ op: 'readThread', sessionId, threadId })
   }
 
+  /** Host session id → when its provider session resolved (epoch ms), for this generation. */
+  readStamps(): Promise<Record<string, number>> {
+    return this.call({ op: 'readStamps' })
+  }
+
   readSessionThreads(sessionId: string): Promise<string[]> {
     return this.call({ op: 'readSessionThreads', sessionId })
   }

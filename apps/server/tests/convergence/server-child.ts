@@ -135,6 +135,8 @@ let newSessionDelayMs = config.newSessionDelayMs
 let autoScript: ScriptStep[] | null = null
 let promptCount = 0
 const providerSessions = new Map<string, FakeAcpConnection>()
+/** Provider session id → when its `session/new` resolved (epoch ms). */
+const resolvedAt = new Map<string, number>()
 const activePrompts = new Map<string, ActivePrompt>()
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
@@ -178,6 +180,7 @@ const connections: FakeConnectionFactory = new FakeConnectionFactory((spec) => {
       if (newSessionDelayMs > 0) await sleep(newSessionDelayMs)
       const sessionId = `fake-${randomUUID()}`
       providerSessions.set(sessionId, connection())
+      resolvedAt.set(sessionId, Date.now())
       return { sessionId }
     }),
     loadSession: traced(async (params) => {
@@ -266,6 +269,7 @@ async function runScript(active: ActivePrompt, steps: ScriptStep[]): Promise<voi
 // takes over; any executable will do.
 process.env.CLAUDE_CODE_BIN = process.execPath
 
+const claudeSdk = new FakeClaudeSdk()
 const server = await startServer({
   port: 0,
   dataDir: config.dataDir,
@@ -276,7 +280,7 @@ const server = await startServer({
   probeProviders: false,
   runtimeOptions: {
     connections,
-    claudeSdk: new FakeClaudeSdk(),
+    claudeSdk,
     // Model listing through a provider's CLI: nothing to list, nothing spawned.
     execFile: async () => ({ stdout: '', stderr: '' }),
     // Health probes off: they would spawn connections on their own schedule.
@@ -471,6 +475,46 @@ async function handle(request: ChildRequest): Promise<unknown> {
       }
       return { bytes }
     }
+    case 'emitTextThenUnstorableImage': {
+      const active = await promptOf(request.sessionId)
+      // Both before anything yields to a timer: the text's batch (100 ms) is
+      // still open when the image's notice goes out.
+      touch()
+      await Promise.all([
+        active.connection.sessionUpdate({
+          sessionId: active.providerSessionId,
+          update: { sessionUpdate: 'agent_message_chunk', content: text(request.text) },
+        }),
+        active.connection.sessionUpdate({
+          sessionId: active.providerSessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'image', mimeType: 'image/png', data: 'not base64!' },
+          },
+        }),
+      ])
+      touch()
+      return null
+    }
+    case 'claudeWaitPrompt': {
+      const deadline = performance.now() + 10_000
+      while ((claudeSdk.queries.at(-1)?.prompts.length ?? 0) < request.prompts) {
+        if (performance.now() > deadline) throw new Error('The Claude session was never prompted.')
+        await sleep(10)
+      }
+      return null
+    }
+    case 'claudeBackground':
+      touch()
+      claudeSdk.last.emitBackgroundTasks(request.tasks)
+      return null
+    case 'claudeComplete': {
+      touch()
+      const query = claudeSdk.last
+      const prompt = query.prompts.at(-1) as { uuid?: string } | undefined
+      query.emitResult({ ...(prompt?.uuid ? { userMessageUuid: prompt.uuid } : {}) })
+      return null
+    }
     case 'setNewSessionDelay':
       newSessionDelayMs = request.ms
       return null
@@ -487,6 +531,17 @@ async function handle(request: ChildRequest): Promise<unknown> {
     }
     case 'readThread':
       return readThread(request.sessionId, request.threadId)
+    case 'readStamps': {
+      const rows = database()
+        .prepare('SELECT session_id, provider_session_id FROM sessions')
+        .all() as Array<{ session_id: string; provider_session_id: string | null }>
+      const stamps: Record<string, number> = {}
+      for (const row of rows) {
+        const at = row.provider_session_id ? resolvedAt.get(row.provider_session_id) : undefined
+        if (at !== undefined) stamps[row.session_id] = at
+      }
+      return stamps
+    }
     case 'readSessionThreads':
       return listThreadsForSession(database(), request.sessionId).map((thread) => thread.threadId)
     case 'readSessions': {

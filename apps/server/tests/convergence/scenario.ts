@@ -57,11 +57,28 @@ export function scenario(name: string, options: ScenarioOptions, body: Body): vo
 }
 
 /**
- * A scenario whose seam does not exist on this build. The construction is
- * written out so the phase that adds the seam only has to enable it.
+ * A future test whose seam does not exist on this build (a phase adds it).
+ * There is no body: it is written by the phase that adds the seam, from the
+ * construction recorded here.
  */
-export function notRunnable(name: string, phase: string, construction: string): void {
-  // The construction stays with the test it becomes; the name says what it waits for.
+export function futureTest(name: string, phase: string, construction: string): void {
   void construction
-  it.todo(`${name} (needs ${phase})`)
+  it.todo(`${name} (future test, needs ${phase})`)
+}
+
+/**
+ * A future test whose body is written against today's harness and protocol,
+ * but whose assertions describe a phase not yet built, so it is skipped.
+ * The phase that lands removes `phase` from the skip, and fixes anything the
+ * new protocol changes (message names, reference-client adapters).
+ */
+export function afterPhase(
+  name: string,
+  phase: string,
+  options: ScenarioOptions,
+  body: Body,
+): void {
+  it.skip(`${name} (after ${phase})`, { timeout: options.timeoutMs ?? 120_000 }, async () => {
+    await withRig(options, body)
+  })
 }
