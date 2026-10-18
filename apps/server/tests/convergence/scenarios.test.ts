@@ -29,7 +29,7 @@ import {
   recordEvidence,
 } from './evidence.ts'
 import { Driver, sleep, until, type Rig, type TestClient } from './harness.ts'
-import type { FrameRecord } from './link-proxy.ts'
+import type { FrameFields, FrameRecord } from './link-proxy.ts'
 import { notRunnable, scenario } from './scenario.ts'
 import {
   createSession,
@@ -114,11 +114,36 @@ async function walkHistory(client: TestClient, target: Target) {
 }
 
 const downFrames = (frames: readonly FrameRecord[]) =>
-  frames.filter((frame) => frame.direction === 'down' && frame.json !== undefined)
+  frames.filter((frame) => frame.direction === 'down' && frame.opcode === 1)
 
 type Json = Record<string, unknown>
 const field = (value: unknown, ...path: string[]): unknown =>
   path.reduce<unknown>((current, key) => (current as Json | undefined)?.[key], value)
+
+/**
+ * The fields scenarios look for, from a parsed frame or, for one too large
+ * for the inspector to keep, from its head.
+ */
+function info(frame: FrameRecord | undefined): FrameFields {
+  if (!frame) return {}
+  if (frame.fields) return frame.fields
+  const payload = field(frame.json, 'payload')
+  const scope = (field(payload, 'snapshot', 'cursor', 'scope') ?? field(payload, 'scope')) as
+    Json | undefined
+  const text = (key: string, from: unknown = frame.json) => {
+    const value = field(from, key)
+    return typeof value === 'string' ? value : undefined
+  }
+  return {
+    type: text('type'),
+    name: text('name'),
+    requestId: text('requestId'),
+    mode: text('mode', payload),
+    reason: text('reason', payload),
+    scopeType: text('type', scope),
+    threadId: text('threadId', scope),
+  }
+}
 
 /** The upstream `subscription.replay` commands for a thread scope, in wire order. */
 function threadReplays(frames: readonly FrameRecord[], threadId: string) {
@@ -301,7 +326,7 @@ describe('§8.4 scenarios on main', () => {
         20_000,
       )
       const answer = downFrames(rig.proxy.frames).find(
-        (frame) => field(frame.json, 'payload', 'reason') === 'gap_expired',
+        (frame) => info(frame).reason === 'gap_expired' && info(frame).threadId === target.threadId,
       )
       expect(answer, 'the catch-up was a gap_expired snapshot').toBeDefined()
       await demonstrateDiff('S4', rig, a, SNAPSHOT_MERGE_DROPS_OLDER_ACTIVITY)
@@ -589,11 +614,10 @@ describe('§8.4 scenarios on main', () => {
       )
       await rig.waitQuiet()
       const environmentReplay = downFrames(rig.proxy.frames).find(
-        (frame) =>
-          field(frame.json, 'payload', 'snapshot', 'cursor', 'scope', 'type') === 'environment',
+        (frame) => info(frame).mode === 'snapshot' && info(frame).scopeType === 'environment',
       )
       expect(
-        field(environmentReplay?.json, 'payload', 'reason'),
+        info(environmentReplay).reason,
         'B caught up with a gap_expired environment snapshot',
       ).toBe('gap_expired')
       // The renames that move the catalog also move the workspace's recency
@@ -644,10 +668,7 @@ describe('§8.4 scenarios on main', () => {
       await until(
         () =>
           downFrames(rig.proxy.frames).some(
-            (frame) =>
-              field(frame.json, 'payload', 'reason') === 'initial' &&
-              field(frame.json, 'payload', 'snapshot', 'cursor', 'scope', 'threadId') ===
-                target.threadId,
+            (frame) => info(frame).reason === 'initial' && info(frame).threadId === target.threadId,
           ),
         'the reload to receive its initial thread snapshot',
       )
@@ -718,12 +739,8 @@ describe('§8.4 scenarios on main', () => {
     )
     const replay = threadReplays(rig.proxy.frames, target.threadId)[0]
     const requestId = field(replay?.json, 'requestId')
-    const answer = downFrames(rig.proxy.frames).find(
-      (frame) => field(frame.json, 'requestId') === requestId,
-    )
-    expect(field(answer?.json, 'payload', 'mode'), 'an incremental replay, not a snapshot').toBe(
-      'replay',
-    )
+    const answer = downFrames(rig.proxy.frames).find((frame) => info(frame).requestId === requestId)
+    expect(info(answer).mode, 'an incremental replay, not a snapshot').toBe('replay')
     await expectConverges('S12', rig, a, {
       replayedEvents: (field(answer?.json, 'payload', 'events') as unknown[] | undefined)?.length,
     })

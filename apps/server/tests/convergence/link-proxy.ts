@@ -5,15 +5,22 @@ import { createServer, connect, type Server, type Socket } from 'node:net'
  * environment. Its URL stays the same while the server child behind it is
  * restarted on a new port.
  *
- * Each direction of each connection is a pump: it reads from one socket into
- * a buffer of at most `bufferBytes` and stops reading when the buffer is full,
- * so TCP backpressure reaches the sender the way it does behind cloudflared's
- * flow-controlled path. It writes the buffer out at `bytesPerSecond` (or as
- * fast as the receiver takes it), after `latencyMs`.
+ * Each direction of each connection is a byte pump: it reads from one socket
+ * into a queue of at most `bufferBytes`, plus the one socket read that
+ * crossed it (at most 64 KiB), and stops reading when the queue is full, so
+ * TCP backpressure reaches the sender the way it does behind cloudflared,
+ * which forwards an upgraded connection as a byte stream. The queue drains at
+ * `bytesPerSecond` (or as fast as the receiver takes it), after `latencyMs`.
  *
- * The proxy also parses WebSocket frames in both directions without changing
- * a byte: downstream frames can be recorded (the wire-order probe), and an
- * upstream frame can be held by a gate until a test releases it.
+ * WebSocket frames are inspected beside that stream, never instead of it:
+ *   - downstream the inspector is a tee. Bytes go to the pump as they are
+ *     read; the inspector keeps a frame's header and at most the first
+ *     `INSPECT_HEAD_BYTES` of its payload, so a frame much larger than the
+ *     bound is never assembled;
+ *   - upstream, frames are forwarded whole, so a gate can hold one before the
+ *     server sees a byte of it. Client frames are bounded by the server's own
+ *     64 KiB inbound limit. The bytes of a frame still arriving are counted in
+ *     `backlog()` as `inspecting`; a held frame counts in `up`.
  */
 
 export type Direction = 'down' | 'up'
@@ -26,17 +33,29 @@ export interface Shape {
   latencyMs: number
 }
 
+/** Fields of a frame too large to parse whole, read from its head. */
+export interface FrameFields {
+  type?: string
+  name?: string
+  requestId?: string
+  mode?: string
+  reason?: string
+  scopeType?: string
+  threadId?: string
+}
+
 /** One WebSocket frame seen on the wire. */
 export interface FrameRecord {
   connection: number
   direction: Direction
-  /** Milliseconds since the proxy started, when the frame was read from its sender. */
+  /** Milliseconds since the proxy started, when the frame's last byte was read from its sender. */
   at: number
   opcode: number
   size: number
-  /** Text frames under 8 MiB, parsed; the frame's head otherwise. */
+  /** Text frames whose payload fits the inspector's head, parsed. */
   json?: unknown
-  head?: string
+  /** Larger text frames: the first value of each field their head names. */
+  fields?: FrameFields
   close?: { code: number; reason: string }
 }
 
@@ -47,90 +66,192 @@ const DEFAULT_BUFFER_BYTES = 4 * 1024 * 1024
 const TICK_MS = 10
 /** Tokens a pump may bank; covers a late timer (Windows ticks at ~16 ms) without bursting. */
 const BURST_MS = 50
-const RECORD_JSON_MAX = 8 * 1024 * 1024
+/** The most of one downstream frame's payload the inspector keeps. */
+export const INSPECT_HEAD_BYTES = 64 * 1024
+/** The largest upstream frame held whole for the gate. */
+const UPSTREAM_FRAME_MAX = 1024 * 1024
 
 interface QueuedChunk {
   data: Buffer
   readyAt: number
+  /** Nothing from this chunk on is written until it settles (the gate). */
+  barrier?: Promise<void>
 }
 
-class FrameParser {
-  private buffer: Buffer = Buffer.alloc(0)
-  private headerDone = false
+interface InspectedFrame {
+  opcode: number
+  size: number
+  /** The payload, unmasked, up to the inspector's retain limit. */
+  head: Buffer
+  /** Whether `head` is the whole payload. */
+  whole: boolean
+}
+
+/**
+ * Follows WebSocket framing over a byte stream, chunk by chunk, holding at
+ * most one frame header and `retain` payload bytes. In framing mode it also
+ * holds the raw bytes of the frame in progress and hands each frame on whole;
+ * a frame longer than `retain` is passed through as it arrives instead.
+ */
+class Inspector {
+  private phase: 'http' | 'header' | 'payload' = 'http'
+  private tail: Buffer = Buffer.alloc(0)
+  private header: Buffer = Buffer.alloc(0)
+  private opcode = 0
+  private remaining = 0
+  private size = 0
+  private mask: Buffer | null = null
+  private maskIndex = 0
+  private headParts: Buffer[] = []
+  private headBytes = 0
+  private rawParts: Buffer[] = []
+  private rawBytes = 0
+  private passing = false
 
   constructor(
-    private readonly masked: boolean,
-    /** Called with each complete frame, and with the raw bytes that carried it. */
-    private readonly onUnit: (unit: { raw: Buffer; frame?: ParsedFrame }) => void,
+    private readonly retain: number,
+    private readonly onFrame: (frame: InspectedFrame) => void,
+    /** Framing mode: every byte leaves through here, frames whole. */
+    private readonly forward?: (raw: Buffer, frame?: InspectedFrame) => void,
   ) {}
 
+  /** Bytes this inspector holds right now. */
+  get held(): number {
+    return this.headBytes + this.rawBytes + this.header.length + this.tail.length
+  }
+
   push(chunk: Buffer): void {
-    this.buffer = this.buffer.length ? Buffer.concat([this.buffer, chunk]) : chunk
-    for (;;) {
-      if (!this.headerDone) {
-        const end = this.buffer.indexOf('\r\n\r\n')
-        if (end === -1) return
-        const raw = this.buffer.subarray(0, end + 4)
-        this.buffer = this.buffer.subarray(end + 4)
-        this.headerDone = true
-        this.onUnit({ raw })
+    let offset = 0
+    while (offset < chunk.length) {
+      if (this.phase === 'http') {
+        // The upgrade request or response, up to its blank line.
+        const rest = chunk.subarray(offset)
+        const window = this.tail.length ? Buffer.concat([this.tail, rest]) : rest
+        const end = window.indexOf('\r\n\r\n')
+        if (end === -1) {
+          this.forward?.(rest)
+          this.tail = Buffer.from(window.subarray(Math.max(0, window.length - 3)))
+          return
+        }
+        const consumed = end + 4 - this.tail.length
+        this.forward?.(rest.subarray(0, consumed))
+        offset += consumed
+        this.tail = Buffer.alloc(0)
+        this.phase = 'header'
         continue
       }
-      const frame = parseFrame(this.buffer)
-      if (!frame) return
-      const raw = this.buffer.subarray(0, frame.length)
-      this.buffer = this.buffer.subarray(frame.length)
-      this.onUnit({ raw, frame: { ...frame, payload: unmask(frame, raw, this.masked) } })
+      if (this.phase === 'header') {
+        const take = Math.min(this.headerLength() - this.header.length, chunk.length - offset)
+        this.header = Buffer.concat([this.header, chunk.subarray(offset, offset + take)])
+        offset += take
+        if (this.header.length < this.headerLength()) continue
+        this.startPayload()
+        if (this.remaining === 0) this.finishFrame()
+        continue
+      }
+      const take = Math.min(this.remaining, chunk.length - offset)
+      const piece = chunk.subarray(offset, offset + take)
+      offset += take
+      this.remaining -= take
+      if (this.forward) {
+        if (this.passing) this.forward(piece)
+        else {
+          this.rawParts.push(piece)
+          this.rawBytes += piece.length
+        }
+      }
+      if (this.headBytes < this.retain) {
+        const kept = Buffer.from(piece.subarray(0, this.retain - this.headBytes))
+        if (this.mask) {
+          for (let index = 0; index < kept.length; index++) {
+            kept[index]! ^= this.mask[(this.maskIndex + index) % 4]!
+          }
+        }
+        this.headParts.push(kept)
+        this.headBytes += kept.length
+      }
+      this.maskIndex += take
+      if (this.remaining === 0) this.finishFrame()
     }
   }
-}
 
-interface ParsedFrame {
-  fin: boolean
-  opcode: number
-  length: number
-  headerLength: number
-  payloadLength: number
-  maskOffset: number | null
-  payload: Buffer
-}
-
-function parseFrame(buffer: Buffer): Omit<ParsedFrame, 'payload'> | null {
-  if (buffer.length < 2) return null
-  const first = buffer[0]!
-  const second = buffer[1]!
-  const maskedBit = (second & 0x80) !== 0
-  let payloadLength = second & 0x7f
-  let offset = 2
-  if (payloadLength === 126) {
-    if (buffer.length < 4) return null
-    payloadLength = buffer.readUInt16BE(2)
-    offset = 4
-  } else if (payloadLength === 127) {
-    if (buffer.length < 10) return null
-    payloadLength = Number(buffer.readBigUInt64BE(2))
-    offset = 10
+  /** Header bytes needed so far: 2, then the extended length and the mask once known. */
+  private headerLength(): number {
+    if (this.header.length < 2) return 2
+    const code = this.header[1]! & 0x7f
+    const masked = (this.header[1]! & 0x80) !== 0
+    return 2 + (code === 126 ? 2 : code === 127 ? 8 : 0) + (masked ? 4 : 0)
   }
-  const maskOffset = maskedBit ? offset : null
-  if (maskedBit) offset += 4
-  const length = offset + payloadLength
-  if (buffer.length < length) return null
-  return {
-    fin: (first & 0x80) !== 0,
-    opcode: first & 0x0f,
-    length,
-    headerLength: offset,
-    payloadLength,
-    maskOffset,
+
+  private startPayload(): void {
+    const code = this.header[1]! & 0x7f
+    const masked = (this.header[1]! & 0x80) !== 0
+    let offset = 2
+    let length = code
+    if (code === 126) {
+      length = this.header.readUInt16BE(2)
+      offset = 4
+    } else if (code === 127) {
+      length = Number(this.header.readBigUInt64BE(2))
+      offset = 10
+    }
+    this.opcode = this.header[0]! & 0x0f
+    this.size = length
+    this.remaining = length
+    this.mask = masked ? Buffer.from(this.header.subarray(offset, offset + 4)) : null
+    this.maskIndex = 0
+    if (this.forward) {
+      this.passing = length > this.retain
+      if (this.passing) this.forward(this.header)
+      else {
+        this.rawParts = [this.header]
+        this.rawBytes = this.header.length
+      }
+    }
+    this.header = Buffer.alloc(0)
+    this.phase = 'payload'
+  }
+
+  private finishFrame(): void {
+    const head =
+      this.headParts.length === 1
+        ? this.headParts[0]!
+        : Buffer.concat(this.headParts, this.headBytes)
+    const frame: InspectedFrame = {
+      opcode: this.opcode,
+      size: this.size,
+      head,
+      whole: head.length === this.size,
+    }
+    this.headParts = []
+    this.headBytes = 0
+    this.phase = 'header'
+    this.onFrame(frame)
+    if (this.forward && !this.passing) {
+      const raw = Buffer.concat(this.rawParts, this.rawBytes)
+      this.rawParts = []
+      this.rawBytes = 0
+      this.forward(raw, frame)
+    }
+    this.passing = false
   }
 }
 
-function unmask(frame: Omit<ParsedFrame, 'payload'>, raw: Buffer, expectMask: boolean): Buffer {
-  const payload = Buffer.from(raw.subarray(frame.headerLength, frame.length))
-  if (frame.maskOffset === null || !expectMask) return payload
-  const mask = raw.subarray(frame.maskOffset, frame.maskOffset + 4)
-  for (let index = 0; index < payload.length; index++) payload[index]! ^= mask[index % 4]!
-  return payload
+/** The first value of each field a frame's head names, for frames too large to parse whole. */
+function fieldsOf(head: string): FrameFields {
+  const fields: FrameFields = {}
+  for (const key of ['type', 'name', 'requestId', 'mode', 'reason'] as const) {
+    const value = new RegExp(`"${key}":"([^"]*)"`).exec(head)?.[1]
+    if (value !== undefined) fields[key] = value
+  }
+  const scope = /"scope":\{([^{}]*)\}/.exec(head)?.[1]
+  if (scope) {
+    const type = /"type":"([^"]*)"/.exec(scope)?.[1]
+    const threadId = /"threadId":"([^"]*)"/.exec(scope)?.[1]
+    if (type) fields.scopeType = type
+    if (threadId) fields.threadId = threadId
+  }
+  return fields
 }
 
 /** One direction of one proxied connection. */
@@ -143,7 +264,8 @@ class Pump {
   private waitingDrain = false
   private ended = false
   private finished = false
-  private held: Promise<void> | undefined
+  /** Barriers still pending, so `idle` can say whether anything is held. */
+  private barriers = 0
   /** Bytes handed to the destination socket. */
   delivered = 0
 
@@ -164,22 +286,28 @@ class Pump {
     return this.queued
   }
 
-  push(data: Buffer): void {
+  /** Whether everything read has been written and nothing is held. */
+  get idle(): boolean {
+    return this.queued === 0 && this.barriers === 0
+  }
+
+  /** Queue bytes; with `barrier`, they and everything after wait until it settles. */
+  push(data: Buffer, barrier?: Promise<void>): void {
     if (data.length === 0) return
-    this.queue.push({ data, readyAt: performance.now() + this.shape().latencyMs })
+    const chunk: QueuedChunk = { data, readyAt: performance.now() + this.shape().latencyMs }
+    if (barrier) {
+      this.barriers += 1
+      chunk.barrier = barrier
+      void barrier.finally(() => {
+        this.barriers -= 1
+        chunk.barrier = undefined
+        this.schedule()
+      })
+    }
+    this.queue.push(chunk)
     this.queued += data.length
     if (this.queued >= this.shape().bufferBytes) this.source.pause()
     this.schedule()
-  }
-
-  /** Hold everything after the current queue until `until` settles. */
-  hold(until: Promise<void>): void {
-    const previous = this.held
-    const chained = (previous ? previous.then(() => until) : until).finally(() => {
-      if (this.held === chained) this.held = undefined
-      this.schedule()
-    })
-    this.held = chained
   }
 
   end(): void {
@@ -200,7 +328,7 @@ class Pump {
     const now = performance.now()
     const elapsed = now - this.lastTick
     this.lastTick = now
-    if (this.blackholed() || this.held || this.waitingDrain) {
+    if (this.blackholed() || this.waitingDrain) {
       // Nothing moves; a blackhole keeps the sockets but forwards nothing.
       this.tokens = 0
       if (this.blackholed() && this.queue.length) this.retry(TICK_MS)
@@ -216,6 +344,7 @@ class Pump {
     }
     while (this.queue.length) {
       const head = this.queue[0]!
+      if (head.barrier) return
       if (head.readyAt > now) {
         this.retry(Math.max(1, head.readyAt - now))
         return
@@ -270,6 +399,8 @@ interface Pair {
   server: Socket
   down: Pump
   up: Pump
+  downInspector: Inspector
+  upInspector: Inspector
   closed: boolean
 }
 
@@ -278,6 +409,21 @@ export interface LinkProxyStats {
   accepted: number
   refused: number
   open: number
+  /** Bytes handed to the client (down) and the server (up), all connections, closed ones included. */
+  delivered: Record<Direction, number>
+}
+
+/** Every application buffer of one connection, in bytes. */
+export interface ConnectionBacklog {
+  connection: number
+  /** Read from the server, not yet written to the client. */
+  down: number
+  /** Read from the client, not yet written to the server (a held frame included). */
+  up: number
+  /** Frame bytes the inspectors hold beside (down) or ahead of (up) the pumps. */
+  inspecting: number
+  /** Bytes written to the client and to the server so far. */
+  delivered: Record<Direction, number>
 }
 
 export class LinkProxy {
@@ -297,7 +443,12 @@ export class LinkProxy {
   readonly frames: FrameRecord[] = []
   /** The local port of every connection the proxy opened to a server: the server sees it as the remote port. */
   readonly serverSidePorts = new Set<number>()
-  readonly stats: LinkProxyStats = { accepted: 0, refused: 0, open: 0 }
+  readonly stats: LinkProxyStats = {
+    accepted: 0,
+    refused: 0,
+    open: 0,
+    delivered: { down: 0, up: 0 },
+  }
 
   private constructor(listener: Server) {
     this.listener = listener
@@ -392,13 +543,35 @@ export class LinkProxy {
     this.recording = on
   }
 
-  /** Bytes read from the server and not yet handed to the client, per open connection. */
-  backlog(): Array<{ connection: number; down: number; up: number }> {
+  /** Every application buffer of every open connection (S15 and S16 read these). */
+  backlog(): ConnectionBacklog[] {
     return [...this.pairs.values()].map((pair) => ({
       connection: pair.id,
       down: pair.down.backlog,
       up: pair.up.backlog,
+      inspecting: pair.downInspector.held + pair.upInspector.held,
+      delivered: { down: pair.down.delivered, up: pair.up.delivered },
     }))
+  }
+
+  /** Bytes delivered to the client and to the server, over every connection. */
+  delivered(): Record<Direction, number> {
+    const open = [...this.pairs.values()]
+    return {
+      down: this.stats.delivered.down + open.reduce((sum, pair) => sum + pair.down.delivered, 0),
+      up: this.stats.delivered.up + open.reduce((sum, pair) => sum + pair.up.delivered, 0),
+    }
+  }
+
+  /** Nothing queued, held or half-inspected on any open connection. */
+  drained(): boolean {
+    return [...this.pairs.values()].every(
+      (pair) =>
+        pair.down.idle &&
+        pair.up.idle &&
+        pair.downInspector.held === 0 &&
+        pair.upInspector.held === 0,
+    )
   }
 
   async close(): Promise<void> {
@@ -436,26 +609,35 @@ export class LinkProxy {
       () => this.shapes.up,
       () => this.holes,
     )
-    const pair: Pair = { id, client, server, down, up, closed: false }
+    const downInspector = new Inspector(INSPECT_HEAD_BYTES, (frame) => {
+      if (this.recording) this.frames.push(this.describe(id, 'down', frame))
+    })
+    const upInspector = new Inspector(
+      // Client frames are small (the server refuses more than 64 KiB), so the
+      // gate sees all of one; this bound only matters to a misbehaving client.
+      UPSTREAM_FRAME_MAX,
+      (frame) => {
+        if (this.recording) this.frames.push(this.describe(id, 'up', frame))
+      },
+      (raw, frame) => {
+        const held =
+          frame && frame.opcode === 1 && frame.whole && this.gateFn
+            ? this.gateFn(frame.head.toString('utf8'), id)
+            : undefined
+        // The frame that matched waits too: the server must not see it yet.
+        up.push(raw, held)
+      },
+    )
+    const pair: Pair = { id, client, server, down, up, downInspector, upInspector, closed: false }
     this.pairs.set(id, pair)
     this.stats.open = this.pairs.size
 
-    const downParser = new FrameParser(false, ({ raw, frame }) => {
-      if (frame && this.recording) this.frames.push(this.describe(id, 'down', frame))
-      down.push(raw)
+    server.on('data', (chunk: Buffer) => {
+      // The byte stream first; inspection only looks.
+      down.push(chunk)
+      downInspector.push(chunk)
     })
-    const upParser = new FrameParser(true, ({ raw, frame }) => {
-      if (frame && this.recording) this.frames.push(this.describe(id, 'up', frame))
-      const held =
-        frame && frame.opcode === 1 && this.gateFn
-          ? this.gateFn(frame.payload.toString('utf8'), id)
-          : undefined
-      up.push(raw)
-      // The frame that matched waits too: the server must not see it yet.
-      if (held) up.hold(held)
-    })
-    server.on('data', (chunk: Buffer) => downParser.push(chunk))
-    client.on('data', (chunk: Buffer) => upParser.push(chunk))
+    client.on('data', (chunk: Buffer) => upInspector.push(chunk))
     server.on('end', () => down.end())
     client.on('end', () => up.end())
     const destroy = () => this.drop(pair)
@@ -471,26 +653,27 @@ export class LinkProxy {
     client.on('close', closed(client))
   }
 
-  private describe(connection: number, direction: Direction, frame: ParsedFrame): FrameRecord {
+  private describe(connection: number, direction: Direction, frame: InspectedFrame): FrameRecord {
     const record: FrameRecord = {
       connection,
       direction,
       at: this.now(),
       opcode: frame.opcode,
-      size: frame.payloadLength,
+      size: frame.size,
     }
     if (frame.opcode === 1) {
-      if (frame.payload.length <= RECORD_JSON_MAX) {
+      const text = frame.head.toString('utf8')
+      if (frame.whole) {
         try {
-          record.json = JSON.parse(frame.payload.toString('utf8'))
+          record.json = JSON.parse(text)
         } catch {
-          record.head = frame.payload.subarray(0, 200).toString('utf8')
+          record.fields = fieldsOf(text)
         }
-      } else record.head = frame.payload.subarray(0, 200).toString('utf8')
-    } else if (frame.opcode === 8 && frame.payload.length >= 2) {
+      } else record.fields = fieldsOf(text)
+    } else if (frame.opcode === 8 && frame.head.length >= 2) {
       record.close = {
-        code: frame.payload.readUInt16BE(0),
-        reason: frame.payload.subarray(2).toString('utf8'),
+        code: frame.head.readUInt16BE(0),
+        reason: frame.head.subarray(2).toString('utf8'),
       }
     }
     return record
@@ -499,6 +682,8 @@ export class LinkProxy {
   private drop(pair: Pair): void {
     if (pair.closed) return
     pair.closed = true
+    this.stats.delivered.down += pair.down.delivered
+    this.stats.delivered.up += pair.up.delivered
     pair.down.stop()
     pair.up.stop()
     pair.client.destroy()
