@@ -1,6 +1,9 @@
-import { useContext, useMemo, type ReactNode } from 'react'
+import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { MonitorIcon, MoonIcon, PlusIcon, SunIcon, XIcon } from '@phosphor-icons/react'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { Button } from '@openmanager/app-core/components/fluid/ui/button'
+import { phosphorIcon } from '@openmanager/app-core/components/fluid/lib/icon-context'
+import { Tooltip } from '@openmanager/app-core/components/ui/Tooltip'
 import {
   TabsSubtle,
   TabsSubtleItem,
@@ -19,10 +22,7 @@ import {
   NOTIFICATIONS_CHOICES,
   NotificationsSettingControl,
 } from '../components/notifications-setting'
-import {
-  TITLE_GENERATION_CHOICES,
-  TitleGenerationSettingControl,
-} from '../components/title-generation-setting'
+import { TitleGenerationSettingControl } from '../components/title-generation-setting'
 import {
   EnvironmentConnectForm,
   EnvironmentList,
@@ -30,7 +30,7 @@ import {
 } from '../components/connection-surfaces'
 import { connectionStatusLabel } from '../lib/connection-state'
 import { findStoredEnvironment } from '../lib/environment-store'
-import { UI_FONTS } from '../lib/fonts'
+import { UI_FONTS, type UiFontId } from '../lib/fonts'
 import { pairingAppUrl } from '../lib/pairing'
 import { useConnection } from '../providers/connection-provider'
 import type { AppearanceMode } from '@openmanager/app-core/providers/theme-provider'
@@ -58,6 +58,8 @@ export const Route = createFileRoute('/settings')({
     isSettingsTab(search.tab) ? { tab: search.tab } : {},
   component: SettingsPage,
 })
+
+const AddIcon = phosphorIcon(PlusIcon)
 
 /** One titled block of a settings tab. */
 function SettingsSection({
@@ -171,10 +173,7 @@ function ProvidersPanel() {
   }
 
   return (
-    <SettingsSection
-      title="Providers"
-      description="The coding agents this environment can run, and whether each is ready."
-    >
+    <SettingsSection title="Providers" description="The coding agents this environment can run.">
       {rows.length === 0 ? (
         <p className="mt-2 text-[13px] text-muted-foreground">
           This environment has not reported any providers.
@@ -230,20 +229,10 @@ function SessionTitlesSetting() {
       section={(field) => (
         <SettingsSection
           title="Session titles"
-          description="Names each session from its first message, looks again after the first reply when that message was vague, and renames on request from ⌘K. Runs the tool's CLI on this environment, with the model below."
+          description="Names each session from its first message, using a model on this environment."
         >
           {field}
         </SettingsSection>
-      )}
-      choices={(value, onChange, disabled) => (
-        <ChoiceGroup
-          name="title-generation"
-          label="Session titles"
-          value={value}
-          options={TITLE_GENERATION_CHOICES}
-          onChange={onChange}
-          disabled={disabled}
-        />
       )}
     />
   )
@@ -260,12 +249,27 @@ function EnvironmentsPanel() {
     removeEnvironment,
     chooseRoute,
     removeRoute,
+    addRoute,
     checkRoutes,
     changeEnvironment,
     confirmRoute,
     declineRoute,
   } = useConnection()
-  // The question itself is asked below, next to where the address was entered.
+  // With nothing saved the form is the whole point of the section.
+  const [adding, setAdding] = useState(false)
+  const formOpen = adding || environments.length === 0
+  // A submitted address keeps its form until the connection it started is
+  // ready, so a typo or an unreachable address can be fixed in place.
+  const submitted = useRef<'sent' | 'left_ready' | null>(null)
+  useEffect(() => {
+    if (!submitted.current) return
+    if (ui.kind !== 'ready') {
+      submitted.current = 'left_ready'
+    } else if (submitted.current === 'left_ready') {
+      submitted.current = null
+      setAdding(false)
+    }
+  }, [ui.kind])
   const status =
     ui.kind === 'confirm_route'
       ? 'A new route is waiting for your answer'
@@ -273,57 +277,70 @@ function EnvironmentsPanel() {
 
   return (
     <>
-      <SettingsSection
-        title="Saved environments"
-        description={
-          <>
-            {status}. Each environment keeps one client token and every route that reaches it.
-            Routes on this device are tried first, then the rest in your order; when the route in
-            use stops answering, the next one that answers takes over.
-          </>
-        }
-      >
-        {environments.length === 0 ? (
-          <p className="mt-2 text-[13px] text-muted-foreground">No environments yet.</p>
-        ) : (
-          <>
-            <EnvironmentList
-              environments={environments}
-              selectedId={selectedId}
-              inUseEndpoint={inUseEndpoint}
-              onSelect={selectEnvironment}
-              onRemove={removeEnvironment}
-              onChooseRoute={chooseRoute}
-              onRemoveRoute={removeRoute}
-              onCheckRoutes={checkRoutes}
-            />
-            {selectedId ? (
-              <Button type="button" variant="tertiary" className="mt-3" onClick={changeEnvironment}>
-                Deselect environment
-              </Button>
-            ) : null}
-          </>
-        )}
-      </SettingsSection>
-      <ConnectedEnvironmentSettings />
-      <SettingsSection
-        title="Add environment"
-        description="A second URL for an environment you already have is added to it as another route."
-      >
+      <SettingsSection title="Environments" description={status}>
         {ui.kind === 'confirm_route' ? (
           <RouteOfferPrompt
             className="mt-3"
             state={ui}
             handlers={{ onConfirmRoute: confirmRoute, onDeclineRoute: declineRoute }}
           />
-        ) : (
-          <EnvironmentConnectForm
-            className="mt-3"
-            onConnect={connect}
-            submitLabel="Add environment"
-          />
-        )}
+        ) : null}
+        <EnvironmentList
+          environments={environments}
+          selectedId={selectedId}
+          inUseEndpoint={inUseEndpoint}
+          onSelect={selectEnvironment}
+          onRemove={removeEnvironment}
+          onDisconnect={changeEnvironment}
+          onChooseRoute={chooseRoute}
+          onRemoveRoute={removeRoute}
+          onAddRoute={addRoute}
+          onCheckRoutes={checkRoutes}
+        />
+        {formOpen && ui.kind !== 'confirm_route' ? (
+          <div className="mt-2 rounded-lg bg-hover/70 p-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-[13px] font-medium text-foreground">Add environment</h3>
+              {environments.length > 0 ? (
+                <Tooltip content="Cancel">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-compact"
+                    aria-label="Cancel adding an environment"
+                    onClick={() => {
+                      submitted.current = null
+                      setAdding(false)
+                    }}
+                  >
+                    <XIcon />
+                  </Button>
+                </Tooltip>
+              ) : null}
+            </div>
+            <EnvironmentConnectForm
+              className="mt-2.5"
+              onConnect={(endpoint, credential) => {
+                submitted.current = 'sent'
+                connect(endpoint, credential)
+              }}
+              submitLabel="Add environment"
+            />
+          </div>
+        ) : environments.length > 0 ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="compact"
+            className="mt-2"
+            leadingIcon={AddIcon}
+            onClick={() => setAdding(true)}
+          >
+            Add environment
+          </Button>
+        ) : null}
       </SettingsSection>
+      <ConnectedEnvironmentSettings />
     </>
   )
 }
@@ -335,7 +352,7 @@ function ConnectedEnvironmentSettings() {
       section={(field) => (
         <SettingsSection
           title="Add project starts in"
-          description="The folder Add project opens in on this environment, for every device connected to it. Leave it empty to start in the home folder (~)."
+          description="Where Add project opens, on every device."
         >
           {field}
         </SettingsSection>
@@ -359,7 +376,7 @@ function DevicesPanel() {
       section={(body) => (
         <SettingsSection
           title="Devices"
-          description="Every device that can reach this environment. Pair a phone or another browser with a single-use link or QR code; revoking a device disconnects it at once."
+          description="Who can reach this environment. Revoking a device disconnects it at once."
         >
           {body}
         </SettingsSection>
@@ -371,58 +388,136 @@ function DevicesPanel() {
   )
 }
 
-const APPEARANCE_MODES: ReadonlyArray<{ id: AppearanceMode; label: string }> = [
-  { id: 'light', label: 'Light' },
-  { id: 'dark', label: 'Dark' },
-  { id: 'system', label: 'System' },
-]
+const APPEARANCE_MODES: ReadonlyArray<{ id: AppearanceMode; label: string; icon: typeof SunIcon }> =
+  [
+    { id: 'light', label: 'Light', icon: SunIcon },
+    { id: 'dark', label: 'Dark', icon: MoonIcon },
+    { id: 'system', label: 'System', icon: MonitorIcon },
+  ]
+
+/** Light, Dark and System as three icons in one quiet track; the mode in use is filled. */
+function ModePicker({
+  value,
+  onChange,
+}: {
+  value: AppearanceMode
+  onChange: (mode: AppearanceMode) => void
+}) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Mode"
+      className="inline-flex shrink-0 items-center gap-0.5 rounded-lg bg-hover/70 p-0.5"
+    >
+      {APPEARANCE_MODES.map((option) => {
+        const selected = option.id === value
+        const Icon = option.icon
+        return (
+          <Tooltip key={option.id} content={option.label}>
+            <label
+              className={cn(
+                'flex size-8 cursor-pointer items-center justify-center rounded-md transition-colors duration-100',
+                'has-[:focus-visible]:ring-1 has-[:focus-visible]:ring-focus-ring',
+                selected
+                  ? 'bg-active text-foreground'
+                  : 'text-muted-foreground hover:bg-hover hover:text-foreground',
+              )}
+            >
+              <input
+                type="radio"
+                className="sr-only"
+                name="appearance-mode"
+                value={option.id}
+                checked={selected}
+                aria-label={option.label}
+                onChange={() => onChange(option.id)}
+              />
+              <Icon aria-hidden size={16} weight={selected ? 'fill' : 'regular'} />
+            </label>
+          </Tooltip>
+        )
+      })}
+    </div>
+  )
+}
+
+/** Each face as a tile that shows it: "Aa" set in the font, its name beneath. */
+const FONT_FAMILIES: Record<UiFontId, string> = {
+  geist: 'var(--font-geist-sans)',
+  inter: 'var(--font-inter-sans)',
+  'public-sans': 'var(--font-public-sans)',
+  system: 'var(--font-system-sans)',
+}
+
+function FontPicker({ value, onChange }: { value: UiFontId; onChange: (font: UiFontId) => void }) {
+  return (
+    <div role="radiogroup" aria-label="Font" className="mt-3 grid grid-cols-4 gap-1.5">
+      {UI_FONTS.map((font) => {
+        const selected = font.id === value
+        return (
+          <label
+            key={font.id}
+            className={cn(
+              // Selection is a fill, never an outline.
+              'flex cursor-pointer flex-col items-center gap-1 rounded-lg px-2 pb-2 pt-3 transition-colors duration-100',
+              'has-[:focus-visible]:ring-1 has-[:focus-visible]:ring-focus-ring',
+              selected ? 'bg-active' : 'bg-hover/70 hover:bg-hover',
+            )}
+          >
+            <input
+              type="radio"
+              className="sr-only"
+              name="font"
+              value={font.id}
+              checked={selected}
+              aria-label={font.label}
+              onChange={() => onChange(font.id)}
+            />
+            <span
+              aria-hidden
+              className={cn(
+                'text-[22px] leading-7',
+                selected ? 'text-foreground' : 'text-muted-foreground',
+              )}
+              style={{ fontFamily: FONT_FAMILIES[font.id] }}
+            >
+              Aa
+            </span>
+            <span
+              className={cn(
+                'truncate text-[12px]',
+                selected ? 'text-foreground' : 'text-muted-foreground',
+              )}
+            >
+              {font.label}
+            </span>
+          </label>
+        )
+      })}
+    </div>
+  )
+}
 
 function AppearancePanel() {
-  const { mode, setMode, scheme, family, setFamily, variants, picks, setVariant, font, setFont } =
-    useTheme()
-  // A family's own variants, for each scheme in play that offers more than one.
-  const variantRows = (['light', 'dark'] as const).filter(
-    (row) => (mode === 'system' || mode === row) && family[row].length > 1,
-  )
+  const { mode, setMode, scheme, family, setFamily, font, setFont } = useTheme()
   return (
     <>
-      <SettingsSection
-        title="Mode"
-        description="System follows this device’s light or dark setting."
-      >
-        <ChoiceGroup
-          name="appearance-mode"
-          label="Mode"
-          value={mode}
-          options={APPEARANCE_MODES}
-          onChange={setMode}
-        />
-      </SettingsSection>
-      <SettingsSection
-        title="Theme"
-        description="Every theme comes in light and dark; the mode decides which you see."
-      >
-        <ThemeFamilyPicker value={family.id} scheme={scheme} picks={picks} onChange={setFamily} />
-        {variantRows.map((row) => (
-          <div key={row} className="mt-4">
-            <h3 className="text-[12px] text-muted-foreground">
-              {row === 'light' ? 'Light variants' : 'Dark variants'}
-              {row !== scheme ? (
-                <span className="text-faint"> · used when this device is {row}</span>
-              ) : null}
-            </h3>
-            <ChoiceGroup
-              name={`theme-variant-${row}`}
-              label={`${family.label} ${row} variants`}
-              value={variants[row]}
-              options={family[row]}
-              onChange={setVariant}
-            />
+      <section>
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <h2 className="text-[13px] font-medium text-foreground">Theme</h2>
+            <p className="mt-1 text-[13px] text-muted-foreground">
+              {mode === 'system' ? 'Follows this device’s light or dark setting.' : null}
+              {mode === 'light' ? 'Always light.' : null}
+              {mode === 'dark' ? 'Always dark.' : null}
+            </p>
           </div>
-        ))}
-      </SettingsSection>
+          <ModePicker value={mode} onChange={setMode} />
+        </div>
+        <ThemeFamilyPicker value={family.id} scheme={scheme} onChange={setFamily} />
+      </section>
       <SettingsSection title="Font">
-        <ChoiceGroup name="font" label="Font" value={font} options={UI_FONTS} onChange={setFont} />
+        <FontPicker value={font} onChange={setFont} />
       </SettingsSection>
     </>
   )

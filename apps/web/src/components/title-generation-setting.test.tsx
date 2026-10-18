@@ -8,7 +8,13 @@ import {
   type EnvironmentCommandName,
 } from '@openmanager/environment-client'
 import { EnvironmentClientProvider } from '@openmanager/app-core/providers/environment-client'
-import { TITLE_GENERATION_CHOICES, TitleGenerationSettingControl } from './title-generation-setting'
+import { ThemeProvider } from '@openmanager/app-core/providers/theme-provider'
+import { TitleGenerationSettingControl, titleModelGroups } from './title-generation-setting'
+
+// jsdom has no pointer capture, which the switch's drag uses.
+HTMLElement.prototype.setPointerCapture ??= () => undefined
+HTMLElement.prototype.releasePointerCapture ??= () => undefined
+HTMLElement.prototype.hasPointerCapture ??= () => false
 
 afterEach(() => {
   cleanup()
@@ -16,75 +22,92 @@ afterEach(() => {
 
 function renderSetting(client: EnvironmentClient) {
   return render(
-    <EnvironmentClientProvider client={client}>
-      <TitleGenerationSettingControl
-        section={(field) => (
-          <section>
-            <h2>Session titles</h2>
-            {field}
-          </section>
-        )}
-        choices={(value, onChange, disabled) => (
-          <div role="radiogroup" aria-label="Session titles">
-            {TITLE_GENERATION_CHOICES.map((choice) => (
-              <label key={choice.id}>
-                <input
-                  type="radio"
-                  name="title-generation"
-                  checked={value === choice.id}
-                  disabled={disabled}
-                  onChange={() => onChange(choice.id)}
-                />
-                {choice.label}
-              </label>
-            ))}
-          </div>
-        )}
-      />
-    </EnvironmentClientProvider>,
+    <ThemeProvider>
+      <EnvironmentClientProvider client={client}>
+        <TitleGenerationSettingControl
+          section={(field) => (
+            <section>
+              <h2>Session titles</h2>
+              {field}
+            </section>
+          )}
+        />
+      </EnvironmentClientProvider>
+    </ThemeProvider>,
   )
 }
 
-const modelField = () => screen.getByLabelText<HTMLInputElement>('Title model')
+const toggle = () => screen.getByRole('switch', { name: 'Generate titles' })
+const chip = () => screen.getByRole('button', { name: /^Title model:/ })
+const rows = () =>
+  screen.queryAllByRole('option').map((row) => row.querySelector('.truncate')?.textContent)
+const selectedTab = () =>
+  document.querySelector('[role="tab"][aria-selected="true"]')?.textContent ?? ''
 
 describe('title generation setting', () => {
-  it("shows the environment's tool, with its default model as the hint", async () => {
-    const client = createMockEnvironmentClient()
-    renderSetting(client)
-    await waitFor(() => expect(screen.getByRole('radio', { name: 'Codex' })).toBeChecked())
-    expect(modelField()).toHaveValue('')
-    expect(modelField()).toHaveAttribute('placeholder', 'gpt-6-luna')
+  it("shows the environment's tool and model in the model picker", async () => {
+    renderSetting(createMockEnvironmentClient())
+    await waitFor(() => expect(toggle()).toHaveAttribute('aria-checked', 'true'))
+    expect(chip()).toHaveAccessibleName('Title model: gpt-6-luna (default)')
   })
 
-  it('switches tool on the default model and saves a model override', async () => {
+  it('picks another tool and model from the picker', async () => {
+    const user = userEvent.setup()
+    const client = createMockEnvironmentClient()
+    renderSetting(client)
+    await waitFor(() => expect(chip()).toBeEnabled())
+
+    await user.click(chip())
+    // The picker opens on the tool in use.
+    await waitFor(() => expect(selectedTab()).toContain('Codex'))
+    await user.click(screen.getByRole('tab', { name: /Claude/ }))
+    expect(rows()).toContain('haiku (default)')
+    await user.click(screen.getByRole('option', { name: /haiku \(default\)/ }))
+
+    await waitFor(async () =>
+      expect((await client.commands.getEnvironmentSettings()).titleGeneration).toEqual({
+        provider: 'claude',
+        model: '',
+      }),
+    )
+  })
+
+  it('takes a typed model id for a tool that lists none', async () => {
+    const user = userEvent.setup()
+    const client = createMockEnvironmentClient()
+    renderSetting(client)
+    await waitFor(() => expect(chip()).toBeEnabled())
+    await user.click(chip())
+    await user.keyboard('gpt-5.5')
+    await user.keyboard('{Enter}')
+    await waitFor(async () =>
+      expect((await client.commands.getEnvironmentSettings()).titleGeneration).toEqual({
+        provider: 'codex',
+        model: 'gpt-5.5',
+      }),
+    )
+    await waitFor(() => expect(chip()).toHaveAccessibleName('Title model: gpt-5.5'))
+  })
+
+  it('turns titles off and back on to the same choice', async () => {
     const user = userEvent.setup()
     const client = createMockEnvironmentClient({
-      seed: { environmentSettings: { titleGeneration: { provider: 'codex', model: 'gpt-x' } } },
+      seed: { environmentSettings: { titleGeneration: { provider: 'claude', model: 'sonnet' } } },
     })
     renderSetting(client)
-    await waitFor(() => expect(modelField()).toHaveValue('gpt-x'))
+    await waitFor(() => expect(toggle()).toHaveAttribute('aria-checked', 'true'))
 
-    await user.click(screen.getByRole('radio', { name: 'Claude Code' }))
-    await waitFor(() => expect(screen.getByRole('radio', { name: 'Claude Code' })).toBeChecked())
-    expect(modelField()).toHaveValue('')
-    expect(modelField()).toHaveAttribute('placeholder', 'haiku')
+    await user.click(toggle())
+    await waitFor(() => expect(toggle()).toHaveAttribute('aria-checked', 'false'))
+    expect(screen.queryByRole('button', { name: /^Title model:/ })).toBeNull()
+    expect((await client.commands.getEnvironmentSettings()).titleGeneration.provider).toBe('off')
 
-    await user.type(modelField(), ' sonnet {Enter}')
-    await waitFor(() => expect(modelField()).toHaveValue('sonnet'))
+    await user.click(toggle())
+    await waitFor(() => expect(toggle()).toHaveAttribute('aria-checked', 'true'))
     expect((await client.commands.getEnvironmentSettings()).titleGeneration).toEqual({
       provider: 'claude',
       model: 'sonnet',
     })
-  })
-
-  it('hides the model when titles are off', async () => {
-    const user = userEvent.setup()
-    const client = createMockEnvironmentClient()
-    renderSetting(client)
-    await waitFor(() => expect(screen.getByRole('radio', { name: 'Off' })).toBeEnabled())
-    await user.click(screen.getByRole('radio', { name: 'Off' }))
-    await waitFor(() => expect(screen.queryByLabelText('Title model')).not.toBeInTheDocument())
-    expect((await client.commands.getEnvironmentSettings()).titleGeneration.provider).toBe('off')
   })
 
   it('offers no choice when the setting could not be read', async () => {
@@ -93,12 +116,13 @@ describe('title generation setting', () => {
       ...client,
       commands: {
         ...client.commands,
-        getEnvironmentSettings: () => Promise.reject(new Error('Environment settings unavailable.')),
+        getEnvironmentSettings: () =>
+          Promise.reject(new Error('Environment settings unavailable.')),
       },
     }
     renderSetting(failing)
     expect(await screen.findByRole('alert')).toHaveTextContent('Environment settings unavailable.')
-    for (const radio of screen.getAllByRole('radio')) expect(radio).toBeDisabled()
+    expect(toggle()).toBeDisabled()
   })
 
   it('draws nothing for an environment without settings', () => {
@@ -109,5 +133,33 @@ describe('title generation setting', () => {
     })
     renderSetting(client)
     expect(screen.queryByText('Session titles')).not.toBeInTheDocument()
+  })
+})
+
+describe('titleModelGroups', () => {
+  it('leads every tool with its title default and keeps a saved model no catalog lists', () => {
+    const groups = titleModelGroups([], {}, { provider: 'cursor', model: 'auto' })
+    expect(groups.map((group) => group.providerId)).toEqual([
+      'claude',
+      'cursor',
+      'opencode',
+      'codex',
+    ])
+    expect(groups[0]!.models[0]).toMatchObject({ id: '', name: 'haiku (default)' })
+    expect(groups[1]!.models.map((model) => model.id)).toEqual(['', 'auto'])
+  })
+
+  it("lists a tool's session models only where its CLI takes the same ids", () => {
+    const profiles = {
+      claude: { availableModels: [{ modelId: 'opus', name: 'Opus' }] },
+      // Cursor's sessions say `grok-4.7`; `cursor-agent --model` wants `grok-4.7-high`.
+      cursor: { availableModels: [{ modelId: 'grok-4.7', name: 'Grok 4.7' }] },
+    } as unknown as Parameters<typeof titleModelGroups>[1]
+    const [claude, cursor, , codex] = titleModelGroups([], profiles, null)
+    expect(claude!.models.map((model) => model.id)).toEqual(['', 'opus'])
+    expect(claude!.acceptsTypedIds).toBeUndefined()
+    expect(cursor!.models.map((model) => model.id)).toEqual([''])
+    expect(cursor!.acceptsTypedIds).toBe(true)
+    expect(codex!.acceptsTypedIds).toBe(true)
   })
 })

@@ -1,6 +1,15 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
-import { KeyIcon } from '@phosphor-icons/react'
+import {
+  KeyIcon,
+  PlugsIcon,
+  PlusIcon,
+  PushPinSimpleIcon,
+  TrashIcon,
+  XIcon,
+} from '@phosphor-icons/react'
 import { Button } from '@openmanager/app-core/components/fluid/ui/button'
+import { phosphorIcon } from '@openmanager/app-core/components/fluid/lib/icon-context'
+import { Tooltip } from '@openmanager/app-core/components/ui/Tooltip'
 import {
   connectionActionLabel,
   connectionStatusLabel,
@@ -19,6 +28,7 @@ import {
 import { canClaimLocalOwner } from '../lib/local-owner'
 import { routeHealthLabel } from '../lib/route-health'
 import { cn } from '../lib/utils'
+import type { AddRouteResult } from '../providers/connection-provider'
 
 // Tend's connect field: borderless, sits on the hover tint and darkens on focus.
 const fieldClass =
@@ -139,7 +149,9 @@ export function EnvironmentConnectForm({
     }
     const credential = parseEnvironmentCredential(credentialValue)
     if (credentialValue.trim() && !credential) {
-      setError('Enter the client token exactly as issued (letters, digits, and - _ . ~ only), or leave it blank.')
+      setError(
+        'Enter the client token exactly as issued (letters, digits, and - _ . ~ only), or leave it blank.',
+      )
       return
     }
     setError(null)
@@ -173,8 +185,8 @@ export function EnvironmentConnectForm({
       />
       <p className="text-[13px] text-muted-foreground">
         {canClaimOwner
-          ? 'The token is optional. Leave it blank on localhost to request the local owner token. It is stored with the environment, not with a particular URL.'
-          : "On the environment's own computer, paste the token from owner-credential in its data directory (~/.openmanager by default). On another device, open a pairing link instead. The token is stored with the environment, not with a particular URL."}
+          ? 'Leave it blank on localhost to use the owner token.'
+          : "On the environment's computer, paste the token from owner-credential in ~/.openmanager. Elsewhere, open a pairing link instead."}
       </p>
       {error ? (
         <p className="text-[13px] text-destructive" role="alert">
@@ -188,17 +200,50 @@ export function EnvironmentConnectForm({
   )
 }
 
-const HEALTH_TONES: Record<RouteHealthStatus, string> = {
-  unknown: 'text-faint',
-  available: 'text-[var(--basis-session-cube-ready)]',
-  unreachable: 'text-[var(--basis-session-cube-needs)]',
-  unauthorized: 'text-[var(--basis-session-cube-needs)]',
+const AddIcon = phosphorIcon(PlusIcon)
+
+const HEALTH_DOTS: Record<RouteHealthStatus, string> = {
+  unknown: 'bg-[var(--basis-text-faint)]',
+  available: 'bg-[var(--basis-session-cube-ready)]',
+  unreachable: 'bg-[var(--basis-session-cube-needs)]',
+  unauthorized: 'bg-[var(--basis-session-cube-needs)]',
+}
+
+/** A small icon button whose name is its tooltip. */
+function IconAction({
+  label,
+  icon: Icon,
+  onClick,
+  disabled,
+  className,
+}: {
+  label: string
+  icon: typeof XIcon
+  onClick: () => void
+  disabled?: boolean
+  className?: string
+}) {
+  return (
+    <Tooltip content={label}>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-compact"
+        aria-label={label}
+        disabled={disabled}
+        className={className}
+        onClick={onClick}
+      >
+        <Icon />
+      </Button>
+    </Tooltip>
+  )
 }
 
 /**
- * One way to reach an environment: where it points, whether it answers, and
- * the choice to use it. The route in use needs no such choice, and neither
- * does the one selecting the environment would start with.
+ * One way to reach an environment: a health dot, the address and its kind.
+ * The route in use is the filled row; any other row is pressed to use it.
+ * Its own actions (make it the first choice, forget it) show on hover.
  */
 function RouteRow({
   route,
@@ -214,55 +259,149 @@ function RouteRow({
   onMakeFirst?: () => void
   onForget?: () => void
 }) {
+  const health = routeHealthLabel(route.health.status)
+  const body = (
+    <>
+      <Tooltip content={route.health.message ? `${health}: ${route.health.message}` : health}>
+        <span
+          aria-hidden
+          className={cn('size-1.5 shrink-0 rounded-full', HEALTH_DOTS[route.health.status])}
+        />
+      </Tooltip>
+      <span className="min-w-0 truncate font-mono text-[12px] text-foreground/85">
+        {route.endpoint}
+      </span>
+      <span className="shrink-0 text-[11px] text-faint">{routeTypeLabel(route.type)}</span>
+      <span className="sr-only">
+        {' · '}
+        <span title={route.health.message}>{health}</span>
+        {inUse ? ' · In use' : ''}
+      </span>
+    </>
+  )
   return (
-    <li className="flex items-center justify-between gap-2">
-      <div className="min-w-0">
-        <p className="truncate font-mono text-[12px] text-muted-foreground">{route.endpoint}</p>
-        <p className="text-[12px] text-faint">
-          {routeTypeLabel(route.type)}
-          {' · '}
-          <span className={HEALTH_TONES[route.health.status]} title={route.health.message}>
-            {routeHealthLabel(route.health.status)}
-          </span>
-          {inUse ? ' · In use' : ''}
-        </p>
-      </div>
-      <div className="flex shrink-0 gap-1">
-        {onUse ? (
-          <Button
-            type="button"
-            variant="secondary"
-            size="compact"
-            aria-label={`Use ${route.endpoint}`}
-            onClick={onUse}
-          >
-            Use
-          </Button>
-        ) : null}
+    <li
+      className={cn(
+        // The route in use is a fill, never an outline.
+        'group/route flex h-8 items-center gap-1 rounded-md pr-0.5 transition-colors duration-100',
+        inUse ? 'bg-active' : onUse ? 'hover:bg-hover' : '',
+      )}
+    >
+      {onUse ? (
+        <button
+          type="button"
+          aria-label={`Use ${route.endpoint}`}
+          title="Use this route"
+          onClick={onUse}
+          className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md pl-2.5 text-left outline-none focus-visible:ring-1 focus-visible:ring-focus-ring"
+        >
+          {body}
+        </button>
+      ) : (
+        <div className="flex h-full min-w-0 flex-1 items-center gap-2 pl-2.5">{body}</div>
+      )}
+      <div className="flex shrink-0 items-center opacity-0 transition-opacity duration-100 focus-within:opacity-100 group-hover/route:opacity-100 pointer-coarse:opacity-100">
         {onMakeFirst ? (
-          <Button
-            type="button"
-            variant="secondary"
-            size="compact"
-            aria-label={`Make ${route.endpoint} the first choice`}
+          <IconAction
+            label={`Make ${route.endpoint} the first choice`}
+            icon={PushPinSimpleIcon}
             onClick={onMakeFirst}
-          >
-            Make first
-          </Button>
+          />
         ) : null}
         {onForget ? (
-          <Button
-            type="button"
-            variant="ghost"
-            size="compact"
-            aria-label={`Forget ${route.endpoint}`}
-            onClick={onForget}
-          >
-            Forget
-          </Button>
+          <IconAction label={`Forget ${route.endpoint}`} icon={XIcon} onClick={onForget} />
         ) : null}
       </div>
     </li>
+  )
+}
+
+/**
+ * Another address for a saved environment, typed in place. The address has
+ * to answer as this environment; it joins as the last choice of route.
+ */
+function AddRouteControl({
+  label,
+  onAddRoute,
+}: {
+  label: string
+  onAddRoute: (endpoint: string) => Promise<AddRouteResult>
+}) {
+  const [open, setOpen] = useState(false)
+  const [value, setValue] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const close = () => {
+    setOpen(false)
+    setValue('')
+    setError(null)
+  }
+  if (!open) {
+    return (
+      <Button
+        type="button"
+        variant="ghost"
+        size="compact"
+        className="mt-0.5 self-start"
+        leadingIcon={AddIcon}
+        aria-label={`Add a route to ${label}`}
+        onClick={() => setOpen(true)}
+      >
+        Add route
+      </Button>
+    )
+  }
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!value.trim() || busy) return
+    setBusy(true)
+    setError(null)
+    const result = await onAddRoute(value)
+    setBusy(false)
+    if (result.ok) close()
+    else setError(result.message)
+  }
+  return (
+    <form className="mt-1 px-0.5" onSubmit={(event) => void submit(event)}>
+      <div className="flex items-center gap-1">
+        <input
+          type="text"
+          inputMode="url"
+          autoComplete="url"
+          spellCheck={false}
+          // Focus belongs in the field the person just asked for.
+          autoFocus
+          placeholder="https://home.example.com"
+          aria-label={`New route to ${label}`}
+          className={cn(fieldClass, 'h-8 min-w-0 flex-1 font-mono text-[12px]')}
+          value={value}
+          disabled={busy}
+          onChange={(event) => {
+            setError(null)
+            setValue(event.target.value)
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              event.preventDefault()
+              close()
+            }
+          }}
+        />
+        <Button type="submit" variant="secondary" size="compact" disabled={busy || !value.trim()}>
+          {busy ? 'Checking…' : 'Add'}
+        </Button>
+        <IconAction label="Cancel" icon={XIcon} disabled={busy} onClick={close} />
+      </div>
+      {error ? (
+        <p role="alert" className="mt-1.5 px-1 text-[12px] text-destructive">
+          {error}
+        </p>
+      ) : (
+        <p className="mt-1.5 px-1 text-[12px] text-faint">
+          It must answer as {label}. No token needed.
+        </p>
+      )}
+    </form>
   )
 }
 
@@ -272,8 +411,10 @@ export function EnvironmentList({
   inUseEndpoint,
   onSelect,
   onRemove,
+  onDisconnect,
   onChooseRoute,
   onRemoveRoute,
+  onAddRoute,
   onCheckRoutes,
 }: {
   environments: StoredEnvironment[]
@@ -285,8 +426,12 @@ export function EnvironmentList({
   inUseEndpoint?: string | null
   onSelect?: (environmentId: string) => void
   onRemove?: (environmentId: string) => void
+  /** Leave the selected environment without forgetting it. */
+  onDisconnect?: () => void
   onChooseRoute?: (environmentId: string, endpoint: string) => void
   onRemoveRoute?: (environmentId: string, endpoint: string) => void
+  /** Offers "Add route" on each environment. */
+  onAddRoute?: (environmentId: string, endpoint: string) => Promise<AddRouteResult>
   /** Called when the list appears, so the health it shows is current. */
   onCheckRoutes?: () => void
 }) {
@@ -297,7 +442,7 @@ export function EnvironmentList({
   if (environments.length === 0) return null
 
   return (
-    <ul className="mt-4 flex w-full flex-col gap-2 text-left" aria-label="Saved environments">
+    <ul className="mt-3 flex w-full flex-col gap-2 text-left" aria-label="Saved environments">
       {environments.map((environment) => {
         const selected = environment.environmentId === selectedId
         // Where this environment's connection is, or would start.
@@ -306,46 +451,63 @@ export function EnvironmentList({
         return (
           <li
             key={environment.environmentId}
-            className={cn('rounded-lg px-3 py-2.5', selected ? 'bg-hover' : 'bg-hover/70')}
+            aria-label={environment.label}
+            className="flex flex-col rounded-lg bg-hover/70 p-1.5"
           >
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <p className="text-[13px] font-medium text-foreground">
-                  {environment.label}
-                  {selected ? ' · Selected' : ''}
-                </p>
-                <p className="mt-0.5 font-mono text-[12px] text-faint">
-                  {environment.environmentId}
-                </p>
-                <p className="mt-1 text-[12px] text-muted-foreground">
+            <div className="flex min-h-8 items-center gap-2 pl-2.5">
+              <p className="flex min-w-0 flex-1 items-center gap-2">
+                <Tooltip content={environment.environmentId}>
+                  <span className="truncate text-[13px] font-medium text-foreground">
+                    {environment.label}
+                  </span>
+                </Tooltip>
+                {selected ? (
+                  <span className="shrink-0 rounded bg-active px-1.5 py-px text-[11px] text-muted-foreground">
+                    Current
+                  </span>
+                ) : null}
+                <span className="sr-only">
                   {environment.credential ? 'Client token saved' : 'No client token'}
-                </p>
-              </div>
-              <div className="flex shrink-0 flex-col gap-1.5">
+                </span>
+                {environment.credential ? null : (
+                  <Tooltip content="No client token saved: pair this browser, or add the environment again with its token.">
+                    <KeyIcon
+                      aria-hidden
+                      className="size-3.5 shrink-0 text-[var(--basis-session-cube-needs)]"
+                    />
+                  </Tooltip>
+                )}
+              </p>
+              <div className="flex shrink-0 items-center">
                 {onSelect && !selected ? (
                   <Button
                     type="button"
                     variant="secondary"
+                    size="compact"
+                    className="mr-1"
+                    aria-label={`Connect to ${environment.label}`}
                     onClick={() => onSelect(environment.environmentId)}
                   >
-                    Select
+                    Connect
                   </Button>
                 ) : null}
+                {onDisconnect && selected ? (
+                  <IconAction
+                    label={`Disconnect from ${environment.label}`}
+                    icon={PlugsIcon}
+                    onClick={onDisconnect}
+                  />
+                ) : null}
                 {onRemove ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
+                  <IconAction
+                    label={`Remove ${environment.label}`}
+                    icon={TrashIcon}
                     onClick={() => onRemove(environment.environmentId)}
-                  >
-                    Remove
-                  </Button>
+                  />
                 ) : null}
               </div>
             </div>
-            <ul
-              className="mt-2.5 flex flex-col gap-2"
-              aria-label={`Routes to ${environment.label}`}
-            >
+            <ul className="mt-0.5 flex flex-col" aria-label={`Routes to ${environment.label}`}>
               {environment.routes.map((route) => (
                 <RouteRow
                   key={route.endpoint}
@@ -373,6 +535,12 @@ export function EnvironmentList({
                 />
               ))}
             </ul>
+            {onAddRoute ? (
+              <AddRouteControl
+                label={environment.label}
+                onAddRoute={(endpoint) => onAddRoute(environment.environmentId, endpoint)}
+              />
+            ) : null}
           </li>
         )
       })}
@@ -396,7 +564,7 @@ export function ConnectionScreen({
   const choosingSaved = state.kind === 'no_environment' && environments.length > 0
   const title = choosingSaved ? 'Select an environment' : state.title
   const description = choosingSaved
-    ? 'Choose a saved environment and the route to reach it by, or add another endpoint. A second URL for an environment you already have is added to it as another route.'
+    ? 'Connect to a saved environment, or add one by its URL.'
     : state.description
 
   // The one mark a screen keeps: a refused token is a key problem.
