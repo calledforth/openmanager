@@ -1304,7 +1304,7 @@ user merges; every agent summarizes only what it did.
   - `apps/server/package.json`;
   - `apps/web/src/lib/environment-cache.ts` (export `cacheState`).
 - **Risks:** package resolution (fallback in §8.2); timing (wait on conditions, never sleep;
-  `waitQuiet` is 300 ms); Windows child processes (explicit stdio; the CAL-53 8.3 tmpdir).
+  `waitQuiet` is 300 ms); Windows child processes (explicit stdio; the Windows CI temp directory is an 8.3 short name).
 - **Verified by:** the §8.4 demonstrations, each with its diff. Independent of #219.
 
 **F3: server truth** (rules 1 and 2). After #219.
