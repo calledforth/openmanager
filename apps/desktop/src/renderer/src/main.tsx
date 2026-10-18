@@ -5,7 +5,7 @@ import { ConvexProvider } from 'convex/react'
 import App from './App'
 import { createConvexClient } from './lib/convex'
 import type { RuntimeConfig } from '../../shared/runtime-config'
-import { ThemeProvider, isThemeMode } from '@openmanager/app-core/providers/theme-provider'
+import { ThemeProvider, readStoredTheme } from '@openmanager/app-core/providers/theme-provider'
 import { FluidProviders } from '@openmanager/app-core/providers/fluid-provider'
 import { ConvexConfigurationRequired } from './components/settings/ConvexSettingsDialog'
 import { DesktopEnvironmentClientProvider } from './environment/DesktopEnvironmentClientProvider'
@@ -14,12 +14,10 @@ import {
   resolveEnvironmentClientSelection,
 } from './environment/select-backend'
 
-try {
-  const stored = localStorage.getItem('openmanager-theme')
-  if (stored && stored !== 'dark' && isThemeMode(stored)) document.documentElement.dataset.theme = stored
-} catch {
-  /* ignore */
-}
+// Paint the saved scheme before the runtime config arrives, so the window
+// doesn't flash the default dark. It resolves exactly as ThemeProvider will.
+const storedTheme = readStoredTheme()
+if (storedTheme !== 'dark') document.documentElement.dataset.theme = storedTheme
 
 const root = createRoot(document.getElementById('root')!)
 

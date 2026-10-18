@@ -2,16 +2,16 @@ import { useCallback, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   ArrowClockwiseIcon,
-  CircleIcon,
   CircleNotchIcon,
   GearIcon,
   HexagonIcon,
+  MonitorIcon,
   MoonIcon,
   SunIcon,
 } from '@phosphor-icons/react'
 import { cn } from '@openmanager/app-core/lib/utils'
 import { typographyCaption } from '@openmanager/app-core/lib/typography'
-import { useTheme } from '@openmanager/app-core/providers/theme-provider'
+import { useTheme, type AppearanceMode } from '@openmanager/app-core/providers/theme-provider'
 import { Tooltip } from '@openmanager/app-core/components/ui/Tooltip'
 import { usePortaledMenu } from '@openmanager/app-core/components/ui/usePortaledMenu'
 import { ConvexSettingsDialog } from '../settings/ConvexSettingsDialog'
@@ -28,6 +28,14 @@ type UpdateCheckState =
 
 const APP_VERSION = packageJson.version
 
+/** The mode picks each theme family's light or dark side; the family itself is in ⌘K. */
+const APPEARANCE_MODES: ReadonlyArray<{ id: AppearanceMode; label: string; Icon: typeof SunIcon }> =
+  [
+    { id: 'light', label: 'Light', Icon: SunIcon },
+    { id: 'dark', label: 'Dark', Icon: MoonIcon },
+    { id: 'system', label: 'System', Icon: MonitorIcon },
+  ]
+
 export function SidebarSettingsMenu({
   convexOpen,
   onToggleConvex,
@@ -40,7 +48,7 @@ export function SidebarSettingsMenu({
   const [updateCheckState, setUpdateCheckState] = useState<UpdateCheckState>({
     status: 'idle',
   })
-  const { theme, setTheme } = useTheme()
+  const { mode, setMode } = useTheme()
   const { open, toggle, close, menuCoords, wrapRef, triggerRef, menuRef } = usePortaledMenu({
     placement: 'above',
     align: 'end',
@@ -120,61 +128,32 @@ export function SidebarSettingsMenu({
               <div className="p-1">
                 <div className="flex flex-col gap-1.5 px-1.5 py-1.5">
                   <span className="text-11-regular leading-tight text-[var(--basis-text-muted)]">
-                    Theme
+                    Appearance
                   </span>
                   <div
                     className="grid grid-cols-3 gap-0.5 rounded-lg border border-[var(--basis-border)] bg-[color-mix(in_srgb,var(--basis-canvas-bg)_72%,#000)] p-0.5"
                     role="group"
-                    aria-label="Theme"
+                    aria-label="Appearance"
                   >
-                    <button
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={theme === 'light'}
-                      aria-label="Light theme"
-                      onClick={() => setTheme('light')}
-                      className={cn(
-                        'flex h-8 items-center justify-center gap-1.5 rounded-md px-1.5 text-11-regular transition-colors',
-                        theme === 'light'
-                          ? 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]'
-                          : 'text-[var(--basis-text-faint)] hover:text-[var(--basis-text)]',
-                      )}
-                    >
-                      <SunIcon className="h-3.5 w-3.5 shrink-0" weight="bold" />
-                      Light
-                    </button>
-                    <button
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={theme === 'dark'}
-                      aria-label="Dark theme"
-                      onClick={() => setTheme('dark')}
-                      className={cn(
-                        'flex h-8 items-center justify-center gap-1.5 rounded-md px-1.5 text-11-regular transition-colors',
-                        theme === 'dark'
-                          ? 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]'
-                          : 'text-[var(--basis-text-faint)] hover:text-[var(--basis-text)]',
-                      )}
-                    >
-                      <MoonIcon className="h-3.5 w-3.5 shrink-0" weight="bold" />
-                      Dark
-                    </button>
-                    <button
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={theme === 'black'}
-                      aria-label="Black theme"
-                      onClick={() => setTheme('black')}
-                      className={cn(
-                        'flex h-8 items-center justify-center gap-1.5 rounded-md px-1.5 text-11-regular transition-colors',
-                        theme === 'black'
-                          ? 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]'
-                          : 'text-[var(--basis-text-faint)] hover:text-[var(--basis-text)]',
-                      )}
-                    >
-                      <CircleIcon className="h-3.5 w-3.5 shrink-0" weight="fill" />
-                      Black
-                    </button>
+                    {APPEARANCE_MODES.map(({ id, label, Icon }) => (
+                      <button
+                        key={id}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={mode === id}
+                        aria-label={`${label} mode`}
+                        onClick={() => setMode(id)}
+                        className={cn(
+                          'flex h-8 items-center justify-center gap-1.5 rounded-md px-1.5 text-11-regular transition-colors',
+                          mode === id
+                            ? 'bg-[var(--basis-surface-hover)] text-[var(--basis-text-strong)]'
+                            : 'text-[var(--basis-text-faint)] hover:text-[var(--basis-text)]',
+                        )}
+                      >
+                        <Icon className="h-3.5 w-3.5 shrink-0" weight="bold" />
+                        {label}
+                      </button>
+                    ))}
                   </div>
                 </div>
 

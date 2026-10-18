@@ -10,14 +10,13 @@ import {
 import { DEFAULT_UI_FONT, isUiFontId, type UiFontId } from '../lib/fonts'
 import {
   DEFAULT_THEME_FAMILY,
-  THEME_FAMILIES,
   familyOfTheme,
-  familyVariant,
   isAppearanceMode,
   isThemeFamilyId,
   isThemeMode,
   schemeOfTheme,
   themeFamily,
+  themeModeFrom,
   type AppearanceMode,
   type ColorScheme,
   type ThemeFamily,
@@ -29,49 +28,34 @@ export {
   THEME_FAMILIES,
   THEME_MODES,
   familyOfTheme,
-  familyVariant,
   isThemeMode,
   schemeOfTheme,
   themeFamily,
-  themeVariant,
+  themeModeFrom,
   type AppearanceMode,
   type ColorScheme,
   type ThemeFamily,
   type ThemeFamilyId,
   type ThemeMode,
+  type ThemeScheme,
   type ThemeSwatch,
-  type ThemeVariant,
 } from '../lib/theme-families'
-
-/** Every scheme with its own name, in family order (for pickers that list schemes, not families). */
-export const THEME_OPTIONS: ReadonlyArray<{ id: ThemeMode; label: string; hint: string }> =
-  THEME_FAMILIES.flatMap((family) =>
-    [...family.light, ...family.dark].map((variant) => ({
-      id: variant.id,
-      label: variant.name,
-      hint: variant.hint,
-    })),
-  )
 
 /** Whether a theme paints on a light canvas (icons and code blocks switch on this). */
 export function isLightTheme(mode: ThemeMode): boolean {
   return schemeOfTheme(mode) === 'light'
 }
 
-/** The variant picked last in each family, per scheme, so going back to a family brings it back. */
-export type ThemePicks = Partial<Record<ThemeFamilyId, Partial<Record<ColorScheme, ThemeMode>>>>
-
 export interface Appearance {
   mode: AppearanceMode
   family: ThemeFamilyId
-  picks: ThemePicks
 }
 
 /**
- * The appearance as saved: mode, family and picks, plus the scheme each mode
+ * The appearance as saved: mode and family, plus the scheme each mode
  * resolves to, so public/theme-boot.js can paint before React runs without
- * knowing the families. `openmanager-theme` keeps the scheme on screen, which
- * the desktop shell's boot reads.
+ * knowing the families. `openmanager-theme` keeps the scheme on screen too:
+ * it was the single value saved before families, read when no appearance is.
  */
 const APPEARANCE_STORAGE_KEY = 'openmanager-appearance'
 const THEME_STORAGE_KEY = 'openmanager-theme'
@@ -79,70 +63,70 @@ const FONT_STORAGE_KEY = 'openmanager-font'
 
 const SYSTEM_LIGHT_QUERY = '(prefers-color-scheme: light)'
 
-const DEFAULT_APPEARANCE: Appearance = { mode: 'system', family: DEFAULT_THEME_FAMILY, picks: {} }
+const DEFAULT_APPEARANCE: Appearance = { mode: 'system', family: DEFAULT_THEME_FAMILY }
 
 /** The scheme an appearance shows under the given system scheme. */
 export function resolveTheme(appearance: Appearance, system: ColorScheme): ThemeMode {
   const scheme = appearance.mode === 'system' ? system : appearance.mode
-  const family = themeFamily(appearance.family)
-  return familyVariant(family, scheme, appearance.picks[family.id]?.[scheme]).id
+  return themeFamily(appearance.family)[scheme].id
 }
 
-function readPicks(value: unknown): ThemePicks {
-  if (!value || typeof value !== 'object') return {}
-  const picks: ThemePicks = {}
-  for (const [familyId, byScheme] of Object.entries(value as Record<string, unknown>)) {
-    if (!isThemeFamilyId(familyId) || !byScheme || typeof byScheme !== 'object') continue
-    const family = themeFamily(familyId)
-    for (const scheme of ['light', 'dark'] as const) {
-      const id = (byScheme as Record<string, unknown>)[scheme]
-      if (typeof id === 'string' && family[scheme].some((variant) => variant.id === id)) {
-        picks[familyId] = { ...picks[familyId], [scheme]: id as ThemeMode }
-      }
-    }
-  }
-  return picks
-}
-
-/** A single saved scheme from before families: its family, its scheme as the mode, and it as the pick. */
+/** A single saved scheme from before families: its family, with its side as the mode. */
 function appearanceFromTheme(theme: ThemeMode): Appearance {
-  const family = familyOfTheme(theme).id
-  const scheme = schemeOfTheme(theme)
-  return { mode: scheme, family, picks: { [family]: { [scheme]: theme } } }
+  return { mode: schemeOfTheme(theme), family: familyOfTheme(theme).id }
 }
 
+/**
+ * The saved appearance. Only the mode and family are read back: the variant
+ * picks an older appearance carried (and its resolved schemes) are dropped, so
+ * a family shows its one scheme for the mode. With no appearance saved, the
+ * single scheme from before families decides, through any scheme that has
+ * since replaced it.
+ */
 export function readStoredAppearance(): Appearance {
   try {
     const raw = localStorage.getItem(APPEARANCE_STORAGE_KEY)
     const parsed: unknown = raw ? JSON.parse(raw) : null
     if (parsed && typeof parsed === 'object') {
       const saved = parsed as Record<string, unknown>
+      const family = isThemeFamilyId(saved.family) ? saved.family : DEFAULT_APPEARANCE.family
+      // Black was Default's other dark and is Lovable's dark now: whoever
+      // picked it keeps the black they chose, in Lovable.
+      const picks = saved.picks as { default?: { dark?: unknown } } | undefined
+      const pickedBlack =
+        family === 'default' && (saved.dark === 'black' || picks?.default?.dark === 'black')
       return {
         mode: isAppearanceMode(saved.mode) ? saved.mode : DEFAULT_APPEARANCE.mode,
-        family: isThemeFamilyId(saved.family) ? saved.family : DEFAULT_APPEARANCE.family,
-        picks: readPicks(saved.picks),
+        family: pickedBlack ? 'lovable' : family,
       }
     }
   } catch {
     /* unreadable: fall back to the single saved scheme */
   }
   try {
-    const legacy = localStorage.getItem(THEME_STORAGE_KEY)
-    if (legacy && isThemeMode(legacy)) return appearanceFromTheme(legacy)
+    const legacy = themeModeFrom(localStorage.getItem(THEME_STORAGE_KEY))
+    if (legacy) return appearanceFromTheme(legacy)
   } catch {
     /* ignore */
   }
   return DEFAULT_APPEARANCE
 }
 
+/** The scheme the saved appearance shows on this device right now, for a shell's boot. */
+export function readStoredTheme(): ThemeMode {
+  return resolveTheme(readStoredAppearance(), readSystemScheme())
+}
+
 function storeAppearance(appearance: Appearance, theme: ThemeMode) {
+  const family = themeFamily(appearance.family)
   try {
     localStorage.setItem(
       APPEARANCE_STORAGE_KEY,
       JSON.stringify({
-        ...appearance,
-        light: resolveTheme({ ...appearance, mode: 'light' }, 'light'),
-        dark: resolveTheme({ ...appearance, mode: 'dark' }, 'dark'),
+        mode: appearance.mode,
+        family: family.id,
+        light: family.light.id,
+        dark: family.dark.id,
       }),
     )
     localStorage.setItem(THEME_STORAGE_KEY, theme)
@@ -199,13 +183,7 @@ interface ThemeValue {
   family: ThemeFamily
   /** Switches family, keeping the mode. */
   setFamily: (family: ThemeFamilyId) => void
-  /** The variant the family shows for each scheme. */
-  variants: Record<ColorScheme, ThemeMode>
-  /** The variant last picked in every family, so a family can be previewed as it would show. */
-  picks: ThemePicks
-  /** Picks a variant within its family (and moves to that family), keeping the mode. */
-  setVariant: (variant: ThemeMode) => void
-  /** Shows exactly this scheme: its family and variant, with the mode pinned to its scheme. */
+  /** Shows exactly this scheme: moves to its family, with the mode pinned to its side. */
   setTheme: (mode: ThemeMode) => void
   toggleTheme: () => void
   font: UiFontId
@@ -213,18 +191,6 @@ interface ThemeValue {
 }
 
 const ThemeContext = createContext<ThemeValue | null>(null)
-
-function withPick(appearance: Appearance, variant: ThemeMode): Appearance {
-  const family = familyOfTheme(variant).id
-  return {
-    ...appearance,
-    family,
-    picks: {
-      ...appearance.picks,
-      [family]: { ...appearance.picks[family], [schemeOfTheme(variant)]: variant },
-    },
-  }
-}
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [appearance, setAppearance] = useState<Appearance>(readStoredAppearance)
@@ -276,17 +242,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       setAppearance((current) => (isThemeFamilyId(family) ? { ...current, family } : current)),
     [],
   )
-  const setVariant = useCallback(
-    (variant: ThemeMode) =>
-      setAppearance((current) => (isThemeMode(variant) ? withPick(current, variant) : current)),
-    [],
-  )
   const setTheme = useCallback(
-    (variant: ThemeMode) =>
-      setAppearance((current) => {
-        if (!isThemeMode(variant)) return current
-        return { ...withPick(current, variant), mode: schemeOfTheme(variant) }
-      }),
+    (next: ThemeMode) =>
+      setAppearance((current) => (isThemeMode(next) ? appearanceFromTheme(next) : current)),
     [],
   )
   const scheme = schemeOfTheme(theme)
@@ -297,8 +255,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const setFont = useCallback((next: UiFontId) => setFontState(next), [])
 
   const family = themeFamily(appearance.family)
-  const lightVariant = familyVariant(family, 'light', appearance.picks[family.id]?.light).id
-  const darkVariant = familyVariant(family, 'dark', appearance.picks[family.id]?.dark).id
 
   const value = useMemo<ThemeValue>(
     () => ({
@@ -308,9 +264,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       setMode,
       family,
       setFamily,
-      variants: { light: lightVariant, dark: darkVariant },
-      picks: appearance.picks,
-      setVariant,
       setTheme,
       toggleTheme,
       font,
@@ -323,10 +276,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       setMode,
       family,
       setFamily,
-      lightVariant,
-      darkVariant,
-      appearance.picks,
-      setVariant,
       setTheme,
       toggleTheme,
       font,

@@ -109,15 +109,12 @@ describe('CommandPalette', () => {
     ])
   })
 
-  it("lists the current family's variants, and picking one shows exactly it", () => {
+  it('lists no variants: a family has one scheme per mode', () => {
     const input = openPalette()
     act(() => type(input, 'variant'))
-    expect(rowLabels()).toEqual(['Dark', 'Black'])
-    act(() => type(input, 'black'))
-    act(() => {
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
-    })
-    expect(document.documentElement.dataset.theme).toBe('black')
+    expect(rowLabels()).toEqual([])
+    act(() => type(input, 'standard'))
+    expect(rowLabels()).toEqual([])
   })
 
   it('switches family and keeps the palette open', () => {

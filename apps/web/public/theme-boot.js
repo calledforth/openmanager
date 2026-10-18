@@ -11,9 +11,16 @@ try {
   /* ignore */
 }
 
+// Schemes since gone, for a value saved before then (until ThemeProvider next
+// saves): each paints the scheme that replaced it, as
+// lib/theme-families.ts maps them. Black moved from Default to Lovable, so a
+// Default appearance that picked it now paints Lovable, either side.
+var replaced = { 'neutral-light-soft': 'neutral-light', 'lovable-light-inverse': 'lovable-light' }
+
 var theme = null
 try {
   theme = localStorage.getItem('openmanager-theme')
+  if (theme === 'black') theme = 'lovable'
 } catch (error) {
   /* ignore */
 }
@@ -26,11 +33,16 @@ try {
           ? 'light'
           : 'dark'
         : appearance.mode
-    if (typeof appearance[scheme] === 'string') theme = appearance[scheme]
+    var resolved = appearance[scheme]
+    if (appearance.family === 'default' && appearance.dark === 'black') {
+      resolved = scheme === 'dark' ? 'lovable' : 'lovable-light'
+    }
+    if (typeof resolved === 'string') theme = resolved
   }
 } catch (error) {
   /* unreadable: keep the single saved scheme */
 }
+if (theme && Object.prototype.hasOwnProperty.call(replaced, theme)) theme = replaced[theme]
 if (theme && theme !== 'dark' && /^[a-z-]+$/.test(theme)) {
   document.documentElement.dataset.theme = theme
 }
