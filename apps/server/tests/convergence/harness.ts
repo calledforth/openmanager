@@ -12,7 +12,7 @@ import {
 } from '@openmanager/environment-client'
 // The web app's own cache transform: what a reload hands the next client.
 import { cacheState } from '../../../web/src/lib/environment-cache.ts'
-import { LinkProxy } from './link-proxy.ts'
+import { LinkProxy, type FrameRecord } from './link-proxy.ts'
 import {
   describeDiff,
   diff,
@@ -92,6 +92,8 @@ export interface TestClient {
   closes: ClientClose[]
   /** Sockets this client has opened. */
   dials: number
+  /** The local port of every socket it opened: how the proxy's recording tells it apart. */
+  ports: ReadonlySet<number>
   /** Times the client reached `connected`. */
   connects: number
   /**
@@ -145,6 +147,9 @@ export class Rig {
         newSessionDelayMs: options.newSessionDelayMs ?? 0,
       })
       proxy.setTarget(server.port)
+      // Always on: expectations derive what a client should hold from what the
+      // server sent it (mirror.ts), never from the client itself.
+      proxy.record(true)
       const credential = (await readFile(join(dataDir, 'owner-credential'), 'utf8')).trim()
       const rig = new Rig(server, proxy, credential, dataDir)
       const driver = await rig.connect('setup', { link: 'direct' })
@@ -181,6 +186,7 @@ export class Rig {
     const link = options.link ?? 'proxy'
     const closes: ClientClose[] = []
     const record = { dials: 0 }
+    const ports = new Set<number>()
     /** Request ids sent on the live socket and not yet answered. */
     const outstanding = new Set<string>()
     // A direct client always dials the live server, whatever port it is on now.
@@ -190,6 +196,10 @@ export class Rig {
       constructor(_url: string, protocols?: string[]) {
         super(url(), protocols)
         record.dials += 1
+        this.addEventListener('open', () => {
+          const port = (this as unknown as { _socket?: { localPort?: number } })._socket?.localPort
+          if (port !== undefined) ports.add(port)
+        })
         // A browser drops a message that arrives once close() was called
         // (WHATWG WebSockets: "if ready state is not OPEN, then return");
         // `ws` still delivers it. The client under test gets browser rules,
@@ -260,6 +270,7 @@ export class Rig {
       get dials() {
         return record.dials
       },
+      ports,
       get connects() {
         return connects
       },
@@ -297,6 +308,14 @@ export class Rig {
     return this.connect(`${old.name}*`, {
       link,
       store: createEnvironmentStore(structuredClone(cached)),
+    })
+  }
+
+  /** The frames on the proxied sockets of one client, in wire order. */
+  framesOf(client: TestClient): FrameRecord[] {
+    return this.proxy.frames.filter((frame) => {
+      const port = this.proxy.clientPorts.get(frame.connection)
+      return port !== undefined && client.ports.has(port)
     })
   }
 

@@ -15,6 +15,8 @@ import {
   workspaceRecencyMirror,
 } from './causes.ts'
 import { judge } from './expectation.ts'
+import { verdictOf } from './evidence.ts'
+import { s8Causes, x2Causes } from './fixtures.ts'
 import type { ConvergenceResult } from './harness.ts'
 import { ABSENT, type DiffEntry, type NormalizedView } from './normalize.ts'
 
@@ -168,12 +170,12 @@ function result(
     entries,
     view: { ...base, ...view },
     fresh: { ...base, ...fresh },
-    server: { threads: {}, sessions: [] },
+    server: { threads: {}, sessions: (fresh.sessions ?? []) as unknown[] },
   } as ConvergenceResult
 }
 
 describe('the seeded runs’ fingerprints', () => {
-  it('explain recency only when the fresh value is the newest session update', () => {
+  it('explain recency only when the fresh value is the server’s newest session update', () => {
     const fresh = {
       sessions: [{ sessionId: S, workspaceId: W, updatedAt: stamped }],
     }
@@ -191,10 +193,15 @@ describe('the seeded runs’ fingerprints', () => {
       fresh,
     )
     expect(classify(backwards, { stamps: {}, restarts: [] })[0]!.cause).toBeUndefined()
-    // The relation the scenarios use agrees.
-    const cause = workspaceRecencyMirror(right, W)
+    // The scenarios' instance agrees, given what the client was sent and the server's newest.
+    const cause = workspaceRecencyMirror({ workspaceId: W, held, newest: stamped })
     expect(judge(right.entries, cause).outcome).toBe('primary-remains')
     expect(judge(other.entries, cause).outcome).toBe('unexpected')
+    // A client value other than the one it was sent is not this cause, even if older.
+    const drifted = [
+      e('fresh', `workspaces.${W}.lastActivityAt`, '2026-10-18T09:00:00.000Z', stamped),
+    ]
+    expect(judge(drifted, cause).outcome).toBe('unexpected')
   })
 
   it('explain a stamp only at the provider session’s resolution time', () => {
@@ -247,5 +254,86 @@ describe('the seeded runs’ fingerprints', () => {
   it('never explain a fresh-vs-server disagreement', () => {
     const entries = [e('fresh-vs-server', `sessions[${S}].providerId`, ABSENT, 'opencode')]
     expect(classify(result(entries, {}), { stamps: {}, restarts: [] })[0]!.cause).toBeUndefined()
+  })
+})
+
+/**
+ * The S8 and X2 expectations exactly as the scenarios build them
+ * (fixtures.ts), judged through verdictOf as demonstrateDiff judges them.
+ */
+describe('the S8 and X2 expectation factories', () => {
+  const captured = {
+    olderId: O,
+    newId: S,
+    workspaceId: W,
+    providerId: 'opencode',
+    createdAt: held,
+    stampedAt,
+    // What B was sent last for the workspace (markUsed, just before the stamp).
+    heldRecency: '2026-10-18T10:00:00.521Z',
+  }
+  const recency = (left: unknown, right: unknown) =>
+    e('fresh', `workspaces.${W}.lastActivityAt`, left, right)
+  const genuine = () => [...s8Diff(), recency(captured.heldRecency, stamped)]
+  const verdict = (entries: DiffEntry[]) => {
+    const { primary, residuals } = s8Causes(captured)
+    return verdictOf(result(entries, {}), primary, residuals)
+  }
+
+  it('accepts the genuine S8 diff, with and without the recency entry', () => {
+    expect(verdict(genuine()).outcome).toBe('primary-remains')
+    expect(verdict(s8Diff()).outcome).toBe('primary-remains')
+  })
+
+  it('fails when a future workspace timestamp rides along with the genuine stamp', () => {
+    const future = genuine().map((entry) =>
+      entry.path.startsWith('workspaces.')
+        ? recency(captured.heldRecency, '2027-01-01T00:00:00.000Z')
+        : entry,
+    )
+    expect(verdict(future).outcome).toBe('unexpected')
+  })
+
+  it('fails when the client holds a workspace time it was never sent', () => {
+    const corrupted = genuine().map((entry) =>
+      entry.path.startsWith('workspaces.') ? recency('2026-10-18T09:59:00.000Z', stamped) : entry,
+    )
+    expect(verdict(corrupted).outcome).toBe('unexpected')
+    // Even a future client value, with the right fresh value.
+    const ahead = genuine().map((entry) =>
+      entry.path.startsWith('workspaces.') ? recency('2027-01-01T00:00:00.000Z', stamped) : entry,
+    )
+    expect(verdict(ahead).outcome).toBe('unexpected')
+  })
+
+  it('fails on a second, unrelated recency entry for another workspace', () => {
+    expect(
+      verdict([...genuine(), e('fresh', 'workspaces.other.lastActivityAt', held, stamped)]).outcome,
+    ).toBe('unexpected')
+  })
+
+  it('asks to flip when only X2 is left', () => {
+    const left = s8Diff().filter((entry) => entry.path.endsWith('providerId'))
+    expect(verdict(left).outcome).toBe('primary-gone')
+  })
+
+  it('judges X2 the same way', () => {
+    const x2 = x2Causes({ ...captured, sessionId: S })
+    const judgeX2 = (entries: DiffEntry[]) =>
+      verdictOf(result(entries, {}), x2.primary, x2.residuals)
+    const providers = ['fresh', 'server'].map((comparison) =>
+      e(comparison, `sessions[${S}].providerId`, ABSENT, 'opencode'),
+    )
+    const stamp = ['fresh', 'server'].map((comparison) =>
+      e(comparison, `sessions[${S}].updatedAt`, held, stamped),
+    )
+    expect(judgeX2([...providers, ...stamp, recency(captured.heldRecency, stamped)]).outcome).toBe(
+      'primary-remains',
+    )
+    expect(
+      judgeX2([...providers, ...stamp, recency(captured.heldRecency, '2027-01-01T00:00:00.000Z')])
+        .outcome,
+    ).toBe('unexpected')
+    expect(judgeX2([...stamp]).outcome).toBe('primary-gone')
   })
 })

@@ -454,6 +454,8 @@ export class LinkProxy {
   readonly frames: FrameRecord[] = []
   /** The local port of every connection the proxy opened to a server: the server sees it as the remote port. */
   readonly serverSidePorts = new Set<number>()
+  /** Proxy connection id → the client's own port, so frames can be told apart per client. */
+  readonly clientPorts = new Map<number, number>()
   readonly stats: LinkProxyStats = {
     accepted: 0,
     refused: 0,
@@ -644,6 +646,7 @@ export class LinkProxy {
       () => this.gateFn !== undefined,
       GATE_HOLD_BUDGET,
     )
+    if (client.remotePort !== undefined) this.clientPorts.set(id, client.remotePort)
     const pair: Pair = { id, client, server, down, up, downInspector, upInspector, closed: false }
     this.pairs.set(id, pair)
     this.stats.open = this.pairs.size

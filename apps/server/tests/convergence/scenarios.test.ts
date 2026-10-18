@@ -20,8 +20,8 @@ import {
   sessionCreatedPartial,
   silentRecovery,
   snapshotMergeDropsOlderActivity,
+  stampMovesRecency,
   thoughtClosedByFold,
-  workspaceRecencyMirror,
 } from './causes.ts'
 import {
   FlipError,
@@ -33,7 +33,9 @@ import {
 } from './evidence.ts'
 import { Driver, sleep, until, type Rig, type TestClient } from './harness.ts'
 import type { FrameFields, FrameRecord } from './link-proxy.ts'
-import { normalize, serverThreadView, type ThreadView } from './normalize.ts'
+import { serverSessionsView, serverThreadView, type ThreadView } from './normalize.ts'
+import { recencyMirror, s8Causes, x2Causes } from './fixtures.ts'
+import { createdAt, mirroredRecency } from './mirror.ts'
 import { afterPhase, futureTest, scenario } from './scenario.ts'
 import {
   createSession,
@@ -137,14 +139,6 @@ async function serverThread(rig: Rig, target: Target): Promise<ThreadView> {
   return serverThreadView(await rig.server.readThread(target.sessionId, target.threadId))
 }
 
-/** A client's own view of one thread, normalized. */
-function clientThread(client: TestClient, target: Target): ThreadView {
-  const view = normalize(client.client.getState(), target.sessionId)
-  const found = view.active?.threads[target.threadId]
-  if (!found) throw new Error(`${client.name} does not hold thread ${target.threadId}.`)
-  return found
-}
-
 /**
  * The server's read of the activity of `turnIds`: what the snapshot merge
  * drops, as the fresh load must show it.
@@ -228,12 +222,6 @@ async function threadWithAnswer(rig: Rig, bytes: number): Promise<Target> {
   return target
 }
 
-/** A client's sidebar row for one session, as normalize shows it. */
-const rowOf = (client: TestClient, sessionId: string) =>
-  (normalize(client.client.getState(), null).sessions as Array<{ sessionId: string }>).find(
-    (row) => row.sessionId === sessionId,
-  )
-
 /**
  * The heartbeat floor on main (S7, S14): a client on a slow link opens a
  * thread right after its handshake; the ping queued at 15 s waits behind the
@@ -247,7 +235,8 @@ async function demonstrateHeartbeatLoop(
   link: { bytesPerSecond: number; bufferBytes: number },
 ) {
   rig.proxy.throttle('down', link.bytesPerSecond, link.bufferBytes)
-  rig.proxy.record(true)
+  // Recording is always on; what follows is judged from here.
+  const mark = rig.proxy.frames.length
   const client = await rig.connect('C')
   const connectedAt = rig.now()
   void client.client.commands.openSession(target.sessionId).catch(() => undefined)
@@ -285,10 +274,12 @@ async function demonstrateHeartbeatLoop(
       })),
       clientDials: client.dials,
       clientCloses: client.closes,
-      threadReplayRequests: threadReplays(rig.proxy.frames, target.threadId).map((frame) => ({
-        connection: frame.connection,
-        atMs: frame.at,
-      })),
+      threadReplayRequests: threadReplays(rig.proxy.frames.slice(mark), target.threadId).map(
+        (frame) => ({
+          connection: frame.connection,
+          atMs: frame.at,
+        }),
+      ),
     },
   })
 }
@@ -325,10 +316,14 @@ describe('§8.4 scenarios on main', () => {
     // A valid baseline: before the crash A agrees with the server, except for
     // the workspace recency the question moved (X1, an interaction event is
     // not one the client mirrors it on), named with its fingerprint.
-    await expectConvergesExcept('S1 baseline', rig, a, [
-      (result) => workspaceRecencyMirror(result, rig.workspaceId),
-    ])
-    const held = clientThread(a, target)
+    await expectConvergesExcept('S1 baseline', rig, a, [recencyMirror(rig, a)])
+    // What A holds, as the server's own read says it (the baseline above
+    // showed they agree): the interactions and the turn state recovery rewrites.
+    const held = await serverThread(rig, target)
+    const openTurn = (held.turns as Array<{ turnId: string; state: string }>).find(
+      (turn) => turn.turnId === turnId,
+    )
+    expect(openTurn?.state).toBe('waiting')
     const before = a.connects
     await rig.crash()
     await until(() => a.connects > before, 'A to reconnect after the crash', 20_000)
@@ -352,7 +347,7 @@ describe('§8.4 scenarios on main', () => {
     await rig.provider({ op: 'emitThought', sessionId: target.sessionId, text: 'Thinking' })
     await rig.provider({ op: 'emitText', sessionId: target.sessionId, text: 'The answer.' })
     await finish(rig, a, target, turnId)
-    const thoughts = thread(a, target)!.reasoning.map((entry) => entry.messageId)
+    const thoughts = Object.keys((await serverThread(rig, target)).reasoning)
     expect(thoughts).toHaveLength(1)
     await demonstrateDiff(
       'S2',
@@ -421,7 +416,8 @@ describe('§8.4 scenarios on main', () => {
       await emitLargeText(rig, target, 300_000, 'text')
       await rig.provider({ op: 'completeTurn', sessionId: target.sessionId })
       await rig.waitQuiet()
-      rig.proxy.record(true)
+      // Recording is always on; what follows is judged from here.
+      const mark = rig.proxy.frames.length
       rig.proxy.up()
       await untilThread(
         a,
@@ -430,7 +426,7 @@ describe('§8.4 scenarios on main', () => {
         'A to catch up after the gap',
         20_000,
       )
-      const answer = downFrames(rig.proxy.frames).find(
+      const answer = downFrames(rig.proxy.frames.slice(mark)).find(
         (frame) => info(frame).reason === 'gap_expired' && info(frame).threadId === target.threadId,
       )
       expect(answer, 'the catch-up was a gap_expired snapshot').toBeDefined()
@@ -442,7 +438,8 @@ describe('§8.4 scenarios on main', () => {
     const a = await rig.connect('A')
     const target = await createSession(rig, a)
     const turnId = await startTurn(a, target)
-    rig.proxy.record(true)
+    // Recording is always on; what follows is judged from here.
+    const mark = rig.proxy.frames.length
     // One child step: the text enters the batcher and the image is refused
     // before any timer runs, so the order does not depend on how fast the
     // host schedules two separate requests against the 100 ms window. The
@@ -458,7 +455,7 @@ describe('§8.4 scenarios on main', () => {
     await rig.provider({ op: 'emitText', sessionId: target.sessionId, text: ' then more' })
     await finish(rig, a, target, turnId)
     await rig.waitQuiet()
-    const frames = downFrames(rig.proxy.frames)
+    const frames = downFrames(rig.proxy.frames.slice(mark))
     const notice = frames.findIndex((frame) => field(frame.json, 'name') === 'turn.notice')
     const firstText = frames.findIndex(
       (frame) =>
@@ -534,7 +531,7 @@ describe('§8.4 scenarios on main', () => {
     // The turn stays open: any end of it would also close the thought in A's
     // fold (S2), and this scenario shows the budget alone.
     const text = await emitLargeText(rig, target, 400 * KiB, 'thought')
-    const entry = await untilThread(
+    await untilThread(
       a,
       target,
       (state) =>
@@ -543,13 +540,15 @@ describe('§8.4 scenarios on main', () => {
         ),
       'A to hold the whole thought',
     )
+    await rig.waitQuiet()
+    const [messageId] = Object.keys((await serverThread(rig, target)).reasoning)
     await demonstrateDiff(
       'S6(b)',
       rig,
       a,
       reasoningBudgetMarker({
         threadId: target.threadId,
-        messageId: entry.reasoning[0]!.messageId,
+        messageId: messageId!,
         text,
       }),
     )
@@ -571,50 +570,59 @@ describe('§8.4 scenarios on main', () => {
     'S8 a session created while another client watches (§4.4)',
     { newSessionDelayMs: 500 },
     async (rig) => {
-      const a = await rig.connect('A')
+      // A direct, so the proxy carries only B: what B was sent is B's alone.
+      const a = await rig.connect('A', { link: 'direct' })
       const b = await rig.connect('B')
-      // Its own stamp lands 500 ms after its creation; createSession waits for it.
-      const older = await createSession(rig, a, { title: 'Older', open: false })
+      // B's own catalog read and environment subscription are done before anything is created.
+      await rig.settle()
+      // Its own stamp lands 500 ms after its creation; quiet creation waits for it.
+      const older = await createSession(rig, a, { title: 'Older', open: false, quiet: true })
       await until(
         () => b.client.getState().sessions[older.sessionId],
         'B to list the older session',
       )
-      const created = await createSession(rig, a, { title: 'New', open: false, settle: false })
+      // A valid baseline before the new session's stamp is induced: B agrees
+      // with the server except for the older session's own X2 diff (its
+      // provider, its stamp), instantiated from what B was sent.
+      const olderStamps = await rig.server.readStamps()
+      const baseline = () =>
+        x2Causes({
+          sessionId: older.sessionId,
+          workspaceId: rig.workspaceId,
+          providerId: 'opencode',
+          createdAt: createdAt(rig.framesOf(b), older.sessionId),
+          stampedAt: olderStamps[older.sessionId]!,
+          heldRecency: mirroredRecency(rig.framesOf(b), rig.workspaceId),
+        })
+      await expectConvergesExcept('S8 baseline', rig, b, [
+        () => baseline().primary,
+        ...[0, 1].map((index) => () => baseline().residuals[index]!),
+      ])
+      const created = await createSession(rig, a, { title: 'New', open: false, quiet: false })
       // Inside the 500 ms before the new session's stamp: the older one moves above it.
       await a.client.commands.renameSession(older.sessionId, 'Older, renamed')
-      const held = await until(
-        () => b.client.getState().sessions[created.sessionId]?.updatedAt,
+      await until(
+        () => b.client.getState().sessions[created.sessionId],
         'B to list the new session',
       )
       await rig.waitQuiet()
       const stamps = await rig.server.readStamps()
+      const causes = () =>
+        s8Causes({
+          olderId: older.sessionId,
+          newId: created.sessionId,
+          workspaceId: rig.workspaceId,
+          providerId: 'opencode',
+          createdAt: createdAt(rig.framesOf(b), created.sessionId),
+          stampedAt: stamps[created.sessionId]!,
+          heldRecency: mirroredRecency(rig.framesOf(b), rig.workspaceId),
+        })
       await demonstrateDiff(
         'S8',
         rig,
         b,
-        (result) =>
-          runtimeStamp({
-            sessionId: created.sessionId,
-            heldUpdatedAt: held,
-            stampedAt: stamps[created.sessionId]!,
-            order: {
-              held: [older.sessionId, created.sessionId],
-              stamped: [created.sessionId, older.sessionId],
-            },
-            workspace: {
-              workspaceId: rig.workspaceId,
-              held: (result.view.workspaces[rig.workspaceId] as { lastActivityAt: string })
-                .lastActivityAt,
-            },
-          }),
-        // B heard of both sessions only through session.created, which names no
-        // provider (X2): named, and only for these two sessions.
-        [
-          sessionCreatedPartial({
-            sessionIds: [older.sessionId, created.sessionId],
-            providerId: 'opencode',
-          }),
-        ],
+        () => causes().primary,
+        [0, 1].map((index) => () => causes().residuals[index]!),
       )
     },
   )
@@ -630,9 +638,9 @@ describe('§8.4 scenarios on main', () => {
     'S8 (child) a child session registered through subtask_update (observed)',
     {},
     async (rig) => {
-      const a = await rig.connect('A')
+      const a = await rig.connect('A', { link: 'direct' })
       const b = await rig.connect('B')
-      const parent = await createSession(rig, a)
+      const parent = await createSession(rig, a, { quiet: true })
       const turnId = await startTurn(a, parent)
       await rig.provider({
         op: 'emitSubtask',
@@ -648,21 +656,26 @@ describe('§8.4 scenarios on main', () => {
         'B to list the child session',
       )
       await finish(rig, a, parent, turnId)
-      const held = child.updatedAt!
       const result = await rig.checkConvergence(b)
-      const { verdict } = verdictOf('S8 (child)', result, undefined, [
-        // The child's stamp has no provider session of its own: it follows
-        // the insert, so it lands at the insert's time or just after.
+      // The child's stamp has no provider session of its own: it follows the
+      // insert, so it lands at the insert's announced time or just after.
+      const announced = createdAt(rig.framesOf(b), child.sessionId)
+      const verdict = verdictOf(result, undefined, [
         runtimeStamp({
           sessionId: child.sessionId,
-          heldUpdatedAt: held,
-          stampedAt: Date.parse(held),
+          heldUpdatedAt: announced,
+          stampedAt: Date.parse(announced),
+        }),
+        stampMovesRecency({
+          workspaceId: rig.workspaceId,
+          held: mirroredRecency(rig.framesOf(b), rig.workspaceId),
+          stampedAt: Date.parse(announced),
         }),
         sessionCreatedPartial({
           sessionIds: [parent.sessionId, child.sessionId],
           providerId: 'opencode',
         }),
-        workspaceRecencyMirror(result, rig.workspaceId),
+        await recencyMirror(rig, b)(),
       ])
       expect(verdict.residual, 'only the instantiated causes may show').toEqual([])
       recordEvidence({
@@ -707,7 +720,7 @@ describe('§8.4 scenarios on main', () => {
     for (let index = 0; index < 110; index++) {
       const client = await driver.client()
       others.push(
-        (await createSession(rig, client, { title: `S${index}`, open: false, settle: false }))
+        (await createSession(rig, client, { title: `S${index}`, open: false, quiet: false }))
           .sessionId,
       )
     }
@@ -727,12 +740,19 @@ describe('§8.4 scenarios on main', () => {
       () => b.client.getState().sessions[others[0]!]?.title === 'Seen by B',
       'B to apply a live environment event',
     )
-    await rig.settle()
-    // The rows B will keep, as normalize shows them.
-    const rows = {
-      [parent.sessionId]: rowOf(b, parent.sessionId),
-      [child.sessionId]: rowOf(b, child.sessionId),
-    }
+    // A valid baseline: B agrees with the server before the cut, except for
+    // the recency the rename above moved (X1), from what B was sent.
+    await expectConvergesExcept('S9 baseline', rig, b, [recencyMirror(rig, b)])
+    // The rows B will keep, as the server's own summaries give them.
+    const summaries = serverSessionsView(await rig.server.readSessions()) as Array<{
+      sessionId: string
+    }>
+    const rows = Object.fromEntries(
+      [parent.sessionId, child.sessionId].map((id) => [
+        id,
+        summaries.find((row) => row.sessionId === id),
+      ]),
+    )
     rig.proxy.down()
     rig.proxy.cut()
     await until(() => b.client.getState().connection.phase !== 'connected', 'B to notice the cut')
@@ -764,7 +784,8 @@ describe('§8.4 scenarios on main', () => {
         listReads += 1
         return movePage()
       })
-      rig.proxy.record(true)
+      // Recording is always on; what follows is judged from here.
+      const mark = rig.proxy.frames.length
       rig.proxy.up()
       // Two pages for the first walk, then three passes of two pages each;
       // or reconciliation settled and the parent is gone (then the property holds).
@@ -775,7 +796,7 @@ describe('§8.4 scenarios on main', () => {
         50,
       )
       await rig.waitQuiet()
-      const environmentReplay = downFrames(rig.proxy.frames).find(
+      const environmentReplay = downFrames(rig.proxy.frames.slice(mark)).find(
         (frame) => info(frame).mode === 'snapshot' && info(frame).scopeType === 'environment',
       )
       expect(
@@ -784,8 +805,8 @@ describe('§8.4 scenarios on main', () => {
       ).toBe('gap_expired')
       await demonstrateDiff('S9', rig, b, environmentSnapshotNeverRemoves({ rows }), [
         // The renames that move the catalog also move the workspace's recency
-        // with no event (X1): named, with its fingerprint.
-        (result) => workspaceRecencyMirror(result, rig.workspaceId),
+        // with no event (X1): named, from what B was sent and a server read.
+        recencyMirror(rig, b),
       ])
       recordEvidence({
         scenario: 'S9',
@@ -830,12 +851,13 @@ describe('§8.4 scenarios on main', () => {
           messageIds: Object.keys(older.reasoning),
         }),
       ])
-      rig.proxy.record(true)
+      // Recording is always on; what follows is judged from here.
+      const mark = rig.proxy.frames.length
       const reloaded = await rig.reload(a)
       // The cache already says "ready"; wait for the reload's own initial snapshot.
       await until(
         () =>
-          downFrames(rig.proxy.frames).some(
+          downFrames(rig.proxy.frames.slice(mark)).some(
             (frame) => info(frame).reason === 'initial' && info(frame).threadId === target.threadId,
           ),
         'the reload to receive its initial thread snapshot',
@@ -896,7 +918,8 @@ describe('§8.4 scenarios on main', () => {
     }
     await rig.provider({ op: 'completeTurn', sessionId: target.sessionId })
     await rig.waitQuiet()
-    rig.proxy.record(true)
+    // Recording is always on; what follows is judged from here.
+    const mark = rig.proxy.frames.length
     rig.proxy.up()
     await untilThread(
       a,
@@ -905,9 +928,11 @@ describe('§8.4 scenarios on main', () => {
       'A to catch up',
       20_000,
     )
-    const replay = threadReplays(rig.proxy.frames, target.threadId)[0]
+    const replay = threadReplays(rig.proxy.frames.slice(mark), target.threadId)[0]
     const requestId = field(replay?.json, 'requestId')
-    const answer = downFrames(rig.proxy.frames).find((frame) => info(frame).requestId === requestId)
+    const answer = downFrames(rig.proxy.frames.slice(mark)).find(
+      (frame) => info(frame).requestId === requestId,
+    )
     expect(info(answer).mode, 'an incremental replay, not a snapshot').toBe('replay')
     await expectConverges('S12', rig, a, {
       replayedEvents: (field(answer?.json, 'payload', 'events') as unknown[] | undefined)?.length,
@@ -1026,7 +1051,8 @@ describe('§8.4 scenarios on main', () => {
       const target = await createSession(rig, a)
       await startTurn(a, target)
       rig.proxy.throttle('down', 10 * KiB, 256 * KiB)
-      rig.proxy.record(true)
+      // Recording is always on; what follows is judged from here.
+      const mark = rig.proxy.frames.length
       const streaming = rig.provider({
         op: 'streamText',
         sessionId: target.sessionId,
@@ -1047,7 +1073,7 @@ describe('§8.4 scenarios on main', () => {
       }
       await streaming
       await rig.provider({ op: 'completeTurn', sessionId: target.sessionId })
-      const names = downFrames(rig.proxy.frames).map((frame) => info(frame).name)
+      const names = downFrames(rig.proxy.frames.slice(mark)).map((frame) => info(frame).name)
       const lagging = names.indexOf('subscription.lagging')
       expect(lagging, 'A was told the scope is lagging').toBeGreaterThanOrEqual(0)
       expect(names.indexOf('subscription.catchup', lagging), 'then caught up').toBeGreaterThan(
@@ -1125,14 +1151,14 @@ describe('divergences on main that §8.4 does not list', () => {
     {},
     async (rig) => {
       const a = await rig.connect('A')
-      const target = await createSession(rig, a)
+      const target = await createSession(rig, a, { quiet: true })
       const turnId = await startTurn(a, target)
       await finish(rig, a, target, turnId)
-      await rig.settle()
+      // A valid baseline: A agrees with the server before the rename.
+      await expectConverges('X1 baseline', rig, a)
       await a.client.commands.renameSession(target.sessionId, 'Renamed later')
-      await demonstrateDiff('X1', rig, a, (result) =>
-        workspaceRecencyMirror(result, rig.workspaceId),
-      )
+      // Held: what A was sent (mirror.ts); newest: a server read after the check.
+      await demonstrateDiff('X1', rig, a, recencyMirror(rig, a))
     },
   )
 
@@ -1140,35 +1166,32 @@ describe('divergences on main that §8.4 does not list', () => {
     'X2 a second client hears of a session only through session.created (§6.3)',
     {},
     async (rig) => {
-      const a = await rig.connect('A')
+      // A direct, so the proxy carries only B.
+      const a = await rig.connect('A', { link: 'direct' })
       const b = await rig.connect('B')
-      const target = await createSession(rig, a, { open: false, settle: false })
-      const held = await until(
-        () => b.client.getState().sessions[target.sessionId]?.updatedAt,
-        'B to list the new session',
-      )
+      // A valid baseline before anything is created.
+      await expectConverges('X2 baseline', rig, b)
+      const target = await createSession(rig, a, { open: false, quiet: false })
+      await until(() => b.client.getState().sessions[target.sessionId], 'B to list the new session')
       await rig.waitQuiet()
       const stamps = await rig.server.readStamps()
+      // Nothing follows the creation, so the runtime stamp (S8's cause) shows
+      // too: named, for this session, at its stamp time.
+      const causes = () =>
+        x2Causes({
+          sessionId: target.sessionId,
+          workspaceId: rig.workspaceId,
+          providerId: 'opencode',
+          createdAt: createdAt(rig.framesOf(b), target.sessionId),
+          stampedAt: stamps[target.sessionId]!,
+          heldRecency: mirroredRecency(rig.framesOf(b), rig.workspaceId),
+        })
       await demonstrateDiff(
         'X2',
         rig,
         b,
-        sessionCreatedPartial({ sessionIds: [target.sessionId], providerId: 'opencode' }),
-        [
-          // Nothing follows the creation, so the runtime stamp (S8's cause)
-          // shows too: named, for this session, with its stamp time.
-          (result) =>
-            runtimeStamp({
-              sessionId: target.sessionId,
-              heldUpdatedAt: held,
-              stampedAt: stamps[target.sessionId]!,
-              workspace: {
-                workspaceId: rig.workspaceId,
-                held: (result.view.workspaces[rig.workspaceId] as { lastActivityAt: string })
-                  .lastActivityAt,
-              },
-            }),
-        ],
+        () => causes().primary,
+        [0, 1].map((index) => () => causes().residuals[index]!),
       )
     },
   )
@@ -1235,11 +1258,10 @@ describe('divergences on main that §8.4 does not list', () => {
     const settle = async (step: string, expected: string | undefined) => {
       await until(() => waitingOn() === expected || undefined, `B to show waitingOn ${expected}`)
       // Interaction events move sessions.updated_at, and with it the
-      // workspace's recency, with no workspace event (X1): named, with its fingerprint.
-      const recency = (result: Parameters<typeof workspaceRecencyMirror>[0]) =>
-        workspaceRecencyMirror(result, rig.workspaceId)
-      await expectConvergesExcept(`G1 ${step} (sidebar)`, rig, b, [recency])
-      await expectConvergesExcept(`G1 ${step} (chat)`, rig, a, [recency])
+      // workspace's recency, with no workspace event (X1): named, from what
+      // each client was sent and a server read.
+      await expectConvergesExcept(`G1 ${step} (sidebar)`, rig, b, [recencyMirror(rig, b)])
+      await expectConvergesExcept(`G1 ${step} (chat)`, rig, a, [recencyMirror(rig, a)])
       steps.push({ step, waitingOn: waitingOn() })
     }
     await rig.provider({ op: 'askPermission', sessionId: target.sessionId, toolCallId: 'edit-g1' })
@@ -1295,15 +1317,13 @@ describe('divergences on main that §8.4 does not list', () => {
       await b.client.commands.listSessions()
       const row = () => b.client.getState().sessions[target.sessionId]
       const steps: Array<{ step: string; status: unknown; inBackground: unknown }> = []
-      const recency = (result: Parameters<typeof workspaceRecencyMirror>[0]) =>
-        workspaceRecencyMirror(result, rig.workspaceId)
       const settle = async (step: string, status: string, inBackground: true | undefined) => {
         await until(
           () => (row()?.status === status && row()?.inBackground === inBackground) || undefined,
           `B to show ${status}${inBackground ? ', in the background' : ''}`,
         )
-        await expectConvergesExcept(`G3 ${step} (sidebar)`, rig, b, [recency])
-        await expectConvergesExcept(`G3 ${step} (chat)`, rig, a, [recency])
+        await expectConvergesExcept(`G3 ${step} (sidebar)`, rig, b, [recencyMirror(rig, b)])
+        await expectConvergesExcept(`G3 ${step} (chat)`, rig, a, [recencyMirror(rig, a)])
         steps.push({ step, status: row()?.status, inBackground: row()?.inBackground })
       }
       const shell = { task_id: 'bg-1', task_type: 'local_bash', description: 'Run the build' }
@@ -1397,10 +1417,11 @@ describe('divergences on main that §8.4 does not list', () => {
       await a.client.commands.deleteDraft({ draftId: newDraftId, baseRevision: 1 })
       await a.client.commands.setComposerPreference({ ...pair, preference: { modeId: 'plan' } })
       await rig.waitQuiet()
-      rig.proxy.record(true)
+      // Recording is always on; what follows is judged from here.
+      const mark = rig.proxy.frames.length
       rig.proxy.up()
       await expectConverges('G2 after a snapshot gap', rig, b)
-      const environment = downFrames(rig.proxy.frames).find(
+      const environment = downFrames(rig.proxy.frames.slice(mark)).find(
         (frame) => info(frame).mode === 'snapshot' && info(frame).scopeType === 'environment',
       )
       expect(info(environment).reason, 'the second gap was caught up by snapshot').toBe(

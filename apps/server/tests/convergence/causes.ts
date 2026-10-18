@@ -178,8 +178,6 @@ export function runtimeStamp(fixture: {
   stampedAt: number
   /** The sidebar order the stamp turns around, if the construction puts one session between. */
   order?: { held: string[]; stamped: string[] }
-  /** The workspace whose recency the stamp moves, with the value the client holds. */
-  workspace?: { workspaceId: string; held: string }
 }): CauseInstance {
   const stamped = satisfies(
     `the provider session's resolution time (${new Date(fixture.stampedAt).toISOString()}) or just after`,
@@ -208,16 +206,37 @@ export function runtimeStamp(fixture: {
             ),
           ]
         : []),
-      ...(fixture.workspace
-        ? [
-            entry(
-              FRESH,
-              `workspaces.${fixture.workspace.workspaceId}.lastActivityAt`,
-              equals(fixture.workspace.held),
-              stamped,
-            ),
-          ]
-        : []),
+    ],
+  }
+}
+
+/**
+ * The stamp moves the workspace's recency too (MAX(sessions.updated_at)),
+ * with no event. Whether this entry shows depends on the stamp landing in a
+ * later millisecond than the event the client last mirrored, so scenarios
+ * name it as a residual. `held` is what the client should hold, derived from
+ * what the server sent it (mirror.ts), never read from the client.
+ */
+export function stampMovesRecency(fixture: {
+  workspaceId: string
+  held: string | null
+  stampedAt: number
+}): CauseInstance {
+  return {
+    name: 'RUNTIME_STAMP_RECENCY',
+    cause:
+      'The runtime stamp (S8) also moves the workspace’s lastActivityAt, which is MAX of the ' +
+      'sessions’ updated_at at read time (workspaces.ts:151, :238-241), with no workspace event.',
+    entries: [
+      entry(
+        FRESH,
+        `workspaces.${fixture.workspaceId}.lastActivityAt`,
+        equals(fixture.held),
+        satisfies(
+          `the provider session's resolution time (${new Date(fixture.stampedAt).toISOString()}) or just after`,
+          (value) => ms(value) >= fixture.stampedAt && ms(value) - fixture.stampedAt <= 250,
+        ),
+      ),
     ],
   }
 }
@@ -245,11 +264,13 @@ export function environmentSnapshotNeverRemoves(fixture: {
  * events. The fingerprint: the fresh value is exactly the newest `updatedAt`
  * among the workspace's sessions in the same fresh load, and the client's is older.
  */
-export function workspaceRecencyMirror(
-  result: Pick<ConvergenceResult, 'fresh'>,
-  workspaceId: string,
-): CauseInstance {
-  const newest = newestSessionUpdate(result.fresh, workspaceId)
+export function workspaceRecencyMirror(fixture: {
+  workspaceId: string
+  /** What the client should hold, derived from what the server sent it (mirror.ts). */
+  held: string | null
+  /** The newest `updatedAt` among the workspace's sessions, from the server's own summaries. */
+  newest: string
+}): CauseInstance {
   return {
     name: 'WORKSPACE_RECENCY_MIRROR',
     cause:
@@ -259,9 +280,9 @@ export function workspaceRecencyMirror(
     entries: [
       entry(
         FRESH,
-        `workspaces.${workspaceId}.lastActivityAt`,
-        satisfies('an older time, or none', (value) => value === null || typeof value === 'string'),
-        equals(newest),
+        `workspaces.${fixture.workspaceId}.lastActivityAt`,
+        equals(fixture.held),
+        equals(fixture.newest),
         {
           describe: 'the client’s value is older',
           check: (left, right) => left === null || ms(left) < ms(right),
@@ -288,9 +309,13 @@ export function sessionCreatedPartial(fixture: {
   }
 }
 
-export function newestSessionUpdate(view: NormalizedView, workspaceId: string): string | undefined {
+/** The newest `updatedAt` among a workspace's session rows (normalized, or the server's own summaries). */
+export function newestSessionUpdate(
+  rows: readonly unknown[],
+  workspaceId: string,
+): string | undefined {
   let newest: string | undefined
-  for (const row of view.sessions as Array<{ workspaceId?: string; updatedAt?: string }>) {
+  for (const row of rows as Array<{ workspaceId?: string; updatedAt?: string }>) {
     if (row.workspaceId !== workspaceId || !row.updatedAt) continue
     if (!newest || ms(row.updatedAt) > ms(newest)) newest = row.updatedAt
   }
@@ -409,7 +434,8 @@ export const FINGERPRINTS: Record<string, Fingerprint> = {
   WORKSPACE_RECENCY_MIRROR: (entry, result) => {
     const match = RECENCY.exec(entry.path)
     if (!match || entry.comparison !== 'fresh') return false
-    const newest = newestSessionUpdate(result.fresh, match[1]!)
+    // The server's own summaries, not either client's view.
+    const newest = newestSessionUpdate(result.server.sessions, match[1]!)
     return (
       newest !== undefined &&
       entry.right === newest &&

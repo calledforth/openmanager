@@ -56,25 +56,22 @@ export function recordEvidence(evidence: Evidence): void {
   )
 }
 
-/** A cause instance, or one built from the views it is judged against (relational fingerprints). */
-export type CauseSpec = CauseInstance | ((result: ConvergenceResult) => CauseInstance)
-const build = (spec: CauseSpec, result: ConvergenceResult) =>
-  typeof spec === 'function' ? spec(result) : spec
+/**
+ * A cause instance, or a builder run after the check. A builder takes no
+ * argument on purpose: nothing it expects may come from the result being
+ * judged, only from values the scenario captured (events the proxy recorded,
+ * the server's own reads, what it sent) and fresh server reads it makes itself.
+ */
+export type CauseSource = CauseInstance | (() => CauseInstance | Promise<CauseInstance>)
+const build = async (source: CauseSource) => (typeof source === 'function' ? source() : source)
 
-/** Judge a convergence result; throws unless the outcome is `expected`. */
+/** Judge a convergence result against instantiated causes. */
 export function verdictOf(
-  scenario: string,
   result: ConvergenceResult,
-  primary: CauseSpec | undefined,
-  residuals: readonly CauseSpec[],
-): { verdict: Verdict; primary: CauseInstance | undefined; residuals: CauseInstance[] } {
-  const primaryInstance = primary ? build(primary, result) : undefined
-  const residualInstances = residuals.map((spec) => build(spec, result))
-  return {
-    verdict: judge(result.entries, primaryInstance, residualInstances),
-    primary: primaryInstance,
-    residuals: residualInstances,
-  }
+  primary: CauseInstance | undefined,
+  residuals: readonly CauseInstance[],
+): Verdict {
+  return judge(result.entries, primary, residuals)
 }
 
 /**
@@ -85,13 +82,13 @@ export async function demonstrateDiff(
   scenario: string,
   rig: Rig,
   subject: TestClient,
-  primary: CauseSpec,
-  residuals: readonly CauseSpec[] = [],
+  primary: CauseSource,
+  residuals: readonly CauseSource[] = [],
   options: { timeoutMs?: number } = {},
 ): Promise<ConvergenceResult> {
   const result = await rig.checkConvergence(subject, options)
-  const judged = verdictOf(scenario, result, primary, residuals)
-  const { verdict } = judged
+  const primaryInstance = await build(primary)
+  const verdict = verdictOf(result, primaryInstance, await Promise.all(residuals.map(build)))
   if (verdict.outcome === 'primary-gone') {
     throw new FlipError(
       scenario,
@@ -103,13 +100,13 @@ export async function demonstrateDiff(
   if (verdict.outcome === 'unexpected') {
     throw new WrongCauseError(
       scenario,
-      `Stated cause: ${judged.primary!.cause}\n${describeVerdict(verdict, result.entries)}`,
+      `Stated cause: ${primaryInstance.cause}\n${describeVerdict(verdict, result.entries)}`,
     )
   }
   recordEvidence({
     scenario,
     bucket: 'known-divergence',
-    cause: judged.primary!.cause,
+    cause: primaryInstance.cause,
     ...(verdict.residualCauses.length ? { residualCauses: verdict.residualCauses } : {}),
     observed: trimmed(result.entries),
   })
@@ -140,24 +137,24 @@ export async function expectConvergesExcept(
   scenario: string,
   rig: Rig,
   subject: TestClient,
-  residuals: readonly CauseSpec[],
+  residuals: readonly CauseSource[],
 ): Promise<ConvergenceResult> {
   let result = await rig.checkConvergence(subject, { timeoutMs: 1 })
-  let judged = verdictOf(scenario, result, undefined, residuals)
-  if (judged.verdict.outcome !== 'primary-gone') {
+  let verdict = verdictOf(result, undefined, await Promise.all(residuals.map(build)))
+  if (verdict.outcome !== 'primary-gone') {
     result = await rig.checkConvergence(subject)
-    judged = verdictOf(scenario, result, undefined, residuals)
+    verdict = verdictOf(result, undefined, await Promise.all(residuals.map(build)))
   }
-  if (judged.verdict.outcome !== 'primary-gone') {
+  if (verdict.outcome !== 'primary-gone') {
     throw new Error(
-      `${scenario}: the property does not hold beyond the named causes.\n${describeVerdict(judged.verdict, result.entries)}`,
+      `${scenario}: the property does not hold beyond the named causes.\n${describeVerdict(verdict, result.entries)}`,
     )
   }
   recordEvidence({
     scenario,
     bucket: 'regression-guard',
     cause: 'converges apart from named, instantiated causes',
-    residualCauses: judged.verdict.residualCauses,
+    residualCauses: verdict.residualCauses,
     observed: trimmed(result.entries),
   })
   return result

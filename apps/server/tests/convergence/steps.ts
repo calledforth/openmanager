@@ -21,11 +21,11 @@ export async function createSession(
     open?: boolean
     providerId?: string
     /**
-     * Wait (default) until the server is quiet, so the provider session has
-     * resolved and its runtime stamp (S8's cause) has landed before the
-     * scenario goes on. Only a scenario about the stamp turns it off.
+     * Wait until the server is quiet, so the provider session has resolved
+     * and its runtime stamp (S8's cause) has landed before the fixture goes
+     * on. A choice each scripted fixture makes for itself; see the call sites.
      */
-    settle?: boolean
+    quiet?: boolean
   } = {},
 ): Promise<Target> {
   const title = options.title === undefined ? 'Scenario' : options.title
@@ -37,7 +37,7 @@ export async function createSession(
   })
   const target = { sessionId: created.session.sessionId, threadId: created.thread.threadId }
   if (options.open !== false) await client.client.commands.openSession(target.sessionId)
-  if (options.settle !== false) await rig.waitQuiet()
+  if (options.quiet !== false) await rig.waitQuiet()
   return target
 }
 
