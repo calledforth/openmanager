@@ -13,7 +13,7 @@
  * Seeds: CONVERGENCE_SEEDS=1,2,3 picks them; otherwise the fixed CI set, or
  * the larger nightly set in `--mode nightly`.
  */
-import { describe, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { classify, type RunContext } from './causes.ts'
 import { describeDiff } from './normalize.ts'
 import {
@@ -57,11 +57,16 @@ interface SessionModel extends Target {
    */
   stale: boolean
   /**
-   * The server went down before this session's provider answered
-   * `session/new` (the delayed provider), so no provider session was ever
-   * stamped on its row. After the restart the server refuses to send or open
-   * it ("The provider session identity is unavailable"): a finding outside
-   * the sync property, recorded in the summary. The model leaves it alone.
+   * Verified unopenable: after a restart its row holds no provider session
+   * identity (the server went down before the delayed provider answered
+   * `session/new`), and a scratch client's `session.open` was refused with
+   * "The provider session identity is unavailable" (thread-service.ts:2297).
+   * S18 demonstrates it; F3 fixes it. A disclosed coverage restriction: the
+   * model neither sends to nor opens such a session, and skips a check while
+   * it is the active one, since a fresh load cannot open it either. Decided
+   * from the durable identity after each restart, never from what the run
+   * happened to sample: a graceful shutdown waits for pending starts, so a
+   * session may get its identity during the shutdown itself.
    */
   orphaned: boolean
 }
@@ -156,8 +161,8 @@ class ModelRun {
   delayMs = 0
   /** When each restart came back. */
   private readonly restarts: number[] = []
-  /** Stamp times from every server generation (orphan bookkeeping only). */
-  private readonly stamps: Record<string, number> = {}
+  /** Sessions verified unopenable after a restart (see `SessionModel.orphaned`). */
+  orphans = 0
   skippedChecks = 0
   private a!: TestClient
   private readonly model: Model = { sessions: [], active: null, providerHealthy: true }
@@ -184,18 +189,37 @@ class ModelRun {
     return this.rig.provider(op)
   }
 
-  /** After a restart or crash, no turn is running anywhere and the provider is new. */
-  /** Keep the stamp times of this server generation; a crash would lose them. */
-  private async collectStamps() {
-    Object.assign(this.stamps, await this.rig.server.readStamps())
-  }
-
-  private forgetTurns() {
+  /**
+   * After a restart or crash: no turn is running anywhere, the provider is
+   * new, and a session is orphaned only if its row holds no provider identity
+   * now and a scratch client's open is refused for exactly that.
+   */
+  private async forgetTurns() {
     this.model.providerHealthy = true
     // A new process starts from the rig's configured delay (none).
     this.delayMs = 0
+    const unidentified = new Set(await this.rig.server.readUnidentified())
+    const candidates = this.model.sessions.filter(
+      (session) => !session.orphaned && unidentified.has(session.sessionId),
+    )
+    if (candidates.length > 0) {
+      const scratch = await this.rig.connect('scratch', { link: 'direct' })
+      try {
+        for (const session of candidates) {
+          const refused = await scratch.client.commands
+            .openSession(session.sessionId)
+            .then(() => undefined)
+            .catch((error: unknown) => (error as { message?: string }).message)
+          if (refused === 'The provider session identity is unavailable.') {
+            session.orphaned = true
+            this.orphans += 1
+          }
+        }
+      } finally {
+        scratch.dispose()
+      }
+    }
     for (const session of this.model.sessions) {
-      if (this.stamps[session.sessionId] === undefined) session.orphaned = true
       session.turn = null
       session.stale = true
     }
@@ -224,7 +248,6 @@ class ModelRun {
         const session = { ...target, turn: null, stale: false, orphaned: false }
         model.sessions.push(session)
         model.active = session
-        await this.collectStamps()
         return
       }
       case 'openSession': {
@@ -363,7 +386,8 @@ class ModelRun {
         // session at once and resolve (and stamp) this much later, so the
         // stamp races whatever comes next: turns, reconnects, restarts.
         const delays = [0, 150, 600]
-        const ms = delays[Math.floor(random() * delays.length)]!
+        const ms = this.nextDelay ?? delays[Math.floor(random() * delays.length)]!
+        this.nextDelay = undefined
         await this.rig.provider({ op: 'setNewSessionDelay', ms })
         this.delayMs = ms
         this.log[this.log.length - 1] = `slowProvider ${ms}`
@@ -389,19 +413,18 @@ class ModelRun {
         if (active) active.stale = false
         return
       case 'restart':
-        await this.collectStamps()
         await this.reconnectAfter(async () => {
           await this.rig.restart()
           this.restarts.push(Date.now())
         })
-        this.forgetTurns()
+        await this.forgetTurns()
         return
       case 'crashServer':
         await this.reconnectAfter(async () => {
           await this.rig.crash()
           this.restarts.push(Date.now())
         })
-        this.forgetTurns()
+        await this.forgetTurns()
         return
       case 'check':
         await this.check()
@@ -453,6 +476,30 @@ class ModelRun {
     for (const { cause } of classified) if (cause) this.known.add(cause)
   }
 
+  /** `slowProvider N` in a script: that delay, not a random one. */
+  private nextDelay: number | undefined
+
+  /**
+   * A fixed operation list instead of a seeded one, for interleavings that
+   * must always be covered. `slowProvider 600` picks that delay.
+   */
+  async script(ops: string[]): Promise<void> {
+    const random = prng(this.seed)
+    for (const [step, line] of ops.entries()) {
+      const [op, value] = line.split(' ') as [Op, string | undefined]
+      if (op === 'slowProvider' && value !== undefined) this.nextDelay = Number(value)
+      this.log.push(op)
+      try {
+        await this.apply(op, random)
+      } catch (error) {
+        if (error instanceof Error) {
+          error.message = `Script step ${step} (${line}) after ${JSON.stringify(this.log)}: ${error.message}`
+        }
+        throw error
+      }
+    }
+  }
+
   async run(): Promise<void> {
     const random = prng(this.seed)
     const length = 20 + Math.floor(random() * 21)
@@ -461,8 +508,6 @@ class ModelRun {
       this.log.push(op)
       try {
         await this.apply(op, random)
-        // Every generation's stamp times, before a crash can lose them.
-        await this.collectStamps().catch(() => undefined)
       } catch (error) {
         if (error instanceof Error) {
           error.message = `Seed ${this.seed}, step ${step} (${op}) after ${JSON.stringify(this.log)}: ${error.message}`
@@ -479,6 +524,44 @@ class ModelRun {
     await this.check()
   }
 }
+
+/**
+ * Fixed interleavings the seeds must not leave to chance. The first is the
+ * one a stamp collected before the convergence read got wrong: a delayed
+ * provider resolves while the check settles, so the context (provenance) is
+ * read after each convergence read, and the stamp it finds is named.
+ */
+describe('scripted model runs', () => {
+  it(
+    'slowProvider 600 → createSession → check: the stamp that lands while the check settles',
+    {
+      timeout: 120_000,
+    },
+    async () => {
+      const rig = await Rig.create()
+      try {
+        const run = new ModelRun(rig, 1)
+        await run.start()
+        await run.script(['slowProvider 600', 'createSession', 'check'])
+        expect(run.checks).toBe(1)
+        expect([...run.known]).toContain('RUNTIME_STAMP')
+        recordEvidence({
+          scenario: 'model script slowProvider 600 → createSession → check',
+          bucket: 'regression-guard',
+          cause: 'model run',
+          observed: { operations: run.log, knownCauses: [...run.known] },
+        })
+      } catch (error) {
+        if (error instanceof Error) {
+          error.message += `\n--- server child output (tail) ---\n${rig.server.diagnostics()}`
+        }
+        throw error
+      } finally {
+        await rig.dispose()
+      }
+    },
+  )
+})
 
 describe('seeded model-based runs', () => {
   for (const seed of SEEDS) {
@@ -497,6 +580,7 @@ describe('seeded model-based runs', () => {
             operations: run.log,
             checks: run.checks,
             skippedChecks: run.skippedChecks,
+            orphans: run.orphans,
             knownCauses: [...run.known],
             durationMs: Math.round(performance.now() - started),
           },

@@ -333,8 +333,6 @@ let newSessionDelayMs = config.newSessionDelayMs
 let autoScript: ScriptStep[] | null = null
 let promptCount = 0
 const providerSessions = new Map<string, FakeAcpConnection>()
-/** Provider session id → when its `session/new` resolved (epoch ms). */
-const resolvedAt = new Map<string, number>()
 const activePrompts = new Map<string, ActivePrompt>()
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
@@ -378,7 +376,6 @@ const connections: FakeConnectionFactory = new FakeConnectionFactory((spec) => {
       if (newSessionDelayMs > 0) await sleep(newSessionDelayMs)
       const sessionId = `fake-${randomUUID()}`
       providerSessions.set(sessionId, connection())
-      resolvedAt.set(sessionId, Date.now())
       return { sessionId }
     }),
     loadSession: traced(async (params) => {
@@ -929,17 +926,6 @@ async function handle(request: ChildRequest): Promise<unknown> {
     }
     case 'readThread':
       return readThread(request.sessionId, request.threadId)
-    case 'readStamps': {
-      const rows = database()
-        .prepare('SELECT session_id, provider_session_id FROM sessions')
-        .all() as Array<{ session_id: string; provider_session_id: string | null }>
-      const stamps: Record<string, number> = {}
-      for (const row of rows) {
-        const at = row.provider_session_id ? resolvedAt.get(row.provider_session_id) : undefined
-        if (at !== undefined) stamps[row.session_id] = at
-      }
-      return stamps
-    }
     case 'readSessionThreads':
       return listThreadsForSession(database(), request.sessionId).map((thread) => thread.threadId)
     case 'readSessions': {

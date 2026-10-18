@@ -68,11 +68,6 @@ export type ServerOp =
   | { op: 'readThread'; sessionId: string; threadId: string }
   /** The threads the server holds for a session (`listThreadsForSession`), whatever any client knows. */
   | { op: 'readSessionThreads'; sessionId: string }
-  /**
-   * Host session id → when the fake provider resolved its `session/new`, in
-   * epoch milliseconds: the moment `persistRuntimeSession` stamps the row.
-   */
-  | { op: 'readStamps' }
   /** The server's own session summaries (`listSessionSummaries` walked to the end), newest first. */
   | { op: 'readSessions' }
   /** Per-connection socket buffers, read from inside the server process (S15). */
