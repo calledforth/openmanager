@@ -37,7 +37,7 @@ export async function createSession(
   })
   const target = { sessionId: created.session.sessionId, threadId: created.thread.threadId }
   if (options.open !== false) await client.client.commands.openSession(target.sessionId)
-  if (options.quiet !== false) await rig.waitQuiet()
+  if (options.quiet === true) await rig.waitQuiet()
   return target
 }
 

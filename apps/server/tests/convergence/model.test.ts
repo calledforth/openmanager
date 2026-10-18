@@ -56,6 +56,14 @@ interface SessionModel extends Target {
    * do not exercise sending into a chat that was open across a restart.
    */
   stale: boolean
+  /**
+   * The server went down before this session's provider answered
+   * `session/new` (the delayed provider), so no provider session was ever
+   * stamped on its row. After the restart the server refuses to send or open
+   * it ("The provider session identity is unavailable"): a finding outside
+   * the sync property, recorded in the summary. The model leaves it alone.
+   */
+  orphaned: boolean
 }
 
 interface Model {
@@ -92,6 +100,7 @@ type Op =
   | 'outage'
   | 'hiccup'
   | 'slowLink'
+  | 'slowProvider'
   | 'reload'
   | 'restart'
   | 'crashServer'
@@ -106,9 +115,12 @@ function alphabet(model: Model): Array<[Op, number]> {
   // An unhealthy provider refuses creates, opens and sends alike.
   if (model.providerHealthy) {
     if (model.sessions.length < 5) ops.push(['createSession', model.sessions.length === 0 ? 10 : 2])
-    if (model.sessions.length >= 2) ops.push(['openSession', 1])
+    if (model.sessions.filter((session) => !session.orphaned).length >= 2)
+      ops.push(['openSession', 1])
   }
-  if (model.active && !turn && model.providerHealthy) ops.push(['sendTurn', 4])
+  if (model.active && !model.active.orphaned && !turn && model.providerHealthy) {
+    ops.push(['sendTurn', 4])
+  }
   if (turn) {
     ops.push(['emitText', 3], ['emitThought', 2], ['openTool', 1], ['completeTurn', 2])
     ops.push(['interruptTurn', 0.5], ['crashProvider', 0.3])
@@ -121,6 +133,7 @@ function alphabet(model: Model): Array<[Op, number]> {
     ops.push(['deleteSession', 0.4])
   }
   ops.push(['cut', 0.7], ['outage', 0.7], ['hiccup', 0.4], ['slowLink', 0.4], ['reload', 0.6])
+  ops.push(['slowProvider', 0.6])
   ops.push(['restart', 0.3], ['crashServer', 0.3], ['check', 1.5])
   return ops
 }
@@ -139,6 +152,8 @@ class ModelRun {
   readonly log: string[] = []
   readonly known = new Set<string>()
   checks = 0
+  /** The fake provider's current `session/new` delay; a restart resets it to 0. */
+  delayMs = 0
   /** Stamp times from every server generation, and when each restart came back. */
   private readonly context: RunContext = { stamps: {}, restarts: [] }
   skippedChecks = 0
@@ -175,7 +190,10 @@ class ModelRun {
 
   private forgetTurns() {
     this.model.providerHealthy = true
+    // A new process starts from the rig's configured delay (none).
+    this.delayMs = 0
     for (const session of this.model.sessions) {
+      if (this.context.stamps[session.sessionId] === undefined) session.orphaned = true
       session.turn = null
       session.stale = true
     }
@@ -195,10 +213,13 @@ class ModelRun {
     switch (op) {
       case 'createSession': {
         await this.connected()
+        // Not quiet: the session is announced at once and its provider
+        // resolves (and stamps the row) later, racing what comes next.
         const target = await createSession(this.rig, this.a, {
           title: `Model ${model.sessions.length}`,
+          quiet: false,
         })
-        const session = { ...target, turn: null, stale: false }
+        const session = { ...target, turn: null, stale: false, orphaned: false }
         model.sessions.push(session)
         model.active = session
         await this.collectStamps()
@@ -206,7 +227,7 @@ class ModelRun {
       }
       case 'openSession': {
         await this.connected()
-        const others = model.sessions.filter((session) => session !== active)
+        const others = model.sessions.filter((session) => session !== active && !session.orphaned)
         const next = others[Math.floor(random() * others.length)]!
         await this.a.client.commands.openSession(next.sessionId)
         next.stale = false
@@ -335,6 +356,17 @@ class ModelRun {
         await sleep(1_500)
         this.rig.proxy.unblackhole()
         return
+      case 'slowProvider': {
+        // A controlled delayed provider: later creations announce the
+        // session at once and resolve (and stamp) this much later, so the
+        // stamp races whatever comes next: turns, reconnects, restarts.
+        const delays = [0, 150, 600]
+        const ms = delays[Math.floor(random() * delays.length)]!
+        await this.rig.provider({ op: 'setNewSessionDelay', ms })
+        this.delayMs = ms
+        this.log[this.log.length - 1] = `slowProvider ${ms}`
+        return
+      }
       case 'slowLink':
         this.rig.proxy.throttle('down', 20_000, 64 * 1024)
         if (turn) {
@@ -381,7 +413,8 @@ class ModelRun {
   async check(): Promise<void> {
     // With the provider unhealthy, `session.open` is refused, so a fresh load
     // cannot open the chat at all and there is nothing to compare with.
-    if (!this.model.providerHealthy) {
+    if (!this.model.providerHealthy || this.model.active?.orphaned) {
+      // An orphaned session cannot be opened at all, by a fresh load either.
       this.skippedChecks += 1
       return
     }
@@ -416,6 +449,8 @@ class ModelRun {
       this.log.push(op)
       try {
         await this.apply(op, random)
+        // Every generation's stamp times, before a crash can lose them.
+        await this.collectStamps().catch(() => undefined)
       } catch (error) {
         if (error instanceof Error) {
           error.message = `Seed ${this.seed}, step ${step} (${op}) after ${JSON.stringify(this.log)}: ${error.message}`

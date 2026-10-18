@@ -213,7 +213,7 @@ function proxiedCloses(rig: Rig, reason: string) {
 /** A thread whose newest page is about `bytes` of assistant text, built on a direct link. */
 async function threadWithAnswer(rig: Rig, bytes: number): Promise<Target> {
   const author = await rig.connect('author', { link: 'direct' })
-  const target = await createSession(rig, author)
+  const target = await createSession(rig, author, QUIET)
   const turnId = await startTurn(author, target)
   await emitLargeText(rig, target, bytes, 'text')
   await finish(rig, author, target, turnId)
@@ -285,6 +285,17 @@ async function demonstrateHeartbeatLoop(
 }
 
 /**
+ * Scripted fixtures create sessions quietly, each by its own choice: the
+ * provider session has resolved and its runtime stamp has landed before the
+ * fixture goes on, so a scenario about something else does not also race
+ * the stamp. That race is real (session.created is announced before the
+ * provider completes); S8 and X2 demonstrate it, creating without waiting,
+ * and the seeded runs cover it at random (asynchronous creation and a
+ * delayed provider, model.test.ts).
+ */
+const QUIET = { quiet: true } as const
+
+/**
  * Tool status at turn end on this build. Main never settles a tool, on either
  * side (event-projection.ts:528-570). F3 writes `tool.updated {cancelled}`
  * before the terminal (§4.3); that phase changes this to 'cancelled'.
@@ -298,7 +309,7 @@ const TOOL_STATUS_AFTER_TURN_END = 'in_progress'
 describe('§8.4 scenarios on main', () => {
   scenario('S1 crash mid-turn: the client resumes from its cursor (W1)', {}, async (rig) => {
     const a = await rig.connect('A')
-    const target = await createSession(rig, a)
+    const target = await createSession(rig, a, QUIET)
     const turnId = await startTurn(a, target)
     await rig.provider({ op: 'openTool', sessionId: target.sessionId, toolCallId: 'tool-s1' })
     await rig.provider({ op: 'emitThought', sessionId: target.sessionId, text: 'Considering it' })
@@ -342,7 +353,7 @@ describe('§8.4 scenarios on main', () => {
 
   scenario('S2 a thought followed by text, connected throughout', {}, async (rig) => {
     const a = await rig.connect('A')
-    const target = await createSession(rig, a)
+    const target = await createSession(rig, a, QUIET)
     const turnId = await startTurn(a, target)
     await rig.provider({ op: 'emitThought', sessionId: target.sessionId, text: 'Thinking' })
     await rig.provider({ op: 'emitText', sessionId: target.sessionId, text: 'The answer.' })
@@ -359,7 +370,7 @@ describe('§8.4 scenarios on main', () => {
 
   scenario('S3 a tool left open when the turn completes (guard)', {}, async (rig) => {
     const a = await rig.connect('A')
-    const target = await createSession(rig, a)
+    const target = await createSession(rig, a, QUIET)
     const turnId = await startTurn(a, target)
     await rig.provider({ op: 'openTool', sessionId: target.sessionId, toolCallId: 'tool-s3' })
     await finish(rig, a, target, turnId)
@@ -393,7 +404,7 @@ describe('§8.4 scenarios on main', () => {
     { timeoutMs: 180_000 },
     async (rig) => {
       const a = await rig.connect('A')
-      const target = await createSession(rig, a)
+      const target = await createSession(rig, a, QUIET)
       const early = await buildLongThread(rig, a, target, { turns: 52, activityTurns: 2 })
       await walkHistory(a, target)
       expect(thread(a, target)?.messages.length).toBe(104)
@@ -436,7 +447,7 @@ describe('§8.4 scenarios on main', () => {
 
   scenario('S5 a notice published while text waits in the batcher (W3)', {}, async (rig) => {
     const a = await rig.connect('A')
-    const target = await createSession(rig, a)
+    const target = await createSession(rig, a, QUIET)
     const turnId = await startTurn(a, target)
     // Recording is always on; what follows is judged from here.
     const mark = rig.proxy.frames.length
@@ -526,7 +537,14 @@ describe('§8.4 scenarios on main', () => {
 
   scenario('S6(b) thoughts over 384 KiB (§7.1)', {}, async (rig) => {
     const a = await rig.connect('A')
-    const target = await createSession(rig, a)
+    // Quiet creation isolates the reasoning budget. Created without waiting,
+    // this fixture once (1 run in 75) also showed a workspace-recency entry
+    // with no session entry: A held the lastActivityAt the markUsed event
+    // sent it, the server's was the turn's start, and no live turn.started
+    // had reached A's socket. That is the recency mirror missing a turn start
+    // (X1's family; the seeded runs' fingerprint classifies it), not the
+    // budget; why the live event was missing was not determined.
+    const target = await createSession(rig, a, QUIET)
     await startTurn(a, target)
     // The turn stays open: any end of it would also close the thought in A's
     // fold (S2), and this scenario shows the budget alone.
@@ -700,7 +718,7 @@ describe('§8.4 scenarios on main', () => {
   async function s9Setup(rig: Rig, childProviderSessionId: string) {
     const driver = new Driver(rig)
     const author = await driver.client(10)
-    const parent = await createSession(rig, author, { title: 'Parent' })
+    const parent = await createSession(rig, author, { title: 'Parent', quiet: true })
     const turnId = await startTurn(author, parent)
     await rig.provider({
       op: 'emitSubtask',
@@ -840,7 +858,7 @@ describe('§8.4 scenarios on main', () => {
     { timeoutMs: 180_000 },
     async (rig) => {
       const a = await rig.connect('A')
-      const target = await createSession(rig, a)
+      const target = await createSession(rig, a, QUIET)
       const early = await buildLongThread(rig, a, target, { turns: 52, activityTurns: 2 })
       await walkHistory(a, target)
       expect(thread(a, target)?.messages.length).toBe(104)
@@ -871,7 +889,7 @@ describe('§8.4 scenarios on main', () => {
     { nightly: true, timeoutMs: 120_000 },
     async (rig) => {
       const a = await rig.connect('A')
-      const target = await createSession(rig, a)
+      const target = await createSession(rig, a, QUIET)
       const turnId = await startTurn(a, target)
       await rig.provider({
         op: 'emitText',
@@ -904,7 +922,7 @@ describe('§8.4 scenarios on main', () => {
 
   scenario('S12 a short cut while streaming, under the replay cap (guard)', {}, async (rig) => {
     const a = await rig.connect('A')
-    const target = await createSession(rig, a)
+    const target = await createSession(rig, a, QUIET)
     const turnId = await startTurn(a, target)
     for (let index = 0; index < 5; index++) {
       await rig.provider({ op: 'emitText', sessionId: target.sessionId, text: `Part ${index}. ` })
@@ -988,7 +1006,7 @@ describe('§8.4 scenarios on main', () => {
     { nightly: true, timeoutMs: 150_000 },
     async (rig) => {
       const a = await rig.connect('A')
-      const target = await createSession(rig, a)
+      const target = await createSession(rig, a, QUIET)
       await startTurn(a, target)
       rig.proxy.throttle('down', 10 * KiB, 256 * KiB)
       const streaming = rig
@@ -1048,7 +1066,7 @@ describe('§8.4 scenarios on main', () => {
       // §7.3 FLOW_POLICY: 4 MiB maximum window, 1 MiB backlog bound.
       const bound = 4 * 1024 * KiB + 1024 * KiB
       const a = await rig.connect('A')
-      const target = await createSession(rig, a)
+      const target = await createSession(rig, a, QUIET)
       await startTurn(a, target)
       rig.proxy.throttle('down', 10 * KiB, 256 * KiB)
       // Recording is always on; what follows is judged from here.
@@ -1207,7 +1225,7 @@ describe('divergences on main that §8.4 does not list', () => {
    */
   scenario('S17 a send in the open chat after a server restart (F3)', {}, async (rig) => {
     const a = await rig.connect('A')
-    const target = await createSession(rig, a)
+    const target = await createSession(rig, a, QUIET)
     const turnId = await startTurn(a, target)
     await finish(rig, a, target, turnId)
     const before = a.connects
@@ -1249,7 +1267,7 @@ describe('divergences on main that §8.4 does not list', () => {
     const a = await rig.connect('A')
     const b = await rig.connect('B')
     // Cursor is the provider whose agent asks questions (cursor/ask_question).
-    const target = await createSession(rig, a, { providerId: 'cursor' })
+    const target = await createSession(rig, a, { providerId: 'cursor', quiet: true })
     // B lists the session once, so it knows its provider (not X2's subject here).
     await b.client.commands.listSessions()
     await startTurn(a, target)
@@ -1313,7 +1331,7 @@ describe('divergences on main that §8.4 does not list', () => {
     async (rig) => {
       const a = await rig.connect('A')
       const b = await rig.connect('B')
-      const target = await createSession(rig, a, { providerId: 'claude' })
+      const target = await createSession(rig, a, { providerId: 'claude', quiet: true })
       await b.client.commands.listSessions()
       const row = () => b.client.getState().sessions[target.sessionId]
       const steps: Array<{ step: string; status: unknown; inBackground: unknown }> = []
@@ -1365,7 +1383,7 @@ describe('divergences on main that §8.4 does not list', () => {
     async (rig) => {
       const a = await rig.connect('A', { link: 'direct' })
       const b = await rig.connect('B')
-      const target = await createSession(rig, a, { title: 'With a draft' })
+      const target = await createSession(rig, a, { title: 'With a draft', quiet: true })
       await b.client.commands.openSession(target.sessionId)
       // A turn, so the session's last change is one every client mirrors.
       const turnId = await startTurn(a, target)
