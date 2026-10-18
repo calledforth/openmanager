@@ -1382,6 +1382,80 @@ describe('divergences on main that §8.4 does not list', () => {
   )
 
   /**
+   * S18: a session announced and durable before its provider identity exists
+   * cannot survive a hard crash in between. `session.create` persists and
+   * announces the session (thread-service.ts:1844-1862) and only stamps the
+   * provider session once `session/new` resolves (:1867-1880, :435-443);
+   * restoring it after a restart needs that identity (:2297-2303). A crash
+   * inside that window leaves a session every client lists and none can
+   * open, through any number of restarts. Not a sync property but a
+   * durability one, outside F2's tests-only scope: F3 owns the fix
+   * (initialization that a restart can resume, or an explicit failure that
+   * removes or marks the session). A graceful restart does not show it: the
+   * shutdown waits for pending starts.
+   */
+  scenario(
+    'S18 a hard crash while the provider creates the session; it never opens again (F3)',
+    { newSessionDelayMs: 3_000 },
+    async (rig) => {
+      const a = await rig.connect('A')
+      // Announced and durable at once; its provider answers 3 s later.
+      const target = await createSession(rig, a, { open: false, quiet: false })
+      expect(await rig.server.readUnidentified(), 'durable without a provider identity').toContain(
+        target.sessionId,
+      )
+      const before = a.connects
+      await rig.crash()
+      await until(() => a.connects > before, 'A to reconnect after the crash', 20_000)
+      await until(() => !a.busy(), 'A to finish its reconnect')
+      const attempts: Array<{ when: string; who: string; outcome: unknown }> = []
+      const open = async (who: string, client: TestClient, when: string) => {
+        const outcome = await client.client.commands
+          .openSession(target.sessionId)
+          .then(() => 'opened')
+          .catch((error: unknown) => {
+            const { code, message } = error as { code?: string; message?: string }
+            return { code, message }
+          })
+        attempts.push({ when, who, outcome })
+        return outcome
+      }
+      const refusal = {
+        code: 'unavailable',
+        message: 'The provider session identity is unavailable.',
+      }
+      if ((await open('A', a, 'after the crash')) === 'opened') {
+        throw new FlipError('S18', 'The interrupted session opened after the crash.')
+      }
+      // A fresh client is refused the same way, and the session is still listed.
+      const fresh = await rig.connect('F', { link: 'direct' })
+      await open('fresh client', fresh, 'after the crash')
+      fresh.dispose()
+      const listed = (await rig.server.readSessions()) as Array<{ sessionId: string }>
+      expect(listed.map((session) => session.sessionId)).toContain(target.sessionId)
+      // A graceful restart does not repair it: the identity never comes.
+      const again = a.connects
+      await rig.restart()
+      await until(() => a.connects > again, 'A to reconnect after the restart', 20_000)
+      await until(() => !a.busy(), 'A to finish its reconnect')
+      await open('A', a, 'after a later graceful restart')
+      expect(await rig.server.readUnidentified()).toContain(target.sessionId)
+      for (const attempt of attempts) {
+        expect(attempt.outcome, `${attempt.who} ${attempt.when}`).toEqual(refusal)
+      }
+      recordEvidence({
+        scenario: 'S18',
+        bucket: 'known-divergence',
+        cause:
+          'session.create persists and announces the session before the provider identity exists ' +
+          '(thread-service.ts:1844-1862, :1867-1880); restoration requires it (:2297-2303), so a ' +
+          'hard crash in between leaves a listed session no client can ever open. F3 owns the fix.',
+        observed: { attempts, stillListed: true },
+      })
+    },
+  )
+
+  /**
    * #219's `waitingOn`: a question outranks a permission, and answering it
    * hands the session back to the permission. Each change rides a
    * `session.updated` whose status does not change (event-repository.ts,
