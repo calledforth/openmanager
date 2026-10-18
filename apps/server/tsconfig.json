@@ -14,5 +14,7 @@
     "rewriteRelativeImportExtensions": true,
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts", "vitest.convergence.config.ts"],
+  // Checked by tests/convergence/tsconfig.json, with the resolution its client import needs.
+  "exclude": ["tests/convergence/**"]
 }
