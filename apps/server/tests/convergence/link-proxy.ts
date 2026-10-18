@@ -12,15 +12,16 @@ import { createServer, connect, type Server, type Socket } from 'node:net'
  * which forwards an upgraded connection as a byte stream. The queue drains at
  * `bytesPerSecond` (or as fast as the receiver takes it), after `latencyMs`.
  *
- * WebSocket frames are inspected beside that stream, never instead of it:
- *   - downstream the inspector is a tee. Bytes go to the pump as they are
- *     read; the inspector keeps a frame's header and at most the first
- *     `INSPECT_HEAD_BYTES` of its payload, so a frame much larger than the
- *     bound is never assembled;
- *   - upstream, frames are forwarded whole, so a gate can hold one before the
- *     server sees a byte of it. Client frames are bounded by the server's own
- *     64 KiB inbound limit. The bytes of a frame still arriving are counted in
- *     `backlog()` as `inspecting`; a held frame counts in `up`.
+ * WebSocket frames are inspected beside that stream, never instead of it, in
+ * both directions: bytes go to the pump as they are read, and the inspector
+ * keeps a frame's header and at most the first `INSPECT_HEAD_BYTES` of its
+ * payload, so a frame much larger than the bound is never assembled.
+ *
+ * The one exception is the upstream gate. While a gate is set, an upstream
+ * frame within `GATE_HOLD_BUDGET` (the server's own 64 KiB inbound limit) is
+ * assembled whole so the gate can decide before the server sees a byte of
+ * it; a larger frame streams on ungated. Bytes of a frame being assembled
+ * count in `backlog()` as `inspecting`; a frame the gate holds counts in `up`.
  */
 
 export type Direction = 'down' | 'up'
@@ -68,8 +69,12 @@ const TICK_MS = 10
 const BURST_MS = 50
 /** The most of one downstream frame's payload the inspector keeps. */
 export const INSPECT_HEAD_BYTES = 64 * 1024
-/** The largest upstream frame held whole for the gate. */
-const UPSTREAM_FRAME_MAX = 1024 * 1024
+/**
+ * The most a gated upstream frame may be, header included: the server's own
+ * inbound limit (64 KiB payload). A larger frame streams on ungated; the
+ * server would refuse it anyway.
+ */
+export const GATE_HOLD_BUDGET = 64 * 1024 + 14
 
 interface QueuedChunk {
   data: Buffer
@@ -88,10 +93,15 @@ interface InspectedFrame {
 }
 
 /**
- * Follows WebSocket framing over a byte stream, chunk by chunk, holding at
- * most one frame header and `retain` payload bytes. In framing mode it also
- * holds the raw bytes of the frame in progress and hands each frame on whole;
- * a frame longer than `retain` is passed through as it arrives instead.
+ * Follows WebSocket framing over a byte stream, chunk by chunk, and hands
+ * every byte on through `forward` as soon as it is read, except:
+ *   - up to 14 header bytes and 3 bytes of the HTTP preamble's end, while
+ *     they are still incomplete;
+ *   - a frame `hold(frame size)` says to hold, which is kept whole (it must
+ *     fit `holdBudget`) and handed on with its parsed head at its last byte,
+ *     so a gate can decide before the far side sees any of it.
+ * Beside that it keeps at most `retain` payload bytes of the frame in
+ * progress for inspection. `held` counts every byte it keeps.
  */
 class Inspector {
   private phase: 'http' | 'header' | 'payload' = 'http'
@@ -106,16 +116,20 @@ class Inspector {
   private headBytes = 0
   private rawParts: Buffer[] = []
   private rawBytes = 0
-  private passing = false
+  private holding = false
 
   constructor(
     private readonly retain: number,
     private readonly onFrame: (frame: InspectedFrame) => void,
-    /** Framing mode: every byte leaves through here, frames whole. */
-    private readonly forward?: (raw: Buffer, frame?: InspectedFrame) => void,
+    /** Where every byte goes; `frame` is set for a held frame, handed on whole. */
+    private readonly forward: (raw: Buffer, frame?: InspectedFrame) => void,
+    /** Whether to hold the frame that is starting (its payload is `size` bytes). */
+    private readonly hold: (size: number) => boolean = () => false,
+    /** The most a held frame may be, header included; larger frames stream. */
+    private readonly holdBudget = 0,
   ) {}
 
-  /** Bytes this inspector holds right now. */
+  /** Bytes this inspector keeps right now: a held frame, a partial header, the inspection head. */
   get held(): number {
     return this.headBytes + this.rawBytes + this.header.length + this.tail.length
   }
@@ -129,12 +143,12 @@ class Inspector {
         const window = this.tail.length ? Buffer.concat([this.tail, rest]) : rest
         const end = window.indexOf('\r\n\r\n')
         if (end === -1) {
-          this.forward?.(rest)
+          this.forward(rest)
           this.tail = Buffer.from(window.subarray(Math.max(0, window.length - 3)))
           return
         }
         const consumed = end + 4 - this.tail.length
-        this.forward?.(rest.subarray(0, consumed))
+        this.forward(rest.subarray(0, consumed))
         offset += consumed
         this.tail = Buffer.alloc(0)
         this.phase = 'header'
@@ -153,13 +167,10 @@ class Inspector {
       const piece = chunk.subarray(offset, offset + take)
       offset += take
       this.remaining -= take
-      if (this.forward) {
-        if (this.passing) this.forward(piece)
-        else {
-          this.rawParts.push(piece)
-          this.rawBytes += piece.length
-        }
-      }
+      if (this.holding) {
+        this.rawParts.push(piece)
+        this.rawBytes += piece.length
+      } else this.forward(piece)
       if (this.headBytes < this.retain) {
         const kept = Buffer.from(piece.subarray(0, this.retain - this.headBytes))
         if (this.mask) {
@@ -200,14 +211,14 @@ class Inspector {
     this.remaining = length
     this.mask = masked ? Buffer.from(this.header.subarray(offset, offset + 4)) : null
     this.maskIndex = 0
-    if (this.forward) {
-      this.passing = length > this.retain
-      if (this.passing) this.forward(this.header)
-      else {
-        this.rawParts = [this.header]
-        this.rawBytes = this.header.length
-      }
-    }
+    // Held only within the budget, and only if its whole payload is inspected,
+    // since a gate decides on the whole text.
+    this.holding =
+      this.header.length + length <= this.holdBudget && length <= this.retain && this.hold(length)
+    if (this.holding) {
+      this.rawParts = [this.header]
+      this.rawBytes = this.header.length
+    } else this.forward(this.header)
     this.header = Buffer.alloc(0)
     this.phase = 'payload'
   }
@@ -227,13 +238,13 @@ class Inspector {
     this.headBytes = 0
     this.phase = 'header'
     this.onFrame(frame)
-    if (this.forward && !this.passing) {
+    if (this.holding) {
       const raw = Buffer.concat(this.rawParts, this.rawBytes)
       this.rawParts = []
       this.rawBytes = 0
+      this.holding = false
       this.forward(raw, frame)
     }
-    this.passing = false
   }
 }
 
@@ -609,34 +620,36 @@ export class LinkProxy {
       () => this.shapes.up,
       () => this.holes,
     )
-    const downInspector = new Inspector(INSPECT_HEAD_BYTES, (frame) => {
-      if (this.recording) this.frames.push(this.describe(id, 'down', frame))
-    })
+    const downInspector = new Inspector(
+      INSPECT_HEAD_BYTES,
+      (frame) => {
+        if (this.recording) this.frames.push(this.describe(id, 'down', frame))
+      },
+      (raw) => down.push(raw),
+    )
     const upInspector = new Inspector(
-      // Client frames are small (the server refuses more than 64 KiB), so the
-      // gate sees all of one; this bound only matters to a misbehaving client.
-      UPSTREAM_FRAME_MAX,
+      INSPECT_HEAD_BYTES,
       (frame) => {
         if (this.recording) this.frames.push(this.describe(id, 'up', frame))
       },
       (raw, frame) => {
+        // A held frame reaches the gate whole; the gate may hold it further.
         const held =
-          frame && frame.opcode === 1 && frame.whole && this.gateFn
+          frame && frame.opcode === 1 && this.gateFn
             ? this.gateFn(frame.head.toString('utf8'), id)
             : undefined
-        // The frame that matched waits too: the server must not see it yet.
         up.push(raw, held)
       },
+      // Only while a gate is set is a frame assembled before it is sent on.
+      () => this.gateFn !== undefined,
+      GATE_HOLD_BUDGET,
     )
     const pair: Pair = { id, client, server, down, up, downInspector, upInspector, closed: false }
     this.pairs.set(id, pair)
     this.stats.open = this.pairs.size
 
-    server.on('data', (chunk: Buffer) => {
-      // The byte stream first; inspection only looks.
-      down.push(chunk)
-      downInspector.push(chunk)
-    })
+    // Bytes stream on as they are read; the inspectors only look, except at a gated frame.
+    server.on('data', (chunk: Buffer) => downInspector.push(chunk))
     client.on('data', (chunk: Buffer) => upInspector.push(chunk))
     server.on('end', () => down.end())
     client.on('end', () => up.end())

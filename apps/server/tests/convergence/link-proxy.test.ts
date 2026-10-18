@@ -7,7 +7,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { createServer, connect, type Server, type Socket } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
-import { INSPECT_HEAD_BYTES, LinkProxy } from './link-proxy.ts'
+import { GATE_HOLD_BUDGET, INSPECT_HEAD_BYTES, LinkProxy } from './link-proxy.ts'
 import { until } from './harness.ts'
 
 const KiB = 1024
@@ -177,5 +177,92 @@ describe('link proxy', () => {
     expect(
       proxy.frames.filter((record) => record.direction === 'up').map((record) => record.json),
     ).toEqual([{ name: 'pass' }, { name: 'hold' }, { name: 'after' }])
+  })
+
+  it('bounds upstream read-ahead too, with and without a gate', async () => {
+    const bound = 64 * KiB
+    let serverBytes = 0
+    const digests = createHash('sha256')
+    const server = await peer((socket) =>
+      socket.on('data', (chunk: Buffer) => {
+        serverBytes += chunk.length
+        digests.update(chunk)
+      }),
+    )
+    const proxy = await proxyTo(server)
+    proxy.record(true)
+    proxy.throttle('up', 200 * KiB, bound)
+    const big = frame(Buffer.alloc(4 * 1024 * KiB, 98), true)
+    // A frame over the gate's budget streams on, gate or no gate.
+    const overBudget = frame(Buffer.alloc(100 * KiB, 99), true)
+    const small = frame(Buffer.from('{"name":"hold"}'), true)
+    const sent = Buffer.concat([Buffer.from(UPGRADE), big, overBudget, small])
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const gated: string[] = []
+    proxy.gate((text) => {
+      gated.push(text.slice(0, 20))
+      return text.includes('"hold"') ? gate : undefined
+    })
+    const client = connect(proxy.port, '127.0.0.1')
+    cleanups.push(() => void client.destroy())
+    await new Promise<void>((resolve) => client.once('connect', () => resolve()))
+    client.write(sent)
+
+    let maxQueued = 0
+    let maxInspecting = 0
+    const started = performance.now()
+    await until(
+      () => {
+        for (const entry of proxy.backlog()) {
+          maxQueued = Math.max(maxQueued, entry.up)
+          maxInspecting = Math.max(maxInspecting, entry.inspecting)
+        }
+        return performance.now() - started > 1_000
+      },
+      'a second of throttled upstream',
+      5_000,
+      10,
+    )
+    expect(maxQueued).toBeLessThanOrEqual(bound + 64 * KiB)
+    // While the gate is set, only frames within its budget are assembled.
+    expect(maxInspecting).toBeLessThanOrEqual(INSPECT_HEAD_BYTES + 14 + 3)
+    proxy.throttle('up', 100 * 1024 * KiB, 4 * 1024 * KiB)
+    const beforeHeld = sent.length - small.length
+    await until(() => serverBytes === beforeHeld, 'everything before the held frame')
+    // The small frame is held whole by the gate, and counted.
+    expect(proxy.backlog()[0]?.up).toBe(small.length)
+    expect(gated).toEqual(['{"name":"hold"}'])
+    release()
+    await until(() => serverBytes === sent.length, 'the held frame after release')
+    expect(digests.digest('hex')).toBe(digest(sent))
+    expect(
+      proxy.frames.filter((record) => record.direction === 'up').map((record) => record.size),
+    ).toEqual([4 * 1024 * KiB, 100 * KiB, small.length - 6])
+  })
+
+  it('assembles a gated frame within its budget, counted as inspecting', async () => {
+    const server = await peer((socket) => socket.resume())
+    const proxy = await proxyTo(server)
+    proxy.gate(() => undefined)
+    const payload = Buffer.alloc(60 * KiB, 100)
+    const whole = frame(payload, true)
+    const client = connect(proxy.port, '127.0.0.1')
+    cleanups.push(() => void client.destroy())
+    await new Promise<void>((resolve) => client.once('connect', () => resolve()))
+    // All but the last byte: the frame is still being assembled.
+    client.write(Buffer.concat([Buffer.from(UPGRADE), whole.subarray(0, whole.length - 1)]))
+    await until(
+      () => (proxy.backlog()[0]?.inspecting ?? 0) >= whole.length - 1,
+      'the partial frame to be held for the gate',
+    )
+    const held = proxy.backlog()[0]!
+    // The raw frame and its inspected copy: the one place the proxy assembles.
+    expect(held.inspecting).toBeLessThanOrEqual(GATE_HOLD_BUDGET + INSPECT_HEAD_BYTES)
+    expect(held.up).toBe(0)
+    client.write(whole.subarray(whole.length - 1))
+    await until(() => proxy.drained(), 'the frame to pass')
   })
 })
