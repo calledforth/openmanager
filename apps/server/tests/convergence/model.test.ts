@@ -50,6 +50,14 @@ interface SessionModel extends Target {
 interface Model {
   sessions: SessionModel[]
   active: SessionModel | null
+  /**
+   * A provider process that crashed marks the provider unhealthy, and the
+   * server then refuses `session.create`, `session.open` and `turn.send` for
+   * it ("Provider is unhealthy") until a
+   * probe says otherwise. Probes are off here, so only a new server process
+   * (restart, crash) makes it usable again.
+   */
+  providerHealthy: boolean
 }
 
 type Op =
@@ -82,9 +90,12 @@ const running = (model: Model) => model.active?.turn ?? null
 function alphabet(model: Model): Array<[Op, number]> {
   const turn = running(model)
   const ops: Array<[Op, number]> = []
-  if (model.sessions.length < 5) ops.push(['createSession', model.sessions.length === 0 ? 10 : 2])
-  if (model.sessions.length >= 2) ops.push(['openSession', 1])
-  if (model.active && !turn) ops.push(['sendTurn', 4])
+  // An unhealthy provider refuses creates, opens and sends alike.
+  if (model.providerHealthy) {
+    if (model.sessions.length < 5) ops.push(['createSession', model.sessions.length === 0 ? 10 : 2])
+    if (model.sessions.length >= 2) ops.push(['openSession', 1])
+  }
+  if (model.active && !turn && model.providerHealthy) ops.push(['sendTurn', 4])
   if (turn) {
     ops.push(['emitText', 3], ['emitThought', 2], ['openTool', 1], ['completeTurn', 2])
     ops.push(['interruptTurn', 0.5], ['crashProvider', 0.3])
@@ -115,8 +126,9 @@ class ModelRun {
   readonly log: string[] = []
   readonly known = new Set<string>()
   checks = 0
+  skippedChecks = 0
   private a!: TestClient
-  private readonly model: Model = { sessions: [], active: null }
+  private readonly model: Model = { sessions: [], active: null, providerHealthy: true }
   private renames = 0
 
   constructor(
@@ -142,6 +154,7 @@ class ModelRun {
 
   /** After a restart or crash, no turn is running anywhere and the provider is new. */
   private forgetTurns() {
+    this.model.providerHealthy = true
     for (const session of this.model.sessions) {
       session.turn = null
       session.stale = true
@@ -260,6 +273,7 @@ class ModelRun {
       case 'crashProvider':
         await this.provider({ op: 'crashProvider', sessionId: active!.sessionId })
         active!.turn = null
+        model.providerHealthy = false
         return
       case 'renameSession':
         await this.connected()
@@ -337,6 +351,12 @@ class ModelRun {
    * whole eventual window is given before calling it a new divergence.
    */
   async check(): Promise<void> {
+    // With the provider unhealthy, `session.open` is refused, so a fresh load
+    // cannot open the chat at all and there is nothing to compare with.
+    if (!this.model.providerHealthy) {
+      this.skippedChecks += 1
+      return
+    }
     this.checks += 1
     await this.connected()
     let result = await this.rig.checkConvergence(this.a, { timeoutMs: 1 })
@@ -371,6 +391,11 @@ class ModelRun {
         throw error
       }
     }
+    if (!this.model.providerHealthy) {
+      // A new server process forgets the crash; then the final check can run.
+      this.log.push('restart')
+      await this.apply('restart', random)
+    }
     this.log.push('check')
     await this.check()
   }
@@ -397,6 +422,7 @@ describe('seeded model-based runs', () => {
           observed: {
             operations: run.log,
             checks: run.checks,
+            skippedChecks: run.skippedChecks,
             knownCauses: [...run.known],
             durationMs: Math.round(performance.now() - started),
           },

@@ -58,6 +58,8 @@ process.on('disconnect', () => process.exit(0))
 // ---------------------------------------------------------------------------
 
 let lastActivity = performance.now()
+/** Provider calls running now; quiet needs none. */
+let inFlight = 0
 const touch = () => {
   lastActivity = performance.now()
 }
@@ -145,13 +147,18 @@ const connections: FakeConnectionFactory = new FakeConnectionFactory((spec) => {
     if (!found) throw new Error('The fake connection is not registered yet.')
     return found
   }
+  // A provider call in flight is activity for as long as it runs (a slow
+  // `session/new` ends in a row write). A prompt is the exception: it stays
+  // open for the whole turn, and its output is traced step by step.
   const traced =
-    <A extends unknown[], R>(fn: (...args: A) => Promise<R>) =>
+    <A extends unknown[], R>(fn: (...args: A) => Promise<R>, { longLived = false } = {}) =>
     async (...args: A): Promise<R> => {
       touch()
+      if (!longLived) inFlight += 1
       try {
         return await fn(...args)
       } finally {
+        if (!longLived) inFlight -= 1
         touch()
       }
     }
@@ -181,26 +188,29 @@ const connections: FakeConnectionFactory = new FakeConnectionFactory((spec) => {
       activePrompts.get(providerSessionIdOf(params))?.finish('cancelled')
       return {}
     }),
-    prompt: traced(async (params) => {
-      const providerSessionId = providerSessionIdOf(params)
-      const index = ++promptCount
-      const stopReason = await new Promise<string>((resolve) => {
-        const active: ActivePrompt = {
-          providerSessionId,
-          connection: connection(),
-          index,
-          finish: (reason) => {
-            if (activePrompts.get(providerSessionId) === active) {
-              activePrompts.delete(providerSessionId)
-            }
-            resolve(reason)
-          },
-        }
-        activePrompts.set(providerSessionId, active)
-        if (autoScript) void runScript(active, autoScript)
-      })
-      return { stopReason }
-    }),
+    prompt: traced(
+      async (params) => {
+        const providerSessionId = providerSessionIdOf(params)
+        const index = ++promptCount
+        const stopReason = await new Promise<string>((resolve) => {
+          const active: ActivePrompt = {
+            providerSessionId,
+            connection: connection(),
+            index,
+            finish: (reason) => {
+              if (activePrompts.get(providerSessionId) === active) {
+                activePrompts.delete(providerSessionId)
+              }
+              resolve(reason)
+            },
+          }
+          activePrompts.set(providerSessionId, active)
+          if (autoScript) void runScript(active, autoScript)
+        })
+        return { stopReason }
+      },
+      { longLived: true },
+    ),
   }
 })
 
@@ -445,7 +455,7 @@ async function handle(request: ChildRequest): Promise<unknown> {
       return null
     case 'waitQuiet': {
       const deadline = performance.now() + request.timeoutMs
-      while (performance.now() - lastActivity < request.quietMs) {
+      while (inFlight > 0 || performance.now() - lastActivity < request.quietMs) {
         if (performance.now() > deadline) throw new Error('The server never went quiet.')
         await sleep(20)
       }
