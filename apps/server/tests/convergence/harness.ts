@@ -16,7 +16,10 @@ import { LinkProxy } from './link-proxy.ts'
 import {
   describeDiff,
   diff,
+  heldPreferencePairs,
   normalize,
+  preferenceKey,
+  type PreferencePair,
   serverSessionsView,
   serverThreadView,
   sessionsWithoutThreads,
@@ -350,11 +353,16 @@ export class Rig {
    * link, the whole session catalog, the same active session opened, and
    * every older history page walked so whole chats are compared (§8.1).
    */
-  async freshView(activeSessionId: string | null): Promise<NormalizedView> {
+  async freshView(
+    activeSessionId: string | null,
+    preferencePairs: readonly PreferencePair[] = [],
+  ): Promise<NormalizedView> {
     const fresh = await this.connect('fresh', { link: 'direct' })
     try {
       const { commands } = fresh.client
       await commands.listWorkspaces()
+      // The draft sync lists drafts by itself once connected.
+      await until(() => fresh.client.getState().draftsListed, 'the fresh load to list drafts')
       let cursor: Parameters<typeof commands.listSessions>[0] = { limit: 100 }
       for (;;) {
         const page = await commands.listSessions(cursor)
@@ -385,10 +393,39 @@ export class Rig {
           }
         }
       }
-      return normalize(fresh.client.getState(), activeSessionId)
+      // A preference is read on demand: the same read the app's composer makes.
+      for (const pair of preferencePairs) {
+        await commands.getComposerPreference(pair).catch(() => undefined)
+      }
+      return normalize(fresh.client.getState(), activeSessionId, preferencePairs)
     } finally {
       fresh.dispose()
     }
+  }
+
+  /**
+   * The read the web app's composer makes for the session on screen
+   * (environment-composer.tsx:294-320): when its workspace and provider
+   * preference is not loaded, the provider is listed and the client is
+   * connected, it asks for it. Comparisons are not passive: this, and the
+   * fresh load's own session.open, can change what the server holds in
+   * memory (the restarted server restores a thread on open; see S17).
+   */
+  private async composerRead(subject: TestClient): Promise<PreferencePair | undefined> {
+    const state = subject.client.getState()
+    const session = state.activeSessionId ? state.sessions[state.activeSessionId] : undefined
+    if (!session?.providerId) return undefined
+    const pair = { workspaceId: session.workspaceId, providerId: session.providerId }
+    const listed = state.providerOrder.includes(pair.providerId)
+    if (
+      !state.composerPreferences[pair.workspaceId]?.[pair.providerId] &&
+      listed &&
+      state.connection.phase === 'connected' &&
+      subject.client.supports('getComposerPreference')
+    ) {
+      await subject.client.commands.getComposerPreference(pair).catch(() => undefined)
+    }
+    return pair
   }
 
   /** The server's own read of the active session's threads (§8.1, third check). */
@@ -416,8 +453,16 @@ export class Rig {
     let last: ConvergenceResult | undefined
     for (;;) {
       await this.settle()
+      const composerPair = await this.composerRead(subject)
       const activeSessionId = subject.client.getState().activeSessionId
-      const fresh = await this.freshView(activeSessionId)
+      // Every pair the client holds, and the one its composer shows.
+      const pairs = new Map(
+        [
+          ...heldPreferencePairs(subject.client.getState()),
+          ...(composerPair ? [composerPair] : []),
+        ].map((pair) => [preferenceKey(pair), pair]),
+      )
+      const fresh = await this.freshView(activeSessionId, [...pairs.values()])
       // The server's own list, not what either client happened to learn: a
       // thread both clients miss must still show.
       const threadIds = activeSessionId ? await this.server.readSessionThreads(activeSessionId) : []
@@ -432,7 +477,7 @@ export class Rig {
       // a second to catch up with them before reading the server again.
       const roundEnd = Math.min(deadline, performance.now() + 1_000)
       for (;;) {
-        const view = normalize(subject.client.getState(), activeSessionId)
+        const view = normalize(subject.client.getState(), activeSessionId, [...pairs.values()])
         const entries = compare(view, fresh, server)
         last = { converged: entries.length === 0, entries, view, fresh, server }
         if (last.converged) return last

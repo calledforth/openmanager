@@ -960,4 +960,82 @@ describe('divergences on main that §8.4 does not list', () => {
       observed: steps,
     })
   })
+
+  /**
+   * Persisted drafts and composer preferences (normalize compares both, and
+   * the composer read the app makes): B follows them live, across a short gap
+   * that replays, and across one past the replay cap, after which the client
+   * forgets its preferences (websocket.ts:875-881) and lists drafts again.
+   */
+  scenario(
+    'G2 drafts and composer preferences across both kinds of gap (guard)',
+    {},
+    async (rig) => {
+      const a = await rig.connect('A', { link: 'direct' })
+      const b = await rig.connect('B')
+      const target = await createSession(rig, a, { title: 'With a draft' })
+      await b.client.commands.openSession(target.sessionId)
+      // A turn, so the session's last change is one every client mirrors, not
+      // the runtime stamp (S8) or the recency it moves (X1).
+      const turnId = await startTurn(a, target)
+      await finish(rig, a, target, turnId)
+      const pair = { workspaceId: rig.workspaceId, providerId: 'opencode' }
+      let revision = 0
+      const saveDraft = async (text: string) => {
+        const draft = await a.client.commands.saveDraft({
+          draftId: target.sessionId,
+          baseRevision: revision,
+          target: { type: 'session', sessionId: target.sessionId },
+          content: { text },
+        })
+        revision = draft.revision
+      }
+      const newDraftId = '00000000-0000-4000-8000-00000000d0d0'
+      await saveDraft('first words')
+      await a.client.commands.setComposerPreference({ ...pair, preference: { modeId: 'plan' } })
+      await until(() => b.client.getState().drafts[target.sessionId], 'B to hear of the draft')
+      await expectConverges('G2 live', rig, b)
+
+      // A short gap: replayed.
+      rig.proxy.down()
+      rig.proxy.cut()
+      await until(() => b.client.getState().connection.phase !== 'connected', 'B to notice the cut')
+      await saveDraft('second words')
+      await a.client.commands.setComposerPreference({ ...pair, preference: { modeId: 'build' } })
+      await a.client.commands.saveDraft({
+        draftId: newDraftId,
+        baseRevision: 0,
+        target: { type: 'new_session', workspaceId: rig.workspaceId, sessionId: newDraftId },
+        content: { text: 'a new chat' },
+      })
+      await rig.waitQuiet()
+      rig.proxy.up()
+      await expectConverges('G2 after a replayed gap', rig, b)
+
+      // A gap past the replay cap: a snapshot, then preferences forgotten and drafts listed again.
+      rig.proxy.down()
+      rig.proxy.cut()
+      await until(() => b.client.getState().connection.phase !== 'connected', 'B to notice the cut')
+      const driver = new Driver(rig)
+      for (let index = 0; index < 501; index++) {
+        await (
+          await driver.client()
+        ).client.commands.renameSession(target.sessionId, `Gap ${index}`)
+      }
+      await saveDraft('third words')
+      await a.client.commands.deleteDraft({ draftId: newDraftId, baseRevision: 1 })
+      await a.client.commands.setComposerPreference({ ...pair, preference: { modeId: 'plan' } })
+      await rig.waitQuiet()
+      rig.proxy.record(true)
+      rig.proxy.up()
+      await expectConverges('G2 after a snapshot gap', rig, b)
+      const environment = downFrames(rig.proxy.frames).find(
+        (frame) => info(frame).mode === 'snapshot' && info(frame).scopeType === 'environment',
+      )
+      expect(info(environment).reason, 'the second gap was caught up by snapshot').toBe(
+        'gap_expired',
+      )
+      driver.dispose()
+    },
+  )
 })

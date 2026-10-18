@@ -10,15 +10,20 @@ import type { ServerThreadRead } from './child-protocol.ts'
  * The server-owned part of a client's state, as `docs/sync-foundations.md`
  * §8.1 defines it, in a canonical form two clients can be compared in.
  *
- * Kept: the environment, workspaces, every session summary in sidebar order,
- * and, for the session on screen, each thread's turns, messages, reasoning,
- * tools, order, pending interactions and (on main) failures.
+ * Kept: the environment, workspaces and their order (the project picker and
+ * the recents' tie-break show it), every session summary in sidebar order,
+ * the drafts the environment reported (not the local `draftEdits` overlay),
+ * the composer preferences of `preferencePairs` (the pairs the client holds
+ * plus the one its composer shows; see `Rig.checkConvergence` for the read the
+ * app makes for an unloaded one), and, for the session on screen, each
+ * thread's turns, messages, reasoning, tools, order, the transcript order of
+ * reasoning and tools that `order` does not place, pending interactions and
+ * (on main) failures.
  *
  * Dropped: everything the client owns or only reads (connection, selection,
- * hydration, the outbox, history cursors, drafts, the provider catalog and
- * health), transient notices, and composer preferences, which a fresh load
- * holds only once something asks for them (they join in F5, with the
- * environment snapshot that carries them).
+ * hydration, the outbox, history cursors, local draft edits, draft
+ * tombstones, which only refuse stale saves and are never shown, the provider
+ * catalog and health) and transient notices.
  *
  * A session's thread list is kept only for the session on screen: a fresh
  * load learns the threads of the session it opens, and no others, so for
@@ -28,7 +33,10 @@ import type { ServerThreadRead } from './child-protocol.ts'
 export interface NormalizedView {
   environment: unknown
   workspaces: Record<string, unknown>
+  workspaceOrder: string[]
   sessions: unknown[]
+  drafts: Record<string, unknown>
+  composerPreferences: Record<string, unknown>
   active: { sessionId: string; present: boolean; threads: Record<string, ThreadView> } | null
 }
 
@@ -38,6 +46,8 @@ export interface ThreadView {
   reasoning: Record<string, unknown>
   tools: Record<string, unknown>
   order: unknown[]
+  /** Reasoning and tools `order` does not place, as the transcript appends them: in array order. */
+  unplaced: { reasoning: string[]; tools: string[] }
   interactions: Record<string, unknown>
   failures: Record<string, unknown>
 }
@@ -55,8 +65,36 @@ export function canonical(value: unknown): unknown {
   return out
 }
 
-const keyed = <T>(items: readonly T[], key: (item: T) => string): Record<string, unknown> =>
-  Object.fromEntries(items.map((item) => [key(item), item]))
+/**
+ * By id. A repeated id is itself a difference worth seeing, so it is kept as
+ * an extra entry ("<id> (duplicate 2)") rather than silently overwritten.
+ */
+const keyed = <T>(items: readonly T[], key: (item: T) => string): Record<string, unknown> => {
+  const out: Record<string, unknown> = {}
+  const seen = new Map<string, number>()
+  for (const item of items) {
+    const id = key(item)
+    const count = (seen.get(id) ?? 0) + 1
+    seen.set(id, count)
+    out[count === 1 ? id : `${id} (duplicate ${count})`] = item
+  }
+  return out
+}
+
+/** The composer preference pair key, `<workspaceId>:<providerId>`. */
+export const preferenceKey = (pair: PreferencePair) => `${pair.workspaceId}:${pair.providerId}`
+
+export interface PreferencePair {
+  workspaceId: string
+  providerId: string
+}
+
+/** Every pair a client holds a preference for. */
+export function heldPreferencePairs(state: EnvironmentState): PreferencePair[] {
+  return Object.entries(state.composerPreferences).flatMap(([workspaceId, byProvider]) =>
+    Object.keys(byProvider).map((providerId) => ({ workspaceId, providerId })),
+  )
+}
 
 /**
  * One sidebar row. `waitingOn` and `inBackground` (#219) are compared as the
@@ -91,6 +129,14 @@ export function threadView(
     reasoning: keyed(thread.reasoning, (entry) => entry.messageId),
     tools: keyed(thread.tools, (tool) => tool.toolCallId),
     order: thread.order,
+    unplaced: {
+      reasoning: thread.reasoning
+        .map((entry) => entry.messageId)
+        .filter((id) => !thread.order.some((ref) => ref.kind === 'reasoning' && ref.id === id)),
+      tools: thread.tools
+        .map((tool) => tool.toolCallId)
+        .filter((id) => !thread.order.some((ref) => ref.kind === 'tool' && ref.id === id)),
+    },
     interactions: keyed(
       thread.interactions.map((item) => ({ turnId: item.turnId, interaction: item.interaction })),
       (item) => item.interaction.interactionId,
@@ -130,12 +176,27 @@ export function sessionsWithoutThreads(view: NormalizedView): unknown[] {
   )
 }
 
-/** `activeSessionId` is the client under test's selection; a fresh load opens the same one. */
-export function normalize(state: EnvironmentState, activeSessionId: string | null): NormalizedView {
+/**
+ * `activeSessionId` is the client under test's selection; a fresh load opens
+ * the same one. `preferencePairs` are compared as held (`null`: not loaded).
+ */
+export function normalize(
+  state: EnvironmentState,
+  activeSessionId: string | null,
+  preferencePairs: readonly PreferencePair[] = [],
+): NormalizedView {
   const session = activeSessionId ? state.sessions[activeSessionId] : undefined
   return canonical({
     environment: state.environment,
     workspaces: state.workspaces,
+    workspaceOrder: state.workspaceOrder.filter((id) => state.workspaces[id] !== undefined),
+    drafts: state.drafts,
+    composerPreferences: Object.fromEntries(
+      preferencePairs.map((pair) => [
+        preferenceKey(pair),
+        state.composerPreferences[pair.workspaceId]?.[pair.providerId] ?? null,
+      ]),
+    ),
     sessions: selectSessionList(state).map((summary) =>
       sessionView(summary, summary.sessionId === activeSessionId),
     ),
