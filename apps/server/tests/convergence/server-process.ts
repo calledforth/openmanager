@@ -143,6 +143,10 @@ export class ServerProcess {
     return this.call({ op: 'readThread', sessionId, threadId })
   }
 
+  readSessionThreads(sessionId: string): Promise<string[]> {
+    return this.call({ op: 'readSessionThreads', sessionId })
+  }
+
   readSessions(): Promise<unknown[]> {
     return this.call({ op: 'readSessions' })
   }

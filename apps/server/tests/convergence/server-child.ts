@@ -22,7 +22,11 @@ import {
 } from '@agentpack/runtime/testing'
 import { startServer } from '../../src/server.ts'
 import { DATABASE_FILENAME } from '../../src/db/database.ts'
-import { listSessionHistory, listSessionSummaries } from '../../src/db/session-store.ts'
+import {
+  listSessionHistory,
+  listSessionSummaries,
+  listThreadsForSession,
+} from '../../src/db/session-store.ts'
 import type {
   ChildConfig,
   ChildEvent,
@@ -483,6 +487,8 @@ async function handle(request: ChildRequest): Promise<unknown> {
     }
     case 'readThread':
       return readThread(request.sessionId, request.threadId)
+    case 'readSessionThreads':
+      return listThreadsForSession(database(), request.sessionId).map((thread) => thread.threadId)
     case 'readSessions': {
       // The server's own summary, `waitingOn` and `inBackground` included
       // (sessionRowToSummary → readSessionActivity), never re-derived here.

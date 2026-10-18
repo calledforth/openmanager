@@ -49,6 +49,8 @@ export type ServerOp =
   | { op: 'waitQuiet'; quietMs: number; timeoutMs: number }
   /** The server's own read of a thread: `listSessionHistory` walked to the start. */
   | { op: 'readThread'; sessionId: string; threadId: string }
+  /** The threads the server holds for a session (`listThreadsForSession`), whatever any client knows. */
+  | { op: 'readSessionThreads'; sessionId: string }
   /** The server's own session summaries (`listSessionSummaries` walked to the end), newest first. */
   | { op: 'readSessions' }
   /** Per-connection socket buffers, read from inside the server process (S15). */

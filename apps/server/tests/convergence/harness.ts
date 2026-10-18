@@ -51,6 +51,17 @@ export async function until<T>(
   }
 }
 
+function parseJson(data: unknown): Record<string, unknown> | undefined {
+  try {
+    const text =
+      typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf8') : undefined
+    const value: unknown = text === undefined ? undefined : JSON.parse(text)
+    return value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** mulberry32: small, seedable, and the same on every platform. */
 export function prng(seed: number): () => number {
   let state = seed >>> 0
@@ -80,6 +91,12 @@ export interface TestClient {
   dials: number
   /** Times the client reached `connected`. */
   connects: number
+  /**
+   * Still working: a command it sent is unanswered (a recovery's replay, a
+   * catalog page, a session open), or it is dialling. A disposed client is
+   * never busy.
+   */
+  busy(): boolean
   dispose(): void
 }
 
@@ -161,6 +178,8 @@ export class Rig {
     const link = options.link ?? 'proxy'
     const closes: ClientClose[] = []
     const record = { dials: 0 }
+    /** Request ids sent on the live socket and not yet answered. */
+    const outstanding = new Set<string>()
     // A direct client always dials the live server, whatever port it is on now.
     const url = () => (link === 'proxy' ? this.proxy.url : `ws://127.0.0.1:${this.server.port}/ws`)
     const now = () => this.now()
@@ -188,9 +207,28 @@ export class Rig {
                 }
               : listener,
           )
-        this.addEventListener('close', (event) =>
-          closes.push({ at: now(), code: event.code, reason: event.reason }),
-        )
+        this.addEventListener('close', (event) => {
+          closes.push({ at: now(), code: event.code, reason: event.reason })
+          // The client fails everything pending on a closed socket.
+          outstanding.clear()
+        })
+        this.addEventListener('message', (event) => {
+          const message = parseJson((event as { data: unknown }).data)
+          if (
+            (message?.type === 'response' || message?.type === 'error') &&
+            typeof message.requestId === 'string'
+          ) {
+            outstanding.delete(message.requestId)
+          }
+        })
+      }
+
+      override send(data: unknown, ...rest: unknown[]): void {
+        const message = parseJson(data)
+        if (message?.type === 'command' && typeof message.requestId === 'string') {
+          outstanding.add(message.requestId)
+        }
+        ;(super.send as (...args: unknown[]) => void)(data, ...rest)
       }
     }
     const store = options.store ?? createEnvironmentStore()
@@ -221,6 +259,11 @@ export class Rig {
       },
       get connects() {
         return connects
+      },
+      busy: () => {
+        if (disposed) return false
+        const current = client.getState().connection.phase
+        return outstanding.size > 0 || current === 'connecting' || current === 'reconnecting'
       },
       dispose: () => {
         if (disposed) return
@@ -258,8 +301,36 @@ export class Rig {
     return this.server.call(op)
   }
 
+  /**
+   * Server quiet only: nothing published, provided or dispatched for the
+   * batcher window plus margin. A prerequisite, not quiescence: the link and
+   * the clients may still be moving. Usable while the link is down.
+   */
   waitQuiet(): Promise<void> {
     return this.server.waitQuiet(QUIET_MS)
+  }
+
+  /**
+   * Everything at rest: the server quiet, the proxy drained (nothing queued,
+   * held or half-inspected), and every live client idle (no unanswered
+   * command, not dialling). Two passes in a row must agree, so a client that
+   * sends its next catalog page right after an answer is not caught between.
+   */
+  async settle(timeoutMs = 30_000): Promise<void> {
+    const deadline = performance.now() + timeoutMs
+    let calm = 0
+    while (calm < 2) {
+      if (performance.now() > deadline) {
+        const busy = this.clients.filter((client) => client.busy()).map((client) => client.name)
+        throw new Error(
+          `The rig never settled: proxy drained ${this.proxy.drained()}, busy clients [${busy.join(', ')}].`,
+        )
+      }
+      await this.waitQuiet()
+      const atRest = this.proxy.drained() && this.clients.every((client) => !client.busy())
+      calm = atRest ? calm + 1 : 0
+      if (calm < 2) await sleep(POLL_MS)
+    }
   }
 
   /** A graceful stop through the server's own shutdown path, then a respawn. */
@@ -297,6 +368,12 @@ export class Rig {
         })
         const session = fresh.client.getState().sessions[activeSessionId]
         for (const threadId of session?.threadIds ?? []) {
+          // openSession swallows a failed hydration and resolves; an empty
+          // failed thread must not pass for an empty one.
+          const hydration = fresh.client.getState().threads[threadId]?.hydration
+          if (hydration !== 'ready') {
+            throw new Error(`The fresh load could not load thread ${threadId} (${hydration}).`)
+          }
           for (;;) {
             const thread = fresh.client.getState().threads[threadId]
             if (!thread?.historyCursor) break
@@ -338,17 +415,12 @@ export class Rig {
     const deadline = performance.now() + (options.timeoutMs ?? CONVERGE_TIMEOUT_MS)
     let last: ConvergenceResult | undefined
     for (;;) {
-      await this.waitQuiet()
+      await this.settle()
       const activeSessionId = subject.client.getState().activeSessionId
       const fresh = await this.freshView(activeSessionId)
-      const threadIds = activeSessionId
-        ? [
-            ...new Set([
-              ...Object.keys(fresh.active?.threads ?? {}),
-              ...(subject.client.getState().sessions[activeSessionId]?.threadIds ?? []),
-            ]),
-          ]
-        : []
+      // The server's own list, not what either client happened to learn: a
+      // thread both clients miss must still show.
+      const threadIds = activeSessionId ? await this.server.readSessionThreads(activeSessionId) : []
       const server: ServerView = {
         threads:
           activeSessionId && fresh.active?.present
