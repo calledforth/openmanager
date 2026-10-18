@@ -173,8 +173,9 @@ function info(frame: FrameRecord | undefined): FrameFields {
   if (!frame) return {}
   if (frame.fields) return frame.fields
   const payload = field(frame.json, 'payload')
-  const scope = (field(payload, 'snapshot', 'cursor', 'scope') ?? field(payload, 'scope')) as
-    Json | undefined
+  const scope = (field(payload, 'snapshot', 'cursor', 'scope') ??
+    field(payload, 'to', 'scope') ??
+    field(payload, 'scope')) as Json | undefined
   const text = (key: string, from: unknown = frame.json) => {
     const value = field(from, key)
     return typeof value === 'string' ? value : undefined
@@ -1404,6 +1405,13 @@ describe('divergences on main that §8.4 does not list', () => {
       await a.client.commands.setComposerPreference({ ...pair, preference: { modeId: 'plan' } })
       await until(() => b.client.getState().drafts[target.sessionId], 'B to hear of the draft')
       await expectConverges('G2 live', rig, b)
+      // Equal is not enough: B holds what A asked for.
+      const held = () => ({
+        draft: b.client.getState().drafts[target.sessionId]?.content.text,
+        newDraft: b.client.getState().drafts[newDraftId]?.content.text,
+        mode: b.client.getState().composerPreferences[pair.workspaceId]?.[pair.providerId]?.modeId,
+      })
+      expect(held()).toEqual({ draft: 'first words', newDraft: undefined, mode: 'plan' })
 
       // A short gap: replayed.
       rig.proxy.down()
@@ -1418,8 +1426,14 @@ describe('divergences on main that §8.4 does not list', () => {
         content: { text: 'a new chat' },
       })
       await rig.waitQuiet()
+      const replayedFrom = rig.proxy.frames.length
       rig.proxy.up()
       await expectConverges('G2 after a replayed gap', rig, b)
+      expect(held()).toEqual({ draft: 'second words', newDraft: 'a new chat', mode: 'build' })
+      const replayed = downFrames(rig.proxy.frames.slice(replayedFrom)).find(
+        (frame) => info(frame).type === 'response' && info(frame).scopeType === 'environment',
+      )
+      expect(info(replayed).mode, 'the first gap was caught up by replay').toBe('replay')
 
       // A gap past the replay cap: a snapshot, then preferences forgotten and drafts listed again.
       rig.proxy.down()
@@ -1445,6 +1459,7 @@ describe('divergences on main that §8.4 does not list', () => {
       expect(info(environment).reason, 'the second gap was caught up by snapshot').toBe(
         'gap_expired',
       )
+      expect(held()).toEqual({ draft: 'third words', newDraft: undefined, mode: 'plan' })
       driver.dispose()
     },
   )
