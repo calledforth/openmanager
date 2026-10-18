@@ -16,13 +16,13 @@ export interface Target {
 export async function createSession(
   rig: Rig,
   client: TestClient,
-  options: { title?: string | null; open?: boolean } = {},
+  options: { title?: string | null; open?: boolean; providerId?: string } = {},
 ): Promise<Target> {
   const title = options.title === undefined ? 'Scenario' : options.title
   const created = await client.client.commands.createSession({
     environmentId: rig.environmentId,
     workspaceId: rig.workspaceId,
-    providerId: 'opencode',
+    providerId: options.providerId ?? 'opencode',
     ...(title !== null ? { title } : {}),
   })
   const target = { sessionId: created.session.sessionId, threadId: created.thread.threadId }

@@ -17,7 +17,9 @@ import {
   describeDiff,
   diff,
   normalize,
+  serverSessionsView,
   serverThreadView,
+  sessionsWithoutThreads,
   type DiffEntry,
   type NormalizedView,
   type ThreadView,
@@ -347,10 +349,13 @@ export class Rig {
             ]),
           ]
         : []
-      const server =
-        activeSessionId && fresh.active?.present
-          ? await this.serverView(activeSessionId, threadIds)
-          : {}
+      const server: ServerView = {
+        threads:
+          activeSessionId && fresh.active?.present
+            ? await this.serverView(activeSessionId, threadIds)
+            : {},
+        sessions: serverSessionsView(await this.server.readSessions()),
+      }
       // Hold the fresh load and the server's read; give the client the rest of
       // a second to catch up with them before reading the server again.
       const roundEnd = Math.min(deadline, performance.now() + 1_000)
@@ -404,28 +409,39 @@ export class Driver {
   }
 }
 
+/** The server's own reads: the open session's threads and every session summary. */
+export interface ServerView {
+  threads: Record<string, ThreadView>
+  sessions: unknown[]
+}
+
 export interface ConvergenceResult {
   converged: boolean
   entries: DiffEntry[]
   view: NormalizedView
   fresh: NormalizedView
-  server: Record<string, ThreadView>
+  server: ServerView
 }
 
 /**
  * Three comparisons: the client against a fresh load (the property), the
- * client's threads against the server's own read, and the fresh load against
- * the server's read (a client bug shared by both clients shows only there).
+ * client against the server's own reads (its session summaries, and the open
+ * session's threads), and the fresh load against those reads (a client bug
+ * shared by both clients shows only there).
  */
 export function compare(
   view: NormalizedView,
   fresh: NormalizedView,
-  server: Record<string, ThreadView>,
+  server: ServerView,
 ): DiffEntry[] {
   const entries = diff('fresh', view, fresh)
+  entries.push(...diff('server', sessionsWithoutThreads(view), server.sessions, 'sessions'))
+  entries.push(
+    ...diff('fresh-vs-server', sessionsWithoutThreads(fresh), server.sessions, 'sessions'),
+  )
   if (fresh.active?.present) {
-    entries.push(...diff('server', view.active?.threads ?? {}, server, 'active.threads'))
-    entries.push(...diff('fresh-vs-server', fresh.active.threads, server, 'active.threads'))
+    entries.push(...diff('server', view.active?.threads ?? {}, server.threads, 'active.threads'))
+    entries.push(...diff('fresh-vs-server', fresh.active.threads, server.threads, 'active.threads'))
   }
   return entries
 }

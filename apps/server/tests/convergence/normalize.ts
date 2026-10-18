@@ -58,6 +58,11 @@ export function canonical(value: unknown): unknown {
 const keyed = <T>(items: readonly T[], key: (item: T) => string): Record<string, unknown> =>
   Object.fromEntries(items.map((item) => [key(item), item]))
 
+/**
+ * One sidebar row. `waitingOn` and `inBackground` (#219) are compared as the
+ * client holds them; the server's side of every comparison comes from its own
+ * summary (a fresh load's listing, or `listSessionSummaries`), never re-derived.
+ */
 function sessionView(session: SessionSummary, onScreen: boolean): unknown {
   const { threadIds, settledAt, doneAt, backgroundTasks, ...rest } = session
   return {
@@ -105,6 +110,24 @@ export function serverThreadView(read: ServerThreadRead): ThreadView {
     interactions: read.interactions,
     failures: [],
   } as unknown as ThreadState)
+}
+
+/** The server's own session summaries, in the form a client's rows normalize to. */
+export function serverSessionsView(summaries: readonly unknown[]): unknown[] {
+  return canonical(
+    summaries.map((summary) =>
+      sessionView({ ...(summary as SessionSummary), threadIds: [] }, false),
+    ),
+  ) as unknown[]
+}
+
+/** A view's sidebar rows without what only the client learns (the open session's threads). */
+export function sessionsWithoutThreads(view: NormalizedView): unknown[] {
+  return view.sessions.map((row) =>
+    Object.fromEntries(
+      Object.entries(row as Record<string, unknown>).filter(([key]) => key !== 'threadIds'),
+    ),
+  )
 }
 
 /** `activeSessionId` is the client under test's selection; a fresh load opens the same one. */

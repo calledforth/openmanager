@@ -12,6 +12,8 @@ import { is, matches, type DiffCause, type DiffMatcher } from './evidence.ts'
 const ID = '[^.\\[\\]]+'
 const THREAD = `active\\.threads\\.${ID}`
 const re = (source: string) => new RegExp(`^${source}$`)
+/** A sidebar entry shows against a fresh load and against the server's own summaries alike. */
+const SIDEBAR = ['fresh', 'server'] as const
 
 const absent = is(ABSENT)
 const present = (value: unknown) => value !== ABSENT
@@ -123,8 +125,8 @@ export const RUNTIME_STAMP: DiffCause = {
     '(thread-service.ts:419-426, called at :1833), after session.created committed, with no ' +
     'event; the other client keeps the event time and sorts the sidebar by it. §4.4, S8.',
   explains: [
-    { comparison: 'fresh', path: re(`sessions\\[${ID}\\]\\.updatedAt`) },
-    { comparison: 'fresh', path: re('sessions\\(order\\)') },
+    { comparison: SIDEBAR, path: re(`sessions\\[${ID}\\]\\.updatedAt`) },
+    { comparison: SIDEBAR, path: re('sessions\\(order\\)') },
     { comparison: 'fresh', path: re(`workspaces\\.${ID}\\.lastActivityAt`) },
   ],
   requires: [{ comparison: 'fresh', path: re(`sessions\\[${ID}\\]\\.updatedAt`) }],
@@ -138,7 +140,7 @@ export const ENVIRONMENT_SNAPSHOT_NEVER_REMOVES: DiffCause = {
     '(websocket.ts:946-1004, :977-993), so sessions deleted during the gap stay listed. ' +
     '§3.6 rows 19 and 23, S9.',
   explains: [
-    { comparison: 'fresh', path: re(`sessions\\[${ID}\\]`), left: present, right: absent },
+    { comparison: SIDEBAR, path: re(`sessions\\[${ID}\\]`), left: present, right: absent },
   ],
   requires: [
     { comparison: 'fresh', path: re(`sessions\\[${ID}\\]`), left: present, right: absent },
@@ -195,7 +197,7 @@ export const SESSION_CREATED_PARTIAL: DiffCause = {
     'SessionSummary in F5.',
   explains: [
     {
-      comparison: 'fresh',
+      comparison: SIDEBAR,
       path: re(`sessions\\[${ID}\\]\\.providerId`),
       left: absent,
       right: present,

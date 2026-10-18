@@ -22,7 +22,7 @@ import {
 } from '@agentpack/runtime/testing'
 import { startServer } from '../../src/server.ts'
 import { DATABASE_FILENAME } from '../../src/db/database.ts'
-import { listSessionHistory } from '../../src/db/session-store.ts'
+import { listSessionHistory, listSessionSummaries } from '../../src/db/session-store.ts'
 import type {
   ChildConfig,
   ChildEvent,
@@ -396,6 +396,26 @@ async function handle(request: ChildRequest): Promise<unknown> {
         .finally(touch)
       return null
     }
+    case 'askQuestion': {
+      const active = await promptOf(request.sessionId)
+      touch()
+      void active.connection
+        .extMethod('cursor/ask_question', {
+          questions: [
+            {
+              id: request.questionId,
+              prompt: 'Which one?',
+              options: [
+                { id: 'a', label: 'A' },
+                { id: 'b', label: 'B' },
+              ],
+            },
+          ],
+        })
+        .catch(() => undefined)
+        .finally(touch)
+      return null
+    }
     case 'completeTurn':
       touch()
       ;(await promptOf(request.sessionId)).finish(request.stopReason ?? 'end_turn')
@@ -463,6 +483,18 @@ async function handle(request: ChildRequest): Promise<unknown> {
     }
     case 'readThread':
       return readThread(request.sessionId, request.threadId)
+    case 'readSessions': {
+      // The server's own summary, `waitingOn` and `inBackground` included
+      // (sessionRowToSummary → readSessionActivity), never re-derived here.
+      const sessions = []
+      let cursor: { updatedAt: string; sessionId: string } | undefined
+      for (;;) {
+        const page = listSessionSummaries(database(), { limit: 100, ...(cursor ? { cursor } : {}) })
+        sessions.push(...page.sessions)
+        if (!page.nextCursor) return sessions
+        cursor = page.nextCursor
+      }
+    }
     case 'sampleSockets':
       return [...sockets.entries()]
         .filter(([ws]) => ws.readyState === WebSocket.OPEN)

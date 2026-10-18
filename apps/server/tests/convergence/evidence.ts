@@ -22,9 +22,11 @@ import { report, type ConvergenceResult, type Rig, type TestClient } from './har
  *     signature.
  */
 
+export type Comparison = 'fresh' | 'server' | 'fresh-vs-server'
+
 export interface DiffMatcher {
   /** Which comparison the entry comes from; any when absent. */
-  comparison?: 'fresh' | 'server' | 'fresh-vs-server'
+  comparison?: Comparison | readonly Comparison[]
   path: RegExp
   left?: (value: unknown) => boolean
   right?: (value: unknown) => boolean
@@ -58,7 +60,10 @@ export class WrongCauseError extends Error {
 }
 
 export const matches = (matcher: DiffMatcher, entry: DiffEntry) =>
-  (matcher.comparison === undefined || matcher.comparison === entry.comparison) &&
+  (matcher.comparison === undefined ||
+    (typeof matcher.comparison === 'string'
+      ? matcher.comparison === entry.comparison
+      : matcher.comparison.includes(entry.comparison as Comparison))) &&
   matcher.path.test(entry.path) &&
   (matcher.left === undefined || matcher.left(entry.left)) &&
   (matcher.right === undefined || matcher.right(entry.right)) &&
@@ -162,5 +167,44 @@ export async function expectConverges(
   if (!result.converged)
     throw new Error(`${scenario}: the property does not hold.\n${report(result)}`)
   recordEvidence({ scenario, bucket: 'regression-guard', cause: 'converges', observed })
+  return result
+}
+
+/**
+ * A guard on one thing while another documented cause unavoidably shows in
+ * the same state: every entry must be explained by `allowed`, and nothing
+ * else may differ. The allowed causes are named, never a wildcard.
+ */
+export async function expectConvergesExcept(
+  scenario: string,
+  rig: Rig,
+  subject: TestClient,
+  allowed: readonly DiffCause[],
+): Promise<ConvergenceResult> {
+  const unexplainedIn = (entries: readonly DiffEntry[]) =>
+    entries.filter(
+      (entry) => !allowed.some((cause) => cause.explains.some((m) => matches(m, entry))),
+    )
+  // One round first: a named cause is permanent, so only something else
+  // needs the whole eventual window before it counts.
+  let result = await rig.checkConvergence(subject, { timeoutMs: 1 })
+  if (unexplainedIn(result.entries).length > 0) result = await rig.checkConvergence(subject)
+  const unexplained = unexplainedIn(result.entries)
+  if (unexplained.length > 0) {
+    throw new Error(
+      `${scenario}: the property does not hold, and not only for ${allowed.map((c) => c.cause.slice(0, 40)).join('; ')}.
+${describeDiff(unexplained)}`,
+    )
+  }
+  recordEvidence({
+    scenario,
+    bucket: 'regression-guard',
+    cause: 'converges apart from named causes',
+    observed: result.entries.map((entry) => ({
+      ...entry,
+      left: trim(entry.left),
+      right: trim(entry.right),
+    })),
+  })
   return result
 }

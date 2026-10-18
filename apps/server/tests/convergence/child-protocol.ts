@@ -30,6 +30,8 @@ export type ProviderOp =
       status: 'pending' | 'in_progress' | 'completed' | 'failed'
     }
   | { op: 'askPermission'; sessionId: string; toolCallId: string; title?: string }
+  /** Cursor's own question request (`cursor/ask_question`); the session must run on Cursor. */
+  | { op: 'askQuestion'; sessionId: string; questionId: string }
   | { op: 'completeTurn'; sessionId: string; stopReason?: string }
   | { op: 'crashProvider'; sessionId: string }
   /** An image the artifact store refuses, so the server publishes a transient `turn.notice`. */
@@ -47,6 +49,8 @@ export type ServerOp =
   | { op: 'waitQuiet'; quietMs: number; timeoutMs: number }
   /** The server's own read of a thread: `listSessionHistory` walked to the start. */
   | { op: 'readThread'; sessionId: string; threadId: string }
+  /** The server's own session summaries (`listSessionSummaries` walked to the end), newest first. */
+  | { op: 'readSessions' }
   /** Per-connection socket buffers, read from inside the server process (S15). */
   | { op: 'sampleSockets' }
   /** Graceful stop through `server.close()`, then exit. */

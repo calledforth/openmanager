@@ -20,7 +20,14 @@ import {
   THOUGHT_CLOSED_BY_FOLD,
   WORKSPACE_RECENCY_MIRROR,
 } from './causes.ts'
-import { FlipError, demonstrateDiff, expectConverges, matches, recordEvidence } from './evidence.ts'
+import {
+  FlipError,
+  demonstrateDiff,
+  expectConverges,
+  expectConvergesExcept,
+  matches,
+  recordEvidence,
+} from './evidence.ts'
 import { Driver, sleep, until, type Rig, type TestClient } from './harness.ts'
 import type { FrameRecord } from './link-proxy.ts'
 import { notRunnable, scenario } from './scenario.ts'
@@ -875,4 +882,65 @@ describe('divergences on main that §8.4 does not list', () => {
       })
     },
   )
+
+  /**
+   * #219's `waitingOn`: a question outranks a permission, and answering it
+   * hands the session back to the permission. Each change rides a
+   * `session.updated` whose status does not change (event-repository.ts,
+   * `activityChanged`). A sidebar-only client must follow every step.
+   */
+  scenario('G1 waitingOn follows a question over a permission (#219, guard)', {}, async (rig) => {
+    const a = await rig.connect('A')
+    const b = await rig.connect('B')
+    // Cursor is the provider whose agent asks questions (cursor/ask_question).
+    const target = await createSession(rig, a, { providerId: 'cursor' })
+    // B lists the session once, so it knows its provider (not X2's subject here).
+    await b.client.commands.listSessions()
+    await startTurn(a, target)
+    const waitingOn = () => b.client.getState().sessions[target.sessionId]?.waitingOn
+    const steps: Array<{ step: string; waitingOn: unknown }> = []
+    const settle = async (step: string, expected: string | undefined) => {
+      await until(() => waitingOn() === expected || undefined, `B to show waitingOn ${expected}`)
+      // Interaction events move sessions.updated_at, and with it the
+      // workspace's recency, with no workspace event (X1): named, not ignored.
+      await expectConvergesExcept(`G1 ${step} (sidebar)`, rig, b, [WORKSPACE_RECENCY_MIRROR])
+      await expectConvergesExcept(`G1 ${step} (chat)`, rig, a, [WORKSPACE_RECENCY_MIRROR])
+      steps.push({ step, waitingOn: waitingOn() })
+    }
+    await rig.provider({ op: 'askPermission', sessionId: target.sessionId, toolCallId: 'edit-g1' })
+    await settle('permission asked', 'permission')
+    await rig.provider({ op: 'askQuestion', sessionId: target.sessionId, questionId: 'q1' })
+    await settle('question asked', 'question')
+    const pending = (kind: string) =>
+      until(
+        () => thread(a, target)?.interactions.find((item) => item.interaction.kind === kind),
+        `A to show the pending ${kind}`,
+      )
+    const question = await pending('question')
+    await a.client.commands.respondToInteraction({
+      ...target,
+      response: {
+        kind: 'question',
+        interactionId: question.interaction.interactionId,
+        outcome: { outcome: 'answered', answers: [{ questionId: 'q1', selectedOptionIds: ['a'] }] },
+      },
+    })
+    await settle('question answered', 'permission')
+    const permission = await pending('permission')
+    await a.client.commands.respondToInteraction({
+      ...target,
+      response: {
+        kind: 'permission',
+        interactionId: permission.interaction.interactionId,
+        outcome: { outcome: 'selected', optionId: 'allow' },
+      },
+    })
+    await settle('permission answered', undefined)
+    recordEvidence({
+      scenario: 'G1',
+      bucket: 'regression-guard',
+      cause: 'waitingOn',
+      observed: steps,
+    })
+  })
 })
