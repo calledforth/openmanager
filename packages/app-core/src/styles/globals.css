@@ -126,7 +126,9 @@
   --basis-session-cube-ready: #6fbf73;
   /* Session status palette: colour only when something runs, asks, or has news. */
   --basis-status-working: #a193ff;
+  --basis-status-background: #6cbcf2;
   --basis-status-needs: #f4b942;
+  --basis-status-question: #f47fc4;
   --basis-status-done: #5ed8a4;
   --basis-status-error: #ff6f6f;
   /* Status surfaces. On dark they are the ink, made translucent; light themes
@@ -231,7 +233,9 @@ html[data-theme='black'] {
   --basis-session-cube-needs: #a07a12;
   --basis-session-cube-ready: #4f9654;
   --basis-status-working: #9486f5;
+  --basis-status-background: #5fb0e6;
   --basis-status-needs: #e0a93c;
+  --basis-status-question: #e872b7;
   --basis-status-done: #4fc493;
   --basis-status-error: #f06464;
   --basis-scrollbar-thumb: color-mix(in srgb, var(--basis-text-muted) 28%, transparent);
@@ -262,7 +266,9 @@ html[data-theme='light'] {
   --basis-session-cube-needs: #b8860b;
   --basis-session-cube-ready: #2f8f45;
   --basis-status-working: #6b56e0;
+  --basis-status-background: #1f74b0;
   --basis-status-needs: #b7791f;
+  --basis-status-question: #b8337f;
   --basis-status-done: #12805a;
   --basis-status-error: #c73b3b;
   --basis-status-done-wash: #e3f6ec;
@@ -1124,6 +1130,35 @@ textarea,
   animation-delay: 0.08s;
 }
 
+/* Background: the turn is over but work it started is not. One dot breathes
+ * slowly while the rest stay dim: busy, but nothing to watch yet. */
+.session-busy-ring--background {
+  color: var(--basis-status-background);
+}
+.session-busy-ring--background .session-busy-dot {
+  opacity: 0.35;
+}
+.session-busy-ring--background .session-busy-dot:nth-child(1) {
+  animation: session-glyph-breathe 2.4s ease-in-out infinite;
+}
+
+/* A question: the dots bob in turn, like a chat waiting on your reply. */
+.session-busy-ring--question {
+  color: var(--basis-status-question);
+}
+.session-busy-ring--question .session-busy-dot {
+  animation: session-glyph-bob 1.6s ease-in-out infinite;
+}
+.session-busy-ring--question .session-busy-dot:nth-child(2) {
+  animation-delay: 0.14s;
+}
+.session-busy-ring--question .session-busy-dot:nth-child(4) {
+  animation-delay: 0.28s;
+}
+.session-busy-ring--question .session-busy-dot:nth-child(3) {
+  animation-delay: 0.42s;
+}
+
 /* Done: the dots draw together into one, which pings until opened. */
 .session-busy-ring--done {
   color: var(--basis-status-done);
@@ -1220,6 +1255,25 @@ textarea,
   12%,
   27% {
     transform: translateY(0);
+  }
+}
+@keyframes session-glyph-breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@keyframes session-glyph-bob {
+  0%,
+  50%,
+  100% {
+    transform: translateY(0);
+  }
+  18% {
+    transform: translateY(-1.75px);
   }
 }
 @keyframes session-glyph-ping {
@@ -1343,6 +1397,9 @@ textarea,
   .session-busy-ring--working .session-busy-dot {
     opacity: 0.9;
   }
+  .session-busy-ring--background .session-busy-dot:nth-child(1) {
+    opacity: 1;
+  }
   .session-busy-sparks,
   .session-card-flash {
     display: none;
@@ -1387,6 +1444,10 @@ textarea,
 
 .session-row-dither--needs {
   --session-dither-color: var(--basis-status-needs);
+}
+
+.session-row-dither--question {
+  --session-dither-color: var(--basis-status-question);
 }
 
 .session-row-dither--ready {

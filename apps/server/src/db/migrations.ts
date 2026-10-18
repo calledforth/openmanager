@@ -762,6 +762,19 @@ export const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    version: 20,
+    name: 'open_turns_index',
+    up(database) {
+      // What a session waits on and whether it has a turn in flight are read
+      // around every status change and for each live session a listing
+      // returns (db/session-activity.ts). Keyed by state as well, they reach
+      // a thread's open turns without walking the finished ones before them.
+      database.exec(
+        'CREATE INDEX IF NOT EXISTS turns_thread_state_idx ON turns(thread_id, state)',
+      )
+    },
+  },
 ]
 
 type RetainedActivityRow = {

@@ -2,6 +2,7 @@ import { foldProtocolEvent, placeActivity } from '@agentpack/view/protocol'
 import { sessionListCursorOf } from '@openmanager/protocol'
 import type {
   BackgroundTask,
+  InteractionKind,
   Message,
   ProofEvent,
   ProofResponse,
@@ -176,6 +177,11 @@ function upsertSession(
       listed.status === undefined ? undefined : (listed.backgroundTasks ?? []),
       existing?.backgroundTasks,
     ),
+    // Like background work, a full summary is the whole truth; a bare
+    // `Session` keeps what an event delivered.
+    ...(listed.status === undefined
+      ? activityOf(existing?.status ?? 'idle', existing?.waitingOn, existing?.inBackground)
+      : activityOf(listed.status, listed.waitingOn, listed.inBackground)),
     ...composerOf(listed.composer, existing?.composer),
     threadIds: threadIds
       ? Array.from(new Set([...(existing?.threadIds ?? []), ...threadIds]))
@@ -226,6 +232,18 @@ function doneOf(
  * the held one when nothing was said. No work is no key at all, and the held
  * list is kept when nothing changed, so selectors stay stable.
  */
+/** Each only means something beside the status it belongs to. */
+function activityOf(
+  status: SessionStatus,
+  waitingOn: InteractionKind | null | undefined,
+  inBackground: boolean | undefined,
+): Pick<SessionSummary, 'waitingOn' | 'inBackground'> {
+  return {
+    ...(status === 'waiting' && waitingOn ? { waitingOn } : {}),
+    ...(status === 'running' && inBackground ? { inBackground: true as const } : {}),
+  }
+}
+
 function backgroundOf(
   reported: BackgroundTask[] | undefined,
   held: BackgroundTask[] | undefined,
@@ -419,10 +437,31 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
       const session = state.sessions[event.payload.sessionId]
       if (!session) return state
       const { title, status, settledAt, doneAt, backgroundTasks } = event.payload
-      const { backgroundTasks: heldTasks, ...held } = session
+      const {
+        backgroundTasks: heldTasks,
+        waitingOn: heldWaitingOn,
+        inBackground: heldInBackground,
+        ...held
+      } = session
+      // A status event says what goes with its status, so one that leaves
+      // these out (an older environment) clears them.
+      const restated = status !== undefined
       const next: SessionSummary = {
         ...held,
         ...backgroundOf(backgroundTasks, heldTasks),
+        ...activityOf(
+          status ?? session.status,
+          event.payload.waitingOn !== undefined
+            ? event.payload.waitingOn
+            : restated
+              ? null
+              : heldWaitingOn,
+          event.payload.inBackground !== undefined
+            ? event.payload.inBackground
+            : restated
+              ? false
+              : heldInBackground,
+        ),
         ...(event.payload.titleSource ? { titleSource: event.payload.titleSource } : {}),
         ...(title !== undefined ? { title } : {}),
         ...(status !== undefined ? { status } : {}),

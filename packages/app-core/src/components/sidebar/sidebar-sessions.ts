@@ -26,6 +26,13 @@ export interface SidebarSession {
   settledAt?: string | null
   /** Its composer holds text or an image that was not sent. */
   hasUnsentDraft?: boolean
+  /** What a waiting session waits on; a question gets its own state. */
+  waitingOn?: string
+  /** Running only because of its background work: no turn is in flight. */
+  inBackground?: boolean
+  /** How many background tasks run, and their names one per line. */
+  backgroundTaskCount?: number
+  backgroundTaskNames?: string
 }
 
 /**

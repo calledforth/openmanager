@@ -18,6 +18,8 @@ import {
   INTERACTIONS_FOR_TURN_SQL,
   MESSAGE_HISTORY_PAGE_SQL,
   MESSAGE_PARTS_SQL,
+  OPEN_TURN_FOR_SESSION_SQL,
+  PENDING_INTERACTIONS_FOR_SESSION_SQL,
   SESSION_LIST_FOR_ENVIRONMENT_SQL,
   SESSION_LIST_FOR_WORKSPACE_SQL,
   STREAM_BOUNDS_SQL,
@@ -65,6 +67,17 @@ describe('bounded query plans', () => {
     expect(plan(database, SESSION_LIST_FOR_ENVIRONMENT_SQL)).toEqual([
       'SEARCH sessions USING INDEX sessions_updated_at_idx ((updated_at,session_id)<(?,?))',
     ])
+  })
+
+  it('reads what a session waits on, and whether a turn is open, through indexes', async () => {
+    const database = await createDatabase()
+    const pending = plan(database, PENDING_INTERACTIONS_FOR_SESSION_SQL)
+    expectIndexed(pending, 'threads_session_')
+    expectIndexed(pending, 'turns_thread_state_idx')
+    expectIndexed(pending, 'interactions_turn_id_idx')
+    const open = plan(database, OPEN_TURN_FOR_SESSION_SQL)
+    expectIndexed(open, 'threads_session_')
+    expectIndexed(open, 'turns_thread_state_idx')
   })
 
   it('replays a deduplicated send from indexed turns and messages', async () => {
