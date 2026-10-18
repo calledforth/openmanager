@@ -77,6 +77,10 @@ export type ServerOp =
   | { op: 'readSessions' }
   /** Per-connection socket buffers, read from inside the server process (S15). */
   | { op: 'sampleSockets' }
+  /** Every row of the provenance audit (provenance.ts), oldest first. */
+  | { op: 'readAudit' }
+  /** Sessions whose row holds no provider session identity, read from the database. */
+  | { op: 'readUnidentified' }
   /** Graceful stop through `server.close()`, then exit. */
   | { op: 'shutdown' }
 
@@ -107,6 +111,97 @@ export interface SocketSample {
   readyState: number
   bufferedAmount: number
 }
+
+/**
+ * The test-only audit the server child keeps with SQLite triggers on its temp
+ * database (server-child.ts): every event appended, every write to a
+ * session's `updated_at` or provider identity, every workspace `last_used_at`,
+ * and markers around each boot, so boot-time recovery is told apart. `seq` is the
+ * one order all of them share.
+ */
+export type AuditRow =
+  | {
+      seq: number
+      kind: 'event'
+      scopeKey: string
+      sequence: number
+      name: string
+      eventId: string
+      /** The event's timestamp, epoch ms (event_log.created_at). */
+      ts: number
+      sessionId: string | null
+      workspaceId: string | null
+      threadId: string | null
+      /** `session.updated` names a title. */
+      title: boolean
+      status: string | null
+      /** `workspace.updated`'s value. */
+      lastActivityAt: string | null
+    }
+  | {
+      seq: number
+      kind: 'session'
+      op: 'insert' | 'update' | 'delete'
+      sessionId: string
+      workspaceId: string
+      old: number | null
+      new: number | null
+      oldProvider: string | null
+      newProvider: string | null
+    }
+  | {
+      seq: number
+      kind: 'workspace'
+      workspaceId: string
+      old: number | null
+      new: number | null
+    }
+  /** A server process starting on an existing database (`start`), and done booting (`boot`). */
+  | { seq: number; kind: 'start' | 'boot' }
+
+/**
+ * What the server owed and sent each socket, logged by the server child as it
+ * happens (one JSON line each, so a hard kill loses nothing written). `s` is
+ * the socket (`pid:n`), `port` its remote port as the server sees it, `a`
+ * the audit's `seq` when the line was written.
+ */
+export type Delivery = { s?: string; port?: number; a: number; at: number } & (
+  | {
+      k: 'grant'
+      key: string
+      mode: 'live' | 'replay' | 'snapshot'
+      /** Replay: the last sequence it carried; snapshot: its cursor. */
+      base: number | null
+      replayed: number[]
+    }
+  | { k: 'refuse'; key: string; code: string | null }
+  | { k: 'request'; name: string; key: string | null; requestId: string }
+  | { k: 'end'; key: string | null }
+  | { k: 'closed' }
+  | {
+      k: 'publish'
+      key: string
+      seq: number
+      name: string
+      /** Open sockets holding a subscription to the scope when it was published. */
+      owed: string[]
+      /** Sockets whose subscription request for the scope was received and not yet answered. */
+      pending: string[]
+      /** Sockets it was handed to (`ws.send`). */
+      sent: string[]
+    }
+  | {
+      k: 'carried'
+      /** Values a response handed the socket: workspace recency and session times. */
+      workspaces: Record<string, string | null>
+      sessions: Record<string, string>
+      /** A `session.create` answer's `announcedAt`, which the client also takes as recency. */
+      announced: { workspaceId: string; at: string } | null
+    }
+)
+
+/** The file the server child appends `Delivery` lines to, in its data directory. */
+export const DELIVERIES_FILENAME = 'convergence-deliveries.jsonl'
 
 /** What the server's own read of a thread holds, shaped like a client thread. */
 export interface ServerThreadRead {

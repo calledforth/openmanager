@@ -12,6 +12,7 @@
  * `src/` changes for it.
  */
 import { randomUUID } from 'node:crypto'
+import { appendFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { WebSocket } from 'ws'
@@ -22,19 +23,23 @@ import {
 } from '@agentpack/runtime/testing'
 import { startServer } from '../../src/server.ts'
 import { DATABASE_FILENAME } from '../../src/db/database.ts'
+import { scopeKey } from '../../src/db/event-repository.ts'
+import type { SubscriptionScope } from '@openmanager/protocol/node'
 import {
   listSessionHistory,
   listSessionSummaries,
   listThreadsForSession,
 } from '../../src/db/session-store.ts'
-import type {
-  ChildConfig,
-  ChildEvent,
-  ChildMessage,
-  ChildRequest,
-  ScriptStep,
-  ServerThreadRead,
-  SocketSample,
+import {
+  DELIVERIES_FILENAME,
+  type AuditRow,
+  type ChildConfig,
+  type ChildEvent,
+  type ChildMessage,
+  type ChildRequest,
+  type ScriptStep,
+  type ServerThreadRead,
+  type SocketSample,
 } from './child-protocol.ts'
 
 const config = JSON.parse(process.env.CONVERGENCE_CHILD_CONFIG ?? '') as ChildConfig
@@ -85,6 +90,181 @@ const socketId = (ws: WebSocket) => {
 }
 const remotePortOf = (ws: WebSocket) =>
   (ws as unknown as { _socket?: { remotePort?: number } })._socket?.remotePort
+
+// ---------------------------------------------------------------------------
+// Delivery log (test-only): which socket held which subscription, what each
+// publish owed and handed to which socket, and the values responses carried.
+// The server's own objects are only observed: its `ws` sends and messages,
+// and its `sockets.publish` (wrapped below, once the server exists).
+// ---------------------------------------------------------------------------
+
+const deliveryFile = join(config.dataDir, DELIVERIES_FILENAME)
+/** The audit's newest `seq`, once the server (and so the database) exists. */
+let auditHead = (): number => 0
+const socketKey = (ws: WebSocket) => `${process.pid}:${socketId(ws)}`
+const deliver = (ws: WebSocket | undefined, record: Record<string, unknown>) => {
+  let head = -1
+  try {
+    head = auditHead()
+  } catch {
+    // The database is closed: the process is shutting down.
+  }
+  appendFileSync(
+    deliveryFile,
+    `${JSON.stringify({
+      ...(ws ? { s: socketKey(ws), port: remotePortOf(ws) } : {}),
+      ...record,
+      a: head,
+      at: Date.now(),
+    })}\n`,
+  )
+}
+/** Granted subscriptions per socket: subscription id → scope key. */
+const granted = new Map<WebSocket, Map<string, string>>()
+/** Commands received and not yet answered, per socket, by request id. */
+const asked = new Map<
+  WebSocket,
+  Map<string, { name: string; key: string | null; subscriptionId?: string }>
+>()
+/** The sockets the publish running now handed its record to. */
+let publishing: Set<WebSocket> | undefined
+const keyOf = (scope: unknown): string | null => {
+  try {
+    return scope ? scopeKey(scope as SubscriptionScope) : null
+  } catch {
+    return null
+  }
+}
+const forget = (ws: WebSocket) => {
+  if (granted.delete(ws) || asked.delete(ws)) deliver(ws, { k: 'closed' })
+  asked.delete(ws)
+}
+
+/** What a response hands the client that it takes as session times and workspace recency. */
+function carriedOf(payload: Record<string, unknown>) {
+  const workspaces: Record<string, string | null> = {}
+  const sessions: Record<string, string> = {}
+  const values = (list: unknown): unknown[] =>
+    Array.isArray(list) ? list : list && typeof list === 'object' ? Object.values(list) : []
+  const takeWorkspaces = (list: unknown) => {
+    for (const item of values(list) as Array<{ workspaceId?: unknown; lastActivityAt?: unknown }>) {
+      if (typeof item?.workspaceId === 'string') {
+        workspaces[item.workspaceId] =
+          typeof item.lastActivityAt === 'string' ? item.lastActivityAt : null
+      }
+    }
+  }
+  const takeSessions = (list: unknown) => {
+    for (const item of values(list) as Array<{ sessionId?: unknown; updatedAt?: unknown }>) {
+      if (typeof item?.sessionId === 'string' && typeof item.updatedAt === 'string') {
+        sessions[item.sessionId] = item.updatedAt
+      }
+    }
+  }
+  takeWorkspaces(payload.workspaces)
+  takeSessions(payload.sessions)
+  takeSessions(payload.session ? [payload.session] : [])
+  const state = (payload.snapshot as { state?: Record<string, unknown> } | undefined)?.state
+  takeWorkspaces(state?.workspaces)
+  takeSessions(state?.sessions)
+  const session = payload.session as { sessionId?: string; workspaceId?: string } | undefined
+  const announced =
+    typeof payload.announcedAt === 'string' && session?.workspaceId && session.sessionId
+      ? { workspaceId: session.workspaceId, at: payload.announcedAt }
+      : null
+  // The answer's session is a bare Session; the client files it at announcedAt.
+  if (announced && session?.sessionId) sessions[session.sessionId] = announced.at
+  return { workspaces, sessions, announced }
+}
+
+/** A response the server sends: settle the request it answers. */
+function answered(ws: WebSocket, encoded: string) {
+  const head = encoded.slice(0, 400)
+  if (!head.includes('"type":"response"')) return
+  const requestId = /"requestId":"([^"]+)"/.exec(head)?.[1]
+  const request = requestId ? asked.get(ws)?.get(requestId) : undefined
+  if (!request || !requestId) return
+  asked.get(ws)!.delete(requestId)
+  let message: { payload?: Record<string, unknown>; error?: { code?: string } }
+  try {
+    message = JSON.parse(encoded) as typeof message
+  } catch {
+    return
+  }
+  const payload = message.payload ?? {}
+  if (request.name === 'subscription.unsubscribe') {
+    const subscriptions = granted.get(ws)
+    const key = request.subscriptionId ? subscriptions?.get(request.subscriptionId) : undefined
+    if (request.subscriptionId) subscriptions?.delete(request.subscriptionId)
+    deliver(ws, { k: 'end', key: key ?? null })
+    return
+  }
+  if (request.name === 'subscription.subscribe' || request.name === 'subscription.replay') {
+    const subscriptionId = payload.subscriptionId
+    const key = keyOf(payload.scope) ?? request.key
+    if (typeof subscriptionId !== 'string' || !key) {
+      deliver(ws, { k: 'refuse', key: request.key, code: message.error?.code ?? null })
+      return
+    }
+    let subscriptions = granted.get(ws)
+    if (!subscriptions) granted.set(ws, (subscriptions = new Map()))
+    subscriptions.set(subscriptionId, key)
+    const mode = payload.mode === 'replay' || payload.mode === 'snapshot' ? payload.mode : 'live'
+    const base =
+      mode === 'replay'
+        ? ((payload.to as { sequence?: number } | undefined)?.sequence ?? null)
+        : mode === 'snapshot'
+          ? ((payload.snapshot as { cursor?: { sequence?: number } } | undefined)?.cursor
+              ?.sequence ?? null)
+          : null
+    const replayed = Array.isArray(payload.events)
+      ? (payload.events as Array<{ cursor: { sequence: number } }>).map(
+          (record) => record.cursor.sequence,
+        )
+      : []
+    deliver(ws, { k: 'grant', key, mode, base, replayed })
+  }
+  const carried = carriedOf(payload)
+  if (
+    Object.keys(carried.workspaces).length > 0 ||
+    Object.keys(carried.sessions).length > 0 ||
+    carried.announced
+  ) {
+    deliver(ws, { k: 'carried', ...carried })
+  }
+}
+
+/** A command the server received: remember it until it is answered. */
+function received(ws: WebSocket, data: unknown) {
+  const text = Buffer.isBuffer(data) ? data.toString('utf8') : typeof data === 'string' ? data : ''
+  if (!text || text.length > 256 * 1024 || !text.includes('"command"')) return
+  let message: {
+    type?: string
+    name?: string
+    requestId?: string
+    payload?: Record<string, unknown>
+  }
+  try {
+    message = JSON.parse(text) as typeof message
+  } catch {
+    return
+  }
+  if (message.type !== 'command' || !message.name || !message.requestId) return
+  const key = keyOf(message.payload?.scope)
+  let pending = asked.get(ws)
+  if (!pending) asked.set(ws, (pending = new Map()))
+  pending.set(message.requestId, {
+    name: message.name,
+    key,
+    ...(typeof message.payload?.subscriptionId === 'string'
+      ? { subscriptionId: message.payload.subscriptionId }
+      : {}),
+  })
+  if (message.name.startsWith('subscription.')) {
+    deliver(ws, { k: 'request', name: message.name, key, requestId: message.requestId })
+  }
+}
+
 const prototype = WebSocket.prototype as unknown as {
   send: (...args: unknown[]) => void
   close: (code?: number, reason?: string) => void
@@ -94,6 +274,12 @@ const prototype = WebSocket.prototype as unknown as {
 const originalSend = prototype.send
 prototype.send = function (this: WebSocket, ...args: unknown[]) {
   socketId(this)
+  if (typeof args[0] === 'string') {
+    if (publishing && args[0].startsWith('{"type":"event","name":"subscription.event"')) {
+      publishing.add(this)
+    }
+    answered(this, args[0])
+  }
   return originalSend.apply(this, args)
 }
 const originalClose = prototype.close
@@ -110,12 +296,24 @@ prototype.close = function (this: WebSocket, code?: number, reason?: string) {
       at: now(),
     })
   }
+  forget(this)
   return originalClose.call(this, code, reason)
+}
+const originalTerminate = prototype.terminate
+prototype.terminate = function (this: WebSocket) {
+  forget(this)
+  return originalTerminate.call(this)
 }
 const originalEmit = prototype.emit
 prototype.emit = function (this: WebSocket, event: string | symbol, ...args: unknown[]) {
-  if (event === 'message') touch()
-  if (event === 'close') sockets.delete(this)
+  if (event === 'message') {
+    touch()
+    received(this, args[0])
+  }
+  if (event === 'close') {
+    sockets.delete(this)
+    forget(this)
+  }
   return originalEmit.call(this, event, ...args)
 }
 
@@ -269,6 +467,22 @@ async function runScript(active: ActivePrompt, steps: ScriptStep[]): Promise<voi
 // takes over; any executable will do.
 process.env.CLAUDE_CODE_BIN = process.execPath
 
+// A restart: what the server writes while it boots (recovery) comes after
+// this marker and before the 'boot' one below. The first boot has no audit.
+if (existsSync(join(config.dataDir, DATABASE_FILENAME))) {
+  try {
+    const writer = new DatabaseSync(join(config.dataDir, DATABASE_FILENAME))
+    try {
+      writer.exec('PRAGMA busy_timeout = 10000')
+      writer.exec("INSERT INTO convergence_audit (kind) VALUES ('start')")
+    } finally {
+      writer.close()
+    }
+  } catch {
+    // Not created yet: the first boot ended before the audit was installed.
+  }
+}
+
 const claudeSdk = new FakeClaudeSdk()
 const server = await startServer({
   port: 0,
@@ -307,6 +521,190 @@ for (const name of ['publish', 'publishEvent', 'publishToFollowers']) {
 let readDatabase: DatabaseSync | undefined
 const database = () =>
   (readDatabase ??= new DatabaseSync(join(config.dataDir, DATABASE_FILENAME), { readOnly: true }))
+
+// ---------------------------------------------------------------------------
+// Provenance audit (test-only): triggers on this temp database log every
+// event appended, every write to a session's `updated_at` or provider
+// identity, and every workspace `last_used_at`, in one order (`seq`). The
+// projection writes a session's time inside the transaction that appends
+// its event (event-repository.ts, `writeScope`), so a write and the event
+// that announces it sit side by side; a write no event announces is what
+// the runtime stamp and boot recovery do. Installed once, right after the
+// first boot and before any client connects; a restart finds them in place
+// and its boot-time recovery is audited too. Nothing under `src/` changes.
+// ---------------------------------------------------------------------------
+
+{
+  const writer = new DatabaseSync(join(config.dataDir, DATABASE_FILENAME))
+  try {
+    writer.exec('PRAGMA busy_timeout = 10000')
+    writer.exec(`
+      CREATE TABLE IF NOT EXISTS convergence_audit (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL,
+        op TEXT,
+        scope_key TEXT,
+        sequence INTEGER,
+        event_name TEXT,
+        event_id TEXT,
+        ts INTEGER,
+        session_id TEXT,
+        workspace_id TEXT,
+        thread_id TEXT,
+        title INTEGER,
+        status TEXT,
+        last_activity_at TEXT,
+        old_value INTEGER,
+        new_value INTEGER,
+        old_provider TEXT,
+        new_provider TEXT
+      );
+      CREATE TRIGGER IF NOT EXISTS convergence_event AFTER INSERT ON event_log BEGIN
+        INSERT INTO convergence_audit (
+          kind, scope_key, sequence, event_name, event_id, ts, session_id, workspace_id,
+          thread_id, title, status, last_activity_at
+        ) VALUES (
+          'event', NEW.scope_key, NEW.sequence, NEW.event_name, NEW.event_id, NEW.created_at,
+          COALESCE(
+            json_extract(NEW.event_json, '$.scope.sessionId'),
+            json_extract(NEW.event_json, '$.payload.sessionId'),
+            json_extract(NEW.event_json, '$.payload.session.sessionId')
+          ),
+          COALESCE(
+            json_extract(NEW.event_json, '$.payload.workspace.workspaceId'),
+            json_extract(NEW.event_json, '$.payload.session.workspaceId'),
+            json_extract(NEW.event_json, '$.payload.workspaceId')
+          ),
+          json_extract(NEW.event_json, '$.scope.threadId'),
+          json_type(NEW.event_json, '$.payload.title') IS NOT NULL,
+          json_extract(NEW.event_json, '$.payload.status'),
+          json_extract(NEW.event_json, '$.payload.workspace.lastActivityAt')
+        );
+      END;
+      CREATE TRIGGER IF NOT EXISTS convergence_session_insert AFTER INSERT ON sessions BEGIN
+        INSERT INTO convergence_audit (kind, op, session_id, workspace_id, new_value, new_provider)
+        VALUES ('session', 'insert', NEW.session_id, NEW.workspace_id, NEW.updated_at,
+          NEW.provider_session_id);
+      END;
+      CREATE TRIGGER IF NOT EXISTS convergence_session_update
+        AFTER UPDATE OF updated_at, provider_session_id ON sessions
+        WHEN NEW.updated_at IS NOT OLD.updated_at
+          OR NEW.provider_session_id IS NOT OLD.provider_session_id
+      BEGIN
+        INSERT INTO convergence_audit (
+          kind, op, session_id, workspace_id, old_value, new_value, old_provider, new_provider
+        ) VALUES ('session', 'update', NEW.session_id, NEW.workspace_id, OLD.updated_at,
+          NEW.updated_at, OLD.provider_session_id, NEW.provider_session_id);
+      END;
+      CREATE TRIGGER IF NOT EXISTS convergence_session_delete AFTER DELETE ON sessions BEGIN
+        INSERT INTO convergence_audit (kind, op, session_id, workspace_id, old_value)
+        VALUES ('session', 'delete', OLD.session_id, OLD.workspace_id, OLD.updated_at);
+      END;
+      CREATE TRIGGER IF NOT EXISTS convergence_workspace_used
+        AFTER UPDATE OF last_used_at ON workspaces
+        WHEN NEW.last_used_at IS NOT OLD.last_used_at
+      BEGIN
+        INSERT INTO convergence_audit (kind, workspace_id, old_value, new_value)
+        VALUES ('workspace', NEW.workspace_id, OLD.last_used_at, NEW.last_used_at);
+      END;
+      INSERT INTO convergence_audit (kind) VALUES ('boot');
+    `)
+  } finally {
+    writer.close()
+  }
+}
+auditHead = () =>
+  (database().prepare('SELECT MAX(seq) AS seq FROM convergence_audit').get() as { seq: number }).seq
+
+function readAudit(): AuditRow[] {
+  const rows = database().prepare('SELECT * FROM convergence_audit ORDER BY seq').all() as Array<
+    Record<string, string | number | null>
+  >
+  return rows.map((row): AuditRow => {
+    const seq = row.seq as number
+    switch (row.kind) {
+      case 'event':
+        return {
+          seq,
+          kind: 'event',
+          scopeKey: row.scope_key as string,
+          sequence: row.sequence as number,
+          name: row.event_name as string,
+          eventId: row.event_id as string,
+          ts: row.ts as number,
+          sessionId: row.session_id as string | null,
+          workspaceId: row.workspace_id as string | null,
+          threadId: row.thread_id as string | null,
+          title: row.title === 1,
+          status: row.status as string | null,
+          lastActivityAt: row.last_activity_at as string | null,
+        }
+      case 'session':
+        return {
+          seq,
+          kind: 'session',
+          op: row.op as 'insert' | 'update' | 'delete',
+          sessionId: row.session_id as string,
+          workspaceId: row.workspace_id as string,
+          old: row.old_value as number | null,
+          new: row.new_value as number | null,
+          oldProvider: row.old_provider as string | null,
+          newProvider: row.new_provider as string | null,
+        }
+      case 'workspace':
+        return {
+          seq,
+          kind: 'workspace',
+          workspaceId: row.workspace_id as string,
+          old: row.old_value as number | null,
+          new: row.new_value as number | null,
+        }
+      default:
+        return { seq, kind: row.kind as 'start' | 'boot' }
+    }
+  })
+}
+
+// Every durable record the server publishes: who held its scope, who got it.
+{
+  const previous = sockets$.publish!
+  sockets$.publish = (...args: unknown[]) => {
+    const record = args[0] as {
+      cursor: { scope: unknown; sequence: number }
+      event: { name: string }
+    }
+    const key = keyOf(record.cursor.scope)
+    const owed: string[] = []
+    const pending: string[] = []
+    for (const [ws, subscriptions] of granted) {
+      if (ws.readyState !== WebSocket.OPEN) continue
+      if ([...subscriptions.values()].includes(key ?? '')) owed.push(socketKey(ws))
+    }
+    for (const [ws, requests] of asked) {
+      for (const request of requests.values()) {
+        if (request.key === key && request.name !== 'subscription.unsubscribe') {
+          pending.push(socketKey(ws))
+        }
+      }
+    }
+    const sent = new Set<WebSocket>()
+    publishing = sent
+    try {
+      return previous(...args)
+    } finally {
+      publishing = undefined
+      deliver(undefined, {
+        k: 'publish',
+        key,
+        seq: record.cursor.sequence,
+        name: record.event.name,
+        owed,
+        pending,
+        sent: [...sent].map(socketKey),
+      })
+    }
+  }
+}
 
 const providerSessionFor = (sessionId: string): string | undefined => {
   const row = database()
@@ -556,6 +954,14 @@ async function handle(request: ChildRequest): Promise<unknown> {
         cursor = page.nextCursor
       }
     }
+    case 'readAudit':
+      return readAudit()
+    case 'readUnidentified':
+      return (
+        database()
+          .prepare('SELECT session_id FROM sessions WHERE provider_session_id IS NULL')
+          .all() as Array<{ session_id: string }>
+      ).map((row) => row.session_id)
     case 'sampleSockets':
       return [...sockets.entries()]
         .filter(([ws]) => ws.readyState === WebSocket.OPEN)

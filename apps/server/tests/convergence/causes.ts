@@ -8,6 +8,12 @@ import {
   type ExpectedEntry,
 } from './expectation.ts'
 import type { ConvergenceResult } from './harness.ts'
+import {
+  explainRecency,
+  explainSessionTime,
+  type ClientWire,
+  type Provenance,
+} from './provenance.ts'
 
 /**
  * The documented reasons today's `main` violates the convergence property.
@@ -165,36 +171,50 @@ export function reasoningBudgetMarker(fixture: {
 }
 
 /**
+ * What a time-valued cause is judged with: the server's write and event
+ * provenance (provenance.ts), read after the check, and the client's wire.
+ */
+export interface Witness {
+  provenance: Provenance
+  wire: ClientWire
+}
+
+/**
  * §4.4, S8: `persistRuntimeSession` stamps `updated_at` once the provider
  * session resolves, after `session.created` committed, with no event. The
- * fingerprint is the stamp itself: the server's value is the time the fake
- * provider resolved that session (read from the child), within `slackMs`.
+ * fingerprint is provenance, not shape: the server's value must come from
+ * that audited write (provider identity and time, no event), and nothing
+ * the server announced or handed the client may carry a newer time, so a
+ * lost rename or status update can never pass as the stamp.
  */
 export function runtimeStamp(fixture: {
   sessionId: string
   /** What the watching client holds: the `session.created` time. */
   heldUpdatedAt: string
-  /** When the provider session resolved, from the server child. */
-  stampedAt: number
+  witness: Witness
   /** The sidebar order the stamp turns around, if the construction puts one session between. */
   order?: { held: string[]; stamped: string[] }
 }): CauseInstance {
-  const stamped = satisfies(
-    `the provider session's resolution time (${new Date(fixture.stampedAt).toISOString()}) or just after`,
-    (value) => ms(value) >= fixture.stampedAt && ms(value) - fixture.stampedAt <= 250,
-  )
+  const { provenance, wire } = fixture.witness
   return {
     name: 'RUNTIME_STAMP',
     cause:
       'persistRuntimeSession writes updated_at once the provider session resolves ' +
-      '(thread-service.ts:419-426, called at :1833), after session.created committed, with no ' +
+      '(thread-service.ts:435-443, called at :1880), after session.created committed, with no ' +
       'event; the other client keeps the event time and sorts the sidebar by it. §4.4, S8.',
     entries: [
       entry(
         BOTH,
         `sessions[${fixture.sessionId}].updatedAt`,
         equals(fixture.heldUpdatedAt),
-        stamped,
+        isTimestamp,
+        {
+          describe:
+            'the server’s value is the audited runtime stamp, and nothing offered the client a newer time',
+          check: (left, right) =>
+            explainSessionTime(provenance, fixture.sessionId, left, right, wire).cause ===
+            'RUNTIME_STAMP',
+        },
       ),
       ...(fixture.order
         ? [
@@ -213,29 +233,43 @@ export function runtimeStamp(fixture: {
 /**
  * The stamp moves the workspace's recency too (MAX(sessions.updated_at)),
  * with no event. Whether this entry shows depends on the stamp landing in a
- * later millisecond than the event the client last mirrored, so scenarios
- * name it as a residual. `held` is what the client should hold, derived from
- * what the server sent it (mirror.ts), never read from the client.
+ * later millisecond than what the client last mirrored, so scenarios name it
+ * as a residual. `held` is what the client should hold, derived from what
+ * the server sent it (mirror.ts); provenance names the write.
  */
 export function stampMovesRecency(fixture: {
   workspaceId: string
   held: string | null
-  stampedAt: number
+  witness: Witness
 }): CauseInstance {
-  return {
-    name: 'RUNTIME_STAMP_RECENCY',
-    cause:
-      'The runtime stamp (S8) also moves the workspace’s lastActivityAt, which is MAX of the ' +
+  return recencyCause(
+    'RUNTIME_STAMP_RECENCY',
+    'The runtime stamp (S8) also moves the workspace’s lastActivityAt, which is MAX of the ' +
       'sessions’ updated_at at read time (workspaces.ts:151, :238-241), with no workspace event.',
+    fixture,
+  )
+}
+
+function recencyCause(
+  name: string,
+  cause: string,
+  fixture: { workspaceId: string; held: string | null; witness: Witness },
+): CauseInstance {
+  const { provenance, wire } = fixture.witness
+  return {
+    name,
+    cause,
     entries: [
       entry(
         FRESH,
         `workspaces.${fixture.workspaceId}.lastActivityAt`,
         equals(fixture.held),
-        satisfies(
-          `the provider session's resolution time (${new Date(fixture.stampedAt).toISOString()}) or just after`,
-          (value) => ms(value) >= fixture.stampedAt && ms(value) - fixture.stampedAt <= 250,
-        ),
+        isTimestamp,
+        {
+          describe: `provenance names ${name}, and nothing offered the client a newer value`,
+          check: (left, right) =>
+            explainRecency(provenance, fixture.workspaceId, left, right, wire).cause === name,
+        },
       ),
     ],
   }
@@ -260,36 +294,26 @@ export function environmentSnapshotNeverRemoves(fixture: {
 
 /**
  * X1 (§3.6 row 14, §4.4): a workspace's `lastActivityAt` is MAX(sessions.updated_at)
- * at read time; the client moves its copy only on session.created and turn
- * events. The fingerprint: the fresh value is exactly the newest `updatedAt`
- * among the workspace's sessions in the same fresh load, and the client's is older.
+ * at read time; the client moves its copy only on session.created and the turn
+ * events it receives. By provenance: the server's value came from a session
+ * write announced only by `session.updated` (a rename, a status) or by turn
+ * events of a thread the client was not offered, and nothing offered the
+ * client a newer value (provenance.ts, `explainRecency`).
  */
 export function workspaceRecencyMirror(fixture: {
   workspaceId: string
   /** What the client should hold, derived from what the server sent it (mirror.ts). */
   held: string | null
-  /** The newest `updatedAt` among the workspace's sessions, from the server's own summaries. */
-  newest: string
+  witness: Witness
 }): CauseInstance {
-  return {
-    name: 'WORKSPACE_RECENCY_MIRROR',
-    cause:
-      'lastActivityAt is computed from MAX(sessions.updated_at) when read (workspaces.ts:151, ' +
+  return recencyCause(
+    'WORKSPACE_RECENCY_MIRROR',
+    'lastActivityAt is computed from MAX(sessions.updated_at) when read (workspaces.ts:151, ' +
       ':238-241) and changes with no workspace event; the client mirrors it only on session.created ' +
-      'and turn events (state.ts:253-270). §3.6 row 14, §4.4.',
-    entries: [
-      entry(
-        FRESH,
-        `workspaces.${fixture.workspaceId}.lastActivityAt`,
-        equals(fixture.held),
-        equals(fixture.newest),
-        {
-          describe: 'the client’s value is older',
-          check: (left, right) => left === null || ms(left) < ms(right),
-        },
-      ),
-    ],
-  }
+      'and the turn events it receives (state.ts:253-270), not on session.updated or a thread ' +
+      'snapshot. §3.6 row 14, §4.4.',
+    fixture,
+  )
 }
 
 /** X2 (§6.3): session.created carries a bare Session, so a watching client lacks the provider. */
@@ -309,27 +333,14 @@ export function sessionCreatedPartial(fixture: {
   }
 }
 
-/** The newest `updatedAt` among a workspace's session rows (normalized, or the server's own summaries). */
-export function newestSessionUpdate(
-  rows: readonly unknown[],
-  workspaceId: string,
-): string | undefined {
-  let newest: string | undefined
-  for (const row of rows as Array<{ workspaceId?: string; updatedAt?: string }>) {
-    if (row.workspaceId !== workspaceId || !row.updatedAt) continue
-    if (!newest || ms(row.updatedAt) > ms(newest)) newest = row.updatedAt
-  }
-  return newest
-}
-
 // ---------------------------------------------------------------------------
 // Fingerprints for the seeded runs
 // ---------------------------------------------------------------------------
 
-/** What a seeded run knows beyond the views. */
+/** What a seeded run knows beyond the views, read after the convergence read it judges. */
 export interface RunContext {
-  /** Host session id → when its provider session resolved (the runtime stamp), from the child. */
-  stamps: Record<string, number>
+  /** The server's write and event provenance, and the subject client's wire. */
+  witness: Witness
   /** When each restart or crash brought the server back up. */
   restarts: number[]
 }
@@ -370,8 +381,26 @@ function interruptedByRestart(
   return context.restarts.some((boot) => Math.abs(finished - boot) <= 5_000)
 }
 
+/** A recency entry whose provenance names `cause` (provenance.ts, `explainRecency`). */
+function recency(entry: DiffEntry, context: RunContext, cause: string): boolean {
+  const match = RECENCY.exec(entry.path)
+  if (!match || entry.comparison !== 'fresh') return false
+  const { provenance, wire } = context.witness
+  return explainRecency(provenance, match[1]!, entry.left, entry.right, wire).cause === cause
+}
+
 export const FINGERPRINTS: Record<string, Fingerprint> = {
   SILENT_RECOVERY: (entry, result, context) => {
+    // Recovery's own writes to session times and recency, named by provenance.
+    if (recency(entry, context, 'SILENT_RECOVERY')) return true
+    const updated = UPDATED.exec(entry.path)
+    if (updated && sessionsOnly(entry.comparison)) {
+      const { provenance, wire } = context.witness
+      return (
+        explainSessionTime(provenance, updated[1]!, entry.left, entry.right, wire).cause ===
+        'SILENT_RECOVERY'
+      )
+    }
     if (!sessionsOnly(entry.comparison)) return false
     const state = TURN_STATE.exec(entry.path)
     if (state) {
@@ -423,25 +452,16 @@ export const FINGERPRINTS: Record<string, Fingerprint> = {
   RUNTIME_STAMP: (entry, _result, context) => {
     const match = UPDATED.exec(entry.path)
     if (!match || !sessionsOnly(entry.comparison)) return false
-    const stamp = context.stamps[match[1]!]
+    const { provenance, wire } = context.witness
     return (
-      stamp !== undefined &&
-      ms(entry.left) < ms(entry.right) &&
-      ms(entry.right) >= stamp &&
-      ms(entry.right) - stamp <= 250
+      explainSessionTime(provenance, match[1]!, entry.left, entry.right, wire).cause ===
+      'RUNTIME_STAMP'
     )
   },
-  WORKSPACE_RECENCY_MIRROR: (entry, result) => {
-    const match = RECENCY.exec(entry.path)
-    if (!match || entry.comparison !== 'fresh') return false
-    // The server's own summaries, not either client's view.
-    const newest = newestSessionUpdate(result.server.sessions, match[1]!)
-    return (
-      newest !== undefined &&
-      entry.right === newest &&
-      (entry.left === null || ms(entry.left) < ms(newest))
-    )
-  },
+  WORKSPACE_RECENCY_MIRROR: (entry, _result, context) =>
+    recency(entry, context, 'WORKSPACE_RECENCY_MIRROR'),
+  RUNTIME_STAMP_RECENCY: (entry, _result, context) =>
+    recency(entry, context, 'RUNTIME_STAMP_RECENCY'),
   SESSION_CREATED_PARTIAL: (entry) =>
     sessionsOnly(entry.comparison) &&
     PROVIDER.test(entry.path) &&

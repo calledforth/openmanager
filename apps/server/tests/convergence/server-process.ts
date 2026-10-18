@@ -7,6 +7,7 @@ import type {
   ServerOp,
   ServerThreadRead,
   SocketSample,
+  AuditRow,
 } from './child-protocol.ts'
 
 const CHILD_ENTRY = fileURLToPath(new URL('./server-child.ts', import.meta.url))
@@ -154,6 +155,16 @@ export class ServerProcess {
 
   readSessions(): Promise<unknown[]> {
     return this.call({ op: 'readSessions' })
+  }
+
+  /** The provenance audit (child-protocol.ts `AuditRow`), oldest first, across every generation. */
+  readAudit(): Promise<AuditRow[]> {
+    return this.call({ op: 'readAudit' })
+  }
+
+  /** Sessions whose row holds no provider session identity. */
+  readUnidentified(): Promise<string[]> {
+    return this.call({ op: 'readUnidentified' })
   }
 
   sampleSockets(): Promise<SocketSample[]> {

@@ -456,6 +456,8 @@ export class LinkProxy {
   readonly serverSidePorts = new Set<number>()
   /** Proxy connection id → the client's own port, so frames can be told apart per client. */
   readonly clientPorts = new Map<number, number>()
+  /** Proxy connection id → the port of its socket to the server, which the server sees as remote. */
+  readonly serverPorts = new Map<number, number>()
   readonly stats: LinkProxyStats = {
     accepted: 0,
     refused: 0,
@@ -606,7 +608,10 @@ export class LinkProxy {
     const id = this.nextId++
     const server = connect(this.target, '127.0.0.1')
     server.once('connect', () => {
-      if (server.localPort !== undefined) this.serverSidePorts.add(server.localPort)
+      if (server.localPort !== undefined) {
+        this.serverSidePorts.add(server.localPort)
+        this.serverPorts.set(id, server.localPort)
+      }
     })
     client.setNoDelay(true)
     server.setNoDelay(true)

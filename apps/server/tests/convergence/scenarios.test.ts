@@ -34,7 +34,7 @@ import {
 import { Driver, sleep, until, type Rig, type TestClient } from './harness.ts'
 import type { FrameFields, FrameRecord } from './link-proxy.ts'
 import { serverSessionsView, serverThreadView, type ThreadView } from './normalize.ts'
-import { recencyMirror, s8Causes, x2Causes } from './fixtures.ts'
+import { recencyMirror, s8Causes, witnessOf, x2Causes } from './fixtures.ts'
 import { createdAt, mirroredRecency } from './mirror.ts'
 import { afterPhase, futureTest, scenario } from './scenario.ts'
 import {
@@ -603,19 +603,18 @@ describe('§8.4 scenarios on main', () => {
       // A valid baseline before the new session's stamp is induced: B agrees
       // with the server except for the older session's own X2 diff (its
       // provider, its stamp), instantiated from what B was sent.
-      const olderStamps = await rig.server.readStamps()
-      const baseline = () =>
+      const baseline = async () =>
         x2Causes({
           sessionId: older.sessionId,
           workspaceId: rig.workspaceId,
           providerId: 'opencode',
           createdAt: createdAt(rig.framesOf(b), older.sessionId),
-          stampedAt: olderStamps[older.sessionId]!,
           heldRecency: mirroredRecency(rig.framesOf(b), rig.workspaceId),
+          witness: await witnessOf(rig, b),
         })
       await expectConvergesExcept('S8 baseline', rig, b, [
-        () => baseline().primary,
-        ...[0, 1].map((index) => () => baseline().residuals[index]!),
+        async () => (await baseline()).primary,
+        ...[0, 1].map((index) => async () => (await baseline()).residuals[index]!),
       ])
       const created = await createSession(rig, a, { title: 'New', open: false, quiet: false })
       // Inside the 500 ms before the new session's stamp: the older one moves above it.
@@ -625,23 +624,22 @@ describe('§8.4 scenarios on main', () => {
         'B to list the new session',
       )
       await rig.waitQuiet()
-      const stamps = await rig.server.readStamps()
-      const causes = () =>
+      const causes = async () =>
         s8Causes({
           olderId: older.sessionId,
           newId: created.sessionId,
           workspaceId: rig.workspaceId,
           providerId: 'opencode',
           createdAt: createdAt(rig.framesOf(b), created.sessionId),
-          stampedAt: stamps[created.sessionId]!,
           heldRecency: mirroredRecency(rig.framesOf(b), rig.workspaceId),
+          witness: await witnessOf(rig, b),
         })
       await demonstrateDiff(
         'S8',
         rig,
         b,
-        () => causes().primary,
-        [0, 1].map((index) => () => causes().residuals[index]!),
+        async () => (await causes()).primary,
+        [0, 1].map((index) => async () => (await causes()).residuals[index]!),
       )
     },
   )
@@ -676,19 +674,19 @@ describe('§8.4 scenarios on main', () => {
       )
       await finish(rig, a, parent, turnId)
       const result = await rig.checkConvergence(b)
-      // The child's stamp has no provider session of its own: it follows the
-      // insert, so it lands at the insert's announced time or just after.
-      const announced = createdAt(rig.framesOf(b), child.sessionId)
+      // The child's stamp: its provider identity written with no event, right
+      // after the insert; provenance names the write.
+      const witness = await witnessOf(rig, b)
       const verdict = verdictOf(result, undefined, [
         runtimeStamp({
           sessionId: child.sessionId,
-          heldUpdatedAt: announced,
-          stampedAt: Date.parse(announced),
+          heldUpdatedAt: createdAt(rig.framesOf(b), child.sessionId),
+          witness,
         }),
         stampMovesRecency({
           workspaceId: rig.workspaceId,
           held: mirroredRecency(rig.framesOf(b), rig.workspaceId),
-          stampedAt: Date.parse(announced),
+          witness,
         }),
         sessionCreatedPartial({
           sessionIds: [parent.sessionId, child.sessionId],
@@ -1193,24 +1191,23 @@ describe('divergences on main that §8.4 does not list', () => {
       const target = await createSession(rig, a, { open: false, quiet: false })
       await until(() => b.client.getState().sessions[target.sessionId], 'B to list the new session')
       await rig.waitQuiet()
-      const stamps = await rig.server.readStamps()
       // Nothing follows the creation, so the runtime stamp (S8's cause) shows
-      // too: named, for this session, at its stamp time.
-      const causes = () =>
+      // too: named for this session, by provenance.
+      const causes = async () =>
         x2Causes({
           sessionId: target.sessionId,
           workspaceId: rig.workspaceId,
           providerId: 'opencode',
           createdAt: createdAt(rig.framesOf(b), target.sessionId),
-          stampedAt: stamps[target.sessionId]!,
           heldRecency: mirroredRecency(rig.framesOf(b), rig.workspaceId),
+          witness: await witnessOf(rig, b),
         })
       await demonstrateDiff(
         'X2',
         rig,
         b,
-        () => causes().primary,
-        [0, 1].map((index) => () => causes().residuals[index]!),
+        async () => (await causes()).primary,
+        [0, 1].map((index) => async () => (await causes()).residuals[index]!),
       )
     },
   )

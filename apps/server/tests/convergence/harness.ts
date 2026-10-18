@@ -28,7 +28,10 @@ import {
   type ThreadView,
 } from './normalize.ts'
 import { ServerProcess } from './server-process.ts'
-import type { ProviderOp } from './child-protocol.ts'
+import { DELIVERIES_FILENAME, type Delivery, type ProviderOp } from './child-protocol.ts'
+import type { ClientWire, Provenance } from './provenance.ts'
+import { scopeKey } from '../../src/db/event-repository.ts'
+import type { SubscriptionScope } from '@openmanager/protocol/node'
 
 /** The batcher holds deltas for at most 100 ms; quiet is that window plus margin (§10.1). */
 export const QUIET_MS = 300
@@ -132,7 +135,7 @@ export class Rig {
 
   static async create(options: RigOptions = {}): Promise<Rig> {
     // The registry and the provider see the long spelling of the directory,
-    // whatever 8.3 short name the temp directory is reached by (CAL-53).
+    // whatever 8.3 short name the temp directory is reached by (Windows CI).
     const dataDir = await realpath(await mkdtemp(join(tmpdir(), 'om-convergence-')))
     const workspaceRoot = join(dataDir, 'workspace')
     await mkdir(workspaceRoot)
@@ -317,6 +320,73 @@ export class Rig {
       const port = this.proxy.clientPorts.get(frame.connection)
       return port !== undefined && client.ports.has(port)
     })
+  }
+
+  /**
+   * The server's write and event provenance (provenance.ts): the child's
+   * audit and every generation's delivery log, read now. A line a hard kill
+   * cut short is dropped.
+   */
+  async provenance(): Promise<Provenance> {
+    const audit = await this.server.readAudit()
+    const text = await readFile(join(this.dataDir, DELIVERIES_FILENAME), 'utf8').catch(() => '')
+    const deliveries: Delivery[] = []
+    for (const line of text.split('\n')) {
+      if (!line) continue
+      try {
+        deliveries.push(JSON.parse(line) as Delivery)
+      } catch {
+        // The last line of a killed process.
+      }
+    }
+    return { audit, deliveries }
+  }
+
+  /**
+   * One client's sockets as the server saw them (its own ports on a direct
+   * link, the proxy's server-side ports otherwise), and what reached it: a
+   * record the server handed a proxied socket reached the client if the
+   * proxy recorded it on that connection.
+   */
+  wireOf(client: TestClient): ClientWire {
+    const ports = new Set<number>()
+    /** Server-side port → proxy connection, for this client's proxied sockets. */
+    const proxied = new Map<number, number>()
+    const viaProxy = new Set<number>()
+    for (const [connection, clientPort] of this.proxy.clientPorts) {
+      if (!client.ports.has(clientPort)) continue
+      viaProxy.add(clientPort)
+      const serverPort = this.proxy.serverPorts.get(connection)
+      if (serverPort !== undefined) {
+        ports.add(serverPort)
+        proxied.set(serverPort, connection)
+      }
+    }
+    // A direct socket: the server sees the client's own port.
+    for (const port of client.ports) if (!viaProxy.has(port)) ports.add(port)
+    const recorded = new Set<string>()
+    for (const frame of this.proxy.frames) {
+      const record = (
+        frame.json as
+          | {
+              name?: string
+              payload?: { record?: { cursor?: { scope?: unknown; sequence?: number } } }
+            }
+          | undefined
+      )?.payload?.record
+      if (frame.direction !== 'down' || !record?.cursor?.scope) continue
+      recorded.add(
+        `${frame.connection}|${scopeKey(record.cursor.scope as SubscriptionScope)}|${record.cursor.sequence}`,
+      )
+    }
+    return {
+      ports,
+      reached: (key, sequence, port) => {
+        const connection = proxied.get(port)
+        if (connection === undefined) return undefined
+        return recorded.has(`${connection}|${key}|${sequence}`)
+      },
+    }
   }
 
   provider(op: ProviderOp): Promise<unknown> {

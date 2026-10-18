@@ -4,6 +4,11 @@
  * item than the cause produces, shows the cause only in part, or has the
  * fresh load disagree with the server; it must ask to flip when only the
  * named residuals are left. The seeded runs' fingerprints get the same tests.
+ *
+ * Time-valued causes are judged by provenance (provenance.ts), so each test
+ * writes the server's story as the child's audit and delivery log would
+ * record it (`Story`), including the adversarial ones: a rename or a
+ * `turn.started` the client missed must never pass as a known cause.
  */
 import { describe, expect, it } from 'vitest'
 import {
@@ -17,22 +22,183 @@ import {
 import { judge } from './expectation.ts'
 import { verdictOf } from './evidence.ts'
 import { s8Causes, x2Causes } from './fixtures.ts'
+import type { AuditRow, Delivery } from './child-protocol.ts'
 import type { ConvergenceResult } from './harness.ts'
 import { ABSENT, type DiffEntry, type NormalizedView } from './normalize.ts'
+import type { ClientWire, Provenance } from './provenance.ts'
 
 const T = 'thread-1'
 const S = 'session-new'
 const O = 'session-older'
 const W = 'workspace-1'
+const E = '["environment","env-1"]'
+const K = `["thread","env-1","${S}","${T}"]`
+const at = (iso: string) => Date.parse(iso)
 const held = '2026-10-18T10:00:00.000Z'
-const stampedAt = Date.parse('2026-10-18T10:00:00.520Z')
 const stamped = '2026-10-18T10:00:00.523Z'
+/** What B was sent last for the workspace: markUsed, just before the stamp. */
+const usedAt = '2026-10-18T10:00:00.521Z'
+/** The client under test: one socket, port 5001. */
+const SOCKET = '1:1'
+const wire: ClientWire = { ports: new Set([5001]) }
 
-const s8 = () =>
+/**
+ * A server's story, as the child's triggers and delivery log record it. The
+ * session-time writes and their events go in together, as the projection
+ * commits them (event-repository.ts, `writeScope`).
+ */
+class Story {
+  readonly audit: AuditRow[] = []
+  readonly deliveries: Delivery[] = []
+  private readonly sequences = new Map<string, number>()
+  private readonly providers = new Map<string, string | null>()
+  private readonly times = new Map<string, number>()
+
+  constructor() {
+    this.audit.push({ seq: 1, kind: 'boot' })
+    this.deliver({ k: 'grant', key: E, mode: 'live', base: null, replayed: [] })
+  }
+
+  private next() {
+    return this.audit.length + 1
+  }
+
+  private deliver(record: Record<string, unknown>, socket: string | null = SOCKET) {
+    this.deliveries.push({
+      ...(socket ? { s: socket, port: 5001 } : {}),
+      a: this.audit.length,
+      at: 0,
+      ...record,
+    } as Delivery)
+  }
+
+  event(
+    name: string,
+    ts: string,
+    fields: Partial<Extract<AuditRow, { kind: 'event' }>> = {},
+  ): Extract<AuditRow, { kind: 'event' }> {
+    const scopeKey = fields.scopeKey ?? E
+    const sequence = (this.sequences.get(scopeKey) ?? 0) + 1
+    this.sequences.set(scopeKey, sequence)
+    const row = {
+      seq: this.next(),
+      kind: 'event' as const,
+      scopeKey,
+      sequence,
+      name,
+      eventId: `${name}-${sequence}`,
+      ts: at(ts),
+      sessionId: null,
+      workspaceId: null,
+      threadId: null,
+      title: false,
+      status: null,
+      lastActivityAt: null,
+      ...fields,
+    }
+    this.audit.push(row)
+    return row
+  }
+
+  /** A publish of `event` to this client: owed and handed over, or owed and not. */
+  publish(event: { scopeKey: string; sequence: number; name: string }, handed = true) {
+    this.deliver(
+      {
+        k: 'publish',
+        key: event.scopeKey,
+        seq: event.sequence,
+        name: event.name,
+        owed: [SOCKET],
+        pending: [],
+        sent: handed ? [SOCKET] : [],
+      },
+      null,
+    )
+  }
+
+  write(sessionId: string, ts: string, provider?: string) {
+    const old = this.times.get(sessionId) ?? null
+    const oldProvider = this.providers.get(sessionId) ?? null
+    const newProvider = provider ?? oldProvider
+    this.audit.push({
+      seq: this.next(),
+      kind: 'session',
+      op: old === null ? 'insert' : 'update',
+      sessionId,
+      workspaceId: W,
+      old,
+      new: at(ts),
+      oldProvider: old === null ? null : oldProvider,
+      newProvider,
+    })
+    this.times.set(sessionId, at(ts))
+    this.providers.set(sessionId, newProvider)
+  }
+
+  created(sessionId: string, ts: string) {
+    this.publish(this.event('session.created', ts, { sessionId, workspaceId: W }))
+    this.write(sessionId, ts)
+  }
+
+  /** The provider resolves: markUsed (and its workspace.updated), then the silent stamp. */
+  started(sessionId: string, used: string, stamp: string) {
+    this.audit.push({
+      seq: this.next(),
+      kind: 'workspace',
+      workspaceId: W,
+      old: null,
+      new: at(used),
+    })
+    this.publish(this.event('workspace.updated', used, { workspaceId: W, lastActivityAt: used }))
+    this.write(sessionId, stamp, `fake-${sessionId}`)
+  }
+
+  renamed(sessionId: string, ts: string) {
+    this.publish(this.event('session.updated', ts, { sessionId, title: true }))
+    this.write(sessionId, ts)
+  }
+
+  /** A turn starts: the thread event, its write, and the status event, in one transaction. */
+  turnStarted(sessionId: string, ts: string, handed: boolean | 'not subscribed' = true) {
+    const started = this.event('turn.started', ts, {
+      scopeKey: K,
+      sessionId,
+      threadId: T,
+    })
+    if (handed !== 'not subscribed') this.publish(started, handed)
+    this.write(sessionId, ts)
+    this.publish(this.event('session.updated', ts, { sessionId, status: 'running' }))
+  }
+
+  subscribeThread() {
+    this.deliver({ k: 'grant', key: K, mode: 'snapshot', base: 0, replayed: [] })
+  }
+
+  get provenance(): Provenance {
+    return { audit: this.audit, deliveries: this.deliveries }
+  }
+
+  get witness() {
+    return { provenance: this.provenance, wire }
+  }
+}
+
+/** S8's story: Older stamped, New announced, Older renamed, then New's provider resolves. */
+function s8Story(): Story {
+  const story = new Story()
+  story.created(O, '2026-10-18T09:59:59.000Z')
+  story.started(O, '2026-10-18T09:59:59.400Z', '2026-10-18T09:59:59.401Z')
+  story.created(S, held)
+  story.renamed(O, '2026-10-18T10:00:00.200Z')
+  story.started(S, usedAt, stamped)
+  return story
+}
+
+const s8 = (story = s8Story()) =>
   runtimeStamp({
     sessionId: S,
     heldUpdatedAt: held,
-    stampedAt,
+    witness: story.witness,
     order: { held: [O, S], stamped: [S, O] },
   })
 const x2 = () => sessionCreatedPartial({ sessionIds: [O, S], providerId: 'opencode' })
@@ -174,45 +340,122 @@ function result(
   } as ConvergenceResult
 }
 
+const contextOf = (story: Story) => ({ witness: story.witness, restarts: [] })
+const recencyEntry = (left: unknown, right: unknown) =>
+  e('fresh', `workspaces.${W}.lastActivityAt`, left, right)
+const timeEntries = (left: unknown, right: unknown) =>
+  ['fresh', 'server'].map((comparison) => e(comparison, `sessions[${S}].updatedAt`, left, right))
+
+/** X1's story: a turn the client watched, then a rename (session.updated, no workspace event). */
+function x1Story() {
+  const story = new Story()
+  story.created(S, held)
+  story.started(S, '2026-10-18T10:00:00.030Z', '2026-10-18T10:00:00.031Z')
+  story.subscribeThread()
+  story.turnStarted(S, '2026-10-18T10:00:00.400Z')
+  story.renamed(S, '2026-10-18T10:00:00.800Z')
+  return story
+}
+
 describe('the seeded runs’ fingerprints', () => {
-  it('explain recency only when the fresh value is the server’s newest session update', () => {
-    const fresh = {
-      sessions: [{ sessionId: S, workspaceId: W, updatedAt: stamped }],
-    }
-    const right = result([e('fresh', `workspaces.${W}.lastActivityAt`, held, stamped)], fresh)
-    expect(classify(right, { stamps: {}, restarts: [] })[0]!.cause).toBe('WORKSPACE_RECENCY_MIRROR')
-    // Any other time is not this cause.
-    const other = result(
-      [e('fresh', `workspaces.${W}.lastActivityAt`, held, '2026-10-18T11:00:00.000Z')],
-      fresh,
-    )
-    expect(classify(other, { stamps: {}, restarts: [] })[0]!.cause).toBeUndefined()
+  it('explain recency only by provenance: an unannounced write, nothing newer offered', () => {
+    const story = x1Story()
+    const lastTurn = '2026-10-18T10:00:00.400Z'
+    const renamed = '2026-10-18T10:00:00.800Z'
+    const classifyOne = (entry: DiffEntry) =>
+      classify(result([entry], {}), contextOf(story))[0]!.cause
+    expect(classifyOne(recencyEntry(lastTurn, renamed))).toBe('WORKSPACE_RECENCY_MIRROR')
+    // Any other server time is not what the writes add up to.
+    expect(classifyOne(recencyEntry(lastTurn, '2026-10-18T11:00:00.000Z'))).toBeUndefined()
     // Nor the other way round.
-    const backwards = result(
-      [e('fresh', `workspaces.${W}.lastActivityAt`, '2026-10-18T12:00:00.000Z', stamped)],
-      fresh,
+    expect(classifyOne(recencyEntry(renamed, lastTurn))).toBeUndefined()
+    // A client older than the turn it was handed lost that turn.started.
+    expect(classifyOne(recencyEntry(held, renamed))).toBeUndefined()
+    // The scenarios' instance agrees.
+    const cause = workspaceRecencyMirror({ workspaceId: W, held: lastTurn, witness: story.witness })
+    expect(judge([recencyEntry(lastTurn, renamed)], cause).outcome).toBe('primary-remains')
+    expect(judge([recencyEntry(lastTurn, '2027-01-01T00:00:00.000Z')], cause).outcome).toBe(
+      'unexpected',
     )
-    expect(classify(backwards, { stamps: {}, restarts: [] })[0]!.cause).toBeUndefined()
-    // The scenarios' instance agrees, given what the client was sent and the server's newest.
-    const cause = workspaceRecencyMirror({ workspaceId: W, held, newest: stamped })
-    expect(judge(right.entries, cause).outcome).toBe('primary-remains')
-    expect(judge(other.entries, cause).outcome).toBe('unexpected')
     // A client value other than the one it was sent is not this cause, even if older.
-    const drifted = [
-      e('fresh', `workspaces.${W}.lastActivityAt`, '2026-10-18T09:00:00.000Z', stamped),
-    ]
-    expect(judge(drifted, cause).outcome).toBe('unexpected')
+    expect(judge([recencyEntry('2026-10-18T09:00:00.000Z', renamed)], cause).outcome).toBe(
+      'unexpected',
+    )
   })
 
-  it('explain a stamp only at the provider session’s resolution time', () => {
-    const entries = [e('fresh', `sessions[${S}].updatedAt`, held, stamped)]
+  it('explain a stamp only when the server’s value is the audited, unannounced stamp', () => {
+    const story = s8Story()
+    const entries = timeEntries(held, stamped)
+    expect(classify(result(entries, {}), contextOf(story))[0]!.cause).toBe('RUNTIME_STAMP')
+    // A server time the stamp did not write.
     expect(
-      classify(result(entries, {}), { stamps: { [S]: stampedAt }, restarts: [] })[0]!.cause,
-    ).toBe('RUNTIME_STAMP')
-    expect(classify(result(entries, {}), { stamps: {}, restarts: [] })[0]!.cause).toBeUndefined()
-    expect(
-      classify(result(entries, {}), { stamps: { [S]: stampedAt - 5_000 }, restarts: [] })[0]!.cause,
+      classify(result(timeEntries(held, '2026-10-18T10:00:00.700Z'), {}), contextOf(story))[0]!
+        .cause,
     ).toBeUndefined()
+    // No stamp in the story: the same shape is nobody's cause.
+    const unstamped = new Story()
+    unstamped.created(S, held)
+    unstamped.write(S, stamped)
+    expect(classify(result(entries, {}), contextOf(unstamped))[0]!.cause).toBeUndefined()
+  })
+
+  it('never pass a missed rename as the stamp, either way round', () => {
+    // Stamp, then a rename whose session.updated the client missed.
+    const after = s8Story()
+    const renamed = '2026-10-18T10:00:00.900Z'
+    after.renamed(S, renamed)
+    expect(
+      classify(result(timeEntries(held, renamed), {}), contextOf(after))[0]!.cause,
+    ).toBeUndefined()
+    // A rename the client missed, then the stamp: the stamp is the server's
+    // value, but a newer time than the client's was announced.
+    const before = new Story()
+    before.created(S, held)
+    before.renamed(S, '2026-10-18T10:00:00.300Z')
+    before.started(S, usedAt, stamped)
+    expect(
+      classify(result(timeEntries(held, stamped), {}), contextOf(before))[0]!.cause,
+    ).toBeUndefined()
+    // The scenarios' builder refuses both.
+    for (const [story, right] of [
+      [after, renamed],
+      [before, stamped],
+    ] as const) {
+      const cause = runtimeStamp({ sessionId: S, heldUpdatedAt: held, witness: story.witness })
+      expect(judge(timeEntries(held, right), cause).outcome).toBe('unexpected')
+    }
+  })
+
+  it('never pass a missed turn.started as recency', () => {
+    const story = new Story()
+    story.created(S, held)
+    story.started(S, usedAt, stamped)
+    story.subscribeThread()
+    const turnAt = '2026-10-18T10:00:01.000Z'
+    // Handed to the client's socket, and the client still holds markUsed's value.
+    story.turnStarted(S, turnAt)
+    expect(
+      classify(result([recencyEntry(usedAt, turnAt)], {}), contextOf(story))[0]!.cause,
+    ).toBeUndefined()
+    // Owed to the open socket and never handed over: the server's own loss.
+    const lost = new Story()
+    lost.created(S, held)
+    lost.started(S, usedAt, stamped)
+    lost.subscribeThread()
+    lost.turnStarted(S, turnAt, false)
+    expect(
+      classify(result([recencyEntry(usedAt, turnAt)], {}), contextOf(lost))[0]!.cause,
+    ).toBeUndefined()
+    const cause = workspaceRecencyMirror({ workspaceId: W, held: usedAt, witness: lost.witness })
+    expect(judge([recencyEntry(usedAt, turnAt)], cause).outcome).toBe('unexpected')
+    // A client that never watched the thread is X1's: nothing offered it the turn.
+    const sidebar = new Story()
+    sidebar.created(S, held)
+    sidebar.started(S, usedAt, stamped)
+    sidebar.turnStarted(S, turnAt, 'not subscribed')
+    expect(classify(result([recencyEntry(usedAt, turnAt)], {}), contextOf(sidebar))[0]!.cause).toBe(
+      'WORKSPACE_RECENCY_MIRROR',
+    )
   })
 
   it('explain a closed thought only when something followed it or its turn ended', () => {
@@ -238,7 +481,7 @@ describe('the seeded runs’ fingerprints', () => {
     })
     const alone = [{ kind: 'reasoning', id: 'r1', turnId: 'u1' }]
     const followed = [...alone, { kind: 'message', id: 'm1', turnId: 'u1' }]
-    const context = { stamps: {}, restarts: [] }
+    const context = contextOf(new Story())
     expect(classify(result(entries, {}, threadWith(followed, 'running')), context)[0]!.cause).toBe(
       'THOUGHT_CLOSED_BY_FOLD',
     )
@@ -253,7 +496,7 @@ describe('the seeded runs’ fingerprints', () => {
 
   it('never explain a fresh-vs-server disagreement', () => {
     const entries = [e('fresh-vs-server', `sessions[${S}].providerId`, ABSENT, 'opencode')]
-    expect(classify(result(entries, {}), { stamps: {}, restarts: [] })[0]!.cause).toBeUndefined()
+    expect(classify(result(entries, {}), contextOf(new Story()))[0]!.cause).toBeUndefined()
   })
 })
 
@@ -262,15 +505,16 @@ describe('the seeded runs’ fingerprints', () => {
  * (fixtures.ts), judged through verdictOf as demonstrateDiff judges them.
  */
 describe('the S8 and X2 expectation factories', () => {
+  const story = s8Story()
   const captured = {
     olderId: O,
     newId: S,
     workspaceId: W,
     providerId: 'opencode',
     createdAt: held,
-    stampedAt,
     // What B was sent last for the workspace (markUsed, just before the stamp).
-    heldRecency: '2026-10-18T10:00:00.521Z',
+    heldRecency: usedAt,
+    witness: story.witness,
   }
   const recency = (left: unknown, right: unknown) =>
     e('fresh', `workspaces.${W}.lastActivityAt`, left, right)
@@ -283,6 +527,17 @@ describe('the S8 and X2 expectation factories', () => {
   it('accepts the genuine S8 diff, with and without the recency entry', () => {
     expect(verdict(genuine()).outcome).toBe('primary-remains')
     expect(verdict(s8Diff()).outcome).toBe('primary-remains')
+  })
+
+  it('fails when the stamp hides a rename the client missed', () => {
+    const renamed = s8Story()
+    const at = '2026-10-18T10:00:00.900Z'
+    renamed.renamed(S, at)
+    const { primary, residuals } = s8Causes({ ...captured, witness: renamed.witness })
+    const entries = s8Diff().map((entry) =>
+      entry.path === `sessions[${S}].updatedAt` ? { ...entry, right: at } : entry,
+    )
+    expect(verdictOf(result(entries, {}), primary, residuals).outcome).toBe('unexpected')
   })
 
   it('fails when a future workspace timestamp rides along with the genuine stamp', () => {

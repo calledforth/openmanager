@@ -154,8 +154,10 @@ class ModelRun {
   checks = 0
   /** The fake provider's current `session/new` delay; a restart resets it to 0. */
   delayMs = 0
-  /** Stamp times from every server generation, and when each restart came back. */
-  private readonly context: RunContext = { stamps: {}, restarts: [] }
+  /** When each restart came back. */
+  private readonly restarts: number[] = []
+  /** Stamp times from every server generation (orphan bookkeeping only). */
+  private readonly stamps: Record<string, number> = {}
   skippedChecks = 0
   private a!: TestClient
   private readonly model: Model = { sessions: [], active: null, providerHealthy: true }
@@ -185,7 +187,7 @@ class ModelRun {
   /** After a restart or crash, no turn is running anywhere and the provider is new. */
   /** Keep the stamp times of this server generation; a crash would lose them. */
   private async collectStamps() {
-    Object.assign(this.context.stamps, await this.rig.server.readStamps())
+    Object.assign(this.stamps, await this.rig.server.readStamps())
   }
 
   private forgetTurns() {
@@ -193,7 +195,7 @@ class ModelRun {
     // A new process starts from the rig's configured delay (none).
     this.delayMs = 0
     for (const session of this.model.sessions) {
-      if (this.context.stamps[session.sessionId] === undefined) session.orphaned = true
+      if (this.stamps[session.sessionId] === undefined) session.orphaned = true
       session.turn = null
       session.stale = true
     }
@@ -388,14 +390,14 @@ class ModelRun {
         await this.collectStamps()
         await this.reconnectAfter(async () => {
           await this.rig.restart()
-          this.context.restarts.push(Date.now())
+          this.restarts.push(Date.now())
         })
         this.forgetTurns()
         return
       case 'crashServer':
         await this.reconnectAfter(async () => {
           await this.rig.crash()
-          this.context.restarts.push(Date.now())
+          this.restarts.push(Date.now())
         })
         this.forgetTurns()
         return
@@ -420,17 +422,25 @@ class ModelRun {
     }
     this.checks += 1
     await this.connected()
-    await this.collectStamps()
-    const unknown = (checked: ConvergenceResult) =>
-      classify(checked, this.context)
-        .filter(({ cause }) => cause === undefined)
-        .map(({ entry }) => entry)
+    // The context is read after each convergence read, never before: settling
+    // can finish a provider creation (and its stamp) after any earlier read.
+    const judge = async (checked: ConvergenceResult) => {
+      const context: RunContext = {
+        witness: { provenance: await this.rig.provenance(), wire: this.rig.wireOf(this.a) },
+        restarts: this.restarts,
+      }
+      return classify(checked, context)
+    }
+    const unknown = (classified: Awaited<ReturnType<typeof judge>>) =>
+      classified.filter(({ cause }) => cause === undefined).map(({ entry }) => entry)
     let result = await this.rig.checkConvergence(this.a, { timeoutMs: 1 })
-    if (!result.converged && unknown(result).length > 0) {
+    let classified = await judge(result)
+    if (!result.converged && unknown(classified).length > 0) {
       result = await this.rig.checkConvergence(this.a)
+      classified = await judge(result)
     }
     if (result.converged) return
-    const unexplained = unknown(result)
+    const unexplained = unknown(classified)
     if (unexplained.length > 0) {
       throw new Error(
         `Seed ${this.seed} diverged for a reason no known cause explains, after:\n` +
@@ -438,7 +448,7 @@ class ModelRun {
           `Unexplained:\n${describeDiff(unexplained)}\n${report(result)}`,
       )
     }
-    for (const { cause } of classify(result, this.context)) if (cause) this.known.add(cause)
+    for (const { cause } of classified) if (cause) this.known.add(cause)
   }
 
   async run(): Promise<void> {
