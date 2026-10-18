@@ -14,7 +14,11 @@ export function environmentCacheName(environmentId: string): string {
   return `openmanager-environment:${environmentId}`
 }
 
-function cacheState(state: EnvironmentState): EnvironmentState {
+/**
+ * What the cache keeps of a state, and what a reload starts from. Exported so
+ * the convergence harness can reload a client exactly as this app does.
+ */
+export function cacheState(state: EnvironmentState): EnvironmentState {
   return {
     ...state,
     connection: createInitialState().connection,
