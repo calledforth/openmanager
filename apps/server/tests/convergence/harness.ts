@@ -181,10 +181,18 @@ export class Rig {
     return Math.round(perf - this.started)
   }
 
-  /** Open a client through the proxy (the link under test) or straight to the server. */
+  /**
+   * Open a client through the proxy (the link under test) or straight to the
+   * server. By default this waits until the client is connected and its own
+   * resync is answered (catalog reads, and the open of a cached active
+   * session): a fixture that acts during that resync races the client's own
+   * `session.open`, which overtakes the fixture's and resolves it before the
+   * chat is subscribed (S19). `wait: 'connected'` keeps that race, for S19;
+   * `wait: false` does not wait at all.
+   */
   async connect(
     name: string,
-    options: { link?: Link; store?: EnvironmentStore; wait?: boolean } = {},
+    options: { link?: Link; store?: EnvironmentStore; wait?: boolean | 'connected' } = {},
   ): Promise<TestClient> {
     const link = options.link ?? 'proxy'
     const closes: ClientClose[] = []
@@ -297,6 +305,9 @@ export class Rig {
         15_000,
       )
     }
+    if (options.wait === undefined || options.wait === true) {
+      await until(() => !testClient.busy(), `${name} to finish its resync`, 15_000)
+    }
     return testClient
   }
 
@@ -305,12 +316,17 @@ export class Rig {
    * app's cache would hand it (`cacheState`, the pure part of the IndexedDB
    * round trip).
    */
-  async reload(old: TestClient, link: Link = 'proxy'): Promise<TestClient> {
+  async reload(
+    old: TestClient,
+    link: Link = 'proxy',
+    wait: boolean | 'connected' = true,
+  ): Promise<TestClient> {
     const cached = cacheState(old.client.getState())
     old.dispose()
     return this.connect(`${old.name}*`, {
       link,
       store: createEnvironmentStore(structuredClone(cached)),
+      wait,
     })
   }
 

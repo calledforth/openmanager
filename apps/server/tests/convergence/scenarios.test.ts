@@ -538,13 +538,14 @@ describe('§8.4 scenarios on main', () => {
 
   scenario('S6(b) thoughts over 384 KiB (§7.1)', {}, async (rig) => {
     const a = await rig.connect('A')
-    // Quiet creation isolates the reasoning budget. Created without waiting,
-    // this fixture once (1 run in 75) also showed a workspace-recency entry
-    // with no session entry: A held the lastActivityAt the markUsed event
-    // sent it, the server's was the turn's start, and no live turn.started
-    // had reached A's socket. That is the recency mirror missing a turn start
-    // (X1's family; the seeded runs' fingerprint classifies it), not the
-    // budget; why the live event was missing was not determined.
+    // Quiet creation isolates the reasoning budget. Before connect() waited
+    // for the client's own resync, this fixture once (1 run in 75, under
+    // load) also showed a recency-only entry: no live turn.started had
+    // reached A, though the session.updated committed with it had. A's open
+    // had been overtaken by its resync's open of the same session, so it
+    // resolved before the chat was subscribed and the turn arrived in the
+    // thread snapshot, which carries no recency. Not a lost event: S19
+    // demonstrates it deterministically.
     const target = await createSession(rig, a, QUIET)
     await startTurn(a, target)
     // The turn stays open: any end of it would also close the thought in A's
@@ -1254,6 +1255,131 @@ describe('divergences on main that §8.4 does not list', () => {
       observed: { refused, afterReopen: 'accepted' },
     })
   })
+
+  /**
+   * S19 (S6(b)'s stray entry): a client's own resync opens its active session
+   * once its catalog reads are answered (websocket.ts:1073-1083). An open the
+   * user started meanwhile is overtaken: `openSession` bumps a generation
+   * (:1243) and the older call returns as soon as its answer lands (:1281),
+   * before the chat is hydrated or subscribed. A turn sent then is published
+   * before the client holds the thread's subscription, so `turn.started`
+   * is never owed to it live; the newer open's snapshot carries the turn,
+   * and no recency (X1). No durable event is lost. The gate fixes the order
+   * the race needs: the user's open goes out before the resync's reads are
+   * answered, is answered after the resync's open began, and the turn goes
+   * out before the resync's open is answered. F3 owns the fix (it rebuilds
+   * this reopen path for S17, and derives recency on the server).
+   */
+  scenario(
+    'S19 an open overtaken by the client’s own resync open resolves before the chat is subscribed (F3)',
+    {},
+    async (rig) => {
+      const a = await rig.connect('A')
+      const target = await createSession(rig, a, QUIET)
+      const holds = new Map<string, () => void>()
+      const hold = (name: string) =>
+        new Promise<void>((resolve) => {
+          holds.set(name, resolve)
+        })
+      const release = (name: string) => holds.get(name)?.()
+      let opens = 0
+      rig.proxy.gate((text) => {
+        const message = JSON.parse(text) as { type?: string; name?: string }
+        if (message.type !== 'command') return undefined
+        if (message.name === 'session.list' && !holds.has('reads')) return hold('reads')
+        if (message.name === 'session.open') {
+          opens += 1
+          if (opens === 1) {
+            // The user's open: the resync's reads may now be answered.
+            release('reads')
+            return hold('user')
+          }
+          if (opens === 2) {
+            // The resync's open has begun: the user's is answered now.
+            release('user')
+            return hold('resync')
+          }
+        }
+        if (message.name === 'turn.send') release('resync')
+        return undefined
+      })
+      // A reload: the new client holds the session as its active one, so its
+      // resync opens it; the user opens it too, as soon as it is connected.
+      const b = await rig.reload(a, 'proxy', 'connected')
+      await b.client.commands.openSession(target.sessionId)
+      const hydration = b.client.getState().threads[target.threadId]?.hydration
+      if (opens < 2 || hydration === 'ready') {
+        throw new FlipError('S19', `The user's open resolved with the chat ${hydration}.`)
+      }
+      const turnId = await startTurn(b, target)
+      await untilThread(
+        b,
+        target,
+        (state) => state.turns.some((turn) => turn.turnId === turnId),
+        'B to hold the turn',
+      )
+      rig.proxy.gate(undefined)
+      await rig.settle()
+      // What the server owed B: nothing live for the turn's start, then a
+      // snapshot that already held it.
+      const { provenance, wire } = await witnessOf(rig, b)
+      const threadKey = JSON.stringify([
+        'thread',
+        rig.environmentId,
+        target.sessionId,
+        target.threadId,
+      ])
+      const started = provenance.audit.find(
+        (row) => row.kind === 'event' && row.name === 'turn.started' && row.scopeKey === threadKey,
+      ) as { sequence: number; seq: number } | undefined
+      const sockets = new Set(
+        provenance.deliveries
+          .filter((line) => line.port !== undefined && wire.ports.has(line.port))
+          .map((line) => line.s),
+      )
+      const published = provenance.deliveries.find(
+        (line) => line.k === 'publish' && line.key === threadKey && line.seq === started?.sequence,
+      ) as { owed: string[]; sent: string[] } | undefined
+      const grant = provenance.deliveries.find(
+        (line) => line.k === 'grant' && line.key === threadKey && sockets.has(line.s),
+      ) as { mode: string; base: number | null; a: number } | undefined
+      expect(started, 'turn.started was appended').toBeDefined()
+      expect(
+        published?.owed.filter((socket) => sockets.has(socket)),
+        'owed to B live',
+      ).toEqual([])
+      expect(grant, 'B subscribed to the chat afterwards, by snapshot').toMatchObject({
+        mode: 'snapshot',
+      })
+      expect(grant!.base!, 'the snapshot already held the turn').toBeGreaterThanOrEqual(
+        started!.sequence,
+      )
+      expect(grant!.a, 'granted after the turn was committed').toBeGreaterThan(started!.seq)
+      const liveStarts = rig.framesOf(b).filter((frame) => {
+        const event = (
+          frame.json as { payload?: { record?: { event?: { name?: string } } } } | undefined
+        )?.payload?.record?.event
+        return frame.direction === 'down' && event?.name === 'turn.started'
+      })
+      expect(liveStarts, 'no live turn.started reached B').toEqual([])
+      await demonstrateDiff('S19', rig, b, recencyMirror(rig, b))
+      recordEvidence({
+        scenario: 'S19',
+        bucket: 'known-divergence',
+        cause:
+          'openSession returns when a newer open of the same session overtakes it ' +
+          '(websocket.ts:1243, :1281), before the chat is subscribed; the resync opens the active ' +
+          'session after its reads (:1073-1083). A turn sent then reaches the chat only through ' +
+          "the newer open's thread snapshot, which carries no recency (X1). F3 owns the fix.",
+        observed: {
+          hydrationWhenOpenResolved: hydration,
+          sessionOpens: opens,
+          turnStarted: { sequence: started!.sequence, owedToB: false },
+          grant: { mode: grant!.mode, base: grant!.base },
+        },
+      })
+    },
+  )
 
   /**
    * #219's `waitingOn`: a question outranks a permission, and answering it

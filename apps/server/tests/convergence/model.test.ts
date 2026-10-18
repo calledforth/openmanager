@@ -382,7 +382,9 @@ class ModelRun {
         this.rig.proxy.heal()
         return
       case 'reload':
-        this.a = await this.rig.reload(this.a)
+        // Not waiting for its resync: a reload's own open of the active
+        // session races what comes next, as it does for a user (S19).
+        this.a = await this.rig.reload(this.a, 'proxy', 'connected')
         // A reload opens its active session again; the others stay as they were.
         if (active) active.stale = false
         return
