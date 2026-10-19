@@ -1,4 +1,4 @@
-import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useContext, useEffect, useMemo, type ReactNode } from 'react'
 import { MonitorIcon, MoonIcon, PlusIcon, SunIcon, XIcon } from '@phosphor-icons/react'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { Button } from '@openmanager/app-core/components/fluid/ui/button'
@@ -28,6 +28,14 @@ import {
   EnvironmentList,
   RouteOfferPrompt,
 } from '../components/connection-surfaces'
+import {
+  closeAddEnvironment,
+  editAddEnvironment,
+  openAddEnvironment,
+  sendAddEnvironment,
+  trackAddEnvironment,
+  useAddEnvironmentDraft,
+} from '../lib/add-environment-draft'
 import { connectionStatusLabel } from '../lib/connection-state'
 import { findStoredEnvironment } from '../lib/environment-store'
 import { UI_FONTS, type UiFontId } from '../lib/fonts'
@@ -255,21 +263,13 @@ function EnvironmentsPanel() {
     confirmRoute,
     declineRoute,
   } = useConnection()
+  // Kept above this page, which remounts when connecting drops the old client.
+  const draft = useAddEnvironmentDraft()
   // With nothing saved the form is the whole point of the section.
-  const [adding, setAdding] = useState(false)
-  const formOpen = adding || environments.length === 0
-  // A submitted address keeps its form until the connection it started is
-  // ready, so a typo or an unreachable address can be fixed in place.
-  const submitted = useRef<'sent' | 'left_ready' | null>(null)
+  const formOpen = draft.open || environments.length === 0
   useEffect(() => {
-    if (!submitted.current) return
-    if (ui.kind !== 'ready') {
-      submitted.current = 'left_ready'
-    } else if (submitted.current === 'left_ready') {
-      submitted.current = null
-      setAdding(false)
-    }
-  }, [ui.kind])
+    trackAddEnvironment(ui.kind === 'ready', inUseEndpoint)
+  }, [ui.kind, inUseEndpoint])
   const status =
     ui.kind === 'confirm_route'
       ? 'A new route is waiting for your answer'
@@ -308,10 +308,7 @@ function EnvironmentsPanel() {
                     variant="ghost"
                     size="icon-compact"
                     aria-label="Cancel adding an environment"
-                    onClick={() => {
-                      submitted.current = null
-                      setAdding(false)
-                    }}
+                    onClick={closeAddEnvironment}
                   >
                     <XIcon />
                   </Button>
@@ -320,8 +317,11 @@ function EnvironmentsPanel() {
             </div>
             <EnvironmentConnectForm
               className="mt-2.5"
+              initialEndpoint={draft.endpoint}
+              initialCredential={draft.credential}
+              onDraftChange={editAddEnvironment}
               onConnect={(endpoint, credential) => {
-                submitted.current = 'sent'
+                sendAddEnvironment(endpoint)
                 connect(endpoint, credential)
               }}
               submitLabel="Add environment"
@@ -334,7 +334,7 @@ function EnvironmentsPanel() {
             size="compact"
             className="mt-2"
             leadingIcon={AddIcon}
-            onClick={() => setAdding(true)}
+            onClick={openAddEnvironment}
           >
             Add environment
           </Button>

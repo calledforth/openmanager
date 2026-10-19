@@ -36,6 +36,7 @@ import { modelHint, modelLabel } from './modelLabel'
 import { contextWindowConfigOption, effortConfigOption } from './modelConfig'
 import {
   favoriteModelKey,
+  parseFavoriteModelKey,
   readFavoriteModels,
   toggleFavoriteModel,
   writeFavoriteModels,
@@ -114,6 +115,25 @@ function providerTabIcon(providerId: PickerProviderId) {
 function sortGroups<G extends { providerId: PickerProviderId }>(groups: G[]): G[] {
   const rank = new Map(PROVIDER_ORDER.map((id, index) => [id, index]))
   return [...groups].sort((a, b) => (rank.get(a.providerId) ?? 99) - (rank.get(b.providerId) ?? 99))
+}
+
+/**
+ * A group that takes typed ids keeps the ones starred, so a model typed once
+ * stays in Favorites after another is picked.
+ */
+function withStarredTypedIds(
+  group: ProviderModelGroup<PickerProviderId>,
+  favorites: readonly FavoriteModelKey[],
+): ProviderModelOption[] {
+  if (!group.acceptsTypedIds) return group.models
+  const listed = new Set(group.models.map((model) => model.id))
+  const starred = favorites.flatMap((key) => {
+    const parsed = parseFavoriteModelKey(key)
+    return parsed?.providerId === group.providerId && !listed.has(parsed.modelId)
+      ? [{ id: parsed.modelId, name: parsed.modelId, description: 'Set by name' }]
+      : []
+  })
+  return starred.length === 0 ? group.models : [...group.models, ...starred]
 }
 
 /** "1M", "200k": short enough to sit at a row's edge. */
@@ -204,6 +224,7 @@ export function ProviderModelPicker<P extends PickerProviderId = ProviderId>({
   paletteEntry = true,
   triggerClassName,
   triggerLabel = 'Switch model',
+  favoritesStorageKey,
 }: {
   groups: ProviderModelGroup<P>[]
   currentProviderId: P
@@ -225,10 +246,14 @@ export function ProviderModelPicker<P extends PickerProviderId = ProviderId>({
   triggerClassName?: string
   /** The chip's tooltip, and its name to a screen reader. */
   triggerLabel?: string
+  /** Where this copy keeps its favorites, when its model ids are not the composer's. */
+  favoritesStorageKey?: string
 }) {
   const [query, setQuery] = useState('')
   const [scope, setScope] = useState<Scope>(currentProviderId)
-  const [favorites, setFavorites] = useState<FavoriteModelKey[]>(() => readFavoriteModels())
+  const [favorites, setFavorites] = useState<FavoriteModelKey[]>(() =>
+    readFavoriteModels(favoritesStorageKey),
+  )
   const [highlighted, setHighlighted] = useState<FavoriteModelKey | null>(null)
   // The detail card is a pointing/browsing affordance: it appears once the
   // user points at or arrows to a row, never for the row highlighted on open.
@@ -245,7 +270,7 @@ export function ProviderModelPicker<P extends PickerProviderId = ProviderId>({
   const allModels = useMemo<FlatModel[]>(
     () =>
       visibleGroups.flatMap((group) =>
-        group.models.map((model) => {
+        withStarredTypedIds(group, favorites).map((model) => {
           const label = modelLabel(model.name, model.description)
           const description = modelHint(model.name, model.description)
           return {
@@ -266,7 +291,7 @@ export function ProviderModelPicker<P extends PickerProviderId = ProviderId>({
           }
         }),
       ),
-    [visibleGroups],
+    [visibleGroups, favorites],
   )
   const modelsByKey = useMemo(
     () => new Map(allModels.map((model) => [model.key, model])),
@@ -421,7 +446,7 @@ export function ProviderModelPicker<P extends PickerProviderId = ProviderId>({
   const toggleFavorite = (key: FavoriteModelKey) => {
     const next = toggleFavoriteModel(favorites, key)
     setFavorites(next)
-    writeFavoriteModels(next)
+    writeFavoriteModels(next, favoritesStorageKey)
   }
 
   const pick = (key: string) => {

@@ -39,6 +39,9 @@ export const TITLE_TOOL_LABELS: Record<TitleTool, string> = {
  */
 const catalogFor = (tool: TitleTool) => (tool === 'claude' || tool === 'opencode' ? tool : null)
 
+/** Title models get their own stars: Cursor's ids here are not the composer's. */
+export const TITLE_FAVORITES_STORAGE_KEY = 'openmanager-title-favorite-models'
+
 /** The tools in the picker's tab order. */
 const TITLE_TOOLS: readonly TitleTool[] = ['claude', 'cursor', 'opencode', 'codex']
 
@@ -209,6 +212,7 @@ function TitleGenerationForm({ client }: { client: EnvironmentClient }) {
             align="end"
             paletteEntry={false}
             triggerLabel="Title model"
+            favoritesStorageKey={TITLE_FAVORITES_STORAGE_KEY}
           />
         ) : null}
       </div>

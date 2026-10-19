@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createMockEnvironmentClient } from '@openmanager/environment-client'
 import type { ComponentProps } from 'react'
 import type { WebApp } from './app'
+import { closeAddEnvironment } from './lib/add-environment-draft'
 import { environmentSocketUrl } from './lib/environment-socket'
 import { ENVIRONMENT_STORAGE_KEY } from './lib/environment-store'
 import { CONNECTION_STORIES } from './stories/connection-states'
@@ -20,6 +21,7 @@ afterEach(() => {
   vi.restoreAllMocks()
   // A test that went offline must not leave the next one's queries paused.
   onlineManager.setOnline(true)
+  closeAddEnvironment()
 })
 
 function seedRegistry(
@@ -621,6 +623,45 @@ describe('web routes', () => {
     expect(storedRegistry().environments).toHaveLength(1)
     expect(storedRegistry().environments[0]?.routes).toHaveLength(1)
     expect(sockets.dialled().map((socket) => socket.url)).not.toContain(TUNNEL_SOCKET)
+  })
+
+  it('keeps the Add environment form, and what was typed, when a new address fails', async () => {
+    const user = userEvent.setup()
+    seedRegistry([
+      {
+        environmentId: 'env-local',
+        endpoints: ['http://127.0.0.1:43120'],
+        credential: 'client-token',
+      },
+    ])
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).startsWith('http://127.0.0.1:9/')) throw new TypeError('Failed to fetch')
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            protocolVersion: PROTOCOL_VERSION,
+            capabilities: ['connection.heartbeat'],
+            environmentId: 'env-local',
+            label: 'Local environment',
+          }),
+        }
+      }),
+    )
+
+    renderWebApp('/settings')
+    await screen.findByText(/Connected · Local environment/)
+    await openAddEnvironment(user)
+    await user.type(screen.getByLabelText('Environment endpoint'), 'http://127.0.0.1:9')
+    await user.type(screen.getByLabelText('Client token'), 'typed-token')
+    await user.click(screen.getByRole('button', { name: 'Add environment' }))
+
+    // Connecting drops the old client and remounts the page; the form survives it.
+    await waitFor(() => expect(screen.queryByText(/Connected · Local environment/)).toBeNull())
+    expect(await screen.findByLabelText('Environment endpoint')).toHaveValue('http://127.0.0.1:9')
+    expect(screen.getByLabelText('Client token')).toHaveValue('typed-token')
   })
 
   it('merges a new address without asking when the connect brings its own token', async () => {

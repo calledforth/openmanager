@@ -27,10 +27,11 @@ export function parseFavoriteModelKey(
   return { providerId: providerId as ProviderIconId, modelId }
 }
 
-export function readFavoriteModels(): FavoriteModelKey[] {
+/** `storageKey` keeps a picker whose model ids mean something else (Settings' title model) apart. */
+export function readFavoriteModels(storageKey = FAVORITE_MODELS_STORAGE_KEY): FavoriteModelKey[] {
   if (typeof localStorage === 'undefined') return []
   try {
-    const raw = localStorage.getItem(FAVORITE_MODELS_STORAGE_KEY)
+    const raw = localStorage.getItem(storageKey)
     if (!raw) return []
     const parsed = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
@@ -43,9 +44,12 @@ export function readFavoriteModels(): FavoriteModelKey[] {
   }
 }
 
-export function writeFavoriteModels(keys: readonly FavoriteModelKey[]): void {
+export function writeFavoriteModels(
+  keys: readonly FavoriteModelKey[],
+  storageKey = FAVORITE_MODELS_STORAGE_KEY,
+): void {
   if (typeof localStorage === 'undefined') return
-  localStorage.setItem(FAVORITE_MODELS_STORAGE_KEY, JSON.stringify([...keys]))
+  localStorage.setItem(storageKey, JSON.stringify([...keys]))
 }
 
 export function toggleFavoriteModel(

@@ -612,7 +612,9 @@ function WaitingLinks({
             }
             busy={withdrawing === item.linkId}
             onShow={onShow}
-            onCopyFailed={() => setError('Could not copy the link.')}
+            onCopyFailed={() =>
+              setError('Could not copy. Open the QR code to select the link yourself.')
+            }
             onWithdraw={() => void withdraw(item)}
           />
         ))}
@@ -650,8 +652,14 @@ function PairingLinkRow({
     const timer = setTimeout(() => setCopied(false), 1400)
     return () => clearTimeout(timer)
   }, [copied])
-  const copy = (url: string) => {
-    navigator.clipboard.writeText(url).then(() => setCopied(true), onCopyFailed)
+  const copy = async (url: string) => {
+    // Without a secure origin there is no `navigator.clipboard` at all.
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+    } catch {
+      onCopyFailed()
+    }
   }
   const details = [
     describeAccess(link.capabilities),
@@ -681,7 +689,7 @@ function PairingLinkRow({
           <IconAction
             label={copied ? 'Copied' : 'Copy link'}
             disabled={busy}
-            onClick={() => copy(made.url)}
+            onClick={() => void copy(made.url)}
           >
             {copied ? <CheckIcon weight="bold" /> : <CopyIcon />}
           </IconAction>

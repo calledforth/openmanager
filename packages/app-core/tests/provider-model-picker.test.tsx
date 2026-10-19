@@ -215,6 +215,26 @@ describe('ProviderModelPicker', () => {
     expect(labels()).toEqual([])
   })
 
+  it('keeps a starred typed id listed after another model is picked, in its own favorites', () => {
+    localStorage.setItem('title-stars', JSON.stringify(['claude:claude-opus-9', 'cursor:auto']))
+    render({
+      favoritesStorageKey: 'title-stars',
+      groups: GROUPS.map((group) =>
+        group.providerId === 'claude' ? { ...group, acceptsTypedIds: true } : group,
+      ),
+    })
+    openWithShortcut()
+    expect(labels()).toContain('claude-opus-9')
+    press('Tab', { shiftKey: true })
+    expect(selectedTab()).toContain('Favorites')
+    // Cursor takes no typed ids here, so its star has nothing to stand for.
+    expect(labels()).toEqual(['claude-opus-9'])
+    press('ArrowDown')
+    press('s', { ctrlKey: true })
+    expect(JSON.parse(localStorage.getItem('title-stars')!)).toEqual(['cursor:auto'])
+    expect(localStorage.getItem(FAVORITE_MODELS_STORAGE_KEY)).toBeNull()
+  })
+
   it('lets Tab leave the field when there are no tabs', () => {
     render({ canChangeProvider: false })
     const input = openWithShortcut()

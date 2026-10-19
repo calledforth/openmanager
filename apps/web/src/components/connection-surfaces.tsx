@@ -124,12 +124,17 @@ export function RouteOfferPrompt({
 
 export function EnvironmentConnectForm({
   initialEndpoint = '',
+  initialCredential = '',
+  onDraftChange,
   onConnect,
   submitLabel = 'Connect',
   className,
   canClaimOwner = canClaimLocalOwner(),
 }: {
   initialEndpoint?: string
+  initialCredential?: string
+  /** Each keystroke, for a caller that keeps the draft past a remount. */
+  onDraftChange?: (draft: { endpoint: string; credential: string }) => void
   onConnect: (endpoint: string, credential: string) => void
   submitLabel?: string
   className?: string
@@ -137,7 +142,7 @@ export function EnvironmentConnectForm({
   canClaimOwner?: boolean
 }) {
   const [endpointValue, setEndpointValue] = useState(initialEndpoint)
-  const [credentialValue, setCredentialValue] = useState('')
+  const [credentialValue, setCredentialValue] = useState(initialCredential)
   const [error, setError] = useState<string | null>(null)
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -170,7 +175,10 @@ export function EnvironmentConnectForm({
         aria-label="Environment endpoint"
         className={fieldClass}
         value={endpointValue}
-        onChange={(event) => setEndpointValue(event.target.value)}
+        onChange={(event) => {
+          setEndpointValue(event.target.value)
+          onDraftChange?.({ endpoint: event.target.value, credential: credentialValue })
+        }}
       />
       <input
         name="credential"
@@ -181,7 +189,10 @@ export function EnvironmentConnectForm({
         aria-label="Client token"
         className={fieldClass}
         value={credentialValue}
-        onChange={(event) => setCredentialValue(event.target.value)}
+        onChange={(event) => {
+          setCredentialValue(event.target.value)
+          onDraftChange?.({ endpoint: endpointValue, credential: event.target.value })
+        }}
       />
       <p className="text-[13px] text-muted-foreground">
         {canClaimOwner
