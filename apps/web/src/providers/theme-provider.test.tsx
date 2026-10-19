@@ -19,15 +19,15 @@ function ThemeProbe() {
       <button type="button" onClick={() => setTheme('light')}>
         Light
       </button>
-      <button type="button" onClick={() => setTheme('black')}>
-        Black
+      <button type="button" onClick={() => setTheme('lovable')}>
+        Lovable
       </button>
     </div>
   )
 }
 
 describe('ThemeProvider', () => {
-  it('defaults to dark and applies light and black tokens', async () => {
+  it('defaults to dark and applies light and Lovable tokens', async () => {
     const user = userEvent.setup()
     renderWithTheme(<ThemeProbe />)
 
@@ -38,7 +38,14 @@ describe('ThemeProvider', () => {
     expect(document.documentElement.dataset.theme).toBe('light')
     expect(localStorage.getItem('openmanager-theme')).toBe('light')
 
-    await user.click(screen.getByRole('button', { name: 'Black' }))
-    expect(document.documentElement.dataset.theme).toBe('black')
+    await user.click(screen.getByRole('button', { name: 'Lovable' }))
+    expect(document.documentElement.dataset.theme).toBe('lovable')
+  })
+
+  it('shows Lovable for a Black saved before families', () => {
+    localStorage.setItem('openmanager-theme', 'black')
+    renderWithTheme(<ThemeProbe />)
+    expect(screen.getByTestId('theme-value').textContent).toBe('lovable')
+    expect(document.documentElement.dataset.theme).toBe('lovable')
   })
 })

@@ -20,6 +20,7 @@ import { useNow } from '@openmanager/app-core/lib/relative-time'
 import { useConnectionState } from '@openmanager/app-core/providers/environment-client'
 import { isLoopbackEnvironmentEndpoint, type EnvironmentRoute } from '../lib/environment-store'
 import { isLoopbackAppUrl } from '../lib/pairing'
+import { forgetPairingLinks, rememberPairingLink } from '../lib/pairing-link-store'
 import { cn } from '../lib/utils'
 
 /** Every capability but `read`, which any useful grant holds, in the order they are offered. */
@@ -78,19 +79,22 @@ export function formatRemaining(until: string, now: number): string | null {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 }
 
-type Created = { link: PairingLink; url: string }
+/** A link this tab made, as the environment last reported it, and the URL it opens. */
+export type ShownPairingLink = { link: PairingLink; url: string }
 
 /**
- * Make a single-use pairing link and show it as a QR code and a link to copy.
- * The token exists only in this dialog's memory: the environment keeps its
- * hash, so a link that is closed cannot be shown again, only made anew. It
- * stays usable until it is used, withdrawn or five minutes pass, so a link
- * already sent somewhere keeps working after the dialog closes.
+ * Make a single-use pairing link and show it as a QR code and a link to copy,
+ * or show one this tab made again (`reopen`). The environment sends the token
+ * once and keeps only its hash, so this tab keeps its own copy until the link
+ * stops working (`lib/pairing-link-store`). A link stays usable until it is
+ * used, withdrawn or five minutes pass, whether or not the dialog is open.
  */
 export function PairDeviceDialog({
   client,
   open,
   onOpenChange,
+  reopen = null,
+  onLinksChanged,
   grant,
   environmentId,
   routes,
@@ -101,6 +105,10 @@ export function PairDeviceDialog({
   client: EnvironmentClient
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** Open straight onto this link instead of making a new one. */
+  reopen?: ShownPairingLink | null
+  /** This dialog made or withdrew a link. */
+  onLinksChanged?: () => void
   /** What this device holds; a link can offer no more. */
   grant: readonly AccessCapability[]
   environmentId: string
@@ -117,6 +125,8 @@ export function PairDeviceDialog({
         {open ? (
           <PairDeviceFlow
             client={client}
+            reopen={reopen}
+            onLinksChanged={onLinksChanged}
             grant={grant}
             environmentId={environmentId}
             routes={routes}
@@ -133,6 +143,8 @@ export function PairDeviceDialog({
 
 function PairDeviceFlow({
   client,
+  reopen,
+  onLinksChanged,
   grant,
   environmentId,
   routes,
@@ -142,6 +154,8 @@ function PairDeviceFlow({
   onClose,
 }: {
   client: EnvironmentClient
+  reopen: ShownPairingLink | null
+  onLinksChanged?: () => void
   grant: readonly AccessCapability[]
   environmentId: string
   routes: readonly EnvironmentRoute[]
@@ -150,14 +164,19 @@ function PairDeviceFlow({
   deviceLabel: (clientId: string) => string | undefined
   onClose: () => void
 }) {
-  const [created, setCreated] = useState<Created | null>(null)
-  if (created) {
+  // The flow mounts as the dialog opens, so the link it opens on is fixed then.
+  const [shown, setShown] = useState<ShownPairingLink | null>(reopen)
+  if (shown) {
     return (
       <LinkView
+        // A new link starts its own view: its status, copy state and polling.
+        key={shown.link.linkId}
         client={client}
-        created={created}
+        shown={shown}
+        environmentId={environmentId}
         deviceLabel={deviceLabel}
-        onAnother={() => setCreated(null)}
+        onWithdrawn={onLinksChanged}
+        onAnother={() => setShown(null)}
         onClose={onClose}
       />
     )
@@ -170,7 +189,16 @@ function PairDeviceFlow({
       routes={routes}
       inUseEndpoint={inUseEndpoint}
       appUrl={appUrl}
-      onCreated={setCreated}
+      onCreated={(created) => {
+        rememberPairingLink({
+          environmentId,
+          linkId: created.link.linkId,
+          url: created.url,
+          expiresAt: created.link.expiresAt,
+        })
+        setShown(created)
+        onLinksChanged?.()
+      }}
       onClose={onClose}
     />
   )
@@ -192,7 +220,7 @@ function SetupForm({
   routes: readonly EnvironmentRoute[]
   inUseEndpoint: string | null
   appUrl: string
-  onCreated: (created: Created) => void
+  onCreated: (created: ShownPairingLink) => void
   onClose: () => void
 }) {
   const offered = OPTIONAL_CAPABILITIES.filter((item) => grant.includes(item.capability))
@@ -402,18 +430,22 @@ function Warning({ children }: { children: ReactNode }) {
 /** The link once made: a QR code, the link to copy, and what became of it. */
 function LinkView({
   client,
-  created,
+  shown,
+  environmentId,
   deviceLabel,
+  onWithdrawn,
   onAnother,
   onClose,
 }: {
   client: EnvironmentClient
-  created: Created
+  shown: ShownPairingLink
+  environmentId: string
   deviceLabel: (clientId: string) => string | undefined
+  onWithdrawn?: () => void
   onAnother: () => void
   onClose: () => void
 }) {
-  const [link, setLink] = useState(created.link)
+  const [link, setLink] = useState(shown.link)
   const [copied, setCopied] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -425,7 +457,7 @@ function LinkView({
   // became of this link. Reading the link list again is cheap and says which
   // device used it. A device can pair while the connection is down, and the
   // environment does not replay that, so every (re)connect reads it too.
-  const linkId = created.link.linkId
+  const linkId = shown.link.linkId
   const connected = useConnectionState().phase === 'connected'
   const generation = useRef(0)
   const refresh = useCallback(() => {
@@ -451,7 +483,7 @@ function LinkView({
 
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(created.url)
+      await navigator.clipboard.writeText(shown.url)
       setCopied(true)
     } catch {
       setError('Could not copy. Select the link and copy it yourself.')
@@ -464,6 +496,8 @@ function LinkView({
     try {
       await client.commands.revokePairingLink(linkId)
       setLink((current) => ({ ...current, status: 'revoked' }))
+      forgetPairingLinks(environmentId, [linkId])
+      onWithdrawn?.()
     } catch (caught) {
       setError(message(caught))
     } finally {
@@ -492,7 +526,7 @@ function LinkView({
             {/* Dark on light, whatever the theme: that is what cameras read best. */}
             <div className="rounded-lg bg-white p-3">
               <QRCodeSVG
-                value={created.url}
+                value={shown.url}
                 size={184}
                 level="L"
                 bgColor="#ffffff"
@@ -508,7 +542,7 @@ function LinkView({
               readOnly
               aria-label="Pairing link"
               className={fieldClass}
-              value={created.url}
+              value={shown.url}
               onFocus={(event) => event.currentTarget.select()}
             />
             <Button type="button" variant="secondary" size="compact" onClick={() => void copy()}>

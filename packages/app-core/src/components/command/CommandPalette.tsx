@@ -123,7 +123,7 @@ const APPEARANCE_MODES: ReadonlyArray<{ id: AppearanceMode; label: string; hint:
  * the app change behind it.
  */
 export function CommandPalette({ commands }: CommandPaletteProps = {}) {
-  const { theme, setTheme, mode, setMode, family, setFamily, font, setFont } = useTheme()
+  const { mode, setMode, family, setFamily, font, setFont } = useTheme()
   const pickers = useAvailablePickers()
 
   const items = useMemo<CommandPaletteItemData[]>(
@@ -166,8 +166,7 @@ export function CommandPalette({ commands }: CommandPaletteProps = {}) {
         keepOpen: true,
         onSelect: () => setMode(option.id),
       })),
-      // Families, not every scheme: each follows the mode above. The current
-      // family's variants follow, where a side has more than one.
+      // Families, not every scheme: each follows the mode above.
       ...THEME_FAMILIES.map((option) => ({
         value: `theme:${option.id}`,
         label: option.label,
@@ -180,21 +179,6 @@ export function CommandPalette({ commands }: CommandPaletteProps = {}) {
         keepOpen: true,
         onSelect: () => setFamily(option.id),
       })),
-      ...(['light', 'dark'] as const)
-        .filter((side) => family[side].length > 1)
-        .flatMap((side) => family[side])
-        .map((variant) => ({
-          value: `variant:${variant.id}`,
-          label: variant.name,
-          description: variant.hint,
-          icon: ThemeIcon,
-          group: `${family.label} variants`,
-          current: variant.id === theme,
-          keywords: ['variant', family.label.toLowerCase()],
-          keepOpen: true,
-          // Shows exactly this variant, so it pins the mode to its side.
-          onSelect: () => setTheme(variant.id),
-        })),
       ...UI_FONTS.map((option) => ({
         value: `font:${option.id}`,
         label: option.label,
@@ -206,7 +190,7 @@ export function CommandPalette({ commands }: CommandPaletteProps = {}) {
         onSelect: () => setFont(option.id),
       })),
     ],
-    [commands, pickers, theme, setTheme, mode, setMode, family, setFamily, font, setFont],
+    [commands, pickers, mode, setMode, family, setFamily, font, setFont],
   )
 
   return <CommandPaletteView items={items} />

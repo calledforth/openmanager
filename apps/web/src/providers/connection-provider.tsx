@@ -26,6 +26,7 @@ import {
   type TransportStatus,
 } from '../lib/connection-state'
 import {
+  addStoredRoute,
   classifyDiscoveredRoute,
   EMPTY_REGISTRY,
   environmentRegistriesEqual,
@@ -103,6 +104,12 @@ type LocalOwnerClaimFailure = {
   message: string
 }
 
+/** How long adding a route waits for the address to answer. */
+const ADD_ROUTE_TIMEOUT_MS = 8000
+
+/** What became of adding an address to a saved environment. */
+export type AddRouteResult = { ok: true } | { ok: false; message: string }
+
 type ConnectionValue = {
   ui: ConnectionUiState
   environment: EnvironmentSelection
@@ -125,6 +132,13 @@ type ConnectionValue = {
   chooseRoute: (environmentId: string, endpoint: string) => void
   /** Forget one route. The last route of an environment cannot be forgotten. */
   removeRoute: (environmentId: string, endpoint: string) => void
+  /**
+   * Add an address to a saved environment, as its last choice of route. The
+   * address must answer as that environment; nothing is dialled, and the
+   * connection in use stays where it is. Asking for this is the person's
+   * consent to the environment's token going there, once the route is used.
+   */
+  addRoute: (environmentId: string, endpoint: string) => Promise<AddRouteResult>
   /** Record what the live connection learned about the route it is using. */
   /**
    * `credential` is the token the reporting socket dialled with. A report from
@@ -1097,6 +1111,48 @@ export function ConnectionProvider({
     }
   }, [preview, update])
 
+  const addRoute = useCallback(
+    async (environmentId: string, typed: string): Promise<AddRouteResult> => {
+      const routeEndpoint = parseEnvironmentEndpoint(typed)
+      if (!routeEndpoint) {
+        return { ok: false, message: 'Enter an http(s) URL, for example https://home.example.com.' }
+      }
+      const before = findStoredEnvironment(registryRef.current.environments, environmentId)
+      if (!before) return { ok: false, message: 'This environment is no longer saved.' }
+      if (before.routes.some((route) => route.endpoint === routeEndpoint)) {
+        return { ok: false, message: 'This environment already has that route.' }
+      }
+      if (preview) return { ok: false, message: 'Routes cannot be added in a preview.' }
+      // Unauthenticated, as every bootstrap is: no token goes anywhere here.
+      const outcome = await fetchBootstrap(routeEndpoint, { timeoutMs: ADD_ROUTE_TIMEOUT_MS })
+      if (outcome.status !== 'ready' && outcome.status !== 'incompatible_protocol') {
+        const reason =
+          outcome.status === 'unreachable' || outcome.status === 'unauthorized'
+            ? outcome.message
+            : undefined
+        return { ok: false, message: reason ?? `Nothing answered at ${routeEndpoint}.` }
+      }
+      if (outcome.environmentId !== environmentId) {
+        return {
+          ok: false,
+          message: outcome.label
+            ? `${routeEndpoint} reaches ${outcome.label}, a different environment.`
+            : WRONG_ENVIRONMENT_MESSAGE,
+        }
+      }
+      // Asked for by name, so a route forgotten earlier may come back.
+      forgottenRoutes.current.delete(routeKey(environmentId, routeEndpoint))
+      noteLiveReport(environmentId, routeEndpoint)
+      const next = update((current) =>
+        addStoredRoute(current, environmentId, routeEndpoint, { status: 'available' }),
+      )
+      return next && findStoredEnvironment(next.environments, environmentId)
+        ? { ok: true }
+        : { ok: false, message: 'This environment is no longer saved.' }
+    },
+    [noteLiveReport, preview, update],
+  )
+
   const retry = useCallback(() => {
     stopRouteSearch(true)
     setBootstrapNonce((value) => value + 1)
@@ -1180,6 +1236,7 @@ export function ConnectionProvider({
       removeEnvironment,
       chooseRoute,
       removeRoute,
+      addRoute,
       reportRouteHealth,
       forgetSocket,
       checkRoutes,
@@ -1204,6 +1261,7 @@ export function ConnectionProvider({
       removeEnvironment,
       chooseRoute,
       removeRoute,
+      addRoute,
       reportRouteHealth,
       forgetSocket,
       checkRoutes,

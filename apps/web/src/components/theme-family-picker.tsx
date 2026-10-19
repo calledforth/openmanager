@@ -1,16 +1,14 @@
 import {
   THEME_FAMILIES,
-  familyVariant,
   type ColorScheme,
   type ThemeFamilyId,
-  type ThemePicks,
   type ThemeSwatch,
 } from '@openmanager/app-core/providers/theme-provider'
 import { cn } from '../lib/utils'
 
 /**
  * A miniature of the app in one scheme: the rail, a sent message, a reply and
- * the composer with its send button. Painted from the variant's swatch, since
+ * the composer with its send button. Painted from the scheme's swatch, since
  * a preview can't take on a `:root` scheme of its own. A faint hairline keeps
  * a light preview's edge on a light page.
  */
@@ -57,20 +55,17 @@ export function ThemePreview({ swatch, className }: { swatch: ThemeSwatch; class
 }
 
 /**
- * The theme families as cards. Each card previews its family in the scheme on
- * screen, as the family would show (with its picked variant), so switching the
- * mode flips every card with the app. Selection is a fill, never an outline.
+ * The theme families as cards. Each card previews its family's side for the
+ * scheme on screen, so switching the mode flips every card with the app.
+ * Selection is a fill, never an outline.
  */
 export function ThemeFamilyPicker({
   value,
   scheme,
-  picks,
   onChange,
 }: {
   value: ThemeFamilyId
   scheme: ColorScheme
-  /** The variant last picked in each family. */
-  picks: ThemePicks
   onChange: (family: ThemeFamilyId) => void
 }) {
   return (
@@ -81,7 +76,6 @@ export function ThemeFamilyPicker({
     >
       {THEME_FAMILIES.map((family) => {
         const selected = family.id === value
-        const variant = familyVariant(family, scheme, picks[family.id]?.[scheme])
         const hintId = `theme-family-${family.id}-hint`
         return (
           <label
@@ -102,7 +96,7 @@ export function ThemeFamilyPicker({
               aria-describedby={hintId}
               onChange={() => onChange(family.id)}
             />
-            <ThemePreview swatch={variant.swatch} />
+            <ThemePreview swatch={family[scheme].swatch} />
             <span className="block px-1 pb-0.5 pt-2">
               <span
                 className={cn(

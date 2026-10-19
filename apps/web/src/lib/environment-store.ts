@@ -466,6 +466,32 @@ export function removeStoredRoute(
 }
 
 /**
+ * Add `endpoint` to a saved environment as its last choice of route, leaving
+ * the selection, the route in use and the person's order alone. Returns the
+ * same registry when the environment is not saved or already has the route.
+ */
+export function addStoredRoute(
+  registry: EnvironmentRegistry,
+  environmentId: string,
+  endpoint: string,
+  report?: RouteHealthReport,
+  now: Date = new Date(),
+): EnvironmentRegistry {
+  const existing = findStoredEnvironment(registry.environments, environmentId)
+  const parsed = parseEnvironmentEndpoint(endpoint)
+  if (!existing || !parsed) return registry
+  if (existing.routes.some((item) => item.endpoint === parsed)) return registry
+  const route: EnvironmentRoute = {
+    type: routeTypeForEndpoint(parsed),
+    endpoint: parsed,
+    priority: existing.routes.length,
+    health: report ? applyHealth(UNKNOWN_HEALTH, report, now) : UNKNOWN_HEALTH,
+  }
+  const record = { ...existing, routes: orderRoutes([...existing.routes, route]) }
+  return { ...registry, environments: replaceEnvironment(registry, record) }
+}
+
+/**
  * Record what reaching a route showed. Returns the same registry when nothing
  * changed, so a repeated report is not a write.
  */

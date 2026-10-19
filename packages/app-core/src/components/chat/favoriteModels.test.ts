@@ -75,5 +75,6 @@ describe('favoriteModels', () => {
       modelId: 'openai/gpt-5',
     })
     expect(parseFavoriteModelKey('unknown:x')).toBeNull()
+    expect(parseFavoriteModelKey('codex:')).toEqual({ providerId: 'codex', modelId: '' })
   })
 })

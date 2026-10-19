@@ -1,4 +1,5 @@
 import type { ProviderId } from '@agentpack/contract'
+import { OpenAiLogoIcon } from '@phosphor-icons/react'
 import { isLightTheme, useTheme } from '../../providers/theme-provider'
 import { cn } from '../../lib/utils'
 
@@ -73,11 +74,17 @@ function ClaudeIcon({ className }: { className?: string }) {
   )
 }
 
+/**
+ * Every tool with a mark: the session providers, and Codex, which the
+ * environment runs only to write session titles for now.
+ */
+export type ProviderIconId = ProviderId | 'codex'
+
 export function ProviderIcon({
   providerId,
   className,
 }: {
-  providerId: ProviderId
+  providerId: ProviderIconId
   className?: string
 }) {
   const { theme } = useTheme()
@@ -91,6 +98,8 @@ export function ProviderIcon({
       return <CursorIcon dark={dark} className={sizeClass} />
     case 'claude':
       return <ClaudeIcon className={sizeClass} />
+    case 'codex':
+      return <OpenAiLogoIcon aria-hidden className={cn(sizeClass, 'text-foreground')} />
     default: {
       const label = String(providerId).slice(0, 1)
       return (

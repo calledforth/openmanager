@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { deriveConnectionUi } from '../lib/connection-state'
@@ -195,13 +195,78 @@ describe('connection surfaces', () => {
       />,
     )
 
-    expect(screen.getByText('Home · Selected')).toBeInTheDocument()
-    expect(screen.getByText('Client token saved')).toBeInTheDocument()
-    expect(screen.getByText('No client token')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Select' }))
+    const home = screen.getByRole('listitem', { name: 'Home' })
+    const lab = screen.getByRole('listitem', { name: 'Lab' })
+    expect(within(home).getByText('Current')).toBeInTheDocument()
+    expect(within(lab).queryByText('Current')).not.toBeInTheDocument()
+    expect(within(home).getByText('Client token saved')).toBeInTheDocument()
+    expect(within(lab).getByText('No client token')).toBeInTheDocument()
+    // The environment in use is the one with nothing to connect to.
+    expect(screen.queryByRole('button', { name: 'Connect to Home' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Connect to Lab' }))
     expect(onSelect).toHaveBeenCalledWith('env-b')
-    await user.click(screen.getAllByRole('button', { name: 'Remove' })[1]!)
+    await user.click(screen.getByRole('button', { name: 'Remove Lab' }))
     expect(onRemove).toHaveBeenCalledWith('env-b')
+  })
+
+  it('disconnects from the environment in use without forgetting it', async () => {
+    const user = userEvent.setup()
+    const onDisconnect = vi.fn()
+    render(
+      <EnvironmentList
+        selectedId="env-a"
+        onDisconnect={onDisconnect}
+        environments={[
+          {
+            environmentId: 'env-a',
+            label: 'Home',
+            routes: [route('http://127.0.0.1:43120')],
+            credential: 'token',
+          },
+        ]}
+      />,
+    )
+    await user.click(screen.getByRole('button', { name: 'Disconnect from Home' }))
+    expect(onDisconnect).toHaveBeenCalledTimes(1)
+  })
+
+  it('adds a route in place, and shows why an address was refused', async () => {
+    const user = userEvent.setup()
+    const onAddRoute = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        message: 'https://lab.example reaches Lab, a different environment.',
+      })
+      .mockResolvedValueOnce({ ok: true })
+    render(
+      <EnvironmentList
+        selectedId="env-a"
+        onAddRoute={onAddRoute}
+        environments={[
+          {
+            environmentId: 'env-a',
+            label: 'Home',
+            routes: [route('http://127.0.0.1:43120')],
+            credential: 'token',
+          },
+        ]}
+      />,
+    )
+    await user.click(screen.getByRole('button', { name: 'Add a route to Home' }))
+    const field = screen.getByLabelText('New route to Home')
+    expect(field).toHaveFocus()
+    await user.type(field, 'https://lab.example{Enter}')
+    expect(onAddRoute).toHaveBeenLastCalledWith('env-a', 'https://lab.example')
+    expect(await screen.findByRole('alert')).toHaveTextContent('a different environment')
+    expect(field).toHaveValue('https://lab.example')
+
+    await user.clear(field)
+    await user.type(field, 'https://home.example{Enter}')
+    expect(onAddRoute).toHaveBeenLastCalledWith('env-a', 'https://home.example')
+    await waitFor(() =>
+      expect(screen.queryByLabelText('New route to Home')).not.toBeInTheDocument(),
+    )
   })
 
   it('lists every route with its type and health, and marks the one in use', async () => {
@@ -238,9 +303,9 @@ describe('connection surfaces', () => {
       'listitem',
     )
     expect(rows.map((row) => row.textContent)).toEqual([
-      'http://127.0.0.1:43120Local · Available · In use' + 'Forget',
-      'https://tunnel.exampleRemote · Unavailable' + 'Use' + 'Forget',
-      'https://gated.exampleRemote · Not authorized' + 'Use' + 'Forget',
+      'http://127.0.0.1:43120Local · Available · In use',
+      'https://tunnel.exampleRemote · Unavailable',
+      'https://gated.exampleRemote · Not authorized',
     ])
     expect(screen.getByText('Unavailable')).toHaveAttribute(
       'title',
@@ -279,8 +344,8 @@ describe('connection surfaces', () => {
       'listitem',
     )
     expect(rows.map((row) => row.textContent)).toEqual([
-      'https://first.exampleRemote · Unavailable' + 'Use',
-      'https://tunnel.exampleRemote · Available · In use' + 'Make first',
+      'https://first.exampleRemote · Unavailable',
+      'https://tunnel.exampleRemote · Available · In use',
     ])
     await user.click(
       screen.getByRole('button', { name: 'Make https://tunnel.example the first choice' }),

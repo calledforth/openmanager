@@ -1,10 +1,20 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import { CloudIcon, DesktopIcon, DevicesIcon } from '@phosphor-icons/react'
+import {
+  CheckIcon,
+  CloudIcon,
+  CopyIcon,
+  DesktopIcon,
+  DevicesIcon,
+  LinkSimpleIcon,
+  QrCodeIcon,
+  XIcon,
+} from '@phosphor-icons/react'
 import {
   isEnvironmentClientError,
   type AuthorizedClient,
   type AuthorizedClientList,
   type EnvironmentClient,
+  type PairingLink,
 } from '@openmanager/environment-client'
 import { CLIENT_LABEL_MAX_LENGTH, type AccessCapability } from '@openmanager/protocol'
 import { Button } from '@openmanager/app-core/components/fluid/ui/button'
@@ -20,14 +30,20 @@ import {
   phosphorIcon,
   type IconComponent,
 } from '@openmanager/app-core/components/fluid/lib/icon-context'
+import { Tooltip } from '@openmanager/app-core/components/ui/Tooltip'
 import { formatRelativeTime, useNow } from '@openmanager/app-core/lib/relative-time'
 import {
   useConnectionState,
   useEnvironmentClientOptional,
 } from '@openmanager/app-core/providers/environment-client'
 import type { EnvironmentRoute } from '../lib/environment-store'
+import {
+  forgetPairingLinks,
+  madePairingLinks,
+  type MadePairingLink,
+} from '../lib/pairing-link-store'
 import { cn } from '../lib/utils'
-import { PairDeviceDialog } from './pair-device-dialog'
+import { formatRemaining, PairDeviceDialog, type ShownPairingLink } from './pair-device-dialog'
 
 const KIND_ICONS: Record<AuthorizedClient['kind'], IconComponent> = {
   owner: phosphorIcon(DesktopIcon),
@@ -181,6 +197,20 @@ function DeviceList({
   const [confirm, setConfirm] = useState<Confirm | null>(null)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [pairingOpen, setPairingOpen] = useState(false)
+  // The link the pairing dialog reopens, or null to make a new one.
+  const [reopen, setReopen] = useState<ShownPairingLink | null>(null)
+  const links = usePairingLinks(
+    client,
+    connected,
+    // Listing links needs `admin`, as listing devices does: only ask once that worked.
+    pairing !== undefined && list !== null,
+    pairing?.environmentId,
+  )
+  const openPairing = (link: ShownPairingLink | null) => {
+    setActionError(null)
+    setReopen(link)
+    setPairingOpen(true)
+  }
   const ask = (next: Confirm) => {
     setActionError(null)
     setConfirm(next)
@@ -221,6 +251,7 @@ function DeviceList({
     setRenaming(null)
     setConfirmOpen(false)
     setPairingOpen(false)
+    setReopen(null)
     return client.onAuthorizedClientsChanged?.((next) => {
       generation.current += 1
       setList(next)
@@ -347,6 +378,17 @@ function DeviceList({
       </ul>
       {list.omitted > 0 ? <Note>{omittedNote(list.omitted, current === undefined)}</Note> : null}
       {actionError && !confirmOpen ? <Note role="alert">{actionError}</Note> : null}
+      {pairing ? (
+        <PairingLinks
+          client={client}
+          environmentId={pairing.environmentId}
+          state={links}
+          currentClientId={list.currentClientId}
+          deviceLabel={(clientId) => list.clients.find((item) => item.clientId === clientId)?.label}
+          // The dialog that shows a link needs this device's own row.
+          onShow={current ? openPairing : undefined}
+        />
+      ) : null}
       {(pairing && current) || revocableOthers > 0 ? (
         <div className="mt-3 flex flex-wrap gap-2">
           {pairing && current ? (
@@ -354,10 +396,7 @@ function DeviceList({
               type="button"
               variant="primary"
               disabled={busy}
-              onClick={() => {
-                setActionError(null)
-                setPairingOpen(true)
-              }}
+              onClick={() => openPairing(null)}
             >
               Pair a device
             </Button>
@@ -378,7 +417,13 @@ function DeviceList({
         <PairDeviceDialog
           client={client}
           open={pairingOpen}
-          onOpenChange={setPairingOpen}
+          onOpenChange={(open) => {
+            setPairingOpen(open)
+            // Whatever the dialog did, the list says where its links stand now.
+            if (!open) links.refresh()
+          }}
+          reopen={reopen}
+          onLinksChanged={links.refresh}
           grant={current.capabilities}
           environmentId={pairing.environmentId}
           routes={pairing.routes}
@@ -400,6 +445,287 @@ function DeviceList({
         onConfirm={() => void confirmAction()}
       />
     </>
+  )
+}
+
+type PairingLinksState = {
+  /** What the environment last reported, or null before it first answered. */
+  links: readonly PairingLink[] | null
+  error: string | null
+  refresh: () => void
+  /** The environment confirmed it withdrew this link. */
+  withdrawn: (linkId: string) => void
+}
+
+/**
+ * The environment's pairing links, read again whenever one may have changed:
+ * on every (re)connect, when a device pairs (a link was probably used), and
+ * when this tab makes or withdraws one. Nothing pushes link changes, so a
+ * link made or withdrawn on another device shows on the next of those.
+ */
+function usePairingLinks(
+  client: EnvironmentClient,
+  connected: boolean,
+  enabled: boolean,
+  environmentId: string | undefined,
+): PairingLinksState {
+  const [links, setLinks] = useState<readonly PairingLink[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const generation = useRef(0)
+
+  useEffect(() => {
+    // Another environment's links must not show while this one's load.
+    generation.current += 1
+    setLinks(null)
+    setError(null)
+  }, [client])
+
+  const refresh = useCallback(() => {
+    if (!enabled) return
+    const current = ++generation.current
+    client.commands.listPairingLinks().then(
+      (next) => {
+        if (current !== generation.current) return
+        setLinks(next)
+        setError(null)
+        // A link that stopped working cannot be shown again.
+        if (environmentId) {
+          forgetPairingLinks(
+            environmentId,
+            next.filter((item) => item.status !== 'waiting').map((item) => item.linkId),
+          )
+        }
+      },
+      (caught: unknown) => {
+        if (current === generation.current) setError(message(caught))
+      },
+    )
+  }, [client, enabled, environmentId])
+
+  useEffect(() => {
+    if (connected) refresh()
+  }, [connected, refresh])
+
+  useEffect(() => client.onAuthorizedClientsChanged?.(() => refresh()), [client, refresh])
+
+  const withdrawn = useCallback((linkId: string) => {
+    setLinks(
+      (value) =>
+        value?.map((item) => (item.linkId === linkId ? { ...item, status: 'revoked' } : item)) ??
+        value,
+    )
+  }, [])
+
+  return { links, error, refresh, withdrawn }
+}
+
+const waitingNow = (link: PairingLink, now: number) =>
+  link.status === 'waiting' && Date.parse(link.expiresAt) > now
+
+/**
+ * Every link still waiting for a device, so one made and closed is not lost.
+ * Links this tab made can be shown and copied again; one made elsewhere can
+ * only be withdrawn, since its token never reached this tab.
+ */
+function PairingLinks({
+  state,
+  ...props
+}: {
+  client: EnvironmentClient
+  environmentId: string
+  state: PairingLinksState
+  currentClientId: string
+  deviceLabel: (clientId: string) => string | undefined
+  onShow?: (link: ShownPairingLink) => void
+}) {
+  // Only a waiting link needs the every-second clock.
+  const waiting = state.links?.some((item) => item.status === 'waiting') ?? false
+  return (
+    <>
+      {waiting ? <WaitingLinks state={state} {...props} /> : null}
+      {state.error ? (
+        <div className="mt-2 flex items-center gap-2">
+          <Note role="alert">Could not read the pairing links: {state.error}</Note>
+          <Button type="button" variant="tertiary" size="compact" onClick={state.refresh}>
+            Retry
+          </Button>
+        </div>
+      ) : null}
+    </>
+  )
+}
+
+function WaitingLinks({
+  client,
+  environmentId,
+  state,
+  currentClientId,
+  deviceLabel,
+  onShow,
+}: {
+  client: EnvironmentClient
+  environmentId: string
+  state: PairingLinksState
+  currentClientId: string
+  deviceLabel: (clientId: string) => string | undefined
+  onShow?: (link: ShownPairingLink) => void
+}) {
+  const now = useNow(1000)
+  const [withdrawing, setWithdrawing] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  // This tab's own copies; a few short entries, so reading them each tick is cheap.
+  const made = madePairingLinks(environmentId)
+  const shown = (state.links ?? [])
+    .filter((item) => waitingNow(item, now))
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+  if (shown.length === 0) return null
+
+  const withdraw = async (link: PairingLink) => {
+    setWithdrawing(link.linkId)
+    setError(null)
+    try {
+      await client.commands.revokePairingLink(link.linkId)
+      state.withdrawn(link.linkId)
+      forgetPairingLinks(environmentId, [link.linkId])
+    } catch (caught) {
+      setError(message(caught))
+    } finally {
+      setWithdrawing(null)
+      state.refresh()
+    }
+  }
+
+  return (
+    <>
+      <h3 className="mt-4 text-[12px] text-muted-foreground">Pairing links</h3>
+      <ul className="mt-1.5 flex flex-col gap-1" aria-label="Pairing links">
+        {shown.map((item) => (
+          <PairingLinkRow
+            key={item.linkId}
+            link={item}
+            made={made.get(item.linkId)}
+            now={now}
+            origin={
+              item.createdByClientId === currentClientId
+                ? 'Made on this device'
+                : `Made on ${deviceLabel(item.createdByClientId) ?? 'another device'}`
+            }
+            busy={withdrawing === item.linkId}
+            onShow={onShow}
+            onCopyFailed={() =>
+              setError('Could not copy. Open the QR code to select the link yourself.')
+            }
+            onWithdraw={() => void withdraw(item)}
+          />
+        ))}
+      </ul>
+      {error ? <Note role="alert">{error}</Note> : null}
+    </>
+  )
+}
+
+function PairingLinkRow({
+  link,
+  made,
+  now,
+  origin,
+  busy,
+  onShow,
+  onCopyFailed,
+  onWithdraw,
+}: {
+  link: PairingLink
+  /** This tab's copy of the link, when this tab made it. */
+  made: MadePairingLink | undefined
+  now: number
+  /** Where a link this tab cannot show was made. */
+  origin: string
+  busy: boolean
+  onShow?: (link: ShownPairingLink) => void
+  onCopyFailed: () => void
+  onWithdraw: () => void
+}) {
+  const name = link.label ?? 'New device'
+  const [copied, setCopied] = useState(false)
+  useEffect(() => {
+    if (!copied) return
+    const timer = setTimeout(() => setCopied(false), 1400)
+    return () => clearTimeout(timer)
+  }, [copied])
+  const copy = async (url: string) => {
+    // Without a secure origin there is no `navigator.clipboard` at all.
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+    } catch {
+      onCopyFailed()
+    }
+  }
+  const details = [
+    describeAccess(link.capabilities),
+    `Expires in ${formatRemaining(link.expiresAt, now) ?? '0:00'}`,
+    ...(made ? [] : [origin]),
+  ]
+  return (
+    <li className="flex items-center gap-3 rounded-lg bg-hover/70 px-3 py-2.5" aria-label={name}>
+      <span aria-hidden className="flex shrink-0 text-muted-foreground">
+        <LinkSimpleIcon size={16} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[13px] text-foreground">{name}</div>
+        <div className="truncate text-[12px] text-muted-foreground">{details.join(' · ')}</div>
+      </div>
+      <div className="flex shrink-0 items-center gap-0.5">
+        {made && onShow ? (
+          <IconAction
+            label="Show QR code"
+            disabled={busy}
+            onClick={() => onShow({ link, url: made.url })}
+          >
+            <QrCodeIcon />
+          </IconAction>
+        ) : null}
+        {made ? (
+          <IconAction
+            label={copied ? 'Copied' : 'Copy link'}
+            disabled={busy}
+            onClick={() => void copy(made.url)}
+          >
+            {copied ? <CheckIcon weight="bold" /> : <CopyIcon />}
+          </IconAction>
+        ) : null}
+        <IconAction label="Withdraw link" disabled={busy} onClick={onWithdraw}>
+          <XIcon />
+        </IconAction>
+      </div>
+    </li>
+  )
+}
+
+function IconAction({
+  label,
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string
+  disabled: boolean
+  onClick: () => void
+  children: ReactNode
+}) {
+  return (
+    <Tooltip content={label} side="bottom">
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-compact"
+        aria-label={label}
+        disabled={disabled}
+        onClick={onClick}
+      >
+        {children}
+      </Button>
+    </Tooltip>
   )
 }
 

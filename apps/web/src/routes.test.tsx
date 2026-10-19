@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createMockEnvironmentClient } from '@openmanager/environment-client'
 import type { ComponentProps } from 'react'
 import type { WebApp } from './app'
+import { closeAddEnvironment } from './lib/add-environment-draft'
 import { environmentSocketUrl } from './lib/environment-socket'
 import { ENVIRONMENT_STORAGE_KEY } from './lib/environment-store'
 import { CONNECTION_STORIES } from './stories/connection-states'
@@ -20,6 +21,7 @@ afterEach(() => {
   vi.restoreAllMocks()
   // A test that went offline must not leave the next one's queries paused.
   onlineManager.setOnline(true)
+  closeAddEnvironment()
 })
 
 function seedRegistry(
@@ -94,6 +96,22 @@ function trackSockets() {
   }
   /** `clients` are the ones not yet disposed. */
   return { dialled: () => dialled, clients: () => [...live], create }
+}
+
+/** Settings keeps the add form behind its button once an environment is saved. */
+async function openAddEnvironment(user: ReturnType<typeof userEvent.setup>) {
+  if (screen.queryByLabelText('Environment endpoint')) return
+  await user.click(await screen.findByRole('button', { name: 'Add environment' }))
+}
+
+/** The saved environment marked as the one in use, by its name. */
+function currentEnvironment() {
+  const list = screen.queryByRole('list', { name: 'Saved environments' })
+  if (!list) return null
+  const item = within(list)
+    .queryAllByRole('listitem')
+    .find((row) => row.getAttribute('aria-label') && within(row).queryByText('Current'))
+  return item?.getAttribute('aria-label') ?? null
 }
 
 function storedRegistry() {
@@ -263,12 +281,14 @@ describe('web routes', () => {
     expect(document.documentElement.dataset.theme).toBe('light')
     expect(localStorage.getItem('openmanager-theme')).toBe('light')
 
-    await user.keyboard('{ArrowRight}')
+    // Clicked, not arrowed to: the mode icons' tooltips stall jsdom's focus
+    // move for seconds (a real browser takes ~300 ms).
+    await user.click(screen.getByRole('radio', { name: 'Dark' }))
     expect(screen.getByRole('radio', { name: 'Dark' })).toBeChecked()
     expect(document.documentElement.dataset.theme).toBeUndefined()
   })
 
-  it('picks a theme family that follows the mode, with its variants beside it', async () => {
+  it('picks a theme family whose one light or dark scheme follows the mode', async () => {
     const user = userEvent.setup()
     renderWebApp('/settings?tab=appearance')
 
@@ -276,24 +296,17 @@ describe('web routes', () => {
     await user.click(screen.getByRole('radio', { name: 'Dark' }))
     await user.click(within(themes).getByRole('radio', { name: /Lovable/ }))
     expect(document.documentElement.dataset.theme).toBe('lovable')
-    // Lovable has one dark variant, so there is nothing more to pick in dark.
-    expect(screen.queryByRole('radiogroup', { name: 'Lovable dark variants' })).toBeNull()
 
     await user.click(screen.getByRole('radio', { name: 'Light' }))
     expect(document.documentElement.dataset.theme).toBe('lovable-light')
-    const lightVariants = screen.getByRole('radiogroup', { name: 'Lovable light variants' })
-    await user.click(within(lightVariants).getByRole('radio', { name: 'Inverse' }))
-    expect(document.documentElement.dataset.theme).toBe('lovable-light-inverse')
 
     await user.click(within(themes).getByRole('radio', { name: /Claude/ }))
     expect(document.documentElement.dataset.theme).toBe('claude-light')
     await user.click(screen.getByRole('radio', { name: 'Dark' }))
     expect(document.documentElement.dataset.theme).toBe('claudeish')
 
-    // Going back to Lovable in light brings back the variant picked there.
-    await user.click(screen.getByRole('radio', { name: 'Light' }))
-    await user.click(within(themes).getByRole('radio', { name: /Lovable/ }))
-    expect(document.documentElement.dataset.theme).toBe('lovable-light-inverse')
+    // A family is one scheme per mode: there is no variant to pick.
+    expect(screen.queryByRole('radiogroup', { name: /variants/ })).toBeNull()
   })
 
   it('shows the connection story playground for every state', async () => {
@@ -473,6 +486,7 @@ describe('web routes', () => {
     renderWebApp('/settings', { createEnvironmentClient: sockets.create })
     // The shell swaps to the shared sidebar once the client exists; type after that.
     await screen.findByText(/Connected · Local environment/)
+    await openAddEnvironment(user)
     await user.type(screen.getByLabelText('Environment endpoint'), 'https://tunnel.example')
     await user.click(screen.getByRole('button', { name: 'Add environment' }))
 
@@ -488,7 +502,7 @@ describe('web routes', () => {
 
     await user.click(within(prompt).getByRole('button', { name: 'Add route' }))
 
-    expect(await screen.findByText('Home lab · Selected')).toBeInTheDocument()
+    await waitFor(() => expect(currentEnvironment()).toBe('Home lab'))
     expect(sockets.dialled().at(-1)).toEqual({ url: TUNNEL_SOCKET, credential: 'client-token' })
     expect(storedRegistry().environments).toEqual([
       {
@@ -519,6 +533,55 @@ describe('web routes', () => {
     ).not.toBeInTheDocument()
   })
 
+  it('adds a route from the environment card as a backup, without switching to it', async () => {
+    const user = userEvent.setup()
+    seedRegistry([
+      {
+        environmentId: 'env-local',
+        endpoints: ['http://127.0.0.1:43120'],
+        credential: 'client-token',
+      },
+    ])
+    mockBootstrap({
+      'http://127.0.0.1:43120': { environmentId: 'env-local', label: 'Local environment' },
+      'https://tunnel.example': { environmentId: 'env-local', label: 'Local environment' },
+      'https://lab.example': { environmentId: 'env-lab', label: 'Lab' },
+    })
+    const sockets = trackSockets()
+
+    renderWebApp('/settings', { createEnvironmentClient: sockets.create })
+    await screen.findByText(/Connected · Local environment/)
+    await user.click(screen.getByRole('button', { name: 'Add a route to Local environment' }))
+
+    // An address that answers as another environment is refused in place.
+    await user.type(screen.getByLabelText('New route to Local environment'), 'https://lab.example')
+    await user.keyboard('{Enter}')
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'https://lab.example reaches Lab, a different environment.',
+    )
+    expect(storedRegistry().environments).toHaveLength(1)
+    expect(storedRegistry().environments[0]?.routes).toHaveLength(1)
+
+    await user.clear(screen.getByLabelText('New route to Local environment'))
+    await user.type(
+      screen.getByLabelText('New route to Local environment'),
+      'https://tunnel.example',
+    )
+    await user.keyboard('{Enter}')
+    await waitFor(() =>
+      expect(storedRegistry().environments[0]?.routes.map((route) => route.endpoint)).toEqual([
+        'http://127.0.0.1:43120',
+        'https://tunnel.example',
+      ]),
+    )
+    // Saved as the last choice; the connection stays where it was, and the
+    // token has gone nowhere new.
+    expect(storedRegistry().selectedId).toBe('env-local')
+    expect(sockets.dialled().map((socket) => socket.url)).not.toContain(TUNNEL_SOCKET)
+    const routes = within(screen.getByRole('list', { name: 'Routes to Local environment' }))
+    expect(routes.getByRole('button', { name: 'Use https://tunnel.example' })).toBeInTheDocument()
+  })
+
   it('leaves a saved environment as it was when the new address is turned down', async () => {
     const user = userEvent.setup()
     seedRegistry([
@@ -536,14 +599,16 @@ describe('web routes', () => {
 
     renderWebApp('/settings', { createEnvironmentClient: sockets.create })
     await screen.findByText(/Connected · Local environment/)
+    await openAddEnvironment(user)
     await user.type(screen.getByLabelText('Environment endpoint'), 'https://tunnel.example')
     await user.click(screen.getByRole('button', { name: 'Add environment' }))
     await user.click(
       within(await screen.findByRole('alert')).getByRole('button', { name: 'Cancel' }),
     )
 
-    // Back on the saved route, with the form there to try another address.
+    // Back on the saved route, with a fresh form to try another address.
     await screen.findByText(/Connected · Local environment/)
+    await openAddEnvironment(user)
     expect(await screen.findByLabelText('Environment endpoint')).toHaveValue('')
     expect(storedRegistry()).toMatchObject({
       selectedId: 'env-local',
@@ -558,6 +623,45 @@ describe('web routes', () => {
     expect(storedRegistry().environments).toHaveLength(1)
     expect(storedRegistry().environments[0]?.routes).toHaveLength(1)
     expect(sockets.dialled().map((socket) => socket.url)).not.toContain(TUNNEL_SOCKET)
+  })
+
+  it('keeps the Add environment form, and what was typed, when a new address fails', async () => {
+    const user = userEvent.setup()
+    seedRegistry([
+      {
+        environmentId: 'env-local',
+        endpoints: ['http://127.0.0.1:43120'],
+        credential: 'client-token',
+      },
+    ])
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).startsWith('http://127.0.0.1:9/')) throw new TypeError('Failed to fetch')
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            protocolVersion: PROTOCOL_VERSION,
+            capabilities: ['connection.heartbeat'],
+            environmentId: 'env-local',
+            label: 'Local environment',
+          }),
+        }
+      }),
+    )
+
+    renderWebApp('/settings')
+    await screen.findByText(/Connected · Local environment/)
+    await openAddEnvironment(user)
+    await user.type(screen.getByLabelText('Environment endpoint'), 'http://127.0.0.1:9')
+    await user.type(screen.getByLabelText('Client token'), 'typed-token')
+    await user.click(screen.getByRole('button', { name: 'Add environment' }))
+
+    // Connecting drops the old client and remounts the page; the form survives it.
+    await waitFor(() => expect(screen.queryByText(/Connected · Local environment/)).toBeNull())
+    expect(await screen.findByLabelText('Environment endpoint')).toHaveValue('http://127.0.0.1:9')
+    expect(screen.getByLabelText('Client token')).toHaveValue('typed-token')
   })
 
   it('merges a new address without asking when the connect brings its own token', async () => {
@@ -577,6 +681,7 @@ describe('web routes', () => {
 
     renderWebApp('/settings', { createEnvironmentClient: sockets.create })
     await screen.findByText(/Connected · Local environment/)
+    await openAddEnvironment(user)
     await user.type(screen.getByLabelText('Environment endpoint'), 'https://tunnel.example')
     await user.type(screen.getByLabelText('Client token'), 'new-token')
     await user.click(screen.getByRole('button', { name: 'Add environment' }))
@@ -637,6 +742,7 @@ describe('web routes', () => {
 
     renderWebApp('/settings')
     await screen.findByText(/Connected · Lab A/)
+    await openAddEnvironment(user)
     await user.type(screen.getByLabelText('Environment endpoint'), 'https://tunnel.example')
     await user.type(screen.getByLabelText('Client token'), 'token-b')
     await user.click(screen.getByRole('button', { name: 'Add environment' }))
@@ -672,10 +778,11 @@ describe('web routes', () => {
 
     renderWebApp('/settings', { createEnvironmentClient: sockets.create })
     await screen.findByText(/Connected · Local environment/)
+    await openAddEnvironment(user)
     await user.type(screen.getByLabelText('Environment endpoint'), 'https://tunnel.example')
     await user.click(screen.getByRole('button', { name: 'Add environment' }))
 
-    expect(await screen.findByText('Lab · Selected')).toBeInTheDocument()
+    await waitFor(() => expect(currentEnvironment()).toBe('Lab'))
     expect(
       storedRegistry().environments.map((item) => [item.environmentId, item.credential]),
     ).toEqual([
@@ -723,6 +830,7 @@ describe('web routes', () => {
 
     renderWebApp('/settings', { createEnvironmentClient: sockets.create })
     await waitFor(() => expect(sockets.dialled()).toHaveLength(1))
+    await openAddEnvironment(user)
     await user.type(await screen.findByLabelText('Environment endpoint'), 'https://tunnel.example')
     await user.click(screen.getByRole('button', { name: 'Add environment' }))
     await waitFor(() =>
@@ -820,6 +928,7 @@ describe('web routes', () => {
 
     online.mockReturnValue(false)
     act(() => void window.dispatchEvent(new Event('offline')))
+    await openAddEnvironment(user)
     await user.type(screen.getByLabelText('Environment endpoint'), 'https://tunnel.example')
     await user.click(screen.getByRole('button', { name: 'Add environment' }))
     await act(async () => {})
@@ -1083,17 +1192,17 @@ describe('web routes', () => {
 
     renderWebApp('/settings')
     await screen.findByText(/Connected · Home/)
-    await waitFor(() => expect(screen.getByText('Home · Selected')).toBeInTheDocument())
-    await user.click(screen.getByRole('button', { name: 'Select' }))
+    await waitFor(() => expect(currentEnvironment()).toBe('Home'))
+    await user.click(screen.getByRole('button', { name: 'Connect to Lab' }))
     // The shell remounts its content while the client is swapped, so re-query.
     await screen.findByText(/Connected · Lab/)
-    await waitFor(() => expect(screen.getByText('Lab · Selected')).toBeInTheDocument())
+    await waitFor(() => expect(currentEnvironment()).toBe('Lab'))
     expect(storedRegistry().selectedId).toBe('env-b')
 
     await screen.findByText(/Connected · Lab/)
-    await user.click(screen.getAllByRole('button', { name: 'Remove' })[0]!)
-    expect(screen.queryByText('Home · Selected')).not.toBeInTheDocument()
-    expect(screen.getByText('Lab · Selected')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Remove Home' }))
+    expect(screen.queryByRole('listitem', { name: 'Home' })).not.toBeInTheDocument()
+    expect(currentEnvironment()).toBe('Lab')
     expect(storedRegistry().environments.map((item) => item.environmentId)).toEqual(['env-b'])
   })
 
@@ -1150,12 +1259,11 @@ describe('web routes', () => {
 
     renderWebApp('/settings')
     await screen.findByText(/Connected · Local environment/)
-    await waitFor(() =>
-      expect(screen.getByText('Local environment · Selected')).toBeInTheDocument(),
-    )
+    await waitFor(() => expect(currentEnvironment()).toBe('Local environment'))
+    await openAddEnvironment(user)
     await user.type(screen.getByLabelText('Environment endpoint'), 'http://127.0.0.1:43121')
     await user.click(screen.getByRole('button', { name: 'Add environment' }))
-    await user.click(screen.getByRole('button', { name: 'Remove' }))
+    await user.click(screen.getByRole('button', { name: 'Remove Local environment' }))
     expect(storedRegistry().environments).toEqual([])
     release()
     await waitFor(() => {

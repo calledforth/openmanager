@@ -33,6 +33,32 @@ export interface AddProjectPaletteProps {
   browse: (path?: string, prefix?: string) => Promise<FilesystemListing>
   /** Registers the folder. A rejection is shown in place and the palette stays open. */
   onAdd: (path: string) => Promise<void>
+  /**
+   * The words for another use of the same browser, such as choosing where
+   * Add project starts. Omitted, it reads as Add project.
+   */
+  labels?: FolderPaletteLabels
+}
+
+export interface FolderPaletteLabels {
+  title: string
+  description: string
+  /** The button for a folder, e.g. `Add openmanager`. */
+  action: (folderName: string) => string
+  /** The button while no folder can be taken. */
+  idle: string
+  busy: string
+  /** What the list says in a folder with no folders inside, where Enter takes it. */
+  emptyFolder: string
+}
+
+const ADD_PROJECT_LABELS: FolderPaletteLabels = {
+  title: 'Add a project',
+  description: "Browse the environment's folders and add one as a project.",
+  action: (name) => `Add ${name}`,
+  idle: 'Add project',
+  busy: 'Adding…',
+  emptyFolder: 'No folders inside. Enter adds this one.',
 }
 
 /**
@@ -41,7 +67,13 @@ export interface AddProjectPaletteProps {
  * so far, and the text after the last separator narrows them. Enter steps
  * into the highlighted folder; Ctrl/⌘+Enter adds the one the field names.
  */
-export function AddProjectPalette({ open, onOpenChange, browse, onAdd }: AddProjectPaletteProps) {
+export function AddProjectPalette({
+  open,
+  onOpenChange,
+  browse,
+  onAdd,
+  labels = ADD_PROJECT_LABELS,
+}: AddProjectPaletteProps) {
   // Adding holds the palette open, so the outcome has somewhere to land.
   const [busy, setBusy] = useState(false)
   const setOpen = useCallback(
@@ -53,8 +85,8 @@ export function AddProjectPalette({ open, onOpenChange, browse, onAdd }: AddProj
   )
   return (
     <CommandMenuDialog
-      title="Add a project"
-      description="Browse the environment's folders and add one as a project."
+      title={labels.title}
+      description={labels.description}
       open={open}
       onOpenChange={setOpen}
       shortcut={null}
@@ -63,6 +95,7 @@ export function AddProjectPalette({ open, onOpenChange, browse, onAdd }: AddProj
       <FolderBrowser
         browse={browse}
         onAdd={onAdd}
+        labels={labels}
         busy={busy}
         setBusy={setBusy}
         close={() => onOpenChange(false)}
@@ -79,10 +112,12 @@ const passAll = () => true
 function FolderBrowser({
   browse,
   onAdd,
+  labels,
   busy,
   setBusy,
   close,
 }: Pick<AddProjectPaletteProps, 'browse' | 'onAdd'> & {
+  labels: FolderPaletteLabels
   busy: boolean
   setBusy: (busy: boolean) => void
   close: () => void
@@ -221,7 +256,7 @@ function FolderBrowser({
   else if (!shown.ok) empty = shown.message
   else if (!shown.listing.readable) empty = 'This folder cannot be opened.'
   else if (filter && current) empty = `No folder here starts with “${filter}”.`
-  else empty = 'No folders inside. Enter adds this one.'
+  else empty = labels.emptyFolder
 
   return (
     <CommandMenu
@@ -294,7 +329,7 @@ function FolderBrowser({
           onClick={() => void add()}
         >
           <span className="truncate">
-            {busy ? 'Adding…' : target ? `Add ${folderName(target)}` : 'Add project'}
+            {busy ? labels.busy : target ? labels.action(folderName(target)) : labels.idle}
           </span>
           <CommandMenuShortcut keys="mod+enter" className="ml-1" />
         </Button>

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  addStoredRoute,
   adoptPersistedCredentials,
   classifyDiscoveredRoute,
   findStoredEnvironment,
@@ -362,6 +363,31 @@ describe('removeStoredRoute', () => {
   it('never forgets the last route of an environment', () => {
     const single = removeStoredRoute(twoRoutes(), 'env-local', LOCAL)
     expect(removeStoredRoute(single, 'env-local', TUNNEL)).toBe(single)
+  })
+})
+
+describe('addStoredRoute', () => {
+  it('adds an address as the last choice, leaving the selection and order alone', () => {
+    const start: EnvironmentRegistry = {
+      selectedId: 'env-other',
+      environments: [
+        environment('env-local', [route(LOCAL, 0)], { credential: 'token-1' }),
+        environment('env-other', [route('http://127.0.0.1:43121', 0)]),
+      ],
+    }
+    const next = addStoredRoute(start, 'env-local', `${TUNNEL}/`, { status: 'available' }, NOW)
+    expect(next.selectedId).toBe('env-other')
+    expect(next.environments[0]!.routes).toEqual([
+      route(LOCAL, 0),
+      route(TUNNEL, 1, { health: { status: 'available', changedAt: NOW.toISOString() } }),
+    ])
+    expect(next.environments[0]!.credential).toBe('token-1')
+  })
+
+  it('changes nothing for a known route or an unsaved environment', () => {
+    const start = twoRoutes()
+    expect(addStoredRoute(start, 'env-local', TUNNEL)).toBe(start)
+    expect(addStoredRoute(start, 'env-missing', 'https://new.example')).toBe(start)
   })
 })
 

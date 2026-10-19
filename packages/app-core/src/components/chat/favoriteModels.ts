@@ -1,28 +1,37 @@
-import type { ProviderId } from '@agentpack/contract'
+import type { ProviderIconId } from '../providers/ProviderIcon'
 
 export const FAVORITE_MODELS_STORAGE_KEY = 'openmanager-favorite-models'
 
-export type FavoriteModelKey = `${ProviderId}:${string}`
+export type FavoriteModelKey = `${ProviderIconId}:${string}`
 
-export function favoriteModelKey(providerId: ProviderId, modelId: string): FavoriteModelKey {
+const FAVORITE_PROVIDERS: ReadonlySet<string> = new Set<ProviderIconId>([
+  'claude',
+  'cursor',
+  'opencode',
+  'codex',
+])
+
+export function favoriteModelKey(providerId: ProviderIconId, modelId: string): FavoriteModelKey {
   return `${providerId}:${modelId}`
 }
 
 export function parseFavoriteModelKey(
   key: string,
-): { providerId: ProviderId; modelId: string } | null {
+): { providerId: ProviderIconId; modelId: string } | null {
   const sep = key.indexOf(':')
-  if (sep <= 0 || sep === key.length - 1) return null
+  // An empty model id is a real choice: a tool's own default (Settings' title model).
+  if (sep <= 0) return null
   const providerId = key.slice(0, sep)
   const modelId = key.slice(sep + 1)
-  if (providerId !== 'claude' && providerId !== 'cursor' && providerId !== 'opencode') return null
-  return { providerId, modelId }
+  if (!FAVORITE_PROVIDERS.has(providerId)) return null
+  return { providerId: providerId as ProviderIconId, modelId }
 }
 
-export function readFavoriteModels(): FavoriteModelKey[] {
+/** `storageKey` keeps a picker whose model ids mean something else (Settings' title model) apart. */
+export function readFavoriteModels(storageKey = FAVORITE_MODELS_STORAGE_KEY): FavoriteModelKey[] {
   if (typeof localStorage === 'undefined') return []
   try {
-    const raw = localStorage.getItem(FAVORITE_MODELS_STORAGE_KEY)
+    const raw = localStorage.getItem(storageKey)
     if (!raw) return []
     const parsed = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
@@ -35,9 +44,12 @@ export function readFavoriteModels(): FavoriteModelKey[] {
   }
 }
 
-export function writeFavoriteModels(keys: readonly FavoriteModelKey[]): void {
+export function writeFavoriteModels(
+  keys: readonly FavoriteModelKey[],
+  storageKey = FAVORITE_MODELS_STORAGE_KEY,
+): void {
   if (typeof localStorage === 'undefined') return
-  localStorage.setItem(FAVORITE_MODELS_STORAGE_KEY, JSON.stringify([...keys]))
+  localStorage.setItem(storageKey, JSON.stringify([...keys]))
 }
 
 export function toggleFavoriteModel(

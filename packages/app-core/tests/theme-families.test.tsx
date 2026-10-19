@@ -8,8 +8,12 @@ import {
   ThemeProvider,
   familyOfTheme,
   isLightTheme,
+  isThemeMode,
   readStoredAppearance,
+  readStoredTheme,
   resolveTheme,
+  themeFamily,
+  themeModeFrom,
   useTheme,
 } from '../src/providers/theme-provider'
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -65,31 +69,128 @@ beforeEach(() => {
 
 afterEach(() => {
   act(() => root?.unmount())
+  root = null
   host?.remove()
   listeners.clear()
 })
 
 describe('theme families', () => {
-  it('puts every scheme in exactly one family, with both a light and a dark side', () => {
-    const placed = THEME_FAMILIES.flatMap((family) => [...family.light, ...family.dark])
-    expect(placed.map((variant) => variant.id).sort()).toEqual([...THEME_MODES].sort())
+  it('puts every scheme in exactly one family: one light side, one dark side', () => {
+    const placed = THEME_FAMILIES.flatMap((family) => [family.light.id, family.dark.id])
+    expect([...placed].sort()).toEqual([...THEME_MODES].sort())
+    expect(new Set(placed).size).toBe(placed.length)
     for (const family of THEME_FAMILIES) {
-      expect(family.light.every((variant) => isLightTheme(variant.id))).toBe(true)
-      expect(family.dark.every((variant) => !isLightTheme(variant.id))).toBe(true)
+      expect(isLightTheme(family.light.id)).toBe(true)
+      expect(isLightTheme(family.dark.id)).toBe(false)
     }
-    expect(familyOfTheme('lovable-light-inverse').id).toBe('lovable')
-    expect(familyOfTheme('black').id).toBe('default')
   })
 
-  it('carries a saved scheme from before families over as its family and mode', () => {
-    localStorage.setItem('openmanager-theme', 'lovable-light-inverse')
-    expect(readStoredAppearance()).toEqual({
-      mode: 'light',
-      family: 'lovable',
-      picks: { lovable: { light: 'lovable-light-inverse' } },
+  it('pairs each family with its light and dark scheme', () => {
+    expect(
+      Object.fromEntries(
+        THEME_FAMILIES.map((family) => [family.id, [family.light.id, family.dark.id]]),
+      ),
+    ).toEqual({
+      default: ['light', 'dark'],
+      neutral: ['neutral-light', 'neutral'],
+      paper: ['paper-light', 'paper'],
+      lovable: ['lovable-light', 'lovable'],
+      claude: ['claude-light', 'claudeish'],
+      carbon: ['carbon-light', 'carbon'],
     })
+    expect(familyOfTheme('lovable').id).toBe('lovable')
+  })
+
+  it('maps schemes that have gone to the ones that replaced them', () => {
+    expect(themeModeFrom('neutral-light-soft')).toBe('neutral-light')
+    expect(themeModeFrom('lovable-light-inverse')).toBe('lovable-light')
+    expect(themeModeFrom('black')).toBe('lovable')
+    expect(themeModeFrom('lovable-light')).toBe('lovable-light')
+    expect(themeModeFrom('carbon')).toBe('carbon')
+    expect(themeModeFrom('sepia')).toBeUndefined()
+    expect(themeModeFrom('toString')).toBeUndefined()
+    expect(themeModeFrom(null)).toBeUndefined()
+    for (const gone of ['neutral-light-soft', 'lovable-light-inverse', 'black']) {
+      expect(isThemeMode(gone)).toBe(false)
+    }
+  })
+
+  it.each([
+    ['neutral-light-soft', 'light', 'neutral', 'neutral-light'],
+    ['lovable-light-inverse', 'light', 'lovable', 'lovable-light'],
+    ['lovable-light', 'light', 'lovable', 'lovable-light'],
+    ['lovable', 'dark', 'lovable', 'lovable'],
+    ['black', 'dark', 'lovable', 'lovable'],
+    ['carbon', 'dark', 'carbon', 'carbon'],
+  ] as const)(
+    'carries a scheme saved alone before families (%s) over as its family and mode',
+    (saved, mode, family, shown) => {
+      localStorage.setItem('openmanager-theme', saved)
+      expect(readStoredAppearance()).toEqual({ mode, family })
+      mount()
+      expect(dataTheme()).toBe(shown)
+    },
+  )
+
+  it.each([
+    [
+      'Neutral with Soft picked',
+      'neutral',
+      'light',
+      { neutral: { light: 'neutral-light-soft' } },
+      'neutral-light',
+    ],
+    [
+      'Lovable with Inverse picked',
+      'lovable',
+      'light',
+      { lovable: { light: 'lovable-light-inverse' } },
+      'lovable-light',
+    ],
+    ['Lovable on its old light', 'lovable', 'light', {}, 'lovable-light'],
+    ['Lovable on its old dark', 'lovable', 'dark', {}, 'lovable'],
+  ] as const)(
+    'drops the variant picks of an appearance saved with them (%s)',
+    (_, family, mode, picks, shown) => {
+      localStorage.setItem(
+        'openmanager-appearance',
+        JSON.stringify({ mode, family, picks, light: 'gone', dark: 'gone' }),
+      )
+      localStorage.setItem('openmanager-theme', 'black')
+      expect(readStoredAppearance()).toEqual({ mode, family })
+      mount()
+      expect(dataTheme()).toBe(shown)
+      // Saved again without the picks, naming only schemes that exist.
+      expect(stored()).toEqual({
+        mode,
+        family,
+        light: themeFamily(family).light.id,
+        dark: themeFamily(family).dark.id,
+      })
+      expect(localStorage.getItem('openmanager-theme')).toBe(shown)
+    },
+  )
+
+  it('moves whoever picked Black under Default to Lovable, where Black lives now', () => {
+    localStorage.setItem(
+      'openmanager-appearance',
+      JSON.stringify({
+        mode: 'dark',
+        family: 'default',
+        picks: { default: { dark: 'black' } },
+        light: 'light',
+        dark: 'black',
+      }),
+    )
+    expect(readStoredAppearance()).toEqual({ mode: 'dark', family: 'lovable' })
     mount()
-    expect(dataTheme()).toBe('lovable-light-inverse')
+    expect(dataTheme()).toBe('lovable')
+    expect(stored()).toEqual({
+      mode: 'dark',
+      family: 'lovable',
+      light: 'lovable-light',
+      dark: 'lovable',
+    })
   })
 
   it('starts on the default family following the system', () => {
@@ -109,32 +210,21 @@ describe('theme families', () => {
     expect(dataTheme()).toBe('claude-light')
     act(() => api.setMode('dark'))
     expect(dataTheme()).toBe('claudeish')
-    act(() => api.setFamily('carbon'))
-    expect(dataTheme()).toBe('carbon')
+    act(() => api.setFamily('lovable'))
+    expect(dataTheme()).toBe('lovable')
     act(() => api.setMode('light'))
+    expect(dataTheme()).toBe('lovable-light')
+    act(() => api.setFamily('carbon'))
     expect(dataTheme()).toBe('carbon-light')
-  })
-
-  it('remembers the variant picked in each family', () => {
-    mount()
-    act(() => api.setMode('dark'))
-    act(() => api.setVariant('black'))
-    expect(dataTheme()).toBe('black')
-    act(() => api.setFamily('neutral'))
-    expect(dataTheme()).toBe('neutral')
-    act(() => api.setFamily('default'))
-    expect(dataTheme()).toBe('black')
-    expect(api.variants).toEqual({ light: 'light', dark: 'black' })
   })
 
   it('saves what each mode resolves to, for the boot script', () => {
     mount()
     act(() => api.setFamily('lovable'))
-    act(() => api.setVariant('lovable-light-inverse'))
-    expect(stored()).toMatchObject({
+    expect(stored()).toEqual({
       mode: 'system',
       family: 'lovable',
-      light: 'lovable-light-inverse',
+      light: 'lovable-light',
       dark: 'lovable',
     })
     expect(localStorage.getItem('openmanager-theme')).toBe('lovable')
@@ -142,33 +232,43 @@ describe('theme families', () => {
 
   it('pins a scheme and its mode with setTheme, so the system no longer moves it', () => {
     mount()
-    act(() => api.setTheme('black'))
+    act(() => api.setTheme('lovable'))
     expect(api.mode).toBe('dark')
-    expect(dataTheme()).toBe('black')
+    expect(api.family.id).toBe('lovable')
+    expect(dataTheme()).toBe('lovable')
     act(() => setSystemLight(true))
-    expect(dataTheme()).toBe('black')
+    expect(dataTheme()).toBe('lovable')
     act(() => api.setTheme('neutral-light'))
     expect(api.mode).toBe('light')
+    expect(api.family.id).toBe('neutral')
     expect(dataTheme()).toBe('neutral-light')
   })
 
-  it('ignores picks that do not belong to the family', () => {
-    expect(
-      resolveTheme(
-        { mode: 'light', family: 'carbon', picks: { carbon: { light: 'lovable-light' } } },
-        'dark',
-      ),
-    ).toBe('carbon-light')
+  it('reads the scheme a shell should paint before it mounts', () => {
+    localStorage.setItem(
+      'openmanager-appearance',
+      JSON.stringify({ mode: 'system', family: 'paper' }),
+    )
+    expect(readStoredTheme()).toBe('paper')
+    systemLight = true
+    expect(readStoredTheme()).toBe('paper-light')
+    localStorage.clear()
+    localStorage.setItem('openmanager-theme', 'black')
+    expect(readStoredTheme()).toBe('lovable')
+  })
+
+  it('ignores an appearance it does not understand', () => {
+    expect(resolveTheme({ mode: 'light', family: 'carbon' }, 'dark')).toBe('carbon-light')
     localStorage.setItem(
       'openmanager-appearance',
       JSON.stringify({ mode: 'sepia', family: 'nope', picks: { lovable: { dark: 'light' } } }),
     )
-    expect(readStoredAppearance()).toEqual({ mode: 'system', family: 'default', picks: {} })
+    expect(readStoredAppearance()).toEqual({ mode: 'system', family: 'default' })
   })
 
   it('falls back to the single saved scheme when the appearance is unreadable', () => {
     localStorage.setItem('openmanager-appearance', '{not json')
     localStorage.setItem('openmanager-theme', 'carbon')
-    expect(readStoredAppearance()).toMatchObject({ mode: 'dark', family: 'carbon' })
+    expect(readStoredAppearance()).toEqual({ mode: 'dark', family: 'carbon' })
   })
 })

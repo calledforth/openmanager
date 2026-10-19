@@ -7,6 +7,7 @@ import {
   CircleNotchIcon,
   GearIcon,
   HexagonIcon,
+  MonitorIcon,
   MoonIcon,
   SunIcon,
   TextTIcon,
@@ -24,7 +25,7 @@ import {
   typographyCaption,
   typographyLabel,
 } from '@openmanager/app-core/lib/typography'
-import { useTheme, type ThemeMode } from '@openmanager/app-core/providers/theme-provider'
+import { useTheme, type AppearanceMode } from '@openmanager/app-core/providers/theme-provider'
 import { usePlatformCapabilities } from '@openmanager/app-core/providers/platform-provider'
 import { useSessionState } from '@openmanager/app-core/providers/session-provider'
 import { Tooltip } from '@openmanager/app-core/components/ui/Tooltip'
@@ -156,7 +157,7 @@ export function ExtraSettingsDialog({
   onToggleConvex: () => void
 }) {
   const dialogRef = useRef<HTMLDivElement>(null)
-  const { theme, setTheme, font, setFont } = useTheme()
+  const { mode, setMode, font, setFont } = useTheme()
   const {
     providerHealthByProvider,
     acpAgentInfoByProvider,
@@ -197,7 +198,7 @@ export function ExtraSettingsDialog({
     [],
   )
 
-  const themeOptions = useMemo<SelectOption[]>(
+  const modeOptions = useMemo<SelectOption[]>(
     () => [
       {
         id: 'light',
@@ -210,9 +211,9 @@ export function ExtraSettingsDialog({
         icon: <MoonIcon className="h-3.5 w-3.5 text-[var(--basis-text-muted)]" />,
       },
       {
-        id: 'black',
-        label: 'Black',
-        icon: <CircleIcon className="h-3.5 w-3.5 text-[var(--basis-text-muted)]" weight="fill" />,
+        id: 'system',
+        label: 'System',
+        icon: <MonitorIcon className="h-3.5 w-3.5 text-[var(--basis-text-muted)]" />,
       },
     ],
     [],
@@ -312,24 +313,21 @@ export function ExtraSettingsDialog({
                   'flex items-center gap-1.5 text-[var(--basis-text)]',
                 )}
               >
-                {theme === 'light' ? (
+                {mode === 'light' ? (
                   <SunIcon className="h-3.5 w-3.5 text-[var(--basis-text-muted)]" />
-                ) : theme === 'black' ? (
-                  <CircleIcon
-                    className="h-3.5 w-3.5 text-[var(--basis-text-muted)]"
-                    weight="fill"
-                  />
+                ) : mode === 'system' ? (
+                  <MonitorIcon className="h-3.5 w-3.5 text-[var(--basis-text-muted)]" />
                 ) : (
                   <MoonIcon className="h-3.5 w-3.5 text-[var(--basis-text-muted)]" />
                 )}
-                Theme
+                Appearance
               </label>
               <SettingsSelect
                 id="extra-settings-theme"
-                aria-label="Theme"
-                value={theme}
-                options={themeOptions}
-                onChange={(next) => setTheme(next as ThemeMode)}
+                aria-label="Appearance"
+                value={mode}
+                options={modeOptions}
+                onChange={(next) => setMode(next as AppearanceMode)}
               />
             </div>
           </div>
