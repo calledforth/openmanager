@@ -1,36 +1,33 @@
 import { PROTOCOL_VERSION } from '@openmanager/protocol'
 import { describe, expect, it } from 'vitest'
 import {
-  CONNECTION_STORIES,
-  READY_CONNECTION_INPUT,
-  ROUTE_FAILURE_STORIES,
-} from '../stories/connection-states'
-import {
   bootstrapOutcomeFromQuery,
   connectionStatusLabel,
   deriveConnectionUi,
   type DeriveConnectionInput,
   type RouteFailure,
-} from './connection-state'
+} from '../../src/connection/connection-state'
 
-/** Route failures that need a person, so they never show the reconnect strip. */
-const PERSON_NEEDED = new Set(['credential_rejected', 'local_access_blocked'])
-
-/** Kinds that keep the shell mounted instead of replacing it. */
-const BANNER_KINDS = new Set(['connecting', 'reconnecting', 'offline', 'unreachable'])
+// The web app's story fixtures (apps/web/src/stories/connection-states.ts)
+// are checked against deriveConnectionUi next to them, in
+// apps/web/src/stories/connection-states.test.ts.
+const READY_CONNECTION_INPUT: DeriveConnectionInput = {
+  environment: {
+    status: 'selected',
+    endpoint: 'http://127.0.0.1:43120',
+    environmentId: 'env-local',
+    label: 'Local environment',
+  },
+  bootstrap: {
+    status: 'ready',
+    environmentId: 'env-local',
+    label: 'Local environment',
+    protocolVersion: PROTOCOL_VERSION,
+  },
+  transport: { phase: 'connected', hasConnected: true, failure: null },
+}
 
 describe('deriveConnectionUi', () => {
-  it('maps each story fixture to its named state and surface', () => {
-    for (const story of CONNECTION_STORIES) {
-      const ui = deriveConnectionUi(story.input)
-      // A variant's id is its kind followed by what sets it apart.
-      expect(story.id.startsWith(ui.kind), story.id).toBe(true)
-      expect(ui.surface, story.id).toBe(BANNER_KINDS.has(ui.kind) ? 'banner' : 'screen')
-      expect(ui.title.length, story.id).toBeGreaterThan(0)
-      expect(ui.description.length, story.id).toBeGreaterThan(0)
-    }
-  })
-
   it('treats a successful bootstrap plus connected transport as ready', () => {
     const ui = deriveConnectionUi(READY_CONNECTION_INPUT)
     expect(ui).toMatchObject({ kind: 'ready', surface: 'none' })
@@ -305,30 +302,6 @@ describe('deriveConnectionUi', () => {
         },
         ...extra,
       })
-
-    it('shows every reason that waiting resolves as the same reconnect state', () => {
-      const details = new Set<string>()
-      const waiting = ROUTE_FAILURE_STORIES.filter((story) => !PERSON_NEEDED.has(story.id))
-      for (const story of waiting) {
-        const ui = deriveConnectionUi(story.input)
-        expect(ui, story.id).toMatchObject({
-          surface: 'banner',
-          title: "Can't reach Rajku's laptop",
-          description: 'Trying to reconnect…',
-          retrying: true,
-          action: 'retry',
-          secondaryAction: 'change_environment',
-        })
-        // The reason itself is kept for debugging. A variant's id is its
-        // reason followed by what sets it apart.
-        if (story.id !== 'route_search') {
-          expect(story.id.startsWith(ui.reason!), story.id).toBe(true)
-        }
-        details.add(ui.detail!)
-      }
-      // Each cause still says something different on its one line.
-      expect(details.size).toBe(waiting.length)
-    })
 
     it('places every reason explicitly, so a new one cannot slip into the strip', () => {
       expect(() => failed({ reason: 'not_a_reason' as unknown as RouteFailure['reason'] })).toThrow(

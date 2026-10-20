@@ -6,7 +6,11 @@ import {
   routeHealthFromConnection,
   routeHealthLabel,
   WRONG_ENVIRONMENT_MESSAGE,
-} from './route-health'
+} from '../../src/connection/route-health'
+import { noLoopbackGate } from '../../src/connection/bootstrap'
+
+/** For the cases that are not about the loopback check. */
+const NO_GATE = { loopbackAccessDenied: noLoopbackGate }
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -115,9 +119,20 @@ describe('probeRouteHealth', () => {
         throw new TypeError('Failed to fetch')
       }),
     )
-    await expect(probeRouteHealth('env-a', 'https://tunnel.example')).resolves.toMatchObject({
+    await expect(
+      probeRouteHealth('env-a', 'https://tunnel.example', NO_GATE),
+    ).resolves.toMatchObject({
       status: 'unreachable',
     })
+  })
+
+  it("asks the host's loopback check when a route on this device does not answer", async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+    const loopbackAccessDenied = vi.fn(async () => true)
+    await expect(
+      probeRouteHealth('env-a', 'http://127.0.0.1:43120', { loopbackAccessDenied }),
+    ).resolves.toMatchObject({ status: 'unreachable' })
+    expect(loopbackAccessDenied).toHaveBeenCalledOnce()
   })
 
   it('checks that the answer comes from the environment the route belongs to', async () => {
@@ -133,10 +148,10 @@ describe('probeRouteHealth', () => {
         }),
       })),
     )
-    await expect(probeRouteHealth('env-b', 'http://127.0.0.1:43120')).resolves.toEqual({
+    await expect(probeRouteHealth('env-b', 'http://127.0.0.1:43120', NO_GATE)).resolves.toEqual({
       status: 'available',
     })
-    await expect(probeRouteHealth('env-a', 'http://127.0.0.1:43120')).resolves.toEqual({
+    await expect(probeRouteHealth('env-a', 'http://127.0.0.1:43120', NO_GATE)).resolves.toEqual({
       status: 'unreachable',
       message: WRONG_ENVIRONMENT_MESSAGE,
     })

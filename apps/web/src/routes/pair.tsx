@@ -11,13 +11,13 @@ import {
   useEnvironmentClientOptional,
   useEnvironmentState,
 } from '@openmanager/app-core/providers/environment-client'
-import { findStoredEnvironment } from '../lib/environment-store'
 import {
+  findStoredEnvironment,
   exchangePairingToken,
   pairingRejectionMessage,
   pairingRejectionReason,
   suggestDeviceLabel,
-} from '../lib/pairing'
+} from '@openmanager/environment-client/connection'
 import { useConnection } from '../providers/connection-provider'
 
 export const Route = createFileRoute('/pair')({ component: PairPage })

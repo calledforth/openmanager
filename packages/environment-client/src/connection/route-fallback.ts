@@ -1,4 +1,4 @@
-import { fetchBootstrap } from './bootstrap'
+import { fetchBootstrap, type LoopbackAccessCheck } from './bootstrap'
 import type { BootstrapOutcome, RouteFailure, RouteFailureReason } from './connection-state'
 import {
   isLoopbackEnvironmentEndpoint,
@@ -108,6 +108,24 @@ export function summarizeRouteFailures(probes: readonly RouteProbe[]): RouteFail
   }
 }
 
+/**
+ * How a search asks each route: `fetchBootstrap` with the host's loopback
+ * check, or a probe of the caller's own.
+ */
+export type RouteSearchProbe =
+  | { probe?: undefined; loopbackAccessDenied: LoopbackAccessCheck }
+  | { probe: (endpoint: string) => Promise<BootstrapOutcome>; loopbackAccessDenied?: undefined }
+
+function routeProbe(options: RouteSearchProbe): (endpoint: string) => Promise<BootstrapOutcome> {
+  if (options.probe) return options.probe
+  const { loopbackAccessDenied } = options
+  return (endpoint) =>
+    fetchBootstrap(endpoint, {
+      signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
+      loopbackAccessDenied,
+    })
+}
+
 export type RouteSearchResult =
   | { found: string; probes: RouteProbe[] }
   | { found: null; probes: RouteProbe[]; failure: RouteFailure }
@@ -123,16 +141,12 @@ export type RouteSearchResult =
  */
 export async function searchRoutes(
   environment: StoredEnvironment,
-  options: {
+  options: RouteSearchProbe & {
     known?: { endpoint: string; outcome: BootstrapOutcome }
     first?: string
-    probe?: (endpoint: string) => Promise<BootstrapOutcome>
-  } = {},
+  },
 ): Promise<RouteSearchResult> {
-  const probe =
-    options.probe ??
-    ((endpoint: string) =>
-      fetchBootstrap(endpoint, { signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS) }))
+  const probe = routeProbe(options)
   const answers = new Map<string, BootstrapOutcome>()
   if (options.known) answers.set(options.known.endpoint, options.known.outcome)
   const first = environment.routes.find((route) => route.endpoint === options.first)

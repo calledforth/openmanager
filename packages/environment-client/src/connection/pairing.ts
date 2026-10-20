@@ -6,7 +6,7 @@ import {
   type PairingExchangeResponse,
   type PairingRejectionReason,
 } from '@openmanager/protocol'
-import { isEnvironmentClientError } from '@openmanager/environment-client'
+import { isEnvironmentClientError } from '../errors'
 import { isLoopbackEnvironmentEndpoint } from './environment-store'
 
 /** What a person reads when the environment refused a pairing link, by reason. */
@@ -133,14 +133,6 @@ export function suggestDeviceLabel(userAgent: string): string {
   const label =
     browser && platform ? `${browser} on ${platform}` : (browser ?? platform ?? 'Web browser')
   return label.slice(0, CLIENT_LABEL_MAX_LENGTH)
-}
-
-/**
- * Where this web app is served from: the address a pairing link opens. A
- * phone can only open it when it is not this computer's loopback address.
- */
-export function pairingAppUrl(location: Pick<Location, 'origin'> = window.location): string {
-  return new URL(import.meta.env.BASE_URL, location.origin).href
 }
 
 export function isLoopbackAppUrl(appUrl: string): boolean {
