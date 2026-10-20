@@ -1,6 +1,8 @@
 import { createContext, useContext, useRef } from 'react'
 import type { DraftSyncStatus } from '@openmanager/environment-client'
 import type { ArtifactSource } from '../../lib/attachments'
+import { browserStorage } from '../../lib/browser-device'
+import { useDeviceStorage, type DeviceStorage } from '../../providers/device-host'
 import {
   pruneComposerDrafts,
   readComposerDrafts,
@@ -91,9 +93,10 @@ export const ComposerDraftStoreContext = createContext<ComposerDraftStore | null
 /** The host's store, or one over this browser's localStorage for the composer's lifetime. */
 export function useComposerDraftStore(): ComposerDraftStore {
   const provided = useContext(ComposerDraftStoreContext)
+  const storage = useDeviceStorage()
   const local = useRef<ComposerDraftStore | null>(null)
   if (provided) return provided
-  return (local.current ??= createLocalComposerDraftStore())
+  return (local.current ??= createLocalComposerDraftStore(storage))
 }
 
 /** Long enough that typing doesn't hit storage on every keystroke, short enough
@@ -104,11 +107,13 @@ const DRAFT_PERSIST_DEBOUNCE_MS = 400
  * Drafts in this browser's localStorage, text only, for hosts with no
  * environment that keeps them. Every instance reads storage when created.
  */
-export function createLocalComposerDraftStore(): ComposerDraftStore {
+export function createLocalComposerDraftStore(
+  storage: DeviceStorage | null = browserStorage(),
+): ComposerDraftStore {
   let texts: Record<string, string> = {}
   // Last snapshot written to storage, so an unchanged draft keeps its original
   // `updatedAt` and the eviction order stays a real recency order.
-  let persisted: Record<string, PersistedDraft> = readComposerDrafts()
+  let persisted: Record<string, PersistedDraft> = readComposerDrafts(storage)
   for (const [key, draft] of Object.entries(persisted)) texts[key] = draft.text
   const listeners = new Set<() => void>()
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -124,7 +129,7 @@ export function createLocalComposerDraftStore(): ComposerDraftStore {
       next[key] = { text, updatedAt: previous?.text === text ? previous.updatedAt : now }
     }
     persisted = pruneComposerDrafts(next)
-    writeComposerDrafts(persisted)
+    writeComposerDrafts(persisted, storage)
   }
 
   return {

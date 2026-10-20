@@ -13,6 +13,7 @@ import { createPortal } from 'react-dom'
 import { CaretDownIcon, CheckIcon, PlusIcon, StarIcon } from '@phosphor-icons/react'
 import type { ProviderId, SessionConfigOption } from '@agentpack/contract'
 import { cn } from '../../lib/utils'
+import { useDeviceStorage } from '../../providers/device-host'
 import {
   CommandMenu,
   CommandMenuEmpty,
@@ -28,12 +29,17 @@ import {
 } from '../fluid/ui/command-menu'
 import { phosphorIcon, type IconComponentProps } from '../fluid/lib/icon-context'
 import { composerChip } from './chatComposerStyles'
-import { ProviderIcon, type ProviderIconId } from '../providers/ProviderIcon'
+import { ProviderIcon } from '../providers/ProviderIcon'
 import { Tooltip } from '../ui/Tooltip'
 import { usePortaledMenu } from '../ui/usePortaledMenu'
 import { useHoldFocus, useRegisterPicker } from '../command/pickerRegistry'
 import { modelHint, modelLabel } from './modelLabel'
 import { contextWindowConfigOption, effortConfigOption } from './modelConfig'
+import type {
+  PickerProviderId,
+  ProviderModelGroup,
+  ProviderModelOption,
+} from './providerModelGroups'
 import {
   favoriteModelKey,
   parseFavoriteModelKey,
@@ -43,32 +49,7 @@ import {
   type FavoriteModelKey,
 } from './favoriteModels'
 
-export type ProviderModelOption = {
-  id: string
-  name: string
-  description?: string
-  resolvedModel?: string
-  effortLevels?: string[]
-  supportsFastMode?: boolean
-  supportsAutoMode?: boolean
-  contextWindowTokens?: number
-  configOptions?: SessionConfigOption[]
-}
-
-/** A tool whose models the picker lists: a session provider, or Codex for titles. */
-export type PickerProviderId = ProviderIconId
-
-export type ProviderModelGroup<P extends PickerProviderId = ProviderId> = {
-  providerId: P
-  providerName: string
-  models: ProviderModelOption[]
-  /** Why this provider cannot be switched to right now. Its models stay
-   * listed, so the picker says what is wrong instead of hiding the provider. */
-  unavailableReason?: string
-  /** Offer what is typed in this provider's tab as a model id of its own, for
-   *  a tool no catalog lists the models of. */
-  acceptsTypedIds?: boolean
-}
+export type { PickerProviderId, ProviderModelGroup, ProviderModelOption }
 
 /** Tab order after Favorites. */
 const PROVIDER_ORDER: readonly PickerProviderId[] = ['claude', 'cursor', 'opencode', 'codex']
@@ -251,8 +232,9 @@ export function ProviderModelPicker<P extends PickerProviderId = ProviderId>({
 }) {
   const [query, setQuery] = useState('')
   const [scope, setScope] = useState<Scope>(currentProviderId)
+  const deviceStorage = useDeviceStorage()
   const [favorites, setFavorites] = useState<FavoriteModelKey[]>(() =>
-    readFavoriteModels(favoritesStorageKey),
+    readFavoriteModels(favoritesStorageKey, deviceStorage),
   )
   const [highlighted, setHighlighted] = useState<FavoriteModelKey | null>(null)
   // The detail card is a pointing/browsing affordance: it appears once the
@@ -446,7 +428,7 @@ export function ProviderModelPicker<P extends PickerProviderId = ProviderId>({
   const toggleFavorite = (key: FavoriteModelKey) => {
     const next = toggleFavoriteModel(favorites, key)
     setFavorites(next)
-    writeFavoriteModels(next, favoritesStorageKey)
+    writeFavoriteModels(next, favoritesStorageKey, deviceStorage)
   }
 
   const pick = (key: string) => {

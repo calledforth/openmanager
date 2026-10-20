@@ -17,6 +17,7 @@ import {
   type SidebarDraft,
   type SidebarDraftFacts,
 } from '../components/sidebar/sidebar-sessions'
+import { usePageExit } from './device-host'
 import { DraftPageNavigationContext } from './draft-pages'
 import { useEnvironmentClient, useEnvironmentState } from './environment-client'
 import type { ProviderStatuses } from './draft-provider'
@@ -243,22 +244,18 @@ export function EnvironmentSidebarDraftsProvider({ children }: { children: React
     [startClock, stopClock],
   )
 
-  // A discard is let go, not kept waiting, when the page is going: unloaded,
-  // or frozen (which may end in a discard of the tab). Not when it is only
-  // hidden: switching tabs and back within the window keeps the undo, and its
-  // timer runs on meanwhile. Captured, so the deletion lands before the
-  // host's own `pagehide` files the state away for the next load.
-  useEffect(() => {
-    const flush = () => settleDiscard(true)
-    window.addEventListener('pagehide', flush, { capture: true })
-    document.addEventListener('freeze', flush, { capture: true })
-    return () => {
-      window.removeEventListener('pagehide', flush, { capture: true })
-      document.removeEventListener('freeze', flush, { capture: true })
-      // Leaving this environment: the discard stands.
-      flush()
-    }
-  }, [settleDiscard])
+  // A discard is let go, not kept waiting, when the page is going (on the
+  // web: unloaded, or frozen, which may end in a discard of the tab). Not when
+  // it is only hidden: switching tabs and back within the window keeps the
+  // undo, and its timer runs on meanwhile. The host says when
+  // (`subscribePageExit`). A host handing over a new one only moves the
+  // subscription across: that is not the page going, so nothing settles.
+  const subscribePageExit = usePageExit()
+  const settleDiscardRef = useRef(settleDiscard)
+  settleDiscardRef.current = settleDiscard
+  useEffect(() => subscribePageExit(() => settleDiscardRef.current(true)), [subscribePageExit])
+  // Leaving this environment: the discard stands.
+  useEffect(() => () => settleDiscard(true), [settleDiscard])
 
   // Back on the discarded draft's page (by its address) before the window
   // closed: the user wants it after all, and deleting it now would empty the
