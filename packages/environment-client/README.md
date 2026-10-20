@@ -129,7 +129,11 @@ It reads no host global. What only a host knows comes in as a parameter:
 
 - The registry's storage: `readEnvironmentRegistry`, `writeEnvironmentRegistry`
   and `clearEnvironmentRegistry` take a `RegistryStorage` (`getItem`, `setItem`,
-  `removeItem`). The web app passes `localStorage`.
+  `removeItem`). The web app passes `browserRegistryStorage`
+  (`apps/web/src/lib/registry-storage.ts`), which looks up
+  `window.localStorage` on every call so that a blocked-storage throw lands
+  inside the registry functions and reads as an empty registry. A phone
+  passes an adapter over its own key-value store.
 - The loopback permission: `fetchBootstrap`, `searchRoutes` and
   `probeRouteHealth` take a `loopbackAccessDenied` check, asked only when a
   fetch to this device's loopback address fails, so a refused browser
