@@ -74,6 +74,14 @@ describe('DOM-free logic entry boundary', () => {
     "const store = globalThis['sessionStorage']",
     'requestAnimationFrame(() => {})',
     "const load = () => import('./theme-families')",
+    'const { document: dom } = globalThis',
+    'const host = globalThis',
+    'const host = globalThis as unknown as { document: unknown }',
+    "const read = (name: string) => globalThis[name as 'document']",
+    'const read = (name: string) => Reflect.get(globalThis, name)',
+    "const worker = new Worker('worker.js')",
+    "const ok = CSS.supports('display', 'grid')",
+    'const defined = customElements.get("x-y")',
   ])('rejects %s', async (code) => {
     const [result] = await eslint.lintText(code, { filePath: logicFilePath })
     expect(result.errorCount).toBeGreaterThan(0)

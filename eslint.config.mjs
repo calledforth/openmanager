@@ -61,6 +61,21 @@ const globalThisSyntax = [
   `MemberExpression[object.expression.name='globalThis'][property.name=${domGlobalPattern}]`,
   `MemberExpression[object.expression.name='globalThis'][property.value=${domGlobalPattern}]`,
 ].map((selector) => ({ selector, message: logicMessage }))
+// `globalThis` only as `globalThis.name` or `globalThis['name']`, where the
+// selectors above can read the name: not destructured, aliased, passed on or
+// indexed by an expression.
+const globalThisEscapes = [
+  {
+    selector:
+      "Identifier[name='globalThis']:not(MemberExpression > Identifier.object, MemberExpression > TSAsExpression.object > Identifier.expression, MemberExpression > TSNonNullExpression.object > Identifier.expression)",
+    message: `${logicMessage} Read \`globalThis\` only as \`globalThis.name\`, so the lint can see which global.`,
+  },
+  {
+    selector:
+      "MemberExpression[computed=true]:matches([object.name='globalThis'], [object.expression.name='globalThis']):not([property.type='Literal'])",
+    message: `${logicMessage} Read \`globalThis\` only as \`globalThis.name\`, so the lint can see which global.`,
+  },
+]
 const logicSyntax = [
   ...electronSyntax,
   requireSyntax,
@@ -175,7 +190,7 @@ export default [
         'error',
         ...domGlobals.map((name) => ({ name, message: logicMessage })),
       ],
-      'no-restricted-syntax': ['error', ...logicSyntax, ...globalThisSyntax],
+      'no-restricted-syntax': ['error', ...logicSyntax, ...globalThisSyntax, ...globalThisEscapes],
     },
   },
   {

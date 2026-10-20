@@ -248,20 +248,14 @@ export function EnvironmentSidebarDraftsProvider({ children }: { children: React
   // web: unloaded, or frozen, which may end in a discard of the tab). Not when
   // it is only hidden: switching tabs and back within the window keeps the
   // undo, and its timer runs on meanwhile. The host says when
-  // (`subscribePageExit`); read through a ref so a host's new function is not
-  // a reason to let the discard go.
+  // (`subscribePageExit`). A host handing over a new one only moves the
+  // subscription across: that is not the page going, so nothing settles.
   const subscribePageExit = usePageExit()
-  const subscribePageExitRef = useRef(subscribePageExit)
-  subscribePageExitRef.current = subscribePageExit
-  useEffect(() => {
-    const flush = () => settleDiscard(true)
-    const unsubscribe = subscribePageExitRef.current(flush)
-    return () => {
-      unsubscribe()
-      // Leaving this environment: the discard stands.
-      flush()
-    }
-  }, [settleDiscard])
+  const settleDiscardRef = useRef(settleDiscard)
+  settleDiscardRef.current = settleDiscard
+  useEffect(() => subscribePageExit(() => settleDiscardRef.current(true)), [subscribePageExit])
+  // Leaving this environment: the discard stands.
+  useEffect(() => () => settleDiscard(true), [settleDiscard])
 
   // Back on the discarded draft's page (by its address) before the window
   // closed: the user wants it after all, and deleting it now would empty the
