@@ -1,0 +1,35 @@
+import { createInitialState } from './state'
+import type { EnvironmentState } from './types'
+
+/**
+ * What a host's offline cache keeps of a state, and what a reload starts
+ * from. Pure, so every host caches the same way and the convergence harness
+ * can reload a client exactly as the web app does.
+ */
+export function cacheState(state: EnvironmentState): EnvironmentState {
+  return {
+    ...state,
+    connection: createInitialState().connection,
+    sessionOpenFailure: null,
+    // A send cut off by the reload has an outcome this page never learns, and
+    // its edit holds the cleared composer, not what was sent. Dropped, so the
+    // environment's copy stands: gone with the session if the send happened,
+    // listed again if it did not.
+    draftEdits: Object.fromEntries(
+      Object.entries(state.draftEdits).filter(([, edit]) => !edit.launching),
+    ),
+    threads: Object.fromEntries(
+      Object.entries(state.threads).map(([id, thread]) => [
+        id,
+        {
+          ...thread,
+          // Pending commands belong to the old transport and are never replayed.
+          outbox: [],
+          // Which messages were echoes only matters to rows the old page drew.
+          confirmedEchoes: undefined,
+          hydration: thread.hydration === 'loading' ? 'idle' : thread.hydration,
+        },
+      ]),
+    ),
+  }
+}

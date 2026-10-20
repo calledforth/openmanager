@@ -1,0 +1,21 @@
+{
+  // The harness imports @openmanager/environment-client, which is source-only
+  // with extensionless imports, so it is checked with bundler resolution (as
+  // vitest runs it). server-child.ts runs under plain Node and keeps the
+  // explicit .ts extensions the server's own sources use.
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "include": ["./**/*.ts"]
+}

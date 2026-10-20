@@ -11,9 +11,11 @@
     "build": "pnpm --filter @openmanager/protocol build && pnpm --filter @agentpack/runtime build && tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
     "build:standalone": "pnpm build && node scripts/build-standalone.mjs",
-    "typecheck": "pnpm --filter @openmanager/protocol build && pnpm --filter @agentpack/runtime build && tsc --noEmit -p tsconfig.json",
-    "lint": "eslint src tests vitest.config.ts",
-    "test": "pnpm build && vitest run"
+    "typecheck": "pnpm --filter @openmanager/protocol build && pnpm --filter @agentpack/runtime build && tsc --noEmit -p tsconfig.json && tsc --noEmit -p tests/convergence/tsconfig.json",
+    "lint": "eslint src tests vitest.config.ts vitest.convergence.config.ts",
+    "test": "pnpm build && vitest run",
+    "test:convergence": "pnpm build && vitest run -c vitest.convergence.config.ts",
+    "test:convergence:nightly": "pnpm build && vitest run -c vitest.convergence.config.ts --mode nightly"
   },
   "dependencies": {
     "@agentpack/runtime": "workspace:*",
@@ -22,6 +24,7 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@openmanager/environment-client": "workspace:*",
     "@types/node": "24.13.3",
     "@types/ws": "8.18.1",
     "esbuild": "0.28.2",
