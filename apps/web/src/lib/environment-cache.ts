@@ -1,4 +1,5 @@
 import {
+  cacheState,
   createEnvironmentStore,
   createInitialState,
   type EnvironmentState,
@@ -12,38 +13,6 @@ const writes = new Map<string, Promise<void>>()
 /** URLs and credentials never participate in the cache namespace or payload. */
 export function environmentCacheName(environmentId: string): string {
   return `openmanager-environment:${environmentId}`
-}
-
-/**
- * What the cache keeps of a state, and what a reload starts from. Exported so
- * the convergence harness can reload a client exactly as this app does.
- */
-export function cacheState(state: EnvironmentState): EnvironmentState {
-  return {
-    ...state,
-    connection: createInitialState().connection,
-    sessionOpenFailure: null,
-    // A send cut off by the reload has an outcome this page never learns, and
-    // its edit holds the cleared composer, not what was sent. Dropped, so the
-    // environment's copy stands: gone with the session if the send happened,
-    // listed again if it did not.
-    draftEdits: Object.fromEntries(
-      Object.entries(state.draftEdits).filter(([, edit]) => !edit.launching),
-    ),
-    threads: Object.fromEntries(
-      Object.entries(state.threads).map(([id, thread]) => [
-        id,
-        {
-          ...thread,
-          // Pending commands belong to the old transport and are never replayed.
-          outbox: [],
-          // Which messages were echoes only matters to rows the old page drew.
-          confirmedEchoes: undefined,
-          hydration: thread.hydration === 'loading' ? 'idle' : thread.hydration,
-        },
-      ]),
-    ),
-  }
 }
 
 function openCache(environmentId: string): Promise<IDBDatabase | null> {

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WebSocket } from 'ws'
 import {
+  cacheState,
   createEnvironmentStore,
   createWebSocketEnvironmentClient,
   type EnvironmentClient,
@@ -11,7 +12,6 @@ import {
   type WebSocketConstructor,
 } from '@openmanager/environment-client'
 // The web app's own cache transform: what a reload hands the next client.
-import { cacheState } from '../../../web/src/lib/environment-cache.ts'
 import { LinkProxy, type FrameRecord } from './link-proxy.ts'
 import {
   describeDiff,
