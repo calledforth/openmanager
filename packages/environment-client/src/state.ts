@@ -613,8 +613,9 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
     ...createThreadState(thread, 'ready'),
     // A snapshot describes what the environment has; a send it has not
     // answered yet is still the client's to show, unless the snapshot is
-    // itself the answer.
-    outbox: reconcileOutbox(existing, threadSnapshot.messages),
+    // itself the answer. Which messages were this client's echoes is the
+    // client's own knowledge and survives the replacement.
+    ...reconcileOutbox(existing, threadSnapshot.messages),
     turns: threadSnapshot.turns,
     messages,
     // Older pages the client keeps in front of the snapshot place their
@@ -752,7 +753,7 @@ export function applySessionHistory(
       reasoning,
       tools,
       order,
-      outbox: reconcileOutbox(current, payload.messages),
+      ...reconcileOutbox(current, payload.messages),
       interactions:
         !older && (interactions.length > 0 || current.hydration !== 'ready')
           ? interactions
@@ -781,27 +782,41 @@ const messageText = (message: Message): string =>
  * started; when an authoritative snapshot or history page then brings back a
  * user message this client never had, that message is the echo. Each arriving
  * message clears at most one echo, so a prompt deliberately sent twice keeps
- * the copy that really did fail.
+ * the copy that really did fail. A cleared echo is recorded as confirmed by
+ * that message, the way a `turn.started` records it.
  */
-function reconcileOutbox(current: ThreadState, incoming: readonly Message[]): OutboxEntry[] {
-  if (!current.outbox.some((entry) => entry.status === 'failed')) return current.outbox
+function reconcileOutbox(
+  current: ThreadState,
+  incoming: readonly Message[],
+): Pick<ThreadState, 'outbox' | 'confirmedEchoes'> {
+  const unchanged = {
+    outbox: current.outbox,
+    ...(current.confirmedEchoes ? { confirmedEchoes: current.confirmedEchoes } : {}),
+  }
+  if (!current.outbox.some((entry) => entry.status === 'failed')) return unchanged
   const known = new Set(current.messages.map((message) => message.messageId))
-  const arrived = incoming
-    .filter((message) => message.role === 'user' && !known.has(message.messageId))
-    .map(messageText)
-  if (arrived.length === 0) return current.outbox
-  return current.outbox.filter((entry) => {
+  const arrived = incoming.filter(
+    (message) => message.role === 'user' && !known.has(message.messageId),
+  )
+  if (arrived.length === 0) return unchanged
+  const texts = arrived.map(messageText)
+  const confirmedEchoes = { ...current.confirmedEchoes }
+  const outbox = current.outbox.filter((entry) => {
     if (entry.status !== 'failed') return true
-    const index = arrived.indexOf(entry.text)
+    const index = texts.indexOf(entry.text)
     if (index === -1) return true
+    confirmedEchoes[arrived[index]!.messageId] = entry.commandId
+    texts.splice(index, 1)
     arrived.splice(index, 1)
     return false
   })
+  return outbox.length === current.outbox.length ? unchanged : { outbox, confirmedEchoes }
 }
 
 /**
  * The confirmed start of a turn: the real turn and user message replace the
- * echo its command id created. Keyed by ID throughout, so the `turn.send`
+ * echo its command id created, and the message is recorded as that echo's.
+ * Keyed by ID throughout, so the `turn.send`
  * response and the `turn.started` event may arrive in either order and only
  * the first of them changes anything.
  */
@@ -810,8 +825,9 @@ function confirmTurnStart(
   payload: TurnStarted,
   startedAt?: string,
 ): ThreadState {
-  const outbox = payload.commandId
-    ? current.outbox.filter((entry) => entry.commandId !== payload.commandId)
+  const { commandId } = payload
+  const outbox = commandId
+    ? current.outbox.filter((entry) => entry.commandId !== commandId)
     : current.outbox
   // A delayed send response must not rewind a turn that already progressed.
   // The `turn.started` event's time is when the work began; a `turn.send`
@@ -836,7 +852,13 @@ function confirmTurnStart(
       id: userMessage.messageId,
       turnId: payload.turn.turnId,
     }),
-    outbox: outbox.length === current.outbox.length ? current.outbox : outbox,
+    // The message is what the echo now shows as; see `confirmedEchoes`.
+    ...(commandId && outbox.length !== current.outbox.length
+      ? {
+          outbox,
+          confirmedEchoes: { ...current.confirmedEchoes, [userMessage.messageId]: commandId },
+        }
+      : {}),
   }
 }
 

@@ -345,6 +345,86 @@ describe('projectThread', () => {
     expect(second.messages).toBe(first.messages)
   })
 
+  it('keeps a confirmed send on the row its echo had', () => {
+    const waiting = thread({ outbox: [{ commandId: 'c1', text: 'hi', status: 'pending' }] })
+    const echo = projectThread(waiting).messages[0]!
+    const confirmed = projectThread(
+      thread({
+        turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'running' }],
+        messages: [
+          {
+            messageId: 'u1',
+            threadId: THREAD.threadId,
+            turnId: 't1',
+            role: 'user',
+            content: [{ type: 'text', text: 'hi' }],
+          },
+        ],
+        confirmedEchoes: { u1: 'c1' },
+      }),
+    ).messages[0]!
+    expect(confirmed.externalId).toBe('u1')
+    expect(confirmed).not.toHaveProperty('isOptimistic')
+    expect(confirmed.rowKey).toBe(echo.rowKey ?? echo.externalId)
+  })
+
+  it('gives a sent message its own row while its echo is still listed', () => {
+    const projection = projectThread(
+      thread({
+        turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'running' }],
+        messages: [
+          {
+            messageId: 'u1',
+            threadId: THREAD.threadId,
+            turnId: 't1',
+            role: 'user',
+            content: [{ type: 'text', text: 'hi' }],
+          },
+        ],
+        outbox: [{ commandId: 'c1', text: 'hi', status: 'pending' }],
+        confirmedEchoes: { u1: 'c1' },
+      }),
+    )
+    const keys = projection.messages.map((message) => message.rowKey ?? message.externalId)
+    expect(new Set(keys).size).toBe(keys.length)
+  })
+
+  it('keeps a reply on its turn row when its first message names it', () => {
+    const turns = [{ turnId: 't1', threadId: THREAD.threadId, state: 'running' as const }]
+    const thinking = projectThread(
+      thread({
+        turns,
+        reasoning: [
+          {
+            messageId: 'r1',
+            turnId: 't1',
+            phase: 'delta',
+            content: [{ type: 'text', text: 'hm' }],
+          },
+        ],
+      }),
+    )
+    const answering = projectThread(
+      thread({
+        turns,
+        reasoning: thinking.thread!.reasoning,
+        messages: [
+          {
+            messageId: 'a1',
+            threadId: THREAD.threadId,
+            turnId: 't1',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'hello' }],
+          },
+        ],
+      }),
+      thinking,
+    )
+    expect(thinking.messages[0]).toMatchObject({ externalId: 'turn:t1:assistant' })
+    expect(answering.messages[0]).toMatchObject({ externalId: 'a1' })
+    expect(answering.messages[0]!.rowKey).toBe(thinking.messages[0]!.rowKey)
+  })
+
   it('surfaces a failed turn on its assistant row', () => {
     const state = thread({
       turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'failed' }],

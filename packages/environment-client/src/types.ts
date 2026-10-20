@@ -163,6 +163,14 @@ export interface ThreadState {
   notices: TurnNotice[]
   /** Sends still waiting on the environment, oldest first, newest last. */
   outbox: OutboxEntry[]
+  /**
+   * The user messages that took the place of this client's own echoes: the
+   * command id each echo was keyed by, by the id of the message the
+   * environment recorded for it. A view uses it to keep showing a sent
+   * message as the row it already had, not as a new one. Client-side only and
+   * for this page's lifetime; absent from state that predates it.
+   */
+  confirmedEchoes?: Readonly<Record<string, string>>
   hydration: HydrationState
   /** Exclusive boundary for the next older persisted page. */
   historyCursor?: HistoryCursor | null

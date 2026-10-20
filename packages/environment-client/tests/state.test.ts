@@ -879,6 +879,45 @@ describe('optimistic sends', () => {
     expect(again.threads[THREAD.threadId]?.turns).toHaveLength(1)
   })
 
+  it('records which message confirmed the echo, whichever confirmation came first', () => {
+    const started = turnStarted('turn-1', 'hello', 'cmd-1')
+    const messageId = started.payload.userMessage!.messageId
+    const fromResponse = applyTurnStarted(sending('cmd-1'), THREAD, started.payload)
+    expect(fromResponse.threads[THREAD.threadId]?.confirmedEchoes).toEqual({
+      [messageId]: 'cmd-1',
+    })
+    // The event that follows finds no echo left and changes nothing.
+    expect(applyEvent(fromResponse, started).threads[THREAD.threadId]?.confirmedEchoes).toBe(
+      fromResponse.threads[THREAD.threadId]?.confirmedEchoes,
+    )
+    const fromEvent = applyEvent(sending('cmd-1'), started)
+    expect(fromEvent.threads[THREAD.threadId]?.confirmedEchoes).toEqual({ [messageId]: 'cmd-1' })
+  })
+
+  it('records no echo for a turn this client did not send', () => {
+    const state = applyEvent(seeded(), turnStarted('turn-1', 'hello', 'cmd-elsewhere'))
+    expect(state.threads[THREAD.threadId]?.confirmedEchoes).toBeUndefined()
+  })
+
+  it('keeps which messages were echoes when a snapshot replaces the thread', () => {
+    const started = turnStarted('turn-1', 'hello', 'cmd-1')
+    const confirmed = applyEvent(sending('cmd-1'), started)
+    const replaced = applySnapshot(confirmed, {
+      cursor: { scope: threadScope, epoch: 'epoch', sequence: 5 },
+      state: {
+        thread: THREAD,
+        turns: confirmed.threads[THREAD.threadId]!.turns,
+        messages: confirmed.threads[THREAD.threadId]!.messages,
+        reasoning: [],
+        tools: [],
+        interactions: [],
+      },
+    })
+    expect(replaced.threads[THREAD.threadId]?.confirmedEchoes).toEqual({
+      [started.payload.userMessage!.messageId]: 'cmd-1',
+    })
+  })
+
   it('keeps a failed send on screen and reuses its row when it is retried', () => {
     const failed = applyTurnSendFailed(sending('cmd-1'), THREAD, 'cmd-1', 'Provider is down')
     expect(failed.threads[THREAD.threadId]?.outbox).toEqual([
@@ -918,6 +957,8 @@ describe('optimistic sends', () => {
     })
     expect(reconnected.threads[THREAD.threadId]?.outbox).toEqual([])
     expect(reconnected.threads[THREAD.threadId]?.messages).toHaveLength(1)
+    // The message is the echo the reader already sees, and keeps its row.
+    expect(reconnected.threads[THREAD.threadId]?.confirmedEchoes).toEqual({ 'user-1': 'cmd-1' })
   })
 
   it('clears only one echo per arriving message when the same text was sent twice', () => {

@@ -7,6 +7,14 @@ import type { PermissionSelection } from './permission-provider'
 
 export interface UIMessage {
   externalId: string
+  /**
+   * The row's identity on screen, when it outlives `externalId`: a sent
+   * message keeps its echo's when the host confirms it, and a reply keeps its
+   * turn's when its first message names it. The timeline updates such a row
+   * in place rather than replacing it, which would replay its entrance.
+   * Defaults to `externalId`.
+   */
+  rowKey?: string
   role: string
   isFinal?: boolean
   sequenceNum: number

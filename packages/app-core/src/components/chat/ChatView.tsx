@@ -63,6 +63,7 @@ const FOLLOW_SLACK_PX = 2
 type TimelineMessage = Pick<
   UIMessage,
   | 'externalId'
+  | 'rowKey'
   | 'role'
   | 'isFinal'
   | 'optimisticContent'
@@ -72,6 +73,13 @@ type TimelineMessage = Pick<
   | 'sendError'
   | 'commandId'
 >
+
+/**
+ * Which row on screen a message is. Keyed by this, a message whose id changes
+ * in place (a send confirmed, a reply named by its first message) is the same
+ * row, updated, rather than a new one replaying its entrance over the old.
+ */
+const rowKeyOf = (message: TimelineMessage): string => message.rowKey ?? message.externalId
 
 interface TimelineHandle {
   /** Smoothly scroll to the latest message and resume following. */
@@ -287,9 +295,7 @@ function MessageTimeline({
   // a fresh session, where the timeline mounts 0 → 1 on the very first send and
   // would otherwise pop the first bubble in with no transition at all.
   const initialMessageIdsRef = useRef(
-    new Set(
-      messages.filter((message) => !message.isOptimistic).map((message) => message.externalId),
-    ),
+    new Set(messages.filter((message) => !message.isOptimistic).map(rowKeyOf)),
   )
   // Read once: this list instance is one visit to one session.
   const [remembered] = useState(() => (sessionId ? recallTimelinePosition(sessionId) : undefined))
@@ -319,9 +325,9 @@ function MessageTimeline({
     [firstPinnedIndex],
   )
 
-  // Last measured height at each position. A row whose id changes in place (a
-  // sent message confirmed, a streaming reply given its final id) is new to
-  // the virtualizer; starting it from the flat estimate would jump the layout
+  // Last measured height at each position. A row whose key changes in place (a
+  // sent message confirmed, a streaming reply given its final id, on a host
+  // that gives such rows no `rowKey`) is new to the virtualizer; starting it from the flat estimate would jump the layout
   // and knock a reader off the bottom mid-reply. Its predecessor's height is
   // the right starting point.
   const heightByIndexRef = useRef(new Map<number, number>())
@@ -331,18 +337,18 @@ function MessageTimeline({
   // A prepend is told apart from the first row's own id changing in place (a
   // new session's first message confirmed) by the old first row reappearing
   // further down; an in-place swap keeps its predecessor's height.
-  const firstMessageId = messages[0]?.externalId
+  const firstMessageId = messages[0] ? rowKeyOf(messages[0]) : undefined
   const indexedFromMessageIdRef = useRef(firstMessageId)
   if (indexedFromMessageIdRef.current !== firstMessageId) {
     const previousFirstId = indexedFromMessageIdRef.current
     indexedFromMessageIdRef.current = firstMessageId
     const prepended =
       previousFirstId !== undefined &&
-      messages.some((message, index) => index > 0 && message.externalId === previousFirstId)
+      messages.some((message, index) => index > 0 && rowKeyOf(message) === previousFirstId)
     if (prepended) heightByIndexRef.current.clear()
   }
   const getItemKey = useCallback(
-    (index: number) => messages[index]?.externalId ?? index,
+    (index: number) => (messages[index] ? rowKeyOf(messages[index]) : index),
     [messages],
   )
   const atEndRef = useRef(true)
@@ -502,7 +508,7 @@ function MessageTimeline({
     previousPaddingStartRef.current = paddingStart
     const anchorIndex =
       remembered && !remembered.atEnd
-        ? messages.findIndex((message) => message.externalId === remembered.anchorKey)
+        ? messages.findIndex((message) => rowKeyOf(message) === remembered.anchorKey)
         : -1
     const anchor = anchorIndex >= 0 ? rowVirtualizer.measurementsCache[anchorIndex] : undefined
     if (anchor && remembered) {
@@ -671,7 +677,7 @@ function MessageTimeline({
           if (!message) return null
           return (
             <div
-              key={`row:${message.externalId}`}
+              key={`row:${rowKeyOf(message)}`}
               ref={rowVirtualizer.measureElement}
               data-index={virtualRow.index}
               className="absolute left-0 top-0 w-full"
@@ -683,7 +689,7 @@ function MessageTimeline({
                 onReady={handleMessageReady}
                 onPersistedContentReady={onPersistedContentReady}
                 onRetrySend={onRetrySend}
-                animate={!initialMessageIdsRef.current.has(message.externalId)}
+                animate={!initialMessageIdsRef.current.has(rowKeyOf(message))}
               />
             </div>
           )

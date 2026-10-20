@@ -33,6 +33,8 @@ function cacheState(state: EnvironmentState): EnvironmentState {
           ...thread,
           // Pending commands belong to the old transport and are never replayed.
           outbox: [],
+          // Which messages were echoes only matters to rows the old page drew.
+          confirmedEchoes: undefined,
           hydration: thread.hydration === 'loading' ? 'idle' : thread.hydration,
         },
       ]),

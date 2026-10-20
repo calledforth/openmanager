@@ -209,6 +209,19 @@ function rowMessage(previous: TurnProjection | undefined, next: UIMessage): UIMe
     : next
 }
 
+/**
+ * The row a user message keeps from the echo it confirmed, so the bubble on
+ * screen is updated rather than replaced. Not while that echo is still listed
+ * (the two would share a row).
+ */
+function echoRowKey(thread: ThreadState, messageId: string): string | undefined {
+  const commandId = thread.confirmedEchoes?.[messageId]
+  if (!commandId || thread.outbox.some((entry) => entry.commandId === commandId)) return undefined
+  return sendRowKey(commandId)
+}
+
+const sendRowKey = (commandId: string) => `send:${commandId}`
+
 function projectTurn(
   thread: ThreadState,
   turn: Turn,
@@ -220,7 +233,22 @@ function projectTurn(
   const tools = byTurn(thread.tools, turn.turnId)
   const order = byTurn(thread.order, turn.turnId)
   const failure = thread.failures.find((item) => item.turnId === turn.turnId)
-  const deps = [turn, sequenceStart, failure, ...messages, ...reasoning, ...tools, ...order]
+  const userRowKeys = new Map<string, string | undefined>()
+  for (const message of messages) {
+    if (message.role === 'user') {
+      userRowKeys.set(message.messageId, echoRowKey(thread, message.messageId))
+    }
+  }
+  const deps = [
+    turn,
+    sequenceStart,
+    failure,
+    ...messages,
+    ...reasoning,
+    ...tools,
+    ...order,
+    ...userRowKeys.values(),
+  ]
   if (previous && shallowEqualArray(previous.deps, deps)) return previous
 
   const entries: ProjectedMessage[] = []
@@ -231,12 +259,13 @@ function projectTurn(
   for (const message of messages) {
     if (message.role !== 'user') continue
     userSources.set(message.messageId, message)
+    const rowKey = userRowKeys.get(message.messageId)
     // Linear, but over the handful of rows one turn produces.
     const reused =
       previous?.userSources.get(message.messageId) === message
         ? previous?.entries.find((entry) => entry.message.externalId === message.messageId)
         : undefined
-    if (reused && reused.message.sequenceNum === sequenceNum) {
+    if (reused && reused.message.sequenceNum === sequenceNum && reused.message.rowKey === rowKey) {
       entries.push(reused)
       sequenceNum += 1
       continue
@@ -244,7 +273,13 @@ function projectTurn(
     const content = contentText(message.content)
     const parts = imageParts(message, thread.thread.sessionId)
     entries.push({
-      message: { externalId: message.messageId, role: 'user', isFinal: true, sequenceNum },
+      message: {
+        externalId: message.messageId,
+        ...(rowKey ? { rowKey } : {}),
+        role: 'user',
+        isFinal: true,
+        sequenceNum,
+      },
       content: { content, ...(parts.length ? { parts } : {}) },
       streaming: { content, parts, hasCompleteHistory: true },
     })
@@ -303,9 +338,12 @@ function projectTurn(
     const runtime = turnRuntime(turn)
     entries.push({
       // Tokens change the row's body, which it reads from the stores; the row
-      // the timeline lists is the same row, so the list does not change.
+      // the timeline lists is the same row, so the list does not change. Its
+      // id is the turn's until the reply's first message names it; the row on
+      // screen stays the turn's throughout.
       message: rowMessage(previous, {
         externalId: assistantMessages[0]?.messageId ?? `turn:${turn.turnId}:assistant`,
+        rowKey: `turn:${turn.turnId}:assistant`,
         role: 'assistant',
         isFinal: settled,
         sequenceNum,
@@ -361,7 +399,7 @@ export function projectThread(
       messages.push(held)
     } else {
       const row: UIMessage = {
-        externalId: `send:${entry.commandId}`,
+        externalId: sendRowKey(entry.commandId),
         role: 'user',
         isFinal: true,
         sequenceNum: sequence,
