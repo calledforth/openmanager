@@ -1,11 +1,22 @@
-import {
-  evaluateBootstrap,
-  PROTOCOL_VERSION,
-  type BootstrapResponse,
-} from '@openmanager/protocol'
+import { evaluateBootstrap, PROTOCOL_VERSION, type BootstrapResponse } from '@openmanager/protocol'
 import type { BootstrapOutcome } from './connection-state'
 import { environmentBootstrapUrl, isLoopbackEnvironmentEndpoint } from './environment-store'
-import { loopbackAccessDenied } from './local-access'
+
+/**
+ * Whether the host refused this client access to the device's own loopback
+ * address. On the web that is the browser's loopback-network permission
+ * (apps/web's `loopbackAccessDenied`). It is required, not defaulted, so a
+ * host cannot lose the "blocked" answer by forgetting to pass it.
+ */
+export type LoopbackAccessCheck = () => Promise<boolean>
+
+/** For a host with no loopback gate: a failed fetch reads as no answer. */
+export const noLoopbackGate: LoopbackAccessCheck = async () => false
+
+export type BootstrapProbeOptions = {
+  /** Asked only when a fetch to a loopback address fails. */
+  loopbackAccessDenied: LoopbackAccessCheck
+}
 
 export function bootstrapUrl(endpoint: string): string {
   return environmentBootstrapUrl(endpoint)
@@ -128,11 +139,11 @@ async function unreadableAnswer(
 
 export async function fetchBootstrap(
   endpoint: string,
-  options: {
+  options: BootstrapProbeOptions & {
     signal?: AbortSignal
     /** Give up after this long, as an address that does not answer. */
     timeoutMs?: number
-  } = {},
+  },
 ): Promise<BootstrapOutcome> {
   let response: Response
   try {
@@ -150,7 +161,7 @@ export async function fetchBootstrap(
     // A browser that refused this page access to its own loopback address
     // fails the fetch exactly as if nothing listened there. Its permission
     // state is the one place the difference shows.
-    if (isLoopbackEnvironmentEndpoint(endpoint) && (await loopbackAccessDenied())) {
+    if (isLoopbackEnvironmentEndpoint(endpoint) && (await options.loopbackAccessDenied())) {
       return {
         status: 'unreachable',
         message: `This browser blocked this page from reaching ${endpoint} on this device.`,

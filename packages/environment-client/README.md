@@ -115,8 +115,41 @@ at the link's route; one with no credential trades the token at `POST /pair`
 itself, outside this client. The mock's `pairDevice(token)` stands in for that
 exchange.
 
+## Connection
+
+`@openmanager/environment-client/connection` is how a client finds, checks and
+keeps its environments before and around the socket: the HTTP bootstrap probe
+(`fetchBootstrap`), pairing-token exchange (`exchangePairingToken`), route
+search and fallback (`searchRoutes`), route health (`probeRouteHealth`), the
+connection state a person reads (`deriveConnectionUi`), and the saved
+environment registry (`readEnvironmentRegistry` and friends). The web app and
+the phone share it.
+
+It reads no host global. What only a host knows comes in as a parameter:
+
+- The registry's storage: `readEnvironmentRegistry`, `writeEnvironmentRegistry`
+  and `clearEnvironmentRegistry` take a `RegistryStorage` (`getItem`, `setItem`,
+  `removeItem`). The web app passes `browserRegistryStorage`
+  (`apps/web/src/lib/registry-storage.ts`), which looks up
+  `window.localStorage` on every call so that a blocked-storage throw lands
+  inside the registry functions and reads as an empty registry. A phone
+  passes an adapter over its own key-value store.
+- The loopback permission: `fetchBootstrap`, `searchRoutes` and
+  `probeRouteHealth` take a `loopbackAccessDenied` check, asked only when a
+  fetch to this device's loopback address fails, so a refused browser
+  permission reads as "blocked" rather than "nothing listening". It is required
+  so no caller loses that answer by leaving it out; a host with no such gate
+  passes `noLoopbackGate`.
+
+The browser-only pieces stay in `apps/web`: the pairing app URL (from
+`window.location`) and the loopback permission check (from
+`navigator.permissions`).
+
 ## Browser safety
 
 The package depends only on `@openmanager/protocol` and `zod`. ESLint applies
 the same restricted-import rules as `app-core`; Node built-ins, Electron,
-Convex and the agent runtime are rejected at lint time.
+Convex and the agent runtime are rejected at lint time. Under `src/connection`
+the DOM globals (`window`, `document`, `localStorage`, `navigator`,
+`indexedDB`, `location`) are rejected too, so the folder stays importable from
+React Native.

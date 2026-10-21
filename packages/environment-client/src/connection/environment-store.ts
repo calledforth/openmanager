@@ -71,9 +71,17 @@ export type EnvironmentRegistry = {
 
 export const EMPTY_REGISTRY: EnvironmentRegistry = { selectedId: null, environments: [] }
 
-type StorageReader = Pick<Storage, 'getItem'>
-type StorageWriter = Pick<Storage, 'setItem'>
-type StorageRemover = Pick<Storage, 'removeItem'>
+/**
+ * Where the registry is kept: a synchronous string key-value store. The web
+ * app hands in `localStorage`. Any of the three may throw (quota, private
+ * mode, a store the host cannot reach); the registry functions treat a throw
+ * as an empty or unsaved registry, as they always have.
+ */
+export type RegistryStorage = {
+  getItem(key: string): string | null
+  setItem(key: string, value: string): void
+  removeItem(key: string): void
+}
 
 export function parseEnvironmentEndpoint(raw: string): string | null {
   const trimmed = raw.trim()
@@ -575,9 +583,7 @@ export function selectStoredEnvironment(
   return { ...registry, selectedId: environmentId }
 }
 
-export function selectedStoredEnvironment(
-  registry: EnvironmentRegistry,
-): StoredEnvironment | null {
+export function selectedStoredEnvironment(registry: EnvironmentRegistry): StoredEnvironment | null {
   if (!registry.selectedId) return null
   return registry.environments.find((item) => item.environmentId === registry.selectedId) ?? null
 }
@@ -652,19 +658,16 @@ function serializeRegistry(registry: EnvironmentRegistry): string {
   })
 }
 
-export function readEnvironmentRegistry(
-  storage?: StorageReader & Partial<StorageWriter> & Partial<StorageRemover>,
-): EnvironmentRegistry {
+export function readEnvironmentRegistry(storage: RegistryStorage): EnvironmentRegistry {
   try {
-    const store = storage ?? window.localStorage
-    const raw = store.getItem(ENVIRONMENT_STORAGE_KEY)
+    const raw = storage.getItem(ENVIRONMENT_STORAGE_KEY)
     if (raw) {
       const document: unknown = JSON.parse(raw)
       const registry = parseRegistryDocument(document)
       if (!registry) return EMPTY_REGISTRY
       if ((document as { version?: unknown }).version !== REGISTRY_VERSION) {
         try {
-          store.setItem?.(ENVIRONMENT_STORAGE_KEY, serializeRegistry(registry))
+          storage.setItem(ENVIRONMENT_STORAGE_KEY, serializeRegistry(registry))
         } catch {
           /* keep the in-memory upgrade even if persist fails */
         }
@@ -672,13 +675,13 @@ export function readEnvironmentRegistry(
       return registry
     }
 
-    const legacy = store.getItem(LEGACY_ENVIRONMENT_STORAGE_KEY)
+    const legacy = storage.getItem(LEGACY_ENVIRONMENT_STORAGE_KEY)
     if (!legacy) return EMPTY_REGISTRY
     const migrated = migrateLegacyRecord(JSON.parse(legacy))
     if (!migrated) return EMPTY_REGISTRY
     try {
-      store.setItem?.(ENVIRONMENT_STORAGE_KEY, serializeRegistry(migrated))
-      store.removeItem?.(LEGACY_ENVIRONMENT_STORAGE_KEY)
+      storage.setItem(ENVIRONMENT_STORAGE_KEY, serializeRegistry(migrated))
+      storage.removeItem(LEGACY_ENVIRONMENT_STORAGE_KEY)
     } catch {
       /* keep the in-memory migration even if persist fails */
     }
@@ -688,24 +691,19 @@ export function readEnvironmentRegistry(
   }
 }
 
-export function writeEnvironmentRegistry(
-  registry: EnvironmentRegistry,
-  storage?: StorageWriter & Partial<StorageRemover>,
-) {
+export function writeEnvironmentRegistry(registry: EnvironmentRegistry, storage: RegistryStorage) {
   try {
-    const store = storage ?? window.localStorage
-    store.setItem(ENVIRONMENT_STORAGE_KEY, serializeRegistry(registry))
-    store.removeItem?.(LEGACY_ENVIRONMENT_STORAGE_KEY)
+    storage.setItem(ENVIRONMENT_STORAGE_KEY, serializeRegistry(registry))
+    storage.removeItem(LEGACY_ENVIRONMENT_STORAGE_KEY)
   } catch {
     /* ignore quota / private-mode failures */
   }
 }
 
-export function clearEnvironmentRegistry(storage?: StorageRemover) {
+export function clearEnvironmentRegistry(storage: RegistryStorage) {
   try {
-    const store = storage ?? window.localStorage
-    store.removeItem(ENVIRONMENT_STORAGE_KEY)
-    store.removeItem(LEGACY_ENVIRONMENT_STORAGE_KEY)
+    storage.removeItem(ENVIRONMENT_STORAGE_KEY)
+    storage.removeItem(LEGACY_ENVIRONMENT_STORAGE_KEY)
   } catch {
     /* ignore quota / private-mode failures */
   }

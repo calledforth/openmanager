@@ -137,7 +137,7 @@ by message ID, so it adds nothing a replay already delivered.
 
 ## How the shell maps this to UI
 
-`apps/web/src/lib/connection-state.ts` derives one `ConnectionKind` from the
+`packages/environment-client/src/connection/connection-state.ts` derives one `ConnectionKind` from the
 environment selection, the HTTP bootstrap result, the transport status, the
 browser's network status and, when no saved route answers, the route failure
 (see [environment routes](./environment-routes.md)).

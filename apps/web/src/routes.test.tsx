@@ -8,7 +8,7 @@ import type { ComponentProps } from 'react'
 import type { WebApp } from './app'
 import { closeAddEnvironment } from './lib/add-environment-draft'
 import { environmentSocketUrl } from './lib/environment-socket'
-import { ENVIRONMENT_STORAGE_KEY } from './lib/environment-store'
+import { ENVIRONMENT_STORAGE_KEY } from '@openmanager/environment-client/connection'
 import { CONNECTION_STORIES } from './stories/connection-states'
 import { renderWebApp } from './test-utils'
 

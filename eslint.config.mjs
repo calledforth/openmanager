@@ -5,6 +5,12 @@ import reactPlugin from 'eslint-plugin-react'
 import reactHooksPlugin from 'eslint-plugin-react-hooks'
 import { builtinModules } from 'node:module'
 
+// The connection stack runs in the browser and in React Native, which has
+// none of these. Whatever it needs from the host comes in as a parameter.
+const HOST_GLOBALS = ['window', 'document', 'localStorage', 'navigator', 'indexedDB', 'location']
+const HOST_GLOBAL_MESSAGE =
+  'packages/environment-client/src/connection must stay host-neutral (the phone imports it). Take the browser value as a parameter that apps/web supplies.'
+
 export default [
   js.configs.recommended,
   {
@@ -96,6 +102,25 @@ export default [
           selector: "CallExpression[callee.name='require']",
           message: 'Use browser-safe static imports in app-core.',
         },
+      ],
+    },
+  },
+  {
+    files: ['packages/environment-client/src/connection/**/*.ts'],
+    rules: {
+      'no-restricted-globals': [
+        'error',
+        ...HOST_GLOBALS.map((name) => ({ name, message: HOST_GLOBAL_MESSAGE })),
+      ],
+      'no-restricted-properties': [
+        'error',
+        ...HOST_GLOBALS.flatMap((property) =>
+          ['globalThis', 'self'].map((object) => ({
+            object,
+            property,
+            message: HOST_GLOBAL_MESSAGE,
+          })),
+        ),
       ],
     },
   },

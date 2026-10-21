@@ -3,7 +3,7 @@ import type {
   ConnectionKind,
   DeriveConnectionInput,
   RouteFailureReason,
-} from '../lib/connection-state'
+} from '@openmanager/environment-client/connection'
 
 export type ConnectionStory = {
   /** The kind it shows, or the kind and what sets this variant apart. */
