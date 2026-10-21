@@ -98,13 +98,13 @@ describe('routeHealthFromConnection', () => {
         failure: {
           code: 'auth',
           message: "This device's access was revoked.",
-          credentialRevoked: true,
+          credentialRefusal: 'revoked',
         },
       }),
     ).toEqual({
       status: 'unauthorized',
       message: "This device's access was revoked.",
-      revoked: true,
+      credentialRefusal: 'revoked',
     })
     expect(
       routeHealthFromConnection({

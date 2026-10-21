@@ -43,7 +43,9 @@ export function routeHealthFromConnection(
     return {
       status: 'unauthorized',
       message: connection.failure.message,
-      ...(connection.failure.credentialRevoked ? { revoked: true as const } : {}),
+      ...(connection.failure.credentialRefusal
+        ? { credentialRefusal: connection.failure.credentialRefusal }
+        : {}),
     }
   }
   if (connection.failure?.code === 'unavailable') {

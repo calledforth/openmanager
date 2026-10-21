@@ -46,9 +46,9 @@ export const phoneStorage = createPhoneStorage({
 export const subscribePhonePageExit = createAppStatePageExit(AppState)
 
 export {
+  confirmCredentialRejected,
+  credentialRefusalOf,
   environmentNeedsPairing,
   forgetRejectedCredential,
-  isRevokedCredentialFailure,
-  isRevokedCredentialReport,
 } from './credential-rejection'
 export { PhoneStorageNotReadyError, type PhoneStorage } from './phone-storage'

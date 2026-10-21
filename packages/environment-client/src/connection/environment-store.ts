@@ -39,10 +39,12 @@ export type RouteHealthReport = {
    */
   stopped?: true
   /**
-   * The environment refused the credential itself (the socket's revocation
-   * close), not merely this route. Read by the connection; never saved.
+   * What answered refused the credential itself with the socket's revocation
+   * close, not merely this route: `ConnectionFailure.credentialRefusal`, which
+   * says whether that answer is known to be the environment's. Read by the
+   * connection; never saved.
    */
-  revoked?: true
+  credentialRefusal?: 'revoked' | 'unknown'
 }
 
 /**

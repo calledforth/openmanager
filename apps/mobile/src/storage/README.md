@@ -12,8 +12,9 @@ storage differs from web.
 import {
   phoneStorage,
   subscribePhonePageExit,
+  confirmCredentialRejected,
+  credentialRefusalOf,
   forgetRejectedCredential,
-  isRevokedCredentialReport,
   environmentNeedsPairing,
 } from '@/storage'
 
@@ -31,10 +32,13 @@ clearEnvironmentRegistry(phoneStorage.registry)
   subscribePageExit={subscribePhonePageExit}
 />
 
-// 4. When a socket report says the environment refused the credential:
-//    report = routeHealthFromConnection(connection), credential = the one that socket carried
-if (isRevokedCredentialReport(report)) {
-  // the shared latch, exactly as web: routeFailure = credential_rejected, no search, no retry
+// 4. When a socket report says the credential was refused:
+//    report = routeHealthFromConnection(connection), credential = the one that socket carried,
+//    endpoint = the route that socket dialled.
+//    First the shared latch, exactly as web: routeFailure = credential_rejected, no search, no retry.
+//    Then forget the credential only once it is sure its own environment refused it:
+const refusal = credentialRefusalOf(report) // 'revoked' | 'unknown' | null
+if (await confirmCredentialRejected({ refusal, environmentId, endpoint })) {
   update((current) => forgetRejectedCredential(current, environmentId, credential))
 }
 
@@ -94,11 +98,23 @@ holding a background task open.
   holds a known credential outside its `credential` field, is removed rather
   than rewritten around it (its credentials go too). So is a legacy record
   holding one.
-- **Revocation only.** The credential is dropped only on the environment's
-  revocation close (`4401`, marked `credentialRevoked` on the connection
-  failure and `revoked` on the route-health report), and only if the stored
-  credential is still the one the refused socket carried. Other `auth`
-  failures (a different environment at the address) keep it.
+- **Revocation only.** The credential is dropped only after the revocation
+  close (`4401`), which the shared client marks as `credentialRefusal` on the
+  connection failure and the route-health report:
+  - `revoked`: the server accepted the credential and then revoked it. Only
+    the issuing environment knows a credential, so this is certain and the
+    phone drops it at once.
+  - `unknown`: the server does not know the credential. That is a credential
+    revoked while the phone was away, or an address that now leads to a
+    different environment. The phone asks that address `/bootstrap` (no
+    credential sent) and drops it only if the same environment answers.
+    Anything else (no answer, another environment) keeps it.
+
+  The drop is also compare-and-clear: only if the stored credential is still
+  the one the refused socket carried. The client's own handshake mismatch is
+  an `auth` failure with no refusal, and keeps it. The shared latch stops
+  retries whatever the phone keeps.
+
 - **Unreadable credentials.** A SecureStore read that throws at boot (Keychain
   before first unlock) reads as "needs pairing" for this run and is never
   deleted implicitly; removing or re-pairing the environment replaces it.
