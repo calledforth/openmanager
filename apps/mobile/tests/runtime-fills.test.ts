@@ -1,8 +1,10 @@
+import { randomBytes } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import {
   installAbortSignalTimeout,
   installRandomUUID,
   missingRuntimeFills,
+  uuidFromRandomBytes,
   type RuntimeScope,
 } from '../src/environment/runtime-fills'
 import { createTimers } from './support'
@@ -86,5 +88,26 @@ describe('runtime fills', () => {
     installAbortSignalTimeout(scope)
     installRandomUUID(scope, () => 'id')
     expect(missingRuntimeFills(scope)).toEqual([])
+  })
+})
+
+describe('uuidFromRandomBytes', () => {
+  it('writes a version 4 UUID from 16 random bytes', () => {
+    const pattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+    for (let i = 0; i < 50; i += 1) {
+      expect(uuidFromRandomBytes(new Uint8Array(randomBytes(16)))).toMatch(pattern)
+    }
+    expect(uuidFromRandomBytes(new Uint8Array(16).fill(0xff))).toBe(
+      'ffffffff-ffff-4fff-bfff-ffffffffffff',
+    )
+    expect(() => uuidFromRandomBytes(new Uint8Array(15))).toThrow()
+  })
+
+  it('fills crypto.randomUUID without calling back into it', () => {
+    // On web expo-crypto's `randomUUID` is `crypto.randomUUID()`; the fill
+    // must not lean on the very global it provides.
+    const scope = { setTimeout } as RuntimeScope
+    installRandomUUID(scope, () => uuidFromRandomBytes(new Uint8Array(randomBytes(16))))
+    expect(scope.crypto!.randomUUID!()).toMatch(/^[0-9a-f-]{36}$/)
   })
 })

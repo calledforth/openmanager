@@ -7,10 +7,16 @@
  * shared connection helpers build URLs as soon as they run.
  */
 import 'react-native-url-polyfill/auto'
-import { randomUUID } from 'expo-crypto'
-import { installAbortSignalTimeout, installRandomUUID, type RuntimeScope } from './runtime-fills'
+import { getRandomBytes } from 'expo-crypto'
+import {
+  installAbortSignalTimeout,
+  installRandomUUID,
+  uuidFromRandomBytes,
+  type RuntimeScope,
+} from './runtime-fills'
 
 const scope = globalThis as unknown as RuntimeScope
 
 installAbortSignalTimeout(scope)
-installRandomUUID(scope, randomUUID)
+// Not expo-crypto's `randomUUID`: on web it calls back into the global this fills.
+installRandomUUID(scope, () => uuidFromRandomBytes(getRandomBytes(16)))

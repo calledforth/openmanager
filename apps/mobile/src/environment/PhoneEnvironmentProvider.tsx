@@ -1,5 +1,4 @@
 import { createContext, useContext, useEffect, useSyncExternalStore, type ReactNode } from 'react'
-import { randomUUID } from 'expo-crypto'
 import {
   EnvironmentApplicationProviders,
   EnvironmentClientProvider,
@@ -31,7 +30,8 @@ function phoneController(): PhoneConnectionController {
       transport: {
         WebSocket: globalThis.WebSocket as unknown as NativeWebSocketConstructor,
         fetch: globalThis.fetch,
-        requestId: randomUUID,
+        // The fill `polyfills.ts` installed where the runtime had none.
+        requestId: () => globalThis.crypto.randomUUID(),
       },
     })
   }

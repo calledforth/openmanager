@@ -59,7 +59,25 @@ export function installAbortSignalTimeout(scope: RuntimeScope): boolean {
   return true
 }
 
-/** `crypto.randomUUID()` from the phone's own generator (expo-crypto). */
+/**
+ * A version 4 UUID from 16 random bytes, as `crypto.randomUUID()` writes it.
+ * The phone fills `crypto.randomUUID` with this over expo-crypto's random
+ * bytes rather than with expo-crypto's own `randomUUID`: on web that one calls
+ * `crypto.randomUUID()` itself, so where the browser has none (a page served
+ * over plain http on the LAN) the fill would call itself until the stack ran
+ * out. Its random bytes come from `crypto.getRandomValues` there, which every
+ * browser has.
+ */
+export function uuidFromRandomBytes(bytes: Uint8Array): string {
+  if (bytes.length < 16) throw new Error('A UUID needs 16 random bytes.')
+  const b = Array.from(bytes.subarray(0, 16))
+  b[6] = (b[6]! & 0x0f) | 0x40
+  b[8] = (b[8]! & 0x3f) | 0x80
+  const hex = b.map((byte) => byte.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
+/** `crypto.randomUUID()` from the phone's own generator. */
 export function installRandomUUID(scope: RuntimeScope, randomUUID: () => string): boolean {
   const existing = scope.crypto
   if (existing && typeof existing.randomUUID === 'function') return false

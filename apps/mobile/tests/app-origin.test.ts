@@ -200,6 +200,28 @@ describe('the controller and the app origin', () => {
     expect(h.storage.registry.getItem(PHONE_APP_ORIGINS_STORAGE_KEY)).toBeNull()
   })
 
+  it('retires a connected socket when only the app origin changes', async () => {
+    const h = harness({ appOrigins: { [ENV]: 'https://old.example.test' } })
+    await h.controller.start()
+    await flush()
+    h.socket().accept()
+    await flush()
+    expect(h.state()).toMatchObject({ status: 'connected' })
+    const first = h.socket()
+
+    h.controller.saveEnvironment({
+      environmentId: ENV,
+      endpoint: LAN,
+      credential: TOKEN,
+      appOrigin: APP,
+    })
+    await flush()
+    expect(first.readyState).toBe(3)
+    expect(h.sockets()).toHaveLength(2)
+    expect(h.socket().origin).toBe(APP)
+    expect(h.state().socketOrigin).toEqual({ origin: APP, from: 'app' })
+  })
+
   it('refuses an app origin that is not an http(s) origin', async () => {
     const h = harness()
     await h.controller.start()

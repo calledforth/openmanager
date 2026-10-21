@@ -978,14 +978,16 @@ export function createPhoneConnectionController(
           warnedOrigin.delete(input.environmentId)
         }
       }
-      // A socket on another environment, or on this one with the token being
-      // replaced, is retired now: left open while the new token's search runs,
-      // a late refusal of the old token would latch the new one as refused.
+      // A socket on another environment, or on this one with the token or the
+      // app origin being replaced, is retired now: left open while the new
+      // search runs, a late refusal of the old token would latch the new one
+      // as refused, and a socket that stays up would keep the old origin.
       const saved = findStoredEnvironment(next.environments, input.environmentId)
       if (
         transport &&
         (transport.environmentId !== input.environmentId ||
-          transport.credential !== saved?.credential)
+          transport.credential !== saved?.credential ||
+          transport.appOrigin !== (nextOrigins.get(input.environmentId) ?? null))
       ) {
         dropTransport()
       }
