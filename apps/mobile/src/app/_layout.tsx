@@ -19,7 +19,7 @@ const convexUrl = process.env.EXPO_PUBLIC_CONVEX_URL
 
 // A cold deep link (a session, search) still has the tabs under it, so its
 // back control returns to them.
-export const unstable_settings = { initialRouteName: '(tabs)' }
+export const unstable_settings = { anchor: '(tabs)' }
 
 SplashScreen.preventAutoHideAsync().catch(() => {
   // The splash screen can already be hidden during fast refresh.
