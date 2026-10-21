@@ -76,13 +76,16 @@ holding a background task open.
 - **Slots and the manifest.** Every credential write goes to a fresh
   SecureStore slot, `openmanager.credential.<escaped id>.<slot>`. The manifest
   (`openmanager-credential-manifest` in AsyncStorage, keys and IDs only) maps
-  each environment to its `active` slot and lists every other slot that may
-  exist as `retired`. Boot reads only active slots and deletes retired ones.
+  each environment to its `active` slot, the slot its current credential is
+  being written to as `pending`, and every other slot that may exist as
+  `retired`. Boot reads active and pending slots and deletes retired ones.
   - A slot is written only once a saved manifest names it (checked when the
     write runs), so nothing in SecureStore is ever unfindable. A failed
     manifest write is tried again with the next registry write, and the slot
     waits for it.
-  - A slot becomes active only after SecureStore confirms it. A credential
+  - A slot becomes active only after SecureStore confirms it; until then it
+    is pending, and boot makes it active if SecureStore has it, so a failed
+    confirmation never loses a saved credential. A credential
     the registry drops (removed, revoked, rotated) leaves `active` at once, so
     it is never read again even if deleting its slot fails; the delete is
     tried again at the next write or boot.

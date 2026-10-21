@@ -110,6 +110,33 @@ describe('a manifest write that fails', () => {
     await save(relaunched, removeStoredEnvironment(withCredential(TOKEN_A), STUDIO))
     expect(stores.secureStore.data.size).toBe(0)
   })
+  it('keeps a saved credential when only the manifest write that would confirm it fails', async () => {
+    // The manifest names the new slot as pending, SecureStore saves it, then
+    // the write marking it active fails, and the app restarts before any
+    // other write: boot finds it in SecureStore and makes it active.
+    const stores = device()
+    const storage = await boot(stores)
+    stores.asyncStore.failAt.set(CREDENTIAL_MANIFEST_KEY, 2)
+    await save(storage, withCredential(TOKEN_A))
+    expect(secretOf(stores.secureStore, STUDIO)).toBe(TOKEN_A)
+    expect(activeIds(stores.asyncStore)).toEqual([])
+    const relaunched = await boot(stores)
+    expect(credentialOf(relaunched)).toBe(TOKEN_A)
+    expect(activeIds(stores.asyncStore)).toEqual([STUDIO])
+    expect(secretOf(stores.secureStore, STUDIO)).toBe(TOKEN_A)
+  })
+
+  it('does not make a revoked credential pending, so a failed retirement cannot revive it', async () => {
+    const stores = device()
+    const storage = await boot(stores)
+    await save(storage, withCredential(TOKEN_A))
+    // Forget it while the next manifest write and the delete both go through.
+    await save(storage, forgetRejectedCredential(withCredential(TOKEN_A), STUDIO, TOKEN_A))
+    const raw = stores.asyncStore.data.get(CREDENTIAL_MANIFEST_KEY)
+    expect(raw === undefined || !raw.includes('pending":{"')).toBe(true)
+    expect(credentialOf(await boot(stores))).toBe('')
+  })
+
   it('still activates a later credential when only an earlier manifest write failed', async () => {
     // Pair, then rotate before the first manifest write settles; only that
     // first write fails. The newer manifest gets through, and the rotated

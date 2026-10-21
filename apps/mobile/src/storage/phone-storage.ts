@@ -25,13 +25,17 @@
  * The manifest. Every credential write goes to a new SecureStore slot
  * (`credential-key.ts`). The manifest in AsyncStorage (`CREDENTIAL_MANIFEST_KEY`,
  * keys and environment IDs only) says which slot is each environment's
- * credential (`active`) and which other slots may exist and are to be deleted
+ * credential (`active`), which slot its current credential is being written
+ * to (`pending`), and which other slots may exist and are to be deleted
  * (`retired`). It is the only thing boot reads SecureStore from:
  *
  * - A slot is written only after a saved manifest names it, so nothing in
  *   SecureStore is ever unfindable. A manifest write that fails is tried again
  *   with the next write, and the slot waits for it.
- * - A slot becomes `active` only after its credential is saved. A credential
+ * - A slot becomes `active` only after its credential is saved. Until then it
+ *   is `pending`; boot makes a pending slot active if SecureStore has it, so a
+ *   confirmation that failed or was cut short does not lose the credential.
+ *   Only the current credential is ever pending. A credential
  *   the registry drops (removed, or refused by the environment) leaves
  *   `active` at once: it is never read again, whether or not deleting its
  *   slot worked. A failed delete is tried again at the next write or boot.
@@ -135,6 +139,12 @@ type Manifest = {
   version: 1
   /** Environment ID to the slot holding its credential. */
   active: Record<string, string>
+  /**
+   * Environment ID to the slot its current credential is being written to,
+   * not yet confirmed. Boot makes it active if SecureStore has it, so a
+   * failed or cut-short confirmation does not lose a saved credential.
+   */
+  pending: Record<string, string>
   /** Slots that may exist and are not anyone's credential: to be deleted. */
   retired: string[]
 }
@@ -175,7 +185,19 @@ export function splitRegistryDocument(raw: string): SplitDocument | null {
   return { stripped: JSON.stringify({ ...document, environments }), credentials, environmentIds }
 }
 
-const EMPTY_MANIFEST: Manifest = { version: 1, active: {}, retired: [] }
+const EMPTY_MANIFEST: Manifest = { version: 1, active: {}, pending: {}, retired: [] }
+
+function slotsByEnvironment(raw: unknown): Record<string, string> {
+  const slots: Record<string, string> = {}
+  if (!isRecord(raw)) return slots
+  for (const [environmentId, key] of Object.entries(raw)) {
+    if (isCredentialSlotKey(key)) slots[environmentId] = key
+  }
+  return slots
+}
+
+const sortedByEnvironment = (slots: Record<string, string>) =>
+  Object.fromEntries(Object.entries(slots).sort(([left], [right]) => (left < right ? -1 : 1)))
 
 function parseManifest(raw: string | null): Manifest | null {
   if (raw === null) return EMPTY_MANIFEST
@@ -187,15 +209,20 @@ function parseManifest(raw: string | null): Manifest | null {
   }
   if (!isRecord(parsed) || parsed.version !== 1 || !isRecord(parsed.active)) return null
   if (!Array.isArray(parsed.retired)) return null
-  const active: Record<string, string> = {}
-  for (const [environmentId, key] of Object.entries(parsed.active)) {
-    if (isCredentialSlotKey(key)) active[environmentId] = key
+  return {
+    version: 1,
+    active: slotsByEnvironment(parsed.active),
+    pending: slotsByEnvironment(parsed.pending),
+    retired: parsed.retired.filter(isCredentialSlotKey),
   }
-  return { version: 1, active, retired: parsed.retired.filter(isCredentialSlotKey) }
 }
 
 function namedIn(manifest: Manifest, key: string): boolean {
-  return manifest.retired.includes(key) || Object.values(manifest.active).includes(key)
+  return (
+    manifest.retired.includes(key) ||
+    Object.values(manifest.active).includes(key) ||
+    Object.values(manifest.pending).includes(key)
+  )
 }
 
 /** Whether `text` holds any of `credentials`. */
@@ -257,21 +284,28 @@ export function createPhoneStorage(options: PhoneStorageOptions): PhoneStorage {
 
   const desiredManifest = (): Manifest => {
     const active: Record<string, string> = {}
+    const pending: Record<string, string> = {}
     for (const [environmentId, key] of current) {
       if (slots.get(key)?.written) active[environmentId] = key
+      else pending[environmentId] = key
     }
     for (const [environmentId, key] of unreadable) active[environmentId] = key
-    const activeKeys = new Set(Object.values(active))
-    const retired = [...slots.keys()].filter((key) => !activeKeys.has(key)).sort()
-    const sorted = Object.fromEntries(
-      Object.entries(active).sort(([left], [right]) => (left < right ? -1 : 1)),
-    )
-    return { version: 1, active: sorted, retired }
+    const inUse = new Set([...Object.values(active), ...Object.values(pending)])
+    const retired = [...slots.keys()].filter((key) => !inUse.has(key)).sort()
+    return {
+      version: 1,
+      active: sortedByEnvironment(active),
+      pending: sortedByEnvironment(pending),
+      retired,
+    }
   }
 
   const syncManifest = () => {
     const manifest = desiredManifest()
-    const empty = Object.keys(manifest.active).length === 0 && manifest.retired.length === 0
+    const empty =
+      Object.keys(manifest.active).length === 0 &&
+      Object.keys(manifest.pending).length === 0 &&
+      manifest.retired.length === 0
     const value = empty ? null : JSON.stringify(manifest)
     if (value === manifestQueued || manifestFailed) return
     manifestQueued = value
@@ -511,6 +545,11 @@ export function createPhoneStorage(options: PhoneStorageOptions): PhoneStorage {
         readSlot(environmentId, key),
       ),
     )
+    const pendingReads = await Promise.all(
+      Object.entries(manifest?.pending ?? {}).map(([environmentId, key]) =>
+        readSlot(environmentId, key),
+      ),
+    )
 
     // Nothing above changed any state, so a load that threw can be retried.
     if (!manifest) {
@@ -531,6 +570,17 @@ export function createPhoneStorage(options: PhoneStorageOptions): PhoneStorage {
       // A slot that is gone, or holds nothing usable, is retired.
       slots.set(key, { environmentId, credential: parsed, written: true })
       if (!parsed) continue
+      saved.set(environmentId, parsed)
+      current.set(environmentId, key)
+    }
+    // A pending slot SecureStore has is the newer credential: its write
+    // landed and only the confirmation did not. One it does not have (or will
+    // not read) is retired, and the active one, if any, stays.
+    for (const { environmentId, key, credential } of pendingReads) {
+      const parsed = typeof credential === 'string' ? parseEnvironmentCredential(credential) : ''
+      slots.set(key, { environmentId, credential: parsed, written: true })
+      if (!parsed) continue
+      unreadable.delete(environmentId)
       saved.set(environmentId, parsed)
       current.set(environmentId, key)
     }
