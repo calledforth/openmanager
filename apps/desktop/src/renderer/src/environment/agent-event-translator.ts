@@ -73,15 +73,88 @@ export function createAgentEventTranslator(options: {
     return inferred
   }
 
-  // Open requests per session, so a resolution says whether its turn still waits.
-  const pending = new Map<string, Set<string>>()
+  /**
+   * What is still open in each session's turn. Since protocol v17 the shared
+   * reducers close nothing themselves: the environment closes a thought when
+   * the turn moves on to text or a tool, and closes every tool, thought and
+   * request still open before the turn's end, each with its own event
+   * (docs/sync-foundations.md §4.3). This translator stands in for the
+   * environment, so it does the same.
+   */
+  type OpenChildren = {
+    thoughts: Map<string, string>
+    tools: Map<string, string>
+    requests: Map<string, Interaction['kind']>
+  }
+  const open = new Map<string, OpenChildren>()
+  const openOf = (sessionId: string): OpenChildren => {
+    let children = open.get(sessionId)
+    if (!children) {
+      children = { thoughts: new Map(), tools: new Map(), requests: new Map() }
+      open.set(sessionId, children)
+    }
+    return children
+  }
+
+  /** Stop the session's open thoughts: text or a tool followed them. */
+  const closeThoughts = (event: Located, suffix: string): ProofEvent[] => {
+    const children = open.get(event.sessionId)
+    if (!children?.thoughts.size) return []
+    const closes = [...children.thoughts].map(([messageId, turnId]): ProofEvent => ({
+      ...envelope(event, `${suffix}:stop:${messageId}`),
+      name: 'message.reasoning',
+      scope: threadScope(event.sessionId),
+      payload: { messageId, turnId, phase: 'stop' },
+    }))
+    children.thoughts.clear()
+    return closes
+  }
+
+  /** Close everything the turn left open, in front of its terminal event. */
+  const closeTurn = (event: Located): ProofEvent[] => {
+    const children = open.get(event.sessionId)
+    open.delete(event.sessionId)
+    if (!children) return []
+    const scope = threadScope(event.sessionId)
+    const turnId = turns.get(event.sessionId) ?? event.messageId ?? `${event.sessionId}:turn`
+    const tools = [...children.tools].map(([toolCallId, toolTurnId]): ProofEvent => ({
+      ...envelope(event, `close:tool:${toolCallId}`),
+      name: 'tool.updated',
+      scope,
+      payload: { toolCallId, turnId: toolTurnId, status: 'cancelled' },
+    }))
+    const thoughts = [...children.thoughts].map(([messageId, thoughtTurnId]): ProofEvent => ({
+      ...envelope(event, `close:reasoning:${messageId}`),
+      name: 'message.reasoning',
+      scope,
+      payload: { messageId, turnId: thoughtTurnId, phase: 'stop' },
+    }))
+    const requests = [...children.requests].map(
+      ([interactionId, kind], index, all): ProofEvent => ({
+        ...envelope(event, `close:interaction:${interactionId}`),
+        name: 'interaction.cancelled',
+        scope,
+        payload: {
+          turnId,
+          response: {
+            kind,
+            interactionId,
+            outcome: { outcome: 'cancelled', reason: 'turn_ended' },
+          } as InteractionResponse,
+          turnState: index < all.length - 1 ? 'waiting' : 'running',
+        },
+      }),
+    )
+    return [...tools, ...thoughts, ...requests]
+  }
 
   const failure = (event: Located, reason: TurnFailureReason, message: string): ProofEvent[] => {
     const turnId = turns.get(event.sessionId) ?? event.messageId
     if (!turnId) return []
+    const closes = closeTurn(event)
     turns.delete(event.sessionId)
-    pending.delete(event.sessionId)
     return [
+      ...closes,
       {
         ...envelope(event),
         name: 'turn.failed',
@@ -92,9 +165,7 @@ export function createAgentEventTranslator(options: {
   }
 
   const requested = (event: Located, interaction: Interaction): ProofEvent[] => {
-    const open = pending.get(event.sessionId) ?? new Set<string>()
-    open.add(interaction.interactionId)
-    pending.set(event.sessionId, open)
+    openOf(event.sessionId).requests.set(interaction.interactionId, interaction.kind)
     return [
       {
         ...envelope(event),
@@ -106,8 +177,8 @@ export function createAgentEventTranslator(options: {
   }
 
   const resolved = (event: Located, response: InteractionResponse): ProofEvent[] => {
-    const open = pending.get(event.sessionId)
-    open?.delete(response.interactionId)
+    const requests = open.get(event.sessionId)?.requests
+    requests?.delete(response.interactionId)
     return [
       {
         ...envelope(event),
@@ -116,7 +187,7 @@ export function createAgentEventTranslator(options: {
         payload: {
           turnId: turnIdFor(event),
           response,
-          turnState: open && open.size > 0 ? 'waiting' : 'running',
+          turnState: requests && requests.size > 0 ? 'waiting' : 'running',
         },
       },
     ]
@@ -155,6 +226,7 @@ export function createAgentEventTranslator(options: {
         ]
       case 'session_deleted':
         turns.delete(event.sessionId)
+        open.delete(event.sessionId)
         return [
           {
             ...envelope(event),
@@ -206,10 +278,11 @@ export function createAgentEventTranslator(options: {
       }
       case 'prompt_completed': {
         const turnId = turnIdFor(event)
+        const closes = closeTurn(event)
         turns.delete(event.sessionId)
-        pending.delete(event.sessionId)
         const interrupted = !!event.data.stopReason && INTERRUPTED_STOP.test(event.data.stopReason)
         return [
+          ...closes,
           interrupted
             ? {
                 ...envelope(event),
@@ -228,6 +301,7 @@ export function createAgentEventTranslator(options: {
       case 'agent_message_chunk': {
         const turnId = turnIdFor(event)
         return [
+          ...closeThoughts(event, 'text'),
           {
             ...envelope(event),
             name: 'message.delta',
@@ -243,13 +317,16 @@ export function createAgentEventTranslator(options: {
       }
       case 'agent_thought_chunk': {
         const turnId = turnIdFor(event)
+        const messageId = event.messageId ?? event.data.messageId ?? turnId
+        if (event.data.phase === 'stop') open.get(event.sessionId)?.thoughts.delete(messageId)
+        else openOf(event.sessionId).thoughts.set(messageId, turnId)
         return [
           {
             ...envelope(event),
             name: 'message.reasoning',
             scope: threadScope(event.sessionId),
             payload: {
-              messageId: event.messageId ?? event.data.messageId ?? turnId,
+              messageId,
               turnId,
               phase: event.data.phase,
               ...(event.data.content ? { content: event.data.content } : {}),
@@ -259,21 +336,28 @@ export function createAgentEventTranslator(options: {
         ]
       }
       case 'tool_call':
-      case 'tool_call_update':
+      case 'tool_call_update': {
+        const turnId = turnIdFor(event)
+        const { status, toolCallId } = event.data
+        const tools = openOf(event.sessionId).tools
+        if (status === 'completed' || status === 'failed') tools.delete(toolCallId)
+        else if (event.event === 'tool_call' || tools.has(toolCallId)) tools.set(toolCallId, turnId)
         return [
+          ...closeThoughts(event, 'tool'),
           {
             ...envelope(event),
             name: 'tool.updated',
             scope: threadScope(event.sessionId),
             payload: {
-              toolCallId: event.data.toolCallId,
-              turnId: turnIdFor(event),
+              toolCallId,
+              turnId,
               ...(event.data.title !== undefined ? { title: event.data.title } : {}),
               ...(event.data.kind ? { kind: event.data.kind } : {}),
-              ...(event.data.status ? { status: event.data.status } : {}),
+              ...(status ? { status } : {}),
             },
           },
         ]
+      }
       case 'permission_request':
         return requested(event, {
           kind: 'permission',
