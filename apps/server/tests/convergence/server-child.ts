@@ -37,6 +37,7 @@ import {
   type ChildEvent,
   type ChildMessage,
   type ChildRequest,
+  type KillAt,
   type ScriptStep,
   type ServerThreadRead,
   type SocketSample,
@@ -481,7 +482,23 @@ if (existsSync(join(config.dataDir, DATABASE_FILENAME))) {
 }
 
 const claudeSdk = new FakeClaudeSdk()
+// The crash-window seam: a kill inside a chosen event-log commit.
+let armedKill: KillAt | undefined = config.killAt ? { ...config.killAt } : undefined
+const killAtCommit =
+  (phase: KillAt['phase']) =>
+  (records: readonly { event: { name: string } }[]): void => {
+    const armed = armedKill
+    if (!armed || armed.phase !== phase) return
+    if (!records.some((record) => record.event.name === armed.name)) return
+    if ((armed.skip ?? 0) > 0) {
+      armed.skip = (armed.skip ?? 0) - 1
+      return
+    }
+    process.kill(process.pid, 'SIGKILL')
+  }
+
 const server = await startServer({
+  commitHooks: { beforeCommit: killAtCommit('before'), afterCommit: killAtCommit('after') },
   port: 0,
   dataDir: config.dataDir,
   logLevel: 'error',
@@ -962,6 +979,9 @@ async function handle(request: ChildRequest): Promise<unknown> {
           readyState: ws.readyState,
           bufferedAmount: ws.bufferedAmount,
         }))
+    case 'armKill':
+      armedKill = request.at ? { ...request.at } : undefined
+      return null
     case 'shutdown':
       await server.close()
       readDatabase?.close()

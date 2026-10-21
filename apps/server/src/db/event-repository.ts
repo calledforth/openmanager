@@ -25,8 +25,14 @@ export type DurableProofEvent = Exclude<ProofEvent, { name: 'turn.notice' }>
 export interface EventRepositoryOptions extends EventProjectionOptions {
   epoch?: string
   now?: () => number
-  /** Test seam used to stop a child process after writes but before COMMIT. */
-  beforeCommit?: () => void
+  /**
+   * Test seams around every write, with the records it commits: `beforeCommit`
+   * runs after every write of the transaction and just before COMMIT,
+   * `afterCommit` just after it. A test stops a child process in either to
+   * prove the rows and the log are both present or both absent.
+   */
+  beforeCommit?: (records: readonly DurableEvent[]) => void
+  afterCommit?: (records: readonly DurableEvent[]) => void
 }
 
 /** Events for one scope; several groups may commit in one transaction. */
@@ -269,8 +275,9 @@ export function createEventRepository(
     try {
       const writtenAt = now()
       const records = pending.flatMap(({ scope, events }) => writeScope(scope, events, writtenAt))
-      options.beforeCommit?.()
+      options.beforeCommit?.(records)
       database.exec('COMMIT')
+      options.afterCommit?.(records)
       return records
     } catch (error) {
       try {

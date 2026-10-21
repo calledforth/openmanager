@@ -298,6 +298,7 @@ export async function startServer(config: ServerConfig) {
         return target.providerId
       },
       onError: (error) => log('error', 'event persistence failed', { reason: String(error) }),
+      ...config.commitHooks,
     },
   )
   const replayReader = createReplayReader(eventDatabase, {

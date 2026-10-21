@@ -28,7 +28,12 @@ import {
   type ThreadView,
 } from './normalize.ts'
 import { ServerProcess } from './server-process.ts'
-import { DELIVERIES_FILENAME, type Delivery, type ProviderOp } from './child-protocol.ts'
+import {
+  DELIVERIES_FILENAME,
+  type Delivery,
+  type KillAt,
+  type ProviderOp,
+} from './child-protocol.ts'
 import type { ClientWire, Provenance } from './provenance.ts'
 import { scopeKey } from '../../src/db/event-repository.ts'
 import type { SubscriptionScope } from '@openmanager/protocol/node'
@@ -450,6 +455,18 @@ export class Rig {
   /** A hard kill, then a respawn. */
   async crash(): Promise<void> {
     await this.server.crash()
+    this.proxy.setTarget(this.server.port)
+  }
+
+  /** A kill inside a chosen event-log commit (child-protocol.ts `KillAt`), then a respawn. */
+  async killAtCommit(at: KillAt, trigger: () => Promise<unknown>): Promise<void> {
+    await this.server.killAtCommit(at, trigger)
+    this.proxy.setTarget(this.server.port)
+  }
+
+  /** A graceful stop, then a boot that dies at a chosen commit, then a normal boot. */
+  async restartKilledAtBoot(at: KillAt): Promise<void> {
+    await this.server.restartKilledAtBoot(at)
     this.proxy.setTarget(this.server.port)
   }
 

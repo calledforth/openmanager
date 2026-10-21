@@ -10,6 +10,20 @@ export interface ChildConfig {
   allowedHosts: string[]
   /** How long the fake provider's `session/new` takes, in milliseconds. */
   newSessionDelayMs: number
+  /** Armed from the start, so a kill can land inside boot (recovery, the repair). */
+  killAt?: KillAt
+}
+
+/**
+ * Kill the server child (SIGKILL, from inside) at a commit of the event log:
+ * just before COMMIT (`before`: neither the rows nor the events land) or just
+ * after it (`after`: both land, and nothing has been published). The commit
+ * is the `skip`+1-th one whose records include an event named `name`.
+ */
+export interface KillAt {
+  phase: 'before' | 'after'
+  name: string
+  skip?: number
 }
 
 /** One step of a scripted prompt, run by the fake provider without a round trip. */
@@ -78,6 +92,8 @@ export type ServerOp =
   | { op: 'readUnidentified' }
   /** Graceful stop through `server.close()`, then exit. */
   | { op: 'shutdown' }
+  /** Arm a kill at a commit (see `KillAt`); `null` disarms. */
+  | { op: 'armKill'; at: KillAt | null }
 
 export type ChildRequest = (ProviderOp | ServerOp) & { id: number }
 
