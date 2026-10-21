@@ -126,6 +126,16 @@ holding a background task open.
   device. The `expo-secure-store` config plugin keeps it out of Android Auto
   Backup.
 
+## Known limit
+
+Dropping a credential takes two writes: the manifest retires its slot, and
+SecureStore deletes it. Either one landing is enough. If **both** fail and the
+app restarts before any later write retries them, boot reads the slot again
+(whether it was active, or pending because its activation write also failed)
+and the dropped credential comes back. For a revoked credential the next
+connect gets the same refusal and the phone drops it again; nothing is sent
+that the environment accepts.
+
 ## Tests
 
 `pnpm --filter @openmanager/mobile test` (vitest, Node). `scripts/dump-phone-store.ts`

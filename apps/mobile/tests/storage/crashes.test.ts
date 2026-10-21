@@ -126,11 +126,13 @@ describe('a manifest write that fails', () => {
     expect(secretOf(stores.secureStore, STUDIO)).toBe(TOKEN_A)
   })
 
-  it('does not make a revoked credential pending, so a failed retirement cannot revive it', async () => {
+  it('retires a revoked credential rather than leaving it pending', async () => {
+    // Only the current credential is ever pending. (If the retirement write
+    // and the delete both fail, a pending or active slot can still come back
+    // at boot; see the known limit in README.md.)
     const stores = device()
     const storage = await boot(stores)
     await save(storage, withCredential(TOKEN_A))
-    // Forget it while the next manifest write and the delete both go through.
     await save(storage, forgetRejectedCredential(withCredential(TOKEN_A), STUDIO, TOKEN_A))
     const raw = stores.asyncStore.data.get(CREDENTIAL_MANIFEST_KEY)
     expect(raw === undefined || !raw.includes('pending":{"')).toBe(true)
