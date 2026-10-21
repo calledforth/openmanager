@@ -1,12 +1,13 @@
 import Constants from 'expo-constants'
 import { useRouter } from 'expo-router'
+import { XIcon } from 'phosphor-react-native'
 import { ScrollView, TouchableOpacity, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { THEME_FAMILIES } from '@openmanager/app-core/lib/theme-families'
 
 import { AppText } from '../components/ui/AppText'
-import { type ThemeMode, useTheme } from '../theme/ThemeProvider'
+import { type ThemeMode, usePhoneTheme, useTheme } from '../theme/ThemeProvider'
 
 const THEME_OPTIONS: { mode: ThemeMode; label: string }[] = [
   { mode: 'system', label: 'System' },
@@ -18,6 +19,7 @@ export default function SettingsScreen() {
   const router = useRouter()
   const insets = useSafeAreaInsets()
   const { mode, setMode, family, setFamily, resolved } = useTheme()
+  const phone = usePhoneTheme()
 
   const deploymentUrl = process.env.EXPO_PUBLIC_CONVEX_URL ?? 'Not configured'
   const version = Constants.expoConfig?.version ?? '—'
@@ -35,9 +37,7 @@ export default function SettingsScreen() {
           accessibilityRole="button"
           accessibilityLabel="Close settings"
         >
-          <AppText variant="text-13-medium" className="text-textMuted">
-            Done
-          </AppText>
+          <XIcon size={20} color={phone.muted} />
         </TouchableOpacity>
       </View>
 

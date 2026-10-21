@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router'
-import { ClockIcon, MagnifyingGlassIcon } from 'phosphor-react-native'
+import { ClockIcon, MagnifyingGlassIcon, XIcon } from 'phosphor-react-native'
 import { useMemo, useState } from 'react'
 import { Pressable, ScrollView, TextInput, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -69,10 +69,14 @@ export default function Search() {
             paddingVertical: 2,
           }}
         />
-        <Pressable accessibilityRole="button" onPress={() => router.back()} hitSlop={8}>
-          <AppText variant="text-14-regular" style={{ color: theme.muted }}>
-            Cancel
-          </AppText>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Close search"
+          onPress={() => router.back()}
+          hitSlop={10}
+          style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+        >
+          <XIcon size={18} color={theme.muted} />
         </Pressable>
       </View>
       <ScrollView
