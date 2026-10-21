@@ -37,6 +37,7 @@ function RootNavigator() {
         <Stack.Screen name="index" />
         <Stack.Screen name="session/[externalId]" />
         <Stack.Screen name="settings" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="theme-preview" options={{ presentation: 'modal' }} />
       </Stack>
     </>
   )
