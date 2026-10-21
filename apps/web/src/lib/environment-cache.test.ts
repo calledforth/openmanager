@@ -1,6 +1,7 @@
 import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createInitialState, createThreadState } from '@openmanager/environment-client'
+import { PROTOCOL_VERSION } from '@openmanager/protocol'
 import {
   createEnvironmentCache,
   environmentCacheName,
@@ -108,6 +109,33 @@ describe('environment identity cache', () => {
       open: () => {
         throw new Error('Denied')
       },
+    })
+    expect(await readEnvironmentCache('env-one')).toBeNull()
+  })
+
+  it('drops a state cached under another protocol version', async () => {
+    await writeEnvironmentCache('env-one', seed())
+    expect(await readEnvironmentCache('env-one')).not.toBeNull()
+    // The next build speaks the next protocol: it starts from nothing, as a
+    // fresh load does, instead of merging state its reducers never folded.
+    expect(await readEnvironmentCache('env-one', PROTOCOL_VERSION + 1)).toBeNull()
+  })
+
+  it('drops a state cached before the cache recorded its protocol version', async () => {
+    // What a build before this change stored: the bare state.
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open(environmentCacheName('env-one'), 1)
+      request.onupgradeneeded = () => request.result.createObjectStore('state')
+      request.onerror = () => reject(request.error)
+      request.onsuccess = () => {
+        const database = request.result
+        const transaction = database.transaction('state', 'readwrite')
+        transaction.objectStore('state').put(seed(), 'snapshot')
+        transaction.oncomplete = () => {
+          database.close()
+          resolve()
+        }
+      }
     })
     expect(await readEnvironmentCache('env-one')).toBeNull()
   })
