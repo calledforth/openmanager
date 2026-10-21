@@ -5,6 +5,7 @@ import {
   type ConnectionState,
   type EnvironmentClient,
   type EnvironmentStore,
+  type WebSocketConstructor,
   type WebSocketEnvironmentClientOptions,
 } from '@openmanager/environment-client'
 import {
@@ -30,6 +31,12 @@ import {
   type RouteSearchResult,
   type StoredEnvironment,
 } from '@openmanager/environment-client/connection'
+import {
+  parseAppOrigin,
+  routeOrigin,
+  withSocketOrigin,
+  type NativeWebSocketConstructor,
+} from './app-origin'
 import { createRegistryPersistence, type RegistryPersistence } from './persistence'
 import type { PhoneStorage } from './phone-storage'
 import { phoneSearchOrder } from './route-order'
@@ -98,7 +105,23 @@ export type PhoneEnvironment = {
   routes: readonly EnvironmentRoute[]
   /** The phone holds a token for it. */
   paired: boolean
+  /**
+   * The origin of the web app it was paired from: what its socket sends as
+   * `Origin`. `null` for an environment saved before the phone kept one.
+   */
+  appOrigin: string | null
 }
+
+/**
+ * The `Origin` the socket sends, and where it came from.
+ *
+ * - `app`: the environment's app origin, from its pairing link. What the
+ *   environment's `--allowed-origin` lists, so the upgrade is accepted.
+ * - `route`: no app origin is saved, so React Native's own default goes out:
+ *   the route's origin. The environment refuses it unless it was told to
+ *   allow that origin too; pairing again records the app origin.
+ */
+export type SocketOrigin = { origin: string | null; from: 'app' | 'route' }
 
 export type PhoneConnectionState = {
   status: PhoneConnectionStatus
@@ -123,6 +146,8 @@ export type PhoneConnectionState = {
   attempt: number
   /** When the next search starts on its own (ms since the epoch), while `waiting`. */
   retryAt: number | null
+  /** The `Origin` the socket last dialled with; `null` before the first dial. */
+  socketOrigin: SocketOrigin | null
   /**
    * The client views read and send through, once the environment has accepted
    * its socket. It stays through a background hold, a network gap and a
@@ -137,6 +162,11 @@ export type SaveEnvironmentInput = {
   endpoint: string
   label?: string
   credential: string
+  /**
+   * The origin of the pairing link (`appOriginFromPairingLink`). Omitted
+   * keeps the one already saved.
+   */
+  appOrigin?: string | null
 }
 
 export interface PhoneConnectionController {
@@ -164,8 +194,16 @@ export type PhoneConnectionOptions = {
   storage: PhoneStorage
   activity: AppActivitySource
   network: NetworkSource
-  /** The phone's own `WebSocket`, `fetch` and request ids. */
-  transport?: Pick<WebSocketEnvironmentClientOptions, 'WebSocket' | 'fetch' | 'requestId'>
+  /**
+   * The phone's own `WebSocket`, `fetch` and request ids. `WebSocket` is
+   * React Native's constructor; each socket is dialled through
+   * `withSocketOrigin` with the environment's app origin.
+   */
+  transport?: Pick<WebSocketEnvironmentClientOptions, 'fetch' | 'requestId'> & {
+    WebSocket?: NativeWebSocketConstructor
+  }
+  /** Where a missing app origin is reported, once per environment. `console.warn` by default. */
+  warn?: (message: string) => void
   /** Replaced in tests. */
   createClient?: (options: WebSocketEnvironmentClientOptions) => EnvironmentClient
   /**
@@ -216,6 +254,8 @@ type Transport = {
   environmentId: string
   endpoint: string
   credential: string
+  /** The app origin the socket was dialled with, `null` for the route's own. */
+  appOrigin: string | null
   client: EnvironmentClient
   /** The connection object last read, so only a change is acted on. */
   seen: ConnectionState | undefined
@@ -236,12 +276,16 @@ type Latch = { environmentId: string; status: 'unauthorized' | 'incompatible_pro
 
 type Wake = 'start' | 'select' | 'retry' | 'foreground' | 'online' | 'activity' | 'timer' | 'socket'
 
-function view(registry: EnvironmentRegistry): PhoneEnvironment[] {
+function view(
+  registry: EnvironmentRegistry,
+  appOrigins: ReadonlyMap<string, string>,
+): PhoneEnvironment[] {
   return registry.environments.map((environment) => ({
     environmentId: environment.environmentId,
     label: environment.label,
     routes: environment.routes,
     paired: environment.credential !== '',
+    appOrigin: appOrigins.get(environment.environmentId) ?? null,
   }))
 }
 
@@ -277,6 +321,7 @@ export function createPhoneConnectionController(
   const retryDelays = options.retryDelaysMs ?? PHONE_RETRY_DELAYS_MS
   const stableAfterMs = options.stableAfterMs ?? PHONE_STABLE_AFTER_MS
   const probeTimeoutMs = options.probeTimeoutMs ?? PROBE_TIMEOUT_MS
+  const warn = options.warn ?? ((message: string) => console.warn(message))
   const persistence: RegistryPersistence = createRegistryPersistence(options.storage)
   const probeRoute =
     options.probe ??
@@ -306,6 +351,10 @@ export function createPhoneConnectionController(
     })
 
   let registry: EnvironmentRegistry = EMPTY_REGISTRY
+  /** Each environment's app origin by ID; kept beside the registry. */
+  let appOrigins: ReadonlyMap<string, string> = new Map()
+  /** Environments already reported as dialling without an app origin. */
+  const warnedOrigin = new Set<string>()
   let loaded = false
   let started = false
   let disposed = false
@@ -334,6 +383,7 @@ export function createPhoneConnectionController(
     network,
     attempt: 0,
     retryAt: null,
+    socketOrigin: null,
     client: null,
   }
 
@@ -352,11 +402,12 @@ export function createPhoneConnectionController(
 
   const selected = () => selectedStoredEnvironment(registry)
 
-  const commit = (next: EnvironmentRegistry) => {
-    if (next === registry) return
+  const commit = (next: EnvironmentRegistry, nextOrigins = appOrigins) => {
+    if (next === registry && nextOrigins === appOrigins) return
     registry = next
-    set({ environments: view(next), selectedId: next.selectedId })
-    persistence.save(next)
+    appOrigins = nextOrigins
+    set({ environments: view(next, nextOrigins), selectedId: next.selectedId })
+    persistence.save(next, nextOrigins)
   }
 
   /** What reaching a route showed. Repeating the same report writes nothing. */
@@ -542,14 +593,37 @@ export function createPhoneConnectionController(
     })
   }
 
+  /**
+   * The `Origin` a socket to `endpoint` sends. With no app origin saved it is
+   * React Native's own default, the route's origin, reported once.
+   */
+  const socketOriginFor = (environmentId: string, endpoint: string) => {
+    const appOrigin = appOrigins.get(environmentId) ?? null
+    if (appOrigin) {
+      return { appOrigin, socketOrigin: { origin: appOrigin, from: 'app' } as SocketOrigin }
+    }
+    const origin = routeOrigin(endpoint)
+    if (!warnedOrigin.has(environmentId)) {
+      warnedOrigin.add(environmentId)
+      warn(
+        `Environment ${environmentId} has no app origin saved (it was paired before the phone ` +
+          `kept one). Its socket sends the route's own origin, ${origin ?? 'unknown'}, which the ` +
+          'environment refuses unless that origin is allowed. Pairing again records it.',
+      )
+    }
+    return { appOrigin: null, socketOrigin: { origin, from: 'route' } as SocketOrigin }
+  }
+
   const dial = (environment: StoredEnvironment, endpoint: string) => {
     const credential = environment.credential
     const current = transport
+    const { appOrigin, socketOrigin } = socketOriginFor(environment.environmentId, endpoint)
     if (
       current &&
       current.environmentId === environment.environmentId &&
       current.endpoint === endpoint &&
-      current.credential === credential
+      current.credential === credential &&
+      current.appOrigin === appOrigin
     ) {
       if (current.closing) {
         // The socket closed for the hold is still closing; open again once it has.
@@ -569,6 +643,10 @@ export function createPhoneConnectionController(
     // already read from: the store carries over, and so does what they show.
     const keepClient = current?.environmentId === environment.environmentId && state.client !== null
     dropTransport(keepClient)
+    set({ socketOrigin })
+    const { WebSocket: NativeSocket, ...rest } = options.transport ?? {}
+    const BaseSocket =
+      NativeSocket ?? (globalThis.WebSocket as unknown as NativeWebSocketConstructor | undefined)
     let client: EnvironmentClient
     try {
       client = createClient({
@@ -577,7 +655,15 @@ export function createPhoneConnectionController(
         environmentId: environment.environmentId,
         store: storeFor(environment.environmentId),
         reconnect: { maxAttempts: 0 },
-        ...options.transport,
+        ...rest,
+        // With no app origin the native default goes out: the route's own.
+        ...(BaseSocket
+          ? {
+              WebSocket: appOrigin
+                ? withSocketOrigin(BaseSocket, appOrigin)
+                : (BaseSocket as unknown as WebSocketConstructor),
+            }
+          : {}),
       })
     } catch {
       // No socket could be made at all (no WebSocket on this runtime). Retried
@@ -590,6 +676,7 @@ export function createPhoneConnectionController(
       environmentId: environment.environmentId,
       endpoint,
       credential,
+      appOrigin,
       client,
       seen: undefined,
       connectedAt: null,
@@ -771,16 +858,20 @@ export function createPhoneConnectionController(
       activity = options.activity.current()
       network = options.network.current()
       let saved = EMPTY_REGISTRY
+      let savedOrigins: ReadonlyMap<string, string> = new Map()
       try {
-        saved = await persistence.load()
+        const loadedState = await persistence.load()
+        saved = loadedState.registry
+        savedOrigins = loadedState.appOrigins
       } catch {
         // Unreadable storage starts empty; the next save writes it whole.
       }
       if (disposed) return
       registry = saved
+      appOrigins = savedOrigins
       loaded = true
       set({
-        environments: view(saved),
+        environments: view(saved, savedOrigins),
         selectedId: saved.selectedId,
         activity,
         network,
@@ -812,6 +903,15 @@ export function createPhoneConnectionController(
         new Date(now()),
       )
       if (!next) throw new Error('That environment address or ID is not valid.')
+      let nextOrigins = appOrigins
+      if (input.appOrigin !== undefined && input.appOrigin !== null) {
+        const appOrigin = parseAppOrigin(input.appOrigin)
+        if (!appOrigin) throw new Error('That app address is not valid.')
+        if (appOrigins.get(input.environmentId) !== appOrigin) {
+          nextOrigins = new Map(appOrigins).set(input.environmentId, appOrigin)
+          warnedOrigin.delete(input.environmentId)
+        }
+      }
       // A socket on another environment, or on this one with the token being
       // replaced, is retired now: left open while the new token's search runs,
       // a late refusal of the old token would latch the new one as refused.
@@ -827,7 +927,7 @@ export function createPhoneConnectionController(
         set({ endpoint: null, bootstrap: IDLE, routeFailure: null })
       }
       latch = null
-      commit(next)
+      commit(next, nextOrigins)
       restart('select')
     },
     removeEnvironment(environmentId) {
@@ -836,7 +936,14 @@ export function createPhoneConnectionController(
       stores.delete(environmentId)
       if (latch?.environmentId === environmentId) latch = null
       const wasSelected = registry.selectedId === environmentId
-      commit(removeStoredEnvironment(registry, environmentId))
+      let nextOrigins = appOrigins
+      if (appOrigins.has(environmentId)) {
+        const without = new Map(appOrigins)
+        without.delete(environmentId)
+        nextOrigins = without
+      }
+      warnedOrigin.delete(environmentId)
+      commit(removeStoredEnvironment(registry, environmentId), nextOrigins)
       if (wasSelected) set({ endpoint: null, bootstrap: IDLE, routeFailure: null })
       restart('select')
     },

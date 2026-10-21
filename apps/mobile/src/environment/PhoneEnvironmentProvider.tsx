@@ -4,7 +4,7 @@ import {
   EnvironmentApplicationProviders,
   EnvironmentClientProvider,
 } from '@openmanager/app-core/logic'
-import type { WebSocketConstructor } from '@openmanager/environment-client'
+import type { NativeWebSocketConstructor } from './app-origin'
 import {
   createPhoneConnectionController,
   type PhoneConnectionController,
@@ -29,7 +29,7 @@ function phoneController(): PhoneConnectionController {
       // React Native's own socket and fetch. Passed explicitly so nothing
       // depends on which globals a later polyfill replaces.
       transport: {
-        WebSocket: globalThis.WebSocket as unknown as WebSocketConstructor,
+        WebSocket: globalThis.WebSocket as unknown as NativeWebSocketConstructor,
         fetch: globalThis.fetch,
         requestId: randomUUID,
       },

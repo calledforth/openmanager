@@ -5,6 +5,12 @@ import {
   writeEnvironmentRegistry,
   type EnvironmentRegistry,
 } from '@openmanager/environment-client/connection'
+import {
+  PHONE_APP_ORIGINS_STORAGE_KEY,
+  readAppOrigins,
+  serializeAppOrigins,
+  type AppOrigins,
+} from './app-origin'
 import type { PhoneStorage } from './phone-storage'
 
 /** The registry as written to plain storage: every token left out. */
@@ -18,11 +24,21 @@ export function withoutCredentials(registry: EnvironmentRegistry): EnvironmentRe
   }
 }
 
+/** What the phone saved: the shared registry, and its own app origins beside it. */
+export type PhoneSaved = {
+  registry: EnvironmentRegistry
+  /** Each environment's app origin by ID, for the environments that have one. */
+  appOrigins: AppOrigins
+}
+
 export interface RegistryPersistence {
-  /** The saved registry with each environment's token filled in. */
-  load(): Promise<EnvironmentRegistry>
-  /** Save in the background, in order. Never rejects. */
-  save(registry: EnvironmentRegistry): void
+  /** The saved registry with each environment's token filled in, and the app origins. */
+  load(): Promise<PhoneSaved>
+  /**
+   * Save in the background, in order. Never rejects. App origins of
+   * environments the registry no longer has are left out.
+   */
+  save(registry: EnvironmentRegistry, appOrigins?: AppOrigins): void
   /** Resolves once every save handed in so far has finished. */
   flush(): Promise<void>
 }
@@ -37,10 +53,16 @@ export interface RegistryPersistence {
  * A registry document that still carries a token (written by a build before
  * tokens moved out) has the token moved to the credential store on load and
  * the document rewritten without it.
+ *
+ * App origins go to their own document in `storage.registry`
+ * (`PHONE_APP_ORIGINS_STORAGE_KEY`). An environment saved before the phone
+ * kept one simply has none; nothing is migrated or guessed.
  */
 export function createRegistryPersistence(storage: PhoneStorage): RegistryPersistence {
   /** What the credential store holds, as far as this process knows. */
   const savedCredentials = new Map<string, string>()
+  /** The app origins document as last read or written. */
+  let savedOrigins: string | null = null
   let queue: Promise<void> = Promise.resolve()
 
   const writeCredentials = async (registry: EnvironmentRegistry) => {
@@ -60,11 +82,26 @@ export function createRegistryPersistence(storage: PhoneStorage): RegistryPersis
     }
   }
 
+  const writeAppOrigins = (registry: EnvironmentRegistry, appOrigins: AppOrigins) => {
+    const kept = new Map(
+      [...appOrigins].filter(([environmentId]) =>
+        registry.environments.some((environment) => environment.environmentId === environmentId),
+      ),
+    )
+    const document = serializeAppOrigins(kept)
+    if (document === savedOrigins) return
+    if (kept.size === 0) storage.registry.removeItem(PHONE_APP_ORIGINS_STORAGE_KEY)
+    else storage.registry.setItem(PHONE_APP_ORIGINS_STORAGE_KEY, document)
+    savedOrigins = document
+  }
+
   return {
     async load() {
       await storage.ready()
+      const appOrigins = readAppOrigins(storage.registry)
+      savedOrigins = serializeAppOrigins(appOrigins)
       const document = readEnvironmentRegistry(storage.registry)
-      if (document === EMPTY_REGISTRY) return EMPTY_REGISTRY
+      if (document === EMPTY_REGISTRY) return { registry: EMPTY_REGISTRY, appOrigins }
       let stale = false
       const environments = await Promise.all(
         document.environments.map(async (environment) => {
@@ -81,15 +118,16 @@ export function createRegistryPersistence(storage: PhoneStorage): RegistryPersis
         await writeCredentials(registry)
         writeEnvironmentRegistry(withoutCredentials(registry), storage.registry)
       }
-      return registry
+      return { registry, appOrigins }
     },
-    save(registry) {
+    save(registry, appOrigins) {
       queue = queue
         .then(async () => {
           // Token first: a document that names an environment whose token is
           // not saved yet would read as unpaired after a crash in between.
           await writeCredentials(registry)
           writeEnvironmentRegistry(withoutCredentials(registry), storage.registry)
+          if (appOrigins) writeAppOrigins(registry, appOrigins)
         })
         .catch(() => {
           // A failed write keeps the in-memory registry. `savedCredentials`

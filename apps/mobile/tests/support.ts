@@ -15,6 +15,7 @@ import {
   type PhoneConnectionOptions,
   type PhoneNetwork,
 } from '../src/environment/controller'
+import { PHONE_APP_ORIGINS_STORAGE_KEY, serializeAppOrigins } from '../src/environment/app-origin'
 import { createMemoryPhoneStorage } from '../src/environment/phone-storage'
 
 type Listener = (event: never) => void
@@ -31,9 +32,18 @@ export class FakeSocket implements WebSocketLike {
   private listeners = new Map<string, Listener[]>()
   constructor(
     readonly url: string,
-    readonly protocols?: string[],
+    readonly protocols?: string | string[],
+    /** React Native's third argument; `headers.origin` replaces the derived `Origin`. */
+    readonly options?: { headers?: Record<string, string> },
   ) {
     FakeSocket.instances.push(this)
+  }
+  /** The `Origin` React Native would send: the one given, else the dialled URL's. */
+  get origin(): string {
+    const given = this.options?.headers?.origin
+    if (given) return given
+    const url = new URL(this.url)
+    return `${url.protocol === 'wss:' ? 'https' : 'http'}://${url.host}`
   }
   addEventListener(type: string, listener: Listener) {
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener])
@@ -205,6 +215,8 @@ export function harness(
     answers?: Record<string, BootstrapOutcome | Promise<BootstrapOutcome>>
     registry?: EnvironmentRegistry
     credentials?: Record<string, string>
+    /** The saved app origins document, as `serializeAppOrigins` writes it. */
+    appOrigins?: Record<string, string>
     options?: Partial<PhoneConnectionOptions>
   } = {},
 ) {
@@ -213,6 +225,13 @@ export function harness(
   const timers = createTimers()
   const storage = createMemoryPhoneStorage({ credentials: input.credentials ?? { [ENV]: TOKEN } })
   writeEnvironmentRegistry(input.registry ?? registryWith(input.routes ?? [LAN]), storage.registry)
+  if (input.appOrigins) {
+    storage.registry.setItem(
+      PHONE_APP_ORIGINS_STORAGE_KEY,
+      serializeAppOrigins(new Map(Object.entries(input.appOrigins))),
+    )
+  }
+  const warnings: string[] = []
   const activity = createSource<AppActivity>('active')
   const network = createSource<PhoneNetwork>({ online: true })
   const answers = new Map(Object.entries(input.answers ?? { [LAN]: ready() }))
@@ -236,6 +255,7 @@ export function harness(
       WebSocket: FakeSocket,
       requestId: () => `req-${++requests}`,
     },
+    warn: (message) => warnings.push(message),
     ...input.options,
   })
   return {
@@ -247,6 +267,7 @@ export function harness(
     answers,
     probes,
     signals,
+    warnings,
     sockets: () => FakeSocket.instances,
     socket: () => FakeSocket.instances.at(-1)!,
     state: () => controller.getState(),

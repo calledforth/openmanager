@@ -12,7 +12,7 @@ describe('registry persistence', () => {
   it('fills each environment token from the credential store', async () => {
     const storage = createMemoryPhoneStorage({ credentials: { [ENV]: TOKEN } })
     writeEnvironmentRegistry(registryWith([LAN]), storage.registry)
-    const registry = await createRegistryPersistence(storage).load()
+    const { registry } = await createRegistryPersistence(storage).load()
     expect(registry.environments[0]).toMatchObject({ environmentId: ENV, credential: TOKEN })
   })
 
@@ -22,7 +22,7 @@ describe('registry persistence', () => {
     registry.environments[0]!.credential = TOKEN
     writeEnvironmentRegistry(registry, storage.registry)
 
-    const loaded = await createRegistryPersistence(storage).load()
+    const { registry: loaded } = await createRegistryPersistence(storage).load()
     expect(loaded.environments[0]!.credential).toBe(TOKEN)
     expect(storage.credentials.snapshot()).toEqual({ [ENV]: TOKEN })
     expect(storage.registry.getItem(ENVIRONMENT_STORAGE_KEY)).not.toContain(TOKEN)
