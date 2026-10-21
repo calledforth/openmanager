@@ -1,11 +1,30 @@
-import { BlurView } from 'expo-blur'
-import type { ReactNode } from 'react'
+import { BlurTargetView, BlurView } from 'expo-blur'
+import { createContext, useContext, useRef, type ReactNode, type RefObject } from 'react'
 import { Platform, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native'
 
 import { usePhoneTheme } from '../theme/ThemeProvider'
 
 export type GlassStrength = 'glass' | 'strong' | 'sheet'
 export type GlassShadow = 'float' | 'rest' | 'none'
+
+const BlurTargetContext = createContext<RefObject<View | null> | null>(null)
+
+/**
+ * Android's blur has to be told what to blur: wrap the content that floats
+ * under glass in this (the root layout wraps the whole navigator), and every
+ * Glass inside it blurs that. iOS and web blur whatever is behind them and
+ * ignore the target.
+ */
+export function GlassBackdrop({ children }: { children: ReactNode }) {
+  const target = useRef<View | null>(null)
+  return (
+    <BlurTargetContext.Provider value={target}>
+      <BlurTargetView ref={target} style={styles.fill}>
+        {children}
+      </BlurTargetView>
+    </BlurTargetContext.Provider>
+  )
+}
 
 /**
  * The one recipe for everything that floats over content: a blur of what is
@@ -31,6 +50,7 @@ export function Glass({
   children?: ReactNode
 }) {
   const theme = usePhoneTheme()
+  const blurTarget = useContext(BlurTargetContext)
   const tint =
     strength === 'glass'
       ? theme.glass
@@ -52,7 +72,9 @@ export function Glass({
         <BlurView
           intensity={intensity}
           tint={theme.colorScheme === 'dark' ? 'dark' : 'light'}
-          experimentalBlurMethod={Platform.OS === 'android' ? 'dimezisBlurView' : undefined}
+          {...(Platform.OS === 'android' && blurTarget
+            ? { blurMethod: 'dimezisBlurView' as const, blurTarget }
+            : null)}
           style={StyleSheet.absoluteFill}
         />
         <View style={[StyleSheet.absoluteFill, { backgroundColor: tint }]} />
@@ -63,5 +85,6 @@ export function Glass({
 }
 
 const styles = StyleSheet.create({
+  fill: { flex: 1 },
   clip: { overflow: 'hidden' },
 })

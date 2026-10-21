@@ -15,6 +15,7 @@ import '../../global.css'
 import { countNeedsYou } from '../home/rows'
 import { useHomeSource } from '../home/source'
 import { ThemeProvider, usePhoneTheme, useTheme } from '../theme/ThemeProvider'
+import { GlassBackdrop } from '../ui/Glass'
 import { PillNav } from '../ui/PillNav'
 
 const convexUrl = process.env.EXPO_PUBLIC_CONVEX_URL
@@ -30,7 +31,7 @@ function RootNavigator() {
   const badge = countNeedsYou(sessions)
 
   return (
-    <>
+    <GlassBackdrop>
       <StatusBar style={resolved === 'dark' ? 'light' : 'dark'} />
       <Stack
         screenOptions={{
@@ -54,7 +55,7 @@ function RootNavigator() {
       </Stack>
       {/* Drawn over every screen; it only shows itself on the three top-level routes. */}
       <PillNav badge={badge} />
-    </>
+    </GlassBackdrop>
   )
 }
 

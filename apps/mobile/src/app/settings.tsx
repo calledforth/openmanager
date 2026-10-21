@@ -45,7 +45,8 @@ export default function SettingsScreen() {
         contentContainerStyle={{
           paddingHorizontal: 16,
           paddingTop: 8,
-          paddingBottom: insets.bottom + 24,
+          // The pill nav floats over the end of the list.
+          paddingBottom: insets.bottom + 140,
           gap: 24,
         }}
       >

@@ -112,7 +112,12 @@ export default function Search() {
               <View>
                 <SectionLabel>Projects</SectionLabel>
                 {hits.projects.map((w) => (
-                  <ProjectRow key={w.path} name={w.name} count={sessionCount(w.path)} />
+                  <ProjectRow
+                    key={w.path}
+                    name={w.name}
+                    count={sessionCount(w.path)}
+                    onPress={() => setQuery(w.name)}
+                  />
                 ))}
               </View>
             ) : null}

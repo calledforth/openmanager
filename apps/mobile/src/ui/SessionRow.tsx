@@ -25,6 +25,8 @@ export function shortAge(iso: string | undefined, now = Date.now()): string {
  * Fills, not borders: the pressed state is the hover fill, selection the
  * active fill.
  */
+const INDENT = 34
+
 export function SessionRow({
   row,
   selected = false,
@@ -42,6 +44,8 @@ export function SessionRow({
   const line = session.workspaceUnavailable
     ? 'Project folder is unavailable'
     : statusLineOf(session)
+  // One step per generation, capped so a deep tree still leaves the title room.
+  const indent = INDENT * Math.min(depth, 2)
   return (
     <Pressable
       accessibilityRole="button"
@@ -56,7 +60,7 @@ export function SessionRow({
         gap: 12,
         paddingVertical: 10,
         paddingRight: 12,
-        paddingLeft: depth ? 46 : 12,
+        paddingLeft: 12 + indent,
         borderRadius: 12,
         backgroundColor: selected ? theme.active : pressed ? theme.hover : 'transparent',
         opacity: session.workspaceUnavailable ? 0.6 : 1,
@@ -67,7 +71,7 @@ export function SessionRow({
           pointerEvents="none"
           style={{
             position: 'absolute',
-            left: 23,
+            left: indent - 11,
             top: -6,
             bottom: '50%',
             width: 10,

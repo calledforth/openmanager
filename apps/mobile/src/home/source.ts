@@ -18,6 +18,8 @@ import {
 import type { HomeDraft, HomeSession } from './rows'
 
 export interface HomeSource {
+  /** Where these sessions live: the fixture has no page behind a row yet. */
+  kind: 'fixture' | 'environment'
   environment: FixtureEnvironment | null
   connected: boolean
   workspaces: WorkspaceEntry[]
@@ -28,6 +30,7 @@ export interface HomeSource {
 export function useHomeSource(): HomeSource {
   return useMemo(
     () => ({
+      kind: 'fixture' as const,
       environment: FIXTURE_ENVIRONMENT,
       connected: true,
       workspaces: FIXTURE_WORKSPACES,

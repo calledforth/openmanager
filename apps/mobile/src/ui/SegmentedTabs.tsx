@@ -30,6 +30,8 @@ export function SegmentedTabs<Key extends string>({
             key={tab.key}
             accessibilityRole="tab"
             accessibilityState={{ selected: on }}
+            // The pill is 34pt tall; the slop brings the target to 44.
+            hitSlop={{ top: 5, bottom: 5 }}
             onPress={() => {
               if (!on) tap()
               onChange(tab.key)
@@ -39,7 +41,7 @@ export function SegmentedTabs<Key extends string>({
               alignItems: 'center',
               gap: 4,
               paddingHorizontal: 12,
-              paddingVertical: 6,
+              paddingVertical: 7,
               borderRadius: 999,
               backgroundColor: on ? theme.active : pressed ? theme.hover : 'transparent',
             })}

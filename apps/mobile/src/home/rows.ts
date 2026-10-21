@@ -140,8 +140,11 @@ function activityRank(mark: StatusMark): number {
 }
 
 /**
- * Sessions as the home lists them for a tab. Children sit under their parent
- * at depth 1, in their own order, and never start a group.
+ * Sessions as the home lists them for a tab. Children sit under their parent,
+ * one level deeper per generation, in their own order, and never start a
+ * group. A parent the tab can't show makes its child top-level; a cycle
+ * (both ends visible, neither a root) stays visible as a top-level row,
+ * as the web sidebar does.
  */
 export function selectHomeRows({
   sessions,
@@ -157,15 +160,15 @@ export function selectHomeRows({
   const byPath = new Map(workspaces.map((workspace) => [workspace.path, workspace]))
   const visible = tab === 'active' ? sessions.filter(isActiveSession) : sessions
   const ids = new Set(visible.map((session) => session.externalId))
-  const topLevel = visible.filter(
-    (session) => !session.parentExternalId || !ids.has(session.parentExternalId),
-  )
+  const roots: HomeSession[] = []
   const children = new Map<string, HomeSession[]>()
   for (const session of visible) {
     if (session.parentExternalId && ids.has(session.parentExternalId)) {
       const list = children.get(session.parentExternalId) ?? []
       list.push(session)
       children.set(session.parentExternalId, list)
+    } else {
+      roots.push(session)
     }
   }
   const row = (session: HomeSession, depth: number): HomeRow => ({
@@ -176,33 +179,46 @@ export function selectHomeRows({
     depth,
   })
   const byRecent = (a: HomeSession, b: HomeSession) => time(b.updatedAt) - time(a.updatedAt)
-  const withChildren = (session: HomeSession): HomeRow[] => [
-    row(session, 0),
-    ...(children.get(session.externalId) ?? []).sort(byRecent).map((child) => row(child, 1)),
-  ]
+  const visited = new Set<string>()
+  const subtree = (session: HomeSession, depth: number): HomeRow[] => {
+    if (visited.has(session.externalId)) return []
+    visited.add(session.externalId)
+    return [
+      row(session, depth),
+      ...(children.get(session.externalId) ?? [])
+        .sort(byRecent)
+        .flatMap((child) => subtree(child, depth + 1)),
+    ]
+  }
+  // One tree per top-level row; whatever no root reaches is a cycle, and
+  // its members become top-level rather than vanish.
+  const trees: { root: HomeSession; rows: HomeRow[] }[] = []
+  for (const root of roots) trees.push({ root, rows: subtree(root, 0) })
+  for (const session of visible) {
+    if (!visited.has(session.externalId)) trees.push({ root: session, rows: subtree(session, 0) })
+  }
+  const rank = (tree: { root: HomeSession }) => activityRank(statusMarkOf(tree.root))
+  const byRootRecent = (a: { root: HomeSession }, b: { root: HomeSession }) =>
+    byRecent(a.root, b.root)
 
   if (tab === 'active') {
-    const live = topLevel
-      .filter((session) => activityRank(statusMarkOf(session)) < 4)
-      .sort(
-        (a, b) => activityRank(statusMarkOf(a)) - activityRank(statusMarkOf(b)) || byRecent(a, b),
-      )
-    const rest = topLevel
-      .filter((session) => activityRank(statusMarkOf(session)) === 4)
-      .sort(byRecent)
+    const live = trees
+      .filter((tree) => rank(tree) < 4)
+      .sort((a, b) => rank(a) - rank(b) || byRootRecent(a, b))
+    const rest = trees.filter((tree) => rank(tree) === 4).sort(byRootRecent)
     const groups: HomeGroup<HomeRow>[] = []
     if (live.length)
-      groups.push({ key: 'live', label: 'Working', rows: live.flatMap(withChildren) })
+      groups.push({ key: 'live', label: 'Working', rows: live.flatMap((tree) => tree.rows) })
     if (rest.length)
-      groups.push({ key: 'recent', label: 'Recent', rows: rest.flatMap(withChildren) })
+      groups.push({ key: 'recent', label: 'Recent', rows: rest.flatMap((tree) => tree.rows) })
     return groups
   }
 
   const groups = new Map<string, HomeGroup<HomeRow>>()
-  for (const session of [...topLevel].sort(byRecent)) {
-    const label = dayLabel(session.updatedAt, now)
+  for (const tree of [...trees].sort(byRootRecent)) {
+    const label = dayLabel(tree.root.updatedAt, now)
     const group = groups.get(label) ?? { key: label, label, rows: [] }
-    group.rows.push(...withChildren(session))
+    group.rows.push(...tree.rows)
     groups.set(label, group)
   }
   return [...groups.values()]

@@ -68,6 +68,21 @@ describe('day labels', () => {
     expect(dayLabel(undefined, NOW)).toBe('Earlier')
     expect(dayLabel('not a date', NOW)).toBe('Earlier')
   })
+
+  it('turns over at local midnight, not at a fixed number of hours', () => {
+    const justAfterMidnight = new Date(2026, 9, 21, 0, 0, 30)
+    expect(dayLabel(local(2026, 10, 21, 0), justAfterMidnight)).toBe('Today')
+    expect(dayLabel(new Date(2026, 9, 20, 23, 59, 59).toISOString(), justAfterMidnight)).toBe(
+      'Yesterday',
+    )
+    // Six days back is still a weekday name; seven is the month.
+    expect(dayLabel(local(2026, 10, 15), NOW)).toBe(
+      new Intl.DateTimeFormat(undefined, { weekday: 'long' }).format(new Date(2026, 9, 15, 10)),
+    )
+    expect(dayLabel(local(2026, 10, 14), NOW)).toBe(
+      new Intl.DateTimeFormat(undefined, { month: 'long' }).format(new Date(2026, 9, 14, 10)),
+    )
+  })
 })
 
 describe('home rows', () => {
@@ -117,6 +132,51 @@ describe('home rows', () => {
     expect(rows[parent + 1]!.session.externalId).toBe('s-tool-payloads-tests')
     expect(rows[parent + 1]!.depth).toBe(1)
     expect(rows[0]!.depth).toBe(0)
+  })
+
+  it('keeps every generation: a grandchild sits one level under its parent', () => {
+    const at = NOW.toISOString()
+    const rows = selectHomeRows({
+      sessions: [
+        session({ externalId: 'root', status: 'running', updatedAt: at }),
+        session({
+          externalId: 'child',
+          parentExternalId: 'root',
+          status: 'running',
+          updatedAt: at,
+        }),
+        session({
+          externalId: 'grandchild',
+          parentExternalId: 'child',
+          status: 'running',
+          updatedAt: at,
+        }),
+      ],
+      workspaces: FIXTURE_WORKSPACES,
+      tab: 'active',
+      now: NOW,
+    })
+    expect(rows[0]!.rows.map((r) => [r.session.externalId, r.depth])).toEqual([
+      ['root', 0],
+      ['child', 1],
+      ['grandchild', 2],
+    ])
+  })
+
+  it('keeps a parent cycle visible instead of losing both sessions', () => {
+    const at = NOW.toISOString()
+    const rows = selectHomeRows({
+      sessions: [
+        session({ externalId: 'a', parentExternalId: 'b', updatedAt: at }),
+        session({ externalId: 'b', parentExternalId: 'a', updatedAt: at }),
+      ],
+      workspaces: FIXTURE_WORKSPACES,
+      tab: 'all',
+      now: NOW,
+    })
+    const ids = rows.flatMap((g) => g.rows.map((r) => r.session.externalId)).sort()
+    expect(ids).toEqual(['a', 'b'])
+    expect(rows.flatMap((g) => g.rows).filter((r) => r.depth === 0)).toHaveLength(1)
   })
 
   it('shows an orphaned child as a top-level row rather than dropping it', () => {
