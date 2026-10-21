@@ -12,8 +12,8 @@ export interface BootReconcileReport {
   toolsCancelled: number
   thoughtsClosed: number
   questionsCancelled: number
-  /** Close events the legacy repair wrote for turns that had already ended. */
-  repaired: number
+  /** Threads whose ended turns the legacy repair closed children in (one transaction each). */
+  threadsRepaired: number
   eventsWritten: number
   /** Turns or threads whose write failed: left as they are, retried next boot. */
   failures: { kind: 'recovery' | 'repair'; ids: Record<string, string>; reason: string }[]
@@ -60,18 +60,17 @@ export function reconcileAfterRestart(
     toolsCancelled: 0,
     thoughtsClosed: 0,
     questionsCancelled: 0,
-    repaired: 0,
+    threadsRepaired: 0,
     eventsWritten: 0,
     failures: [],
     durationMs: 0,
   }
-  const count = (records: readonly DurableEvent[], repair: boolean) => {
+  const count = (records: readonly DurableEvent[]) => {
     report.eventsWritten += records.length
     for (const { event } of records) {
       if (event.name === 'tool.updated') report.toolsCancelled += 1
       else if (event.name === 'message.reasoning') report.thoughtsClosed += 1
       else if (event.name === 'interaction.cancelled') report.questionsCancelled += 1
-      if (repair && event.scope.type === 'thread') report.repaired += 1
     }
   }
   const scopeOf = (row: { session_id: string; thread_id: string }): ThreadScope => ({
@@ -104,7 +103,7 @@ export function reconcileAfterRestart(
     try {
       const records = repository.finalizeTurn(scope, [interrupted])
       report.turnsRecovered += 1
-      count(records, false)
+      count(records)
     } catch (error) {
       report.failures.push({
         kind: 'recovery',
@@ -159,7 +158,8 @@ export function reconcileAfterRestart(
           }),
     )
     try {
-      count(repository.appendEvents(scope, events), true)
+      count(repository.appendEvents(scope, events))
+      report.threadsRepaired += 1
     } catch (error) {
       report.failures.push({
         kind: 'repair',

@@ -476,7 +476,7 @@ export async function startServer(config: ServerConfig) {
       toolsCancelled: reconciled.toolsCancelled,
       thoughtsClosed: reconciled.thoughtsClosed,
       questionsCancelled: reconciled.questionsCancelled,
-      repaired: reconciled.repaired,
+      threadsRepaired: reconciled.threadsRepaired,
       eventsWritten: reconciled.eventsWritten,
       durationMs: reconciled.durationMs,
     })

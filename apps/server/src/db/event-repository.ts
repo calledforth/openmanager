@@ -133,14 +133,22 @@ export function createEventRepository(
     lastEventId: string
     lastTimestamp: string
   }
-  let tracked: Map<string, Tracked> | undefined
-  /** Status records of retried events, re-published with their original cursors. */
-  let retriedStatus: { environmentId: string; event: DurableProofEvent }[] = []
+  /**
+   * One transaction's state, passed down its writes rather than kept between
+   * them: the sessions it touched, and the status records of retried events,
+   * re-published with their original cursors. Derived writes pass none: they
+   * state the pass itself.
+   */
+  type Transaction = {
+    tracked: Map<string, Tracked>
+    retriedStatus: { environmentId: string; event: DurableProofEvent }[]
+  }
 
   const writeScope = (
     scope: SubscriptionScope,
     events: readonly DurableProofEvent[],
     writtenAt: number,
+    transaction?: Transaction,
   ): DurableEvent[] => {
     const key = scopeKey(scope)
     statements.ensureStream.run(
@@ -156,11 +164,11 @@ export function createEventRepository(
     if (!stream) throw new Error(`Event stream ${key} vanished inside its transaction`)
     const records: DurableEvent[] = []
     const replayStatus = (event: DurableProofEvent) => {
-      if (!statusSessionOf(event) || !tracked) return
+      if (!statusSessionOf(event) || !transaction) return
       const statusRecord = statements.selectByEventId.get(`${event.eventId}:status`) as
         ExistingEventRow | undefined
       if (statusRecord) {
-        retriedStatus.push({
+        transaction.retriedStatus.push({
           environmentId: scope.environmentId,
           event: JSON.parse(statusRecord.event_json) as DurableProofEvent,
         })
@@ -242,8 +250,8 @@ export function createEventRepository(
         JSON.stringify(record.event),
         Date.parse(event.timestamp),
       )
-      const sessionId = tracked ? statusSessionOf(event) : undefined
-      let entry = sessionId ? tracked!.get(sessionId) : undefined
+      const sessionId = transaction ? statusSessionOf(event) : undefined
+      let entry = sessionId ? transaction!.tracked.get(sessionId) : undefined
       if (sessionId && !entry) {
         const before = readStatus(sessionId)
         if (before) {
@@ -253,7 +261,7 @@ export function createEventRepository(
             lastEventId: event.eventId,
             lastTimestamp: event.timestamp,
           }
-          tracked!.set(sessionId, entry)
+          transaction!.tracked.set(sessionId, entry)
         }
       }
       project(event)
@@ -280,15 +288,15 @@ export function createEventRepository(
    * loading thread history, and a batch that closes a question and then ends
    * the turn publishes one change, not two.
    */
-  const deriveStatus = (writtenAt: number): DurableEvent[] => {
+  const deriveStatus = (transaction: Transaction, writtenAt: number): DurableEvent[] => {
     const byEnvironment = new Map<string, DurableProofEvent[]>()
     const add = (environmentId: string, event: DurableProofEvent) => {
       const list = byEnvironment.get(environmentId) ?? []
       list.push(event)
       byEnvironment.set(environmentId, list)
     }
-    for (const { environmentId, event } of retriedStatus) add(environmentId, event)
-    for (const [sessionId, entry] of tracked ?? []) {
+    for (const { environmentId, event } of transaction.retriedStatus) add(environmentId, event)
+    for (const [sessionId, entry] of transaction.tracked) {
       const after = readStatus(sessionId)
       if (!after) continue
       const before = entry.announced
@@ -326,9 +334,8 @@ export function createEventRepository(
         }),
       )
     }
-    // The derived records are written untracked: they state the pass itself.
-    tracked = undefined
-    retriedStatus = []
+    // The derived records are written with no transaction state: they state
+    // the pass itself.
     return [...byEnvironment].flatMap(([environmentId, events]) =>
       writeScope({ type: 'environment', environmentId }, events, writtenAt),
     )
@@ -347,17 +354,16 @@ export function createEventRepository(
     database.exec('BEGIN IMMEDIATE')
     try {
       const writtenAt = now()
-      tracked = new Map()
-      retriedStatus = []
-      const records = pending.flatMap(({ scope, events }) => writeScope(scope, events, writtenAt))
-      records.push(...deriveStatus(writtenAt))
+      const transaction: Transaction = { tracked: new Map(), retriedStatus: [] }
+      const records = pending.flatMap(({ scope, events }) =>
+        writeScope(scope, events, writtenAt, transaction),
+      )
+      records.push(...deriveStatus(transaction, writtenAt))
       options.beforeCommit?.(records)
       database.exec('COMMIT')
       options.afterCommit?.(records)
       return records
     } catch (error) {
-      tracked = undefined
-      retriedStatus = []
       try {
         database.exec('ROLLBACK')
       } catch {

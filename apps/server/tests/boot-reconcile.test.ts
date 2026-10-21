@@ -122,7 +122,7 @@ describe('boot reconcile', () => {
       toolsCancelled: 2,
       thoughtsClosed: 2,
       questionsCancelled: 2,
-      repaired: 0,
+      threadsRepaired: 0,
       failures: [],
     })
     // One transaction per turn: its closes, its end, and its session's status.
@@ -207,7 +207,7 @@ describe('boot reconcile', () => {
       turnsRecovered: 0,
       toolsCancelled: 1,
       thoughtsClosed: 1,
-      repaired: 2,
+      threadsRepaired: 1,
       failures: [],
     })
     expect(
@@ -223,7 +223,7 @@ describe('boot reconcile', () => {
     ])
     // Idempotent: nothing is open any more.
     expect(reconcileAfterRestart(database, repository, ENV)).toMatchObject({
-      repaired: 0,
+      threadsRepaired: 0,
       eventsWritten: 0,
     })
   })

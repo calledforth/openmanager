@@ -184,6 +184,17 @@ export const TurnFailureReasonSchema = z.enum([
   'capability_missing',
 ])
 export type TurnFailureReason = z.infer<typeof TurnFailureReasonSchema>
+/**
+ * What a failed turn says, per reason: the one table every writer and reader
+ * uses, so the live event, the stored row and an older row read back agree.
+ */
+export const TURN_FAILURE_MESSAGES: Record<TurnFailureReason, string> = {
+  provider_process_exited: 'The provider process exited before the turn completed.',
+  provider_process_crashed: 'The provider process crashed before the turn completed.',
+  provider_error: 'The provider failed to complete the turn.',
+  authentication_required: 'The provider requires authentication.',
+  capability_missing: 'The provider does not support this operation.',
+}
 /** Who ended an interrupted turn: the user, or a restart that cut it off. */
 export const TurnInterruptionSchema = z.enum(['user', 'server_restarted'])
 export type TurnInterruption = z.infer<typeof TurnInterruptionSchema>

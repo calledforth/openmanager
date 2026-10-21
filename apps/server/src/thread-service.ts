@@ -7,6 +7,7 @@ import {
   pageThreadMessages,
   BACKGROUND_TASKS_MAX,
   shouldReplaceSessionTitle,
+  TURN_FAILURE_MESSAGES,
   titleFromPrompt,
   WorkspaceUnavailableDetailsSchema,
   type BackgroundTask,
@@ -39,6 +40,7 @@ import {
   type RuntimeSessionArgs,
 } from '@agentpack/runtime/node'
 import {
+  cancelledInteractionIds,
   findOpenTurnId,
   findSessionIdByProviderSession,
   findTurnByCommandId,
@@ -338,6 +340,13 @@ function invalidResponse(interaction: Interaction, response: InteractionResponse
 export function createThreadService(
   runtime: InteractionRuntime,
   providerGate: ProviderGate,
+  /**
+   * Where durable events go. With a database (`options.database`) they reach
+   * the event repository, whose terminal path closes a turn's open children
+   * with their own events (db/turn-closure.ts). Without one (unit tests
+   * only) nothing writes those closes, unlike the environment-client mock,
+   * which plays the server and does (docs/sync-foundations.md §4.3 (e)).
+   */
   appendEvent: (event: ProofEvent) => void,
   publishTransient: (event: EventEnvelope) => void = () => undefined,
   // Routing is by registered workspace ID only (D9): there is no default that
@@ -491,7 +500,10 @@ export function createThreadService(
 
   // Provider callbacks and turn settlement must not fail because a write did:
   // the in-memory turn still settles, and the host decides how to report it.
-  const appendRuntimeEvent = (event: ProofEvent) => {
+  // Answers whether the event committed, so what memory records about the
+  // event itself (requests, their answers, open thoughts) follows only a
+  // committed write (I11).
+  const appendRuntimeEvent = (event: ProofEvent): boolean => {
     let committed = true
     try {
       appendEvent(event)
@@ -519,9 +531,16 @@ export function createThreadService(
       if (record && event.name === 'turn.completed') queueMicrotask(() => refineTitle(record))
       // The requests the turn left open were closed by `interaction.cancelled`
       // events committed with its end (db/turn-closure.ts). Memory follows
-      // that commit, never a write that failed (I11).
+      // those committed rows, never a write that failed (I11). Without a
+      // database (unit tests only) there are no rows; the turn's end settles
+      // every request it left open.
+      const cancelled =
+        committed && options.database
+          ? cancelledInteractionIds(options.database, event.payload.turnId)
+          : undefined
       for (const entry of committed ? (record?.interactions.values() ?? []) : []) {
         if (entry.turnId !== event.payload.turnId || entry.settled) continue
+        if (cancelled && !cancelled.has(entry.interaction.interactionId)) continue
         entry.settled = true
         if (entry.interaction.lifecycle) {
           entry.interaction = {
@@ -535,6 +554,7 @@ export function createThreadService(
         }
       }
     }
+    return committed
   }
 
   const emitInterrupted = (
@@ -587,12 +607,7 @@ export function createThreadService(
         payload: {
           turnId,
           reason,
-          message:
-            reason === 'provider_process_crashed'
-              ? 'The provider process crashed before the turn completed.'
-              : reason === 'provider_process_exited'
-                ? 'The provider process exited before the turn completed.'
-                : 'The provider failed to complete the turn.',
+          message: TURN_FAILURE_MESSAGES[reason],
         },
       }),
     )
@@ -960,6 +975,12 @@ export function createThreadService(
     ) {
       closeOpenReasoning(record, active, projected.timestamp)
     }
+    // What memory records here may run ahead of a write that failed, and
+    // that is safe: the batcher keeps a failed batch and writes it before
+    // anything appended after it (event-batcher.ts), so the request this
+    // records reaches the rows before its answer can, or the answer is not
+    // written either. Dropping it here would lose a request the next flush
+    // commits.
     if (projected.name === 'turn.notice') publishTransient(projected)
     else appendRuntimeEvent(projected)
     if (active && projected.name === 'message.reasoning') {
@@ -2660,26 +2681,28 @@ export function createThreadService(
               reason?: Exclude<T['reason' & keyof T], 'turn_ended' | 'server_restarted'>
             }
           : T
+        // The one cast: what `invalidResponse` let through is the provider's.
+        const forwarded = <T>(outcome: T) => outcome as Forwarded<T>
         const forward =
           response.kind === 'permission'
             ? runtime.respondPermission &&
               (() =>
                 runtime.respondPermission!({
                   ...target,
-                  outcome: response.outcome as Forwarded<typeof response.outcome>,
+                  outcome: forwarded(response.outcome),
                 }))
             : response.kind === 'question'
               ? runtime.respondQuestion &&
                 (() =>
                   runtime.respondQuestion!({
                     ...target,
-                    outcome: response.outcome as Forwarded<typeof response.outcome>,
+                    outcome: forwarded(response.outcome),
                   }))
               : runtime.respondPlan &&
                 (() =>
                   runtime.respondPlan!({
                     ...target,
-                    outcome: response.outcome as Forwarded<typeof response.outcome>,
+                    outcome: forwarded(response.outcome),
                   }))
         if (!forward) {
           return errorResult(

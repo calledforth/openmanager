@@ -12,6 +12,7 @@ import {
   SessionSummarySchema,
   ToolCallStateSchema,
   TurnSchema,
+  TURN_FAILURE_MESSAGES,
   resolvePageLimit,
   type ActivityRef,
   type HistoryCursor,
@@ -25,6 +26,7 @@ import {
   type SessionSummary,
   type Thread,
   type Turn,
+  type TurnFailureReason,
   type TurnStart,
 } from '@openmanager/protocol/node'
 import {
@@ -126,7 +128,10 @@ function turnFromRow(row: TurnRow): Turn {
       ? {
           failure: {
             reason: row.failure_reason,
-            message: row.failure_message ?? FAILURE_MESSAGES[row.failure_reason] ?? '',
+            message:
+              row.failure_message ??
+              TURN_FAILURE_MESSAGES[row.failure_reason as TurnFailureReason] ??
+              '',
           },
         }
       : {}),
@@ -136,18 +141,6 @@ function turnFromRow(row: TurnRow): Turn {
   })
 }
 
-/**
- * What the server said for each failure reason before `turns.failure_message`
- * existed (thread-service.ts `emitFailed`, agent-runtime `failureMessage`):
- * a turn failed before migration 21 reads back the text its event carried.
- */
-const FAILURE_MESSAGES: Record<string, string> = {
-  provider_process_crashed: 'The provider process crashed before the turn completed.',
-  provider_process_exited: 'The provider process exited before the turn completed.',
-  provider_error: 'The provider failed to complete the turn.',
-  authentication_required: 'The provider requires authentication.',
-  capability_missing: 'The provider does not support this operation.',
-}
 type TurnActivityRow = {
   activity_id: string
   turn_id: string
@@ -462,6 +455,14 @@ export function hasInteraction(
   return !!database
     .prepare(INTERACTION_IN_THREAD_SQL)
     .get(query.interactionId, query.threadId, query.sessionId)
+}
+
+/** The requests of a turn its rows say were cancelled (by its end, or a restart). */
+export function cancelledInteractionIds(database: DatabaseSync, turnId: string): Set<string> {
+  const rows = database
+    .prepare("SELECT interaction_id FROM interactions WHERE turn_id = ? AND state = 'cancelled'")
+    .all(turnId) as { interaction_id: string }[]
+  return new Set(rows.map((row) => row.interaction_id))
 }
 
 /**

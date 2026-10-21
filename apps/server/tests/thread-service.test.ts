@@ -2077,6 +2077,73 @@ describe('durable session lifecycle', () => {
     }
   })
 
+  it('keeps a request whose write failed, because the retry writes it before its answer', async () => {
+    const failures: string[] = []
+    const h = setup((_error, eventName) => failures.push(eventName))
+    try {
+      await h.service.resolveRuntimeSession(h.created.session.sessionId)
+      h.runtime.prompt.mockReturnValueOnce(new Promise(() => undefined))
+      const sent = ProofResponseSchemas['turn.send'].parse(
+        h.dispatch(h.service, 'turn.send', { ...h.created.thread, text: 'Go' }),
+      ).payload
+      const base = {
+        providerId: 'opencode' as const,
+        threadId: h.created.thread.threadId,
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-persisted',
+        messageId: 'assistant-1',
+        timestamp: new Date().toISOString(),
+      }
+      h.service.onRuntimeEvent({
+        ...base,
+        id: 'started',
+        seq: 1,
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'Go', userMessageId: sent.userMessage.messageId },
+      })
+      h.database.exec(`CREATE TEMP TRIGGER refuse_request BEFORE INSERT ON interactions
+        BEGIN SELECT RAISE(ABORT, 'boom'); END`)
+      h.service.onRuntimeEvent({
+        ...base,
+        id: 'asked',
+        seq: 2,
+        category: 'permission',
+        event: 'permission_request',
+        data: {
+          requestId: 'provider-permission',
+          sessionId: 'provider-persisted',
+          toolCall: { toolCallId: 'tool-1', title: 'Run tests' },
+          options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+        },
+      })
+      h.database.exec('DROP TRIGGER refuse_request')
+      expect(failures).toEqual(['interaction.requested'])
+      expect(h.database.prepare('SELECT count(*) AS n FROM interactions').get()).toEqual({ n: 0 })
+      // The answer comes; the batcher first writes the request it kept, then
+      // the answer, in order, so memory and the rows agree again.
+      h.service.onRuntimeEvent({
+        ...base,
+        id: 'settled',
+        seq: 3,
+        category: 'permission',
+        event: 'permission_resolved',
+        data: {
+          requestId: 'provider-permission',
+          outcome: { outcome: 'selected', optionId: 'allow' },
+        },
+      })
+      h.events.flush()
+      expect(failures).toEqual(['interaction.requested'])
+      expect(h.database.prepare('SELECT state FROM interactions').all()).toEqual([
+        { state: 'resolved' },
+      ])
+      expect(h.database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'running' })
+    } finally {
+      h.close()
+    }
+  })
+
   it('answers an interaction only the log remembers as already resolved after a restart', async () => {
     const h = setup()
     try {

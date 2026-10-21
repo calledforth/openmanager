@@ -1,5 +1,6 @@
 import type { AgentEvent } from '@agentpack/contract'
 import {
+  TURN_FAILURE_MESSAGES,
   ProofEventSchema,
   type ProofEvent,
   type SubscriptionScope,
@@ -263,16 +264,5 @@ export function projectAgentEvent(
 }
 
 function failureMessage(reason: TurnFailureReason): string {
-  switch (reason) {
-    case 'provider_process_exited':
-      return 'The provider process exited before the turn completed.'
-    case 'provider_process_crashed':
-      return 'The provider process crashed before the turn completed.'
-    case 'authentication_required':
-      return 'The provider requires authentication.'
-    case 'capability_missing':
-      return 'The provider does not support this operation.'
-    case 'provider_error':
-      return 'The provider failed to complete the turn.'
-  }
+  return TURN_FAILURE_MESSAGES[reason]
 }
