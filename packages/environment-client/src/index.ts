@@ -50,7 +50,6 @@ export type {
   ThreadState,
   ThreadTarget,
   ToolState,
-  TurnFailure,
   TurnNotice,
   Unsubscribe,
   UploadArtifactInput,

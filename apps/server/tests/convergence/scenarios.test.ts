@@ -18,7 +18,6 @@ import {
   reasoningBudgetMarker,
   runtimeStamp,
   sessionCreatedPartial,
-  silentRecovery,
   snapshotMergeDropsOlderActivity,
   stampMovesRecency,
 } from './causes.ts'
@@ -306,7 +305,13 @@ const TOOL_STATUS_AFTER_TURN_END = 'cancelled'
 // ---------------------------------------------------------------------------
 
 describe('§8.4 scenarios on main', () => {
-  scenario('S1 crash mid-turn: the client resumes from its cursor (W1)', {}, async (rig) => {
+  /**
+   * Guard since F3 (§4.1): the restarted server ends the turn with events on
+   * the thread's own stream, closing its tool, thought and question first, so
+   * the client's replay from its cursor brings exactly that. On main the
+   * replay came back empty (SILENT_RECOVERY).
+   */
+  scenario('S1 crash mid-turn: the client resumes from its cursor (W1, guard)', {}, async (rig) => {
     const a = await rig.connect('A')
     const target = await createSession(rig, a, QUIET)
     const turnId = await startTurn(a, target)
@@ -327,8 +332,6 @@ describe('§8.4 scenarios on main', () => {
     // the workspace recency the question moved (X1, an interaction event is
     // not one the client mirrors it on), named with its fingerprint.
     await expectConvergesExcept('S1 baseline', rig, a, [recencyMirror(rig, a)])
-    // What A holds, as the server's own read says it (the baseline above
-    // showed they agree): the interactions and the turn state recovery rewrites.
     const held = await serverThread(rig, target)
     const openTurn = (held.turns as Array<{ turnId: string; state: string }>).find(
       (turn) => turn.turnId === turnId,
@@ -337,17 +340,33 @@ describe('§8.4 scenarios on main', () => {
     const before = a.connects
     await rig.crash()
     await until(() => a.connects > before, 'A to reconnect after the crash', 20_000)
-    await demonstrateDiff(
-      'S1',
-      rig,
-      a,
-      silentRecovery({
-        threadId: target.threadId,
-        turnId,
-        openState: 'waiting',
-        interactions: held.interactions,
-      }),
-    )
+    await until(() => !a.busy(), 'A to finish its reconnect')
+    const result = await expectConverges('S1', rig, a)
+    // Equal is not enough: everything recovery closed is closed on all three.
+    const views = [result.view, result.fresh].map((view) => view.active!.threads[target.threadId]!)
+    views.push(result.server.threads[target.threadId]!)
+    for (const view of views) {
+      expect(view.turns).toContainEqual(
+        expect.objectContaining({
+          turnId,
+          state: 'interrupted',
+          interruptedBy: 'server_restarted',
+        }),
+      )
+      expect(Object.values(view.tools).map((tool) => (tool as { status?: string }).status)).toEqual(
+        ['cancelled'],
+      )
+      expect(
+        Object.values(view.reasoning).map((thought) => (thought as { phase?: string }).phase),
+      ).toEqual(['stop'])
+      expect(view.interactions).toEqual({})
+    }
+    recordEvidence({
+      scenario: 'S1',
+      bucket: 'regression-guard',
+      cause: 'recovery events replayed from the cursor',
+      observed: { turn: 'interrupted (server_restarted)', tool: 'cancelled', thought: 'stop' },
+    })
   })
 
   /**
@@ -420,16 +439,11 @@ describe('§8.4 scenarios on main', () => {
       const early = await buildLongThread(rig, a, target, { turns: 52, activityTurns: 2 })
       await walkHistory(a, target)
       expect(thread(a, target)?.messages.length).toBe(104)
-      // A valid baseline: before the gap A differs from the server only by
-      // the fold closing the early thoughts (S2), exactly those.
+      // A valid baseline: before the gap A agrees with the server (since F3
+      // the server closes the thoughts, so S2's cause no longer shows here).
       const server = await serverThread(rig, target)
       const older = olderActivity(server, target.threadId, early)
-      await expectConvergesExcept('S4 baseline', rig, a, [
-        thoughtClosedByFold({
-          threadId: target.threadId,
-          messageIds: Object.keys(older.reasoning),
-        }),
-      ])
+      await expectConverges('S4 baseline', rig, a)
       rig.proxy.down()
       rig.proxy.cut()
       await until(() => a.client.getState().connection.phase !== 'connected', 'A to notice the cut')
@@ -874,12 +888,7 @@ describe('§8.4 scenarios on main', () => {
       await walkHistory(a, target)
       expect(thread(a, target)?.messages.length).toBe(104)
       const older = olderActivity(await serverThread(rig, target), target.threadId, early)
-      await expectConvergesExcept('S10 baseline', rig, a, [
-        thoughtClosedByFold({
-          threadId: target.threadId,
-          messageIds: Object.keys(older.reasoning),
-        }),
-      ])
+      await expectConverges('S10 baseline', rig, a)
       // Recording is always on; what follows is judged from here.
       const mark = rig.proxy.frames.length
       const reloaded = await rig.reload(a)

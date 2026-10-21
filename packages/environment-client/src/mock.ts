@@ -265,9 +265,74 @@ export function createMockEnvironmentClient(
       else drains.add(resolve)
     })
 
+  /**
+   * What the environment writes before a turn's end (docs/sync-foundations.md
+   * §4.3): one close event for every tool, thought and request of the turn
+   * still open. The mock plays the server, so it closes them the same way.
+   */
+  const closeOpenChildren = (
+    terminal: Extract<ProofEvent, { name: 'turn.completed' | 'turn.interrupted' | 'turn.failed' }>,
+  ) => {
+    const { turnId } = terminal.payload
+    const thread = store.getState().threads[terminal.scope.threadId]
+    if (!thread) return
+    const scope = terminal.scope
+    for (const tool of thread.tools) {
+      if (tool.turnId !== turnId) continue
+      if (tool.status && tool.status !== 'pending' && tool.status !== 'in_progress') continue
+      emit({
+        ...base(),
+        name: 'tool.updated',
+        scope,
+        payload: { toolCallId: tool.toolCallId, turnId, status: 'cancelled' },
+      })
+    }
+    for (const entry of thread.reasoning) {
+      if (entry.turnId !== turnId || entry.phase === 'stop') continue
+      emit({
+        ...base(),
+        name: 'message.reasoning',
+        scope,
+        payload: { messageId: entry.messageId, turnId, phase: 'stop' },
+      })
+    }
+    const pending = thread.interactions.filter((item) => item.turnId === turnId)
+    pending.forEach((item, index) => {
+      emit({
+        ...base(),
+        name: 'interaction.cancelled',
+        scope,
+        payload: {
+          turnId,
+          response: {
+            kind: item.interaction.kind,
+            interactionId: item.interaction.interactionId,
+            outcome: {
+              outcome: 'cancelled',
+              reason:
+                terminal.name === 'turn.interrupted' &&
+                terminal.payload.reason === 'server_restarted'
+                  ? 'server_restarted'
+                  : 'turn_ended',
+            },
+          } as InteractionResponse,
+          turnState: index < pending.length - 1 ? 'waiting' : 'running',
+        },
+      })
+    })
+  }
+
   const emit = (event: ProofEvent) => {
     const schema = ProofEventSchemas[event.name] as { parse(input: unknown): ProofEvent }
     const parsed = schema.parse(event)
+    if (
+      parsed.scope.type === 'thread' &&
+      (parsed.name === 'turn.completed' ||
+        parsed.name === 'turn.interrupted' ||
+        parsed.name === 'turn.failed')
+    ) {
+      closeOpenChildren(parsed)
+    }
     const folded = settles.mask(parsed)
     store.update((state) => applyEvent(state, folded))
     // The mock plays the server as well as the client. Emit the authoritative
@@ -280,7 +345,8 @@ export function createMockEnvironmentClient(
         parsed.name === 'turn.failed' ||
         parsed.name === 'interaction.requested' ||
         parsed.name === 'interaction.resolved' ||
-        parsed.name === 'interaction.expired')
+        parsed.name === 'interaction.expired' ||
+        parsed.name === 'interaction.cancelled')
     ) {
       const state = store.getState()
       const session = state.sessions[parsed.scope.sessionId]

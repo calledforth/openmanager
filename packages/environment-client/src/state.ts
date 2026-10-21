@@ -79,7 +79,6 @@ export function createThreadState(
     tools: [],
     order: [],
     interactions: [],
-    failures: [],
     notices: [],
     outbox: [],
     hydration,
@@ -325,47 +324,49 @@ function patchThread(
   return { ...withThread, threads: { ...withThread.threads, [thread.threadId]: updated } }
 }
 
+/**
+ * The state of a turn the thread holds, as an interaction event states it
+ * (`turnState`). The server says it; the client never derives it from the
+ * requests it holds. A turn the thread does not hold is left alone: the
+ * transport recovers the scope (`namesUnknownTurn`).
+ */
 function setTurnState(thread: ThreadState, turnId: string, turnState: Turn['state']): ThreadState {
   const index = thread.turns.findIndex((turn) => turn.turnId === turnId)
-  if (index === -1) {
-    // A terminal event for a turn we never saw start (late join without a
-    // snapshot). Record it so status derivation and history stay honest.
-    return {
-      ...thread,
-      turns: [...thread.turns, { turnId, threadId: thread.thread.threadId, state: turnState }],
-    }
-  }
-  if (thread.turns[index]!.state === turnState) return thread
+  if (index === -1 || thread.turns[index]!.state === turnState) return thread
   const turns = thread.turns.slice()
   turns[index] = { ...turns[index]!, state: turnState }
   return { ...thread, turns }
 }
 
+/** Drop a pending interaction; the turn's state is the event's to say. */
+function dropInteraction(current: ThreadState, interactionId: string): ThreadState {
+  if (!current.interactions.some((item) => item.interaction.interactionId === interactionId)) {
+    return current
+  }
+  return {
+    ...current,
+    interactions: current.interactions.filter(
+      (item) => item.interaction.interactionId !== interactionId,
+    ),
+  }
+}
+
 /**
- * Drop a pending interaction and, when it was the last one blocking its turn,
- * return that turn to `running`. `turnId` may be null when the caller only
- * knows the interaction ID (the optimistic path); it is then looked up.
+ * The optimistic answer (`applyInteractionResolved`, until the overlays of
+ * F3's later step replace it): hides the request and, when it was the last
+ * one blocking its turn, returns that turn to `running`.
  */
-function resolveInteraction(
-  current: ThreadState,
-  interactionId: string,
-  turnId: string | null,
-): ThreadState {
+function resolveInteraction(current: ThreadState, interactionId: string): ThreadState {
   const pending = current.interactions.find(
     (item) => item.interaction.interactionId === interactionId,
   )
   if (!pending) return current
-  const resolvedTurnId = turnId ?? pending.turnId
-  const interactions = current.interactions.filter(
-    (item) => item.interaction.interactionId !== interactionId,
-  )
-  const stillWaiting = interactions.some((item) => item.turnId === resolvedTurnId)
-  const turn = current.turns.find((item) => item.turnId === resolvedTurnId)
-  const updated =
-    turn?.state === 'waiting' && !stillWaiting
-      ? setTurnState(current, resolvedTurnId, 'running')
-      : current
-  return { ...updated, interactions }
+  const dropped = dropInteraction(current, interactionId)
+  const stillWaiting = dropped.interactions.some((item) => item.turnId === pending.turnId)
+  const turn = current.turns.find((item) => item.turnId === pending.turnId)
+  return turn?.state === 'waiting' && !stillWaiting
+    ? setTurnState(dropped, pending.turnId, 'running')
+    : dropped
 }
 
 /**
@@ -556,13 +557,14 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
       }))
     case 'interaction.requested':
       return patchThread(state, thread, (current) => {
+        if (!current.turns.some((turn) => turn.turnId === event.payload.turnId)) return current
         const pending: PendingInteraction = {
           sessionId: thread.sessionId,
           threadId: thread.threadId,
           turnId: event.payload.turnId,
           interaction: event.payload.interaction,
         }
-        const updated = setTurnState(current, event.payload.turnId, 'waiting')
+        const updated = setTurnState(current, event.payload.turnId, event.payload.turnState)
         return {
           ...updated,
           interactions: upsertById(
@@ -574,8 +576,13 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
       })
     case 'interaction.resolved':
     case 'interaction.expired':
+    case 'interaction.cancelled':
       return patchThread(state, thread, (current) =>
-        resolveInteraction(current, event.payload.response.interactionId, event.payload.turnId),
+        setTurnState(
+          dropInteraction(current, event.payload.response.interactionId),
+          event.payload.turnId,
+          event.payload.turnState,
+        ),
       )
     default:
       return state
@@ -924,7 +931,7 @@ export function applyInteractionResolved(
   thread: Thread,
   interactionId: string,
 ): EnvironmentState {
-  return patchThread(state, thread, (current) => resolveInteraction(current, interactionId, null))
+  return patchThread(state, thread, (current) => resolveInteraction(current, interactionId))
 }
 
 /**
