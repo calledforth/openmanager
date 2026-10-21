@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import type { ProofEvent } from '@openmanager/protocol/node'
 import type { DurableProofEvent } from './event-repository.ts'
 import { prepareDraftProjection } from './draft-projection.ts'
+import { OPEN_TURN_FOR_SESSION_SQL } from './queries.ts'
 
 type SessionSummary = Extract<ProofEvent, { name: 'session.created' }>['payload']['session']
 type TurnStarted = Extract<ProofEvent, { name: 'turn.started' }>
@@ -80,6 +81,8 @@ export function createEventProjector(
     hasBackgroundTasks: database.prepare(
       'SELECT 1 FROM sessions WHERE session_id = ? AND background_tasks_json IS NOT NULL',
     ),
+    selectSessionStatus: database.prepare('SELECT status FROM sessions WHERE session_id = ?'),
+    openTurnForSession: database.prepare(OPEN_TURN_FOR_SESSION_SQL),
     // Not a sidebar-ordering change, so `updated_at` stays put.
     updateSessionComposer: database.prepare(
       'UPDATE sessions SET composer_json = ? WHERE session_id = ?',
@@ -437,6 +440,24 @@ export function createEventProjector(
               : null,
             event.payload.sessionId,
           )
+          // Between turns the roster is all that says whether the session is
+          // working, so the rows say it: a resting session runs while it has
+          // background work and is idle once it has none. A failed session
+          // stays failed, and a turn in flight owns the status. The status
+          // pass announces the change (event-repository.ts).
+          if (event.payload.status === undefined) {
+            const row = s.selectSessionStatus.get(event.payload.sessionId) as
+              | { status: string }
+              | undefined
+            if (
+              row &&
+              (row.status === 'idle' || row.status === 'running') &&
+              !s.openTurnForSession.get(event.payload.sessionId)
+            ) {
+              const rests = event.payload.backgroundTasks.length > 0 ? 'running' : 'idle'
+              if (rests !== row.status) s.updateSessionStatus.run(rests, at, event.payload.sessionId)
+            }
+          }
         }
         return
       case 'session.composer.updated':

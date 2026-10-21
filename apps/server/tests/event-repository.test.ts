@@ -1773,3 +1773,72 @@ describe('durable turn activity', () => {
     ).toEqual([...page.order, { kind: 'message', id: 'later', turnId: 'turn-1' }])
   })
 })
+
+describe('session status, once per session per transaction (docs/sync-foundations.md §4.3)', () => {
+  const environment = { type: 'environment', environmentId: 'environment-1' } as const
+  const statusEvents = (records: readonly { event: { name: string; scope: { type: string } } }[]) =>
+    records.filter(
+      (record) =>
+        record.event.name === 'session.updated' && record.event.scope.type === 'environment',
+    )
+
+  it('announces a batch that answers a request and ends the turn as one change', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    repository.appendEvents(scope, [started(), interactionRequested()])
+    // waiting -> running -> idle inside one transaction: clients see idle, once.
+    const records = repository.finalizeTurn(scope, [interactionResolved(), completed()])
+    expect(statusEvents(records).map((record) => record.event)).toEqual([
+      expect.objectContaining({
+        eventId: `${completed().eventId}:status`,
+        payload: expect.objectContaining({ sessionId: 'session-1', status: 'idle' }),
+      }),
+    ])
+  })
+
+  it('does not restate a status a producer already stated (an idle provider exit)', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const records = repository.appendEvents(environment, [
+      ProofEventSchemas['session.updated'].parse({
+        type: 'event',
+        name: 'session.updated',
+        eventId: 'exit-error',
+        timestamp: '2026-09-10T10:00:05.000Z',
+        scope: environment,
+        payload: { sessionId: 'session-1', status: 'error', doneAt: null },
+      }),
+    ])
+    expect(records.map((record) => record.event.eventId)).toEqual(['exit-error'])
+    expect(database.prepare('SELECT status FROM sessions').get()).toEqual({ status: 'error' })
+  })
+
+  it('derives the resting status from a background roster', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const roster = (eventId: string, tasks: unknown[]) =>
+      ProofEventSchemas['session.updated'].parse({
+        type: 'event',
+        name: 'session.updated',
+        eventId,
+        timestamp: '2026-09-10T10:00:05.000Z',
+        scope: environment,
+        payload: { sessionId: 'session-1', backgroundTasks: tasks },
+      })
+    const task = { taskId: 'task-1', kind: 'shell', description: 'watch' }
+    const working = repository.appendEvents(environment, [roster('roster-1', [task])])
+    expect(working.map((record) => record.event.payload)).toEqual([
+      { sessionId: 'session-1', backgroundTasks: [task] },
+      { sessionId: 'session-1', status: 'running', inBackground: true },
+    ])
+    const resting = repository.appendEvents(environment, [roster('roster-2', [])])
+    expect(resting.map((record) => record.event.payload)).toEqual([
+      { sessionId: 'session-1', backgroundTasks: [] },
+      { sessionId: 'session-1', status: 'idle' },
+    ])
+    // A failed session stays failed whatever its roster says.
+    database.exec("UPDATE sessions SET status = 'error'")
+    const failed = repository.appendEvents(environment, [roster('roster-3', [task])])
+    expect(failed.map((record) => record.event.eventId)).toEqual(['roster-3'])
+  })
+})

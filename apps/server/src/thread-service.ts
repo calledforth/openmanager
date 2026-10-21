@@ -984,8 +984,6 @@ export function createThreadService(
       return { taskId, kind: task.kind, description: task.description.slice(0, 1000) }
     })
     const rests = !record.activeTurn && (record.status === 'idle' || record.status === 'running')
-    // Restated even when it matches what this process believes: the row is
-    // what clients read, and an earlier write may not have reached it yet.
     const status = rests ? (tasks.length ? 'running' : 'idle') : undefined
     const updated = ProofEventSchemas['session.updated'].parse({
       type: 'event',
@@ -996,8 +994,13 @@ export function createThreadService(
       payload: {
         sessionId: record.session.sessionId,
         backgroundTasks: tasks,
-        // Nothing is in flight here, so running is running for this work alone.
-        ...(status ? { status, ...(status === 'running' ? { inBackground: true } : {}) } : {}),
+        // With SQLite the event states only the roster: the projection derives
+        // the resting status from the rows and the status pass announces it
+        // (docs/sync-foundations.md §4.7.8). The in-memory seam has no rows,
+        // so there the roster event also carries the status that follows.
+        ...(status && !options.database
+          ? { status, ...(status === 'running' ? { inBackground: true } : {}) }
+          : {}),
       },
     })
     try {
@@ -1645,12 +1648,10 @@ export function createThreadService(
           eventId: randomUUID(),
           timestamp,
           scope: { type: 'environment', environmentId },
-          payload: {
-            sessionId: row.session_id,
-            backgroundTasks: [],
-            // A turn cut off by the restart already reads as failed.
-            ...(row.status === 'running' ? { status: 'idle' } : {}),
-          },
+          // Only the roster: a resting session it kept running becomes idle
+          // in the projection, and a turn cut off by the restart already
+          // reads as failed.
+          payload: { sessionId: row.session_id, backgroundTasks: [] },
         }),
       )
       if (options.appendAtomic) options.appendAtomic(events)
