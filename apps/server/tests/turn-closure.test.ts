@@ -228,6 +228,47 @@ describe('turn closure', () => {
     ).toEqual(['tool-finish', 'thought-stop', 'done'])
   })
 
+  it('lets a finished turn take only the close of a child it left open (I2)', async () => {
+    const database = await createDatabase()
+    const repository = createEventRepository(database)
+    repository.appendEvents(scope, openTurn().slice(0, 4))
+    repository.finalizeTurn(scope, [event('turn.completed', 'done', { turnId: 'turn-1' }, T(2))])
+    // A turn from before servers closed children: its tool and thought still open.
+    database.exec(`UPDATE turn_activity SET state_json = json_set(state_json, '$.status', 'in_progress')
+      WHERE activity_id = 'tool-1'`)
+    database.exec(`UPDATE turn_activity SET state_json = json_set(state_json, '$.phase', 'delta')
+      WHERE activity_id = 'thought-1'`)
+    const late = (eventId: string, payload: object) =>
+      event('tool.updated', eventId, { toolCallId: 'tool-1', turnId: 'turn-1', ...payload })
+    // Late output is refused...
+    expect(() => repository.appendEvents(scope, [late('late', { status: 'completed' })])).toThrow(
+      /finished turn/,
+    )
+    expect(() =>
+      repository.appendEvents(scope, [
+        event('message.delta', 'late-text', {
+          messageId: 'late-text',
+          turnId: 'turn-1',
+          role: 'assistant',
+          content: { type: 'text', text: 'late' },
+        }),
+      ]),
+    ).toThrow(/finished turn/)
+    // ...the repair's closes are taken...
+    repository.appendEvents(scope, [
+      late('repair:tool:tool-1', { status: 'cancelled' }),
+      event('message.reasoning', 'repair:reasoning:thought-1', {
+        messageId: 'thought-1',
+        turnId: 'turn-1',
+        phase: 'stop',
+      }),
+    ])
+    // ...and a second close of the same child is not.
+    expect(() =>
+      repository.appendEvents(scope, [late('second-close', { status: 'cancelled' })]),
+    ).toThrow(/finished turn/)
+  })
+
   it('refuses a terminal that would leave a child open (I3)', async () => {
     const database = await createDatabase()
     const repository = createEventRepository(database)

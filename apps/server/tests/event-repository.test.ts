@@ -902,8 +902,9 @@ describe('event repository transactions', () => {
         repository.finalizeTurn(scope, [completed()])
       }
       const before = projectionSnapshot(database)
+      // A finished turn takes no new output at all (close-only, I2).
       expect(() => repository.appendEvents(incoming.scope, [incoming])).toThrow(
-        'mismatched or finalized message',
+        mismatch === 'finalized' ? 'finished turn' : 'mismatched or finalized message',
       )
       expect(projectionSnapshot(database)).toEqual(before)
     },
@@ -1639,13 +1640,33 @@ describe('durable turn activity', () => {
     // Text that doubles when encoded (one newline per character) is budgeted
     // as the frame carries it, so the page still fits.
     const dense = 'z\n'.repeat(400 * 1024)
+    // In a turn of its own: a finished turn takes no new thought (close-only, I2).
     repository.appendEvents(other, [
+      {
+        ...otherStart,
+        eventId: 'other-started-3',
+        scope: other,
+        payload: {
+          turn: {
+            turnId: 'turn-3',
+            threadId: 'thread-2',
+            state: 'running',
+            startedAt: '2026-09-10T10:00:00.000Z',
+          },
+          userMessage: {
+            ...otherStart.payload.userMessage,
+            messageId: 'other-user-3',
+            threadId: 'thread-2',
+            turnId: 'turn-3',
+          },
+        },
+      },
       {
         ...thought('other-r2', 'thought-dense'),
         scope: other,
         payload: {
           ...thought('other-r2', 'thought-dense').payload,
-          turnId: 'turn-2',
+          turnId: 'turn-3',
           content: { type: 'text', text: dense },
         },
       },
@@ -1755,10 +1776,28 @@ describe('durable turn activity', () => {
       { ordinal: 1 / 3 },
       { ordinal: 2 / 3 },
     ])
+    // A later turn (one the provider began, so it has no prompt of its own);
+    // the finished one takes no new output.
     createEventRepository(upgraded).appendEvents(scope, [
+      ProofEventSchemas['turn.started'].parse({
+        ...started('later-started'),
+        payload: {
+          turn: {
+            turnId: 'turn-2',
+            threadId: 'thread-1',
+            state: 'running',
+            startedAt: '2026-09-10T10:00:05.000Z',
+            origin: 'background',
+          },
+        },
+      }),
       ProofEventSchemas['message.delta'].parse({
         ...delta('later', 'later-delta'),
-        payload: { ...delta('later', 'later-delta').payload, messageId: 'later' },
+        payload: {
+          ...delta('later', 'later-delta').payload,
+          messageId: 'later',
+          turnId: 'turn-2',
+        },
       }),
     ])
     expect(
@@ -1772,7 +1811,7 @@ describe('durable turn activity', () => {
     databases.push(again)
     expect(
       listSessionHistory(again, { sessionId: 'session-1', threadId: 'thread-1' })!.order,
-    ).toEqual([...page.order, { kind: 'message', id: 'later', turnId: 'turn-1' }])
+    ).toEqual([...page.order, { kind: 'message', id: 'later', turnId: 'turn-2' }])
   })
 })
 

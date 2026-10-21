@@ -4,7 +4,7 @@ import type { ProofEvent } from '@openmanager/protocol/node'
 import type { DurableProofEvent } from './event-repository.ts'
 import { prepareDraftProjection } from './draft-projection.ts'
 import { OPEN_TURN_FOR_SESSION_SQL } from './queries.ts'
-import { createTurnClosure } from './turn-closure.ts'
+import { createTurnClosure, reasoningIsOpen, toolIsOpen } from './turn-closure.ts'
 
 type SessionSummary = Extract<ProofEvent, { name: 'session.created' }>['payload']['session']
 type TurnStarted = Extract<ProofEvent, { name: 'turn.started' }>
@@ -13,6 +13,10 @@ type MessageContent = MessageDelta['payload']['content']
 type MessageReasoning = Extract<ProofEvent, { name: 'message.reasoning' }>
 type ToolUpdated = Extract<ProofEvent, { name: 'tool.updated' }>
 type ActivityRow = { turn_id: string; thread_id: string; kind: string; state_json: string }
+type TurnRow = { workspace_id: string; state: string }
+
+/** A turn that has ended takes no new output. */
+const finished = (turn: TurnRow) => turn.state !== 'running' && turn.state !== 'waiting'
 
 export interface EventProjectionOptions {
   /** Host-owned provider identity, absent from the public session summary. */
@@ -105,7 +109,7 @@ export function createEventProjector(
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     selectTurnWorkspace: database.prepare(
-      'SELECT workspace_id FROM turns WHERE turn_id = ? AND thread_id = ?',
+      'SELECT workspace_id, state FROM turns WHERE turn_id = ? AND thread_id = ?',
     ),
     /** Only an unfinished turn may change state; late events for finished turns roll back. */
     updateOpenTurnState: database.prepare(
@@ -256,9 +260,9 @@ export function createEventProjector(
 
   function projectMessageDelta(event: MessageDelta, at: number): void {
     const { messageId, turnId, role, content } = event.payload
-    const turn = s.selectTurnWorkspace.get(turnId, event.scope.threadId) as
-      { workspace_id: string } | undefined
+    const turn = s.selectTurnWorkspace.get(turnId, event.scope.threadId) as TurnRow | undefined
     if (!turn) throw new Error(`Cannot project message for missing turn ${turnId}`)
+    if (finished(turn)) throw new Error(`Cannot add a message to finished turn ${turnId}`)
     const existing = s.selectMessage.get(messageId) as
       { turn_id: string; thread_id: string; role: string; is_final: number } | undefined
     if (
@@ -295,10 +299,15 @@ export function createEventProjector(
     next: (existing: unknown | undefined) => unknown,
   ): void {
     const { turnId } = event.payload
-    const turn = s.selectTurnWorkspace.get(turnId, event.scope.threadId) as
-      { workspace_id: string } | undefined
+    const turn = s.selectTurnWorkspace.get(turnId, event.scope.threadId) as TurnRow | undefined
     if (!turn) throw new Error(`Cannot project ${kind} for missing turn ${turnId}`)
     const existing = s.selectActivity.get(activityId) as ActivityRow | undefined
+    // A finished turn takes exactly one kind of child event: the close of a
+    // child it left open (the legacy repair, docs/sync-foundations.md §4.2).
+    // Anything else, a second close included, rolls the write back (I2).
+    if (finished(turn) && !closesOpenChild(event, existing)) {
+      throw new Error(`Cannot change ${kind} ${activityId} of finished turn ${turnId}`)
+    }
     if (existing) {
       if (
         existing.turn_id !== turnId ||
@@ -323,6 +332,33 @@ export function createEventProjector(
       JSON.stringify(next(undefined)),
       at,
       at,
+    )
+  }
+
+  /** Whether an event only closes an open child: tool to `cancelled`, thought to `stop`. */
+  function closesOpenChild(
+    event: MessageReasoning | ToolUpdated,
+    existing: ActivityRow | undefined,
+  ): boolean {
+    if (!existing) return false
+    const state = JSON.parse(existing.state_json) as { status?: string; phase?: string }
+    if (event.name === 'tool.updated') {
+      const { status, title, kind } = event.payload
+      return (
+        existing.kind === 'tool' &&
+        toolIsOpen(state) &&
+        status === 'cancelled' &&
+        title === undefined &&
+        kind === undefined
+      )
+    }
+    const { phase, content, tokens } = event.payload
+    return (
+      existing.kind === 'reasoning' &&
+      reasoningIsOpen(state) &&
+      phase === 'stop' &&
+      content === undefined &&
+      tokens === undefined
     )
   }
 
