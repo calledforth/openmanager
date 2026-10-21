@@ -5,8 +5,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { THEME_FAMILIES } from '@openmanager/app-core/lib/theme-families'
 
-import { AppText } from '../components/ui/AppText'
-import { type ThemeMode, useTheme } from '../theme/ThemeProvider'
+import { AppText } from '../../components/ui/AppText'
+import { type ThemeMode, useTheme } from '../../theme/ThemeProvider'
 
 const THEME_OPTIONS: { mode: ThemeMode; label: string }[] = [
   { mode: 'system', label: 'System' },
@@ -24,28 +24,19 @@ export default function SettingsScreen() {
 
   return (
     <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
+      {/* A tab now, so nothing to close. The screen itself is redesigned later. */}
       <View className="flex-row items-center justify-between px-4 pb-3 pt-2">
         <AppText variant="text-16-medium" className="text-textStrong">
           Settings
         </AppText>
-        <TouchableOpacity
-          activeOpacity={0.7}
-          hitSlop={12}
-          onPress={() => router.back()}
-          accessibilityRole="button"
-          accessibilityLabel="Close settings"
-        >
-          <AppText variant="text-13-medium" className="text-textMuted">
-            Done
-          </AppText>
-        </TouchableOpacity>
       </View>
 
       <ScrollView
         contentContainerStyle={{
           paddingHorizontal: 16,
           paddingTop: 8,
-          paddingBottom: insets.bottom + 24,
+          // The pill nav floats over the end of the list.
+          paddingBottom: insets.bottom + 140,
           gap: 24,
         }}
       >

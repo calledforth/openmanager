@@ -1,4 +1,4 @@
-import { useLocalSearchParams, useRouter } from 'expo-router'
+import { useLocalSearchParams } from 'expo-router'
 import { CaretLeftIcon, DotsThreeVerticalIcon } from 'phosphor-react-native'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -23,7 +23,10 @@ import { useMobileClientId } from '../../data/client-id'
 import { usePendingPermission } from '../../data/usePendingPermission'
 import { useSession } from '../../data/useSession'
 import { useSessionMessages, type SessionMessage } from '../../data/useSessionMessages'
+import { useHomeSource } from '../../home/source'
 import { useTokens } from '../../theme/useTokens'
+import { useGoBack } from '../../ui/goBack'
+import { SessionPagePlaceholder } from '../../ui/SessionPagePlaceholder'
 
 // Phase 4 chat screen: header (back, 1-line title, status, overflow menu),
 // message timeline with desktop-parity auto-stick scrolling, streaming via
@@ -35,8 +38,8 @@ const ACTIVE_STATUSES = new Set(['running', 'busy', 'waiting'])
 // assuming the desktop worker never cleared `pending_permissions`.
 const PERMISSION_RESOLVE_TIMEOUT_MS = 15_000
 
-export default function SessionScreen() {
-  const router = useRouter()
+function ConvexSessionScreen() {
+  const goBack = useGoBack()
   const insets = useSafeAreaInsets()
   const tokens = useTokens()
   const { externalId, workspacePath } = useLocalSearchParams<{
@@ -183,13 +186,13 @@ export default function SessionScreen() {
       confirmLabel: 'Delete',
       onConfirm: () => {
         deleteSession({ workspacePath, sessionExternalId: externalId })
-          .then(() => router.back())
+          .then(goBack)
           .catch(() => {
             showAlert('Could not delete session', 'Please try again in a moment.')
           })
       },
     })
-  }, [externalId, workspacePath, deleteSession, router])
+  }, [externalId, workspacePath, deleteSession, goBack])
 
   const handleOverflowMenu = useCallback(() => {
     // Native: two-step action sheet (menu → confirm). Web: straight to the
@@ -215,7 +218,7 @@ export default function SessionScreen() {
         <TouchableOpacity
           activeOpacity={0.7}
           hitSlop={12}
-          onPress={() => router.back()}
+          onPress={goBack}
           accessibilityRole="button"
           accessibilityLabel="Back"
         >
@@ -279,4 +282,16 @@ export default function SessionScreen() {
       </KeyboardAvoidingView>
     </View>
   )
+}
+
+/**
+ * A row from the fixture has no page behind it yet, whatever else is
+ * configured; the placeholder says where the page is headed. The Convex-era
+ * page only ever answered for Convex sessions, and only with its provider
+ * mounted. The page itself is rebuilt on the environment protocol in CAL-308.
+ */
+export default function SessionScreen() {
+  const { kind } = useHomeSource()
+  if (kind === 'fixture' || !process.env.EXPO_PUBLIC_CONVEX_URL) return <SessionPagePlaceholder />
+  return <ConvexSessionScreen />
 }

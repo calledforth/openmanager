@@ -1,0 +1,153 @@
+import { useRouter } from 'expo-router'
+import { NotePencilIcon, PlusIcon } from 'phosphor-react-native'
+import { useCallback, useMemo, useState } from 'react'
+import { SectionList, View, type SectionListRenderItem } from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
+
+import { AppText } from '../../components/ui/AppText'
+import {
+  selectDraftRows,
+  selectHomeRows,
+  tabCounts,
+  type HomeDraftRow,
+  type HomeRow,
+  type HomeTab,
+} from '../../home/rows'
+import { useHomeSource } from '../../home/source'
+import { usePhoneTheme } from '../../theme/ThemeProvider'
+import { BigTitle, FadeOut, SectionLabel } from '../../ui/chrome'
+import { DraftRow } from '../../ui/DraftRow'
+import { IconButton } from '../../ui/IconButton'
+import { SegmentedTabs } from '../../ui/SegmentedTabs'
+import { SessionRow } from '../../ui/SessionRow'
+
+type ListRow = HomeRow | HomeDraftRow
+type ListSection = { key: string; label: string; data: ListRow[] }
+
+const EMPTY: Record<HomeTab, { title: string; body: string }> = {
+  all: {
+    title: 'No sessions yet',
+    body: 'Start one from the compose button, or on your computer; it shows up here.',
+  },
+  active: {
+    title: 'Nothing active',
+    body: 'Every session is settled. New work and anything that needs you shows up here.',
+  },
+  drafts: {
+    title: 'No drafts',
+    body: 'A message you start and leave unsent waits here.',
+  },
+}
+
+const keyOf = (row: ListRow) =>
+  row.kind === 'draft' ? `draft:${row.draft.draftId}` : `session:${row.session.externalId}`
+
+/**
+ * The sessions home: big title with the environment under it, All · Active
+ * · Drafts, rows grouped by what they are doing (Active) or by day (All).
+ * The floating pill nav is the tabs group's tab bar, drawn over this.
+ */
+export default function SessionsHome() {
+  const router = useRouter()
+  const insets = useSafeAreaInsets()
+  const theme = usePhoneTheme()
+  const { environment, connected, workspaces, sessions, drafts } = useHomeSource()
+  const [tab, setTab] = useState<HomeTab>('all')
+
+  const counts = useMemo(() => tabCounts(sessions, drafts), [sessions, drafts])
+  const sections = useMemo<ListSection[]>(() => {
+    const groups =
+      tab === 'drafts'
+        ? selectDraftRows({ drafts, workspaces })
+        : selectHomeRows({ sessions, workspaces, tab })
+    return groups.map((group) => ({ key: group.key, label: group.label, data: group.rows }))
+  }, [sessions, drafts, workspaces, tab])
+
+  const renderItem = useCallback<SectionListRenderItem<ListRow, ListSection>>(
+    ({ item }) =>
+      item.kind === 'draft' ? (
+        <DraftRow
+          row={item}
+          onPress={() => router.push(`/draft/${encodeURIComponent(item.draft.draftId)}`)}
+        />
+      ) : (
+        <SessionRow
+          row={item}
+          onPress={() => router.push(`/session/${encodeURIComponent(item.session.externalId)}`)}
+        />
+      ),
+    [router],
+  )
+
+  const empty = EMPTY[tab]
+
+  return (
+    <View className="flex-1" style={{ paddingTop: insets.top + 6 }}>
+      <BigTitle
+        title="Sessions"
+        environment={
+          environment
+            ? {
+                label: environment.label,
+                detail: environment.route.kind === 'local' ? 'LAN' : 'Tunnel',
+                connected,
+              }
+            : null
+        }
+        trailing={
+          <IconButton label="New session" onPress={() => router.push('/draft/new')}>
+            <NotePencilIcon size={18} color={theme.fg} />
+          </IconButton>
+        }
+      />
+      <SegmentedTabs
+        tabs={[
+          { key: 'all', label: 'All' },
+          { key: 'active', label: 'Active', count: counts.active },
+          { key: 'drafts', label: 'Drafts', count: counts.drafts },
+        ]}
+        value={tab}
+        onChange={setTab}
+      />
+      <View className="flex-1">
+        <SectionList
+          className="flex-1"
+          sections={sections}
+          keyExtractor={keyOf}
+          renderItem={renderItem}
+          renderSectionHeader={({ section }) => <SectionLabel>{section.label}</SectionLabel>}
+          stickySectionHeadersEnabled={false}
+          contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: insets.bottom + 140 }}
+          showsVerticalScrollIndicator={false}
+          ListEmptyComponent={
+            <View className="items-center px-10 pt-24">
+              <View
+                style={{
+                  width: 56,
+                  height: 56,
+                  borderRadius: 18,
+                  backgroundColor: theme.hover,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  marginBottom: 12,
+                }}
+              >
+                <PlusIcon size={26} color={theme.muted} />
+              </View>
+              <AppText variant="text-16-medium" style={{ color: theme.fg }}>
+                {empty.title}
+              </AppText>
+              <AppText
+                variant="text-13-regular"
+                style={{ color: theme.muted, textAlign: 'center', marginTop: 4 }}
+              >
+                {empty.body}
+              </AppText>
+            </View>
+          }
+        />
+        <FadeOut />
+      </View>
+    </View>
+  )
+}

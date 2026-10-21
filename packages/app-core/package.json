@@ -96,6 +96,7 @@
     "./components/sidebar/DraftDiscardToast": "./src/components/sidebar/DraftDiscardToast.tsx",
     "./components/sidebar/ProjectIcon": "./src/components/sidebar/ProjectIcon.tsx",
     "./components/sidebar/SessionBusyLoader": "./src/components/sidebar/SessionBusyLoader.tsx",
+    "./components/sidebar/session-busy-tone": "./src/components/sidebar/session-busy-tone.ts",
     "./components/sidebar/WorkspaceSidebar": "./src/components/sidebar/WorkspaceSidebar.tsx",
     "./components/sidebar/WorkspaceSidebarView": "./src/components/sidebar/WorkspaceSidebarView.tsx",
     "./components/workspace/AddProjectPalette": "./src/components/workspace/AddProjectPalette.tsx",
