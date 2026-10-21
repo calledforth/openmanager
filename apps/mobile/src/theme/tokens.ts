@@ -80,6 +80,8 @@ export interface PhoneTheme {
    * the scheme's canvas or its ink, whichever contrasts more with the fill.
    */
   inkOn: (fill: string) => string
+  /** The squares a project shows until its declared icon reaches the phone. */
+  projectMarks: readonly string[]
 }
 
 /** WCAG relative luminance of a generated colour; its alpha is ignored. */
@@ -106,6 +108,26 @@ export function contrastRatio(a: string, b: string): number {
 function pickInk(fill: string, bg: string, fg: string): string {
   return contrastRatio(fill, bg) >= contrastRatio(fill, fg) ? bg : fg
 }
+
+/**
+ * A project's square, until declared project icons reach the phone: eight
+ * hues a project's name picks from, so it keeps its colour across screens,
+ * schemes and devices. Web has no counterpart (it shows a folder), so these
+ * are the phone's own, the same on every scheme: a colour that changed with
+ * the theme would stop identifying the project. Mid-tone hues, so a square
+ * stands at 2:1 or better on every canvas; it always sits beside the
+ * project's name, which carries the meaning.
+ */
+export const PROJECT_MARKS: readonly string[] = [
+  '#4f8ff7',
+  '#e0a04f',
+  '#9b6bd6',
+  '#4a9d7a',
+  '#c0565a',
+  '#3fa7b8',
+  '#b58a3c',
+  '#7a7fd1',
+]
 
 const GLASS_ALPHA: Record<ColorScheme, { glass: number; strong: number; sheet: number }> = {
   dark: { glass: 0.58, strong: 0.72, sheet: 0.82 },
@@ -174,6 +196,7 @@ export function phoneTheme(scheme: SchemeId): PhoneTheme {
     shadowLayers: { float: shadows['float-shadow'], rest: shadows['float-shadow-rest'] },
     tokens: t,
     inkOn,
+    projectMarks: PROJECT_MARKS,
   }
   cache.set(scheme, theme)
   return theme

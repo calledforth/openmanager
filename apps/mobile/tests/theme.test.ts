@@ -14,7 +14,7 @@ const {
   resolveScheme,
   serializeAppearance,
 } = await import('../src/theme/appearance')
-const { basisDark, basisLight, contrastRatio, legacyBasis, phoneTheme, themeVars } =
+const { basisDark, basisLight, contrastRatio, legacyBasis, phoneTheme, PROJECT_MARKS, themeVars } =
   await import('../src/theme/tokens')
 
 describe('appearance', () => {
@@ -160,6 +160,16 @@ describe('phone theme', () => {
         // The pick is the better of the two, never the worse.
         const other = ink === theme.bg ? theme.fg : theme.bg
         expect(contrastRatio(fill, ink)).toBeGreaterThanOrEqual(contrastRatio(fill, other))
+      }
+    }
+  })
+
+  it('gives a project the same square on every scheme, visible on each canvas', () => {
+    for (const scheme of THEME_MODES) {
+      const theme = phoneTheme(scheme)
+      expect(theme.projectMarks).toBe(PROJECT_MARKS)
+      for (const mark of theme.projectMarks) {
+        expect(contrastRatio(mark, theme.bg), `${scheme} ${mark}`).toBeGreaterThanOrEqual(2)
       }
     }
   })
